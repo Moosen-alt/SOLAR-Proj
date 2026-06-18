@@ -1,0 +1,7 @@
+node_modules/
+backend/data/*.sqlite
+backend/data/storage-state/
+*.log
+.env
+dist/
+
