@@ -514,34 +514,61 @@ function renderHandoffBanner() {
   `;
 }
 
-// Plain-language "what do I do next" guidance keyed off project status.
+// Friendly display labels for every canonical ProjectStatus (shared/src/types.ts).
+const STATUS_LABELS = {
+  intake_uploaded: "Intake uploaded",
+  parsed: "Parsed",
+  qc_failed: "QC failed",
+  qc_passed: "QC passed",
+  ready_to_stage: "Ready to stage",
+  submit_staging: "Submit staging",
+  awaiting_human_submit: "Awaiting human submit",
+  submitted: "Submitted",
+  correction_received: "Correction received",
+  correction_triaged: "Correction triaged",
+  waiting_on_designer: "Waiting on designer",
+  ready_to_resubmit: "Ready to resubmit",
+  resubmit_staging: "Resubmit staging",
+  awaiting_human_resubmit: "Awaiting human resubmit",
+  ready_for_issue: "Ready for issue",
+  issued: "Permit issued",
+  approved: "Approved",
+  nem_approved: "NEM approved",
+  handoff_ready: "Ready for handoff",
+  blocked: "Blocked",
+};
+
+function statusLabel(status) {
+  return STATUS_LABELS[status] || String(status || "unknown").replaceAll("_", " ");
+}
+
+// Plain-language "what do I do next" guidance for every canonical status.
 // tone: "info" (blue, normal), "warn" (amber, needs attention), "done" (green).
+const NEXT_STEPS = {
+  intake_uploaded: { tone: "warn", step: "Step 1", text: "Files uploaded but not parsed yet. Open the <strong>Parser</strong>, click <strong>Parse</strong>, then <strong>Save to project</strong>." },
+  parsed: { tone: "info", step: "Step 2", text: "Parsed. Click <strong>2 · Run QC</strong> to check the data for missing or wrong info." },
+  qc_failed: { tone: "warn", step: "Step 2", text: "QC found problems. Open <strong>QC Results</strong> below, fix the flagged fields, then click <strong>2 · Run QC</strong> again." },
+  qc_passed: { tone: "info", step: "Step 3", text: "QC passed. Click <strong>3 · Build AHJ/NEM Docs</strong>, then <strong>4 · Reviewer Gate</strong>." },
+  ready_to_stage: { tone: "info", step: "Step 4", text: "Docs built. Click <strong>4 · Reviewer Gate</strong>, then <strong>5 · Prepare Submittal</strong>." },
+  submit_staging: { tone: "info", step: "Step 5", text: "Staging for submission. Click <strong>5 · Prepare Submittal</strong> to finish staging." },
+  awaiting_human_submit: { tone: "warn", step: "Step 5", text: "Staged and ready. <strong>A person must do the final submit</strong> in the portal now — automation stops here." },
+  submitted: { tone: "info", step: "Step 6", text: "Submitted. Track it with <strong>Permit Checks</strong> / <strong>NEM Checks</strong>. Paste any correction letter into <strong>Corrections</strong>." },
+  correction_received: { tone: "warn", step: "Step 6", text: "A correction came in. Open <strong>Corrections</strong> to triage it — the AI drafts a reply you review before sending." },
+  correction_triaged: { tone: "warn", step: "Step 6", text: "Correction triaged. Fix the docs per the reply, then move the project to <strong>Ready to resubmit</strong>." },
+  waiting_on_designer: { tone: "warn", step: "Step 6", text: "Waiting on the designer to revise stamped plans. Follow up if it has been a while." },
+  ready_to_resubmit: { tone: "info", step: "Step 5", text: "Revisions done. Click <strong>5 · Prepare Submittal</strong> to re-stage for resubmission." },
+  resubmit_staging: { tone: "info", step: "Step 5", text: "Staging the resubmission. Click <strong>5 · Prepare Submittal</strong> to finish." },
+  awaiting_human_resubmit: { tone: "warn", step: "Step 5", text: "Resubmission staged. <strong>A person must do the final resubmit</strong> in the portal — automation stops here." },
+  ready_for_issue: { tone: "info", step: "Step 6", text: "Approved — issuance/fees pending. Confirm the permit is issued, then keep tracking NEM." },
+  issued: { tone: "info", step: "Step 6", text: "Permit issued. Waiting on <strong>NEM approval</strong> to finish — keep running NEM Checks." },
+  approved: { tone: "info", step: "Step 6", text: "Approved. Confirm both permit issued and NEM approved to reach handoff." },
+  nem_approved: { tone: "info", step: "Step 7", text: "NEM approved. Once the permit is also issued, you will reach handoff." },
+  handoff_ready: { tone: "done", step: "Done", text: "Permit issued + NEM approved. Copy the <strong>Project Handoff Packet</strong> to the installer. PTO is the installer's job — our scope ends here." },
+  blocked: { tone: "warn", step: "Blocked", text: "This project is blocked — see the red items below. Clear the blocker, then continue the steps." },
+};
+
 function nextStepFor(status) {
-  switch (status) {
-    case "qc_pending":
-      return { tone: "warn", step: "Step 2", text: "QC flagged items. Open <strong>QC Results</strong> below, fix the flagged fields, then click <strong>2 · Run QC</strong> again." };
-    case "qc_passed":
-      return { tone: "info", step: "Step 3", text: "QC passed. Click <strong>3 · Build AHJ/NEM Docs</strong>, then <strong>4 · Reviewer Gate</strong>." };
-    case "submitted":
-      return { tone: "info", step: "Step 6", text: "Submitted. Now <strong>track it</strong> — run Permit Checks / NEM Checks. Paste any correction letter into <strong>Corrections</strong>." };
-    case "correction_received":
-    case "correction_triaged":
-      return { tone: "warn", step: "Step 6", text: "A correction came back. Open <strong>Corrections</strong>, review the AI-drafted reply, fix the docs, and resubmit (a person submits)." };
-    case "ready_for_issue":
-    case "issued":
-    case "permit_issued":
-      return { tone: "info", step: "Step 6", text: "Permit issued. Waiting on <strong>NEM approval</strong> to finish — keep running NEM Checks." };
-    case "nem_approved":
-      return { tone: "info", step: "Step 7", text: "NEM approved. Once the permit is also issued, copy the <strong>Handoff Packet</strong> to the installer." };
-    case "handoff_ready":
-      return { tone: "done", step: "Done", text: "Permit issued + NEM approved. Copy the <strong>Project Handoff Packet</strong> to the installer. PTO is the installer's job — our scope ends here." };
-    case "blocked":
-      return { tone: "warn", step: "Blocked", text: "This project is blocked — see the red items below. Clear the blocker, then continue the steps." };
-    case "pto_granted":
-      return { tone: "done", step: "Closed", text: "PTO granted by the installer. Nothing left for us on this project." };
-    default:
-      return { tone: "info", step: "Step 2", text: "New project. Click <strong>2 · Run QC</strong> to check the parsed data for missing or wrong info." };
-  }
+  return NEXT_STEPS[status] || { tone: "info", step: "Step 2", text: "Click <strong>2 · Run QC</strong> to check the parsed data for missing or wrong info." };
 }
 
 function renderNextStep() {
@@ -559,7 +586,7 @@ function renderDetail() {
   const { project } = state.detail;
   $("detailTitle").textContent = project.homeownerName || "Unnamed project";
   $("detailSubtitle").textContent = project.projectAddress || "No address captured";
-  $("metricStatus").textContent = project.status;
+  $("metricStatus").textContent = statusLabel(project.status);
   $("metricUtility").textContent = project.utility || "Missing";
   $("metricAhj").textContent = project.ahj || "Missing";
   $("metricSystem").textContent = `${project.systemSizeDcKw ?? "?"} DC / ${project.systemSizeAcKw ?? "?"} AC`;

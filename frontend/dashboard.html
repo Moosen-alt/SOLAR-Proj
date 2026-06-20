@@ -77,14 +77,34 @@
         <input id="projectSearch" type="search" placeholder="Search homeowner, address, AHJ…" />
         <select id="projectStatusFilter">
           <option value="">All statuses</option>
-          <option value="new">New</option>
-          <option value="qc_pending">QC pending</option>
-          <option value="qc_passed">QC passed</option>
-          <option value="submitted">Submitted</option>
-          <option value="correction_triaged">Correction</option>
-          <option value="permit_issued">Permit issued</option>
-          <option value="nem_approved">NEM approved</option>
-          <option value="pto_granted">PTO granted</option>
+          <optgroup label="1–2 · Intake & QC">
+            <option value="intake_uploaded">Intake uploaded</option>
+            <option value="parsed">Parsed</option>
+            <option value="qc_failed">QC failed</option>
+            <option value="qc_passed">QC passed</option>
+          </optgroup>
+          <optgroup label="3–5 · Build & Submit">
+            <option value="ready_to_stage">Ready to stage</option>
+            <option value="submit_staging">Submit staging</option>
+            <option value="awaiting_human_submit">Awaiting human submit</option>
+            <option value="submitted">Submitted</option>
+          </optgroup>
+          <optgroup label="6 · Corrections">
+            <option value="correction_received">Correction received</option>
+            <option value="correction_triaged">Correction triaged</option>
+            <option value="waiting_on_designer">Waiting on designer</option>
+            <option value="ready_to_resubmit">Ready to resubmit</option>
+            <option value="resubmit_staging">Resubmit staging</option>
+            <option value="awaiting_human_resubmit">Awaiting human resubmit</option>
+          </optgroup>
+          <optgroup label="6–7 · Issue & Handoff">
+            <option value="ready_for_issue">Ready for issue</option>
+            <option value="issued">Permit issued</option>
+            <option value="approved">Approved</option>
+            <option value="nem_approved">NEM approved</option>
+            <option value="handoff_ready">Ready for handoff</option>
+          </optgroup>
+          <option value="blocked">Blocked</option>
         </select>
         <select id="projectUserFilter">
           <option value="">All assignees</option>
