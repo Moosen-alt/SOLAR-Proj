@@ -4045,11 +4045,21 @@ export async function prepareSubmission(db: AppDb, projectId: string): Promise<P
     ? detail.project.parserSnapshot["portal_profile_id"]
     : null;
   const portalProfile = snapshotProfileId
-    ? (db.get("SELECT * FROM portal_profiles WHERE id = ?", [snapshotProfileId]) as { portal_type?: string; encrypted_storage_state?: string } | undefined)
+    ? (db.get("SELECT * FROM portal_profiles WHERE id = ?", [snapshotProfileId]) as { id?: string; portal_name?: string; portal_type?: string; encrypted_storage_state?: string } | undefined)
     : (db.get(
         "SELECT * FROM portal_profiles WHERE portal_type IN ('accela_oregon', 'powerclerk_pge') ORDER BY created_at DESC LIMIT 1"
-      ) as { portal_type?: string; encrypted_storage_state?: string } | undefined);
+      ) as { id?: string; portal_name?: string; portal_type?: string; encrypted_storage_state?: string } | undefined);
   const portalType = portalProfile?.portal_type ?? "mock";
+  const isRealPortal = portalType !== "mock";
+  const portalProfileId = portalProfile?.id ?? null;
+  const portalLabel = isRealPortal
+    ? (portalProfile?.portal_name || portalType)
+    : "Mock portal";
+  const adapterActorName = portalType === "accela_oregon"
+    ? "OregonEPermittingAdapter"
+    : portalType === "powerclerk_pge"
+      ? "PowerClerkAdapter"
+      : "MockPortalAdapter";
   const stageOptions = {
     encryptedStorageStatePath: portalProfile?.encrypted_storage_state ?? undefined,
     headless: false,
@@ -4069,7 +4079,7 @@ export async function prepareSubmission(db: AppDb, projectId: string): Promise<P
         (id, project_id, portal_profile_id, run_type, status, started_at, finished_at, error_message,
          human_action_required, screenshots_path, logs_path, result_json)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [runId, projectId, null, "prepare_submit", "awaiting_human_submit", ts, nowIso(), "", 1, "", "", asJson(result)],
+      [runId, projectId, portalProfileId, "prepare_submit", "awaiting_human_submit", ts, nowIso(), "", 1, "", "", asJson(result)],
     );
 
     db.run(
@@ -4080,7 +4090,7 @@ export async function prepareSubmission(db: AppDb, projectId: string): Promise<P
       [
         submissionId,
         projectId,
-        null,
+        portalProfileId,
         "permit",
         "awaiting_human_submit",
         "",
@@ -4089,20 +4099,22 @@ export async function prepareSubmission(db: AppDb, projectId: string): Promise<P
         null,
         "",
         "",
-        "Mock portal staged to final review only. Automation did not click final submit.",
+        `${portalLabel} staged to final review only. Automation did not click final submit.`,
         ts,
       ],
     );
 
     db.run("UPDATE projects SET status = ?, current_stage = ?, updated_at = ? WHERE id = ?", [
       "awaiting_human_submit",
-      "Mock portal staged. Human must verify and submit manually.",
+      `${portalLabel} staged. Human must verify and submit manually.`,
       nowIso(),
       projectId,
     ]);
 
-    addAuditLog(db, projectId, "portal_bot", "MockPortalAdapter", "portal.staged_to_review", {
+    addAuditLog(db, projectId, "portal_bot", adapterActorName, "portal.staged_to_review", {
       runId,
+      portalProfileId,
+      portalType,
       finalSubmitClickedByAutomation: false,
       mustShowAhjPreviewWindow: reviewerReport.finalSubmitGate.mustShowAhjPreviewWindow,
       finalSubmitButtonAloneIsEnough: reviewerReport.finalSubmitGate.finalSubmitButtonAloneIsEnough,

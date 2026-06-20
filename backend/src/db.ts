@@ -42,6 +42,16 @@ export class AppDb {
   }
 
   transaction<T>(fn: () => T): T {
+    // Reentrancy guard: sql.js cannot nest BEGIN. If a transaction is already
+    // open, run the work inline and let the outermost call commit/persist once.
+    if (this.transactionDepth > 0) {
+      this.transactionDepth += 1;
+      try {
+        return fn();
+      } finally {
+        this.transactionDepth -= 1;
+      }
+    }
     this.transactionDepth += 1;
     this.db.run("BEGIN");
     try {

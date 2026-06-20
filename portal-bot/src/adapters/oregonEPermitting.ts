@@ -1,6 +1,7 @@
 import path from "node:path";
 import type { ProjectRecord, ReviewerReport } from "../../../shared/src/types";
 import { HUMAN_REVIEW_MESSAGE, type PortalAdapter, type PortalContext, type PortalStepResult } from "../adapter";
+import { openPortal } from "../browser";
 
 // Oregon ePermitting (Accela ACA) adapter
 // Codegen recording captured by operator up to the review page.
@@ -98,7 +99,6 @@ export class OregonEPermittingAdapter implements PortalAdapter {
   // ---------------------------------------------------------------------------
   async login(context: PortalContext): Promise<PortalStepResult> {
     try {
-      const { openPortal } = await import("../browser.js");
       const { page } = await openPortal({
         userDataDir: context.userDataDir,
         storageStatePath: context.storageStatePath,
