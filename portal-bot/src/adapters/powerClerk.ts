@@ -71,39 +71,32 @@ export class PowerClerkAdapter implements PortalAdapter {
   private page: any = null;
 
   // ---------------------------------------------------------------------------
-  // login — loads encrypted session state; never types a password in code
+  // login — uses a persistent browser profile (userDataDir) so the login
+  // survives across runs without re-entering credentials. Falls back to a
+  // storage-state snapshot if userDataDir is not set.
   // ---------------------------------------------------------------------------
   async login(context: PortalContext): Promise<PortalStepResult> {
     try {
-      const { chromium } = await import("playwright");
-      const browser = await chromium.launch({ headless: context.headless ?? false });
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const browserContext: any = context.storageStatePath
-        ? await browser.newContext({ storageState: context.storageStatePath })
-        : await browser.newContext();
+      const { openPortal } = await import("../browser.js");
+      const { page } = await openPortal({
+        userDataDir: context.userDataDir,
+        storageStatePath: context.storageStatePath,
+        headless: context.headless ?? false,
+      });
+      this.page = page;
 
-      this.page = await browserContext.newPage();
       await this.page.goto(PGE_LOGIN_URL);
+      await this.page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
 
-      // If the session is valid we are redirected past the login form. Only when
-      // the login form is still present do we click Log In (credentials must
-      // already be supplied by the loaded session/secret manager, not by us).
       const loginVisible = await this.page.getByRole("button", { name: "Log In" }).count();
       if (loginVisible > 0) {
-        const hasSession = !!context.storageStatePath;
-        if (!hasSession) {
-          return fail(
-            "PowerClerk login form is shown but no session state is configured. Capture a session with `npx playwright codegen --save-storage` and store it as an encrypted portal profile."
-          );
-        }
-        await this.page.getByRole("button", { name: "Log In" }).click();
-        await this.page.waitForLoadState("networkidle", { timeout: 20000 }).catch(() => null);
+        // Session didn't persist — let the user log in manually in the open window
+        return fail(
+          "PowerClerk login form is still visible. Log in manually in the browser window, then re-run. For a persistent login, use: npm run portal:login -- powerclerk"
+        );
       }
 
-      return ok("Session loaded and logged in to PowerClerk (PGE).", {
-        portalProfileId: context.portalProfileId ?? null,
-        sessionStateLoaded: !!context.storageStatePath,
-      });
+      return ok("Logged in to PowerClerk (PGE).", { portalProfileId: context.portalProfileId ?? null });
     } catch (err) {
       return fail(`Login failed: ${err instanceof Error ? err.message : String(err)}`);
     }

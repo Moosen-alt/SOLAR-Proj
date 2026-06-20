@@ -94,36 +94,31 @@ export class OregonEPermittingAdapter implements PortalAdapter {
   private page: any = null;
 
   // ---------------------------------------------------------------------------
-  // login — loads encrypted session state so no password is ever entered here
+  // login — uses a persistent browser profile so the login survives across runs
   // ---------------------------------------------------------------------------
   async login(context: PortalContext): Promise<PortalStepResult> {
     try {
-      const { chromium } = await import("playwright");
-      const browser = await chromium.launch({ headless: context.headless ?? false });
+      const { openPortal } = await import("../browser.js");
+      const { page } = await openPortal({
+        userDataDir: context.userDataDir,
+        storageStatePath: context.storageStatePath,
+        headless: context.headless ?? false,
+      });
+      this.page = page;
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const browserContext: any = context.storageStatePath
-        ? await browser.newContext({ storageState: context.storageStatePath })
-        : await browser.newContext();
-
-      this.page = await browserContext.newPage();
       await this.page.goto(`${BASE_URL}/Default.aspx`);
+      await this.page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
 
-      // If session state was loaded we may already be logged in — check dashboard
       const isLoggedIn = await this.page.locator('a[href*="Dashboard"]').count() > 0
         || (await this.page.title()).toLowerCase().includes("dashboard");
 
       if (!isLoggedIn) {
-        // Click Sign In inside the login iframe; password must be in session state
-        const loginFrame = this.page.frameLocator('iframe[title="Login Frame"]');
-        await loginFrame.getByRole("button", { name: "Sign In" }).click();
-        await this.page.waitForURL(`${BASE_URL}/Dashboard.aspx`, { timeout: 20000 }).catch(() => null);
+        return fail(
+          "Oregon ePermitting login page is still showing. Log in manually in the browser window, then re-run. For a persistent login, use: npm run portal:login -- accela"
+        );
       }
 
-      return ok("Session loaded and logged in to Oregon ePermitting.", {
-        portalProfileId: context.portalProfileId ?? null,
-        sessionStateLoaded: !!context.storageStatePath,
-      });
+      return ok("Logged in to Oregon ePermitting.", { portalProfileId: context.portalProfileId ?? null });
     } catch (err) {
       return fail(`Login failed: ${err instanceof Error ? err.message : String(err)}`);
     }

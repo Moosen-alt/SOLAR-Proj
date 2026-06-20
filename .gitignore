@@ -9,4 +9,5 @@ dist/
 *-session.json
 *.session.json
 playwright/.auth/
+portal-profiles/
 

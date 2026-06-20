@@ -1,28 +1,38 @@
 /**
  * Standalone portal test harness.
  *
- * Lets you watch a portal adapter fill a real portal in a visible browser,
- * WITHOUT setting up a full project in the database. The bot always stops at
- * the final review screen — it never clicks final submit.
+ * FIRST TIME SETUP — log in and save a persistent profile (once per portal):
+ *   npm run portal:login -- powerclerk
+ *   npm run portal:login -- accela
  *
- * USAGE:
- *   1. Capture a login session for the portal (one time):
- *        npx playwright codegen --save-storage=accela-session.json https://aca-oregon.accela.com/oregon/
- *        # (log in manually in the window that opens, then close it)
+ *   A browser opens. Log in manually. Close the browser. Done — your login is
+ *   saved in portal-profiles/<portal>/ and reused on every run from now on.
  *
- *   2. Point this script at that session and a sample project JSON:
- *        npx tsx portal-bot/src/testRun.ts accela ./accela-session.json ./sample-project.json
- *        npx tsx portal-bot/src/testRun.ts powerclerk ./pge-session.json ./sample-project.json
+ * RUN THE BOT (after login is saved):
+ *   npm run portal:test -- powerclerk
+ *   npm run portal:test -- accela
  *
- *   If you omit the project file, a built-in sample project is used.
- *   Files to upload are read from the project's `uploadFiles` array (absolute
- *   paths). Leave it empty to skip uploads while testing field-fill.
+ *   A browser opens, fills every field, and stops at the review screen.
+ *   Verify everything, then click submit yourself. Press Ctrl+C when done.
+ *
+ * USE YOUR OWN PROJECT DATA:
+ *   npm run portal:test -- powerclerk ./my-project.json
+ *
+ * The bot NEVER clicks final submit, pays fees, or handles MFA/CAPTCHA.
  */
 import fs from "node:fs";
+import path from "node:path";
 import type { ProjectRecord } from "../../shared/src/types";
 import { OregonEPermittingAdapter } from "./adapters/oregonEPermitting";
 import { PowerClerkAdapter } from "./adapters/powerClerk";
-import type { PortalAdapter } from "./adapter";
+import type { PortalAdapter, PortalContext } from "./adapter";
+
+const PROFILES_DIR = path.resolve(process.cwd(), "portal-profiles");
+
+const PORTAL_URLS: Record<string, string> = {
+  powerclerk: "https://pgenm.powerclerk.com/MvcAccount/Login",
+  accela: "https://aca-oregon.accela.com/oregon/Default.aspx",
+};
 
 const SAMPLE_PROJECT: ProjectRecord & { uploadFiles?: string[] } = {
   id: "test-project",
@@ -63,17 +73,44 @@ const SAMPLE_PROJECT: ProjectRecord & { uploadFiles?: string[] } = {
   updatedAt: new Date().toISOString(),
 };
 
-async function main(): Promise<void> {
-  const [portal, sessionPath, projectPath] = process.argv.slice(2);
+// Opens a visible browser so the user can log in and save a persistent profile
+async function doLogin(portal: string): Promise<void> {
+  const { chromium } = await import("playwright");
+  const profileDir = path.join(PROFILES_DIR, portal);
+  fs.mkdirSync(profileDir, { recursive: true });
 
-  if (!portal || !["accela", "powerclerk"].includes(portal)) {
-    console.error("Usage: tsx portal-bot/src/testRun.ts <accela|powerclerk> [session.json] [project.json]");
-    process.exit(1);
-  }
+  const url = PORTAL_URLS[portal];
+  console.log(`\n▶ Opening ${portal} login page in a persistent browser profile`);
+  console.log(`  Profile saved to: ${profileDir}`);
+  console.log(`  → Log in manually in the browser window that opens.`);
+  console.log(`  → When you reach your dashboard, close the browser window.`);
+  console.log(`  → Your login will be reused on every future run.\n`);
 
-  if (sessionPath && !fs.existsSync(sessionPath)) {
-    console.error(`Session file not found: ${sessionPath}`);
-    console.error("Capture one with: npx playwright codegen --save-storage=session.json <portal-url>");
+  const context = await chromium.launchPersistentContext(profileDir, {
+    headless: false,
+    viewport: null,
+    args: ["--start-maximized"],
+  });
+  const page = context.pages()[0] ?? await context.newPage();
+  await page.goto(url);
+
+  // Wait until the user closes the browser window
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  await new Promise<void>((resolve) => {
+    (context as any).on("close", resolve);
+    (page as any).on("close", resolve);
+  });
+
+  console.log("\n✅ Browser closed. Your login has been saved.");
+  console.log(`   Now run: npm run portal:test -- ${portal}\n`);
+}
+
+// Drives the adapter through all steps and stops at the review screen
+async function doTest(portal: string, projectPath: string | undefined): Promise<void> {
+  const profileDir = path.join(PROFILES_DIR, portal);
+  if (!fs.existsSync(profileDir)) {
+    console.error(`\n✗ No saved login found for ${portal}.`);
+    console.error(`  Run this first: npm run portal:login -- ${portal}\n`);
     process.exit(1);
   }
 
@@ -82,38 +119,77 @@ async function main(): Promise<void> {
       ? (JSON.parse(fs.readFileSync(projectPath, "utf8")) as ProjectRecord & { uploadFiles?: string[] })
       : SAMPLE_PROJECT;
 
-  const files = Array.isArray(project.uploadFiles) ? project.uploadFiles : [];
+  const files: string[] = Array.isArray(project.uploadFiles) ? project.uploadFiles : [];
 
-  const adapter: PortalAdapter = portal === "accela" ? new OregonEPermittingAdapter() : new PowerClerkAdapter();
+  const adapter: PortalAdapter = portal === "accela"
+    ? new OregonEPermittingAdapter()
+    : new PowerClerkAdapter();
+
+  const context: PortalContext = {
+    userDataDir: profileDir,
+    headless: false,
+  };
 
   console.log(`\n▶ Testing ${adapter.portalName}`);
-  console.log(`  Session: ${sessionPath ?? "(none — you must log in manually if prompted)"}`);
-  console.log(`  Project: ${project.homeownerName} @ ${project.projectAddress}`);
-  console.log(`  Files:   ${files.length} to upload`);
-  console.log(`  Browser will open VISIBLE. The bot stops at the review page — it never submits.\n`);
+  console.log(`  Profile:  ${profileDir}`);
+  console.log(`  Project:  ${project.homeownerName} @ ${project.projectAddress}`);
+  console.log(`  Arrays:   ${Array.isArray((project.parserSnapshot as Record<string, unknown>)?.["pvArrays"]) ? ((project.parserSnapshot as Record<string, unknown>)["pvArrays"] as unknown[]).length : 1}`);
+  console.log(`  Files:    ${files.length} to upload`);
+  console.log(`  The bot stops at the review page — it NEVER submits.\n`);
 
   const step = async (label: string, fn: () => Promise<{ ok: boolean; message: string }>) => {
     process.stdout.write(`  • ${label} ... `);
     const r = await fn();
-    console.log(r.ok ? `ok — ${r.message}` : `FAILED — ${r.message}`);
+    if (r.ok) {
+      console.log(`ok  ${r.message}`);
+    } else {
+      console.log(`FAILED\n\n    ${r.message}\n`);
+    }
     return r.ok;
   };
 
-  // headless:false so you can watch and take over for the final submit
-  if (!(await step("login", () => adapter.login({ storageStatePath: sessionPath, headless: false })))) return;
+  if (!(await step("login", () => adapter.login(context)))) {
+    console.log("  ↳ Fix login then re-run. Browser is still open if you want to log in now.\n");
+    await new Promise(() => {}); // keep open
+  }
   if (!(await step("openSubmission", () => adapter.openSubmission(project)))) return;
   if (!(await step("fillApplication", () => adapter.fillApplication(project)))) return;
   if (files.length > 0) await step("uploadFiles", () => adapter.uploadFiles(project, files));
   await step("stopAtReview", () => adapter.stopAtReview(project));
 
-  console.log("\n✅ Bot stopped at the review screen. Verify everything, then click submit MANUALLY.");
-  console.log("   The browser stays open. Press Ctrl+C here when you're done.\n");
+  console.log("\n✅ Bot stopped at the review screen.");
+  console.log("   Verify all fields, then click Submit MANUALLY.");
+  console.log("   Press Ctrl+C here when you are done.\n");
 
-  // Keep the process alive so the browser stays open for manual review/submit
-  await new Promise(() => {});
+  await new Promise(() => {}); // keep browser open
+}
+
+async function main(): Promise<void> {
+  const [command, arg1, arg2] = process.argv.slice(2);
+
+  if (command === "login") {
+    const portal = arg1;
+    if (!portal || !PORTAL_URLS[portal]) {
+      console.error("Usage: npm run portal:login -- <accela|powerclerk>");
+      process.exit(1);
+    }
+    await doLogin(portal);
+    return;
+  }
+
+  // Default: test mode
+  const portal = command;
+  if (!portal || !["accela", "powerclerk"].includes(portal)) {
+    console.error("Usage:");
+    console.error("  npm run portal:login -- <accela|powerclerk>   (first-time login)");
+    console.error("  npm run portal:test  -- <accela|powerclerk> [project.json]");
+    process.exit(1);
+  }
+
+  await doTest(portal, arg1 ?? arg2);
 }
 
 main().catch((err) => {
-  console.error("Test run error:", err);
+  console.error("\nTest run error:", err instanceof Error ? err.message : String(err));
   process.exit(1);
 });
