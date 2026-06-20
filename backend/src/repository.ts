@@ -59,7 +59,7 @@ import type {
 } from "../../shared/src/types";
 import fs from "node:fs";
 import path from "node:path";
-import { stageWithMockPortal } from "../../portal-bot/src/index";
+import { stageWithAccela, stageWithMockPortal } from "../../portal-bot/src/index";
 import { addAuditLog } from "./audit";
 import { buildApplicationDocumentPackage } from "./applicationDocs";
 import { classifyCorrection } from "./corrections";
@@ -4037,7 +4037,25 @@ export async function prepareSubmission(db: AppDb, projectId: string): Promise<P
   const submissionId = id();
   const ts = nowIso();
   const files = filesFromProject(detail.project.parserSnapshot);
-  const result = await stageWithMockPortal(detail.project, files, reviewerReport);
+
+  // Resolve portal adapter: if project has a portal_profile_id override in its
+  // parserSnapshot, use that; otherwise look for any accela_oregon profile when
+  // the project AHJ is an Oregon ePermitting jurisdiction; else use mock.
+  const snapshotProfileId = typeof detail.project.parserSnapshot?.["portal_profile_id"] === "string"
+    ? detail.project.parserSnapshot["portal_profile_id"]
+    : null;
+  const portalProfile = snapshotProfileId
+    ? (db.get("SELECT * FROM portal_profiles WHERE id = ?", [snapshotProfileId]) as { portal_type?: string; encrypted_storage_state?: string } | undefined)
+    : (db.get("SELECT * FROM portal_profiles WHERE portal_type = 'accela_oregon' ORDER BY created_at DESC LIMIT 1") as { portal_type?: string; encrypted_storage_state?: string } | undefined);
+  const portalType = portalProfile?.portal_type ?? "mock";
+
+  const result = portalType === "accela_oregon"
+    ? await stageWithAccela(detail.project, files, {
+        encryptedStorageStatePath: portalProfile?.encrypted_storage_state ?? undefined,
+        headless: false,
+        reviewerReport,
+      })
+    : await stageWithMockPortal(detail.project, files, reviewerReport);
 
   db.transaction(() => {
     db.run(

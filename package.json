@@ -15,10 +15,12 @@
     "sql.js": "^1.12.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.0",
     "@types/cors": "^2.8.17",
     "@types/express": "^5.0.0",
     "@types/node": "^22.10.7",
     "@types/sql.js": "^1.4.9",
+    "playwright": "^1.61.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3"
   }
