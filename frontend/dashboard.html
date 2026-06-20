@@ -25,7 +25,7 @@
     </nav>
   </header>
 
-  <details id="startHereGuide" class="start-here" open>
+  <details id="startHereGuide" class="start-here">
     <summary>
       <span class="start-here-title"><i data-lucide="compass"></i> Start here — how a project flows</span>
       <span class="start-here-hint">click to collapse</span>
@@ -181,7 +181,7 @@
       <!-- Drag-and-drop a .zip of past-project PDFs -->
       <div id="batchDropZone" class="mbox-drop-zone">
         <i data-lucide="file-archive"></i>
-        <span>Drag &amp; drop a <strong>.zip</strong> of past-project PDFs here — we read the jurisdiction, utility, required-document and correction patterns into the knowledge base to improve future projects (no projects or PII are created). Or <label class="drop-browse" for="batchDropInput">browse</label>, or use a folder path below</span>
+        <span>Drag &amp; drop a <strong>.zip</strong> of past-project PDFs here to train the parser — the system learns document layouts, AHJ/utility patterns, and what a complete packet looks like so it recognizes them better on future projects. Or <label class="drop-browse" for="batchDropInput">browse</label>, or use a folder path below. (For corrections and AHJ required-doc lists, import your mbox data above.)</span>
         <input id="batchDropInput" type="file" accept=".zip" />
       </div>
       <div class="batch-import-form">
@@ -197,8 +197,12 @@
       <div id="batchScanStatus" class="muted" style="font-size:13px;padding:6px 0"></div>
       <div id="batchScanResults" hidden></div>
 
+      <div class="section-head subhead" style="margin-top:10px">
+        <h2>Knowledge Base</h2>
+        <p class="muted" style="font-size:12px">What the system has learned — AHJ profiles, required-document lists, correction patterns. Updated by mbox imports, batch PDF scans, and saved projects.</p>
+      </div>
       <div id="knowledgeBase" class="stack knowledge-stack">
-        <p class="muted">Learning profiles load from saved projects, permit targets, corrections, status checks, and seeded public/reference sources.</p>
+        <p class="muted">Loading…</p>
       </div>
     </section>
 
@@ -261,71 +265,78 @@
           <div id="submitGate" class="submit-gate"></div>
         </section>
 
-        <section class="panel pm-brief-panel">
-          <div class="section-head">
-            <h3>PM Brief</h3>
-            <div class="actions">
-              <span id="opsBriefStatus" class="badge">syncing</span>
-              <button id="copyHandoffBtn" class="secondary"><i data-lucide="clipboard-copy"></i><span>Copy Handoff</span></button>
-            </div>
-          </div>
-          <div id="opsBrief" class="pm-brief"></div>
-        </section>
+        <details id="laterStepsAccordion" class="later-steps-accordion">
+          <summary class="later-steps-summary">
+            <span>PM Brief · Handoff Packet · Communication Drafts · Runbook · PermitFlow · Installer Packet</span>
+            <span class="later-steps-hint">available after submit</span>
+          </summary>
 
-        <section class="panel handoff-panel">
-          <div class="section-head">
-            <h3>Project Handoff Packet</h3>
-            <div class="actions">
-              <span id="handoffPacketStatus" class="badge">syncing</span>
-              <button id="copyHandoffPacketBtn" class="secondary"><i data-lucide="clipboard-copy"></i><span>Copy</span></button>
+          <section class="panel pm-brief-panel">
+            <div class="section-head">
+              <h3>PM Brief</h3>
+              <div class="actions">
+                <span id="opsBriefStatus" class="badge">syncing</span>
+                <button id="copyHandoffBtn" class="secondary"><i data-lucide="clipboard-copy"></i><span>Copy Handoff</span></button>
+              </div>
             </div>
-          </div>
-          <div id="handoffPacket" class="handoff-packet"></div>
-        </section>
+            <div id="opsBrief" class="pm-brief"></div>
+          </section>
 
-        <section class="panel communication-panel">
-          <div class="section-head">
-            <h3>Communication Drafts</h3>
-            <div class="actions">
-              <span id="communicationDraftsStatus" class="badge">syncing</span>
-              <button id="copyCommunicationDraftsBtn" class="secondary"><i data-lucide="clipboard-copy"></i><span>Copy All</span></button>
+          <section class="panel handoff-panel">
+            <div class="section-head">
+              <h3>Project Handoff Packet</h3>
+              <div class="actions">
+                <span id="handoffPacketStatus" class="badge">syncing</span>
+                <button id="copyHandoffPacketBtn" class="secondary"><i data-lucide="clipboard-copy"></i><span>Copy</span></button>
+              </div>
             </div>
-          </div>
-          <div id="communicationDrafts" class="communication-drafts"></div>
-        </section>
+            <div id="handoffPacket" class="handoff-packet"></div>
+          </section>
 
-        <section class="panel runbook-panel">
-          <div class="section-head">
-            <h3>PM Runbook</h3>
-            <div class="actions">
-              <span id="runbookStatus" class="badge">syncing</span>
-              <button id="copyRunbookBtn" class="secondary"><i data-lucide="clipboard-copy"></i><span>Copy</span></button>
+          <section class="panel communication-panel">
+            <div class="section-head">
+              <h3>Communication Drafts</h3>
+              <div class="actions">
+                <span id="communicationDraftsStatus" class="badge">syncing</span>
+                <button id="copyCommunicationDraftsBtn" class="secondary"><i data-lucide="clipboard-copy"></i><span>Copy All</span></button>
+              </div>
             </div>
-          </div>
-          <div id="runbook" class="pm-runbook"></div>
-        </section>
+            <div id="communicationDrafts" class="communication-drafts"></div>
+          </section>
 
-        <section class="panel">
-          <div class="section-head">
-            <h3>PermitFlow + NEMflow</h3>
-            <div class="actions">
-              <span id="processMapStatus" class="badge">syncing</span>
-              <button id="copyProcessMapBtn" class="secondary"><i data-lucide="clipboard-copy"></i><span>Copy</span></button>
+          <section class="panel runbook-panel">
+            <div class="section-head">
+              <h3>PM Runbook</h3>
+              <div class="actions">
+                <span id="runbookStatus" class="badge">syncing</span>
+                <button id="copyRunbookBtn" class="secondary"><i data-lucide="clipboard-copy"></i><span>Copy</span></button>
+              </div>
             </div>
-          </div>
-          <div id="processMap" class="process-map"></div>
-        </section>
+            <div id="runbook" class="pm-runbook"></div>
+          </section>
 
-        <section class="panel">
-          <div class="section-head">
-            <h3>Installer Action Packet</h3>
-            <div class="actions">
-              <span id="installerPacketStatus" class="badge">syncing</span>
-              <button id="copyInstallerPacketBtn" class="secondary"><i data-lucide="clipboard-copy"></i><span>Copy</span></button>
+          <section class="panel">
+            <div class="section-head">
+              <h3>PermitFlow + NEMflow</h3>
+              <div class="actions">
+                <span id="processMapStatus" class="badge">syncing</span>
+                <button id="copyProcessMapBtn" class="secondary"><i data-lucide="clipboard-copy"></i><span>Copy</span></button>
+              </div>
             </div>
-          </div>
-          <div id="installerPacket" class="installer-packet"></div>
-        </section>
+            <div id="processMap" class="process-map"></div>
+          </section>
+
+          <section class="panel">
+            <div class="section-head">
+              <h3>Installer Action Packet</h3>
+              <div class="actions">
+                <span id="installerPacketStatus" class="badge">syncing</span>
+                <button id="copyInstallerPacketBtn" class="secondary"><i data-lucide="clipboard-copy"></i><span>Copy</span></button>
+              </div>
+            </div>
+            <div id="installerPacket" class="installer-packet"></div>
+          </section>
+        </details>
 
         <section class="panel ops-panel">
           <div class="section-head">

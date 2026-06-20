@@ -727,7 +727,7 @@ app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
     err instanceof HttpError
       ? err
       : bodyParserStatus === 413 || bodyParserType === "entity.too.large"
-        ? new HttpError(413, `Upload is too large for the browser-upload limit. For a big .mbox, paste its full local path and click Import Path (it streams from disk with no size cap). For a big .zip, raise BATCH_ZIP_LIMIT in your .env.`)
+        ? new HttpError(413, `Upload is too large. For a big .zip of project PDFs, raise BATCH_ZIP_LIMIT in your .env (default 2gb) or unzip it locally and use the "Scan Folder" path instead. For a big .mbox file, paste its full local path and click Import Path.`)
         : new HttpError(bodyParserStatus && bodyParserStatus >= 400 && bodyParserStatus < 600 ? bodyParserStatus : 500, err instanceof Error ? err.message : "Unknown error.");
   if (httpError.status >= 500) console.error(err);
   res.status(httpError.status).json({

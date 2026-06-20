@@ -60,7 +60,7 @@ function esc(value) {
 }
 
 function statusBadge(status) {
-  const label = (status || "unknown").replaceAll("_", " ");
+  const label = String(status ?? "unknown").replaceAll("_", " ");
   if (status === "handoff_ready") return `<span class="badge badge-pass">${esc(label)}</span>`;
   if (status === "nem_approved") return `<span class="badge badge-info">${esc(label)}</span>`;
   if (status === "issued" || status === "ready_for_issue") return `<span class="badge badge-info">${esc(label)}</span>`;
@@ -404,14 +404,14 @@ function renderOpsActions() {
     <div class="ops-action-list">
       ${actions.length ? actions.slice(0, 12).map((action) => `
         <article class="ops-action-card ${opsClass(action.status)} ${action.projectId === state.selectedProjectId ? "active" : ""}" data-action-project-id="${action.projectId}" data-action-step-id="${action.stepId}">
-          <div class="ops-action-card-head">
+          <div class="ops-action-card-head" style="cursor:pointer" data-action-toggle="${action.stepId}">
             <strong>${esc(action.ownerRole || "Operations")}</strong>
             ${statusBadge(action.status)}
           </div>
           <span>${esc(action.phaseName)} | ${esc(action.homeownerName || "Unnamed")}</span>
           <span>${esc(action.action)}</span>
           <span class="muted">${esc(dueLabel(action))} | ${esc(action.source)} | ${action.blockerCount} project blocker(s)</span>
-          <form class="ops-action-form" data-action-form="${action.projectId}:${action.stepId}" method="post" action="/api/projects/${action.projectId}/ops-steps/${action.stepId}" target="opsActionFrame">
+          <form class="ops-action-form" data-action-form="${action.projectId}:${action.stepId}" method="post" action="/api/projects/${action.projectId}/ops-steps/${action.stepId}" target="opsActionFrame" hidden>
             <div class="ops-action-controls">
               <label>Status<select id="action-status-${action.stepId}" name="status">${opsStatusOptions(action.status)}</select></label>
               <label>Owner<input id="action-owner-${action.stepId}" name="ownerRole" value="${esc(action.ownerRole || "")}" /></label>
@@ -435,6 +435,14 @@ function handleOpsActionClick(event) {
     selectProject(openButton.dataset.actionOpen);
     return;
   }
+  const toggleHead = target.closest("[data-action-toggle]");
+  if (toggleHead) {
+    const stepId = toggleHead.dataset.actionToggle;
+    const card = toggleHead.closest(".ops-action-card");
+    const form = card?.querySelector(`.ops-action-form[data-action-form*="${stepId}"]`);
+    if (form) form.hidden = !form.hidden;
+    return;
+  }
 }
 
 async function handleOpsActionFrameLoad() {
@@ -443,32 +451,91 @@ async function handleOpsActionFrameLoad() {
   await refreshProjectListOnly();
 }
 
+function renderKnowledgeProfile(profile) {
+  const title = [profile.state, profile.ahj || "Any AHJ", profile.utility || "Any utility"].filter(Boolean).join(" / ");
+  const timeline = profile.averageTimelineDays == null
+    ? null
+    : `${profile.averageTimelineDays.toFixed(1)} days avg (${profile.timelineSampleCount} sample${profile.timelineSampleCount === 1 ? "" : "s"})`;
+  const docs = profile.requiredDocuments || [];
+  const corrections = (profile.commonCorrections || []).slice(0, 4);
+  const sourceSummary = (() => {
+    const types = [...new Set((profile.sources || []).map((s) => s.sourceType))];
+    const labels = types.map((t) => ({
+      official: "official", sanitized_reference: "reference", learned_project: "projects",
+      learned_correction: "corrections", learned_permit_status: "permit status", learned_batch_import: "batch scan",
+    }[t] || t));
+    return labels.join(", ");
+  })();
+  const lastLearned = profile.lastLearnedAt ? new Date(profile.lastLearnedAt).toLocaleDateString() : null;
+  const colorClass = profile.correctionCount > 0 ? "warning" : profile.projectCount > 0 ? "info" : "pass";
+  return `
+    <article class="item ${colorClass}" style="margin-bottom:8px">
+      <div class="item-title">
+        <span>${esc(title)}</span>
+        ${statusBadge(profile.confidence)}
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:12px;font-size:12px;margin:4px 0 6px">
+        <span>📁 ${profile.projectCount} project(s)</span>
+        <span>⚠️ ${profile.correctionCount} correction(s)</span>
+        ${timeline ? `<span>📅 ${esc(timeline)}</span>` : ""}
+        ${lastLearned ? `<span>🔄 Last learned ${esc(lastLearned)}</span>` : ""}
+        ${sourceSummary ? `<span class="muted">Sources: ${esc(sourceSummary)}</span>` : ""}
+      </div>
+      ${profile.portalName ? `<p style="margin:2px 0;font-size:12px"><strong>Portal:</strong> ${esc(profile.portalName)}${profile.portalUrl ? ` — <a href="${esc(profile.portalUrl)}" target="_blank" rel="noopener">${esc(profile.portalUrl)}</a>` : ""}</p>` : ""}
+      ${docs.length ? `<p style="margin:4px 0;font-size:12px"><strong>Required docs (${docs.length}):</strong> ${esc(docs.join(" · "))}</p>` : `<p style="margin:4px 0;font-size:12px;color:var(--muted)">No required documents learned yet.</p>`}
+      ${corrections.length ? `<div style="margin-top:4px;font-size:12px"><strong>Common corrections:</strong> <ul style="margin:2px 0 0 16px;padding:0">${corrections.map((c) => `<li>${esc(c.rootCause)}${c.count > 1 ? ` (×${c.count})` : ""}</li>`).join("")}</ul></div>` : ""}
+      ${profile.notes ? `<p style="margin:4px 0;font-size:12px;color:var(--muted)">${esc(profile.notes)}</p>` : ""}
+    </article>
+  `;
+}
+
 function renderKnowledgeBase() {
   const profiles = state.knowledgeProfiles || [];
   if (!profiles.length) {
-    $("knowledgeBase").innerHTML = `<p class="muted">No knowledge profiles yet.</p>`;
+    $("knowledgeBase").innerHTML = `<p class="muted">No knowledge profiles yet. Import mbox data or run a batch PDF scan to start learning.</p>`;
     return;
   }
-  const top = [...profiles]
-    .sort((a, b) => (b.projectCount - a.projectCount) || (b.correctionCount - a.correctionCount) || a.state.localeCompare(b.state))
-    .slice(0, 10);
-  $("knowledgeBase").innerHTML = top.map((profile) => {
-    const title = [profile.state, profile.ahj || "Any AHJ", profile.utility || "Any utility"].filter(Boolean).join(" / ");
-    const timeline = profile.averageTimelineDays == null
-      ? "timeline learning"
-      : `${profile.averageTimelineDays.toFixed(1)} days avg`;
-    const docs = (profile.requiredDocuments || []).slice(0, 5);
-    const corrections = (profile.commonCorrections || []).slice(0, 2);
-    return `
-      <article class="item ${profile.correctionCount ? "warning" : profile.projectCount ? "info" : "pass"}">
-        <div class="item-title"><span>${esc(title)}</span>${statusBadge(profile.confidence)}</div>
-        <p><strong>Portal:</strong> ${esc(profile.portalName || "Unknown")} ${profile.portalUrl ? `| ${esc(profile.portalUrl)}` : ""}</p>
-        <p><strong>Learned:</strong> ${profile.projectCount} project(s), ${profile.correctionCount} correction(s), ${timeline} from ${profile.timelineSampleCount} sample(s).</p>
-        ${docs.length ? `<p><strong>Docs:</strong> ${esc(docs.join(", "))}${profile.requiredDocuments.length > docs.length ? "..." : ""}</p>` : `<p class="muted">No required documents learned yet.</p>`}
-        ${corrections.length ? `<p><strong>Common corrections:</strong> ${esc(corrections.map((item) => `${item.rootCause} (${item.count})`).join("; "))}</p>` : ""}
-      </article>
+  const sorted = [...profiles].sort((a, b) =>
+    (b.projectCount - a.projectCount) || (b.correctionCount - a.correctionCount) || a.state.localeCompare(b.state),
+  );
+  const learned = sorted.filter((p) => (p.sources || []).some((s) => ["learned_batch_import", "learned_correction", "learned_project", "learned_permit_status"].includes(s.sourceType)));
+  const seeded = sorted.filter((p) => !learned.includes(p));
+  const totalLearned = learned.length;
+  const totalDocs = learned.reduce((n, p) => n + (p.requiredDocuments || []).length, 0);
+  const totalCorrections = learned.reduce((n, p) => n + p.correctionCount, 0);
+
+  let html = `
+    <div style="background:var(--surface-2,#f5f5f5);border-radius:6px;padding:8px 12px;margin-bottom:10px;font-size:13px">
+      <strong>KB Summary:</strong>
+      ${sorted.length} profile(s) total —
+      ${totalLearned} learned (${totalDocs} required-doc entries, ${totalCorrections} corrections),
+      ${seeded.length} seeded/reference.
+    </div>
+  `;
+
+  if (learned.length) {
+    html += `<h3 style="font-size:13px;margin:8px 0 4px;font-weight:600">Learned profiles (${learned.length})</h3>`;
+    html += learned.map(renderKnowledgeProfile).join("");
+  }
+  if (seeded.length) {
+    const showSeeded = state.kbShowSeeded;
+    html += `
+      <button type="button" id="kbToggleSeeded" style="font-size:12px;background:none;border:none;color:var(--accent,#0066cc);cursor:pointer;padding:4px 0;margin-top:6px">
+        ${showSeeded ? "▾ Hide" : "▸ Show"} ${seeded.length} seeded/reference profile(s)
+      </button>
     `;
-  }).join("");
+    if (showSeeded) {
+      html += `<div id="kbSeededList">${seeded.map(renderKnowledgeProfile).join("")}</div>`;
+    }
+  }
+  $("knowledgeBase").innerHTML = html;
+  const toggleBtn = $("kbToggleSeeded");
+  if (toggleBtn) {
+    toggleBtn.addEventListener("click", () => {
+      state.kbShowSeeded = !state.kbShowSeeded;
+      renderKnowledgeBase();
+    });
+  }
 }
 
 async function selectProject(projectId) {
@@ -605,6 +672,12 @@ function renderDetail() {
   renderRunbook();
   renderProcessMap();
   renderInstallerPacket();
+  // Auto-open the "later steps" accordion if any panel has real data
+  const laterAccordion = $("laterStepsAccordion");
+  if (laterAccordion) {
+    const hasLaterData = state.opsBrief || state.handoffPacket || state.communicationDrafts?.length || state.runbook || state.processMap || state.installerPacket;
+    laterAccordion.open = Boolean(hasLaterData);
+  }
   renderOpsPlan();
   renderLiveTestReadiness();
   renderHistoricalFailures();
@@ -2345,6 +2418,11 @@ function uploadBatchZip(file) {
 
 async function handleBatchDrop(file) {
   const name = (file.name || "").toLowerCase();
+  if (name.endsWith(".7z") || name.endsWith(".rar") || name.endsWith(".tar") || name.endsWith(".tar.gz") || name.endsWith(".tgz")) {
+    showMessage(`"${file.name}" is a ${name.split(".").pop().toUpperCase()} archive — only .zip is supported for browser upload. Extract it to a folder on your machine first, then paste that folder path into the "Scan Folder" field below and click Scan Folder.`, "error");
+    $("batchScanStatus").textContent = `Unsupported archive format. Extract to a folder and use Scan Folder path instead.`;
+    return;
+  }
   if (name.endsWith(".zip")) {
     try {
       const job = await uploadBatchZip(file);
@@ -2872,10 +2950,11 @@ async function pollBatchJob(jobId) {
       } else if (job.status === "done") {
         const r = job.result || {};
         $("batchScanStatus").textContent =
-          `Done — ${r.scanned} scanned, ${r.learned} learned, ${r.lowSignal} low-signal, ${r.errors} errors. ` +
-          `${r.profilesTouched || 0} knowledge profile(s) updated, ${r.correctionsLearned || 0} correction pattern(s).` +
-          (r.reportPath ? ` Report: ${r.reportPath}` : "");
+          `Done — ${r.scanned} PDFs scanned, ${r.learned} trained the parser, ${r.lowSignal} low-signal, ${r.errors} errors. ` +
+          `${r.profilesTouched || 0} AHJ/utility profile(s) updated, ${r.correctionsLearned || 0} correction pattern(s) added.` +
+          (r.reportPath ? ` Full report: ${r.reportPath}` : "");
         renderBatchResults(job);
+        await loadKnowledgeBase();
         btn.disabled = false;
       } else {
         $("batchScanStatus").textContent = `Job ${job.status}: ${job.error || "unknown error"}`;
