@@ -546,6 +546,61 @@ function migrate(db: AppDb): void {
       FOREIGN KEY (client_id) REFERENCES clients(id)
     );
     CREATE INDEX IF NOT EXISTS idx_client_portal_identities_client ON client_portal_identities(client_id);
+
+    -- Users (operators working in the pipeline)
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      email TEXT NOT NULL UNIQUE,
+      role TEXT NOT NULL DEFAULT 'operator',
+      color TEXT NOT NULL DEFAULT '#6366f1',
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL
+    );
+
+    -- Job queue for async work (MBOX imports, permit checks, portal runs)
+    CREATE TABLE IF NOT EXISTS job_queue (
+      id TEXT PRIMARY KEY,
+      job_type TEXT NOT NULL,
+      payload TEXT NOT NULL DEFAULT '{}',
+      status TEXT NOT NULL DEFAULT 'pending',
+      priority INTEGER NOT NULL DEFAULT 5,
+      assigned_to_user TEXT,
+      project_id TEXT,
+      created_at TEXT NOT NULL,
+      scheduled_at TEXT,
+      started_at TEXT,
+      finished_at TEXT,
+      progress INTEGER NOT NULL DEFAULT 0,
+      progress_total INTEGER NOT NULL DEFAULT 0,
+      result TEXT,
+      error TEXT,
+      retry_count INTEGER NOT NULL DEFAULT 0,
+      max_retries INTEGER NOT NULL DEFAULT 3
+    );
+    CREATE INDEX IF NOT EXISTS idx_job_queue_status ON job_queue(status, priority DESC, scheduled_at);
+    CREATE INDEX IF NOT EXISTS idx_job_queue_project ON job_queue(project_id);
+
+    -- KPI metrics snapshot per project (updated on key lifecycle events)
+    CREATE TABLE IF NOT EXISTS project_metrics (
+      project_id TEXT PRIMARY KEY,
+      submitted_at TEXT,
+      permit_issued_at TEXT,
+      nem_approved_at TEXT,
+      pto_at TEXT,
+      first_correction_at TEXT,
+      last_correction_at TEXT,
+      correction_count INTEGER NOT NULL DEFAULT 0,
+      permit_cycle_days REAL,
+      nem_cycle_days REAL,
+      total_cycle_days REAL,
+      sla_breaches INTEGER NOT NULL DEFAULT 0,
+      assigned_user_id TEXT,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (project_id) REFERENCES projects(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_project_metrics_user ON project_metrics(assigned_user_id);
+    CREATE INDEX IF NOT EXISTS idx_project_metrics_submitted ON project_metrics(submitted_at);
   `);
 
   // Additive licensing/contractor columns on the existing clients table.
@@ -558,6 +613,11 @@ function migrate(db: AppDb): void {
   for (const [column, ddl] of CORRECTION_SLA_COLUMNS) {
     addColumnIfMissing(db, "corrections", column, ddl);
   }
+
+  // target_type distinguishes permit vs NEM/interconnection check targets
+  addColumnIfMissing(db, "permit_check_targets", "target_type", "TEXT NOT NULL DEFAULT 'permit'");
+  // project-level user assignment
+  addColumnIfMissing(db, "projects", "assigned_user_id", "TEXT");
 
   seedBaselineRuleRows(db);
   seedInitialKnowledgeBase(db);

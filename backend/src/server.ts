@@ -6,6 +6,9 @@ import path from "node:path";
 import { openDatabase } from "./db";
 import { HttpError } from "./httpError";
 import { createClient, deleteClient, getClient, listClients, updateClient } from "./clients";
+import { enqueueJob, getJob, listJobs, processNextJob } from "./jobQueue";
+import { createUser, getUserWorkload, listUsers, updateUser, assignProjectToUser } from "./users";
+import { getKpiReport, touchProjectMetrics } from "./kpi";
 import {
   ahjFormRegistry,
   buildFilledFormsForProject,
@@ -383,9 +386,71 @@ app.post("/api/projects/:id/permit-checks", asyncHandler(async (req, res) => {
   res.status(201).json(await recordPermitStatusCheck(db, String(req.params.id), req.body || {}));
 }));
 
-app.post("/api/permit-monitor/run", asyncHandler(async (_req, res) => {
-  res.json(await runDuePermitChecks(db));
+app.post("/api/permit-monitor/run", asyncHandler(async (req, res) => {
+  const targetType = req.body?.targetType || "all";
+  res.json(await runDuePermitChecks(db, targetType));
 }));
+
+app.post("/api/nem-monitor/run", asyncHandler(async (_req, res) => {
+  res.json(await runDuePermitChecks(db, "nem"));
+}));
+
+// Users
+app.get("/api/users", (_req, res) => { res.json(listUsers(db)); });
+app.post("/api/users", (req, res) => {
+  if (!req.body?.name || !req.body?.email) throw new HttpError(400, "name and email are required.");
+  res.status(201).json(createUser(db, req.body));
+});
+app.put("/api/users/:id", (req, res) => {
+  res.json(updateUser(db, req.params.id, req.body || {}));
+});
+app.get("/api/users/workload", (_req, res) => { res.json(getUserWorkload(db)); });
+app.post("/api/projects/:id/assign", (req, res) => {
+  assignProjectToUser(db, req.params.id, req.body?.userId || null);
+  res.json({ ok: true });
+});
+
+// KPIs
+app.get("/api/kpi", (req, res) => {
+  const startDate = typeof req.query.startDate === "string" ? req.query.startDate : undefined;
+  const endDate = typeof req.query.endDate === "string" ? req.query.endDate : undefined;
+  res.json(getKpiReport(db, { startDate, endDate }));
+});
+app.post("/api/projects/:id/metrics/refresh", (req, res) => {
+  touchProjectMetrics(db, req.params.id);
+  res.json({ ok: true });
+});
+
+// Job queue
+app.get("/api/jobs", (req, res) => {
+  res.json(listJobs(db, {
+    status: req.query.status as string | undefined as any,
+    jobType: req.query.jobType as string | undefined as any,
+    limit: req.query.limit ? Number(req.query.limit) : 100,
+  }));
+});
+app.get("/api/jobs/:id", (req, res) => {
+  const job = getJob(db, req.params.id);
+  if (!job) throw new HttpError(404, "Job not found.");
+  res.json(job);
+});
+app.post("/api/jobs", (req, res) => {
+  const { jobType, payload, priority, assignedToUser, projectId, scheduledAt } = req.body || {};
+  if (!jobType) throw new HttpError(400, "jobType is required.");
+  res.status(201).json(enqueueJob(db, jobType, payload || {}, { priority, assignedToUser, projectId, scheduledAt }));
+});
+app.post("/api/jobs/process-next", asyncHandler(async (_req, res) => {
+  const processed = await processNextJob(db);
+  res.json({ processed });
+}));
+
+// MBOX streaming import via job queue (for large files)
+app.post("/api/mbox/enqueue", (req, res) => {
+  const { filePath, sourceLabel, defaultState, defaultAhj, defaultUtility } = req.body || {};
+  if (!filePath) throw new HttpError(400, "filePath is required.");
+  const job = enqueueJob(db, "mbox_import", { filePath, sourceLabel, defaultState, defaultAhj, defaultUtility }, { priority: 3, maxRetries: 1 });
+  res.status(201).json(job);
+});
 
 app.post("/api/projects/:id/prepare-submission", asyncHandler(async (req, res) => {
   res.json(await prepareSubmission(db, String(req.params.id)));

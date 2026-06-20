@@ -57,6 +57,7 @@ import type {
   SubmitGateCheck,
   SubmitGateReport,
 } from "../../shared/src/types";
+import { touchProjectMetrics } from "./kpi";
 import fs from "node:fs";
 import path from "node:path";
 import { stageWithAccela, stageWithMockPortal, stageWithPowerClerk } from "../../portal-bot/src/index";
@@ -109,6 +110,7 @@ interface ProjectRow extends Row {
   current_stage: string;
   parser_confidence_summary: string;
   parser_json: string;
+  assigned_user_id?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -142,6 +144,7 @@ function mapProject(row: ProjectRow): ProjectRecord {
     currentStage: row.current_stage,
     parserConfidenceSummary: row.parser_confidence_summary,
     parserSnapshot: parseJson<ParserPayload>(row.parser_json, {}),
+    assignedUserId: row.assigned_user_id ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -228,6 +231,7 @@ function mapPermitTarget(row: Row): PermitCheckTarget {
     latestOutcome: row.latest_outcome == null ? null : (text(row.latest_outcome) as PermitCheckOutcome),
     latestStatusLabel: text(row.latest_status_label),
     notes: text(row.notes),
+    targetType: (row.target_type === "nem" ? "nem" : "permit") as "permit" | "nem",
     createdAt: text(row.created_at),
     updatedAt: text(row.updated_at),
   };
@@ -509,15 +513,19 @@ function getProjectLaneStatusSummary(db: AppDb, projectId: string, projectStatus
 }
 
 export function getProjectList(db: AppDb): ProjectListItem[] {
+  const today = new Date().toISOString().slice(0, 10);
   const rows = db.query<ProjectRow & Row>(
     `SELECT p.*,
       (SELECT COUNT(*) FROM qc_results q WHERE q.project_id = p.id AND q.qc_status = 'fail') AS qcFailCount,
       (SELECT COUNT(*) FROM qc_results q WHERE q.project_id = p.id AND q.qc_status = 'warning') AS qcWarningCount,
       (SELECT COUNT(*) FROM human_review_items h WHERE h.project_id = p.id AND h.status = 'pending') AS pendingReviewCount,
       (SELECT COUNT(*) FROM corrections c WHERE c.project_id = p.id) AS correctionCount,
+      (SELECT COUNT(*) FROM corrections c WHERE c.project_id = p.id AND c.closed_at IS NULL
+         AND (c.due_at < ? OR (c.due_at IS NULL AND date(c.created_at, '+' || c.sla_days || ' days') < ?))) AS overdueCorrections,
       (SELECT pr.status FROM portal_runs pr WHERE pr.project_id = p.id ORDER BY pr.started_at DESC LIMIT 1) AS latestPortalStatus
      FROM projects p
      ORDER BY p.updated_at DESC`,
+    [today, today],
   );
 
   return rows.map((row) => {
@@ -530,6 +538,8 @@ export function getProjectList(db: AppDb): ProjectListItem[] {
       qcWarningCount: Number(row.qcWarningCount ?? 0),
       pendingReviewCount: Number(row.pendingReviewCount ?? 0),
       correctionCount: Number(row.correctionCount ?? 0),
+      overdueCorrections: Number(row.overdueCorrections ?? 0),
+      assignedUserId: row.assigned_user_id == null ? null : text(row.assigned_user_id),
       latestPortalStatus: row.latestPortalStatus == null ? null : (text(row.latestPortalStatus) as ProjectListItem["latestPortalStatus"]),
       ...laneSummary,
     };
@@ -3751,6 +3761,7 @@ export function addManualCorrection(db: AppDb, projectId: string, correctionText
     learnFromCorrection(db, detail.project, classification, correctionText, source);
   });
 
+  touchProjectMetrics(db, projectId);
   return getProjectDetail(db, projectId);
 }
 
@@ -3788,19 +3799,21 @@ export function createPermitCheckTarget(
     permitNumber?: string;
     checkFrequencyDays?: number;
     notes?: string;
+    targetType?: "permit" | "nem";
   },
 ): ProjectDetail {
   const detail = getProjectDetail(db, projectId);
   const targetId = id();
   const ts = nowIso();
   const frequency = Math.max(1, Math.floor(Number(input.checkFrequencyDays || 7)));
+  const targetType = input.targetType === "nem" ? "nem" : "permit";
   db.transaction(() => {
     db.run(
       `INSERT INTO permit_check_targets
         (id, project_id, jurisdiction, portal_name, portal_url, application_number, permit_number,
          check_frequency_days, active, last_checked_at, next_check_at, latest_outcome, latest_status_label,
-         notes, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         notes, target_type, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         targetId,
         projectId,
@@ -3816,11 +3829,12 @@ export function createPermitCheckTarget(
         null,
         "",
         input.notes || "",
+        targetType,
         ts,
         ts,
       ],
     );
-    addAuditLog(db, projectId, "system", "permit monitor", "permit_target.created", { targetId });
+    addAuditLog(db, projectId, "system", "permit monitor", "permit_target.created", { targetId, targetType });
     learnFromPermitTarget(db, detail.project, input);
   });
   return getProjectDetail(db, projectId);
@@ -4043,23 +4057,29 @@ function updateProjectForPermitOutcome(
   }
 }
 
-export async function runDuePermitChecks(db: AppDb): Promise<{ checked: number; projects: ProjectDetail[] }> {
+export async function runDuePermitChecks(
+  db: AppDb,
+  targetType: "permit" | "nem" | "all" = "all",
+): Promise<{ checked: number; projects: ProjectDetail[] }> {
   const now = nowIso();
+  const typeFilter = targetType === "all" ? "" : "AND target_type = ?";
+  const params: string[] = targetType === "all" ? [now] : [now, targetType];
   const targets = db.query<Row>(
     `SELECT * FROM permit_check_targets
      WHERE active = 1 AND (next_check_at IS NULL OR next_check_at <= ?)
+       ${typeFilter}
      ORDER BY next_check_at ASC, created_at ASC
      LIMIT 50`,
-    [now],
+    params,
   );
   const projects: ProjectDetail[] = [];
   for (const target of targets) {
-    projects.push(
-      await recordPermitStatusCheck(db, text(target.project_id), {
-        targetId: text(target.id),
-        source: text(target.portal_url) ? "public_url" : "mock",
-      }),
-    );
+    const detail = await recordPermitStatusCheck(db, text(target.project_id), {
+      targetId: text(target.id),
+      source: text(target.portal_url) ? "public_url" : "mock",
+    });
+    touchProjectMetrics(db, text(target.project_id));
+    projects.push(detail);
   }
   return { checked: targets.length, projects };
 }

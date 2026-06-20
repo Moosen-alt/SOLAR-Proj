@@ -16,7 +16,10 @@
     <nav class="actions">
       <a class="button secondary" href="/parser"><i data-lucide="file-scan"></i><span>Parser</span></a>
       <button id="openClientsBtn" class="secondary"><i data-lucide="building-2"></i><span>Clients</span></button>
-      <button id="runPermitMonitorBtn" class="secondary"><i data-lucide="radar"></i><span>Run Tracking Checks</span></button>
+      <button id="openUsersBtn" class="secondary"><i data-lucide="users"></i><span>Team</span></button>
+      <button id="openKpiBtn" class="secondary"><i data-lucide="bar-chart-2"></i><span>KPIs</span></button>
+      <button id="runPermitMonitorBtn" class="secondary"><i data-lucide="radar"></i><span>Permit Checks</span></button>
+      <button id="runNemMonitorBtn" class="secondary"><i data-lucide="zap"></i><span>NEM Checks</span></button>
       <button id="refreshBtn" class="secondary"><i data-lucide="refresh-cw"></i><span>Refresh</span></button>
     </nav>
   </header>
@@ -51,11 +54,36 @@
         <h2>Projects</h2>
         <span id="projectCount" class="badge">0</span>
       </div>
+      <div class="project-filters">
+        <input id="projectSearch" type="search" placeholder="Search homeowner, address, AHJ…" />
+        <select id="projectStatusFilter">
+          <option value="">All statuses</option>
+          <option value="new">New</option>
+          <option value="qc_pending">QC pending</option>
+          <option value="qc_passed">QC passed</option>
+          <option value="submitted">Submitted</option>
+          <option value="correction_triaged">Correction</option>
+          <option value="permit_issued">Permit issued</option>
+          <option value="nem_approved">NEM approved</option>
+          <option value="pto_granted">PTO granted</option>
+        </select>
+        <select id="projectUserFilter">
+          <option value="">All assignees</option>
+        </select>
+        <select id="projectSort">
+          <option value="updated_desc">Last updated</option>
+          <option value="created_desc">Newest first</option>
+          <option value="name_asc">Name A→Z</option>
+          <option value="status_asc">Status</option>
+          <option value="overdue">Overdue first</option>
+        </select>
+      </div>
       <div class="table-wrap">
         <table>
           <thead>
             <tr>
               <th>Project</th>
+              <th>Assignee</th>
               <th>Status</th>
               <th>Permit</th>
               <th>NEM</th>
@@ -64,9 +92,17 @@
             </tr>
           </thead>
           <tbody id="projectsBody">
-            <tr><td colspan="6" class="muted">No projects saved yet.</td></tr>
+            <tr><td colspan="7" class="muted">No projects saved yet.</td></tr>
           </tbody>
         </table>
+      </div>
+
+      <div class="section-head subhead">
+        <h2>Team Workload</h2>
+        <span id="workloadStatus" class="badge">syncing</span>
+      </div>
+      <div id="teamWorkload" class="team-workload">
+        <p class="muted">Loading team workload...</p>
       </div>
       <div class="section-head subhead">
         <h2>Permit & Utility Knowledge</h2>
@@ -112,6 +148,11 @@
               <i data-lucide="building-2"></i>
               <label for="projectClientSelect">Submitting client:</label>
               <select id="projectClientSelect"><option value="">— none —</option></select>
+            </div>
+            <div class="client-assign">
+              <i data-lucide="user"></i>
+              <label for="projectAssignSelect">Assigned to:</label>
+              <select id="projectAssignSelect"><option value="">— unassigned —</option></select>
             </div>
           </div>
           <div class="actions">
@@ -445,6 +486,61 @@
             <button type="button" id="deleteClientBtn" class="danger-button"><i data-lucide="trash-2"></i><span>Delete</span></button>
           </div>
         </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Team / Users Modal -->
+  <div id="usersModal" class="modal" hidden>
+    <div class="modal-card">
+      <div class="modal-head">
+        <h2>Team Members</h2>
+        <button id="closeUsersBtn" class="secondary"><i data-lucide="x"></i><span>Close</span></button>
+      </div>
+      <div class="modal-body">
+        <div class="clients-list-pane">
+          <div class="section-head">
+            <h3>Operators</h3>
+            <button id="newUserBtn" class="primary"><i data-lucide="plus"></i><span>Add</span></button>
+          </div>
+          <div id="usersList" class="stack compact"></div>
+        </div>
+        <form id="userForm" class="clients-form-pane stack">
+          <input type="hidden" id="userId" />
+          <div id="userFormStatus" class="message" hidden></div>
+          <label>Name<input id="u_name" required /></label>
+          <label>Email<input id="u_email" type="email" required /></label>
+          <div class="form-row">
+            <label>Role
+              <select id="u_role">
+                <option value="operator">Operator</option>
+                <option value="admin">Admin</option>
+              </select>
+            </label>
+            <label>Color<input id="u_color" type="color" value="#6366f1" /></label>
+          </div>
+          <div class="actions">
+            <button type="submit" class="primary"><i data-lucide="save"></i><span>Save</span></button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- KPI Modal -->
+  <div id="kpiModal" class="modal" hidden>
+    <div class="modal-card modal-wide">
+      <div class="modal-head">
+        <h2>KPI Dashboard</h2>
+        <div class="actions">
+          <input id="kpiStart" type="date" />
+          <input id="kpiEnd" type="date" />
+          <button id="refreshKpiBtn" class="secondary"><i data-lucide="refresh-cw"></i><span>Refresh</span></button>
+          <button id="closeKpiBtn" class="secondary"><i data-lucide="x"></i><span>Close</span></button>
+        </div>
+      </div>
+      <div id="kpiBody" class="kpi-body">
+        <p class="muted">Loading KPIs...</p>
       </div>
     </div>
   </div>

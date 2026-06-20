@@ -268,20 +268,29 @@ function renderEmailTracker() {
 
 function renderProjects() {
   const body = $("projectsBody");
-  if (!state.projects.length) {
-    body.innerHTML = `<tr><td colspan="6" class="muted">No projects saved yet.</td></tr>`;
+  const filtered = applyProjectFilters(state.projects);
+  $("projectCount").textContent = `${filtered.length}/${state.projects.length}`;
+  if (!filtered.length) {
+    body.innerHTML = `<tr><td colspan="7" class="muted">${state.projects.length ? "No projects match filters." : "No projects saved yet."}</td></tr>`;
     return;
   }
-  body.innerHTML = state.projects.map((project) => `
+  const userMap = Object.fromEntries((state.users || []).map((u) => [u.id, u]));
+  body.innerHTML = filtered.map((project) => {
+    const assignee = project.assignedUserId ? userMap[project.assignedUserId] : null;
+    const assigneeHtml = assignee
+      ? `<span style="display:inline-flex;align-items:center;gap:4px"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${esc(assignee.color)}"></span>${esc(assignee.name)}</span>`
+      : `<span class="muted">—</span>`;
+    return `
     <tr data-project-id="${project.id}" class="${project.id === state.selectedProjectId ? "active" : ""}">
       <td><strong>${esc(project.homeownerName || "Unnamed")}</strong><br><span class="muted">${esc(project.projectAddress || "No address")}</span></td>
+      <td>${assigneeHtml}</td>
       <td>${statusBadge(project.status)}</td>
       <td>${projectLaneStatusCell(project.latestPermitLabel, project.latestPermitOutcome, project.latestPermitCheckedAt, project.readyForIssue, "ready for issue")}</td>
       <td>${projectLaneStatusCell(project.latestNemLabel, project.latestNemOutcome, project.latestNemCheckedAt, project.nemApproved, "NEM approved")}</td>
       <td>${project.qcFailCount ? `<strong class="danger">${project.qcFailCount} fail</strong>` : "0 fail"}<br><span class="muted">${project.qcWarningCount} warn</span></td>
       <td>${project.pendingReviewCount}</td>
-    </tr>
-  `).join("");
+    </tr>`;
+  }).join("");
   body.querySelectorAll("tr[data-project-id]").forEach((row) => {
     row.addEventListener("click", () => selectProject(row.dataset.projectId));
   });
@@ -2377,9 +2386,336 @@ $("addPortalIdentityBtn").addEventListener("click", () => {
 $("projectClientSelect").addEventListener("change", assignProjectClient);
 $("clientsModal").addEventListener("click", (e) => { if (e.target.id === "clientsModal") closeClientsModal(); });
 
+// ----- Project search / sort / filter -----
+const projectFilterState = { search: "", status: "", userId: "", sort: "updated_desc" };
+
+function applyProjectFilters(projects) {
+  let list = [...projects];
+  const q = projectFilterState.search.toLowerCase();
+  if (q) {
+    list = list.filter((p) => {
+      const hay = `${p.homeownerName} ${p.address} ${p.city} ${p.ahj} ${p.utility} ${p.status}`.toLowerCase();
+      return hay.includes(q);
+    });
+  }
+  if (projectFilterState.status) {
+    list = list.filter((p) => p.status === projectFilterState.status);
+  }
+  if (projectFilterState.userId) {
+    list = list.filter((p) => p.assignedUserId === projectFilterState.userId);
+  }
+  switch (projectFilterState.sort) {
+    case "created_desc": list.sort((a, b) => b.createdAt?.localeCompare(a.createdAt)); break;
+    case "name_asc":     list.sort((a, b) => (a.homeownerName || "").localeCompare(b.homeownerName || "")); break;
+    case "status_asc":   list.sort((a, b) => (a.status || "").localeCompare(b.status || "")); break;
+    case "overdue":
+      list.sort((a, b) => {
+        const aOver = (a.overdueCorrections || 0) > 0 ? 0 : 1;
+        const bOver = (b.overdueCorrections || 0) > 0 ? 0 : 1;
+        return aOver - bOver || b.updatedAt?.localeCompare(a.updatedAt);
+      });
+      break;
+    default: list.sort((a, b) => b.updatedAt?.localeCompare(a.updatedAt)); break;
+  }
+  return list;
+}
+
+function renderProjectUserOptions() {
+  const filterSel = $("projectUserFilter");
+  const current = filterSel.value;
+  filterSel.innerHTML = `<option value="">All assignees</option>` +
+    (state.users || []).map((u) => `<option value="${esc(u.id)}">${esc(u.name)}</option>`).join("");
+  filterSel.value = current;
+
+  const assignSel = $("projectAssignSelect");
+  if (assignSel) {
+    const cur2 = assignSel.value;
+    assignSel.innerHTML = `<option value="">— unassigned —</option>` +
+      (state.users || []).map((u) => `<option value="${esc(u.id)}">${esc(u.name)}</option>`).join("");
+    assignSel.value = cur2;
+  }
+}
+
+async function assignProjectUser() {
+  if (!state.selectedProjectId) return;
+  const userId = $("projectAssignSelect").value || null;
+  try {
+    await api(`/api/projects/${state.selectedProjectId}/assign`, { method: "POST", body: JSON.stringify({ userId }) });
+    await loadProjects();
+    await loadTeamWorkload();
+    showMessage(userId ? "Project assigned." : "Assignment cleared.", "info");
+  } catch (err) {
+    showMessage(err.message || "Could not assign project.", "error");
+  }
+}
+
+if ($("projectAssignSelect")) $("projectAssignSelect").addEventListener("change", assignProjectUser);
+
+$("projectSearch").addEventListener("input", (e) => {
+  projectFilterState.search = e.target.value;
+  renderProjects();
+});
+$("projectStatusFilter").addEventListener("change", (e) => {
+  projectFilterState.status = e.target.value;
+  renderProjects();
+});
+$("projectUserFilter").addEventListener("change", (e) => {
+  projectFilterState.userId = e.target.value;
+  renderProjects();
+});
+$("projectSort").addEventListener("change", (e) => {
+  projectFilterState.sort = e.target.value;
+  renderProjects();
+});
+
+// ----- NEM monitor button -----
+async function runNemMonitor() {
+  $("runNemMonitorBtn").disabled = true;
+  try {
+    const result = await api("/api/nem-monitor/run", { method: "POST" });
+    showMessage(`NEM check: ${result.checked} target(s) checked.`, "info");
+    await loadProjects();
+  } catch (err) {
+    showMessage(err.message || "NEM check failed.", "error");
+  } finally {
+    $("runNemMonitorBtn").disabled = false;
+  }
+}
+$("runNemMonitorBtn").addEventListener("click", runNemMonitor);
+
+// ----- Team workload -----
+async function loadTeamWorkload() {
+  $("workloadStatus").textContent = "syncing";
+  try {
+    const workload = await api("/api/users/workload");
+    renderTeamWorkload(workload);
+    $("workloadStatus").textContent = "live";
+  } catch {
+    $("workloadStatus").textContent = "error";
+  }
+}
+
+function renderTeamWorkload(workload) {
+  if (!workload || workload.length === 0) {
+    $("teamWorkload").innerHTML = `<p class="muted">No team members configured. Add operators via the Team button.</p>`;
+    return;
+  }
+  $("teamWorkload").innerHTML = workload.map((w) => {
+    const color = (state.users || []).find((u) => u.id === w.user.id)?.color || "#6366f1";
+    return `
+      <article class="item ${w.overdueCorrections > 0 ? "fail" : "info"}" style="border-left-color:${esc(color)}">
+        <div class="item-title">
+          <span>${esc(w.user.name)}</span>
+          <span class="muted">${esc(w.user.role)}</span>
+        </div>
+        <div class="workload-stats">
+          <span><strong>${w.openProjects}</strong> open</span>
+          <span><strong>${w.openCorrections}</strong> corrections</span>
+          ${w.overdueCorrections > 0 ? `<span class="badge badge-fail">${w.overdueCorrections} overdue</span>` : ""}
+          <span><strong>${w.pendingReviews}</strong> pending review</span>
+        </div>
+      </article>`;
+  }).join("");
+}
+
+// ----- Users modal -----
+async function loadUsers() {
+  const users = await api("/api/users");
+  state.users = Array.isArray(users) ? users : [];
+  renderUsersList();
+  renderProjectUserOptions();
+}
+
+function renderUsersList() {
+  const list = $("usersList");
+  if (!list) return;
+  if (!state.users || state.users.length === 0) {
+    list.innerHTML = `<p class="muted">No team members yet.</p>`;
+    return;
+  }
+  list.innerHTML = state.users.map((u) => `
+    <div class="client-list-item ${state.selectedUserId === u.id ? "active" : ""}" data-user-id="${esc(u.id)}">
+      <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${esc(u.color)};margin-right:6px"></span>
+      ${esc(u.name)}
+      <span class="muted" style="font-size:12px">${esc(u.role)}</span>
+    </div>`).join("");
+  list.querySelectorAll("[data-user-id]").forEach((el) => {
+    el.addEventListener("click", () => editUser(el.dataset.userId));
+  });
+}
+
+function editUser(userId) {
+  state.selectedUserId = userId;
+  const user = (state.users || []).find((u) => u.id === userId);
+  if (!user) return;
+  $("userId").value = user.id;
+  $("u_name").value = user.name;
+  $("u_email").value = user.email;
+  $("u_role").value = user.role;
+  $("u_color").value = user.color;
+  renderUsersList();
+}
+
+function blankUserForm() {
+  state.selectedUserId = null;
+  $("userId").value = "";
+  $("u_name").value = "";
+  $("u_email").value = "";
+  $("u_role").value = "operator";
+  $("u_color").value = "#6366f1";
+  renderUsersList();
+}
+
+async function saveUser(event) {
+  event.preventDefault();
+  const payload = {
+    name: $("u_name").value.trim(),
+    email: $("u_email").value.trim(),
+    role: $("u_role").value,
+    color: $("u_color").value,
+  };
+  if (!payload.name || !payload.email) { showMessage("Name and email required.", "warning"); return; }
+  try {
+    const userId = $("userId").value;
+    if (userId) {
+      await api(`/api/users/${userId}`, { method: "PUT", body: JSON.stringify(payload) });
+    } else {
+      await api("/api/users", { method: "POST", body: JSON.stringify(payload) });
+    }
+    await loadUsers();
+    showMessage("Saved.", "info");
+  } catch (err) {
+    showMessage(err.message || "Save failed.", "error");
+  }
+}
+
+async function openUsersModal() {
+  $("usersModal").hidden = false;
+  await loadUsers();
+  if ((state.users || []).length > 0) editUser(state.users[0].id);
+  else blankUserForm();
+  if (window.lucide) window.lucide.createIcons();
+}
+
+function closeUsersModal() { $("usersModal").hidden = true; }
+
+$("openUsersBtn").addEventListener("click", openUsersModal);
+$("closeUsersBtn").addEventListener("click", closeUsersModal);
+$("newUserBtn").addEventListener("click", blankUserForm);
+$("userForm").addEventListener("submit", saveUser);
+$("usersModal").addEventListener("click", (e) => { if (e.target.id === "usersModal") closeUsersModal(); });
+
+// ----- KPI Dashboard -----
+function formatDays(days) {
+  if (days == null) return "—";
+  return `${days}d`;
+}
+
+async function loadKpi() {
+  const start = $("kpiStart").value || "";
+  const end = $("kpiEnd").value || "";
+  const params = new URLSearchParams();
+  if (start) params.set("startDate", start);
+  if (end) params.set("endDate", end);
+  try {
+    const kpi = await api(`/api/kpi?${params}`);
+    renderKpi(kpi);
+  } catch (err) {
+    $("kpiBody").innerHTML = `<p class="muted">Failed to load KPIs: ${esc(err.message)}</p>`;
+  }
+}
+
+function renderKpi(kpi) {
+  const body = $("kpiBody");
+  body.innerHTML = `
+    <div class="kpi-period">Period: ${esc(kpi.period.start)} → ${esc(kpi.period.end)}</div>
+    <div class="kpi-grid">
+      <div class="kpi-card">
+        <div class="kpi-value">${kpi.projectsSubmitted}</div>
+        <div class="kpi-label">Submitted</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-value">${kpi.projectsPtoGranted}</div>
+        <div class="kpi-label">PTO Granted</div>
+      </div>
+      <div class="kpi-card ${kpi.avgTotalCycleDays != null && kpi.avgTotalCycleDays > 90 ? "kpi-warn" : ""}">
+        <div class="kpi-value">${formatDays(kpi.avgTotalCycleDays)}</div>
+        <div class="kpi-label">Avg Cycle (Submit→PTO)</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-value">${formatDays(kpi.avgPermitCycleDays)}</div>
+        <div class="kpi-label">Avg Permit Cycle</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-value">${formatDays(kpi.avgNemCycleDays)}</div>
+        <div class="kpi-label">Avg NEM Cycle</div>
+      </div>
+      <div class="kpi-card ${kpi.throughputPerWeek < 1 ? "kpi-warn" : ""}">
+        <div class="kpi-value">${kpi.throughputPerWeek}</div>
+        <div class="kpi-label">PTO/Week</div>
+      </div>
+      <div class="kpi-card ${kpi.correctionRate > 50 ? "kpi-warn" : ""}">
+        <div class="kpi-value">${kpi.correctionRate}%</div>
+        <div class="kpi-label">Correction Rate</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-value">${kpi.avgCorrectionsPerProject}</div>
+        <div class="kpi-label">Avg Corrections/Project</div>
+      </div>
+      <div class="kpi-card ${kpi.overdueCorrections > 0 ? "kpi-fail" : ""}">
+        <div class="kpi-value">${kpi.overdueCorrections}</div>
+        <div class="kpi-label">Overdue Corrections</div>
+      </div>
+      <div class="kpi-card ${kpi.slaBreachRate > 20 ? "kpi-warn" : ""}">
+        <div class="kpi-value">${kpi.slaBreachRate}%</div>
+        <div class="kpi-label">SLA Breach Rate</div>
+      </div>
+    </div>
+
+    ${kpi.byUser.length > 0 ? `
+    <h3 style="margin-top:24px">Per Operator</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Name</th><th>Submitted</th><th>PTO</th><th>Open</th><th>Overdue</th><th>Avg Cycle</th></tr></thead>
+        <tbody>
+          ${kpi.byUser.map((u) => `
+            <tr>
+              <td>${esc(u.userName)}</td>
+              <td>${u.submitted}</td>
+              <td>${u.pto}</td>
+              <td>${u.openProjects}</td>
+              <td class="${u.overdueCorrections > 0 ? "text-danger" : ""}">${u.overdueCorrections}</td>
+              <td>${formatDays(u.avgCycleDays)}</td>
+            </tr>`).join("")}
+        </tbody>
+      </table>
+    </div>` : ""}
+  `;
+}
+
+async function openKpiModal() {
+  $("kpiModal").hidden = false;
+  // Default: last 90 days
+  if (!$("kpiEnd").value) $("kpiEnd").value = new Date().toISOString().slice(0, 10);
+  if (!$("kpiStart").value) {
+    const d = new Date(); d.setDate(d.getDate() - 90);
+    $("kpiStart").value = d.toISOString().slice(0, 10);
+  }
+  await loadKpi();
+}
+
+function closeKpiModal() { $("kpiModal").hidden = true; }
+
+$("openKpiBtn").addEventListener("click", openKpiModal);
+$("closeKpiBtn").addEventListener("click", closeKpiModal);
+$("refreshKpiBtn").addEventListener("click", loadKpi);
+$("kpiModal").addEventListener("click", (e) => { if (e.target.id === "kpiModal") closeKpiModal(); });
+
 await checkHealth();
 await loadProjects();
 await loadClients();
+await loadUsers();
+await loadTeamWorkload();
 if (window.lucide) window.lucide.createIcons();
 
 

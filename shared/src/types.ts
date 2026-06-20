@@ -106,6 +106,7 @@ export interface ProjectRecord {
   currentStage: string;
   parserConfidenceSummary: string;
   parserSnapshot: ParserPayload;
+  assignedUserId?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -124,6 +125,7 @@ export interface ProjectListItem extends Omit<ProjectRecord, "parserSnapshot"> {
   latestNemOutcome: PermitCheckOutcome | null;
   latestNemCheckedAt: string | null;
   nemApproved: boolean;
+  overdueCorrections: number;
 }
 
 export interface QcResult {
@@ -216,6 +218,7 @@ export interface PermitCheckTarget {
   latestOutcome: PermitCheckOutcome | null;
   latestStatusLabel: string;
   notes: string;
+  targetType: "permit" | "nem";
   createdAt: string;
   updatedAt: string;
 }
