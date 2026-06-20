@@ -149,6 +149,7 @@ Use EXACTLY these fieldId keys when you find a value (omit a key entirely if abs
 Rules:
 - Set confidence honestly. If a value is inferred or the OCR is messy, lower it. Put any field with confidence < 0.6 (or that you had to guess) into lowConfidenceFields.
 - For account and meter numbers, only return digits/characters you can actually read; never invent or pad them. If unreadable, omit and add to lowConfidenceFields.
+- Account numbers are often printed in spaced segments (e.g. "65564191-001 4" is a single account "65564191-0014"). Join the segments into one continuous value; do not drop a trailing check digit.
 - Prefer the utility bill for name/address/account, the meter photo for meter number, the plan set for system/equipment.
 - Numbers must be JSON numbers, not strings.
 - Return valid JSON only — no prose outside the JSON.`;
@@ -195,7 +196,7 @@ Rules:
     const system = `You read photos/scans of a residential solar customer's electric documents and extract intake fields with MAXIMUM accuracy. These are phone photos, so read carefully — digits matter.
 
 You are shown one or more labeled images:
-- UTILITY_BILL: the electric bill. Read the homeowner name, full service address, utility company, the ACCOUNT NUMBER exactly as printed (include any dashes/segments, e.g. "65564191-0014"), and the meter number from the account-activity table.
+- UTILITY_BILL: the electric bill. Read the homeowner name, full service address, utility company, the ACCOUNT NUMBER exactly as printed, and the meter number from the account-activity table. Account numbers are often shown in spaced segments (e.g. "65564191-001 4") — that is ONE account number "65564191-0014"; join the segments and never drop a trailing check digit.
 - METER_PHOTO: a photo of the electric meter. Read the meter serial number printed on the face/label (e.g. "78 118 886" -> "78118886"), and the utility (e.g. PacifiCorp = Pacific Power).
 
 Return ONLY JSON: {"fields":{"<id>":{"value":<string|number>,"confidence":<0..1>}}, "lowConfidenceFields":[...], "notes":"..."}

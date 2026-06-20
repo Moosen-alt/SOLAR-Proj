@@ -689,6 +689,18 @@ function migrate(db: AppDb): void {
   // password auth (used only when AUTH_ENABLED=true)
   addColumnIfMissing(db, "users", "password_hash", "TEXT NOT NULL DEFAULT ''");
 
+  // Scale indexes (built after the migrated columns exist) — keep the project
+  // list snappy with thousands of rows: default sort is updated_at DESC, with
+  // common filters on assigned user, client, and customer.
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_projects_updated ON projects(updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_projects_created ON projects(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_projects_assigned ON projects(assigned_user_id);
+    CREATE INDEX IF NOT EXISTS idx_projects_client ON projects(client_id);
+    CREATE INDEX IF NOT EXISTS idx_projects_customer ON projects(customer_id);
+    CREATE INDEX IF NOT EXISTS idx_projects_status_updated ON projects(status, updated_at DESC);
+  `);
+
   seedBaselineRuleRows(db);
   seedInitialKnowledgeBase(db);
 }
