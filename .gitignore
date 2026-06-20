@@ -11,3 +11,7 @@ dist/
 playwright/.auth/
 portal-profiles/
 
+
+# Cached AHJ form templates and filled outputs
+backend/data/ahj-forms/
+backend/data/filled/

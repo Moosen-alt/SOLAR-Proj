@@ -7,6 +7,14 @@ import { openDatabase } from "./db";
 import { HttpError } from "./httpError";
 import { createClient, deleteClient, getClient, listClients, updateClient } from "./clients";
 import {
+  ahjFormRegistry,
+  buildFilledFormsForProject,
+  fetchFormTemplate,
+  filledFormPath,
+  inspectFormFields,
+  matchingForms,
+} from "./ahjForms";
+import {
   addManualCorrection,
   addProjectNote,
   assignProjectClient,
@@ -105,6 +113,46 @@ app.delete("/api/clients/:id", (req, res) => {
 app.post("/api/projects/:id/client", (req, res) => {
   const clientId = req.body?.clientId === null ? null : String(req.body?.clientId || "").trim() || null;
   res.json(assignProjectClient(db, String(req.params.id), clientId));
+});
+
+// --- AHJ PDF forms (fetch official form, fill, attach) ---
+app.get("/api/ahj-forms", (req, res) => {
+  const ahj = String(req.query.ahj || "").trim();
+  const matches = ahj ? matchingForms(ahj) : ahjFormRegistry;
+  res.json({
+    forms: matches.map((def) => ({
+      id: def.id,
+      formName: def.formName,
+      matchJurisdictions: def.matchJurisdictions,
+      sourceUrl: def.sourceUrl,
+      version: def.version,
+      status: def.status,
+      mappedTextFields: Object.keys(def.textFields).length,
+      mappedCheckboxes: Object.keys(def.checkboxes ?? {}).length,
+      notes: def.notes ?? [],
+    })),
+  });
+});
+
+// Inspect a fillable PDF's AcroForm field names — used to map a new form once.
+app.post("/api/ahj-forms/inspect", asyncHandler(async (req, res) => {
+  const url = String(req.body?.url || "").trim();
+  if (!url) throw new HttpError(400, "url is required.");
+  const def = { id: "inspect", formName: "inspect", matchJurisdictions: [], sourceUrl: url, version: "", status: "verified" as const, textFields: {} };
+  const bytes = await fetchFormTemplate(def);
+  const result = await inspectFormFields(bytes);
+  res.json(result);
+}));
+
+app.post("/api/projects/:id/filled-forms", asyncHandler(async (req, res) => {
+  const detail = getProjectDetail(db, String(req.params.id));
+  res.json(await buildFilledFormsForProject(db, detail.project));
+}));
+
+app.get("/api/projects/:id/filled-forms/:formId", (req, res) => {
+  const file = filledFormPath(String(req.params.id), String(req.params.formId));
+  if (!fs.existsSync(file)) throw new HttpError(404, "Filled form not found. Build it first.");
+  res.type("application/pdf").sendFile(file);
 });
 
 app.get("/api/ops-board", (_req, res) => {
