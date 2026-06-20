@@ -74,13 +74,13 @@ export function classifyPermitStatusText(rawStatusText: string): PermitStatusCla
 
   if (nemApprovalPattern.test(text)) {
     return {
-      outcome: "reviewed_by_ahj",
+      outcome: "nem_approved",
       statusLabel: "NEM / interconnection approved",
       confidence: 0.94,
       reviewedByAhj: true,
       readyForIssue: false,
       issueFeeDue: false,
-      message: "Utility/NEM approval language detected. Record approval evidence and continue any permit/inspection/PTO closeout path.",
+      message: "Utility NEM / interconnection approval detected. Your submission scope is complete — hand off to installer for final inspection scheduling.",
     };
   }
 

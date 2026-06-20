@@ -496,8 +496,9 @@ function getProjectLaneStatusSummary(db: AppDb, projectId: string, projectStatus
     || emails.some((email) => hasPermitSignal(email) && (email.emailBucket === "permit_approval" || email.emailBucket === "inspection_final_notice"));
   const nemApproved =
     projectStatus === "approved"
-    || projectStatus === "complete"
-    || nemChecks.some((check) => check.readyForIssue || ["reviewed_by_ahj", "ready_for_issue", "issued"].includes(check.outcome))
+    || projectStatus === "nem_approved"
+    || projectStatus === "handoff_ready"
+    || nemChecks.some((check) => check.readyForIssue || ["reviewed_by_ahj", "ready_for_issue", "issued", "nem_approved"].includes(check.outcome))
     || emails.some((email) => (hasNemSignal(email) || email.workflow === "nem" || email.workflow === "both") && email.emailBucket === "nem_approval");
 
   return {
@@ -3925,6 +3926,7 @@ export async function recordPermitStatusCheck(
     }
 
     updateProjectForPermitOutcome(db, detail.project.status, projectId, classification.outcome, classification.message, ts);
+    triggerHandoffIfReady(db, projectId, ts);
     addAuditLog(db, projectId, "system", "permit monitor", "permit_status.checked", {
       checkId,
       targetId: input.targetId || null,
@@ -4049,12 +4051,84 @@ function updateProjectForPermitOutcome(
   if (outcome === "correction_flagged") update("correction_received", "Permit monitor flagged a correction. Review bucket and next action.");
   else if (outcome === "ready_for_issue") update("ready_for_issue", message);
   else if (outcome === "issued") update("issued", message);
+  else if (outcome === "nem_approved") update("nem_approved", message);
   else if (outcome === "reviewed_by_ahj") update("approved", message);
-  else if (outcome === "waiting" && ["awaiting_human_submit", "submitted", "approved", "ready_for_issue", "issued", "complete"].includes(currentStatus)) {
+  else if (outcome === "waiting" && ["awaiting_human_submit", "submitted", "approved", "ready_for_issue", "issued", "nem_approved", "handoff_ready"].includes(currentStatus)) {
     update("submitted", "Permit monitor checked: AHJ/utility review is still in progress.");
   } else if (outcome === "needs_human_review") {
     db.run("UPDATE projects SET current_stage = ?, updated_at = ? WHERE id = ?", [message, ts, projectId]);
   }
+}
+
+function buildInstallerHandoffChecklist(project: ProjectRecord): string[] {
+  const size = project.systemSizeDcKw ? `${project.systemSizeDcKw} kW DC` : "system";
+  return [
+    `PERMIT ISSUED — ${project.ahj || "AHJ"}: Download permit card and post at job site before work begins.`,
+    `NEM APPROVED — ${project.utility || "Utility"}: Save the approval confirmation email/letter.`,
+    `INSTALLATION: Install per the approved plans. Do not deviate from stamped set without re-permit.`,
+    `RAPID SHUTDOWN: Label all rapid shutdown devices per approved plans before inspection.`,
+    `FINAL INSPECTION: Schedule with ${project.ahj || "AHJ"}. Inspector will verify install matches approved plans.`,
+    `AFTER INSPECTION PASSES: Send a copy of the signed final inspection card to ${project.utility || "the utility"} to trigger Permission to Operate (PTO).`,
+    `PTO: Utility will issue PTO once inspection record is received. Timeline varies (typically 1–5 business days).`,
+    `SYSTEM SIZE: ${size} — verify AC output at inverter matches NEM application.`,
+    project.interconnectionMethod ? `INTERCONNECTION: ${project.interconnectionMethod}` : "",
+    `HOMEOWNER: Notify ${project.homeownerName || "homeowner"} that the system can be energized only after PTO is received.`,
+  ].filter(Boolean);
+}
+
+function triggerHandoffIfReady(db: AppDb, projectId: string, ts: string): void {
+  const project = db.get<ProjectRow>("SELECT * FROM projects WHERE id = ?", [projectId]);
+  if (!project) return;
+  const currentStatus = project.status as ProjectRecord["status"];
+  if (currentStatus === "handoff_ready") return; // already done
+
+  // Check if at least one permit target shows issued AND one NEM target shows nem_approved
+  const permitIssued = db.get<Row>(
+    `SELECT id FROM permit_status_checks
+     WHERE project_id = ? AND outcome = 'issued'
+     LIMIT 1`,
+    [projectId],
+  );
+  const nemApproved = db.get<Row>(
+    `SELECT id FROM permit_status_checks
+     WHERE project_id = ? AND outcome = 'nem_approved'
+     LIMIT 1`,
+    [projectId],
+  );
+
+  // Also accept project status signals — if NEM approved is now the status and permit was issued before
+  const permitIssuedViaStatus = ["issued", "ready_for_issue", "handoff_ready"].includes(currentStatus) || !!permitIssued;
+  const nemApprovedViaStatus = currentStatus === "nem_approved" || !!nemApproved;
+
+  if (!permitIssuedViaStatus || !nemApprovedViaStatus) return;
+
+  const mappedProject = mapProject(project);
+  const checklist = buildInstallerHandoffChecklist(mappedProject);
+  const noteBody = [
+    "✓ PERMIT ISSUED + NEM APPROVED — your submission scope is complete.",
+    "",
+    "Installer handoff checklist:",
+    ...checklist.map((line, i) => `${i + 1}. ${line}`),
+    "",
+    "No further action required from this platform unless a correction is received after final inspection.",
+  ].join("\n");
+
+  db.run("UPDATE projects SET status = 'handoff_ready', current_stage = ?, updated_at = ? WHERE id = ?", [
+    "Permit issued + NEM approved. Ready for installer handoff.",
+    ts,
+    projectId,
+  ]);
+
+  db.run(
+    `INSERT INTO project_notes (id, project_id, note_type, body, created_by, created_at)
+     VALUES (?, ?, 'handoff', ?, 'system', ?)`,
+    [id(), projectId, noteBody, ts],
+  );
+
+  addAuditLog(db, projectId, "system", "handoff trigger", "handoff.ready", {
+    permitIssued: !!permitIssued,
+    nemApproved: !!nemApproved,
+  });
 }
 
 export async function runDuePermitChecks(

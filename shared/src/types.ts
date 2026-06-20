@@ -16,8 +16,8 @@ export type ProjectStatus =
   | "ready_for_issue"
   | "issued"
   | "approved"
-  | "pto_pending"
-  | "complete"
+  | "nem_approved"
+  | "handoff_ready"
   | "blocked";
 
 export type PortalType = "AHJ" | "utility" | "finance" | "other";
@@ -41,6 +41,7 @@ export type PermitCheckOutcome =
   | "reviewed_by_ahj"
   | "ready_for_issue"
   | "issued"
+  | "nem_approved"
   | "needs_human_review"
   | "no_change";
 

@@ -59,8 +59,14 @@ function esc(value) {
     .replaceAll('"', "&quot;");
 }
 
-function statusBadge(text) {
-  return `<span class="badge">${esc(text || "unknown")}</span>`;
+function statusBadge(status) {
+  const label = (status || "unknown").replaceAll("_", " ");
+  if (status === "handoff_ready") return `<span class="badge badge-pass">${esc(label)}</span>`;
+  if (status === "nem_approved") return `<span class="badge badge-info">${esc(label)}</span>`;
+  if (status === "issued" || status === "ready_for_issue") return `<span class="badge badge-info">${esc(label)}</span>`;
+  if (status === "correction_received" || status === "correction_triaged") return `<span class="badge badge-warning">${esc(label)}</span>`;
+  if (status === "blocked") return `<span class="badge badge-fail">${esc(label)}</span>`;
+  return `<span class="badge">${esc(label)}</span>`;
 }
 
 function projectLaneStatusCell(label, outcome, checkedAt, ready, readyLabel) {
@@ -492,6 +498,21 @@ async function selectProject(projectId) {
   renderDetail();
 }
 
+function renderHandoffBanner() {
+  const { project, projectNotes } = state.detail;
+  let banner = $("handoffBanner");
+  if (!banner) return;
+  if (project.status !== "handoff_ready") { banner.hidden = true; return; }
+  const handoffNote = (projectNotes || []).find((n) => n.noteType === "handoff");
+  banner.hidden = false;
+  banner.innerHTML = `
+    <div class="handoff-banner-head">
+      <span>✓ Permit Issued + NEM Approved — Ready for installer handoff</span>
+    </div>
+    ${handoffNote ? `<pre class="handoff-checklist">${esc(handoffNote.body)}</pre>` : ""}
+  `;
+}
+
 function renderDetail() {
   const { project } = state.detail;
   $("detailTitle").textContent = project.homeownerName || "Unnamed project";
@@ -504,6 +525,7 @@ function renderDetail() {
     ? `Permit ${state.processMap.permitStatus.replaceAll("_", " ")} / NEM ${state.processMap.nemStatus.replaceAll("_", " ")}`
     : "Not checked";
   syncProjectClientSelect();
+  renderHandoffBanner();
   syncPermitForm();
   renderWorkflow();
   renderSubmitGate();
@@ -2635,12 +2657,12 @@ function renderKpi(kpi) {
         <div class="kpi-label">Submitted</div>
       </div>
       <div class="kpi-card">
-        <div class="kpi-value">${kpi.projectsPtoGranted}</div>
-        <div class="kpi-label">PTO Granted</div>
+        <div class="kpi-value">${kpi.projectsHandedOff}</div>
+        <div class="kpi-label">Handed Off ✓</div>
       </div>
-      <div class="kpi-card ${kpi.avgTotalCycleDays != null && kpi.avgTotalCycleDays > 90 ? "kpi-warn" : ""}">
+      <div class="kpi-card ${kpi.avgTotalCycleDays != null && kpi.avgTotalCycleDays > 60 ? "kpi-warn" : ""}">
         <div class="kpi-value">${formatDays(kpi.avgTotalCycleDays)}</div>
-        <div class="kpi-label">Avg Cycle (Submit→PTO)</div>
+        <div class="kpi-label">Avg Cycle (Submit→Handoff)</div>
       </div>
       <div class="kpi-card">
         <div class="kpi-value">${formatDays(kpi.avgPermitCycleDays)}</div>
@@ -2652,7 +2674,7 @@ function renderKpi(kpi) {
       </div>
       <div class="kpi-card ${kpi.throughputPerWeek < 1 ? "kpi-warn" : ""}">
         <div class="kpi-value">${kpi.throughputPerWeek}</div>
-        <div class="kpi-label">PTO/Week</div>
+        <div class="kpi-label">Handoffs/Week</div>
       </div>
       <div class="kpi-card ${kpi.correctionRate > 50 ? "kpi-warn" : ""}">
         <div class="kpi-value">${kpi.correctionRate}%</div>
@@ -2676,13 +2698,13 @@ function renderKpi(kpi) {
     <h3 style="margin-top:24px">Per Operator</h3>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Name</th><th>Submitted</th><th>PTO</th><th>Open</th><th>Overdue</th><th>Avg Cycle</th></tr></thead>
+        <thead><tr><th>Name</th><th>Submitted</th><th>Handed Off</th><th>Open</th><th>Overdue</th><th>Avg Cycle</th></tr></thead>
         <tbody>
           ${kpi.byUser.map((u) => `
             <tr>
               <td>${esc(u.userName)}</td>
               <td>${u.submitted}</td>
-              <td>${u.pto}</td>
+              <td>${u.handedOff}</td>
               <td>${u.openProjects}</td>
               <td class="${u.overdueCorrections > 0 ? "text-danger" : ""}">${u.overdueCorrections}</td>
               <td>${formatDays(u.avgCycleDays)}</td>

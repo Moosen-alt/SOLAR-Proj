@@ -5,21 +5,21 @@ type Row = Record<string, SqlParam>;
 export interface KpiReport {
   period: { start: string; end: string };
   projectsSubmitted: number;
-  projectsPtoGranted: number;
-  avgPermitCycleDays: number | null;
-  avgNemCycleDays: number | null;
-  avgTotalCycleDays: number | null;
-  correctionRate: number;       // % of projects that received at least one correction
+  projectsHandedOff: number;        // permit issued + NEM approved — our completion metric
+  avgPermitCycleDays: number | null; // submit → permit issued
+  avgNemCycleDays: number | null;    // submit → NEM approved
+  avgTotalCycleDays: number | null;  // submit → handoff_ready (both complete)
+  correctionRate: number;
   avgCorrectionsPerProject: number;
   openCorrections: number;
   overdueCorrections: number;
-  slaBreachRate: number;        // % of corrections that breached SLA
-  throughputPerWeek: number;    // PTOs granted per 7-day window in period
+  slaBreachRate: number;
+  throughputPerWeek: number;         // handoffs per week in period
   byUser: Array<{
     userId: string;
     userName: string;
     submitted: number;
-    pto: number;
+    handedOff: number;
     openProjects: number;
     overdueCorrections: number;
     avgCycleDays: number | null;
@@ -76,15 +76,11 @@ export function touchProjectMetrics(db: AppDb, projectId: string): void {
     [projectId],
   );
   const permitRow = db.get<Row>(
-    "SELECT MIN(created_at) as t FROM permit_status_checks WHERE project_id = ? AND outcome = 'permit_issued'",
+    "SELECT MIN(created_at) as t FROM permit_status_checks WHERE project_id = ? AND outcome = 'issued'",
     [projectId],
   );
   const nemRow = db.get<Row>(
     "SELECT MIN(created_at) as t FROM permit_status_checks WHERE project_id = ? AND outcome = 'nem_approved'",
-    [projectId],
-  );
-  const ptoRow = db.get<Row>(
-    "SELECT MIN(created_at) as t FROM permit_status_checks WHERE project_id = ? AND outcome = 'pto_granted'",
     [projectId],
   );
   const corrRows = db.query<Row>(
@@ -95,7 +91,12 @@ export function touchProjectMetrics(db: AppDb, projectId: string): void {
   const submittedAt = submitRow?.t != null ? String(submitRow.t) : null;
   const permitIssuedAt = permitRow?.t != null ? String(permitRow.t) : null;
   const nemApprovedAt = nemRow?.t != null ? String(nemRow.t) : null;
-  const ptoAt = ptoRow?.t != null ? String(ptoRow.t) : null;
+  // handoff_ready is our completion milestone — submit scope ends when both permit issued + NEM approved
+  const handoffRow = db.get<Row>(
+    "SELECT MIN(created_at) as t FROM project_notes WHERE project_id = ? AND note_type = 'handoff'",
+    [projectId],
+  );
+  const handoffAt = handoffRow?.t != null ? String(handoffRow.t) : null;
   const firstCorrectionAt = corrRows.length > 0 ? String(corrRows[0].created_at) : null;
   const lastCorrectionAt = corrRows.length > 0 ? String(corrRows[corrRows.length - 1].created_at) : null;
   const correctionCount = corrRows.length;
@@ -114,7 +115,8 @@ export function touchProjectMetrics(db: AppDb, projectId: string): void {
 
   const permitCycleDays = daysBetween(submittedAt, permitIssuedAt);
   const nemCycleDays = daysBetween(submittedAt, nemApprovedAt);
-  const totalCycleDays = daysBetween(submittedAt, ptoAt);
+  // total cycle = submit → handoff_ready (permit issued + NEM approved — our actual completion)
+  const totalCycleDays = daysBetween(submittedAt, handoffAt);
 
   db.run(
     `INSERT INTO project_metrics
@@ -136,7 +138,7 @@ export function touchProjectMetrics(db: AppDb, projectId: string): void {
        sla_breaches = excluded.sla_breaches,
        updated_at = excluded.updated_at`,
     [
-      projectId, submittedAt, permitIssuedAt, nemApprovedAt, ptoAt,
+      projectId, submittedAt, permitIssuedAt, nemApprovedAt, null /* pto outside our scope */,
       firstCorrectionAt, lastCorrectionAt, correctionCount,
       permitCycleDays, nemCycleDays, totalCycleDays, slaBreaches, now,
     ],
@@ -187,7 +189,14 @@ export function getKpiReport(
   const totalCycles = metrics.map((m) => m.totalCycleDays).filter((v): v is number => v !== null);
 
   const periodDays = Math.max(1, (new Date(end).getTime() - new Date(start).getTime()) / 86_400_000);
-  const ptoCount = metrics.filter((m) => m.ptoAt !== null).length;
+  // Completion = handoff_ready (permit issued + NEM approved) — our actual deliverable
+  const handoffCount = Number(
+    db.get<Row>(
+      `SELECT COUNT(*) as cnt FROM projects
+       WHERE status = 'handoff_ready' AND updated_at >= ? AND updated_at <= ?`,
+      [start, end + "T23:59:59"],
+    )?.cnt ?? 0,
+  );
 
   // Per-user breakdown
   const users = db.query<Row>("SELECT * FROM users WHERE active = 1");
@@ -206,7 +215,7 @@ export function getKpiReport(
     );
     const userOpen = Number(
       db.get<Row>(
-        "SELECT COUNT(*) as cnt FROM projects WHERE assigned_user_id = ? AND status NOT IN ('pto_granted','cancelled','archived')",
+        "SELECT COUNT(*) as cnt FROM projects WHERE assigned_user_id = ? AND status NOT IN ('handoff_ready','blocked')",
         [uid],
       )?.cnt ?? 0,
     );
@@ -214,7 +223,12 @@ export function getKpiReport(
       userId: uid,
       userName: String(u.name),
       submitted: userMetrics.length,
-      pto: userMetrics.filter((m) => m.ptoAt !== null).length,
+      handedOff: Number(
+        db.get<Row>(
+          "SELECT COUNT(*) as cnt FROM projects WHERE assigned_user_id = ? AND status = 'handoff_ready' AND updated_at >= ? AND updated_at <= ?",
+          [uid, start, end + "T23:59:59"],
+        )?.cnt ?? 0,
+      ),
       openProjects: userOpen,
       overdueCorrections: userOverdue,
       avgCycleDays: avg(userCycles),
@@ -224,7 +238,7 @@ export function getKpiReport(
   return {
     period: { start, end },
     projectsSubmitted: metrics.length,
-    projectsPtoGranted: ptoCount,
+    projectsHandedOff: handoffCount,
     avgPermitCycleDays: avg(permitCycles),
     avgNemCycleDays: avg(nemCycles),
     avgTotalCycleDays: avg(totalCycles),
@@ -237,7 +251,7 @@ export function getKpiReport(
     slaBreachRate: allCorrections.length > 0
       ? Math.round((totalSlaBreaches / allCorrections.length) * 100)
       : 0,
-    throughputPerWeek: Math.round((ptoCount / periodDays) * 7 * 10) / 10,
+    throughputPerWeek: Math.round((handoffCount / periodDays) * 7 * 10) / 10,
     byUser,
   };
 }
