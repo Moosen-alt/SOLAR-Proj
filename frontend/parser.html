@@ -3544,60 +3544,109 @@ const LLM_FIELD_TARGETS = {
 
 // Confidence at/above which the LLM may OVERWRITE a value the regex parser already filled.
 const LLM_OVERWRITE_CONFIDENCE = 0.75;
+// Fields where the document IMAGE (vision) is authoritative over noisy OCR text —
+// these are exactly the ones OCR mangles (a misread digit in an account number).
+const VISION_AUTHORITATIVE = new Set(['account', 'meter', 'owner', 'street', 'city', 'state', 'zip', 'utility']);
 
-async function runLlmAssist(){
-  const planText = state.planDoc?.text || '';
-  const utilityBillText = state.ubDoc?.text || '';
-  const meterText = state.meterDoc?.text || '';
-  if (!planText.trim() && !utilityBillText.trim() && !meterText.trim()) return;
+// Read a File (image) as base64 (no data: prefix) for the vision endpoint.
+function fileToBase64(file){
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).split(',')[1] || '');
+    r.onerror = () => reject(new Error('read failed'));
+    r.readAsDataURL(file);
+  });
+}
+function imageMime(file){
+  const t = (file.type || '').toLowerCase();
+  if (t.includes('png')) return 'image/png';
+  if (t.includes('webp')) return 'image/webp';
+  return 'image/jpeg';
+}
+function isImageFile(file){ return file && /^image\//i.test(file.type || '') || /\.(jpe?g|png|webp)$/i.test(file?.name || ''); }
 
-  $('parseStatus').textContent = 'Asking AI to read the documents…';
-  let result;
-  try {
-    const resp = await fetch('/api/parser/llm-extract', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ planText, utilityBillText, meterText, defaultState: getVal('state') || 'OR' }),
-    });
-    if (!resp.ok){
-      const err = await resp.json().catch(()=>({}));
-      throw new Error(err.error || `AI extract failed (${resp.status})`);
-    }
-    result = await resp.json();
-  } catch (e){
-    state.reviewFlags.push(`AI-assist unavailable: ${e.message}. Used regex/OCR parse only.`);
-    return;
+async function postJson(url, body){
+  const resp = await fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+  if (!resp.ok){
+    const err = await resp.json().catch(()=>({}));
+    const e = new Error(err.error || `Request failed (${resp.status})`);
+    e.status = resp.status;
+    throw e;
   }
+  return resp.json();
+}
 
-  if (result.provider === 'stub'){
-    state.reviewFlags.push('AI-assist is OFF (no ANTHROPIC_API_KEY on the server). Using regex/OCR parse only.');
-    return;
-  }
-
-  const applied = [];
+// Apply an extraction result's fields to the form. `authoritativeAll` forces
+// overwrite (used for vision results on the high-stakes ID fields).
+function applyExtraction(result, applied, opts = {}){
   const fields = result.fields || {};
   Object.keys(fields).forEach(fieldId => {
     const entry = fields[fieldId];
     if (!entry || entry.value == null || entry.value === '') return;
     const targets = LLM_FIELD_TARGETS[fieldId];
     if (!targets) return;
+    const authoritative = opts.vision && VISION_AUTHORITATIVE.has(fieldId) && (entry.confidence ?? 0) >= 0.5;
     targets.forEach(targetId => {
       if (!$(targetId)) return;
       const current = (getVal(targetId) || '').trim();
       const confident = (entry.confidence ?? 0) >= LLM_OVERWRITE_CONFIDENCE;
-      // Fill if empty, or overwrite only when the model is confident.
-      if (!current || confident){
+      if (!current || confident || authoritative){
         setVal(targetId, entry.value);
-        applied.push(`${targetId}=${entry.value}${confident ? '' : ' (low-conf)'}`);
+        applied.push(`${targetId}=${entry.value}${(confident||authoritative) ? '' : ' (low-conf)'}`);
       }
     });
   });
-
-  (result.lowConfidenceFields || []).forEach(f => {
-    state.reviewFlags.push(`AI low-confidence on "${f}" — verify manually.`);
-  });
+  (result.lowConfidenceFields || []).forEach(f => state.reviewFlags.push(`AI low-confidence on "${f}" — verify manually.`));
   if (result.notes) state.reviewFlags.push(`AI notes: ${result.notes}`);
-  state.llmAssist = { applied, notes: result.notes, lowConfidenceFields: result.lowConfidenceFields || [] };
+}
+
+async function runLlmAssist(){
+  const planText = state.planDoc?.text || '';
+  const utilityBillText = state.ubDoc?.text || '';
+  const meterText = state.meterDoc?.text || '';
+  const haveText = planText.trim() || utilityBillText.trim() || meterText.trim();
+  // Collect document images for vision (most accurate for account/meter numbers).
+  const visionImages = [];
+  try {
+    if (isImageFile(state.ubFile)) visionImages.push({ kind:'utility_bill', base64: await fileToBase64(state.ubFile), mimeType: imageMime(state.ubFile) });
+    if (isImageFile(state.meterFile)) visionImages.push({ kind:'meter_photo', base64: await fileToBase64(state.meterFile), mimeType: imageMime(state.meterFile) });
+  } catch { /* ignore image read errors, fall back to text */ }
+  if (!haveText && !visionImages.length) return;
+
+  const applied = [];
+  let ranAny = false;
+  let authOff = false;
+
+  // 1) Vision pass on the actual bill/meter images — authoritative for account/meter/name/address.
+  if (visionImages.length){
+    $('parseStatus').textContent = 'AI reading the bill & meter photos…';
+    try {
+      const v = await postJson('/api/parser/vision-extract', { images: visionImages, defaultState: getVal('state') || 'OR' });
+      if (v.provider === 'stub'){ authOff = true; }
+      else { applyExtraction(v, applied, { vision: true }); ranAny = true; }
+    } catch (e){
+      if (e.status === 502) state.reviewFlags.push(`AI vision: ${e.message}`);
+      else state.reviewFlags.push(`AI vision unavailable: ${e.message}. Using regex/OCR for those fields.`);
+    }
+  }
+
+  // 2) Text pass on the plan set (and any docs) — fills the rest.
+  if (haveText){
+    $('parseStatus').textContent = 'AI reading the plan set…';
+    try {
+      const t = await postJson('/api/parser/llm-extract', { planText, utilityBillText, meterText, defaultState: getVal('state') || 'OR' });
+      if (t.provider === 'stub'){ authOff = true; }
+      else { applyExtraction(t, applied, { vision: false }); ranAny = true; }
+    } catch (e){
+      if (e.status === 502) state.reviewFlags.push(`AI: ${e.message}`);
+      else state.reviewFlags.push(`AI-assist unavailable: ${e.message}. Used regex/OCR parse only.`);
+    }
+  }
+
+  if (authOff && !ranAny){
+    state.reviewFlags.push('AI-assist is OFF (no/invalid ANTHROPIC_API_KEY on the server). Using regex/OCR only — set a valid sk-ant- key to enable accurate AI extraction.');
+  }
+  state.llmAssist = ranAny ? { applied } : null;
 }
 
 async function runParse(){

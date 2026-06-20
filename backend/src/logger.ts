@@ -1,0 +1,201 @@
+// ---------------------------------------------------------------------------
+// Structured, copy-pasteable terminal logging + runtime diagnostics.
+//
+// Goals:
+//  - Every line is greppable and self-describing: `[time] LEVEL [scope] message`.
+//  - Errors print a clear block you can paste straight into a chat for diagnosis.
+//  - A /api/diagnostics endpoint returns the same picture as JSON.
+//  - NEVER log secrets or PII: no request bodies, no tokens/cookies/passwords,
+//    no account/meter numbers. Query strings are redacted on sensitive keys.
+// ---------------------------------------------------------------------------
+import { performance } from "node:perf_hooks";
+import fs from "node:fs";
+import type { Request, Response, NextFunction } from "express";
+import type { AppDb } from "./db";
+
+const LEVELS = { error: 0, warn: 1, info: 2, debug: 3 } as const;
+type Level = keyof typeof LEVELS;
+
+const CONFIGURED_LEVEL: Level = (() => {
+  const raw = (process.env.LOG_LEVEL || "").toLowerCase();
+  if (raw in LEVELS) return raw as Level;
+  if (process.env.DEBUG === "true" || process.env.DEBUG === "1") return "debug";
+  return "info";
+})();
+
+const threshold = LEVELS[CONFIGURED_LEVEL];
+
+const ICON: Record<Level, string> = { error: "✖", warn: "▲", info: "•", debug: "·" };
+
+function stamp(): string {
+  // Local time, second precision — easy to correlate with what the user did.
+  return new Date().toISOString().replace("T", " ").replace("Z", "");
+}
+
+function fmtExtra(extra?: Record<string, unknown>): string {
+  if (!extra) return "";
+  const parts: string[] = [];
+  for (const [k, v] of Object.entries(extra)) {
+    if (v === undefined) continue;
+    const val = typeof v === "string" ? v : JSON.stringify(v);
+    parts.push(`${k}=${val}`);
+  }
+  return parts.length ? " " + parts.join(" ") : "";
+}
+
+function emit(level: Level, scope: string, message: string, extra?: Record<string, unknown>): void {
+  if (LEVELS[level] > threshold) return;
+  const line = `${stamp()} ${ICON[level]} ${level.toUpperCase().padEnd(5)} [${scope}] ${message}${fmtExtra(extra)}`;
+  if (level === "error") console.error(line);
+  else if (level === "warn") console.warn(line);
+  else console.log(line);
+}
+
+export const logger = {
+  error: (scope: string, message: string, extra?: Record<string, unknown>) => emit("error", scope, message, extra),
+  warn: (scope: string, message: string, extra?: Record<string, unknown>) => emit("warn", scope, message, extra),
+  info: (scope: string, message: string, extra?: Record<string, unknown>) => emit("info", scope, message, extra),
+  debug: (scope: string, message: string, extra?: Record<string, unknown>) => emit("debug", scope, message, extra),
+  level: CONFIGURED_LEVEL,
+};
+
+// --- Sensitive-data hygiene --------------------------------------------------
+const SENSITIVE_QUERY = /token|key|secret|password|cookie|auth|account|meter|mfa|otp/i;
+
+function safePath(req: Request): string {
+  const base = req.path || req.url.split("?")[0];
+  const q = req.query && Object.keys(req.query).length
+    ? "?" + Object.keys(req.query).map((k) => `${k}=${SENSITIVE_QUERY.test(k) ? "[redacted]" : String(req.query[k]).slice(0, 40)}`).join("&")
+    : "";
+  return base + q;
+}
+
+// --- HTTP request logger -----------------------------------------------------
+// Logs one line per request on completion. 2xx/3xx -> info, 4xx -> warn, 5xx -> error.
+// Health/diagnostics polling is logged at debug so it doesn't drown the terminal.
+export function requestLogger(req: Request, res: Response, next: NextFunction): void {
+  const start = performance.now();
+  res.on("finish", () => {
+    const ms = Math.round(performance.now() - start);
+    const status = res.statusCode;
+    const quiet = req.path === "/health" || req.path === "/api/diagnostics";
+    const level: Level = status >= 500 ? "error" : status >= 400 ? "warn" : quiet ? "debug" : "info";
+    emit(level, "http", `${status} ${req.method} ${safePath(req)}`, { ms: `${ms}ms` });
+  });
+  next();
+}
+
+// --- Error block -------------------------------------------------------------
+// Prints a boxed, copy-pasteable error report. Call from the global error handler.
+export function logErrorBlock(scope: string, err: unknown, context?: Record<string, unknown>): void {
+  const e = err as { message?: string; stack?: string; status?: number };
+  const lines = [
+    "┌─ ERROR ───────────────────────────────────────────────",
+    `│ scope:   ${scope}`,
+    `│ message: ${e?.message ?? String(err)}`,
+  ];
+  if (context) for (const [k, v] of Object.entries(context)) lines.push(`│ ${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`);
+  if (e?.stack) {
+    lines.push("│ stack:");
+    for (const s of e.stack.split("\n").slice(0, 6)) lines.push(`│   ${s.trim()}`);
+  }
+  lines.push("└───────────────────────────────────────────────────────");
+  console.error(lines.join("\n"));
+}
+
+// --- Diagnostics snapshot ----------------------------------------------------
+function safeCount(db: AppDb, sql: string): number | null {
+  try {
+    const row = db.get<{ n: number }>(sql);
+    return row ? Number(row.n) : 0;
+  } catch {
+    return null;
+  }
+}
+
+export interface Diagnostics {
+  service: string;
+  version: string;
+  status: "ok" | "degraded";
+  timestamp: string;
+  uptimeSeconds: number;
+  node: string;
+  logLevel: Level;
+  config: {
+    port: number;
+    authEnabled: boolean;
+    llm: "claude" | "stub";
+    gmailConfigured: boolean;
+    sessionKeySet: boolean;
+    dbPath: string;
+    dbSizeKb: number | null;
+  };
+  data: {
+    projects: number | null;
+    knowledgeProfiles: number | null;
+    jobsPending: number | null;
+    jobsFailed: number | null;
+    historicalFailureExamples: number | null;
+  };
+  warnings: string[];
+}
+
+export function collectDiagnostics(db: AppDb, opts: { version: string; port: number; dbPath: string }): Diagnostics {
+  const dbSizeKb = (() => {
+    try { return Math.round(fs.statSync(opts.dbPath).size / 1024); } catch { return null; }
+  })();
+  const llm: "claude" | "stub" = process.env.ANTHROPIC_API_KEY ? "claude" : "stub";
+  const authEnabled = process.env.AUTH_ENABLED === "true";
+  const gmailConfigured = Boolean(process.env.GMAIL_CLIENT_ID && process.env.GMAIL_CLIENT_SECRET);
+  const sessionKeySet = Boolean(process.env.SESSION_ENCRYPTION_KEY && process.env.SESSION_ENCRYPTION_KEY !== "replace-with-a-long-random-secret");
+
+  const data = {
+    projects: safeCount(db, "SELECT COUNT(*) n FROM projects"),
+    knowledgeProfiles: safeCount(db, "SELECT COUNT(*) n FROM permit_utility_knowledge"),
+    jobsPending: safeCount(db, "SELECT COUNT(*) n FROM job_queue WHERE status IN ('pending','running')"),
+    jobsFailed: safeCount(db, "SELECT COUNT(*) n FROM job_queue WHERE status = 'failed'"),
+    historicalFailureExamples: safeCount(db, "SELECT COUNT(*) n FROM historical_failure_examples"),
+  };
+
+  const warnings: string[] = [];
+  if (llm === "stub") warnings.push("ANTHROPIC_API_KEY not set — LLM features run in advisory/stub mode.");
+  if (!sessionKeySet) warnings.push("SESSION_ENCRYPTION_KEY is unset or default — set a real secret before deploying.");
+  if (!authEnabled) warnings.push("AUTH_ENABLED=false — the dashboard is open with no login.");
+  if ((data.jobsFailed ?? 0) > 0) warnings.push(`${data.jobsFailed} background job(s) are in 'failed' state.`);
+
+  return {
+    service: "Solar Submission Autopilot",
+    version: opts.version,
+    status: warnings.some((w) => w.includes("SESSION_ENCRYPTION_KEY")) ? "degraded" : "ok",
+    timestamp: new Date().toISOString(),
+    uptimeSeconds: Math.round(process.uptime()),
+    node: process.version,
+    logLevel: CONFIGURED_LEVEL,
+    config: { port: opts.port, authEnabled, llm, gmailConfigured, sessionKeySet, dbPath: opts.dbPath, dbSizeKb },
+    data,
+    warnings,
+  };
+}
+
+// --- Startup banner ----------------------------------------------------------
+// One clear block at boot so a pasted terminal tells the whole story at a glance.
+export function startupBanner(d: Diagnostics, urls: { base: string }): void {
+  const L = (s: string) => console.log(s);
+  L("");
+  L("════════════════════════════════════════════════════════════");
+  L(`  ${d.service}  v${d.version}`);
+  L("════════════════════════════════════════════════════════════");
+  L(`  URL          ${urls.base}`);
+  L(`  Dashboard    ${urls.base}/   ·   Parser  ${urls.base}/parser`);
+  L(`  Node         ${d.node}        Log level  ${d.logLevel}`);
+  L(`  LLM          ${d.config.llm === "claude" ? "Claude (live)" : "stub (no API key)"}`);
+  L(`  Auth         ${d.config.authEnabled ? "ENABLED (login required)" : "disabled (open dashboard)"}`);
+  L(`  Database     ${d.config.dbPath} (${d.config.dbSizeKb ?? "?"} KB)`);
+  L(`  Data         ${d.data.projects ?? "?"} projects · ${d.data.knowledgeProfiles ?? "?"} KB profiles · ${d.data.jobsPending ?? "?"} jobs queued`);
+  if (d.warnings.length) {
+    L("  ─ Warnings ────────────────────────────────────────────────");
+    for (const w of d.warnings) L(`  ▲ ${w}`);
+  }
+  L("════════════════════════════════════════════════════════════");
+  L("");
+}

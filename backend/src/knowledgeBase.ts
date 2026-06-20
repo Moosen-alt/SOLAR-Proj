@@ -381,7 +381,14 @@ function upsertKnowledge(db: AppDb, facts: KnowledgeFacts, event?: KnowledgeEven
 }
 
 function upsertProjectFingerprint(db: AppDb, project: ProjectRecord): void {
-  const key = profileKey(project);
+  // Derive the key with the SAME city fallback that learnFromProject/upsertKnowledge
+  // uses, so the fingerprint's profile_key always matches an existing profile.
+  const key = profileKey({ state: project.state, ahj: project.ahj || project.city, utility: project.utility });
+  // FK safety: the fingerprint references permit_utility_knowledge(profile_key).
+  // If that profile row doesn't exist yet (e.g. fingerprint called before the
+  // profile is learned), skip rather than throwing a FOREIGN KEY constraint error.
+  const profileExists = db.get<{ one: number }>("SELECT 1 one FROM permit_utility_knowledge WHERE profile_key = ?", [key]);
+  if (!profileExists) return;
   const portal = portalFromProject(project);
   const ts = nowIso();
   db.run(

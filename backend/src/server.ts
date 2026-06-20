@@ -6,6 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { openDatabase } from "./db";
 import { HttpError } from "./httpError";
+import { collectDiagnostics, logErrorBlock, logger, requestLogger, startupBanner } from "./logger";
 import { createClient, deleteClient, getClient, listClients, updateClient } from "./clients";
 import { enqueueJob, getJob, listJobs, processNextJob, startJobWorker } from "./jobQueue";
 import { createUser, getUserWorkload, listUsers, updateUser, assignProjectToUser } from "./users";
@@ -80,6 +81,8 @@ const app = express();
 const db = await openDatabase();
 const frontendDir = path.resolve(process.cwd(), "frontend");
 const port = Number(process.env.PORT || 4173);
+const APP_VERSION = "0.1.0-beta";
+const dbPath = path.resolve(process.cwd(), process.env.AUTOPILOT_DB_PATH || "backend/data/autopilot.sqlite");
 
 const asyncHandler =
   (handler: (req: Request, res: Response, next: NextFunction) => Promise<unknown>) =>
@@ -87,9 +90,34 @@ const asyncHandler =
     handler(req, res, next).catch(next);
   };
 
+// Turn raw Anthropic SDK errors into clean, actionable messages for the UI.
+function normalizeLlmError(err: unknown): HttpError {
+  const status = (err as { status?: number })?.status;
+  const raw = (err as { message?: string })?.message || String(err);
+  if (status === 401 || /authentication_error|invalid x-api-key/i.test(raw)) {
+    return new HttpError(502, "Claude rejected the API key (401). Set a valid, active ANTHROPIC_API_KEY in your .env (it must start with 'sk-ant-'). A placeholder or expired key will be rejected — AI-assist stays off and the parser uses regex/OCR only.");
+  }
+  if (status === 429 || /rate_limit/i.test(raw)) {
+    return new HttpError(502, "Claude is rate-limited (429). Wait a moment and try again.");
+  }
+  if (/credit|billing|insufficient|quota/i.test(raw)) {
+    return new HttpError(502, "Claude rejected the request: your Anthropic account has no credit/billing. The API key is valid, but you must add credits at console.anthropic.com → Settings → Billing before AI-assist can run. Until then the parser uses regex/OCR only.");
+  }
+  return new HttpError(502, `AI-assist failed: ${raw.slice(0, 200)}`);
+}
+
 app.use(cors());
+app.use(requestLogger);
 app.use(express.json({ limit: "80mb" }));
 app.use(express.urlencoded({ extended: false, limit: "1mb" }));
+
+// Lightweight security headers (no extra deps). Safe for a same-origin app.
+app.use((_req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "SAMEORIGIN");
+  res.setHeader("Referrer-Policy", "same-origin");
+  next();
+});
 
 // Auth gate (no-op unless AUTH_ENABLED=true). Must run before static so
 // unauthenticated requests for the dashboard are redirected to /login.
@@ -103,7 +131,12 @@ app.use(requireAuth(db));
 app.use(express.static(frontendDir));
 
 app.get("/health", (_req, res) => {
-  res.json({ ok: true, service: "Solar Submission Autopilot", mode: "local-prototype" });
+  res.json({ ok: true, service: "Solar Submission Autopilot", version: APP_VERSION });
+});
+
+// Full runtime diagnostics — paste this output to troubleshoot. No secrets/PII.
+app.get("/api/diagnostics", (_req, res) => {
+  res.json(collectDiagnostics(db, { version: APP_VERSION, port, dbPath }));
 });
 
 app.post("/api/projects", (req, res) => {
@@ -699,8 +732,38 @@ app.post("/api/parser/llm-extract", asyncHandler(async (req, res) => {
   }
   const { createLLMProvider } = await import("./llm");
   const llm = createLLMProvider();
-  const result = await llm.extractProjectFields({ planText, utilityBillText, meterText, defaultState });
-  res.json(result);
+  try {
+    const result = await llm.extractProjectFields({ planText, utilityBillText, meterText, defaultState });
+    res.json(result);
+  } catch (err) {
+    throw normalizeLlmError(err);
+  }
+}));
+
+// Vision-based extraction from the actual document IMAGES (utility bill, meter
+// photo). Far more accurate for account/meter numbers than in-browser OCR text.
+// Account/meter values flow back to populate the project record but are never logged.
+app.post("/api/parser/vision-extract", asyncHandler(async (req, res) => {
+  const images = Array.isArray(req.body?.images) ? req.body.images : [];
+  const cleaned = images
+    .filter((i: unknown): i is { kind: string; base64: string; mimeType: string } =>
+      Boolean(i) && typeof (i as { base64?: unknown }).base64 === "string")
+    .map((i: { kind?: string; base64: string; mimeType?: string }) => ({
+      kind: (["utility_bill", "meter_photo", "plan_page"].includes(String(i.kind)) ? i.kind : "utility_bill") as "utility_bill" | "meter_photo" | "plan_page",
+      base64: i.base64,
+      mimeType: (["image/png", "image/jpeg", "image/webp"].includes(String(i.mimeType)) ? i.mimeType : "image/jpeg") as "image/png" | "image/jpeg" | "image/webp",
+    }))
+    .slice(0, 4);
+  if (!cleaned.length) throw new HttpError(400, "Provide at least one image with base64 data.");
+  const defaultState = typeof req.body?.defaultState === "string" ? req.body.defaultState : undefined;
+  const { createLLMProvider } = await import("./llm");
+  const llm = createLLMProvider();
+  try {
+    const result = await llm.extractProjectFieldsFromImages({ images: cleaned, defaultState });
+    res.json(result);
+  } catch (err) {
+    throw normalizeLlmError(err);
+  }
 }));
 
 app.post("/api/projects/:id/prepare-submission", asyncHandler(async (req, res) => {
@@ -739,7 +802,7 @@ app.use((_req, _res, next) => {
   next(new HttpError(404, "Route not found."));
 });
 
-app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
   const bodyParserStatus = typeof (err as { status?: unknown })?.status === "number" ? Number((err as { status: number }).status) : null;
   const bodyParserType = String((err as { type?: unknown })?.type || "");
   const httpError =
@@ -748,18 +811,31 @@ app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
       : bodyParserStatus === 413 || bodyParserType === "entity.too.large"
         ? new HttpError(413, `Upload is too large. For a big .zip of project PDFs, raise BATCH_ZIP_LIMIT in your .env (default 2gb) or unzip it locally and use the "Scan Folder" path instead. For a big .mbox file, paste its full local path and click Import Path.`)
         : new HttpError(bodyParserStatus && bodyParserStatus >= 400 && bodyParserStatus < 600 ? bodyParserStatus : 500, err instanceof Error ? err.message : "Unknown error.");
-  if (httpError.status >= 500) console.error(err);
+  // 5xx are real bugs — print a copy-pasteable block. 4xx are client errors — one line.
+  if (httpError.status >= 500) logErrorBlock("http", err, { route: `${req.method} ${req.path}`, status: httpError.status });
+  else logger.warn("http", `${httpError.status} ${req.method} ${req.path}`, { reason: httpError.message });
   res.status(httpError.status).json({
     error: httpError.message,
     details: httpError.details,
   });
 });
 
-app.listen(port, () => {
-  console.log(`Solar Submission Autopilot running at http://localhost:${port}`);
-  console.log(`Parser: http://localhost:${port}/parser`);
-  console.log(`Dashboard: http://localhost:${port}/  (or /dashboard)`);
-  if (AUTH_ENABLED) console.log("Auth: ENABLED — login required at /login");
+// Crash visibility — never die silently.
+process.on("unhandledRejection", (reason) => logErrorBlock("unhandledRejection", reason));
+process.on("uncaughtException", (err) => logErrorBlock("uncaughtException", err));
+
+const server = app.listen(port, () => {
+  const diag = collectDiagnostics(db, { version: APP_VERSION, port, dbPath });
+  startupBanner(diag, { base: `http://localhost:${port}` });
   startJobWorker(db);
   startBackupScheduler(db);
 });
+
+// Graceful shutdown so the DB/WAL flushes cleanly on deploy restarts.
+for (const sig of ["SIGINT", "SIGTERM"] as const) {
+  process.on(sig, () => {
+    logger.info("server", `${sig} received — shutting down`);
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 5000).unref();
+  });
+}

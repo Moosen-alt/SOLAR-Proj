@@ -21,6 +21,15 @@ export class StubLLMProvider implements LLMProvider {
     };
   }
 
+  async extractProjectFieldsFromImages(): Promise<ParserLlmExtraction> {
+    return {
+      provider: "stub",
+      fields: {},
+      lowConfidenceFields: [],
+      notes: "No ANTHROPIC_API_KEY configured — vision extraction is off.",
+    };
+  }
+
   async classifyCorrection(): Promise<{ bucket: CorrectionBucket; confidence: number; notes: string }> {
     return { bucket: "C_reviewer_clarification", confidence: 0, notes: "Stub: human review required." };
   }
@@ -176,6 +185,70 @@ Rules:
     };
   }
 
+  async extractProjectFieldsFromImages(input: {
+    images: { kind: "utility_bill" | "meter_photo" | "plan_page"; base64: string; mimeType: "image/png" | "image/jpeg" | "image/webp" }[];
+    defaultState?: string;
+  }): Promise<ParserLlmExtraction> {
+    if (!input.images.length) {
+      return { provider: "claude", fields: {}, lowConfidenceFields: [], notes: "No images supplied." };
+    }
+    const system = `You read photos/scans of a residential solar customer's electric documents and extract intake fields with MAXIMUM accuracy. These are phone photos, so read carefully — digits matter.
+
+You are shown one or more labeled images:
+- UTILITY_BILL: the electric bill. Read the homeowner name, full service address, utility company, the ACCOUNT NUMBER exactly as printed (include any dashes/segments, e.g. "65564191-0014"), and the meter number from the account-activity table.
+- METER_PHOTO: a photo of the electric meter. Read the meter serial number printed on the face/label (e.g. "78 118 886" -> "78118886"), and the utility (e.g. PacifiCorp = Pacific Power).
+
+Return ONLY JSON: {"fields":{"<id>":{"value":<string|number>,"confidence":<0..1>}}, "lowConfidenceFields":[...], "notes":"..."}
+
+Field ids (omit if not present):
+- owner, street, city, state (2-letter), zip
+- utility (normalize: PacifiCorp/Pacific Power -> "Pacific Power"; Portland General/PGE -> "PGE")
+- account: the utility account number, digits/dashes EXACTLY as printed
+- meter: the meter serial/number, digits only
+- servicePeriod: e.g. "Mar 13, 2026 - Apr 13, 2026"
+
+CRITICAL accuracy rules:
+- Transcribe account and meter numbers digit-by-digit from the image. Do NOT guess or "correct" them. If a digit is genuinely unreadable, lower confidence and add the field to lowConfidenceFields.
+- If both UTILITY_BILL and METER_PHOTO show a meter number, they should match; if they differ, report the clearer one and note the discrepancy.
+- Numbers that are identifiers (account, meter, zip) stay strings to preserve leading zeros/segments.
+- Return valid JSON only.`;
+
+    const content: Anthropic.Messages.ContentBlockParam[] = [];
+    for (const img of input.images) {
+      const label = img.kind === "utility_bill" ? "UTILITY_BILL image:" : img.kind === "meter_photo" ? "METER_PHOTO image:" : "PLAN_PAGE image:";
+      content.push({ type: "text", text: label });
+      content.push({ type: "image", source: { type: "base64", media_type: img.mimeType, data: img.base64 } });
+    }
+    content.push({ type: "text", text: `${input.defaultState ? `(Default state if ambiguous: ${input.defaultState})\n` : ""}Extract the fields now as specified.` });
+
+    const msg = await this.client.messages.create({
+      model: MODEL,
+      max_tokens: 1500,
+      system,
+      messages: [{ role: "user", content }],
+    });
+    let raw = "";
+    for (const block of msg.content) if (block.type === "text") raw += block.text;
+    const parsed = this.parseJson<{ fields?: Record<string, { value: unknown; confidence?: number }>; lowConfidenceFields?: string[]; notes?: string }>(
+      raw,
+      { fields: {}, lowConfidenceFields: [], notes: "Could not parse vision response." },
+    );
+    const fields: ParserLlmExtraction["fields"] = {};
+    for (const [key, entry] of Object.entries(parsed.fields || {})) {
+      if (!entry || entry.value == null || entry.value === "") continue;
+      const value = typeof entry.value === "number" ? entry.value : String(entry.value).trim();
+      if (value === "") continue;
+      const confidence = typeof entry.confidence === "number" ? Math.max(0, Math.min(1, entry.confidence)) : 0.6;
+      fields[key] = { value: value as string | number, confidence };
+    }
+    return {
+      provider: "claude",
+      fields,
+      lowConfidenceFields: Array.isArray(parsed.lowConfidenceFields) ? parsed.lowConfidenceFields : [],
+      notes: typeof parsed.notes === "string" ? parsed.notes : "",
+    };
+  }
+
   async classifyCorrection(input: { correctionText: string; project?: ProjectRecord }): Promise<{ bucket: CorrectionBucket; confidence: number; notes: string }> {
     const system = `You are a solar permit correction classifier for AHJ (Authority Having Jurisdiction) permit applications.
 Classify the correction request into exactly one bucket:
@@ -272,11 +345,24 @@ ${input.correctionPatterns.slice(0, 20).join("\n")}`;
 // Factory
 // ---------------------------------------------------------------------------
 
+// Strip the common mistakes that cause a 401 "invalid x-api-key": surrounding
+// quotes, whitespace, and accidental "Bearer "/"ANTHROPIC_API_KEY=" prefixes.
+export function sanitizeApiKey(raw: string | undefined): string {
+  if (!raw) return "";
+  let k = raw.trim();
+  k = k.replace(/^["']|["']$/g, "").trim();
+  k = k.replace(/^Bearer\s+/i, "").replace(/^ANTHROPIC_API_KEY\s*=\s*/i, "").trim();
+  return k;
+}
+
 export function createLLMProvider(): LLMProvider {
-  const apiKey = process.env["ANTHROPIC_API_KEY"];
+  const apiKey = sanitizeApiKey(process.env["ANTHROPIC_API_KEY"]);
   if (!apiKey) {
     console.warn("[llm] No ANTHROPIC_API_KEY — running in stub mode (advisory only).");
     return new StubLLMProvider();
+  }
+  if (!/^sk-ant-/.test(apiKey)) {
+    console.warn(`[llm] ANTHROPIC_API_KEY does not start with "sk-ant-" — it may be malformed (got ${apiKey.length} chars). Claude calls will likely 401.`);
   }
   return new ClaudeLLMProvider(apiKey);
 }

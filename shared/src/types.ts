@@ -1008,6 +1008,11 @@ export interface LLMProvider {
     meterText?: string;
     defaultState?: string;
   }): Promise<ParserLlmExtraction>;
+  /** Vision-based extraction from the actual document images — accurate for account/meter numbers that OCR mangles. */
+  extractProjectFieldsFromImages(input: {
+    images: { kind: "utility_bill" | "meter_photo" | "plan_page"; base64: string; mimeType: "image/png" | "image/jpeg" | "image/webp" }[];
+    defaultState?: string;
+  }): Promise<ParserLlmExtraction>;
   classifyCorrection(input: {
     correctionText: string;
     project?: ProjectRecord;
