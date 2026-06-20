@@ -1306,6 +1306,62 @@ export function learnFromSubmissionConfirmation(
   );
 }
 
+// Learn from a historical document WITHOUT creating a project. Used by the
+// batch past-project scanner: it feeds AHJ/utility requirements, required-document
+// lists, and correction patterns into the knowledge base so future live projects
+// benefit, but never persists a project row or any PII.
+export interface HistoricalDocFacts {
+  state?: string;
+  ahj?: string;
+  utility?: string;
+  portalName?: string;
+  requiredDocuments?: string[];
+  notes?: string;
+  sourceLabel: string;
+  correctionText?: string;
+}
+
+export function learnFromHistoricalDocument(
+  db: AppDb,
+  input: HistoricalDocFacts,
+): { profileKey: string; learnedCorrection: boolean } {
+  const classification = input.correctionText ? classifyCorrection(input.correctionText) : null;
+  const facts: KnowledgeFacts = {
+    state: input.state,
+    ahj: input.ahj,
+    utility: input.utility,
+    portalName: input.portalName,
+    requiredDocuments: input.requiredDocuments,
+    correction:
+      classification && input.correctionText
+        ? {
+            bucket: classification.bucket,
+            rootCause: classification.rootCause,
+            requiredAction: classification.requiredAction,
+            sample: input.correctionText,
+          }
+        : undefined,
+    sources: [learnedSource("learned_batch_import", input.sourceLabel)],
+    confidence: "learned",
+    notes: input.notes || "Learned from historical past-project document (batch scan).",
+  };
+  const profile = upsertKnowledge(db, facts, {
+    eventType: "batch_import.document_learned",
+    details: { sourceLabel: input.sourceLabel, hasCorrection: Boolean(classification) },
+  });
+  if (classification && facts.correction) {
+    insertHistoricalFailureExample(db, {
+      facts,
+      correction: facts.correction,
+      sourceType: "batch_import",
+      sourceLabel: input.sourceLabel,
+      occurredAt: nowIso(),
+      signatureSeed: `batch|${input.sourceLabel}|${input.correctionText}`,
+    });
+  }
+  return { profileKey: profile.profileKey, learnedCorrection: Boolean(classification) };
+}
+
 export function listKnowledgeProfiles(db: AppDb): PermitUtilityKnowledgeProfile[] {
   return db
     .query<Row>(

@@ -2871,10 +2871,12 @@ async function pollBatchJob(jobId) {
         setTimeout(tick, 2000);
       } else if (job.status === "done") {
         const r = job.result || {};
-        $("batchScanStatus").textContent = `Done — ${r.scanned} scanned, ${r.imported} imported, ${r.skipped} skipped, ${r.errors} errors.`;
+        $("batchScanStatus").textContent =
+          `Done — ${r.scanned} scanned, ${r.learned} learned, ${r.lowSignal} low-signal, ${r.errors} errors. ` +
+          `${r.profilesTouched || 0} knowledge profile(s) updated, ${r.correctionsLearned || 0} correction pattern(s).` +
+          (r.reportPath ? ` Report: ${r.reportPath}` : "");
         renderBatchResults(job);
         btn.disabled = false;
-        await loadProjects();
       } else {
         $("batchScanStatus").textContent = `Job ${job.status}: ${job.error || "unknown error"}`;
         btn.disabled = false;
@@ -2898,8 +2900,8 @@ function renderBatchResults(job) {
       <tr class="${r.status}">
         <td>${esc(r.filePath.split(/[\\/]/).pop())}</td>
         <td>${esc(r.docType.replace("_", " "))}</td>
-        <td>${r.status === "imported" ? "✓ imported" : r.status === "error" ? "✗ error" : "— skipped"}</td>
-        <td>${esc(r.message)}${r.fields?.meterNumber ? ` · meter: <strong>${esc(String(r.fields.meterNumber))}</strong>` : ""}${r.fields?.systemSizeDcKw ? ` · ${r.fields.systemSizeDcKw} kW DC` : ""}</td>
+        <td>${r.status === "learned" ? "✓ learned" : r.status === "error" ? "✗ error" : "— low signal"}</td>
+        <td>${esc(r.message)}${r.docLabel ? ` · <strong>${esc(String(r.docLabel))}</strong>` : ""}</td>
       </tr>`).join("")}
     </tbody></table></div>`;
 }

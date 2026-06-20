@@ -25,3 +25,6 @@ backend/data/backups/
 
 # Extracted batch-import zip uploads
 backend/data/batch-uploads/
+
+# Batch learning scan reports
+backend/data/batch-reports/

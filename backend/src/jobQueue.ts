@@ -220,7 +220,18 @@ async function runFolderScanJob(db: AppDb, job: JobRecord): Promise<Record<strin
     defaultState, defaultAhj, defaultUtility, useLlm,
     onProgress: (done, total) => updateJobProgress(db, job.id, done, total),
   });
-  return { scanned: summary.scanned, imported: summary.imported, skipped: summary.skipped, errors: summary.errors, byType: summary.byType, results: summary.results };
+  return {
+    scanned: summary.scanned,
+    learned: summary.learned,
+    lowSignal: summary.lowSignal,
+    errors: summary.errors,
+    byType: summary.byType,
+    byJurisdiction: summary.byJurisdiction,
+    profilesTouched: summary.profilesTouched.length,
+    correctionsLearned: summary.correctionsLearned,
+    reportPath: summary.reportPath,
+    results: summary.results,
+  };
 }
 
 // Background worker — call once at server startup. Polls the job queue on a fixed interval.

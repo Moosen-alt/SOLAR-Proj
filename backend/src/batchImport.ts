@@ -1,9 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { AppDb, SqlParam } from "./db";
-import { createLLMProvider } from "./llm";
-
-type Row = Record<string, SqlParam>;
+import type { AppDb } from "./db";
+import { learnFromHistoricalDocument } from "./knowledgeBase";
 
 // ---------------------------------------------------------------------------
 // PDF text extraction (server-side via pdfjs-dist)
@@ -105,127 +103,12 @@ export function classifyDoc(filename: string, text: string): DocType {
 // Field extractors
 // ---------------------------------------------------------------------------
 
-interface PermitAppFields {
-  homeownerName?: string;
-  projectAddress?: string;
-  city?: string;
-  state?: string;
-  zip?: string;
-  ahj?: string;
-  utility?: string;
-  systemSizeDcKw?: number;
-  systemSizeAcKw?: number;
-  interconnectionMethod?: string;
-  hasBattery?: boolean;
-}
-
-interface SldFields {
-  systemSizeDcKw?: number;
-  systemSizeAcKw?: number;
-  moduleModel?: string;
-  moduleCount?: number;
-  inverterModel?: string;
-  hasBattery?: boolean;
-  interconnectionMethod?: string;
-  rapidShutdown?: boolean;
-}
-
-interface UtilityBillFields {
-  meterNumber?: string;          // stored — needed for NEM
-  serviceAddress?: string;
-  utilityName?: string;
-  rateSchedule?: string;
-  avgMonthlyKwh?: number;
-  // account number intentionally NOT extracted — PII, not needed by platform
-}
-
-interface IssuedPermitFields {
-  permitNumber?: string;
-  issuedDate?: string;
-  ahj?: string;
-  expirationDate?: string;
-}
-
 interface CorrectionFields {
   correctionItems?: string[];
-  ahj?: string;
   applicationNumber?: string;
 }
 
-async function llmExtract<T>(text: string, prompt: string): Promise<Partial<T>> {
-  try {
-    const llm = createLLMProvider();
-    const result = await llm.extractFields({ text: text.slice(0, 6000), instruction: prompt });
-    return result as Partial<T>;
-  } catch {
-    return {};
-  }
-}
-
-// Regex fast-path extractors (no LLM cost for clear signals)
-function quickExtractPermitApp(text: string): Partial<PermitAppFields> {
-  const fields: Partial<PermitAppFields> = {};
-  const dcMatch = text.match(/(?:dc\s*(?:system)?\s*size|total\s*dc\s*watts?|dc\s*capacity)[:\s]+([0-9.]+)\s*(kw|watts?)/i);
-  if (dcMatch) fields.systemSizeDcKw = Number(dcMatch[1]) * (dcMatch[2].toLowerCase().startsWith("w") ? 0.001 : 1);
-  const acMatch = text.match(/(?:ac\s*(?:system)?\s*size|ac\s*capacity|ac\s*output)[:\s]+([0-9.]+)\s*(kw|watts?)/i);
-  if (acMatch) fields.systemSizeAcKw = Number(acMatch[1]) * (acMatch[2].toLowerCase().startsWith("w") ? 0.001 : 1);
-  if (/battery|energy\s*storage|ess|bess/i.test(text)) fields.hasBattery = true;
-  const methMatch = text.match(/(?:interconnection\s*method|interconnect\s*type|point\s*of\s*interconnect)[:\s]+(load[- ]side|line[- ]side|supply[- ]side)/i);
-  if (methMatch) fields.interconnectionMethod = methMatch[1].toLowerCase().replace(/\s/g, "-");
-  return fields;
-}
-
-function quickExtractSld(text: string): Partial<SldFields> {
-  const fields: Partial<SldFields> = {};
-  const dcMatch = text.match(/(?:total\s*dc|pv\s*system\s*output|dc\s*power)[:\s=]+([0-9.]+)\s*(kw|w\b)/i);
-  if (dcMatch) fields.systemSizeDcKw = Number(dcMatch[1]) * (dcMatch[2].toLowerCase() === "w" ? 0.001 : 1);
-  const acMatch = text.match(/(?:ac\s*output|inverter\s*output|ac\s*power)[:\s=]+([0-9.]+)\s*(kw|w\b)/i);
-  if (acMatch) fields.systemSizeAcKw = Number(acMatch[1]) * (acMatch[2].toLowerCase() === "w" ? 0.001 : 1);
-  const countMatch = text.match(/([0-9]+)\s*(?:x\s*)?(?:modules?|panels?|pv\s*modules?)/i);
-  if (countMatch) fields.moduleCount = Number(countMatch[1]);
-  const invMatch = text.match(/(?:inverter|micro[\s-]?inverter)[:\s]+([A-Z][A-Za-z0-9\s\-]+?)(?:\s*,|\s*\n|\s{2,}|$)/im);
-  if (invMatch) fields.inverterModel = invMatch[1].trim().slice(0, 80);
-  const modMatch = text.match(/(?:module|panel)[:\s]+([A-Z][A-Za-z0-9\s\-]+?)(?:\s*,|\s*\n|\s{2,}|$)/im);
-  if (modMatch) fields.moduleModel = modMatch[1].trim().slice(0, 80);
-  if (/battery|storage|ess|bess/i.test(text)) fields.hasBattery = true;
-  if (/rapid\s*shutdown/i.test(text)) fields.rapidShutdown = true;
-  const methMatch = text.match(/(load[- ]side|line[- ]side|supply[- ]side)\s*(?:tap|connection|interconnect)/i);
-  if (methMatch) fields.interconnectionMethod = methMatch[1].toLowerCase().replace(/\s/g, "-");
-  return fields;
-}
-
-function quickExtractUtilityBill(text: string): Partial<UtilityBillFields> {
-  const fields: Partial<UtilityBillFields> = {};
-  // Meter number: typically 8-12 digit numeric string labeled clearly — store this
-  const meterMatch = text.match(/meter\s*(?:number|no\.?|#)[:\s]+([0-9A-Z]{6,14})/i);
-  if (meterMatch) fields.meterNumber = meterMatch[1];
-  // Rate schedule
-  const rateMatch = text.match(/(?:rate\s*schedule|rate\s*code|tariff)[:\s]+([A-Z0-9\-]{2,20})/i);
-  if (rateMatch) fields.rateSchedule = rateMatch[1];
-  // Avg monthly usage
-  const kwhMatch = text.match(/(?:total\s*usage|energy\s*used|kWh\s*used|total\s*kWh)[:\s]+([0-9,]+)\s*kWh/i);
-  if (kwhMatch) fields.avgMonthlyKwh = Number(kwhMatch[1].replace(/,/g, ""));
-  // Utility name from common patterns
-  if (/pacific\s*gas|pg&e|pge/i.test(text)) fields.utilityName = "PG&E";
-  else if (/pacific\s*power|pacificorp/i.test(text)) fields.utilityName = "Pacific Power";
-  else if (/portland\s*general|pge/i.test(text.slice(0, 500))) fields.utilityName = "PGE";
-  else if (/southern\s*california\s*edison|sce/i.test(text)) fields.utilityName = "SCE";
-  else if (/san\s*diego\s*gas|sdg&e/i.test(text)) fields.utilityName = "SDG&E";
-  else if (/puget\s*sound|pse/i.test(text)) fields.utilityName = "PSE";
-  return fields;
-}
-
-function quickExtractIssuedPermit(text: string): Partial<IssuedPermitFields> {
-  const fields: Partial<IssuedPermitFields> = {};
-  const numMatch = text.match(/permit\s*(?:number|no\.?|#)[:\s]+([A-Z0-9\-]{4,20})/i);
-  if (numMatch) fields.permitNumber = numMatch[1];
-  const dateMatch = text.match(/(?:issued|issue\s*date|date\s*issued)[:\s]+(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}|\w+ \d{1,2},\s*\d{4})/i);
-  if (dateMatch) fields.issuedDate = dateMatch[1];
-  const expMatch = text.match(/(?:expir|valid\s*through|valid\s*until)[:\s]+(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}|\w+ \d{1,2},\s*\d{4})/i);
-  if (expMatch) fields.expirationDate = expMatch[1];
-  return fields;
-}
-
+// Pull numbered correction / plan-check items out of a correction document.
 function quickExtractCorrections(text: string): Partial<CorrectionFields> {
   const appMatch = text.match(/(?:application|app|record|permit)\s*(?:number|no\.?|#)[:\s]+([A-Z0-9\-]{4,20})/i);
   const lines = text.split(/\n/);
@@ -239,27 +122,120 @@ function quickExtractCorrections(text: string): Partial<CorrectionFields> {
     correctionItems: items.length > 0 ? items : undefined,
   };
 }
+// ---------------------------------------------------------------------------
+// Customer / jurisdiction anchors from filenames + folders
+// ---------------------------------------------------------------------------
+//
+// In real-world export dumps the useful signal lives in the *names*, not the PDF
+// text: files are named "Abby Johnson - Happy Valley, OR.pdf" and grouped in a
+// per-customer folder. We parse "Name - City, ST" to recover the jurisdiction
+// (city -> AHJ) and state for each customer folder. We do NOT create projects or
+// store any homeowner PII — only the jurisdiction/utility/requirement signals are
+// learned into the knowledge base.
+
+interface FolderAnchor {
+  city: string;
+  state: string;
+}
+
+const NAME_CITY_RE = /-\s*([A-Za-z][A-Za-z .'/]+?),\s*([A-Za-z]{2})\b/;
+
+function parseCityState(name: string): FolderAnchor | null {
+  const base = name.replace(/\.pdf$/i, "").trim();
+  const m = base.match(NAME_CITY_RE);
+  if (!m) return null;
+  const city = m[1].replace(/\s{2,}/g, " ").trim();
+  const state = m[2].toUpperCase();
+  if (city.length < 3) return null;
+  return { city, state };
+}
+
+// Dominant city/state for a folder: the most common one parsed from the
+// filenames inside it, falling back to the folder's own name.
+function folderAnchor(folderPath: string, files: string[]): FolderAnchor | null {
+  const counts = new Map<string, { anchor: FolderAnchor; n: number }>();
+  for (const f of files) {
+    const a = parseCityState(path.basename(f));
+    if (!a) continue;
+    const key = `${a.city.toLowerCase()}|${a.state}`;
+    const cur = counts.get(key);
+    if (cur) cur.n++;
+    else counts.set(key, { anchor: a, n: 1 });
+  }
+  let best: { anchor: FolderAnchor; n: number } | null = null;
+  for (const v of counts.values()) if (!best || v.n > best.n) best = v;
+  if (best) return best.anchor;
+  return parseCityState(path.basename(folderPath));
+}
 
 // ---------------------------------------------------------------------------
-// Main folder scanner
+// Canonical document labels (what a jurisdiction's submission packet contains)
+// ---------------------------------------------------------------------------
+//
+// The set of filenames in a customer folder is itself a strong signal of what
+// documents an AHJ requires. We normalise each filename to a canonical document
+// label and learn those as the AHJ's required-document list.
+
+const DOC_LABEL_RULES: Array<{ pattern: RegExp; label: string }> = [
+  { pattern: /single[_\s-]?line|one[_\s-]?line|\bsld\b|riser/i, label: "Single-Line Diagram (SLD)" },
+  { pattern: /site[_\s-]?plan/i, label: "Site Plan" },
+  { pattern: /floodplain/i, label: "Floodplain Development Permit Application" },
+  { pattern: /structural.*(permit|application|analysis)|structural[_\s-]?permit/i, label: "Structural Permit Application" },
+  { pattern: /electrical.*(permit|renewable)|renewable[_\s-]?electrical|elec.*permit/i, label: "Electrical / Renewable Energy Permit Application" },
+  { pattern: /building[_\s-]?permit[_\s-]?application|building[_\s-]?permit/i, label: "Building Permit Application" },
+  { pattern: /prescriptive.*(solar|checklist|installation)|solar[_\s-]?installation[_\s-]?checklist|photovoltaic[_\s-]?checklist/i, label: "Prescriptive Solar Installation Checklist" },
+  { pattern: /notice[_\s-]?authorizing[_\s-]?representative|authorizing[_\s-]?representative|letter[_\s-]?of[_\s-]?authorization/i, label: "Notice / Letter Authorizing Representative" },
+  { pattern: /supplemental[_\s-]?required[_\s-]?signatures|required[_\s-]?signatures/i, label: "Supplemental Required Signatures Form" },
+  { pattern: /construction[_\s-]?responsibilit|owners?[_\s-]?construction/i, label: "Construction Responsibilities Form" },
+  { pattern: /moisture[_\s-]?content/i, label: "Moisture Content Acknowledgement Form" },
+  { pattern: /land[_\s-]?use[_\s-]?compliance/i, label: "Land Use Compliance Checklist" },
+  { pattern: /interconnection[_\s-]?agreement|net[_\s-]?metering|\bnem\b/i, label: "Interconnection / Net-Metering Agreement" },
+  { pattern: /meter[_\s-]?mounted[_\s-]?device|work[_\s-]?order[_\s-]?authorization|mmd/i, label: "Meter-Mounted Device Work Order Authorization" },
+  { pattern: /inspection[_\s-]?(card|worksheet|result)/i, label: "Inspection Card / Worksheet" },
+  { pattern: /structural[_\s-]?(letter|analysis)|engineer/i, label: "Structural Engineering Letter" },
+];
+
+function canonicalDocLabel(filename: string): string | null {
+  const base = path.basename(filename, path.extname(filename));
+  for (const rule of DOC_LABEL_RULES) if (rule.pattern.test(base)) return rule.label;
+  return null;
+}
+
+function utilityFromText(text: string): string {
+  if (/pacific\s*power|pacificorp/i.test(text)) return "Pacific Power";
+  if (/portland\s*general|\bpge\b/i.test(text)) return "PGE";
+  if (/pacific\s*gas|pg&e/i.test(text)) return "PG&E";
+  if (/puget\s*sound|\bpse\b/i.test(text)) return "PSE";
+  if (/southern\s*california\s*edison|\bsce\b/i.test(text)) return "SCE";
+  if (/san\s*diego\s*gas|sdg&e/i.test(text)) return "SDG&E";
+  return "";
+}
+
+// ---------------------------------------------------------------------------
+// Main folder scanner — LEARN, don't import
 // ---------------------------------------------------------------------------
 
 export interface ScanResult {
   filePath: string;
   docType: DocType;
-  status: "imported" | "skipped" | "error";
+  status: "learned" | "low_signal" | "error";
   message: string;
-  projectId?: string;
-  fields?: Record<string, unknown>;
+  profileKey?: string;
+  docLabel?: string;
 }
 
 export interface ScanSummary {
   scanned: number;
-  imported: number;
-  skipped: number;
+  learned: number;
+  lowSignal: number;
   errors: number;
   byType: Record<DocType, number>;
+  byJurisdiction: Record<string, number>;
+  profilesTouched: string[];
+  requiredDocsByAhj: Record<string, string[]>;
+  correctionsLearned: number;
   results: ScanResult[];
+  reportPath?: string;
 }
 
 function walkPdfs(dir: string): string[] {
@@ -272,18 +248,15 @@ function walkPdfs(dir: string): string[] {
   return files;
 }
 
-// Find an existing project by address/name similarity (simple substring match)
-function findProjectByAddress(db: AppDb, address: string): Row | null {
-  if (!address || address.length < 6) return null;
-  const normalized = address.toLowerCase().replace(/[^a-z0-9\s]/g, "").trim();
-  const words = normalized.split(/\s+/).filter((w) => w.length > 3);
-  if (!words.length) return null;
-  // Try to find by any significant word in the address
-  for (const word of words.slice(0, 3)) {
-    const row = db.get<Row>("SELECT * FROM projects WHERE LOWER(project_address) LIKE ?", [`%${word}%`]);
-    if (row) return row;
+function groupByFolder(files: string[]): Map<string, string[]> {
+  const groups = new Map<string, string[]>();
+  for (const f of files) {
+    const dir = path.dirname(f);
+    const arr = groups.get(dir);
+    if (arr) arr.push(f);
+    else groups.set(dir, [f]);
   }
-  return null;
+  return groups;
 }
 
 export async function scanFolder(
@@ -298,285 +271,192 @@ export async function scanFolder(
   } = {},
 ): Promise<ScanSummary> {
   const allFiles = walkPdfs(folderPath);
+  const groups = groupByFolder(allFiles);
+
   const summary: ScanSummary = {
-    scanned: 0, imported: 0, skipped: 0, errors: 0,
+    scanned: 0,
+    learned: 0,
+    lowSignal: 0,
+    errors: 0,
     byType: { permit_application: 0, sld: 0, issued_permit: 0, utility_bill: 0, correction: 0, unknown: 0 },
+    byJurisdiction: {},
+    profilesTouched: [],
+    requiredDocsByAhj: {},
+    correctionsLearned: 0,
     results: [],
   };
+  const profiles = new Set<string>();
+  let processed = 0;
 
-  for (let i = 0; i < allFiles.length; i++) {
-    const filePath = allFiles[i];
-    const filename = path.basename(filePath);
-    options.onProgress?.(i, allFiles.length, filename);
-    summary.scanned++;
+  for (const [dir, files] of groups) {
+    const anchor = folderAnchor(dir, files);
+    const state = anchor?.state || options.defaultState || "";
+    const ahj = options.defaultAhj || anchor?.city || "";
 
-    try {
-      const text = await extractPdfText(filePath, 20);
-      const docType = classifyDoc(filePath, text);
-      summary.byType[docType]++;
+    // Learn the jurisdiction's required-document set from the folder's filenames.
+    const folderDocLabels = Array.from(
+      new Set(files.map((f) => canonicalDocLabel(f)).filter((l): l is string => Boolean(l))),
+    );
 
-      let result: ScanResult;
+    for (const filePath of files) {
+      const filename = path.basename(filePath);
+      options.onProgress?.(processed, allFiles.length, filename);
+      processed++;
+      summary.scanned++;
 
-      if (docType === "permit_application") {
-        result = await importPermitApplication(db, filePath, text, options);
-      } else if (docType === "sld") {
-        result = await importSld(db, filePath, text, options);
-      } else if (docType === "utility_bill") {
-        result = await importUtilityBill(db, filePath, text, options);
-      } else if (docType === "issued_permit") {
-        result = await importIssuedPermit(db, filePath, text, options);
-      } else if (docType === "correction") {
-        result = await importCorrectionDoc(db, filePath, text, options);
-      } else {
-        result = { filePath, docType, status: "skipped", message: "Could not classify document type." };
-        summary.skipped++;
+      try {
+        const text = await extractPdfText(filePath, 12);
+        const docType = classifyDoc(filePath, text);
+        summary.byType[docType]++;
+
+        const utility = utilityFromText(text) || options.defaultUtility || "";
+        const docLabel = canonicalDocLabel(filePath) || undefined;
+
+        // Build the requirement signal for this doc: the canonical label of this
+        // file plus the wider folder packet.
+        const requiredDocuments = Array.from(new Set([...(docLabel ? [docLabel] : []), ...folderDocLabels]));
+
+        // Pull a correction sample if this is a correction/plan-check doc.
+        let correctionText: string | undefined;
+        if (docType === "correction") {
+          const items = quickExtractCorrections(text).correctionItems;
+          if (items && items.length) correctionText = items.join("\n");
+        }
+
+        // A doc with no jurisdiction anchor AND no recognisable signal teaches us
+        // nothing — flag it for troubleshooting rather than silently dropping it.
+        const hasSignal = Boolean(state || ahj || utility || requiredDocuments.length || correctionText);
+        if (!hasSignal) {
+          summary.lowSignal++;
+          summary.results.push({
+            filePath,
+            docType,
+            status: "low_signal",
+            message: "No jurisdiction (city/state), utility, document type, or correction signal could be derived — nothing to learn.",
+            docLabel,
+          });
+          continue;
+        }
+
+        const learned = learnFromHistoricalDocument(db, {
+          state,
+          ahj,
+          utility,
+          requiredDocuments,
+          sourceLabel: `batch:${filename}`,
+          correctionText,
+          notes: `Historical ${docType.replace(/_/g, " ")} (${ahj || "unknown AHJ"}, ${state || "??"}).`,
+        });
+
+        profiles.add(learned.profileKey);
+        if (learned.learnedCorrection) summary.correctionsLearned++;
+
+        const jurKey = `${ahj || "Unknown AHJ"}, ${state || "??"}`;
+        summary.byJurisdiction[jurKey] = (summary.byJurisdiction[jurKey] || 0) + 1;
+        if (folderDocLabels.length) summary.requiredDocsByAhj[jurKey] = folderDocLabels;
+
+        summary.learned++;
+        summary.results.push({
+          filePath,
+          docType,
+          status: "learned",
+          profileKey: learned.profileKey,
+          docLabel,
+          message: `Learned into ${jurKey}${docLabel ? ` — ${docLabel}` : ""}${learned.learnedCorrection ? " (+correction pattern)" : ""}.`,
+        });
+      } catch (err) {
+        summary.errors++;
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[batch-scan] ERROR ${filename}: ${msg}`);
+        summary.results.push({ filePath, docType: "unknown", status: "error", message: msg });
       }
-
-      if (result.status === "imported") summary.imported++;
-      else if (result.status === "error") summary.errors++;
-      else summary.skipped++;
-      summary.results.push(result);
-
-    } catch (err) {
-      summary.errors++;
-      summary.results.push({ filePath, docType: "unknown", status: "error", message: String(err) });
     }
   }
 
+  summary.profilesTouched = Array.from(profiles);
   options.onProgress?.(allFiles.length, allFiles.length, "done");
+
+  summary.reportPath = writeScanReport(folderPath, summary);
+  printScanReport(summary);
   return summary;
 }
 
 // ---------------------------------------------------------------------------
-// Per-type importers
+// Reporting — terminal + on-disk, for troubleshooting as the dataset grows
 // ---------------------------------------------------------------------------
 
-async function importPermitApplication(
-  db: AppDb,
-  filePath: string,
-  text: string,
-  options: { defaultState?: string; defaultAhj?: string; defaultUtility?: string; useLlm?: boolean },
-): Promise<ScanResult> {
-  const quick = quickExtractPermitApp(text);
+const REPORT_DIR = process.env.BATCH_REPORT_DIR || path.join(process.cwd(), "backend", "data", "batch-reports");
 
-  let fields: Partial<PermitAppFields> = { ...quick };
-  if (options.useLlm) {
-    const llmFields = await llmExtract<PermitAppFields>(text,
-      "Extract from this solar permit application: homeownerName, projectAddress (street), city, state, zip, ahj (authority having jurisdiction / city/county building dept), utility (electric utility company), systemSizeDcKw (number), systemSizeAcKw (number), interconnectionMethod ('load-side' or 'line-side'), hasBattery (true/false). Return JSON only.");
-    fields = { ...llmFields, ...quick }; // quick regex wins on numeric fields
-  }
-
-  if (!fields.projectAddress && !fields.homeownerName) {
-    return { filePath, docType: "permit_application", status: "skipped", message: "Could not extract address or name — may need LLM extraction (enable useLlm)." };
-  }
-
-  // Check if project already exists
-  const existing = findProjectByAddress(db, fields.projectAddress || "");
-  if (existing) {
-    // Update specs if we got better data
-    const updates: string[] = [];
-    const params: (string | number | null)[] = [];
-    if (fields.systemSizeDcKw && !existing.system_size_dc_kw) { updates.push("system_size_dc_kw = ?"); params.push(fields.systemSizeDcKw); }
-    if (fields.systemSizeAcKw && !existing.system_size_ac_kw) { updates.push("system_size_ac_kw = ?"); params.push(fields.systemSizeAcKw); }
-    if (fields.interconnectionMethod && !existing.interconnection_method) { updates.push("interconnection_method = ?"); params.push(fields.interconnectionMethod); }
-    if (updates.length) {
-      params.push(new Date().toISOString(), String(existing.id));
-      db.run(`UPDATE projects SET ${updates.join(", ")}, updated_at = ? WHERE id = ?`, params);
-    }
-    return { filePath, docType: "permit_application", status: "imported", projectId: String(existing.id), message: `Merged specs into existing project ${existing.id}.`, fields: fields as Record<string, unknown> };
-  }
-
-  // Create new project record
-  const projectId = crypto.randomUUID();
-  const now = new Date().toISOString();
-  db.run(
-    `INSERT INTO projects
-      (id, homeowner_name, project_address, city, state, zip, ahj, utility,
-       system_size_dc_kw, system_size_ac_kw, interconnection_method,
-       status, current_stage, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'intake', 'Imported from batch scan', ?, ?)`,
-    [
-      projectId,
-      fields.homeownerName || "Unknown",
-      fields.projectAddress || "",
-      fields.city || "",
-      fields.state || options.defaultState || "",
-      fields.zip || "",
-      fields.ahj || options.defaultAhj || "",
-      fields.utility || options.defaultUtility || "",
-      fields.systemSizeDcKw ?? null,
-      fields.systemSizeAcKw ?? null,
-      fields.interconnectionMethod || "",
-      now, now,
-    ],
-  );
-  // Record the source PDF path in project notes
-  db.run(
-    `INSERT INTO project_notes (id, project_id, note_type, body, created_by, created_at)
-     VALUES (?, ?, 'system_note', ?, 'batch_import', ?)`,
-    [crypto.randomUUID(), projectId, `Imported from: ${filePath}`, now],
-  );
-
-  return { filePath, docType: "permit_application", status: "imported", projectId, message: `Created new project ${projectId}.`, fields: fields as Record<string, unknown> };
-}
-
-async function importSld(
-  db: AppDb,
-  filePath: string,
-  text: string,
-  options: { useLlm?: boolean },
-): Promise<ScanResult> {
-  const quick = quickExtractSld(text);
-  let fields: Partial<SldFields> = { ...quick };
-  if (options.useLlm) {
-    const llmFields = await llmExtract<SldFields>(text,
-      "Extract from this solar single-line diagram: systemSizeDcKw (number kW), systemSizeAcKw (number kW), moduleModel (string), moduleCount (integer), inverterModel (string), hasBattery (bool), interconnectionMethod ('load-side' or 'line-side'), rapidShutdown (bool). Return JSON only.");
-    fields = { ...llmFields, ...quick };
-  }
-
-  if (!fields.systemSizeDcKw && !fields.inverterModel && !fields.moduleModel) {
-    return { filePath, docType: "sld", status: "skipped", message: "No equipment specs extracted from SLD — may be a scanned image (OCR not available server-side)." };
-  }
-
-  // Try to match to a project by address in SLD text or filename
-  const addrMatch = text.match(/(?:project|property|service|installation)\s*address[:\s]+([^\n]{10,80})/i);
-  const existing = addrMatch ? findProjectByAddress(db, addrMatch[1].trim()) : null;
-  const now = new Date().toISOString();
-
-  if (existing) {
-    // Update matched project specs from SLD
-    const updates: string[] = [];
-    const params: (string | number | null)[] = [];
-    if (fields.systemSizeDcKw && !existing.system_size_dc_kw) { updates.push("system_size_dc_kw = ?"); params.push(fields.systemSizeDcKw); }
-    if (fields.systemSizeAcKw && !existing.system_size_ac_kw) { updates.push("system_size_ac_kw = ?"); params.push(fields.systemSizeAcKw); }
-    if (fields.interconnectionMethod && !existing.interconnection_method) { updates.push("interconnection_method = ?"); params.push(fields.interconnectionMethod); }
-    if (updates.length) {
-      params.push(now, String(existing.id));
-      db.run(`UPDATE projects SET ${updates.join(", ")}, updated_at = ? WHERE id = ?`, params);
-    }
-    db.run(
-      `INSERT INTO project_notes (id, project_id, note_type, body, created_by, created_at) VALUES (?, ?, 'system_note', ?, 'batch_import', ?)`,
-      [crypto.randomUUID(), String(existing.id), `SLD imported: ${JSON.stringify(fields)}`, now],
+function writeScanReport(folderPath: string, summary: ScanSummary): string | undefined {
+  try {
+    fs.mkdirSync(REPORT_DIR, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const jsonPath = path.join(REPORT_DIR, `scan-${stamp}.json`);
+    fs.writeFileSync(
+      jsonPath,
+      JSON.stringify({ folderPath, generatedAt: new Date().toISOString(), summary }, null, 2),
     );
-    return { filePath, docType: "sld", status: "imported", projectId: String(existing.id), message: `SLD specs merged into project ${existing.id}.`, fields: fields as Record<string, unknown> };
-  }
 
-  // No matching project — report extracted specs so user can match manually
-  return { filePath, docType: "sld", status: "imported", message: "SLD specs extracted but no matching project found by address. Create the project first, then re-scan to link.", fields: fields as Record<string, unknown> };
-}
-
-async function importUtilityBill(
-  db: AppDb,
-  filePath: string,
-  text: string,
-  options: { defaultUtility?: string },
-): Promise<ScanResult> {
-  const fields = quickExtractUtilityBill(text);
-  if (!fields.meterNumber && !fields.utilityName) {
-    return { filePath, docType: "utility_bill", status: "skipped", message: "Could not extract meter number or utility name." };
-  }
-
-  // Try to match to an existing project by service address
-  const addrMatch = text.match(/(?:service\s*address|property\s*address|installation\s*address)[:\s]+([^\n]{10,80})/i);
-  const serviceAddress = addrMatch?.[1]?.trim();
-  const existing = serviceAddress ? findProjectByAddress(db, serviceAddress) : null;
-
-  if (existing && fields.meterNumber) {
-    // Update meter number on the project (needed for NEM application)
-    db.run("UPDATE projects SET meter_number = ?, updated_at = ? WHERE id = ? AND (meter_number IS NULL OR meter_number = '')",
-      [fields.meterNumber, new Date().toISOString(), String(existing.id)]);
-    if (fields.utilityName && !existing.utility) {
-      db.run("UPDATE projects SET utility = ? WHERE id = ?", [fields.utilityName, String(existing.id)]);
+    // Human-readable troubleshooting report.
+    const lines: string[] = [];
+    lines.push(`Batch learning report — ${new Date().toISOString()}`);
+    lines.push(`Source folder: ${folderPath}`);
+    lines.push("");
+    lines.push(`Scanned ${summary.scanned} PDFs — learned ${summary.learned}, low-signal ${summary.lowSignal}, errors ${summary.errors}.`);
+    lines.push(`Knowledge profiles touched: ${summary.profilesTouched.length}. Correction patterns learned: ${summary.correctionsLearned}.`);
+    lines.push("");
+    lines.push("By document type:");
+    for (const [t, n] of Object.entries(summary.byType)) if (n) lines.push(`  ${t.padEnd(20)} ${n}`);
+    lines.push("");
+    lines.push("By jurisdiction (docs learned):");
+    for (const [j, n] of Object.entries(summary.byJurisdiction).sort((a, b) => b[1] - a[1])) lines.push(`  ${String(n).padStart(4)}  ${j}`);
+    lines.push("");
+    lines.push("Required-document packets learned per AHJ:");
+    for (const [j, docs] of Object.entries(summary.requiredDocsByAhj)) {
+      lines.push(`  ${j}:`);
+      for (const d of docs) lines.push(`     - ${d}`);
     }
-    return {
-      filePath, docType: "utility_bill", status: "imported", projectId: String(existing.id),
-      message: `Meter number ${fields.meterNumber} linked to project ${existing.id}. Account number intentionally not stored.`,
-      fields: { meterNumber: fields.meterNumber, utilityName: fields.utilityName, rateSchedule: fields.rateSchedule, avgMonthlyKwh: fields.avgMonthlyKwh },
-    };
+    lines.push("");
+    const lowSignal = summary.results.filter((r) => r.status === "low_signal");
+    if (lowSignal.length) {
+      lines.push(`Low-signal files (${lowSignal.length}) — nothing learned, review naming/source:`);
+      for (const r of lowSignal) lines.push(`  - ${path.basename(r.filePath)}`);
+      lines.push("");
+    }
+    const errors = summary.results.filter((r) => r.status === "error");
+    if (errors.length) {
+      lines.push(`Errors (${errors.length}):`);
+      for (const r of errors) lines.push(`  - ${path.basename(r.filePath)}: ${r.message}`);
+      lines.push("");
+    }
+    const txtPath = path.join(REPORT_DIR, `scan-${stamp}.txt`);
+    fs.writeFileSync(txtPath, lines.join("\n"));
+    return txtPath;
+  } catch (err) {
+    console.error(`[batch-scan] could not write report: ${err instanceof Error ? err.message : String(err)}`);
+    return undefined;
   }
-
-  return {
-    filePath, docType: "utility_bill", status: "imported",
-    message: `Extracted meter number${fields.meterNumber ? ` (${fields.meterNumber})` : " not found"}. No matching project found by address — add project first then re-scan to link.`,
-    fields: { meterNumber: fields.meterNumber, utilityName: fields.utilityName, rateSchedule: fields.rateSchedule },
-  };
 }
 
-async function importIssuedPermit(
-  db: AppDb,
-  filePath: string,
-  text: string,
-  _options: unknown,
-): Promise<ScanResult> {
-  const fields = quickExtractIssuedPermit(text);
-  // Try to find project by permit number or address
-  let existing: Row | null = null;
-  if (fields.permitNumber) {
-    // Check if permit number is already recorded on a check
-    const checkRow = db.get<Row>("SELECT project_id FROM permit_status_checks WHERE permit_number = ? LIMIT 1", [fields.permitNumber]);
-    if (checkRow) existing = db.get<Row>("SELECT * FROM projects WHERE id = ?", [String(checkRow.project_id)]);
+function printScanReport(summary: ScanSummary): void {
+  console.log("");
+  console.log("──────────────────────────────────────────────────────────");
+  console.log("[batch-scan] LEARNING SUMMARY");
+  console.log(`  scanned:       ${summary.scanned}`);
+  console.log(`  learned:       ${summary.learned}`);
+  console.log(`  low-signal:    ${summary.lowSignal}`);
+  console.log(`  errors:        ${summary.errors}`);
+  console.log(`  KB profiles:   ${summary.profilesTouched.length}`);
+  console.log(`  corrections:   ${summary.correctionsLearned}`);
+  const topJur = Object.entries(summary.byJurisdiction).sort((a, b) => b[1] - a[1]).slice(0, 8);
+  if (topJur.length) {
+    console.log("  top jurisdictions:");
+    for (const [j, n] of topJur) console.log(`     ${String(n).padStart(4)}  ${j}`);
   }
-  if (!existing) {
-    const addrMatch = text.match(/(?:project|property|installation|service)\s*address[:\s]+([^\n]{10,80})/i);
-    if (addrMatch) existing = findProjectByAddress(db, addrMatch[1].trim());
+  if (summary.errors) {
+    console.log(`  ⚠ ${summary.errors} file(s) errored — see report for details.`);
   }
-
-  if (existing && fields.issuedDate) {
-    // Record an issued permit check against the project
-    const now = new Date().toISOString();
-    const issuedTs = fields.issuedDate ? new Date(fields.issuedDate).toISOString() : now;
-    db.run(
-      `INSERT INTO permit_status_checks
-        (id, project_id, source, raw_status_text, status_label, outcome, confidence,
-         permit_number, message, created_at)
-       VALUES (?, ?, 'batch_import', ?, 'Permit issued', 'issued', 0.9, ?, ?, ?)`,
-      [
-        crypto.randomUUID(), String(existing.id),
-        `Permit issued — imported from ${path.basename(filePath)}`,
-        fields.permitNumber || "",
-        `Permit ${fields.permitNumber || "(number unknown)"} issued${fields.issuedDate ? ` on ${fields.issuedDate}` : ""}.`,
-        issuedTs,
-      ],
-    );
-    db.run("UPDATE projects SET status = 'issued', updated_at = ? WHERE id = ? AND status NOT IN ('handoff_ready','nem_approved')",
-      [now, String(existing.id)]);
-    return { filePath, docType: "issued_permit", status: "imported", projectId: String(existing.id), message: `Permit ${fields.permitNumber || ""} recorded as issued on project ${existing.id}.`, fields: fields as Record<string, unknown> };
-  }
-
-  return { filePath, docType: "issued_permit", status: "skipped", message: `Permit ${fields.permitNumber || "(unknown)"} extracted but no matching project found. Create the project first.`, fields: fields as Record<string, unknown> };
-}
-
-async function importCorrectionDoc(
-  db: AppDb,
-  filePath: string,
-  text: string,
-  options: { defaultAhj?: string },
-): Promise<ScanResult> {
-  const fields = quickExtractCorrections(text);
-  // Try to find project by application number
-  let existing: Row | null = null;
-  if (fields.applicationNumber) {
-    const checkRow = db.get<Row>("SELECT project_id FROM permit_status_checks WHERE application_number = ? LIMIT 1", [fields.applicationNumber]);
-    if (checkRow) existing = db.get<Row>("SELECT * FROM projects WHERE id = ?", [String(checkRow.project_id)]);
-  }
-
-  if (!existing) {
-    return { filePath, docType: "correction", status: "skipped", message: "Could not match correction doc to a project. If this is a historical correction, create the project first.", fields: fields as Record<string, unknown> };
-  }
-
-  const now = new Date().toISOString();
-  for (const item of fields.correctionItems || []) {
-    db.run(
-      `INSERT INTO corrections
-        (id, project_id, correction_text, status, source, created_at)
-       VALUES (?, ?, ?, 'open', 'batch_import', ?)`,
-      [crypto.randomUUID(), String(existing.id), item.slice(0, 2000), now],
-    );
-  }
-
-  return {
-    filePath, docType: "correction", status: "imported", projectId: String(existing.id),
-    message: `${fields.correctionItems?.length || 0} correction item(s) imported into project ${existing.id}.`,
-    fields: { correctionCount: fields.correctionItems?.length, applicationNumber: fields.applicationNumber },
-  };
+  if (summary.reportPath) console.log(`  full report:   ${summary.reportPath}`);
+  console.log("──────────────────────────────────────────────────────────");
+  console.log("");
 }

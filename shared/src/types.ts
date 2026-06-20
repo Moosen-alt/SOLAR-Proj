@@ -354,7 +354,7 @@ export interface ReviewerReport {
 export interface KnowledgeSource {
   label: string;
   url: string;
-  sourceType: "official" | "sanitized_reference" | "learned_project" | "learned_correction" | "learned_permit_status";
+  sourceType: "official" | "sanitized_reference" | "learned_project" | "learned_correction" | "learned_permit_status" | "learned_batch_import";
   observedAt: string;
 }
 
