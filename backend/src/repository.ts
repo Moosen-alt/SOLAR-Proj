@@ -421,6 +421,52 @@ export function createProject(db: AppDb, payload: ParserPayload): ProjectDetail 
   return getProjectDetail(db, project.id);
 }
 
+// Update an existing project from a (re-)parsed payload. Merges the new fields
+// over the existing parser snapshot — so a re-parse of a corrected plan set
+// updates the record (including the canonical electrical/structural/evidence
+// keys) without losing prior data — then re-runs QC.
+export function updateProject(db: AppDb, projectId: string, payload: ParserPayload): ProjectDetail {
+  const existing = getProjectDetail(db, projectId).project;
+  const mergedSnapshot: ParserPayload = { ...(existing.parserSnapshot || {}), ...payload };
+  const project = normalizeProject(projectId, mergedSnapshot, existing.status, existing.createdAt);
+  // Preserve the client link unless the payload explicitly changes it.
+  const clientId = (payload.clientId ?? payload.client_id ?? existing.clientId) as string | null;
+  db.transaction(() => {
+    db.run(
+      `UPDATE projects SET
+        client_id = ?, homeowner_name = ?, project_address = ?, city = ?, state = ?, zip = ?, ahj = ?, utility = ?,
+        account_number = ?, meter_number = ?, system_size_dc_kw = ?, system_size_ac_kw = ?, total_export_kw = ?,
+        interconnection_method = ?, parser_confidence_summary = ?, parser_json = ?, updated_at = ?
+       WHERE id = ?`,
+      [
+        clientId,
+        project.homeownerName,
+        project.projectAddress,
+        project.city,
+        project.state,
+        project.zip,
+        project.ahj,
+        project.utility,
+        project.accountNumber,
+        project.meterNumber,
+        project.systemSizeDcKw,
+        project.systemSizeAcKw,
+        project.totalExportKw,
+        project.interconnectionMethod,
+        project.parserConfidenceSummary,
+        asJson(mergedSnapshot),
+        nowIso(),
+        projectId,
+      ],
+    );
+    insertExtractedFields(db, projectId, mergedSnapshot, true);
+    addAuditLog(db, projectId, "system", "front-end parser", "project.updated_from_parser_snapshot", { fields: Object.keys(payload).length });
+  });
+  runQcForProject(db, projectId);
+  learnFromProject(db, getProjectDetail(db, projectId).project, "project.updated");
+  return getProjectDetail(db, projectId);
+}
+
 export function assignProjectClient(db: AppDb, projectId: string, clientId: string | null): ProjectDetail {
   const project = db.get<Row>("SELECT id FROM projects WHERE id = ?", [projectId]);
   if (!project) throw new HttpError(404, "Project not found.");
@@ -2799,7 +2845,11 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
         ...pendingCritical.slice(0, 4).map((item) => `Pending human review: ${item.fieldName}`),
         ...qcWarnings.slice(0, 3).map((item) => `Warning: ${item.ruleName}`),
       ],
-      nextAction: qcFails.length || pendingCritical.length ? "Resolve QC failures and human review items, then rerun QC." : qcWarnings.length ? "Review warning values against source evidence before staging." : "QC is clear.",
+      nextAction: qcFails.length
+        ? `Resolve ${qcFails.length} QC failure(s), then rerun QC.`
+        : pendingCritical.length
+          ? `Approve or edit ${pendingCritical.length} pending item(s) in the Human Review queue (no QC failures remain).`
+          : qcWarnings.length ? "Review warning values against source evidence before staging." : "QC is clear.",
       source: "qc.human_review",
     }),
     submitGateCheck({
@@ -3825,6 +3875,30 @@ export function addManualCorrection(db: AppDb, projectId: string, correctionText
 
   touchProjectMetrics(db, projectId);
   return getProjectDetail(db, projectId);
+}
+
+// Generate an ADVISORY draft reply for the newest correction using the LLM, so
+// the coordinator gets a ready-to-edit response instead of a blank box. The
+// draft is suggestion-only — a human must review and send it. Falls back to the
+// deterministic draft (or empty) when no API key is configured.
+export async function draftLatestCorrectionResponse(db: AppDb, projectId: string, correctionText: string): Promise<ProjectDetail> {
+  if (!process.env.ANTHROPIC_API_KEY) return getProjectDetail(db, projectId);
+  const detail = getProjectDetail(db, projectId);
+  const correction = (detail.corrections || [])[0]; // newest (ORDER BY created_at DESC)
+  if (!correction) return detail;
+  try {
+    const { createLLMProvider } = await import("./llm");
+    const llm = createLLMProvider();
+    const result = await llm.draftResponse({ correctionText, project: detail.project });
+    if (result.draft && result.draft.trim()) {
+      db.run("UPDATE corrections SET draft_response = ? WHERE id = ?", [result.draft.trim(), correction.id]);
+      addAuditLog(db, projectId, "system", "correction drafter", "correction.llm_draft", { correctionId: correction.id, confidence: result.confidence });
+      return getProjectDetail(db, projectId);
+    }
+  } catch (err) {
+    console.warn("[corrections] LLM draft failed:", (err as Error).message);
+  }
+  return detail;
 }
 
 export function listOverdueCorrections(db: AppDb): CorrectionRecord[] {

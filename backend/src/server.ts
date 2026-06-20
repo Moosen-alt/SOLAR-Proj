@@ -35,6 +35,7 @@ import {
 import { buildAuthUrl, exchangeCodeForTokens, gmailStatus, pollGmail } from "./gmail";
 import {
   addManualCorrection,
+  draftLatestCorrectionResponse,
   listOverdueCorrections,
   setCorrectionsSlaDays,
   addProjectNote,
@@ -42,6 +43,7 @@ import {
   captureConfirmation,
   createPermitCheckTarget,
   createProject,
+  updateProject,
   deleteProject,
   configureEmailTrackingSource,
   getEmailTrackerStatus,
@@ -145,6 +147,14 @@ app.post("/api/projects", (req, res) => {
     throw new HttpError(400, "Project payload must be an object.");
   }
   res.status(201).json(createProject(db, payload));
+});
+
+app.put("/api/projects/:id", (req, res) => {
+  const payload = req.body?.parserPayload ?? req.body?.payload ?? req.body;
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new HttpError(400, "Project payload must be an object.");
+  }
+  res.json(updateProject(db, String(req.params.id), payload));
 });
 
 app.get("/api/projects", (req, res) => {
@@ -434,11 +444,13 @@ app.patch("/api/corrections/:id/sla", (req, res) => {
   res.json({ ok: true });
 });
 
-app.post("/api/projects/:id/corrections", (req, res) => {
+app.post("/api/projects/:id/corrections", asyncHandler(async (req, res) => {
   const correctionText = String(req.body?.correctionText || "").trim();
   if (!correctionText) throw new HttpError(400, "correctionText is required.");
-  res.status(201).json(addManualCorrection(db, req.params.id, correctionText, req.body?.source || "manual"));
-});
+  addManualCorrection(db, String(req.params.id), correctionText, req.body?.source || "manual");
+  // Generate the advisory AI draft reply (human reviews before sending).
+  res.status(201).json(await draftLatestCorrectionResponse(db, String(req.params.id), correctionText));
+}));
 
 app.post("/api/projects/:id/permit-targets", (req, res) => {
   res.status(201).json(createPermitCheckTarget(db, req.params.id, req.body || {}));

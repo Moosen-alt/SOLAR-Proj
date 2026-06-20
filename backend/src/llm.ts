@@ -143,8 +143,11 @@ SYSTEM / EQUIPMENT
 - dcKw (number), acKw (number): system size kW DC / AC
 - interco: interconnection method (e.g. "Net Metering", "Load-side breaker", "Supply-side tap")
 - moduleMake, moduleModel, moduleWattage (number), moduleQty (number)
-- invMake, invModel, invQty (number)
-- invOutputW: inverter/microinverter rated output CURRENT in amps (number; from the inverter datasheet/SLD, e.g. 24)
+- invMake, invModel, invQty (number) — for string inverters
+- invOutputW: string-inverter rated output CURRENT in amps (number; from datasheet/SLD)
+- pvMicroMake, pvMicroModel, pvMicroQty (number) — for MICROINVERTERS (e.g. Enphase, AP Systems). Use these instead of inv* when the system uses microinverters.
+- pvMicroOutputW: microinverter rated output CURRENT in amps per unit (number; from the micro datasheet)
+- inverterSettings: note grid-support listing / settings, e.g. "UL 1741 SB" or "UL 1741 SA, PCS profile" (needed for utility interconnection)
 - batteryMake, batteryModel, batteryQty (number)
 - roofMaterial (e.g. "Composition Shingle"), mounting (e.g. "Roof Mount")
 ELECTRICAL (read from the SLD / one-line and load calc — critical for plan review)
@@ -159,6 +162,14 @@ STRUCTURAL (read from structural notes / roof framing plan — drive prescriptiv
 - roofRafterSpan: rafter span (number, feet) if given
 - wind: wind exposure category letter (e.g. "B" or "C")
 - permitPath: "prescriptive" or "engineered" if determinable
+UTILITY INTERCONNECTION (PGE PowerClerk / Pacific Power customer generation NEM)
+- utilitySchedule: the utility rate schedule from the bill (e.g. PGE "Schedule 7", Pacific Power "Schedule 4")
+- serviceVoltage: service voltage (e.g. "240V")
+- servicePhase: "single-phase" or "three-phase"
+- numberOfCircuits: number of PV backfeed circuits/strings (number)
+PERMIT PORTAL (Accela / ProjectDox AHJ building+electrical permit)
+- parcelNumber: assessor parcel number (APN) / map-tax-lot, if shown on the cover sheet or site plan
+- jobValue: project valuation / installed cost in dollars (number), if shown
 
 NARRATIVE EVIDENCE BLOBS — also include these as fields (value = a short factual summary; cite sheet numbers). These let plan review confirm each required element is shown. Write what the plan set ACTUALLY shows; if an element is absent, say so plainly ("No rapid shutdown note found"):
 - electricalCalcText: summarize the SLD/one-line — SLD sheet #, modules→inverter→POI, disconnects/OCPD, busbar/main/PV breaker math (705.12), rapid shutdown (690.12), grounding/bonding, meter/service relationship
@@ -185,7 +196,9 @@ Rules:
       return { provider: "claude", fields: {}, lowConfidenceFields: [], notes: "No document text supplied." };
     }
 
-    const raw = await this.askLong(system, parts.join("\n\n"), 6000);
+    // Generous budget: every field now carries evidence + several narrative
+    // blobs, so the JSON is large. Too small a budget truncates it (unparseable).
+    const raw = await this.askLong(system, parts.join("\n\n"), 16000);
     return this.normalizeExtraction(raw, "Could not parse LLM response.");
   }
 
@@ -245,6 +258,7 @@ Field ids (omit if not present):
 - account: the utility account number, digits/dashes EXACTLY as printed
 - meter: the meter serial/number, digits only
 - servicePeriod: e.g. "Mar 13, 2026 - Apr 13, 2026"
+- utilitySchedule: the rate schedule printed on the bill (e.g. "Schedule 7" for PGE, "Schedule 4" for Pacific Power) — needed for the NEM/interconnection application
 
 CRITICAL accuracy rules:
 - Transcribe account and meter numbers digit-by-digit from the image. Do NOT guess or "correct" them. If a digit is genuinely unreadable, lower confidence and add the field to lowConfidenceFields.

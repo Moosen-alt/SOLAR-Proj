@@ -3585,10 +3585,13 @@ async function postJson(url, body){
 const LLM_SNAPSHOT_KEYS = new Set([
   'owner','street','city','state','zip','ahj','utility','account','meter',
   'dcKw','acKw','interco','moduleMake','moduleModel','moduleWattage','moduleQty',
-  'invMake','invModel','invQty','invOutputW','batteryMake','batteryModel','batteryQty',
+  'invMake','invModel','invQty','invOutputW',
+  'pvMicroMake','pvMicroModel','pvMicroQty','pvMicroOutputW','inverterSettings',
+  'batteryMake','batteryModel','batteryQty',
   'roofMaterial','mounting',
   'busRating','mainBreaker','pvBreaker','acDiscReq',
   'snow','deadLoad','roofRafterSpacing','roofRafterSpan','wind','permitPath',
+  'utilitySchedule','serviceVoltage','servicePhase','numberOfCircuits','parcelNumber','jobValue',
   'electricalCalcText','structuralCalcText','sitePlanNotesText','roofPlanNotesText',
   'labelsText','projectDescriptionText','locateCalloutText',
 ]);

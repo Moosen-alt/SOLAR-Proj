@@ -20,7 +20,7 @@ const issuedPattern =
   /\b(permit issued|issued permit|status:\s*issued|issued on|download permit|permit card|inspection card|permit has been issued)\b/i;
 
 const nemApprovalPattern =
-  /\b(pto granted|permission to operate|interconnection approved|nem approved|net metering approved|customer generation approved|utility application approved)\b/i;
+  /\b(pto granted|permission to operate|net metering approved|customer generation approved|(?:interconnection|nem)(?:\s+\w+){0,3}\s+approved|approved(?:\s+\w+){0,3}\s+(?:interconnection|nem)|authorization to (?:install|interconnect|operate))\b/i;
 
 const reviewedPattern =
   /\b(review complete|plan review complete|approved|approved with conditions|reviewed by ahj|reviewed and approved|passed review|application approved)\b/i;

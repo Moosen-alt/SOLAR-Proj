@@ -156,9 +156,12 @@ function ensureReviewItem(
   parserValue: string,
   notes: string,
 ): void {
+  // Dedupe against ANY existing item for this field — not just pending ones.
+  // If the coordinator already approved/edited/rejected this field, re-running
+  // QC must NOT resurrect it as a new pending item (that trapped the submit gate).
   const existing = db.get<{ id: string }>(
     `SELECT id FROM human_review_items
-     WHERE project_id = ? AND field_name = ? AND status = 'pending'
+     WHERE project_id = ? AND field_name = ?
      LIMIT 1`,
     [projectId, fieldName],
   );
