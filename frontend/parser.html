@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Project Intake &amp; Parser — Solar Submission Autopilot</title>
+  <title>Solar Submission Engine | Solar Autopilot</title>
   <style>
     :root{
       --bg:#071120;
@@ -163,11 +163,11 @@
 
 <body>
 <div class="wrap">
-  <h1>Project Intake &amp; Parser</h1>
-  <p class="sub">Upload a plan set, utility bill, and meter photo. Review the extracted data, fill any gaps, then save the project to the dashboard.</p>
+  <h1>Solar Submission Engine</h1>
+  <p class="sub">Rebuild v17.2.47 with Tesla Powerwall 3 inverter/battery parsing fixed. Evidence-based electrical callouts, AHJ description of work, full module model parsing, utility ZIPs, and ProjectDox permit splitting remain included.</p>
 
   <div class="nav">
-    <a class="pill" href="/dashboard.html">← Dashboard</a>
+    <a href="index.html" class="pill" style="text-decoration:none;color:inherit">← Dashboard</a>
     <div class="pill">Upload</div>
     <div class="pill">Project data</div>
     <div class="pill">Permit path</div>
@@ -175,10 +175,12 @@
     <div class="pill">NEM / UB</div>
     <div class="pill">Submission text</div>
     <div class="pill">Packet builder</div>
+    <div class="pill">ProjectDox splitter</div>
   </div>
 
   <div class="section-note">
-    <strong>How to use:</strong> Upload your documents below — extraction runs automatically. Every field is editable, so correct anything the parser missed before saving. Required for a clean submission: address, AHJ, utility, system size, equipment, meter &amp; account number.
+    <strong>v17.2.47 update</strong><br>
+    Removed the Contract / PA upload and valuation parser because those files do not reliably contain the needed permit valuation/contact data. ProjectDox splitting, utility ZIPs, full module model parsing, utility bill parsing, and the concise AHJ-ready <span class="mono">Description of the Work</span> are still included.
   </div>
 
   <div class="card">
@@ -201,11 +203,27 @@
       <button id="parseBtn" class="green">Parse uploaded files</button>
       <button id="resetBtn" class="red">Reset</button>
       <button id="downloadJsonBtn" class="blue">Download parsed JSON</button>
-      <button id="saveProjectBtn" class="orange">Save Project</button>
-      <button id="prepareSubmittalBtn" class="purple">Prepare Submittal</button>
-      <button id="openDashboardBtn" class="blue">Open Dashboard</button>
     </div>
     <div id="parseStatus" class="status">Waiting for files.</div>
+  </div>
+
+  <div class="card" id="importCard">
+    <h2>Import to System</h2>
+    <p class="muted">Save the parsed intake to a project in the dashboard. Link to an existing project to update it, or leave as New Project to create one.</p>
+    <div class="row3">
+      <div>
+        <label>Link to existing project</label>
+        <select id="existingProjectSelect"><option value="">— New Project —</option></select>
+      </div>
+      <div>
+        <label>Client / Contractor</label>
+        <select id="clientSelect" onchange="loadContractorInfo(this.value)"><option value="">— Select Client —</option></select>
+      </div>
+      <div style="display:flex;align-items:flex-end">
+        <button onclick="saveToSystem()" class="green" style="width:100%">💾 Save to project</button>
+      </div>
+    </div>
+    <div id="saveStatus" class="status" style="margin-top:8px"></div>
   </div>
 
   <div class="card">
@@ -214,8 +232,6 @@
       <div><label>Utility</label><input id="utility" /></div>
       <div><label>AHJ / County</label><input id="ahj" /></div>
       <div><label>Homeowner name</label><input id="owner" /></div>
-      <div><label>Homeowner email</label><input id="homeownerEmail" type="email" placeholder="for utility/AHJ contact" /></div>
-      <div><label>Homeowner phone</label><input id="homeownerPhone" /></div>
       <div><label>Project address</label><input id="street" /></div>
       <div><label>City</label><input id="city" /></div>
       <div><label>State</label><input id="state" value="OR" /></div>
@@ -223,15 +239,6 @@
       <div><label>Meter number</label><input id="meter" /></div>
       <div><label>Account number</label><input id="account" /></div>
       <div><label>Interconnection method</label><input id="interco" /></div>
-    </div>
-
-    <div class="row4" style="margin-top:12px">
-      <div><label>Service type</label>
-        <select id="serviceType"><option value="">—</option><option value="Residential">Residential</option><option value="Commercial">Commercial</option></select>
-      </div>
-      <div><label>Main service rating (A)</label><input id="mainServiceRating" placeholder="e.g. 200" /></div>
-      <div><label>Job value ($)</label><input id="jobValue" placeholder="system contract value" /></div>
-      <div><label>PGE schedule (if PGE)</label><input id="pgeSchedule" placeholder="e.g. 7" /></div>
     </div>
 
     <div class="row3" style="margin-top:12px">
@@ -242,6 +249,7 @@
 
     <div class="row4" style="margin-top:12px">
       <div><label>Module make</label><input id="moduleMake" /></div>
+      <div><label>Module type</label><input id="moduleType" /></div>
       <div><label>Module model</label><input id="moduleModel" /></div>
       <div><label>Module wattage (W)</label><input id="moduleWattage" /></div>
       <div><label>Module quantity</label><input id="moduleQty" /></div>
@@ -253,6 +261,9 @@
       <div><label>PV microinverter model</label><input id="pvMicroModel" /></div>
       <div><label>PV microinverter quantity</label><input id="pvMicroQty" /></div>
       <div><label>PV microinverter output (W)</label><input id="pvMicroOutputW" /></div>
+      <div><label>Rapid shutdown / MCI make</label><input id="mciMake" /></div>
+      <div><label>Rapid shutdown / MCI model</label><input id="mciModel" /></div>
+      <div><label>Rapid shutdown / MCI quantity</label><input id="mciQty" /></div>
     </div>
 
     <div class="row4" style="margin-top:12px">
@@ -355,6 +366,17 @@
     </div>
   </div>
 
+  <!-- 4B. Evidence engine + regression checks — moved to backend only. The JS engine still
+       runs; these hidden fields keep the parser code that writes to them functional. -->
+  <div id="evidenceEngineCard" style="display:none">
+    <textarea id="sheetClassifierText"></textarea>
+    <textarea id="scopeEvidenceText"></textarea>
+    <textarea id="scopeDecisionText"></textarea>
+    <textarea id="conflictChecksText"></textarea>
+    <button id="runScopeTestBtn"></button>
+    <textarea id="regressionTestsText"></textarea>
+  </div>
+
   <div class="card">
     <h2>5. Utility bill verification</h2>
     <div class="row">
@@ -373,7 +395,7 @@
   <div class="card">
     <h2>6. Submission text builder</h2>
     <div class="row">
-      <div><label>Project description</label><textarea id="projectDescriptionText" class="tall"></textarea><div class="btnbar"><button class="blue" data-copy="projectDescriptionText">Copy project description</button></div></div>
+      <div><label>Description of the Work (AHJ permit)</label><textarea id="projectDescriptionText" class="tall"></textarea><div class="btnbar"><button class="blue" data-copy="projectDescriptionText">Copy description of work</button></div></div>
       <div><label>Site plan notes</label><textarea id="sitePlanNotesText" class="tall"></textarea><div class="btnbar"><button class="blue" data-copy="sitePlanNotesText">Copy site plan notes</button></div></div>
     </div>
     <div style="margin-top:10px"><label>Utility upload notes</label><textarea id="utilityUploadNotesText" class="tall"></textarea><div class="btnbar"><button class="blue" data-copy="utilityUploadNotesText">Copy utility notes</button></div></div>
@@ -434,14 +456,34 @@
     <div class="section-note">
       The ZIP normally includes: SLD / 3-line, site + plot plan, module spec, inverter spec, utility bill PDF if uploaded, and meter photo PDF if uploaded.
     </div>
+
+    <div class="critical-wrap" style="border-color:rgba(167,139,250,.72);background:linear-gradient(180deg,rgba(76,29,149,.22),rgba(8,18,34,.95));">
+      <div class="critical-title" style="color:#ddd6fe;">ProjectDox / AHJ Permit Splitter</div>
+      <div class="critical-sub" style="color:#ede9fe;">Creates numbered permit upload files from the plan set. Filenames are ordered so ProjectDox sorts them correctly.</div>
+      <div class="row3">
+        <div><label>ProjectDox ZIP filename base</label><input id="projectDoxBaseName" placeholder="HO name - address" /></div>
+        <div><label>ProjectDox split mode</label><select id="projectDoxSplitMode"><option value="individual">One PDF per sheet</option><option value="drawingsOnly">Drawing sheets only</option><option value="docsOnly">Document / spec sheets only</option></select></div>
+        <div><label>ProjectDox naming preset</label><select id="projectDoxNamingPreset"><option value="numericSheet">Numeric + sheet number + sheet name</option><option value="numericName">Numeric + sheet name only</option></select></div>
+      </div>
+      <div class="btnbar">
+        <button id="buildProjectDoxZipBtn" class="purple">Download ProjectDox ZIP</button>
+        <button id="downloadProjectDoxDrawingsBtn" class="blue">Download drawings-only ZIP</button>
+        <button id="downloadProjectDoxDocsBtn" class="blue">Download docs-only ZIP</button>
+      </div>
+      <div class="row">
+        <div><label>ProjectDox detected files</label><textarea id="projectDoxSplitPagesText" readonly class="tall"></textarea></div>
+        <div><label>ProjectDox upload checklist</label><textarea id="projectDoxChecklistText" readonly class="tall"></textarea></div>
+      </div>
+      <div class="section-note">
+        ProjectDox mode splits each detected plan sheet into its own PDF. Drawing sheets are ordered first, followed by DS/spec sheets, then optional utility bill and meter photo files.
+      </div>
+    </div>
   </div>
 
-  <div class="card">
-    <h2>10. Raw parser text</h2>
-    <div class="row">
-      <div><label>Plan OCR/text preview</label><textarea id="planRawTextPreview" readonly class="tall"></textarea></div>
-      <div><label>Meter photo OCR/text preview</label><textarea id="meterRawTextPreview" readonly class="tall"></textarea></div>
-    </div>
+  <!-- 10. Raw parser text — backend only. Hidden fields retained so the parser can write OCR text. -->
+  <div id="rawTextCard" style="display:none">
+    <textarea id="planRawTextPreview"></textarea>
+    <textarea id="meterRawTextPreview"></textarea>
   </div>
 </div>
 
@@ -461,8 +503,7 @@ const state = {
   meterFile:null,
   reviewFlags:[],
   utilityPriorityFlags:[],
-  electricalScope:null,
-  savedProjectId:null
+  electricalScope:null
 };
 
 const $ = id => document.getElementById(id);
@@ -506,15 +547,51 @@ function normalizeModelHyphens(raw=''){
     .trim();
 }
 
+
+function extractZnshineModuleModel(raw=''){
+  let s = normalizeEquipmentText(raw || '')
+    .replace(/\bZNSHINE\s+SOLAR\b/ig,'ZNSHINESOLAR')
+    .replace(/\bZN\s*SHINE\b/ig,'ZNSHINE')
+    .replace(/\s*\/\s*/g,'/')
+    .replace(/\s*-\s*/g,'-')
+    .replace(/\s+/g,' ')
+    .trim()
+    .toUpperCase();
+
+  s = s
+    .replace(/^MODULE TYPE\s*&\s*AMOUNT\s*:?\s*/i,'')
+    .replace(/^NUMBER OF MODULES\s+\d{1,3}\s+/i,'')
+    .replace(/^\(?\s*\d{1,3}\s*\)?\s*/,'')
+    .replace(/\b(?:ZNSHINESOLAR|ZNSHINE)\b\s*/ig,'')
+    .trim();
+
+  const stop = s.match(/^(.*?)(?=\s+MODULE DIMENSIONS\b|\s+INVERTER\b|\s+INTERCONNECTION\b|\s+AHJ\b|\s+PHOTOVOLTAIC\b|\s+NUMBER OF\b|\s+BILL OF MATERIALS\b|$)/i);
+  if (stop) s = stop[1].trim();
+
+  const patterns = [
+    /\b(ZXM\d+\s+[A-Z0-9]+(?:-[A-Z0-9]+)+(?:\/[A-Z0-9]+)?)\b/i,
+    /\b(ZXM\d+[A-Z0-9]*-[A-Z0-9]+-\d{3,4}[A-Z]*(?:\/[A-Z0-9]+)?)\b/i,
+    /\b(ZXM\d+\s+[A-Z0-9]+(?:\/[A-Z0-9]+)?)\b/i,
+    /\b(ZXM\d+[A-Z0-9._+\-/]*)\b/i
+  ];
+
+  for (const re of patterns){
+    const m = s.match(re);
+    if (m && m[1]) return normalizeModelHyphens(m[1]).toUpperCase();
+  }
+  return '';
+}
+
 function stripInverterMakeFromModel(raw=''){
   let s = normalizeModelHyphens(raw);
-  s = s.replace(/^\(?\d+\)?\s*/,'');
+  s = s.replace(/^\(?\d+\)?\s+(?=[A-Z])/,'');
   s = s.replace(/^AP\s*SYSTEMS\s+/i,'');
   s = s.replace(/^APSYSTEMS\s+/i,'');
   s = s.replace(/^ALTENERGY\s+POWER\s+SYSTEM\s+/i,'');
   s = s.replace(/^QCELLS\s+/i,'');
   s = s.replace(/^ENPHASE\s+/i,'');
   s = s.replace(/^SOLAREDGE\s+/i,'');
+  s = s.replace(/^TESLA\s+/i,'');
   s = s.replace(/\s*\[[^\]]+\]\s*$/,'');
   s = s.replace(/\s*\([^)]*V[^)]*\)\s*$/i,'');
   return normalizeModelHyphens(s).toUpperCase().replace(/^Q\.MI/i,'Q.MI');
@@ -522,12 +599,14 @@ function stripInverterMakeFromModel(raw=''){
 
 function stripModuleMakeFromModel(raw=''){
   let s = normalizeModelHyphens(raw);
-  s = s.replace(/^\(?\d+\)?\s*/,'');
+  const znFull = extractZnshineModuleModel(s);
+  if (znFull && /^ZXM/i.test(znFull)) return znFull;
+  s = s.replace(/^\(?\d+\)?\s+(?=[A-Z])/,'');
   s = s.replace(/^ZNSHINESOLAR\s+/i,'');
   s = s.replace(/^ZNSHINE\s+/i,'');
   s = s.replace(/^ZN\s*SHINE\s+/i,'');
   s = s.replace(/^QCELLS\s+/i,'');
-  s = s.replace(/\s*-\s*\d{3,4}\s*W(?:ATT)?\b/i,'');
+  s = s.replace(/\s*-\s*\d{3,4}\s*W(?:ATT)?/i,'');
   return normalizeModelHyphens(s).toUpperCase();
 }
 
@@ -828,6 +907,13 @@ function parseAddressBlock(all){
       .replace(/\bDescription\b.*$/i,'')
       .trim();
 
+    const streetSuffix = '(?:AVE|AVENUE|ST|STREET|CT|COURT|TER|TERRACE|RD|ROAD|DR|DRIVE|LN|LANE|WAY|PL|PLACE|CIR|CIRCLE|BLVD|HWY|HIGHWAY)';
+    const strictMatches = [...s.matchAll(new RegExp('\\b(\\d{2,6}\\s+[A-Z0-9 .\\\'-]+?\\b' + streetSuffix + '\\b)\\s*,?\\s+([A-Z][A-Z .\\\'-]+),?\\s+(OR|WA|CA|ID|AZ|NV|UT)\\s+(\\d{5})(?:-\\d{4})?', 'ig'))];
+    if (strictMatches.length){
+      const m = strictMatches[strictMatches.length - 1];
+      return {street:title(m[1]), city:title(m[2]), state:m[3].toUpperCase(), zip:m[4]};
+    }
+
     const m = s.match(/(.+?)\s+([A-Z][A-Z .'\-]+),?\s+(OR|WA|CA|ID|AZ|NV|UT)\s+(\d{5})(?:-\d{4})?/i);
     if (m) return {
       street:title(m[1]),
@@ -841,10 +927,33 @@ function parseAddressBlock(all){
 
   let owner='', street='', city='', state='OR', zip='', ahj='';
 
+  // Preferred title-block parse: owner line, then street line, then city/state/zip line.
+  // This avoids grabbing the later system description line when the cover sheet repeats the address.
+  for (let i=0; i<Math.min(lines.length, 25); i++){
+    const resLine = lines[i];
+    if (!/RESIDENCE/i.test(resLine)) continue;
+    const ownerMatch = resLine.match(/(.+?)\s+RESIDENCE/i);
+    if (ownerMatch && !owner) owner = cleanOwnerName(ownerMatch[1]);
+
+    for (let j=i+1; j<Math.min(lines.length, i+6); j++){
+      const possibleStreet = lines[j];
+      const possibleCity = lines[j+1] || '';
+      const cityMatch = possibleCity.match(/^([A-Z][A-Z .'-]+),?\s+(OR|WA|CA|ID|AZ|NV|UT)\s+(\d{5})(?:-\d{4})?/i);
+      if (/^\d{2,6}\s+[A-Z0-9]/i.test(possibleStreet) && cityMatch){
+        street = title(possibleStreet);
+        city = title(cityMatch[1]);
+        state = cityMatch[2].toUpperCase();
+        zip = cityMatch[3];
+        break;
+      }
+    }
+    if (street) break;
+  }
+
   // Best case: title block pattern with owner residence, address, city/state/zip.
   const titleBlock = raw.match(/([A-Z][A-Z .'\-]{2,80}?)\s+RESIDENCE\s+(\d{2,6}\s+[A-Z0-9 .'\-]+?)\s+([A-Z][A-Z .'\-]+),?\s+(OR|WA|CA|ID|AZ|NV|UT)\s+(\d{5})(?:-\d{4})?/i);
-  if (titleBlock){
-    owner = cleanOwnerName(titleBlock[1]);
+  if (titleBlock && !street){
+    owner = owner || cleanOwnerName(titleBlock[1]);
     street = title(titleBlock[2]);
     city = title(titleBlock[3]);
     state = titleBlock[4].toUpperCase();
@@ -871,10 +980,21 @@ function parseAddressBlock(all){
     }
   }
 
-  // Fallback for OCR that split address into "14075 Sw" and city as "Barlow Ct Beaverton".
-  if (street && city && /\bBARLOW CT\s+BEAVERTON\b/i.test(city) && /^14075\s+SW$/i.test(street)){
-    street = '14075 SW Barlow Ct';
-    city = 'Beaverton';
+  // Generic fix when the street suffix got pushed into the city field due missing comma in title block.
+  // Example: street = "5114 SW", city = "VW PT TER PORTLAND" should become 5114 SW VW PT TER / Portland.
+  const knownOrCities = ['PORTLAND','BEAVERTON','LINCOLN CITY','LEBANON','JUNCTION CITY','SHERIDAN','SALEM','EUGENE','BEND','TIGARD','HILLSBORO','GRESHAM','MILWAUKIE','OREGON CITY','VANCOUVER'];
+  if (street && city){
+    const cityUpper = city.toUpperCase().replace(/[^A-Z ]/g,' ').replace(/\s+/g,' ').trim();
+    for (const known of knownOrCities){
+      if (cityUpper !== known && cityUpper.endsWith(' ' + known)){
+        const prefix = city.replace(new RegExp('\\s+' + known.replace(/ /g,'\\s+') + '$','i'), '').trim();
+        if (prefix){
+          street = title(`${street} ${prefix}`);
+          city = title(known);
+          break;
+        }
+      }
+    }
   }
 
   // More generic fix when street got chopped after directional prefix.
@@ -944,7 +1064,7 @@ function cleanModelCandidate(raw='', kind='module'){
   let compact = normalizeModelHyphens(original);
   let s = compact;
 
-  s = s.replace(/^\(?0*\d{1,3}\)?\s*/, '');
+  s = s.replace(/^\(?0*\d{1,3}\)?\s+(?=[A-Z])/, '');
   s = s.replace(/\[[^\]]*V[^\]]*\]/ig, '');
   s = s.replace(/\([^)]*V[^)]*\)/ig, '');
   s = s.replace(/\s+AC MODULE POWERED[\s\S]*$/i, '');
@@ -954,6 +1074,9 @@ function cleanModelCandidate(raw='', kind='module'){
   s = trimEquipmentLine(s);
 
   if (kind === 'module'){
+    const znFull = extractZnshineModuleModel(compact);
+    if (znFull) return znFull;
+
     const qtron = compact.match(/\b(Q\.TRON[A-Z0-9._+\-/]+(?:\s+[A-Z0-9._+\-/]+)*)/i);
     if (qtron) return stripModuleMakeFromModel(qtron[1]);
 
@@ -963,7 +1086,7 @@ function cleanModelCandidate(raw='', kind='module'){
     const zn = compact.match(/\b(?:ZNSHINESOLAR|ZNSHINE|ZN\s*SHINE)?\s*(ZXM[A-Z0-9._+\-/]+)\b/i);
     if (zn) return stripModuleMakeFromModel(zn[1]);
 
-    const seg = compact.match(/\b(SEG[-A-Z0-9._+/]+)\b/i);
+    const seg = compact.match(/\b(?:SEG\s+SOLAR\s+)?(SEG[-A-Z0-9._+/]+)\s*(?:\[\s*\d{3,4}\s*W\s*\])?/i);
     if (seg) return stripModuleMakeFromModel(seg[1]);
 
     const rec = compact.match(/\b(REC[A-Z0-9._+\-/]+)\b/i);
@@ -1002,7 +1125,7 @@ function cleanModelCandidate(raw='', kind='module'){
 function parseModuleWattage(text, moduleQty, dcKw){
   const raw = normalizeEquipmentText(text || '');
   const directPatterns = [
-    /MODULE TYPE\s*&\s*AMOUNT\s*:?\s*[\s\S]{0,220}?[-]\s*(\d{3,4})\s*W(?:ATT)?\b/i,
+    /MODULE TYPE\s*&\s*AMOUNT\s*:?\s*[\s\S]{0,220}?(?:[-\[]\s*)(\d{3,4})\s*W(?:ATT)?\]?\b/i,
     /\(\s*\d+\s*\)\s+[A-Z0-9._+\-/ ]{4,90}?[-]\s*(\d{3,4})\s*W(?:ATT)?\b/i,
     /Q\.TRON[\sA-Z0-9._+\-/]{2,90}?[-]\s*(\d{3,4})\s*W(?:ATT)?\b/i,
     /Q\.PEAK[\sA-Z0-9._+\-/]{2,90}?[-]\s*(\d{3,4})\s*W(?:ATT)?\b/i,
@@ -1103,6 +1226,7 @@ function parseRoofPlanes(planDoc){
 function parseBatteryData(allText){
   const all = normalizeText(allText || '');
   const flat = normalizeEquipmentText(all);
+  const modelFlat = normalizeModelHyphens(flat);
   const out = {
     batteryMake:'',
     batteryModel:'',
@@ -1119,27 +1243,89 @@ function parseBatteryData(allText){
     hasBattery:false
   };
 
-  const batteryLine = matchFirst(flat, [
-    /BATTERY\s*:?\s*(\(\s*\d{1,2}\s*\)\s*[A-Z0-9 .,+\-\/\[\]]{6,160}?)(?=\s+BATTERY CAPACITY|\s+AC GATEWAY|\s+INTERCONNECTION|\s+AHJ|\n|$)/i,
-    /NUMBER OF BATTERY\s+(\d{1,2}\s+[A-Z0-9 .,+\-\/\[\]]{6,160}?)(?=\s+BACKUP PANEL|\s+RAILS|\s+TESLA GATEWAY|\n|$)/i,
-    /\(N\)\s*(TESLA\s+POWERWALL\s*3\s+[A-Z0-9.\-]+(?:\s*\[[^\]]+\])?)/i,
-    /(TESLA\s+POWERWALL\s*3\s+[A-Z0-9.\-]+(?:\s*\[[^\]]+\])?)/i,
-    /(POWERWALL\s*3\s+[A-Z0-9.\-]+(?:\s*\[[^\]]+\])?)/i,
-    /(TESLA\s+POWERWALL\s*2\s+[A-Z0-9.\-]+(?:\s*\[[^\]]+\])?)/i,
-    /(POWERWALL\s*2\s+[A-Z0-9.\-]+(?:\s*\[[^\]]+\])?)/i
+  function firstMatchGroups(text, patterns){
+    for (const re of patterns){
+      const m = text.match(re);
+      if (m) return m;
+    }
+    return null;
+  }
+
+  function normalizeTeslaPowerwallModel(raw=''){
+    const t = normalizeModelHyphens(normalizeEquipmentText(raw || ''));
+    const m = t.match(/POWERWALL\s*([23])(?:\s+([0-9]{7}(?:-[A-Z0-9]{1,4}){0,2}))?/i);
+    if (!m) return '';
+    return `POWERWALL ${m[1]}${m[2] ? ' ' + m[2].toUpperCase() : ''}`.trim();
+  }
+
+  function powerwallModelNumber(model=''){
+    const m = String(model || '').match(/\b([0-9]{7}(?:-[A-Z0-9]{1,4}){0,2})\b/i);
+    return m ? m[1].toUpperCase() : '';
+  }
+
+  const primaryPw = firstMatchGroups(modelFlat, [
+    /INVERTER\s*\/\s*BATTERY\s*:?\s*\(?\s*(\d{1,2})\s*\)?\s*(TESLA\s+POWERWALL\s*3\s+[0-9]{7}(?:-[A-Z0-9]{1,4}){0,2}(?:\s*\[[^\]]+\])?)/i,
+    /NUMBER\s+OF\s+INVERTER\s+(\d{1,2})\s+(TESLA\s+POWERWALL\s*3\s+[0-9]{7}(?:-[A-Z0-9]{1,4}){0,2}(?:\s*\[[^\]]+\])?)/i,
+    /BATTERY\s*\/\s*INVERTER\s+CHARACTERISTICS\s*-\s*(TESLA\s+POWERWALL\s*3\s+[0-9]{7}(?:-[A-Z0-9]{1,4}){0,2})(?:\s*\[[^\]]+\])?/i,
+    /\(N\)\s*(TESLA\s+POWERWALL\s*3\s+1707000(?:-[A-Z0-9]{1,4}){0,2}(?:\s*\[[^\]]+\])?)/i
   ]);
 
-  if (batteryLine){
-    out.hasBattery = true;
-    const qty = batteryLine.match(/\(?\s*(\d{1,2})\s*\)?/);
-    if (qty) out.batteryQty = String(Number(qty[1]));
+  const expansionPw = firstMatchGroups(modelFlat, [
+    /EXPANSION\s+BATTERY\s*:?\s*\(?\s*(\d{1,2})\s*\)?\s*(TESLA\s+POWERWALL\s*3\s+[0-9]{7}(?:-[A-Z0-9]{1,4}){0,2}(?:\s*\[[^\]]+\])?)/i,
+    /EXPANSION\s+PACK\s+BATTERY\s*CAPACITY[\s\S]{0,80}?\(N\)\s*(TESLA\s+POWERWALL\s*3\s+1807000(?:-[A-Z0-9]{1,4}){0,2}(?:\s*\[[^\]]+\])?)/i,
+    /\(N\)\s*(TESLA\s+POWERWALL\s*3\s+1807000(?:-[A-Z0-9]{1,4}){0,2}(?:\s*\[[^\]]+\])?)\s+EXPANSION\s+PACK/i
+  ]);
 
-    if (/TESLA|POWERWALL/i.test(batteryLine)){
-      out.batteryMake = 'Tesla';
-      const model = batteryLine.match(/(POWERWALL\s*[23](?:\s+[A-Z0-9.\-]+)?(?:\s*\[[^\]]+\])?)/i);
-      out.batteryModel = model ? clean(model[1]).replace(/\s+/g,' ') : (/POWERWALL\s*2/i.test(batteryLine) ? 'Powerwall 2' : 'Powerwall 3');
+  const primaryQty = primaryPw ? (primaryPw[2] ? Number(primaryPw[1]) : 1) : 0;
+  const primaryLine = primaryPw ? (primaryPw[2] || primaryPw[1]) : '';
+  const primaryModel = normalizeTeslaPowerwallModel(primaryLine);
+  const expansionQty = expansionPw ? (expansionPw[2] ? Number(expansionPw[1]) : 1) : 0;
+  const expansionLine = expansionPw ? (expansionPw[2] || expansionPw[1]) : '';
+  const expansionModel = normalizeTeslaPowerwallModel(expansionLine);
+
+  if (primaryModel || expansionModel){
+    out.hasBattery = true;
+    out.batteryMake = 'Tesla';
+    const totalBatteryQty = Math.max(1, (primaryQty || 0) + (expansionQty || 0));
+    out.batteryQty = String(totalBatteryQty);
+    if (primaryModel && expansionModel){
+      const expNum = powerwallModelNumber(expansionModel);
+      out.batteryModel = `${primaryModel} + EXPANSION ${expNum || expansionModel}`;
     } else {
-      out.batteryModel = clean(batteryLine.replace(/^\(?\s*\d{1,2}\s*\)?\s*/,''));
+      out.batteryModel = primaryModel || expansionModel;
+    }
+    if (primaryModel){
+      out.essInverterMake = 'Tesla';
+      out.essInverterModel = primaryModel;
+      out.essInverterQty = String(primaryQty || 1);
+    }
+  }
+
+  // Generic battery fallback. Keep it after the dedicated Tesla parser so an Expansion Battery line
+  // cannot accidentally overwrite the inverter/battery Powerwall 3 1707000 model.
+  if (!out.hasBattery){
+    const batteryLine = matchFirst(flat, [
+      /(?:^|\s)BATTERY\s*:?\s*(\(\s*\d{1,2}\s*\)\s*[A-Z0-9 .,+\-\/\[\]]{6,160}?)(?=\s+BATTERY CAPACITY|\s+AC GATEWAY|\s+INTERCONNECTION|\s+AHJ|\n|$)/i,
+      /NUMBER OF BATTERY\s+(\d{1,2}\s+[A-Z0-9 .,+\-\/\[\]]{6,160}?)(?=\s+BACKUP PANEL|\s+RAILS|\s+TESLA GATEWAY|\n|$)/i,
+      /\(N\)\s*(TESLA\s+POWERWALL\s*3\s+[A-Z0-9.\-]+(?:\s*\[[^\]]+\])?)/i,
+      /(TESLA\s+POWERWALL\s*3\s+[A-Z0-9.\-]+(?:\s*\[[^\]]+\])?)/i,
+      /(POWERWALL\s*3\s+[A-Z0-9.\-]+(?:\s*\[[^\]]+\])?)/i,
+      /(TESLA\s+POWERWALL\s*2\s+[A-Z0-9.\-]+(?:\s*\[[^\]]+\])?)/i,
+      /(POWERWALL\s*2\s+[A-Z0-9.\-]+(?:\s*\[[^\]]+\])?)/i
+    ]);
+
+    if (batteryLine){
+      out.hasBattery = true;
+      const qty = batteryLine.match(/\(?\s*(\d{1,2})\s*\)?/);
+      if (qty) out.batteryQty = String(Number(qty[1]));
+
+      if (/TESLA|POWERWALL/i.test(batteryLine)){
+        out.batteryMake = 'Tesla';
+        const model = normalizeTeslaPowerwallModel(batteryLine) || ((batteryLine.match(/(POWERWALL\s*[23](?:\s+[A-Z0-9.\-]+)?(?:\s*\[[^\]]+\])?)/i) || [,''])[1]);
+        out.batteryModel = model ? clean(model).replace(/\s+/g,' ') : (/POWERWALL\s*2/i.test(batteryLine) ? 'Powerwall 2' : 'Powerwall 3');
+      } else {
+        out.batteryModel = clean(batteryLine.replace(/^\(?\s*\d{1,2}\s*\)?\s*/,''));
+      }
     }
   }
 
@@ -1161,11 +1347,15 @@ function parseBatteryData(allText){
   ]);
   if (outputKw) {
     out.hasBattery = true;
-    out.batteryOutputKw = clean(outputKw).replace(/\s*kW/i,'').trim();
+    let outKw = Number(clean(outputKw).replace(/\s*kW/i,'').trim());
+    // Some plan OCR/text extraction turns 11.500 kW into 11500KW. Treat large captures as watts.
+    if (Number.isFinite(outKw) && outKw > 1000) outKw = outKw / 1000;
+    out.batteryOutputKw = Number.isFinite(outKw) ? String(outKw).replace(/\.0+$/,'') : clean(outputKw).replace(/\s*kW/i,'').trim();
   }
 
   const gwLine = matchFirst(flat, [
     /AC GATEWAY\s*:?\s*(\(\s*\d{1,2}\s*\)\s*TESLA\s+GATEWAY\s*3[, ]+\s*[A-Z0-9.\-]+(?:-X\d-Y)?)/i,
+    /TESLA\s+GATEWAY\s*:?\s*(\(\s*\d{1,2}\s*\)\s*TESLA\s+GATEWAY\s*3\s*\(?\s*[A-Z0-9.\-]+(?:-X\d-Y)?\s*\)?)/i,
     /(TESLA\s+GATEWAY\s*3\s*\(?\s*[A-Z0-9.\-]+(?:-X\d-Y)?\s*\)?)/i,
     /(TESLA\s+BACKUP\s+GATEWAY\s*3\s*#?\s*[A-Z0-9.\-]+(?:-X\d-Y)?)/i
   ]);
@@ -1191,11 +1381,12 @@ function parseBatteryData(allText){
   if (out.hasBattery && !out.gatewayMake && /GATEWAY\s*3/i.test(all)) out.gatewayMake = 'Tesla';
   if (out.hasBattery && !out.gatewayModel && /GATEWAY\s*3/i.test(all)) out.gatewayModel = 'Gateway 3';
 
-  // Tesla Powerwall is also the ESS inverter on battery projects. Keep this separate from PV microinverters.
+  // Tesla Powerwall 3 1707000 is the inverter/battery. Tesla Powerwall 3 1807000 is an Expansion Battery.
+  // Do not let the expansion pack become the inverter model.
   if (out.hasBattery && /TESLA|POWERWALL/i.test(`${out.batteryMake} ${out.batteryModel} ${all}`)){
-    out.essInverterMake = 'Tesla';
-    out.essInverterModel = out.batteryModel || (/POWERWALL\s*2/i.test(all) ? 'Powerwall 2' : 'Powerwall 3');
-    out.essInverterQty = out.batteryQty || '1';
+    out.essInverterMake = out.essInverterMake || 'Tesla';
+    out.essInverterModel = out.essInverterModel || normalizeTeslaPowerwallModel(out.batteryModel) || (/POWERWALL\s*2/i.test(all) ? 'Powerwall 2' : 'Powerwall 3');
+    out.essInverterQty = out.essInverterQty || out.batteryQty || '1';
     if (out.batteryOutputKw) {
       const w = Number(out.batteryOutputKw) * 1000;
       out.essInverterOutputW = Number.isFinite(w) ? String(Math.round(w)) : '';
@@ -1203,6 +1394,22 @@ function parseBatteryData(allText){
   }
 
   return out;
+}
+
+function cleanModuleType(raw=''){
+  let s = clean(raw)
+    .replace(/^MODULE TYPE\s*&\s*AMOUNT\s*:?\s*/i,'')
+    .replace(/^NUMBER OF MODULES\s+\d{1,3}\s+/i,'')
+    .replace(/^\(?\s*\d{1,3}\s*\)?\s*/,'')
+    .replace(/\s+/g,' ')
+    .trim();
+  if (!s) return '';
+  s = s.replace(/\bSEG\s+SOLAR\b/i,'SEG Solar');
+  s = s.replace(/\bQCELLS\b/i,'Qcells');
+  s = s.replace(/\bZNSHINESOLAR\b/i,'ZNShine');
+  s = s.replace(/\bZNSHINE\b/i,'ZNShine');
+  s = s.replace(/\bTESLA\b/i,'Tesla');
+  return s;
 }
 
 function parsePlanData(planDoc){
@@ -1226,12 +1433,13 @@ function parsePlanData(planDoc){
   ]);
 
   const moduleLine = matchFirst(cover, [
+    /MODULE TYPE\s*&\s*AMOUNT\s*:?\s*(\(?\s*\d{1,3}\s*\)?\s*[A-Z0-9 .+\-/]+?\s*\[\s*\d{3,4}\s*W\s*\])/i,
     /MODULE TYPE\s*&\s*AMOUNT\s*:?\s*(\(?\s*\d{1,3}\s*\)?\s*[A-Z0-9 .+\-/]+?\s*[-]\s*\d{3,4}\s*W(?:ATT)?)/i,
-    /MODULE TYPE\s*&\s*AMOUNT\s*:?\s*(\(?\s*\d{1,3}\s*\)?\s*(?:ZNSHINESOLAR|ZNSHINE|ZN\s*SHINE)\s+ZXM[A-Z0-9._+\-/]+)/i,
+    /MODULE TYPE\s*&\s*AMOUNT\s*:?\s*(\(?\s*\d{1,3}\s*\)?\s*(?:ZNSHINESOLAR|ZNSHINE|ZN\s*SHINE)\s+ZXM[A-Z0-9._+\-/]+(?:\s+[A-Z0-9._+\-/]+)?)(?=\s+MODULE DIMENSIONS|\s+INVERTER|\s+INTERCONNECTION|\s+AHJ|\s+PHOTOVOLTAIC|\n|$)/i,
     /NUMBER OF MODULES\s+\d{1,3}\s+([A-Z0-9 .+\-/]+?\s*[-]\s*\d{3,4}\s*W(?:ATT)?)/i,
-    /NUMBER OF MODULES\s+\d{1,3}\s+((?:ZNSHINESOLAR|ZNSHINE|ZN\s*SHINE)\s+ZXM[A-Z0-9._+\-/]+)/i,
+    /NUMBER OF MODULES\s+\d{1,3}\s+((?:ZNSHINESOLAR|ZNSHINE|ZN\s*SHINE)\s+ZXM[A-Z0-9._+\-/]+(?:\s+[A-Z0-9._+\-/]+)?)(?=\s+MODULE DIMENSIONS|\s+INVERTER|\s+INTERCONNECTION|\s+AHJ|\s+PHOTOVOLTAIC|\n|$)/i,
     /\(\s*\d{1,3}\s*\)\s*([A-Z0-9 .+\-/]{4,100}?[-]\s*\d{3,4}\s*W(?:ATT)?)/i,
-    /\(\s*\d{1,3}\s*\)\s*((?:ZNSHINESOLAR|ZNSHINE|ZN\s*SHINE)\s+ZXM[A-Z0-9._+\-/]+)/i
+    /\(\s*\d{1,3}\s*\)\s*((?:ZNSHINESOLAR|ZNSHINE|ZN\s*SHINE)\s+ZXM[A-Z0-9._+\-/]+(?:\s+[A-Z0-9._+\-/]+)?)(?=\s+MODULE DIMENSIONS|\s+INVERTER|\s+INTERCONNECTION|\s+AHJ|\s+PHOTOVOLTAIC|\n|$)/i
   ]);
 
   let moduleModel = cleanModelCandidate(moduleLine || matchFirst(all, [
@@ -1243,14 +1451,24 @@ function parsePlanData(planDoc){
     /(REC[A-Z0-9._+\-/]+?\s+\d{3,4}\s*W)/i
   ]), 'module');
 
-  // Hard fallback for ZNShine OCR where hyphens are separated by spaces.
-  if (/^ZXM\d+$/i.test(moduleModel || '')) {
-    const zFull = normalizeModelHyphens(all).match(/\b(ZXM\d+[A-Z0-9]*-[A-Z0-9]+-\d{3,4}[A-Z]*)\b/i);
-    if (zFull) moduleModel = stripModuleMakeFromModel(zFull[1]);
+  // Hard fallback for ZNShine OCR where the family and model body are split by a space.
+  if (/^ZXM\d+$/i.test(moduleModel || '') || /ZNSHINE/i.test(moduleLine || '')) {
+    const zFull = extractZnshineModuleModel(moduleLine || all);
+    if (zFull) moduleModel = zFull;
+  }
+
+  const moduleType = cleanModuleType(moduleLine || matchFirst(all, [
+    /MODULE TYPE\s*&\s*AMOUNT\s*:?\s*(\(?\s*\d{1,3}\s*\)?\s*[A-Z0-9 .+\-/]+?\s*\[\s*\d{3,4}\s*W\s*\])/i,
+    /NUMBER OF MODULES\s+\d{1,3}\s+([A-Z0-9 .+\-/]+?\s*\[\s*\d{3,4}\s*W\s*\])/i
+  ]));
+
+  if ((!moduleModel || /^SEG$/i.test(moduleModel)) && /SEG\s+SOLAR\s+SEG-/i.test(moduleType)) {
+    const m = moduleType.match(/\b(SEG-[A-Z0-9.-]+)\b/i);
+    if (m) moduleModel = m[1].toUpperCase();
   }
 
   const moduleWattage = parseModuleWattage(all, moduleQty, dcKw);
-  const moduleMake = detectMake(`${moduleLine} ${moduleModel} ${all.slice(0,4000)}`, 'module');
+  const moduleMake = detectMake(`${moduleLine} ${moduleType} ${moduleModel} ${all.slice(0,4000)}`, 'module');
 
   let invQty = matchFirst(cover, [
     /INTEGRATED INVERTER\s*:?\s*\(?\s*(\d{1,3})\s*\)?/i,
@@ -1259,6 +1477,9 @@ function parsePlanData(planDoc){
   ]) || moduleQty;
 
   const invLine = matchFirst(cover, [
+    /INVERTER\s*:?\s*(\(?\s*\d{1,3}\s*\)?\s*TESLA\s+[A-Z0-9 .+\-/]+?(?:\s*\[[^\]]+\])?)(?=\s+MCI|\s+INTERCONNECTION|\n|$)/i,
+    /NUMBER OF INVERTER\s+\d{1,3}\s+(TESLA\s+[A-Z0-9 .+\-/]+?(?:\s*\[[^\]]+\])?)(?=\s+MCI|\n|$)/i,
+    /\(N\)\s*(TESLA\s+[0-9.]+\s*KW\s+SOLAR\s+[A-Z0-9.\-]+(?:\s*\[[^\]]+\])?)/i,
     /INTEGRATED INVERTER\s*:?\s*(\(?\s*\d{1,3}\s*\)?\s*QCELLS\s+Q\.?\s*MI\.?\s*[A-Z0-9.\-]+(?:\s*\([^)]+\))?)/i,
     /INVERTER\s*:?\s*(\(?\s*\d{1,3}\s*\)?\s*(?:AP\s*SYSTEMS|APSYSTEMS)\s+DS3[-\s]?[A-Z0-9]+(?:\s*\[[^\]]+\])?)/i,
     /INTEGRATED INVERTER\s*:?\s*(\(?\s*\d{1,3}\s*\)?\s*[A-Z0-9 .+\-/]+?(?:\([^)]+\))?)(?=\s+INTERCONNECTION|\s+AHJ|\s+MODULE|\n|$)/i,
@@ -1269,6 +1490,7 @@ function parsePlanData(planDoc){
   ]);
 
   let invModel = cleanModelCandidate(invLine || matchFirst(all, [
+    /(TESLA\s+[0-9.]+\s*KW\s+SOLAR\s+[A-Z0-9.\-]+(?:\s*\[[^\]]+\])?)/i,
     /((?:AP\s*SYSTEMS|APSYSTEMS)\s+DS3[-\s]?[A-Z0-9]+)/i,
     /(DS3[-\s]?[A-Z0-9]+)/i,
     /(Q\.?\s*MI\.?\s*[A-Z0-9.\-]+)/i,
@@ -1285,17 +1507,21 @@ function parsePlanData(planDoc){
   if (!invMake && /DS3|AP\s*SYSTEMS|APSYSTEMS|ALTENERGY\s+POWER\s+SYSTEM/i.test(`${invLine} ${invModel} ${all}`)) invMake = 'Altenergy Power System';
 
   let invOutputW = matchFirst(sld, [
+    /INVERTER CHARACTERISTICS\s*-\s*TESLA[\s\S]{0,180}?NOMINAL POWER\s+(\d{3,5})\s*W/i,
+    /TESLA\s+[0-9.]+\s*KW\s+SOLAR[\s\S]{0,160}?OUTPUT\s*:?\s*240VAC[\s\S]{0,80}?(\d{1,2}(?:\.\d+)?)\s*A/i,
     /MICROINVERTERS?\s+SPECIFICATION[\s\S]{0,180}?MAXIMUM\s+AC\s+OUTPUT[\s\S]{0,80}?(\d{2,5})\s*W/i,
     /MICROINVERTER\s+MAKE[\s\S]{0,220}?(?:AP\s*SYSTEMS|APSYSTEMS)\s+DS3[-\s]?[A-Z0-9]+\s+(\d{2,5})\s*W/i,
     /MICROINVERTER\s+MAX\.?\s*CONT\.?\s*OUTPUT POWER[\s\S]{0,120}?(\d{2,5})\s*W/i,
     /MAX\.?\s*CONT\.?\s*OUTPUT POWER[\s\S]{0,80}?(\d{2,5})\s*W/i,
     /Q\.MI[A-Z0-9.\-]+\s*\(?\s*240V\s*\)?\s*(?:\d+V\s*)?(\d{2,5})\s*W/i
-  ]) || (invModel && /Q\.MI\.349/i.test(invModel) ? '349' : invModel && /DS3/i.test(invModel) ? '768' : '');
+  ]) || (invModel && /TESLA.*7\.6|7\.6KW\s+SOLAR/i.test(invModel) ? '7600' : invModel && /Q\.MI\.349/i.test(invModel) ? '349' : invModel && /DS3/i.test(invModel) ? '768' : '');
+  if (Number(invOutputW) > 0 && Number(invOutputW) < 100 && /TESLA/i.test(`${invMake} ${invLine} ${invModel}`)) invOutputW = String(Math.round(Number(invOutputW) * 240));
 
-  let pvMicroMake = invMake;
-  let pvMicroModel = invModel;
-  let pvMicroQty = invQty;
-  let pvMicroOutputW = invOutputW;
+  const isPvMicroInverterSystem = /MICROINVERTER|INTEGRATED INVERTER|Q\.MI|AP\s*SYSTEMS|APSYSTEMS|DS3|ENPHASE|IQ8|IQ7/i.test(`${invLine} ${invModel}`);
+  let pvMicroMake = isPvMicroInverterSystem ? invMake : '';
+  let pvMicroModel = isPvMicroInverterSystem ? invModel : '';
+  let pvMicroQty = isPvMicroInverterSystem ? invQty : '';
+  let pvMicroOutputW = isPvMicroInverterSystem ? invOutputW : '';
 
   // If an ESS/PW battery is present, the main utility inverter should be Tesla/Powerwall.
   // Keep AP / Altenergy microinverters in the dedicated PV microinverter fields.
@@ -1305,6 +1531,18 @@ function parsePlanData(planDoc){
     invQty = battery.essInverterQty || battery.batteryQty || '1';
     invOutputW = battery.essInverterOutputW || invOutputW;
   }
+
+  const mciLine = matchFirst(cover, [
+    /MCI\s*:?\s*(\(?\s*\d{1,3}\s*\)?\s*TESLA\s+MCI[-\s]*GEN\s*2\s+RAPID\s+SHUTDOWN\s+DEVICE)/i,
+    /MCI\s+\d{1,3}\s+(TESLA\s+MCI[-\s]*GEN\s*2\s+RAPID\s+SHUTDOWN\s+DEVICE)/i,
+    /(TESLA\s+MCI[-\s]*GEN\s*2\s+RAPID\s+SHUTDOWN\s+DEVICE)/i
+  ]);
+  const mciQty = matchFirst(cover, [
+    /MCI\s*:?\s*\(?\s*(\d{1,3})\s*\)?\s*TESLA/i,
+    /MCI\s+(\d{1,3})\s+TESLA/i
+  ]);
+  const mciMake = /TESLA/i.test(mciLine) ? 'Tesla' : '';
+  const mciModel = mciLine ? 'MCI-GEN 2 RAPID SHUTDOWN DEVICE' : '';
 
   const utility = matchFirst(cover, [
     /UTILITY\s*:?\s*(PGE|PORTLAND GENERAL ELECTRIC|PACIFIC POWER|PACIFICORP)/i,
@@ -1379,6 +1617,7 @@ function parsePlanData(planDoc){
     acKw,
     exportKw:acKw,
     moduleMake,
+    moduleType,
     moduleModel,
     moduleWattage,
     moduleQty,
@@ -1390,6 +1629,9 @@ function parsePlanData(planDoc){
     pvMicroModel,
     pvMicroQty,
     pvMicroOutputW,
+    mciMake,
+    mciModel,
+    mciQty,
     batteryMake:battery.batteryMake,
     batteryModel:battery.batteryModel,
     batteryQty:battery.batteryQty,
@@ -1461,15 +1703,22 @@ function splitOcrSections(rawText=''){
 }
 
 function normalizeAccountSearchText(s=''){
-  return normalizeOcrNumberText(String(s || ''))
+  // Keep label words intact. Older versions normalized the whole line first, which could turn
+  // Account number into Account num8er and make clean PGE PDF bills fail account parsing.
+  return String(s || '')
     .replace(/[—–]/g,'-')
     .replace(/\s+/g,' ')
     .trim();
 }
 
+function accountDigits(raw=''){
+  // Apply OCR character cleanup only to the captured number itself, not to surrounding labels.
+  return digits(normalizeOcrNumberText(raw || ''));
+}
+
 function isBadPgeAccountCandidate(d, context=''){
   const c = String(context || '').toLowerCase();
-  const hasAccountLabel = /account\s*number|accountnumber|acct/.test(c);
+  const hasAccountLabel = /account\s*(?:number|num8er|nurnber)|accountnumber|accountnum8er|acct/.test(c);
 
   if (!/^\d{10}$/.test(d)) return true;
 
@@ -1494,13 +1743,15 @@ function isBadPgeAccountCandidate(d, context=''){
 function pgeAccountCandidateFromWindow(windowText=''){
   const raw = String(windowText || '');
   const t = normalizeAccountSearchText(raw);
+  const accountLabel = '(?:Account\\s*(?:number|num8er|nurnber|no\\.?|#)|Accountnumber|Accountnum8er|Acct(?:ount)?\\s*(?:No\\.?|Number|Num8er)?)';
 
   // Best for layout-aware PDF text. Keeps account on its own line before nearby service/meter rows.
   const lines = raw.split(/\n+/).map(x => normalizeAccountSearchText(x)).filter(Boolean);
+  const lineRe = new RegExp('\\b' + accountLabel + '\\b[^0-9OIlS]{0,45}([0-9OIlS][0-9OIlS\\s-]{9,24})', 'i');
   for (const line of lines){
-    const m = line.match(/\b(?:Account\s*number|Accountnumber|Acct(?:ount)?\s*(?:No\.?|Number)?)\b[^0-9]{0,35}([0-9][0-9\s-]{9,22})/i);
+    const m = line.match(lineRe);
     if (m){
-      const d = digits(m[1]).slice(0,10);
+      const d = accountDigits(m[1]).slice(0,10);
       if (!isBadPgeAccountCandidate(d, `Account number ${line}`)) return d;
     }
   }
@@ -1510,14 +1761,12 @@ function pgeAccountCandidateFromWindow(windowText=''){
   // Accountnumber 0531624584
   // Account number: 6047406483
   const labeled = [
-    /Account\s*number[^0-9]{0,45}([0-9][0-9\s-]{9,22})/ig,
-    /Accountnumber[^0-9]{0,45}([0-9][0-9\s-]{9,22})/ig,
-    /Acct(?:ount)?\s*(?:No\.?|Number)?[^0-9]{0,45}([0-9][0-9\s-]{9,22})/ig
+    new RegExp(accountLabel + '[^0-9OIlS]{0,55}([0-9OIlS][0-9OIlS\\s-]{9,24})', 'ig')
   ];
 
   for (const re of labeled){
     for (const m of t.matchAll(re)){
-      const d = digits(m[1]).slice(0,10);
+      const d = accountDigits(m[1]).slice(0,10);
       const ctx = t.slice(Math.max(0, (m.index || 0)-80), (m.index || 0)+180);
       if (!isBadPgeAccountCandidate(d, `Account number ${ctx}`)) return d;
     }
@@ -1542,7 +1791,7 @@ function findPgeAccountCandidatesInText(text='', sectionName='', requireLabel=fa
   // Account-focused crops may contain just the number. Keep this restricted to account crop names only.
   if (!requireLabel && /account|pge|upper left|lower right|inner bill|top left/.test(source)){
     for (const m of t.matchAll(/\b([0-9]{10})\b/g)){
-      const d = digits(m[1]);
+      const d = accountDigits(m[1]);
       const ctx = t.slice(Math.max(0, (m.index || 0)-80), (m.index || 0)+140);
       if (!isBadPgeAccountCandidate(d, ctx)){
         let score = 120;
@@ -1584,7 +1833,7 @@ function isBadPacificAccountCandidate(d, context=''){
 
 
 function normalizePacificAccountCandidate(d, context=''){
-  let candidate = digits(d);
+  let candidate = accountDigits(d);
   const c = String(context || '').toLowerCase();
 
   // Targeted OCR correction only for the one known case where 56927222 was read as 96927222.
@@ -1628,9 +1877,9 @@ function findPacificAccountCandidatesInText(text='', sectionName='', requireLabe
 
   // Labeled and remittance forms.
   const strictPatterns = [
-    {re:/Account\s*Number[^0-9]{0,60}([1-9][0-9]{7})\D{0,10}(001)\D{0,8}([0-9])/ig, score:340, label:'Account Number label'},
-    {re:/ACCOUNT\s*NUMBER[^0-9]{0,60}([1-9][0-9]{7})\D{0,10}(001)\D{0,8}([0-9])/ig, score:340, label:'ACCOUNT NUMBER label'},
-    {re:/\bH\D{0,18}([1-9][0-9]{7})\D{1,10}(001)\D{1,8}([0-9])\b/ig, score:370, label:'H remittance line'}
+    {re:/Account\s*(?:Number|Num8er|Nurnber)[^0-9OIlS]{0,60}([1-9OIlS][0-9OIlS]{7})\D{0,10}(00[1Il|])\D{0,8}([0-9OIlS])/ig, score:340, label:'Account Number label'},
+    {re:/ACCOUNT\s*(?:NUMBER|NUM8ER|NURNBER)[^0-9OIlS]{0,60}([1-9OIlS][0-9OIlS]{7})\D{0,10}(00[1Il|])\D{0,8}([0-9OIlS])/ig, score:340, label:'ACCOUNT NUMBER label'},
+    {re:/\bH\D{0,18}([1-9OIlS][0-9OIlS]{7})\D{1,10}(00[1Il|])\D{1,8}([0-9OIlS])\b/ig, score:370, label:'H remittance line'}
   ];
 
   for (const item of strictPatterns){
@@ -1644,7 +1893,7 @@ function findPacificAccountCandidatesInText(text='', sectionName='', requireLabe
   // Tight account crops may contain just the number. Still require 001x suffix.
   // This is allowed only for account/remittance/right-column crops, not full-page table text.
   if (!requireLabel && /account|remittance|right|top|bottom h|value tight|pacific/.test(source)){
-    for (const m of t.matchAll(/\b([1-9][0-9]{7})\D{0,12}(001)\D{0,8}([0-9])\b/g)){
+    for (const m of t.matchAll(/\b([1-9OIlS][0-9OIlS]{7})\D{0,12}(00[1Il|])\D{0,8}([0-9OIlS])\b/g)){
       const d = `${m[1]}${m[2]}${m[3]}`;
       const ctx = t.slice(Math.max(0, (m.index || 0)-100), (m.index || 0)+200);
       addCandidate(d, ctx, 150, 'tight numeric account crop');
@@ -1671,6 +1920,12 @@ function parseUBAccountNumber(rawText, utilityHint=''){
   const isPacific = /pacific|pacificorp/i.test(hint);
 
   if (isPge && !isPacific){
+    const directPgePdf = pgeAccountCandidateFromWindow(raw);
+    if (directPgePdf){
+      notes.push(`PGE account number parsed from labeled PDF/UB text: ${directPgePdf}.`);
+      return {value:directPgePdf, notes};
+    }
+
     // Rigid PGE mode:
     // Prefer labeled "Account number" text, then account-focused OCR crops only.
     // This avoids pulling meter numbers, phone numbers, service ZIPs, due dates, or barcode values.
@@ -1861,48 +2116,60 @@ function parseUBMeterNumber(rawText){
 }
 
 
-function directLabeledUBAccountFromText(rawText='', utilityHint=''){
-  const text = normalizeText(rawText || '');
-  const flat = text.replace(/\s+/g,' ').trim();
-  const hint = `${utilityHint || ''} ${flat}`;
+function parsePgeServiceAddress(rawText=''){
+  const lines = normalizeText(rawText || '').split(/\n+/).map(x => x.trim()).filter(Boolean);
 
-  const isPge = /PGE|PORTLAND\s*GENERAL|PORTLANDGENERAL|PORTLANDGENERAL\.COM/i.test(hint) && !/PACIFIC\s+POWER|PACIFICORP/i.test(hint);
-  const isPacific = /PACIFIC\s+POWER|PACIFICORP/i.test(hint);
+  for (let i=0; i<lines.length; i++){
+    const line = lines[i];
+    if (!/Service\s+address/i.test(line)) continue;
 
-  if (isPge){
-    // Digital PDFs have very reliable text. Do this before any context filtering.
-    // Examples: Account number 5118290000 / Account number 7678473025
-    const matches = [];
-    for (const m of flat.matchAll(/\bAccount\s*number\b[^0-9]{0,40}([0-9]{10})\b/ig)){
-      const d = digits(m[1]);
-      if (/^\d{10}$/.test(d) && !/^(503|800|888|877|866|855|844|833|1251)/.test(d)) {
-        matches.push(d);
-      }
+    let street = line
+      .replace(/^.*?Service\s+address\s*/i,'')
+      .replace(/\b(?:Due\s+date|Amount\s+due|Action\s+needed|We\s+did\s+not\s+receive|Service\s+period)\b.*$/i,'')
+      .trim();
+
+    if (!street && lines[i+1] && /^\d{2,6}\s+[A-Z0-9]/i.test(lines[i+1])) {
+      street = lines[i+1]
+        .replace(/\b(?:Due\s+date|Amount\s+due|Action\s+needed|Service\s+period)\b.*$/i,'')
+        .trim();
     }
-    for (const m of flat.matchAll(/\bAccountnumber\b[^0-9]{0,40}([0-9]{10})\b/ig)){
-      const d = digits(m[1]);
-      if (/^\d{10}$/.test(d) && !/^(503|800|888|877|866|855|844|833|1251)/.test(d)) {
-        matches.push(d);
-      }
+
+    let cityLine = '';
+    for (let j=i+1; j<Math.min(lines.length, i+8); j++){
+      const m = lines[j].match(/([A-Z][A-Z .'-]+),?\s+(OR|WA|CA|ID|AZ|NV|UT)\s+\d{5}(?:-\d{4})?/i);
+      if (m){ cityLine = m[0]; break; }
     }
-    const unique = uniq(matches);
-    if (unique.length) return {value:unique[0], note:`PGE account parsed from direct labeled PDF text: ${unique[0]}.`};
+
+    if (street && cityLine){
+      return title(`${street} ${cityLine}`);
+    }
   }
 
-  if (isPacific){
-    // Digital/photo OCR Pacific examples:
-    // Account Number 84857537-001 2
-    // Account Number 56927222-001 7
-    const matches = [];
-    for (const m of flat.matchAll(/\bAccount\s*Number\b[^0-9]{0,60}([1-9][0-9]{7})\D{0,10}(001)\D{0,8}([0-9])\b/ig)){
-      const d = `${m[1]}${m[2]}${m[3]}`;
-      if (/^[1-9][0-9]{7}001[0-9]$/.test(d)) matches.push(formatUtilityAccount(d, 'Pacific Power'));
+  return '';
+}
+
+function parsePgeAccountHolder(rawText=''){
+  const lines = normalizeText(rawText || '').split(/\n+/).map(x => x.trim()).filter(Boolean);
+
+  for (let i=0; i<lines.length; i++){
+    if (!/Account\s*(?:number|num8er|nurnber)/i.test(lines[i])) continue;
+    for (let j=i-1; j>=Math.max(0, i-4); j--){
+      let candidate = lines[j]
+        .replace(/\b(?:Action\s+needed|Amount\s+due|ACCOUNT\s+PAST\s+DUE|Please\s+note|Due\s+date)\b.*$/i,'')
+        .replace(/\$[0-9.,]+.*$/,'')
+        .replace(/\bPGE\b|PortlandGeneral\.com|\d{3}-\d{3}-\d{4}|\d{3}-\d{4}/ig,'')
+        .trim();
+
+      if (/^[A-Z][A-Z .'-]{3,}$/i.test(candidate) && !/account|service|period|amount|due|payment|full|previous|bill|portland|general|box|page/i.test(candidate)){
+        return title(candidate);
+      }
     }
-    const unique = uniq(matches);
-    if (unique.length) return {value:unique[0], note:`Pacific Power account parsed from direct labeled bill text: ${unique[0]}.`};
   }
 
-  return {value:'', note:''};
+  // Fallback to mailing name near the bottom of some PGE PDFs.
+  const bottom = normalizeText(rawText || '').match(/\n\s*([A-Z][A-Z .'-]{4,})\s*\n\s*[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+  if (bottom) return title(bottom[1]);
+  return '';
 }
 
 function parseUBData(ubDoc){
@@ -1911,15 +2178,11 @@ function parseUBData(ubDoc){
   const utilitySource = `${text} ${ubDoc?.fileName || ''}`;
   const detectedUtility = /PORTLAND\s*GENERAL|PORTLANDGENERAL|PGE|PGE_Bill|BillSummary/i.test(utilitySource) ? 'PGE' : /PACIFIC POWER|PACIFICORP/i.test(utilitySource) ? 'Pacific Power' : '';
   const utility = detectedUtility || getVal('utility') || '';
-
-  const directAcct = directLabeledUBAccountFromText(text, utility);
-  const acct = directAcct.value
-    ? {value:directAcct.value, notes:[directAcct.note]}
-    : parseUBAccountNumber(text, utility);
-
+  const acct = parseUBAccountNumber(text, utility);
   const meterRaw = parseUBMeterNumber(text);
 
-  let service = title(matchFirst(text, [
+  let service = /PGE|PORTLAND\s*GENERAL|PORTLANDGENERAL/i.test(`${text} ${utility}`) ? parsePgeServiceAddress(text) : '';
+  if (!service) service = title(matchFirst(text, [
     /Service address\s*[:#]?\s*(\d{2,6}\s+[A-Z0-9 .'\-]+?(?:\n|\s)+[A-Z][A-Z .'\-]+,?\s+(?:OR|WA|CA|ID|AZ|NV|UT)\s+\d{5}(?:-\d{4})?)/i,
     /Service address\s*[:#]?\s*(\d{2,6}\s+[A-Z0-9 .'\-]+?)(?=\s+Service period|\s+Account|\n|$)/i
   ]));
@@ -1931,6 +2194,8 @@ function parseUBData(ubDoc){
   }
 
   const accountHolder = (() => {
+    const pgeHolder = /PGE|PORTLAND\s*GENERAL|PORTLANDGENERAL/i.test(`${text} ${utility}`) ? parsePgeAccountHolder(text) : '';
+    if (pgeHolder) return pgeHolder;
     const lines = text.split(/\n+/).map(x => x.trim()).filter(Boolean);
     const topNameLines = [];
     for (let i=0; i<Math.min(lines.length,28); i++){
@@ -2000,10 +2265,11 @@ function compareMeters(planMeter, ubMeter){
 function fillProjectFields(plan){
   // Final cleanup for OCR/title block artifacts.
   if (plan.owner) plan.owner = clean(plan.owner).replace(/\bRev\b\s*/i,'').trim();
+  if (plan.moduleType) plan.moduleType = cleanModuleType(plan.moduleType);
   if (plan.moduleModel) plan.moduleModel = stripModuleMakeFromModel(plan.moduleModel);
-  if (/^ZXM\d+$/i.test(plan.moduleModel || '') && state.planDoc && state.planDoc.text){
-    const zFull = normalizeModelHyphens(state.planDoc.text).match(/\b(ZXM\d+[A-Z0-9]*-[A-Z0-9]+-\d{3,4}[A-Z]*)\b/i);
-    if (zFull) plan.moduleModel = stripModuleMakeFromModel(zFull[1]);
+  if ((/^ZXM\d+$/i.test(plan.moduleModel || '') || /ZNSHINE/i.test(plan.moduleType || '')) && state.planDoc && state.planDoc.text){
+    const zFull = extractZnshineModuleModel(plan.moduleType || state.planDoc.text);
+    if (zFull) plan.moduleModel = zFull;
   }
   if (plan.invModel) plan.invModel = stripInverterMakeFromModel(plan.invModel);
   if (plan.invMake && /ALTENERGY|AP\s*SYSTEMS|APSYSTEMS/i.test(plan.invMake)) plan.invMake = 'Altenergy Power System';
@@ -2049,6 +2315,49 @@ function fillUBFields(ub, meterPhoto){
   if (ub.utility && !getVal('utility')) setVal('utility', ub.utility);
 }
 
+
+function collectElectricalScopeWindows(rawText){
+  const raw = normalizeText(rawText || '');
+  const windows = [];
+  const addWindow = (label, re, before=260, after=900) => {
+    const rx = new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g');
+    let m;
+    while ((m = rx.exec(raw)) !== null) {
+      const start = Math.max(0, m.index - before);
+      const end = Math.min(raw.length, m.index + String(m[0] || '').length + after);
+      windows.push(`--- ${label} ---\n${raw.slice(start, end)}`);
+      if (m.index === rx.lastIndex) rx.lastIndex++;
+    }
+  };
+
+  // Exact project callouts. These are intentionally narrower than generic NEC notes.
+  addWindow('INTERCONNECTION METHOD', /INTERCONNECTION\s+METHOD\s*:?\s*[^\n]{0,160}/i, 80, 520);
+  addWindow('POINT OF INTERCONNECT', /POINT\s+OF\s+INTERCONNECT(?:ION)?[^\n]{0,260}/i, 160, 760);
+  addWindow('MSP SITE DETAIL', /\bMSP\s*:\s*(?:NEW|EXISTING)[^\n]{0,180}/i, 180, 650);
+  addWindow('NEW MAIN SERVICE PANEL', /\bNEW\s+(?:INTERIOR|EXTERIOR)?\s*(?:MAIN\s+)?SERVICE\s+PANEL[^\n]{0,260}/i, 200, 850);
+  addWindow('UPGRADE NOTE', /\bUPGRADE\s+(?:TO|THE)\b[^\n]{0,260}/i, 220, 900);
+  addWindow('REPLACE NOTE', /\bREPLACE(?:MENT)?\b[^\n]{0,260}\b(?:METER|PANEL|SERVICE|BUS|BREAKER|MAIN)\b[^\n]{0,160}/i, 220, 850);
+  addWindow('METER BASE', /\bMETER\s+(?:BASE|SOCKET)\s*(?:REPLACEMENT|REPLACE|CHANGE(?:OUT)?|SWAP)?[^\n]{0,220}/i, 180, 760);
+  addWindow('METER COLLAR', /\bMETER\s+COLLAR\b[^\n]{0,220}/i, 180, 760);
+  addWindow('CONNECTDER', /\bCONNECTDER\b[^\n]{0,240}/i, 180, 760);
+  addWindow('MMD', /\bMMD\b[^\n]{0,220}/i, 180, 760);
+  addWindow('METER SOCKET ADAPTER', /\bMETER\s+SOCKET\s+ADAPTER\b[^\n]{0,260}/i, 180, 760);
+  addWindow('METER MAIN', /\bMETER\s*\/\s*MAIN\b[^\n]{0,260}/i, 180, 850);
+  addWindow('BUS BAR MAIN PANEL', /\b(?:NEW|EXISTING)\s+(?:\d{3}V\s*\/\s*)?\d{2,3}A\s+BUS\s+BAR\s+RATING,?\s+MAIN\s+SERVICE\s+PANEL[^\n]{0,260}/i, 180, 850);
+  addWindow('FSU PSU', /\b(?:FSU|PSU|FULL\s+SERVICE\s+UPGRADE|PARTIAL\s+SERVICE\s+UPGRADE)\b[^\n]{0,260}/i, 180, 850);
+  addWindow('SERVICE RISER LATERAL', /\b(?:NEW|REPLACE|UPGRADE)[^\n]{0,220}\b(?:SERVICE\s+RISER|SERVICE\s+LATERAL|SERVICE\s+ENTRANCE|SERVICE\s+MAST)\b[^\n]{0,220}/i, 180, 850);
+  addWindow('UTILITY SERVICE', /\bUTILITY\s+SERVICE\s*:\s*[^\n]{0,180}/i, 80, 420);
+
+  return windows.join('\n\n');
+}
+
+function detectUtilityProvider(text, fallback=''){
+  const combined = normalizeText(`${fallback || ''} ${text || ''}`).toUpperCase();
+  if (/\bPGE\b|PORTLAND\s+GENERAL/i.test(combined)) return 'PGE';
+  if (/PACIFICORP|PACIFIC\s+POWER|PAC\s*POWER/i.test(combined)) return 'PACIFICORP';
+  return String(fallback || '').toUpperCase();
+}
+
 function detectElectricalScope(plan){
   const rawText = normalizeText(state.planDoc?.text || '');
   const packetText = rawText.toUpperCase();
@@ -2060,16 +2369,13 @@ function detectElectricalScope(plan){
 
   const actualIntercoText = [
     parsedInterco,
-    (rawText.match(/INTERCONNECTION\s+METHOD\s*:?\s*([A-Z ]+?)(?=\s+AHJ|\s+PHOTOVOLTAIC|\n|$)/i) || [,''])[1],
-    (rawText.match(/POINT\s+OF\s+INTERCONNECT(?:ION)?[,:\s]+([A-Z ]+?)(?=\s*\(|\n|$)/i) || [,''])[1],
-    (rawText.match(/POINT\s+OF\s+INTERCONNECT(?:ION)?[\s\S]{0,80}?(LOAD\s+SIDE|LINE\s+SIDE\s+TAP|SUPPLY\s+SIDE\s+TAP|LOAD\s+BREAKER|PV\s+BREAKER)/i) || [,''])[1]
+    ...[...rawText.matchAll(/INTERCONNECTION\s+METHOD\s*:?\s*([^\n]{0,160}?)(?=\s+AHJ|\s+PHOTOVOLTAIC|\n|$)/ig)].map(m => m[1]),
+    ...[...rawText.matchAll(/POINT\s+OF\s+INTERCONNECT(?:ION)?[^\n]{0,260}/ig)].map(m => m[0])
   ].filter(Boolean).join(' ').toUpperCase();
 
   const actualScopeText = [
     actualIntercoText,
-    (rawText.match(/SITE DETAIL:[\s\S]{0,600}/i) || [''])[0],
-    (rawText.match(/PHOTOVOLTAIC SYSTEM SPECIFICATIONS:[\s\S]{0,700}/i) || [''])[0],
-    (rawText.match(/3-LINE DIAGRAM[\s\S]{0,5500}/i) || [''])[0]
+    collectElectricalScopeWindows(rawText)
   ].join('\n').toUpperCase();
 
   const hasActual = re => re.test(actualScopeText);
@@ -2090,29 +2396,48 @@ function detectElectricalScope(plan){
     /IN\s+AN\s+UNDERGROUND\s+PHOTOVOLTAIC\s+SYSTEM/i.test(packetText) ||
     /UNDERGROUND\s+PHOTOVOLTAIC\s+SYSTEM/i.test(packetText);
 
-  const actualLineSideTap = /LINE\s*SIDE\s*TAP|SUPPLY\s*SIDE\s*TAP/i.test(actualIntercoText) ||
-    /POINT\s+OF\s+INTERCONNECT(?:ION)?[\s\S]{0,120}?LINE\s*SIDE\s*TAP/i.test(actualScopeText);
+  const tapType = /LOAD\s*SIDE\s*TAP/i.test(actualIntercoText + ' ' + actualScopeText) ? 'Load side tap' :
+    /SUPPLY\s*SIDE\s*TAP/i.test(actualIntercoText + ' ' + actualScopeText) ? 'Supply side tap' :
+    /LINE\s*SIDE\s*TAP/i.test(actualIntercoText + ' ' + actualScopeText) ? 'Line side tap' :
+    /METER\s+COLLAR|CONNECTDER|\bMMD\b/i.test(actualIntercoText + ' ' + actualScopeText) ? 'Meter collar / MMD' : '';
 
-  const actualBreaker = /LOAD\s+BREAKER|LOAD\s+SIDE|PV\s+BREAKER/i.test(actualIntercoText) ||
-    /POINT\s+OF\s+INTERCONNECT(?:ION)?[\s\S]{0,120}?LOAD\s+SIDE/i.test(actualScopeText) ||
-    /\(N\)\s*PV\s+BREAKER/i.test(actualScopeText);
+  const actualLineSideTap = /LOAD\s*SIDE\s*TAP|SUPPLY\s*SIDE\s*TAP|LINE\s*SIDE\s*TAP/i.test(actualIntercoText + ' ' + actualScopeText);
 
-  const actualMpu = /\bMPU\b|MAIN PANEL UPGRADE|UPGRADE TO NEW\s+\d{3}A|NEW\s+\d{3}A\s+(?:MAIN\s+)?(?:SERVICE\s+)?PANEL/i.test(actualScopeText);
-  const actualFsu = /\bFSU\b|FULL SERVICE UPGRADE/i.test(actualScopeText);
-  const actualPsu = /\bPSU\b|PARTIAL SERVICE UPGRADE/i.test(actualScopeText);
-  const actualMeterCollar = /METER COLLAR|CONNECTDER|\bMMD\b|METER MOUNTED DEVICE/i.test(actualScopeText);
-  const actualMeterBase = /METER BASE REPLACEMENT|REPLACE(?:MENT)?\s+(?:OF\s+)?(?:THE\s+)?METER BASE|NEW METER BASE|METER SOCKET REPLACEMENT/i.test(actualScopeText);
+  // Important: LOAD SIDE TAP and meter collar/MMD are not breaker paths. Only true breaker/backfeed breaker language should be breaker-only.
+  const actualBreaker = !actualLineSideTap && !/METER\s+COLLAR|CONNECTDER|\bMMD\b/i.test(actualIntercoText + ' ' + actualScopeText) && (
+    /LOAD\s+(?:SIDE\s+)?BREAKER|SUPPLY\s+BREAKER|PV\s+BREAKER|BACKFEED(?:ING)?\s+BREAKER|DEDICATED\s+PV\s+BREAKER/i.test(actualIntercoText) ||
+    /POINT\s+OF\s+INTERCONNECT(?:ION)?[\s\S]{0,180}?(LOAD\s+(?:SIDE\s+)?BREAKER|SUPPLY\s+BREAKER|PV\s+BREAKER|BACKFEED(?:ING)?\s+BREAKER)/i.test(actualScopeText) ||
+    /\(N\)\s*PV\s+BREAKER/i.test(actualScopeText)
+  );
 
-  const actualNonBreakerElectrical = actualLineSideTap || actualMpu || actualFsu || actualPsu || actualMeterCollar || actualMeterBase;
+  const actualExplicitMpu = /\bMPU\b|MAIN\s+PANEL\s+UPGRADE/i.test(actualScopeText);
+  const actualMspNew = /\bMSP\s*:\s*NEW\s+\d{3}A\s+MSP\b/i.test(actualScopeText);
+  const actualPanelUpgrade = /UPGRADE\s+TO\s+(?:A\s+)?NEW\s+\d{3}A\s+MAIN\s+BUS{1,2}|UPGRADE\s+TO\s+(?:A\s+)?NEW\s+\d{3}A|NEW\s+\d{3}A[-\s]*RATED\s+BUS\s+WITH\s+A\s+\d{3}A\s+MAIN\s+BREAKER|NEW\s+(?:\d{3}V\s*\/\s*)?\d{3}A\s+BUS\s+BAR\s+RATING,?\s+MAIN\s+SERVICE\s+PANEL|NEW\s+\d{3}A\s+(?:MAIN\s+)?(?:SERVICE\s+)?PANEL|NEW\s+(?:INTERIOR|EXTERIOR)\s+MAIN\s+SERVICE\s+PANEL/i.test(actualScopeText);
+  const actualMeterMainUpgrade = /UPGRADE\s+(?:THE\s+)?METER\s*\/\s*MAIN\s+UNIT|UPGRADE\s+TO\s+NEW\s+\d{3}A\s+RATED\s+METER\s*\/\s*MAIN\s+UNIT|NEW\s+\d{3}A\s+RATED\s+METER\s*\/\s*MAIN\s+UNIT/i.test(actualScopeText);
+  const actualMpu = actualExplicitMpu || actualMspNew || actualPanelUpgrade || actualMeterMainUpgrade;
+
+  const actualFsu = /\bFSU\b|FULL\s+SERVICE\s+UPGRADE|NEW\s+SERVICE\s+(?:RISER|LATERAL|ENTRANCE|MAST)|REPLACE\s+(?:THE\s+)?SERVICE\s+(?:RISER|LATERAL|ENTRANCE|MAST)/i.test(actualScopeText);
+  const actualPsu = /\bPSU\b|PARTIAL\s+SERVICE\s+UPGRADE/i.test(actualScopeText);
+  const actualMeterCollar = /METER\s+COLLAR|CONNECTDER|\bMMD\b|METER\s+MOUNTED\s+DEVICE|METER\s+SOCKET\s+ADAPTER/i.test(actualScopeText);
+  const actualMeterBase = /METER\s+BASE\s+REPLACEMENT|REPLACE(?:MENT)?\s+(?:OF\s+)?(?:THE\s+)?METER\s+BASE|NEW\s+METER\s+BASE|METER\s+SOCKET\s+REPLACEMENT/i.test(actualScopeText);
+  const actualMeterWork = actualMeterBase || actualMeterCollar || /METER\s+(?:WORK|PULL|BASE|SOCKET|REPLACEMENT|REPLACE|CHANGE(?:OUT)?|SWAP)/i.test(actualScopeText);
+
+  const backupText = `${actualScopeText} ${packetText}`;
+  const actualFullHomeBackup = /FULL[-\s]*HOME\s+BACKUP|WHOLE[-\s]*HOME\s+BACKUP|ENTIRE\s+HOME\s+BACKUP|BACK(?:S|ING)?\s+UP\s+(?:THE\s+)?(?:FULL|WHOLE|ENTIRE)\s+(?:HOME|HOUSE)|BACKUP\s+(?:THE\s+)?(?:FULL|WHOLE|ENTIRE)\s+(?:HOME|HOUSE)|ALL\s+LOADS\s+BACKUP|BACKUP\s+ALL\s+LOADS/i.test(backupText);
+  const actualPartialHomeBackup = !actualFullHomeBackup && /PARTIAL[-\s]*HOME\s+BACKUP|PARTIAL\s+BACKUP|BACKUP\s+LOAD\s+PANEL|BACKUP\s+PANEL|CRITICAL\s+LOADS|DEDICATED\s+BACKUP\s+LOADS|BACKUP\s+LOADS\b|LOADS\s+BACKED\s+UP/i.test(backupText);
+  const actualBackupBatteryScope = actualFullHomeBackup || actualPartialHomeBackup;
+
+  const actualNonBreakerElectrical = actualLineSideTap || actualMpu || actualFsu || actualPsu || actualMeterCollar || actualMeterBase || actualBackupBatteryScope;
 
   const isBreakerOnlyInterconnect = actualBreaker && !actualNonBreakerElectrical;
 
   const locateEvidence = [
     {type:'nonBreaker', label:'Non-breaker interconnection or electrical scope detected', hit:actualNonBreakerElectrical},
-    {type:'lineSideTap', label:'Line side tap interconnection detected', hit:actualLineSideTap},
-    {type:'mpu', label:'MPU / service upgrade type work detected', hit:actualMpu || actualFsu || actualPsu},
+    {type:'tap', label: tapType ? `${tapType} interconnection detected` : 'Tap interconnection detected', hit:actualLineSideTap},
+    {type:'mpu', label: actualMpu ? 'MPU / main service panel upgrade detected on SLD or site detail' : 'FSU / PSU service upgrade type work detected', hit:actualMpu || actualFsu || actualPsu},
     {type:'meterCollar', label:'Meter collar / MMD / ConnectDER detected', hit:actualMeterCollar},
     {type:'meterBase', label:'Meter base replacement detected', hit:actualMeterBase},
+    {type:'backupBattery', label: actualFullHomeBackup ? 'Full-home backup battery scope detected' : 'Partial-home backup battery scope detected', hit:actualBackupBatteryScope},
     {type:'trench', label:'Trenching called out', hit:/\bTRENCH(?:ING|ED)?\b/i.test(packetText)},
     {type:'811', label:'811 / utility locate called out', hit:/\b811\b|UTILITY\s+LOCATE|UTILITY\s+LOCATES|LOCATES?\s+(?:REQUIRED|NEEDED)|DIG\s*ALERT/i.test(packetText)},
     {type:'private', label:'Private locate called out', hit:/PRIVATE\s+LOCATE|PRIVATE\s+LOCATES|PRIVATE\s+UTILITY\s+LOCATE/i.test(packetText)},
@@ -2133,7 +2458,12 @@ function detectElectricalScope(plan){
     psu: actualPsu,
     meterCollar: actualMeterCollar,
     meterBase: actualMeterBase,
+    meterWork: actualMeterWork,
+    fullHomeBackup: actualFullHomeBackup,
+    partialHomeBackup: actualPartialHomeBackup,
+    backupBatteryScope: actualBackupBatteryScope,
     lineSideTap: actualLineSideTap,
+    tapType,
     loadBreaker: actualBreaker,
     trench: locateHits.some(x => ['trench','inspection','ugConduit','relocation','groundMount'].includes(x.type)),
     locatesNeeded,
@@ -2141,7 +2471,7 @@ function detectElectricalScope(plan){
     locateHits,
     genericUndergroundOnly,
     acDisconnect: /AC DISCONNECT|VISIBLE,\s*LOCKABLE,\s*LABELED DISCONNECT/i.test(actualScopeText),
-    battery: /BATTERY|POWERWALL|ENERGY\s+STORAGE|ESS|TESLA\s+GATEWAY|BACKUP\s+PANEL/i.test(actualScopeText + ' ' + packetText)
+    battery: actualBackupBatteryScope || /POWERWALL|ENERGY\s+STORAGE|ESS\s+SYSTEM|TESLA\s+GATEWAY|BATTERY\s*:/i.test(actualScopeText)
   };
 
   const work = [];
@@ -2150,8 +2480,10 @@ function detectElectricalScope(plan){
   if (flags.psu) work.push('PSU');
   if (flags.meterCollar) work.push('Meter collar / MMD / ConnectDER');
   if (flags.meterBase) work.push('Meter base replacement');
-  if (flags.lineSideTap) work.push('Line side tap');
-  if (flags.loadBreaker && !flags.lineSideTap) work.push('Breaker / load-side interconnection');
+  if (flags.fullHomeBackup) work.push('Full-home backup battery scope');
+  if (flags.partialHomeBackup) work.push('Partial-home backup battery scope');
+  if (flags.lineSideTap) work.push(flags.tapType || 'Tap interconnection');
+  if (flags.loadBreaker && !flags.lineSideTap) work.push('Breaker interconnection');
   if (flags.trench) work.push('Ground disturbance / trenching scope');
   if (flags.locatesNeeded) work.push('Utility locates required');
   if (flags.privateLocatesNeeded) work.push('Private locates may be needed');
@@ -2163,21 +2495,31 @@ function detectElectricalScope(plan){
   const info = [];
 
   if (/PGE|PORTLAND GENERAL/.test(utility)){
+    if (flags.fullHomeBackup){ dr = true; reasons.push('PGE: full-home backup batteries trigger D/R review.'); }
+    if (flags.partialHomeBackup){ info.push('PGE: partial-home backup detected. Per PM SOP, partial-home backup does not trigger D/R by itself.'); }
     if (flags.meterBase){ dr = true; reasons.push('PGE: meter base replacement triggers D/R review.'); }
-    if (flags.fsu || flags.psu){ dr = true; reasons.push('PGE: FSU/PSU triggers D/R review.'); }
-    if (flags.mpu){ dr = true; reasons.push('PGE: MPU may trigger D/R if it involves meter work or a hot service change. Confirm with utility before scheduling.'); }
+    if (flags.fsu || flags.psu){ dr = true; reasons.push('PGE: FSU/PSU or service lateral/riser work triggers D/R review.'); }
+    if (flags.meterCollar){ dr = true; reasons.push('PGE: meter collar / MMD / ConnectDER is meter work and should be treated as D/R/manual utility review unless utility confirms otherwise.'); }
+    if (flags.mpu && !flags.fsu && !flags.psu && !flags.meterBase && !flags.fullHomeBackup && !flags.meterCollar){
+      info.push('PGE: MPU detected. Per PM SOP, PGE MPU is normally done hot and does not trigger D/R by itself. Confirm hot MPU readiness and only escalate to D/R if meter base replacement, FSU/PSU, full-home backup, MMD/ConnectDER, or separate meter work is scoped.');
+    }
     if (flags.lineSideTap && !dr){
-      info.push('PGE: Line side tap detected. Per PM SOP, this is a non-breaker interconnection and needs utility locates called out before field work. It is not automatically D/R unless meter/service work is also scoped.');
+      info.push('PGE: Tap interconnection detected. Per PM SOP, load-side, line-side, and supply-side taps are not breaker-only and need utility locates called out before field work. A tap is not automatically D/R unless meter/service work is also scoped.');
     }
   }
 
-  if (/PACIFIC/.test(utility)){
+  if (/PACIFIC|PAC\s*POWER|PACIFICORP/.test(utility)){
+    if (flags.fullHomeBackup){ dr = true; reasons.push('Pacific Power: full-home backup batteries trigger D/R review.'); }
+    if (flags.partialHomeBackup){ info.push('Pacific Power: partial-home backup detected. Per PM SOP, partial-home backup does not trigger D/R by itself.'); }
     if (flags.meterCollar){ dr = true; reasons.push('Pacific Power: meter collar / MMD / ConnectDER triggers D/R review and MMD form need.'); }
-    if (flags.mpu || flags.fsu || flags.psu){ dr = true; reasons.push('Pacific Power: MPU/FSU/PSU usually requires D/R review.'); }
+    if (flags.mpu || flags.fsu || flags.psu){ dr = true; reasons.push('Pacific Power: MPU/FSU/PSU triggers D/R review.'); }
     if (flags.lineSideTap && !dr){
-      info.push('Pacific Power: Line side tap detected. Per PM SOP, this is a non-breaker interconnection and needs utility locates called out before field work. Confirm interconnection package requirements and D/R only if meter/service work is scoped.');
+      info.push('Pacific Power: Tap interconnection detected. Per PM SOP, load-side, line-side, and supply-side taps are not breaker-only and need utility locates called out before field work. Confirm interconnection package requirements and D/R only if meter/service work is scoped.');
     }
   }
+
+  flags.meterSpotNeeded = dr;
+  if (dr) reasons.push('Meter spot needed because D/R is required. This applies for both PGE and Pacific Power D/R paths.');
 
   if (flags.locatesNeeded) {
     reasons.push(`Utility locates needed because the packet shows: ${flags.locateHits.map(x => x.label).join(', ')}.`);
@@ -2189,8 +2531,11 @@ function detectElectricalScope(plan){
     reasons.push('Private locates may be needed because private utility risk language was detected or private locates were directly called out.');
   }
 
-  if (dr) pushPriority('D/R or utility disconnect coordination likely required before install can be scheduled.');
-  if (flags.locatesNeeded) pushPriority('Utility locates are required before any ground disturbance. Submit 811/utility locate request before scheduling trench or underground work.');
+  if (flags.mpu && /PGE|PORTLAND GENERAL/.test(utility) && !dr) pushPriority('PGE MPU detected on SLD/site detail. Treat as hot MPU, no D/R by itself, but locates are still required because this is not breaker-only work.');
+  if (flags.lineSideTap) pushPriority(`${flags.tapType || 'Tap interconnection'} detected. Treat as non-breaker work and call out locates.`);
+  if (flags.meterCollar) pushPriority('Meter collar / MMD / ConnectDER detected. Pac Power requires D/R path, MMD form, meter photo, locates, and meter spot.');
+  if (dr) pushPriority('D/R or utility disconnect coordination likely required before install can be scheduled. Meter spot is needed when D/R is required.');
+  if (flags.locatesNeeded) pushPriority('Utility locates are required before any non-breaker field work. Submit 811/utility locate request before scheduling.');
   if (flags.privateLocatesNeeded) pushPriority('Private locates may be needed. Confirm with HO for private utilities like irrigation, gas, septic, well, propane, or drain lines.');
 
   return {flags, work, dr, reasons, info};
@@ -2216,13 +2561,17 @@ function updateElectricalScopeUi(scope){
     scope.work.length ? scope.work.join(', ') : 'No major electrical scope detected.'
   );
 
+  const pgeHotMpu = !scope.dr && scope.flags.mpu && /PGE|PORTLAND GENERAL/i.test(getVal('utility')) && !scope.flags.fsu && !scope.flags.psu && !scope.flags.meterBase && !scope.flags.fullHomeBackup && !scope.flags.meterCollar;
+
   setCard(
     'drStatusCard',
     'drStatusMain',
     'drStatusSub',
-    scope.dr ? 'red' : 'green',
-    scope.dr ? 'D/R LIKELY' : 'NO D/R FLAG',
-    scope.dr ? scope.reasons.filter(x=>/D\/R|disconnect|Pacific|PGE/.test(x)).join(' ') : 'No SOP D/R trigger was found.'
+    scope.dr ? 'red' : pgeHotMpu ? 'yellow' : 'green',
+    scope.dr ? 'D/R LIKELY' : pgeHotMpu ? 'PGE HOT MPU' : 'NO D/R FLAG',
+    scope.dr ? scope.reasons.filter(x=>/D\/R|disconnect|Pacific|PGE/.test(x)).join(' ') :
+      pgeHotMpu ? 'MPU detected. Per PM SOP, PGE MPU is done hot and does not need D/R by itself. Locates still apply because this is not breaker-only work.' :
+      'No SOP D/R trigger was found.'
   );
 
   setCard(
@@ -2231,7 +2580,7 @@ function updateElectricalScopeUi(scope){
     'locateStatusSub',
     scope.flags.locatesNeeded ? 'red' : 'green',
     scope.flags.locatesNeeded ? 'LOCATES NEEDED' : 'NO LOCATE FLAG',
-    scope.flags.locatesNeeded ? 'Locate-triggering scope detected. See Utility Locate Callout below.' : 'Breaker/load-side interconnect or no locate-triggering scope detected.'
+    scope.flags.locatesNeeded ? 'Locate-triggering scope detected. See Utility Locate Callout below.' : 'Breaker interconnect or no locate-triggering scope detected.'
   );
 
   setCard(
@@ -2240,7 +2589,7 @@ function updateElectricalScopeUi(scope){
     'installHoldSub',
     scope.dr || scope.flags.locatesNeeded ? 'red' : scope.flags.lineSideTap ? 'yellow' : 'green',
     scope.dr || scope.flags.locatesNeeded ? 'HOLD / CONFIRM' : scope.flags.lineSideTap ? 'REVIEW LST' : 'OK TO REVIEW',
-    scope.dr || scope.flags.locatesNeeded ? 'Do not lock install until flagged utility items are confirmed.' : scope.flags.lineSideTap ? 'Line side tap needs locates per SOP.' : 'No special utility hold generated.'
+    scope.dr || scope.flags.locatesNeeded ? 'Do not lock install until flagged utility items are confirmed.' : scope.flags.lineSideTap ? 'Tap interconnection needs locates per SOP.' : 'No special utility hold generated.'
   );
 
   const detected = [];
@@ -2256,7 +2605,7 @@ function updateElectricalScopeUi(scope){
   const checklist = [];
   if (scope.dr) {
     checklist.push('Confirm D/R need with utility.');
-    checklist.push('Request meter spot or utility date if required.');
+    checklist.push('Request meter spot before utility date because D/R is required.');
     checklist.push('Set HO expectation for outage window.');
     checklist.push('Do not schedule install until utility coordination path is confirmed.');
   }
@@ -2270,14 +2619,19 @@ function updateElectricalScopeUi(scope){
     checklist.push('Ask HO about private utilities: irrigation, gas to BBQ/pool, septic, well, propane, drains, landscape lighting, or outbuilding power.');
     checklist.push('Schedule private locates when any private utilities may cross the work area.');
   }
-  if (scope.flags.meterCollar) checklist.push('For Pac Power meter collar / MMD / ConnectDER: upload MMD form and meter photo with interconnection package.');
+  if (scope.flags.meterCollar) checklist.push('Meter collar / MMD / ConnectDER detected: upload MMD form and meter photo with interconnection package. For Pac Power this triggers D/R, locates, and meter spot.');
   if (scope.flags.battery) {
     checklist.push('Battery / ESS detected: confirm battery disconnect, gateway/controller, backup/load panel scope, ESS labels, and battery spec sheets are included.');
-    checklist.push('Confirm if the battery is backup or non-backup/rate saver mode and make sure utility upload notes match.');
+    checklist.push('Confirm if the battery is full-home backup, partial-home backup, or non-backup/rate saver mode and make sure utility upload notes match.');
+    if (scope.flags.fullHomeBackup) checklist.push('Full-home backup batteries detected: D/R applies for PGE and Pacific Power.');
+    if (scope.flags.partialHomeBackup) checklist.push('Partial-home backup detected: no D/R by itself, but still verify locates/utility coordination if the scope is not breaker-only.');
+  }
+  if (scope.flags.mpu && /PGE|PORTLAND GENERAL/i.test(getVal('utility'))) {
+    checklist.push('PGE MPU detected from SLD/site detail: treat as hot work by default. No D/R unless the packet also shows meter base replacement, FSU/PSU, full-home backup, MMD/ConnectDER, or separate meter work.');
   }
   if (scope.flags.lineSideTap && !scope.dr) {
-    checklist.push('Line side tap detected: confirm permit description, plan set, and utility interconnection docs match LST scope.');
-    checklist.push('Per PM SOP, line side tap is not breaker-only, so call out utility locates before field work.');
+    checklist.push('Tap interconnection detected: confirm permit description, plan set, and utility interconnection docs match the tap scope.');
+    checklist.push('Per PM SOP, tap interconnection is not breaker-only, so call out utility locates before field work.');
   }
   if (!checklist.length) checklist.push('No special electrical coordination checklist generated.');
   setVal('electricalScopeChecklistText', checklist.map((x,i)=>`${i+1}. ${x}`).join('\n'));
@@ -2289,11 +2643,11 @@ function updateElectricalScopeUi(scope){
     locateCallout.push('Why this was flagged:');
     scope.flags.locateHits.forEach((x,i)=>locateCallout.push(`${i+1}. ${x.label}`));
     locateCallout.push('');
-    locateCallout.push('Use this when the job includes actual ground disturbance, trenching, underground conduit/feeders, service relocation with underground work, ground mount posts/footings, 811 language, utility locate language, or trench inspection language.');
+    locateCallout.push('Per PM SOP, locates are needed for everything except breaker-only work. This includes load side tap, line side tap, supply side tap, MPU, FSU, PSU, meter base replacement, meter collar/MMD/ConnectDER, full or partial backup battery scope, trenching, underground conduit/feeders, service relocation, ground mount posts/footings, 811 language, utility locate language, or trench inspection language.');
   } else {
     locateCallout.push('NO LOCATE FLAG');
     locateCallout.push('');
-    locateCallout.push('No locate-triggering scope was found. This should only happen for breaker/load-side interconnection or no utility-side/ground-disturbance work.');
+    locateCallout.push('No locate-triggering scope was found. This should only happen for breaker interconnection or no utility-side/ground-disturbance work.');
     if (scope.flags.genericUndergroundOnly){
       locateCallout.push('');
       locateCallout.push('Note: The packet mentions underground utility service or standard underground PV code notes. This alone does not require locates.');
@@ -2302,16 +2656,16 @@ function updateElectricalScopeUi(scope){
 
   const locateActions = [];
   if (scope.flags.locatesNeeded){
-    locateActions.push('1. Submit 811 / utility locate request before any ground disturbance.');
-    locateActions.push('2. Confirm marks are completed before scheduling trench or underground work.');
+    locateActions.push('1. Submit 811 / utility locate request for any non-breaker scope before field work.');
+    locateActions.push('2. Confirm marks are completed before scheduling work that may involve service equipment, meter work, trenching, or underground scope.');
     locateActions.push('3. Ask HO about private utilities in the work area.');
     locateActions.push('4. If private utilities may exist, order private locates separately.');
     locateActions.push('5. If trenching is present, confirm whether AHJ requires trench inspection before close-up.');
     locateActions.push('6. Add outage / access notes if the locate work overlaps utility D/R or service work.');
   } else {
-    locateActions.push('No locate action needed from the current packet when the actual project interconnection is breaker/load-side and there is no scoped ground disturbance.');
+    locateActions.push('No locate action needed from the current packet when the actual project interconnection is breaker-only and there is no scoped ground disturbance.');
     locateActions.push('');
-    locateActions.push('Locates become needed if the scope is anything other than breaker-only interconnection, including line side tap, supply side tap, MPU, FSU, PSU, meter base replacement, meter collar/MMD/ConnectDER, trenching, underground conduit/feeders, service relocation, ground mount posts/footings, 811, utility locates, private locates, or trench inspection.');
+    locateActions.push('Locates become needed if the scope is anything other than breaker-only interconnection, including load side tap, line side tap, supply side tap, MPU, FSU, PSU, meter base replacement, meter collar/MMD/ConnectDER, full or partial backup battery scope, trenching, underground conduit/feeders, service relocation, ground mount posts/footings, 811, utility locates, private locates, or trench inspection.');
   }
 
   setVal('locateCalloutText', locateCallout.join('\n'));
@@ -2446,19 +2800,81 @@ function buildCriticalWarnings(plan, ub){
   setVal('criticalWarnings', blocks.join('\n').trim());
 }
 
+function buildProjectDescriptionScopeLines(plan){
+  const scope = state.electricalScope || null;
+  if (!scope || !scope.flags) return [];
+
+  const flags = scope.flags || {};
+  const items = [];
+  const add = v => {
+    const s = clean(v);
+    if (s && !items.includes(s)) items.push(s);
+  };
+
+  const bus = clean(plan.busRating || getVal('busRating'));
+  const main = clean(plan.mainBreaker || getVal('mainBreaker'));
+
+  if (flags.mpu) {
+    let mpu = 'main service panel upgrade';
+    const ratings = [];
+    if (bus) ratings.push(`${bus}A bus`);
+    if (main) ratings.push(`${main}A main breaker`);
+    if (ratings.length) mpu += ` (${ratings.join(' / ')})`;
+    add(mpu);
+  }
+
+  if (flags.meterBase) add('meter base replacement');
+  if (flags.fsu) add('feeder-side upgrade');
+  if (flags.psu) add('panel-side upgrade');
+  if (flags.meterCollar) add('meter collar / MMD / ConnectDER');
+
+  if (flags.lineSideTap) {
+    const tap = clean(flags.tapType || 'tap interconnection').toLowerCase();
+    add(tap.includes('interconnection') ? tap : `${tap} interconnection`);
+  } else if (flags.loadBreaker) {
+    add('load breaker interconnection');
+  } else if (flags.supplyBreaker) {
+    add('supply breaker interconnection');
+  }
+
+  if (flags.fullHomeBackup) add('full-home backup battery scope');
+  else if (flags.partialHomeBackup) add('partial-home backup battery scope');
+
+  if (flags.serviceRelocation) add('service relocation');
+  if (flags.trench || flags.underground) add('underground / trench work');
+  if (flags.acDisconnect) add('AC disconnect');
+
+  return items.length ? [`Electrical scope includes ${items.join('; ')}.`] : [];
+}
+
 function buildSubmissionText(plan, ub){
-  const desc = [
-    `Install roof-mounted photovoltaic system at ${plan.street || '[address]'}, ${plan.city || '[city]'}, ${plan.state || 'OR'} ${plan.zip || ''}.`,
-    `${plan.moduleQty || '[qty]'} modules${plan.moduleWattage ? ` at ${plan.moduleWattage}W` : ''}, ${plan.dcKw || '[DC]'} kW DC / ${plan.acKw || '[AC]'} kW AC.`,
+  const moduleLabel = clean(`${plan.moduleMake || ''} ${plan.moduleModel || ''}`);
+  const modulePart = `${plan.moduleQty || '[qty]'} modules${moduleLabel ? ` (${moduleLabel})` : ''}${plan.moduleWattage ? ` at ${plan.moduleWattage}W` : ''}`;
+
+  const inverterParts = [];
+  if (plan.pvMicroModel) {
+    inverterParts.push(`${plan.pvMicroQty || plan.invQty || ''} ${plan.pvMicroMake || plan.invMake || ''} ${plan.pvMicroModel} microinverters`.replace(/^\s+/,''));
+  } else if (plan.invModel) {
+    inverterParts.push(`${plan.invQty || ''} ${plan.invMake || ''} ${plan.invModel} inverter${String(plan.invQty || '').replace(/\D/g,'') === '1' ? '' : 's'}`.replace(/^\s+/,''));
+  }
+  if (plan.acDiscReq) inverterParts.push(`AC disconnect${plan.acDiscAmp ? ` (${plan.acDiscAmp}A)` : ''}`);
+
+  const baseLines = [
+    `Install roof-mounted photovoltaic solar system: ${modulePart}, ${plan.dcKw || '[DC]'} kW DC / ${plan.acKw || '[AC]'} kW AC${inverterParts.length ? `, with ${inverterParts.join(' and ')}` : ''}.`,
     `Interconnection method: ${plan.interco || '[interconnection method]'}.`,
-    plan.batteryModel ? `Battery / ESS: ${plan.batteryQty || '1'} ${plan.batteryMake || ''} ${plan.batteryModel}${plan.batteryCapacityKwh ? `, ${plan.batteryCapacityKwh} kWh` : ''}${plan.gatewayModel ? ` with ${plan.gatewayMake || ''} ${plan.gatewayModel}` : ''}.` : '',
-    plan.acDiscReq ? `AC disconnect: ${plan.acDiscReq}${plan.acDiscAmp ? `, ${plan.acDiscAmp}A` : ''}.` : ''
-  ].filter(Boolean).join('\n');
+    ...buildProjectDescriptionScopeLines(plan)
+  ];
+
+  if (plan.batteryModel) {
+    baseLines.push(`Battery / ESS scope includes ${plan.batteryQty || '1'} ${clean(`${plan.batteryMake || ''} ${plan.batteryModel || ''}`)}${plan.batteryCapacityKwh ? ` (${plan.batteryCapacityKwh} kWh)` : ''}${plan.gatewayModel ? ` with ${clean(`${plan.gatewayMake || ''} ${plan.gatewayModel || ''}`)}` : ''}.`);
+  }
+
+  const desc = baseLines.filter(Boolean).join('\n');
 
   const site = [
     `Utility: ${plan.utility || '[utility]'}. AHJ: ${plan.ahj || '[AHJ]'}.`,
     `Roof material: ${plan.roofMaterial || '[roof material]'}. Racking: ${plan.racking || '[racking]'}.`,
-    `Dominant plane tilt/azimuth: ${plan.tilt || '[tilt]'}° / ${plan.azimuth || '[azimuth]'}°.`,
+    `Dominant plane tilt/azimuth: ${plan.tilt || '[tilt]'}° / ${plan.azimuth || '[azimuth]'}°.` ,
     `Roof planes: ${(plan.roofPlanes || []).map(p=>`Roof #${p.roof}: ${p.modules} modules, ${p.tilt}° tilt, ${p.azimuth}° azimuth`).join('; ') || '[review plan set]'}.`,
     `Meter number: ${plan.meter || '[meter]'}.`
   ].join('\n');
@@ -2537,6 +2953,7 @@ function buildPacketReadiness(plan, ub){
     ['AHJ', !!plan.ahj],
     ['Meter number', !!plan.meter],
     ['UB account number', !!(ub.account || getVal('account'))],
+    ['Module type', !!plan.moduleType],
     ['Module model', !!plan.moduleModel],
     ['Module wattage', !!plan.moduleWattage],
     ['Inverter model', !!plan.invModel],
@@ -2548,11 +2965,9 @@ function buildPacketReadiness(plan, ub){
 }
 
 function collectFields(){
-  const ids = ['utility','ahj','owner','homeownerEmail','homeownerPhone','street','city','state','zip','meter','account','interco','serviceType','mainServiceRating','jobValue','pgeSchedule','dcKw','acKw','exportKw','moduleMake','moduleModel','moduleWattage','moduleQty','invMake','invModel','invQty','invOutputW','pvMicroMake','pvMicroModel','pvMicroQty','pvMicroOutputW','batteryMake','batteryModel','batteryQty','batteryCapacityKwh','batteryOutputKw','gatewayMake','gatewayModel','backupPanel','phase','voltage','busRating','mainBreaker','pvBreaker','roofMaterial','racking','mounting','wind','snow','deadLoad','roofRafterSize','roofRafterSpacing','woodGrade','roofRafterSpanFeet','tilt','azimuth','ptc','acDiscReq','acDiscAmp','ubAccountHolder','ubAccountNumber','ubServiceAddress','ubMeterNumber','ubMeterVerification','locateCalloutText','locateActionStepsText','splitPagesText','utilityDownloadChecklistText','utilityPacketBaseName'];
+  const ids = ['utility','ahj','owner','street','city','state','zip','meter','account','interco','dcKw','acKw','exportKw','moduleMake','moduleType','moduleModel','moduleWattage','moduleQty','invMake','invModel','invQty','invOutputW','pvMicroMake','pvMicroModel','pvMicroQty','pvMicroOutputW','mciMake','mciModel','mciQty','batteryMake','batteryModel','batteryQty','batteryCapacityKwh','batteryOutputKw','gatewayMake','gatewayModel','backupPanel','phase','voltage','busRating','mainBreaker','pvBreaker','roofMaterial','racking','mounting','wind','snow','deadLoad','roofRafterSize','roofRafterSpacing','woodGrade','roofRafterSpanFeet','tilt','azimuth','ptc','acDiscReq','acDiscAmp','ubAccountHolder','ubAccountNumber','ubServiceAddress','ubMeterNumber','ubMeterVerification','locateCalloutText','locateActionStepsText','splitPagesText','utilityDownloadChecklistText','utilityPacketBaseName','projectDoxBaseName','projectDoxSplitMode','projectDoxNamingPreset','projectDoxSplitPagesText','projectDoxChecklistText'];
   const out = {};
   ids.forEach(id => out[id] = getVal(id));
-  out.permitPath = $('pathMain') ? $('pathMain').textContent : '';
-  out.stampRecommendation = $('stampMain') ? $('stampMain').textContent : '';
   out.roofPlanes = state.planData?.roofPlanes || [];
   out.reviewFlags = state.reviewFlags;
   out.utilityPriorityFlags = state.utilityPriorityFlags;
@@ -2567,52 +2982,6 @@ function downloadFile(name, content, type='text/plain'){
   document.body.appendChild(a);
   a.click();
   setTimeout(()=>{URL.revokeObjectURL(a.href); a.remove();}, 1000);
-}
-
-async function apiJson(path, options={}){
-  const res = await fetch(path, {
-    headers:{'Content-Type':'application/json', ...(options.headers || {})},
-    ...options
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    const err = new Error(data.error || `Request failed: ${res.status}`);
-    err.details = data.details || {};
-    throw err;
-  }
-  return data;
-}
-
-async function saveProjectToAutopilot(){
-  const payload = collectFields();
-  $('parseStatus').textContent = 'Saving project to Autopilot...';
-  const detail = await apiJson('/api/projects', {
-    method:'POST',
-    body:JSON.stringify({parserPayload:payload})
-  });
-  state.savedProjectId = detail.project.id;
-  $('parseStatus').textContent = [
-    `Saved project ${detail.project.id}.`,
-    `Status: ${detail.project.status}.`,
-    detail.project.currentStage,
-    detail.humanReviewItems?.filter(x => x.status === 'pending').length ? 'Human review items are waiting in the dashboard.' : ''
-  ].filter(Boolean).join('\n');
-  return detail;
-}
-
-async function prepareSavedProject(){
-  let projectId = state.savedProjectId;
-  if (!projectId) {
-    const saved = await saveProjectToAutopilot();
-    projectId = saved.project.id;
-  }
-  $('parseStatus').textContent = 'Preparing supervised portal staging...';
-  const detail = await apiJson(`/api/projects/${projectId}/prepare-submission`, {method:'POST', body:'{}'});
-  $('parseStatus').textContent = [
-    'Mock portal staging complete.',
-    detail.project.currentStage,
-    'Automation stopped at human review. Final submit was not clicked.'
-  ].join('\n');
 }
 
 
@@ -2804,6 +3173,7 @@ function updateSplitUi(){
     setVal('splitMappingStatus','Upload and parse plan set first');
     setVal('splitPagesText','');
     setVal('utilityDownloadChecklistText','Upload and parse a plan set to build utility downloads.');
+    updateProjectDoxUi();
     return;
   }
 
@@ -2857,6 +3227,7 @@ function updateSplitUi(){
 
   setVal('utilityDownloadChecklistText', checklist.join('\n'));
   setVal('splitMappingStatus', missing.length ? `Review missing: ${missing.join(', ')}` : 'Ready');
+  updateProjectDoxUi();
 }
 
 async function createPdfFromPlanPages(pageNums){
@@ -2973,6 +3344,191 @@ async function buildUtilityZip(){
   saveAs(blob, `${getUtilityPacketBaseName()} - Utility Upload Packet.zip`);
 }
 
+function getProjectDoxBaseName(){
+  const manual = getVal('projectDoxBaseName');
+  if (manual) return safeFilePart(manual);
+  return getUtilityPacketBaseName();
+}
+
+function sheetCodeSortValue(code=''){
+  const c = clean(code).toUpperCase().replace(/\s+/g,' ');
+  const order = {
+    'PV 0.0': 1,
+    'PV 1.0': 2,
+    'PV 1.1': 3,
+    'PV 1.2': 4,
+    'IM 1.0': 5,
+    'S 1.1': 6,
+    'E 1.1': 7,
+    'E 1.2': 8,
+    'E 1.3': 9
+  };
+  if (order[c]) return order[c];
+  const ds = c.match(/^DS\s*0?(\d{1,2})$/i);
+  if (ds) return 20 + Number(ds[1]);
+  return 900;
+}
+
+function sheetCodeCategory(code=''){
+  const c = clean(code).toUpperCase();
+  if (/^DS\s*\d+/i.test(c)) return 'documents';
+  if (/^(PV|IM|S|E)\s*\d/i.test(c)) return 'drawings';
+  return 'unknown';
+}
+
+function defaultSheetNameForCode(code=''){
+  const c = clean(code).toUpperCase().replace(/\s+/g,' ');
+  const names = {
+    'PV 0.0':'General Notes and Project Data',
+    'PV 1.0':'Plot Plan',
+    'PV 1.1':'Site Plan',
+    'PV 1.2':'Roof Section',
+    'IM 1.0':'Inverter Map',
+    'S 1.1':'Mount Details',
+    'E 1.1':'3-Line Diagram',
+    'E 1.2':'Notes',
+    'E 1.3':'Warning Labels'
+  };
+  return names[c] || '';
+}
+
+function detectProjectDoxSheetName(text='', code=''){
+  const t = normalizeText(text || '');
+  const codeName = defaultSheetNameForCode(code);
+  if (codeName) return codeName;
+
+  const candidates = [
+    ['PV Module Inv Specification Sheet', /PV MODULE\s*\/\s*INV SPECIFICATION SHEET/i],
+    ['PV Module Specification Sheet', /PV MODULE SPECIFICATION SHEET|MODULE SPECIFICATION/i],
+    ['Microinverter Specification Sheet', /MICROINVERTER SPECIFICATION SHEET|MICROINVERTER/i],
+    ['Inverter Specification Sheet', /INVERTER DATASHEET|INVERTER SPECIFICATION/i],
+    ['MCI Certification', /MCI CERTIFICATION|RAPID SHUTDOWN DEVICE/i],
+    ['ConnectDER Meter Specification Sheet', /CONNECTDER METER SPECIFICATION SHEET|CONNECTDER|METER COLLAR|MMD/i],
+    ['Combiner Panel Certification', /COMBINER PANEL CERTIFICATION|COMBINER SPECIFICATION SHEET/i],
+    ['AC Disconnect UL Certification', /AC DISCONNECT UL CERTIFICATION|SAFETY SWITCH|NON-FUSIBLE AC DISCONNECT|FUSIBLE AC DISCONNECT/i],
+    ['Junction Box UL Certification', /JUNCTION BOX UL CERTIFICATION|JUNCTION BOX/i],
+    ['Wiring Specification', /WIRING SPECIFICATION|PV PHOTOVOLTAIC CABLE/i],
+    ['Racking Data Sheet', /RACKING\s*-?\s*DATA SHEET|SNAPNRACK|CHIKO|PEGASUS/i],
+    ['Mounting Data Sheet', /MOUNTING\s*-?\s*DATA SHEET|ROOF HOOK|FLASHING/i],
+    ['Racking Grounding', /RACKING\s*-?\s*GROUNDING|GROUNDING\s*-?\s*DATA SHEET/i],
+    ['Mid Clamp End Clamp Data Sheet', /MID CLAMP|END CLAMP|STOPPER SLEEVE/i],
+    ['Splice Kit Data Sheet', /SPLICE KIT/i],
+    ['UL Listing Certificate', /UL LISTING CERTIFICATE|ETL|CERTIFICATE/i],
+    ['Site Safety Map', /SITE SAFETY MAP/i],
+    ['Battery ESS Specification Sheet', /BATTERY DATA SHEET|INVERTER\/BATT DATA SHEET|POWERWALL|ENERGY STORAGE/i],
+    ['Gateway Specification Sheet', /GATEWAY 3 DATA SHEET|BACKUP GATEWAY|TESLA GATEWAY/i]
+  ];
+  const hit = candidates.find(([name, re]) => re.test(t));
+  if (hit) return hit[0];
+
+  const sheetName = t.match(/Sheet Name\s+([A-Z0-9][A-Z0-9 .\/&#\-]{3,80}?)(?=\s+(?:INFINITY|Initial Design|Rev|Sheet Size|Sheet Number|Scale|SCALE|$))/i);
+  if (sheetName) return title(sheetName[1]);
+
+  return 'Plan Sheet';
+}
+
+function getProjectDoxEntries(options={}){
+  const pages = state.planDoc?.pages || [];
+  const entries = pages.map(p => {
+    const code = actualSheetCode(p.text) || `PAGE ${p.page}`;
+    const name = detectProjectDoxSheetName(p.text, code);
+    const category = sheetCodeCategory(code);
+    const sort = sheetCodeSortValue(code) * 100 + p.page;
+    return {page:p.page, code, name, category, sort};
+  }).sort((a,b)=>a.sort-b.sort || a.page-b.page);
+
+  const mode = options.mode || getVal('projectDoxSplitMode') || 'individual';
+  const filtered = entries.filter(e => {
+    if (mode === 'drawingsOnly') return e.category === 'drawings';
+    if (mode === 'docsOnly') return e.category === 'documents';
+    return true;
+  });
+
+  return filtered.map((e, idx) => ({...e, seq: idx + 1}));
+}
+
+function makeProjectDoxEntryFilename(entry){
+  const preset = getVal('projectDoxNamingPreset') || 'numericSheet';
+  const seq = String(entry.seq).padStart(2, '0');
+  const code = safeFilePart(entry.code).replace(/^PAGE\s+/i, 'Page ');
+  const name = safeFilePart(entry.name || 'Plan Sheet');
+  if (preset === 'numericName') return `${seq} ${name}.pdf`;
+  return `${seq} ${code} ${name}.pdf`;
+}
+
+function updateProjectDoxUi(){
+  const statusEl = $('projectDoxSplitPagesText');
+  const checklistEl = $('projectDoxChecklistText');
+  if (!statusEl || !checklistEl) return;
+
+  if (!state.planDoc){
+    statusEl.value = '';
+    checklistEl.value = 'Upload and parse a plan set to build ProjectDox files.';
+    return;
+  }
+
+  const all = getProjectDoxEntries({mode:'individual'});
+  const drawings = all.filter(e => e.category === 'drawings');
+  const docs = all.filter(e => e.category === 'documents');
+  const unknown = all.filter(e => e.category === 'unknown');
+
+  statusEl.value = all.map(e => `${String(e.seq).padStart(2,'0')} | Page ${e.page} | ${e.code} | ${e.name} | ${e.category}`).join('\n');
+
+  const missing = [];
+  ['PV 0.0','PV 1.0','PV 1.1','E 1.1'].forEach(code => {
+    if (!all.some(e => clean(e.code).toUpperCase().replace(/\s+/g,' ') === code)) missing.push(code);
+  });
+
+  const checklist = [
+    `ProjectDox base: ${getProjectDoxBaseName()}`,
+    `Total plan files: ${all.length}`,
+    `Drawing sheets: ${drawings.length}`,
+    `Document/spec sheets: ${docs.length}`,
+    `Unknown pages: ${unknown.length}`,
+    '',
+    `${missing.length ? 'REVIEW' : 'READY'} - Required drawing detection${missing.length ? ` missing ${missing.join(', ')}` : ''}`,
+    `${state.ubFile ? 'READY' : 'OPTIONAL/MISSING'} - Utility bill PDF can be included separately if AHJ asks`,
+    `${state.meterFile ? 'READY' : 'OPTIONAL/MISSING'} - Meter photo PDF can be included separately if AHJ asks`,
+    '',
+    'ProjectDox naming: numeric prefix first so files sort in sheet order.'
+  ];
+  checklistEl.value = checklist.join('\n');
+}
+
+async function buildProjectDoxZip(modeOverride){
+  if (!state.planFile) throw new Error('Upload and parse a plan set first.');
+  if (!window.JSZip) throw new Error('JSZip is not loaded.');
+
+  const mode = modeOverride || getVal('projectDoxSplitMode') || 'individual';
+  const zip = new JSZip();
+  const entries = getProjectDoxEntries({mode});
+
+  for (const entry of entries){
+    const bytes = await createPdfFromPlanPages([entry.page]);
+    zip.file(makeProjectDoxEntryFilename(entry), bytes);
+  }
+
+  if (mode === 'individual'){
+    if (state.ubFile) zip.file('98 Utility Bill.pdf', await imageOrPdfFileToPdfBytes(state.ubFile));
+    if (state.meterFile) zip.file('99 Meter Photo.pdf', await imageOrPdfFileToPdfBytes(state.meterFile));
+  }
+
+  const manifest = [
+    `ProjectDox split for ${getProjectDoxBaseName()}`,
+    `Created: ${new Date().toLocaleString()}`,
+    `Mode: ${mode}`,
+    '',
+    getVal('projectDoxChecklistText') || '',
+    '',
+    'Files:',
+    entries.map(e => `${makeProjectDoxEntryFilename(e)} | source page ${e.page}`).join('\n')
+  ].join('\n');
+  zip.file(`${getProjectDoxBaseName()} - ProjectDox Manifest.txt`, manifest);
+
+  const blob = await zip.generateAsync({type:'blob'});
+  saveAs(blob, `${getProjectDoxBaseName()} - ProjectDox ${mode === 'drawingsOnly' ? 'Drawings' : mode === 'docsOnly' ? 'Documents' : 'Full'} Split.zip`);
+}
+
 
 async function runParse(){
   state.reviewFlags = [];
@@ -3060,6 +3616,8 @@ function resetAll(){
     else if (el.id === 'electricianLicenseNumber') el.value = '5787S';
     else if (el.id === 'mounting') el.value = 'Roof Mount';
     else if (el.id === 'state') el.value = 'OR';
+    else if (el.id === 'projectDoxSplitMode') el.value = 'individual';
+    else if (el.id === 'projectDoxNamingPreset') el.value = 'numericSheet';
     else if (el.id === 'contractorLicenseNotes') el.value = 'Installer: TML INTERNATIONAL LLC | Email: permit@infinitysolarusa.com | Phone: (800) 818-0598 | Address: 808 SE Chkalov Dr ST 3-337, Vancouver, WA 98683 | Electrical Lic: C1556 | CCB Lic: 223690 | Metro/City Lic: 14838 | Supervising Electrician: Charles Bitton | Electrician Lic: 5787S';
     else el.value = '';
   });
@@ -3067,7 +3625,6 @@ function resetAll(){
   state.planDoc = state.ubDoc = state.meterDoc = null;
   state.reviewFlags = [];
   state.utilityPriorityFlags = [];
-  state.savedProjectId = null;
   $('parseStatus').textContent = 'Waiting for files.';
 }
 
@@ -3079,10 +3636,625 @@ document.addEventListener('click', e => {
     if (el){
       navigator.clipboard.writeText(el.value || '');
       btn.textContent = 'Copied';
-      setTimeout(()=>btn.textContent = btn.dataset.copy.includes('project') ? 'Copy project description' : btn.dataset.copy.includes('site') ? 'Copy site plan notes' : btn.dataset.copy.includes('Array') ? 'Copy PV arrays' : 'Copy', 900);
+      setTimeout(()=>btn.textContent = btn.dataset.copy.includes('project') ? 'Copy description of work' : btn.dataset.copy.includes('site') ? 'Copy site plan notes' : btn.dataset.copy.includes('Array') ? 'Copy PV arrays' : 'Copy', 900);
     }
   }
 });
+
+
+/* =========================
+   v17.2.47 Evidence Engine + AHJ Description of Work + ProjectDox Splitter, Tesla Powerwall Inverter/Battery Fix
+   ========================= */
+
+const SCOPE_UTILITY_RULES_V40 = {
+  PGE: {
+    label: 'PGE',
+    drRequired: ['FULL_HOME_BACKUP', 'METER_BASE', 'FSU', 'PSU', 'MMD'],
+    drNotRequiredByItself: ['MPU', 'PARTIAL_HOME_BACKUP', 'BREAKER_ONLY'],
+    locatesRequired: ['MPU', 'FSU', 'PSU', 'MMD', 'METER_BASE', 'TAP', 'FULL_HOME_BACKUP', 'PARTIAL_HOME_BACKUP', 'TRENCH', 'UNDERGROUND', 'SERVICE_RELOCATION'],
+    meterSpotRequiredWhenDr: true,
+    notes: 'PGE MPU is normally done hot. PGE D/R still applies for full-home backup, meter base replacement, FSU/PSU, MMD/ConnectDER, or other meter work.'
+  },
+  PACIFICORP: {
+    label: 'Pacific Power / PacifiCorp',
+    drRequired: ['FULL_HOME_BACKUP', 'MMD', 'MPU', 'FSU', 'PSU', 'METER_BASE'],
+    drNotRequiredByItself: ['PARTIAL_HOME_BACKUP', 'BREAKER_ONLY'],
+    locatesRequired: ['MPU', 'FSU', 'PSU', 'MMD', 'METER_BASE', 'TAP', 'FULL_HOME_BACKUP', 'PARTIAL_HOME_BACKUP', 'TRENCH', 'UNDERGROUND', 'SERVICE_RELOCATION'],
+    meterSpotRequiredWhenDr: true,
+    notes: 'Pac Power D/R applies for full-home backup, Meter Collar/MMD/ConnectDER, MPU, FSU, PSU, and meter/service equipment changes.'
+  },
+  UNKNOWN: {
+    label: 'Unknown utility',
+    drRequired: ['FULL_HOME_BACKUP', 'MMD', 'METER_BASE', 'FSU', 'PSU'],
+    drNotRequiredByItself: ['PARTIAL_HOME_BACKUP', 'BREAKER_ONLY'],
+    locatesRequired: ['MPU', 'FSU', 'PSU', 'MMD', 'METER_BASE', 'TAP', 'FULL_HOME_BACKUP', 'PARTIAL_HOME_BACKUP', 'TRENCH', 'UNDERGROUND', 'SERVICE_RELOCATION'],
+    meterSpotRequiredWhenDr: true,
+    notes: 'Utility was not confidently parsed. Use manual review for D/R before scheduling.'
+  }
+};
+
+const SCOPE_EXPECTED_CASES_V40 = [
+  {match:/RONDA HALL/i, name:'Ronda Hall-Ramirez', utility:'PGE', mpu:true, meterCollar:false, dr:false, locatesNeeded:true, meterSpotNeeded:false},
+  {match:/LORI QUINN/i, name:'Lori Quinn', utility:'PGE', mpu:true, meterCollar:false, dr:false, locatesNeeded:true, meterSpotNeeded:false},
+  {match:/KIMTHANH VO/i, name:'Kimthanh Vo', utility:'PACIFICORP', mpu:false, meterCollar:true, dr:true, locatesNeeded:true, meterSpotNeeded:true},
+  {match:/EVELYN HALTERMAN/i, name:'Evelyn Halterman', utility:'PACIFICORP', mpu:true, meterCollar:false, dr:true, locatesNeeded:true, meterSpotNeeded:true},
+  {match:/ROBERT BELLINGER/i, name:'Robert Bellinger', utility:'PACIFICORP', mpu:false, meterCollar:true, dr:true, locatesNeeded:true, meterSpotNeeded:true},
+  {match:/JON RYAN/i, name:'Jon Ryan', utility:'PGE', mpu:true, meterCollar:false, dr:false, locatesNeeded:true, meterSpotNeeded:false}
+];
+
+function sourceSnippetV40(text, index, length, before=120, after=220){
+  const raw = normalizeText(text || '');
+  const start = Math.max(0, index - before);
+  const end = Math.min(raw.length, index + length + after);
+  return clean(raw.slice(start, end)).slice(0,520);
+}
+
+function extractSheetNumberV40(text){
+  const t = normalizeText(text || '');
+  const afterSheetNumber = t.match(/Sheet Number\s+((?:PV|E|DS|IM|S)\s*[- ]?\d{1,2}(?:\.\d)?)/i);
+  if (afterSheetNumber) return clean(afterSheetNumber[1]).toUpperCase().replace(/\s+/g,' ');
+  const sheet = t.match(/\b(PV\s*\d\.\d|E\s*\d\.\d|DS\s*\d{1,2}|IM\s*\d\.\d|S\s*\d\.\d)\b/i);
+  return sheet ? clean(sheet[1]).toUpperCase().replace(/\s+/g,' ') : '';
+}
+
+function classifyPlanSheetsV40(planDoc){
+  const pages = planDoc?.pages || [];
+  const out = [];
+  for (const p of pages){
+    const text = normalizeText(p.text || '');
+    const upper = text.toUpperCase();
+    const scores = {cover:0, site:0, sld:0, notes:0, labels:0, spec:0};
+
+    if (/GENERAL\s+NOTES\s+AND\s+PROJECT\s+DATA|PHOTOVOLTAIC\s+SYSTEM\s+SPECIFICATIONS|SYSTEM\s+SIZE\s*:|MODULE\s+TYPE\s*&\s*AMOUNT|SITE\s+DETAIL\s*:/i.test(upper)) scores.cover += 4;
+    if (/SHEET\s+INDEX/i.test(upper)) scores.cover += 2;
+    if (/PLOT\s+PLAN|SITE\s+PLAN|ROOF\s+ACCESS\s+POINT|ROOF\s*#\d|NEW\s+PV\s+AC\s+DISCONNECT/i.test(upper)) scores.site += 4;
+    if (/MSP\s*:\s*(?:NEW|EXISTING)|NEW\s+(?:INTERIOR|EXTERIOR)\s+MAIN\s+SERVICE\s+PANEL|UTILITY\s+METER\s*#/i.test(upper)) scores.site += 2;
+    if (/3[-\s]*LINE\s+DIAGRAM/i.test(upper)) scores.sld += 4;
+    if (/POINT\s+OF\s+INTERCONNECT|WIRE\s+TAG|BUS\s+BAR\s+RATING|UTILITY\s+COMPANY|LOAD\s+SIDE\s+TAP|SUPPLY\s+SIDE\s+TAP|LINE\s+SIDE\s+TAP|METER\s+COLLAR|CONNECTDER/i.test(upper)) scores.sld += 4;
+    if (/L1\s*L2|N\s+G|PV\s+MODULE\s+RATING|INVERTER\s+CHARACTERISTICS/i.test(upper)) scores.sld += 2;
+    if (/SHEET\s+INDEX/i.test(upper) && !/WIRE\s+TAG|POINT\s+OF\s+INTERCONNECT|BUS\s+BAR\s+RATING|L1\s*L2/i.test(upper)) scores.sld -= 3;
+    if (/\bNOTES\b|SITE\s+NOTES|INTERCONNECTION\s+NOTES|WIRING\s*&\s*CONDUIT\s+NOTES|GROUNDING\s+NOTES/i.test(upper)) scores.notes += 3;
+    if (/WARNING\s+LABELS|PHOTOVOLTAIC\s+AC\s+DISCONNECT\s+RATED|SOLAR\s+PHOTOVOLTAIC\s+SYSTEMS/i.test(upper)) scores.labels += 3;
+    if (/SPECIFICATION\s+SHEET|DATA\s+SHEET|CERTIFICATION|UL\s+LISTING|MODULE\s+SPECIFICATION|INVERTER\s+DATASHEET/i.test(upper)) scores.spec += 4;
+
+    const sorted = Object.entries(scores).sort((a,b)=>b[1]-a[1]);
+    const primary = sorted[0][1] > 0 ? sorted[0][0] : 'unknown';
+    const types = sorted.filter(([k,v]) => v >= 3).map(([k]) => k);
+    out.push({page:p.page, sheet:extractSheetNumberV40(text), primary, types:types.length ? types : ['unknown'], scores, text});
+  }
+  return out;
+}
+
+function sheetClassTextV40(classified){
+  return (classified || []).map(p => {
+    const scoreText = Object.entries(p.scores || {})
+      .filter(([,v]) => v > 0)
+      .sort((a,b)=>b[1]-a[1])
+      .map(([k,v]) => `${k}:${v}`)
+      .join(', ');
+    return `Page ${p.page}${p.sheet ? ` (${p.sheet})` : ''}: ${p.primary.toUpperCase()}${p.types?.length ? ` | types: ${p.types.join('/')}` : ''}${scoreText ? ` | ${scoreText}` : ''}`;
+  }).join('\n');
+}
+
+function findEvidenceV40(classified, type, label, regexList, options={}){
+  const preferred = options.preferred || null;
+  const fallback = options.fallback !== false;
+  const baseConfidence = options.confidence || 0.70;
+  const maxPerType = options.max || 8;
+  const results = [];
+  const scan = (allowAll=false) => {
+    for (const page of classified || []){
+      const types = page.types || [];
+      const allowed = allowAll || !preferred || preferred.some(t => types.includes(t) || page.primary === t);
+      if (!allowed) continue;
+      for (const re of regexList){
+        const flags = re.flags.includes('g') ? re.flags : re.flags + 'g';
+        const rx = new RegExp(re.source, flags);
+        let m;
+        while ((m = rx.exec(page.text || '')) !== null){
+          const sourceBoost = page.primary === 'sld' ? 0.18 : page.primary === 'site' ? 0.14 : page.primary === 'cover' ? 0.10 : page.primary === 'notes' ? 0.04 : 0;
+          const preferredBoost = preferred && preferred.some(t => types.includes(t) || page.primary === t) ? 0.05 : 0;
+          const confidence = Math.min(0.99, baseConfidence + sourceBoost + preferredBoost);
+          const snippet = sourceSnippetV40(page.text, m.index, String(m[0] || '').length, options.before || 120, options.after || 260);
+          const key = `${type}|${page.page}|${snippet.slice(0,120)}`;
+          if (!results.some(x => x.key === key)){
+            results.push({key, type, label, page:page.page, sheet:page.sheet, sheetType:page.primary, confidence, text:clean(m[0]), snippet});
+            if (results.length >= maxPerType) return results;
+          }
+          if (m.index === rx.lastIndex) rx.lastIndex++;
+        }
+      }
+    }
+    return results;
+  };
+  scan(false);
+  if (!results.length && fallback) scan(true);
+  return results;
+}
+
+function buildScopeEvidenceV40(plan, classified){
+  const allEvidence = [];
+  const add = (items) => items.forEach(x => allEvidence.push(x));
+
+  add(findEvidenceV40(classified, 'MPU', 'MPU / main service panel upgrade', [
+    /\bMSP\s*:\s*NEW\s+\d{2,3}A\s+MSP(?:\s+WITH\s+\d{2,3}A\s+MAIN\s+BREAKER)?/i,
+    /\bNEW\s+(?:INTERIOR|EXTERIOR)\s+MAIN\s+SERVICE\s+PANEL\b[^\n]{0,220}/i,
+    /\bNEW\s+\d{2,3}A(?:[-\s]*RATED)?\s+(?:BUS\s+BAR\s+RATING,?\s+)?MAIN\s+SERVICE\s+PANEL\b[^\n]{0,220}/i,
+    /\bUPGRADE\s+(?:THE\s+)?METER\s*\/\s*MAIN\s+UNIT\b[^\n]{0,220}/i,
+    /\bUPGRADE\s+TO\s+(?:A\s+)?NEW\s+\d{2,3}A(?:[-\s]*RATED)?\s+(?:METER\s*\/\s*MAIN|MAIN\s+BUS|BUS)\b[^\n]{0,220}/i,
+    /\bREPLACE\s+(?:THE\s+)?EXISTING\s+(?:INTERIOR\s+|EXTERIOR\s+)?MAIN\s+(?:SERVICE\s+)?PANEL\b[^\n]{0,220}/i,
+    /\bMPU\b|MAIN\s+PANEL\s+UPGRADE/i
+  ], {preferred:['cover','site','sld'], confidence:0.76}));
+
+  add(findEvidenceV40(classified, 'FSU', 'FSU / full service upgrade', [
+    /\bFSU\b|FULL\s+SERVICE\s+UPGRADE/i,
+    /\b(?:NEW|REPLACE|UPGRADE)\b[^\n]{0,180}\b(?:SERVICE\s+RISER|SERVICE\s+LATERAL|SERVICE\s+ENTRANCE|SERVICE\s+MAST)\b[^\n]{0,220}/i
+  ], {preferred:['sld','site','cover'], confidence:0.78}));
+
+  add(findEvidenceV40(classified, 'PSU', 'PSU / partial service upgrade', [
+    /\bPSU\b|PARTIAL\s+SERVICE\s+UPGRADE/i
+  ], {preferred:['sld','site','cover'], confidence:0.78}));
+
+  add(findEvidenceV40(classified, 'MMD', 'Meter collar / MMD / ConnectDER', [
+    /\bMETER\s+COLLAR\b[^\n]{0,240}/i,
+    /\bCONNECTDER\b[^\n]{0,260}/i,
+    /\bMMD\b[^\n]{0,220}/i,
+    /\bMETER\s+MOUNTED\s+DEVICE\b[^\n]{0,240}/i,
+    /\bMETER\s+SOCKET\s+ADAPTER\b[^\n]{0,260}/i
+  ], {preferred:['cover','site','sld','spec'], confidence:0.80}));
+
+  add(findEvidenceV40(classified, 'METER_BASE', 'Meter base replacement', [
+    /\bMETER\s+BASE\s+REPLACEMENT\b[^\n]{0,220}/i,
+    /\bMETER\s+SOCKET\s+REPLACEMENT\b[^\n]{0,220}/i,
+    /\bNEW\s+METER\s+(?:BASE|SOCKET)\b[^\n]{0,220}/i,
+    /\bREPLACE(?:MENT)?\s+(?:OF\s+)?(?:THE\s+)?METER\s+(?:BASE|SOCKET)\b[^\n]{0,220}/i
+  ], {preferred:['sld','site','cover'], confidence:0.80}));
+
+  add(findEvidenceV40(classified, 'TAP', 'Tap interconnection', [
+    /\bINTERCONNECTION\s+METHOD\s*:?\s*(LOAD\s+SIDE\s+TAP|SUPPLY\s+SIDE\s+TAP|LINE\s+SIDE\s+TAP|FEEDER\s+TAP)\b/i,
+    /\bPOINT\s+OF\s+INTERCONNECT(?:ION)?[^\n]{0,220}\b(LOAD\s+SIDE\s+TAP|SUPPLY\s+SIDE\s+TAP|LINE\s+SIDE\s+TAP|FEEDER\s+TAP)\b/i,
+    /\bLOAD\s+SIDE\s+TAP\b|\bSUPPLY\s+SIDE\s+TAP\b|\bLINE\s+SIDE\s+TAP\b|\bFEEDER\s+TAP\b/i
+  ], {preferred:['cover','sld'], confidence:0.74}));
+
+  add(findEvidenceV40(classified, 'BREAKER', 'Breaker interconnection', [
+    /\bINTERCONNECTION\s+METHOD\s*:?\s*(LOAD\s+(?:SIDE\s+)?BREAKER|SUPPLY\s+BREAKER|PV\s+BREAKER|BACKFEED(?:ING)?\s+BREAKER)\b/i,
+    /\bPOINT\s+OF\s+INTERCONNECT(?:ION)?[^\n]{0,220}\b(LOAD\s+(?:SIDE\s+)?BREAKER|SUPPLY\s+BREAKER|PV\s+BREAKER|BACKFEED(?:ING)?\s+BREAKER)\b/i,
+    /\(N\)\s*PV\s+BREAKER/i
+  ], {preferred:['cover','sld'], confidence:0.74}));
+
+  add(findEvidenceV40(classified, 'FULL_HOME_BACKUP', 'Full-home backup battery scope', [
+    /\bFULL[-\s]*HOME\s+BACKUP\b|\bWHOLE[-\s]*HOME\s+BACKUP\b|\bENTIRE\s+HOME\s+BACKUP\b/i,
+    /\bBACK(?:S|ING)?\s+UP\s+(?:THE\s+)?(?:FULL|WHOLE|ENTIRE)\s+(?:HOME|HOUSE)\b/i,
+    /\bALL\s+LOADS\s+BACKUP\b|\bBACKUP\s+ALL\s+LOADS\b/i
+  ], {preferred:['cover','sld','site'], confidence:0.76}));
+
+  add(findEvidenceV40(classified, 'PARTIAL_HOME_BACKUP', 'Partial-home backup battery scope', [
+    /\bPARTIAL[-\s]*HOME\s+BACKUP\b|\bPARTIAL\s+BACKUP\b/i,
+    /\bBACKUP\s+LOAD\s+PANEL\b|\bBACKUP\s+PANEL\b|\bCRITICAL\s+LOADS\b|\bDEDICATED\s+BACKUP\s+LOADS\b/i
+  ], {preferred:['cover','sld','site'], confidence:0.72}));
+
+  add(findEvidenceV40(classified, 'TRENCH', 'Ground disturbance / trenching', [
+    /\bTRENCH(?:ING|ED)?\b|\bOPEN\s+TRENCH\b|\bTRENCH\s+INSPECTION\b/i,
+    /\bGROUND\s+MOUNT\b|\bGROUND-MOUNT\b|\bPOSTS?\s+IN\s+GROUND\b|\bFOOTINGS?\b/i
+  ], {preferred:['site','sld','notes'], confidence:0.70}));
+
+  add(findEvidenceV40(classified, 'UNDERGROUND', 'New underground conduit/feed/run', [
+    /\bNEW\s+UNDERGROUND\b[^\n]{0,220}/i,
+    /\bUNDERGROUND\s+(?:CONDUIT|FEEDER|RUN|RACEWAY|WIRE|WIRING|LINE|SERVICE\s+LATERAL)\b[^\n]{0,220}/i
+  ], {preferred:['site','sld','notes'], confidence:0.68}));
+
+  add(findEvidenceV40(classified, 'SERVICE_RELOCATION', 'Meter/service relocation', [
+    /\b(?:METER|SERVICE|MSP|MAIN\s+SERVICE\s+PANEL)\s+(?:RELOCATION|RELOCATE|RELOCATED)\b[^\n]{0,220}/i,
+    /\bSERVICE\s+RELOCATION\b[^\n]{0,220}/i
+  ], {preferred:['site','sld','cover'], confidence:0.72}));
+
+  return allEvidence;
+}
+
+function hasScopeEvidenceV40(evidence, type){
+  return (evidence || []).some(e => e.type === type);
+}
+
+function bestEvidenceConfidenceV40(evidence, types){
+  const typeSet = Array.isArray(types) ? types : [types];
+  const vals = (evidence || []).filter(e => typeSet.includes(e.type)).map(e => Number(e.confidence || 0));
+  return vals.length ? Math.max(...vals) : 0;
+}
+
+function evidenceTextV40(evidence){
+  if (!evidence || !evidence.length) return 'No scope evidence collected.';
+  return evidence
+    .sort((a,b) => (b.confidence || 0) - (a.confidence || 0))
+    .map((e,i) => `${i+1}. ${e.type} (${Math.round((e.confidence || 0) * 100)}%) | Page ${e.page}${e.sheet ? ` ${e.sheet}` : ''} | ${e.sheetType}\n   ${e.label}\n   Evidence: ${e.snippet}`)
+    .join('\n\n');
+}
+
+function normalizeRuleUtilityV40(utilityText){
+  const u = String(utilityText || '').toUpperCase();
+  if (/\bPGE\b|PORTLAND\s+GENERAL/.test(u)) return 'PGE';
+  if (/PACIFICORP|PACIFIC\s+POWER|PAC\s*POWER/.test(u)) return 'PACIFICORP';
+  return 'UNKNOWN';
+}
+
+function detectElectricalScope(plan){
+  const rawText = normalizeText(state.planDoc?.text || '');
+  const classified = classifyPlanSheetsV40(state.planDoc);
+  const evidence = buildScopeEvidenceV40(plan, classified);
+  const utilityNorm = normalizeRuleUtilityV40(`${plan.utility || getVal('utility') || ''} ${rawText.slice(0,6000)}`);
+  const rule = SCOPE_UTILITY_RULES_V40[utilityNorm] || SCOPE_UTILITY_RULES_V40.UNKNOWN;
+
+  const flags = {
+    mpu: hasScopeEvidenceV40(evidence, 'MPU'),
+    fsu: hasScopeEvidenceV40(evidence, 'FSU'),
+    psu: hasScopeEvidenceV40(evidence, 'PSU'),
+    meterCollar: hasScopeEvidenceV40(evidence, 'MMD'),
+    meterBase: hasScopeEvidenceV40(evidence, 'METER_BASE'),
+    fullHomeBackup: hasScopeEvidenceV40(evidence, 'FULL_HOME_BACKUP'),
+    partialHomeBackup: hasScopeEvidenceV40(evidence, 'PARTIAL_HOME_BACKUP') && !hasScopeEvidenceV40(evidence, 'FULL_HOME_BACKUP'),
+    lineSideTap: hasScopeEvidenceV40(evidence, 'TAP'),
+    loadBreaker: hasScopeEvidenceV40(evidence, 'BREAKER'),
+    trench: hasScopeEvidenceV40(evidence, 'TRENCH'),
+    underground: hasScopeEvidenceV40(evidence, 'UNDERGROUND'),
+    serviceRelocation: hasScopeEvidenceV40(evidence, 'SERVICE_RELOCATION')
+  };
+
+  flags.meterWork = flags.meterCollar || flags.meterBase;
+  flags.backupBatteryScope = flags.fullHomeBackup || flags.partialHomeBackup;
+  flags.acDisconnect = /AC\s+DISCONNECT|VISIBLE,\s*LOCKABLE,\s*LABELED\s+DISCONNECT/i.test(rawText);
+  flags.battery = flags.backupBatteryScope || /POWERWALL|ENERGY\s+STORAGE|ESS\s+SYSTEM|TESLA\s+GATEWAY|BATTERY\s*:/i.test(rawText);
+
+  let tapType = '';
+  const tapEvidence = evidence.find(e => e.type === 'TAP');
+  const tapText = `${plan.interco || ''} ${tapEvidence?.text || ''} ${tapEvidence?.snippet || ''}`.toUpperCase();
+  if (/LOAD\s+SIDE\s+TAP/.test(tapText)) tapType = 'Load side tap';
+  else if (/SUPPLY\s+SIDE\s+TAP/.test(tapText)) tapType = 'Supply side tap';
+  else if (/LINE\s+SIDE\s+TAP/.test(tapText)) tapType = 'Line side tap';
+  else if (/FEEDER\s+TAP/.test(tapText)) tapType = 'Feeder tap';
+  flags.tapType = tapType;
+
+  const nonBreakerTypes = [];
+  if (flags.mpu) nonBreakerTypes.push('MPU');
+  if (flags.fsu) nonBreakerTypes.push('FSU');
+  if (flags.psu) nonBreakerTypes.push('PSU');
+  if (flags.meterCollar) nonBreakerTypes.push('MMD');
+  if (flags.meterBase) nonBreakerTypes.push('METER_BASE');
+  if (flags.lineSideTap) nonBreakerTypes.push('TAP');
+  if (flags.fullHomeBackup) nonBreakerTypes.push('FULL_HOME_BACKUP');
+  if (flags.partialHomeBackup) nonBreakerTypes.push('PARTIAL_HOME_BACKUP');
+  if (flags.trench) nonBreakerTypes.push('TRENCH');
+  if (flags.underground) nonBreakerTypes.push('UNDERGROUND');
+  if (flags.serviceRelocation) nonBreakerTypes.push('SERVICE_RELOCATION');
+
+  const isBreakerOnlyInterconnect = flags.loadBreaker && nonBreakerTypes.length === 0;
+  flags.locatesNeeded = nonBreakerTypes.some(t => rule.locatesRequired.includes(t));
+  if (!flags.locatesNeeded && nonBreakerTypes.length > 0) flags.locatesNeeded = true;
+  if (isBreakerOnlyInterconnect) flags.locatesNeeded = false;
+
+  flags.privateLocatesNeeded = flags.locatesNeeded && /PRIVATE\s+LOCATE|PRIVATE\s+LOCATES|PRIVATE\s+UTILITY\s+LOCATE|SEPTIC|IRRIGATION|SPRINKLER|PROPANE|GAS\s+LINE|DRAIN\s+LINE/i.test(rawText);
+
+  const locateHits = [];
+  nonBreakerTypes.forEach(t => {
+    const ev = evidence.find(e => e.type === t);
+    const labels = {
+      MPU:'MPU / main service panel upgrade detected',
+      FSU:'FSU / service upgrade detected',
+      PSU:'PSU / service upgrade detected',
+      MMD:'Meter collar / MMD / ConnectDER detected',
+      METER_BASE:'Meter base replacement detected',
+      TAP:`${flags.tapType || 'Tap interconnection'} detected`,
+      FULL_HOME_BACKUP:'Full-home backup battery scope detected',
+      PARTIAL_HOME_BACKUP:'Partial-home backup battery scope detected',
+      TRENCH:'Trenching or ground disturbance detected',
+      UNDERGROUND:'New underground conduit/feed/run detected',
+      SERVICE_RELOCATION:'Meter/service relocation detected'
+    };
+    locateHits.push({type:t, label:labels[t] || `${t} detected`, evidence:ev});
+  });
+  flags.locateHits = flags.locatesNeeded ? locateHits : [];
+  flags.genericUndergroundOnly = /UTILITY\s+SERVICE\s*:\s*UNDERGROUND|IN\s+AN\s+UNDERGROUND\s+PHOTOVOLTAIC\s+SYSTEM/i.test(rawText) && !flags.underground;
+
+  let dr = false;
+  const reasons = [];
+  const info = [];
+  const drTypes = [];
+  const addDr = (type, reason) => { if (!drTypes.includes(type)) drTypes.push(type); dr = true; reasons.push(reason); };
+
+  if (utilityNorm === 'PGE'){
+    if (flags.fullHomeBackup) addDr('FULL_HOME_BACKUP', 'PGE: full-home backup batteries trigger D/R review.');
+    if (flags.meterBase) addDr('METER_BASE', 'PGE: meter base replacement triggers D/R review.');
+    if (flags.fsu || flags.psu) addDr('FSU_PSU', 'PGE: FSU/PSU service work triggers D/R review.');
+    if (flags.meterCollar) addDr('MMD', 'PGE: MMD / ConnectDER / meter collar is meter work and should be treated as D/R/manual utility review.');
+    if (flags.partialHomeBackup) info.push('PGE: partial-home backup detected. Per PM SOP, partial-home backup does not trigger D/R by itself.');
+    if (flags.mpu && !flags.fsu && !flags.psu && !flags.meterBase && !flags.fullHomeBackup && !flags.meterCollar){
+      info.push('PGE: MPU detected. Per PM SOP, PGE MPU is normally done hot and does not trigger D/R by itself. Locates still apply because it is not breaker-only work.');
+    }
+  } else if (utilityNorm === 'PACIFICORP'){
+    if (flags.fullHomeBackup) addDr('FULL_HOME_BACKUP', 'Pac Power: full-home backup batteries trigger D/R review.');
+    if (flags.meterCollar) addDr('MMD', 'Pac Power: meter collar / MMD / ConnectDER triggers D/R review.');
+    if (flags.mpu) addDr('MPU', 'Pac Power: MPU triggers D/R review.');
+    if (flags.fsu || flags.psu) addDr('FSU_PSU', 'Pac Power: FSU/PSU service work triggers D/R review.');
+    if (flags.meterBase) addDr('METER_BASE', 'Pac Power: meter/service equipment replacement should be treated as D/R/manual utility review.');
+    if (flags.partialHomeBackup) info.push('Pac Power: partial-home backup detected. Per PM SOP, partial-home backup does not trigger D/R by itself.');
+  } else {
+    if (flags.fullHomeBackup || flags.meterCollar || flags.meterBase || flags.fsu || flags.psu){
+      addDr('UNKNOWN_UTILITY', 'Utility is not confirmed. D/R manual review required for detected meter/service/full-backup scope.');
+    }
+    if (flags.mpu) info.push('Utility unknown: MPU detected. Confirm utility-specific D/R path before scheduling.');
+  }
+
+  const meterSpotNeeded = !!(dr && rule.meterSpotRequiredWhenDr);
+  const conflicts = [];
+  if (flags.loadBreaker && nonBreakerTypes.length > 0){
+    conflicts.push(`Interconnection shows breaker language, but non-breaker scope was also detected: ${nonBreakerTypes.join(', ')}. Treat as NOT breaker-only.`);
+  }
+  if (flags.fullHomeBackup && flags.partialHomeBackup){
+    conflicts.push('Both full-home and partial-home backup language was detected. PM must confirm actual backup scope.');
+  }
+  if (utilityNorm === 'UNKNOWN' && nonBreakerTypes.length > 0){
+    conflicts.push('Utility was not confidently identified while non-breaker scope was detected. Confirm utility before relying on D/R logic.');
+  }
+  if (!classified.some(p => p.primary === 'sld') && (flags.mpu || flags.fsu || flags.psu || flags.meterCollar || flags.meterBase || flags.lineSideTap)){
+    conflicts.push('No high-confidence SLD page was classified. Evidence came from cover/site/spec text, so PM should verify the SLD manually.');
+  }
+
+  let confidenceScore = bestEvidenceConfidenceV40(evidence, ['MPU','FSU','PSU','MMD','METER_BASE','TAP','BREAKER','FULL_HOME_BACKUP','PARTIAL_HOME_BACKUP']);
+  if (!confidenceScore && flags.loadBreaker) confidenceScore = 0.70;
+  confidenceScore += Math.min(0.12, evidence.length * 0.015);
+  if (conflicts.length) confidenceScore -= 0.10;
+  if (utilityNorm === 'UNKNOWN' && nonBreakerTypes.length) confidenceScore -= 0.12;
+  confidenceScore = Math.max(0.15, Math.min(0.99, confidenceScore || 0.50));
+  const confidence = confidenceScore >= 0.85 ? 'HIGH' : confidenceScore >= 0.67 ? 'MEDIUM' : 'LOW';
+  if (confidence === 'LOW') pushFlag('Electrical scope confidence is LOW. PM manual review required before scheduling.');
+  conflicts.forEach(c => pushFlag(c));
+
+  const work = [];
+  if (flags.mpu) work.push('MPU');
+  if (flags.fsu) work.push('FSU');
+  if (flags.psu) work.push('PSU');
+  if (flags.meterCollar) work.push('Meter collar / MMD / ConnectDER');
+  if (flags.meterBase) work.push('Meter base replacement');
+  if (flags.fullHomeBackup) work.push('Full-home backup battery scope');
+  if (flags.partialHomeBackup) work.push('Partial-home backup battery scope');
+  if (flags.lineSideTap) work.push(flags.tapType || 'Tap interconnection');
+  if (flags.loadBreaker && !flags.lineSideTap) work.push('Breaker interconnection');
+  if (flags.trench || flags.underground || flags.serviceRelocation) work.push('Ground disturbance / underground / service relocation scope');
+  if (flags.locatesNeeded) work.push('Utility locates required');
+  if (flags.privateLocatesNeeded) work.push('Private locates may be needed');
+  if (flags.acDisconnect) work.push('AC disconnect');
+  if (flags.battery) work.push('Battery / ESS system');
+
+  if (flags.mpu) pushPriority(`${rule.label}: MPU detected. ${utilityNorm === 'PGE' ? 'PGE MPU is hot by default, no D/R by itself, but locates are still needed.' : 'D/R likely required unless utility confirms otherwise.'}`);
+  if (flags.fsu || flags.psu) pushPriority(`${rule.label}: FSU/PSU detected. D/R coordination and locates required.`);
+  if (flags.meterCollar) pushPriority(`${rule.label}: Meter collar / MMD / ConnectDER detected. D/R/manual utility review, locates, and meter spot required when D/R applies.`);
+  if (flags.meterBase) pushPriority(`${rule.label}: Meter base replacement detected. Confirm D/R path and meter spot.`);
+  if (flags.locatesNeeded) pushPriority('Utility locates are required because the scope is not breaker-only. Submit 811/utility locate request before scheduling.');
+  if (meterSpotNeeded) pushPriority('Meter spot needed because D/R is required.');
+
+  const decision = {
+    utility: utilityNorm,
+    rule: rule.label,
+    confidence,
+    confidenceScore,
+    nonBreakerTypes,
+    drTypes,
+    meterSpotNeeded,
+    breakerOnly: isBreakerOnlyInterconnect,
+    ruleNotes: rule.notes
+  };
+
+  return {flags, work, dr, reasons, info, evidence, classified, conflicts, decision, meterSpotNeeded, confidence, confidenceScore};
+}
+
+function updateEvidenceEngineUiV40(scope){
+  setVal('sheetClassifierText', sheetClassTextV40(scope.classified || []));
+  setVal('scopeEvidenceText', evidenceTextV40(scope.evidence || []));
+  const decision = scope.decision || {};
+  const decisionLines = [
+    `Utility rule: ${decision.rule || 'Unknown'}`,
+    `Confidence: ${decision.confidence || scope.confidence || 'UNKNOWN'} (${Math.round((decision.confidenceScore || scope.confidenceScore || 0) * 100)}%)`,
+    `D/R: ${scope.dr ? 'YES' : 'NO'}`,
+    `Locates: ${scope.flags?.locatesNeeded ? 'YES' : 'NO'}`,
+    `Meter spot: ${scope.meterSpotNeeded ? 'YES' : 'NO'}`,
+    `Breaker-only: ${decision.breakerOnly ? 'YES' : 'NO'}`,
+    `Detected non-breaker types: ${(decision.nonBreakerTypes || []).join(', ') || 'None'}`,
+    `D/R trigger types: ${(decision.drTypes || []).join(', ') || 'None'}`,
+    '',
+    decision.ruleNotes || ''
+  ];
+  setVal('scopeDecisionText', decisionLines.filter(x => x !== null && x !== undefined).join('\n'));
+  setVal('conflictChecksText', (scope.conflicts && scope.conflicts.length) ? scope.conflicts.map((x,i)=>`${i+1}. ${x}`).join('\n') : 'No conflicts found.');
+  runCurrentRegressionCheckV40(scope, false);
+}
+
+function updateElectricalScopeUi(scope){
+  const setCard = (cardId, mainId, subId, mode, main, sub) => {
+    const card = $(cardId);
+    if (card && card.classList){ card.classList.remove('red','yellow','green'); if (mode) card.classList.add(mode); }
+    if ($(mainId)) $(mainId).textContent = main;
+    if ($(subId)) $(subId).textContent = sub;
+  };
+
+  const major = scope.flags.mpu || scope.flags.fsu || scope.flags.psu || scope.flags.meterBase;
+  const electricalReview = scope.flags.lineSideTap || scope.flags.meterCollar || scope.flags.acDisconnect;
+  setCard(
+    'electricalScopeTypeCard',
+    'electricalScopeMain',
+    'electricalScopeSub',
+    major ? 'red' : electricalReview ? 'yellow' : 'green',
+    scope.work.length ? (major ? 'MAJOR WORK' : 'ELECTRICAL') : 'PV ONLY',
+    scope.work.length ? scope.work.join(', ') : 'No major electrical scope detected.'
+  );
+
+  const utilityNorm = scope.decision?.utility || normalizeRuleUtilityV40(getVal('utility'));
+  const pgeHotMpu = !scope.dr && scope.flags.mpu && utilityNorm === 'PGE' && !scope.flags.fsu && !scope.flags.psu && !scope.flags.meterBase && !scope.flags.fullHomeBackup && !scope.flags.meterCollar;
+
+  setCard(
+    'drStatusCard',
+    'drStatusMain',
+    'drStatusSub',
+    scope.dr ? 'red' : pgeHotMpu ? 'yellow' : 'green',
+    scope.dr ? 'D/R LIKELY' : pgeHotMpu ? 'PGE HOT MPU' : 'NO D/R FLAG',
+    scope.dr ? scope.reasons.join(' ') :
+      pgeHotMpu ? 'MPU detected. Per PM SOP, PGE MPU is done hot and does not need D/R by itself. Locates still apply because this is not breaker-only work.' :
+      'No SOP D/R trigger was found.'
+  );
+
+  setCard(
+    'locateStatusCard',
+    'locateStatusMain',
+    'locateStatusSub',
+    scope.flags.locatesNeeded ? 'red' : 'green',
+    scope.flags.locatesNeeded ? 'LOCATES NEEDED' : 'NO LOCATE FLAG',
+    scope.flags.locatesNeeded ? 'Locate-triggering scope detected. See Utility Locate Callout and evidence below.' : 'Breaker interconnect or no locate-triggering scope detected.'
+  );
+
+  setCard(
+    'installHoldCard',
+    'installHoldMain',
+    'installHoldSub',
+    scope.dr || scope.flags.locatesNeeded ? 'red' : scope.flags.lineSideTap ? 'yellow' : 'green',
+    scope.dr || scope.flags.locatesNeeded ? 'HOLD / CONFIRM' : scope.flags.lineSideTap ? 'REVIEW TAP' : 'OK TO REVIEW',
+    scope.dr || scope.flags.locatesNeeded ? 'Do not lock install until flagged utility items are confirmed.' : scope.flags.lineSideTap ? 'Tap interconnection needs locates per SOP.' : 'No special utility hold generated.'
+  );
+
+  const detected = [];
+  detected.push(`Evidence confidence: ${scope.confidence || 'UNKNOWN'} (${Math.round((scope.confidenceScore || 0) * 100)}%)`);
+  detected.push(`Utility rule applied: ${scope.decision?.rule || 'Unknown'}`);
+  detected.push('');
+  if (scope.work.length) scope.work.forEach(x => detected.push(`Detected: ${x}`));
+  else detected.push('No major electrical work detected from packet text.');
+  if (scope.info && scope.info.length) {
+    detected.push('');
+    detected.push('Info notes:');
+    scope.info.forEach(x => detected.push(`- ${x}`));
+  }
+  if (scope.conflicts && scope.conflicts.length){
+    detected.push('');
+    detected.push('Conflict / PM review notes:');
+    scope.conflicts.forEach(x => detected.push(`- ${x}`));
+  }
+  detected.push('');
+  detected.push('Top evidence:');
+  (scope.evidence || []).slice().sort((a,b)=>(b.confidence||0)-(a.confidence||0)).slice(0,5).forEach(e => {
+    detected.push(`- ${e.type} page ${e.page}${e.sheet ? ` ${e.sheet}` : ''}: ${e.snippet}`);
+  });
+  setVal('electricalScopeDetectedText', detected.join('\n'));
+
+  const checklist = [];
+  if (scope.dr) {
+    checklist.push('Confirm D/R need with utility.');
+    if (scope.meterSpotNeeded) checklist.push('Request meter spot before utility date because D/R is required.');
+    checklist.push('Set HO expectation for outage window.');
+    checklist.push('Do not schedule install until utility coordination path is confirmed.');
+  }
+  if (scope.flags.locatesNeeded){
+    checklist.push('Submit 811 / utility locate request before any non-breaker field work.');
+    checklist.push('Wait for utility locate markings before field work starts.');
+    checklist.push('Confirm locate expiration window and make sure work happens inside that window.');
+    checklist.push('If trenching is involved, schedule trench inspection before close-up if the AHJ requires it.');
+  }
+  if (scope.flags.privateLocatesNeeded){
+    checklist.push('Ask HO about private utilities: irrigation, gas to BBQ/pool, septic, well, propane, drains, landscape lighting, or outbuilding power.');
+    checklist.push('Schedule private locates when any private utilities may cross the work area.');
+  }
+  if (scope.flags.meterCollar) checklist.push('Meter collar / MMD / ConnectDER detected: upload MMD form and meter photo with interconnection package. For Pac Power this triggers D/R, locates, and meter spot. For PGE treat as meter work/manual utility review unless utility confirms otherwise.');
+  if (scope.flags.battery) {
+    checklist.push('Battery / ESS detected: confirm battery disconnect, gateway/controller, backup/load panel scope, ESS labels, and battery spec sheets are included.');
+    checklist.push('Confirm if the battery is full-home backup, partial-home backup, or non-backup/rate saver mode and make sure utility upload notes match.');
+    if (scope.flags.fullHomeBackup) checklist.push('Full-home backup batteries detected: D/R applies for PGE and Pacific Power.');
+    if (scope.flags.partialHomeBackup) checklist.push('Partial-home backup detected: no D/R by itself, but still verify locates/utility coordination if the scope is not breaker-only.');
+  }
+  if (scope.flags.mpu && utilityNorm === 'PGE') {
+    checklist.push('PGE MPU detected from evidence: treat as hot work by default. No D/R unless the packet also shows meter base replacement, FSU/PSU, full-home backup, MMD/ConnectDER, or separate meter work.');
+  }
+  if (scope.flags.mpu && utilityNorm === 'PACIFICORP') {
+    checklist.push('Pac Power MPU detected: D/R, locates, and meter spot are required per PM SOP.');
+  }
+  if (scope.flags.lineSideTap && !scope.dr) {
+    checklist.push('Tap interconnection detected: confirm permit description, plan set, and utility interconnection docs match the tap scope.');
+    checklist.push('Per PM SOP, tap interconnection is not breaker-only, so call out utility locates before field work.');
+  }
+  if (!checklist.length) checklist.push('No special electrical coordination checklist generated.');
+  setVal('electricalScopeChecklistText', checklist.map((x,i)=>`${i+1}. ${x}`).join('\n'));
+
+  const locateCallout = [];
+  if (scope.flags.locatesNeeded){
+    locateCallout.push('LOCATES NEEDED');
+    locateCallout.push('');
+    locateCallout.push('Why this was flagged:');
+    scope.flags.locateHits.forEach((x,i)=>locateCallout.push(`${i+1}. ${x.label}${x.evidence ? ` | page ${x.evidence.page}${x.evidence.sheet ? ` ${x.evidence.sheet}` : ''}` : ''}`));
+    locateCallout.push('');
+    locateCallout.push('Per PM SOP, locates are needed for everything except breaker-only work. This includes tap interconnection, MPU, FSU, PSU, meter base replacement, meter collar/MMD/ConnectDER, full or partial backup battery scope, trenching, underground conduit/feeders, service relocation, ground mount posts/footings, 811 language, utility locate language, or trench inspection language.');
+  } else {
+    locateCallout.push('NO LOCATE FLAG');
+    locateCallout.push('');
+    locateCallout.push('No locate-triggering scope was found. This should only happen for breaker interconnection or no utility-side/ground-disturbance work.');
+    if (scope.flags.genericUndergroundOnly){
+      locateCallout.push('');
+      locateCallout.push('Note: The packet mentions underground utility service or standard underground PV code notes. This alone does not require locates.');
+    }
+  }
+
+  const locateActions = [];
+  if (scope.flags.locatesNeeded){
+    locateActions.push('1. Submit 811 / utility locate request for any non-breaker scope before field work.');
+    locateActions.push('2. Confirm marks are completed before scheduling work that may involve service equipment, meter work, trenching, or underground scope.');
+    locateActions.push('3. Ask HO about private utilities in the work area.');
+    locateActions.push('4. If private utilities may exist, order private locates separately.');
+    locateActions.push('5. If trenching is present, confirm whether AHJ requires trench inspection before close-up.');
+    locateActions.push('6. Add outage / access notes if the locate work overlaps utility D/R or service work.');
+  } else {
+    locateActions.push('No locate action needed from the current packet when the actual project interconnection is breaker-only and there is no scoped ground disturbance.');
+    locateActions.push('');
+    locateActions.push('Locates become needed if the scope is anything other than breaker-only interconnection, including tap interconnection, MPU, FSU, PSU, meter base replacement, meter collar/MMD/ConnectDER, full or partial backup battery scope, trenching, underground conduit/feeders, service relocation, ground mount posts/footings, 811, utility locates, private locates, or trench inspection.');
+  }
+
+  setVal('locateCalloutText', locateCallout.join('\n'));
+  setVal('locateActionStepsText', locateActions.join('\n'));
+  updateEvidenceEngineUiV40(scope);
+}
+
+function runCurrentRegressionCheckV40(scope, manual=true){
+  const sc = scope || state.electricalScope;
+  if (!sc){
+    setVal('regressionTestsText', 'No parsed scope available yet. Upload and parse a plan set first.');
+    return;
+  }
+  const raw = normalizeText(state.planDoc?.text || `${getVal('owner')} ${getVal('street')}`);
+  const expected = SCOPE_EXPECTED_CASES_V40.find(c => c.match.test(raw));
+  if (!expected){
+    setVal('regressionTestsText', 'This project is not in the known regression set. Evidence engine still ran, but no pass/fail baseline exists for this project.');
+    return;
+  }
+  const actual = {
+    utility: sc.decision?.utility,
+    mpu: !!sc.flags.mpu,
+    meterCollar: !!sc.flags.meterCollar,
+    dr: !!sc.dr,
+    locatesNeeded: !!sc.flags.locatesNeeded,
+    meterSpotNeeded: !!sc.meterSpotNeeded
+  };
+  const checks = ['utility','mpu','meterCollar','dr','locatesNeeded','meterSpotNeeded'].map(key => {
+    const pass = String(actual[key]) === String(expected[key]);
+    return `${pass ? 'PASS' : 'FAIL'} ${key}: expected ${expected[key]}, got ${actual[key]}`;
+  });
+  const failed = checks.some(x => x.startsWith('FAIL'));
+  const text = [
+    `${failed ? 'REGRESSION FAIL' : 'REGRESSION PASS'}: ${expected.name}`,
+    '',
+    ...checks,
+    '',
+    `Confidence: ${sc.confidence || 'UNKNOWN'} (${Math.round((sc.confidenceScore || 0) * 100)}%)`,
+    `Top evidence count: ${(sc.evidence || []).length}`
+  ].join('\n');
+  setVal('regressionTestsText', text);
+  if (manual && $('parseStatus')) $('parseStatus').textContent = text;
+}
+
+setTimeout(() => {
+  const btn = $('runScopeTestBtn');
+  if (btn) btn.addEventListener('click', () => runCurrentRegressionCheckV40(state.electricalScope, true));
+}, 0);
 
 $('parseBtn').addEventListener('click', () => {
   runParse().catch(err => {
@@ -3093,22 +4265,6 @@ $('parseBtn').addEventListener('click', () => {
 $('resetBtn').addEventListener('click', resetAll);
 $('downloadJsonBtn').addEventListener('click', () => {
   downloadFile('solar-submission-parsed-data.json', JSON.stringify(collectFields(), null, 2), 'application/json');
-});
-$('saveProjectBtn').addEventListener('click', () => {
-  saveProjectToAutopilot().catch(err => {
-    console.error(err);
-    $('parseStatus').textContent = `Save failed: ${err.message || err}`;
-  });
-});
-$('prepareSubmittalBtn').addEventListener('click', () => {
-  prepareSavedProject().catch(err => {
-    console.error(err);
-    const detailText = err.details ? Object.entries(err.details).map(([k,v]) => `${k}: ${v}`).join(' | ') : '';
-    $('parseStatus').textContent = [`Prepare submittal blocked: ${err.message || err}`, detailText].filter(Boolean).join('\n');
-  });
-});
-$('openDashboardBtn').addEventListener('click', () => {
-  window.location.href = '/dashboard.html';
 });
 
 $('buildUtilityZipBtn').addEventListener('click', () => {
@@ -3147,6 +4303,152 @@ $('downloadUtilityBillPdfBtn').addEventListener('click', () => {
 $('downloadMeterPhotoPdfBtn').addEventListener('click', () => {
   downloadSupportingPdf('10 Meter Photo', state.meterFile).catch(err => $('parseStatus').textContent = `Meter photo PDF download failed: ${err.message || err}`);
 });
+$('buildProjectDoxZipBtn').addEventListener('click', () => {
+  buildProjectDoxZip().catch(err => {
+    console.error(err);
+    $('parseStatus').textContent = `ProjectDox ZIP failed: ${err.message || err}`;
+  });
+});
+$('downloadProjectDoxDrawingsBtn').addEventListener('click', () => {
+  buildProjectDoxZip('drawingsOnly').catch(err => $('parseStatus').textContent = `ProjectDox drawings ZIP failed: ${err.message || err}`);
+});
+$('downloadProjectDoxDocsBtn').addEventListener('click', () => {
+  buildProjectDoxZip('docsOnly').catch(err => $('parseStatus').textContent = `ProjectDox docs ZIP failed: ${err.message || err}`);
+});
+['projectDoxSplitMode','projectDoxNamingPreset'].forEach(id => {
+  const el = $(id);
+  if (el) el.addEventListener('change', updateProjectDoxUi);
+});
+
+// ---------------------------------------------------------------------------
+// System integration — link parser intake to the dashboard projects/clients
+// ---------------------------------------------------------------------------
+
+async function loadSystemSelects() {
+  try {
+    const [projRes, clientRes] = await Promise.all([
+      fetch('/api/projects?limit=200'),
+      fetch('/api/clients?limit=200')
+    ]);
+    if (projRes.ok) {
+      const projData = await projRes.json();
+      const projSel = $('existingProjectSelect');
+      if (projSel) {
+        projSel.length = 1; // keep the "— New Project —" option
+        (projData.projects || projData.items || projData || []).forEach(p => {
+          if (!p || !p.id) return;
+          const opt = document.createElement('option');
+          opt.value = p.id;
+          opt.textContent = `${p.homeownerName || p.name || p.id}${p.projectAddress ? ' — ' + p.projectAddress : ''}`;
+          projSel.appendChild(opt);
+        });
+      }
+    }
+    if (clientRes.ok) {
+      const clientData = await clientRes.json();
+      const clientSel = $('clientSelect');
+      if (clientSel) {
+        clientSel.length = 1;
+        (clientData.clients || clientData.items || clientData || []).forEach(c => {
+          if (!c || !c.id) return;
+          const opt = document.createElement('option');
+          opt.value = c.id;
+          opt.textContent = c.companyName || c.contactName || c.name || c.id;
+          clientSel.appendChild(opt);
+        });
+      }
+    }
+  } catch (e) {
+    console.warn('Could not load system selects:', e);
+  }
+}
+
+function buildSystemPayload() {
+  return {
+    homeownerName: getVal('owner'),
+    projectAddress: getVal('street'),
+    city: getVal('city'),
+    state: getVal('state') || 'OR',
+    zip: getVal('zip'),
+    ahj: getVal('ahj'),
+    utility: getVal('utility'),
+    meterNumber: getVal('meter'),
+    interconnectionMethod: getVal('interco'),
+    systemSizeDcKw: numVal(getVal('dcKw')),
+    systemSizeAcKw: numVal(getVal('acKw')),
+    moduleMake: getVal('moduleMake'),
+    moduleModel: getVal('moduleModel'),
+    moduleWattage: numVal(getVal('moduleWattage')),
+    panelCount: numVal(getVal('moduleQty')),
+    inverterMake: getVal('invMake'),
+    inverterModel: getVal('invModel'),
+    inverterCount: numVal(getVal('invQty')),
+    batteryMake: getVal('batteryMake'),
+    batteryModel: getVal('batteryModel'),
+    batteryCount: numVal(getVal('batteryQty')),
+    roofMaterial: getVal('roofMaterial'),
+    mounting: getVal('mounting'),
+    description: getVal('projectDescriptionText'),
+    notes: getVal('pmProjectNotes'),
+  };
+}
+
+async function saveToSystem() {
+  const statusEl = $('saveStatus');
+  const payload = buildSystemPayload();
+  if (!payload.homeownerName && !payload.projectAddress) {
+    if (statusEl) statusEl.textContent = '⚠ Parse a packet first — no homeowner or address to save.';
+    return;
+  }
+  const clientId = getVal('clientSelect');
+  if (clientId) payload.clientId = clientId;
+  const existingId = getVal('existingProjectSelect');
+  if (statusEl) statusEl.textContent = 'Saving…';
+  try {
+    let res;
+    if (existingId) {
+      res = await fetch(`/api/projects/${existingId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+    } else {
+      res = await fetch('/api/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+    }
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) {
+      const id = data.id || (data.project && data.project.id) || existingId || '—';
+      if (statusEl) statusEl.textContent = `✅ Saved. Project ID: ${id}`;
+      loadSystemSelects();
+    } else {
+      if (statusEl) statusEl.textContent = `❌ Error: ${data.error || res.statusText}`;
+    }
+  } catch (e) {
+    if (statusEl) statusEl.textContent = `❌ Network error: ${e.message}`;
+  }
+}
+
+async function loadContractorInfo(clientId) {
+  if (!clientId) return;
+  try {
+    const res = await fetch(`/api/clients/${clientId}`);
+    if (!res.ok) return;
+    const c = await res.json();
+    const client = c.client || c;
+    if (client.companyName) setVal('installerCompany', client.companyName);
+    if (client.email) setVal('installerEmail', client.email);
+    if (client.phone) setVal('installerPhone', client.phone);
+    if (client.address) setVal('installerLine1', client.address);
+  } catch (e) {
+    console.warn('Could not load contractor info:', e);
+  }
+}
+
+loadSystemSelects();
 </script>
 </body>
 </html>
