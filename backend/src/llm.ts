@@ -123,36 +123,58 @@ You are given up to three documents:
 Return ONLY a JSON object of this exact shape:
 {
   "fields": {
-    "<fieldId>": { "value": <string|number|null>, "confidence": <0..1> }
+    "<fieldId>": { "value": <string|number|null>, "confidence": <0..1>, "evidence": { "source": "plan_set|utility_bill|meter_photo", "sheet": "<sheet/page hint e.g. PV-2 or Cover>", "excerpt": "<short verbatim text you read it from>" } }
   },
   "lowConfidenceFields": ["<fieldId>", ...],
   "notes": "<short notes on anything ambiguous or worth a human double-check>"
 }
 
+EVIDENCE IS REQUIRED for accuracy: for every field, include an "evidence" object citing where you read it (which document, the sheet/page hint if visible, and a short verbatim excerpt). This lets a human verify the value. If you cannot cite a source, lower confidence and add the field to lowConfidenceFields.
+
 Use EXACTLY these fieldId keys when you find a value (omit a key entirely if absent):
-- owner: full homeowner name(s) exactly as on the utility bill (e.g. "Abigail Boileau & Thomas Boileau")
-- street: service street address line (e.g. "1300 N Sitka Ave")
-- city, state, zip: service address city / 2-letter state / 5-digit zip
-- ahj: the Authority Having Jurisdiction (permitting city or county), e.g. "City of Newberg"
-- utility: electric utility company normalized (e.g. "PGE", "Pacific Power")
-- account: utility account number (digits as printed on the bill)
-- meter: meter number/serial (prefer the meter photo; cross-check the bill)
-- dcKw: system size in kW DC (number only)
-- acKw: system size in kW AC (number only)
-- interco: interconnection method if stated (e.g. "Net Metering")
+IDENTITY / SITE
+- owner: full homeowner name(s) (e.g. "Abigail Boileau & Thomas Boileau")
+- street, city, state (2-letter), zip: service address parts
+- ahj: Authority Having Jurisdiction (permitting city/county), e.g. "City of Newberg"
+- utility: electric utility normalized ("PGE", "Pacific Power")
+- account: utility account number (digits as printed)
+- meter: meter number/serial
+SYSTEM / EQUIPMENT
+- dcKw (number), acKw (number): system size kW DC / AC
+- interco: interconnection method (e.g. "Net Metering", "Load-side breaker", "Supply-side tap")
 - moduleMake, moduleModel, moduleWattage (number), moduleQty (number)
 - invMake, invModel, invQty (number)
+- invOutputW: inverter/microinverter rated output CURRENT in amps (number; from the inverter datasheet/SLD, e.g. 24)
 - batteryMake, batteryModel, batteryQty (number)
-- roofMaterial: e.g. "Composition Shingle"
-- mounting: e.g. "Roof Mount"
+- roofMaterial (e.g. "Composition Shingle"), mounting (e.g. "Roof Mount")
+ELECTRICAL (read from the SLD / one-line and load calc — critical for plan review)
+- busRating: main service panel (MSP) busbar rating in amps (e.g. "200A")
+- mainBreaker: main breaker / main service rating in amps (e.g. "200A")
+- pvBreaker: PV backfeed breaker / OCPD size in amps (e.g. "40A")
+- acDiscReq: AC/manual disconnect — "yes/required/provided/shown" if a lockable visible load-break disconnect is shown, else note the exception
+STRUCTURAL (read from structural notes / roof framing plan — drive prescriptive screening)
+- snow: ground snow load in PSF (number)
+- deadLoad: PV dead load in PSF (number)
+- roofRafterSpacing: rafter/truss spacing in inches on-center (number, e.g. 24)
+- roofRafterSpan: rafter span (number, feet) if given
+- wind: wind exposure category letter (e.g. "B" or "C")
+- permitPath: "prescriptive" or "engineered" if determinable
+
+NARRATIVE EVIDENCE BLOBS — also include these as fields (value = a short factual summary; cite sheet numbers). These let plan review confirm each required element is shown. Write what the plan set ACTUALLY shows; if an element is absent, say so plainly ("No rapid shutdown note found"):
+- electricalCalcText: summarize the SLD/one-line — SLD sheet #, modules→inverter→POI, disconnects/OCPD, busbar/main/PV breaker math (705.12), rapid shutdown (690.12), grounding/bonding, meter/service relationship
+- structuralCalcText: roof framing (rafter/truss size & spacing & span), snow/dead/wind loads, attachment/standoff/flashing details, whether stamped engineering is present
+- sitePlanNotesText: site/plot plan, roof plan/PV layout, setbacks, north arrow, equipment locations
+- roofPlanNotesText: roof planes, fire access pathways/setbacks/ridge gaps, module layout per plane
+- labelsText: PV label/placard schedule and directory (690.12 / 705.10)
+- projectDescriptionText: one-paragraph scope (size, module/inverter counts, mounting, interconnection)
+- locateCalloutText: any utility-locate / call-before-dig callouts
 
 Rules:
-- Set confidence honestly. If a value is inferred or the OCR is messy, lower it. Put any field with confidence < 0.6 (or that you had to guess) into lowConfidenceFields.
-- For account and meter numbers, only return digits/characters you can actually read; never invent or pad them. If unreadable, omit and add to lowConfidenceFields.
-- Account numbers are often printed in spaced segments (e.g. "65564191-001 4" is a single account "65564191-0014"). Join the segments into one continuous value; do not drop a trailing check digit.
-- Prefer the utility bill for name/address/account, the meter photo for meter number, the plan set for system/equipment.
-- Numbers must be JSON numbers, not strings.
-- Return valid JSON only — no prose outside the JSON.`;
+- Set confidence honestly; put anything <0.6 or guessed into lowConfidenceFields.
+- Account/meter numbers: only digits you can actually read; never invent or pad. Join spaced account segments (e.g. "65564191-001 4" -> "65564191-0014"); do not drop a trailing check digit.
+- Electrical amps/structural loads come from the PLAN SET (SLD, datasheets, structural notes) — not the bill.
+- Prefer the utility bill for name/address/account, the meter photo for meter number, the plan set for everything else.
+- Numbers must be JSON numbers. Return valid JSON only — no prose outside the JSON.`;
 
     const parts: string[] = [];
     if (input.defaultState) parts.push(`(Default state hint if ambiguous: ${input.defaultState})`);
@@ -163,12 +185,18 @@ Rules:
       return { provider: "claude", fields: {}, lowConfidenceFields: [], notes: "No document text supplied." };
     }
 
-    const raw = await this.askLong(system, parts.join("\n\n"));
+    const raw = await this.askLong(system, parts.join("\n\n"), 6000);
+    return this.normalizeExtraction(raw, "Could not parse LLM response.");
+  }
+
+  // Shared parser for both text and vision extraction results — captures
+  // value, confidence, and evidence (provenance) per field.
+  private normalizeExtraction(raw: string, parseFailNote: string): ParserLlmExtraction {
     const parsed = this.parseJson<{
-      fields?: Record<string, { value: unknown; confidence?: number }>;
+      fields?: Record<string, { value: unknown; confidence?: number; evidence?: { source?: string; sheet?: string; excerpt?: string } }>;
       lowConfidenceFields?: string[];
       notes?: string;
-    }>(raw, { fields: {}, lowConfidenceFields: [], notes: "Could not parse LLM response." });
+    }>(raw, { fields: {}, lowConfidenceFields: [], notes: parseFailNote });
 
     const fields: ParserLlmExtraction["fields"] = {};
     for (const [key, entry] of Object.entries(parsed.fields || {})) {
@@ -176,7 +204,15 @@ Rules:
       const value = typeof entry.value === "number" ? entry.value : String(entry.value).trim();
       if (value === "") continue;
       const confidence = typeof entry.confidence === "number" ? Math.max(0, Math.min(1, entry.confidence)) : 0.5;
-      fields[key] = { value: value as string | number, confidence };
+      const ev = entry.evidence;
+      const evidence = ev && (ev.sheet || ev.excerpt || ev.source)
+        ? {
+            source: (["plan_set", "utility_bill", "meter_photo"].includes(String(ev.source)) ? ev.source : "plan_set") as "plan_set" | "utility_bill" | "meter_photo",
+            sheet: ev.sheet ? String(ev.sheet).slice(0, 40) : undefined,
+            excerpt: ev.excerpt ? String(ev.excerpt).slice(0, 200) : undefined,
+          }
+        : undefined;
+      fields[key] = { value: value as string | number, confidence, evidence };
     }
     return {
       provider: "claude",
@@ -199,7 +235,9 @@ You are shown one or more labeled images:
 - UTILITY_BILL: the electric bill. Read the homeowner name, full service address, utility company, the ACCOUNT NUMBER exactly as printed, and the meter number from the account-activity table. Account numbers are often shown in spaced segments (e.g. "65564191-001 4") — that is ONE account number "65564191-0014"; join the segments and never drop a trailing check digit.
 - METER_PHOTO: a photo of the electric meter. Read the meter serial number printed on the face/label (e.g. "78 118 886" -> "78118886"), and the utility (e.g. PacifiCorp = Pacific Power).
 
-Return ONLY JSON: {"fields":{"<id>":{"value":<string|number>,"confidence":<0..1>}}, "lowConfidenceFields":[...], "notes":"..."}
+Return ONLY JSON: {"fields":{"<id>":{"value":<string|number>,"confidence":<0..1>,"evidence":{"source":"utility_bill|meter_photo","sheet":"<region/label>","excerpt":"<verbatim text read>"}}}, "lowConfidenceFields":[...], "notes":"..."}
+
+Include an "evidence" object for every field (where on the document you read it + a short verbatim excerpt) so a human can verify it.
 
 Field ids (omit if not present):
 - owner, street, city, state (2-letter), zip
@@ -230,24 +268,7 @@ CRITICAL accuracy rules:
     });
     let raw = "";
     for (const block of msg.content) if (block.type === "text") raw += block.text;
-    const parsed = this.parseJson<{ fields?: Record<string, { value: unknown; confidence?: number }>; lowConfidenceFields?: string[]; notes?: string }>(
-      raw,
-      { fields: {}, lowConfidenceFields: [], notes: "Could not parse vision response." },
-    );
-    const fields: ParserLlmExtraction["fields"] = {};
-    for (const [key, entry] of Object.entries(parsed.fields || {})) {
-      if (!entry || entry.value == null || entry.value === "") continue;
-      const value = typeof entry.value === "number" ? entry.value : String(entry.value).trim();
-      if (value === "") continue;
-      const confidence = typeof entry.confidence === "number" ? Math.max(0, Math.min(1, entry.confidence)) : 0.6;
-      fields[key] = { value: value as string | number, confidence };
-    }
-    return {
-      provider: "claude",
-      fields,
-      lowConfidenceFields: Array.isArray(parsed.lowConfidenceFields) ? parsed.lowConfidenceFields : [],
-      notes: typeof parsed.notes === "string" ? parsed.notes : "",
-    };
+    return this.normalizeExtraction(raw, "Could not parse vision response.");
   }
 
   async classifyCorrection(input: { correctionText: string; project?: ProjectRecord }): Promise<{ bucket: CorrectionBucket; confidence: number; notes: string }> {

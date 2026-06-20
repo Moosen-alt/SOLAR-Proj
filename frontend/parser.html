@@ -503,6 +503,9 @@ const state = {
   meterFile:null,
   reviewFlags:[],
   utilityPriorityFlags:[],
+  llmSnapshot:{},
+  llmEvidence:[],
+  llmAssist:null,
   electricalScope:null
 };
 
@@ -3576,13 +3579,43 @@ async function postJson(url, body){
   return resp.json();
 }
 
-// Apply an extraction result's fields to the form. `authoritativeAll` forces
-// overwrite (used for vision results on the high-stakes ID fields).
+// Canonical snapshot keys the backend QC engine + reviewer gate read directly.
+// The LLM emits these; we persist them verbatim into the save payload so the
+// human doesn't have to re-key anything that's on the plan set.
+const LLM_SNAPSHOT_KEYS = new Set([
+  'owner','street','city','state','zip','ahj','utility','account','meter',
+  'dcKw','acKw','interco','moduleMake','moduleModel','moduleWattage','moduleQty',
+  'invMake','invModel','invQty','invOutputW','batteryMake','batteryModel','batteryQty',
+  'roofMaterial','mounting',
+  'busRating','mainBreaker','pvBreaker','acDiscReq',
+  'snow','deadLoad','roofRafterSpacing','roofRafterSpan','wind','permitPath',
+  'electricalCalcText','structuralCalcText','sitePlanNotesText','roofPlanNotesText',
+  'labelsText','projectDescriptionText','locateCalloutText',
+]);
+
+// Apply an extraction result's fields to the form AND record them (with evidence)
+// for persistence + the PM-facing evidence panel.
 function applyExtraction(result, applied, opts = {}){
   const fields = result.fields || {};
   Object.keys(fields).forEach(fieldId => {
     const entry = fields[fieldId];
     if (!entry || entry.value == null || entry.value === '') return;
+
+    // 1) Record into the snapshot we merge at save time (canonical keys).
+    if (LLM_SNAPSHOT_KEYS.has(fieldId)){
+      const existing = state.llmSnapshot[fieldId];
+      // Vision wins on ID fields; otherwise first confident value wins.
+      const authoritativeSnap = opts.vision && VISION_AUTHORITATIVE.has(fieldId) && (entry.confidence ?? 0) >= 0.5;
+      if (existing == null || authoritativeSnap || (entry.confidence ?? 0) >= LLM_OVERWRITE_CONFIDENCE){
+        state.llmSnapshot[fieldId] = entry.value;
+      }
+    }
+    // 2) Record evidence (provenance) for the PM.
+    if (entry.evidence){
+      state.llmEvidence.push({ field: fieldId, value: entry.value, confidence: entry.confidence ?? 0, ...entry.evidence });
+    }
+
+    // 3) Fill the visible form input where one exists.
     const targets = LLM_FIELD_TARGETS[fieldId];
     if (!targets) return;
     const authoritative = opts.vision && VISION_AUTHORITATIVE.has(fieldId) && (entry.confidence ?? 0) >= 0.5;
@@ -3598,6 +3631,21 @@ function applyExtraction(result, applied, opts = {}){
   });
   (result.lowConfidenceFields || []).forEach(f => state.reviewFlags.push(`AI low-confidence on "${f}" — verify manually.`));
   if (result.notes) state.reviewFlags.push(`AI notes: ${result.notes}`);
+}
+
+// Build a readable evidence summary (field = value — [source/sheet] "excerpt").
+function buildEvidenceText(){
+  if (!state.llmEvidence.length) return '';
+  const lines = state.llmEvidence
+    .filter(e => !/Text$/.test(e.field))   // skip the narrative blobs in the per-field list
+    .map(e => {
+      const src = e.source ? e.source.replace('_',' ') : 'doc';
+      const where = e.sheet ? `${src} ${e.sheet}` : src;
+      const ex = e.excerpt ? ` "${e.excerpt}"` : '';
+      const conf = Math.round((e.confidence||0)*100);
+      return `${e.field} = ${e.value}  [${where}, ${conf}%]${ex}`;
+    });
+  return lines.join('\n');
 }
 
 async function runLlmAssist(){
@@ -3653,6 +3701,8 @@ async function runParse(){
   state.reviewFlags = [];
   state.utilityPriorityFlags = [];
   state.llmAssist = null;
+  state.llmSnapshot = {};
+  state.llmEvidence = [];
   state.planFile = $('planFile').files[0] || null;
   state.ubFile = $('ubFile').files[0] || null;
   state.meterFile = $('meterPhotoFile').files[0] || null;
@@ -3717,9 +3767,11 @@ async function runParse(){
   updateSplitUi();
   setVal('reviewFlags', state.reviewFlags.join('\n'));
 
+  const snapCount = Object.keys(state.llmSnapshot || {}).length;
+  const evCount = (state.llmEvidence || []).length;
   const llmLine = state.llmAssist
-    ? (state.llmAssist.applied.length
-        ? `AI-assist filled/updated ${state.llmAssist.applied.length} field(s).`
+    ? (state.llmAssist.applied.length || snapCount
+        ? `AI-assist harvested ${snapCount} field(s) from the documents, with ${evCount} evidence citation(s) for the PM to verify.`
         : 'AI-assist ran; no additional fields needed.')
     : '';
   $('parseStatus').textContent = [
@@ -4495,7 +4547,16 @@ async function loadSystemSelects() {
 }
 
 function buildSystemPayload() {
-  return {
+  // Start with every canonical snapshot key the LLM harvested (electrical
+  // ratings, structural loads, permit path, and the narrative evidence blobs).
+  // These are the exact keys the backend QC engine + reviewer gate read, so the
+  // human doesn't have to re-enter anything that was on the plan set.
+  const payload = { ...(state.llmSnapshot || {}) };
+
+  // Visible-form values (the human may have edited these) take precedence.
+  Object.assign(payload, {
+    owner: getVal('owner'),
+    street: getVal('street'),
     homeownerName: getVal('owner'),
     projectAddress: getVal('street'),
     city: getVal('city'),
@@ -4503,25 +4564,42 @@ function buildSystemPayload() {
     zip: getVal('zip'),
     ahj: getVal('ahj'),
     utility: getVal('utility'),
-    meterNumber: getVal('meter'),
+    account: getVal('account') || getVal('ubAccountNumber'),
+    meter: getVal('meter') || getVal('planMeterNumber') || getVal('ubMeterNumber'),
+    meterNumber: getVal('meter') || getVal('planMeterNumber') || getVal('ubMeterNumber'),
+    interco: getVal('interco'),
     interconnectionMethod: getVal('interco'),
+    dcKw: numVal(getVal('dcKw')),
+    acKw: numVal(getVal('acKw')),
     systemSizeDcKw: numVal(getVal('dcKw')),
     systemSizeAcKw: numVal(getVal('acKw')),
     moduleMake: getVal('moduleMake'),
     moduleModel: getVal('moduleModel'),
     moduleWattage: numVal(getVal('moduleWattage')),
+    moduleQty: numVal(getVal('moduleQty')),
     panelCount: numVal(getVal('moduleQty')),
+    invMake: getVal('invMake'),
+    invModel: getVal('invModel'),
+    invQty: numVal(getVal('invQty')),
     inverterMake: getVal('invMake'),
     inverterModel: getVal('invModel'),
     inverterCount: numVal(getVal('invQty')),
     batteryMake: getVal('batteryMake'),
     batteryModel: getVal('batteryModel'),
+    batteryQty: numVal(getVal('batteryQty')),
     batteryCount: numVal(getVal('batteryQty')),
     roofMaterial: getVal('roofMaterial'),
     mounting: getVal('mounting'),
-    description: getVal('projectDescriptionText'),
+    description: getVal('projectDescriptionText') || payload.projectDescriptionText || '',
     notes: getVal('pmProjectNotes'),
-  };
+    // Provenance trail the PM can audit on the project record.
+    parserEvidenceText: buildEvidenceText(),
+  });
+  // Drop empty-string overrides so they don't clobber a good LLM value.
+  for (const k of Object.keys(payload)) {
+    if (payload[k] === '' || payload[k] === null || (typeof payload[k] === 'number' && Number.isNaN(payload[k]))) delete payload[k];
+  }
+  return payload;
 }
 
 async function saveToSystem() {

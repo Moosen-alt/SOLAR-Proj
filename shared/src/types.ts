@@ -982,10 +982,20 @@ export interface ProjectDetail {
   projectNotes: ProjectNote[];
 }
 
+/** Where an extracted value came from — shown to the PM to verify accuracy. */
+export interface ParserFieldEvidence {
+  source: "plan_set" | "utility_bill" | "meter_photo";
+  /** Sheet/page hint, e.g. "PV-2" or "Cover". */
+  sheet?: string;
+  /** Short verbatim excerpt the value was read from. */
+  excerpt?: string;
+}
+
 /** One extracted parser field with provenance and confidence. */
 export interface ParserExtractedField {
   value: string | number | null;
   confidence: number; // 0-1
+  evidence?: ParserFieldEvidence;
 }
 
 /** Result of the LLM-assisted parser extraction across plan set + utility bill + meter photo. */
