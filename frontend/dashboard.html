@@ -24,6 +24,25 @@
     </nav>
   </header>
 
+  <details id="startHereGuide" class="start-here" open>
+    <summary>
+      <span class="start-here-title"><i data-lucide="compass"></i> Start here — how a project flows</span>
+      <span class="start-here-hint">click to collapse</span>
+    </summary>
+    <div class="start-here-body">
+      <p class="start-here-intro">Every project moves left-to-right through these 7 steps. Pick a project from the list to see its <strong>Next step</strong> banner, which tells you exactly which button to click.</p>
+      <ol class="flow-steps">
+        <li><span class="flow-num">1</span><div><strong>Intake</strong><p>Open the <a href="/parser">Parser</a>, upload the plan set + utility bill, click <em>Parse</em>, then <em>Save to project</em>.</p></div></li>
+        <li><span class="flow-num">2</span><div><strong>QC check</strong><p>Select the project, click <em>Run QC</em>. Fix anything flagged in <em>QC Results</em>, then re-run.</p></div></li>
+        <li><span class="flow-num">3</span><div><strong>Build docs</strong><p>Click <em>Build AHJ/NEM Docs</em> to generate the application packet.</p></div></li>
+        <li><span class="flow-num">4</span><div><strong>Final review</strong><p>Click <em>Reviewer Gate</em> — the last automated check before a human submits.</p></div></li>
+        <li><span class="flow-num">5</span><div><strong>Submit</strong><p>Click <em>Prepare Submittal</em>. <strong>A person does the final submit</strong> in the portal — automation never clicks submit, pays fees, or solves MFA/CAPTCHA.</p></div></li>
+        <li><span class="flow-num">6</span><div><strong>Track</strong><p>Use <em>Permit Checks</em> + <em>NEM Checks</em> to monitor. Paste any correction letter into <em>Corrections</em> for an AI-drafted reply (you review before sending).</p></div></li>
+        <li><span class="flow-num">7</span><div><strong>Handoff</strong><p>When the permit is issued <em>and</em> NEM approved, copy the <em>Handoff Packet</em> to the installer. Our scope ends here — PTO is the installer's job.</p></div></li>
+      </ol>
+    </div>
+  </details>
+
   <main class="layout">
     <section class="project-list" aria-label="Projects">
       <div class="section-head">
@@ -173,17 +192,21 @@
               <select id="projectAssignSelect"><option value="">— unassigned —</option></select>
             </div>
           </div>
-          <div class="actions">
-            <button id="runWorkflowBtn" class="primary"><i data-lucide="list-checks"></i><span>Run Workflow</span></button>
-            <button id="runQcBtn" class="secondary"><i data-lucide="shield-check"></i><span>Run QC</span></button>
+          <div class="actions step-actions">
+            <span class="actions-label">Daily steps:</span>
+            <button id="runQcBtn" class="primary"><i data-lucide="shield-check"></i><span>2 · Run QC</span></button>
+            <button id="buildAppDocsBtn" class="secondary"><i data-lucide="files"></i><span>3 · Build AHJ/NEM Docs</span></button>
+            <button id="runReviewerGateBtn" class="secondary"><i data-lucide="clipboard-list"></i><span>4 · Reviewer Gate</span></button>
+            <button id="prepareBtn" class="secondary"><i data-lucide="send"></i><span>5 · Prepare Submittal</span></button>
+            <span class="actions-divider"></span>
+            <span class="actions-label">Tools:</span>
+            <button id="runWorkflowBtn" class="secondary"><i data-lucide="list-checks"></i><span>Run Workflow</span></button>
             <button id="runHistoricalBtn" class="secondary"><i data-lucide="history"></i><span>Historical Check</span></button>
-            <button id="runReviewerGateBtn" class="secondary"><i data-lucide="clipboard-list"></i><span>Reviewer Gate</span></button>
-            <button id="buildAppDocsBtn" class="secondary"><i data-lucide="files"></i><span>Build AHJ/NEM Docs</span></button>
-            <button id="prepareBtn" class="secondary"><i data-lucide="send"></i><span>Prepare Submittal</span></button>
             <button id="deleteProjectBtn" class="danger-button"><i data-lucide="trash-2"></i><span>Delete Test Project</span></button>
           </div>
         </div>
 
+        <div id="nextStepBanner" class="next-step-banner" hidden></div>
         <div id="message" class="message" hidden></div>
         <div id="handoffBanner" class="handoff-banner" hidden></div>
 

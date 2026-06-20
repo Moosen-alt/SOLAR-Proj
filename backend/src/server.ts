@@ -615,6 +615,11 @@ app.get("/parser", (_req, res) => {
   res.sendFile(path.join(frontendDir, "parser.html"));
 });
 
+// Friendly aliases so a new hire can land on the dashboard at "/" or "/dashboard".
+app.get(["/", "/dashboard"], (_req, res) => {
+  res.sendFile(path.join(frontendDir, "dashboard.html"));
+});
+
 app.use((_req, _res, next) => {
   next(new HttpError(404, "Route not found."));
 });
@@ -638,6 +643,6 @@ app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
 app.listen(port, () => {
   console.log(`Solar Submission Autopilot running at http://localhost:${port}`);
   console.log(`Parser: http://localhost:${port}/parser`);
-  console.log(`Dashboard: http://localhost:${port}/dashboard.html`);
+  console.log(`Dashboard: http://localhost:${port}/  (or /dashboard)`);
   startJobWorker(db);
 });

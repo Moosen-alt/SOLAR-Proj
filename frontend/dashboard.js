@@ -514,6 +514,47 @@ function renderHandoffBanner() {
   `;
 }
 
+// Plain-language "what do I do next" guidance keyed off project status.
+// tone: "info" (blue, normal), "warn" (amber, needs attention), "done" (green).
+function nextStepFor(status) {
+  switch (status) {
+    case "qc_pending":
+      return { tone: "warn", step: "Step 2", text: "QC flagged items. Open <strong>QC Results</strong> below, fix the flagged fields, then click <strong>2 · Run QC</strong> again." };
+    case "qc_passed":
+      return { tone: "info", step: "Step 3", text: "QC passed. Click <strong>3 · Build AHJ/NEM Docs</strong>, then <strong>4 · Reviewer Gate</strong>." };
+    case "submitted":
+      return { tone: "info", step: "Step 6", text: "Submitted. Now <strong>track it</strong> — run Permit Checks / NEM Checks. Paste any correction letter into <strong>Corrections</strong>." };
+    case "correction_received":
+    case "correction_triaged":
+      return { tone: "warn", step: "Step 6", text: "A correction came back. Open <strong>Corrections</strong>, review the AI-drafted reply, fix the docs, and resubmit (a person submits)." };
+    case "ready_for_issue":
+    case "issued":
+    case "permit_issued":
+      return { tone: "info", step: "Step 6", text: "Permit issued. Waiting on <strong>NEM approval</strong> to finish — keep running NEM Checks." };
+    case "nem_approved":
+      return { tone: "info", step: "Step 7", text: "NEM approved. Once the permit is also issued, copy the <strong>Handoff Packet</strong> to the installer." };
+    case "handoff_ready":
+      return { tone: "done", step: "Done", text: "Permit issued + NEM approved. Copy the <strong>Project Handoff Packet</strong> to the installer. PTO is the installer's job — our scope ends here." };
+    case "blocked":
+      return { tone: "warn", step: "Blocked", text: "This project is blocked — see the red items below. Clear the blocker, then continue the steps." };
+    case "pto_granted":
+      return { tone: "done", step: "Closed", text: "PTO granted by the installer. Nothing left for us on this project." };
+    default:
+      return { tone: "info", step: "Step 2", text: "New project. Click <strong>2 · Run QC</strong> to check the parsed data for missing or wrong info." };
+  }
+}
+
+function renderNextStep() {
+  const banner = $("nextStepBanner");
+  if (!banner) return;
+  const { project } = state.detail;
+  if (!project) { banner.hidden = true; return; }
+  const guide = nextStepFor(project.status);
+  banner.hidden = false;
+  banner.className = `next-step-banner${guide.tone === "done" ? " is-done" : guide.tone === "warn" ? " is-warn" : ""}`;
+  banner.innerHTML = `<span class="next-step-step">${esc(guide.step)}</span><span class="next-step-text">${guide.text}</span>`;
+}
+
 function renderDetail() {
   const { project } = state.detail;
   $("detailTitle").textContent = project.homeownerName || "Unnamed project";
@@ -526,6 +567,7 @@ function renderDetail() {
     ? `Permit ${state.processMap.permitStatus.replaceAll("_", " ")} / NEM ${state.processMap.nemStatus.replaceAll("_", " ")}`
     : "Not checked";
   syncProjectClientSelect();
+  renderNextStep();
   renderHandoffBanner();
   syncPermitForm();
   renderWorkflow();
