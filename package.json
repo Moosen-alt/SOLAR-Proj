@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "tsx backend/src/server.ts",
     "typecheck": "tsc --noEmit",
-    "smoke": "tsx backend/src/smoke.ts"
+    "smoke": "tsx backend/src/smoke.ts",
+    "portal:test": "tsx portal-bot/src/testRun.ts",
+    "portal:install": "playwright install chromium"
   },
   "dependencies": {
     "cors": "^2.8.5",
