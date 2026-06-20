@@ -2478,6 +2478,177 @@ $("addPortalIdentityBtn").addEventListener("click", () => {
 $("projectClientSelect").addEventListener("change", assignProjectClient);
 $("clientsModal").addEventListener("click", (e) => { if (e.target.id === "clientsModal") closeClientsModal(); });
 
+// ----- Leads / Customers + communication log -----
+const CUSTOMER_TEXT_FIELDS = ["name", "email", "phone", "leadSource", "address", "city", "state", "zip", "notes"];
+const COMM_CHANNEL_LABELS = { note: "Note", call: "Call", email: "Email", sms: "Text", meeting: "Meeting" };
+
+async function loadCustomers() {
+  const params = new URLSearchParams();
+  const search = $("customerSearch").value.trim();
+  const stage = $("customerStageFilter").value;
+  if (search) params.set("search", search);
+  if (stage) params.set("stage", stage);
+  const qs = params.toString();
+  state.customers = await api(`/api/customers${qs ? "?" + qs : ""}`);
+  renderCustomersList();
+}
+
+function renderCustomersList() {
+  const list = $("customersList");
+  if (!state.customers || state.customers.length === 0) {
+    list.innerHTML = `<p class="muted">No contacts. Click New to add a lead.</p>`;
+    return;
+  }
+  list.innerHTML = state.customers.map((c) => `
+    <button type="button" class="client-row${c.id === state.editingCustomerId ? " active" : ""}" data-customer-id="${esc(c.id)}">
+      <strong>${esc(c.name || "Unnamed")}</strong>
+      <span class="muted">${esc(STAGE_LABELS[c.leadStage] || c.leadStage)}${c.phone ? " · " + esc(c.phone) : ""}</span>
+    </button>
+  `).join("");
+  list.querySelectorAll("[data-customer-id]").forEach((btn) => {
+    btn.addEventListener("click", () => editCustomer(btn.dataset.customerId));
+  });
+}
+
+const STAGE_LABELS = { new_lead: "New lead", contacted: "Contacted", quoted: "Quoted", won: "Won", customer: "Customer", lost: "Lost" };
+
+function customerFormStatus(text, kind) {
+  const el = $("customerFormStatus");
+  el.hidden = !text;
+  el.textContent = text || "";
+  el.className = "message" + (kind ? " " + kind : "");
+}
+
+function blankCustomerForm() {
+  state.editingCustomerId = null;
+  $("cu_id").value = "";
+  CUSTOMER_TEXT_FIELDS.forEach((f) => { const el = $("cu_" + f); if (el) el.value = ""; });
+  $("cu_leadStage").value = "new_lead";
+  $("commLogAddRow").hidden = true;
+  $("commLogList").innerHTML = `<p class="muted">Save the contact first to start logging communication.</p>`;
+  customerFormStatus("");
+  renderCustomersList();
+}
+
+async function editCustomer(id) {
+  const c = (state.customers || []).find((x) => x.id === id);
+  if (!c) return;
+  state.editingCustomerId = id;
+  $("cu_id").value = id;
+  CUSTOMER_TEXT_FIELDS.forEach((f) => { const el = $("cu_" + f); if (el) el.value = c[f] || ""; });
+  $("cu_leadStage").value = c.leadStage || "new_lead";
+  $("commLogAddRow").hidden = false;
+  customerFormStatus("");
+  renderCustomersList();
+  await loadCommunications(id);
+}
+
+function collectCustomerPayload() {
+  const payload = { leadStage: $("cu_leadStage").value };
+  CUSTOMER_TEXT_FIELDS.forEach((f) => { payload[f] = $("cu_" + f)?.value ?? ""; });
+  return payload;
+}
+
+async function saveCustomer(event) {
+  event.preventDefault();
+  const payload = collectCustomerPayload();
+  if (!payload.name.trim()) { customerFormStatus("Name is required.", "error"); return; }
+  try {
+    const id = $("cu_id").value;
+    const saved = id
+      ? await api(`/api/customers/${id}`, { method: "PUT", body: JSON.stringify(payload) })
+      : await api("/api/customers", { method: "POST", body: JSON.stringify(payload) });
+    await loadCustomers();
+    editCustomer(saved.id);
+    customerFormStatus("Saved.", "info");
+  } catch (err) {
+    customerFormStatus(err.message || "Save failed.", "error");
+  }
+}
+
+async function removeCustomer() {
+  const id = $("cu_id").value;
+  if (!id) { blankCustomerForm(); return; }
+  if (!confirm("Delete this contact? Communication history will be unlinked.")) return;
+  try {
+    await api(`/api/customers/${id}`, { method: "DELETE" });
+    await loadCustomers();
+    blankCustomerForm();
+    customerFormStatus("Contact deleted.", "info");
+  } catch (err) {
+    customerFormStatus(err.message || "Delete failed.", "error");
+  }
+}
+
+async function loadCommunications(customerId) {
+  const comms = await api(`/api/customers/${customerId}/communications`);
+  const list = $("commLogList");
+  if (!comms || comms.length === 0) {
+    list.innerHTML = `<p class="muted">No communication logged yet.</p>`;
+    return;
+  }
+  list.innerHTML = comms.map((m) => `
+    <div class="comm-entry">
+      <div class="comm-meta">
+        <strong>${esc(COMM_CHANNEL_LABELS[m.channel] || m.channel)}</strong>
+        <span class="muted">${esc(m.direction)} · ${esc(new Date(m.occurredAt).toLocaleString())}</span>
+      </div>
+      ${m.subject ? `<div class="comm-subject">${esc(m.subject)}</div>` : ""}
+      ${m.body ? `<div class="comm-body">${esc(m.body)}</div>` : ""}
+    </div>
+  `).join("");
+}
+
+async function addCommunication() {
+  const customerId = $("cu_id").value;
+  if (!customerId) { customerFormStatus("Save the contact first.", "error"); return; }
+  const body = $("comm_body").value.trim();
+  const subject = $("comm_subject").value.trim();
+  if (!subject && !body) { customerFormStatus("Add a subject or details to log.", "error"); return; }
+  try {
+    await api("/api/communications", {
+      method: "POST",
+      body: JSON.stringify({
+        customerId,
+        channel: $("comm_channel").value,
+        direction: $("comm_direction").value,
+        subject,
+        body,
+      }),
+    });
+    $("comm_subject").value = "";
+    $("comm_body").value = "";
+    await loadCommunications(customerId);
+    customerFormStatus("Logged.", "info");
+  } catch (err) {
+    customerFormStatus(err.message || "Could not log entry.", "error");
+  }
+}
+
+async function openCustomersModal() {
+  $("customersModal").hidden = false;
+  await loadCustomers();
+  if ((state.customers || []).length > 0) editCustomer(state.customers[0].id);
+  else blankCustomerForm();
+  if (window.lucide) window.lucide.createIcons();
+}
+
+function closeCustomersModal() { $("customersModal").hidden = true; }
+
+let _customerSearchTimer = null;
+$("openCustomersBtn").addEventListener("click", openCustomersModal);
+$("closeCustomersBtn").addEventListener("click", closeCustomersModal);
+$("newCustomerBtn").addEventListener("click", blankCustomerForm);
+$("customerForm").addEventListener("submit", saveCustomer);
+$("deleteCustomerBtn").addEventListener("click", removeCustomer);
+$("addCommBtn").addEventListener("click", addCommunication);
+$("customerStageFilter").addEventListener("change", loadCustomers);
+$("customerSearch").addEventListener("input", () => {
+  clearTimeout(_customerSearchTimer);
+  _customerSearchTimer = setTimeout(loadCustomers, 250);
+});
+$("customersModal").addEventListener("click", (e) => { if (e.target.id === "customersModal") closeCustomersModal(); });
+
 // ----- Project search / sort / filter (server-side, paginated) -----
 const PROJECT_PAGE_SIZE = 200;
 const projectFilterState = { search: "", status: "", userId: "", sort: "updated_desc", offset: 0 };

@@ -9,6 +9,17 @@ import { HttpError } from "./httpError";
 import { createClient, deleteClient, getClient, listClients, updateClient } from "./clients";
 import { enqueueJob, getJob, listJobs, processNextJob, startJobWorker } from "./jobQueue";
 import { createUser, getUserWorkload, listUsers, updateUser, assignProjectToUser } from "./users";
+import { listBackups, runBackup, startBackupScheduler } from "./backup";
+import { AUTH_ENABLED, login, logout, me, requireAuth, seedAdminUser } from "./auth";
+import {
+  addCommunication,
+  createCustomer,
+  deleteCustomer,
+  getCustomer,
+  listCommunications,
+  listCustomers,
+  updateCustomer,
+} from "./crm";
 import { getKpiReport, touchProjectMetrics } from "./kpi";
 import { classifyDoc, extractPdfText } from "./batchImport";
 import {
@@ -77,6 +88,16 @@ const asyncHandler =
 app.use(cors());
 app.use(express.json({ limit: "80mb" }));
 app.use(express.urlencoded({ extended: false, limit: "1mb" }));
+
+// Auth gate (no-op unless AUTH_ENABLED=true). Must run before static so
+// unauthenticated requests for the dashboard are redirected to /login.
+seedAdminUser(db);
+app.post("/api/auth/login", (req, res) => login(db, req, res));
+app.post("/api/auth/logout", (req, res) => logout(req, res));
+app.get("/api/auth/me", (req, res) => me(db, req, res));
+app.get("/login", (_req, res) => res.sendFile(path.join(frontendDir, "login.html")));
+app.use(requireAuth(db));
+
 app.use(express.static(frontendDir));
 
 app.get("/health", (_req, res) => {
@@ -421,6 +442,48 @@ app.post("/api/projects/:id/assign", (req, res) => {
   res.json({ ok: true });
 });
 
+// Customers / leads
+app.get("/api/customers", (req, res) => {
+  res.json(listCustomers(db, { stage: req.query.stage ? String(req.query.stage) : undefined, search: req.query.search ? String(req.query.search) : undefined }));
+});
+app.get("/api/customers/:id", (req, res) => {
+  const customer = getCustomer(db, req.params.id);
+  if (!customer) throw new HttpError(404, "Customer not found.");
+  res.json(customer);
+});
+app.post("/api/customers", (req, res) => {
+  if (!req.body?.name && !req.body?.email && !req.body?.phone) throw new HttpError(400, "A name, email, or phone is required.");
+  res.status(201).json(createCustomer(db, req.body || {}));
+});
+app.put("/api/customers/:id", (req, res) => {
+  res.json(updateCustomer(db, req.params.id, req.body || {}));
+});
+app.delete("/api/customers/:id", (req, res) => {
+  deleteCustomer(db, req.params.id);
+  res.json({ ok: true });
+});
+
+// Communication log
+app.get("/api/customers/:id/communications", (req, res) => {
+  res.json(listCommunications(db, { customerId: req.params.id }));
+});
+app.get("/api/projects/:id/communications", (req, res) => {
+  res.json(listCommunications(db, { projectId: req.params.id }));
+});
+app.post("/api/communications", (req, res) => {
+  if (!req.body?.customerId && !req.body?.projectId) throw new HttpError(400, "customerId or projectId is required.");
+  if (!req.body?.body && !req.body?.subject) throw new HttpError(400, "A subject or body is required.");
+  res.status(201).json(addCommunication(db, req.body || {}));
+});
+
+// Backups (manual trigger + list; a scheduled snapshot also runs automatically)
+app.post("/api/admin/backup", (_req, res) => {
+  res.json(runBackup(db));
+});
+app.get("/api/admin/backups", (_req, res) => {
+  res.json(listBackups());
+});
+
 // KPIs
 app.get("/api/kpi", (req, res) => {
   const startDate = typeof req.query.startDate === "string" ? req.query.startDate : undefined;
@@ -644,5 +707,7 @@ app.listen(port, () => {
   console.log(`Solar Submission Autopilot running at http://localhost:${port}`);
   console.log(`Parser: http://localhost:${port}/parser`);
   console.log(`Dashboard: http://localhost:${port}/  (or /dashboard)`);
+  if (AUTH_ENABLED) console.log("Auth: ENABLED — login required at /login");
   startJobWorker(db);
+  startBackupScheduler(db);
 });

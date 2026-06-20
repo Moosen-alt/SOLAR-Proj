@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sign in · Solar Submission Autopilot</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <style>
+    .login-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; }
+    .login-card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); width: min(380px, 100%); padding: 28px; }
+    .login-card h1 { font-size: 20px; margin-bottom: 4px; }
+    .login-card p.muted { margin-bottom: 18px; font-size: 13px; }
+    .login-card label { display: block; font-size: 13px; font-weight: 700; margin: 12px 0 4px; }
+    .login-card input { width: 100%; padding: 9px 11px; border: 1px solid var(--line); border-radius: 6px; font: inherit; background: var(--surface); }
+    .login-card button { width: 100%; justify-content: center; margin-top: 18px; }
+    #loginError { color: var(--danger); font-size: 13px; margin-top: 12px; min-height: 18px; }
+  </style>
+</head>
+<body>
+  <div class="login-wrap">
+    <form class="login-card" id="loginForm">
+      <h1>Solar Submission Autopilot</h1>
+      <p class="muted">Sign in to continue.</p>
+      <label for="email">Email</label>
+      <input id="email" type="email" autocomplete="username" required />
+      <label for="password">Password</label>
+      <input id="password" type="password" autocomplete="current-password" required />
+      <button type="submit" class="primary">Sign in</button>
+      <div id="loginError"></div>
+    </form>
+  </div>
+  <script>
+    document.getElementById("loginForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const err = document.getElementById("loginError");
+      err.textContent = "";
+      try {
+        const res = await fetch("/api/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            email: document.getElementById("email").value,
+            password: document.getElementById("password").value,
+          }),
+        });
+        if (res.ok) {
+          window.location.href = "/dashboard";
+        } else {
+          const data = await res.json().catch(() => ({}));
+          err.textContent = data.error || "Sign in failed.";
+        }
+      } catch (e2) {
+        err.textContent = "Network error: " + e2.message;
+      }
+    });
+  </script>
+</body>
+</html>

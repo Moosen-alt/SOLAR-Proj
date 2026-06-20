@@ -19,3 +19,6 @@ portland_filled_SAMPLE.pdf
 
 backend/data/*.sqlite-wal
 backend/data/*.sqlite-shm
+
+# Automated database backup snapshots
+backend/data/backups/

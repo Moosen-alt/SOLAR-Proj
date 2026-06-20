@@ -48,6 +48,13 @@ export class AppDb {
     this.db.exec(sql);
   }
 
+  // Online snapshot backup. VACUUM INTO writes a clean, compacted copy of the
+  // whole database (committed WAL contents included) to a new file while the
+  // app keeps running. The destination must not already exist.
+  backupTo(filePath: string): void {
+    this.db.exec(`VACUUM INTO '${filePath.replace(/'/g, "''")}'`);
+  }
+
   transaction<T>(fn: () => T): T {
     // Reentrancy guard: SQLite cannot nest BEGIN. If a transaction is already
     // open, run the work inline and let the outermost call commit.
@@ -618,6 +625,48 @@ function migrate(db: AppDb): void {
       updated_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_ahj_form_templates_ahj ON ahj_form_templates(ahj_name, state);
+
+    -- Customers / leads: the homeowner side of a deal, tracked before (and
+    -- after) a project packet exists. client_id is the installer who referred
+    -- them; project_id links once the lead becomes a real project.
+    CREATE TABLE IF NOT EXISTS customers (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL DEFAULT '',
+      email TEXT NOT NULL DEFAULT '',
+      phone TEXT NOT NULL DEFAULT '',
+      address TEXT NOT NULL DEFAULT '',
+      city TEXT NOT NULL DEFAULT '',
+      state TEXT NOT NULL DEFAULT '',
+      zip TEXT NOT NULL DEFAULT '',
+      lead_source TEXT NOT NULL DEFAULT '',
+      lead_stage TEXT NOT NULL DEFAULT 'new_lead',
+      client_id TEXT,
+      assigned_user_id TEXT,
+      notes TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (client_id) REFERENCES clients(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_customers_stage ON customers(lead_stage, updated_at);
+
+    -- Communication log: one row per touch (email/call/text/note) tied to a
+    -- customer and/or project. Plain operational history — no secrets stored.
+    CREATE TABLE IF NOT EXISTS communications (
+      id TEXT PRIMARY KEY,
+      customer_id TEXT,
+      project_id TEXT,
+      direction TEXT NOT NULL DEFAULT 'outbound',
+      channel TEXT NOT NULL DEFAULT 'note',
+      subject TEXT NOT NULL DEFAULT '',
+      body TEXT NOT NULL DEFAULT '',
+      logged_by TEXT NOT NULL DEFAULT '',
+      occurred_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (customer_id) REFERENCES customers(id),
+      FOREIGN KEY (project_id) REFERENCES projects(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_comms_customer ON communications(customer_id, occurred_at);
+    CREATE INDEX IF NOT EXISTS idx_comms_project ON communications(project_id, occurred_at);
   `);
 
   // Additive licensing/contractor columns on the existing clients table.
@@ -635,6 +684,10 @@ function migrate(db: AppDb): void {
   addColumnIfMissing(db, "permit_check_targets", "target_type", "TEXT NOT NULL DEFAULT 'permit'");
   // project-level user assignment
   addColumnIfMissing(db, "projects", "assigned_user_id", "TEXT");
+  // link a project back to the customer/lead it came from
+  addColumnIfMissing(db, "projects", "customer_id", "TEXT");
+  // password auth (used only when AUTH_ENABLED=true)
+  addColumnIfMissing(db, "users", "password_hash", "TEXT NOT NULL DEFAULT ''");
 
   seedBaselineRuleRows(db);
   seedInitialKnowledgeBase(db);

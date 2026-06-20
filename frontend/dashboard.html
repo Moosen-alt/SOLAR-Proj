@@ -15,6 +15,7 @@
     </div>
     <nav class="actions">
       <a class="button secondary" href="/parser"><i data-lucide="file-scan"></i><span>Parser</span></a>
+      <button id="openCustomersBtn" class="secondary"><i data-lucide="contact"></i><span>Leads</span></button>
       <button id="openClientsBtn" class="secondary"><i data-lucide="building-2"></i><span>Clients</span></button>
       <button id="openUsersBtn" class="secondary"><i data-lucide="users"></i><span>Team</span></button>
       <button id="openKpiBtn" class="secondary"><i data-lucide="bar-chart-2"></i><span>KPIs</span></button>
@@ -473,6 +474,101 @@
   </main>
 
   <iframe id="opsActionFrame" name="opsActionFrame" title="Action save target" hidden></iframe>
+
+  <!-- Customers / Leads Modal -->
+  <div id="customersModal" class="modal" hidden>
+    <div class="modal-card">
+      <div class="modal-head">
+        <h2>Leads &amp; Customers</h2>
+        <button id="closeCustomersBtn" class="secondary"><i data-lucide="x"></i><span>Close</span></button>
+      </div>
+      <div class="modal-body">
+        <div class="clients-list-pane">
+          <div class="section-head">
+            <h3>Contacts</h3>
+            <button id="newCustomerBtn" class="primary"><i data-lucide="plus"></i><span>New</span></button>
+          </div>
+          <div class="form-row">
+            <label>Search<input id="customerSearch" placeholder="Name, email, phone…" /></label>
+            <label>Stage
+              <select id="customerStageFilter">
+                <option value="">All stages</option>
+                <option value="new_lead">New lead</option>
+                <option value="contacted">Contacted</option>
+                <option value="quoted">Quoted</option>
+                <option value="won">Won</option>
+                <option value="customer">Customer</option>
+                <option value="lost">Lost</option>
+              </select>
+            </label>
+          </div>
+          <div id="customersList" class="stack compact"></div>
+        </div>
+        <form id="customerForm" class="clients-form-pane stack">
+          <input type="hidden" id="cu_id" />
+          <div id="customerFormStatus" class="message" hidden></div>
+          <h3>Contact</h3>
+          <label>Name<input id="cu_name" required /></label>
+          <div class="form-row">
+            <label>Email<input id="cu_email" type="email" /></label>
+            <label>Phone<input id="cu_phone" /></label>
+          </div>
+          <div class="form-row">
+            <label>Lead source<input id="cu_leadSource" placeholder="Referral, web, ad…" /></label>
+            <label>Stage
+              <select id="cu_leadStage">
+                <option value="new_lead">New lead</option>
+                <option value="contacted">Contacted</option>
+                <option value="quoted">Quoted</option>
+                <option value="won">Won</option>
+                <option value="customer">Customer</option>
+                <option value="lost">Lost</option>
+              </select>
+            </label>
+          </div>
+
+          <h3>Address</h3>
+          <label>Street<input id="cu_address" /></label>
+          <div class="form-row">
+            <label>City<input id="cu_city" /></label>
+            <label>State<input id="cu_state" /></label>
+            <label>Zip<input id="cu_zip" /></label>
+          </div>
+
+          <label>Notes<textarea id="cu_notes"></textarea></label>
+          <div class="actions">
+            <button type="submit" class="primary"><i data-lucide="save"></i><span>Save</span></button>
+            <button type="button" id="deleteCustomerBtn" class="danger-button"><i data-lucide="trash-2"></i><span>Delete</span></button>
+          </div>
+
+          <h3>Communication log</h3>
+          <div id="commLogAddRow" class="comm-add" hidden>
+            <div class="form-row">
+              <label>Channel
+                <select id="comm_channel">
+                  <option value="note">Note</option>
+                  <option value="call">Call</option>
+                  <option value="email">Email</option>
+                  <option value="sms">Text</option>
+                  <option value="meeting">Meeting</option>
+                </select>
+              </label>
+              <label>Direction
+                <select id="comm_direction">
+                  <option value="outbound">Outbound</option>
+                  <option value="inbound">Inbound</option>
+                </select>
+              </label>
+            </div>
+            <label>Subject<input id="comm_subject" placeholder="Short summary" /></label>
+            <label>Details<textarea id="comm_body"></textarea></label>
+            <button type="button" id="addCommBtn" class="secondary"><i data-lucide="plus"></i><span>Log entry</span></button>
+          </div>
+          <div id="commLogList" class="stack compact"></div>
+        </form>
+      </div>
+    </div>
+  </div>
 
   <div id="clientsModal" class="modal" hidden>
     <div class="modal-card">
