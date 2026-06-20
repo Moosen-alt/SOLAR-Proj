@@ -5,9 +5,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { openDatabase } from "./db";
 import { HttpError } from "./httpError";
+import { createClient, deleteClient, getClient, listClients, updateClient } from "./clients";
 import {
   addManualCorrection,
   addProjectNote,
+  assignProjectClient,
   captureConfirmation,
   createPermitCheckTarget,
   createProject,
@@ -75,6 +77,34 @@ app.post("/api/projects", (req, res) => {
 
 app.get("/api/projects", (_req, res) => {
   res.json({ projects: getProjectList(db) });
+});
+
+// --- Clients (contractor profiles + licensing) ---
+app.get("/api/clients", (_req, res) => {
+  res.json({ clients: listClients(db) });
+});
+
+app.get("/api/clients/:id", (req, res) => {
+  res.json(getClient(db, String(req.params.id)));
+});
+
+app.post("/api/clients", (req, res) => {
+  const payload = req.body && typeof req.body === "object" ? req.body : {};
+  res.status(201).json(createClient(db, payload));
+});
+
+app.put("/api/clients/:id", (req, res) => {
+  const payload = req.body && typeof req.body === "object" ? req.body : {};
+  res.json(updateClient(db, String(req.params.id), payload));
+});
+
+app.delete("/api/clients/:id", (req, res) => {
+  res.json(deleteClient(db, String(req.params.id)));
+});
+
+app.post("/api/projects/:id/client", (req, res) => {
+  const clientId = req.body?.clientId === null ? null : String(req.body?.clientId || "").trim() || null;
+  res.json(assignProjectClient(db, String(req.params.id), clientId));
 });
 
 app.get("/api/ops-board", (_req, res) => {

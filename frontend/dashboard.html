@@ -15,6 +15,7 @@
     </div>
     <nav class="actions">
       <a class="button secondary" href="/parser"><i data-lucide="file-scan"></i><span>Parser</span></a>
+      <button id="openClientsBtn" class="secondary"><i data-lucide="building-2"></i><span>Clients</span></button>
       <button id="runPermitMonitorBtn" class="secondary"><i data-lucide="radar"></i><span>Run Tracking Checks</span></button>
       <button id="refreshBtn" class="secondary"><i data-lucide="refresh-cw"></i><span>Refresh</span></button>
     </nav>
@@ -107,6 +108,11 @@
           <div>
             <h2 id="detailTitle">Project</h2>
             <p id="detailSubtitle"></p>
+            <div class="client-assign">
+              <i data-lucide="building-2"></i>
+              <label for="projectClientSelect">Submitting client:</label>
+              <select id="projectClientSelect"><option value="">— none —</option></select>
+            </div>
           </div>
           <div class="actions">
             <button id="runWorkflowBtn" class="primary"><i data-lucide="list-checks"></i><span>Run Workflow</span></button>
@@ -364,6 +370,85 @@
   </main>
 
   <iframe id="opsActionFrame" name="opsActionFrame" title="Action save target" hidden></iframe>
+
+  <div id="clientsModal" class="modal" hidden>
+    <div class="modal-card">
+      <div class="modal-head">
+        <h2>Clients &amp; Contractor Licensing</h2>
+        <button id="closeClientsBtn" class="secondary"><i data-lucide="x"></i><span>Close</span></button>
+      </div>
+      <div class="modal-body">
+        <div class="clients-list-pane">
+          <div class="section-head">
+            <h3>Clients</h3>
+            <button id="newClientBtn" class="primary"><i data-lucide="plus"></i><span>New</span></button>
+          </div>
+          <div id="clientsList" class="stack compact"></div>
+        </div>
+        <form id="clientForm" class="clients-form-pane stack">
+          <input type="hidden" id="clientId" />
+          <div id="clientFormStatus" class="message" hidden></div>
+          <h3>Business</h3>
+          <label>Company name<input id="c_companyName" required /></label>
+          <label>Legal business name<input id="c_legalBusinessName" /></label>
+          <label>DBA<input id="c_dba" /></label>
+          <div class="form-row">
+            <label>Contact name<input id="c_contactName" /></label>
+            <label>Contact email<input id="c_contactEmail" type="email" /></label>
+          </div>
+          <div class="form-row">
+            <label>Phone<input id="c_phone" /></label>
+            <label>Billing status<input id="c_billingStatus" /></label>
+          </div>
+
+          <h3>Licensing</h3>
+          <div class="form-row">
+            <label>CCB license #<input id="c_ccbLicenseNumber" placeholder="Oregon CCB" /></label>
+            <label>CCB expiration<input id="c_ccbExpiration" type="date" /></label>
+          </div>
+          <div class="form-row">
+            <label>Electrical license #<input id="c_electricalLicenseNumber" /></label>
+            <label>Supervising electrician<input id="c_electricalSupervisorName" /></label>
+          </div>
+          <div class="form-row">
+            <label>EIN<input id="c_ein" /></label>
+            <label>Bond carrier<input id="c_bondCarrier" /></label>
+          </div>
+          <label>Insurance carrier<input id="c_insuranceCarrier" /></label>
+
+          <h3>Business address</h3>
+          <label>Address<input id="c_businessAddress" /></label>
+          <div class="form-row">
+            <label>City<input id="c_businessCity" /></label>
+            <label>State<input id="c_businessState" /></label>
+            <label>Zip<input id="c_businessZip" /></label>
+          </div>
+          <div class="form-row">
+            <label>Business phone<input id="c_businessPhone" /></label>
+            <label>Business email<input id="c_businessEmail" type="email" /></label>
+          </div>
+
+          <h3>Authorized signer</h3>
+          <div class="form-row">
+            <label>Signer name<input id="c_authorizedSignerName" /></label>
+            <label>Signer title<input id="c_authorizedSignerTitle" /></label>
+          </div>
+
+          <h3>Portal installer identities</h3>
+          <p class="muted">Per-portal account identity used by automation (e.g. the PowerClerk "Installer Company" label and the contact code from your account).</p>
+          <div id="portalIdentitiesList" class="stack compact"></div>
+          <button type="button" id="addPortalIdentityBtn" class="secondary"><i data-lucide="plus"></i><span>Add portal identity</span></button>
+
+          <label>Notes<textarea id="c_notes"></textarea></label>
+          <div class="actions">
+            <button type="submit" class="primary"><i data-lucide="save"></i><span>Save client</span></button>
+            <button type="button" id="deleteClientBtn" class="danger-button"><i data-lucide="trash-2"></i><span>Delete</span></button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
   <script type="module" src="/dashboard.js"></script>
 </body>
 </html>

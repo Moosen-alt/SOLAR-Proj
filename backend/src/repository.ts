@@ -61,6 +61,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { stageWithAccela, stageWithMockPortal, stageWithPowerClerk } from "../../portal-bot/src/index";
 import { addAuditLog } from "./audit";
+import { clientStagingOverlay } from "./clients";
 import { buildApplicationDocumentPackage } from "./applicationDocs";
 import { classifyCorrection } from "./corrections";
 import type { AppDb } from "./db";
@@ -396,6 +397,18 @@ export function createProject(db: AppDb, payload: ParserPayload): ProjectDetail 
   const detail = getProjectDetail(db, project.id);
   learnFromProject(db, detail.project, "project.created");
   return getProjectDetail(db, project.id);
+}
+
+export function assignProjectClient(db: AppDb, projectId: string, clientId: string | null): ProjectDetail {
+  const project = db.get<Row>("SELECT id FROM projects WHERE id = ?", [projectId]);
+  if (!project) throw new HttpError(404, "Project not found.");
+  if (clientId) {
+    const client = db.get<Row>("SELECT id FROM clients WHERE id = ?", [clientId]);
+    if (!client) throw new HttpError(404, "Client not found.");
+  }
+  db.run("UPDATE projects SET client_id = ?, updated_at = ? WHERE id = ?", [clientId, nowIso(), projectId]);
+  addAuditLog(db, projectId, "human", "client assignment", "project.client_assigned", { clientId });
+  return getProjectDetail(db, projectId);
 }
 
 function insertExtractedFields(db: AppDb, projectId: string, payload: ParserPayload, humanVerified: boolean): void {
@@ -4066,12 +4079,20 @@ export async function prepareSubmission(db: AppDb, projectId: string): Promise<P
     reviewerReport,
   };
 
+  // Overlay the linked client's contractor/licensing identity onto the project
+  // snapshot the adapters read, so submissions use authoritative client data
+  // (CCB#, electrical license, installer company) instead of hardcoded names.
+  const overlay = clientStagingOverlay(db, detail.project.clientId, portalType);
+  const stagedProject = Object.keys(overlay).length > 0
+    ? { ...detail.project, parserSnapshot: { ...detail.project.parserSnapshot, ...overlay } }
+    : detail.project;
+
   const result =
     portalType === "accela_oregon"
-      ? await stageWithAccela(detail.project, files, stageOptions)
+      ? await stageWithAccela(stagedProject, files, stageOptions)
       : portalType === "powerclerk_pge"
-        ? await stageWithPowerClerk(detail.project, files, stageOptions)
-        : await stageWithMockPortal(detail.project, files, reviewerReport);
+        ? await stageWithPowerClerk(stagedProject, files, stageOptions)
+        : await stageWithMockPortal(stagedProject, files, reviewerReport);
 
   db.transaction(() => {
     db.run(

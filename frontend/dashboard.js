@@ -494,6 +494,7 @@ function renderDetail() {
   $("metricPermit").textContent = state.processMap
     ? `Permit ${state.processMap.permitStatus.replaceAll("_", " ")} / NEM ${state.processMap.nemStatus.replaceAll("_", " ")}`
     : "Not checked";
+  syncProjectClientSelect();
   syncPermitForm();
   renderWorkflow();
   renderSubmitGate();
@@ -2164,8 +2165,205 @@ $("importMboxPathBtn").addEventListener("click", importMboxPath);
 $("saveEmailWatchBtn").addEventListener("click", saveEmailWatch);
 $("runEmailTrackerBtn").addEventListener("click", runEmailTracker);
 
+// ----- Clients & contractor licensing -----
+const CLIENT_TEXT_FIELDS = [
+  "companyName", "legalBusinessName", "dba", "contactName", "contactEmail", "phone", "billingStatus",
+  "ccbLicenseNumber", "ccbExpiration", "electricalLicenseNumber", "electricalSupervisorName",
+  "ein", "bondCarrier", "insuranceCarrier", "businessAddress", "businessCity", "businessState",
+  "businessZip", "businessPhone", "businessEmail", "authorizedSignerName", "authorizedSignerTitle", "notes",
+];
+
+function clientFormStatus(message, kind) {
+  const el = $("clientFormStatus");
+  if (!message) { el.hidden = true; el.textContent = ""; return; }
+  el.hidden = false;
+  el.textContent = message;
+  el.style.borderLeftColor = kind === "error" ? "var(--danger)" : "var(--info)";
+}
+
+async function loadClients() {
+  const data = await api("/api/clients");
+  state.clients = data.clients || [];
+  renderClientsList();
+  renderProjectClientOptions();
+}
+
+function renderClientsList() {
+  const list = $("clientsList");
+  if (!state.clients || state.clients.length === 0) {
+    list.innerHTML = `<p class="muted">No clients yet. Click New to add one.</p>`;
+    return;
+  }
+  list.innerHTML = state.clients.map((client) => `
+    <button type="button" class="client-row${client.id === state.editingClientId ? " active" : ""}" data-client-id="${esc(client.id)}">
+      <strong>${esc(client.companyName || client.legalBusinessName || "Unnamed")}</strong>
+      <span class="muted">${esc(client.ccbLicenseNumber ? "CCB " + client.ccbLicenseNumber : "No CCB on file")}</span>
+    </button>
+  `).join("");
+  list.querySelectorAll("[data-client-id]").forEach((btn) => {
+    btn.addEventListener("click", () => editClient(btn.dataset.clientId));
+  });
+}
+
+function renderProjectClientOptions() {
+  const select = $("projectClientSelect");
+  if (!select) return;
+  const current = select.value;
+  const options = ['<option value="">— none —</option>'].concat(
+    (state.clients || []).map((c) => `<option value="${esc(c.id)}">${esc(c.companyName || c.legalBusinessName || "Unnamed")}</option>`),
+  );
+  select.innerHTML = options.join("");
+  select.value = current;
+}
+
+function syncProjectClientSelect() {
+  const select = $("projectClientSelect");
+  if (!select) return;
+  renderProjectClientOptions();
+  select.value = state.detail?.project?.clientId || "";
+}
+
+function blankClientForm() {
+  state.editingClientId = null;
+  $("clientId").value = "";
+  CLIENT_TEXT_FIELDS.forEach((field) => { const el = $("c_" + field); if (el) el.value = ""; });
+  state.portalIdentitiesDraft = [];
+  renderPortalIdentities();
+  clientFormStatus("");
+  renderClientsList();
+}
+
+function editClient(clientId) {
+  const client = (state.clients || []).find((c) => c.id === clientId);
+  if (!client) return;
+  state.editingClientId = clientId;
+  $("clientId").value = clientId;
+  CLIENT_TEXT_FIELDS.forEach((field) => { const el = $("c_" + field); if (el) el.value = client[field] || ""; });
+  state.portalIdentitiesDraft = (client.portalIdentities || []).map((i) => ({
+    portalType: i.portalType, installerCompanyLabel: i.installerCompanyLabel, installerContactCode: i.installerContactCode, notes: i.notes,
+  }));
+  renderPortalIdentities();
+  clientFormStatus("");
+  renderClientsList();
+}
+
+function renderPortalIdentities() {
+  const wrap = $("portalIdentitiesList");
+  const drafts = state.portalIdentitiesDraft || [];
+  if (drafts.length === 0) {
+    wrap.innerHTML = `<p class="muted">No portal identities. Add one if this client submits through PowerClerk or Accela.</p>`;
+    return;
+  }
+  wrap.innerHTML = drafts.map((identity, idx) => `
+    <div class="portal-identity-row">
+      <select data-pi="portalType" data-idx="${idx}">
+        <option value="powerclerk_pge"${identity.portalType === "powerclerk_pge" ? " selected" : ""}>PowerClerk (PGE)</option>
+        <option value="accela_oregon"${identity.portalType === "accela_oregon" ? " selected" : ""}>Oregon ePermitting (Accela)</option>
+      </select>
+      <input data-pi="installerCompanyLabel" data-idx="${idx}" placeholder="Installer company label" value="${esc(identity.installerCompanyLabel || "")}" />
+      <input data-pi="installerContactCode" data-idx="${idx}" placeholder="Contact / account code" value="${esc(identity.installerContactCode || "")}" />
+      <button type="button" class="danger-button" data-remove-pi="${idx}"><i data-lucide="x"></i></button>
+    </div>
+  `).join("");
+  wrap.querySelectorAll("[data-pi]").forEach((el) => {
+    el.addEventListener("input", () => {
+      const idx = Number(el.dataset.idx);
+      state.portalIdentitiesDraft[idx][el.dataset.pi] = el.value;
+    });
+  });
+  wrap.querySelectorAll("[data-remove-pi]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      state.portalIdentitiesDraft.splice(Number(btn.dataset.removePi), 1);
+      renderPortalIdentities();
+      if (window.lucide) window.lucide.createIcons();
+    });
+  });
+  if (window.lucide) window.lucide.createIcons();
+}
+
+function collectClientPayload() {
+  const payload = { portalIdentities: state.portalIdentitiesDraft || [] };
+  CLIENT_TEXT_FIELDS.forEach((field) => { payload[field] = $("c_" + field)?.value ?? ""; });
+  return payload;
+}
+
+async function saveClient(event) {
+  event.preventDefault();
+  const payload = collectClientPayload();
+  if (!payload.companyName && !payload.legalBusinessName) {
+    clientFormStatus("Company name (or legal business name) is required.", "error");
+    return;
+  }
+  try {
+    const clientId = $("clientId").value;
+    const saved = clientId
+      ? await api(`/api/clients/${clientId}`, { method: "PUT", body: JSON.stringify(payload) })
+      : await api("/api/clients", { method: "POST", body: JSON.stringify(payload) });
+    await loadClients();
+    editClient(saved.id);
+    clientFormStatus("Saved.", "info");
+  } catch (err) {
+    clientFormStatus(err.message || "Save failed.", "error");
+  }
+}
+
+async function removeClient() {
+  const clientId = $("clientId").value;
+  if (!clientId) { blankClientForm(); return; }
+  if (!confirm("Delete this client? This cannot be undone.")) return;
+  try {
+    await api(`/api/clients/${clientId}`, { method: "DELETE" });
+    await loadClients();
+    blankClientForm();
+    clientFormStatus("Client deleted.", "info");
+  } catch (err) {
+    clientFormStatus(err.message || "Delete failed.", "error");
+  }
+}
+
+async function openClientsModal() {
+  $("clientsModal").hidden = false;
+  await loadClients();
+  if ((state.clients || []).length > 0) editClient(state.clients[0].id);
+  else blankClientForm();
+  if (window.lucide) window.lucide.createIcons();
+}
+
+function closeClientsModal() {
+  $("clientsModal").hidden = true;
+}
+
+async function assignProjectClient() {
+  if (!state.selectedProjectId) return;
+  const clientId = $("projectClientSelect").value || null;
+  try {
+    state.detail = await api(`/api/projects/${state.selectedProjectId}/client`, {
+      method: "POST",
+      body: JSON.stringify({ clientId }),
+    });
+    renderDetail();
+    showMessage(clientId ? "Client assigned to project." : "Client cleared.", "info");
+  } catch (err) {
+    showMessage(err.message || "Could not assign client.", "error");
+  }
+}
+
+$("openClientsBtn").addEventListener("click", openClientsModal);
+$("closeClientsBtn").addEventListener("click", closeClientsModal);
+$("newClientBtn").addEventListener("click", blankClientForm);
+$("clientForm").addEventListener("submit", saveClient);
+$("deleteClientBtn").addEventListener("click", removeClient);
+$("addPortalIdentityBtn").addEventListener("click", () => {
+  state.portalIdentitiesDraft = state.portalIdentitiesDraft || [];
+  state.portalIdentitiesDraft.push({ portalType: "powerclerk_pge", installerCompanyLabel: "", installerContactCode: "", notes: "" });
+  renderPortalIdentities();
+});
+$("projectClientSelect").addEventListener("change", assignProjectClient);
+$("clientsModal").addEventListener("click", (e) => { if (e.target.id === "clientsModal") closeClientsModal(); });
+
 await checkHealth();
 await loadProjects();
+await loadClients();
 if (window.lucide) window.lucide.createIcons();
 
 

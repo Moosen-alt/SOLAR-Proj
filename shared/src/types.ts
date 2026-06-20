@@ -46,6 +46,46 @@ export type PermitCheckOutcome =
 
 export type ParserPayload = Record<string, unknown>;
 
+export interface ClientPortalIdentity {
+  id: string;
+  clientId: string;
+  portalType: string;
+  installerCompanyLabel: string;
+  installerContactCode: string;
+  notes: string;
+  createdAt: string;
+}
+
+export interface ClientRecord {
+  id: string;
+  companyName: string;
+  contactName: string;
+  contactEmail: string;
+  phone: string;
+  billingStatus: string;
+  notes: string;
+  // Contractor licensing & business identity
+  legalBusinessName: string;
+  dba: string;
+  ccbLicenseNumber: string;
+  ccbExpiration: string;
+  electricalLicenseNumber: string;
+  electricalSupervisorName: string;
+  businessAddress: string;
+  businessCity: string;
+  businessState: string;
+  businessZip: string;
+  businessPhone: string;
+  businessEmail: string;
+  ein: string;
+  bondCarrier: string;
+  insuranceCarrier: string;
+  authorizedSignerName: string;
+  authorizedSignerTitle: string;
+  portalIdentities: ClientPortalIdentity[];
+  createdAt: string;
+}
+
 export interface ProjectRecord {
   id: string;
   clientId: string | null;

@@ -50,7 +50,9 @@ export function normalizeProject(
   const updatedAt = nowIso();
   return {
     id,
-    clientId: null,
+    clientId: typeof payload["client_id"] === "string" ? (payload["client_id"] as string)
+      : typeof payload["clientId"] === "string" ? (payload["clientId"] as string)
+      : null,
     homeownerName: first(payload, ["owner", "homeownerName", "ubAccountHolder"]),
     projectAddress: addressFrom(payload),
     city: str(payload, "city"),

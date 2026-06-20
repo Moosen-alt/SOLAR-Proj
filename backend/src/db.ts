@@ -534,9 +534,55 @@ function migrate(db: AppDb): void {
     CREATE INDEX IF NOT EXISTS idx_mbox_learning_profile ON mbox_learning_records(profile_key, bucket, occurred_at);
     CREATE INDEX IF NOT EXISTS idx_mbox_learning_bucket ON mbox_learning_records(bucket, workflow, occurred_at);
     CREATE INDEX IF NOT EXISTS idx_audit_project ON audit_logs(project_id);
+
+    CREATE TABLE IF NOT EXISTS client_portal_identities (
+      id TEXT PRIMARY KEY,
+      client_id TEXT NOT NULL,
+      portal_type TEXT NOT NULL DEFAULT '',
+      installer_company_label TEXT NOT NULL DEFAULT '',
+      installer_contact_code TEXT NOT NULL DEFAULT '',
+      notes TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (client_id) REFERENCES clients(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_client_portal_identities_client ON client_portal_identities(client_id);
   `);
+
+  // Additive licensing/contractor columns on the existing clients table.
+  // Uses addColumnIfMissing so databases created before these fields existed
+  // pick them up without losing data.
+  for (const [column, ddl] of CLIENT_LICENSING_COLUMNS) {
+    addColumnIfMissing(db, "clients", column, ddl);
+  }
+
   seedBaselineRuleRows(db);
   seedInitialKnowledgeBase(db);
+}
+
+const CLIENT_LICENSING_COLUMNS: [string, string][] = [
+  ["legal_business_name", "TEXT NOT NULL DEFAULT ''"],
+  ["dba", "TEXT NOT NULL DEFAULT ''"],
+  ["ccb_license_number", "TEXT NOT NULL DEFAULT ''"],
+  ["ccb_expiration", "TEXT NOT NULL DEFAULT ''"],
+  ["electrical_license_number", "TEXT NOT NULL DEFAULT ''"],
+  ["electrical_supervisor_name", "TEXT NOT NULL DEFAULT ''"],
+  ["business_address", "TEXT NOT NULL DEFAULT ''"],
+  ["business_city", "TEXT NOT NULL DEFAULT ''"],
+  ["business_state", "TEXT NOT NULL DEFAULT ''"],
+  ["business_zip", "TEXT NOT NULL DEFAULT ''"],
+  ["business_phone", "TEXT NOT NULL DEFAULT ''"],
+  ["business_email", "TEXT NOT NULL DEFAULT ''"],
+  ["ein", "TEXT NOT NULL DEFAULT ''"],
+  ["bond_carrier", "TEXT NOT NULL DEFAULT ''"],
+  ["insurance_carrier", "TEXT NOT NULL DEFAULT ''"],
+  ["authorized_signer_name", "TEXT NOT NULL DEFAULT ''"],
+  ["authorized_signer_title", "TEXT NOT NULL DEFAULT ''"],
+];
+
+function addColumnIfMissing(db: AppDb, table: string, column: string, ddl: string): void {
+  const cols = db.query<{ name: string }>(`PRAGMA table_info(${table})`);
+  if (cols.some((c) => c.name === column)) return;
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
 }
 
 function seedBaselineRuleRows(db: AppDb): void {
