@@ -9,6 +9,7 @@ import { createClient, deleteClient, getClient, listClients, updateClient } from
 import { enqueueJob, getJob, listJobs, processNextJob, startJobWorker } from "./jobQueue";
 import { createUser, getUserWorkload, listUsers, updateUser, assignProjectToUser } from "./users";
 import { getKpiReport, touchProjectMetrics } from "./kpi";
+import { classifyDoc, extractPdfText } from "./batchImport";
 import {
   ahjFormRegistry,
   buildFilledFormsForProject,
@@ -456,6 +457,21 @@ app.post("/api/mbox/enqueue", (req, res) => {
   if (!filePath) throw new HttpError(400, "filePath is required.");
   const job = enqueueJob(db, "mbox_import", { filePath, sourceLabel, defaultState, defaultAhj, defaultUtility }, { priority: 3, maxRetries: 1 });
   res.status(201).json(job);
+});
+
+// Batch folder scan — enqueues a background job to classify + import all PDFs in a folder
+app.post("/api/batch-import/scan", (req, res) => {
+  const { folderPath, defaultState, defaultAhj, defaultUtility, useLlm } = req.body || {};
+  if (!folderPath) throw new HttpError(400, "folderPath is required.");
+  if (!fs.existsSync(folderPath)) throw new HttpError(404, `Folder not found: ${folderPath}`);
+  if (!fs.statSync(folderPath).isDirectory()) throw new HttpError(400, "Path must be a directory.");
+  const job = enqueueJob(db, "folder_scan", { folderPath, defaultState, defaultAhj, defaultUtility, useLlm: !!useLlm }, { priority: 2, maxRetries: 1 });
+  res.status(201).json(job);
+});
+
+// Check folder scan job status + get full result
+app.get("/api/batch-import/jobs", (req, res) => {
+  res.json(listJobs(db, { jobType: "folder_scan", limit: 20 }));
 });
 
 app.post("/api/projects/:id/prepare-submission", asyncHandler(async (req, res) => {

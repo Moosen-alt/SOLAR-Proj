@@ -2494,6 +2494,79 @@ $("projectSort").addEventListener("change", (e) => {
   reloadProjects();
 });
 
+// ----- Batch folder import -----
+async function startBatchScan() {
+  const folderPath = $("batchFolderPath").value.trim();
+  if (!folderPath) { showMessage("Enter a folder path first.", "error"); return; }
+  const btn = $("startBatchScanBtn");
+  btn.disabled = true;
+  $("batchScanStatus").textContent = "Queuing scan job…";
+  $("batchScanResults").hidden = true;
+  try {
+    const job = await api("/api/batch-import/scan", {
+      method: "POST",
+      body: JSON.stringify({
+        folderPath,
+        defaultAhj: $("batchDefaultAhj").value.trim() || undefined,
+        defaultUtility: $("batchDefaultUtility").value.trim() || undefined,
+        defaultState: $("batchDefaultState").value.trim() || undefined,
+        useLlm: $("batchUseLlm").checked,
+      }),
+    });
+    $("batchScanStatus").textContent = `Job ${job.id.slice(0, 8)} queued (status: ${job.status}). Polling for result…`;
+    pollBatchJob(job.id);
+  } catch (err) {
+    $("batchScanStatus").textContent = `Error: ${err.message}`;
+    btn.disabled = false;
+  }
+}
+
+async function pollBatchJob(jobId) {
+  const btn = $("startBatchScanBtn");
+  const tick = async () => {
+    try {
+      const job = await api(`/api/jobs/${jobId}`);
+      const pct = job.progressTotal > 0 ? Math.round((job.progress / job.progressTotal) * 100) : 0;
+      if (job.status === "running" || job.status === "pending") {
+        $("batchScanStatus").textContent = `Scanning… ${job.progress}/${job.progressTotal} files (${pct}%)`;
+        setTimeout(tick, 2000);
+      } else if (job.status === "done") {
+        const r = job.result || {};
+        $("batchScanStatus").textContent = `Done — ${r.scanned} scanned, ${r.imported} imported, ${r.skipped} skipped, ${r.errors} errors.`;
+        renderBatchResults(job);
+        btn.disabled = false;
+        await loadProjects();
+      } else {
+        $("batchScanStatus").textContent = `Job ${job.status}: ${job.error || "unknown error"}`;
+        btn.disabled = false;
+      }
+    } catch (err) {
+      $("batchScanStatus").textContent = `Poll error: ${err.message}`;
+      btn.disabled = false;
+    }
+  };
+  setTimeout(tick, 1500);
+}
+
+function renderBatchResults(job) {
+  const wrap = $("batchScanResults");
+  const results = (job.result?.results || []);
+  if (!results.length) { wrap.hidden = true; return; }
+  wrap.hidden = false;
+  wrap.innerHTML = `<div class="table-wrap"><table class="batch-results-table">
+    <thead><tr><th>File</th><th>Type</th><th>Status</th><th>Details</th></tr></thead>
+    <tbody>${results.map((r) => `
+      <tr class="${r.status}">
+        <td>${esc(r.filePath.split(/[\\/]/).pop())}</td>
+        <td>${esc(r.docType.replace("_", " "))}</td>
+        <td>${r.status === "imported" ? "✓ imported" : r.status === "error" ? "✗ error" : "— skipped"}</td>
+        <td>${esc(r.message)}${r.fields?.meterNumber ? ` · meter: <strong>${esc(String(r.fields.meterNumber))}</strong>` : ""}${r.fields?.systemSizeDcKw ? ` · ${r.fields.systemSizeDcKw} kW DC` : ""}</td>
+      </tr>`).join("")}
+    </tbody></table></div>`;
+}
+
+if ($("startBatchScanBtn")) $("startBatchScanBtn").addEventListener("click", startBatchScan);
+
 // ----- NEM monitor button -----
 async function runNemMonitor() {
   $("runNemMonitorBtn").disabled = true;

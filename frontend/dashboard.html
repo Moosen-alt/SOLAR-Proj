@@ -128,6 +128,24 @@
         <button id="runEmailTrackerBtn" class="secondary"><i data-lucide="radio-tower"></i><span>Scan Email</span></button>
       </div>
       <div id="emailTrackerStatus" class="email-tracker-status muted">No email watch source configured.</div>
+
+      <!-- Batch PDF import -->
+      <div class="section-head subhead" style="margin-top:8px">
+        <h2>Batch Import (Past Projects)</h2>
+      </div>
+      <div class="batch-import-form">
+        <input id="batchFolderPath" placeholder="Full path to folder with past project PDFs" style="flex:1;min-width:200px" />
+        <input id="batchDefaultAhj" placeholder="Default AHJ" style="width:140px" />
+        <input id="batchDefaultUtility" placeholder="Default Utility" style="width:140px" />
+        <input id="batchDefaultState" placeholder="State (OR)" style="width:60px" />
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;white-space:nowrap">
+          <input type="checkbox" id="batchUseLlm" /> Use LLM
+        </label>
+        <button id="startBatchScanBtn" class="primary"><i data-lucide="folder-search"></i><span>Scan Folder</span></button>
+      </div>
+      <div id="batchScanStatus" class="muted" style="font-size:13px;padding:6px 0"></div>
+      <div id="batchScanResults" hidden></div>
+
       <div id="knowledgeBase" class="stack knowledge-stack">
         <p class="muted">Learning profiles load from saved projects, permit targets, corrections, status checks, and seeded public/reference sources.</p>
       </div>

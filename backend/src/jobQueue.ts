@@ -3,11 +3,13 @@ import { createInterface } from "node:readline";
 import type { AppDb, SqlParam } from "./db";
 import { importMboxKnowledge } from "./knowledgeBase";
 import { runDuePermitChecks } from "./repository";
+import { scanFolder } from "./batchImport";
 
 export type JobType =
   | "permit_checks"
   | "nem_checks"
   | "mbox_import"
+  | "folder_scan"
   | "email_scan"
   | "portal_run";
 
@@ -206,6 +208,21 @@ async function runMboxImportJob(db: AppDb, job: JobRecord): Promise<Record<strin
   return { processed, totalMessages, learningEvents, duplicateMessages, skippedMessages, bucketCounts: totals };
 }
 
+async function runFolderScanJob(db: AppDb, job: JobRecord): Promise<Record<string, unknown>> {
+  const { folderPath, defaultState, defaultAhj, defaultUtility, useLlm } = job.payload as {
+    folderPath: string;
+    defaultState?: string;
+    defaultAhj?: string;
+    defaultUtility?: string;
+    useLlm?: boolean;
+  };
+  const summary = await scanFolder(db, folderPath, {
+    defaultState, defaultAhj, defaultUtility, useLlm,
+    onProgress: (done, total) => updateJobProgress(db, job.id, done, total),
+  });
+  return { scanned: summary.scanned, imported: summary.imported, skipped: summary.skipped, errors: summary.errors, byType: summary.byType, results: summary.results };
+}
+
 // Background worker — call once at server startup. Polls the job queue on a fixed interval.
 // Interval defaults to JOB_WORKER_INTERVAL_MS env var, or 30 seconds.
 export function startJobWorker(db: AppDb): ReturnType<typeof setInterval> {
@@ -249,6 +266,8 @@ export async function processNextJob(db: AppDb): Promise<boolean> {
       result = { checked: checkResult.checked };
     } else if (job.jobType === "mbox_import") {
       result = await runMboxImportJob(db, job);
+    } else if (job.jobType === "folder_scan") {
+      result = await runFolderScanJob(db, job);
     } else {
       result = { skipped: true, reason: "job type handled externally" };
     }
