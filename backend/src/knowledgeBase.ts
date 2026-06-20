@@ -1,4 +1,6 @@
 import crypto from "node:crypto";
+import fs from "node:fs";
+import readline from "node:readline";
 import type {
   CommonCorrectionPattern,
   CorrectionBucket,
@@ -1024,11 +1026,51 @@ export async function classifyMboxMessages(input: {
   return { messages, llmReviewRecommended };
 }
 
-export async function importMboxKnowledge(
+// Stream messages out of a (potentially multi-GB) mbox file without ever
+// holding the whole file — or even a >512MB slice — in a single JS string.
+// readline yields one line at a time; we accumulate a message and flush it
+// when the next mbox "From " separator line appears.
+async function* streamMboxMessagesFromFile(filePath: string, maxMessages: number): AsyncGenerator<string> {
+  const rl = readline.createInterface({
+    input: fs.createReadStream(filePath, { encoding: "utf8" }),
+    crlfDelay: Infinity,
+  });
+  let current: string[] = [];
+  let count = 0;
+  for await (const line of rl) {
+    if (/^From .+/.test(line) && current.length) {
+      const msg = current.join("\n").trim();
+      current = [];
+      if (msg) {
+        yield msg;
+        if (++count >= maxMessages) {
+          rl.close();
+          return;
+        }
+      }
+    }
+    current.push(line);
+  }
+  if (current.length && count < maxMessages) {
+    const msg = current.join("\n").trim();
+    if (msg) yield msg;
+  }
+}
+
+async function* messagesFromArray(messages: string[]): AsyncGenerator<string> {
+  for (const message of messages) yield message;
+}
+
+const MBOX_MESSAGE_CAP = 10000;
+
+// Shared importer: consumes a stream of raw mbox message blocks and learns from
+// each. Both the in-memory (string) and streaming (file path) entry points use
+// this so behavior stays identical regardless of how the messages were read.
+async function runMboxImport(
   db: AppDb,
-  input: { mboxText: string; sourceLabel?: string; defaultState?: string; defaultAhj?: string; defaultUtility?: string },
+  rawMessages: AsyncIterable<string>,
+  input: { sourceLabel?: string; defaultState?: string; defaultAhj?: string; defaultUtility?: string },
 ): Promise<MboxKnowledgeImportResult> {
-  const messages = splitMboxMessages(input.mboxText).slice(0, 10000);
   const touched = new Set<string>();
   const extractedRecords: MboxExtractedLearningRecord[] = [];
   const bucketCounts = {
@@ -1042,6 +1084,7 @@ export async function importMboxKnowledge(
     inspection_final_notice: 0,
     spam_irrelevant: 0,
   } satisfies Record<MboxEmailBucket, number>;
+  let messagesScanned = 0;
   let learningEvents = 0;
   let failuresImported = 0;
   let skippedMessages = 0;
@@ -1049,7 +1092,8 @@ export async function importMboxKnowledge(
   let llmReviewRecommended = 0;
   const sourceLabel = input.sourceLabel || "Imported MBOX";
 
-  for (const raw of messages) {
+  for await (const raw of rawMessages) {
+    messagesScanned += 1;
     const parsed = parseMessage(raw);
     const subject = parsed.headers.subject || "";
     const from = parsed.headers.from || "";
@@ -1146,7 +1190,7 @@ export async function importMboxKnowledge(
   }
 
   return {
-    messagesScanned: messages.length,
+    messagesScanned,
     learningEvents,
     failureExamplesImported: failuresImported,
     profilesTouched: touched.size,
@@ -1156,6 +1200,24 @@ export async function importMboxKnowledge(
     bucketCounts,
     extractedRecords: extractedRecords.slice(0, 100),
   };
+}
+
+export async function importMboxKnowledge(
+  db: AppDb,
+  input: { mboxText: string; sourceLabel?: string; defaultState?: string; defaultAhj?: string; defaultUtility?: string },
+): Promise<MboxKnowledgeImportResult> {
+  const messages = splitMboxMessages(input.mboxText).slice(0, MBOX_MESSAGE_CAP);
+  return runMboxImport(db, messagesFromArray(messages), input);
+}
+
+// Streaming variant for large local files — never loads the whole mbox into a
+// string, so multi-GB Gmail/Outlook exports import without blowing the heap or
+// Node's ~512MB max-string limit.
+export async function importMboxKnowledgeFromFile(
+  db: AppDb,
+  input: { filePath: string; sourceLabel?: string; defaultState?: string; defaultAhj?: string; defaultUtility?: string },
+): Promise<MboxKnowledgeImportResult> {
+  return runMboxImport(db, streamMboxMessagesFromFile(input.filePath, MBOX_MESSAGE_CAP), input);
 }
 
 export function learnFromPermitStatus(

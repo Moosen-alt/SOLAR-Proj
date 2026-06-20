@@ -65,6 +65,7 @@ import {
   getReviewerReportHtml,
   humanVerify,
   importKnowledgeFromMbox,
+  importKnowledgeFromMboxFile,
   prepareSubmission,
   recordPermitStatusCheck,
   rerunQc,
@@ -280,21 +281,16 @@ app.post("/api/knowledge-base/import-mbox-file", express.raw({ type: "*/*", limi
 }));
 
 app.post("/api/knowledge-base/import-mbox-path", asyncHandler(async (req, res) => {
-  const filePath = String(req.body?.filePath || "").trim();
+  const filePath = String(req.body?.filePath || "").trim().replace(/^"(.*)"$/, "$1");
   if (!filePath) throw new HttpError(400, "Paste the full local MBOX file path before importing.");
   const resolved = path.resolve(filePath);
   if (!fs.existsSync(resolved)) throw new HttpError(404, `MBOX file path was not found: ${resolved}`);
   const stat = fs.statSync(resolved);
   if (!stat.isFile()) throw new HttpError(400, "MBOX path must point to a file.");
-  const maxBytes = Number(process.env.MBOX_IMPORT_MAX_BYTES || 1024 * 1024 * 1024);
-  if (Number.isFinite(maxBytes) && stat.size > maxBytes) {
-    throw new HttpError(413, `MBOX file is too large for this local import limit (${Math.round(maxBytes / 1024 / 1024)} MB).`);
-  }
-  const mboxText = fs.readFileSync(resolved, "utf8");
-  if (!mboxText.trim()) throw new HttpError(400, "MBOX file was empty or unreadable.");
+  // Streamed line-by-line from disk — no size cap; multi-GB exports are fine.
   res.status(201).json(
-    await importKnowledgeFromMbox(db, {
-      mboxText,
+    await importKnowledgeFromMboxFile(db, {
+      filePath: resolved,
       sourceLabel: req.body?.sourceLabel || path.basename(resolved),
       defaultState: req.body?.defaultState,
       defaultAhj: req.body?.defaultAhj,
@@ -651,7 +647,7 @@ app.post("/api/batch-import/scan", (req, res) => {
 // same folder scan against the extracted directory.
 app.post(
   "/api/batch-import/upload-zip",
-  express.raw({ type: "*/*", limit: process.env.BATCH_ZIP_LIMIT || "1gb" }),
+  express.raw({ type: "*/*", limit: process.env.BATCH_ZIP_LIMIT || "2gb" }),
   (req, res) => {
     const body = req.body;
     if (!Buffer.isBuffer(body) || body.length === 0) {
@@ -731,7 +727,7 @@ app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
     err instanceof HttpError
       ? err
       : bodyParserStatus === 413 || bodyParserType === "entity.too.large"
-        ? new HttpError(413, `Upload is too large for the current local import limit. Increase MBOX_IMPORT_LIMIT or use a smaller export.`)
+        ? new HttpError(413, `Upload is too large for the browser-upload limit. For a big .mbox, paste its full local path and click Import Path (it streams from disk with no size cap). For a big .zip, raise BATCH_ZIP_LIMIT in your .env.`)
         : new HttpError(bodyParserStatus && bodyParserStatus >= 400 && bodyParserStatus < 600 ? bodyParserStatus : 500, err instanceof Error ? err.message : "Unknown error.");
   if (httpError.status >= 500) console.error(err);
   res.status(httpError.status).json({

@@ -78,6 +78,7 @@ import {
   learnFromSubmissionConfirmation,
   listKnowledgeProfiles,
   importMboxKnowledge,
+  importMboxKnowledgeFromFile,
   classifyMboxMessages,
   type ClassifiedMboxMessage,
 } from "./knowledgeBase";
@@ -3688,6 +3689,25 @@ export async function importKnowledgeFromMbox(
   input: { mboxText: string; sourceLabel?: string; defaultState?: string; defaultAhj?: string; defaultUtility?: string },
 ): Promise<MboxKnowledgeImportResult> {
   const result = await importMboxKnowledge(db, input);
+  addAuditLog(db, null, "system", "mbox importer", "knowledge_base.mbox_imported", {
+    messagesScanned: result.messagesScanned,
+    learningEvents: result.learningEvents,
+    failureExamplesImported: result.failureExamplesImported,
+    profilesTouched: result.profilesTouched,
+    skippedMessages: result.skippedMessages,
+    duplicateMessages: result.duplicateMessages,
+    llmReviewRecommended: result.llmReviewRecommended,
+    bucketCounts: result.bucketCounts,
+  });
+  return result;
+}
+
+// Stream a large local mbox file from disk (no full-file string load).
+export async function importKnowledgeFromMboxFile(
+  db: AppDb,
+  input: { filePath: string; sourceLabel?: string; defaultState?: string; defaultAhj?: string; defaultUtility?: string },
+): Promise<MboxKnowledgeImportResult> {
+  const result = await importMboxKnowledgeFromFile(db, input);
   addAuditLog(db, null, "system", "mbox importer", "knowledge_base.mbox_imported", {
     messagesScanned: result.messagesScanned,
     learningEvents: result.learningEvents,
