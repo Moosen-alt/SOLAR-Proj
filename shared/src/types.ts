@@ -992,4 +992,23 @@ export interface LLMProvider {
     correctionText: string;
     project?: ProjectRecord;
   }): Promise<{ draft: string; confidence: number }>;
+  /** Extract structured data from an image (base64 PNG/JPEG) — used for image-only SLDs */
+  visionExtract(input: {
+    imageBase64: string;
+    mimeType: "image/png" | "image/jpeg" | "image/webp";
+    prompt: string;
+  }): Promise<Record<string, unknown>>;
+  /** Synthesize AHJ/utility requirements from past project history */
+  synthesizeKnowledge(input: {
+    ahjName: string;
+    state: string;
+    utility?: string;
+    pastApplicationTexts: string[];
+    correctionPatterns: string[];
+  }): Promise<{
+    requiredDocuments: string[];
+    commonRejectionReasons: string[];
+    tips: string[];
+    confidence: "low" | "medium" | "high";
+  }>;
 }

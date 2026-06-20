@@ -601,6 +601,23 @@ function migrate(db: AppDb): void {
     );
     CREATE INDEX IF NOT EXISTS idx_project_metrics_user ON project_metrics(assigned_user_id);
     CREATE INDEX IF NOT EXISTS idx_project_metrics_submitted ON project_metrics(submitted_at);
+
+    -- AHJ blank form templates (PDF bytes stored as BLOB, wiped after extraction)
+    -- moat_data stores extracted field positions/structure so the blank is re-generatable
+    CREATE TABLE IF NOT EXISTS ahj_form_templates (
+      id TEXT PRIMARY KEY,
+      ahj_name TEXT NOT NULL,
+      state TEXT NOT NULL DEFAULT '',
+      form_type TEXT NOT NULL DEFAULT 'permit_application',
+      original_filename TEXT NOT NULL DEFAULT '',
+      pdf_blob BLOB,
+      moat_data TEXT NOT NULL DEFAULT '{}',
+      field_map TEXT NOT NULL DEFAULT '{}',
+      notes TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_ahj_form_templates_ahj ON ahj_form_templates(ahj_name, state);
   `);
 
   // Additive licensing/contractor columns on the existing clients table.

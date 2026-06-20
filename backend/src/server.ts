@@ -1,4 +1,5 @@
 import "dotenv/config";
+import crypto from "node:crypto";
 import express, { type NextFunction, type Request, type Response } from "express";
 import cors from "cors";
 import fs from "node:fs";
@@ -97,7 +98,10 @@ app.get("/api/projects", (req, res) => {
   const status = req.query.status ? String(req.query.status) : undefined;
   const userId = req.query.userId ? String(req.query.userId) : undefined;
   const sort = (req.query.sort as string | undefined);
-  res.json(getProjectList(db, { limit, offset, search, status, userId, sort: sort as Parameters<typeof getProjectList>[1]["sort"] }));
+  const validSorts = ["updated_desc", "created_desc", "name_asc", "status_asc"] as const;
+  type SortOption = typeof validSorts[number];
+  const sortVal = validSorts.includes(sort as SortOption) ? (sort as SortOption) : undefined;
+  res.json(getProjectList(db, { limit, offset, search, status, userId, sort: sortVal }));
 });
 
 // --- Clients (contractor profiles + licensing) ---
@@ -460,6 +464,116 @@ app.post("/api/mbox/enqueue", (req, res) => {
 });
 
 // Batch folder scan — enqueues a background job to classify + import all PDFs in a folder
+// ---------------------------------------------------------------------------
+// AHJ form templates — store blank PDFs, extract field map, wipe raw bytes
+// ---------------------------------------------------------------------------
+
+// Upload a blank AHJ application PDF for storage in the moat
+app.post(
+  "/api/ahj-templates/upload",
+  express.raw({ type: "application/pdf", limit: "50mb" }),
+  asyncHandler(async (req, res) => {
+    const ahjName = String(req.query.ahj || req.headers["x-ahj-name"] || "").trim();
+    const state = String(req.query.state || req.headers["x-state"] || "").trim();
+    const formType = String(req.query.formType || "permit_application").trim();
+    const filename = String(req.query.filename || req.headers["x-filename"] || "upload.pdf").trim();
+    if (!ahjName) throw new HttpError(400, "ahj query param required.");
+    if (!Buffer.isBuffer(req.body) || req.body.length === 0) throw new HttpError(400, "PDF body required.");
+
+    const { extractPdfText } = await import("./batchImport");
+    const tmp = path.join("/tmp", `ahj-tmpl-${Date.now()}.pdf`);
+    fs.writeFileSync(tmp, req.body);
+    let extractedText = "";
+    try { extractedText = await extractPdfText(tmp); } catch { /* ignore */ }
+    fs.unlinkSync(tmp);
+
+    // LLM extracts the field structure / form positions
+    const { createLLMProvider } = await import("./llm");
+    const llm = createLLMProvider();
+    const fieldMap = await llm.extractFields({ text: extractedText, source: "ahj_form_template", ahjName, state });
+
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+    db.run(
+      `INSERT INTO ahj_form_templates (id, ahj_name, state, form_type, original_filename, pdf_blob, moat_data, field_map, notes, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, '{}', ?, '', ?, ?)`,
+      [id, ahjName, state, formType, filename, req.body, JSON.stringify(fieldMap), now, now],
+    );
+    res.status(201).json({ id, ahjName, state, formType, fieldCount: Object.keys(fieldMap).length });
+  }),
+);
+
+// List stored AHJ templates
+app.get("/api/ahj-templates", (req, res) => {
+  const state = req.query.state ? String(req.query.state) : null;
+  const rows = state
+    ? db.query("SELECT id, ahj_name, state, form_type, original_filename, field_map, created_at FROM ahj_form_templates WHERE state = ? ORDER BY ahj_name", [state])
+    : db.query("SELECT id, ahj_name, state, form_type, original_filename, field_map, created_at FROM ahj_form_templates ORDER BY state, ahj_name");
+  res.json(rows.map((r) => ({ ...r, fieldMap: JSON.parse(String(r.field_map || "{}")) })));
+});
+
+// Wipe the raw PDF blob (keep moat data + field map for submission prep)
+app.delete("/api/ahj-templates/:id/blob", (req, res) => {
+  db.run("UPDATE ahj_form_templates SET pdf_blob = NULL, updated_at = ? WHERE id = ?", [new Date().toISOString(), req.params.id]);
+  res.json({ wiped: true });
+});
+
+// Get the stored PDF blob for a template
+app.get("/api/ahj-templates/:id/pdf", (req, res) => {
+  const row = db.get<{ pdf_blob: Buffer | null; original_filename: string }>(
+    "SELECT pdf_blob, original_filename FROM ahj_form_templates WHERE id = ?",
+    [req.params.id],
+  );
+  if (!row) throw new HttpError(404, "Template not found.");
+  if (!row.pdf_blob) throw new HttpError(410, "PDF blob has been wiped. Only field map is available.");
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Disposition", `attachment; filename="${row.original_filename}"`);
+  res.send(row.pdf_blob);
+});
+
+// Synthesize AHJ knowledge from past project history using Claude
+app.post("/api/knowledge-base/synthesize-ahj", asyncHandler(async (req, res) => {
+  const { ahjName, state, utility } = req.body || {};
+  if (!ahjName) throw new HttpError(400, "ahjName required.");
+
+  // Pull correction patterns and application texts for this AHJ
+  const corrRows = db.query<{ correction_text: string }>(
+    `SELECT DISTINCT c.correction_text FROM corrections c
+     JOIN projects p ON p.id = c.project_id
+     WHERE p.ahj LIKE ? AND (? = '' OR p.state = ?)
+     ORDER BY c.created_at DESC LIMIT 50`,
+    [`%${ahjName}%`, state || "", state || ""],
+  );
+  const noteRows = db.query<{ content: string }>(
+    `SELECT pn.content FROM project_notes pn
+     JOIN projects p ON p.id = pn.project_id
+     WHERE p.ahj LIKE ? AND pn.content LIKE '%application%'
+     ORDER BY pn.created_at DESC LIMIT 20`,
+    [`%${ahjName}%`],
+  );
+
+  const { createLLMProvider } = await import("./llm");
+  const llm = createLLMProvider();
+  const result = await llm.synthesizeKnowledge({
+    ahjName,
+    state: state || "",
+    utility: utility || "",
+    pastApplicationTexts: noteRows.map((r) => r.content),
+    correctionPatterns: corrRows.map((r) => r.correction_text),
+  });
+
+  // Persist synthesized knowledge into ahj_library
+  const existing = db.get<{ id: string }>("SELECT id FROM ahj_library WHERE ahj_name LIKE ? AND state = ?", [`%${ahjName}%`, state || ""]);
+  if (existing) {
+    db.run(
+      "UPDATE ahj_library SET required_documents = ?, known_rejection_patterns = ?, notes = ? WHERE id = ?",
+      [result.requiredDocuments.join("; "), result.commonRejectionReasons.join("; "), result.tips.join("; "), existing.id],
+    );
+  }
+
+  res.json(result);
+}));
+
 app.post("/api/batch-import/scan", (req, res) => {
   const { folderPath, defaultState, defaultAhj, defaultUtility, useLlm } = req.body || {};
   if (!folderPath) throw new HttpError(400, "folderPath is required.");
