@@ -2063,6 +2063,7 @@ function uploadMboxFile(file) {
 async function importMbox(event) {
   const file = event.target.files?.[0];
   if (!file) return;
+  setMboxProgress(1, `Reading ${file.name} (${formatBytes(file.size)})…`);
   try {
     const result = await uploadMboxFile(file);
     setMboxProgress(100, "Import complete.");
@@ -2281,6 +2282,57 @@ $("mboxFile").addEventListener("change", importMbox);
 $("importMboxPathBtn").addEventListener("click", importMboxPath);
 $("saveEmailWatchBtn").addEventListener("click", saveEmailWatch);
 $("runEmailTrackerBtn").addEventListener("click", runEmailTracker);
+
+// ----- MBOX drag-and-drop -----
+(function () {
+  const zone = $("mboxDropZone");
+  function highlight(e) { e.preventDefault(); e.stopPropagation(); zone.classList.add("drag-over"); }
+  function unhighlight(e) { e.preventDefault(); e.stopPropagation(); zone.classList.remove("drag-over"); }
+  zone.addEventListener("dragenter", highlight);
+  zone.addEventListener("dragover", highlight);
+  zone.addEventListener("dragleave", unhighlight);
+  zone.addEventListener("drop", async (e) => {
+    unhighlight(e);
+    const file = e.dataTransfer.files?.[0];
+    if (!file) return;
+    try {
+      setMboxProgress(1, `Reading ${file.name}…`);
+      const result = await uploadMboxFile(file);
+      setMboxProgress(100, "Import complete.");
+      showMessage(mboxResultMessage(result));
+      await loadKnowledgeBase();
+      window.setTimeout(() => setMboxProgress(0, "", false), 1800);
+    } catch (err) {
+      setMboxProgress(0, "Import failed.", true);
+      showMessage(err.message || "MBOX import failed.", "error");
+    }
+  });
+})();
+
+// ----- Batch PDF drag-and-drop -----
+(function () {
+  const zone = $("batchDropZone");
+  const input = $("batchDropInput");
+  function highlight(e) { e.preventDefault(); e.stopPropagation(); zone.classList.add("drag-over"); }
+  function unhighlight(e) { e.preventDefault(); e.stopPropagation(); zone.classList.remove("drag-over"); }
+  zone.addEventListener("dragenter", highlight);
+  zone.addEventListener("dragover", highlight);
+  zone.addEventListener("dragleave", unhighlight);
+  zone.addEventListener("drop", (e) => {
+    unhighlight(e);
+    const files = Array.from(e.dataTransfer.files || []).filter(f => f.name.toLowerCase().endsWith(".pdf"));
+    if (!files.length) { showMessage("No PDF files found in the drop — make sure you're dropping PDF files.", "error"); return; }
+    $("batchScanStatus").textContent = `${files.length} PDF${files.length === 1 ? "" : "s"} ready — click Scan Folder or enter a path to import.`;
+    $("batchScanResults").hidden = false;
+    $("batchScanResults").innerHTML = files.map(f => `<div class="muted" style="font-size:13px">${esc(f.name)}</div>`).join("");
+  });
+  input.addEventListener("change", () => {
+    const files = Array.from(input.files || []).filter(f => f.name.toLowerCase().endsWith(".pdf"));
+    if (!files.length) return;
+    $("batchScanStatus").textContent = `${files.length} PDF${files.length === 1 ? "" : "s"} selected.`;
+    input.value = "";
+  });
+})();
 
 // ----- Clients & contractor licensing -----
 const CLIENT_TEXT_FIELDS = [

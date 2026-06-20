@@ -148,8 +148,13 @@
         <h2>Permit & Utility Knowledge</h2>
         <div class="actions">
           <span id="knowledgeCount" class="badge">0</span>
-        <label class="file-button secondary"><i data-lucide="inbox"></i><span>Import MBOX</span><input id="mboxFile" type="file" accept=".mbox,.txt" /></label>
         </div>
+      </div>
+      <!-- MBOX drag-and-drop drop zone -->
+      <div id="mboxDropZone" class="mbox-drop-zone">
+        <i data-lucide="inbox"></i>
+        <span>Drag &amp; drop an <strong>.mbox</strong> file here, or <label class="drop-browse" for="mboxFile">browse</label></span>
+        <input id="mboxFile" type="file" accept=".mbox,.txt" />
       </div>
       <div id="mboxProgressWrap" class="progress-wrap" hidden>
         <div class="progress-label">
@@ -172,6 +177,12 @@
       <!-- Batch PDF import -->
       <div class="section-head subhead" style="margin-top:8px">
         <h2>Batch Import (Past Projects)</h2>
+      </div>
+      <!-- Drag-and-drop PDFs directly -->
+      <div id="batchDropZone" class="mbox-drop-zone">
+        <i data-lucide="files"></i>
+        <span>Drag &amp; drop PDF files or a folder here, or fill the path below</span>
+        <input id="batchDropInput" type="file" accept=".pdf" multiple />
       </div>
       <div class="batch-import-form">
         <input id="batchFolderPath" placeholder="Full path to folder with past project PDFs" style="flex:1;min-width:200px" />
