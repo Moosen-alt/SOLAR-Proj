@@ -489,50 +489,72 @@ function renderKnowledgeProfile(profile) {
   `;
 }
 
+const KB_PAGE_SIZE = 20;
+
+// A profile is "meaningful" if it carries real signal. The mbox importer produces
+// many junk AHJ names (sentence fragments), so by default we only surface profiles
+// with projects, multiple corrections, or an official/reference source. Search
+// looks across everything.
+function kbIsMeaningful(p) {
+  if (p.projectCount > 0) return true;
+  if (p.correctionCount >= 2) return true;
+  if ((p.sources || []).some((s) => ["official", "sanitized_reference"].includes(s.sourceType))) return true;
+  // Drop obvious junk AHJ names (long sentence fragments from email subjects).
+  const ahj = p.ahj || "";
+  if (ahj.length > 34 || /\b(your|this|the sender|originated|notification|will be|has been)\b/i.test(ahj)) return false;
+  return p.correctionCount >= 1;
+}
+
 function renderKnowledgeBase() {
+  const container = $("knowledgeBase");
+  if (!container) return;
   const profiles = state.knowledgeProfiles || [];
+  const summaryEl = $("kbSummaryCount");
+
   if (!profiles.length) {
-    $("knowledgeBase").innerHTML = `<p class="muted">No knowledge profiles yet. Import mbox data or run a batch PDF scan to start learning.</p>`;
+    if (summaryEl) summaryEl.textContent = "";
+    container.innerHTML = `<p class="muted">No knowledge profiles yet. Import mbox data or run a batch PDF scan to start learning.</p>`;
     return;
   }
+
+  const totalCorrections = profiles.reduce((n, p) => n + p.correctionCount, 0);
+  if (summaryEl) summaryEl.textContent = `${profiles.length} profiles · ${totalCorrections} corrections`;
+
+  const query = (state.kbSearch || "").trim().toLowerCase();
   const sorted = [...profiles].sort((a, b) =>
     (b.projectCount - a.projectCount) || (b.correctionCount - a.correctionCount) || a.state.localeCompare(b.state),
   );
-  const learned = sorted.filter((p) => (p.sources || []).some((s) => ["learned_batch_import", "learned_correction", "learned_project", "learned_permit_status"].includes(s.sourceType)));
-  const seeded = sorted.filter((p) => !learned.includes(p));
-  const totalLearned = learned.length;
-  const totalDocs = learned.reduce((n, p) => n + (p.requiredDocuments || []).length, 0);
-  const totalCorrections = learned.reduce((n, p) => n + p.correctionCount, 0);
 
-  let html = `
-    <div style="background:var(--surface-2,#f5f5f5);border-radius:6px;padding:8px 12px;margin-bottom:10px;font-size:13px">
-      <strong>KB Summary:</strong>
-      ${sorted.length} profile(s) total —
-      ${totalLearned} learned (${totalDocs} required-doc entries, ${totalCorrections} corrections),
-      ${seeded.length} seeded/reference.
-    </div>
-  `;
-
-  if (learned.length) {
-    html += `<h3 style="font-size:13px;margin:8px 0 4px;font-weight:600">Learned profiles (${learned.length})</h3>`;
-    html += learned.map(renderKnowledgeProfile).join("");
+  let matches;
+  if (query) {
+    matches = sorted.filter((p) =>
+      [p.state, p.ahj, p.utility, p.portalName].filter(Boolean).join(" ").toLowerCase().includes(query),
+    );
+  } else {
+    matches = sorted.filter(kbIsMeaningful);
   }
-  if (seeded.length) {
-    const showSeeded = state.kbShowSeeded;
-    html += `
-      <button type="button" id="kbToggleSeeded" style="font-size:12px;background:none;border:none;color:var(--accent,#0066cc);cursor:pointer;padding:4px 0;margin-top:6px">
-        ${showSeeded ? "▾ Hide" : "▸ Show"} ${seeded.length} seeded/reference profile(s)
-      </button>
-    `;
-    if (showSeeded) {
-      html += `<div id="kbSeededList">${seeded.map(renderKnowledgeProfile).join("")}</div>`;
+
+  const limit = state.kbRenderLimit || KB_PAGE_SIZE;
+  const shown = matches.slice(0, limit);
+
+  let html = "";
+  if (!matches.length) {
+    html = `<p class="muted">No profiles match "${esc(query)}".</p>`;
+  } else {
+    if (!query) {
+      html += `<p class="muted" style="font-size:12px;margin:0 0 6px">Showing ${shown.length} of ${matches.length} key profile(s). Search to find any of the ${profiles.length} total.</p>`;
+    }
+    html += shown.map(renderKnowledgeProfile).join("");
+    if (matches.length > shown.length) {
+      html += `<button type="button" id="kbShowMore" class="secondary" style="font-size:12px;margin-top:6px">Show ${Math.min(KB_PAGE_SIZE, matches.length - shown.length)} more (${matches.length - shown.length} left)</button>`;
     }
   }
-  $("knowledgeBase").innerHTML = html;
-  const toggleBtn = $("kbToggleSeeded");
-  if (toggleBtn) {
-    toggleBtn.addEventListener("click", () => {
-      state.kbShowSeeded = !state.kbShowSeeded;
+  container.innerHTML = html;
+
+  const moreBtn = $("kbShowMore");
+  if (moreBtn) {
+    moreBtn.addEventListener("click", () => {
+      state.kbRenderLimit = (state.kbRenderLimit || KB_PAGE_SIZE) + KB_PAGE_SIZE;
       renderKnowledgeBase();
     });
   }
@@ -2898,6 +2920,15 @@ $("projectSearch").addEventListener("input", (e) => {
   clearTimeout(_searchDebounceTimer);
   _searchDebounceTimer = setTimeout(reloadProjects, 300);
 });
+let _kbSearchTimer = null;
+if ($("kbSearch")) {
+  $("kbSearch").addEventListener("input", (e) => {
+    state.kbSearch = e.target.value;
+    state.kbRenderLimit = KB_PAGE_SIZE;
+    clearTimeout(_kbSearchTimer);
+    _kbSearchTimer = setTimeout(renderKnowledgeBase, 200);
+  });
+}
 $("projectStatusFilter").addEventListener("change", (e) => {
   projectFilterState.status = e.target.value;
   reloadProjects();

@@ -197,13 +197,17 @@
       <div id="batchScanStatus" class="muted" style="font-size:13px;padding:6px 0"></div>
       <div id="batchScanResults" hidden></div>
 
-      <div class="section-head subhead" style="margin-top:10px">
-        <h2>Knowledge Base</h2>
-        <p class="muted" style="font-size:12px">What the system has learned — AHJ profiles, required-document lists, correction patterns. Updated by mbox imports, batch PDF scans, and saved projects.</p>
-      </div>
-      <div id="knowledgeBase" class="stack knowledge-stack">
-        <p class="muted">Loading…</p>
-      </div>
+      <details id="kbAccordion" class="kb-accordion" style="margin-top:10px">
+        <summary class="kb-summary">
+          <span>Knowledge Base</span>
+          <span id="kbSummaryCount" class="muted" style="font-size:12px;font-weight:400"></span>
+        </summary>
+        <p class="muted" style="font-size:12px;margin:6px 0">AHJ profiles, required-document lists, and correction patterns learned from mbox imports, batch scans, and saved projects.</p>
+        <input id="kbSearch" type="search" placeholder="Search by AHJ, state, or utility…" style="width:100%;padding:6px 8px;margin-bottom:8px;font-size:13px;box-sizing:border-box" />
+        <div id="knowledgeBase" class="stack knowledge-stack">
+          <p class="muted">Loading…</p>
+        </div>
+      </details>
     </section>
 
     <section class="detail" aria-label="Project detail">
