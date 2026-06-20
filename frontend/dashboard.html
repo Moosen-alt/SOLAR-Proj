@@ -178,11 +178,11 @@
       <div class="section-head subhead" style="margin-top:8px">
         <h2>Batch Import (Past Projects)</h2>
       </div>
-      <!-- Drag-and-drop PDFs directly -->
+      <!-- Drag-and-drop a .zip of past-project PDFs -->
       <div id="batchDropZone" class="mbox-drop-zone">
-        <i data-lucide="files"></i>
-        <span>Drag &amp; drop PDF files or a folder here, or fill the path below</span>
-        <input id="batchDropInput" type="file" accept=".pdf" multiple />
+        <i data-lucide="file-archive"></i>
+        <span>Drag &amp; drop a <strong>.zip</strong> of past-project PDFs here (we extract &amp; organize it), or <label class="drop-browse" for="batchDropInput">browse</label> — or use a folder path below</span>
+        <input id="batchDropInput" type="file" accept=".zip" />
       </div>
       <div class="batch-import-form">
         <input id="batchFolderPath" placeholder="Full path to folder with past project PDFs" style="flex:1;min-width:200px" />

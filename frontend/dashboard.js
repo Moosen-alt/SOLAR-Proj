@@ -2309,7 +2309,58 @@ $("runEmailTrackerBtn").addEventListener("click", runEmailTracker);
   });
 })();
 
-// ----- Batch PDF drag-and-drop -----
+// ----- Batch import drag-and-drop: a .zip uploads + extracts + scans -----
+function uploadBatchZip(file) {
+  return new Promise((resolve, reject) => {
+    const params = new URLSearchParams({ label: file.name || "batch" });
+    const ahj = $("batchDefaultAhj").value.trim();
+    const utility = $("batchDefaultUtility").value.trim();
+    const stateVal = $("batchDefaultState").value.trim();
+    if (ahj) params.set("defaultAhj", ahj);
+    if (utility) params.set("defaultUtility", utility);
+    if (stateVal) params.set("defaultState", stateVal);
+    if ($("batchUseLlm").checked) params.set("useLlm", "true");
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `/api/batch-import/upload-zip?${params.toString()}`);
+    xhr.setRequestHeader("Content-Type", "application/octet-stream");
+    xhr.upload.onprogress = (event) => {
+      if (!event.lengthComputable) return;
+      const pct = Math.round((event.loaded / event.total) * 100);
+      $("batchScanStatus").textContent = `Uploading ${file.name}… ${pct}% (${formatBytes(event.loaded)} / ${formatBytes(event.total)})`;
+    };
+    xhr.onload = () => {
+      let data = {};
+      try { data = JSON.parse(xhr.responseText || "{}"); } catch { data = {}; }
+      if (xhr.status < 200 || xhr.status >= 300) {
+        reject(new Error(data.error || `Zip upload failed (status ${xhr.status}).`));
+        return;
+      }
+      resolve(data);
+    };
+    xhr.onerror = () => reject(new Error("Browser could not upload the zip. If it's very large, unzip it to a folder and use the Scan Folder path instead."));
+    $("batchScanStatus").textContent = `Reading ${file.name} (${formatBytes(file.size)})…`;
+    xhr.send(file);
+  });
+}
+
+async function handleBatchDrop(file) {
+  const name = (file.name || "").toLowerCase();
+  if (name.endsWith(".zip")) {
+    try {
+      const job = await uploadBatchZip(file);
+      $("batchScanStatus").textContent = `Extracted ${job.extractedPdfCount} PDF${job.extractedPdfCount === 1 ? "" : "s"} — scanning now…`;
+      if (typeof pollBatchJob === "function") pollBatchJob(job.id);
+    } catch (err) {
+      $("batchScanStatus").textContent = err.message || "Zip import failed.";
+      showMessage(err.message || "Zip import failed.", "error");
+    }
+  } else if (name.endsWith(".pdf")) {
+    showMessage("For loose PDFs, zip them into one .zip and drop that — or put them in a folder and use Scan Folder. Single-file upload isn't wired to the disk scanner.", "info");
+  } else {
+    showMessage("Drop a .zip of your project PDFs here.", "error");
+  }
+}
+
 (function () {
   const zone = $("batchDropZone");
   const input = $("batchDropInput");
@@ -2320,16 +2371,12 @@ $("runEmailTrackerBtn").addEventListener("click", runEmailTracker);
   zone.addEventListener("dragleave", unhighlight);
   zone.addEventListener("drop", (e) => {
     unhighlight(e);
-    const files = Array.from(e.dataTransfer.files || []).filter(f => f.name.toLowerCase().endsWith(".pdf"));
-    if (!files.length) { showMessage("No PDF files found in the drop — make sure you're dropping PDF files.", "error"); return; }
-    $("batchScanStatus").textContent = `${files.length} PDF${files.length === 1 ? "" : "s"} ready — click Scan Folder or enter a path to import.`;
-    $("batchScanResults").hidden = false;
-    $("batchScanResults").innerHTML = files.map(f => `<div class="muted" style="font-size:13px">${esc(f.name)}</div>`).join("");
+    const file = e.dataTransfer.files?.[0];
+    if (file) handleBatchDrop(file);
   });
   input.addEventListener("change", () => {
-    const files = Array.from(input.files || []).filter(f => f.name.toLowerCase().endsWith(".pdf"));
-    if (!files.length) return;
-    $("batchScanStatus").textContent = `${files.length} PDF${files.length === 1 ? "" : "s"} selected.`;
+    const file = input.files?.[0];
+    if (file) handleBatchDrop(file);
     input.value = "";
   });
 })();

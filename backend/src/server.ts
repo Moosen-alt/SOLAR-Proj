@@ -10,6 +10,7 @@ import { createClient, deleteClient, getClient, listClients, updateClient } from
 import { enqueueJob, getJob, listJobs, processNextJob, startJobWorker } from "./jobQueue";
 import { createUser, getUserWorkload, listUsers, updateUser, assignProjectToUser } from "./users";
 import { listBackups, runBackup, startBackupScheduler } from "./backup";
+import { extractZipToWorkdir } from "./batchZip";
 import { AUTH_ENABLED, login, logout, me, requireAuth, seedAdminUser } from "./auth";
 import {
   addCommunication,
@@ -645,6 +646,42 @@ app.post("/api/batch-import/scan", (req, res) => {
   const job = enqueueJob(db, "folder_scan", { folderPath, defaultState, defaultAhj, defaultUtility, useLlm: !!useLlm }, { priority: 2, maxRetries: 1 });
   res.status(201).json(job);
 });
+
+// Upload a .zip of past-project PDFs: extract it server-side, then kick off the
+// same folder scan against the extracted directory.
+app.post(
+  "/api/batch-import/upload-zip",
+  express.raw({ type: "*/*", limit: process.env.BATCH_ZIP_LIMIT || "1gb" }),
+  (req, res) => {
+    const body = req.body;
+    if (!Buffer.isBuffer(body) || body.length === 0) {
+      throw new HttpError(400, "Uploaded zip was empty or unreadable.");
+    }
+    const label = String(req.query.label || "batch");
+    let extracted;
+    try {
+      extracted = extractZipToWorkdir(body, label);
+    } catch (err) {
+      throw new HttpError(400, `Could not read that zip file. ${(err as Error).message || ""}`.trim());
+    }
+    if (extracted.pdfCount === 0) {
+      throw new HttpError(400, `Zip extracted (${extracted.totalEntries} entries) but contained no PDF files.`);
+    }
+    const job = enqueueJob(
+      db,
+      "folder_scan",
+      {
+        folderPath: extracted.folderPath,
+        defaultState: req.query.defaultState ? String(req.query.defaultState) : undefined,
+        defaultAhj: req.query.defaultAhj ? String(req.query.defaultAhj) : undefined,
+        defaultUtility: req.query.defaultUtility ? String(req.query.defaultUtility) : undefined,
+        useLlm: String(req.query.useLlm || "") === "true",
+      },
+      { priority: 2, maxRetries: 1 },
+    );
+    res.status(201).json({ ...job, extractedPdfCount: extracted.pdfCount, folderPath: extracted.folderPath });
+  },
+);
 
 // Check folder scan job status + get full result
 app.get("/api/batch-import/jobs", (req, res) => {

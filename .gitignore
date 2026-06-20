@@ -22,3 +22,6 @@ backend/data/*.sqlite-shm
 
 # Automated database backup snapshots
 backend/data/backups/
+
+# Extracted batch-import zip uploads
+backend/data/batch-uploads/
