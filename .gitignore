@@ -16,3 +16,6 @@ portal-profiles/
 backend/data/ahj-forms/
 backend/data/filled/
 portland_filled_SAMPLE.pdf
+
+backend/data/*.sqlite-wal
+backend/data/*.sqlite-shm

@@ -12,19 +12,19 @@
     "portal:install": "playwright install chromium"
   },
   "dependencies": {
+    "better-sqlite3": "^12.11.1",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "pdf-lib": "^1.17.1",
-    "pdfjs-dist": "^6.0.227",
-    "sql.js": "^1.12.0"
+    "pdfjs-dist": "^6.0.227"
   },
   "devDependencies": {
     "@playwright/test": "^1.61.0",
+    "@types/better-sqlite3": "^7.6.13",
     "@types/cors": "^2.8.17",
     "@types/express": "^5.0.0",
     "@types/node": "^22.10.7",
-    "@types/sql.js": "^1.4.9",
     "playwright": "^1.61.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3"

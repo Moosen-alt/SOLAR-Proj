@@ -1,49 +1,56 @@
 import fs from "node:fs";
 import path from "node:path";
-import { createRequire } from "node:module";
-import initSqlJs, { type Database } from "sql.js";
+import Database, { type Database as DB, type Statement } from "better-sqlite3";
 import { baselineRuleDefinitions } from "./baselineRules";
 import { seedInitialKnowledgeBase } from "./knowledgeBase";
 
 export type SqlParam = string | number | null | Uint8Array;
 export type SqlParams = SqlParam[];
 
-const require = createRequire(import.meta.url);
+// better-sqlite3 binds blobs as Buffer; convert any Uint8Array params.
+function bindable(params: SqlParams): unknown[] {
+  return params.map((p) => (p instanceof Uint8Array ? Buffer.from(p) : p));
+}
 
+// File-backed SQLite via better-sqlite3. Writes incrementally to disk under WAL
+// — no full-file rewrite per write — so it scales to large data and concurrent
+// reads. The query/get/run/exec/transaction interface is unchanged, so all
+// call sites are untouched.
 export class AppDb {
   private transactionDepth = 0;
+  private readonly stmtCache = new Map<string, Statement>();
 
-  constructor(private readonly db: Database, private readonly filePath: string) {}
+  constructor(private readonly db: DB) {}
+
+  private prepare(sql: string): Statement {
+    let stmt = this.stmtCache.get(sql);
+    if (!stmt) {
+      stmt = this.db.prepare(sql);
+      this.stmtCache.set(sql, stmt);
+    }
+    return stmt;
+  }
 
   query<T = Record<string, unknown>>(sql: string, params: SqlParams = []): T[] {
-    const stmt = this.db.prepare(sql);
-    const rows: T[] = [];
-    try {
-      stmt.bind(params);
-      while (stmt.step()) rows.push(stmt.getAsObject() as T);
-      return rows;
-    } finally {
-      stmt.free();
-    }
+    return this.prepare(sql).all(...bindable(params)) as T[];
   }
 
   get<T = Record<string, unknown>>(sql: string, params: SqlParams = []): T | null {
-    return this.query<T>(sql, params)[0] ?? null;
+    return (this.prepare(sql).get(...bindable(params)) as T | undefined) ?? null;
   }
 
   run(sql: string, params: SqlParams = []): void {
-    this.db.run(sql, params);
-    if (this.transactionDepth === 0) this.persist();
+    this.prepare(sql).run(...bindable(params));
   }
 
+  // Multi-statement DDL/seed scripts. Not parameterized.
   exec(sql: string): void {
     this.db.exec(sql);
-    if (this.transactionDepth === 0) this.persist();
   }
 
   transaction<T>(fn: () => T): T {
-    // Reentrancy guard: sql.js cannot nest BEGIN. If a transaction is already
-    // open, run the work inline and let the outermost call commit/persist once.
+    // Reentrancy guard: SQLite cannot nest BEGIN. If a transaction is already
+    // open, run the work inline and let the outermost call commit.
     if (this.transactionDepth > 0) {
       this.transactionDepth += 1;
       try {
@@ -53,23 +60,17 @@ export class AppDb {
       }
     }
     this.transactionDepth += 1;
-    this.db.run("BEGIN");
+    this.db.exec("BEGIN");
     try {
       const value = fn();
-      this.db.run("COMMIT");
+      this.db.exec("COMMIT");
       this.transactionDepth -= 1;
-      this.persist();
       return value;
     } catch (err) {
-      this.db.run("ROLLBACK");
+      this.db.exec("ROLLBACK");
       this.transactionDepth -= 1;
       throw err;
     }
-  }
-
-  private persist(): void {
-    fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
-    fs.writeFileSync(this.filePath, Buffer.from(this.db.export()));
   }
 }
 
@@ -77,13 +78,12 @@ export async function openDatabase(): Promise<AppDb> {
   const dbPath = path.resolve(process.cwd(), process.env.AUTOPILOT_DB_PATH || "backend/data/autopilot.sqlite");
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 
-  const wasmPath = require.resolve("sql.js/dist/sql-wasm.wasm");
-  const SQL = await initSqlJs({ locateFile: () => wasmPath });
-  const db = fs.existsSync(dbPath)
-    ? new SQL.Database(new Uint8Array(fs.readFileSync(dbPath)))
-    : new SQL.Database();
+  const db = new Database(dbPath);
+  db.pragma("journal_mode = WAL");
+  db.pragma("synchronous = NORMAL");
+  db.pragma("foreign_keys = ON");
 
-  const appDb = new AppDb(db, dbPath);
+  const appDb = new AppDb(db);
   migrate(appDb);
   return appDb;
 }
