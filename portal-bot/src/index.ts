@@ -4,6 +4,7 @@ import path from "node:path";
 import type { ProjectRecord, ReviewerReport } from "../../shared/src/types";
 import { MockPortalAdapter } from "./adapters/mock";
 import { OregonEPermittingAdapter } from "./adapters/oregonEPermitting";
+import { PowerClerkAdapter } from "./adapters/powerClerk";
 import { decryptStorageState } from "./cryptoStorage";
 
 export async function stageWithMockPortal(project: ProjectRecord, files: string[] = [], reviewerReport?: ReviewerReport): Promise<Record<string, unknown>> {
@@ -37,18 +38,22 @@ function resolveStorageStatePath(encryptedStatePath: string | null | undefined):
   return tmp;
 }
 
-export async function stageWithAccela(
+interface StageOptions {
+  encryptedStorageStatePath?: string;
+  headless?: boolean;
+  reviewerReport?: ReviewerReport;
+}
+
+// Generic adapter runner: decrypts the session into a temp file, drives the
+// adapter through login → open → fill → upload → stopAtReview, and always
+// cleans up the plaintext session file. Never clicks final submit.
+async function runAdapter(
+  adapter: import("./adapter").PortalAdapter,
   project: ProjectRecord,
   files: string[],
-  options: {
-    encryptedStorageStatePath?: string;
-    headless?: boolean;
-    reviewerReport?: ReviewerReport;
-  } = {}
+  options: StageOptions
 ): Promise<Record<string, unknown>> {
-  const adapter = new OregonEPermittingAdapter();
   let tmpStatePath: string | undefined;
-
   try {
     tmpStatePath = resolveStorageStatePath(options.encryptedStorageStatePath);
 
@@ -71,9 +76,16 @@ export async function stageWithAccela(
       steps: [loginResult, openResult, fillResult, uploadResult, reviewResult],
     };
   } finally {
-    // Always delete the plaintext temp session file
     if (tmpStatePath && fs.existsSync(tmpStatePath)) {
       fs.unlinkSync(tmpStatePath);
     }
   }
+}
+
+export async function stageWithAccela(project: ProjectRecord, files: string[], options: StageOptions = {}): Promise<Record<string, unknown>> {
+  return runAdapter(new OregonEPermittingAdapter(), project, files, options);
+}
+
+export async function stageWithPowerClerk(project: ProjectRecord, files: string[], options: StageOptions = {}): Promise<Record<string, unknown>> {
+  return runAdapter(new PowerClerkAdapter(), project, files, options);
 }
