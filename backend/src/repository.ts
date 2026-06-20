@@ -177,6 +177,19 @@ function mapReview(row: Row): HumanReviewItem {
 }
 
 function mapCorrection(row: Row): CorrectionRecord {
+  const createdAt = text(row.created_at);
+  const closedAt = row.closed_at == null ? null : text(row.closed_at);
+  const slaDays = Number(row.sla_days ?? 5);
+  const dueAt = row.due_at == null
+    ? (() => {
+        const d = new Date(createdAt);
+        d.setDate(d.getDate() + slaDays);
+        return d.toISOString().slice(0, 10);
+      })()
+    : text(row.due_at);
+  const refDate = closedAt ? new Date(closedAt) : new Date();
+  const daysOpen = Math.floor((refDate.getTime() - new Date(createdAt).getTime()) / 86_400_000);
+  const isOverdue = !closedAt && new Date() > new Date(`${dueAt}T23:59:59`);
   return {
     id: text(row.id),
     projectId: text(row.project_id),
@@ -190,8 +203,12 @@ function mapCorrection(row: Row): CorrectionRecord {
     humanApproved: bool(row.human_approved),
     resubmitted: bool(row.resubmitted),
     newRuleRecommended: bool(row.new_rule_recommended),
-    createdAt: text(row.created_at),
-    closedAt: row.closed_at == null ? null : text(row.closed_at),
+    createdAt,
+    closedAt,
+    dueAt,
+    slaDays,
+    daysOpen,
+    isOverdue,
   };
 }
 
@@ -3735,6 +3752,29 @@ export function addManualCorrection(db: AppDb, projectId: string, correctionText
   });
 
   return getProjectDetail(db, projectId);
+}
+
+export function listOverdueCorrections(db: AppDb): CorrectionRecord[] {
+  const today = new Date().toISOString().slice(0, 10);
+  const rows = db.query<Row>(
+    `SELECT * FROM corrections
+     WHERE closed_at IS NULL
+       AND (
+         due_at < ?
+         OR (due_at IS NULL AND date(created_at, '+' || sla_days || ' days') < ?)
+       )
+     ORDER BY created_at ASC`,
+    [today, today],
+  );
+  return rows.map(mapCorrection);
+}
+
+export function setCorrectionsSlaDays(db: AppDb, correctionId: string, slaDays: number): void {
+  const ts = nowIso();
+  db.run(
+    `UPDATE corrections SET sla_days = ?, due_at = date(created_at, '+' || ? || ' days') WHERE id = ?`,
+    [slaDays, slaDays, correctionId],
+  );
 }
 
 export function createPermitCheckTarget(

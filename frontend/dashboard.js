@@ -1285,11 +1285,23 @@ function renderPermitMonitor() {
   }
 }
 
+function correctionSlaBadge(correction) {
+  if (correction.closedAt) return `<span class="badge badge-pass">Closed</span>`;
+  if (correction.isOverdue) return `<span class="badge badge-fail">Overdue (${correction.daysOpen}d)</span>`;
+  const daysLeft = correction.slaDays - correction.daysOpen;
+  if (daysLeft <= 1) return `<span class="badge badge-warning">Due tomorrow</span>`;
+  return `<span class="badge badge-info">Due ${esc(correction.dueAt)} (${daysLeft}d left)</span>`;
+}
+
 function renderCorrections() {
   const corrections = state.detail.corrections || [];
   $("corrections").innerHTML = corrections.length ? corrections.map((correction) => `
-    <article class="item info">
-      <div class="item-title"><span>${esc(correction.correctionBucket)}</span><span>${esc(new Date(correction.createdAt).toLocaleString())}</span></div>
+    <article class="item ${correction.isOverdue ? "fail" : correction.closedAt ? "pass" : "info"}">
+      <div class="item-title">
+        <span>${esc(correction.correctionBucket)}</span>
+        <span>${correctionSlaBadge(correction)}</span>
+        <span class="muted">${esc(new Date(correction.createdAt).toLocaleDateString())}</span>
+      </div>
       <p>${esc(correction.requiredAction)}</p>
       <p class="muted">${esc(correction.correctionText)}</p>
     </article>

@@ -555,6 +555,10 @@ function migrate(db: AppDb): void {
     addColumnIfMissing(db, "clients", column, ddl);
   }
 
+  for (const [column, ddl] of CORRECTION_SLA_COLUMNS) {
+    addColumnIfMissing(db, "corrections", column, ddl);
+  }
+
   seedBaselineRuleRows(db);
   seedInitialKnowledgeBase(db);
 }
@@ -577,6 +581,11 @@ const CLIENT_LICENSING_COLUMNS: [string, string][] = [
   ["insurance_carrier", "TEXT NOT NULL DEFAULT ''"],
   ["authorized_signer_name", "TEXT NOT NULL DEFAULT ''"],
   ["authorized_signer_title", "TEXT NOT NULL DEFAULT ''"],
+];
+
+const CORRECTION_SLA_COLUMNS: [string, string][] = [
+  ["due_at", "TEXT"],
+  ["sla_days", "INTEGER NOT NULL DEFAULT 5"],
 ];
 
 function addColumnIfMissing(db: AppDb, table: string, column: string, ddl: string): void {

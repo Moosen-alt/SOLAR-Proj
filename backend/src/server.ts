@@ -17,6 +17,8 @@ import {
 import { buildAuthUrl, exchangeCodeForTokens, gmailStatus, pollGmail } from "./gmail";
 import {
   addManualCorrection,
+  listOverdueCorrections,
+  setCorrectionsSlaDays,
   addProjectNote,
   assignProjectClient,
   captureConfirmation,
@@ -354,6 +356,17 @@ app.get("/api/projects/:id/reviewer-report", (req, res) => {
 
 app.post("/api/projects/:id/qc", (req, res) => {
   res.json(rerunQc(db, req.params.id));
+});
+
+app.get("/api/corrections/overdue", (_req, res) => {
+  res.json(listOverdueCorrections(db));
+});
+
+app.patch("/api/corrections/:id/sla", (req, res) => {
+  const slaDays = Number(req.body?.slaDays);
+  if (!Number.isInteger(slaDays) || slaDays < 1) throw new HttpError(400, "slaDays must be a positive integer.");
+  setCorrectionsSlaDays(db, req.params.id, slaDays);
+  res.json({ ok: true });
 });
 
 app.post("/api/projects/:id/corrections", (req, res) => {

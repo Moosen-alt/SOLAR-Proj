@@ -166,6 +166,10 @@ export interface CorrectionRecord {
   newRuleRecommended: boolean;
   createdAt: string;
   closedAt: string | null;
+  dueAt: string | null;
+  slaDays: number;
+  daysOpen: number;
+  isOverdue: boolean;
 }
 
 export interface PortalRun {
