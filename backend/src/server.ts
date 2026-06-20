@@ -14,6 +14,7 @@ import {
   inspectFormFields,
   matchingForms,
 } from "./ahjForms";
+import { buildAuthUrl, exchangeCodeForTokens, gmailStatus, pollGmail } from "./gmail";
 import {
   addManualCorrection,
   addProjectNote,
@@ -154,6 +155,34 @@ app.get("/api/projects/:id/filled-forms/:formId", (req, res) => {
   if (!fs.existsSync(file)) throw new HttpError(404, "Filled form not found. Build it first.");
   res.type("application/pdf").sendFile(file);
 });
+
+// --- Live Gmail polling (read-only) ---
+app.get("/api/gmail/status", (_req, res) => {
+  res.json(gmailStatus());
+});
+
+app.get("/api/gmail/auth-url", (_req, res) => {
+  res.json({ url: buildAuthUrl() });
+});
+
+// One-time OAuth callback: exchanges the code and returns the refresh token to
+// store in GMAIL_REFRESH_TOKEN. Shown as plain text so it's easy to copy.
+app.get("/api/gmail/oauth/callback", asyncHandler(async (req, res) => {
+  const code = String(req.query.code || "");
+  if (!code) throw new HttpError(400, "Missing authorization code.");
+  const { refreshToken } = await exchangeCodeForTokens(code);
+  res.type("html").send(
+    `<h2>Gmail authorized</h2>` +
+      (refreshToken
+        ? `<p>Add this to your environment and restart the server:</p><pre>GMAIL_REFRESH_TOKEN=${refreshToken}</pre>`
+        : `<p>No refresh token returned. Revoke access in your Google account and try again with prompt=consent.</p>`),
+  );
+}));
+
+app.post("/api/gmail/poll", asyncHandler(async (req, res) => {
+  const query = typeof req.body?.query === "string" ? req.body.query : undefined;
+  res.json(await pollGmail(db, query));
+}));
 
 app.get("/api/ops-board", (_req, res) => {
   res.json(getOperationsBoard(db));
