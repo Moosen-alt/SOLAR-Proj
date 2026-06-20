@@ -570,6 +570,7 @@ export function getProjectDetail(db: AppDb, projectId: string): ProjectDetail {
     portalRuns: db.query<Row>("SELECT * FROM portal_runs WHERE project_id = ? ORDER BY started_at DESC", [projectId]).map(mapPortalRun),
     submissions: db.query<Row>("SELECT * FROM submissions WHERE project_id = ? ORDER BY created_at DESC", [projectId]).map(mapSubmission),
     auditLogs: db.query<Row>("SELECT * FROM audit_logs WHERE project_id = ? ORDER BY created_at DESC LIMIT 100", [projectId]).map(mapAudit),
+    projectNotes: db.query<Row>("SELECT * FROM project_notes WHERE project_id = ? ORDER BY created_at DESC LIMIT 50", [projectId]).map(mapProjectNote),
   };
 }
 

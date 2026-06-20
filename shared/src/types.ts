@@ -979,6 +979,7 @@ export interface ProjectDetail {
   portalRuns: PortalRun[];
   submissions: SubmissionRecord[];
   auditLogs: AuditLog[];
+  projectNotes: ProjectNote[];
 }
 
 export interface LLMProvider {

@@ -72,7 +72,7 @@ export function touchProjectMetrics(db: AppDb, projectId: string): void {
 
   // Pull lifecycle timestamps from permit_status_checks and corrections
   const submitRow = db.get<Row>(
-    "SELECT MIN(created_at) as t FROM portal_runs WHERE project_id = ? AND status NOT IN ('failed','cancelled')",
+    "SELECT MIN(started_at) as t FROM portal_runs WHERE project_id = ? AND status NOT IN ('failed')",
     [projectId],
   );
   const permitRow = db.get<Row>(
