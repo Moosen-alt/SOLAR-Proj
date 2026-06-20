@@ -31,18 +31,31 @@ async function getPdfjs(): Promise<PdfjsModule> {
   return _pdfjs;
 }
 
+const PDFJS_WARN_RE = /^Warning: (TT: undefined function:|Font "[^"]+" is not available|getHexString|Indexing all PDF objects)/;
+
 export async function extractPdfText(filePath: string, maxPages = 30): Promise<string> {
   const pdfjs = await getPdfjs();
   const data = new Uint8Array(fs.readFileSync(filePath));
-  const doc = await pdfjs.getDocument({ data, useSystemFonts: true, disableWorker: true }).promise;
-  const pages = Math.min(doc.numPages, maxPages);
-  const parts: string[] = [];
-  for (let i = 1; i <= pages; i++) {
-    const page = await doc.getPage(i);
-    const content = await page.getTextContent();
-    parts.push(content.items.map((item) => item.str).join(" "));
+
+  const origWarn = console.warn;
+  console.warn = (...args: unknown[]) => {
+    if (typeof args[0] === "string" && PDFJS_WARN_RE.test(args[0])) return;
+    origWarn.apply(console, args);
+  };
+
+  try {
+    const doc = await pdfjs.getDocument({ data, useSystemFonts: true, disableWorker: true }).promise;
+    const pages = Math.min(doc.numPages, maxPages);
+    const parts: string[] = [];
+    for (let i = 1; i <= pages; i++) {
+      const page = await doc.getPage(i);
+      const content = await page.getTextContent();
+      parts.push(content.items.map((item) => item.str).join(" "));
+    }
+    return parts.join("\n").replace(/\s{3,}/g, "  ").trim();
+  } finally {
+    console.warn = origWarn;
   }
-  return parts.join("\n").replace(/\s{3,}/g, "  ").trim();
 }
 
 // ---------------------------------------------------------------------------
