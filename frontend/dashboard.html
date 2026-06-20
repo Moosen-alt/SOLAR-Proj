@@ -1,0 +1,369 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Solar Submission Autopilot</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>Solar Submission Autopilot</h1>
+      <p id="serviceStatus">Checking backend...</p>
+    </div>
+    <nav class="actions">
+      <a class="button secondary" href="/parser"><i data-lucide="file-scan"></i><span>Parser</span></a>
+      <button id="runPermitMonitorBtn" class="secondary"><i data-lucide="radar"></i><span>Run Tracking Checks</span></button>
+      <button id="refreshBtn" class="secondary"><i data-lucide="refresh-cw"></i><span>Refresh</span></button>
+    </nav>
+  </header>
+
+  <main class="layout">
+    <section class="project-list" aria-label="Projects">
+      <div class="section-head">
+        <h2>Daily Report</h2>
+        <div class="actions">
+          <span id="opsReportStatus" class="badge">syncing</span>
+          <button id="copyOpsReportBtn" class="secondary"><i data-lucide="clipboard-copy"></i><span>Copy</span></button>
+        </div>
+      </div>
+      <div id="opsReport" class="ops-report">
+        <p class="muted">Loading daily operations report...</p>
+      </div>
+      <div class="section-head">
+        <h2>Ops Board</h2>
+        <span id="opsBoardStatus" class="badge">syncing</span>
+      </div>
+      <div id="opsBoard" class="ops-board">
+        <p class="muted">Loading portfolio action board...</p>
+      </div>
+      <div class="section-head subhead">
+        <h2>Action Queue</h2>
+        <span id="opsActionsStatus" class="badge">syncing</span>
+      </div>
+      <div id="opsActions" class="ops-actions">
+        <p class="muted">Loading active PM actions...</p>
+      </div>
+      <div class="section-head">
+        <h2>Projects</h2>
+        <span id="projectCount" class="badge">0</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Project</th>
+              <th>Status</th>
+              <th>Permit</th>
+              <th>NEM</th>
+              <th>QC</th>
+              <th>Review</th>
+            </tr>
+          </thead>
+          <tbody id="projectsBody">
+            <tr><td colspan="6" class="muted">No projects saved yet.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="section-head subhead">
+        <h2>Permit & Utility Knowledge</h2>
+        <div class="actions">
+          <span id="knowledgeCount" class="badge">0</span>
+        <label class="file-button secondary"><i data-lucide="inbox"></i><span>Import MBOX</span><input id="mboxFile" type="file" accept=".mbox,.txt" /></label>
+        </div>
+      </div>
+      <div id="mboxProgressWrap" class="progress-wrap" hidden>
+        <div class="progress-label">
+          <span id="mboxProgressText">Preparing import...</span>
+          <strong id="mboxProgressPercent">0%</strong>
+        </div>
+        <div class="progress-track"><div id="mboxProgressBar" class="progress-bar"></div></div>
+      </div>
+      <div class="mbox-path-form">
+        <input id="mboxPath" placeholder="Optional local MBOX path if browser upload fails" />
+        <button id="importMboxPathBtn" class="secondary"><i data-lucide="folder-input"></i><span>Import Path</span></button>
+      </div>
+      <div class="email-watch-form">
+        <input id="emailWatchPath" placeholder="Live email MBOX path to watch for project corrections/approvals" />
+        <button id="saveEmailWatchBtn" class="secondary"><i data-lucide="mail-check"></i><span>Watch</span></button>
+        <button id="runEmailTrackerBtn" class="secondary"><i data-lucide="radio-tower"></i><span>Scan Email</span></button>
+      </div>
+      <div id="emailTrackerStatus" class="email-tracker-status muted">No email watch source configured.</div>
+      <div id="knowledgeBase" class="stack knowledge-stack">
+        <p class="muted">Learning profiles load from saved projects, permit targets, corrections, status checks, and seeded public/reference sources.</p>
+      </div>
+    </section>
+
+    <section class="detail" aria-label="Project detail">
+      <div id="emptyState" class="empty">
+        <h2>No project selected</h2>
+        <p>Open the parser, save a parsed project, then it will appear here for QC and staging.</p>
+      </div>
+
+      <div id="detailView" hidden>
+        <div class="detail-head">
+          <div>
+            <h2 id="detailTitle">Project</h2>
+            <p id="detailSubtitle"></p>
+          </div>
+          <div class="actions">
+            <button id="runWorkflowBtn" class="primary"><i data-lucide="list-checks"></i><span>Run Workflow</span></button>
+            <button id="runQcBtn" class="secondary"><i data-lucide="shield-check"></i><span>Run QC</span></button>
+            <button id="runHistoricalBtn" class="secondary"><i data-lucide="history"></i><span>Historical Check</span></button>
+            <button id="runReviewerGateBtn" class="secondary"><i data-lucide="clipboard-list"></i><span>Reviewer Gate</span></button>
+            <button id="buildAppDocsBtn" class="secondary"><i data-lucide="files"></i><span>Build AHJ/NEM Docs</span></button>
+            <button id="prepareBtn" class="secondary"><i data-lucide="send"></i><span>Prepare Submittal</span></button>
+            <button id="deleteProjectBtn" class="danger-button"><i data-lucide="trash-2"></i><span>Delete Test Project</span></button>
+          </div>
+        </div>
+
+        <div id="message" class="message" hidden></div>
+
+        <section class="summary-grid">
+          <div class="metric"><span>Status</span><strong id="metricStatus"></strong></div>
+          <div class="metric"><span>Utility</span><strong id="metricUtility"></strong></div>
+          <div class="metric"><span>AHJ</span><strong id="metricAhj"></strong></div>
+          <div class="metric"><span>System</span><strong id="metricSystem"></strong></div>
+          <div class="metric"><span>Permit/NEM</span><strong id="metricPermit"></strong></div>
+        </section>
+
+        <section class="panel submit-gate-panel">
+          <div class="section-head">
+            <h3>Submit Gate</h3>
+            <div class="actions">
+              <span id="submitGateStatus" class="badge">syncing</span>
+              <button id="copySubmitGateBtn" class="secondary"><i data-lucide="clipboard-copy"></i><span>Copy</span></button>
+            </div>
+          </div>
+          <div id="submitGate" class="submit-gate"></div>
+        </section>
+
+        <section class="panel pm-brief-panel">
+          <div class="section-head">
+            <h3>PM Brief</h3>
+            <div class="actions">
+              <span id="opsBriefStatus" class="badge">syncing</span>
+              <button id="copyHandoffBtn" class="secondary"><i data-lucide="clipboard-copy"></i><span>Copy Handoff</span></button>
+            </div>
+          </div>
+          <div id="opsBrief" class="pm-brief"></div>
+        </section>
+
+        <section class="panel handoff-panel">
+          <div class="section-head">
+            <h3>Project Handoff Packet</h3>
+            <div class="actions">
+              <span id="handoffPacketStatus" class="badge">syncing</span>
+              <button id="copyHandoffPacketBtn" class="secondary"><i data-lucide="clipboard-copy"></i><span>Copy</span></button>
+            </div>
+          </div>
+          <div id="handoffPacket" class="handoff-packet"></div>
+        </section>
+
+        <section class="panel communication-panel">
+          <div class="section-head">
+            <h3>Communication Drafts</h3>
+            <div class="actions">
+              <span id="communicationDraftsStatus" class="badge">syncing</span>
+              <button id="copyCommunicationDraftsBtn" class="secondary"><i data-lucide="clipboard-copy"></i><span>Copy All</span></button>
+            </div>
+          </div>
+          <div id="communicationDrafts" class="communication-drafts"></div>
+        </section>
+
+        <section class="panel runbook-panel">
+          <div class="section-head">
+            <h3>PM Runbook</h3>
+            <div class="actions">
+              <span id="runbookStatus" class="badge">syncing</span>
+              <button id="copyRunbookBtn" class="secondary"><i data-lucide="clipboard-copy"></i><span>Copy</span></button>
+            </div>
+          </div>
+          <div id="runbook" class="pm-runbook"></div>
+        </section>
+
+        <section class="panel">
+          <div class="section-head">
+            <h3>PermitFlow + NEMflow</h3>
+            <div class="actions">
+              <span id="processMapStatus" class="badge">syncing</span>
+              <button id="copyProcessMapBtn" class="secondary"><i data-lucide="clipboard-copy"></i><span>Copy</span></button>
+            </div>
+          </div>
+          <div id="processMap" class="process-map"></div>
+        </section>
+
+        <section class="panel">
+          <div class="section-head">
+            <h3>Installer Action Packet</h3>
+            <div class="actions">
+              <span id="installerPacketStatus" class="badge">syncing</span>
+              <button id="copyInstallerPacketBtn" class="secondary"><i data-lucide="clipboard-copy"></i><span>Copy</span></button>
+            </div>
+          </div>
+          <div id="installerPacket" class="installer-packet"></div>
+        </section>
+
+        <section class="panel ops-panel">
+          <div class="section-head">
+            <h3>Operations Plan</h3>
+            <div class="actions">
+              <span id="opsPlanStatus" class="badge">syncing</span>
+              <button id="syncOpsPlanBtn" class="secondary"><i data-lucide="git-branch"></i><span>Sync Plan</span></button>
+            </div>
+          </div>
+          <div id="opsPlan" class="stack"></div>
+          <div class="ops-note-form">
+            <select id="opsNoteType">
+              <option value="pm_note">PM note</option>
+              <option value="blocker">Blocker</option>
+              <option value="client_update">Client update</option>
+              <option value="handoff">Handoff</option>
+            </select>
+            <input id="opsNoteAuthor" placeholder="By" value="Operations" />
+            <button id="addOpsNoteBtn" class="secondary"><i data-lucide="message-square-plus"></i><span>Add Note</span></button>
+          </div>
+          <textarea id="opsNoteBody" placeholder="Add a PM note, blocker, client update, handoff, or next-step note for this project."></textarea>
+          <div id="opsNotes" class="stack compact"></div>
+        </section>
+
+        <section class="panel workflow-panel">
+          <div class="section-head">
+            <h3>Submission Workflow</h3>
+            <span id="workflowStatus" class="badge">not run</span>
+          </div>
+          <div id="workflowSteps" class="stack"></div>
+        </section>
+
+        <section class="panel">
+          <div class="section-head">
+            <h3>Live Project Test Readiness</h3>
+            <div class="actions">
+              <span id="liveReadinessCounts" class="badge">not checked</span>
+              <button id="copyLiveReadinessBtn" class="secondary"><i data-lucide="clipboard-copy"></i><span>Copy</span></button>
+            </div>
+          </div>
+          <div id="liveReadiness" class="stack"></div>
+        </section>
+
+        <section class="panel">
+          <div class="section-head">
+            <h3>AHJ Reviewer Gate</h3>
+            <div class="actions">
+              <span id="reviewerCounts" class="badge">not run</span>
+              <button id="openReviewerPacketBtn" class="secondary"><i data-lucide="external-link"></i><span>Open Correction Packet</span></button>
+            </div>
+          </div>
+          <div id="reviewerGate" class="stack"></div>
+        </section>
+
+        <section class="panel">
+          <div class="section-head">
+            <h3>Historical Failure Check</h3>
+            <span id="historicalCounts" class="badge">not run</span>
+          </div>
+          <div id="historicalFailures" class="stack"></div>
+        </section>
+
+        <section class="columns">
+          <div class="panel">
+            <div class="section-head">
+              <h3>QC Results</h3>
+              <span id="qcCounts" class="badge">0</span>
+            </div>
+            <div id="qcResults" class="stack"></div>
+          </div>
+
+          <div class="panel">
+            <div class="section-head">
+              <h3>Human Review</h3>
+              <span id="reviewCounts" class="badge">0</span>
+            </div>
+            <div id="reviewItems" class="stack"></div>
+          </div>
+
+          <div class="panel">
+            <div class="section-head">
+              <h3>AHJ Application Docs</h3>
+              <button id="openAppDocsBtn" class="secondary"><i data-lucide="external-link"></i><span>Open Print Packet</span></button>
+            </div>
+            <div id="applicationDocs" class="stack"></div>
+          </div>
+        </section>
+
+        <section class="columns">
+          <div class="panel">
+            <div class="section-head">
+              <h3>Permit Checkup</h3>
+              <button id="addPermitTargetBtn" class="secondary"><i data-lucide="bookmark-plus"></i><span>Track</span></button>
+            </div>
+            <div class="permit-form">
+              <label>Jurisdiction / AHJ<input id="permitJurisdiction" /></label>
+              <label>Portal name<input id="permitPortalName" placeholder="DevHub, ProjectDox, Oregon ePermitting, PowerClerk" /></label>
+              <label>Public status URL<input id="permitPortalUrl" placeholder="Optional public status page URL" /></label>
+              <label>Application number<input id="permitApplicationNumber" /></label>
+              <label>Permit number<input id="permitTrackingNumber" /></label>
+              <label>Check every N days<input id="permitCheckFrequencyDays" type="number" min="1" value="7" /></label>
+            </div>
+            <textarea id="permitStatusText" placeholder="Paste AHJ/portal/email status text here: corrections, deficiency, reviewed, approved, ready for issue, fees due, issued, etc."></textarea>
+            <div class="actions permit-actions">
+              <button id="recordPermitStatusBtn" class="primary"><i data-lucide="scan-search"></i><span>Classify Status</span></button>
+              <button id="mockPermitCheckBtn" class="secondary"><i data-lucide="play"></i><span>Mock Check</span></button>
+            </div>
+            <div id="permitTargets" class="stack"></div>
+            <div id="permitChecks" class="stack"></div>
+          </div>
+
+          <div class="panel">
+            <div class="section-head">
+              <h3>Corrections</h3>
+              <button id="addCorrectionBtn" class="secondary"><i data-lucide="plus"></i><span>Add</span></button>
+            </div>
+            <textarea id="correctionText" placeholder="Paste correction, deficiency, rejection, or reviewer comment text here."></textarea>
+            <div id="corrections" class="stack"></div>
+          </div>
+
+          <div class="panel">
+            <div class="section-head">
+              <h3>Portal Runs</h3>
+              <span class="badge">supervised</span>
+            </div>
+            <div id="portalRuns" class="stack"></div>
+            <form id="confirmationForm" class="confirmation" hidden>
+              <label>Application number<input id="applicationNumber" /></label>
+              <label>Permit number<input id="permitNumber" /></label>
+              <label>Confirmation number<input id="confirmationNumber" /></label>
+              <label>Submitted by<input id="submittedBy" placeholder="human name" /></label>
+              <label>Notes<textarea id="confirmationNotes"></textarea></label>
+              <button class="primary" type="submit"><i data-lucide="clipboard-check"></i><span>Capture Confirmation</span></button>
+            </form>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="section-head">
+            <h3>Project Timeline</h3>
+            <div class="actions">
+              <span id="timelineCounts" class="badge">not synced</span>
+              <button id="copyTimelineBtn" class="secondary"><i data-lucide="clipboard-copy"></i><span>Copy</span></button>
+            </div>
+          </div>
+          <div id="projectTimeline" class="timeline-list"></div>
+        </section>
+
+        <section class="panel">
+          <div class="section-head">
+            <h3>Audit Log</h3>
+          </div>
+          <div id="auditLog" class="stack compact"></div>
+        </section>
+      </div>
+    </section>
+  </main>
+
+  <iframe id="opsActionFrame" name="opsActionFrame" title="Action save target" hidden></iframe>
+  <script type="module" src="/dashboard.js"></script>
+</body>
+</html>

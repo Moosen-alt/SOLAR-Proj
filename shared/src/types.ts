@@ -43,6 +43,904 @@ export type PermitCheckOutcome =
   | "issued"
   | "needs_human_review"
   | "no_change";
+
 export type ParserPayload = Record<string, unknown>;
-export interface ProjectRecord { id: string; clientId: string | null; homeownerName: string; projectAddress: string; city: string; state: string; zip: string; ahj: string; utility: string; accountNumber: string; meterNumber: string; systemSizeDcKw: number | null; systemSizeAcKw: number | null; totalExportKw: number | null; interconnectionMethod: string; status: ProjectStatus; currentStage: string; parserConfidenceSummary: string; parserSnapshot: ParserPayload; createdAt: string; updatedAt: string; }
-export interface LLMProvider { extractFields(input: Record<string, unknown>): Promise<Record<string, unknown>>; classifyCorrection(input: { correctionText: string; project?: ProjectRecord; }): Promise<{ bucket: CorrectionBucket; confidence: number; notes: string }>; draftResponse(input: { correctionText: string; project?: ProjectRecord; }): Promise<{ draft: string; confidence: number }>; }
+
+export interface ProjectRecord {
+  id: string;
+  clientId: string | null;
+  homeownerName: string;
+  projectAddress: string;
+  city: string;
+  state: string;
+  zip: string;
+  ahj: string;
+  utility: string;
+  accountNumber: string;
+  meterNumber: string;
+  systemSizeDcKw: number | null;
+  systemSizeAcKw: number | null;
+  totalExportKw: number | null;
+  interconnectionMethod: string;
+  status: ProjectStatus;
+  currentStage: string;
+  parserConfidenceSummary: string;
+  parserSnapshot: ParserPayload;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectListItem extends Omit<ProjectRecord, "parserSnapshot"> {
+  qcFailCount: number;
+  qcWarningCount: number;
+  pendingReviewCount: number;
+  correctionCount: number;
+  latestPortalStatus: PortalRunStatus | null;
+  latestPermitLabel: string | null;
+  latestPermitOutcome: PermitCheckOutcome | null;
+  latestPermitCheckedAt: string | null;
+  readyForIssue: boolean;
+  latestNemLabel: string | null;
+  latestNemOutcome: PermitCheckOutcome | null;
+  latestNemCheckedAt: string | null;
+  nemApproved: boolean;
+}
+
+export interface QcResult {
+  id: string;
+  projectId: string;
+  qcStatus: QcStatus;
+  ruleId: string;
+  ruleName: string;
+  message: string;
+  severity: Severity;
+  createdAt: string;
+}
+
+export interface HumanReviewItem {
+  id: string;
+  projectId: string;
+  issueType: string;
+  fieldName: string;
+  parserValue: string;
+  llmSuggestedValue: string;
+  sourceExcerpt: string;
+  status: HumanReviewStatus;
+  notes: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CorrectionRecord {
+  id: string;
+  projectId: string;
+  source: "email" | "portal" | "manual";
+  correctionText: string;
+  correctionBucket: CorrectionBucket;
+  rootCause: string;
+  requiredAction: string;
+  assignedTo: string;
+  draftResponse: string;
+  humanApproved: boolean;
+  resubmitted: boolean;
+  newRuleRecommended: boolean;
+  createdAt: string;
+  closedAt: string | null;
+}
+
+export interface PortalRun {
+  id: string;
+  projectId: string;
+  portalProfileId: string | null;
+  runType: string;
+  status: PortalRunStatus;
+  startedAt: string;
+  finishedAt: string | null;
+  errorMessage: string;
+  humanActionRequired: boolean;
+  screenshotsPath: string;
+  logsPath: string;
+}
+
+export interface SubmissionRecord {
+  id: string;
+  projectId: string;
+  portalProfileId: string | null;
+  submissionType: "permit" | "interconnection" | "correction" | "revision";
+  status: "staged" | "awaiting_human_submit" | "submitted" | "failed" | "approved";
+  applicationNumber: string;
+  permitNumber: string;
+  confirmationNumber: string;
+  submittedAt: string | null;
+  submittedBy: string;
+  screenshotsPath: string;
+  notes: string;
+}
+
+export interface PermitCheckTarget {
+  id: string;
+  projectId: string;
+  jurisdiction: string;
+  portalName: string;
+  portalUrl: string;
+  applicationNumber: string;
+  permitNumber: string;
+  checkFrequencyDays: number;
+  active: boolean;
+  lastCheckedAt: string | null;
+  nextCheckAt: string | null;
+  latestOutcome: PermitCheckOutcome | null;
+  latestStatusLabel: string;
+  notes: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PermitStatusCheck {
+  id: string;
+  projectId: string;
+  targetId: string | null;
+  source: PermitCheckSource;
+  rawStatusText: string;
+  statusLabel: string;
+  outcome: PermitCheckOutcome;
+  confidence: number;
+  correctionId: string | null;
+  reviewedByAhj: boolean;
+  readyForIssue: boolean;
+  issueFeeDue: boolean;
+  applicationNumber: string;
+  permitNumber: string;
+  message: string;
+  createdAt: string;
+}
+
+export interface ApplicationRequirementProfile {
+  id: string;
+  name: string;
+  matchJurisdictions: string[];
+  portalName: string;
+  sourceUrl: string;
+  requiresAhjApplication: boolean;
+  requiresStructuralApplication: boolean;
+  requiresElectricalApplication: boolean;
+  requiresPrescriptiveChecklist: boolean;
+  requiresBidSheet: boolean;
+  requiresPortalEntryOnly: boolean;
+  requiredDocuments: string[];
+  notes: string[];
+}
+
+export interface GeneratedApplicationDocument {
+  id: string;
+  title: string;
+  required: boolean;
+  documentType: "cover" | "manifest" | "ahj_application" | "structural_application" | "electrical_application" | "checklist" | "utility_application" | "worksheet";
+  fileName: string;
+  markdown: string;
+}
+
+export interface ApplicationDocumentPackage {
+  projectId: string;
+  profile: ApplicationRequirementProfile;
+  generatedAt: string;
+  docs: GeneratedApplicationDocument[];
+  missingFields: string[];
+  html: string;
+}
+
+export interface AhjProcessProfile {
+  state: string;
+  ahj: string;
+  submissionMethod: string;
+  timeline: string;
+  requiresElectricianSign: boolean;
+  requiresElectricalStamp: boolean;
+  requiresStructuralStamp: boolean;
+  requiresElectricalPermitApplication: boolean;
+  requiresBuildingPermitApplication: boolean;
+  requiresSolarChecklist: boolean;
+  requiresPlanSet: boolean;
+  requiresUtilityApproval: boolean;
+  requiresCustomerSignature: boolean;
+  requiresFloodplainCheck: boolean;
+  requiresJurisdictionCheck: boolean;
+  otherRequirements: string;
+  reviewerNotes: string;
+  sourceSheet: string;
+}
+
+export interface CodeReference {
+  code: string;
+  section: string;
+  title: string;
+  adoptionScope: string;
+  sourceUrl: string;
+  note: string;
+}
+
+export type ReviewerEvidenceStatus = "verified" | "weak" | "missing" | "profile" | "not_applicable";
+
+export interface ReviewerFindingEvidence {
+  kind: "source_excerpt" | "absence_check" | "field_value" | "process_profile" | "screenshot_placeholder";
+  label: string;
+  source: string;
+  excerpt: string;
+  confidence: "high" | "medium" | "low";
+  pageHint: string;
+  screenshotPath: string;
+  verifier: "parser" | "normalized_field" | "rule_engine" | "ahj_profile" | "llm";
+  note: string;
+}
+
+export interface ReviewerFinding {
+  id: string;
+  severity: "blocker" | "warning" | "callout" | "pass";
+  category: "project_data" | "ahj_profile" | "plan_set" | "utility_nem" | "structural" | "electrical" | "portal" | "installer";
+  title: string;
+  message: string;
+  cityFeedback: string;
+  designTeamAction: string;
+  evidenceNeeded: string[];
+  codeReferences: CodeReference[];
+  installerCallout: boolean;
+  evidenceStatus?: ReviewerEvidenceStatus;
+  evidenceFound?: ReviewerFindingEvidence[];
+}
+
+export interface FinalSubmitGate {
+  mustShowAhjPreviewWindow: boolean;
+  finalSubmitButtonAloneIsEnough: boolean;
+  requirements: string[];
+}
+
+export interface ReviewerReport {
+  projectId: string;
+  generatedAt: string;
+  matchedProcessProfile: AhjProcessProfile | null;
+  findings: ReviewerFinding[];
+  installerCallouts: ReviewerFinding[];
+  finalSubmitGate: FinalSubmitGate;
+}
+
+export interface KnowledgeSource {
+  label: string;
+  url: string;
+  sourceType: "official" | "sanitized_reference" | "learned_project" | "learned_correction" | "learned_permit_status";
+  observedAt: string;
+}
+
+export interface CommonCorrectionPattern {
+  signature: string;
+  bucket: CorrectionBucket;
+  rootCause: string;
+  requiredAction: string;
+  count: number;
+  lastSeenAt: string;
+  sample: string;
+}
+
+export interface PermitUtilityKnowledgeProfile {
+  id: string;
+  profileKey: string;
+  state: string;
+  ahj: string;
+  utility: string;
+  portalName: string;
+  portalUrl: string;
+  requiredDocuments: string[];
+  averageTimelineDays: number | null;
+  timelineSampleCount: number;
+  timelineNotes: string[];
+  commonCorrections: CommonCorrectionPattern[];
+  projectCount: number;
+  correctionCount: number;
+  confidence: "seeded" | "learned" | "mixed";
+  sources: KnowledgeSource[];
+  notes: string;
+  firstSeenAt: string;
+  lastLearnedAt: string;
+  updatedAt: string;
+}
+
+export interface HistoricalFailureCause {
+  signature: string;
+  title: string;
+  count: number;
+  correctionBucket: CorrectionBucket | "";
+  rootCause: string;
+  requiredAction: string;
+  sample: string;
+  severity: "blocker" | "warning" | "callout";
+}
+
+export interface HistoricalChecklistItem {
+  id: string;
+  status: "present" | "missing" | "needs_review";
+  title: string;
+  why: string;
+  action: string;
+  evidence: string[];
+  sourceCauseSignature: string | null;
+}
+
+export interface HistoricalFailureReport {
+  projectId: string;
+  generatedAt: string;
+  summaryLabel: string;
+  matchedProjectCount: number;
+  matchedFailureRecordCount: number;
+  matchTags: string[];
+  topRejectionCauses: HistoricalFailureCause[];
+  checklist: HistoricalChecklistItem[];
+  dataConfidence: "low" | "medium" | "high";
+  notes: string[];
+}
+
+export type MboxEmailBucket =
+  | "permit_approval"
+  | "permit_correction"
+  | "nem_approval"
+  | "nem_correction"
+  | "status_update"
+  | "missing_info_request"
+  | "fee_request"
+  | "inspection_final_notice"
+  | "spam_irrelevant";
+
+export interface MboxExtractedLearningRecord {
+  source: "email";
+  type: MboxEmailBucket;
+  workflow: "permit" | "nem" | "both" | "unknown";
+  jurisdiction: string | null;
+  utility: string | null;
+  projectAddress: "REDACTED" | null;
+  projectAddressHash: string | null;
+  portalName: string | null;
+  correctionCategory: string | null;
+  correctionSubcategory: string | null;
+  requiredAction: string | null;
+  preventable: boolean;
+  requiredDocuments: string[];
+  timelineSignal: string | null;
+  statusLabel: string | null;
+  classifier: "deterministic" | "llm_stub" | "llm";
+  confidence: number;
+  sample: string;
+  occurredAt: string;
+}
+
+export interface MboxKnowledgeImportResult {
+  messagesScanned: number;
+  learningEvents: number;
+  failureExamplesImported: number;
+  profilesTouched: number;
+  skippedMessages: number;
+  duplicateMessages: number;
+  llmReviewRecommended: number;
+  bucketCounts: Record<MboxEmailBucket, number>;
+  extractedRecords: MboxExtractedLearningRecord[];
+}
+
+export interface EmailTrackingSource {
+  id: string;
+  sourceType: "mbox_path";
+  label: string;
+  filePath: string;
+  defaultState: string;
+  defaultAhj: string;
+  defaultUtility: string;
+  active: boolean;
+  lastCheckedAt: string | null;
+  lastMessageCount: number;
+  lastMatchedCount: number;
+  lastError: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface EmailProjectMatch {
+  id: string;
+  projectId: string;
+  sourceId: string | null;
+  sourceSignature: string;
+  sourceLabel: string;
+  emailBucket: MboxEmailBucket;
+  workflow: "permit" | "nem" | "both" | "unknown";
+  confidence: number;
+  matchReason: string;
+  statusCheckId: string | null;
+  correctionId: string | null;
+  subject: string;
+  occurredAt: string;
+  createdAt: string;
+}
+
+export interface EmailTrackerRunResult {
+  sourcesChecked: number;
+  messagesScanned: number;
+  projectMatches: number;
+  statusChecksCreated: number;
+  correctionsCreated: number;
+  skippedDuplicates: number;
+  unmatchedMessages: number;
+  sourceErrors: string[];
+  matches: EmailProjectMatch[];
+}
+
+export type OperationStepStatus = "not_started" | "in_progress" | "waiting" | "blocked" | "done";
+export type ProjectNoteType = "pm_note" | "blocker" | "client_update" | "handoff" | "system_note";
+
+export interface OperationStep {
+  id: string;
+  projectId: string;
+  phaseKey: string;
+  phaseName: string;
+  status: OperationStepStatus;
+  statusSource: "system" | "manual";
+  ownerRole: string;
+  dueAt: string | null;
+  summary: string;
+  nextAction: string;
+  notes: string;
+  sortOrder: number;
+  source: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectNote {
+  id: string;
+  projectId: string;
+  noteType: ProjectNoteType;
+  body: string;
+  createdBy: string;
+  createdAt: string;
+}
+
+export interface OperationsPlan {
+  projectId: string;
+  generatedAt: string;
+  status: OperationStepStatus;
+  currentPhase: string;
+  nextAction: string;
+  steps: OperationStep[];
+  notes: ProjectNote[];
+  counts: Record<OperationStepStatus, number>;
+}
+
+export interface ProjectRunbookStep {
+  id: string;
+  phaseKey: string;
+  phaseName: string;
+  status: OperationStepStatus;
+  ownerRole: string;
+  dueAt: string | null;
+  whatToDo: string;
+  why: string;
+  doneCriteria: string[];
+  evidence: string[];
+  notes: string;
+  source: string;
+  isCurrent: boolean;
+}
+
+export interface ProjectRunbook {
+  projectId: string;
+  generatedAt: string;
+  status: OperationStepStatus;
+  headline: string;
+  currentStepId: string | null;
+  nextAction: string;
+  totalSteps: number;
+  doneCount: number;
+  blockedCount: number;
+  waitingCount: number;
+  inProgressCount: number;
+  noteCount: number;
+  steps: ProjectRunbookStep[];
+  recentNotes: ProjectNote[];
+  reportText: string;
+}
+
+export type OperationsBriefHealth = "ready" | "watch" | "blocked";
+export type OperationsBriefSeverity = "pass" | "info" | "warning" | "blocker";
+
+export interface OperationsBriefAction {
+  phaseName: string;
+  ownerRole: string;
+  action: string;
+  reason: string;
+  status: OperationStepStatus;
+  dueAt: string | null;
+}
+
+export interface OperationsBriefSignal {
+  title: string;
+  detail: string;
+  severity: OperationsBriefSeverity;
+  source: string;
+}
+
+export interface OperationsBriefActivity {
+  title: string;
+  detail: string;
+  severity: OperationsBriefSeverity;
+  occurredAt: string;
+  source: string;
+}
+
+export interface OperationsBrief {
+  projectId: string;
+  generatedAt: string;
+  health: OperationsBriefHealth;
+  headline: string;
+  currentPhase: string;
+  nextAction: string;
+  counts: Record<OperationStepStatus, number>;
+  immediateActions: OperationsBriefAction[];
+  blockers: OperationsBriefSignal[];
+  readySignals: OperationsBriefSignal[];
+  recentActivity: OperationsBriefActivity[];
+  handoffNote: string;
+}
+
+export interface ProjectHandoffPacketSection {
+  title: string;
+  severity: OperationsBriefSeverity;
+  source: string;
+  lines: string[];
+}
+
+export interface ProjectHandoffPacket {
+  projectId: string;
+  generatedAt: string;
+  health: OperationsBriefHealth;
+  headline: string;
+  nextAction: string;
+  currentPhase: string;
+  blockerCount: number;
+  actionCount: number;
+  readinessStatus: LiveProjectReadinessReport["status"];
+  timelineEventCount: number;
+  ownerRoles: string[];
+  sections: ProjectHandoffPacketSection[];
+  reportText: string;
+}
+
+export type ProjectCommunicationAudience = "internal_pm" | "installer_design" | "client_safe";
+
+export interface ProjectCommunicationDraft {
+  audience: ProjectCommunicationAudience;
+  title: string;
+  subject: string;
+  body: string;
+  severity: OperationsBriefSeverity;
+  source: string;
+}
+
+export interface ProjectCommunicationDraftPacket {
+  projectId: string;
+  generatedAt: string;
+  headline: string;
+  status: OperationsBriefHealth;
+  nextAction: string;
+  drafts: ProjectCommunicationDraft[];
+  reportText: string;
+}
+
+export interface OperationsBoardProject {
+  projectId: string;
+  homeownerName: string;
+  projectAddress: string;
+  status: ProjectStatus;
+  health: OperationsBriefHealth;
+  currentPhase: string;
+  nextAction: string;
+  ownerRole: string;
+  blockerCount: number;
+  activeActionCount: number;
+  dueAt: string | null;
+  latestActivityAt: string | null;
+  latestActivity: string;
+  updatedAt: string;
+}
+
+export interface OperationsBoard {
+  generatedAt: string;
+  totalProjects: number;
+  blockedProjects: number;
+  watchProjects: number;
+  readyProjects: number;
+  totalBlockers: number;
+  totalActiveActions: number;
+  projects: OperationsBoardProject[];
+}
+
+export type OperationsActionDueBucket = "overdue" | "today" | "upcoming" | "no_due";
+
+export interface OperationsActionItem {
+  projectId: string;
+  stepId: string;
+  homeownerName: string;
+  projectAddress: string;
+  health: OperationsBriefHealth;
+  phaseName: string;
+  status: OperationStepStatus;
+  ownerRole: string;
+  dueAt: string | null;
+  dueBucket: OperationsActionDueBucket;
+  action: string;
+  reason: string;
+  notes: string;
+  source: string;
+  blockerCount: number;
+  updatedAt: string;
+}
+
+export interface OperationsActionQueue {
+  generatedAt: string;
+  totalActions: number;
+  blockedActions: number;
+  waitingActions: number;
+  inProgressActions: number;
+  overdueActions: number;
+  todayActions: number;
+  actions: OperationsActionItem[];
+}
+
+export interface OperationsOwnerWorkload {
+  ownerRole: string;
+  totalActions: number;
+  blockedActions: number;
+  waitingActions: number;
+  inProgressActions: number;
+  overdueActions: number;
+  todayActions: number;
+}
+
+export interface OperationsDailyReport {
+  generatedAt: string;
+  headline: string;
+  summary: string[];
+  board: OperationsBoard;
+  actionQueue: OperationsActionQueue;
+  ownerWorkload: OperationsOwnerWorkload[];
+  topProjects: OperationsBoardProject[];
+  dueNow: OperationsActionItem[];
+  topActions: OperationsActionItem[];
+  reportText: string;
+}
+
+export type LiveProjectReadinessStatus = "done" | "needs_review" | "blocked";
+
+export interface LiveProjectReadinessItem {
+  id: string;
+  title: string;
+  status: LiveProjectReadinessStatus;
+  ownerRole: string;
+  detail: string;
+  nextAction: string;
+  evidence: string[];
+  source: string;
+}
+
+export interface LiveProjectReadinessReport {
+  projectId: string;
+  generatedAt: string;
+  status: "ready" | "needs_review" | "blocked";
+  headline: string;
+  nextAction: string;
+  doneCount: number;
+  needsReviewCount: number;
+  blockedCount: number;
+  totalCount: number;
+  items: LiveProjectReadinessItem[];
+  reportText: string;
+}
+
+export type ProjectTimelineEventCategory =
+  | "project"
+  | "pm_note"
+  | "operation"
+  | "qc"
+  | "human_review"
+  | "correction"
+  | "permit_status"
+  | "email"
+  | "portal"
+  | "submission"
+  | "audit";
+
+export interface ProjectTimelineEvent {
+  id: string;
+  projectId: string;
+  occurredAt: string;
+  category: ProjectTimelineEventCategory;
+  severity: OperationsBriefSeverity;
+  title: string;
+  detail: string;
+  actor: string;
+  source: string;
+  ownerRole: string;
+  nextAction: string;
+  evidence: string[];
+  relatedId: string | null;
+}
+
+export interface ProjectTimelineReport {
+  projectId: string;
+  generatedAt: string;
+  headline: string;
+  latestActivityAt: string | null;
+  totalEvents: number;
+  blockerCount: number;
+  warningCount: number;
+  emailCount: number;
+  correctionCount: number;
+  events: ProjectTimelineEvent[];
+  reportText: string;
+}
+
+export type ProjectProcessLaneKey = "intake" | "permit" | "nem" | "closeout";
+export type ProjectProcessStepStatus = "not_started" | "in_progress" | "waiting" | "blocked" | "done";
+
+export interface ProjectProcessStep {
+  id: string;
+  laneKey: ProjectProcessLaneKey;
+  label: string;
+  status: ProjectProcessStepStatus;
+  ownerRole: string;
+  summary: string;
+  nextAction: string;
+  evidence: string[];
+  source: string;
+}
+
+export interface ProjectProcessLane {
+  key: ProjectProcessLaneKey;
+  title: string;
+  status: ProjectProcessStepStatus;
+  summary: string;
+  currentStep: string;
+  nextAction: string;
+  steps: ProjectProcessStep[];
+}
+
+export interface ProjectProcessMap {
+  projectId: string;
+  generatedAt: string;
+  headline: string;
+  status: ProjectProcessStepStatus;
+  permitStatus: ProjectProcessStepStatus;
+  nemStatus: ProjectProcessStepStatus;
+  nextAction: string;
+  lanes: ProjectProcessLane[];
+  reportText: string;
+}
+
+export type SubmitGateDecision = "blocked" | "ready_to_stage" | "staged_awaiting_human" | "submitted_tracking";
+export type SubmitGateLane = "intake" | "qc" | "permit" | "nem" | "portal" | "tracking" | "closeout";
+export type SubmitGateCheckStatus = "pass" | "warning" | "blocker";
+
+export interface SubmitGateCheck {
+  id: string;
+  title: string;
+  lane: SubmitGateLane;
+  status: SubmitGateCheckStatus;
+  ownerRole: string;
+  requirement: string;
+  evidence: string[];
+  nextAction: string;
+  source: string;
+}
+
+export interface SubmitGateReport {
+  projectId: string;
+  generatedAt: string;
+  decision: SubmitGateDecision;
+  headline: string;
+  nextAction: string;
+  canPrepareSubmission: boolean;
+  canHumanSubmit: boolean;
+  blockerCount: number;
+  warningCount: number;
+  passCount: number;
+  checks: SubmitGateCheck[];
+  manualSubmitChecklist: string[];
+  reportText: string;
+}
+
+export type InstallerActionCategory =
+  | "design"
+  | "field_verification"
+  | "utility_nem"
+  | "documents"
+  | "correction"
+  | "portal"
+  | "approval_tracking";
+
+export interface InstallerActionItem {
+  id: string;
+  category: InstallerActionCategory;
+  severity: OperationsBriefSeverity;
+  title: string;
+  ask: string;
+  why: string;
+  ownerRole: string;
+  dueBefore: string;
+  evidence: string[];
+  source: string;
+  relatedId: string | null;
+}
+
+export interface InstallerActionPacket {
+  projectId: string;
+  generatedAt: string;
+  headline: string;
+  status: "clear" | "needs_action" | "blocked";
+  totalActions: number;
+  blockerCount: number;
+  warningCount: number;
+  installerActionCount: number;
+  designActionCount: number;
+  nemActionCount: number;
+  nextAction: string;
+  items: InstallerActionItem[];
+  reportText: string;
+}
+
+export interface WorkflowStep {
+  id: string;
+  label: string;
+  status: "done" | "needs_review" | "blocked" | "ready";
+  summary: string;
+  action: string;
+}
+
+export interface ProjectWorkflow {
+  projectId: string;
+  generatedAt: string;
+  status: "blocked" | "needs_review" | "ready_to_stage" | "staged_or_submitted";
+  nextAction: string;
+  canPrepareSubmission: boolean;
+  steps: WorkflowStep[];
+  historicalReport: HistoricalFailureReport;
+  reviewerReport: ReviewerReport;
+  applicationDocs: ApplicationDocumentPackage;
+}
+
+export interface AuditLog {
+  id: string;
+  projectId: string | null;
+  actorType: "system" | "human" | "llm" | "portal_bot";
+  actorName: string;
+  action: string;
+  details: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface ProjectDetail {
+  project: ProjectRecord;
+  qcResults: QcResult[];
+  humanReviewItems: HumanReviewItem[];
+  corrections: CorrectionRecord[];
+  permitCheckTargets: PermitCheckTarget[];
+  permitStatusChecks: PermitStatusCheck[];
+  emailProjectMatches: EmailProjectMatch[];
+  portalRuns: PortalRun[];
+  submissions: SubmissionRecord[];
+  auditLogs: AuditLog[];
+}
+
+export interface LLMProvider {
+  extractFields(input: Record<string, unknown>): Promise<Record<string, unknown>>;
+  classifyCorrection(input: {
+    correctionText: string;
+    project?: ProjectRecord;
+  }): Promise<{ bucket: CorrectionBucket; confidence: number; notes: string }>;
+  draftResponse(input: {
+    correctionText: string;
+    project?: ProjectRecord;
+  }): Promise<{ draft: string; confidence: number }>;
+}

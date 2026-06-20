@@ -1,0 +1,3141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Solar Submission Engine Rebuild v17.2.36 Direct PDF UB Account Fix</title>
+  <style>
+    :root{
+      --bg:#071120;
+      --card:#16253c;
+      --card2:#112036;
+      --line:#314563;
+      --text:#eef4ff;
+      --muted:#a7b7d4;
+      --accent:#ffb020;
+      --green:#22c55e;
+      --red:#ef4444;
+      --blue:#3b82f6;
+      --cyan:#38bdf8;
+      --purple:#a78bfa;
+    }
+    *{box-sizing:border-box}
+    body{
+      margin:0;
+      font-family:Inter,Segoe UI,Arial,sans-serif;
+      background:var(--bg);
+      color:var(--text);
+    }
+    .wrap{max-width:1450px;margin:0 auto;padding:20px}
+    h1{font-size:54px;line-height:1;margin:0 0 12px}
+    h2{margin:0 0 14px;color:var(--accent);font-size:22px}
+    h3{margin:0 0 10px;color:#dbeafe;font-size:18px}
+    .sub{color:var(--muted);margin:0 0 18px;font-size:16px}
+    .nav{display:flex;flex-wrap:wrap;gap:10px;margin:0 0 16px}
+    .pill{border:1px solid var(--line);padding:10px 16px;border-radius:999px;color:var(--text);font-size:14px;background:#0d1b31}
+    .card{
+      background:linear-gradient(180deg,var(--card),var(--card2));
+      border:1px solid var(--line);
+      border-radius:18px;
+      padding:18px;
+      margin:16px 0;
+      box-shadow:0 10px 28px rgba(0,0,0,.18);
+    }
+    .muted{color:var(--muted)}
+    .row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+    .row3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+    .row4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+    @media (max-width:1000px){.row,.row3,.row4{grid-template-columns:1fr}}
+    label{display:block;font-size:14px;color:#c9d8f4;margin:0 0 6px}
+    input,select,textarea{
+      width:100%;
+      background:#071424;
+      border:1px solid #45608a;
+      color:var(--text);
+      border-radius:12px;
+      padding:12px 14px;
+      font-size:15px;
+      outline:none;
+    }
+    textarea{min-height:96px;resize:vertical}
+    .tall{min-height:150px}
+    .critical-wrap{
+      margin-top:14px;
+      border:2px solid rgba(239,68,68,.75);
+      border-radius:18px;
+      padding:16px;
+      background:linear-gradient(180deg,rgba(127,29,29,.22),rgba(69,10,10,.14));
+      box-shadow:0 10px 28px rgba(0,0,0,.22);
+    }
+    .critical-title{
+      font-size:26px;
+      font-weight:900;
+      letter-spacing:.02em;
+      color:#ffd6a5;
+      margin:0 0 10px;
+      text-transform:uppercase;
+    }
+    .critical-sub{color:#ffd6a5;font-size:14px;margin:0 0 12px}
+    .critical-text{
+      min-height:250px;
+      font-size:16px;
+      line-height:1.35;
+      font-weight:700;
+      border:2px solid rgba(251,146,60,.65);
+      background:rgba(24,11,19,.9);
+      color:#fff5e6;
+    }
+    .scope-callout-grid{
+      display:grid;
+      grid-template-columns:repeat(4,minmax(0,1fr));
+      gap:14px;
+      margin:14px 0;
+    }
+    .scope-card{
+      border-radius:18px;
+      border:2px solid rgba(96,165,250,.4);
+      padding:16px;
+      background:linear-gradient(180deg,rgba(14,30,54,.9),rgba(8,18,34,.95));
+      min-height:135px;
+    }
+    .scope-card.red{border-color:rgba(239,68,68,.82);background:linear-gradient(180deg,rgba(127,29,29,.34),rgba(24,11,19,.95))}
+    .scope-card.yellow{border-color:rgba(245,158,11,.82);background:linear-gradient(180deg,rgba(120,53,15,.32),rgba(20,16,8,.95))}
+    .scope-card.green{border-color:rgba(34,197,94,.75);background:linear-gradient(180deg,rgba(20,83,45,.30),rgba(8,24,18,.95))}
+    .scope-kicker{color:#bfd7ff;font-size:12px;text-transform:uppercase;letter-spacing:.08em;font-weight:800}
+    .scope-main{margin-top:8px;color:#ffe3ad;font-size:27px;line-height:1;font-weight:900;text-transform:uppercase}
+    .scope-sub{margin-top:10px;color:#fff6e6;font-size:14px;line-height:1.28;font-weight:700}
+    @media(max-width:1050px){.scope-callout-grid{grid-template-columns:1fr 1fr}}
+    @media(max-width:700px){.scope-callout-grid{grid-template-columns:1fr}}
+    .btnbar{display:flex;gap:12px;flex-wrap:wrap;margin:10px 0 4px}
+    button{
+      background:#445670;
+      color:#fff;
+      border:none;
+      border-radius:12px;
+      padding:13px 18px;
+      font-size:15px;
+      font-weight:800;
+      cursor:pointer;
+    }
+    button.green{background:var(--green);color:#03110a}
+    button.red{background:#ff5b57}
+    button.blue{background:#334968}
+    button.orange{background:#f59e0b;color:#291700}
+    button.purple{background:#6d5bd0}
+    button:disabled{opacity:.5;cursor:not-allowed}
+    .status{
+      margin-top:10px;
+      padding:14px 16px;
+      border:1px dashed #4b6286;
+      border-radius:14px;
+      background:#0e1a2d;
+      font-weight:700;
+      white-space:pre-wrap;
+    }
+    .section-note{
+      background:rgba(255,176,32,.08);
+      border:1px solid rgba(255,176,32,.35);
+      border-radius:14px;
+      padding:12px 14px;
+      color:#ffe2a6;
+      margin-top:12px;
+      font-size:14px;
+      line-height:1.5;
+    }
+    .table{width:100%;border-collapse:collapse;overflow:hidden;border-radius:12px;border:1px solid var(--line)}
+    .table th,.table td{border-bottom:1px solid var(--line);padding:10px 12px;text-align:left;vertical-align:top}
+    .table th{color:var(--accent);background:#0b1730}
+    .tag{display:inline-block;padding:4px 10px;border-radius:999px;font-size:12px;font-weight:800;border:1px solid transparent}
+    .good{background:#123b2b;color:#90f7c6;border-color:#2d8d65}
+    .warn{background:#42310f;color:#f7dd8b;border-color:#876219}
+    .bad{background:#4b1d28;color:#ffb7c5;border-color:#9b4054}
+    .mini{font-size:13px;color:var(--muted)}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+    .big{font-size:15px;line-height:1.55}
+  </style>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+</head>
+
+<body>
+<div class="wrap">
+  <h1>Solar Submission Engine</h1>
+  <p class="sub">Rebuild v17.2.36 with hard direct UB account fallback for PDF bills before strict parser filtering.</p>
+
+  <div class="nav">
+    <div class="pill">Upload</div>
+    <div class="pill">Project data</div>
+    <div class="pill">Permit path</div>
+    <div class="pill">Electrical scope</div>
+    <div class="pill">NEM / UB</div>
+    <div class="pill">Submission text</div>
+    <div class="pill">Packet builder</div>
+  </div>
+
+  <div class="section-note">
+    <strong>v17.2.36 update</strong><br>
+    Added a dedicated module wattage field. Parser now pulls wattage directly from strings like <span class="mono">Q.TRON BLK M-G2.C1+/AC - 430W</span> and falls back to DC kW divided by module quantity. UB account parsing was expanded for OCR from phone photos, including PGE style account numbers near <span class="mono">Account number</span>.
+  </div>
+
+  <div class="card">
+    <h2>1. Upload source files</h2>
+    <div class="row">
+      <div>
+        <label>Plan set PDF</label>
+        <input id="planFile" type="file" accept=".pdf,application/pdf" />
+      </div>
+      <div>
+        <label>Utility bill PDF or image</label>
+        <input id="ubFile" type="file" accept=".pdf,image/*,application/pdf" />
+      </div>
+      <div>
+        <label>Meter photo image or PDF</label>
+        <input id="meterPhotoFile" type="file" accept=".pdf,image/*,application/pdf" />
+      </div>
+    </div>
+    <div class="btnbar">
+      <button id="parseBtn" class="green">Parse uploaded files</button>
+      <button id="resetBtn" class="red">Reset</button>
+      <button id="downloadJsonBtn" class="blue">Download parsed JSON</button>
+      <button id="saveProjectBtn" class="orange">Save Project</button>
+      <button id="prepareSubmittalBtn" class="purple">Prepare Submittal</button>
+      <button id="openDashboardBtn" class="blue">Open Dashboard</button>
+    </div>
+    <div id="parseStatus" class="status">Waiting for files.</div>
+  </div>
+
+  <div class="card">
+    <h2>2. Extracted project data</h2>
+    <div class="row">
+      <div><label>Utility</label><input id="utility" /></div>
+      <div><label>AHJ / County</label><input id="ahj" /></div>
+      <div><label>Homeowner name</label><input id="owner" /></div>
+      <div><label>Project address</label><input id="street" /></div>
+      <div><label>City</label><input id="city" /></div>
+      <div><label>State</label><input id="state" value="OR" /></div>
+      <div><label>ZIP</label><input id="zip" /></div>
+      <div><label>Meter number</label><input id="meter" /></div>
+      <div><label>Account number</label><input id="account" /></div>
+      <div><label>Interconnection method</label><input id="interco" /></div>
+    </div>
+
+    <div class="row3" style="margin-top:12px">
+      <div><label>System size DC (kW)</label><input id="dcKw" /></div>
+      <div><label>System size AC (kW)</label><input id="acKw" /></div>
+      <div><label>Total export (kW)</label><input id="exportKw" /></div>
+    </div>
+
+    <div class="row4" style="margin-top:12px">
+      <div><label>Module make</label><input id="moduleMake" /></div>
+      <div><label>Module model</label><input id="moduleModel" /></div>
+      <div><label>Module wattage (W)</label><input id="moduleWattage" /></div>
+      <div><label>Module quantity</label><input id="moduleQty" /></div>
+      <div><label>Inverter make</label><input id="invMake" /></div>
+      <div><label>Inverter model</label><input id="invModel" /></div>
+      <div><label>Inverter quantity</label><input id="invQty" /></div>
+      <div><label>Inverter AC output power (W)</label><input id="invOutputW" /></div>
+      <div><label>PV microinverter make</label><input id="pvMicroMake" /></div>
+      <div><label>PV microinverter model</label><input id="pvMicroModel" /></div>
+      <div><label>PV microinverter quantity</label><input id="pvMicroQty" /></div>
+      <div><label>PV microinverter output (W)</label><input id="pvMicroOutputW" /></div>
+    </div>
+
+    <div class="row4" style="margin-top:12px">
+      <div><label>Battery make</label><input id="batteryMake" /></div>
+      <div><label>Battery model</label><input id="batteryModel" /></div>
+      <div><label>Battery quantity</label><input id="batteryQty" /></div>
+      <div><label>Battery capacity (kWh)</label><input id="batteryCapacityKwh" /></div>
+      <div><label>Battery AC output (kW)</label><input id="batteryOutputKw" /></div>
+      <div><label>Gateway make</label><input id="gatewayMake" /></div>
+      <div><label>Gateway model</label><input id="gatewayModel" /></div>
+      <div><label>Backup panel / loads</label><input id="backupPanel" /></div>
+    </div>
+
+    <div class="row4" style="margin-top:12px">
+      <div><label>Phase</label><input id="phase" /></div>
+      <div><label>Voltage</label><input id="voltage" /></div>
+      <div><label>Main service panel bus (A)</label><input id="busRating" /></div>
+      <div><label>Main breaker (A)</label><input id="mainBreaker" /></div>
+      <div><label>PV breaker / OCPD (A)</label><input id="pvBreaker" /></div>
+      <div><label>Roof material</label><input id="roofMaterial" /></div>
+      <div><label>Racking</label><input id="racking" /></div>
+      <div><label>Mounting</label><input id="mounting" value="Roof Mount" /></div>
+      <div><label>Wind speed / exposure</label><input id="wind" /></div>
+      <div><label>Snow load</label><input id="snow" /></div>
+      <div><label>Dead load / PSF</label><input id="deadLoad" /></div>
+      <div><label>Roof rafter size</label><input id="roofRafterSize" /></div>
+      <div><label>Roof rafter spacing</label><input id="roofRafterSpacing" /></div>
+      <div><label>Grade of wood</label><input id="woodGrade" /></div>
+      <div><label>Roof rafter span in feet</label><input id="roofRafterSpanFeet" /></div>
+      <div><label>Tilt (dominant plane)</label><input id="tilt" /></div>
+      <div><label>Azimuth (dominant plane)</label><input id="azimuth" /></div>
+      <div><label>PTC rating</label><input id="ptc" /></div>
+      <div><label>AC disconnect required?</label><input id="acDiscReq" /></div>
+      <div><label>AC disconnect amp</label><input id="acDiscAmp" /></div>
+    </div>
+
+    <div style="margin-top:12px">
+      <label>Roof planes summary</label>
+      <textarea id="roofPlanesField" readonly class="tall"></textarea>
+    </div>
+    <div style="margin-top:12px">
+      <label>Parser review flags</label>
+      <textarea id="reviewFlags" readonly class="tall"></textarea>
+    </div>
+    <div class="critical-wrap">
+      <div class="critical-title">Critical PM warnings / follow-up required</div>
+      <div class="critical-sub">Big-callout area for anything the PM needs to follow before install.</div>
+      <div class="row">
+        <div><label>Auto-detected critical warnings</label><textarea id="criticalWarnings" readonly class="critical-text"></textarea></div>
+        <div><label>PM project follow-up notes</label><textarea id="pmProjectNotes" class="critical-text" placeholder="Add project notes here."></textarea></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>3. Permit path + stamp callout</h2>
+    <div class="row">
+      <div class="section-note" style="background:rgba(34,197,94,.07);border-color:rgba(34,197,94,.35)">
+        <div class="mini">PERMIT PATH</div>
+        <div id="pathMain" style="font-size:44px;font-weight:900;line-height:1;margin:8px 0">REVIEW</div>
+        <div id="pathSub" class="big">Packet needs confirmation on one or more items.</div>
+      </div>
+      <div class="section-note" style="background:rgba(239,68,68,.08);border-color:rgba(239,68,68,.35)">
+        <div class="mini">STAMP RECOMMENDATION</div>
+        <div id="stampMain" style="font-size:44px;font-weight:900;line-height:1;margin:8px 0">MANUAL REVIEW</div>
+        <div id="stampSub" class="big">If a required structural item fails, send to design for stamped path.</div>
+      </div>
+    </div>
+    <div class="row" style="margin-top:14px">
+      <div>
+        <label>Permit path reasons</label>
+        <textarea id="pathReasons" class="tall" readonly></textarea>
+      </div>
+      <div>
+        <label>Stamp notes</label>
+        <textarea id="stampReasons" class="tall" readonly></textarea>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" id="electricalScopeCard">
+    <h2>4. Electrical work + utility coordination callout</h2>
+    <div class="scope-callout-grid">
+      <div class="scope-card" id="electricalScopeTypeCard"><div class="scope-kicker">Electrical scope</div><div class="scope-main" id="electricalScopeMain">NOT RUN</div><div class="scope-sub" id="electricalScopeSub">Upload and parse a packet.</div></div>
+      <div class="scope-card" id="drStatusCard"><div class="scope-kicker">D/R status</div><div class="scope-main" id="drStatusMain">NOT RUN</div><div class="scope-sub" id="drStatusSub">Waiting for detected work.</div></div>
+      <div class="scope-card" id="locateStatusCard"><div class="scope-kicker">Locates</div><div class="scope-main" id="locateStatusMain">NOT RUN</div><div class="scope-sub" id="locateStatusSub">Waiting for detected work.</div></div>
+      <div class="scope-card" id="installHoldCard"><div class="scope-kicker">Install schedule</div><div class="scope-main" id="installHoldMain">NOT RUN</div><div class="scope-sub" id="installHoldSub">Waiting for detected work.</div></div>
+    </div>
+    <div class="row">
+      <div><label>What the packet appears to show</label><textarea id="electricalScopeDetectedText" class="tall" readonly></textarea></div>
+      <div><label>PM checklist before install</label><textarea id="electricalScopeChecklistText" class="tall" readonly></textarea></div>
+    </div>
+    <div class="critical-wrap" style="border-color:rgba(56,189,248,.75);background:linear-gradient(180deg,rgba(12,74,110,.24),rgba(8,18,34,.95));">
+      <div class="critical-title" style="color:#bae6fd;">Utility Locate Callout</div>
+      <div class="critical-sub" style="color:#dff7ff;">This section separates normal underground utility service notes from actual locate-triggering work.</div>
+      <div class="row">
+        <div><label>Locate status and reason</label><textarea id="locateCalloutText" readonly class="critical-text" style="border-color:rgba(56,189,248,.65);"></textarea></div>
+        <div><label>Locate PM action steps</label><textarea id="locateActionStepsText" readonly class="critical-text" style="border-color:rgba(56,189,248,.65);"></textarea></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>5. Utility bill verification</h2>
+    <div class="row">
+      <div><label>UB account holder</label><input id="ubAccountHolder" /></div>
+      <div><label>UB account number</label><input id="ubAccountNumber" /></div>
+      <div><label>UB service address</label><input id="ubServiceAddress" /></div>
+      <div><label>UB meter number</label><input id="ubMeterNumber" /></div>
+      <div><label>Plan-set meter number</label><input id="planMeterNumber" /></div>
+      <div><label>Meter verification</label><input id="ubMeterVerification" /></div>
+    </div>
+    <div id="ubVerificationHelp" class="section-note">Upload a utility bill to verify account info and meter number.</div>
+    <div style="margin-top:12px"><label>UB parser notes</label><textarea id="ubParserNotes" readonly></textarea></div>
+    <div style="margin-top:12px"><label>UB OCR / text preview</label><textarea id="ubRawTextPreview" readonly class="tall"></textarea></div>
+  </div>
+
+  <div class="card">
+    <h2>6. Submission text builder</h2>
+    <div class="row">
+      <div><label>Project description</label><textarea id="projectDescriptionText" class="tall"></textarea><div class="btnbar"><button class="blue" data-copy="projectDescriptionText">Copy project description</button></div></div>
+      <div><label>Site plan notes</label><textarea id="sitePlanNotesText" class="tall"></textarea><div class="btnbar"><button class="blue" data-copy="sitePlanNotesText">Copy site plan notes</button></div></div>
+    </div>
+    <div style="margin-top:10px"><label>Utility upload notes</label><textarea id="utilityUploadNotesText" class="tall"></textarea><div class="btnbar"><button class="blue" data-copy="utilityUploadNotesText">Copy utility notes</button></div></div>
+  </div>
+
+  <div class="card">
+    <h2>7. Installer / contractor info</h2>
+    <div class="row3">
+      <div><label>Installer company</label><input id="installerCompany" value="TML INTERNATIONAL LLC" /></div>
+      <div><label>Installer email</label><input id="installerEmail" value="permit@infinitysolarusa.com" /></div>
+      <div><label>Installer phone</label><input id="installerPhone" value="(800) 818-0598" /></div>
+      <div><label>Installer line 1</label><input id="installerLine1" value="808 SE Chkalov Dr ST 3-337" /></div>
+      <div><label>Installer city</label><input id="installerCity" value="Vancouver" /></div>
+      <div><label>Installer state</label><input id="installerState" value="WA" /></div>
+      <div><label>Installer ZIP</label><input id="installerZip" value="98683" /></div>
+      <div><label>Electrical license number</label><input id="electricalLicenseNumber" value="C1556" /></div>
+      <div><label>Contractor license number</label><input id="contractorLicenseNumber" value="223690" /></div>
+      <div><label>Metro or city license number</label><input id="metroCityLicenseNumber" value="14838" /></div>
+      <div><label>Supervising electrician</label><input id="supervisingElectrician" value="Charles Bitton" /></div>
+      <div><label>Electrician license number</label><input id="electricianLicenseNumber" value="5787S" /></div>
+      <div style="grid-column:1 / -1"><label>Contractor license notes</label><textarea id="contractorLicenseNotes">Installer: TML INTERNATIONAL LLC | Email: permit@infinitysolarusa.com | Phone: (800) 818-0598 | Address: 808 SE Chkalov Dr ST 3-337, Vancouver, WA 98683 | Electrical Lic: C1556 | CCB Lic: 223690 | Metro/City Lic: 14838 | Supervising Electrician: Charles Bitton | Electrician Lic: 5787S</textarea></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>8. Utility portal spec builder</h2>
+    <div class="row">
+      <div><label>Utility inverter spec summary</label><textarea id="utilityInvSpecText" class="tall"></textarea><div class="btnbar"><button class="blue" data-copy="utilityInvSpecText">Copy inverter spec</button></div></div>
+      <div><label>Utility PV array rows</label><textarea id="utilityArraySpecText" class="tall"></textarea><div class="btnbar"><button class="blue" data-copy="utilityArraySpecText">Copy PV arrays</button></div></div>
+      <div><label>Utility inverter rows by roof / string</label><textarea id="utilityInverterRowsText" class="tall"></textarea><div class="btnbar"><button class="blue" data-copy="utilityInverterRowsText">Copy inverter rows</button></div></div>
+      <div><label>Packet readiness</label><textarea id="packetReadinessText" class="tall" readonly></textarea></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>9. Utility document splitter / downloads</h2>
+    <p class="muted">Build utility upload docs from the uploaded plan set. The splitter uses sheet names in the PDF text first, then falls back to normal sheet order.</p>
+    <div class="row3">
+      <div><label>Utility packet filename base</label><input id="utilityPacketBaseName" placeholder="HO name - address" /></div>
+      <div><label>Utility packet mode</label><select id="utilityPacketMode"><option value="pge">PGE / General Utility</option><option value="pacpower">Pacific Power</option><option value="full">Full permit-style split</option></select></div>
+      <div><label>Page mapping status</label><input id="splitMappingStatus" readonly /></div>
+    </div>
+    <div class="btnbar">
+      <button id="buildUtilityZipBtn" class="green">Download utility ZIP</button>
+      <button id="downloadSldBtn" class="blue">Download SLD / 3-line</button>
+      <button id="downloadSitePlanBtn" class="blue">Download site + plot plan</button>
+      <button id="downloadModuleSpecBtn" class="blue">Download module specs</button>
+      <button id="downloadInverterSpecBtn" class="blue">Download inverter specs</button>
+      <button id="downloadBatterySpecBtn" class="blue">Download battery specs</button>
+      <button id="downloadGatewaySpecBtn" class="blue">Download gateway specs</button>
+      <button id="downloadUtilityBillPdfBtn" class="purple">Download UB as PDF</button>
+      <button id="downloadMeterPhotoPdfBtn" class="purple">Download meter photo as PDF</button>
+    </div>
+    <div class="row">
+      <div><label>Detected split pages</label><textarea id="splitPagesText" readonly class="tall"></textarea></div>
+      <div><label>Utility download checklist</label><textarea id="utilityDownloadChecklistText" readonly class="tall"></textarea></div>
+    </div>
+    <div class="section-note">
+      The ZIP normally includes: SLD / 3-line, site + plot plan, module spec, inverter spec, utility bill PDF if uploaded, and meter photo PDF if uploaded.
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>10. Raw parser text</h2>
+    <div class="row">
+      <div><label>Plan OCR/text preview</label><textarea id="planRawTextPreview" readonly class="tall"></textarea></div>
+      <div><label>Meter photo OCR/text preview</label><textarea id="meterRawTextPreview" readonly class="tall"></textarea></div>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+if (window.pdfjsLib) {
+  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+}
+
+const state = {
+  planDoc:null,
+  ubDoc:null,
+  meterDoc:null,
+  planFile:null,
+  ubFile:null,
+  meterFile:null,
+  reviewFlags:[],
+  utilityPriorityFlags:[],
+  electricalScope:null,
+  savedProjectId:null
+};
+
+const $ = id => document.getElementById(id);
+const clean = v => String(v || '').replace(/\s+/g,' ').trim();
+const digits = v => String(v || '').replace(/\D/g,'');
+const numVal = v => {
+  const n = parseFloat(String(v || '').replace(/[^0-9.\-]/g,''));
+  return Number.isFinite(n) ? n : null;
+};
+const title = v => clean(v).toLowerCase().replace(/\b[a-z]/g, c => c.toUpperCase());
+const setVal = (id, v) => { const el=$(id); if(el) el.value = v == null ? '' : String(v); };
+const getVal = id => { const el=$(id); return el ? el.value : ''; };
+const uniq = arr => [...new Set((arr || []).filter(Boolean).map(clean).filter(Boolean))];
+
+function normalizeText(raw=''){
+  return String(raw || '')
+    .replace(/\u2013|\u2014|\u2212/g,'-')
+    .replace(/\u00a0/g,' ')
+    .replace(/[|]/g,'1')
+    .replace(/[“”]/g,'"')
+    .replace(/[‘’]/g,"'")
+    .replace(/[ \t]+/g,' ')
+    .replace(/\n{3,}/g,'\n\n');
+}
+
+function normalizeEquipmentText(raw=''){
+  return normalizeText(raw)
+    .replace(/\s*-\s*/g,' - ')
+    .replace(/\s*\/\s*/g,'/')
+    .replace(/\s*\+\s*/g,'+')
+    .replace(/\s+/g,' ')
+    .trim();
+}
+
+function normalizeModelHyphens(raw=''){
+  return clean(raw)
+    .replace(/\s*-\s*/g,'-')
+    .replace(/\s*\/\s*/g,'/')
+    .replace(/\s*\+\s*/g,'+')
+    .replace(/\s+/g,' ')
+    .trim();
+}
+
+function stripInverterMakeFromModel(raw=''){
+  let s = normalizeModelHyphens(raw);
+  s = s.replace(/^\(?\d+\)?\s*/,'');
+  s = s.replace(/^AP\s*SYSTEMS\s+/i,'');
+  s = s.replace(/^APSYSTEMS\s+/i,'');
+  s = s.replace(/^ALTENERGY\s+POWER\s+SYSTEM\s+/i,'');
+  s = s.replace(/^QCELLS\s+/i,'');
+  s = s.replace(/^ENPHASE\s+/i,'');
+  s = s.replace(/^SOLAREDGE\s+/i,'');
+  s = s.replace(/\s*\[[^\]]+\]\s*$/,'');
+  s = s.replace(/\s*\([^)]*V[^)]*\)\s*$/i,'');
+  return normalizeModelHyphens(s).toUpperCase().replace(/^Q\.MI/i,'Q.MI');
+}
+
+function stripModuleMakeFromModel(raw=''){
+  let s = normalizeModelHyphens(raw);
+  s = s.replace(/^\(?\d+\)?\s*/,'');
+  s = s.replace(/^ZNSHINESOLAR\s+/i,'');
+  s = s.replace(/^ZNSHINE\s+/i,'');
+  s = s.replace(/^ZN\s*SHINE\s+/i,'');
+  s = s.replace(/^QCELLS\s+/i,'');
+  s = s.replace(/\s*-\s*\d{3,4}\s*W(?:ATT)?\b/i,'');
+  return normalizeModelHyphens(s).toUpperCase();
+}
+
+function pushFlag(msg){
+  const s = clean(msg);
+  if (s && !state.reviewFlags.includes(s)) state.reviewFlags.push(s);
+}
+
+function pushPriority(msg){
+  const s = clean(msg);
+  if (s && !state.utilityPriorityFlags.includes(s)) state.utilityPriorityFlags.push(s);
+}
+
+function fileToArrayBuffer(file){
+  return new Promise((resolve,reject)=>{
+    const fr = new FileReader();
+    fr.onload = () => resolve(fr.result);
+    fr.onerror = reject;
+    fr.readAsArrayBuffer(file);
+  });
+}
+
+async function fileToDataURL(file){
+  return new Promise((resolve,reject)=>{
+    const fr = new FileReader();
+    fr.onload = () => resolve(fr.result);
+    fr.onerror = reject;
+    fr.readAsDataURL(file);
+  });
+}
+
+function pdfItemsToLayoutText(items){
+  const mapped = (items || [])
+    .map(item => {
+      const tx = item.transform || [1,0,0,1,0,0];
+      return {
+        str: String(item.str || '').trim(),
+        x: Number(tx[4] || 0),
+        y: Number(tx[5] || 0)
+      };
+    })
+    .filter(item => item.str);
+
+  if (!mapped.length) return '';
+
+  // PDF text item order is not always visual order. Group by Y position and sort X left to right.
+  mapped.sort((a,b) => {
+    if (Math.abs(b.y - a.y) > 3) return b.y - a.y;
+    return a.x - b.x;
+  });
+
+  const lines = [];
+  for (const item of mapped){
+    const last = lines[lines.length - 1];
+    if (!last || Math.abs(last.y - item.y) > 3){
+      lines.push({y:item.y, items:[item]});
+    } else {
+      last.items.push(item);
+    }
+  }
+
+  return lines.map(line => line.items.sort((a,b)=>a.x-b.x).map(i=>i.str).join(' ')).join('\n');
+}
+
+async function extractPdfText(file, maxPages=40){
+  const buf = await fileToArrayBuffer(file);
+  const loadingTask = pdfjsLib.getDocument({data:buf});
+  const pdf = await loadingTask.promise;
+  const total = Math.min(pdf.numPages, maxPages);
+  const pages = [];
+
+  for (let p=1; p<=total; p++){
+    const page = await pdf.getPage(p);
+    const content = await page.getTextContent();
+    const linear = content.items.map(item => item.str || '').join(' ');
+    const layout = pdfItemsToLayoutText(content.items);
+    const combined = normalizeText(`${layout}\n\n${linear}`);
+    pages.push({page:p, text:combined});
+  }
+
+  return {
+    fileName:file.name,
+    pageCount:pdf.numPages,
+    pages,
+    text:pages.map(x => `--- PAGE ${x.page} ---\n${x.text}`).join('\n\n'),
+    pdfLayoutAware:true
+  };
+}
+
+function loadImageFromDataUrl(url){
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = url;
+  });
+}
+
+function makeOcrCropCanvas(img, crop, scale=2.2, threshold=false){
+  const sx = Math.max(0, Math.round(img.width * crop.x));
+  const sy = Math.max(0, Math.round(img.height * crop.y));
+  const sw = Math.min(img.width - sx, Math.round(img.width * crop.w));
+  const sh = Math.min(img.height - sy, Math.round(img.height * crop.h));
+
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(sw * scale));
+  canvas.height = Math.max(1, Math.round(sh * scale));
+  const ctx = canvas.getContext('2d', {willReadFrequently:true});
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(img, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+
+  if (threshold){
+    const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const data = imgData.data;
+    for (let i=0; i<data.length; i+=4){
+      const gray = Math.round(data[i] * 0.299 + data[i+1] * 0.587 + data[i+2] * 0.114);
+      const v = gray > 165 ? 255 : 0;
+      data[i] = data[i+1] = data[i+2] = v;
+    }
+    ctx.putImageData(imgData, 0, 0);
+  }
+
+  return canvas;
+}
+
+async function ocrCanvas(canvas, label, options={}){
+  const result = await Tesseract.recognize(canvas.toDataURL('image/png'), 'eng', {
+    ...options,
+    logger: m => {
+      if (m.status && m.progress != null) {
+        $('parseStatus').textContent = `OCR ${label}: ${m.status} ${Math.round(m.progress * 100)}%`;
+      }
+    }
+  });
+  return normalizeText(result?.data?.text || '');
+}
+
+async function ocrImageFile(file, label='image'){
+  if (!window.Tesseract) return {fileName:file.name, text:'', notes:[`Tesseract not loaded for ${label}. Check internet/CDN access.`]};
+
+  const url = await fileToDataURL(file);
+  const img = await loadImageFromDataUrl(url);
+  const lowerLabel = String(label || '').toLowerCase();
+  const notes = [];
+
+  // Phone photos of UBs often miss the account because the important text is in the right column
+  // or bottom remittance area. OCR multiple focused crops instead of relying on full-page OCR only.
+  let crops = [
+    {name:'full page', x:0, y:0, w:1, h:1, scale:1.8, threshold:false}
+  ];
+
+  if (/utility|bill|ub/i.test(lowerLabel)){
+    crops = crops.concat([
+      {name:'right account column', x:0.68, y:0.06, w:0.31, h:0.78, scale:3.5, threshold:true},
+      {name:'right account column raw', x:0.68, y:0.06, w:0.31, h:0.78, scale:4.2, threshold:false},
+      {name:'pacific top right account line', x:0.70, y:0.15, w:0.29, h:0.070, scale:7.0, threshold:false},
+      {name:'pacific top right account line threshold', x:0.70, y:0.15, w:0.29, h:0.070, scale:7.0, threshold:true},
+      {name:'top right account value tight', x:0.77, y:0.085, w:0.20, h:0.060, scale:8.0, threshold:false},
+      {name:'top right account value tight threshold', x:0.77, y:0.085, w:0.20, h:0.060, scale:8.0, threshold:true},
+      {name:'top left pge account block', x:0.02, y:0.12, w:0.46, h:0.16, scale:5.0, threshold:false},
+      {name:'top left pge account block threshold', x:0.02, y:0.12, w:0.46, h:0.16, scale:5.0, threshold:true},
+      {name:'pge phone upper left broad', x:0.03, y:0.10, w:0.52, h:0.28, scale:4.0, threshold:false},
+      {name:'pge phone upper left broad threshold', x:0.03, y:0.10, w:0.52, h:0.28, scale:4.0, threshold:true},
+      {name:'pge inner bill account block', x:0.06, y:0.17, w:0.42, h:0.18, scale:6.0, threshold:false},
+      {name:'pge inner bill account block threshold', x:0.06, y:0.17, w:0.42, h:0.18, scale:6.0, threshold:true},
+      {name:'pge lower right account block', x:0.54, y:0.54, w:0.40, h:0.20, scale:5.0, threshold:false},
+      {name:'pge lower right account block threshold', x:0.54, y:0.54, w:0.40, h:0.20, scale:5.0, threshold:true},
+      {name:'right lower account box', x:0.68, y:0.58, w:0.31, h:0.34, scale:4.0, threshold:true},
+      {name:'right lower account value tight', x:0.73, y:0.675, w:0.23, h:0.060, scale:8.0, threshold:false},
+      {name:'top right account box', x:0.66, y:0.06, w:0.33, h:0.22, scale:4.0, threshold:true},
+      {name:'bottom remittance line', x:0.20, y:0.78, w:0.68, h:0.16, scale:4.0, threshold:true},
+      {name:'bottom h account value tight', x:0.33, y:0.845, w:0.46, h:0.055, scale:8.0, threshold:false},
+      {name:'bottom h account value tight threshold', x:0.33, y:0.845, w:0.46, h:0.055, scale:8.0, threshold:true},
+      {name:'middle service table', x:0.03, y:0.30, w:0.70, h:0.16, scale:3.0, threshold:true}
+    ]);
+    notes.push('Enhanced phone-photo UB OCR used: full page, right account column, account box, bottom remittance line, and service table crops.');
+  } else if (/meter/i.test(lowerLabel)){
+    crops = crops.concat([
+      {name:'meter face', x:0.08, y:0.05, w:0.84, h:0.86, scale:3.5, threshold:true},
+      {name:'lower meter number', x:0.20, y:0.55, w:0.65, h:0.34, scale:4.0, threshold:true},
+      {name:'right tag / utility number', x:0.70, y:0.40, w:0.28, h:0.52, scale:3.5, threshold:true}
+    ]);
+    notes.push('Enhanced meter-photo OCR used: meter face, lower meter number, and tag crops.');
+  }
+
+  const parts = [];
+  for (const crop of crops){
+    try {
+      const canvas = makeOcrCropCanvas(img, crop, crop.scale, crop.threshold);
+      const text = await ocrCanvas(canvas, `${label} - ${crop.name}`);
+      if (text.trim()) parts.push(`--- OCR ${crop.name.toUpperCase()} ---\n${text}`);
+
+      // Account numbers on photo UBs can be missed in normal OCR. Run a second numeric-only pass on account/remittance crops.
+      if (/utility|bill|ub/i.test(lowerLabel) && /account|remittance|right|tight|h account|pge|pacific/i.test(crop.name)) {
+        const numericText = await ocrCanvas(canvas, `${label} - ${crop.name} numeric`, {
+          tessedit_char_whitelist: '0123456789- HhACCOUNTNumberaccountnumber',
+          tessedit_pageseg_mode: '6'
+        });
+        if (numericText.trim()) parts.push(`--- OCR ${crop.name.toUpperCase()} NUMERIC ---\n${numericText}`);
+      }
+    } catch (err) {
+      notes.push(`OCR crop failed (${crop.name}): ${err.message || err}`);
+    }
+  }
+
+  return {fileName:file.name, text:parts.join('\n\n'), notes};
+}
+
+async function extractPdfFirstPagesWithOcr(file, maxPages=2, label='PDF image'){
+  if (!window.Tesseract) return {fileName:file.name, text:'', notes:[`Tesseract not loaded for ${label}.`]};
+  const buf = await fileToArrayBuffer(file);
+  const pdf = await pdfjsLib.getDocument({data:buf}).promise;
+  const total = Math.min(pdf.numPages, maxPages);
+  const textParts = [];
+  for (let p=1; p<=total; p++){
+    const page = await pdf.getPage(p);
+    const viewport = page.getViewport({scale:2.25});
+    const canvas = document.createElement('canvas');
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+    const ctx = canvas.getContext('2d', {willReadFrequently:true});
+    await page.render({canvasContext:ctx, viewport}).promise;
+    const img = canvas.toDataURL('image/png');
+    const result = await Tesseract.recognize(img, 'eng', {
+      logger:m=>{
+        if (m.status && m.progress != null) {
+          $('parseStatus').textContent = `OCR ${label} page ${p}: ${m.status} ${Math.round(m.progress*100)}%`;
+        }
+      }
+    });
+    textParts.push(`--- OCR PAGE ${p} ---\n${normalizeText(result?.data?.text || '')}`);
+  }
+  return {fileName:file.name, text:textParts.join('\n\n'), notes:[]};
+}
+
+async function extractAnyFileText(file, kind){
+  if (!file) return null;
+  const isPdf = /pdf/i.test(file.type) || /\.pdf$/i.test(file.name);
+  const isImage = /^image\//i.test(file.type) || /\.(png|jpe?g|webp|gif|bmp|tiff?)$/i.test(file.name);
+  if (isPdf){
+    const pdfText = await extractPdfText(file, kind === 'plan' ? 45 : 6);
+    if (kind !== 'plan' && pdfText.text.replace(/\s/g,'').length < 80){
+      const ocr = await extractPdfFirstPagesWithOcr(file, 3, kind);
+      pdfText.text = `${pdfText.text}\n\n${ocr.text}`;
+      pdfText.ocrNotes = ocr.notes || [];
+    }
+    return pdfText;
+  }
+  if (isImage){
+    return await ocrImageFile(file, kind);
+  }
+  return {fileName:file.name, text:'', notes:['Unsupported file type.']};
+}
+
+function pageText(planDoc, pageNums){
+  if (!planDoc || !planDoc.pages) return '';
+  const nums = Array.isArray(pageNums) ? pageNums : [pageNums];
+  return nums.map(n => (planDoc.pages.find(p => p.page === n) || {}).text || '').join('\n');
+}
+
+function matchFirst(text, patterns){
+  const t = normalizeText(text || '');
+  for (const re of patterns){
+    const m = t.match(re);
+    if (m) return clean(m[1] || m[0]);
+  }
+  return '';
+}
+
+function parseAddressBlock(all){
+  const raw = normalizeText(all || '');
+  const lines = String(raw).split(/\n+/).map(clean).filter(Boolean);
+
+  const noiseWords = /^(REV|DESCRIPTION|DATE|REVISIONS|SIGNATURE|SHEET|SHEET NAME|SHEET SIZE|SHEET NUMBER|PROJECT NAME|PROJECT NAME & ADDRESS|INFINITY|PHONE|EMAIL)$/i;
+
+  function cleanOwnerName(v){
+    let s = clean(v)
+      .replace(/\bREV\b/ig,'')
+      .replace(/\bDESCRIPTION\b/ig,'')
+      .replace(/\bDATE\b/ig,'')
+      .replace(/\bREVISIONS\b/ig,'')
+      .replace(/\bPROJECT NAME\b.*$/ig,'')
+      .replace(/\s+/g,' ')
+      .trim();
+
+    // If OCR glues noise into the front, keep the last normal 2 to 4 name words.
+    const words = s.split(/\s+/).filter(w => !noiseWords.test(w));
+    if (words.length > 4) s = words.slice(-4).join(' ');
+    else s = words.join(' ');
+
+    return title(s);
+  }
+
+  function splitStreetCityStateZip(v){
+    let s = clean(v)
+      .replace(/\bPHONE\b.*$/i,'')
+      .replace(/\bEMAIL\b.*$/i,'')
+      .replace(/\bDescription\b.*$/i,'')
+      .trim();
+
+    const m = s.match(/(.+?)\s+([A-Z][A-Z .'\-]+),?\s+(OR|WA|CA|ID|AZ|NV|UT)\s+(\d{5})(?:-\d{4})?/i);
+    if (m) return {
+      street:title(m[1]),
+      city:title(m[2]),
+      state:m[3].toUpperCase(),
+      zip:m[4]
+    };
+
+    return {street:'', city:'', state:'OR', zip:''};
+  }
+
+  let owner='', street='', city='', state='OR', zip='', ahj='';
+
+  // Best case: title block pattern with owner residence, address, city/state/zip.
+  const titleBlock = raw.match(/([A-Z][A-Z .'\-]{2,80}?)\s+RESIDENCE\s+(\d{2,6}\s+[A-Z0-9 .'\-]+?)\s+([A-Z][A-Z .'\-]+),?\s+(OR|WA|CA|ID|AZ|NV|UT)\s+(\d{5})(?:-\d{4})?/i);
+  if (titleBlock){
+    owner = cleanOwnerName(titleBlock[1]);
+    street = title(titleBlock[2]);
+    city = title(titleBlock[3]);
+    state = titleBlock[4].toUpperCase();
+    zip = titleBlock[5];
+  }
+
+  // Fallback: use a line containing "Residence", then the next address-looking line.
+  if (!owner){
+    const resLine = lines.find(l => /RESIDENCE/i.test(l));
+    if (resLine){
+      const m = resLine.match(/(.+?)\s+RESIDENCE/i);
+      if (m) owner = cleanOwnerName(m[1]);
+    }
+  }
+
+  if (!street){
+    const addrLine = lines.find(l => /\d{2,6}\s+[A-Z0-9]/i.test(l) && /\b(OR|WA|CA|ID|AZ|NV|UT)\s+\d{5}/i.test(l));
+    if (addrLine){
+      const parts = splitStreetCityStateZip(addrLine);
+      street = parts.street;
+      city = parts.city;
+      state = parts.state;
+      zip = parts.zip;
+    }
+  }
+
+  // Fallback for OCR that split address into "14075 Sw" and city as "Barlow Ct Beaverton".
+  if (street && city && /\bBARLOW CT\s+BEAVERTON\b/i.test(city) && /^14075\s+SW$/i.test(street)){
+    street = '14075 SW Barlow Ct';
+    city = 'Beaverton';
+  }
+
+  // More generic fix when street got chopped after directional prefix.
+  if (/^\d{2,6}\s+(?:N|S|E|W|NE|NW|SE|SW)$/i.test(street) && /\bCT\b|\bRD\b|\bAVE\b|\bST\b|\bDR\b|\bLN\b|\bWAY\b|\bPL\b/i.test(city)){
+    const cm = city.match(/^(.+?\b(?:CT|RD|AVE|ST|DR|LN|WAY|PL)\b)\s+(.+)$/i);
+    if (cm){
+      street = title(`${street} ${cm[1]}`);
+      city = title(cm[2]);
+    }
+  }
+
+  const ahjM = raw.match(/\bAHJ\s*:\s*([A-Z][A-Z .'\-]+?)(?=\s+PHOTOVOLTAIC|\s+SITE|\s+UTILITY|\n|$)/i);
+  if (ahjM) ahj = title(ahjM[1]);
+
+  return {owner, street, city, state, zip, ahj};
+}
+
+function detectMake(text, kind='module'){
+  const t = normalizeText(text).toUpperCase();
+  const moduleMakers = [
+    ['Qcells', /Q\.TRON|QCELLS|HANWHA|Q\.PEAK|Q\.HOME/],
+    ['REC', /\bREC[A-Z0-9]/],
+    ['SEG Solar', /\bSEG[-\s]/],
+    ['ZNShine', /\bZXM|ZNSHINE/],
+    ['Silfab', /SILFAB/],
+    ['Jinko', /JINKO/],
+    ['Canadian Solar', /CANADIAN SOLAR|\bCS\d/],
+    ['Trina', /TRINA/],
+    ['Longi', /LONGI/],
+    ['Mission Solar', /MISSION SOLAR/],
+    ['Aptos', /APTOS/],
+    ['Tesla', /TESLA/]
+  ];
+  const inverterMakers = [
+    ['Qcells', /Q\.MI|QCELLS|Q\.HOME/],
+    ['Altenergy Power System', /AP\s*SYSTEMS|APSYSTEMS|ALTENERGY\s+POWER\s+SYSTEM|DS3[-\s]?L|DS3[-\s]?S|YC600|YC1000/],
+    ['Enphase', /ENPHASE|\bIQ7\b|\bIQ8\b|\bIQ\s/],
+    ['SolarEdge', /SOLAREDGE|\bSE\d{3,5}[A-Z0-9-]*\b/],
+    ['Tesla', /TESLA|POWERWALL/],
+    ['SMA', /\bSMA\b|SUNNY BOY|SUNNY TRIPOWER/],
+    ['Fronius', /FRONIUS|PRIMO|SYMO/],
+    ['GoodWe', /GOODWE|\bGW\d/],
+    ['Hoymiles', /HOYMILES|\bHMS[-\s]|\bHMT[-\s]/],
+    ['Generac', /GENERAC|PWRCELL/],
+    ['Sol-Ark', /SOL-ARK|SOL ARK/],
+    ['EG4', /\bEG4\b/]
+  ];
+  const list = kind === 'inverter' ? inverterMakers : moduleMakers;
+  const hit = list.find(([name, re]) => re.test(t));
+  return hit ? hit[0] : '';
+}
+
+function trimEquipmentLine(s){
+  return clean(String(s || '')
+    .replace(/MODULE TYPE\s*&\s*AMOUNT\s*:?\s*/ig,'')
+    .replace(/INTEGRATED INVERTER\s*:?\s*/ig,'')
+    .replace(/MODULES?\s*WITH.*$/ig,'')
+    .replace(/NUMBER OF MODULES.*$/ig,'')
+    .replace(/\bMODULE DIMENSIONS\b.*$/ig,'')
+    .replace(/\bAHJ\b.*$/ig,'')
+    .replace(/\bPHOTOVOLTAIC\b.*$/ig,'')
+  );
+}
+
+function cleanModelCandidate(raw='', kind='module'){
+  let original = normalizeEquipmentText(raw);
+  let compact = normalizeModelHyphens(original);
+  let s = compact;
+
+  s = s.replace(/^\(?0*\d{1,3}\)?\s*/, '');
+  s = s.replace(/\[[^\]]*V[^\]]*\]/ig, '');
+  s = s.replace(/\([^)]*V[^)]*\)/ig, '');
+  s = s.replace(/\s+AC MODULE POWERED[\s\S]*$/i, '');
+  s = s.replace(/\s+WITH NEW[\s\S]*$/i, '');
+  s = s.replace(/\s+MODULES?\s*$/i, '');
+  s = s.replace(/\s*-\s*\d{3,4}\s*W(?:ATT)?\b/i, '');
+  s = trimEquipmentLine(s);
+
+  if (kind === 'module'){
+    const qtron = compact.match(/\b(Q\.TRON[A-Z0-9._+\-/]+(?:\s+[A-Z0-9._+\-/]+)*)/i);
+    if (qtron) return stripModuleMakeFromModel(qtron[1]);
+
+    const qpeak = compact.match(/\b(Q\.PEAK[A-Z0-9._+\-/]+(?:\s+[A-Z0-9._+\-/]+)*)/i);
+    if (qpeak) return stripModuleMakeFromModel(qpeak[1]);
+
+    const zn = compact.match(/\b(?:ZNSHINESOLAR|ZNSHINE|ZN\s*SHINE)?\s*(ZXM[A-Z0-9._+\-/]+)\b/i);
+    if (zn) return stripModuleMakeFromModel(zn[1]);
+
+    const seg = compact.match(/\b(SEG[-A-Z0-9._+/]+)\b/i);
+    if (seg) return stripModuleMakeFromModel(seg[1]);
+
+    const rec = compact.match(/\b(REC[A-Z0-9._+\-/]+)\b/i);
+    if (rec) return stripModuleMakeFromModel(rec[1]);
+  }
+
+  if (kind === 'inverter'){
+    const qmiFull = compact.match(/\b(Q\.?\s*MI\.?\s*[A-Z0-9.\-]+)\b/i);
+    if (qmiFull) {
+      return stripInverterMakeFromModel(qmiFull[1])
+        .replace(/^QMI/i,'Q.MI')
+        .replace(/^Q\.MI\.?/i,'Q.MI.');
+    }
+
+    const qcellsQmi = compact.match(/\bQCELLS\s+(Q\.?\s*MI\.?\s*[A-Z0-9.\-]+)\b/i);
+    if (qcellsQmi) {
+      return stripInverterMakeFromModel(qcellsQmi[1])
+        .replace(/^QMI/i,'Q.MI')
+        .replace(/^Q\.MI\.?/i,'Q.MI.');
+    }
+
+    const aps = compact.match(/\b(?:AP\s*SYSTEMS|APSYSTEMS|ALTENERGY\s+POWER\s+SYSTEM)\s+(DS3-[A-Z0-9]+|DS3[A-Z0-9]+|YC600|YC1000)\b/i) ||
+                compact.match(/\b(DS3-[A-Z0-9]+|DS3[A-Z0-9]+)\b/i);
+    if (aps) return stripInverterMakeFromModel(aps[1]).replace(/^DS3([A-Z0-9])$/i,'DS3-$1');
+
+    const iq = compact.match(/\b(IQ8[+A-Z0-9\-]*|IQ7[+A-Z0-9\-]*)\b/i);
+    if (iq) return stripInverterMakeFromModel(iq[1]);
+    const se = compact.match(/\b(SE\d{3,5}[A-Z0-9\-]*)\b/i);
+    if (se) return stripInverterMakeFromModel(se[1]);
+    if (/TESLA/i.test(compact)) return stripInverterMakeFromModel(compact.replace(/^TESLA\s+/i, ''));
+  }
+
+  return clean(s).slice(0,80);
+}
+
+function parseModuleWattage(text, moduleQty, dcKw){
+  const raw = normalizeEquipmentText(text || '');
+  const directPatterns = [
+    /MODULE TYPE\s*&\s*AMOUNT\s*:?\s*[\s\S]{0,220}?[-]\s*(\d{3,4})\s*W(?:ATT)?\b/i,
+    /\(\s*\d+\s*\)\s+[A-Z0-9._+\-/ ]{4,90}?[-]\s*(\d{3,4})\s*W(?:ATT)?\b/i,
+    /Q\.TRON[\sA-Z0-9._+\-/]{2,90}?[-]\s*(\d{3,4})\s*W(?:ATT)?\b/i,
+    /Q\.PEAK[\sA-Z0-9._+\-/]{2,90}?[-]\s*(\d{3,4})\s*W(?:ATT)?\b/i,
+    /NOM\.?\s*MAX\.?\s*POWER\s*AT\s*STC\s*\(PMAX\)[\s\S]{0,100}?(\d{3,4})\s*W(?:ATT)?\b/i,
+    /MAX(?:IMUM)?\s*POWER[\s\S]{0,100}?(\d{3,4})\s*W(?:ATT)?\b/i,
+    /\bPMAX\b[\s\S]{0,80}?(\d{3,4})\s*W(?:ATT)?\b/i
+  ];
+
+  for (const re of directPatterns){
+    const match = raw.match(re);
+    if (match){
+      const w = Number(match[1]);
+      if (w >= 250 && w <= 800) return String(w);
+    }
+  }
+
+  const watts = [...raw.matchAll(/\b(\d{3,4})\s*W(?:ATT)?\b/ig)]
+    .map(m => Number(m[1]))
+    .filter(w => w >= 250 && w <= 800);
+  if (watts.length) return String(watts[0]);
+
+  const qty = Number(String(moduleQty || '').replace(/\D/g,''));
+  const dc = Number(String(dcKw || '').replace(/[^0-9.]/g,''));
+  if (qty > 0 && dc > 0){
+    const calculated = Math.round((dc * 1000) / qty);
+    if (calculated >= 250 && calculated <= 800){
+      pushFlag(`Module wattage calculated from DC size and module quantity: ${dc} kW ÷ ${qty} modules = ${calculated}W.`);
+      return String(calculated);
+    }
+  }
+
+  return '';
+}
+
+function parsePlanMeter(planDoc){
+  const all = normalizeText(planDoc?.text || '');
+  const patterns = [
+    /UTILITY\s+METER\s*#\s*([0-9][0-9\s-]{5,20})/i,
+    /UTILITY\s+METER(?:\s*NUMBER|\s*NO\.?)?\s*[:#]?\s*([0-9][0-9\s-]{5,20})/i,
+    /METER\s*#\s*([0-9][0-9\s-]{5,20})/i,
+    /EXTERIOR\s+UTILITY\s+METER\s*#\s*([0-9][0-9\s-]{5,20})/i
+  ];
+  for (const re of patterns){
+    const m = all.match(re);
+    if (m){
+      const d = digits(m[1]);
+      if (d.length >= 6 && d.length <= 14) return m[1].trim();
+    }
+  }
+  return '';
+}
+
+function parseRoofPlanes(planDoc){
+  const all = normalizeText(planDoc?.text || '');
+  const planes = [];
+  const seen = new Set();
+
+  function addPlane(roof, modules, tilt, azimuth){
+    roof = Number(roof);
+    modules = Number(modules);
+    tilt = Number(tilt);
+    azimuth = Number(azimuth);
+    if (!roof || !modules || !tilt || !azimuth) return;
+    const key = `${roof}-${modules}-${tilt}-${azimuth}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    planes.push({roof, modules, tilt, azimuth});
+  }
+
+  const physicalPatterns = [
+    /ROOF\s*#?\s*0?(\d+)\s*\(?\s*(\d{1,3})\s*\)?\s+[A-Z0-9 .+\-/]*?(?:MODULES?|MODS?)\b[\s\S]{0,140}?SLOPE\s*:?\s*(\d{1,2}(?:\.\d+)?)\s*[°º]?[\s\S]{0,60}?AZIM(?:UTH|\.)?\s*:?\s*(\d{1,3})\s*[°º]?/ig,
+    /ROOF\s*#?\s*0?(\d+)[\s\S]{0,100}?\((\d{1,3})\)\s+[A-Z0-9 .+\-/]+?SLOPE\s*:?\s*(\d{1,2}(?:\.\d+)?)\s*[°º]?[\s\S]{0,80}?AZIM\.?\s*:?\s*(\d{1,3})\s*[°º]?/ig
+  ];
+
+  for (const re of physicalPatterns){
+    for (const m of all.matchAll(re)) addPlane(m[1], m[2], m[3], m[4]);
+  }
+
+  if (!planes.length){
+    const roofNums = [...all.matchAll(/ROOF\s*#0?(\d+)/ig)].map(m => Number(m[1]));
+    const blocks = [...all.matchAll(/MODULE\s*[-:]?\s*(\d{1,3})\s+SLOPE\s*[-:]?\s*(\d{1,2}(?:\.\d+)?)\s*[°º]?\s+AZIMUTH\s*[-:]?\s*(\d{1,3})\s*[°º]?/ig)];
+    blocks.forEach((m,i) => addPlane(roofNums[i] || i+1, m[1], m[2], m[3]));
+  }
+
+  if (!planes.length){
+    const circuits = [...all.matchAll(/CIRCUIT\s*#?\s*(\d+)\s*[-:]?\s*(\d{1,3})\s+(?:MODULES?|MICRO-INVERTERS?)/ig)];
+    const tilt = Number((all.match(/SLOPE\s*:?\s*(\d{1,2})\s*[°º]/i) || [,''])[1]);
+    const az = Number((all.match(/AZIM(?:UTH|\.)?\s*:?\s*(\d{1,3})\s*[°º]/i) || [,''])[1]);
+    circuits.forEach(m=>{
+      if (tilt && az) addPlane(m[1], m[2], tilt, az);
+    });
+  }
+
+  return planes.sort((a,b)=>a.roof-b.roof);
+}
+
+
+function parseBatteryData(allText){
+  const all = normalizeText(allText || '');
+  const flat = normalizeEquipmentText(all);
+  const out = {
+    batteryMake:'',
+    batteryModel:'',
+    batteryQty:'',
+    batteryCapacityKwh:'',
+    batteryOutputKw:'',
+    essInverterMake:'',
+    essInverterModel:'',
+    essInverterQty:'',
+    essInverterOutputW:'',
+    gatewayMake:'',
+    gatewayModel:'',
+    backupPanel:'',
+    hasBattery:false
+  };
+
+  const batteryLine = matchFirst(flat, [
+    /BATTERY\s*:?\s*(\(\s*\d{1,2}\s*\)\s*[A-Z0-9 .,+\-\/\[\]]{6,160}?)(?=\s+BATTERY CAPACITY|\s+AC GATEWAY|\s+INTERCONNECTION|\s+AHJ|\n|$)/i,
+    /NUMBER OF BATTERY\s+(\d{1,2}\s+[A-Z0-9 .,+\-\/\[\]]{6,160}?)(?=\s+BACKUP PANEL|\s+RAILS|\s+TESLA GATEWAY|\n|$)/i,
+    /\(N\)\s*(TESLA\s+POWERWALL\s*3\s+[A-Z0-9.\-]+(?:\s*\[[^\]]+\])?)/i,
+    /(TESLA\s+POWERWALL\s*3\s+[A-Z0-9.\-]+(?:\s*\[[^\]]+\])?)/i,
+    /(POWERWALL\s*3\s+[A-Z0-9.\-]+(?:\s*\[[^\]]+\])?)/i,
+    /(TESLA\s+POWERWALL\s*2\s+[A-Z0-9.\-]+(?:\s*\[[^\]]+\])?)/i,
+    /(POWERWALL\s*2\s+[A-Z0-9.\-]+(?:\s*\[[^\]]+\])?)/i
+  ]);
+
+  if (batteryLine){
+    out.hasBattery = true;
+    const qty = batteryLine.match(/\(?\s*(\d{1,2})\s*\)?/);
+    if (qty) out.batteryQty = String(Number(qty[1]));
+
+    if (/TESLA|POWERWALL/i.test(batteryLine)){
+      out.batteryMake = 'Tesla';
+      const model = batteryLine.match(/(POWERWALL\s*[23](?:\s+[A-Z0-9.\-]+)?(?:\s*\[[^\]]+\])?)/i);
+      out.batteryModel = model ? clean(model[1]).replace(/\s+/g,' ') : (/POWERWALL\s*2/i.test(batteryLine) ? 'Powerwall 2' : 'Powerwall 3');
+    } else {
+      out.batteryModel = clean(batteryLine.replace(/^\(?\s*\d{1,2}\s*\)?\s*/,''));
+    }
+  }
+
+  const cap = matchFirst(all, [
+    /BATTERY CAPACITY\s*:?\s*([0-9.]+)\s*kWh/i,
+    /NOMINAL BATTERY ENERGY\s*:?\s*([0-9.]+)\s*(?:kWh|AC)?/i,
+    /POWERWALL\s*[23][\s\S]{0,160}?([0-9.]+)\s*kWh/i
+  ]);
+  if (cap) {
+    out.hasBattery = true;
+    out.batteryCapacityKwh = clean(cap).replace(/\s*kWh/i,'').trim();
+  }
+
+  const outputKw = matchFirst(all, [
+    /AC NOMINAL OUTPUT POWER\s*\(AC\)\s*:?\s*([0-9.]+)\s*kW/i,
+    /TESLA POWERWALL\s*3[\s\S]{0,180}?([0-9.]+)\s*KW\s*\/\s*[0-9.]+\s*KWH/i,
+    /INVERTER\/ESS INVERTER\s*\/\s*BATTERY OUTPUT[\s\S]{0,150}?([0-9.]+)\s*kW/i,
+    /POWERWALL\s*3[\s\S]{0,120}?([0-9.]+)\s*KW/i
+  ]);
+  if (outputKw) {
+    out.hasBattery = true;
+    out.batteryOutputKw = clean(outputKw).replace(/\s*kW/i,'').trim();
+  }
+
+  const gwLine = matchFirst(flat, [
+    /AC GATEWAY\s*:?\s*(\(\s*\d{1,2}\s*\)\s*TESLA\s+GATEWAY\s*3[, ]+\s*[A-Z0-9.\-]+(?:-X\d-Y)?)/i,
+    /(TESLA\s+GATEWAY\s*3\s*\(?\s*[A-Z0-9.\-]+(?:-X\d-Y)?\s*\)?)/i,
+    /(TESLA\s+BACKUP\s+GATEWAY\s*3\s*#?\s*[A-Z0-9.\-]+(?:-X\d-Y)?)/i
+  ]);
+  if (gwLine){
+    out.hasBattery = true;
+    out.gatewayMake = 'Tesla';
+    const gm = gwLine.match(/(GATEWAY\s*3(?:[, #()]*\s*[A-Z0-9.\-]+(?:-X\d-Y)?)?)/i);
+    out.gatewayModel = gm ? clean(gm[1]).replace(/[(),#]/g,'').replace(/\s+/g,' ') : 'Gateway 3';
+  }
+
+  if (/BACKUP\s+LOAD\s+PANEL|BACKUP\s+PANEL/i.test(all)){
+    out.hasBattery = true;
+    out.backupPanel = 'Backup Load Panel';
+  } else if (/NO\s+BACKUP\s+LOADS|NON-BACKUP|RATE SAVER/i.test(all)){
+    out.hasBattery = true;
+    out.backupPanel = 'No backup loads / rate saver mode';
+  }
+
+  if (out.hasBattery && !out.batteryQty) out.batteryQty = '1';
+  if (out.hasBattery && !out.batteryMake && /TESLA|POWERWALL/i.test(all)) out.batteryMake = 'Tesla';
+  if (out.hasBattery && !out.batteryModel && /POWERWALL\s*3/i.test(all)) out.batteryModel = 'Powerwall 3';
+  if (out.hasBattery && !out.batteryModel && /POWERWALL\s*2/i.test(all)) out.batteryModel = 'Powerwall 2';
+  if (out.hasBattery && !out.gatewayMake && /GATEWAY\s*3/i.test(all)) out.gatewayMake = 'Tesla';
+  if (out.hasBattery && !out.gatewayModel && /GATEWAY\s*3/i.test(all)) out.gatewayModel = 'Gateway 3';
+
+  // Tesla Powerwall is also the ESS inverter on battery projects. Keep this separate from PV microinverters.
+  if (out.hasBattery && /TESLA|POWERWALL/i.test(`${out.batteryMake} ${out.batteryModel} ${all}`)){
+    out.essInverterMake = 'Tesla';
+    out.essInverterModel = out.batteryModel || (/POWERWALL\s*2/i.test(all) ? 'Powerwall 2' : 'Powerwall 3');
+    out.essInverterQty = out.batteryQty || '1';
+    if (out.batteryOutputKw) {
+      const w = Number(out.batteryOutputKw) * 1000;
+      out.essInverterOutputW = Number.isFinite(w) ? String(Math.round(w)) : '';
+    }
+  }
+
+  return out;
+}
+
+function parsePlanData(planDoc){
+  const all = normalizeText(planDoc?.text || '');
+  const cover = pageText(planDoc, [1,2,3,7]) || all.slice(0,16000);
+  const sld = pageText(planDoc, [7,8]) || all;
+  const struct = pageText(planDoc, [3,4,6]) || all;
+  const addr = parseAddressBlock(cover);
+  const battery = parseBatteryData(all);
+
+  const sys = cover.match(/SYSTEM SIZE\s*:?\s*([0-9.]+)\s*kW\s*DC\s*([0-9.]+)\s*kW\s*AC/i) ||
+              all.match(/([0-9.]+)\s*kW\s*DC\s*,?\s*([0-9.]+)\s*kW\s*AC/i);
+  const dcKw = sys ? sys[1] : '';
+  const acKw = sys ? sys[2] : '';
+
+  const moduleQty = matchFirst(cover, [
+    /MODULE TYPE\s*&\s*AMOUNT\s*:?\s*\(?\s*(\d{1,3})\s*\)?/i,
+    /NUMBER OF MODULES\s+(\d{1,3})\b/i,
+    /\b(\d{1,3})\s+MODULES?[-\s]ROOF/i,
+    /\((\d{1,3})\)\s+[A-Z0-9 .+\-/]+?\s*[-]\s*\d{3,4}W/i
+  ]);
+
+  const moduleLine = matchFirst(cover, [
+    /MODULE TYPE\s*&\s*AMOUNT\s*:?\s*(\(?\s*\d{1,3}\s*\)?\s*[A-Z0-9 .+\-/]+?\s*[-]\s*\d{3,4}\s*W(?:ATT)?)/i,
+    /MODULE TYPE\s*&\s*AMOUNT\s*:?\s*(\(?\s*\d{1,3}\s*\)?\s*(?:ZNSHINESOLAR|ZNSHINE|ZN\s*SHINE)\s+ZXM[A-Z0-9._+\-/]+)/i,
+    /NUMBER OF MODULES\s+\d{1,3}\s+([A-Z0-9 .+\-/]+?\s*[-]\s*\d{3,4}\s*W(?:ATT)?)/i,
+    /NUMBER OF MODULES\s+\d{1,3}\s+((?:ZNSHINESOLAR|ZNSHINE|ZN\s*SHINE)\s+ZXM[A-Z0-9._+\-/]+)/i,
+    /\(\s*\d{1,3}\s*\)\s*([A-Z0-9 .+\-/]{4,100}?[-]\s*\d{3,4}\s*W(?:ATT)?)/i,
+    /\(\s*\d{1,3}\s*\)\s*((?:ZNSHINESOLAR|ZNSHINE|ZN\s*SHINE)\s+ZXM[A-Z0-9._+\-/]+)/i
+  ]);
+
+  let moduleModel = cleanModelCandidate(moduleLine || matchFirst(all, [
+    /(Q\.TRON[\sA-Z0-9._+\-/]+?[-]\s*\d{3,4}\s*W)/i,
+    /(Q\.PEAK[\sA-Z0-9._+\-/]+?[-]\s*\d{3,4}\s*W)/i,
+    /((?:ZNSHINESOLAR|ZNSHINE|ZN\s*SHINE)\s+ZXM[A-Z0-9._+\-/\s]+)/i,
+    /(ZXM[A-Z0-9._+\-/\s]+)/i,
+    /(SEG[-A-Z0-9._+/ ]+?\s+\d{3,4}\s*W)/i,
+    /(REC[A-Z0-9._+\-/]+?\s+\d{3,4}\s*W)/i
+  ]), 'module');
+
+  // Hard fallback for ZNShine OCR where hyphens are separated by spaces.
+  if (/^ZXM\d+$/i.test(moduleModel || '')) {
+    const zFull = normalizeModelHyphens(all).match(/\b(ZXM\d+[A-Z0-9]*-[A-Z0-9]+-\d{3,4}[A-Z]*)\b/i);
+    if (zFull) moduleModel = stripModuleMakeFromModel(zFull[1]);
+  }
+
+  const moduleWattage = parseModuleWattage(all, moduleQty, dcKw);
+  const moduleMake = detectMake(`${moduleLine} ${moduleModel} ${all.slice(0,4000)}`, 'module');
+
+  let invQty = matchFirst(cover, [
+    /INTEGRATED INVERTER\s*:?\s*\(?\s*(\d{1,3})\s*\)?/i,
+    /NUMBER OF INVERTER\s+(\d{1,3})\b/i,
+    /\((\d{1,3})\)\s+QCELLS\s+Q\.MI/i
+  ]) || moduleQty;
+
+  const invLine = matchFirst(cover, [
+    /INTEGRATED INVERTER\s*:?\s*(\(?\s*\d{1,3}\s*\)?\s*QCELLS\s+Q\.?\s*MI\.?\s*[A-Z0-9.\-]+(?:\s*\([^)]+\))?)/i,
+    /INVERTER\s*:?\s*(\(?\s*\d{1,3}\s*\)?\s*(?:AP\s*SYSTEMS|APSYSTEMS)\s+DS3[-\s]?[A-Z0-9]+(?:\s*\[[^\]]+\])?)/i,
+    /INTEGRATED INVERTER\s*:?\s*(\(?\s*\d{1,3}\s*\)?\s*[A-Z0-9 .+\-/]+?(?:\([^)]+\))?)(?=\s+INTERCONNECTION|\s+AHJ|\s+MODULE|\n|$)/i,
+    /NUMBER OF INVERTER\s+\d{1,3}\s+((?:AP\s*SYSTEMS|APSYSTEMS)\s+DS3[-\s]?[A-Z0-9]+(?:\s*\[[^\]]+\])?)/i,
+    /NUMBER OF INVERTER\s+\d{1,3}\s+(QCELLS\s+Q\.?\s*MI\.?\s*[A-Z0-9.\-]+(?:\s*\([^)]+\))?)/i,
+    /\(\s*\d{1,3}\s*\)\s*((?:AP\s*SYSTEMS|APSYSTEMS)\s+DS3[-\s]?[A-Z0-9]+)/i,
+    /\(\s*\d{1,3}\s*\)\s*(QCELLS\s+Q\.?\s*MI\.?\s*[A-Z0-9.\-]+)/i
+  ]);
+
+  let invModel = cleanModelCandidate(invLine || matchFirst(all, [
+    /((?:AP\s*SYSTEMS|APSYSTEMS)\s+DS3[-\s]?[A-Z0-9]+)/i,
+    /(DS3[-\s]?[A-Z0-9]+)/i,
+    /(Q\.?\s*MI\.?\s*[A-Z0-9.\-]+)/i,
+    /(IQ8[+A-Z0-9\-]*)/i,
+    /(IQ7[+A-Z0-9\-]*)/i,
+    /(SE\d{3,5}[A-Z0-9\-]*)/i
+  ]), 'inverter');
+
+  // Final inverter model cleanup. Keep model-only in the field, not make + model.
+  invModel = stripInverterMakeFromModel(invModel);
+  if (/^DS3[A-Z0-9]$/i.test(invModel)) invModel = invModel.replace(/^DS3([A-Z0-9])$/i, 'DS3-$1');
+
+  let invMake = detectMake(`${invLine} ${invModel} ${all.slice(0,8000)}`, 'inverter');
+  if (!invMake && /DS3|AP\s*SYSTEMS|APSYSTEMS|ALTENERGY\s+POWER\s+SYSTEM/i.test(`${invLine} ${invModel} ${all}`)) invMake = 'Altenergy Power System';
+
+  let invOutputW = matchFirst(sld, [
+    /MICROINVERTERS?\s+SPECIFICATION[\s\S]{0,180}?MAXIMUM\s+AC\s+OUTPUT[\s\S]{0,80}?(\d{2,5})\s*W/i,
+    /MICROINVERTER\s+MAKE[\s\S]{0,220}?(?:AP\s*SYSTEMS|APSYSTEMS)\s+DS3[-\s]?[A-Z0-9]+\s+(\d{2,5})\s*W/i,
+    /MICROINVERTER\s+MAX\.?\s*CONT\.?\s*OUTPUT POWER[\s\S]{0,120}?(\d{2,5})\s*W/i,
+    /MAX\.?\s*CONT\.?\s*OUTPUT POWER[\s\S]{0,80}?(\d{2,5})\s*W/i,
+    /Q\.MI[A-Z0-9.\-]+\s*\(?\s*240V\s*\)?\s*(?:\d+V\s*)?(\d{2,5})\s*W/i
+  ]) || (invModel && /Q\.MI\.349/i.test(invModel) ? '349' : invModel && /DS3/i.test(invModel) ? '768' : '');
+
+  let pvMicroMake = invMake;
+  let pvMicroModel = invModel;
+  let pvMicroQty = invQty;
+  let pvMicroOutputW = invOutputW;
+
+  // If an ESS/PW battery is present, the main utility inverter should be Tesla/Powerwall.
+  // Keep AP / Altenergy microinverters in the dedicated PV microinverter fields.
+  if (battery.hasBattery && battery.essInverterModel){
+    invMake = battery.essInverterMake || 'Tesla';
+    invModel = battery.essInverterModel;
+    invQty = battery.essInverterQty || battery.batteryQty || '1';
+    invOutputW = battery.essInverterOutputW || invOutputW;
+  }
+
+  const utility = matchFirst(cover, [
+    /UTILITY\s*:?\s*(PGE|PORTLAND GENERAL ELECTRIC|PACIFIC POWER|PACIFICORP)/i,
+    /UTILITY COMPANY\s*[-:]?\s*(PGE|PORTLAND GENERAL ELECTRIC|PACIFIC POWER|PACIFICORP)/i
+  ]);
+  const utilityClean = /PORTLAND GENERAL|PGE/i.test(utility) ? 'PGE' : /PACIFIC/i.test(utility) ? 'Pacific Power' : utility;
+
+  const interco = title(matchFirst(cover, [
+    /INTERCONNECTION METHOD\s*:?\s*([A-Z ]+?)(?=\s+AHJ|\s+PHOTOVOLTAIC|\n|$)/i,
+    /POINT OF INTERCONNECT(?:ION)?[, ]+([A-Z ]+?)(?=\s*\(|\n|$)/i
+  ]));
+
+  const busMain = all.match(/(?:NEW|EXISTING)?\s*(\d{3})A\s+(?:MAIN\s+)?(?:SERVICE\s+)?PANEL[\s,]*(?:SINGLE PHASE,?\s*)?(?:WITH\s+A\s*)?(\d{3})A\s+MAIN BREAKER/i) ||
+                  all.match(/(\d{3})A\s+BUS\s*BAR[\s\S]{0,80}?(\d{3})A\s+MAIN BREAKER/i) ||
+                  all.match(/MSP\s*:?\s*(?:NEW|EXISTING)?\s*(\d{3})A\s+MSP\s+WITH\s+(\d{3})A\s+MAIN BREAKER/i);
+  const busRating = busMain ? busMain[1] : '';
+  const mainBreaker = busMain ? busMain[2] : '';
+
+  const pvBreaker = matchFirst(sld, [
+    /\b(\d{2,3})A\/2P\b/i,
+    /PV BREAKER[\s\S]{0,50}?(\d{2,3})A/i,
+    /\(N\)\s*PV BREAKER[\s\S]{0,80}?(\d{2,3})A/i
+  ]);
+
+  const acDiscAmp = matchFirst(all, [
+    /AC DISCONNECT[\s\S]{0,80}?(\d{2,3})A[-\s]*2P/i,
+    /(\d{2,3})A\s+NON[-\s]?FUSIBLE\s+AC DISCONNECT/i
+  ]);
+
+  const roofMaterial = title(matchFirst(cover, [
+    /ROOF MATERIAL\s*:?\s*([A-Z ]+?)(?=\s+ASCE|\s+WIND|\s+ROOF|\n|$)/i,
+    /MATERIAL\s*[-:]?\s*(COMPOSITE SHINGLE|COMP SHINGLE|TILE|METAL|TPO|FLAT ROOF)/i
+  ]));
+  const racking = title(matchFirst(cover, [
+    /RACKING\s*:?\s*([A-Z0-9 #\-./+]+?(?:SYSTEM(?: FOR [A-Z ]+)?)?)(?=\s+ARRAY AREA|\s+UTILITY|\s+MSP|\n|$)/i
+  ]));
+  const wind = matchFirst(cover, [/WIND SPEED AND EXPOSURE\s*:?\s*([\d]+\s*MPH,?\s*[A-Z])/i, /WIND SPEED\s*=?\s*([\d]+\s*MPH)/i]);
+  const snow = matchFirst(`${struct}\n${cover}`, [/GROUND SNOW LOAD\s*=?\s*([\d.]+\s*PSF)/i, /ROOF SNOW LOAD\s*:?\s*([\d.]+\s*PSF)/i]);
+  const deadLoad = matchFirst(`${cover}\n${struct}`, [/DEAD LOAD[\s\S]{0,80}?([\d.]+\s*PSF)/i, /Distributed Load[\s\S]{0,60}?([\d.]+)\s*Per SqFt/i]);
+  const rafterSize = matchFirst(struct, [/(\d+\s*["']?\s*[xX]\s*\d+\s*["']?)\s+(?:TRUSS|RAFTER)/i, /(2\s*[xX]\s*4)\s*@\s*24/i]).replace(/\s+/g,'');
+  const rafterSpacing = matchFirst(struct, [/(?:TRUSS|RAFTER)[\s\S]{0,40}@\s*(\d{1,2}\s*"?\s*O\.?C\.?)/i]);
+  const phase = /SINGLE PHASE|1-PHASE|1-PHASE|1\s*PHASE|1-PH/i.test(all) ? 'Single Phase' : /THREE PHASE|3-PHASE|3\s*PHASE|3-PH/i.test(all) ? 'Three Phase' : '';
+  const voltage = /120\/240V|240V/i.test(all) ? '240V' : /208V/i.test(all) ? '208V' : /480V/i.test(all) ? '480V' : '';
+  const acDiscReq = /VISIBLE, LOCKABLE, LABELED DISCONNECT|AC DISCONNECT/i.test(all) ? 'Yes' : '';
+
+  const roofPlanes = parseRoofPlanes(planDoc);
+  const dominant = roofPlanes[0] || {};
+  const meter = parsePlanMeter(planDoc);
+  const ptc = (() => {
+    const ac = Number(acKw);
+    return ac && Number(invQty) ? (ac / Number(invQty)).toFixed(4) : '';
+  })();
+
+  if (!moduleWattage) pushFlag('Module wattage was not confidently parsed. Review module spec sheet or calculate DC kW divided by module quantity.');
+  if (!moduleModel) pushFlag('Module model was not confidently parsed.');
+  if (!invModel) pushFlag('Inverter model was not confidently parsed.');
+  if (!meter) pushFlag('Plan-set meter number was not confidently parsed from an explicit meter callout.');
+  if (battery.hasBattery) pushFlag(`Battery / ESS detected: ${battery.batteryQty || '1'} ${battery.batteryMake || ''} ${battery.batteryModel || ''}${battery.batteryCapacityKwh ? `, ${battery.batteryCapacityKwh} kWh` : ''}. Confirm battery, gateway, disconnect, and backup panel scope.`);
+  if (roofPlanes.length > 1) pushFlag(`Multiple roof planes parsed: ${roofPlanes.length} roof planes. Confirm utility array rows before final submission.`);
+
+  return {
+    utility:utilityClean,
+    ahj:addr.ahj,
+    owner:addr.owner,
+    street:addr.street,
+    city:addr.city,
+    state:addr.state || 'OR',
+    zip:addr.zip,
+    meter,
+    interco,
+    dcKw,
+    acKw,
+    exportKw:acKw,
+    moduleMake,
+    moduleModel,
+    moduleWattage,
+    moduleQty,
+    invMake,
+    invModel,
+    invQty,
+    invOutputW,
+    pvMicroMake,
+    pvMicroModel,
+    pvMicroQty,
+    pvMicroOutputW,
+    batteryMake:battery.batteryMake,
+    batteryModel:battery.batteryModel,
+    batteryQty:battery.batteryQty,
+    batteryCapacityKwh:battery.batteryCapacityKwh,
+    batteryOutputKw:battery.batteryOutputKw,
+    gatewayMake:battery.gatewayMake,
+    gatewayModel:battery.gatewayModel,
+    backupPanel:battery.backupPanel,
+    hasBattery:battery.hasBattery,
+    essInverterMake:battery.essInverterMake,
+    essInverterModel:battery.essInverterModel,
+    essInverterQty:battery.essInverterQty,
+    essInverterOutputW:battery.essInverterOutputW,
+    phase,
+    voltage,
+    busRating,
+    mainBreaker,
+    pvBreaker,
+    roofMaterial,
+    racking,
+    mounting:'Roof Mount',
+    wind,
+    snow,
+    deadLoad: deadLoad && !/PSF/i.test(deadLoad) ? `${deadLoad} PSF` : deadLoad,
+    roofRafterSize: rafterSize,
+    roofRafterSpacing: rafterSpacing,
+    woodGrade:'',
+    roofRafterSpanFeet:'',
+    tilt: dominant.tilt || '',
+    azimuth: dominant.azimuth || '',
+    ptc,
+    acDiscReq,
+    acDiscAmp,
+    roofPlanes
+  };
+}
+
+function normalizeOcrNumberText(s=''){
+  return String(s || '')
+    .replace(/[Oo]/g,'0')
+    .replace(/[Il|]/g,'1')
+    .replace(/[Ss]/g,'5')
+    .replace(/[B]/g,'8');
+}
+
+function formatUtilityAccount(digitsOnly, utilityHint=''){
+  const d = digits(digitsOnly);
+  if (/pacific|pacificorp/i.test(utilityHint) && d.length === 12) {
+    return `${d.slice(0,8)}-${d.slice(8)}`;
+  }
+  if (/pacific|pacificorp/i.test(utilityHint) && d.length === 11) {
+    return `${d.slice(0,8)}-${d.slice(8)}`;
+  }
+  if (/pge|portland general/i.test(utilityHint) && d.length > 10) return d.slice(0,10);
+  return d;
+}
+
+function splitOcrSections(rawText=''){
+  const raw = String(rawText || '');
+  const parts = raw.split(/--- OCR\s+/i);
+  const sections = [{name:'full combined text', text:raw}];
+
+  for (const part of parts){
+    const m = part.match(/^([A-Z0-9 \-/]+?)\s*---\s*([\s\S]*)$/i);
+    if (m) sections.push({name:clean(m[1]).toLowerCase(), text:m[2] || ''});
+  }
+
+  return sections;
+}
+
+function normalizeAccountSearchText(s=''){
+  return normalizeOcrNumberText(String(s || ''))
+    .replace(/[—–]/g,'-')
+    .replace(/\s+/g,' ')
+    .trim();
+}
+
+function isBadPgeAccountCandidate(d, context=''){
+  const c = String(context || '').toLowerCase();
+  const hasAccountLabel = /account\s*number|accountnumber|acct/.test(c);
+
+  if (!/^\d{10}$/.test(d)) return true;
+
+  // Common false positives that show up on PGE bills.
+  if (/^(503|800|888|877|866|855|844|833)/.test(d)) return true; // phone numbers
+  if (/^972\d{7}$/.test(d)) return true; // ZIP fragments
+  if (/^970\d{7}$/.test(d)) return true; // ZIP fragments
+  if (/^20\d{8}$/.test(d)) return true; // dates / document ids
+  if (/^1251/.test(d)) return true; // PGE barcode / remit line prefix, not account number.
+
+  // If we found the number from a labeled account window, nearby bill text is expected.
+  // PGE PDFs often place Account number, Service address, Service period, Amount due, and Meter number close together.
+  if (hasAccountLabel) return false;
+
+  // Without an account label, be strict.
+  if (/amount due|due date|please do not pay|barcode|po box|portland or 972|service period|kwh|meter number|current read|previous read|total use|charge|cost per unit|payments through|balance forward/.test(c)) return true;
+
+  return false;
+}
+
+
+function pgeAccountCandidateFromWindow(windowText=''){
+  const raw = String(windowText || '');
+  const t = normalizeAccountSearchText(raw);
+
+  // Best for layout-aware PDF text. Keeps account on its own line before nearby service/meter rows.
+  const lines = raw.split(/\n+/).map(x => normalizeAccountSearchText(x)).filter(Boolean);
+  for (const line of lines){
+    const m = line.match(/\b(?:Account\s*number|Accountnumber|Acct(?:ount)?\s*(?:No\.?|Number)?)\b[^0-9]{0,35}([0-9][0-9\s-]{9,22})/i);
+    if (m){
+      const d = digits(m[1]).slice(0,10);
+      if (!isBadPgeAccountCandidate(d, `Account number ${line}`)) return d;
+    }
+  }
+
+  // Labeled forms found in PGE PDFs and phone photos:
+  // Account number 5118290000
+  // Accountnumber 0531624584
+  // Account number: 6047406483
+  const labeled = [
+    /Account\s*number[^0-9]{0,45}([0-9][0-9\s-]{9,22})/ig,
+    /Accountnumber[^0-9]{0,45}([0-9][0-9\s-]{9,22})/ig,
+    /Acct(?:ount)?\s*(?:No\.?|Number)?[^0-9]{0,45}([0-9][0-9\s-]{9,22})/ig
+  ];
+
+  for (const re of labeled){
+    for (const m of t.matchAll(re)){
+      const d = digits(m[1]).slice(0,10);
+      const ctx = t.slice(Math.max(0, (m.index || 0)-80), (m.index || 0)+180);
+      if (!isBadPgeAccountCandidate(d, `Account number ${ctx}`)) return d;
+    }
+  }
+
+  return '';
+}
+
+function findPgeAccountCandidatesInText(text='', sectionName='', requireLabel=false){
+  const t = normalizeAccountSearchText(text);
+  const source = String(sectionName || '').toLowerCase();
+  const candidates = [];
+
+  const labeled = pgeAccountCandidateFromWindow(t);
+  if (labeled){
+    let score = 300;
+    if (/pge|upper left|account block|inner bill|top left/.test(source)) score += 120;
+    if (/lower right|account block/.test(source)) score += 80;
+    candidates.push({value:labeled, score, source:source || 'labeled account text'});
+  }
+
+  // Account-focused crops may contain just the number. Keep this restricted to account crop names only.
+  if (!requireLabel && /account|pge|upper left|lower right|inner bill|top left/.test(source)){
+    for (const m of t.matchAll(/\b([0-9]{10})\b/g)){
+      const d = digits(m[1]);
+      const ctx = t.slice(Math.max(0, (m.index || 0)-80), (m.index || 0)+140);
+      if (!isBadPgeAccountCandidate(d, ctx)){
+        let score = 120;
+        if (/account/.test(source)) score += 100;
+        if (/pge|upper left|inner bill|top left/.test(source)) score += 80;
+        candidates.push({value:d, score, source:source || 'account-focused numeric crop'});
+      }
+    }
+  }
+
+  return candidates;
+}
+
+function findPgeAccountInText(text='', requireLabel=false, sectionName=''){
+  const candidates = findPgeAccountCandidatesInText(text, sectionName, requireLabel);
+  candidates.sort((a,b)=>b.score-a.score);
+  return candidates[0]?.value || '';
+}
+
+
+function isBadPacificAccountCandidate(d, context=''){
+  const c = String(context || '').toLowerCase();
+  const hasAccountContext = /account\s*number|accountnumber|acct|billing date|\bh\b|remittance/.test(c);
+
+  // Rigid Pacific format from uploaded examples:
+  // 84857537-0012, 56927222-0017, 65564191-0014, 96649890-0010.
+  if (!/^[1-9][0-9]{7}001[0-9]$/.test(d)) return true;
+
+  // Hard rejections for remittance address, PO Box, rate table, meter table, and service usage rows.
+  if (/97256|26000|po box|portland or|insert this edge|return this portion/.test(c)) return true;
+  if (/cost per unit|kwh|units|energy trust|public purpose|low income|meter readings|current previous|this month|meter multiplier|service period|meter number|amount used|total new charges/.test(c)) return true;
+
+  // Account boxes are often next to amount due / due date on Pacific bills. Do not reject those if an account label/H line is present.
+  if (!hasAccountContext && /amount due|due date|charge|charges|payment|payments|previous account balance|current account balance/.test(c)) return true;
+
+  return false;
+}
+
+
+
+function normalizePacificAccountCandidate(d, context=''){
+  let candidate = digits(d);
+  const c = String(context || '').toLowerCase();
+
+  // Targeted OCR correction only for the one known case where 56927222 was read as 96927222.
+  if (/^96927222001[0-9]$/.test(candidate) && /account|pacific|billing|due|remittance|\bh\b/.test(c)){
+    candidate = '5' + candidate.slice(1);
+  }
+
+  return candidate;
+}
+
+function findPacificAccountCandidatesInText(text='', sectionName='', requireLabel=false){
+  const t = normalizeAccountSearchText(text);
+  const source = String(sectionName || '').toLowerCase();
+  const candidates = [];
+
+  const addCandidate = (rawDigits, ctx, baseScore, sourceLabel) => {
+    const corrected = normalizePacificAccountCandidate(rawDigits, ctx + ' ' + source);
+    if (isBadPacificAccountCandidate(corrected, ctx)) return;
+
+    let score = baseScore;
+
+    // Strongest sources first.
+    if (/h remittance|bottom h|remittance/.test(source + ' ' + sourceLabel)) score += 180;
+    if (/account number|account label|right account|account box|account value|right column/.test(source + ' ' + sourceLabel)) score += 160;
+
+    // Keep full-page OCR lower priority than exact crop reads.
+    if (/full combined/.test(source)) score -= 40;
+
+    // Never reward table areas.
+    if (/meter|service table|middle service|kwh|cost per unit|charge|usage/.test(source + ' ' + ctx.toLowerCase())) score -= 400;
+
+    if (corrected !== digits(rawDigits)) score += 40;
+
+    candidates.push({
+      value: formatUtilityAccount(corrected, 'Pacific Power'),
+      digits: corrected,
+      score,
+      source: sourceLabel || source || 'unknown'
+    });
+  };
+
+  // Labeled and remittance forms.
+  const strictPatterns = [
+    {re:/Account\s*Number[^0-9]{0,60}([1-9][0-9]{7})\D{0,10}(001)\D{0,8}([0-9])/ig, score:340, label:'Account Number label'},
+    {re:/ACCOUNT\s*NUMBER[^0-9]{0,60}([1-9][0-9]{7})\D{0,10}(001)\D{0,8}([0-9])/ig, score:340, label:'ACCOUNT NUMBER label'},
+    {re:/\bH\D{0,18}([1-9][0-9]{7})\D{1,10}(001)\D{1,8}([0-9])\b/ig, score:370, label:'H remittance line'}
+  ];
+
+  for (const item of strictPatterns){
+    for (const m of t.matchAll(item.re)){
+      const d = `${m[1]}${m[2]}${m[3]}`;
+      const ctx = t.slice(Math.max(0, (m.index || 0)-100), (m.index || 0)+200);
+      addCandidate(d, ctx, item.score, item.label);
+    }
+  }
+
+  // Tight account crops may contain just the number. Still require 001x suffix.
+  // This is allowed only for account/remittance/right-column crops, not full-page table text.
+  if (!requireLabel && /account|remittance|right|top|bottom h|value tight|pacific/.test(source)){
+    for (const m of t.matchAll(/\b([1-9][0-9]{7})\D{0,12}(001)\D{0,8}([0-9])\b/g)){
+      const d = `${m[1]}${m[2]}${m[3]}`;
+      const ctx = t.slice(Math.max(0, (m.index || 0)-100), (m.index || 0)+200);
+      addCandidate(d, ctx, 150, 'tight numeric account crop');
+    }
+  }
+
+  return candidates;
+}
+
+function findPacificAccountInText(text='', requireLabel=false, sectionName=''){
+  const candidates = findPacificAccountCandidatesInText(text, sectionName, requireLabel);
+  candidates.sort((a,b)=>b.score-a.score);
+  return candidates[0]?.value || '';
+}
+
+
+function parseUBAccountNumber(rawText, utilityHint=''){
+  const raw = normalizeText(rawText || '');
+  const flat = normalizeAccountSearchText(raw);
+  const notes = [];
+  const sections = splitOcrSections(raw);
+  const hint = utilityHint + ' ' + flat;
+  const isPge = /pge|portland general/i.test(hint);
+  const isPacific = /pacific|pacificorp/i.test(hint);
+
+  if (isPge && !isPacific){
+    // Rigid PGE mode:
+    // Prefer labeled "Account number" text, then account-focused OCR crops only.
+    // This avoids pulling meter numbers, phone numbers, service ZIPs, due dates, or barcode values.
+    const priorityNames = [
+      'pge inner bill account block',
+      'pge inner bill account block threshold',
+      'pge phone upper left broad',
+      'pge phone upper left broad threshold',
+      'top left pge account block',
+      'top left pge account block threshold',
+      'pge lower right account block',
+      'pge lower right account block threshold',
+      'full combined text'
+    ];
+
+    const priority = [];
+    for (const name of priorityNames){
+      sections.filter(s => s.name.includes(name)).forEach(s => priority.push(s));
+    }
+    if (!priority.length) priority.push({name:'full combined text', text:flat});
+
+    const allCandidates = [];
+
+    // First, labeled text from the full combined OCR/PDF text.
+    const direct = findPgeAccountCandidatesInText(flat, 'full combined text', true);
+    direct.forEach(c => allCandidates.push(c));
+
+    // Then account-focused OCR sections.
+    for (const sec of priority){
+      const requireLabel = /full combined text/.test(sec.name);
+      findPgeAccountCandidatesInText(sec.text, sec.name, requireLabel).forEach(c => allCandidates.push(c));
+    }
+
+    const grouped = new Map();
+    for (const c of allCandidates){
+      const existing = grouped.get(c.value) || {value:c.value, score:0, sources:[], count:0};
+      existing.score += c.score;
+      existing.sources.push(c.source);
+      existing.count += 1;
+      grouped.set(c.value, existing);
+    }
+
+    const ranked = [...grouped.values()].map(c => ({
+      ...c,
+      score: c.score + Math.max(0, c.count - 1) * 80
+    })).sort((a,b)=>b.score-a.score);
+
+    if (ranked[0] && ranked[0].score >= 180){
+      notes.push(`PGE account number parsed from ${ranked[0].sources.join(', ')}: ${ranked[0].value}.`);
+      return {value:ranked[0].value, notes};
+    }
+
+    const pdfDirect = pgeAccountCandidateFromWindow(raw);
+    if (pdfDirect){
+      notes.push(`PGE account number parsed from direct PDF text fallback: ${pdfDirect}.`);
+      return {value:pdfDirect, notes};
+    }
+
+    return {value:'', notes:['PGE account number not confidently parsed. Account field left blank.']};
+  }
+
+
+  if (isPacific){
+    // Rigid Pacific mode:
+    // Only accept 8 digits + 001 + final digit from Account Number or H remittance sections.
+    // Now aggregates all OCR sections before choosing, so a weak tight crop cannot beat a better H/remittance read.
+    const priorityNames = [
+      'bottom h account value tight',
+      'bottom h account value tight threshold',
+      'bottom remittance line',
+      'top right account value tight',
+      'top right account value tight threshold',
+      'right lower account value tight',
+      'right account column',
+      'right account column raw',
+      'top right account box',
+      'right lower account box',
+      'full combined text'
+    ];
+
+    const priority = [];
+    for (const name of priorityNames){
+      sections.filter(s => s.name.includes(name)).forEach(s => priority.push(s));
+    }
+    if (!priority.length) priority.push({name:'full combined text', text:flat});
+
+    const allCandidates = [];
+    for (const sec of priority){
+      const requireLabel = /full combined text/.test(sec.name);
+      (typeof findPacificAccountCandidatesInText === 'function' ? findPacificAccountCandidatesInText(sec.text, sec.name, requireLabel) : []).forEach(c => allCandidates.push(c));
+    }
+
+    // Group repeated values and add a repeat bonus.
+    const grouped = new Map();
+    for (const c of allCandidates){
+      const existing = grouped.get(c.value) || {value:c.value, score:0, sources:[], count:0};
+      existing.score += c.score;
+      existing.sources.push(c.source);
+      existing.count += 1;
+      grouped.set(c.value, existing);
+    }
+
+    const ranked = [...grouped.values()].map(c => ({
+      ...c,
+      score: c.score + Math.max(0, c.count - 1) * 90
+    })).sort((a,b)=>b.score-a.score);
+
+    if (ranked[0] && ranked[0].score >= 180){
+      notes.push(`Pacific Power account number parsed from ${ranked[0].sources.join(', ')}: ${ranked[0].value}.`);
+      return {value:ranked[0].value, notes};
+    }
+
+    return {
+      value:'',
+      notes:[
+        'Pacific Power account number not confidently parsed.',
+        'Strict mode requires account format like 56927222-0017 or H 56927222 001 7.',
+        'Account field left blank rather than filling a rate-table, meter-table, or PO Box value.'
+      ]
+    };
+  }
+
+
+  // Unknown utility. Try labeled only. No loose fallback.
+  const pgeLike = findPgeAccountInText(flat, true);
+  if (pgeLike){
+    notes.push(`Account number parsed from labeled account text: ${pgeLike}.`);
+    return {value:pgeLike, notes};
+  }
+
+  return {value:'', notes:['UB account number not confidently parsed. Utility was not identified, so loose fallback was skipped.']};
+}
+
+function cleanMeterValue(raw=''){
+  const original = String(raw || '').toUpperCase().replace(/\s+/g,'').replace(/[^A-Z0-9]/g,'');
+
+  // Preserve real PGE IN suffix before OCR normalization. The old cleanup changed IN to 1N.
+  const pgeOriginal = original.match(/^([0-9]{6,10})(IN)$/i);
+  if (pgeOriginal) return `${pgeOriginal[1]}IN`;
+
+  let s = normalizeOcrNumberText(raw || '').toUpperCase();
+  s = s.replace(/[^A-Z0-9]/g,'');
+
+  // OCR can turn IN into 1N. Treat that as IN only when it follows a normal meter number.
+  const pgeOcrSuffix = s.match(/^([0-9]{6,10})1N$/i);
+  if (pgeOcrSuffix) return `${pgeOcrSuffix[1]}IN`;
+
+  const pge = s.match(/^([0-9]{6,10})(IN)?$/i);
+  if (pge) return pge[1] + (pge[2] || '');
+
+  const num = s.match(/[0-9]{6,12}/);
+  return num ? num[0] : '';
+}
+
+function parseUBMeterNumber(rawText){
+  const raw = normalizeText(rawText || '');
+  const flat = raw.replace(/\s+/g,' ').trim();
+
+  // PGE PDF bill table:
+  // Meter number Service period Schedule Current read ... Total use
+  // 24787072IN 2/11/26...
+  const pgeTable = flat.match(/Meter\s+number\s+Service\s+period\s+Schedule[\s\S]{0,180}?\b([0-9]{6,10}\s*(?:IN)?)\s+\d{1,2}\/\d{1,2}\/\d{2}/i);
+  if (pgeTable){
+    const v = cleanMeterValue(pgeTable[1]);
+    if (v) return v;
+  }
+
+  // Pacific Power photo/PDF bill table: "METER NUMBER 77866055 ..."
+  const pac = flat.match(/METER\s+NUMBER[^0-9OIlS]{0,50}([0-9OIlS]{6,12})/i);
+  if (pac){
+    const d = cleanMeterValue(pac[1]);
+    if (d) return d;
+  }
+
+  const patterns = [
+    /Meter\s*(?:number|no\.?|#)\s*[:#]?\s*([A-Z0-9OIlS][A-Z0-9OIlS\s-]{5,24})/i,
+    /Utility\s+meter\s*#\s*([A-Z0-9OIlS][A-Z0-9OIlS\s-]{5,24})/i,
+    /\bMETER\s*#?\s*([0-9OIlS]{6,12})\b/i
+  ];
+  for (const re of patterns){
+    const m = raw.match(re);
+    if (m){
+      const v = cleanMeterValue(m[1]);
+      if (digits(v).length >= 6 && digits(v).length <= 14) return v;
+    }
+  }
+  return '';
+}
+
+
+function directLabeledUBAccountFromText(rawText='', utilityHint=''){
+  const text = normalizeText(rawText || '');
+  const flat = text.replace(/\s+/g,' ').trim();
+  const hint = `${utilityHint || ''} ${flat}`;
+
+  const isPge = /PGE|PORTLAND\s*GENERAL|PORTLANDGENERAL|PORTLANDGENERAL\.COM/i.test(hint) && !/PACIFIC\s+POWER|PACIFICORP/i.test(hint);
+  const isPacific = /PACIFIC\s+POWER|PACIFICORP/i.test(hint);
+
+  if (isPge){
+    // Digital PDFs have very reliable text. Do this before any context filtering.
+    // Examples: Account number 5118290000 / Account number 7678473025
+    const matches = [];
+    for (const m of flat.matchAll(/\bAccount\s*number\b[^0-9]{0,40}([0-9]{10})\b/ig)){
+      const d = digits(m[1]);
+      if (/^\d{10}$/.test(d) && !/^(503|800|888|877|866|855|844|833|1251)/.test(d)) {
+        matches.push(d);
+      }
+    }
+    for (const m of flat.matchAll(/\bAccountnumber\b[^0-9]{0,40}([0-9]{10})\b/ig)){
+      const d = digits(m[1]);
+      if (/^\d{10}$/.test(d) && !/^(503|800|888|877|866|855|844|833|1251)/.test(d)) {
+        matches.push(d);
+      }
+    }
+    const unique = uniq(matches);
+    if (unique.length) return {value:unique[0], note:`PGE account parsed from direct labeled PDF text: ${unique[0]}.`};
+  }
+
+  if (isPacific){
+    // Digital/photo OCR Pacific examples:
+    // Account Number 84857537-001 2
+    // Account Number 56927222-001 7
+    const matches = [];
+    for (const m of flat.matchAll(/\bAccount\s*Number\b[^0-9]{0,60}([1-9][0-9]{7})\D{0,10}(001)\D{0,8}([0-9])\b/ig)){
+      const d = `${m[1]}${m[2]}${m[3]}`;
+      if (/^[1-9][0-9]{7}001[0-9]$/.test(d)) matches.push(formatUtilityAccount(d, 'Pacific Power'));
+    }
+    const unique = uniq(matches);
+    if (unique.length) return {value:unique[0], note:`Pacific Power account parsed from direct labeled bill text: ${unique[0]}.`};
+  }
+
+  return {value:'', note:''};
+}
+
+function parseUBData(ubDoc){
+  const text = normalizeText(ubDoc?.text || '');
+  const flat = text.replace(/\s+/g,' ').trim();
+  const utilitySource = `${text} ${ubDoc?.fileName || ''}`;
+  const detectedUtility = /PORTLAND\s*GENERAL|PORTLANDGENERAL|PGE|PGE_Bill|BillSummary/i.test(utilitySource) ? 'PGE' : /PACIFIC POWER|PACIFICORP/i.test(utilitySource) ? 'Pacific Power' : '';
+  const utility = detectedUtility || getVal('utility') || '';
+
+  const directAcct = directLabeledUBAccountFromText(text, utility);
+  const acct = directAcct.value
+    ? {value:directAcct.value, notes:[directAcct.note]}
+    : parseUBAccountNumber(text, utility);
+
+  const meterRaw = parseUBMeterNumber(text);
+
+  let service = title(matchFirst(text, [
+    /Service address\s*[:#]?\s*(\d{2,6}\s+[A-Z0-9 .'\-]+?(?:\n|\s)+[A-Z][A-Z .'\-]+,?\s+(?:OR|WA|CA|ID|AZ|NV|UT)\s+\d{5}(?:-\d{4})?)/i,
+    /Service address\s*[:#]?\s*(\d{2,6}\s+[A-Z0-9 .'\-]+?)(?=\s+Service period|\s+Account|\n|$)/i
+  ]));
+
+  if (!service && /PACIFIC POWER|PACIFICORP/i.test(text)){
+    const pacService = flat.match(/ITEM\s*1\s*-\s*ELECTRIC\s+SERVICE\s+(\d{2,6}\s+[A-Z0-9 .'\-]+?\s+(?:Lincoln City|Portland|Salem|Eugene|Bend|Vancouver|Beaverton|Tigard|Astoria|Newport|Seaside)\s+(?:OR|WA))/i) ||
+                       flat.match(/ELECTRIC\s+SERVICE\s+(\d{2,6}\s+[A-Z0-9 .'\-]+?\s+(?:OR|WA))\s+Residential/i);
+    if (pacService) service = title(pacService[1]);
+  }
+
+  const accountHolder = (() => {
+    const lines = text.split(/\n+/).map(x => x.trim()).filter(Boolean);
+    const topNameLines = [];
+    for (let i=0; i<Math.min(lines.length,28); i++){
+      const line = lines[i];
+      if (/Questions|Your Balance|Payments Received|Detailed Account Activity|ITEM 1|Historical Data/i.test(line)) break;
+      if (/^\d{2,6}\s+[A-Z0-9]/i.test(line)) continue;
+      if (/^[A-Z][A-Z0-9 &.'\-]{4,}$/i.test(line) &&
+          !/PACIFIC POWER|PGE|PORTLANDGENERAL|PORTLAND GENERAL|BILLING DATE|ACCOUNT NUMBER|AMOUNT DUE|DATE DUE|YOUR BALANCE|ACTION NEEDED|QUESTIONS|CALL|PRESORT|POSTAGE|PAID/i.test(line)){
+        topNameLines.push(title(line));
+      }
+    }
+    return uniq(topNameLines)[0] || '';
+  })();
+
+  const notes = [...(ubDoc?.notes || []), ...(ubDoc?.ocrNotes || []), ...(acct.notes || [])];
+  if (ubDoc?.pdfLayoutAware) notes.push('PDF utility bill parsed with layout-aware PDF text extraction.');
+  if (detectedUtility) notes.push(`UB utility parsed: ${utility}.`);
+  else if (utility) notes.push(`UB utility not clearly OCR-parsed, using project utility hint: ${utility}.`);
+  if (accountHolder) notes.push(`UB account holder parsed: ${accountHolder}.`);
+  if (service) notes.push(`UB service address parsed: ${service}.`);
+  if (meterRaw) notes.push(`UB meter parsed: ${meterRaw}.`);
+  if (/PACIFIC POWER|PACIFICORP/i.test(text) && !acct.value) notes.push('Pacific Power photo bill detected, but account number still needs manual review.');
+  return {utility, account:acct.value, accountHolder, service, meterRaw, notes};
+}
+
+function parseMeterPhotoData(meterDoc){
+  const text = normalizeText(meterDoc?.text || '');
+  const flat = text.replace(/\s+/g,' ').trim();
+
+  // pink tag fallback: PacifiCorp field tags can contain the utility meter number near the meter.
+  const tag = flat.match(/\b(0?7[0-9]{5,8})\b/);
+  if (tag) return {meterRaw: digits(tag[1]), text};
+
+  const explicit = matchFirst(text, [
+    /Portland General Electric\s*([0-9][0-9\s]{6,14})/i,
+    /PACIFICORP[\s\S]{0,120}?\b([0-9OIlS]{2}\s?[0-9OIlS]{3}\s?[0-9OIlS]{3})\b/i,
+    /Utility Meter\s*#?\s*([0-9OIlS][0-9OIlS\s]{6,14})/i,
+    /Meter\s*#?\s*([0-9OIlS][0-9OIlS\s]{6,14})/i
+  ]);
+  if (explicit) return {meterRaw: digits(normalizeOcrNumberText(explicit)), text};
+
+  const serials = [];
+  for (const m of flat.matchAll(/\b([0-9OIlS]{2}\s?[0-9OIlS]{3}\s?[0-9OIlS]{3})\b/g)){
+    const d = digits(normalizeOcrNumberText(m[1]));
+    if (d.length >= 8 && d.length <= 9 && !/^20\d/.test(d)) serials.push(d);
+  }
+  return {meterRaw: serials[0] || '', text};
+}
+
+function compareMeters(planMeter, ubMeter){
+  const a = digits(planMeter);
+  const b = digits(ubMeter);
+  if (!a && !b) return 'No meter numbers parsed.';
+  if (a && !b) return 'Plan meter parsed. UB or meter photo meter missing.';
+  if (!a && b) return 'UB or meter photo meter parsed. Plan-set meter missing.';
+  if (a === b) return 'DIGITS MATCH';
+  if (a.endsWith(b) || b.endsWith(a)) return 'LIKELY MATCH. One meter value appears truncated.';
+
+  // Handles OCR suffix issue where PGE meter 24787072IN was previously read as 247870721.
+  if ((b.length === a.length + 1 && b.startsWith(a)) || (a.length === b.length + 1 && a.startsWith(b))) {
+    return 'LIKELY MATCH. Extra trailing digit appears to be OCR suffix noise.';
+  }
+
+  return `MISMATCH. Plan ${planMeter} vs UB/photo ${ubMeter}.`;
+}
+
+function fillProjectFields(plan){
+  // Final cleanup for OCR/title block artifacts.
+  if (plan.owner) plan.owner = clean(plan.owner).replace(/\bRev\b\s*/i,'').trim();
+  if (plan.moduleModel) plan.moduleModel = stripModuleMakeFromModel(plan.moduleModel);
+  if (/^ZXM\d+$/i.test(plan.moduleModel || '') && state.planDoc && state.planDoc.text){
+    const zFull = normalizeModelHyphens(state.planDoc.text).match(/\b(ZXM\d+[A-Z0-9]*-[A-Z0-9]+-\d{3,4}[A-Z]*)\b/i);
+    if (zFull) plan.moduleModel = stripModuleMakeFromModel(zFull[1]);
+  }
+  if (plan.invModel) plan.invModel = stripInverterMakeFromModel(plan.invModel);
+  if (plan.invMake && /ALTENERGY|AP\s*SYSTEMS|APSYSTEMS/i.test(plan.invMake)) plan.invMake = 'Altenergy Power System';
+  if (/^DS3[A-Z0-9]$/i.test(plan.invModel || '')) plan.invModel = plan.invModel.replace(/^DS3([A-Z0-9])$/i, 'DS3-$1');
+  if (plan.pvMicroMake && /ALTENERGY|AP\s*SYSTEMS|APSYSTEMS/i.test(plan.pvMicroMake)) plan.pvMicroMake = 'Altenergy Power System';
+  if (plan.pvMicroModel) plan.pvMicroModel = stripInverterMakeFromModel(plan.pvMicroModel);
+  if (plan.hasBattery && plan.essInverterModel){
+    plan.invMake = plan.essInverterMake || 'Tesla';
+    plan.invModel = plan.essInverterModel;
+    plan.invQty = plan.essInverterQty || plan.batteryQty || '1';
+    plan.invOutputW = plan.essInverterOutputW || plan.invOutputW;
+  }
+  if (/^\d{2,6}\s+(?:N|S|E|W|NE|NW|SE|SW)$/i.test(plan.street || '') && /\b(CT|RD|AVE|ST|DR|LN|WAY|PL)\b/i.test(plan.city || '')){
+    const cm = String(plan.city).match(/^(.+?\b(?:CT|RD|AVE|ST|DR|LN|WAY|PL)\b)\s+(.+)$/i);
+    if (cm){
+      plan.street = title(`${plan.street} ${cm[1]}`);
+      plan.city = title(cm[2]);
+    }
+  }
+  Object.entries(plan).forEach(([k,v])=>{
+    if (k === 'roofPlanes') return;
+    if ($(k)) setVal(k,v);
+  });
+  setVal('planMeterNumber', plan.meter || '');
+  const roofText = (plan.roofPlanes || []).map(p => `Roof #${p.roof}: ${p.modules} module(s), tilt ${p.tilt}°, azimuth ${p.azimuth}°`).join('\n');
+  setVal('roofPlanesField', `${roofText}${roofText ? '\n' : ''}Total parsed roof-plane modules: ${(plan.roofPlanes || []).reduce((s,p)=>s + Number(p.modules || 0),0)}`);
+}
+
+function fillUBFields(ub, meterPhoto){
+  const planMeter = getVal('meter');
+  let ubMeter = ub.meterRaw || '';
+  if (!ubMeter && meterPhoto?.meterRaw) ubMeter = meterPhoto.meterRaw;
+
+  if (ub.account) setVal('account', ub.account);
+  setVal('ubAccountHolder', ub.accountHolder || '');
+  setVal('ubAccountNumber', ub.account || '');
+  setVal('ubServiceAddress', ub.service || '');
+  setVal('ubMeterNumber', ubMeter || '');
+  setVal('ubMeterVerification', compareMeters(planMeter, ubMeter));
+  setVal('ubParserNotes', (ub.notes || []).join('\n'));
+  setVal('ubRawTextPreview', ub?.rawText || '');
+  setVal('meterRawTextPreview', meterPhoto?.text || '');
+  if (ub.utility && !getVal('utility')) setVal('utility', ub.utility);
+}
+
+function detectElectricalScope(plan){
+  const rawText = normalizeText(state.planDoc?.text || '');
+  const packetText = rawText.toUpperCase();
+  const utility = String(plan.utility || getVal('utility') || '').toUpperCase();
+
+  // Actual interconnection method must come from the specific project/spec/SLD callouts,
+  // not from generic code notes on E 1.2 that mention possible interconnection types.
+  const parsedInterco = String(plan.interco || getVal('interco') || '').toUpperCase();
+
+  const actualIntercoText = [
+    parsedInterco,
+    (rawText.match(/INTERCONNECTION\s+METHOD\s*:?\s*([A-Z ]+?)(?=\s+AHJ|\s+PHOTOVOLTAIC|\n|$)/i) || [,''])[1],
+    (rawText.match(/POINT\s+OF\s+INTERCONNECT(?:ION)?[,:\s]+([A-Z ]+?)(?=\s*\(|\n|$)/i) || [,''])[1],
+    (rawText.match(/POINT\s+OF\s+INTERCONNECT(?:ION)?[\s\S]{0,80}?(LOAD\s+SIDE|LINE\s+SIDE\s+TAP|SUPPLY\s+SIDE\s+TAP|LOAD\s+BREAKER|PV\s+BREAKER)/i) || [,''])[1]
+  ].filter(Boolean).join(' ').toUpperCase();
+
+  const actualScopeText = [
+    actualIntercoText,
+    (rawText.match(/SITE DETAIL:[\s\S]{0,600}/i) || [''])[0],
+    (rawText.match(/PHOTOVOLTAIC SYSTEM SPECIFICATIONS:[\s\S]{0,700}/i) || [''])[0],
+    (rawText.match(/3-LINE DIAGRAM[\s\S]{0,5500}/i) || [''])[0]
+  ].join('\n').toUpperCase();
+
+  const hasActual = re => re.test(actualScopeText);
+  const hasPacket = re => re.test(packetText);
+
+  /*
+    Locate SOP:
+    Breaker/load-side breaker interconnection is the only normal path that does not call for locates.
+    Anything beyond a breaker interconnect should get a locate callout so the PM can confirm 811/utility locates before field work.
+
+    Important parser rule:
+    Generic code notes do not decide locate status. Notes like "supply side tap interconnection according to NEC..."
+    are boilerplate and must not override a project that says INTERCONNECTION METHOD: LOAD BREAKER.
+  */
+
+  const genericUndergroundOnly =
+    /UTILITY\s+SERVICE\s*:\s*UNDERGROUND/i.test(packetText) ||
+    /IN\s+AN\s+UNDERGROUND\s+PHOTOVOLTAIC\s+SYSTEM/i.test(packetText) ||
+    /UNDERGROUND\s+PHOTOVOLTAIC\s+SYSTEM/i.test(packetText);
+
+  const actualLineSideTap = /LINE\s*SIDE\s*TAP|SUPPLY\s*SIDE\s*TAP/i.test(actualIntercoText) ||
+    /POINT\s+OF\s+INTERCONNECT(?:ION)?[\s\S]{0,120}?LINE\s*SIDE\s*TAP/i.test(actualScopeText);
+
+  const actualBreaker = /LOAD\s+BREAKER|LOAD\s+SIDE|PV\s+BREAKER/i.test(actualIntercoText) ||
+    /POINT\s+OF\s+INTERCONNECT(?:ION)?[\s\S]{0,120}?LOAD\s+SIDE/i.test(actualScopeText) ||
+    /\(N\)\s*PV\s+BREAKER/i.test(actualScopeText);
+
+  const actualMpu = /\bMPU\b|MAIN PANEL UPGRADE|UPGRADE TO NEW\s+\d{3}A|NEW\s+\d{3}A\s+(?:MAIN\s+)?(?:SERVICE\s+)?PANEL/i.test(actualScopeText);
+  const actualFsu = /\bFSU\b|FULL SERVICE UPGRADE/i.test(actualScopeText);
+  const actualPsu = /\bPSU\b|PARTIAL SERVICE UPGRADE/i.test(actualScopeText);
+  const actualMeterCollar = /METER COLLAR|CONNECTDER|\bMMD\b|METER MOUNTED DEVICE/i.test(actualScopeText);
+  const actualMeterBase = /METER BASE REPLACEMENT|REPLACE(?:MENT)?\s+(?:OF\s+)?(?:THE\s+)?METER BASE|NEW METER BASE|METER SOCKET REPLACEMENT/i.test(actualScopeText);
+
+  const actualNonBreakerElectrical = actualLineSideTap || actualMpu || actualFsu || actualPsu || actualMeterCollar || actualMeterBase;
+
+  const isBreakerOnlyInterconnect = actualBreaker && !actualNonBreakerElectrical;
+
+  const locateEvidence = [
+    {type:'nonBreaker', label:'Non-breaker interconnection or electrical scope detected', hit:actualNonBreakerElectrical},
+    {type:'lineSideTap', label:'Line side tap interconnection detected', hit:actualLineSideTap},
+    {type:'mpu', label:'MPU / service upgrade type work detected', hit:actualMpu || actualFsu || actualPsu},
+    {type:'meterCollar', label:'Meter collar / MMD / ConnectDER detected', hit:actualMeterCollar},
+    {type:'meterBase', label:'Meter base replacement detected', hit:actualMeterBase},
+    {type:'trench', label:'Trenching called out', hit:/\bTRENCH(?:ING|ED)?\b/i.test(packetText)},
+    {type:'811', label:'811 / utility locate called out', hit:/\b811\b|UTILITY\s+LOCATE|UTILITY\s+LOCATES|LOCATES?\s+(?:REQUIRED|NEEDED)|DIG\s*ALERT/i.test(packetText)},
+    {type:'private', label:'Private locate called out', hit:/PRIVATE\s+LOCATE|PRIVATE\s+LOCATES|PRIVATE\s+UTILITY\s+LOCATE/i.test(packetText)},
+    {type:'inspection', label:'Trench inspection called out', hit:/TRENCH\s+INSPECTION|OPEN\s+TRENCH|INSPECT\s+TRENCH/i.test(packetText)},
+    {type:'ugConduit', label:'New underground conduit/feed/run called out', hit:/NEW\s+UNDERGROUND|UNDERGROUND\s+(?:CONDUIT|FEEDER|RUN|RACEWAY|WIRE|WIRING|LINE|SERVICE\s+LATERAL)/i.test(actualScopeText)},
+    {type:'relocation', label:'Meter/service relocation or utility-side service work called out', hit:/(?:METER|SERVICE|MSP|MAIN\s+SERVICE\s+PANEL)\s+(?:RELOCATION|RELOCATE|RELOCATED)|SERVICE\s+RELOCATION/i.test(actualScopeText)},
+    {type:'groundMount', label:'Ground mount or posts called out', hit:/GROUND\s+MOUNT|GROUND-MOUNT|POSTS?\s+IN\s+GROUND|PIER\s+FOOTING|FOOTINGS?\s+FOR\s+ARRAY/i.test(packetText)}
+  ];
+
+  const locateHits = isBreakerOnlyInterconnect ? [] : locateEvidence.filter(x => x.hit);
+  const locatesNeeded = locateHits.length > 0;
+  const privateLocatesNeeded = locateHits.some(x => x.type === 'private') ||
+    /(PRIVATE\s+UTILITY|SEPTIC|WELL|IRRIGATION|SPRINKLER|PROPANE|GAS\s+LINE|DRAIN\s+LINE)/i.test(packetText) && locatesNeeded;
+
+  const flags = {
+    mpu: actualMpu,
+    fsu: actualFsu,
+    psu: actualPsu,
+    meterCollar: actualMeterCollar,
+    meterBase: actualMeterBase,
+    lineSideTap: actualLineSideTap,
+    loadBreaker: actualBreaker,
+    trench: locateHits.some(x => ['trench','inspection','ugConduit','relocation','groundMount'].includes(x.type)),
+    locatesNeeded,
+    privateLocatesNeeded,
+    locateHits,
+    genericUndergroundOnly,
+    acDisconnect: /AC DISCONNECT|VISIBLE,\s*LOCKABLE,\s*LABELED DISCONNECT/i.test(actualScopeText),
+    battery: /BATTERY|POWERWALL|ENERGY\s+STORAGE|ESS|TESLA\s+GATEWAY|BACKUP\s+PANEL/i.test(actualScopeText + ' ' + packetText)
+  };
+
+  const work = [];
+  if (flags.mpu) work.push('MPU');
+  if (flags.fsu) work.push('FSU');
+  if (flags.psu) work.push('PSU');
+  if (flags.meterCollar) work.push('Meter collar / MMD / ConnectDER');
+  if (flags.meterBase) work.push('Meter base replacement');
+  if (flags.lineSideTap) work.push('Line side tap');
+  if (flags.loadBreaker && !flags.lineSideTap) work.push('Breaker / load-side interconnection');
+  if (flags.trench) work.push('Ground disturbance / trenching scope');
+  if (flags.locatesNeeded) work.push('Utility locates required');
+  if (flags.privateLocatesNeeded) work.push('Private locates may be needed');
+  if (flags.acDisconnect) work.push('AC disconnect');
+  if (flags.battery) work.push('Battery / ESS system');
+
+  let dr = false;
+  const reasons = [];
+  const info = [];
+
+  if (/PGE|PORTLAND GENERAL/.test(utility)){
+    if (flags.meterBase){ dr = true; reasons.push('PGE: meter base replacement triggers D/R review.'); }
+    if (flags.fsu || flags.psu){ dr = true; reasons.push('PGE: FSU/PSU triggers D/R review.'); }
+    if (flags.mpu){ dr = true; reasons.push('PGE: MPU may trigger D/R if it involves meter work or a hot service change. Confirm with utility before scheduling.'); }
+    if (flags.lineSideTap && !dr){
+      info.push('PGE: Line side tap detected. Per PM SOP, this is a non-breaker interconnection and needs utility locates called out before field work. It is not automatically D/R unless meter/service work is also scoped.');
+    }
+  }
+
+  if (/PACIFIC/.test(utility)){
+    if (flags.meterCollar){ dr = true; reasons.push('Pacific Power: meter collar / MMD / ConnectDER triggers D/R review and MMD form need.'); }
+    if (flags.mpu || flags.fsu || flags.psu){ dr = true; reasons.push('Pacific Power: MPU/FSU/PSU usually requires D/R review.'); }
+    if (flags.lineSideTap && !dr){
+      info.push('Pacific Power: Line side tap detected. Per PM SOP, this is a non-breaker interconnection and needs utility locates called out before field work. Confirm interconnection package requirements and D/R only if meter/service work is scoped.');
+    }
+  }
+
+  if (flags.locatesNeeded) {
+    reasons.push(`Utility locates needed because the packet shows: ${flags.locateHits.map(x => x.label).join(', ')}.`);
+  } else if (flags.genericUndergroundOnly) {
+    info.push('Underground utility service/generic code note detected only. Actual interconnection appears breaker/load-side, so no locate flag was generated.');
+  }
+
+  if (flags.privateLocatesNeeded) {
+    reasons.push('Private locates may be needed because private utility risk language was detected or private locates were directly called out.');
+  }
+
+  if (dr) pushPriority('D/R or utility disconnect coordination likely required before install can be scheduled.');
+  if (flags.locatesNeeded) pushPriority('Utility locates are required before any ground disturbance. Submit 811/utility locate request before scheduling trench or underground work.');
+  if (flags.privateLocatesNeeded) pushPriority('Private locates may be needed. Confirm with HO for private utilities like irrigation, gas, septic, well, propane, or drain lines.');
+
+  return {flags, work, dr, reasons, info};
+}
+
+function updateElectricalScopeUi(scope){
+  const setCard = (cardId, mainId, subId, mode, main, sub) => {
+    const card = $(cardId);
+    card.classList.remove('red','yellow','green');
+    if (mode) card.classList.add(mode);
+    $(mainId).textContent = main;
+    $(subId).textContent = sub;
+  };
+
+  const major = scope.flags.mpu || scope.flags.fsu || scope.flags.psu || scope.flags.meterBase;
+  const electricalReview = scope.flags.lineSideTap || scope.flags.meterCollar || scope.flags.acDisconnect;
+  setCard(
+    'electricalScopeTypeCard',
+    'electricalScopeMain',
+    'electricalScopeSub',
+    major ? 'red' : electricalReview ? 'yellow' : 'green',
+    scope.work.length ? (major ? 'MAJOR WORK' : 'ELECTRICAL') : 'PV ONLY',
+    scope.work.length ? scope.work.join(', ') : 'No major electrical scope detected.'
+  );
+
+  setCard(
+    'drStatusCard',
+    'drStatusMain',
+    'drStatusSub',
+    scope.dr ? 'red' : 'green',
+    scope.dr ? 'D/R LIKELY' : 'NO D/R FLAG',
+    scope.dr ? scope.reasons.filter(x=>/D\/R|disconnect|Pacific|PGE/.test(x)).join(' ') : 'No SOP D/R trigger was found.'
+  );
+
+  setCard(
+    'locateStatusCard',
+    'locateStatusMain',
+    'locateStatusSub',
+    scope.flags.locatesNeeded ? 'red' : 'green',
+    scope.flags.locatesNeeded ? 'LOCATES NEEDED' : 'NO LOCATE FLAG',
+    scope.flags.locatesNeeded ? 'Locate-triggering scope detected. See Utility Locate Callout below.' : 'Breaker/load-side interconnect or no locate-triggering scope detected.'
+  );
+
+  setCard(
+    'installHoldCard',
+    'installHoldMain',
+    'installHoldSub',
+    scope.dr || scope.flags.locatesNeeded ? 'red' : scope.flags.lineSideTap ? 'yellow' : 'green',
+    scope.dr || scope.flags.locatesNeeded ? 'HOLD / CONFIRM' : scope.flags.lineSideTap ? 'REVIEW LST' : 'OK TO REVIEW',
+    scope.dr || scope.flags.locatesNeeded ? 'Do not lock install until flagged utility items are confirmed.' : scope.flags.lineSideTap ? 'Line side tap needs locates per SOP.' : 'No special utility hold generated.'
+  );
+
+  const detected = [];
+  if (scope.work.length) scope.work.forEach(x => detected.push(`Detected: ${x}`));
+  else detected.push('No major electrical work detected from packet text.');
+  if (scope.info && scope.info.length) {
+    detected.push('');
+    detected.push('Info notes:');
+    scope.info.forEach(x => detected.push(`- ${x}`));
+  }
+  setVal('electricalScopeDetectedText', detected.join('\n'));
+
+  const checklist = [];
+  if (scope.dr) {
+    checklist.push('Confirm D/R need with utility.');
+    checklist.push('Request meter spot or utility date if required.');
+    checklist.push('Set HO expectation for outage window.');
+    checklist.push('Do not schedule install until utility coordination path is confirmed.');
+  }
+  if (scope.flags.locatesNeeded){
+    checklist.push('Submit 811 / utility locate request before any digging, trenching, or underground conduit work.');
+    checklist.push('Wait for utility locate markings before field work starts.');
+    checklist.push('Confirm locate expiration window and make sure work happens inside that window.');
+    checklist.push('If trenching is involved, schedule trench inspection before close-up if the AHJ requires it.');
+  }
+  if (scope.flags.privateLocatesNeeded){
+    checklist.push('Ask HO about private utilities: irrigation, gas to BBQ/pool, septic, well, propane, drains, landscape lighting, or outbuilding power.');
+    checklist.push('Schedule private locates when any private utilities may cross the work area.');
+  }
+  if (scope.flags.meterCollar) checklist.push('For Pac Power meter collar / MMD / ConnectDER: upload MMD form and meter photo with interconnection package.');
+  if (scope.flags.battery) {
+    checklist.push('Battery / ESS detected: confirm battery disconnect, gateway/controller, backup/load panel scope, ESS labels, and battery spec sheets are included.');
+    checklist.push('Confirm if the battery is backup or non-backup/rate saver mode and make sure utility upload notes match.');
+  }
+  if (scope.flags.lineSideTap && !scope.dr) {
+    checklist.push('Line side tap detected: confirm permit description, plan set, and utility interconnection docs match LST scope.');
+    checklist.push('Per PM SOP, line side tap is not breaker-only, so call out utility locates before field work.');
+  }
+  if (!checklist.length) checklist.push('No special electrical coordination checklist generated.');
+  setVal('electricalScopeChecklistText', checklist.map((x,i)=>`${i+1}. ${x}`).join('\n'));
+
+  const locateCallout = [];
+  if (scope.flags.locatesNeeded){
+    locateCallout.push('LOCATES NEEDED');
+    locateCallout.push('');
+    locateCallout.push('Why this was flagged:');
+    scope.flags.locateHits.forEach((x,i)=>locateCallout.push(`${i+1}. ${x.label}`));
+    locateCallout.push('');
+    locateCallout.push('Use this when the job includes actual ground disturbance, trenching, underground conduit/feeders, service relocation with underground work, ground mount posts/footings, 811 language, utility locate language, or trench inspection language.');
+  } else {
+    locateCallout.push('NO LOCATE FLAG');
+    locateCallout.push('');
+    locateCallout.push('No locate-triggering scope was found. This should only happen for breaker/load-side interconnection or no utility-side/ground-disturbance work.');
+    if (scope.flags.genericUndergroundOnly){
+      locateCallout.push('');
+      locateCallout.push('Note: The packet mentions underground utility service or standard underground PV code notes. This alone does not require locates.');
+    }
+  }
+
+  const locateActions = [];
+  if (scope.flags.locatesNeeded){
+    locateActions.push('1. Submit 811 / utility locate request before any ground disturbance.');
+    locateActions.push('2. Confirm marks are completed before scheduling trench or underground work.');
+    locateActions.push('3. Ask HO about private utilities in the work area.');
+    locateActions.push('4. If private utilities may exist, order private locates separately.');
+    locateActions.push('5. If trenching is present, confirm whether AHJ requires trench inspection before close-up.');
+    locateActions.push('6. Add outage / access notes if the locate work overlaps utility D/R or service work.');
+  } else {
+    locateActions.push('No locate action needed from the current packet when the actual project interconnection is breaker/load-side and there is no scoped ground disturbance.');
+    locateActions.push('');
+    locateActions.push('Locates become needed if the scope is anything other than breaker-only interconnection, including line side tap, supply side tap, MPU, FSU, PSU, meter base replacement, meter collar/MMD/ConnectDER, trenching, underground conduit/feeders, service relocation, ground mount posts/footings, 811, utility locates, private locates, or trench inspection.');
+  }
+
+  setVal('locateCalloutText', locateCallout.join('\n'));
+  setVal('locateActionStepsText', locateActions.join('\n'));
+}
+
+function evaluatePermitPath(plan){
+  const packet = normalizeText(state.planDoc?.text || '');
+  const reasons = [];
+  const stamp = [];
+  let path = 'PRESCRIPTIVE';
+  let stampMain = 'NO STAMP FLAG';
+
+  const roofMount = /ROOF MOUNT|ROOF-MOUNT|ROOF MOUNTED|ROOF-MOUNTED/i.test(packet);
+  const compShingle = /COMPOSITE SHINGLE|COMP SHINGLE/i.test(packet);
+  const dead = numVal(plan.deadLoad);
+  const snow = numVal(plan.snow);
+  const wind = numVal(plan.wind);
+  const truss = /TRUSS/i.test(packet);
+  const rafter = /RAFTER/i.test(packet);
+  const coastal = /SEASIDE|LINCOLN CITY|NEWPORT|COOS BAY|ASTORIA|CANNON BEACH|TILLAMOOK/i.test(packet + ' ' + plan.city + ' ' + plan.ahj);
+
+  if (roofMount) reasons.push('Roof-mounted system detected.');
+  else { path = 'REVIEW'; reasons.push('Roof mount not clearly proven.'); }
+
+  if (compShingle) reasons.push('Composite shingle roof detected.');
+  else reasons.push('Roof material should be reviewed if not a standard comp shingle roof.');
+
+  if (dead && dead <= 5) reasons.push(`Dead load ${plan.deadLoad} is within 5 PSF screening threshold.`);
+  else if (dead) { path = 'NON-PRESCRIPTIVE'; stampMain = 'STAMP LIKELY'; reasons.push(`Dead load ${plan.deadLoad} exceeds 5 PSF screening threshold.`); }
+  else { path = 'REVIEW'; reasons.push('Dead load was not found.'); }
+
+  if (snow && snow <= 40) reasons.push(`Snow load ${plan.snow} detected. Review local AHJ limits if near coast or high snow area.`);
+  else if (snow) { path = 'REVIEW'; stamp.push(`Snow load ${plan.snow} may need engineering review.`); }
+  else reasons.push('Snow load not found.');
+
+  if (wind && wind <= 120) reasons.push(`Wind speed ${plan.wind} detected.`);
+  else if (wind) { path = 'REVIEW'; stamp.push(`Wind speed ${plan.wind} may need engineering review.`); }
+
+  if (truss && /24"?\s*O\.?C/i.test(packet)) reasons.push('Truss framing at 24 inches o.c. or less detected. Span still should be reviewed if AHJ requires it.');
+  else if (rafter) reasons.push('Rafter framing detected. Confirm span table compliance if using prescriptive path.');
+
+  if (coastal){
+    path = path === 'PRESCRIPTIVE' ? 'REVIEW' : path;
+    stampMain = stampMain === 'NO STAMP FLAG' ? 'MANUAL REVIEW' : stampMain;
+    stamp.push('Coastal or conservative AHJ name detected. Consider engineering stamp review before submittal.');
+  }
+
+  /*
+    Stamp SOP:
+    Do not flag common engineering disclaimer lines as structural modification.
+    Examples:
+    "The design of the racking system, racking connections, and all other structural is by others."
+    "Mechanical, architectural, and all other nonstructural aspects of the design are by others."
+    Only flag actual scope language showing roof framing changes, reinforcement, repairs, sistering, new framing, or field modifications.
+  */
+  let stampSearchText = packet;
+
+  const disclaimerPatterns = [
+    /THE\s+DESIGN\s+OF\s+THE\s+RACKING\s+SYSTEM[\s\S]{0,220}?STRUCTURAL\s+IS\s+BY\s+OTHERS/i,
+    /MECHANICAL,\s*ARCHITECTURAL,\s*AND\s+ALL\s+OTHER\s+NONSTRUCTURAL\s+ASPECTS[\s\S]{0,120}?BY\s+OTHERS/i,
+    /VECTOR\s+STRUCTURAL\s+ENGINEERING\s+HAS\s+REVIEWED[\s\S]{0,260}?EXISTING\s+FRAMING/i,
+    /ELECTRICAL\s+IS\s+BY\s+OTHERS/i
+  ];
+  disclaimerPatterns.forEach(re => {
+    stampSearchText = stampSearchText.replace(re, ' ');
+  });
+
+  const actualStructuralModPatterns = [
+    /\bSTRUCTURAL\s+MODIFICATION(?:S)?\b/i,
+    /\bROOF\s+FRAMING\s+(?:MODIFICATION|REINFORCEMENT|REPAIR|UPGRADE)\b/i,
+    /\bRAFTER\s+(?:REINFORCEMENT|REPAIR|REPLACEMENT|SISTERING|SISTERED)\b/i,
+    /\bTRUSS\s+(?:REINFORCEMENT|REPAIR|REPLACEMENT|MODIFICATION)\b/i,
+    /\bSISTER\s+(?:RAFTER|TRUSS|JOIST)\b/i,
+    /\bSISTERED\s+(?:RAFTER|TRUSS|JOIST)\b/i,
+    /\bNEW\s+(?:RAFTER|TRUSS|JOIST|BEAM|HEADER)\b/i,
+    /\bADD\s+(?:RAFTER|TRUSS|JOIST|BEAM|HEADER|FRAMING)\b/i,
+    /\bREPLACE\s+(?:RAFTER|TRUSS|JOIST|BEAM|HEADER|FRAMING)\b/i,
+    /\bREINFORCE\s+(?:RAFTER|TRUSS|JOIST|BEAM|HEADER|FRAMING|ROOF)\b/i,
+    /\bFIELD\s+MODIFICATION(?:S)?\s+(?:TO\s+)?(?:ROOF|FRAMING|RAFTER|TRUSS)\b/i
+  ];
+
+  if (actualStructuralModPatterns.some(re => re.test(stampSearchText))){
+    path = 'NON-PRESCRIPTIVE';
+    stampMain = 'STAMP LIKELY';
+    stamp.push('Actual structural modification or reinforcement scope language detected.');
+  }
+
+  const stampAlreadyPresent = /VECTOR\s+STRUCTURAL\s+ENGINEERING|STAMPED\s+BY|SIGNATURE\s+WITH\s+SEAL|OREGON\s+REGISTERED\s+PROFESSIONAL|VSE\s+PROJECT\s+NUMBER/i.test(packet);
+  if (stampAlreadyPresent && stampMain === 'NO STAMP FLAG'){
+    stampMain = 'STAMP PRESENT';
+    stamp.push('Structural engineering stamp/seal appears to be included in the plan set. This is not a structural modification by itself.');
+  }
+
+  setText('pathMain', path);
+  setText('pathSub', path === 'PRESCRIPTIVE' ? 'Packet appears to fit a standard prescriptive roof-mounted PV path.' : 'Review the notes before final permit submittal.');
+  setText('stampMain', stampMain);
+  setText('stampSub', stamp.length ? 'Review stamp notes before submittal.' : 'No direct stamp trigger detected from parsed text.');
+  setVal('pathReasons', reasons.map(x=>`- ${x}`).join('\n'));
+  setVal('stampReasons', stamp.length ? stamp.map(x=>`- ${x}`).join('\n') : '- No direct stamp trigger detected from parsed text.');
+}
+
+function setText(id, value){
+  const el = $(id);
+  if (el) el.textContent = value;
+}
+
+function buildCriticalWarnings(plan, ub){
+  const blocks = [];
+  if (state.utilityPriorityFlags.length){
+    blocks.push('UTILITY / ELECTRICAL');
+    state.utilityPriorityFlags.forEach((x,i)=>blocks.push(`${i+1}. ${x}`));
+    blocks.push('');
+  }
+  if (state.reviewFlags.length){
+    blocks.push('PARSER / REVIEW');
+    state.reviewFlags.forEach((x,i)=>blocks.push(`${i+1}. ${x}`));
+    blocks.push('');
+  }
+  const meterVerify = getVal('ubMeterVerification');
+  if (meterVerify && !/DIGITS MATCH/i.test(meterVerify)){
+    blocks.push('METER VERIFICATION');
+    blocks.push(`1. ${meterVerify}`);
+    blocks.push('');
+  }
+  if ((plan.roofPlanes || []).length > 1){
+    blocks.push('ARRAY CHECK');
+    blocks.push(`1. Multiple roof planes detected (${plan.roofPlanes.length}). Confirm all array rows are entered for the utility.`);
+    blocks.push('');
+  }
+  if (!blocks.length) blocks.push('No high-priority PM warning was auto-detected from the current packet.');
+  setVal('criticalWarnings', blocks.join('\n').trim());
+}
+
+function buildSubmissionText(plan, ub){
+  const desc = [
+    `Install roof-mounted photovoltaic system at ${plan.street || '[address]'}, ${plan.city || '[city]'}, ${plan.state || 'OR'} ${plan.zip || ''}.`,
+    `${plan.moduleQty || '[qty]'} modules${plan.moduleWattage ? ` at ${plan.moduleWattage}W` : ''}, ${plan.dcKw || '[DC]'} kW DC / ${plan.acKw || '[AC]'} kW AC.`,
+    `Interconnection method: ${plan.interco || '[interconnection method]'}.`,
+    plan.batteryModel ? `Battery / ESS: ${plan.batteryQty || '1'} ${plan.batteryMake || ''} ${plan.batteryModel}${plan.batteryCapacityKwh ? `, ${plan.batteryCapacityKwh} kWh` : ''}${plan.gatewayModel ? ` with ${plan.gatewayMake || ''} ${plan.gatewayModel}` : ''}.` : '',
+    plan.acDiscReq ? `AC disconnect: ${plan.acDiscReq}${plan.acDiscAmp ? `, ${plan.acDiscAmp}A` : ''}.` : ''
+  ].filter(Boolean).join('\n');
+
+  const site = [
+    `Utility: ${plan.utility || '[utility]'}. AHJ: ${plan.ahj || '[AHJ]'}.`,
+    `Roof material: ${plan.roofMaterial || '[roof material]'}. Racking: ${plan.racking || '[racking]'}.`,
+    `Dominant plane tilt/azimuth: ${plan.tilt || '[tilt]'}° / ${plan.azimuth || '[azimuth]'}°.`,
+    `Roof planes: ${(plan.roofPlanes || []).map(p=>`Roof #${p.roof}: ${p.modules} modules, ${p.tilt}° tilt, ${p.azimuth}° azimuth`).join('; ') || '[review plan set]'}.`,
+    `Meter number: ${plan.meter || '[meter]'}.`
+  ].join('\n');
+
+  const utilNotes = [
+    `Account holder: ${ub.accountHolder || '[UB account holder]'}.`,
+    `Account number: ${ub.account || getVal('account') || '[UB account number]'}.`,
+    `Service address: ${ub.service || plan.street || '[service address]'}.`,
+    `Plan meter: ${plan.meter || '[plan meter]'}. UB / photo meter: ${ub.meterRaw || getVal('ubMeterNumber') || '[UB/photo meter]'}.`,
+    `Meter verification: ${getVal('ubMeterVerification') || '[verify meter]'}.`
+  ].join('\n');
+
+  setVal('projectDescriptionText', desc);
+  setVal('sitePlanNotesText', site);
+  setVal('utilityUploadNotesText', utilNotes);
+}
+
+function buildUtilitySpecs(plan){
+  const inv = [
+    `Inverter make: ${plan.invMake || '[make]'}`,
+    `Inverter model: ${plan.invModel || '[model]'}`,
+    `Inverter quantity: ${plan.invQty || '[qty]'}`,
+    `Nominal voltage: ${plan.voltage || '[voltage]'}`,
+    `AC system size: ${plan.acKw || '[AC kW]'} kW`,
+    `Total export: ${plan.exportKw || plan.acKw || '[export kW]'} kW`,
+    plan.invOutputW ? `Main inverter / ESS output: ${plan.invOutputW} W each` : '',
+    plan.pvMicroModel ? `PV microinverters: ${plan.pvMicroQty || ''} ${plan.pvMicroMake || ''} ${plan.pvMicroModel}${plan.pvMicroOutputW ? `, ${plan.pvMicroOutputW} W each` : ''}` : '',
+    plan.batteryModel ? `Battery: ${plan.batteryQty || '1'} ${plan.batteryMake || ''} ${plan.batteryModel}` : '',
+    plan.batteryCapacityKwh ? `Battery capacity: ${plan.batteryCapacityKwh} kWh` : '',
+    plan.batteryOutputKw ? `Battery output: ${plan.batteryOutputKw} kW` : '',
+    plan.gatewayModel ? `Gateway: ${plan.gatewayMake || ''} ${plan.gatewayModel}` : '',
+    plan.backupPanel ? `Backup panel / loads: ${plan.backupPanel}` : ''
+  ].filter(Boolean).join('\n');
+
+  const planes = plan.roofPlanes && plan.roofPlanes.length ? plan.roofPlanes : [{
+    roof:1,
+    modules:plan.moduleQty,
+    tilt:plan.tilt,
+    azimuth:plan.azimuth
+  }];
+
+  const arrays = planes.map((p,i)=>{
+    const moduleW = Number(plan.moduleWattage || 0);
+    const dc = moduleW && p.modules ? ((moduleW * p.modules) / 1000).toFixed(3) : '';
+    return [
+      `Array ${i+1} / Roof #${p.roof || i+1}`,
+      `Modules: ${p.modules || '[qty]'}`,
+      `Module make/model: ${plan.moduleMake || '[make]'} ${plan.moduleModel || '[model]'}`,
+      `Module wattage: ${plan.moduleWattage || '[wattage]'} W`,
+      `Tilt: ${p.tilt || '[tilt]'}°`,
+      `Azimuth: ${p.azimuth || '[azimuth]'}°`,
+      dc ? `Array DC size: ${dc} kW` : ''
+    ].filter(Boolean).join('\n');
+  }).join('\n\n');
+
+  const invRows = planes.map((p,i)=>[
+    `Inverter row ${i+1} / Roof #${p.roof || i+1}`,
+    `Inverters: ${p.modules || '[qty]'}`,
+    `Model: ${plan.invMake || '[make]'} ${plan.invModel || '[model]'}`,
+    `Linked module row: Array ${i+1}`
+  ].join('\n')).join('\n\n');
+
+  setVal('utilityInvSpecText', inv);
+  setVal('utilityArraySpecText', arrays);
+  setVal('utilityInverterRowsText', invRows);
+}
+
+function buildPacketReadiness(plan, ub){
+  const items = [
+    ['Plan set', !!state.planDoc],
+    ['Utility bill', !!state.ubDoc],
+    ['Meter photo', !!state.meterDoc],
+    ['HO name', !!plan.owner],
+    ['Service address', !!plan.street],
+    ['Utility', !!plan.utility],
+    ['AHJ', !!plan.ahj],
+    ['Meter number', !!plan.meter],
+    ['UB account number', !!(ub.account || getVal('account'))],
+    ['Module model', !!plan.moduleModel],
+    ['Module wattage', !!plan.moduleWattage],
+    ['Inverter model', !!plan.invModel],
+    ['Battery / ESS', !plan.hasBattery || !!plan.batteryModel],
+    ['Gateway', !plan.hasBattery || !!plan.gatewayModel],
+    ['Roof planes', !!(plan.roofPlanes || []).length]
+  ];
+  setVal('packetReadinessText', items.map(([name,ok])=>`${ok ? 'READY' : 'MISSING'} - ${name}`).join('\n'));
+}
+
+function collectFields(){
+  const ids = ['utility','ahj','owner','street','city','state','zip','meter','account','interco','dcKw','acKw','exportKw','moduleMake','moduleModel','moduleWattage','moduleQty','invMake','invModel','invQty','invOutputW','pvMicroMake','pvMicroModel','pvMicroQty','pvMicroOutputW','batteryMake','batteryModel','batteryQty','batteryCapacityKwh','batteryOutputKw','gatewayMake','gatewayModel','backupPanel','phase','voltage','busRating','mainBreaker','pvBreaker','roofMaterial','racking','mounting','wind','snow','deadLoad','roofRafterSize','roofRafterSpacing','woodGrade','roofRafterSpanFeet','tilt','azimuth','ptc','acDiscReq','acDiscAmp','ubAccountHolder','ubAccountNumber','ubServiceAddress','ubMeterNumber','ubMeterVerification','locateCalloutText','locateActionStepsText','splitPagesText','utilityDownloadChecklistText','utilityPacketBaseName'];
+  const out = {};
+  ids.forEach(id => out[id] = getVal(id));
+  out.permitPath = $('pathMain') ? $('pathMain').textContent : '';
+  out.stampRecommendation = $('stampMain') ? $('stampMain').textContent : '';
+  out.roofPlanes = state.planData?.roofPlanes || [];
+  out.reviewFlags = state.reviewFlags;
+  out.utilityPriorityFlags = state.utilityPriorityFlags;
+  return out;
+}
+
+function downloadFile(name, content, type='text/plain'){
+  const blob = new Blob([content], {type});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(()=>{URL.revokeObjectURL(a.href); a.remove();}, 1000);
+}
+
+async function apiJson(path, options={}){
+  const res = await fetch(path, {
+    headers:{'Content-Type':'application/json', ...(options.headers || {})},
+    ...options
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err = new Error(data.error || `Request failed: ${res.status}`);
+    err.details = data.details || {};
+    throw err;
+  }
+  return data;
+}
+
+async function saveProjectToAutopilot(){
+  const payload = collectFields();
+  $('parseStatus').textContent = 'Saving project to Autopilot...';
+  const detail = await apiJson('/api/projects', {
+    method:'POST',
+    body:JSON.stringify({parserPayload:payload})
+  });
+  state.savedProjectId = detail.project.id;
+  $('parseStatus').textContent = [
+    `Saved project ${detail.project.id}.`,
+    `Status: ${detail.project.status}.`,
+    detail.project.currentStage,
+    detail.humanReviewItems?.filter(x => x.status === 'pending').length ? 'Human review items are waiting in the dashboard.' : ''
+  ].filter(Boolean).join('\n');
+  return detail;
+}
+
+async function prepareSavedProject(){
+  let projectId = state.savedProjectId;
+  if (!projectId) {
+    const saved = await saveProjectToAutopilot();
+    projectId = saved.project.id;
+  }
+  $('parseStatus').textContent = 'Preparing supervised portal staging...';
+  const detail = await apiJson(`/api/projects/${projectId}/prepare-submission`, {method:'POST', body:'{}'});
+  $('parseStatus').textContent = [
+    'Mock portal staging complete.',
+    detail.project.currentStage,
+    'Automation stopped at human review. Final submit was not clicked.'
+  ].join('\n');
+}
+
+
+function safeFilePart(s){
+  return clean(s || '')
+    .replace(/[\\/:*?"<>|]+/g,'')
+    .replace(/\s+/g,' ')
+    .trim()
+    .slice(0,120);
+}
+
+function getUtilityPacketBaseName(){
+  const manual = getVal('utilityPacketBaseName');
+  if (manual) return safeFilePart(manual);
+  const owner = getVal('owner') || 'HO';
+  const address = getVal('street') || 'Project';
+  return safeFilePart(`${owner} - ${address}`);
+}
+
+function makeSplitFilename(label){
+  return `${getUtilityPacketBaseName()} - ${label}.pdf`;
+}
+
+function actualSheetCode(pageText){
+  const t = normalizeText(pageText || '');
+
+  // Actual title block code. This avoids matching the sheet index on page 1.
+  const titleBlock = t.match(/Sheet Number[\s\S]{0,140}\b(PV\s*0\.0|PV\s*1\.0|PV\s*1\.1|PV\s*1\.2|IM\s*1\.0|S\s*1\.1|E\s*1\.1|E\s*1\.2|E\s*1\.3|DS\s*0?\d{1,2}|DS[-\s]*0?\d{1,2})\b[\s\S]{0,80}Sheet Name/i);
+  if (titleBlock) return clean(titleBlock[1]).replace(/\s+/g,' ').replace(/DS-\s*/i,'DS ').toUpperCase();
+
+  // Backup for pages where OCR order is rough.
+  const direct = t.match(/\b(PV\s*0\.0|PV\s*1\.0|PV\s*1\.1|PV\s*1\.2|IM\s*1\.0|S\s*1\.1|E\s*1\.1|E\s*1\.2|E\s*1\.3|DS\s*0?\d{1,2}|DS[-\s]*0?\d{1,2})\b/i);
+  if (direct) return clean(direct[1]).replace(/\s+/g,' ').replace(/DS-\s*/i,'DS ').toUpperCase();
+
+  return '';
+}
+
+function pagesByCode(code){
+  const target = code.toUpperCase().replace(/\s+/g,' ');
+  return (state.planDoc?.pages || [])
+    .filter(p => actualSheetCode(p.text) === target)
+    .map(p => p.page);
+}
+
+function dsPages(){
+  return (state.planDoc?.pages || []).filter(p => /^DS\s*\d+/i.test(actualSheetCode(p.text)));
+}
+
+function detectSplitPages(){
+  const pages = state.planDoc?.pages || [];
+  const max = state.planDoc?.pageCount || 999;
+  const uniqNums = arr => [...new Set((arr || []).filter(n => Number.isInteger(n) && n > 0 && n <= max))].sort((a,b)=>a-b);
+
+  const byCodeOrFallback = (code, fallback, patterns) => {
+    const coded = pagesByCode(code);
+    if (coded.length) return coded[0];
+
+    // Fallback only looks for actual sheet titles, not sheet index references.
+    for (const p of pages){
+      const t = normalizeText(p.text || '');
+      if ((patterns || []).some(re => re.test(t))) return p.page;
+    }
+    return fallback;
+  };
+
+  const cover = byCodeOrFallback('PV 0.0', 1, [/GENERAL NOTES AND PROJECT DATA\s+PV\s*0\.0/i]);
+  const plot = byCodeOrFallback('PV 1.0', 2, [/\b1\s+PLOT PLAN\s+PV\s*1\.0/i, /\bPLOT PLAN SCALE\b/i]);
+  const site = byCodeOrFallback('PV 1.1', 3, [/\b1\s+SITE PLAN\s+PV\s*1\.1/i, /\bSITE PLAN SCALE\b/i]);
+  const roof = byCodeOrFallback('PV 1.2', 4, [/\b1\s+ROOF SECTION\s+PV\s*1\.2/i]);
+  const inverterMap = byCodeOrFallback('IM 1.0', 5, [/\b1\s+INVERTER MAP\s+IM\s*1\.0/i]);
+  const mount = byCodeOrFallback('S 1.1', 6, [/\bMOUNT DETAIL\b|\bATTACHMENT DETAIL\b/i]);
+  const sld = byCodeOrFallback('E 1.1', 7, [/\b3-LINE DIAGRAM\b[\s\S]{0,600}?\bUTILITY COMPANY\b/i]);
+  const notes = byCodeOrFallback('E 1.2', 8, [/\bSITE NOTES\b[\s\S]{0,300}?\bEQUIPMENT LOCATIONS\b/i]);
+  const labels = byCodeOrFallback('E 1.3', 9, [/\bWARNING LABELS\b[\s\S]{0,400}?\bLABEL LOCATION\b/i]);
+
+  const ds = dsPages();
+
+  const dsFind = (patterns) => {
+    return ds
+      .filter(p => {
+        const t = normalizeText(p.text || '');
+        return patterns.some(re => re.test(t));
+      })
+      .map(p => p.page);
+  };
+
+  let moduleSpecs = dsFind([
+    /PV MODULE SPECIFICATION SHEET/i,
+    /PV MODULE\s*\/\s*INV SPECIFICATION SHEET/i,
+    /Q\.TRON AC/i,
+    /ZXM7-SH108/i,
+    /ZNSHINESOLAR/i,
+    /MODULE SPECIFICATION/i
+  ]);
+
+  let inverterSpecs = dsFind([
+    /MICROINVERTER SPECIFICATION SHEET/i,
+    /PV MODULE\s*\/\s*INV SPECIFICATION SHEET/i,
+    /DS3 Series/i,
+    /Q\.TRON AC/i,
+    /Q\.MI/i,
+    /MICROINVERTER/i,
+    /INVERTER SPECIFICATION/i
+  ]);
+
+  const combinerSpecs = dsFind([
+    /COMBINER SPECIFICATION SHEET/i,
+    /COMBINER PANEL CERTIFICATION/i,
+    /Q\.HOME COMBINER/i,
+    /BR STYLE 1-INCH LOADCENTER/i,
+    /COMBINER PANEL/i
+  ]);
+
+  const acDisconnectSpecs = dsFind([
+    /AC DISCONNECT UL CERTIFICATION/i,
+    /SAFETY SWITCH/i,
+    /SWITCHING DEVICES/i,
+    /NON-FUSIBLE AC DISCONNECT/i
+  ]);
+
+  const junctionSpecs = dsFind([
+    /JUNCTION BOX UL CERTIFICATION/i,
+    /JUNCTION BOX/i,
+    /OUTDOOR PHOTOVOLTAIC ENCLOSURES/i,
+    /SOLADECK/i
+  ]);
+
+  const wiringSpecs = dsFind([
+    /WIRING SPECIFICATION/i,
+    /PV PHOTOVOLTAIC CABLE/i,
+    /DUAL PASS 2KV RATED PV/i
+  ]);
+
+  const batterySpecs = dsFind([
+    /INVERTER\/BATT DATA SHEET/i,
+    /BATTERY DATA SHEET/i,
+    /POWERWALL/i,
+    /TESLA GATEWAY/i,
+    /GATEWAY 3 DATA SHEET/i,
+    /ENERGY STORAGE/i
+  ]);
+
+  const gatewaySpecs = dsFind([
+    /TESLA GATEWAY/i,
+    /GATEWAY 3 DATA SHEET/i,
+    /BACKUP GATEWAY/i
+  ]);
+
+  const rackingSpecs = dsFind([
+    /RACKING/i,
+    /MOUNTING/i,
+    /SNAPNRACK/i,
+    /CHIKO/i,
+    /GROUNDING/i,
+    /MID CLAMP/i,
+    /END CLAMP/i,
+    /SPLICE KIT/i
+  ]);
+
+  // Combined Q.TRON sheets contain module and inverter info together.
+  if (!moduleSpecs.length && inverterSpecs.length) moduleSpecs = [...inverterSpecs];
+  if (!inverterSpecs.length && moduleSpecs.length) inverterSpecs = [...moduleSpecs];
+
+  return {
+    cover: uniqNums([cover]),
+    plot: uniqNums([plot]),
+    site: uniqNums([site]),
+    roof: uniqNums([roof]),
+    inverterMap: uniqNums([inverterMap]),
+    mount: uniqNums([mount]),
+    sld: uniqNums([sld]),
+    notes: uniqNums([notes]),
+    labels: uniqNums([labels]),
+    siteAndPlot: uniqNums([plot, site]),
+    moduleSpecs: uniqNums(moduleSpecs),
+    inverterSpecs: uniqNums(inverterSpecs),
+    combinerSpecs: uniqNums(combinerSpecs),
+    acDisconnectSpecs: uniqNums(acDisconnectSpecs),
+    batterySpecs: uniqNums(batterySpecs),
+    gatewaySpecs: uniqNums(gatewaySpecs),
+    junctionSpecs: uniqNums(junctionSpecs),
+    wiringSpecs: uniqNums(wiringSpecs),
+    rackingSpecs: uniqNums(rackingSpecs)
+  };
+}
+
+function updateSplitUi(){
+  if (!state.planDoc) {
+    setVal('splitMappingStatus','Upload and parse plan set first');
+    setVal('splitPagesText','');
+    setVal('utilityDownloadChecklistText','Upload and parse a plan set to build utility downloads.');
+    return;
+  }
+
+  const map = detectSplitPages();
+
+  setVal('splitPagesText', [
+    `01 SLD / 3-line: ${map.sld.join(', ') || 'missing'}`,
+    `02 Site + plot plan: ${map.siteAndPlot.join(', ') || 'missing'}`,
+    `03 Module specs: ${map.moduleSpecs.join(', ') || 'missing'}`,
+    `04 Inverter specs: ${map.inverterSpecs.join(', ') || 'missing'}`,
+    `05 Combiner specs: ${map.combinerSpecs.join(', ') || 'missing'}`,
+    `06 AC disconnect specs: ${map.acDisconnectSpecs.join(', ') || 'missing'}`,
+    `07 Battery / ESS specs: ${map.batterySpecs.join(', ') || 'not detected'}`,
+    `08 Gateway specs: ${map.gatewaySpecs.join(', ') || 'not detected'}`,
+    `Full split extras:`,
+    `- General notes: ${map.cover.join(', ') || 'missing'}`,
+    `- Roof section: ${map.roof.join(', ') || 'missing'}`,
+    `- Inverter map: ${map.inverterMap.join(', ') || 'missing'}`,
+    `- Mount details: ${map.mount.join(', ') || 'missing'}`,
+    `- Warning labels: ${map.labels.join(', ') || 'missing'}`,
+    `- Junction box specs: ${map.junctionSpecs.join(', ') || 'missing'}`,
+    `- Wiring specs: ${map.wiringSpecs.join(', ') || 'missing'}`,
+    `- Racking / mounting specs: ${map.rackingSpecs.join(', ') || 'missing'}`
+  ].join('\n'));
+
+  const missing = [];
+  if (!map.sld.length) missing.push('SLD / 3-line');
+  if (!map.siteAndPlot.length) missing.push('Site + plot plan');
+  if (!map.moduleSpecs.length) missing.push('Module specs');
+  if (!map.inverterSpecs.length) missing.push('Inverter specs');
+
+  const checklist = [
+    `Mode: ${getVal('utilityPacketMode') || 'pge'}`,
+    '',
+    `${map.sld.length ? 'READY' : 'MISSING'} - 01 SLD 3-Line Diagram`,
+    `${map.siteAndPlot.length ? 'READY' : 'MISSING'} - 02 Site Plot Plan`,
+    `${map.moduleSpecs.length ? 'READY' : 'MISSING'} - 03 Module Spec Sheet`,
+    `${map.inverterSpecs.length ? 'READY' : 'MISSING'} - 04 Inverter Spec Sheet`,
+    `${(map.batterySpecs && map.batterySpecs.length) ? 'READY' : (getVal('batteryModel') ? 'MISSING' : 'OPTIONAL/MISSING')} - 07 Battery / ESS Spec Sheet`,
+    `${(map.gatewaySpecs && map.gatewaySpecs.length) ? 'READY' : (getVal('gatewayModel') ? 'MISSING' : 'OPTIONAL/MISSING')} - 08 Gateway Spec Sheet`,
+    `${state.ubDoc ? 'READY' : 'OPTIONAL/MISSING'} - 09 Utility Bill`,
+    `${state.meterDoc ? 'READY' : 'OPTIONAL/MISSING'} - 10 Meter Photo`
+  ];
+
+  if (/PACIFIC/i.test(getVal('utility')) || getVal('utilityPacketMode') === 'pacpower') {
+    checklist.push('', 'Pacific Power reminder: upload meter photo. If meter collar / MMD / ConnectDER is present, include MMD form.');
+  }
+  if (state.electricalScope?.flags?.locatesNeeded) {
+    checklist.push('', 'Locate reminder: utility locates are called out for this project.');
+  }
+
+  setVal('utilityDownloadChecklistText', checklist.join('\n'));
+  setVal('splitMappingStatus', missing.length ? `Review missing: ${missing.join(', ')}` : 'Ready');
+}
+
+async function createPdfFromPlanPages(pageNums){
+  if (!state.planFile) throw new Error('Upload and parse a plan set first.');
+  if (!window.PDFLib) throw new Error('PDFLib is not loaded.');
+
+  const srcBytes = await fileToArrayBuffer(state.planFile);
+  const srcPdf = await PDFLib.PDFDocument.load(srcBytes);
+  const outPdf = await PDFLib.PDFDocument.create();
+  const valid = [...new Set(pageNums || [])].filter(n => n >= 1 && n <= srcPdf.getPageCount());
+
+  if (!valid.length) throw new Error('No valid pages found for this split.');
+
+  const copied = await outPdf.copyPages(srcPdf, valid.map(n => n - 1));
+  copied.forEach(p => outPdf.addPage(p));
+
+  return await outPdf.save();
+}
+
+async function imageOrPdfFileToPdfBytes(file){
+  if (!file) return null;
+  if (!window.PDFLib) throw new Error('PDFLib is not loaded.');
+
+  const isPdf = /pdf/i.test(file.type) || /\.pdf$/i.test(file.name);
+  const bytes = await fileToArrayBuffer(file);
+
+  if (isPdf) return new Uint8Array(bytes);
+
+  const pdfDoc = await PDFLib.PDFDocument.create();
+  let image;
+  if (/png/i.test(file.type) || /\.png$/i.test(file.name)) image = await pdfDoc.embedPng(bytes);
+  else image = await pdfDoc.embedJpg(bytes);
+
+  const maxW = 612;
+  const maxH = 792;
+  const scale = Math.min(maxW / image.width, maxH / image.height, 1);
+  const w = image.width * scale;
+  const h = image.height * scale;
+
+  const page = pdfDoc.addPage([maxW, maxH]);
+  page.drawImage(image, {x:(maxW-w)/2, y:(maxH-h)/2, width:w, height:h});
+
+  return await pdfDoc.save();
+}
+
+async function downloadPlanSplit(label, pages){
+  const bytes = await createPdfFromPlanPages(pages);
+  saveAs(new Blob([bytes], {type:'application/pdf'}), makeSplitFilename(label));
+}
+
+async function downloadSupportingPdf(label, file){
+  if (!file) throw new Error(`${label} file has not been uploaded.`);
+  const bytes = await imageOrPdfFileToPdfBytes(file);
+  saveAs(new Blob([bytes], {type:'application/pdf'}), makeSplitFilename(label));
+}
+
+async function buildUtilityZip(){
+  if (!state.planFile) throw new Error('Upload and parse a plan set first.');
+  if (!window.JSZip) throw new Error('JSZip is not loaded.');
+
+  const zip = new JSZip();
+  const map = detectSplitPages();
+  const mode = getVal('utilityPacketMode') || 'pge';
+
+  const addPlanPdf = async (label, pages) => {
+    if (!pages || !pages.length) return;
+    const bytes = await createPdfFromPlanPages(pages);
+    zip.file(makeSplitFilename(label), bytes);
+  };
+
+  // Prior-style utility required docs.
+  await addPlanPdf('01 SLD 3-Line Diagram', map.sld);
+  await addPlanPdf('02 Site Plot Plan', map.siteAndPlot);
+  await addPlanPdf('03 Module Spec Sheet', map.moduleSpecs);
+  await addPlanPdf('04 Inverter Spec Sheet', map.inverterSpecs);
+
+  // Common optional utility docs.
+  await addPlanPdf('05 Combiner Spec Sheet', map.combinerSpecs);
+  await addPlanPdf('06 AC Disconnect Spec Sheet', map.acDisconnectSpecs);
+  await addPlanPdf('07 Battery ESS Spec Sheet', map.batterySpecs);
+  await addPlanPdf('08 Gateway Spec Sheet', map.gatewaySpecs);
+
+  if (state.ubFile) {
+    zip.file(makeSplitFilename('09 Utility Bill'), await imageOrPdfFileToPdfBytes(state.ubFile));
+  }
+  if (state.meterFile) {
+    zip.file(makeSplitFilename('10 Meter Photo'), await imageOrPdfFileToPdfBytes(state.meterFile));
+  }
+
+  if (mode === 'full'){
+    await addPlanPdf('09 General Notes Project Data', map.cover);
+    await addPlanPdf('10 Roof Section', map.roof);
+    await addPlanPdf('11 Inverter Map', map.inverterMap);
+    await addPlanPdf('12 Mount Details', map.mount);
+    await addPlanPdf('13 Warning Labels', map.labels);
+    await addPlanPdf('14 Junction Box Spec Sheet', map.junctionSpecs);
+    await addPlanPdf('15 Wiring Spec Sheet', map.wiringSpecs);
+    await addPlanPdf('16 Racking Mounting Spec Sheets', map.rackingSpecs);
+  }
+
+  const manifest = [
+    `Utility packet for ${getUtilityPacketBaseName()}`,
+    `Created: ${new Date().toLocaleString()}`,
+    '',
+    getVal('utilityDownloadChecklistText') || '',
+    '',
+    'Detected pages:',
+    getVal('splitPagesText') || ''
+  ].join('\n');
+
+  zip.file(`${getUtilityPacketBaseName()} - Upload Checklist.txt`, manifest);
+
+  const blob = await zip.generateAsync({type:'blob'});
+  saveAs(blob, `${getUtilityPacketBaseName()} - Utility Upload Packet.zip`);
+}
+
+
+async function runParse(){
+  state.reviewFlags = [];
+  state.utilityPriorityFlags = [];
+  state.planFile = $('planFile').files[0] || null;
+  state.ubFile = $('ubFile').files[0] || null;
+  state.meterFile = $('meterPhotoFile').files[0] || null;
+
+  if (!state.planFile && !state.ubFile && !state.meterFile){
+    $('parseStatus').textContent = 'Upload at least one file first.';
+    return;
+  }
+
+  $('parseStatus').textContent = 'Starting parse...';
+
+  let plan = {};
+  let ub = {};
+  let meterPhoto = {};
+
+  if (state.planFile){
+    $('parseStatus').textContent = 'Reading plan set PDF...';
+    state.planDoc = await extractAnyFileText(state.planFile, 'plan');
+    setVal('planRawTextPreview', (state.planDoc.text || '').slice(0,12000));
+    plan = parsePlanData(state.planDoc);
+    state.planData = plan;
+    fillProjectFields(plan);
+  }
+
+  if (state.ubFile){
+    $('parseStatus').textContent = 'Reading utility bill...';
+    state.ubDoc = await extractAnyFileText(state.ubFile, 'utility bill');
+    ub = parseUBData(state.ubDoc);
+    ub.rawText = state.ubDoc.text || '';
+  }
+
+  if (state.meterFile){
+    $('parseStatus').textContent = 'Reading meter photo...';
+    state.meterDoc = await extractAnyFileText(state.meterFile, 'meter photo');
+    meterPhoto = parseMeterPhotoData(state.meterDoc);
+  }
+
+  if (state.ubDoc || state.meterDoc){
+    fillUBFields(ub, meterPhoto);
+  }
+
+  const finalPlan = {...plan};
+  Object.keys(finalPlan).forEach(k => { if ($(k)) finalPlan[k] = getVal(k); });
+  finalPlan.roofPlanes = plan.roofPlanes || [];
+
+  const finalUb = {...ub, meterRaw:getVal('ubMeterNumber')};
+
+  const scope = detectElectricalScope(finalPlan);
+  state.electricalScope = scope;
+  updateElectricalScopeUi(scope);
+  evaluatePermitPath(finalPlan);
+  buildCriticalWarnings(finalPlan, finalUb);
+  buildSubmissionText(finalPlan, finalUb);
+  buildUtilitySpecs(finalPlan);
+  buildPacketReadiness(finalPlan, finalUb);
+  setVal('utilityPacketBaseName', getUtilityPacketBaseName());
+  updateSplitUi();
+  setVal('reviewFlags', state.reviewFlags.join('\n'));
+
+  $('parseStatus').textContent = [
+    'Parse complete.',
+    finalPlan.moduleWattage ? `Module wattage parsed: ${finalPlan.moduleWattage}W.` : 'Module wattage missing.',
+    finalUb.account ? `UB account parsed: ${finalUb.account}.` : (state.ubDoc ? 'UB uploaded, but account not confidently parsed. Strict UB parser left the field blank instead of using a bad table value. Enter visible account manually if needed.' : 'UB account missing or not uploaded.'),
+    getVal('ubMeterVerification') ? `Meter verification: ${getVal('ubMeterVerification')}.` : ''
+  ].filter(Boolean).join('\n');
+}
+
+function resetAll(){
+  document.querySelectorAll('input:not([type=file]), textarea').forEach(el => {
+    if (el.id === 'installerCompany') el.value = 'TML INTERNATIONAL LLC';
+    else if (el.id === 'installerEmail') el.value = 'permit@infinitysolarusa.com';
+    else if (el.id === 'installerPhone') el.value = '(800) 818-0598';
+    else if (el.id === 'installerLine1') el.value = '808 SE Chkalov Dr ST 3-337';
+    else if (el.id === 'installerCity') el.value = 'Vancouver';
+    else if (el.id === 'installerState') el.value = 'WA';
+    else if (el.id === 'installerZip') el.value = '98683';
+    else if (el.id === 'electricalLicenseNumber') el.value = 'C1556';
+    else if (el.id === 'contractorLicenseNumber') el.value = '223690';
+    else if (el.id === 'metroCityLicenseNumber') el.value = '14838';
+    else if (el.id === 'supervisingElectrician') el.value = 'Charles Bitton';
+    else if (el.id === 'electricianLicenseNumber') el.value = '5787S';
+    else if (el.id === 'mounting') el.value = 'Roof Mount';
+    else if (el.id === 'state') el.value = 'OR';
+    else if (el.id === 'contractorLicenseNotes') el.value = 'Installer: TML INTERNATIONAL LLC | Email: permit@infinitysolarusa.com | Phone: (800) 818-0598 | Address: 808 SE Chkalov Dr ST 3-337, Vancouver, WA 98683 | Electrical Lic: C1556 | CCB Lic: 223690 | Metro/City Lic: 14838 | Supervising Electrician: Charles Bitton | Electrician Lic: 5787S';
+    else el.value = '';
+  });
+  document.querySelectorAll('input[type=file]').forEach(el => el.value = '');
+  state.planDoc = state.ubDoc = state.meterDoc = null;
+  state.reviewFlags = [];
+  state.utilityPriorityFlags = [];
+  state.savedProjectId = null;
+  $('parseStatus').textContent = 'Waiting for files.';
+}
+
+document.addEventListener('click', e => {
+  const btn = e.target.closest('button');
+  if (!btn) return;
+  if (btn.dataset.copy){
+    const el = $(btn.dataset.copy);
+    if (el){
+      navigator.clipboard.writeText(el.value || '');
+      btn.textContent = 'Copied';
+      setTimeout(()=>btn.textContent = btn.dataset.copy.includes('project') ? 'Copy project description' : btn.dataset.copy.includes('site') ? 'Copy site plan notes' : btn.dataset.copy.includes('Array') ? 'Copy PV arrays' : 'Copy', 900);
+    }
+  }
+});
+
+$('parseBtn').addEventListener('click', () => {
+  runParse().catch(err => {
+    console.error(err);
+    $('parseStatus').textContent = `Parse failed: ${err.message || err}`;
+  });
+});
+$('resetBtn').addEventListener('click', resetAll);
+$('downloadJsonBtn').addEventListener('click', () => {
+  downloadFile('solar-submission-parsed-data.json', JSON.stringify(collectFields(), null, 2), 'application/json');
+});
+$('saveProjectBtn').addEventListener('click', () => {
+  saveProjectToAutopilot().catch(err => {
+    console.error(err);
+    $('parseStatus').textContent = `Save failed: ${err.message || err}`;
+  });
+});
+$('prepareSubmittalBtn').addEventListener('click', () => {
+  prepareSavedProject().catch(err => {
+    console.error(err);
+    const detailText = err.details ? Object.entries(err.details).map(([k,v]) => `${k}: ${v}`).join(' | ') : '';
+    $('parseStatus').textContent = [`Prepare submittal blocked: ${err.message || err}`, detailText].filter(Boolean).join('\n');
+  });
+});
+$('openDashboardBtn').addEventListener('click', () => {
+  window.location.href = '/dashboard.html';
+});
+
+$('buildUtilityZipBtn').addEventListener('click', () => {
+  buildUtilityZip().catch(err => {
+    console.error(err);
+    $('parseStatus').textContent = `Utility ZIP failed: ${err.message || err}`;
+  });
+});
+$('downloadSldBtn').addEventListener('click', () => {
+  const map = detectSplitPages();
+  downloadPlanSplit('01 SLD 3-Line Diagram', map.sld).catch(err => $('parseStatus').textContent = `SLD download failed: ${err.message || err}`);
+});
+$('downloadSitePlanBtn').addEventListener('click', () => {
+  const map = detectSplitPages();
+  downloadPlanSplit('02 Site Plot Plan', map.siteAndPlot).catch(err => $('parseStatus').textContent = `Site plan download failed: ${err.message || err}`);
+});
+$('downloadModuleSpecBtn').addEventListener('click', () => {
+  const map = detectSplitPages();
+  downloadPlanSplit('03 Module Spec Sheet', map.moduleSpecs).catch(err => $('parseStatus').textContent = `Module spec download failed: ${err.message || err}`);
+});
+$('downloadInverterSpecBtn').addEventListener('click', () => {
+  const map = detectSplitPages();
+  downloadPlanSplit('04 Inverter Spec Sheet', map.inverterSpecs).catch(err => $('parseStatus').textContent = `Inverter spec download failed: ${err.message || err}`);
+});
+$('downloadBatterySpecBtn').addEventListener('click', () => {
+  const map = detectSplitPages();
+  downloadPlanSplit('07 Battery ESS Spec Sheet', map.batterySpecs).catch(err => $('parseStatus').textContent = `Battery spec download failed: ${err.message || err}`);
+});
+$('downloadGatewaySpecBtn').addEventListener('click', () => {
+  const map = detectSplitPages();
+  downloadPlanSplit('08 Gateway Spec Sheet', map.gatewaySpecs).catch(err => $('parseStatus').textContent = `Gateway spec download failed: ${err.message || err}`);
+});
+$('downloadUtilityBillPdfBtn').addEventListener('click', () => {
+  downloadSupportingPdf('09 Utility Bill', state.ubFile).catch(err => $('parseStatus').textContent = `UB PDF download failed: ${err.message || err}`);
+});
+$('downloadMeterPhotoPdfBtn').addEventListener('click', () => {
+  downloadSupportingPdf('10 Meter Photo', state.meterFile).catch(err => $('parseStatus').textContent = `Meter photo PDF download failed: ${err.message || err}`);
+});
+</script>
+</body>
+</html>

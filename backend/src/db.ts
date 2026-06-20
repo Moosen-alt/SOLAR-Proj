@@ -92,6 +92,7 @@ function migrate(db: AppDb): void {
       notes TEXT NOT NULL DEFAULT '',
       created_at TEXT NOT NULL
     );
+
     CREATE TABLE IF NOT EXISTS portal_profiles (
       id TEXT PRIMARY KEY,
       client_id TEXT,
@@ -107,6 +108,7 @@ function migrate(db: AppDb): void {
       created_at TEXT NOT NULL,
       FOREIGN KEY (client_id) REFERENCES clients(id)
     );
+
     CREATE TABLE IF NOT EXISTS projects (
       id TEXT PRIMARY KEY,
       client_id TEXT,
@@ -119,8 +121,8 @@ function migrate(db: AppDb): void {
       utility TEXT NOT NULL DEFAULT '',
       account_number TEXT NOT NULL DEFAULT '',
       meter_number TEXT NOT NULL DEFAULT '',
-      system_size_dc_kw REAM,
-      system_size_ac_kw REAM,
+      system_size_dc_kw REAL,
+      system_size_ac_kw REAL,
       total_export_kw REAL,
       interconnection_method TEXT NOT NULL DEFAULT '',
       status TEXT NOT NULL,
@@ -131,6 +133,397 @@ function migrate(db: AppDb): void {
       updated_at TEXT NOT NULL,
       FOREIGN KEY (client_id) REFERENCES clients(id)
     );
+
+    CREATE TABLE IF NOT EXISTS source_files (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      file_type TEXT NOT NULL,
+      original_filename TEXT NOT NULL DEFAULT '',
+      stored_path TEXT NOT NULL DEFAULT '',
+      extracted_text TEXT NOT NULL DEFAULT '',
+      ocr_used INTEGER NOT NULL DEFAULT 0,
+      confidence REAL,
+      uploaded_at TEXT NOT NULL,
+      FOREIGN KEY (project_id) REFERENCES projects(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS extracted_fields (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      field_name TEXT NOT NULL,
+      field_value TEXT NOT NULL DEFAULT '',
+      source_file_id TEXT,
+      source_method TEXT NOT NULL DEFAULT '',
+      confidence REAL,
+      human_verified INTEGER NOT NULL DEFAULT 0,
+      notes TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (project_id) REFERENCES projects(id),
+      FOREIGN KEY (source_file_id) REFERENCES source_files(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS qc_results (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      qc_status TEXT NOT NULL,
+      rule_id TEXT NOT NULL,
+      rule_name TEXT NOT NULL,
+      message TEXT NOT NULL,
+      severity TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (project_id) REFERENCES projects(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS ahj_library (
+      id TEXT PRIMARY KEY,
+      ahj_name TEXT NOT NULL,
+      state TEXT NOT NULL DEFAULT '',
+      county TEXT NOT NULL DEFAULT '',
+      portal_name TEXT NOT NULL DEFAULT '',
+      portal_url TEXT NOT NULL DEFAULT '',
+      permit_types TEXT NOT NULL DEFAULT '',
+      file_naming_profile TEXT NOT NULL DEFAULT '',
+      required_documents TEXT NOT NULL DEFAULT '',
+      known_rejection_patterns TEXT NOT NULL DEFAULT '',
+      notes TEXT NOT NULL DEFAULT ''
+    );
+
+    CREATE TABLE IF NOT EXISTS utility_library (
+      id TEXT PRIMARY KEY,
+      utility_name TEXT NOT NULL,
+      state TEXT NOT NULL DEFAULT '',
+      portal_name TEXT NOT NULL DEFAULT '',
+      portal_url TEXT NOT NULL DEFAULT '',
+      nem_process TEXT NOT NULL DEFAULT '',
+      required_documents TEXT NOT NULL DEFAULT '',
+      known_rejection_patterns TEXT NOT NULL DEFAULT '',
+      account_number_pattern TEXT NOT NULL DEFAULT '',
+      meter_number_pattern TEXT NOT NULL DEFAULT '',
+      notes TEXT NOT NULL DEFAULT ''
+    );
+
+    CREATE TABLE IF NOT EXISTS permit_utility_knowledge (
+      id TEXT PRIMARY KEY,
+      profile_key TEXT NOT NULL UNIQUE,
+      state TEXT NOT NULL DEFAULT '',
+      ahj TEXT NOT NULL DEFAULT '',
+      utility TEXT NOT NULL DEFAULT '',
+      portal_name TEXT NOT NULL DEFAULT '',
+      portal_url TEXT NOT NULL DEFAULT '',
+      required_documents_json TEXT NOT NULL DEFAULT '[]',
+      average_timeline_days REAL,
+      timeline_sample_count INTEGER NOT NULL DEFAULT 0,
+      timeline_notes_json TEXT NOT NULL DEFAULT '[]',
+      common_corrections_json TEXT NOT NULL DEFAULT '[]',
+      project_count INTEGER NOT NULL DEFAULT 0,
+      correction_count INTEGER NOT NULL DEFAULT 0,
+      confidence TEXT NOT NULL DEFAULT 'seeded',
+      sources_json TEXT NOT NULL DEFAULT '[]',
+      notes TEXT NOT NULL DEFAULT '',
+      first_seen_at TEXT NOT NULL,
+      last_learned_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS knowledge_events (
+      id TEXT PRIMARY KEY,
+      profile_key TEXT NOT NULL,
+      project_id TEXT,
+      event_type TEXT NOT NULL,
+      details TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (project_id) REFERENCES projects(id),
+      FOREIGN KEY (profile_key) REFERENCES permit_utility_knowledge(profile_key)
+    );
+
+    CREATE TABLE IF NOT EXISTS historical_project_fingerprints (
+      project_id TEXT PRIMARY KEY,
+      profile_key TEXT NOT NULL,
+      state TEXT NOT NULL DEFAULT '',
+      ahj TEXT NOT NULL DEFAULT '',
+      utility TEXT NOT NULL DEFAULT '',
+      portal_name TEXT NOT NULL DEFAULT '',
+      feature_tags_json TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (project_id) REFERENCES projects(id),
+      FOREIGN KEY (profile_key) REFERENCES permit_utility_knowledge(profile_key)
+    );
+
+    CREATE TABLE IF NOT EXISTS historical_failure_examples (
+      id TEXT PRIMARY KEY,
+      source_signature TEXT NOT NULL UNIQUE,
+      profile_key TEXT NOT NULL,
+      project_id TEXT,
+      state TEXT NOT NULL DEFAULT '',
+      ahj TEXT NOT NULL DEFAULT '',
+      utility TEXT NOT NULL DEFAULT '',
+      portal_name TEXT NOT NULL DEFAULT '',
+      feature_tags_json TEXT NOT NULL DEFAULT '[]',
+      outcome TEXT NOT NULL DEFAULT 'rejected_or_delayed',
+      correction_bucket TEXT NOT NULL DEFAULT '',
+      root_cause TEXT NOT NULL DEFAULT '',
+      required_action TEXT NOT NULL DEFAULT '',
+      sample TEXT NOT NULL DEFAULT '',
+      source_type TEXT NOT NULL DEFAULT '',
+      source_label TEXT NOT NULL DEFAULT '',
+      occurred_at TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (project_id) REFERENCES projects(id),
+      FOREIGN KEY (profile_key) REFERENCES permit_utility_knowledge(profile_key)
+    );
+
+    CREATE TABLE IF NOT EXISTS mbox_learning_records (
+      id TEXT PRIMARY KEY,
+      source_signature TEXT NOT NULL UNIQUE,
+      source_label TEXT NOT NULL DEFAULT '',
+      bucket TEXT NOT NULL,
+      workflow TEXT NOT NULL DEFAULT '',
+      profile_key TEXT NOT NULL DEFAULT '',
+      state TEXT NOT NULL DEFAULT '',
+      jurisdiction TEXT NOT NULL DEFAULT '',
+      utility TEXT NOT NULL DEFAULT '',
+      portal_name TEXT NOT NULL DEFAULT '',
+      project_address_hash TEXT NOT NULL DEFAULT '',
+      project_address_redacted TEXT NOT NULL DEFAULT '',
+      correction_category TEXT NOT NULL DEFAULT '',
+      correction_subcategory TEXT NOT NULL DEFAULT '',
+      required_action TEXT NOT NULL DEFAULT '',
+      preventable INTEGER NOT NULL DEFAULT 0,
+      required_documents_json TEXT NOT NULL DEFAULT '[]',
+      timeline_signal TEXT NOT NULL DEFAULT '',
+      status_label TEXT NOT NULL DEFAULT '',
+      classifier TEXT NOT NULL DEFAULT 'deterministic',
+      confidence REAL NOT NULL DEFAULT 0,
+      sample TEXT NOT NULL DEFAULT '',
+      occurred_at TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (profile_key) REFERENCES permit_utility_knowledge(profile_key)
+    );
+
+    CREATE TABLE IF NOT EXISTS rules (
+      id TEXT PRIMARY KEY,
+      rule_type TEXT NOT NULL,
+      jurisdiction_scope TEXT NOT NULL DEFAULT '',
+      utility_scope TEXT NOT NULL DEFAULT '',
+      trigger TEXT NOT NULL DEFAULT '',
+      condition TEXT NOT NULL DEFAULT '',
+      action TEXT NOT NULL DEFAULT '',
+      severity TEXT NOT NULL DEFAULT '',
+      source TEXT NOT NULL DEFAULT '',
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS submissions (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      portal_profile_id TEXT,
+      submission_type TEXT NOT NULL,
+      status TEXT NOT NULL,
+      application_number TEXT NOT NULL DEFAULT '',
+      permit_number TEXT NOT NULL DEFAULT '',
+      confirmation_number TEXT NOT NULL DEFAULT '',
+      submitted_at TEXT,
+      submitted_by TEXT NOT NULL DEFAULT '',
+      screenshots_path TEXT NOT NULL DEFAULT '',
+      notes TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (project_id) REFERENCES projects(id),
+      FOREIGN KEY (portal_profile_id) REFERENCES portal_profiles(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS portal_runs (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      portal_profile_id TEXT,
+      run_type TEXT NOT NULL,
+      status TEXT NOT NULL,
+      started_at TEXT NOT NULL,
+      finished_at TEXT,
+      error_message TEXT NOT NULL DEFAULT '',
+      human_action_required INTEGER NOT NULL DEFAULT 0,
+      screenshots_path TEXT NOT NULL DEFAULT '',
+      logs_path TEXT NOT NULL DEFAULT '',
+      result_json TEXT NOT NULL DEFAULT '{}',
+      FOREIGN KEY (project_id) REFERENCES projects(id),
+      FOREIGN KEY (portal_profile_id) REFERENCES portal_profiles(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS corrections (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      source TEXT NOT NULL,
+      correction_text TEXT NOT NULL,
+      correction_bucket TEXT NOT NULL,
+      root_cause TEXT NOT NULL DEFAULT '',
+      required_action TEXT NOT NULL DEFAULT '',
+      assigned_to TEXT NOT NULL DEFAULT '',
+      draft_response TEXT NOT NULL DEFAULT '',
+      human_approved INTEGER NOT NULL DEFAULT 0,
+      resubmitted INTEGER NOT NULL DEFAULT 0,
+      new_rule_recommended INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      closed_at TEXT,
+      FOREIGN KEY (project_id) REFERENCES projects(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS permit_check_targets (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      jurisdiction TEXT NOT NULL DEFAULT '',
+      portal_name TEXT NOT NULL DEFAULT '',
+      portal_url TEXT NOT NULL DEFAULT '',
+      application_number TEXT NOT NULL DEFAULT '',
+      permit_number TEXT NOT NULL DEFAULT '',
+      check_frequency_days INTEGER NOT NULL DEFAULT 7,
+      active INTEGER NOT NULL DEFAULT 1,
+      last_checked_at TEXT,
+      next_check_at TEXT,
+      latest_outcome TEXT,
+      latest_status_label TEXT NOT NULL DEFAULT '',
+      notes TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (project_id) REFERENCES projects(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS permit_status_checks (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      target_id TEXT,
+      source TEXT NOT NULL,
+      raw_status_text TEXT NOT NULL DEFAULT '',
+      status_label TEXT NOT NULL DEFAULT '',
+      outcome TEXT NOT NULL,
+      confidence REAL NOT NULL DEFAULT 0,
+      correction_id TEXT,
+      reviewed_by_ahj INTEGER NOT NULL DEFAULT 0,
+      ready_for_issue INTEGER NOT NULL DEFAULT 0,
+      issue_fee_due INTEGER NOT NULL DEFAULT 0,
+      application_number TEXT NOT NULL DEFAULT '',
+      permit_number TEXT NOT NULL DEFAULT '',
+      message TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (project_id) REFERENCES projects(id),
+      FOREIGN KEY (target_id) REFERENCES permit_check_targets(id),
+      FOREIGN KEY (correction_id) REFERENCES corrections(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS email_tracking_sources (
+      id TEXT PRIMARY KEY,
+      source_type TEXT NOT NULL DEFAULT 'mbox_path',
+      label TEXT NOT NULL DEFAULT '',
+      file_path TEXT NOT NULL UNIQUE,
+      default_state TEXT NOT NULL DEFAULT '',
+      default_ahj TEXT NOT NULL DEFAULT '',
+      default_utility TEXT NOT NULL DEFAULT '',
+      active INTEGER NOT NULL DEFAULT 1,
+      last_checked_at TEXT,
+      last_message_count INTEGER NOT NULL DEFAULT 0,
+      last_matched_count INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS email_project_matches (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      source_id TEXT,
+      source_signature TEXT NOT NULL UNIQUE,
+      source_label TEXT NOT NULL DEFAULT '',
+      email_bucket TEXT NOT NULL DEFAULT '',
+      workflow TEXT NOT NULL DEFAULT '',
+      confidence REAL NOT NULL DEFAULT 0,
+      match_reason TEXT NOT NULL DEFAULT '',
+      status_check_id TEXT,
+      correction_id TEXT,
+      subject TEXT NOT NULL DEFAULT '',
+      occurred_at TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (project_id) REFERENCES projects(id),
+      FOREIGN KEY (source_id) REFERENCES email_tracking_sources(id),
+      FOREIGN KEY (status_check_id) REFERENCES permit_status_checks(id),
+      FOREIGN KEY (correction_id) REFERENCES corrections(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS human_review_items (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      issue_type TEXT NOT NULL,
+      field_name TEXT NOT NULL,
+      parser_value TEXT NOT NULL DEFAULT '',
+      llm_suggested_value TEXT NOT NULL DEFAULT '',
+      source_excerpt TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL,
+      notes TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (project_id) REFERENCES projects(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS operation_steps (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      phase_key TEXT NOT NULL,
+      phase_name TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'not_started',
+      status_source TEXT NOT NULL DEFAULT 'system',
+      owner_role TEXT NOT NULL DEFAULT '',
+      due_at TEXT,
+      summary TEXT NOT NULL DEFAULT '',
+      next_action TEXT NOT NULL DEFAULT '',
+      notes TEXT NOT NULL DEFAULT '',
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      source TEXT NOT NULL DEFAULT 'system',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(project_id, phase_key),
+      FOREIGN KEY (project_id) REFERENCES projects(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS project_notes (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      note_type TEXT NOT NULL DEFAULT 'pm_note',
+      body TEXT NOT NULL DEFAULT '',
+      created_by TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (project_id) REFERENCES projects(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS audit_logs (
+      id TEXT PRIMARY KEY,
+      project_id TEXT,
+      actor_type TEXT NOT NULL,
+      actor_name TEXT NOT NULL DEFAULT '',
+      action TEXT NOT NULL,
+      details TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (project_id) REFERENCES projects(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status);
+    CREATE INDEX IF NOT EXISTS idx_qc_project ON qc_results(project_id);
+    CREATE INDEX IF NOT EXISTS idx_review_project_status ON human_review_items(project_id, status);
+    CREATE INDEX IF NOT EXISTS idx_corrections_project ON corrections(project_id);
+    CREATE INDEX IF NOT EXISTS idx_permit_targets_project ON permit_check_targets(project_id);
+    CREATE INDEX IF NOT EXISTS idx_permit_targets_due ON permit_check_targets(active, next_check_at);
+    CREATE INDEX IF NOT EXISTS idx_permit_checks_project ON permit_status_checks(project_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_email_tracking_active ON email_tracking_sources(active, updated_at);
+    CREATE INDEX IF NOT EXISTS idx_email_matches_project ON email_project_matches(project_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_operation_steps_project ON operation_steps(project_id, sort_order);
+    CREATE INDEX IF NOT EXISTS idx_project_notes_project ON project_notes(project_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_knowledge_lookup ON permit_utility_knowledge(state, ahj, utility);
+    CREATE INDEX IF NOT EXISTS idx_knowledge_events_profile ON knowledge_events(profile_key, created_at);
+    CREATE INDEX IF NOT EXISTS idx_knowledge_events_project ON knowledge_events(project_id);
+    CREATE INDEX IF NOT EXISTS idx_historical_fingerprints_profile ON historical_project_fingerprints(profile_key);
+    CREATE INDEX IF NOT EXISTS idx_historical_failures_profile ON historical_failure_examples(profile_key, created_at);
+    CREATE INDEX IF NOT EXISTS idx_historical_failures_lookup ON historical_failure_examples(state, ahj, utility);
+    CREATE INDEX IF NOT EXISTS idx_mbox_learning_profile ON mbox_learning_records(profile_key, bucket, occurred_at);
+    CREATE INDEX IF NOT EXISTS idx_mbox_learning_bucket ON mbox_learning_records(bucket, workflow, occurred_at);
+    CREATE INDEX IF NOT EXISTS idx_audit_project ON audit_logs(project_id);
   `);
   seedBaselineRuleRows(db);
   seedInitialKnowledgeBase(db);
@@ -143,7 +536,19 @@ function seedBaselineRuleRows(db: AppDb): void {
       `INSERT OR IGNORE INTO rules
         (id, rule_type, jurisdiction_scope, utility_scope, trigger, condition, action, severity, source, active, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [rule.id, rule.ruleType, rule.jurisdictionScope, rule.utilityScope, rule.trigger, rule.trigger, rule.action, rule.severity, rule.source, 1, createdAt],
+      [
+        rule.id,
+        rule.ruleType,
+        rule.jurisdictionScope,
+        rule.utilityScope,
+        rule.trigger,
+        rule.trigger,
+        rule.action,
+        rule.severity,
+        rule.source,
+        1,
+        createdAt,
+      ],
     );
   }
 }
