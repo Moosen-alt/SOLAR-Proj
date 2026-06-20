@@ -197,7 +197,9 @@ export function clientStagingOverlay(db: AppDb, clientId: string | null, portalT
       .join(", "),
     ccbLicenseNumber: client.ccbLicenseNumber,
     electricalLicenseNumber: client.electricalLicenseNumber,
+    electricalSupervisorName: client.electricalSupervisorName,
     authorizedSignerName: client.authorizedSignerName,
+    authorizedSignerTitle: client.authorizedSignerTitle,
   };
   if (identity?.installerContactCode) {
     overlay.powerclerkExistingContact = identity.installerContactCode;

@@ -16,6 +16,7 @@
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^6.0.227",
     "sql.js": "^1.12.0"
   },
   "devDependencies": {
