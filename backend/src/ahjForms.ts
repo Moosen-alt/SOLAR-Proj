@@ -49,6 +49,9 @@ export interface OverlayField {
   y: number;
   size?: number;
   maxWidth?: number; // truncate long values to fit
+  // Only draw when this source resolves truthy (or equals `equals`). Used to
+  // place a value on the one fee-bracket row that matches the system size.
+  onlyIf?: { source: FieldSource; equals?: string };
 }
 
 export interface AhjFormDefinition {
@@ -85,32 +88,62 @@ export const ahjFormRegistry: AhjFormDefinition[] = [
     fillMode: "overlay",
     textFields: {},
     overlayFields: [
+      // Type of work + Category of construction: mark "Other" and write "Solar"
+      { source: "lit:X", page: 0, x: 186, y: 688, size: 9 },          // Type of work -> Other checkbox
+      { source: "lit:Solar", page: 0, x: 224, y: 688, size: 9 },      // Type of work -> Other: blank
+      { source: "lit:X", page: 0, x: 264, y: 643, size: 9 },          // Category -> Other checkbox
+      { source: "lit:Solar", page: 0, x: 301, y: 643, size: 9 },      // Category -> Other: blank
       // Job site information
-      { source: "project.projectAddress", page: 0, x: 160, y: 614, maxWidth: 320 },
-      { source: "computed.cityStateZip", page: 0, x: 115, y: 597, maxWidth: 300 },
-      { source: "project.homeownerName", page: 0, x: 215, y: 581, maxWidth: 200 },
+      { source: "project.projectAddress", page: 0, x: 160, y: 614, maxWidth: 200 },
+      { source: "computed.cityStateZip", page: 0, x: 115, y: 597, maxWidth: 240 },
+      { source: "project.homeownerName", page: 0, x: 215, y: 581, maxWidth: 150 },
       // Description of work (open area below the label)
-      { source: "computed.descriptionOfWork", page: 0, x: 35, y: 516, size: 8, maxWidth: 545 },
+      { source: "computed.descriptionOfWork", page: 0, x: 35, y: 516, size: 8, maxWidth: 320 },
       // Property owner
       { source: "project.homeownerName", page: 0, x: 63, y: 455, maxWidth: 130 },
-      { source: "snapshot.homeownerEmail", page: 0, x: 245, y: 455, maxWidth: 130 },
-      { source: "project.projectAddress", page: 0, x: 75, y: 438, maxWidth: 480 },
-      { source: "computed.cityStateZip", page: 0, x: 115, y: 421, maxWidth: 300 },
+      { source: "snapshot.homeownerEmail", page: 0, x: 245, y: 455, maxWidth: 110 },
+      { source: "project.projectAddress", page: 0, x: 75, y: 438, maxWidth: 280 },
+      { source: "computed.cityStateZip", page: 0, x: 115, y: 421, maxWidth: 240 },
       { source: "snapshot.homeownerPhone", page: 0, x: 66, y: 404, maxWidth: 120 },
       // Contractor
       { source: "client.installerCompanyName", page: 0, x: 115, y: 342, maxWidth: 80 },
-      { source: "client.installerEmail", page: 0, x: 245, y: 342, maxWidth: 130 },
-      { source: "client.installerAddress", page: 0, x: 75, y: 325, maxWidth: 480 },
+      { source: "client.installerEmail", page: 0, x: 245, y: 342, maxWidth: 110 },
+      { source: "client.installerStreet", page: 0, x: 75, y: 325, maxWidth: 280 },
+      { source: "client.installerCityStateZip", page: 0, x: 115, y: 308, maxWidth: 240 },
       { source: "client.installerPhone", page: 0, x: 66, y: 291, maxWidth: 120 },
       { source: "client.electricalLicenseNumber", page: 0, x: 100, y: 275, maxWidth: 90 },
-      { source: "client.ccbLicenseNumber", page: 0, x: 267, y: 275, maxWidth: 120 },
+      { source: "client.ccbLicenseNumber", page: 0, x: 267, y: 275, maxWidth: 90 },
       // Supervising electrician
       { source: "client.electricalSupervisorName", page: 0, x: 93, y: 225, maxWidth: 150 },
+      // Applicant / Contact Person = our (submitter) info
+      { source: "client.installerCompanyName", page: 0, x: 120, y: 161, maxWidth: 230 },
+      { source: "client.installerContactName", page: 0, x: 115, y: 144, maxWidth: 230 },
+      { source: "client.installerStreet", page: 0, x: 75, y: 127, maxWidth: 280 },
+      { source: "client.installerCityStateZip", page: 0, x: 115, y: 110, maxWidth: 240 },
+      { source: "client.installerPhone", page: 0, x: 66, y: 93, maxWidth: 120 },
+      { source: "client.installerEmail", page: 0, x: 75, y: 76, maxWidth: 280 },
+      // Fee schedule — renewable energy per-system fee by kVA bracket.
+      // Qty=1 + Total drawn only on the row matching the system size.
+      { source: "lit:1", page: 0, x: 494, y: 649, size: 8, onlyIf: { source: "computed.feeBracket", equals: "le5" } },
+      { source: "computed.renewableFee", page: 0, x: 540, y: 649, size: 8, onlyIf: { source: "computed.feeBracket", equals: "le5" } },
+      { source: "lit:1", page: 0, x: 494, y: 638, size: 8, onlyIf: { source: "computed.feeBracket", equals: "5to15" } },
+      { source: "computed.renewableFee", page: 0, x: 540, y: 638, size: 8, onlyIf: { source: "computed.feeBracket", equals: "5to15" } },
+      { source: "lit:1", page: 0, x: 494, y: 627, size: 8, onlyIf: { source: "computed.feeBracket", equals: "15to25" } },
+      { source: "computed.renewableFee", page: 0, x: 540, y: 627, size: 8, onlyIf: { source: "computed.feeBracket", equals: "15to25" } },
+      // Over 25 kVA solar: enter total kVA on the per-kVA line
+      { source: "computed.systemKva", page: 0, x: 455, y: 443, size: 8, onlyIf: { source: "computed.feeBracket", equals: "over25" } },
+      { source: "computed.renewableFee", page: 0, x: 540, y: 443, size: 8, onlyIf: { source: "computed.feeBracket", equals: "over25" } },
+      // Totals block
+      { source: "computed.renewableFee", page: 0, x: 540, y: 346, size: 8 },     // Subtotal
+      { source: "computed.planReview", page: 0, x: 540, y: 334, size: 8 },       // Plan review (only >25 kVA)
+      { source: "computed.stateSurcharge", page: 0, x: 540, y: 322, size: 8 },   // 12% surcharge
+      { source: "computed.totalPermitFee", page: 0, x: 540, y: 310, size: 8 },   // TOTAL PERMIT FEE
     ],
     notes: [
       "Flat PDF (no fillable fields) filled by coordinate overlay.",
+      "Type of work and Category of construction are marked Other = Solar.",
+      "Fees use the rate schedule printed on the form (rev 7/1/2025): per-system kVA brackets + 12% state surcharge; 25% plan review only when over 25 kVA.",
       "Signatures (owner, supervising electrician, authorized) are intentionally left blank for a human to sign.",
-      "Checkboxes for Type of work / Category of construction are left for human selection.",
     ],
   },
 ];
@@ -125,8 +158,65 @@ function str(v: unknown): string {
   return typeof v === "string" ? v : v == null ? "" : String(v);
 }
 
+// kVA basis for renewable-energy electrical permit fees (solar inverter AC
+// output ≈ kVA). Falls back to DC size if AC is missing.
+function systemKva(ctx: FillContext): number {
+  return Number(ctx.project.systemSizeAcKw || ctx.project.systemSizeDcKw || 0);
+}
+
+// Renewable energy permit fee using the rate schedule PRINTED ON THIS FORM
+// (rev 7/1/2025): ≤5 kVA $201, 5.01–15 $283, 15.01–25 $372, >25 $14.78/kVA.
+function renewableFee(ctx: FillContext): number {
+  const k = systemKva(ctx);
+  if (k <= 0) return 0;
+  if (k <= 5) return 201;
+  if (k <= 15) return 283;
+  if (k <= 25) return 372;
+  return Math.round(k * 14.78 * 100) / 100;
+}
+
+function feeBracket(ctx: FillContext): string {
+  const k = systemKva(ctx);
+  if (k <= 0) return "";
+  if (k <= 5) return "le5";
+  if (k <= 15) return "5to15";
+  if (k <= 25) return "15to25";
+  return "over25";
+}
+
+function money(n: number): string {
+  return n.toFixed(2);
+}
+
 function computed(name: string, ctx: FillContext): string {
   switch (name) {
+    case "systemKva": {
+      const k = systemKva(ctx);
+      return k ? String(k) : "";
+    }
+    case "feeBracket":
+      return feeBracket(ctx);
+    case "renewableFee": {
+      const f = renewableFee(ctx);
+      return f ? money(f) : "";
+    }
+    case "renewableFeeQty":
+      return systemKva(ctx) > 0 ? "1" : "";
+    case "planReview": {
+      // Plan review (25%) only required for systems over 25 kVA.
+      if (feeBracket(ctx) !== "over25") return "";
+      return money(renewableFee(ctx) * 0.25);
+    }
+    case "stateSurcharge": {
+      const f = renewableFee(ctx);
+      return f ? money(f * 0.12) : "";
+    }
+    case "totalPermitFee": {
+      const f = renewableFee(ctx);
+      if (!f) return "";
+      const plan = feeBracket(ctx) === "over25" ? f * 0.25 : 0;
+      return money(f + plan + f * 0.12);
+    }
     case "fullAddress":
       return [ctx.project.projectAddress, ctx.project.city, ctx.project.state, ctx.project.zip]
         .filter(Boolean)
@@ -271,6 +361,11 @@ export async function fillForm(
     for (const field of def.overlayFields ?? []) {
       const page = pages[field.page];
       if (!page) continue;
+      if (field.onlyIf) {
+        const cond = resolveSource(field.onlyIf.source, ctx);
+        const pass = field.onlyIf.equals != null ? cond === field.onlyIf.equals : Boolean(cond);
+        if (!pass) continue;
+      }
       let text = resolveSource(field.source, ctx);
       if (!text) continue;
       const size = field.size ?? 9;

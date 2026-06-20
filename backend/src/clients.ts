@@ -195,6 +195,11 @@ export function clientStagingOverlay(db: AppDb, clientId: string | null, portalT
     installerAddress: [client.businessAddress, client.businessCity, client.businessState, client.businessZip]
       .filter(Boolean)
       .join(", "),
+    installerStreet: client.businessAddress,
+    installerCityStateZip:
+      [client.businessCity, client.businessState].filter(Boolean).join(", ") +
+      (client.businessZip ? ` ${client.businessZip}` : ""),
+    installerContactName: client.contactName || client.authorizedSignerName,
     ccbLicenseNumber: client.ccbLicenseNumber,
     electricalLicenseNumber: client.electricalLicenseNumber,
     electricalSupervisorName: client.electricalSupervisorName,
