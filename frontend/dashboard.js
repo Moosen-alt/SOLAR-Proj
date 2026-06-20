@@ -85,10 +85,7 @@ async function checkHealth() {
 }
 
 async function loadProjects() {
-  const data = await api("/api/projects");
-  state.projects = data.projects || [];
-  $("projectCount").textContent = state.projects.length;
-  renderProjects();
+  await fetchProjectPage(false);
   await loadOpsReport();
   await loadOpsBoard();
   await loadOpsActions();
@@ -118,10 +115,7 @@ async function loadProjects() {
 }
 
 async function refreshProjectListOnly() {
-  const data = await api("/api/projects");
-  state.projects = data.projects || [];
-  $("projectCount").textContent = state.projects.length;
-  renderProjects();
+  await fetchProjectPage(false);
   await loadOpsReport();
   await loadOpsBoard();
   await loadOpsActions();
@@ -274,14 +268,15 @@ function renderEmailTracker() {
 
 function renderProjects() {
   const body = $("projectsBody");
-  const filtered = applyProjectFilters(state.projects);
-  $("projectCount").textContent = `${filtered.length}/${state.projects.length}`;
-  if (!filtered.length) {
-    body.innerHTML = `<tr><td colspan="7" class="muted">${state.projects.length ? "No projects match filters." : "No projects saved yet."}</td></tr>`;
+  const projects = state.projects;
+  const total = state.projectsTotal ?? projects.length;
+  $("projectCount").textContent = `${projects.length}${total > projects.length ? `/${total}` : ""}`;
+  if (!projects.length) {
+    body.innerHTML = `<tr><td colspan="7" class="muted">No projects saved yet.</td></tr>`;
     return;
   }
   const userMap = Object.fromEntries((state.users || []).map((u) => [u.id, u]));
-  body.innerHTML = filtered.map((project) => {
+  body.innerHTML = projects.map((project) => {
     const assignee = project.assignedUserId ? userMap[project.assignedUserId] : null;
     const assigneeHtml = assignee
       ? `<span style="display:inline-flex;align-items:center;gap:4px"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${esc(assignee.color)}"></span>${esc(assignee.name)}</span>`
@@ -297,6 +292,12 @@ function renderProjects() {
       <td>${project.pendingReviewCount}</td>
     </tr>`;
   }).join("");
+  if (total > projects.length) {
+    const loadMoreRow = document.createElement("tr");
+    loadMoreRow.innerHTML = `<td colspan="7" style="text-align:center;padding:12px"><button id="loadMoreBtn" class="secondary">Load more (${total - projects.length} remaining)</button></td>`;
+    body.appendChild(loadMoreRow);
+    loadMoreRow.querySelector("#loadMoreBtn").addEventListener("click", loadMoreProjects);
+  }
   body.querySelectorAll("tr[data-project-id]").forEach((row) => {
     row.addEventListener("click", () => selectProject(row.dataset.projectId));
   });
@@ -2408,38 +2409,40 @@ $("addPortalIdentityBtn").addEventListener("click", () => {
 $("projectClientSelect").addEventListener("change", assignProjectClient);
 $("clientsModal").addEventListener("click", (e) => { if (e.target.id === "clientsModal") closeClientsModal(); });
 
-// ----- Project search / sort / filter -----
-const projectFilterState = { search: "", status: "", userId: "", sort: "updated_desc" };
+// ----- Project search / sort / filter (server-side, paginated) -----
+const PROJECT_PAGE_SIZE = 200;
+const projectFilterState = { search: "", status: "", userId: "", sort: "updated_desc", offset: 0 };
 
-function applyProjectFilters(projects) {
-  let list = [...projects];
-  const q = projectFilterState.search.toLowerCase();
-  if (q) {
-    list = list.filter((p) => {
-      const hay = `${p.homeownerName} ${p.address} ${p.city} ${p.ahj} ${p.utility} ${p.status}`.toLowerCase();
-      return hay.includes(q);
-    });
+// applyProjectFilters kept as a no-op alias — filtering now happens on the server
+function applyProjectFilters(projects) { return projects; }
+
+let _searchDebounceTimer = null;
+
+async function reloadProjects() {
+  projectFilterState.offset = 0;
+  await fetchProjectPage(false);
+}
+
+async function loadMoreProjects() {
+  projectFilterState.offset = state.projects.length;
+  await fetchProjectPage(true);
+}
+
+async function fetchProjectPage(append) {
+  const params = new URLSearchParams({ limit: String(PROJECT_PAGE_SIZE), offset: String(projectFilterState.offset) });
+  if (projectFilterState.search) params.set("search", projectFilterState.search);
+  if (projectFilterState.status) params.set("status", projectFilterState.status);
+  if (projectFilterState.userId) params.set("userId", projectFilterState.userId);
+  if (projectFilterState.sort && projectFilterState.sort !== "overdue") params.set("sort", projectFilterState.sort);
+  const data = await api(`/api/projects?${params}`);
+  const page = data.projects || [];
+  state.projectsTotal = data.total ?? page.length;
+  if (append) {
+    state.projects = [...state.projects, ...page];
+  } else {
+    state.projects = page;
   }
-  if (projectFilterState.status) {
-    list = list.filter((p) => p.status === projectFilterState.status);
-  }
-  if (projectFilterState.userId) {
-    list = list.filter((p) => p.assignedUserId === projectFilterState.userId);
-  }
-  switch (projectFilterState.sort) {
-    case "created_desc": list.sort((a, b) => b.createdAt?.localeCompare(a.createdAt)); break;
-    case "name_asc":     list.sort((a, b) => (a.homeownerName || "").localeCompare(b.homeownerName || "")); break;
-    case "status_asc":   list.sort((a, b) => (a.status || "").localeCompare(b.status || "")); break;
-    case "overdue":
-      list.sort((a, b) => {
-        const aOver = (a.overdueCorrections || 0) > 0 ? 0 : 1;
-        const bOver = (b.overdueCorrections || 0) > 0 ? 0 : 1;
-        return aOver - bOver || b.updatedAt?.localeCompare(a.updatedAt);
-      });
-      break;
-    default: list.sort((a, b) => b.updatedAt?.localeCompare(a.updatedAt)); break;
-  }
-  return list;
+  renderProjects();
 }
 
 function renderProjectUserOptions() {
@@ -2475,19 +2478,20 @@ if ($("projectAssignSelect")) $("projectAssignSelect").addEventListener("change"
 
 $("projectSearch").addEventListener("input", (e) => {
   projectFilterState.search = e.target.value;
-  renderProjects();
+  clearTimeout(_searchDebounceTimer);
+  _searchDebounceTimer = setTimeout(reloadProjects, 300);
 });
 $("projectStatusFilter").addEventListener("change", (e) => {
   projectFilterState.status = e.target.value;
-  renderProjects();
+  reloadProjects();
 });
 $("projectUserFilter").addEventListener("change", (e) => {
   projectFilterState.userId = e.target.value;
-  renderProjects();
+  reloadProjects();
 });
 $("projectSort").addEventListener("change", (e) => {
   projectFilterState.sort = e.target.value;
-  renderProjects();
+  reloadProjects();
 });
 
 // ----- NEM monitor button -----

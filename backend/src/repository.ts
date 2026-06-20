@@ -513,8 +513,45 @@ function getProjectLaneStatusSummary(db: AppDb, projectId: string, projectStatus
   };
 }
 
-export function getProjectList(db: AppDb): ProjectListItem[] {
+export function getProjectList(
+  db: AppDb,
+  options: {
+    limit?: number;
+    offset?: number;
+    search?: string;
+    status?: string;
+    userId?: string;
+    sort?: "updated_desc" | "created_desc" | "name_asc" | "status_asc";
+  } = {},
+): { projects: ProjectListItem[]; total: number } {
   const today = new Date().toISOString().slice(0, 10);
+  const limit = Math.min(options.limit ?? 200, 500);
+  const offset = options.offset ?? 0;
+
+  const conditions: string[] = [];
+  const filterParams: (string | number)[] = [];
+
+  if (options.search) {
+    conditions.push("(p.homeowner_name LIKE ? OR p.project_address LIKE ? OR p.ahj LIKE ? OR p.status LIKE ?)");
+    const q = `%${options.search}%`;
+    filterParams.push(q, q, q, q);
+  }
+  if (options.status) { conditions.push("p.status = ?"); filterParams.push(options.status); }
+  if (options.userId) { conditions.push("p.assigned_user_id = ?"); filterParams.push(options.userId); }
+
+  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+
+  const orderMap: Record<string, string> = {
+    updated_desc: "p.updated_at DESC",
+    created_desc: "p.created_at DESC",
+    name_asc: "p.homeowner_name ASC",
+    status_asc: "p.status ASC",
+  };
+  const order = orderMap[options.sort ?? ""] ?? "p.updated_at DESC";
+
+  const countRow = db.get<Row>(`SELECT COUNT(*) as cnt FROM projects p ${where}`, filterParams);
+  const total = Number(countRow?.cnt ?? 0);
+
   const rows = db.query<ProjectRow & Row>(
     `SELECT p.*,
       (SELECT COUNT(*) FROM qc_results q WHERE q.project_id = p.id AND q.qc_status = 'fail') AS qcFailCount,
@@ -524,12 +561,13 @@ export function getProjectList(db: AppDb): ProjectListItem[] {
       (SELECT COUNT(*) FROM corrections c WHERE c.project_id = p.id AND c.closed_at IS NULL
          AND (c.due_at < ? OR (c.due_at IS NULL AND date(c.created_at, '+' || c.sla_days || ' days') < ?))) AS overdueCorrections,
       (SELECT pr.status FROM portal_runs pr WHERE pr.project_id = p.id ORDER BY pr.started_at DESC LIMIT 1) AS latestPortalStatus
-     FROM projects p
-     ORDER BY p.updated_at DESC`,
-    [today, today],
+     FROM projects p ${where}
+     ORDER BY ${order}
+     LIMIT ? OFFSET ?`,
+    [today, today, ...filterParams, limit, offset],
   );
 
-  return rows.map((row) => {
+  const projects = rows.map((row) => {
     const project = mapProject(row);
     const { parserSnapshot: _parserSnapshot, ...listBase } = project;
     const laneSummary = getProjectLaneStatusSummary(db, project.id, project.status);
@@ -545,6 +583,8 @@ export function getProjectList(db: AppDb): ProjectListItem[] {
       ...laneSummary,
     };
   });
+
+  return { projects, total };
 }
 
 export function getProjectDetail(db: AppDb, projectId: string): ProjectDetail {
@@ -1574,7 +1614,7 @@ function boardHealthRank(health: OperationsBrief["health"]): number {
 }
 
 export function getOperationsBoard(db: AppDb): OperationsBoard {
-  const projects = getProjectList(db);
+  const { projects } = getProjectList(db);
   const boardProjects: OperationsBoardProject[] = projects.map((project) => {
     const brief = getOperationsBrief(db, project.id);
     const primaryAction = brief.immediateActions[0];
@@ -1645,7 +1685,7 @@ function actionDueBucket(dueAt: string | null, now = new Date()): OperationsActi
 }
 
 export function getOperationsActionQueue(db: AppDb): OperationsActionQueue {
-  const projects = getProjectList(db);
+  const { projects } = getProjectList(db);
   const activeStatuses = new Set<OperationStepStatus>(["blocked", "waiting", "in_progress"]);
   const actions = projects.flatMap((project) => {
     const plan = syncOperationsPlan(db, project.id);

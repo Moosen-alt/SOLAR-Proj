@@ -206,6 +206,19 @@ async function runMboxImportJob(db: AppDb, job: JobRecord): Promise<Record<strin
   return { processed, totalMessages, learningEvents, duplicateMessages, skippedMessages, bucketCounts: totals };
 }
 
+// Background worker — call once at server startup. Polls the job queue on a fixed interval.
+// Interval defaults to JOB_WORKER_INTERVAL_MS env var, or 30 seconds.
+export function startJobWorker(db: AppDb): ReturnType<typeof setInterval> {
+  const intervalMs = Number(process.env.JOB_WORKER_INTERVAL_MS ?? 30_000);
+  const timer = setInterval(() => {
+    processNextJob(db).catch((err) => {
+      console.error("[job-worker] uncaught error:", err);
+    });
+  }, intervalMs);
+  console.log(`[job-worker] started — polling every ${intervalMs / 1000}s`);
+  return timer;
+}
+
 // Process one pending job. Returns true if a job was found and processed.
 export async function processNextJob(db: AppDb): Promise<boolean> {
   const now = nowIso();

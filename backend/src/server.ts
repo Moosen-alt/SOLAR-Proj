@@ -6,7 +6,7 @@ import path from "node:path";
 import { openDatabase } from "./db";
 import { HttpError } from "./httpError";
 import { createClient, deleteClient, getClient, listClients, updateClient } from "./clients";
-import { enqueueJob, getJob, listJobs, processNextJob } from "./jobQueue";
+import { enqueueJob, getJob, listJobs, processNextJob, startJobWorker } from "./jobQueue";
 import { createUser, getUserWorkload, listUsers, updateUser, assignProjectToUser } from "./users";
 import { getKpiReport, touchProjectMetrics } from "./kpi";
 import {
@@ -89,8 +89,14 @@ app.post("/api/projects", (req, res) => {
   res.status(201).json(createProject(db, payload));
 });
 
-app.get("/api/projects", (_req, res) => {
-  res.json({ projects: getProjectList(db) });
+app.get("/api/projects", (req, res) => {
+  const limit = req.query.limit ? Number(req.query.limit) : 200;
+  const offset = req.query.offset ? Number(req.query.offset) : 0;
+  const search = req.query.search ? String(req.query.search) : undefined;
+  const status = req.query.status ? String(req.query.status) : undefined;
+  const userId = req.query.userId ? String(req.query.userId) : undefined;
+  const sort = (req.query.sort as string | undefined);
+  res.json(getProjectList(db, { limit, offset, search, status, userId, sort: sort as Parameters<typeof getProjectList>[1]["sort"] }));
 });
 
 // --- Clients (contractor profiles + licensing) ---
@@ -503,4 +509,5 @@ app.listen(port, () => {
   console.log(`Solar Submission Autopilot running at http://localhost:${port}`);
   console.log(`Parser: http://localhost:${port}/parser`);
   console.log(`Dashboard: http://localhost:${port}/dashboard.html`);
+  startJobWorker(db);
 });

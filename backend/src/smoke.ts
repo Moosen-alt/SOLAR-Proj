@@ -366,7 +366,7 @@ const emailUpdated = getProjectDetail(db, detail.project.id);
 if (!emailUpdated.emailProjectMatches.length || emailUpdated.permitStatusChecks[0]?.source !== "email") {
   throw new Error("Expected project detail to include an email match and latest email permit/NEM status check.");
 }
-const listWithNem = getProjectList(db).find((project) => project.id === detail.project.id);
+const listWithNem = getProjectList(db).projects.find((project) => project.id === detail.project.id);
 if (!listWithNem?.latestNemOutcome || !listWithNem.nemApproved || !listWithNem.latestNemCheckedAt) {
   throw new Error("Expected dashboard project list to expose NEMflow status and approval from live email tracking.");
 }
@@ -382,7 +382,7 @@ if (
 fs.rmSync(liveMboxPath, { force: true });
 
 const deletion = deleteProject(db, detail.project.id);
-if (!deletion.deleted || getProjectList(db).some((project) => project.id === detail.project.id)) {
+if (!deletion.deleted || getProjectList(db).projects.some((project) => project.id === detail.project.id)) {
   throw new Error("Expected test project deletion to remove the project from the dashboard list.");
 }
 
