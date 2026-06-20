@@ -684,6 +684,25 @@ app.get("/api/batch-import/jobs", (req, res) => {
   res.json(listJobs(db, { jobType: "folder_scan", limit: 20 }));
 });
 
+// LLM-assisted parser extraction. The browser does the PDF text / OCR extraction
+// (pdf.js + Tesseract) and posts the raw text here; Claude returns structured
+// fields with confidences which the parser merges into the form. Account/meter
+// numbers may be returned (the project record needs them to fill forms) but are
+// never logged here.
+app.post("/api/parser/llm-extract", asyncHandler(async (req, res) => {
+  const planText = typeof req.body?.planText === "string" ? req.body.planText : "";
+  const utilityBillText = typeof req.body?.utilityBillText === "string" ? req.body.utilityBillText : "";
+  const meterText = typeof req.body?.meterText === "string" ? req.body.meterText : "";
+  const defaultState = typeof req.body?.defaultState === "string" ? req.body.defaultState : undefined;
+  if (!planText.trim() && !utilityBillText.trim() && !meterText.trim()) {
+    throw new HttpError(400, "Provide at least one of planText, utilityBillText, or meterText.");
+  }
+  const { createLLMProvider } = await import("./llm");
+  const llm = createLLMProvider();
+  const result = await llm.extractProjectFields({ planText, utilityBillText, meterText, defaultState });
+  res.json(result);
+}));
+
 app.post("/api/projects/:id/prepare-submission", asyncHandler(async (req, res) => {
   res.json(await prepareSubmission(db, String(req.params.id)));
 }));

@@ -3530,9 +3530,80 @@ async function buildProjectDoxZip(modeOverride){
 }
 
 
+// Map LLM field ids -> the actual form input ids they should populate.
+const LLM_FIELD_TARGETS = {
+  owner: ['owner'], street: ['street'], city: ['city'], state: ['state'], zip: ['zip'],
+  ahj: ['ahj'], utility: ['utility'],
+  account: ['account', 'ubAccountNumber'], meter: ['planMeterNumber', 'ubMeterNumber'],
+  dcKw: ['dcKw'], acKw: ['acKw'], interco: ['interco'],
+  moduleMake: ['moduleMake'], moduleModel: ['moduleModel'], moduleWattage: ['moduleWattage'], moduleQty: ['moduleQty'],
+  invMake: ['invMake'], invModel: ['invModel'], invQty: ['invQty'],
+  batteryMake: ['batteryMake'], batteryModel: ['batteryModel'], batteryQty: ['batteryQty'],
+  roofMaterial: ['roofMaterial'], mounting: ['mounting'],
+};
+
+// Confidence at/above which the LLM may OVERWRITE a value the regex parser already filled.
+const LLM_OVERWRITE_CONFIDENCE = 0.75;
+
+async function runLlmAssist(){
+  const planText = state.planDoc?.text || '';
+  const utilityBillText = state.ubDoc?.text || '';
+  const meterText = state.meterDoc?.text || '';
+  if (!planText.trim() && !utilityBillText.trim() && !meterText.trim()) return;
+
+  $('parseStatus').textContent = 'Asking AI to read the documents…';
+  let result;
+  try {
+    const resp = await fetch('/api/parser/llm-extract', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ planText, utilityBillText, meterText, defaultState: getVal('state') || 'OR' }),
+    });
+    if (!resp.ok){
+      const err = await resp.json().catch(()=>({}));
+      throw new Error(err.error || `AI extract failed (${resp.status})`);
+    }
+    result = await resp.json();
+  } catch (e){
+    state.reviewFlags.push(`AI-assist unavailable: ${e.message}. Used regex/OCR parse only.`);
+    return;
+  }
+
+  if (result.provider === 'stub'){
+    state.reviewFlags.push('AI-assist is OFF (no ANTHROPIC_API_KEY on the server). Using regex/OCR parse only.');
+    return;
+  }
+
+  const applied = [];
+  const fields = result.fields || {};
+  Object.keys(fields).forEach(fieldId => {
+    const entry = fields[fieldId];
+    if (!entry || entry.value == null || entry.value === '') return;
+    const targets = LLM_FIELD_TARGETS[fieldId];
+    if (!targets) return;
+    targets.forEach(targetId => {
+      if (!$(targetId)) return;
+      const current = (getVal(targetId) || '').trim();
+      const confident = (entry.confidence ?? 0) >= LLM_OVERWRITE_CONFIDENCE;
+      // Fill if empty, or overwrite only when the model is confident.
+      if (!current || confident){
+        setVal(targetId, entry.value);
+        applied.push(`${targetId}=${entry.value}${confident ? '' : ' (low-conf)'}`);
+      }
+    });
+  });
+
+  (result.lowConfidenceFields || []).forEach(f => {
+    state.reviewFlags.push(`AI low-confidence on "${f}" — verify manually.`);
+  });
+  if (result.notes) state.reviewFlags.push(`AI notes: ${result.notes}`);
+  state.llmAssist = { applied, notes: result.notes, lowConfidenceFields: result.lowConfidenceFields || [] };
+}
+
 async function runParse(){
   state.reviewFlags = [];
   state.utilityPriorityFlags = [];
+  state.llmAssist = null;
   state.planFile = $('planFile').files[0] || null;
   state.ubFile = $('ubFile').files[0] || null;
   state.meterFile = $('meterPhotoFile').files[0] || null;
@@ -3574,6 +3645,11 @@ async function runParse(){
     fillUBFields(ub, meterPhoto);
   }
 
+  // LLM-assisted pass: send the raw extracted text to Claude, merge structured
+  // fields into the form. The regex/OCR pass above runs first as a fast baseline;
+  // the LLM fills gaps and corrects fields the deterministic parser missed.
+  await runLlmAssist();
+
   const finalPlan = {...plan};
   Object.keys(finalPlan).forEach(k => { if ($(k)) finalPlan[k] = getVal(k); });
   finalPlan.roofPlanes = plan.roofPlanes || [];
@@ -3592,10 +3668,16 @@ async function runParse(){
   updateSplitUi();
   setVal('reviewFlags', state.reviewFlags.join('\n'));
 
+  const llmLine = state.llmAssist
+    ? (state.llmAssist.applied.length
+        ? `AI-assist filled/updated ${state.llmAssist.applied.length} field(s).`
+        : 'AI-assist ran; no additional fields needed.')
+    : '';
   $('parseStatus').textContent = [
     'Parse complete.',
+    llmLine,
     finalPlan.moduleWattage ? `Module wattage parsed: ${finalPlan.moduleWattage}W.` : 'Module wattage missing.',
-    finalUb.account ? `UB account parsed: ${finalUb.account}.` : (state.ubDoc ? 'UB uploaded, but account not confidently parsed. Strict UB parser left the field blank instead of using a bad table value. Enter visible account manually if needed.' : 'UB account missing or not uploaded.'),
+    getVal('account') ? `Account parsed: ${getVal('account')}.` : (state.ubDoc ? 'UB uploaded, but account not confidently parsed — enter visible account manually if needed.' : 'UB account missing or not uploaded.'),
     getVal('ubMeterVerification') ? `Meter verification: ${getVal('ubMeterVerification')}.` : ''
   ].filter(Boolean).join('\n');
 }

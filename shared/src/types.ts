@@ -982,8 +982,32 @@ export interface ProjectDetail {
   projectNotes: ProjectNote[];
 }
 
+/** One extracted parser field with provenance and confidence. */
+export interface ParserExtractedField {
+  value: string | number | null;
+  confidence: number; // 0-1
+}
+
+/** Result of the LLM-assisted parser extraction across plan set + utility bill + meter photo. */
+export interface ParserLlmExtraction {
+  provider: "claude" | "stub";
+  /** Field id -> extracted value+confidence. Keys match the parser form field ids. */
+  fields: Record<string, ParserExtractedField>;
+  /** Fields the model could not confidently determine — surface for human review. */
+  lowConfidenceFields: string[];
+  /** Short human-readable notes about anything ambiguous or worth verifying. */
+  notes: string;
+}
+
 export interface LLMProvider {
   extractFields(input: Record<string, unknown>): Promise<Record<string, unknown>>;
+  /** LLM-assisted extraction of all project fields from raw document text (plan set, utility bill, meter photo). */
+  extractProjectFields(input: {
+    planText?: string;
+    utilityBillText?: string;
+    meterText?: string;
+    defaultState?: string;
+  }): Promise<ParserLlmExtraction>;
   classifyCorrection(input: {
     correctionText: string;
     project?: ProjectRecord;

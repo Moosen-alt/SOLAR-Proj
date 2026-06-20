@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import type { CorrectionBucket, LLMProvider, MboxExtractedLearningRecord, ProjectRecord } from "../../shared/src/types";
+import type { CorrectionBucket, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, ProjectRecord } from "../../shared/src/types";
 
 const MODEL = "claude-opus-4-8";
 
@@ -10,6 +10,15 @@ const MODEL = "claude-opus-4-8";
 export class StubLLMProvider implements LLMProvider {
   async extractFields(): Promise<Record<string, unknown>> {
     return { provider: "stub", confidence: 0, notes: "No ANTHROPIC_API_KEY configured. Human review required." };
+  }
+
+  async extractProjectFields(): Promise<ParserLlmExtraction> {
+    return {
+      provider: "stub",
+      fields: {},
+      lowConfidenceFields: [],
+      notes: "No ANTHROPIC_API_KEY configured — LLM-assisted parsing is off. Set ANTHROPIC_API_KEY to enable. Regex/OCR results are used as-is.",
+    };
   }
 
   async classifyCorrection(): Promise<{ bucket: CorrectionBucket; confidence: number; notes: string }> {
@@ -71,6 +80,100 @@ IMPORTANT: Do NOT include utility account numbers — omit that field entirely f
 Set confidence (0-1) for each field. Return only valid JSON.`;
     const raw = await this.ask(system, JSON.stringify(input));
     return this.parseJson<Record<string, unknown>>(raw, { provider: "claude", confidence: 0 });
+  }
+
+  // Larger budget than ask() — plan sets are dense and we want every field.
+  private async askLong(systemPrompt: string, userMessage: string, maxTokens = 4096): Promise<string> {
+    const stream = await this.client.messages.stream({
+      model: MODEL,
+      max_tokens: maxTokens,
+      thinking: { type: "adaptive" },
+      system: systemPrompt,
+      messages: [{ role: "user", content: userMessage }],
+    });
+    const msg = await stream.finalMessage();
+    for (const block of msg.content) {
+      if (block.type === "text") return block.text;
+    }
+    return "";
+  }
+
+  async extractProjectFields(input: {
+    planText?: string;
+    utilityBillText?: string;
+    meterText?: string;
+    defaultState?: string;
+  }): Promise<ParserLlmExtraction> {
+    const system = `You are an expert solar permit intake specialist. You read the raw extracted text of a residential solar project's documents and pull out every field a permit/interconnection application needs. The text comes from PDF extraction and OCR, so it may be noisy, out of order, or have character errors — use judgment and cross-check between documents.
+
+You are given up to three documents:
+- PLAN_SET: the engineering plan set (cover sheet, site plan, electrical SLD, datasheets). Best source for system size, equipment, roof, AHJ.
+- UTILITY_BILL: the electric utility bill. Best source for homeowner name(s), service address, utility company, account number, and sometimes meter number.
+- METER_PHOTO: OCR of a photo of the electric meter. Best source for the meter number/serial.
+
+Return ONLY a JSON object of this exact shape:
+{
+  "fields": {
+    "<fieldId>": { "value": <string|number|null>, "confidence": <0..1> }
+  },
+  "lowConfidenceFields": ["<fieldId>", ...],
+  "notes": "<short notes on anything ambiguous or worth a human double-check>"
+}
+
+Use EXACTLY these fieldId keys when you find a value (omit a key entirely if absent):
+- owner: full homeowner name(s) exactly as on the utility bill (e.g. "Abigail Boileau & Thomas Boileau")
+- street: service street address line (e.g. "1300 N Sitka Ave")
+- city, state, zip: service address city / 2-letter state / 5-digit zip
+- ahj: the Authority Having Jurisdiction (permitting city or county), e.g. "City of Newberg"
+- utility: electric utility company normalized (e.g. "PGE", "Pacific Power")
+- account: utility account number (digits as printed on the bill)
+- meter: meter number/serial (prefer the meter photo; cross-check the bill)
+- dcKw: system size in kW DC (number only)
+- acKw: system size in kW AC (number only)
+- interco: interconnection method if stated (e.g. "Net Metering")
+- moduleMake, moduleModel, moduleWattage (number), moduleQty (number)
+- invMake, invModel, invQty (number)
+- batteryMake, batteryModel, batteryQty (number)
+- roofMaterial: e.g. "Composition Shingle"
+- mounting: e.g. "Roof Mount"
+
+Rules:
+- Set confidence honestly. If a value is inferred or the OCR is messy, lower it. Put any field with confidence < 0.6 (or that you had to guess) into lowConfidenceFields.
+- For account and meter numbers, only return digits/characters you can actually read; never invent or pad them. If unreadable, omit and add to lowConfidenceFields.
+- Prefer the utility bill for name/address/account, the meter photo for meter number, the plan set for system/equipment.
+- Numbers must be JSON numbers, not strings.
+- Return valid JSON only — no prose outside the JSON.`;
+
+    const parts: string[] = [];
+    if (input.defaultState) parts.push(`(Default state hint if ambiguous: ${input.defaultState})`);
+    if (input.planText?.trim()) parts.push(`=== PLAN_SET ===\n${input.planText.slice(0, 24000)}`);
+    if (input.utilityBillText?.trim()) parts.push(`=== UTILITY_BILL ===\n${input.utilityBillText.slice(0, 8000)}`);
+    if (input.meterText?.trim()) parts.push(`=== METER_PHOTO ===\n${input.meterText.slice(0, 2000)}`);
+    if (!parts.length) {
+      return { provider: "claude", fields: {}, lowConfidenceFields: [], notes: "No document text supplied." };
+    }
+
+    const raw = await this.askLong(system, parts.join("\n\n"));
+    const parsed = this.parseJson<{
+      fields?: Record<string, { value: unknown; confidence?: number }>;
+      lowConfidenceFields?: string[];
+      notes?: string;
+    }>(raw, { fields: {}, lowConfidenceFields: [], notes: "Could not parse LLM response." });
+
+    const fields: ParserLlmExtraction["fields"] = {};
+    for (const [key, entry] of Object.entries(parsed.fields || {})) {
+      if (!entry || entry.value == null || entry.value === "") continue;
+      const value = typeof entry.value === "number" ? entry.value : String(entry.value).trim();
+      if (value === "") continue;
+      const confidence = typeof entry.confidence === "number" ? Math.max(0, Math.min(1, entry.confidence)) : 0.5;
+      fields[key] = { value: value as string | number, confidence };
+    }
+    return {
+      provider: "claude",
+      fields,
+      lowConfidenceFields: Array.isArray(parsed.lowConfidenceFields) ? parsed.lowConfidenceFields : [],
+      notes: typeof parsed.notes === "string" ? parsed.notes : "",
+    };
   }
 
   async classifyCorrection(input: { correctionText: string; project?: ProjectRecord }): Promise<{ bucket: CorrectionBucket; confidence: number; notes: string }> {
