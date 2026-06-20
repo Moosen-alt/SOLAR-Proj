@@ -5,11 +5,16 @@
   "type": "module",
   "scripts": {
     "dev": "tsx backend/src/server.ts",
+    "start": "tsx backend/src/server.ts",
     "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit",
     "smoke": "tsx backend/src/smoke.ts",
     "portal:login": "tsx portal-bot/src/testRun.ts login",
     "portal:test": "tsx portal-bot/src/testRun.ts",
     "portal:install": "playwright install chromium"
+  },
+  "engines": {
+    "node": ">=20"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.105.0",
@@ -20,7 +25,8 @@
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "pdf-lib": "^1.17.1",
-    "pdfjs-dist": "^6.0.227"
+    "pdfjs-dist": "^6.0.227",
+    "tsx": "^4.19.2"
   },
   "devDependencies": {
     "@playwright/test": "^1.61.0",
@@ -29,7 +35,6 @@
     "@types/express": "^5.0.0",
     "@types/node": "^22.10.7",
     "playwright": "^1.61.0",
-    "tsx": "^4.19.2",
     "typescript": "^5.7.3"
   }
 }

@@ -1,0 +1,26 @@
+node_modules
+.git
+.gitignore
+.env
+*.log
+dist
+**/dist
+# Local data — never bake into the image; mount a volume instead
+backend/data
+backend/data/backups
+backend/data/batch-uploads
+backend/data/batch-reports
+backend/data/ahj-forms
+backend/data/filled
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+# Portal auth / sessions
+playwright/.auth
+portal-profiles
+*-session.json
+*.session.json
+# Editor / OS cruft
+.DS_Store
+.vscode
+.idea

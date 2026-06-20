@@ -1,0 +1,20 @@
+# Solar Submission Autopilot — single-service deploy.
+# Usage:
+#   1) cp .env.example .env  and fill in SESSION_ENCRYPTION_KEY (+ ANTHROPIC_API_KEY for AI)
+#   2) docker compose up -d --build
+#   3) open http://localhost:4173   (health: /health, diagnostics: /api/diagnostics)
+services:
+  app:
+    build: .
+    image: solar-submission-autopilot:latest
+    ports:
+      - "${PORT:-4173}:4173"
+    env_file:
+      - .env
+    # Persist the SQLite database + backups across restarts/redeploys.
+    volumes:
+      - solar-data:/app/backend/data
+    restart: unless-stopped
+
+volumes:
+  solar-data:
