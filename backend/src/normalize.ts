@@ -41,6 +41,65 @@ function confidenceSummary(payload: ParserPayload): string {
   return lines.join("; ") || "parser completed without explicit review flags";
 }
 
+// Produces the canonical snapshot keys that portal adapters and the AHJ PDF
+// form engine read, mapping the parser's short field names to canonical names
+// and building a structured pvArrays list. Additive and idempotent: existing
+// canonical keys are preserved, so a future parser emitting canonical names
+// still works. This is what makes intake "pulled properly" end to end.
+export function canonicalizeSnapshot(payload: ParserPayload): ParserPayload {
+  const pick = (keys: string[]): string => first(payload, keys);
+  const has = (key: string): boolean => payload[key] !== undefined && payload[key] !== null && payload[key] !== "";
+
+  const canonical: Record<string, unknown> = {};
+  const set = (key: string, value: unknown) => {
+    if (has(key)) return; // never clobber a value the parser already provided
+    if (value === "" || value == null) return;
+    canonical[key] = value;
+  };
+
+  set("homeownerEmail", pick(["homeownerEmail", "ownerEmail"]));
+  set("homeownerPhone", pick(["homeownerPhone", "ownerPhone"]));
+  set("moduleManufacturer", pick(["moduleManufacturer", "moduleMake"]));
+  set("moduleModel", pick(["moduleModel"]));
+  set("moduleWatts", pick(["moduleWatts", "moduleWattage"]));
+  set("moduleQuantity", pick(["moduleQuantity", "moduleQty"]));
+  set("inverterManufacturer", pick(["inverterManufacturer", "invMake", "pvMicroMake"]));
+  set("inverterModel", pick(["inverterModel", "invModel", "pvMicroModel"]));
+  set("inverterQuantity", pick(["inverterQuantity", "invQty", "pvMicroQty"]));
+  set("batteryManufacturer", pick(["batteryManufacturer", "batteryMake"]));
+  set("batteryModel", pick(["batteryModel"]));
+  set("batteryQuantity", pick(["batteryQuantity", "batteryQty"]));
+  set("essKwh", pick(["essKwh", "batteryCapacityKwh"]));
+  set("mainServiceRating", pick(["mainServiceRating", "busRating", "mainBreaker"]));
+  set("serviceType", pick(["serviceType"]));
+  set("jobValue", pick(["jobValue"]));
+  set("pgeSchedule", pick(["pgeSchedule"]));
+  set("phase", pick(["phase"]));
+
+  const batteryQty = pick(["batteryQuantity", "batteryQty"]);
+  const batteryModel = pick(["batteryModel"]);
+  set("hasBattery", batteryModel || (batteryQty && Number(batteryQty) > 0) ? "Yes" : "No");
+
+  // Build a structured pvArrays list when the parser didn't provide one.
+  if (!Array.isArray(payload["pvArrays"])) {
+    const qty = pick(["moduleQuantity", "moduleQty"]);
+    const model = pick(["moduleModel"]);
+    if (qty || model) {
+      canonical["pvArrays"] = [
+        {
+          quantity: qty,
+          moduleManufacturer: pick(["moduleManufacturer", "moduleMake"]),
+          moduleModel: model,
+          tilt: pick(["tilt"]),
+          azimuth: pick(["azimuth"]),
+        },
+      ];
+    }
+  }
+
+  return { ...payload, ...canonical };
+}
+
 export function normalizeProject(
   id: string,
   payload: ParserPayload,
@@ -69,7 +128,7 @@ export function normalizeProject(
     status,
     currentStage: status === "parsed" ? "Parsed by front-end engine" : status,
     parserConfidenceSummary: confidenceSummary(payload),
-    parserSnapshot: payload,
+    parserSnapshot: canonicalizeSnapshot(payload),
     createdAt,
     updatedAt,
   };

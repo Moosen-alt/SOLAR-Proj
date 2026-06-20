@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Solar Submission Engine Rebuild v17.2.36 Direct PDF UB Account Fix</title>
+  <title>Project Intake &amp; Parser — Solar Submission Autopilot</title>
   <style>
     :root{
       --bg:#071120;
@@ -163,10 +163,11 @@
 
 <body>
 <div class="wrap">
-  <h1>Solar Submission Engine</h1>
-  <p class="sub">Rebuild v17.2.36 with hard direct UB account fallback for PDF bills before strict parser filtering.</p>
+  <h1>Project Intake &amp; Parser</h1>
+  <p class="sub">Upload a plan set, utility bill, and meter photo. Review the extracted data, fill any gaps, then save the project to the dashboard.</p>
 
   <div class="nav">
+    <a class="pill" href="/dashboard.html">← Dashboard</a>
     <div class="pill">Upload</div>
     <div class="pill">Project data</div>
     <div class="pill">Permit path</div>
@@ -177,8 +178,7 @@
   </div>
 
   <div class="section-note">
-    <strong>v17.2.36 update</strong><br>
-    Added a dedicated module wattage field. Parser now pulls wattage directly from strings like <span class="mono">Q.TRON BLK M-G2.C1+/AC - 430W</span> and falls back to DC kW divided by module quantity. UB account parsing was expanded for OCR from phone photos, including PGE style account numbers near <span class="mono">Account number</span>.
+    <strong>How to use:</strong> Upload your documents below — extraction runs automatically. Every field is editable, so correct anything the parser missed before saving. Required for a clean submission: address, AHJ, utility, system size, equipment, meter &amp; account number.
   </div>
 
   <div class="card">
@@ -214,6 +214,8 @@
       <div><label>Utility</label><input id="utility" /></div>
       <div><label>AHJ / County</label><input id="ahj" /></div>
       <div><label>Homeowner name</label><input id="owner" /></div>
+      <div><label>Homeowner email</label><input id="homeownerEmail" type="email" placeholder="for utility/AHJ contact" /></div>
+      <div><label>Homeowner phone</label><input id="homeownerPhone" /></div>
       <div><label>Project address</label><input id="street" /></div>
       <div><label>City</label><input id="city" /></div>
       <div><label>State</label><input id="state" value="OR" /></div>
@@ -221,6 +223,15 @@
       <div><label>Meter number</label><input id="meter" /></div>
       <div><label>Account number</label><input id="account" /></div>
       <div><label>Interconnection method</label><input id="interco" /></div>
+    </div>
+
+    <div class="row4" style="margin-top:12px">
+      <div><label>Service type</label>
+        <select id="serviceType"><option value="">—</option><option value="Residential">Residential</option><option value="Commercial">Commercial</option></select>
+      </div>
+      <div><label>Main service rating (A)</label><input id="mainServiceRating" placeholder="e.g. 200" /></div>
+      <div><label>Job value ($)</label><input id="jobValue" placeholder="system contract value" /></div>
+      <div><label>PGE schedule (if PGE)</label><input id="pgeSchedule" placeholder="e.g. 7" /></div>
     </div>
 
     <div class="row3" style="margin-top:12px">
@@ -2537,7 +2548,7 @@ function buildPacketReadiness(plan, ub){
 }
 
 function collectFields(){
-  const ids = ['utility','ahj','owner','street','city','state','zip','meter','account','interco','dcKw','acKw','exportKw','moduleMake','moduleModel','moduleWattage','moduleQty','invMake','invModel','invQty','invOutputW','pvMicroMake','pvMicroModel','pvMicroQty','pvMicroOutputW','batteryMake','batteryModel','batteryQty','batteryCapacityKwh','batteryOutputKw','gatewayMake','gatewayModel','backupPanel','phase','voltage','busRating','mainBreaker','pvBreaker','roofMaterial','racking','mounting','wind','snow','deadLoad','roofRafterSize','roofRafterSpacing','woodGrade','roofRafterSpanFeet','tilt','azimuth','ptc','acDiscReq','acDiscAmp','ubAccountHolder','ubAccountNumber','ubServiceAddress','ubMeterNumber','ubMeterVerification','locateCalloutText','locateActionStepsText','splitPagesText','utilityDownloadChecklistText','utilityPacketBaseName'];
+  const ids = ['utility','ahj','owner','homeownerEmail','homeownerPhone','street','city','state','zip','meter','account','interco','serviceType','mainServiceRating','jobValue','pgeSchedule','dcKw','acKw','exportKw','moduleMake','moduleModel','moduleWattage','moduleQty','invMake','invModel','invQty','invOutputW','pvMicroMake','pvMicroModel','pvMicroQty','pvMicroOutputW','batteryMake','batteryModel','batteryQty','batteryCapacityKwh','batteryOutputKw','gatewayMake','gatewayModel','backupPanel','phase','voltage','busRating','mainBreaker','pvBreaker','roofMaterial','racking','mounting','wind','snow','deadLoad','roofRafterSize','roofRafterSpacing','woodGrade','roofRafterSpanFeet','tilt','azimuth','ptc','acDiscReq','acDiscAmp','ubAccountHolder','ubAccountNumber','ubServiceAddress','ubMeterNumber','ubMeterVerification','locateCalloutText','locateActionStepsText','splitPagesText','utilityDownloadChecklistText','utilityPacketBaseName'];
   const out = {};
   ids.forEach(id => out[id] = getVal(id));
   out.permitPath = $('pathMain') ? $('pathMain').textContent : '';
