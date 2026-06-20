@@ -1076,7 +1076,11 @@ function renderHistoricalFailures() {
     <article class="item ${report.topRejectionCauses.some((cause) => cause.count > 0) ? "warning" : "info"}">
       <div class="item-title"><span>Top rejection causes</span>${statusBadge(report.topRejectionCauses.length)}</div>
       ${report.topRejectionCauses.map((cause) => `
-        <p><strong>${esc(cause.title)}</strong> ${cause.count ? `(${cause.count} prior)` : "(baseline)"}. ${esc(cause.requiredAction)}</p>
+        <div class="check-row ${esc(cause.severity || "callout")}">
+          <strong>${esc(cause.title)}</strong> ${statusBadge(cause.severity || "callout")}
+          <p>${cause.count ? `<strong>${cause.count} prior record(s)</strong>` : "Baseline rule (no learned records yet)"}${cause.rootCause ? ` · ${esc(cause.rootCause)}` : ""}. ${esc(cause.requiredAction)}</p>
+          ${cause.sample ? `<p class="muted evidence-sample"><strong>Evidence:</strong> "${esc(String(cause.sample).slice(0, 280))}${String(cause.sample).length > 280 ? "…" : ""}"</p>` : `<p class="muted">No source excerpt — derived from a deterministic baseline rule.</p>`}
+        </div>
       `).join("")}
     </article>
     <article class="item ${missing ? "blocker" : review ? "warning" : "pass"}">
