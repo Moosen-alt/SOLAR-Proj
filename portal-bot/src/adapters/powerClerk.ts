@@ -141,29 +141,36 @@ export class PowerClerkAdapter implements PortalAdapter {
       const installerEmail = str(s["installerEmail"] ?? s["installer_email"]) || "permit@infinitysolarusa.com";
       const installerPhone = str(s["installerPhone"] ?? s["installer_phone"]) || "(800) 818-0598";
 
-      await page.getByRole("textbox", { name: "Name" }).fill(installerFirst);
-      await page.getByRole("textbox", { name: "Last" }).fill(installerLast);
-      await page.getByRole("textbox", { name: "Address", exact: true }).fill(installerAddress);
-      await page.getByRole("textbox", { name: "Email" }).fill(installerEmail);
-      await page.getByRole("textbox", { name: "Phone" }).fill(installerPhone);
+      // The page may render multiple contact sections; pin the installer block
+      // to the first matching field of each kind to stay unambiguous.
+      await page.getByRole("textbox", { name: "Name" }).first().fill(installerFirst);
+      await page.getByRole("textbox", { name: "Last" }).first().fill(installerLast);
+      await page.getByRole("textbox", { name: "Address", exact: true }).first().fill(installerAddress);
+      await page.getByRole("textbox", { name: "Email" }).first().fill(installerEmail);
+      await page.getByRole("textbox", { name: "Phone" }).first().fill(installerPhone);
       await page.getByRole("button", { name: "Next", exact: true }).click();
 
       // --- Applicant (PGE Customer / homeowner) -----------------------------
+      // Scope the whole block to the Applicant group so it never collides with
+      // any other contact section rendered on the same page.
       const ownerFull = (project.homeownerName ?? "").trim();
       const ownerFirst = ownerFull.split(/\s+/)[0] ?? "";
       const ownerLast = ownerFull.split(/\s+/).slice(1).join(" ") || ownerFirst;
 
-      await page.getByRole("textbox", { name: "Name" }).fill(ownerFirst);
-      await page.getByRole("group", { name: "Applicant (PGE Customer)" }).getByPlaceholder("Last").fill(ownerLast);
-      await page.getByRole("textbox", { name: "Address", exact: true }).fill(project.projectAddress ?? "");
-      await page.getByRole("textbox", { name: "City" }).fill(project.city ?? "");
-      await page.getByLabel("State").selectOption(project.state || "OR");
-      await page.getByRole("textbox", { name: "Zip Code" }).fill(project.zip ?? "");
+      const applicant = page.getByRole("group", { name: "Applicant (PGE Customer)" });
+      const applicantScope = (await applicant.count()) > 0 ? applicant : page;
+
+      await applicantScope.getByRole("textbox", { name: "Name" }).first().fill(ownerFirst);
+      await applicantScope.getByPlaceholder("Last").first().fill(ownerLast);
+      await applicantScope.getByRole("textbox", { name: "Address", exact: true }).first().fill(project.projectAddress ?? "");
+      await applicantScope.getByRole("textbox", { name: "City" }).first().fill(project.city ?? "");
+      await applicantScope.getByLabel("State").first().selectOption(project.state || "OR");
+      await applicantScope.getByRole("textbox", { name: "Zip Code" }).first().fill(project.zip ?? "");
 
       const ownerPhone = str(s["homeownerPhone"] ?? s["owner_phone"]);
       const ownerEmail = str(s["homeownerEmail"] ?? s["owner_email"]);
-      if (ownerPhone) await page.getByRole("textbox", { name: "Phone" }).fill(ownerPhone);
-      if (ownerEmail) await page.getByRole("textbox", { name: "Email" }).fill(ownerEmail);
+      if (ownerPhone) await applicantScope.getByRole("textbox", { name: "Phone" }).first().fill(ownerPhone);
+      if (ownerEmail) await applicantScope.getByRole("textbox", { name: "Email" }).first().fill(ownerEmail);
       await page.getByRole("button", { name: "Next", exact: true }).click();
 
       // --- Installer company selection --------------------------------------
@@ -182,9 +189,9 @@ export class PowerClerkAdapter implements PortalAdapter {
       await page.getByText("New net metering system at a location currently served by PGE").click().catch(() => null);
 
       const serviceType = str(s["serviceType"] ?? s["service_type"]) || "Residential";
-      await page.getByLabel("Type").selectOption(serviceType).catch(() => null);
+      await page.getByLabel("Type").first().selectOption(serviceType).catch(() => null);
       const schedule = str(s["pgeSchedule"] ?? s["schedule"]) || "7";
-      await page.getByLabel("Schedule").selectOption(schedule).catch(() => null);
+      await page.getByLabel("Schedule").first().selectOption(schedule).catch(() => null);
 
       await page.getByRole("textbox", { name: "PGE Account Number for point" }).fill(project.accountNumber ?? "");
       await page.getByRole("textbox", { name: "Meter Number" }).fill(project.meterNumber ?? "");
