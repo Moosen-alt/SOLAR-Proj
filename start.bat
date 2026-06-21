@@ -20,13 +20,24 @@ if errorlevel 1 (
   exit /b 1
 )
 
-REM First run: install dependencies if node_modules is missing.
-if not exist "node_modules" (
-  echo Installing dependencies for the first time, please wait...
+REM Install dependencies if node_modules is missing OR incomplete. A partial
+REM install (e.g. an interrupted npm install, or a folder copied without all
+REM packages) would otherwise fail at runtime with "Cannot find package ...".
+REM We check the two critical runtime deps as a sentinel.
+set "NEED_INSTALL="
+if not exist "node_modules" set "NEED_INSTALL=1"
+if not exist "node_modules\better-sqlite3" set "NEED_INSTALL=1"
+if not exist "node_modules\tsx" set "NEED_INSTALL=1"
+if defined NEED_INSTALL (
+  echo Installing dependencies, please wait ^(first run can take a minute^)...
   call npm install
   if errorlevel 1 (
     echo.
     echo  npm install failed. See the messages above.
+    echo  If it mentions better-sqlite3, try a clean reinstall:
+    echo      rmdir /s /q node_modules
+    echo      npm install
+    echo.
     pause
     exit /b 1
   )
