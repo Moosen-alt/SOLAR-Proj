@@ -1115,6 +1115,46 @@ export interface LLMProvider {
     inverterModel: string;
     inverterQty?: number;
   }): Promise<InverterSpecLookup>;
+
+  /** Web-search for the AHJ's official blank permit application PDF and return
+   *  candidate direct-download URLs to try. Advisory — URLs must be fetched and
+   *  validated as PDFs before use. */
+  findAhjFormUrl(input: {
+    ahj: string;
+    state: string;
+    formType?: string;
+  }): Promise<AhjFormUrlResult>;
+
+  /** Map a blank form's AcroForm field names onto project data sources so the
+   *  form can be auto-filled. Returns the textField/checkbox source maps using
+   *  the same source convention as ahjForms (project.* / snapshot.* / client.* /
+   *  computed.* / lit:*). */
+  mapAcroFormFields(input: {
+    ahj: string;
+    state: string;
+    formName: string;
+    fields: { name: string; type: string }[];
+    availableSources: string[];
+  }): Promise<AhjFieldMapResult>;
+}
+
+export interface AhjFormUrlResult {
+  provider: "claude" | "stub";
+  formName: string;
+  /** Direct-download URLs for the blank PDF, best first. May be empty. */
+  candidateUrls: string[];
+  formType: string;
+  confidence: "low" | "medium" | "high";
+  notes: string;
+}
+
+export interface AhjFieldMapResult {
+  provider: "claude" | "stub";
+  /** AcroForm text field name -> value source (e.g. "project.homeownerName"). */
+  textFields: Record<string, string>;
+  /** AcroForm checkbox field name -> check rule. */
+  checkboxes: Record<string, { source: string; equals?: string }>;
+  notes: string;
 }
 
 export interface InverterSpecLookup {

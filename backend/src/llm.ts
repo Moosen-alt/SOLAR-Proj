@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import type { AhjResearchResult, CorrectionBucket, InverterSpecLookup, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, ProjectRecord, UtilityResearchResult } from "../../shared/src/types";
+import type { AhjFieldMapResult, AhjFormUrlResult, AhjResearchResult, CorrectionBucket, InverterSpecLookup, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, ProjectRecord, UtilityResearchResult } from "../../shared/src/types";
 import { RECIPE_FIELD_DESCRIPTIONS } from "./portalRecipes";
 
 const MODEL = "claude-opus-4-8";
@@ -103,6 +103,21 @@ export class StubLLMProvider implements LLMProvider {
       notes: "No ANTHROPIC_API_KEY configured — equipment spec lookup is off.",
       needsHumanVerification: true,
     };
+  }
+
+  async findAhjFormUrl(input: { ahj: string; state: string; formType?: string }): Promise<AhjFormUrlResult> {
+    return {
+      provider: "stub",
+      formName: "",
+      candidateUrls: [],
+      formType: input.formType || "permit_application",
+      confidence: "low",
+      notes: "No ANTHROPIC_API_KEY configured — AHJ form lookup is off.",
+    };
+  }
+
+  async mapAcroFormFields(): Promise<AhjFieldMapResult> {
+    return { provider: "stub", textFields: {}, checkboxes: {}, notes: "No ANTHROPIC_API_KEY configured — field mapping is off." };
   }
 }
 
@@ -658,6 +673,101 @@ Use the MAXIMUM CONTINUOUS output (not peak). Set confidence "low" and outputCur
       notes: `${String(parsed.notes || "")} Derived PV breaker = next standard size ≥ 1.25 × ${Math.round(totalA * 100) / 100}A total (verify against the SLD, especially multi-branch microinverter layouts).`.trim(),
       needsHumanVerification: true,
     };
+  }
+
+  async findAhjFormUrl(input: { ahj: string; state: string; formType?: string }): Promise<AhjFormUrlResult> {
+    const formType = input.formType || "permit_application";
+    const system = `You are a solar permitting research assistant. Find the OFFICIAL blank ${formType.replace(/_/g, " ")} PDF form that the named Authority Having Jurisdiction (AHJ) uses for residential rooftop solar PV permits. Search the web and prefer the AHJ's own .gov/.us website.
+
+Return ONLY JSON:
+{
+  "formName": "<the official form's title>",
+  "candidateUrls": ["<direct https URL(s) that download the blank PDF, best first — only URLs you actually found, must end in .pdf or be a direct download>"],
+  "confidence": "low|medium|high",
+  "notes": "<which site it came from; any caveat, e.g. 'online portal only, no PDF exists'>"
+}
+Rules:
+- ONLY return URLs you actually located via search — never fabricate a URL. If the AHJ submits exclusively through an online portal and has no downloadable PDF form, return an empty candidateUrls array and say so in notes.
+- Prefer the most current year's form. Return valid JSON only.`;
+    const userMsg = `AHJ: ${input.ahj}\nState: ${input.state}\nForm needed: residential solar ${formType.replace(/_/g, " ")}.\nFind the official blank PDF.`;
+    let parsed: Partial<AhjFormUrlResult> = {};
+    try {
+      parsed = this.parseJson(await this.askWithWebSearch(system, userMsg), {});
+    } catch (err) {
+      console.warn("[llm] findAhjFormUrl web search failed:", err instanceof Error ? err.message : String(err));
+    }
+    const urls = Array.isArray(parsed.candidateUrls)
+      ? parsed.candidateUrls.map((u) => String(u)).filter((u) => /^https?:\/\//i.test(u))
+      : [];
+    return {
+      provider: "claude",
+      formName: String(parsed.formName || ""),
+      candidateUrls: urls,
+      formType,
+      confidence: (["low", "medium", "high"].includes(String(parsed.confidence)) ? parsed.confidence : "low") as "low" | "medium" | "high",
+      notes: String(parsed.notes || ""),
+    };
+  }
+
+  async mapAcroFormFields(input: {
+    ahj: string;
+    state: string;
+    formName: string;
+    fields: { name: string; type: string }[];
+    availableSources: string[];
+  }): Promise<AhjFieldMapResult> {
+    const system = `You map a blank permit PDF's form fields onto a solar project's known data, so the form can be auto-filled.
+
+You are given the form's AcroForm FIELD NAMES (and types) and the list of AVAILABLE DATA SOURCES. For each form field you can confidently fill, choose the single best matching source. Leave a field out entirely if no source clearly matches (do not guess).
+
+Source syntax (use these EXACT strings):
+- "project.<key>" / "snapshot.<key>" / "client.<key>" / "computed.<key>" — pull from project data
+- "lit:<text>" — a literal constant (use for fixed marks, e.g. "lit:X" for a checkbox, "lit:Solar")
+
+Return ONLY JSON:
+{
+  "textFields": { "<exact form field name>": "<source string>", ... },
+  "checkboxes": { "<exact checkbox field name>": { "source": "<source string>", "equals": "<optional value to compare>" }, ... },
+  "notes": "<short note on anything ambiguous or left blank, e.g. signature/date fields left for the human>"
+}
+Rules:
+- Use the EXACT field names provided (case/spacing matters).
+- Put checkbox-type fields in "checkboxes", text fields in "textFields".
+- NEVER map signature, date-signed, or fee-payment fields — leave them for the human.
+- NEVER map utility account number or meter number onto a public form field unless the field name explicitly asks for it.
+- Return valid JSON only.`;
+    const userMsg = `AHJ: ${input.ahj} (${input.state})
+Form: ${input.formName}
+
+FORM FIELDS (name | type):
+${input.fields.slice(0, 200).map((f) => `${f.name} | ${f.type}`).join("\n")}
+
+AVAILABLE DATA SOURCES:
+${input.availableSources.join("\n")}`;
+    let parsed: Partial<AhjFieldMapResult> = {};
+    try {
+      parsed = this.parseJson(await this.askLong(system, userMsg, 4096), {});
+    } catch (err) {
+      console.warn("[llm] mapAcroFormFields failed:", err instanceof Error ? err.message : String(err));
+    }
+    const textFields: Record<string, string> = {};
+    if (parsed.textFields && typeof parsed.textFields === "object") {
+      for (const [k, v] of Object.entries(parsed.textFields)) {
+        const src = String(v);
+        if (k && src && /^(project|snapshot|client|computed)\.|^lit:/.test(src)) textFields[k] = src;
+      }
+    }
+    const checkboxes: Record<string, { source: string; equals?: string }> = {};
+    if (parsed.checkboxes && typeof parsed.checkboxes === "object") {
+      for (const [k, v] of Object.entries(parsed.checkboxes)) {
+        const rule = v as { source?: unknown; equals?: unknown };
+        const src = String(rule?.source || "");
+        if (k && src && /^(project|snapshot|client|computed)\.|^lit:/.test(src)) {
+          checkboxes[k] = rule.equals != null ? { source: src, equals: String(rule.equals) } : { source: src };
+        }
+      }
+    }
+    return { provider: "claude", textFields, checkboxes, notes: String(parsed.notes || "") };
   }
 }
 

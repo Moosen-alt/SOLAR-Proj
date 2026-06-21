@@ -1767,7 +1767,15 @@ function renderFilledForms(projectId) {
   if (ff.unmatched || !forms.length) {
     return `<article class="item warning">
       <div class="item-title"><span>Official AHJ PDF form</span>${statusBadge("none on file")}</div>
-      <p>No built-in fillable PDF form for <strong>${esc(ff.ahj || "this AHJ")}</strong> yet. Either this jurisdiction submits online (no PDF — use the portal recording), or its blank form hasn't been added. Upload the AHJ's blank PDF under Knowledge → AHJ Forms to have it auto-filled for every project here.</p>
+      <p>No filled PDF form for <strong>${esc(ff.ahj || "this AHJ")}</strong> yet. Let the AI find the AHJ's official permit PDF, map its fields, and fill it — or upload the blank PDF yourself if it can't be found (e.g. the AHJ is online-only).</p>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:6px">
+        <button type="button" id="findAhjFormBtn" class="secondary"><i data-lucide="search"></i><span>Find official form (AI)</span></button>
+        <label class="secondary" style="cursor:pointer;display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid var(--line);border-radius:6px">
+          <i data-lucide="upload"></i><span>Upload blank PDF</span>
+          <input id="uploadAhjFormInput" type="file" accept="application/pdf" style="display:none">
+        </label>
+        <span id="findAhjFormStatus" class="muted" style="font-size:12px"></span>
+      </div>
     </article>`;
   }
   return forms.map((f) => {
@@ -1816,6 +1824,65 @@ function renderApplicationDocs() {
       </article>
     `).join("")}
   `;
+  bindFilledFormControls();
+  if (window.lucide) window.lucide.createIcons();
+}
+
+// Wire the dynamically-rendered "Find official form (AI)" + upload controls.
+function bindFilledFormControls() {
+  const findBtn = $("findAhjFormBtn");
+  if (findBtn) findBtn.addEventListener("click", findAhjForm);
+  const upload = $("uploadAhjFormInput");
+  if (upload) upload.addEventListener("change", uploadAhjForm);
+}
+
+async function findAhjForm() {
+  if (!state.selectedProjectId) return;
+  const btn = $("findAhjFormBtn");
+  const status = $("findAhjFormStatus");
+  if (btn) btn.disabled = true;
+  if (status) status.textContent = "Searching the web for the AHJ's official permit PDF…";
+  try {
+    const result = await api(`/api/projects/${state.selectedProjectId}/find-ahj-form`, { method: "POST", body: "{}" });
+    state.filledForms = result.filled || state.filledForms;
+    const e = result.ensure || {};
+    if (status) status.textContent = e.message || "Done.";
+    renderApplicationDocs();
+    if (e.status === "acquired") showMessage(e.message, "success");
+    else if (e.status === "not_found") showMessage(e.message || "No official PDF found — upload the blank form.", "warning");
+  } catch (err) {
+    if (status) status.textContent = "";
+    showMessage(err.message || "Form lookup failed.", "error");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function uploadAhjForm(ev) {
+  if (!state.selectedProjectId) return;
+  const file = ev.target.files && ev.target.files[0];
+  if (!file) return;
+  const p = state.detail?.project || {};
+  const status = $("findAhjFormStatus");
+  if (status) status.textContent = `Uploading ${file.name} and mapping its fields…`;
+  try {
+    const buf = await file.arrayBuffer();
+    const qs = new URLSearchParams({ ahj: p.ahj || "", state: p.state || "", filename: file.name });
+    const res = await fetch(`/api/ahj-templates/upload?${qs.toString()}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/pdf" },
+      body: buf,
+    });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `Upload failed (${res.status})`);
+    const out = await res.json();
+    // Re-fill now that the template is stored.
+    state.filledForms = await api(`/api/projects/${state.selectedProjectId}/filled-forms`, { method: "POST", body: "{}" });
+    renderApplicationDocs();
+    showMessage(out.fillable ? `Uploaded and mapped ${out.fieldCount} field(s). The form is now auto-filled.` : "Uploaded — but this PDF has no fillable fields, so it's stored as the blank for manual completion.", out.fillable ? "success" : "warning");
+  } catch (err) {
+    if (status) status.textContent = "";
+    showMessage(err.message || "Upload failed.", "error");
+  }
 }
 
 function renderPermitMonitor() {

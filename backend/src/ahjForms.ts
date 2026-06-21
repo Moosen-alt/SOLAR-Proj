@@ -148,7 +148,7 @@ export const ahjFormRegistry: AhjFormDefinition[] = [
   },
 ];
 
-interface FillContext {
+export interface FillContext {
   project: ProjectRecord;
   client: Record<string, string>; // overlay keys (installerCompanyName, ccbLicenseNumber, ...)
   snapshot: Record<string, unknown>;
@@ -269,7 +269,7 @@ export function resolveSource(source: FieldSource, ctx: FillContext): string {
   }
 }
 
-function buildContext(db: AppDb, project: ProjectRecord): FillContext {
+export function buildContext(db: AppDb, project: ProjectRecord): FillContext {
   // Reuse the same client overlay the portal adapters get, so PDF and portal
   // stay consistent. portalType "" yields licensing fields without a specific
   // installer identity.
@@ -350,7 +350,17 @@ export async function fillForm(
   } catch (err) {
     return { formId: def.id, formName: def.formName, status: "error", message: err instanceof Error ? err.message : String(err) };
   }
+  return fillLoadedForm(def, templateBytes, ctx, outputPath);
+}
 
+// Fill from in-memory template bytes (e.g. a stored/uploaded blank PDF) — same
+// logic as fillForm but without the network fetch.
+export async function fillLoadedForm(
+  def: AhjFormDefinition,
+  templateBytes: Uint8Array,
+  ctx: FillContext,
+  outputPath: string,
+): Promise<FilledFormResult> {
   const doc = await PDFDocument.load(templateBytes, { ignoreEncryption: true });
 
   // Overlay mode: flat PDF, draw text at coordinates.
@@ -453,13 +463,57 @@ export async function buildFilledFormsForProject(db: AppDb, project: ProjectReco
     forms.push(await fillForm(def, ctx, path.join(outDir, `${def.id}.pdf`)));
   }
 
+  // Also fill any stored AHJ form templates (operator-uploaded or auto-researched)
+  // for this AHJ/state that aren't already covered by a built-in registry form.
+  for (const stored of loadStoredTemplates(db, project.ahj, project.state)) {
+    if (forms.some((f) => f.formId === stored.def.id)) continue;
+    forms.push(await fillLoadedForm(stored.def, stored.bytes, ctx, path.join(outDir, `${stored.def.id}.pdf`)));
+  }
+
   return {
     projectId: project.id,
     ahj: project.ahj,
     generatedAt: nowIso(),
     forms,
-    unmatched: defs.length === 0,
+    unmatched: forms.length === 0,
   };
+}
+
+// Build fillable definitions from stored ahj_form_templates rows for this AHJ.
+// The field_map column holds { formName, sourceUrl, fillMode, textFields, checkboxes }.
+export function loadStoredTemplates(db: AppDb, ahj: string, state: string): Array<{ def: AhjFormDefinition; bytes: Uint8Array }> {
+  const needle = (ahj || "").trim().toLowerCase();
+  if (!needle) return [];
+  const rows = db.query<{ id: string; ahj_name: string; state: string; original_filename: string; pdf_blob: Buffer | null; field_map: string }>(
+    "SELECT id, ahj_name, state, original_filename, pdf_blob, field_map FROM ahj_form_templates WHERE pdf_blob IS NOT NULL ORDER BY updated_at DESC",
+  );
+  const out: Array<{ def: AhjFormDefinition; bytes: Uint8Array }> = [];
+  for (const row of rows) {
+    const rowAhj = String(row.ahj_name || "").trim().toLowerCase();
+    if (!rowAhj) continue;
+    const nameMatches = rowAhj === needle || needle.includes(rowAhj) || rowAhj.includes(needle);
+    const stateOk = !row.state || !state || String(row.state).toLowerCase() === String(state).toLowerCase();
+    if (!nameMatches || !stateOk || !row.pdf_blob) continue;
+    let map: { formName?: string; sourceUrl?: string; fillMode?: string; textFields?: Record<string, string>; checkboxes?: Record<string, { source: string; equals?: string }> } = {};
+    try { map = JSON.parse(row.field_map || "{}"); } catch { map = {}; }
+    const textFields = map.textFields || {};
+    if (!Object.keys(textFields).length && !(map.checkboxes && Object.keys(map.checkboxes).length)) continue; // no usable map yet
+    out.push({
+      def: {
+        id: `tmpl-${row.id}`,
+        formName: map.formName || row.original_filename || `${row.ahj_name} form`,
+        matchJurisdictions: [rowAhj],
+        sourceUrl: map.sourceUrl || "",
+        version: "stored",
+        status: "verified",
+        fillMode: map.fillMode === "overlay" ? "overlay" : "acroform",
+        textFields,
+        checkboxes: map.checkboxes || {},
+      },
+      bytes: new Uint8Array(row.pdf_blob),
+    });
+  }
+  return out;
 }
 
 export function filledFormPath(projectId: string, formId: string): string {

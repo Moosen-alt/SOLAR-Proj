@@ -36,6 +36,7 @@ import { enqueueJob, getJob, listJobs, processNextJob, startJobWorker } from "./
 import { createUser, getUserWorkload, listUsers, updateUser, assignProjectToUser } from "./users";
 import { listBackups, runBackup, startBackupScheduler } from "./backup";
 import { startMonitorScheduler } from "./scheduler";
+import { startAhjFormRefreshScheduler } from "./ahjFormRefresh";
 import { extractZipToWorkdir } from "./batchZip";
 import { AUTH_ENABLED, login, logout, me, requireAuth, seedAdminUser } from "./auth";
 import {
@@ -57,6 +58,8 @@ import {
   inspectFormFields,
   matchingForms,
 } from "./ahjForms";
+import { buildFieldMapForPdf, ensureAhjFormTemplate, storeAhjFormTemplate } from "./ahjFormAuto";
+import { addAuditLog } from "./audit";
 import { buildAuthUrl, exchangeCodeForTokens, gmailStatus, pollGmail } from "./gmail";
 import {
   addManualCorrection,
@@ -279,6 +282,26 @@ app.get("/api/projects/:id/filled-forms/:formId", (req, res) => {
   if (!fs.existsSync(file)) throw new HttpError(404, "Filled form not found. Build it first.");
   res.type("application/pdf").sendFile(file);
 });
+
+// Auto-acquire the AHJ's official permit PDF (web research → download → field
+// map → store), then re-fill. Falls back to "upload the blank PDF" when no form
+// is found. This is the deliberate, opt-in step behind the "Find official form
+// (AI)" button so the web search cost is only paid on demand.
+app.post("/api/projects/:id/find-ahj-form", asyncHandler(async (req, res) => {
+  const detail = getProjectDetail(db, String(req.params.id));
+  const formType = String(req.body?.formType || "permit_application").trim() || "permit_application";
+  const { createLLMProvider } = await import("./llm");
+  const llm = createLLMProvider();
+  let ensure;
+  try {
+    ensure = await ensureAhjFormTemplate(db, llm, detail.project, formType);
+  } catch (err) {
+    throw normalizeLlmError(err);
+  }
+  addAuditLog(db, String(req.params.id), "system", "ahj form acquisition", "ahj_form.find", { status: ensure.status, formName: ensure.formName || "", ahj: detail.project.ahj });
+  const filled = await buildFilledFormsForProject(db, detail.project);
+  res.json({ ensure, filled });
+}));
 
 // --- Live Gmail polling (read-only) ---
 app.get("/api/gmail/status", (_req, res) => {
@@ -851,33 +874,48 @@ app.post(
   asyncHandler(async (req, res) => {
     const ahjName = String(req.query.ahj || req.headers["x-ahj-name"] || "").trim();
     const state = String(req.query.state || req.headers["x-state"] || "").trim();
-    const formType = String(req.query.formType || "permit_application").trim();
+    const formType = String(req.query.formType || "permit_application").trim() || "permit_application";
     const filename = String(req.query.filename || req.headers["x-filename"] || "upload.pdf").trim();
     if (!ahjName) throw new HttpError(400, "ahj query param required.");
     if (!Buffer.isBuffer(req.body) || req.body.length === 0) throw new HttpError(400, "PDF body required.");
+    const bytes = new Uint8Array(req.body);
 
-    const { extractPdfText } = await import("./batchImport");
-    const tmp = path.join("/tmp", `ahj-tmpl-${Date.now()}.pdf`);
-    fs.writeFileSync(tmp, req.body);
-    let extractedText = "";
-    try { extractedText = await extractPdfText(tmp); } catch { /* ignore */ }
-    fs.unlinkSync(tmp);
-
-    // LLM extracts the field structure / form positions
+    // Map the blank form's actual AcroForm fields to project data sources so the
+    // form can be auto-filled for every project under this AHJ. Flat/scanned/XFA
+    // PDFs (no fillable fields) are stored as the blank for manual completion.
     const { createLLMProvider } = await import("./llm");
     const llm = createLLMProvider();
-    const fieldMap = await llm.extractFields({ text: extractedText, source: "ahj_form_template", ahjName, state });
-
-    const id = crypto.randomUUID();
-    const now = new Date().toISOString();
-    db.run(
-      `INSERT INTO ahj_form_templates (id, ahj_name, state, form_type, original_filename, pdf_blob, moat_data, field_map, notes, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, '{}', ?, '', ?, ?)`,
-      [id, ahjName, state, formType, filename, req.body, JSON.stringify(fieldMap), now, now],
-    );
-    res.status(201).json({ id, ahjName, state, formType, fieldCount: Object.keys(fieldMap).length });
+    const formName = filename.replace(/\.pdf$/i, "") || `${ahjName} ${formType.replace(/_/g, " ")}`;
+    let map;
+    try {
+      map = await buildFieldMapForPdf(llm, { ahj: ahjName, state, formName, bytes });
+    } catch (err) {
+      throw normalizeLlmError(err);
+    }
+    const fillMode = map ? "acroform" : "overlay";
+    const id = storeAhjFormTemplate(db, {
+      ahjName, state, formType, filename, bytes,
+      map: {
+        formName,
+        sourceUrl: "",
+        fillMode,
+        textFields: map?.textFields || {},
+        checkboxes: map?.checkboxes || {},
+        notes: map ? map.notes : "Uploaded flat/scanned/XFA PDF — no fillable fields; stored for manual completion.",
+      },
+    });
+    const fieldCount = map ? Object.keys(map.textFields).length + Object.keys(map.checkboxes).length : 0;
+    res.status(201).json({ id, ahjName, state, formType, fieldCount, fillable: Boolean(map) });
   }),
 );
+
+// Re-check every stored form's source link now and refresh any that changed.
+// Runs automatically on a ~60-day schedule; this is the manual trigger.
+app.post("/api/ahj-templates/refresh", asyncHandler(async (_req, res) => {
+  const { refreshAhjFormTemplates } = await import("./ahjFormRefresh");
+  const { createLLMProvider } = await import("./llm");
+  res.json(await refreshAhjFormTemplates(db, createLLMProvider()));
+}));
 
 // List stored AHJ templates
 app.get("/api/ahj-templates", (req, res) => {
@@ -1139,6 +1177,7 @@ const server = app.listen(port, () => {
   startJobWorker(db);
   startBackupScheduler(db);
   startMonitorScheduler(db);
+  startAhjFormRefreshScheduler(db);
 });
 
 // Graceful shutdown so the DB/WAL flushes cleanly on deploy restarts.
