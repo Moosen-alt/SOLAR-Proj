@@ -2053,11 +2053,28 @@ function renderFilledForms(projectId) {
   }
   const forms = ff.forms || [];
   if (ff.unmatched || !forms.length) {
+    // Online-only (e-permitting) AHJs don't publish a standalone PDF — the
+    // application is entered directly in their portal. Show that plainly instead
+    // of a search button that can't succeed.
+    const portalOnly = state.applicationDocs?.profile?.requiresPortalEntryOnly;
+    if (portalOnly) {
+      return `<article class="item info">
+        <div class="item-title"><span>Official AHJ form</span>${statusBadge("online-only")}</div>
+        <p><strong>${esc(ff.ahj || "This AHJ")}</strong> takes applications online through its permit portal — there is no standalone PDF to download or fill. Enter the application directly in the portal; the plan set and required documents below are what you'll upload there.</p>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:6px">
+          <label class="secondary" style="cursor:pointer;display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid var(--line);border-radius:6px">
+            <i data-lucide="upload"></i><span>Upload a blank PDF anyway</span>
+            <input id="uploadAhjFormInput" type="file" accept="application/pdf" style="display:none">
+          </label>
+          <span id="findAhjFormStatus" class="muted" style="font-size:12px"></span>
+        </div>
+      </article>`;
+    }
     return `<article class="item warning">
       <div class="item-title"><span>Official AHJ PDF form</span>${statusBadge("none on file")}</div>
-      <p>No filled PDF form for <strong>${esc(ff.ahj || "this AHJ")}</strong> yet. Let the AI find the AHJ's official permit PDF, map its fields, and fill it — or upload the blank PDF yourself if it can't be found (e.g. the AHJ is online-only).</p>
+      <p>No filled PDF form for <strong>${esc(ff.ahj || "this AHJ")}</strong> yet. Find the AHJ's official permit PDF, map its fields, and fill it — or upload the blank PDF yourself if it can't be found (e.g. the AHJ is online-only).</p>
       <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:6px">
-        <button type="button" id="findAhjFormBtn" class="secondary"><i data-lucide="search"></i><span>Find official form (AI)</span></button>
+        <button type="button" id="findAhjFormBtn" class="secondary"><i data-lucide="search"></i><span>Find official form</span></button>
         <label class="secondary" style="cursor:pointer;display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid var(--line);border-radius:6px">
           <i data-lucide="upload"></i><span>Upload blank PDF</span>
           <input id="uploadAhjFormInput" type="file" accept="application/pdf" style="display:none">

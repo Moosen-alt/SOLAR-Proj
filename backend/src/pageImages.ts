@@ -68,6 +68,34 @@ export function findPlanSetPdf(db: AppDb, projectId: string): string | null {
   return byType("sld") || byType("plan_set") || byType("permit_application") || byType("issued_permit") || (rows.find(isPdf) ? s(rows.find(isPdf)!.stored_path) : null);
 }
 
+// Find a stored document by its doc_type (e.g. "meter_photo", "utility_bill").
+// Returns the on-disk path + whether it is a PDF, or null. Used so evidence that
+// lives in a STANDALONE uploaded file (the meter photo, the utility bill) renders
+// that file — not a page of the plan set.
+function findDocByType(db: AppDb, projectId: string, docTypes: string[]): { path: string; isPdf: boolean } | null {
+  const rows = db.query<Record<string, unknown>>(
+    "SELECT doc_type, stored_path, content_type, original_filename FROM project_documents WHERE project_id = ? ORDER BY uploaded_at DESC",
+    [projectId],
+  );
+  for (const type of docTypes) {
+    const hit = rows.find((row) => s(row.doc_type) === type && Boolean(s(row.stored_path)) && fs.existsSync(s(row.stored_path)));
+    if (hit) {
+      const ct = s(hit.content_type).toLowerCase();
+      const name = s(hit.original_filename).toLowerCase();
+      const p = s(hit.stored_path);
+      const isPdf = ct.includes("pdf") || name.endsWith(".pdf") || p.toLowerCase().endsWith(".pdf");
+      return { path: p, isPdf };
+    }
+  }
+  return null;
+}
+
+// Topics whose evidence is a standalone uploaded file rather than a plan-set page.
+const TOPIC_DOC_TYPES: Partial<Record<EvidenceTopic, string[]>> = {
+  meterPhoto: ["meter_photo"],
+  accountVerification: ["utility_bill"],
+};
+
 // Keywords used to score which page best matches a reviewer topic. Light-weight
 // on purpose — the sheet label from the pageHint and the excerpt do most of the
 // disambiguation; these are the fallback signal.
@@ -172,6 +200,26 @@ export async function renderEvidenceImage(
   hint: string,
   excerpt: string,
 ): Promise<Buffer | null> {
+  // Meter photo / utility bill evidence is a standalone uploaded file — render
+  // THAT, not a page of the plan set (which was showing the plot plan for the
+  // meter-photo crop slot).
+  const docTypes = TOPIC_DOC_TYPES[topic];
+  if (docTypes) {
+    const doc = findDocByType(db, projectId, docTypes);
+    if (doc) {
+      try {
+        if (doc.isPdf) return await renderPdfPageToPng(doc.path, 1);
+        // Image file (jpg/png) — return the bytes directly.
+        return fs.readFileSync(doc.path);
+      } catch {
+        return null;
+      }
+    }
+    // No standalone file stored for this topic — don't fall back to the plan set
+    // (that's what caused the wrong-sheet crop). Show the text hint instead.
+    return null;
+  }
+
   const pdfPath = findPlanSetPdf(db, projectId);
   if (!pdfPath) return null;
   let pages: string[];

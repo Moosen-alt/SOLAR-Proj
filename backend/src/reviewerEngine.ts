@@ -149,6 +149,7 @@ export function topicForFinding(finding: ReviewerFinding): EvidenceTopic | null 
   if (/rapid|rsd|690\.12/.test(idTitle)) return "rapidShutdown";
   if (/label|placard|directory/.test(idTitle)) return "labels";
   if (/inverter settings|1741|smart inverter/.test(idTitle)) return "inverterSettings";
+  if (/equipment schedule|spec package|equipment.*spec|spec.*sheet|dc.size|equipment field/.test(idTitle)) return "sld";
   if (/battery|ess|powerwall/.test(idTitle)) return "batteryMode";
   if (/utility approval|interconnection approval/.test(idTitle)) return "utilityApproval";
   if (/signature|owner authorization|customer authorization/.test(idTitle)) return "ownerAuthorization";

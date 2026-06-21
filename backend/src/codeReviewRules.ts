@@ -359,15 +359,26 @@ export function evaluateDesignCodeFindings(project: ProjectRecord, profile: AhjP
   const inverterFields = [str(project, "invModel"), str(project, "pvMicroModel"), str(project, "inverterModel"), str(project, "invQty"), str(project, "pvMicroQty")].filter(Boolean);
   const hasModuleSpec = hasAny(all, [/module spec/i, /module data/i, /\bUL\s*61730\b/i, /\bUL\s*1703\b/i]);
   const hasInverterSpec = hasAny(all, [/inverter spec/i, /microinverter spec/i, /\bUL\s*1741\b/i, /PCS/i]);
+  // Core equipment data present = the schedule IS there (make/model/wattage/qty for
+  // modules and at least model+qty for the inverter). When that's the case, only a
+  // separate SPEC-SHEET is unverified, which is a non-blocking callout the human
+  // confirms — not a warning that the equipment is "missing". The warning/blocker
+  // is reserved for genuinely missing core fields.
+  const coreEquipmentPresent = moduleFields.length >= 4 && inverterFields.length >= 2;
   if (moduleFields.length < 4 || inverterFields.length < 2 || !hasModuleSpec || !hasInverterSpec) {
+    const severity = !coreEquipmentPresent ? "blocker" : "callout";
     out.push(finding({
       id: "city.elec.equipment-specs-incomplete",
-      severity: moduleFields.length < 4 || inverterFields.length < 2 ? "blocker" : "warning",
+      severity,
       category: "electrical",
-      title: "Equipment schedule/spec package incomplete",
-      message: "Module/inverter schedule or spec-sheet evidence is incomplete.",
+      title: coreEquipmentPresent ? "Equipment spec sheets — confirm attached" : "Equipment schedule/spec package incomplete",
+      message: coreEquipmentPresent
+        ? "Module/inverter schedule is present; confirm the matching spec sheets are attached."
+        : "Module/inverter schedule or spec-sheet evidence is incomplete.",
       cityFeedback: "Provide a complete equipment schedule and matching specification sheets for modules, inverter(s)/microinverters, racking, rapid shutdown devices, ESS equipment if applicable, and disconnect/OCPD equipment. Equipment names on specs must match the SLD and application.",
-      designTeamAction: "Add missing equipment fields/spec sheets and reconcile model numbers across the plan set.",
+      designTeamAction: coreEquipmentPresent
+        ? "Confirm module/inverter/racking/RSD spec sheets are included and model numbers match the schedule."
+        : "Add missing equipment fields/spec sheets and reconcile model numbers across the plan set.",
       evidenceNeeded: ["Module make/model/wattage/quantity", "Inverter or microinverter make/model/quantity/output", "Module and inverter spec sheets", "Racking and RSD spec sheets"],
       codeReferences: [oregonElectrical2023, rapidShutdown],
     }));
