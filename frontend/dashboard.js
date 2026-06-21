@@ -1706,10 +1706,9 @@ function renderReview() {
       ${item.sourceExcerpt ? `<p><strong>Source:</strong> ${esc(item.sourceExcerpt)}</p>` : ""}
       ${item.status === "pending" ? `
         <div class="review-actions">
-          <input id="review-${item.id}" value="${esc(item.llmSuggestedValue || item.parserValue)}" placeholder="Verified value" />
+          <input id="review-${item.id}" value="${esc(item.llmSuggestedValue || item.parserValue)}" placeholder="Type the value (read it off the plan set), then Save Edit" />
           <div class="actions">
             <button class="secondary" data-review-action="reject" data-review-id="${item.id}"><i data-lucide="x"></i><span>Reject</span></button>
-            <button class="secondary" data-review-action="approve" data-review-id="${item.id}"><i data-lucide="check"></i><span>Approve</span></button>
             <button class="primary" data-review-action="edit" data-review-id="${item.id}"><i data-lucide="pencil"></i><span>Save Edit</span></button>
           </div>
         </div>
@@ -1836,10 +1835,18 @@ function renderAudit() {
 
 async function updateReview(reviewItemId, action) {
   const input = $(`review-${reviewItemId}`);
+  const value = (input?.value || "").trim();
+  // Guard the trap: approving/saving a BLANK value writes nothing, so the QC
+  // blocker never clears and the project looks stuck. Require a real value.
+  if (action !== "reject" && !value) {
+    showMessage("Type the value first (read it off the plan set / SLD), then click Save Edit. Approving a blank field won't clear the QC blocker. If a value truly doesn't apply, use Reject.", "warning");
+    if (input) input.focus();
+    return;
+  }
   const body = {
     reviewItemId,
     action,
-    fieldValue: input?.value || "",
+    fieldValue: value,
     notes: action === "reject" ? "Rejected from dashboard." : "Verified from dashboard.",
   };
   state.detail = await api(`/api/projects/${state.selectedProjectId}/human-verify`, {
