@@ -94,6 +94,7 @@ import { evidenceForTopic, evidenceLines, type EvidenceTopic } from "./projectEv
 import { runQcForProject } from "./qc";
 import { loadStoredTemplates } from "./ahjForms";
 import { buildReviewerReport, renderReviewerReportHtml } from "./reviewerEngine";
+import { applyCachedVisionVerdicts } from "./reviewerVision";
 import { nowIso } from "./time";
 
 type Row = Record<string, unknown>;
@@ -910,7 +911,7 @@ function isStagedOrSubmitted(status: ProjectRecord["status"]): boolean {
 function operationDrafts(db: AppDb, detail: ProjectDetail): OperationStepDraft[] {
   const project = detail.project;
   const historicalReport = buildHistoricalFailureReport(db, project.id);
-  const reviewerReport = buildReviewerReport(project);
+  const reviewerReport = applyCachedVisionVerdicts(db, buildReviewerReport(project));
   const applicationDocs = buildApplicationDocumentPackage(project);
   const pendingCritical = detail.humanReviewItems.filter((item) => item.status === "pending" && item.fieldName !== "correction").length;
   const pendingCorrections = detail.humanReviewItems.filter((item) => item.status === "pending" && item.fieldName === "correction").length;
@@ -1397,7 +1398,7 @@ export function getOperationsBrief(db: AppDb, projectId: string): OperationsBrie
   const detail = getProjectDetail(db, projectId);
   const plan = syncOperationsPlan(db, projectId);
   const project = detail.project;
-  const reviewerReport = buildReviewerReport(project);
+  const reviewerReport = applyCachedVisionVerdicts(db, buildReviewerReport(project));
   const applicationDocs = buildApplicationDocumentPackage(project);
   const historicalReport = buildHistoricalFailureReport(db, projectId);
   const blockers: OperationsBriefSignal[] = [];
@@ -2021,7 +2022,7 @@ export function getLiveProjectReadinessReport(db: AppDb, projectId: string): Liv
   const detail = getProjectDetail(db, projectId);
   const project = detail.project;
   const historicalReport = buildHistoricalFailureReport(db, projectId);
-  const reviewerReport = buildReviewerReport(project);
+  const reviewerReport = applyCachedVisionVerdicts(db, buildReviewerReport(project));
   const applicationDocs = buildApplicationDocumentPackage(project);
   const activeEmailSources = db.query<Row>("SELECT id, label, last_checked_at, last_matched_count, last_error FROM email_tracking_sources WHERE active = 1 ORDER BY updated_at DESC");
 
@@ -2282,7 +2283,7 @@ export function getProjectProcessMap(db: AppDb, projectId: string): ProjectProce
   const detail = getProjectDetail(db, projectId);
   const project = detail.project;
   const historicalReport = buildHistoricalFailureReport(db, projectId);
-  const reviewerReport = buildReviewerReport(project);
+  const reviewerReport = applyCachedVisionVerdicts(db, buildReviewerReport(project));
   const applicationDocs = buildApplicationDocumentPackage(project);
 
   const accountEvidence = evidenceForTopic(project, "accountVerification");
@@ -2640,7 +2641,7 @@ function renderInstallerActionText(packet: Omit<InstallerActionPacket, "reportTe
 export function getInstallerActionPacket(db: AppDb, projectId: string): InstallerActionPacket {
   const detail = getProjectDetail(db, projectId);
   const project = detail.project;
-  const reviewerReport = buildReviewerReport(project);
+  const reviewerReport = applyCachedVisionVerdicts(db, buildReviewerReport(project));
   const historicalReport = buildHistoricalFailureReport(db, projectId);
   const applicationDocs = buildApplicationDocumentPackage(project);
   const processMap = getProjectProcessMap(db, projectId);
@@ -2865,7 +2866,7 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
   const detail = getProjectDetail(db, projectId);
   const project = detail.project;
   const historicalReport = buildHistoricalFailureReport(db, projectId);
-  const reviewerReport = buildReviewerReport(project);
+  const reviewerReport = applyCachedVisionVerdicts(db, buildReviewerReport(project));
   const applicationDocs = buildApplicationDocumentPackage(project);
   const processMap = getProjectProcessMap(db, projectId);
   const installerPacket = getInstallerActionPacket(db, projectId);

@@ -16,10 +16,11 @@ import { nowIso } from "./time";
 // SLD whose text didn't OCR cleanly gets flagged "weak/missing" (false positive).
 // This opt-in pass renders the actual plan-set sheet behind such a finding and
 // asks Claude vision whether the required items are present, then upgrades the
-// finding's evidence status (and downgrades a warning to a non-blocking callout)
-// when vision confirms it. Verdicts are cached per plan-set version to control
-// cost. The pass NEVER turns a non-issue into a blocker — it only ADDS evidence
-// and can relax a text-only warning; a human still does the final review.
+// finding's evidence status (and downgrades a confirmed warning OR blocker to a
+// non-blocking callout) when vision confirms it. Verdicts are cached per plan-set
+// version to control cost. The pass NEVER turns a non-issue into a blocker — it
+// only ADDS evidence and can relax a text-derived finding it confirms on the
+// sheet; a human still does the final review at the final-submit preview gate.
 // ---------------------------------------------------------------------------
 
 // Topics that live on the plan set (worth a vision look). Utility/account/owner
@@ -152,7 +153,12 @@ async function verifyOne(
 }
 
 // Apply a verdict to a finding: vision confirmation upgrades the evidence status
-// and relaxes a text-only WARNING to a non-blocking callout (never the reverse).
+// and relaxes a text-derived WARNING or BLOCKER to a non-blocking callout when the
+// required items are confirmed present on the sheet (never the reverse — vision
+// only ADDS evidence/relaxes, it can't escalate). The text-only finding fired
+// because the parser couldn't confirm the item; once vision sees it on the plan,
+// keeping it as a hard blocker traps the submit gate even though the design is fine.
+// A human still does the final review at the always-on final-submit preview gate.
 function applyVerdict(finding: ReviewerFinding, verdict: ReviewerVisionVerdict): ReviewerFinding {
   // The verdict is rendered once as the finding's "Vision-verified" banner
   // (visionVerification). Do NOT also push it into evidenceFound — that printed
@@ -160,12 +166,35 @@ function applyVerdict(finding: ReviewerFinding, verdict: ReviewerVisionVerdict):
   const out: ReviewerFinding = { ...finding, visionVerification: verdict };
   if (verdict.checked && verdict.present && (verdict.confidence === "high" || verdict.confidence === "medium")) {
     out.evidenceStatus = "verified";
-    // Relax a purely text-derived warning — the data IS on the sheet. Keep it as
-    // a visible callout so the human still sees it, but it no longer blocks.
-    if (finding.severity === "warning") out.severity = "callout";
+    // Relax a purely text-derived warning OR blocker — the data IS on the sheet.
+    // Keep it as a visible callout so the human still sees it, but it no longer
+    // blocks staging/submission.
+    if (finding.severity === "warning" || finding.severity === "blocker") out.severity = "callout";
     out.designTeamAction = `Vision-verified on the plan set (page ${verdict.page}). ${finding.designTeamAction}`;
   }
   return out;
+}
+
+// Synchronous, cache-only application of vision verdicts to an already-built
+// reviewer report. Reads the vision cache (no LLM, no PDF render) and downgrades
+// any finding a prior vision pass confirmed. The reviewer-gate ENDPOINT runs the
+// full async pass that POPULATES this cache; this lets the submit gate, installer
+// packet, and readiness reports — which build their own text-only report — reflect
+// those same vision verdicts so a vision-cleared blocker stops blocking submission.
+export function applyCachedVisionVerdicts(db: AppDb, report: ReviewerReport): ReviewerReport {
+  const pdfPath = findPlanSetPdf(db, report.projectId);
+  if (!pdfPath) return report;
+  const sig = sourceSig(pdfPath);
+  let changed = false;
+  const findings = report.findings.map((finding) => {
+    if (!needsVision(finding)) return finding;
+    const cached = readCache(db, report.projectId, finding.id, sig);
+    if (!cached || !cached.checked) return finding;
+    changed = true;
+    return applyVerdict(finding, cached);
+  });
+  if (!changed) return report;
+  return { ...report, findings, installerCallouts: findings.filter((item) => item.installerCallout) };
 }
 
 // Opt-in vision pass over an already-built reviewer report. Returns a new report
