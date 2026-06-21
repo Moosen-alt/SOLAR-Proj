@@ -2290,10 +2290,9 @@ function parseMeterPhotoData(meterDoc){
   const text = normalizeText(meterDoc?.text || '');
   const flat = text.replace(/\s+/g,' ').trim();
 
-  // pink tag fallback: PacifiCorp field tags can contain the utility meter number near the meter.
-  const tag = flat.match(/\b(0?7[0-9]{5,8})\b/);
-  if (tag) return {meterRaw: digits(tag[1]), text};
-
+  // Prefer a LABELED meter number (next to the utility brand / "Meter #") over the
+  // greedy tag fallback below — otherwise the LCD kWh reading (e.g. "02 008 160") or
+  // a barcode/FCC-ID digit run can be grabbed as the meter number.
   const explicit = matchFirst(text, [
     /Portland General Electric\s*([0-9][0-9\s]{6,14})/i,
     /PACIFICORP[\s\S]{0,120}?\b([0-9OIlS]{2}\s?[0-9OIlS]{3}\s?[0-9OIlS]{3})\b/i,
@@ -2301,6 +2300,10 @@ function parseMeterPhotoData(meterDoc){
     /Meter\s*#?\s*([0-9OIlS][0-9OIlS\s]{6,14})/i
   ]);
   if (explicit) return {meterRaw: digits(normalizeOcrNumberText(explicit)), text};
+
+  // pink tag fallback: PacifiCorp field tags can contain the utility meter number near the meter.
+  const tag = flat.match(/\b(0?7[0-9]{5,8})\b/);
+  if (tag) return {meterRaw: digits(tag[1]), text};
 
   const serials = [];
   for (const m of flat.matchAll(/\b([0-9OIlS]{2}\s?[0-9OIlS]{3}\s?[0-9OIlS]{3})\b/g)){
@@ -3693,7 +3696,16 @@ function applyExtraction(result, applied, opts = {}){
     }
 
     // 3) Fill the visible form input where one exists.
-    const targets = LLM_FIELD_TARGETS[fieldId];
+    let targets = LLM_FIELD_TARGETS[fieldId];
+    if (fieldId === 'meter'){
+      // Keep the plan-set meter and the photographed/bill meter INDEPENDENT so
+      // compareMeters() can truly cross-validate them. A vision pass reads the
+      // real meter/bill image → canonical `meter` + `ubMeterNumber`; the text
+      // pass reads the plan set's stated meter → `planMeterNumber`. Previously a
+      // single value was written to BOTH, so the cross-check always "matched"
+      // and a misread photo silently overwrote the plan-set value.
+      targets = opts.vision ? ['meter', 'ubMeterNumber'] : ['planMeterNumber'];
+    }
     if (!targets) return;
     const authoritative = opts.vision && VISION_AUTHORITATIVE.has(fieldId) && (entry.confidence ?? 0) >= 0.5;
     targets.forEach(targetId => {

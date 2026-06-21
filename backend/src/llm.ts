@@ -641,23 +641,35 @@ ${JSON.stringify(input.unbound, null, 2)}`;
   }
 
   // Ask with the server-side web search tool enabled (used as the spec-lookup fallback).
-  private async askWithWebSearch(systemPrompt: string, userMessage: string, maxTokens = 1024, maxUses = 3): Promise<string> {
-    const stream = await this.client.messages.stream({
-      model: MODEL,
-      max_tokens: maxTokens,
-      thinking: { type: "adaptive" },
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      tools: [{ type: "web_search_20260209", name: "web_search", max_uses: maxUses }] as any,
-      system: systemPrompt,
-      messages: [{ role: "user", content: userMessage }],
-    });
-    const msg = await stream.finalMessage();
-    let out = "";
-    for (const block of msg.content) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      if ((block as any).type === "text") out += (block as any).text;
+  private async askWithWebSearch(systemPrompt: string, userMessage: string, maxTokens = 1024, maxUses = 3, timeoutMs = 45000): Promise<string> {
+    // Hard timeout so a stalled web search can never hang the HTTP request (the
+    // "Find official form" button would otherwise spin forever). On timeout we
+    // abort the stream; callers catch and fall back (no URLs / model knowledge).
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const stream = await this.client.messages.stream(
+        {
+          model: MODEL,
+          max_tokens: maxTokens,
+          thinking: { type: "adaptive" },
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          tools: [{ type: "web_search_20260209", name: "web_search", max_uses: maxUses }] as any,
+          system: systemPrompt,
+          messages: [{ role: "user", content: userMessage }],
+        },
+        { signal: controller.signal },
+      );
+      const msg = await stream.finalMessage();
+      let out = "";
+      for (const block of msg.content) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        if ((block as any).type === "text") out += (block as any).text;
+      }
+      return out;
+    } finally {
+      clearTimeout(timer);
     }
-    return out;
   }
 
   async lookupInverterSpec(input: { inverterModel: string; inverterQty?: number }): Promise<InverterSpecLookup> {

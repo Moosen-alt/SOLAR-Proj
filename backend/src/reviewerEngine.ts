@@ -70,11 +70,30 @@ export function buildReviewerReport(project: ProjectRecord): ReviewerReport {
   addProfileFindings(project, profile, findings);
   addInstallerCallouts(project, profile, findings);
 
-  // Deduplicate by finding ID — keep first occurrence (most specific rule wins).
-  const seenIds = new Set<string>();
-  for (let i = findings.length - 1; i >= 0; i--) {
-    if (seenIds.has(findings[i].id)) { findings.splice(i, 1); continue; }
-    seenIds.add(findings[i].id);
+  // Deduplicate findings. Two subsystems independently check the same topics with
+  // DIFFERENT ids — the code-rule engine (city.plan.*/city.fire.*) and the plan-set
+  // pass (reviewer.plan.*), plus core vs utility for account/meter. Collapse those
+  // known-overlapping families to one canonical key so the gate doesn't "double up".
+  // Keep the FIRST occurrence: with the builder order above that's the code-anchored
+  // / generic finding (richer code refs), not the redundant restatement.
+  const DEDUPE_ALIASES: Record<string, string> = {
+    "city.plan.sld-missing": "topic:sld",
+    "reviewer.plan.sld": "topic:sld",
+    "city.plan.site-roof-missing": "topic:site-roof",
+    "reviewer.plan.site": "topic:site-roof",
+    "city.fire.pathways-missing": "topic:fire",
+    "reviewer.plan.fire-path": "topic:fire",
+    "reviewer.core.account": "topic:account",
+    "reviewer.utility.pge-account": "topic:account",
+    "reviewer.core.meter": "topic:meter",
+    "reviewer.utility.pacpower-meter-photo": "topic:meter",
+  };
+  const dedupeKey = (f: ReviewerFinding): string => DEDUPE_ALIASES[f.id] || f.id;
+  const seenKeys = new Set<string>();
+  for (let i = 0; i < findings.length; i++) {
+    const key = dedupeKey(findings[i]);
+    if (seenKeys.has(key)) { findings.splice(i, 1); i--; continue; }
+    seenKeys.add(key);
   }
 
   if (!profile) {
