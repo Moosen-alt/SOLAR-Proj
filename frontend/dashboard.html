@@ -643,6 +643,34 @@
             <p class="muted">Loading…</p>
           </div>
         </details>
+
+        <details id="signaturesAccordion" class="kb-accordion" style="margin-top:10px">
+          <summary class="kb-summary">
+            <span>Signatures</span>
+            <span id="signaturesSummaryCount" class="muted" style="font-size:12px;font-weight:400"></span>
+          </summary>
+          <p class="muted" style="font-size:12px;margin:6px 0">Store your signature once (PNG with a transparent background works best). It's stamped on the matching signature line of permit forms — the applicant line by default. Add others (owner, contractor, electrician) for any line that needs them. You still review and do the final portal submit.</p>
+          <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:8px;padding:8px;border:1px dashed var(--line);border-radius:6px">
+            <span style="font-size:12px;font-weight:600;width:100%">Add a signature</span>
+            <select id="addSigRole" style="padding:5px 7px;font-size:13px">
+              <option value="applicant">Applicant (default)</option>
+              <option value="owner">Owner</option>
+              <option value="contractor">Contractor</option>
+              <option value="electrician">Electrician</option>
+              <option value="other">Other</option>
+            </select>
+            <input id="addSigName" placeholder="Label (e.g. your name)" style="flex:1;min-width:120px;padding:5px 7px;font-size:13px" />
+            <label style="font-size:12px;display:inline-flex;align-items:center;gap:4px"><input id="addSigDefault" type="checkbox" checked> default for role</label>
+            <label class="secondary" style="cursor:pointer;display:inline-flex;align-items:center;gap:6px;padding:5px 9px;border:1px solid var(--line);border-radius:6px;font-size:12px">
+              <i data-lucide="upload"></i><span>Choose image</span>
+              <input id="addSigFile" type="file" accept="image/png,image/jpeg" style="display:none">
+            </label>
+            <span id="signaturesStatus" class="muted" style="font-size:12px;width:100%"></span>
+          </div>
+          <div id="signaturesList" class="stack" style="margin-top:8px">
+            <p class="muted">Loading…</p>
+          </div>
+        </details>
       </div>
     </div>
   </div>

@@ -121,7 +121,7 @@ export class StubLLMProvider implements LLMProvider {
   }
 
   async mapFlatFormOverlay(): Promise<AhjOverlayMapResult> {
-    return { provider: "stub", fields: [], notes: "No ANTHROPIC_API_KEY configured — flat-form vision mapping is off." };
+    return { provider: "stub", fields: [], signatures: [], notes: "No ANTHROPIC_API_KEY configured — flat-form vision mapping is off." };
   }
 }
 
@@ -792,13 +792,20 @@ For each blank/line/box on the form that one of the AVAILABLE DATA SOURCES shoul
 - "maxWidthFrac": optional, the available width as a fraction of page width
 - "label": the form's printed label for this blank (for human review)
 
-Return ONLY JSON: {"fields":[ ... ], "notes":"<caveats; mention anything you left for a human>"}
+ALSO locate every SIGNATURE line (where a handwritten signature goes) and return it under "signatures" with:
+- "role": whose signature — one of "applicant","owner","contractor","electrician","other" (infer from the nearby label; the main applicant/owner signature is "applicant")
+- "page": 0-based page index
+- "nx","ny": normalized position of the BOTTOM-LEFT corner of the signature area (just above the signature line, at its left)
+- "widthFrac","heightFrac": the signature area size as a fraction of page width/height (a signature line is typically ~0.25 wide, ~0.04 tall)
+- "label": the printed signature label
+
+Return ONLY JSON: {"fields":[ ... ], "signatures":[ ... ], "notes":"<caveats>"}
 
 Rules:
 - Place a value ONLY where you can clearly see the matching labeled blank. Do not guess positions.
-- NEVER place signature, date-signed, or fee-payment values — leave them blank.
+- Do NOT put text in "fields" for signature or date-signed lines — signature lines go in "signatures"; leave date-signed for the human.
 - For checkboxes (e.g. "Type of work: Other"), use source "lit:X" placed at the box.
-- Coordinates must be precise to the blank — they will be used verbatim to draw text. Return valid JSON only.`;
+- Coordinates must be precise — they will be used verbatim. Return valid JSON only.`;
 
     const content: Anthropic.Messages.ContentBlockParam[] = [];
     content.push({ type: "text", text: `Form: ${input.formName} — ${input.ahj} (${input.state})\n\nAVAILABLE DATA SOURCES:\n${input.availableSources.join("\n")}\n\nPages follow:` });
@@ -820,7 +827,7 @@ Rules:
     } catch (err) {
       console.warn("[llm] mapFlatFormOverlay failed:", err instanceof Error ? err.message : String(err));
     }
-    const parsed = this.parseJson<{ fields?: unknown[]; notes?: string }>(raw, {});
+    const parsed = this.parseJson<{ fields?: unknown[]; signatures?: unknown[]; notes?: string }>(raw, {});
     const fields: AhjOverlayMapResult["fields"] = [];
     if (Array.isArray(parsed.fields)) {
       for (const f of parsed.fields) {
@@ -841,7 +848,26 @@ Rules:
         });
       }
     }
-    return { provider: "claude", fields, notes: String(parsed.notes || "") };
+    const validRoles = ["applicant", "owner", "contractor", "electrician", "other"];
+    const signatures: AhjOverlayMapResult["signatures"] = [];
+    if (Array.isArray(parsed.signatures)) {
+      for (const sgn of parsed.signatures) {
+        const o = sgn as Record<string, unknown>;
+        const nx = Number(o.nx);
+        const ny = Number(o.ny);
+        if (!Number.isFinite(nx) || !Number.isFinite(ny) || nx < 0 || nx > 1 || ny < 0 || ny > 1) continue;
+        signatures.push({
+          role: validRoles.includes(String(o.role)) ? String(o.role) : "applicant",
+          page: Number.isFinite(Number(o.page)) ? Math.max(0, Math.floor(Number(o.page))) : 0,
+          nx,
+          ny,
+          widthFrac: Number.isFinite(Number(o.widthFrac)) && Number(o.widthFrac) > 0 ? Number(o.widthFrac) : 0.25,
+          heightFrac: Number.isFinite(Number(o.heightFrac)) && Number(o.heightFrac) > 0 ? Number(o.heightFrac) : 0.04,
+          label: o.label != null ? String(o.label) : undefined,
+        });
+      }
+    }
+    return { provider: "claude", fields, signatures, notes: String(parsed.notes || "") };
   }
 }
 

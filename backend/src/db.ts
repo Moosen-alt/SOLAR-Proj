@@ -629,6 +629,25 @@ function migrate(db: AppDb): void {
     );
     CREATE INDEX IF NOT EXISTS idx_ahj_form_templates_ahj ON ahj_form_templates(ahj_name, state);
 
+    -- Operator signatures: a stored PNG the operator chooses to apply to permit
+    -- forms (e.g. the applicant/owner signature line). role groups them so the
+    -- right one lands on the right line; one per role is the default. The human
+    -- still performs the final submit — this only pre-places the operator's own
+    -- signature on the prepared document at their direction.
+    CREATE TABLE IF NOT EXISTS signatures (
+      id TEXT PRIMARY KEY,
+      role TEXT NOT NULL DEFAULT 'applicant',
+      name TEXT NOT NULL DEFAULT '',
+      image_png BLOB NOT NULL,
+      mime TEXT NOT NULL DEFAULT 'image/png',
+      width_px INTEGER NOT NULL DEFAULT 0,
+      height_px INTEGER NOT NULL DEFAULT 0,
+      is_default INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_signatures_role ON signatures(role);
+
     -- Customers / leads: the homeowner side of a deal, tracked before (and
     -- after) a project packet exists. client_id is the installer who referred
     -- them; project_id links once the lead becomes a real project.

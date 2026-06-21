@@ -1153,7 +1153,22 @@ export interface LLMProvider {
 export interface AhjOverlayMapResult {
   provider: "claude" | "stub";
   fields: AhjOverlayPlacement[];
+  /** Detected signature lines where the operator's stored signature can be stamped. */
+  signatures: AhjSignaturePlacementNorm[];
   notes: string;
+}
+
+export interface AhjSignaturePlacementNorm {
+  /** Whose signature: applicant | owner | contractor | electrician | other. */
+  role: string;
+  page: number;
+  /** Normalized bottom-left corner of the signature box (0..1 from top-left). */
+  nx: number;
+  ny: number;
+  /** Box size as a fraction of page width/height. */
+  widthFrac: number;
+  heightFrac: number;
+  label?: string;
 }
 
 export interface AhjOverlayPlacement {

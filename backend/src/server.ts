@@ -59,6 +59,7 @@ import {
   matchingForms,
 } from "./ahjForms";
 import { acquireFromBytes, ensureAhjFormTemplate } from "./ahjFormAuto";
+import { createSignature, deleteSignature, getSignatureImage, listSignatures, setDefaultSignature } from "./signatures";
 import { addAuditLog } from "./audit";
 import { buildAuthUrl, exchangeCodeForTokens, gmailStatus, pollGmail } from "./gmail";
 import {
@@ -901,6 +902,42 @@ app.post(
     });
   }),
 );
+
+// --- Operator signatures (stored once, stamped onto permit forms) ---
+app.get("/api/signatures", (_req, res) => {
+  res.json({ signatures: listSignatures(db) });
+});
+
+app.post(
+  "/api/signatures",
+  express.raw({ type: ["image/png", "image/jpeg"], limit: "5mb" }),
+  asyncHandler(async (req, res) => {
+    if (!Buffer.isBuffer(req.body) || req.body.length === 0) throw new HttpError(400, "PNG/JPEG image body required.");
+    const role = String(req.query.role || "applicant").trim();
+    const name = String(req.query.name || "").trim();
+    const isDefault = String(req.query.default || "") === "1" || String(req.query.default || "") === "true";
+    const mime = String(req.headers["content-type"] || "image/png");
+    const view = await createSignature(db, { role, name, bytes: new Uint8Array(req.body), mime, isDefault });
+    res.status(201).json(view);
+  }),
+);
+
+app.patch("/api/signatures/:id/default", (req, res) => {
+  setDefaultSignature(db, String(req.params.id));
+  res.json({ ok: true });
+});
+
+app.delete("/api/signatures/:id", (req, res) => {
+  deleteSignature(db, String(req.params.id));
+  res.json({ deleted: true });
+});
+
+app.get("/api/signatures/:id/image", (req, res) => {
+  const img = getSignatureImage(db, String(req.params.id));
+  res.setHeader("Content-Type", img.mime);
+  res.setHeader("Cache-Control", "private, max-age=300");
+  res.send(img.bytes);
+});
 
 // Re-check every stored form's source link now and refresh any that changed.
 // Runs automatically on a ~60-day schedule; this is the manual trigger.

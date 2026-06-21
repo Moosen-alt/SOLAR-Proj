@@ -5,6 +5,7 @@ import type { ProjectRecord } from "../../shared/src/types";
 import type { AppDb } from "./db";
 import { clientStagingOverlay } from "./clients";
 import { HttpError } from "./httpError";
+import { loadDefaultSignaturesByRole } from "./signatures";
 import { nowIso } from "./time";
 
 // =============================================================================
@@ -54,6 +55,18 @@ export interface OverlayField {
   onlyIf?: { source: FieldSource; equals?: string };
 }
 
+// Where an operator signature image is stamped. PDF points, bottom-left origin
+// (the box's bottom-left corner). The image is scaled to fit, preserving aspect.
+export interface SignaturePlacement {
+  role: string; // applicant | owner | contractor | electrician | other
+  page: number; // 0-based
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  label?: string; // the form's printed signature label, for review
+}
+
 export interface AhjFormDefinition {
   id: string;
   formName: string;
@@ -70,6 +83,8 @@ export interface AhjFormDefinition {
   checkboxes?: Record<string, CheckboxRule>;
   // overlay placements (used when fillMode === "overlay")
   overlayFields?: OverlayField[];
+  // operator-signature image placements (applied to both fill modes)
+  signatureFields?: SignaturePlacement[];
   notes?: string[];
 }
 
@@ -152,6 +167,9 @@ export interface FillContext {
   project: ProjectRecord;
   client: Record<string, string>; // overlay keys (installerCompanyName, ccbLicenseNumber, ...)
   snapshot: Record<string, unknown>;
+  // Default operator signature image per role, drawn at the form's signature
+  // placements. Loaded in buildContext; empty when none are stored.
+  signatures?: Record<string, { bytes: Uint8Array; mime: string; widthPx: number; heightPx: number }>;
 }
 
 function str(v: unknown): string {
@@ -278,7 +296,38 @@ export function buildContext(db: AppDb, project: ProjectRecord): FillContext {
     project,
     client,
     snapshot: (project.parserSnapshot ?? {}) as Record<string, unknown>,
+    signatures: loadDefaultSignaturesByRole(db),
   };
+}
+
+// Stamp the operator's stored signature image(s) onto the form at the detected
+// signature placements. Each role uses its default signature; an unmatched role
+// falls back to the applicant signature. Returns how many were drawn.
+async function drawSignatures(doc: PDFDocument, def: AhjFormDefinition, ctx: FillContext): Promise<number> {
+  const placements = def.signatureFields ?? [];
+  const sigs = ctx.signatures ?? {};
+  if (!placements.length || !Object.keys(sigs).length) return 0;
+  const pages = doc.getPages();
+  let drawn = 0;
+  for (const pl of placements) {
+    const sig = sigs[pl.role] || sigs.applicant;
+    if (!sig) continue;
+    const page = pages[pl.page];
+    if (!page) continue;
+    let img;
+    try {
+      img = sig.mime.includes("jpeg") ? await doc.embedJpg(sig.bytes) : await doc.embedPng(sig.bytes);
+    } catch {
+      continue;
+    }
+    // Fit within the placement box, preserving aspect ratio.
+    const boxW = pl.width > 0 ? pl.width : 130;
+    const boxH = pl.height > 0 ? pl.height : 34;
+    const scale = Math.min(boxW / img.width, boxH / img.height) || 1;
+    page.drawImage(img, { x: pl.x, y: pl.y, width: img.width * scale, height: img.height * scale });
+    drawn += 1;
+  }
+  return drawn;
 }
 
 export function matchingForms(ahj: string): AhjFormDefinition[] {
@@ -387,6 +436,7 @@ export async function fillLoadedForm(
       page.drawText(text, { x: field.x, y: field.y, size, font, color: rgb(0, 0, 0) });
       drawn += 1;
     }
+    await drawSignatures(doc, def, ctx);
     fs.mkdirSync(path.dirname(outputPath), { recursive: true });
     fs.writeFileSync(outputPath, await doc.save());
     return { formId: def.id, formName: def.formName, status: "filled", outputPath, filledFieldCount: drawn, unmappedRequested: [] };
@@ -431,6 +481,9 @@ export async function fillLoadedForm(
 
   // Flatten so the filled values are baked in and can't be edited in transit.
   try { form.flatten(); } catch { /* some forms can't flatten; leave as-is */ }
+
+  // Stamp signatures on top of the flattened form.
+  await drawSignatures(doc, def, ctx);
 
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   fs.writeFileSync(outputPath, await doc.save());
@@ -494,13 +547,15 @@ export function loadStoredTemplates(db: AppDb, ahj: string, state: string): Arra
     const nameMatches = rowAhj === needle || needle.includes(rowAhj) || rowAhj.includes(needle);
     const stateOk = !row.state || !state || String(row.state).toLowerCase() === String(state).toLowerCase();
     if (!nameMatches || !stateOk || !row.pdf_blob) continue;
-    let map: { formName?: string; sourceUrl?: string; fillMode?: string; textFields?: Record<string, string>; checkboxes?: Record<string, { source: string; equals?: string }>; overlayFields?: OverlayField[] } = {};
+    let map: { formName?: string; sourceUrl?: string; fillMode?: string; textFields?: Record<string, string>; checkboxes?: Record<string, { source: string; equals?: string }>; overlayFields?: OverlayField[]; signatureFields?: SignaturePlacement[] } = {};
     try { map = JSON.parse(row.field_map || "{}"); } catch { map = {}; }
     const textFields = map.textFields || {};
     const overlayFields = map.overlayFields || [];
+    const signatureFields = map.signatureFields || [];
     const isOverlay = map.fillMode === "overlay" && overlayFields.length > 0;
     const hasAcro = Object.keys(textFields).length > 0 || (map.checkboxes && Object.keys(map.checkboxes).length > 0);
-    if (!isOverlay && !hasAcro) continue; // no usable map yet
+    // A form with only signature placements is still usable (signs the blank).
+    if (!isOverlay && !hasAcro && !signatureFields.length) continue;
     out.push({
       def: {
         id: `tmpl-${row.id}`,
@@ -513,6 +568,7 @@ export function loadStoredTemplates(db: AppDb, ahj: string, state: string): Arra
         textFields,
         checkboxes: map.checkboxes || {},
         overlayFields,
+        signatureFields,
       },
       bytes: new Uint8Array(row.pdf_blob),
     });

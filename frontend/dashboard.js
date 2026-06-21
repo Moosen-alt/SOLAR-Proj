@@ -22,6 +22,7 @@ const state = {
   submitGate: null,
   knowledgeProfiles: [],
   ahjForms: [],
+  signatures: [],
   emailTracker: null,
   projectView: (typeof localStorage !== "undefined" && localStorage.getItem("projectView")) || "board",
 };
@@ -112,6 +113,7 @@ async function loadProjects() {
   await loadKnowledgeBase();
   await loadPortalRecipes();
   await loadAhjForms();
+  await loadSignatures();
   await loadEmailTracker();
   const selectedStillExists = state.projects.some((project) => project.id === state.selectedProjectId);
   if (!state.selectedProjectId && state.projects[0]) {
@@ -360,6 +362,71 @@ async function refreshAhjFormLinks() {
     if (status) status.textContent = `Checked ${out.checked}, updated ${out.updated}, broken ${out.brokenLinks}, unchanged ${out.unchanged}.`;
     await loadAhjForms();
   } catch (err) { if (status) status.textContent = ""; showMessage(err.message || "Refresh failed.", "error"); }
+}
+
+async function loadSignatures() {
+  const el = $("signaturesList");
+  if (!el) return;
+  try {
+    const data = await api("/api/signatures");
+    state.signatures = data.signatures || [];
+    renderSignatures();
+  } catch (err) {
+    el.innerHTML = `<p class="muted">${esc(err.message || "Could not load signatures.")}</p>`;
+  }
+}
+
+function renderSignatures() {
+  const el = $("signaturesList");
+  if (!el) return;
+  const rows = state.signatures || [];
+  const countEl = $("signaturesSummaryCount");
+  if (countEl) countEl.textContent = rows.length ? `${rows.length} stored` : "none yet";
+  if (!rows.length) { el.innerHTML = '<p class="muted">No signatures stored. Add one above — it\'s placed on the applicant line by default.</p>'; return; }
+  el.innerHTML = rows.map((r) => `
+    <div class="card" style="padding:8px 10px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+      <div style="display:flex;align-items:center;gap:10px">
+        <img src="/api/signatures/${esc(r.id)}/image" alt="${esc(r.name)}" style="height:34px;max-width:160px;background:#fff;border:1px solid var(--line);border-radius:4px;padding:2px" />
+        <div>
+          <strong>${esc(r.name || r.role)}</strong>
+          <span class="muted" style="font-size:12px">· ${esc(r.role)}${r.isDefault ? " · default" : ""}</span>
+        </div>
+      </div>
+      <div style="display:flex;gap:6px;align-items:center">
+        ${r.isDefault ? "" : `<button class="secondary" data-sig-default="${esc(r.id)}" style="font-size:11px">Make default</button>`}
+        <button class="danger" data-sig-delete="${esc(r.id)}" style="font-size:11px">Delete</button>
+      </div>
+    </div>`).join("");
+  el.querySelectorAll("[data-sig-default]").forEach((b) => b.addEventListener("click", async () => {
+    try { await api(`/api/signatures/${b.getAttribute("data-sig-default")}/default`, { method: "PATCH", body: "{}" }); await loadSignatures(); }
+    catch (err) { showMessage(err.message || "Failed.", "error"); }
+  }));
+  el.querySelectorAll("[data-sig-delete]").forEach((b) => b.addEventListener("click", async () => {
+    if (!confirm("Delete this signature?")) return;
+    try { await api(`/api/signatures/${b.getAttribute("data-sig-delete")}`, { method: "DELETE" }); await loadSignatures(); }
+    catch (err) { showMessage(err.message || "Delete failed.", "error"); }
+  }));
+}
+
+async function uploadSignature(ev) {
+  const file = ev.target.files && ev.target.files[0];
+  if (!file) return;
+  const role = $("addSigRole")?.value || "applicant";
+  const name = ($("addSigName")?.value || "").trim();
+  const isDefault = $("addSigDefault")?.checked ? "1" : "0";
+  const status = $("signaturesStatus");
+  if (status) status.textContent = `Uploading ${file.name}…`;
+  try {
+    const buf = await file.arrayBuffer();
+    const qs = new URLSearchParams({ role, name, default: isDefault });
+    const res = await fetch(`/api/signatures?${qs.toString()}`, {
+      method: "POST", headers: { "Content-Type": file.type || "image/png" }, body: buf,
+    });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `Upload failed (${res.status})`);
+    if (status) status.textContent = "Saved.";
+    await loadSignatures();
+  } catch (err) { if (status) status.textContent = ""; showMessage(err.message || "Upload failed.", "error"); }
+  finally { ev.target.value = ""; }
 }
 
 async function loadEmailTracker() {
@@ -3665,6 +3732,7 @@ if ($("addUtilityBtn")) {
 }
 if ($("addFormFile")) $("addFormFile").addEventListener("change", uploadAhjFormFromManager);
 if ($("refreshFormsBtn")) $("refreshFormsBtn").addEventListener("click", refreshAhjFormLinks);
+if ($("addSigFile")) $("addSigFile").addEventListener("change", uploadSignature);
 $("projectStatusFilter").addEventListener("change", (e) => {
   projectFilterState.status = e.target.value;
   reloadProjects();
