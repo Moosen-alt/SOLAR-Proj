@@ -70,10 +70,13 @@ function writeCache(db: AppDb, projectId: string, findingId: string, sig: string
   );
 }
 
-// Findings worth a vision look: weak/missing text evidence on a plan-set topic.
+// Findings worth a vision look: any warning/blocker on a plan-set topic. We run
+// vision even when text evidence is already "verified" — a code rule (e.g. the
+// 705.12 load-side calc) raises a warning regardless of whether the SLD was
+// found, so "verified text" doesn't mean the SPECIFIC required items are on the
+// sheet. Vision confirms the items and can relax the warning. (We never escalate.)
 function needsVision(finding: ReviewerFinding): EvidenceTopic | null {
   if (finding.severity !== "warning" && finding.severity !== "blocker") return null;
-  if (finding.evidenceStatus === "verified") return null;
   const topic = topicForFinding(finding);
   if (!topic || !PLAN_TOPICS.has(topic)) return null;
   return topic;
@@ -89,14 +92,18 @@ The automated text parser could not confirm the following item on this project, 
 Look at the sheet image and determine whether it actually SHOWS the required information below:
 ${items || "- The information described in the finding above."}
 
-Read tables, one-line/3-line diagrams, schedules, and notes. Be strict: only report present=true for items you can actually see on this sheet.
+Read tables, one-line/3-line diagrams, schedules, calc blocks, and notes carefully — the data is often in a small calc box or schedule (e.g. "BUS BAR RATING x 120% = 200 + 70A", "225A x 120%", "MAIN BREAKER 200A", "PV OCPD 70A").
+
+Judge whether the SUBSTANTIVE required information is present:
+- Set present=true if the sheet shows the core required values (e.g. the bus rating, main breaker, and PV/OCPD ratings and the interconnection math), EVEN IF one minor sub-item (like an explicit "opposite-end" note) is not separately labeled — list that minor gap in "missing".
+- Set present=false only if the core required information is genuinely absent from this sheet.
 
 Return ONLY JSON:
 {
-  "present": true|false,            // is the required information actually shown on this sheet?
+  "present": true|false,
   "confidence": "high"|"medium"|"low",
-  "observed": "<short note of exactly what you see that satisfies (or fails) the item, citing values/labels>",
-  "missing": "<short note of what is still not shown, or empty string if nothing>"
+  "observed": "<exactly what you see that satisfies the item, citing the actual values/labels on the sheet>",
+  "missing": "<any minor item not separately shown, or empty string if nothing>"
 }`;
 }
 
