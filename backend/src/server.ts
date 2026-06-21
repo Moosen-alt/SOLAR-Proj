@@ -31,6 +31,7 @@ import {
   deleteProjectDocument,
 } from "./projectDocuments";
 import { buildUtilityPackage } from "./docSplitter";
+import { buildSubmittalEmailDraft } from "./applicationDocs";
 import type { EvidenceTopic } from "./projectEvidence";
 import { createClient, deleteClient, getClient, listClients, updateClient } from "./clients";
 import { enqueueJob, getJob, listJobs, processNextJob, startJobWorker } from "./jobQueue";
@@ -326,6 +327,20 @@ app.post("/api/projects/:id/find-ahj-form", asyncHandler(async (req, res) => {
   const filled = await buildFilledFormsForProject(db, detail.project);
   res.json({ ensure, filled });
 }));
+
+// Draft a permit submittal email for email-submittal AHJs (e.g. City of Hillsboro).
+// Deterministic — subject "<company> - BLD, ELE Permit submittal - <customer> - <address>".
+app.get("/api/projects/:id/submittal-email", (req, res) => {
+  const detail = getProjectDetail(db, String(req.params.id));
+  let companyName = "";
+  if (detail.project.clientId) {
+    try {
+      const client = getClient(db, detail.project.clientId);
+      companyName = client.companyName || client.legalBusinessName || client.dba || "";
+    } catch { /* no client */ }
+  }
+  res.json(buildSubmittalEmailDraft(detail.project, { companyName }));
+});
 
 // --- Live Gmail polling (read-only) ---
 app.get("/api/gmail/status", (_req, res) => {

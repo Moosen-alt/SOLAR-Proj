@@ -732,19 +732,35 @@ Use the MAXIMUM CONTINUOUS output (not peak). Set confidence "low" and outputCur
 
   async findAhjFormUrl(input: { ahj: string; state: string; formType?: string }): Promise<AhjFormUrlResult> {
     const formType = input.formType || "permit_application";
-    const system = `You are a solar permitting research assistant. Find the OFFICIAL blank ${formType.replace(/_/g, " ")} PDF form that the named Authority Having Jurisdiction (AHJ) uses for residential rooftop solar PV permits. Search the web and prefer the AHJ's own .gov/.us website.
+    const system = `You are a solar permitting research assistant. Find the OFFICIAL blank ${formType.replace(/_/g, " ")} PDF form that the named Authority Having Jurisdiction (AHJ) uses for residential rooftop solar PV permits.
+
+HOW TO SEARCH (do this thoroughly — these forms are usually easy to find):
+1. Search for the AHJ's permitting / building-department "Forms & Applications" or "Permitting Center" page on its own .gov/.us site (e.g. "<AHJ> permitting center forms applications", "<AHJ> building permit application pdf", "<AHJ> electrical permit application pdf").
+2. Open that forms page and pull the DIRECT links to the blank building permit application AND the electrical permit application PDFs (residential solar usually needs BOTH a BLD and an ELE permit).
+3. Return every blank-form PDF you find, best/most-relevant first.
 
 Return ONLY JSON:
 {
-  "formName": "<the official form's title>",
-  "candidateUrls": ["<direct https URL(s) that download the blank PDF, best first — only URLs you actually found, must end in .pdf or be a direct download>"],
+  "formName": "<the official form's title (or 'Building + Electrical permit applications')>",
+  "candidateUrls": ["<direct https URL(s) that download a blank PDF, best first — only URLs you actually found, ending in .pdf or a direct download>"],
+  "formsPageUrl": "<the AHJ forms/applications landing page you found these on, or ''>",
+  "submissionMethod": "<email | online portal | in-person | combination — how this AHJ takes the completed application, if stated>",
+  "submittalPortalUrl": "<the URL of the actual submittal PORTAL where the completed application is uploaded/entered, if there is one (login/landing page), else ''>",
+  "portalPlatform": "<which platform the submittal portal runs on, if identifiable: 'Oregon ePermitting' (Accela), 'Portland Portal' (City of Portland Development Hub), 'ProjectDox' (Avolve), 'Email', or 'Other'>",
+  "submittalRequirements": "<any AHJ-specific submittal requirements posted on the site — e.g. 'email BLD+ELE apps + plan set as one PDF to permits@city.gov', 'register in ProjectDox after intake', combined vs separate permits, required cover sheet, fee handling>",
   "confidence": "low|medium|high",
-  "notes": "<which site it came from; any caveat, e.g. 'online portal only, no PDF exists'>"
+  "notes": "<which site it came from; any caveat>"
 }
+Context — in Oregon/SW-Washington the submittal almost always lands in one of these, so identify which:
+- Oregon ePermitting (Accela) — the shared state portal most OR cities/counties use.
+- Portland Portal — City of Portland's own Development Hub.
+- ProjectDox (Avolve) — electronic plan review many cities route into after intake.
+- Email — the completed application + plan set is emailed to a permit-center address.
 Rules:
-- ONLY return URLs you actually located via search — never fabricate a URL. If the AHJ submits exclusively through an online portal and has no downloadable PDF form, return an empty candidateUrls array and say so in notes.
+- ONLY return URLs you actually located via search — never fabricate a URL.
+- If the AHJ truly submits exclusively through an online portal with NO downloadable PDF, return an empty candidateUrls array and say so in notes (but still fill submittalPortalUrl/portalPlatform).
 - Prefer the most current year's form. Return valid JSON only.`;
-    const userMsg = `AHJ: ${input.ahj}\nState: ${input.state}\nForm needed: residential solar ${formType.replace(/_/g, " ")}.\nFind the official blank PDF.`;
+    const userMsg = `AHJ: ${input.ahj}\nState: ${input.state}\nForm needed: residential solar ${formType.replace(/_/g, " ")} (building + electrical permit applications).\nFind the AHJ's forms/applications page and the direct blank PDF links.`;
     let parsed: Partial<AhjFormUrlResult> = {};
     try {
       parsed = this.parseJson(await this.askWithWebSearch(system, userMsg), {});
@@ -754,6 +770,8 @@ Rules:
     const urls = Array.isArray(parsed.candidateUrls)
       ? parsed.candidateUrls.map((u) => String(u)).filter((u) => /^https?:\/\//i.test(u))
       : [];
+    const portalUrl = /^https?:\/\//i.test(String(parsed.submittalPortalUrl || "")) ? String(parsed.submittalPortalUrl) : "";
+    const formsPageUrl = /^https?:\/\//i.test(String(parsed.formsPageUrl || "")) ? String(parsed.formsPageUrl) : "";
     return {
       provider: "claude",
       formName: String(parsed.formName || ""),
@@ -761,6 +779,11 @@ Rules:
       formType,
       confidence: (["low", "medium", "high"].includes(String(parsed.confidence)) ? parsed.confidence : "low") as "low" | "medium" | "high",
       notes: String(parsed.notes || ""),
+      formsPageUrl,
+      submissionMethod: String(parsed.submissionMethod || ""),
+      submittalPortalUrl: portalUrl,
+      portalPlatform: String(parsed.portalPlatform || ""),
+      submittalRequirements: String(parsed.submittalRequirements || ""),
     };
   }
 

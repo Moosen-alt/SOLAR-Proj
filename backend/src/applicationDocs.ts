@@ -195,6 +195,70 @@ export function findApplicationProfile(project: ProjectRecord): ApplicationRequi
   };
 }
 
+export interface SubmittalEmailDraft {
+  isEmailSubmittal: boolean;
+  to: string;
+  subject: string;
+  body: string;
+}
+
+// Detect whether this AHJ takes the completed application by EMAIL (vs a portal),
+// using the seeded profile + any learned KB hints passed in.
+function isEmailSubmittalProfile(profile: ApplicationRequirementProfile, learnedMethod = "", learnedPlatform = ""): boolean {
+  const blob = `${profile.portalName} ${(profile.notes || []).join(" ")} ${learnedMethod} ${learnedPlatform}`.toLowerCase();
+  if (/email/.test(blob)) return true;
+  // Portal-only / known portal platforms are NOT email.
+  if (profile.requiresPortalEntryOnly) return false;
+  return false;
+}
+
+// Draft a permit submittal email for email-submittal AHJs. Deterministic (no LLM) —
+// subject pattern: "<company> - BLD, ELE Permit submittal - <customer> - <address>".
+export function buildSubmittalEmailDraft(
+  project: ProjectRecord,
+  opts: { companyName?: string; toEmail?: string; learnedMethod?: string; learnedPlatform?: string } = {},
+): SubmittalEmailDraft {
+  const profile = findApplicationProfile(project);
+  const isEmail = isEmailSubmittalProfile(profile, opts.learnedMethod, opts.learnedPlatform);
+  const company = (opts.companyName || "").trim() || "Our company";
+  const customer = (project.homeownerName || "Customer").trim();
+  const addr = [project.projectAddress, [project.city, project.state, project.zip].filter(Boolean).join(", ")].filter(Boolean).join(", ");
+  const subject = `${company} - BLD, ELE Permit submittal - ${customer} - ${project.projectAddress || addr}`;
+
+  const snap = (project.parserSnapshot || {}) as Record<string, unknown>;
+  const s = (k: string): string => (snap[k] == null ? "" : String(snap[k]));
+  const moduleLine = [s("moduleQty") && `${s("moduleQty")}×`, s("moduleMake"), s("moduleModel"), s("moduleWattage") && `${s("moduleWattage")}W`].filter(Boolean).join(" ");
+  const inverterLine = [s("invModel") || s("pvMicroModel"), (s("invQty") || s("pvMicroQty")) && `×${s("invQty") || s("pvMicroQty")}`].filter(Boolean).join(" ");
+  const sysLine = [project.systemSizeDcKw && `${project.systemSizeDcKw} kW DC`, project.systemSizeAcKw && `${project.systemSizeAcKw} kW AC`].filter(Boolean).join(" / ");
+
+  const docs = (profile.requiredDocuments && profile.requiredDocuments.length
+    ? profile.requiredDocuments
+    : ["Building permit application", "Electrical permit application", "Plan set", "Equipment specifications"]
+  ).map((d) => `  - ${d}`).join("\n");
+
+  const body = [
+    "Hello,",
+    "",
+    `Please find attached the building (BLD) and electrical (ELE) permit submittal for the following residential rooftop solar PV project:`,
+    "",
+    `Customer: ${customer}`,
+    `Site address: ${addr || "[address]"}`,
+    `AHJ: ${project.ahj || "[AHJ]"}`,
+    sysLine ? `System: ${sysLine}` : "",
+    moduleLine ? `Modules: ${moduleLine}` : "",
+    inverterLine ? `Inverter: ${inverterLine}` : "",
+    "",
+    "Attached documents:",
+    docs,
+    "",
+    "Please let us know if anything further is needed to complete intake. Thank you.",
+    "",
+    company,
+  ].filter((l) => l !== "").join("\n");
+
+  return { isEmailSubmittal: isEmail, to: (opts.toEmail || "").trim(), subject, body };
+}
+
 export function buildApplicationDocumentPackage(project: ProjectRecord): ApplicationDocumentPackage {
   const profile = findApplicationProfile(project);
   const missingFields = requiredProjectFields(project);

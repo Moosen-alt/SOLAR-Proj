@@ -2235,6 +2235,7 @@ function renderApplicationDocs() {
   const pid = state.selectedProjectId;
   $("applicationDocs").innerHTML = `
     ${renderFilledForms(pid)}
+    <div id="submittalEmailCard"></div>
     <article class="item ${pkg.missingFields?.length ? "warning" : "pass"}">
       <div class="item-title"><span>${esc(profile.name)}</span>${statusBadge(profile.requiresAhjApplication || profile.requiresPortalEntryOnly ? "docs required" : "manifest only")}</div>
       <p>${(profile.notes || []).map(esc).join("<br>")}</p>
@@ -2254,6 +2255,38 @@ function renderApplicationDocs() {
     `).join("")}
   `;
   bindFilledFormControls();
+  renderSubmittalEmail();
+  if (window.lucide) window.lucide.createIcons();
+}
+
+// For email-submittal AHJs (e.g. Hillsboro), fetch + show a ready-to-send permit
+// submittal email draft with copy buttons. Hidden for portal-submittal AHJs.
+async function renderSubmittalEmail() {
+  const card = $("submittalEmailCard");
+  if (!card || !state.selectedProjectId) return;
+  let draft;
+  try {
+    draft = await api(`/api/projects/${state.selectedProjectId}/submittal-email`);
+  } catch { return; }
+  if (!draft || !draft.isEmailSubmittal) { card.innerHTML = ""; return; }
+  state._submittalEmail = draft;
+  const mailto = `mailto:${encodeURIComponent(draft.to || "")}?subject=${encodeURIComponent(draft.subject)}&body=${encodeURIComponent(draft.body)}`;
+  card.innerHTML = `
+    <article class="item info">
+      <div class="item-title"><span>Email submittal draft</span>${statusBadge("email AHJ")}</div>
+      <p class="muted" style="font-size:12px">This AHJ takes the completed application by email. Attach the building + electrical apps and plan set, then send.</p>
+      <p><strong>Subject:</strong> ${esc(draft.subject)}</p>
+      <pre class="record-cmd" style="white-space:pre-wrap;word-break:normal">${esc(draft.body)}</pre>
+      <div class="actions">
+        <a class="badge" href="${mailto}">Open in email app</a>
+        <button id="copyEmailSubjectBtn" class="secondary ghost"><i data-lucide="clipboard-copy"></i><span>Copy subject</span></button>
+        <button id="copyEmailBodyBtn" class="secondary ghost"><i data-lucide="clipboard-copy"></i><span>Copy body</span></button>
+      </div>
+    </article>`;
+  const cs = $("copyEmailSubjectBtn");
+  if (cs) cs.addEventListener("click", async () => { try { await navigator.clipboard.writeText(draft.subject); showMessage("Subject copied.", "info"); } catch { showMessage(draft.subject, "info"); } });
+  const cb = $("copyEmailBodyBtn");
+  if (cb) cb.addEventListener("click", async () => { try { await navigator.clipboard.writeText(draft.body); showMessage("Email body copied.", "info"); } catch { showMessage(draft.body, "info"); } });
   if (window.lucide) window.lucide.createIcons();
 }
 

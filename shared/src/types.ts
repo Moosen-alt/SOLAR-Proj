@@ -1214,6 +1214,16 @@ export interface AhjFormUrlResult {
   formType: string;
   confidence: "low" | "medium" | "high";
   notes: string;
+  /** The AHJ forms/applications landing page these were found on. */
+  formsPageUrl?: string;
+  /** How the completed application is submitted: email | online portal | in-person | combination. */
+  submissionMethod?: string;
+  /** URL of the actual submittal portal (login/landing), pre-filled into the record/training step. */
+  submittalPortalUrl?: string;
+  /** Platform the submittal portal runs on: Oregon ePermitting | Portland Portal | ProjectDox | Email | Other. */
+  portalPlatform?: string;
+  /** AHJ-specific submittal requirements posted on the site. */
+  submittalRequirements?: string;
 }
 
 export interface AhjFieldMapResult {
