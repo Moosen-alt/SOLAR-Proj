@@ -2590,6 +2590,13 @@ async function updateReview(reviewItemId, action) {
     if (input) input.focus();
     return;
   }
+  // Capture every typed value NOW — before any await below re-renders and wipes
+  // the inputs — so saving/rejecting one item never discards what was typed into
+  // the others. Exclude the item being saved (it leaves the pending list).
+  const savedInputs = {};
+  document.querySelectorAll("[id^='review-']").forEach((el) => { if (el.value) savedInputs[el.id] = el.value; });
+  delete savedInputs[`review-${reviewItemId}`];
+
   const body = {
     reviewItemId,
     action,
@@ -2607,11 +2614,10 @@ async function updateReview(reviewItemId, action) {
   await loadProcessMap();
   await loadInstallerPacket();
   showMessage("Human review item updated. QC was rerun automatically.");
-  // Preserve typed values in other pending review inputs before re-render wipes them.
-  const savedInputs = {};
-  document.querySelectorAll("[id^='review-']").forEach((el) => { if (el.value) savedInputs[el.id] = el.value; });
   renderDetail();
-  Object.entries(savedInputs).forEach(([id, val]) => { const el = $(id); if (el && !el.value) el.value = val; });
+  // Restore the captured values, OVERWRITING the re-rendered defaults, so the
+  // operator's in-progress entries in the other rows survive the save.
+  Object.entries(savedInputs).forEach(([id, val]) => { const el = $(id); if (el) el.value = val; });
   await loadProjects();
 }
 
