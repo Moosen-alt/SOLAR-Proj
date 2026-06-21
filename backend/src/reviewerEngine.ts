@@ -83,6 +83,8 @@ export function buildReviewerReport(project: ProjectRecord): ReviewerReport {
     "reviewer.plan.site": "topic:site-roof",
     "city.fire.pathways-missing": "topic:fire",
     "reviewer.plan.fire-path": "topic:fire",
+    "city.elec.rapid-shutdown-missing": "topic:rapid-shutdown",
+    "reviewer.plan.rapid-shutdown": "topic:rapid-shutdown",
     "reviewer.core.account": "topic:account",
     "reviewer.utility.pge-account": "topic:account",
     "reviewer.core.meter": "topic:meter",
@@ -423,10 +425,12 @@ export function renderReviewerReportHtml(project: ProjectRecord, report: Reviewe
       <h2>City-Style Correction Comments</h2>
       ${report.findings.map(renderFinding).join("")}
     </section>
+    ${report.installerCallouts.length ? `
     <section class="summary">
-      <h2>Installer Callouts Before Submittal</h2>
-      ${report.installerCallouts.length ? report.installerCallouts.map(renderFinding).join("") : "<p>No installer callouts were generated.</p>"}
-    </section>
+      <h2>Installer Callouts — Quick Checklist</h2>
+      <p class="meta">A one-line summary of the installer-facing items above (full detail is in the correction comments).</p>
+      <ul>${report.installerCallouts.map((item) => `<li><strong>${esc(item.title)}:</strong> ${esc(item.designTeamAction || item.message)}</li>`).join("")}</ul>
+    </section>` : ""}
   </main>
 </body>
 </html>`;

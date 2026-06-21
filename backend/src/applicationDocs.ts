@@ -235,7 +235,7 @@ export function describePermitType(
   const structureLabel =
     structure === "separate" ? "Separate building (BLD) + electrical (ELE) permits — both must be filed"
     : structure === "combo" ? "Combined building + electrical permit (one permit)"
-    : "Permit structure not yet determined";
+    : "Combo vs separate BLD/ELE permits not yet confirmed — verify on the AHJ site";
   const callout = `${structureLabel} — submitted via ${submissionMethod}.`;
   return { structure, submissionMethod, callout };
 }

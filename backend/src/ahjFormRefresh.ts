@@ -130,5 +130,18 @@ export function startAhjFormRefreshScheduler(db: AppDb): void {
     }
   };
   logger.info("ahj-forms", `AHJ form refresh scheduler started — re-checking source links every ${days} day(s).`);
-  setInterval(() => void tick(), days * 24 * 60 * 60 * 1000).unref();
+  // A days-long interval in ms overflows setInterval's 32-bit cap (~24.8 days),
+  // which silently collapses the delay to 1ms — firing the refresh constantly.
+  // Wake once a day (safely within the cap) and only run the tick once the full
+  // interval has elapsed.
+  const intervalMs = days * 24 * 60 * 60 * 1000;
+  const stepMs = Math.min(intervalMs, 24 * 60 * 60 * 1000);
+  let elapsedMs = 0;
+  setInterval(() => {
+    elapsedMs += stepMs;
+    if (elapsedMs >= intervalMs) {
+      elapsedMs = 0;
+      void tick();
+    }
+  }, stepMs).unref();
 }
