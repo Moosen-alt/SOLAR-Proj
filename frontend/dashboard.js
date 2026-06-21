@@ -1242,6 +1242,7 @@ function renderDetail() {
   });
   // Each panel is isolated so a single bad value can't break the flow or the stepper.
   safeRender("clientSelect", syncProjectClientSelect);
+  safeRender("assignSelect", syncProjectAssignSelect);
   safeRender("nextStep", renderNextStep);
   safeRender("handoffBanner", renderHandoffBanner);
   safeRender("permitForm", syncPermitForm);
@@ -3400,6 +3401,16 @@ function syncProjectClientSelect() {
   if (!select) return;
   renderProjectClientOptions();
   select.value = state.detail?.project?.clientId || "";
+}
+
+// Reflect the project's SAVED assignee in the dropdown on every detail render.
+// Without this the select reset to blank each load, so the operator thought the
+// assignment hadn't saved and re-picked it every time.
+function syncProjectAssignSelect() {
+  const select = $("projectAssignSelect");
+  if (!select) return;
+  renderProjectUserOptions();
+  select.value = state.detail?.project?.assignedUserId || "";
 }
 
 function blankClientForm() {

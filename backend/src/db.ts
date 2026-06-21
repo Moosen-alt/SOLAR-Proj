@@ -87,7 +87,12 @@ export async function openDatabase(): Promise<AppDb> {
 
   const db = new Database(dbPath);
   db.pragma("journal_mode = WAL");
-  db.pragma("synchronous = NORMAL");
+  // FULL (not NORMAL): fsync the WAL on every commit so a committed write
+  // survives even an OS crash / power loss, not just an app crash. better-sqlite3
+  // is synchronous and autocommits each statement, so every API action is flushed
+  // to disk the moment it returns — as close to real-time durability as SQLite
+  // offers. The fsync cost is negligible at this tool's human-paced write volume.
+  db.pragma("synchronous = FULL");
   db.pragma("foreign_keys = ON");
   // Wait up to 5s for a lock instead of failing immediately — brief contention
   // (e.g. the backup VACUUM INTO overlapping a write) should retry, not error.
@@ -95,6 +100,17 @@ export async function openDatabase(): Promise<AppDb> {
 
   const appDb = new AppDb(db);
   migrate(appDb);
+
+  // Periodically fold the WAL back into the main .db file so the primary file
+  // stays current (a stray copy of just the .db is then near-complete) and the
+  // WAL doesn't grow unbounded. TRUNCATE resets the WAL after checkpointing.
+  const checkpointMs = Number(process.env.WAL_CHECKPOINT_MS || 60000);
+  if (checkpointMs > 0) {
+    const timer = setInterval(() => {
+      try { db.pragma("wal_checkpoint(TRUNCATE)"); } catch { /* a busy checkpoint retries next tick */ }
+    }, checkpointMs);
+    if (typeof timer.unref === "function") timer.unref();
+  }
   return appDb;
 }
 
