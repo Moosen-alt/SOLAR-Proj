@@ -806,6 +806,7 @@ Rules:
 - Place a value ONLY where you can clearly see the matching labeled blank. Do not guess positions.
 - Do NOT put text in "fields" for signature or date-signed lines — signature lines go in "signatures"; leave date-signed for the human.
 - For checkboxes (e.g. "Type of work: Other"), use source "lit:X" placed at the box.
+- ROLE/SECTION checkboxes: if the form has checkboxes that select WHO a section describes — e.g. "Property owner" vs "Tenant", "Contractor" vs "Subcontractor", "Applicant" vs "Contact Person", "Owner" vs "Agent" — check the boxes that match THIS filing: this project is submitted by the licensed CONTRACTOR who is also the APPLICANT, and the property-owner block holds the homeowner. So place "lit:X" in the "Property owner", "Contractor", and "Applicant" boxes (and any equivalent owner/contractor/applicant selector), and DO NOT check "Tenant", "Subcontractor", or "Contact Person". Place the X precisely inside the small box, not on the label.
 - Coordinates must be precise — they will be used verbatim. Return valid JSON only.`;
 
     const content: Anthropic.Messages.ContentBlockParam[] = [];

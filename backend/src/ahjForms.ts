@@ -113,6 +113,12 @@ export const ahjFormRegistry: AhjFormDefinition[] = [
       { source: "lit:Solar", page: 0, x: 224, y: 688, size: 9 },      // Type of work -> Other: blank
       { source: "lit:X", page: 0, x: 264, y: 643, size: 9 },          // Category -> Other checkbox
       { source: "lit:Solar", page: 0, x: 301, y: 643, size: 9 },      // Category -> Other: blank
+      // Section-header role checkboxes: we file as the contractor + applicant and
+      // fill the property-owner block, so check those three (not Tenant /
+      // Subcontractor / Contact Person).
+      { source: "lit:X", page: 0, x: 33, y: 470, size: 9 },   // ☑ Property owner
+      { source: "lit:X", page: 0, x: 33, y: 358, size: 9 },   // ☑ Contractor
+      { source: "lit:X", page: 0, x: 33, y: 175, size: 9 },   // ☑ Applicant
       // Job site information
       { source: "computed.streetAddress", page: 0, x: 160, y: 614, maxWidth: 200 },
       { source: "computed.cityStateZip", page: 0, x: 115, y: 597, maxWidth: 240 },
