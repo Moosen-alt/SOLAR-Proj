@@ -1052,6 +1052,25 @@ function applyStageState() {
       if (pill) pill.textContent = "Not reached";
     }
   });
+
+  // Pending human-review items block the submit gate but live in Stage 2, which is
+  // usually collapsed "Done" by the time the operator is staging — so it's easy to
+  // miss WHY "Prepare Submittal" is greyed out. Surface the count on the QC/Verify
+  // stage (even when done) and flag it red so the blocker is discoverable.
+  const pendingReview = (d.humanReviewItems || []).filter((it) => it.status === "pending" && it.fieldName !== "correction");
+  const qcStage = document.querySelector('.stage-accordion[data-stage-index="1"]');
+  if (qcStage) {
+    const pill = qcStage.querySelector(".stage-pill");
+    const marker = qcStage.querySelector(".stage-marker");
+    if (pendingReview.length) {
+      qcStage.classList.add("is-blocked");
+      if (pill) pill.textContent = `${pendingReview.length} to review`;
+      if (marker) marker.textContent = "!";
+      qcStage.title = "Resolve these Human Review items, then Run QC, to unblock Prepare Submittal.";
+    } else {
+      qcStage.title = "";
+    }
+  }
 }
 
 // ----- Record this portal (teach the bot a new AHJ/utility portal) -----

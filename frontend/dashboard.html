@@ -68,12 +68,19 @@
           <p class="muted">Loading portfolio action board...</p>
         </div>
       </div>
-      <div class="section-head subhead">
-        <h2>Action Queue</h2>
-        <span id="opsActionsStatus" class="badge">syncing</span>
-      </div>
-      <div id="opsActions" class="ops-actions">
-        <p class="muted">Loading active PM actions...</p>
+      <!-- Action Queue hidden for solo operation: it restated each project's
+           blockers as role-based PM actions (Data QA / Permit Ops / NEM Ops /
+           Submission Specialist), which is noise for a one-person operator — the
+           per-project stepper + Submit Gate already show what's next. Kept in DOM
+           with its IDs so loaders/renders never error. Restore by removing `hidden`. -->
+      <div id="opsActionsWrap" hidden>
+        <div class="section-head subhead">
+          <h2>Action Queue</h2>
+          <span id="opsActionsStatus" class="badge">syncing</span>
+        </div>
+        <div id="opsActions" class="ops-actions">
+          <p class="muted">Loading active PM actions...</p>
+        </div>
       </div>
       <div class="section-head">
         <h2>Projects</h2>
