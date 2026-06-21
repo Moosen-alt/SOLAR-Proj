@@ -21,6 +21,7 @@ import { createClient, deleteClient, getClient, listClients, updateClient } from
 import { enqueueJob, getJob, listJobs, processNextJob, startJobWorker } from "./jobQueue";
 import { createUser, getUserWorkload, listUsers, updateUser, assignProjectToUser } from "./users";
 import { listBackups, runBackup, startBackupScheduler } from "./backup";
+import { startMonitorScheduler } from "./scheduler";
 import { extractZipToWorkdir } from "./batchZip";
 import { AUTH_ENABLED, login, logout, me, requireAuth, seedAdminUser } from "./auth";
 import {
@@ -989,6 +990,7 @@ const server = app.listen(port, () => {
   startupBanner(diag, { base: `http://localhost:${port}` });
   startJobWorker(db);
   startBackupScheduler(db);
+  startMonitorScheduler(db);
 });
 
 // Graceful shutdown so the DB/WAL flushes cleanly on deploy restarts.
