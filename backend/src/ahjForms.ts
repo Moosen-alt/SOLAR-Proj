@@ -159,11 +159,30 @@ export const ahjFormRegistry: AhjFormDefinition[] = [
       { source: "computed.stateSurcharge", page: 0, x: 540, y: 322, size: 8 },   // 12% surcharge
       { source: "computed.totalPermitFee", page: 0, x: 540, y: 310, size: 8 },   // TOTAL PERMIT FEE
     ],
+    // The operator (applicant/submitter) signs the "Authorized signature" line
+    // only. Owner and supervising-electrician lines are left blank — the
+    // homeowner and the licensed electrician must sign those themselves. These
+    // coordinates were mapped from the actual form layout (US Letter, y from
+    // bottom); the date is written on the adjacent "Date:" line.
+    signatureFields: [
+      {
+        role: "applicant",
+        page: 0,
+        x: 138,
+        y: 197,
+        width: 150,
+        height: 22,
+        label: "Authorized signature",
+        dateX: 292,
+        dateY: 189,
+        dateSize: 9,
+      },
+    ],
     notes: [
       "Flat PDF (no fillable fields) filled by coordinate overlay.",
       "Type of work and Category of construction are marked Other = Solar.",
       "Fees use the rate schedule printed on the form (rev 7/1/2025): per-system kVA brackets + 12% state surcharge; 25% plan review only when over 25 kVA.",
-      "Signatures (owner, supervising electrician, authorized) are intentionally left blank for a human to sign.",
+      "Only the Authorized signature line is auto-stamped with the operator's signature + today's date. Owner and supervising-electrician signatures are left blank for those parties to sign.",
     ],
   },
 ];
@@ -320,6 +339,10 @@ async function drawSignatures(doc: PDFDocument, def: AhjFormDefinition, ctx: Fil
   let dateFont;
   let drawn = 0;
   for (const pl of placements) {
+    // Never auto-stamp the property-owner signature line — the homeowner must
+    // sign that in person. Only fall back to the applicant signature for other
+    // operator-signable roles.
+    if (pl.role === "owner") continue;
     const sig = sigs[pl.role] || sigs.applicant;
     if (!sig) continue;
     const page = pages[pl.page];
@@ -409,6 +432,9 @@ export interface FilledFormResult {
   verified?: boolean;
   /** ahj_form_templates row id (stored forms only), for the verify action. */
   templateId?: string;
+  /** True when signature placements are hand-tuned on the registry def, so the
+   *  "Detect signature lines" affordance is irrelevant and hidden in the UI. */
+  signaturesLocked?: boolean;
 }
 
 export async function fillForm(
@@ -542,9 +568,14 @@ export async function buildFilledFormsForProject(db: AppDb, project: ProjectReco
     // with out-of-bounds coords) must not nuke the whole package — surface it as
     // a per-form error so the operator still sees every other form.
     try {
+      // Prefer hand-tuned signature placements on the registry def; only fall
+      // back to a vision-detected override when the def defines none. A bad
+      // detect-signatures run must not override known-good coordinates.
       const sigOverride = loadRegistrySignatureOverride(db, def.id);
-      const effectiveDef = sigOverride.length ? { ...def, signatureFields: sigOverride } : def;
-      forms.push({ ...(await fillForm(effectiveDef, ctx, path.join(outDir, `${def.id}.pdf`))), verified: true });
+      const effectiveDef = def.signatureFields?.length
+        ? def
+        : sigOverride.length ? { ...def, signatureFields: sigOverride } : def;
+      forms.push({ ...(await fillForm(effectiveDef, ctx, path.join(outDir, `${def.id}.pdf`))), verified: true, signaturesLocked: Boolean(def.signatureFields?.length) });
     } catch (err) {
       forms.push({
         formId: def.id,

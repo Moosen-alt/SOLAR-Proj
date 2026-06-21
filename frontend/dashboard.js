@@ -1960,7 +1960,8 @@ function renderFilledForms(projectId) {
           <button type="button" class="secondary" data-verify-form="${esc(f.templateId)}" style="font-size:12px">✓ Looks right — mark verified</button>
           <button type="button" class="secondary" data-remap-form="${esc(f.templateId)}" style="font-size:12px">Re-map</button>
         </div>` : ""}
-      ${ok && !isStored ? `<p class="muted"><button type="button" class="secondary" data-detect-sign="${esc(f.formId)}" style="font-size:12px">Detect signature lines (AI)</button> — stamp your stored signature on this form.</p>` : ""}
+      ${ok && !isStored && !f.signaturesLocked ? `<p class="muted"><button type="button" class="secondary" data-detect-sign="${esc(f.formId)}" style="font-size:12px">Detect signature lines (AI)</button> — stamp your stored signature on this form.</p>` : ""}
+      ${ok && !isStored && f.signaturesLocked ? `<p class="muted">✓ Built-in form — signature + date auto-placed on the authorized-signature line. No verification needed.</p>` : ""}
       ${extra ? `<p class="muted">${esc(extra)}</p>` : ""}
     </article>`;
   }).join("");
