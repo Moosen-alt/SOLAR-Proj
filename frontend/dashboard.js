@@ -1278,6 +1278,7 @@ function renderSubmitGate() {
               <p><strong>Owner:</strong> ${esc(check.ownerRole)}<br><strong>Next:</strong> ${esc(check.nextAction)}</p>
               <p class="muted">${esc(check.requirement)}</p>
               ${(check.evidence || []).length ? `<ul class="evidence-list">${check.evidence.slice(0, 4).map((line) => `<li>${esc(line)}</li>`).join("")}</ul>` : ""}
+              ${check.id === "ahj-form-mapping-verified" && check.status === "blocker" ? `<button type="button" class="secondary" style="font-size:12px;margin-top:4px" onclick="document.querySelector('.stage-accordion[data-stage-index=\\'2\\']')?.setAttribute('open','');document.getElementById('applicationDocs')?.scrollIntoView({behavior:'smooth'})">Go to App Docs → verify forms</button>` : ""}
               <p class="muted">${esc(check.source)}</p>
             </article>
           `).join("") : `<p class="muted">No submit gate checks generated yet.</p>`}
