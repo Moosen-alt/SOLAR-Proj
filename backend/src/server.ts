@@ -93,6 +93,7 @@ import {
   getReviewerReport,
   getReviewerReportHtml,
   humanVerify,
+  suggestReviewValues,
   importKnowledgeFromMbox,
   importKnowledgeFromMboxFile,
   prepareSubmission,
@@ -1049,6 +1050,32 @@ app.post("/api/projects/:id/human-verify", (req, res) => {
     }),
   );
 });
+
+// Equipment-spec auto-fill: look up the inverter's rated output from its model
+// (datasheet knowledge first, web search fallback), derive a suggested PV breaker,
+// and pre-fill the pending inverterOutput / pvBreaker review items for human approval.
+app.post("/api/projects/:id/autofill-specs", asyncHandler(async (req, res) => {
+  const detail = getProjectDetail(db, String(req.params.id));
+  const snap = (detail.project.parserSnapshot || {}) as Record<string, unknown>;
+  const model = String(snap.invModel || snap.pvMicroModel || "").trim();
+  const qtyRaw = Number(snap.invQty || snap.pvMicroQty || 0);
+  const qty = Number.isFinite(qtyRaw) && qtyRaw > 0 ? qtyRaw : undefined;
+  if (!model) throw new HttpError(400, "No inverter model on the project yet. Fill the inverter/microinverter model first, then auto-fill specs.");
+
+  const { createLLMProvider } = await import("./llm");
+  const llm = createLLMProvider();
+  let spec;
+  try {
+    spec = await llm.lookupInverterSpec({ inverterModel: model, inverterQty: qty });
+  } catch (err) {
+    throw normalizeLlmError(err);
+  }
+  const suggestions: Record<string, string> = {};
+  if (spec.outputCurrentA != null) suggestions.inverterOutput = String(spec.outputCurrentA);
+  if (spec.derivedPvBreakerA != null) suggestions.pvBreaker = String(spec.derivedPvBreakerA);
+  const applied = Object.keys(suggestions).length ? suggestReviewValues(db, String(req.params.id), suggestions) : 0;
+  res.json({ spec, suggestions, applied, detail: getProjectDetail(db, String(req.params.id)) });
+}));
 
 app.post("/api/portal-runs/:id/capture-confirmation", (req, res) => {
   res.json(captureConfirmation(db, req.params.id, req.body || {}));

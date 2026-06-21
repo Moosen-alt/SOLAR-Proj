@@ -1833,6 +1833,32 @@ function renderAudit() {
   `).join("") : `<p class="muted">No audit entries yet.</p>`;
 }
 
+async function autofillSpecs() {
+  if (!state.selectedProjectId) return;
+  const btn = $("autofillSpecsBtn");
+  const status = $("autofillSpecsStatus");
+  if (btn) btn.disabled = true;
+  if (status) status.textContent = "Looking up the inverter datasheet (knowledge first, web if needed)…";
+  try {
+    const result = await api(`/api/projects/${state.selectedProjectId}/autofill-specs`, { method: "POST", body: "{}" });
+    if (result.detail) state.detail = result.detail;
+    const s = result.spec || {};
+    if (result.applied > 0) {
+      if (status) status.textContent = `Filled ${result.applied} field(s) from ${esc(s.source || "lookup")} (${esc(s.confidence || "?")} confidence): inverter output ${s.outputCurrentA ?? "?"} A, suggested PV breaker ${s.derivedPvBreakerA ?? "?"} A. Review and Save Edit each. ${esc(s.notes || "")}`;
+      renderDetail();
+    } else if (s.outputCurrentA != null) {
+      if (status) status.textContent = `Found inverter output ${s.outputCurrentA} A / suggested breaker ${s.derivedPvBreakerA ?? "?"} A, but there were no pending inverter-output/PV-breaker items to fill (run QC first if needed).`;
+    } else {
+      if (status) status.textContent = s.notes || "Could not determine the inverter spec — enter it manually from the datasheet/SLD.";
+    }
+  } catch (err) {
+    if (status) status.textContent = "";
+    showMessage(err.message || "Auto-fill specs failed.", "error");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
 async function updateReview(reviewItemId, action) {
   const input = $(`review-${reviewItemId}`);
   const value = (input?.value || "").trim();
@@ -3055,6 +3081,7 @@ if ($("recordScope")) $("recordScope").addEventListener("change", renderRecordPo
 if ($("recordPortalUrl")) $("recordPortalUrl").addEventListener("input", () => { const el = $("recordCmdPreview"); if (el) el.textContent = buildRecordCommand(); });
 if ($("copyRecordCmdBtn")) $("copyRecordCmdBtn").addEventListener("click", copyRecordCommand);
 if ($("downloadRecordBatBtn")) $("downloadRecordBatBtn").addEventListener("click", downloadRecordBat);
+if ($("autofillSpecsBtn")) $("autofillSpecsBtn").addEventListener("click", autofillSpecs);
 if ($("docUploadBtn")) $("docUploadBtn").addEventListener("click", uploadProjectDocument);
 $("newClientBtn").addEventListener("click", blankClientForm);
 $("clientForm").addEventListener("submit", saveClient);

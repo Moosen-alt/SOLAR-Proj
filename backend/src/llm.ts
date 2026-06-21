@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import type { AhjResearchResult, CorrectionBucket, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, ProjectRecord, UtilityResearchResult } from "../../shared/src/types";
+import type { AhjResearchResult, CorrectionBucket, InverterSpecLookup, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, ProjectRecord, UtilityResearchResult } from "../../shared/src/types";
 import { RECIPE_FIELD_DESCRIPTIONS } from "./portalRecipes";
 
 const MODEL = "claude-opus-4-8";
@@ -88,6 +88,29 @@ export class StubLLMProvider implements LLMProvider {
   async suggestRecipeFieldBindings(): Promise<Array<{ index: number; field: string | null }>> {
     return [];
   }
+
+  async lookupInverterSpec(input: { inverterModel: string; inverterQty?: number }): Promise<InverterSpecLookup> {
+    return {
+      provider: "stub",
+      inverterModel: input.inverterModel,
+      inverterQty: input.inverterQty && input.inverterQty > 0 ? input.inverterQty : 1,
+      outputCurrentA: null,
+      outputVa: null,
+      totalContinuousCurrentA: null,
+      derivedPvBreakerA: null,
+      confidence: "low",
+      source: "",
+      notes: "No ANTHROPIC_API_KEY configured — equipment spec lookup is off.",
+      needsHumanVerification: true,
+    };
+  }
+}
+
+// Standard inverse-time breaker / OCPD sizes (amps), per NEC 240.6(A).
+const STANDARD_BREAKER_SIZES = [15, 20, 25, 30, 35, 40, 45, 50, 60, 70, 80, 90, 100, 110, 125, 150, 175, 200, 225, 250, 300, 350, 400];
+function nextStandardBreaker(amps: number): number | null {
+  if (!Number.isFinite(amps) || amps <= 0) return null;
+  return STANDARD_BREAKER_SIZES.find((s) => s >= amps) ?? STANDARD_BREAKER_SIZES[STANDARD_BREAKER_SIZES.length - 1];
 }
 
 // ---------------------------------------------------------------------------
@@ -557,6 +580,84 @@ ${JSON.stringify(input.unbound, null, 2)}`;
     return suggestions
       .filter((s) => typeof s.index === "number")
       .map((s) => ({ index: s.index, field: s.field && validKeys.has(s.field) ? s.field : null }));
+  }
+
+  // Ask with the server-side web search tool enabled (used as the spec-lookup fallback).
+  private async askWithWebSearch(systemPrompt: string, userMessage: string): Promise<string> {
+    const stream = await this.client.messages.stream({
+      model: MODEL,
+      max_tokens: 1024,
+      thinking: { type: "adaptive" },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      tools: [{ type: "web_search_20260209", name: "web_search", max_uses: 3 }] as any,
+      system: systemPrompt,
+      messages: [{ role: "user", content: userMessage }],
+    });
+    const msg = await stream.finalMessage();
+    let out = "";
+    for (const block of msg.content) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      if ((block as any).type === "text") out += (block as any).text;
+    }
+    return out;
+  }
+
+  async lookupInverterSpec(input: { inverterModel: string; inverterQty?: number }): Promise<InverterSpecLookup> {
+    const model = String(input.inverterModel || "").trim();
+    const qty = input.inverterQty && input.inverterQty > 0 ? Math.round(input.inverterQty) : 1;
+    const empty = (notes: string, source = ""): InverterSpecLookup => ({
+      provider: "claude", inverterModel: model, inverterQty: qty,
+      outputCurrentA: null, outputVa: null, totalContinuousCurrentA: null, derivedPvBreakerA: null,
+      confidence: "low", source, notes, needsHumanVerification: true,
+    });
+    if (!model) return empty("No inverter model provided — enter the inverter/microinverter model first.");
+
+    const system = `You are a solar PV equipment datasheet expert. Given an inverter or microinverter MODEL, return its rated CONTINUOUS AC output from datasheet knowledge.
+Return ONLY JSON:
+{"outputCurrentA": <number|null — per-unit rated continuous AC output current in amps>,
+ "outputVa": <number|null — per-unit rated continuous AC output power in VA or W>,
+ "confidence": "low|medium|high",
+ "notes": "<short note: full model name, voltage basis, any caveat>"}
+Use the MAXIMUM CONTINUOUS output (not peak). Set confidence "low" and outputCurrentA null if you do not recognize the exact model or aren't sure — do NOT guess.`;
+
+    let parsed: { outputCurrentA?: number; outputVa?: number; confidence?: string; notes?: string } = {};
+    let source = "model knowledge";
+    try {
+      parsed = this.parseJson(await this.ask(system, `Model: ${model}`), {});
+    } catch { parsed = {}; }
+
+    // Web fallback only when knowledge is unsure/unknown (honors "knowledge first, web fallback").
+    if (parsed.outputCurrentA == null || parsed.confidence === "low") {
+      try {
+        const webRaw = await this.askWithWebSearch(
+          `${system}\nFirst search the web for the official manufacturer datasheet for this EXACT model, then return the JSON. Put the datasheet URL in "notes".`,
+          `Find the rated continuous AC output current (amps) for inverter model: ${model}`,
+        );
+        const webParsed = this.parseJson<typeof parsed>(webRaw, {});
+        if (webParsed.outputCurrentA != null) { parsed = webParsed; source = "web search"; }
+      } catch (err) {
+        console.warn("[llm] inverter spec web fallback failed:", err instanceof Error ? err.message : String(err));
+      }
+    }
+
+    const perUnitA = Number(parsed.outputCurrentA);
+    if (!Number.isFinite(perUnitA) || perUnitA <= 0) {
+      return empty(`Could not determine a rated output for "${model}". Enter the value from the inverter datasheet/SLD manually.`, source);
+    }
+    const totalA = perUnitA * qty;
+    return {
+      provider: "claude",
+      inverterModel: model,
+      inverterQty: qty,
+      outputCurrentA: Math.round(perUnitA * 100) / 100,
+      outputVa: Number.isFinite(Number(parsed.outputVa)) ? Number(parsed.outputVa) : null,
+      totalContinuousCurrentA: Math.round(totalA * 100) / 100,
+      derivedPvBreakerA: nextStandardBreaker(totalA * 1.25),
+      confidence: (["low", "medium", "high"].includes(String(parsed.confidence)) ? parsed.confidence : "medium") as "low" | "medium" | "high",
+      source,
+      notes: `${String(parsed.notes || "")} Derived PV breaker = next standard size ≥ 1.25 × ${Math.round(totalA * 100) / 100}A total (verify against the SLD, especially multi-branch microinverter layouts).`.trim(),
+      needsHumanVerification: true,
+    };
   }
 }
 

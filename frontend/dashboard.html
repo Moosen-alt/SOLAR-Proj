@@ -272,8 +272,12 @@
               <div class="panel">
                 <div class="section-head">
                   <h3>Human Review</h3>
-                  <span id="reviewCounts" class="badge">0</span>
+                  <div class="actions">
+                    <span id="reviewCounts" class="badge">0</span>
+                    <button id="autofillSpecsBtn" class="secondary" title="Look up the inverter's rated output from its model and derive the PV breaker"><i data-lucide="sparkles"></i><span>Auto-fill specs (AI)</span></button>
+                  </div>
                 </div>
+                <div id="autofillSpecsStatus" class="muted" style="font-size:12px;margin-bottom:6px"></div>
                 <div id="reviewItems" class="stack"></div>
               </div>
             </section>

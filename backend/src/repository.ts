@@ -4693,6 +4693,26 @@ function applyVerifiedField(db: AppDb, projectId: string, payload: ParserPayload
   db.run("UPDATE projects SET parser_json = ?, updated_at = ? WHERE id = ?", [asJson(payload), nowIso(), projectId]);
 }
 
+// Pre-fill a suggested value onto pending human-review items (e.g. an AI equipment-spec
+// lookup). The value lands in the review box for a human to approve — never auto-applied.
+export function suggestReviewValues(db: AppDb, projectId: string, suggestions: Record<string, string>): number {
+  let applied = 0;
+  for (const [fieldName, value] of Object.entries(suggestions)) {
+    if (!value) continue;
+    const existing = db.get<{ id: string }>(
+      "SELECT id FROM human_review_items WHERE project_id = ? AND field_name = ? AND status = 'pending' LIMIT 1",
+      [projectId, fieldName],
+    );
+    if (!existing) continue;
+    db.run(
+      "UPDATE human_review_items SET llm_suggested_value = ?, updated_at = ? WHERE project_id = ? AND field_name = ? AND status = 'pending'",
+      [value, nowIso(), projectId, fieldName],
+    );
+    applied += 1;
+  }
+  return applied;
+}
+
 export function captureConfirmation(
   db: AppDb,
   portalRunId: string,

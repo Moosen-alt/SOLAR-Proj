@@ -1108,6 +1108,32 @@ export interface LLMProvider {
     unbound: Array<{ index: number; action: string; label?: string; value: string }>;
     fieldValues: Record<string, string>;
   }): Promise<Array<{ index: number; field: string | null }>>;
+  /** Look up an inverter/microinverter model's rated continuous AC output from datasheet
+   *  knowledge (web search as a fallback when unsure), and derive a suggested PV breaker.
+   *  Advisory only — the result pre-fills the human-review boxes for approval. */
+  lookupInverterSpec(input: {
+    inverterModel: string;
+    inverterQty?: number;
+  }): Promise<InverterSpecLookup>;
+}
+
+export interface InverterSpecLookup {
+  provider: "claude" | "stub";
+  inverterModel: string;
+  inverterQty: number;
+  /** Per-unit rated continuous AC output current in amps (this is the QC "inverter output"). */
+  outputCurrentA: number | null;
+  /** Per-unit rated continuous AC output power in VA/W. */
+  outputVa: number | null;
+  /** outputCurrentA * inverterQty. */
+  totalContinuousCurrentA: number | null;
+  /** Suggested PV backfeed breaker/OCPD: next standard size >= 1.25 * total continuous current. */
+  derivedPvBreakerA: number | null;
+  confidence: "low" | "medium" | "high";
+  /** "model knowledge" | "web search" | "" — where the rating came from. */
+  source: string;
+  notes: string;
+  needsHumanVerification: boolean;
 }
 
 export interface AhjResearchResult {
