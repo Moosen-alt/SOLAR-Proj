@@ -224,10 +224,15 @@ export function describePermitType(
   const blob = `${profile.portalName} ${(profile.notes || []).join(" ")} ${learned.submissionMethod || ""} ${learned.portalPlatform || ""}`.toLowerCase();
   let submissionMethod = profile.submissionMethod || "";
   if (!submissionMethod) {
-    if (/projectdox|avolve/.test(blob)) submissionMethod = "ProjectDox (online plan review)";
+    // Email first: when an AHJ's portal name lists email as the channel (e.g.
+    // "Email / ProjectDox when required"), email is the primary submittal and
+    // ProjectDox is the conditional plan-review step — keep this consistent with
+    // the email-draft card. Pure-portal AHJs don't mention email and fall through.
+    if (/email/.test(`${profile.portalName} ${learned.submissionMethod || ""}`.toLowerCase())) {
+      submissionMethod = /projectdox|avolve/.test(blob) ? "Email (ProjectDox when directed into review)" : "Email";
+    } else if (/projectdox|avolve/.test(blob)) submissionMethod = "ProjectDox (online plan review)";
     else if (/portland.*(devhub|hub|portal)/.test(blob)) submissionMethod = "Portland DevHub portal";
     else if (/epermitting|accela/.test(blob)) submissionMethod = "Oregon ePermitting (Accela)";
-    else if (/email/.test(blob)) submissionMethod = "Email";
     else if (profile.requiresPortalEntryOnly) submissionMethod = "Online portal";
     else submissionMethod = "Unknown — verify on the AHJ site";
   }
