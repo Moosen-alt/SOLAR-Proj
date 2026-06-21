@@ -47,15 +47,21 @@
 
   <main class="layout">
     <section class="project-list" aria-label="Projects">
-      <div class="section-head">
-        <h2>Daily Report</h2>
-        <div class="actions">
-          <span id="opsReportStatus" class="badge">syncing</span>
-          <button id="copyOpsReportBtn" class="secondary"><i data-lucide="clipboard-copy"></i><span>Copy</span></button>
+      <!-- Daily Report hidden for solo operation: same role-workload noise as the
+           Action Queue (Data QA / Permit Ops / NEM Ops / Submission Specialist
+           counts). Kept in DOM with its IDs so loaders/renders never error.
+           Restore by removing `hidden`. -->
+      <div id="opsReportWrap" hidden>
+        <div class="section-head">
+          <h2>Daily Report</h2>
+          <div class="actions">
+            <span id="opsReportStatus" class="badge">syncing</span>
+            <button id="copyOpsReportBtn" class="secondary"><i data-lucide="clipboard-copy"></i><span>Copy</span></button>
+          </div>
         </div>
-      </div>
-      <div id="opsReport" class="ops-report">
-        <p class="muted">Loading daily operations report...</p>
+        <div id="opsReport" class="ops-report">
+          <p class="muted">Loading daily operations report...</p>
+        </div>
       </div>
       <!-- Ops Board hidden for solo operation (team portfolio view); kept in DOM
            with its IDs so loaders/renders never error. Restore by removing `hidden`. -->
