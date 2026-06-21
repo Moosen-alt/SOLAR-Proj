@@ -17,6 +17,12 @@ import {
   deletePortalRecipe,
   resolveRecipeFieldValues,
 } from "./portalRecipes";
+import {
+  listPortalCredentials,
+  createPortalCredential,
+  updatePortalCredential,
+  deletePortalCredential,
+} from "./portalCredentials";
 import { createClient, deleteClient, getClient, listClients, updateClient } from "./clients";
 import { enqueueJob, getJob, listJobs, processNextJob, startJobWorker } from "./jobQueue";
 import { createUser, getUserWorkload, listUsers, updateUser, assignProjectToUser } from "./users";
@@ -209,6 +215,20 @@ app.delete("/api/clients/:id", (req, res) => {
 app.post("/api/projects/:id/client", (req, res) => {
   const clientId = req.body?.clientId === null ? null : String(req.body?.clientId || "").trim() || null;
   res.json(assignProjectClient(db, String(req.params.id), clientId));
+});
+
+// --- Per-client portal credentials (encrypted; plaintext never returned) ---
+app.get("/api/clients/:id/portal-credentials", (req, res) => {
+  res.json({ credentials: listPortalCredentials(db, String(req.params.id)) });
+});
+app.post("/api/clients/:id/portal-credentials", (req, res) => {
+  res.status(201).json(createPortalCredential(db, String(req.params.id), req.body || {}));
+});
+app.put("/api/clients/:id/portal-credentials/:credId", (req, res) => {
+  res.json(updatePortalCredential(db, String(req.params.id), String(req.params.credId), req.body || {}));
+});
+app.delete("/api/clients/:id/portal-credentials/:credId", (req, res) => {
+  res.json(deletePortalCredential(db, String(req.params.id), String(req.params.credId)));
 });
 
 // --- AHJ PDF forms (fetch official form, fill, attach) ---

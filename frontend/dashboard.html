@@ -705,6 +705,24 @@
             <button type="button" id="deleteClientBtn" class="danger-button"><i data-lucide="trash-2"></i><span>Delete</span></button>
           </div>
         </form>
+
+        <div id="clientCredentials" hidden style="margin-top:14px;border-top:1px solid var(--line);padding-top:12px">
+          <h3 style="margin:0 0 6px">Portal logins (encrypted)</h3>
+          <p class="muted" style="font-size:12px;margin:0 0 8px">Passwords are stored encrypted (AES-256-GCM) and never shown again. Used by the bot to log in for this client only.</p>
+          <div id="credList" class="stack" style="margin-bottom:8px"></div>
+          <div class="form-row">
+            <label>Portal type<input id="cred_portalType" placeholder="e.g. accela_oregon" /></label>
+            <label>Portal URL<input id="cred_portalUrl" placeholder="https://…" /></label>
+          </div>
+          <div class="form-row">
+            <label>Username<input id="cred_username" autocomplete="off" /></label>
+            <label>Password<input id="cred_password" type="password" autocomplete="new-password" /></label>
+          </div>
+          <div class="actions">
+            <button type="button" id="addCredentialBtn" class="secondary"><i data-lucide="key-round"></i><span>Save login</span></button>
+            <span id="credStatus" class="muted" style="font-size:12px"></span>
+          </div>
+        </div>
       </div>
     </div>
   </div>

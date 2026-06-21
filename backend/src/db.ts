@@ -733,6 +733,25 @@ function migrate(db: AppDb): void {
     CREATE INDEX IF NOT EXISTS idx_portal_recipes_status ON portal_recipes(status);
   `);
 
+  // Per-client portal credentials — username/password stored ONLY as an AES-256-GCM
+  // encrypted blob (keyed by SESSION_ENCRYPTION_KEY). Plaintext is never persisted or
+  // returned by the API. Client-bound so we never log in with another client's account.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS portal_credentials (
+      id TEXT PRIMARY KEY,
+      client_id TEXT NOT NULL,
+      portal_type TEXT NOT NULL DEFAULT '',
+      portal_url TEXT NOT NULL DEFAULT '',
+      username_reference TEXT NOT NULL DEFAULT '',
+      encrypted_secret TEXT NOT NULL DEFAULT '',
+      notes TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (client_id) REFERENCES clients(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_portal_credentials_client ON portal_credentials(client_id);
+  `);
+
   seedBaselineRuleRows(db);
   seedInitialKnowledgeBase(db);
   seedTestInstaller(db);

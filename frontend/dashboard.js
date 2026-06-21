@@ -2637,7 +2637,30 @@ function blankClientForm() {
   state.portalIdentitiesDraft = [];
   renderPortalIdentities();
   clientFormStatus("");
+  if ($("clientCredentials")) $("clientCredentials").hidden = true;
   renderClientsList();
+}
+
+async function loadClientCredentials(clientId) {
+  const wrap = $("clientCredentials");
+  if (!wrap) return;
+  wrap.hidden = false;
+  try {
+    const data = await api(`/api/clients/${clientId}/portal-credentials`);
+    const list = $("credList");
+    const creds = data.credentials || [];
+    list.innerHTML = creds.length
+      ? creds.map((c) => `<div class="card" style="padding:6px 8px;display:flex;justify-content:space-between;align-items:center;gap:8px">
+          <span style="font-size:13px"><strong>${esc(c.portalType || "portal")}</strong> · ${esc(c.usernameReference)} ${c.hasSecret ? "🔒" : ""}</span>
+          <button class="danger" data-cred-del="${esc(c.id)}" style="font-size:11px">Delete</button></div>`).join("")
+      : '<p class="muted" style="font-size:12px">No saved logins yet.</p>';
+    list.querySelectorAll("[data-cred-del]").forEach((b) => b.addEventListener("click", async () => {
+      try { await api(`/api/clients/${clientId}/portal-credentials/${b.getAttribute("data-cred-del")}`, { method: "DELETE" }); await loadClientCredentials(clientId); }
+      catch (err) { $("credStatus").textContent = err.message || "Delete failed."; }
+    }));
+  } catch (err) {
+    $("credList").innerHTML = `<p class="muted">${esc(err.message || "Could not load logins.")}</p>`;
+  }
 }
 
 function editClient(clientId) {
@@ -2651,6 +2674,7 @@ function editClient(clientId) {
   }));
   renderPortalIdentities();
   clientFormStatus("");
+  loadClientCredentials(clientId);
   renderClientsList();
 }
 
@@ -2760,6 +2784,25 @@ $("closeClientsBtn").addEventListener("click", closeClientsModal);
 $("newClientBtn").addEventListener("click", blankClientForm);
 $("clientForm").addEventListener("submit", saveClient);
 $("deleteClientBtn").addEventListener("click", removeClient);
+if ($("addCredentialBtn")) {
+  $("addCredentialBtn").addEventListener("click", async () => {
+    const clientId = state.editingClientId;
+    if (!clientId) { $("credStatus").textContent = "Save the client first."; return; }
+    const body = {
+      portalType: $("cred_portalType").value.trim(),
+      portalUrl: $("cred_portalUrl").value.trim(),
+      username: $("cred_username").value.trim(),
+      password: $("cred_password").value,
+    };
+    if (!body.username || !body.password) { $("credStatus").textContent = "Username and password are required."; return; }
+    try {
+      await api(`/api/clients/${clientId}/portal-credentials`, { method: "POST", body: JSON.stringify(body) });
+      $("cred_username").value = ""; $("cred_password").value = ""; $("cred_portalType").value = ""; $("cred_portalUrl").value = "";
+      $("credStatus").textContent = "Saved (encrypted).";
+      await loadClientCredentials(clientId);
+    } catch (err) { $("credStatus").textContent = err.message || "Save failed."; }
+  });
+}
 $("addPortalIdentityBtn").addEventListener("click", () => {
   state.portalIdentitiesDraft = state.portalIdentitiesDraft || [];
   state.portalIdentitiesDraft.push({ portalType: "powerclerk_pge", installerCompanyLabel: "", installerContactCode: "", notes: "" });
