@@ -477,7 +477,9 @@ ${input.correctionPatterns.slice(0, 20).join("\n")}`;
   }
 
   async researchAhjRequirements(input: { ahj: string; state: string; utility?: string }): Promise<AhjResearchResult> {
-    const system = `You are a solar permitting onboarding specialist. Given an Authority Having Jurisdiction (AHJ) that the system has never processed, lay out what's needed to permit a residential rooftop solar PV system there, based on your knowledge of US municipal/county solar permitting and the listed utility's interconnection process.
+    const system = `You are a solar permitting onboarding specialist. Given an Authority Having Jurisdiction (AHJ) that the system has never processed, lay out what's needed to permit a residential rooftop solar PV system there.
+
+FIRST search the web — prefer the AHJ's own .gov/.us site and the state's ePermitting/building-department pages — to confirm the real portal, submission method, and document checklist for THIS jurisdiction. Many small/mid Oregon and Washington cities (e.g. City of Hillsboro) do NOT run their own portal — they file building+electrical permits through a shared state system (Oregon ePermitting, which runs on Accela). Identify that correctly rather than inventing a city-specific portal. Ground every field in what you actually find; only fall back to regional norms when the search is inconclusive, and say so in tips.
 
 Return ONLY JSON:
 {
@@ -498,8 +500,24 @@ Rules:
 - Reflect the named utility's interconnection/NEM document needs in requiredDocuments where relevant.
 - Return valid JSON only.`;
     const userMsg = `AHJ: ${input.ahj}\nState: ${input.state}${input.utility ? `\nUtility: ${input.utility}` : ""}\n\nResearch the residential solar permitting + interconnection requirements for this jurisdiction.`;
-    const raw = await this.askLong(system, userMsg, 3000);
-    const parsed = this.parseJson<Partial<AhjResearchResult>>(raw, {});
+    // Web-grounded first (accurate for never-seen AHJs); fall back to model
+    // knowledge if the search is unreachable so the call never hard-fails.
+    let parsed: Partial<AhjResearchResult> = {};
+    let webGrounded = false;
+    try {
+      const raw = await this.askWithWebSearch(system, userMsg, 3000, 5);
+      const p = this.parseJson<Partial<AhjResearchResult>>(raw, {});
+      if (p && (p.portalName || (Array.isArray(p.requiredDocuments) && p.requiredDocuments.length))) {
+        parsed = p;
+        webGrounded = true;
+      }
+    } catch (err) {
+      console.warn("[llm] researchAhjRequirements web search failed:", err instanceof Error ? err.message : String(err));
+    }
+    if (!webGrounded) {
+      const raw = await this.askLong(system, userMsg, 3000);
+      parsed = this.parseJson<Partial<AhjResearchResult>>(raw, {});
+    }
     const arr = (v: unknown): string[] => (Array.isArray(v) ? v.map((x) => String(x)).filter(Boolean) : []);
     return {
       provider: "claude",
@@ -513,12 +531,16 @@ Rules:
       submissionSteps: arr(parsed.submissionSteps),
       confidence: (["low", "medium", "high"].includes(String(parsed.confidence)) ? parsed.confidence : "low") as "low" | "medium" | "high",
       needsHumanVerification: true,
-      notes: "AI-researched from model knowledge. Verify against the AHJ's official site before relying on it; the first real submittal will confirm/correct these requirements.",
+      notes: webGrounded
+        ? "Researched from the AHJ's official site via web search. Human-verify before relying on it; the first real submittal will confirm/correct these requirements."
+        : "Web search was unavailable — researched from model knowledge only. Verify against the AHJ's official site before relying on it.",
     };
   }
 
   async researchUtilityRequirements(input: { utility: string; state: string; ahj?: string }): Promise<UtilityResearchResult> {
-    const system = `You are a solar interconnection onboarding specialist. Given an electric UTILITY the system has never processed, lay out what's needed to file a RESIDENTIAL rooftop solar net-metering (NEM) / interconnection application with that utility, based on your knowledge of US utility customer-generation/interconnection processes.
+    const system = `You are a solar interconnection onboarding specialist. Given an electric UTILITY the system has never processed, lay out what's needed to file a RESIDENTIAL rooftop solar net-metering (NEM) / interconnection application with that utility.
+
+FIRST search the web — prefer the utility's own customer-generation / interconnection page — to confirm the real application portal (many utilities run PowerClerk), submission method, and document checklist for THIS utility. Ground every field in what you actually find; only fall back to regional norms when the search is inconclusive, and say so in tips.
 
 Return ONLY JSON:
 {
@@ -543,8 +565,23 @@ Rules:
 - For smartInverterSettings, reflect the REAL portal behavior: it is a Yes/No election to use the utility's recommended smart-inverter settings (answer Yes for UL 1741-SB listed inverters) plus an inverter spec/cut-sheet upload — never describe it as a required grid-profile drawing on the plan set.
 - Return valid JSON only.`;
     const userMsg = `Utility: ${input.utility}\nState: ${input.state}${input.ahj ? `\nAHJ context: ${input.ahj}` : ""}\n\nResearch the residential solar net-metering / interconnection requirements for this utility.`;
-    const raw = await this.askLong(system, userMsg, 3000);
-    const parsed = this.parseJson<Partial<UtilityResearchResult>>(raw, {});
+    // Web-grounded first; fall back to model knowledge if search is unreachable.
+    let parsed: Partial<UtilityResearchResult> = {};
+    let webGrounded = false;
+    try {
+      const raw = await this.askWithWebSearch(system, userMsg, 3000, 5);
+      const p = this.parseJson<Partial<UtilityResearchResult>>(raw, {});
+      if (p && (p.portalName || (Array.isArray(p.requiredDocuments) && p.requiredDocuments.length))) {
+        parsed = p;
+        webGrounded = true;
+      }
+    } catch (err) {
+      console.warn("[llm] researchUtilityRequirements web search failed:", err instanceof Error ? err.message : String(err));
+    }
+    if (!webGrounded) {
+      const raw = await this.askLong(system, userMsg, 3000);
+      parsed = this.parseJson<Partial<UtilityResearchResult>>(raw, {});
+    }
     const arr = (v: unknown): string[] => (Array.isArray(v) ? v.map((x) => String(x)).filter(Boolean) : []);
     return {
       provider: "claude",
@@ -562,7 +599,9 @@ Rules:
       submissionSteps: arr(parsed.submissionSteps),
       confidence: (["low", "medium", "high"].includes(String(parsed.confidence)) ? parsed.confidence : "low") as "low" | "medium" | "high",
       needsHumanVerification: true,
-      notes: "AI-researched from model knowledge. Verify against the utility's official interconnection page before relying on it; the first real submittal will confirm/correct these requirements.",
+      notes: webGrounded
+        ? "Researched from the utility's official interconnection page via web search. Human-verify before relying on it; the first real submittal will confirm/correct these requirements."
+        : "Web search was unavailable — researched from model knowledge only. Verify against the utility's official interconnection page before relying on it.",
     };
   }
 
@@ -602,13 +641,13 @@ ${JSON.stringify(input.unbound, null, 2)}`;
   }
 
   // Ask with the server-side web search tool enabled (used as the spec-lookup fallback).
-  private async askWithWebSearch(systemPrompt: string, userMessage: string): Promise<string> {
+  private async askWithWebSearch(systemPrompt: string, userMessage: string, maxTokens = 1024, maxUses = 3): Promise<string> {
     const stream = await this.client.messages.stream({
       model: MODEL,
-      max_tokens: 1024,
+      max_tokens: maxTokens,
       thinking: { type: "adaptive" },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      tools: [{ type: "web_search_20260209", name: "web_search", max_uses: 3 }] as any,
+      tools: [{ type: "web_search_20260209", name: "web_search", max_uses: maxUses }] as any,
       system: systemPrompt,
       messages: [{ role: "user", content: userMessage }],
     });
