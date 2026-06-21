@@ -2092,13 +2092,10 @@ function renderReviewerGate() {
         ${renderCodeRefs(finding.codeReferences)}
       </article>
     `).join("")}
-    ${report.installerCallouts.length ? `
-      <article class="item info">
-        <div class="item-title"><span>Installer callouts before submittal</span>${statusBadge(report.installerCallouts.length)}</div>
-        ${report.installerCallouts.slice(0, 8).map((item) => `<p>${esc(item.designTeamAction || item.message)}</p>`).join("")}
-      </article>
-    ` : ""}
   `;
+  // Note: installer callouts are a subset of the findings rendered above (each
+  // carries installerCallout=true), so they're intentionally NOT shown again as a
+  // separate block — that was duplicating the city-style correction comments.
 }
 
 function syncPermitForm() {
