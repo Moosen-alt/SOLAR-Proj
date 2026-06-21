@@ -70,6 +70,13 @@ export function buildReviewerReport(project: ProjectRecord): ReviewerReport {
   addProfileFindings(project, profile, findings);
   addInstallerCallouts(project, profile, findings);
 
+  // Deduplicate by finding ID — keep first occurrence (most specific rule wins).
+  const seenIds = new Set<string>();
+  for (let i = findings.length - 1; i >= 0; i--) {
+    if (seenIds.has(findings[i].id)) { findings.splice(i, 1); continue; }
+    seenIds.add(findings[i].id);
+  }
+
   if (!profile) {
     findings.push(finding(
       "reviewer.profile.missing",

@@ -1,5 +1,6 @@
 import "dotenv/config";
 import crypto from "node:crypto";
+import { spawn } from "node:child_process";
 import express, { type NextFunction, type Request, type Response } from "express";
 import cors from "cors";
 import fs from "node:fs";
@@ -689,6 +690,35 @@ app.get("/api/projects/:id/staging-field-values", (req, res) => {
   const detail = getProjectDetail(db, String(req.params.id));
   const portalType = String(req.query.portalType || "");
   res.json({ fieldValues: resolveRecipeFieldValues(db, detail.project, portalType) });
+});
+// Launch a headed portal-record browser session on this machine. The recorder
+// script (portal-bot/src/recordRecipe.ts) drives a local Playwright browser.
+// This only works when the server is running on the operator's own machine.
+app.post("/api/projects/:id/launch-record", (req, res) => {
+  const detail = getProjectDetail(db, String(req.params.id));
+  const p = detail.project;
+  const b = (req.body || {}) as Record<string, string>;
+  const scope = String(b.scope || "ahj") === "utility" ? "utility" : "ahj";
+  const name = scope === "utility" ? (p.utility || "") : (p.ahj || "");
+  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || scope;
+  const args: string[] = [
+    "run", "portal:record", "--",
+    "--scope", scope,
+    ...(scope === "ahj" ? ["--ahj", p.ahj || ""] : ["--utility", p.utility || ""]),
+    ...(p.state ? ["--state", p.state] : []),
+    ...(b.portalUrl ? ["--url", b.portalUrl] : []),
+    "--project", p.id,
+    "--api", `http://localhost:${process.env.PORT || 4173}`,
+    "--profile", `./.portal-profiles/${slug}`,
+  ];
+  const child = spawn("npm", args, {
+    cwd: path.resolve(process.cwd(), ".."),
+    detached: true,
+    stdio: "ignore",
+    shell: process.platform === "win32",
+  });
+  child.unref();
+  res.json({ ok: true, message: `Record session started for ${name || scope}. Complete the form in the opened browser window, then type save.` });
 });
 // LLM-assisted field binding: for fill/select steps the recorder couldn't auto-bind by
 // exact match, ask the model which project/client field each typed value corresponds to.

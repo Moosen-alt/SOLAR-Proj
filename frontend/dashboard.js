@@ -1170,24 +1170,53 @@ function renderRecordPortal() {
   $("recordCmdPreview").textContent = buildRecordCommand();
 
   const snap = p.parserSnapshot || {};
-  const rows = [
-    ["Homeowner", p.homeownerName],
-    ["Address", p.projectAddress],
-    ["City/State/Zip", [p.city, p.state, p.zip].filter(Boolean).join(", ")],
-    ["AHJ", p.ahj],
-    ["Utility", p.utility],
-    ["Account #", p.accountNumber],
-    ["Meter #", p.meterNumber],
-    ["System DC/AC kW", `${p.systemSizeDcKw ?? "?"} / ${p.systemSizeAcKw ?? "?"}`],
-    ["Interconnection", p.interconnectionMethod],
-    ["Module", [snap.moduleMake, snap.moduleModel, snap.moduleWattage && `${snap.moduleWattage}W`, snap.moduleQty && `x${snap.moduleQty}`].filter(Boolean).join(" ")],
-    ["Inverter", [snap.invModel || snap.pvMicroModel, (snap.invQty || snap.pvMicroQty) && `x${snap.invQty || snap.pvMicroQty}`].filter(Boolean).join(" ")],
-    ["Inverter output (A)", snap.invOutputW || snap.pvMicroOutputW],
-    ["Bus / Main / PV breaker (A)", [snap.busRating, snap.mainBreaker, snap.pvBreaker].filter(Boolean).join(" / ")],
+  const dcKw = p.systemSizeDcKw;
+  const acKw = p.systemSizeAcKw;
+  const dcAcRatio = dcKw && acKw ? (dcKw / acKw).toFixed(2) : null;
+  const sections = [
+    { heading: "Project", rows: [
+      ["Homeowner", p.homeownerName],
+      ["Address", p.projectAddress],
+      ["City / State / Zip", [p.city, p.state, p.zip].filter(Boolean).join(", ")],
+      ["AHJ", p.ahj],
+      ["Utility", p.utility],
+      ["Account #", p.accountNumber],
+      ["Meter #", p.meterNumber],
+    ]},
+    { heading: "System", rows: [
+      ["System DC / AC kW", dcKw || acKw ? `${dcKw ?? "?"} kW DC / ${acKw ?? "?"} kW AC` : null],
+      ["DC/AC ratio", dcAcRatio],
+      ["Interconnection", p.interconnectionMethod],
+      ["Phase", snap.servicePhase],
+      ["Job value", snap.jobValue ? `$${snap.jobValue}` : null],
+    ]},
+    { heading: "Array / Roof", rows: [
+      ["Module", [snap.moduleMake, snap.moduleModel, snap.moduleWattage && `${snap.moduleWattage}W`, snap.moduleQty && `x${snap.moduleQty}`].filter(Boolean).join(" ")],
+      ["Tilt / Azimuth", [snap.tilt && `${snap.tilt}°`, snap.azimuth && `${snap.azimuth}°`].filter(Boolean).join(" / ")],
+      ["Roof material", snap.roofMaterial],
+      ["Roof slope", snap.roofSlope],
+      ["Mount type", snap.mounting],
+    ]},
+    { heading: "Electrical", rows: [
+      ["Inverter", [snap.invModel || snap.pvMicroModel, (snap.invQty || snap.pvMicroQty) && `x${snap.invQty || snap.pvMicroQty}`].filter(Boolean).join(" ")],
+      ["Inverter output (A)", snap.invOutputW || snap.pvMicroOutputW],
+      ["Bus / Main / PV breaker (A)", [snap.busRating, snap.mainBreaker, snap.pvBreaker].filter(Boolean).join(" / ")],
+    ]},
+    { heading: "Battery (if any)", rows: [
+      ["Battery", [snap.batteryMake, snap.batteryModel, snap.batteryQty && `x${snap.batteryQty}`].filter(Boolean).join(" ")],
+      ["ESS capacity", snap.essKwh ? `${snap.essKwh} kWh` : null],
+      ["Gateway", snap.gatewayModel],
+    ]},
+    { heading: "Notes", rows: [
+      ["Locates / 811", snap.locateCalloutText],
+    ]},
   ];
-  $("recordManualData").innerHTML =
-    rows.filter(([, v]) => v != null && v !== "" && v !== "? / ?").map(([k, v]) => `<div class="record-data-row"><span class="muted">${esc(k)}</span><strong>${esc(v)}</strong></div>`).join("") ||
-    `<p class="muted">No parsed data yet.</p>`;
+  const sectionHtml = sections.map(({ heading, rows }) => {
+    const visibleRows = rows.filter(([, v]) => v != null && v !== "" && v !== "? / ?");
+    if (!visibleRows.length) return "";
+    return `<div class="record-data-section"><div class="record-data-heading">${esc(heading)}</div>${visibleRows.map(([k, v]) => `<div class="record-data-row"><span class="muted">${esc(k)}</span><strong>${esc(String(v))}</strong></div>`).join("")}</div>`;
+  }).join("");
+  $("recordManualData").innerHTML = sectionHtml || `<p class="muted">No parsed data yet.</p>`;
 }
 
 async function copyRecordCommand() {
@@ -1198,6 +1227,24 @@ async function copyRecordCommand() {
     showMessage("Record command copied. Run it in your SOLAR-Proj folder.", "info");
   } catch {
     showMessage(cmd, "info");
+  }
+}
+
+async function launchRecordSession() {
+  const p = state.detail?.project;
+  if (!p) { showMessage("Open a project first.", "warning"); return; }
+  const scope = $("recordScope")?.value === "utility" ? "utility" : "ahj";
+  const url = ($("recordPortalUrl")?.value || "").trim();
+  const statusEl = $("launchRecordStatus");
+  if (statusEl) { statusEl.style.display = ""; statusEl.textContent = "Launching browser…"; statusEl.className = "muted"; }
+  try {
+    const res = await api(`/api/projects/${p.id}/launch-record`, {
+      method: "POST",
+      body: JSON.stringify({ scope, portalUrl: url || undefined }),
+    });
+    if (statusEl) { statusEl.textContent = res.message || "Browser session started — complete the form in the opened browser window, then type save."; statusEl.className = ""; }
+  } catch (err) {
+    if (statusEl) { statusEl.textContent = `Launch failed: ${err.message}. Use Download record.bat instead.`; statusEl.className = "muted"; }
   }
 }
 
@@ -3604,6 +3651,7 @@ if ($("recordScope")) $("recordScope").addEventListener("change", renderRecordPo
 if ($("recordPortalUrl")) $("recordPortalUrl").addEventListener("input", () => { const el = $("recordCmdPreview"); if (el) el.textContent = buildRecordCommand(); });
 if ($("copyRecordCmdBtn")) $("copyRecordCmdBtn").addEventListener("click", copyRecordCommand);
 if ($("downloadRecordBatBtn")) $("downloadRecordBatBtn").addEventListener("click", downloadRecordBat);
+if ($("launchRecordBtn")) $("launchRecordBtn").addEventListener("click", launchRecordSession);
 if ($("autofillSpecsBtn")) $("autofillSpecsBtn").addEventListener("click", autofillSpecs);
 if ($("docUploadBtn")) $("docUploadBtn").addEventListener("click", uploadProjectDocument);
 $("newClientBtn").addEventListener("click", blankClientForm);

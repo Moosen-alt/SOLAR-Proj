@@ -398,14 +398,19 @@
                 <label style="flex:1">Portal URL<input id="recordPortalUrl" placeholder="https://…  (the portal login/landing page)" /></label>
               </div>
               <div class="actions">
-                <button id="copyRecordCmdBtn" class="secondary"><i data-lucide="clipboard-copy"></i><span>Copy record command</span></button>
+                <button id="launchRecordBtn"><i data-lucide="play"></i><span>Launch record session</span></button>
                 <button id="downloadRecordBatBtn" class="secondary"><i data-lucide="download"></i><span>Download record.bat</span></button>
+                <button id="copyRecordCmdBtn" class="secondary ghost"><i data-lucide="clipboard-copy"></i><span>Copy command</span></button>
               </div>
-              <pre id="recordCmdPreview" class="record-cmd"></pre>
-              <details class="kb-accordion" style="margin-top:6px">
+              <div id="launchRecordStatus" style="display:none;margin:4px 0;font-size:13px"></div>
+              <details class="kb-accordion" style="margin-top:6px" open>
                 <summary class="kb-summary"><span>Project data (for manual entry / recording reference)</span></summary>
-                <p class="muted" style="font-size:12px;margin:6px 0">The parsed values for this project — copy these into the portal fields as you record (or use for a fully manual submission).</p>
+                <p class="muted" style="font-size:12px;margin:6px 0">Parsed values for this project — copy into the portal as you record or for manual submission.</p>
                 <div id="recordManualData" class="stack compact"></div>
+              </details>
+              <details class="kb-accordion" style="margin-top:4px">
+                <summary class="kb-summary"><span>Record command (advanced)</span></summary>
+                <pre id="recordCmdPreview" class="record-cmd"></pre>
               </details>
             </section>
 
