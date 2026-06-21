@@ -65,7 +65,7 @@ export function findPlanSetPdf(db: AppDb, projectId: string): string | null {
     const hit = rows.find((row) => s(row.doc_type) === type && isPdf(row));
     return hit ? s(hit.stored_path) : null;
   };
-  return byType("sld") || byType("permit_application") || byType("issued_permit") || (rows.find(isPdf) ? s(rows.find(isPdf)!.stored_path) : null);
+  return byType("sld") || byType("plan_set") || byType("permit_application") || byType("issued_permit") || (rows.find(isPdf) ? s(rows.find(isPdf)!.stored_path) : null);
 }
 
 // Keywords used to score which page best matches a reviewer topic. Light-weight

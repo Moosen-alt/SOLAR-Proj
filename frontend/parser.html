@@ -4720,6 +4720,16 @@ async function saveToSystem() {
     const data = await res.json().catch(() => ({}));
     if (res.ok) {
       const id = data.id || (data.project && data.project.id) || existingId || '—';
+      // Log the source documents we parsed at intake into the project so the AHJ
+      // Reviewer Gate (and submittal package) can use them without a re-upload.
+      if (id && id !== '—') {
+        try {
+          if (statusEl) statusEl.textContent = '✅ Saved. Logging parsed documents…';
+          await uploadIntakeDocs(id);
+        } catch (e) {
+          console.warn('Could not log intake documents:', e);
+        }
+      }
       if (statusEl) statusEl.textContent = `✅ Saved. Project ID: ${id}`;
       loadSystemSelects();
     } else {
@@ -4727,6 +4737,40 @@ async function saveToSystem() {
     }
   } catch (e) {
     if (statusEl) statusEl.textContent = `❌ Network error: ${e.message}`;
+  }
+}
+
+// Upload the files we parsed at intake (plan set, utility bill, meter photo) to
+// the project's document store so the AHJ Reviewer Gate evidence screenshots and
+// the submittal package can use them automatically — no manual re-upload needed.
+// Best-effort and idempotent-ish: re-saving a project re-logs the current files.
+async function uploadIntakeDoc(projectId, file, docType){
+  if (!file) return;
+  const url = `/api/projects/${projectId}/documents?filename=${encodeURIComponent(file.name)}&docType=${encodeURIComponent(docType)}`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': file.type || 'application/octet-stream' },
+    body: file,
+  });
+  if (!res.ok) throw new Error(`upload ${docType} failed: ${res.status}`);
+}
+
+async function uploadIntakeDocs(projectId){
+  // Skip files already logged for this project (avoid duplicates on re-save).
+  let existing = [];
+  try {
+    const r = await fetch(`/api/projects/${projectId}/documents`);
+    if (r.ok) existing = ((await r.json()).documents || []).map(d => `${d.docType}:${d.originalFilename}`);
+  } catch { /* ignore — fall through and upload */ }
+  const planned = [
+    [state.planFile, 'plan_set'],
+    [state.ubFile, 'utility_bill'],
+    [state.meterFile, 'meter_photo'],
+  ];
+  for (const [file, docType] of planned){
+    if (!file) continue;
+    if (existing.includes(`${docType}:${file.name}`)) continue;
+    await uploadIntakeDoc(projectId, file, docType);
   }
 }
 
