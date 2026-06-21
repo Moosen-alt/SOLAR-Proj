@@ -403,20 +403,21 @@
 
   <div class="card">
     <h2>7. Installer / contractor info</h2>
+    <p class="muted" style="font-size:13px;margin:0 0 8px">Select the <strong>Submitting client</strong> above — these fields auto-fill from that client's licensing record (the single source of truth). Do not hand-enter another client's info here; onboard a new client in the Clients tab instead.</p>
     <div class="row3">
-      <div><label>Installer company</label><input id="installerCompany" value="TML INTERNATIONAL LLC" /></div>
-      <div><label>Installer email</label><input id="installerEmail" value="permit@infinitysolarusa.com" /></div>
-      <div><label>Installer phone</label><input id="installerPhone" value="(800) 818-0598" /></div>
-      <div><label>Installer line 1</label><input id="installerLine1" value="808 SE Chkalov Dr ST 3-337" /></div>
-      <div><label>Installer city</label><input id="installerCity" value="Vancouver" /></div>
-      <div><label>Installer state</label><input id="installerState" value="WA" /></div>
-      <div><label>Installer ZIP</label><input id="installerZip" value="98683" /></div>
-      <div><label>Electrical license number</label><input id="electricalLicenseNumber" value="C1556" /></div>
-      <div><label>Contractor license number</label><input id="contractorLicenseNumber" value="223690" /></div>
-      <div><label>Metro or city license number</label><input id="metroCityLicenseNumber" value="14838" /></div>
-      <div><label>Supervising electrician</label><input id="supervisingElectrician" value="Charles Bitton" /></div>
-      <div><label>Electrician license number</label><input id="electricianLicenseNumber" value="5787S" /></div>
-      <div style="grid-column:1 / -1"><label>Contractor license notes</label><textarea id="contractorLicenseNotes">Installer: TML INTERNATIONAL LLC | Email: permit@infinitysolarusa.com | Phone: (800) 818-0598 | Address: 808 SE Chkalov Dr ST 3-337, Vancouver, WA 98683 | Electrical Lic: C1556 | CCB Lic: 223690 | Metro/City Lic: 14838 | Supervising Electrician: Charles Bitton | Electrician Lic: 5787S</textarea></div>
+      <div><label>Installer company</label><input id="installerCompany" placeholder="(from selected client)" /></div>
+      <div><label>Installer email</label><input id="installerEmail" placeholder="(from selected client)" /></div>
+      <div><label>Installer phone</label><input id="installerPhone" placeholder="(from selected client)" /></div>
+      <div><label>Installer line 1</label><input id="installerLine1" placeholder="(from selected client)" /></div>
+      <div><label>Installer city</label><input id="installerCity" placeholder="(from selected client)" /></div>
+      <div><label>Installer state</label><input id="installerState" placeholder="(from selected client)" /></div>
+      <div><label>Installer ZIP</label><input id="installerZip" placeholder="(from selected client)" /></div>
+      <div><label>Electrical license number</label><input id="electricalLicenseNumber" placeholder="(from selected client)" /></div>
+      <div><label>Contractor license number (CCB)</label><input id="contractorLicenseNumber" placeholder="(from selected client)" /></div>
+      <div><label>Metro or city license number</label><input id="metroCityLicenseNumber" placeholder="(from selected client)" /></div>
+      <div><label>Supervising electrician</label><input id="supervisingElectrician" placeholder="(from selected client)" /></div>
+      <div><label>Electrician license number</label><input id="electricianLicenseNumber" placeholder="(from selected client)" /></div>
+      <div style="grid-column:1 / -1"><label>Contractor license notes</label><textarea id="contractorLicenseNotes" placeholder="Auto-filled from the selected client's licensing record."></textarea></div>
     </div>
   </div>
 
@@ -3592,17 +3593,29 @@ const LLM_SNAPSHOT_KEYS = new Set([
   'busRating','mainBreaker','pvBreaker','acDiscReq',
   'snow','deadLoad','roofRafterSpacing','roofRafterSpan','wind','permitPath',
   'utilitySchedule','serviceVoltage','servicePhase','numberOfCircuits','parcelNumber','jobValue',
+  'azimuth','tilt','roofSlope','mainServiceRating',
   'electricalCalcText','structuralCalcText','sitePlanNotesText','roofPlanNotesText',
   'labelsText','projectDescriptionText','locateCalloutText',
 ]);
 
 // Apply an extraction result's fields to the form AND record them (with evidence)
 // for persistence + the PM-facing evidence panel.
+// Contractor block extracted from the plan set = a SUGGESTED client to onboard.
+// It never fills the project's contractor fields (those come from the selected
+// client) — it's only surfaced so the coordinator can create/match the client.
+const CONTRACTOR_SUGGEST_KEYS = ['contractorCompany','contractorCcb','contractorElectricalLicense','contractorAddress','contractorPhone','contractorEmail','contractorSupervisor'];
+
 function applyExtraction(result, applied, opts = {}){
   const fields = result.fields || {};
   Object.keys(fields).forEach(fieldId => {
     const entry = fields[fieldId];
     if (!entry || entry.value == null || entry.value === '') return;
+    // Capture contractor info for client-onboarding suggestion (do NOT apply to project).
+    if (CONTRACTOR_SUGGEST_KEYS.includes(fieldId)){
+      state.suggestedClient = state.suggestedClient || {};
+      state.suggestedClient[fieldId] = entry.value;
+      return;
+    }
 
     // 1) Record into the snapshot we merge at save time (canonical keys).
     if (LLM_SNAPSHOT_KEYS.has(fieldId)){
@@ -3634,6 +3647,12 @@ function applyExtraction(result, applied, opts = {}){
   });
   (result.lowConfidenceFields || []).forEach(f => state.reviewFlags.push(`AI low-confidence on "${f}" — verify manually.`));
   if (result.notes) state.reviewFlags.push(`AI notes: ${result.notes}`);
+  // Surface the plan-set contractor as a client-onboarding suggestion.
+  if (state.suggestedClient && state.suggestedClient.contractorCompany){
+    const s = state.suggestedClient;
+    const bits = [s.contractorCompany, s.contractorCcb ? `CCB ${s.contractorCcb}` : '', s.contractorElectricalLicense ? `Elec ${s.contractorElectricalLicense}` : '', s.contractorPhone, s.contractorEmail].filter(Boolean).join(' | ');
+    state.reviewFlags.push(`Plan-set installer (onboard as client if new): ${bits}`);
+  }
 }
 
 // Build a readable evidence summary (field = value — [source/sheet] "excerpt").
@@ -3706,6 +3725,7 @@ async function runParse(){
   state.llmAssist = null;
   state.llmSnapshot = {};
   state.llmEvidence = [];
+  state.suggestedClient = null;
   state.planFile = $('planFile').files[0] || null;
   state.ubFile = $('ubFile').files[0] || null;
   state.meterFile = $('meterPhotoFile').files[0] || null;
@@ -3787,26 +3807,16 @@ async function runParse(){
 }
 
 function resetAll(){
+  // Only non-client UI defaults remain hardcoded. Installer/contractor/CCB info is
+  // NEVER defaulted — it comes from the selected client to avoid wrong-client data.
   document.querySelectorAll('input:not([type=file]), textarea').forEach(el => {
-    if (el.id === 'installerCompany') el.value = 'TML INTERNATIONAL LLC';
-    else if (el.id === 'installerEmail') el.value = 'permit@infinitysolarusa.com';
-    else if (el.id === 'installerPhone') el.value = '(800) 818-0598';
-    else if (el.id === 'installerLine1') el.value = '808 SE Chkalov Dr ST 3-337';
-    else if (el.id === 'installerCity') el.value = 'Vancouver';
-    else if (el.id === 'installerState') el.value = 'WA';
-    else if (el.id === 'installerZip') el.value = '98683';
-    else if (el.id === 'electricalLicenseNumber') el.value = 'C1556';
-    else if (el.id === 'contractorLicenseNumber') el.value = '223690';
-    else if (el.id === 'metroCityLicenseNumber') el.value = '14838';
-    else if (el.id === 'supervisingElectrician') el.value = 'Charles Bitton';
-    else if (el.id === 'electricianLicenseNumber') el.value = '5787S';
-    else if (el.id === 'mounting') el.value = 'Roof Mount';
+    if (el.id === 'mounting') el.value = 'Roof Mount';
     else if (el.id === 'state') el.value = 'OR';
     else if (el.id === 'projectDoxSplitMode') el.value = 'individual';
     else if (el.id === 'projectDoxNamingPreset') el.value = 'numericSheet';
-    else if (el.id === 'contractorLicenseNotes') el.value = 'Installer: TML INTERNATIONAL LLC | Email: permit@infinitysolarusa.com | Phone: (800) 818-0598 | Address: 808 SE Chkalov Dr ST 3-337, Vancouver, WA 98683 | Electrical Lic: C1556 | CCB Lic: 223690 | Metro/City Lic: 14838 | Supervising Electrician: Charles Bitton | Electrician Lic: 5787S';
     else el.value = '';
   });
+  if ($('clientSelect')) $('clientSelect').value = '';
   document.querySelectorAll('input[type=file]').forEach(el => el.value = '');
   state.planDoc = state.ubDoc = state.meterDoc = null;
   state.reviewFlags = [];
@@ -4644,17 +4654,43 @@ async function saveToSystem() {
   }
 }
 
+// The selected client is the single source of truth for installer/contractor/CCB
+// info. Auto-fill every contractor field from that client (and clear them when no
+// client is selected) so a project is never staged with another client's data.
+const CONTRACTOR_FIELDS = ['installerCompany','installerEmail','installerPhone','installerLine1','installerCity','installerState','installerZip','electricalLicenseNumber','contractorLicenseNumber','metroCityLicenseNumber','supervisingElectrician','electricianLicenseNumber','contractorLicenseNotes'];
+function clearContractorFields(){ CONTRACTOR_FIELDS.forEach(id => setVal(id, '')); }
+
 async function loadContractorInfo(clientId) {
+  clearContractorFields();
   if (!clientId) return;
   try {
     const res = await fetch(`/api/clients/${clientId}`);
     if (!res.ok) return;
     const c = await res.json();
     const client = c.client || c;
-    if (client.companyName) setVal('installerCompany', client.companyName);
-    if (client.email) setVal('installerEmail', client.email);
-    if (client.phone) setVal('installerPhone', client.phone);
-    if (client.address) setVal('installerLine1', client.address);
+    setVal('installerCompany', client.legalBusinessName || client.companyName || '');
+    setVal('installerEmail', client.businessEmail || client.contactEmail || '');
+    setVal('installerPhone', client.businessPhone || client.phone || '');
+    setVal('installerLine1', client.businessAddress || '');
+    setVal('installerCity', client.businessCity || '');
+    setVal('installerState', client.businessState || '');
+    setVal('installerZip', client.businessZip || '');
+    setVal('electricalLicenseNumber', client.electricalLicenseNumber || '');
+    setVal('contractorLicenseNumber', client.ccbLicenseNumber || '');
+    setVal('supervisingElectrician', client.electricalSupervisorName || '');
+    // A readable summary of who will be on this submittal — for the coordinator to verify.
+    const notes = [
+      client.companyName || client.legalBusinessName,
+      client.ccbLicenseNumber ? `CCB ${client.ccbLicenseNumber}` : '',
+      client.electricalLicenseNumber ? `Elec Lic ${client.electricalLicenseNumber}` : '',
+      client.electricalSupervisorName ? `Supervisor ${client.electricalSupervisorName}` : '',
+      client.businessEmail || client.contactEmail,
+      client.businessPhone || client.phone,
+    ].filter(Boolean).join(' | ');
+    setVal('contractorLicenseNotes', notes);
+    if (!client.ccbLicenseNumber) {
+      const s = $('saveStatus'); if (s) s.textContent = `⚠ ${client.companyName || 'This client'} has no CCB license on file — add it in the Clients tab before submitting.`;
+    }
   } catch (e) {
     console.warn('Could not load contractor info:', e);
   }

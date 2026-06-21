@@ -700,10 +700,10 @@ app.post("/api/knowledge-base/synthesize-ahj", asyncHandler(async (req, res) => 
      ORDER BY c.created_at DESC LIMIT 50`,
     [`%${ahjName}%`, state || "", state || ""],
   );
-  const noteRows = db.query<{ content: string }>(
-    `SELECT pn.content FROM project_notes pn
+  const noteRows = db.query<{ body: string }>(
+    `SELECT pn.body FROM project_notes pn
      JOIN projects p ON p.id = pn.project_id
-     WHERE p.ahj LIKE ? AND pn.content LIKE '%application%'
+     WHERE p.ahj LIKE ? AND pn.body LIKE '%application%'
      ORDER BY pn.created_at DESC LIMIT 20`,
     [`%${ahjName}%`],
   );
@@ -714,7 +714,7 @@ app.post("/api/knowledge-base/synthesize-ahj", asyncHandler(async (req, res) => 
     ahjName,
     state: state || "",
     utility: utility || "",
-    pastApplicationTexts: noteRows.map((r) => r.content),
+    pastApplicationTexts: noteRows.map((r) => r.body),
     correctionPatterns: corrRows.map((r) => r.correction_text),
   });
 

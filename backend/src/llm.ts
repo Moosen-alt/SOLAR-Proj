@@ -184,9 +184,22 @@ UTILITY INTERCONNECTION (PGE PowerClerk / Pacific Power customer generation NEM)
 - serviceVoltage: service voltage (e.g. "240V")
 - servicePhase: "single-phase" or "three-phase"
 - numberOfCircuits: number of PV backfeed circuits/strings (number)
+- azimuth: array azimuth in degrees (number), tilt: array tilt/pitch in degrees (number), roofSlope: roof slope (e.g. "4:12" or degrees)
+- mainServiceRating: main service rating in amps if distinct from busRating
 PERMIT PORTAL (Accela / ProjectDox AHJ building+electrical permit)
 - parcelNumber: assessor parcel number (APN) / map-tax-lot, if shown on the cover sheet or site plan
 - jobValue: project valuation / installed cost in dollars (number), if shown
+CLIENT ONBOARDING — the INSTALLER/CONTRACTOR shown on the plan set title block / stamp
+  (this is the solar company doing the install, NOT the homeowner). Extract for onboarding a
+  client record — these do NOT fill the project's contractor fields (those come from the
+  selected client), they're a suggestion to create/match the client:
+- contractorCompany: installer/contractor business name
+- contractorCcb: CCB / contractor license number
+- contractorElectricalLicense: electrical contractor license number
+- contractorAddress: contractor business address
+- contractorPhone: contractor phone
+- contractorEmail: contractor email
+- contractorSupervisor: supervising electrician name
 
 NARRATIVE EVIDENCE BLOBS — also include these as fields (value = a short factual summary; cite sheet numbers). These let plan review confirm each required element is shown. Write what the plan set ACTUALLY shows; if an element is absent, say so plainly ("No rapid shutdown note found"):
 - electricalCalcText: summarize the SLD/one-line — SLD sheet #, modules→inverter→POI, disconnects/OCPD, busbar/main/PV breaker math (705.12), rapid shutdown (690.12), grounding/bonding, meter/service relationship

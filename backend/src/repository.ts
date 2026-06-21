@@ -62,7 +62,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { stageWithAccela, stageWithMockPortal, stageWithPowerClerk } from "../../portal-bot/src/index";
 import { addAuditLog } from "./audit";
-import { clientStagingOverlay } from "./clients";
+import { clientStagingOverlay, getClient } from "./clients";
 import { buildApplicationDocumentPackage } from "./applicationDocs";
 import { classifyCorrection } from "./corrections";
 import type { AppDb } from "./db";
@@ -2822,6 +2822,10 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
     ["Interconnection", project.interconnectionMethod],
   ];
   const missingCritical = criticalFields.filter(([, value]) => !hasValue(value)).map(([label]) => label);
+  // Safe client lookup (no throw) for the submitting-client gate.
+  const submittingClientRow = project.clientId
+    ? db.get<Row>("SELECT company_name, legal_business_name, ccb_license_number FROM clients WHERE id = ?", [project.clientId])
+    : null;
   const permitLane = processMap.lanes.find((lane) => lane.key === "permit");
   const nemLane = processMap.lanes.find((lane) => lane.key === "nem");
   const blockedPermitSteps = (permitLane?.steps || []).filter((step) => step.status === "blocked");
@@ -2853,6 +2857,26 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
       evidence: missingCritical.length ? missingCritical.map((field) => `Missing: ${field}`) : criticalFields.map(([label, value]) => `${label}: ${hasValue(value) ? "captured" : "missing"}`),
       nextAction: missingCritical.length ? `Resolve missing source-of-truth fields: ${missingCritical.join(", ")}.` : "Use this record as the source for every form, portal, and tracker.",
       source: "project.fields",
+    }),
+    submitGateCheck({
+      id: "submitting-client",
+      title: "Submitting client & CCB",
+      lane: "intake",
+      status: !submittingClientRow ? "blocker" : !String(submittingClientRow.ccb_license_number || "").trim() ? "blocker" : "pass",
+      ownerRole: "Intake Coordinator",
+      requirement: "A submitting client with a CCB/contractor license must be assigned, so the filing uses the correct contractor — never default or another client's info.",
+      evidence: !submittingClientRow
+        ? ["No submitting client assigned to this project."]
+        : [
+            `Client: ${String(submittingClientRow.company_name || submittingClientRow.legal_business_name || "(unnamed)")}`,
+            String(submittingClientRow.ccb_license_number || "").trim() ? `CCB: ${String(submittingClientRow.ccb_license_number)}` : "No CCB license on file.",
+          ],
+      nextAction: !submittingClientRow
+        ? "Assign the submitting client in the project header before staging."
+        : !String(submittingClientRow.ccb_license_number || "").trim()
+          ? "Add the client's CCB license number in the Clients tab."
+          : "Verified — this client's contractor info will be used on the filing.",
+      source: "project.client",
     }),
     submitGateCheck({
       id: "qc-human-review",
@@ -4368,6 +4392,17 @@ export async function prepareSubmission(db: AppDb, projectId: string): Promise<P
       historicalMissingCount: learnedHistoricalMissing.length,
       historicalMissing: learnedHistoricalMissing.slice(0, 8).map((item) => item.title),
     });
+  }
+
+  // ROCK-SOLID CLIENT GATE: never stage a submittal without an explicitly assigned
+  // client whose CCB/license will be on the filing. This is the guardrail against
+  // submitting with the wrong (or default/blank) contractor's info.
+  if (!detail.project.clientId) {
+    throw new HttpError(409, "No submitting client assigned. Assign the client whose CCB/contractor license belongs on this permit before staging — we never submit with default or another client's info.", { needsClient: true });
+  }
+  const submittingClient = getClient(db, detail.project.clientId);
+  if (!submittingClient.ccbLicenseNumber?.trim()) {
+    throw new HttpError(409, `Submitting client "${submittingClient.companyName || submittingClient.legalBusinessName || detail.project.clientId}" has no CCB license number on file. Add it in the Clients tab before staging.`, { needsCcb: true, clientId: detail.project.clientId });
   }
 
   const runId = id();
