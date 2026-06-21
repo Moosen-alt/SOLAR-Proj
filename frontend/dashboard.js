@@ -2156,6 +2156,19 @@ const REVIEW_FIELD_LABELS = {
   permitPath: ["Permit path", "the permit path (prescriptive vs engineered)"],
   locates: ["Required locates", "type 'N/A - roof mount, no excavation' or note the 811/locate callout"],
   splitPages: ["Required files / page mapping", "confirm the plan-set sheet split mapping"],
+  // Additional fields that can surface from baseline / utility / structural rules.
+  dcKw: ["System size — DC (kW)", "the DC system size in kW"],
+  acKw: ["System size — AC (kW)", "the AC system size in kW"],
+  exportKw: ["Export capacity (kW)", "the AC export capacity in kW (for NEM tier screens)"],
+  acDiscReq: ["AC disconnect required?", "type 'Yes - lockable AC disconnect within 10 ft of meter' or 'No - not required'"],
+  snow: ["Snow load (psf)", "the design ground snow load in psf"],
+  deadLoad: ["Roof dead load (psf)", "the distributed dead load the array adds, in psf"],
+  wind: ["Wind speed / exposure", "the design wind speed (mph) and exposure category"],
+  roofRafterSpacing: ["Rafter / truss spacing", "the rafter or truss spacing, e.g. '24 in O.C.'"],
+  account: ["Utility account number", "the utility account number from the bill"],
+  meter: ["Meter number", "the meter number from the plan set / bill / meter photo"],
+  ubAccountNumber: ["Utility-bill account number", "the account number printed on the utility bill"],
+  ubMeterNumber: ["Utility-bill meter number", "the meter number printed on the utility bill / meter photo"],
 };
 function camelToTitle(key) {
   return String(key || "")
@@ -2193,7 +2206,7 @@ function renderReview() {
       ${item.sourceExcerpt ? `<p><strong>Source:</strong> ${esc(item.sourceExcerpt)}</p>` : ""}
       ${item.status === "pending" ? `
         <div class="review-actions">
-          <input id="review-${item.id}" value="${esc(item.llmSuggestedValue || item.parserValue)}" placeholder="${esc(hint ? `Enter ${hint}, then Save Edit` : "Type the value (read it off the plan set), then Save Edit")}" />
+          <input id="review-${item.id}" value="${esc(item.llmSuggestedValue || item.parserValue)}" placeholder="${esc(hint ? `Enter ${hint}, then Save Edit` : `Enter the ${label} (read it off the plan set / bill), then Save Edit`)}" />
           <div class="actions">
             <button class="secondary" data-review-action="reject" data-review-id="${item.id}"><i data-lucide="x"></i><span>Reject</span></button>
             <button class="primary" data-review-action="edit" data-review-id="${item.id}"><i data-lucide="pencil"></i><span>Save Edit</span></button>
