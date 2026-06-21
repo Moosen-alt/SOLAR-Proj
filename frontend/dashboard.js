@@ -21,6 +21,7 @@ const state = {
   installerPacket: null,
   submitGate: null,
   knowledgeProfiles: [],
+  ahjForms: [],
   emailTracker: null,
   projectView: (typeof localStorage !== "undefined" && localStorage.getItem("projectView")) || "board",
 };
@@ -110,6 +111,7 @@ async function loadProjects() {
   await loadOpsActions();
   await loadKnowledgeBase();
   await loadPortalRecipes();
+  await loadAhjForms();
   await loadEmailTracker();
   const selectedStillExists = state.projects.some((project) => project.id === state.selectedProjectId);
   if (!state.selectedProjectId && state.projects[0]) {
@@ -266,6 +268,98 @@ function renderPortalRecipes() {
     try { await api(`/api/portal-recipes/${b.getAttribute("data-recipe-rerecord")}/rerecord`, { method: "POST" }); await loadPortalRecipes(); }
     catch (err) { showMessage(err.message || "Failed.", "error"); }
   }));
+}
+
+async function loadAhjForms() {
+  const el = $("ahjFormsList");
+  if (!el) return;
+  try {
+    const rows = await api("/api/ahj-templates");
+    state.ahjForms = Array.isArray(rows) ? rows : [];
+    renderAhjForms();
+  } catch (err) {
+    el.innerHTML = `<p class="muted">${esc(err.message || "Could not load AHJ forms.")}</p>`;
+  }
+}
+
+function renderAhjForms() {
+  const el = $("ahjFormsList");
+  if (!el) return;
+  const rows = state.ahjForms || [];
+  const countEl = $("ahjFormsSummaryCount");
+  if (countEl) countEl.textContent = rows.length ? `${rows.length} stored` : "none yet";
+  if (!rows.length) { el.innerHTML = '<p class="muted">No AHJ forms stored yet. Use a project\'s "Find official form (AI)" button, or upload one above.</p>'; return; }
+  el.innerHTML = rows.map((r) => {
+    const map = r.fieldMap || {};
+    const fillMode = map.fillMode || "acroform";
+    const acroCount = Object.keys(map.textFields || {}).length + Object.keys(map.checkboxes || {}).length;
+    const overlayCount = (map.overlayFields || []).length;
+    const mapped = fillMode === "overlay" ? overlayCount : acroCount;
+    const fillable = mapped > 0;
+    return `
+    <div class="card" style="padding:8px 10px;margin-bottom:6px">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+        <div>
+          <strong>${esc(r.ahj_name)}</strong>
+          <span class="muted" style="font-size:12px">· ${esc(r.state || "—")} · ${esc(r.form_type || "permit_application")} · ${esc(fillMode)} · ${mapped} field(s) mapped</span>
+          ${fillable ? "" : '<span style="font-size:11px;padding:1px 6px;border-radius:4px;background:var(--warning);color:#fff;margin-left:6px">manual</span>'}
+        </div>
+        <div style="display:flex;gap:6px;align-items:center">
+          <a class="secondary" href="/api/ahj-templates/${esc(r.id)}/pdf" target="_blank" rel="noopener" style="font-size:11px;padding:3px 8px;border:1px solid var(--line);border-radius:6px;text-decoration:none">Blank PDF</a>
+          <button class="secondary" data-form-remap="${esc(r.id)}" style="font-size:11px">Re-map</button>
+          <button class="danger" data-form-delete="${esc(r.id)}" style="font-size:11px">Delete</button>
+        </div>
+      </div>
+      ${map.notes ? `<div class="muted" style="font-size:11px;margin-top:4px">${esc(map.notes)}</div>` : ""}
+    </div>`;
+  }).join("");
+  el.querySelectorAll("[data-form-delete]").forEach((b) => b.addEventListener("click", async () => {
+    if (!confirm("Delete this stored AHJ form? Projects under this AHJ will fall back to manual until it's re-added.")) return;
+    try { await api(`/api/ahj-templates/${b.getAttribute("data-form-delete")}`, { method: "DELETE" }); await loadAhjForms(); }
+    catch (err) { showMessage(err.message || "Delete failed.", "error"); }
+  }));
+  el.querySelectorAll("[data-form-remap]").forEach((b) => b.addEventListener("click", async () => {
+    const status = $("ahjFormsStatus");
+    if (status) status.textContent = "Re-mapping from the stored blank…";
+    try {
+      const out = await api(`/api/ahj-templates/${b.getAttribute("data-form-remap")}/remap`, { method: "POST", body: "{}" });
+      if (status) status.textContent = out.message || "Re-mapped.";
+      await loadAhjForms();
+    } catch (err) { if (status) status.textContent = ""; showMessage(err.message || "Re-map failed.", "error"); }
+  }));
+  if (window.lucide) window.lucide.createIcons();
+}
+
+async function uploadAhjFormFromManager(ev) {
+  const file = ev.target.files && ev.target.files[0];
+  if (!file) return;
+  const ahj = ($("addFormAhj")?.value || "").trim();
+  const statev = ($("addFormState")?.value || "").trim();
+  const status = $("ahjFormsStatus");
+  if (!ahj) { showMessage("Enter the AHJ name before uploading.", "warning"); ev.target.value = ""; return; }
+  if (status) status.textContent = `Uploading ${file.name} and mapping its fields…`;
+  try {
+    const buf = await file.arrayBuffer();
+    const qs = new URLSearchParams({ ahj, state: statev, filename: file.name });
+    const res = await fetch(`/api/ahj-templates/upload?${qs.toString()}`, {
+      method: "POST", headers: { "Content-Type": "application/pdf" }, body: buf,
+    });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `Upload failed (${res.status})`);
+    const out = await res.json();
+    if (status) status.textContent = out.message || "Stored.";
+    await loadAhjForms();
+  } catch (err) { if (status) status.textContent = ""; showMessage(err.message || "Upload failed.", "error"); }
+  finally { ev.target.value = ""; }
+}
+
+async function refreshAhjFormLinks() {
+  const status = $("ahjFormsStatus");
+  if (status) status.textContent = "Re-checking every form's source link…";
+  try {
+    const out = await api("/api/ahj-templates/refresh", { method: "POST", body: "{}" });
+    if (status) status.textContent = `Checked ${out.checked}, updated ${out.updated}, broken ${out.brokenLinks}, unchanged ${out.unchanged}.`;
+    await loadAhjForms();
+  } catch (err) { if (status) status.textContent = ""; showMessage(err.message || "Refresh failed.", "error"); }
 }
 
 async function loadEmailTracker() {
@@ -3569,6 +3663,8 @@ if ($("addUtilityBtn")) {
     }
   });
 }
+if ($("addFormFile")) $("addFormFile").addEventListener("change", uploadAhjFormFromManager);
+if ($("refreshFormsBtn")) $("refreshFormsBtn").addEventListener("click", refreshAhjFormLinks);
 $("projectStatusFilter").addEventListener("change", (e) => {
   projectFilterState.status = e.target.value;
   reloadProjects();

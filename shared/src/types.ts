@@ -1136,6 +1136,41 @@ export interface LLMProvider {
     fields: { name: string; type: string }[];
     availableSources: string[];
   }): Promise<AhjFieldMapResult>;
+
+  /** Vision-map a FLAT (non-fillable / scanned) form: given page images, return
+   *  where each project value should be drawn, as normalized (0..1) coordinates
+   *  from each page's top-left. Used to build a coordinate overlay so flat PDFs
+   *  can be auto-filled too — computed once and saved. */
+  mapFlatFormOverlay(input: {
+    ahj: string;
+    state: string;
+    formName: string;
+    pages: { base64: string; mimeType: "image/png" | "image/jpeg" | "image/webp" }[];
+    availableSources: string[];
+  }): Promise<AhjOverlayMapResult>;
+}
+
+export interface AhjOverlayMapResult {
+  provider: "claude" | "stub";
+  fields: AhjOverlayPlacement[];
+  notes: string;
+}
+
+export interface AhjOverlayPlacement {
+  /** Value source string (project.* / snapshot.* / client.* / computed.* / lit:*). */
+  source: string;
+  /** 0-based page index. */
+  page: number;
+  /** Normalized horizontal position of the text start, 0 (left) .. 1 (right). */
+  nx: number;
+  /** Normalized vertical baseline position, 0 (top) .. 1 (bottom). */
+  ny: number;
+  /** Font size in points (default 9). */
+  size?: number;
+  /** Optional max width as a fraction of page width, to truncate long values. */
+  maxWidthFrac?: number;
+  /** What this placement is (label text), for human review. */
+  label?: string;
 }
 
 export interface AhjFormUrlResult {

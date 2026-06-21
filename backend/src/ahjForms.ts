@@ -494,10 +494,13 @@ export function loadStoredTemplates(db: AppDb, ahj: string, state: string): Arra
     const nameMatches = rowAhj === needle || needle.includes(rowAhj) || rowAhj.includes(needle);
     const stateOk = !row.state || !state || String(row.state).toLowerCase() === String(state).toLowerCase();
     if (!nameMatches || !stateOk || !row.pdf_blob) continue;
-    let map: { formName?: string; sourceUrl?: string; fillMode?: string; textFields?: Record<string, string>; checkboxes?: Record<string, { source: string; equals?: string }> } = {};
+    let map: { formName?: string; sourceUrl?: string; fillMode?: string; textFields?: Record<string, string>; checkboxes?: Record<string, { source: string; equals?: string }>; overlayFields?: OverlayField[] } = {};
     try { map = JSON.parse(row.field_map || "{}"); } catch { map = {}; }
     const textFields = map.textFields || {};
-    if (!Object.keys(textFields).length && !(map.checkboxes && Object.keys(map.checkboxes).length)) continue; // no usable map yet
+    const overlayFields = map.overlayFields || [];
+    const isOverlay = map.fillMode === "overlay" && overlayFields.length > 0;
+    const hasAcro = Object.keys(textFields).length > 0 || (map.checkboxes && Object.keys(map.checkboxes).length > 0);
+    if (!isOverlay && !hasAcro) continue; // no usable map yet
     out.push({
       def: {
         id: `tmpl-${row.id}`,
@@ -506,9 +509,10 @@ export function loadStoredTemplates(db: AppDb, ahj: string, state: string): Arra
         sourceUrl: map.sourceUrl || "",
         version: "stored",
         status: "verified",
-        fillMode: map.fillMode === "overlay" ? "overlay" : "acroform",
+        fillMode: isOverlay ? "overlay" : "acroform",
         textFields,
         checkboxes: map.checkboxes || {},
+        overlayFields,
       },
       bytes: new Uint8Array(row.pdf_blob),
     });

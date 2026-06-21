@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import type { AhjFieldMapResult, AhjFormUrlResult, AhjResearchResult, CorrectionBucket, InverterSpecLookup, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, ProjectRecord, UtilityResearchResult } from "../../shared/src/types";
+import type { AhjFieldMapResult, AhjFormUrlResult, AhjOverlayMapResult, AhjResearchResult, CorrectionBucket, InverterSpecLookup, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, ProjectRecord, UtilityResearchResult } from "../../shared/src/types";
 import { RECIPE_FIELD_DESCRIPTIONS } from "./portalRecipes";
 
 const MODEL = "claude-opus-4-8";
@@ -118,6 +118,10 @@ export class StubLLMProvider implements LLMProvider {
 
   async mapAcroFormFields(): Promise<AhjFieldMapResult> {
     return { provider: "stub", textFields: {}, checkboxes: {}, notes: "No ANTHROPIC_API_KEY configured — field mapping is off." };
+  }
+
+  async mapFlatFormOverlay(): Promise<AhjOverlayMapResult> {
+    return { provider: "stub", fields: [], notes: "No ANTHROPIC_API_KEY configured — flat-form vision mapping is off." };
   }
 }
 
@@ -768,6 +772,76 @@ ${input.availableSources.join("\n")}`;
       }
     }
     return { provider: "claude", textFields, checkboxes, notes: String(parsed.notes || "") };
+  }
+
+  async mapFlatFormOverlay(input: {
+    ahj: string;
+    state: string;
+    formName: string;
+    pages: { base64: string; mimeType: "image/png" | "image/jpeg" | "image/webp" }[];
+    availableSources: string[];
+  }): Promise<AhjOverlayMapResult> {
+    const system = `You are reading a BLANK government permit form (image per page) to determine WHERE each piece of a solar project's data should be written, so a flat (non-fillable) PDF can be auto-filled by drawing text at coordinates.
+
+For each blank/line/box on the form that one of the AVAILABLE DATA SOURCES should fill, return a placement with:
+- "source": the EXACT source string to write there (from AVAILABLE DATA SOURCES; use "lit:X" for a checkbox mark, "lit:<text>" for a constant)
+- "page": 0-based page index of the image it's on
+- "nx": normalized horizontal position (0=left edge, 1=right edge) where the text should START (just right of the label / start of the blank)
+- "ny": normalized vertical position (0=top edge, 1=bottom edge) of the text BASELINE (the line the text sits on)
+- "size": font size in points (8-10 typical)
+- "maxWidthFrac": optional, the available width as a fraction of page width
+- "label": the form's printed label for this blank (for human review)
+
+Return ONLY JSON: {"fields":[ ... ], "notes":"<caveats; mention anything you left for a human>"}
+
+Rules:
+- Place a value ONLY where you can clearly see the matching labeled blank. Do not guess positions.
+- NEVER place signature, date-signed, or fee-payment values — leave them blank.
+- For checkboxes (e.g. "Type of work: Other"), use source "lit:X" placed at the box.
+- Coordinates must be precise to the blank — they will be used verbatim to draw text. Return valid JSON only.`;
+
+    const content: Anthropic.Messages.ContentBlockParam[] = [];
+    content.push({ type: "text", text: `Form: ${input.formName} — ${input.ahj} (${input.state})\n\nAVAILABLE DATA SOURCES:\n${input.availableSources.join("\n")}\n\nPages follow:` });
+    input.pages.forEach((pg, i) => {
+      content.push({ type: "text", text: `PAGE ${i}:` });
+      content.push({ type: "image", source: { type: "base64", media_type: pg.mimeType, data: pg.base64 } });
+    });
+    content.push({ type: "text", text: "Return the placements JSON now." });
+
+    let raw = "";
+    try {
+      const msg = await this.client.messages.create({
+        model: MODEL,
+        max_tokens: 4096,
+        system,
+        messages: [{ role: "user", content }],
+      });
+      for (const block of msg.content) if (block.type === "text") raw += block.text;
+    } catch (err) {
+      console.warn("[llm] mapFlatFormOverlay failed:", err instanceof Error ? err.message : String(err));
+    }
+    const parsed = this.parseJson<{ fields?: unknown[]; notes?: string }>(raw, {});
+    const fields: AhjOverlayMapResult["fields"] = [];
+    if (Array.isArray(parsed.fields)) {
+      for (const f of parsed.fields) {
+        const o = f as Record<string, unknown>;
+        const source = String(o.source || "");
+        const nx = Number(o.nx);
+        const ny = Number(o.ny);
+        if (!/^(project|snapshot|client|computed)\.|^lit:/.test(source)) continue;
+        if (!Number.isFinite(nx) || !Number.isFinite(ny) || nx < 0 || nx > 1 || ny < 0 || ny > 1) continue;
+        fields.push({
+          source,
+          page: Number.isFinite(Number(o.page)) ? Math.max(0, Math.floor(Number(o.page))) : 0,
+          nx,
+          ny,
+          size: Number.isFinite(Number(o.size)) ? Number(o.size) : 9,
+          maxWidthFrac: Number.isFinite(Number(o.maxWidthFrac)) ? Number(o.maxWidthFrac) : undefined,
+          label: o.label != null ? String(o.label) : undefined,
+        });
+      }
+    }
+    return { provider: "claude", fields, notes: String(parsed.notes || "") };
   }
 }
 

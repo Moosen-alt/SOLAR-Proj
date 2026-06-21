@@ -58,7 +58,7 @@ import {
   inspectFormFields,
   matchingForms,
 } from "./ahjForms";
-import { buildFieldMapForPdf, ensureAhjFormTemplate, storeAhjFormTemplate } from "./ahjFormAuto";
+import { acquireFromBytes, ensureAhjFormTemplate } from "./ahjFormAuto";
 import { addAuditLog } from "./audit";
 import { buildAuthUrl, exchangeCodeForTokens, gmailStatus, pollGmail } from "./gmail";
 import {
@@ -880,32 +880,25 @@ app.post(
     if (!Buffer.isBuffer(req.body) || req.body.length === 0) throw new HttpError(400, "PDF body required.");
     const bytes = new Uint8Array(req.body);
 
-    // Map the blank form's actual AcroForm fields to project data sources so the
-    // form can be auto-filled for every project under this AHJ. Flat/scanned/XFA
-    // PDFs (no fillable fields) are stored as the blank for manual completion.
+    // Map the blank form's fields to project data so it can be auto-filled for
+    // every project under this AHJ. AcroForm fields are mapped directly; flat/
+    // scanned PDFs fall back to vision-derived coordinate overlay.
     const { createLLMProvider } = await import("./llm");
     const llm = createLLMProvider();
     const formName = filename.replace(/\.pdf$/i, "") || `${ahjName} ${formType.replace(/_/g, " ")}`;
-    let map;
+    let result;
     try {
-      map = await buildFieldMapForPdf(llm, { ahj: ahjName, state, formName, bytes });
+      result = await acquireFromBytes(db, llm, { ahj: ahjName, state, formType, formName, bytes, sourceUrl: "" });
     } catch (err) {
       throw normalizeLlmError(err);
     }
-    const fillMode = map ? "acroform" : "overlay";
-    const id = storeAhjFormTemplate(db, {
-      ahjName, state, formType, filename, bytes,
-      map: {
-        formName,
-        sourceUrl: "",
-        fillMode,
-        textFields: map?.textFields || {},
-        checkboxes: map?.checkboxes || {},
-        notes: map ? map.notes : "Uploaded flat/scanned/XFA PDF — no fillable fields; stored for manual completion.",
-      },
+    res.status(201).json({
+      ahjName, state, formType,
+      status: result.status,
+      message: result.message,
+      fieldCount: result.mappedFields || 0,
+      fillable: result.status === "acquired",
     });
-    const fieldCount = map ? Object.keys(map.textFields).length + Object.keys(map.checkboxes).length : 0;
-    res.status(201).json({ id, ahjName, state, formType, fieldCount, fillable: Boolean(map) });
   }),
 );
 
@@ -924,6 +917,39 @@ app.get("/api/ahj-templates", (req, res) => {
     ? db.query("SELECT id, ahj_name, state, form_type, original_filename, field_map, created_at FROM ahj_form_templates WHERE state = ? ORDER BY ahj_name", [state])
     : db.query("SELECT id, ahj_name, state, form_type, original_filename, field_map, created_at FROM ahj_form_templates ORDER BY state, ahj_name");
   res.json(rows.map((r) => ({ ...r, fieldMap: JSON.parse(String(r.field_map || "{}")) })));
+});
+
+// Re-map a stored template's fields from its stored blob (AcroForm first, then
+// vision overlay) — used after a bad auto-map or to refresh the mapping.
+app.post("/api/ahj-templates/:id/remap", asyncHandler(async (req, res) => {
+  const row = db.get<{ id: string; ahj_name: string; state: string; form_type: string; pdf_blob: Buffer | null; field_map: string }>(
+    "SELECT id, ahj_name, state, form_type, pdf_blob, field_map FROM ahj_form_templates WHERE id = ?",
+    [String(req.params.id)],
+  );
+  if (!row) throw new HttpError(404, "Template not found.");
+  if (!row.pdf_blob) throw new HttpError(410, "PDF blob has been wiped — re-upload the blank to re-map.");
+  let map: { formName?: string; sourceUrl?: string } = {};
+  try { map = JSON.parse(row.field_map || "{}"); } catch { /* ignore */ }
+  const formName = map.formName || `${row.ahj_name} ${row.form_type.replace(/_/g, " ")}`;
+  const { createLLMProvider } = await import("./llm");
+  let result;
+  try {
+    result = await acquireFromBytes(db, createLLMProvider(), {
+      ahj: row.ahj_name, state: row.state, formType: row.form_type, formName,
+      bytes: new Uint8Array(row.pdf_blob), sourceUrl: map.sourceUrl || "",
+    });
+  } catch (err) {
+    throw normalizeLlmError(err);
+  }
+  res.json(result);
+}));
+
+// Fully delete a stored template (blob + map).
+app.delete("/api/ahj-templates/:id", (req, res) => {
+  const row = db.get<{ id: string }>("SELECT id FROM ahj_form_templates WHERE id = ?", [String(req.params.id)]);
+  if (!row) throw new HttpError(404, "Template not found.");
+  db.run("DELETE FROM ahj_form_templates WHERE id = ?", [String(req.params.id)]);
+  res.json({ deleted: true });
 });
 
 // Wipe the raw PDF blob (keep moat data + field map for submission prep)

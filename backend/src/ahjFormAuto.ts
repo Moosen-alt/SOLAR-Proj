@@ -1,7 +1,9 @@
 import crypto from "node:crypto";
+import { PDFDocument } from "pdf-lib";
 import type { AppDb } from "./db";
 import type { LLMProvider, ProjectRecord } from "../../shared/src/types";
-import { inspectFormFields, loadStoredTemplates } from "./ahjForms";
+import { inspectFormFields, loadStoredTemplates, type OverlayField } from "./ahjForms";
+import { renderPdfPageToPng } from "./pageImages";
 import { nowIso } from "./time";
 
 // ---------------------------------------------------------------------------
@@ -59,6 +61,9 @@ export interface StoredFieldMap {
   fillMode: "acroform" | "overlay";
   textFields: Record<string, string>;
   checkboxes: Record<string, { source: string; equals?: string }>;
+  /** Coordinate placements (PDF points, bottom-left origin) for flat/scanned PDFs
+   *  filled by vision-derived overlay. Used when fillMode === "overlay". */
+  overlayFields?: OverlayField[];
   notes: string;
   /** sha256 of the blank PDF bytes — lets the periodic refresh detect when the
    *  AHJ has revised the form at its source URL. Set by storeAhjFormTemplate. */
@@ -136,6 +141,69 @@ export async function buildFieldMapForPdf(
   return { textFields: mapped.textFields, checkboxes: mapped.checkboxes, notes: mapped.notes, fieldCount: inspected.fields.length };
 }
 
+// Vision-map a FLAT (non-AcroForm) PDF: render each page to an image, ask the
+// vision model where each value goes, and convert the normalized coordinates to
+// PDF-point overlay placements (bottom-left origin) that fillLoadedForm draws.
+// Computed once and stored, so later projects reuse it with no further LLM cost.
+export async function buildOverlayMapForPdf(
+  llm: LLMProvider,
+  input: { ahj: string; state: string; formName: string; bytes: Uint8Array },
+): Promise<{ overlayFields: OverlayField[]; notes: string } | null> {
+  const os = await import("node:os");
+  const fs = await import("node:fs");
+  const path = await import("node:path");
+
+  let pageSizes: { w: number; h: number }[] = [];
+  try {
+    const doc = await PDFDocument.load(input.bytes, { ignoreEncryption: true });
+    const n = Math.min(doc.getPageCount(), 3);
+    for (let i = 0; i < n; i++) {
+      const sz = doc.getPage(i).getSize();
+      pageSizes.push({ w: sz.width, h: sz.height });
+    }
+  } catch {
+    return null;
+  }
+  if (!pageSizes.length) return null;
+
+  // renderPdfPageToPng works off a file path — write the blank to a temp file.
+  const tmp = path.join(os.tmpdir(), `ahj-flat-${crypto.randomUUID()}.pdf`);
+  const pages: { base64: string; mimeType: "image/png" }[] = [];
+  try {
+    fs.writeFileSync(tmp, Buffer.from(input.bytes));
+    for (let i = 0; i < pageSizes.length; i++) {
+      const png = await renderPdfPageToPng(tmp, i + 1, 1.6);
+      pages.push({ base64: png.toString("base64"), mimeType: "image/png" });
+    }
+  } catch {
+    return null;
+  } finally {
+    try { fs.unlinkSync(tmp); } catch { /* ignore */ }
+  }
+
+  const mapped = await llm.mapFlatFormOverlay({
+    ahj: input.ahj,
+    state: input.state,
+    formName: input.formName,
+    pages,
+    availableSources: AVAILABLE_FIELD_SOURCES,
+  });
+  if (!mapped.fields.length) return null;
+
+  const overlayFields: OverlayField[] = mapped.fields.map((f) => {
+    const sz = pageSizes[f.page] || pageSizes[0];
+    return {
+      source: f.source,
+      page: f.page,
+      x: Math.round(f.nx * sz.w),
+      y: Math.round((1 - f.ny) * sz.h), // flip: ny is from top, PDF y from bottom
+      size: f.size && f.size > 0 ? f.size : 9,
+      ...(f.maxWidthFrac && f.maxWidthFrac > 0 ? { maxWidth: Math.round(f.maxWidthFrac * sz.w) } : {}),
+    };
+  });
+  return { overlayFields, notes: mapped.notes };
+}
+
 export interface EnsureFormResult {
   status: "exists" | "acquired" | "needs_manual" | "not_found";
   message: string;
@@ -178,23 +246,42 @@ export async function ensureAhjFormTemplate(
   }
 
   const formName = research.formName || `${project.ahj} ${formType.replace(/_/g, " ")}`;
-  const map = await buildFieldMapForPdf(llm, { ahj: project.ahj, state: project.state, formName, bytes });
-  if (!map) {
-    // Store the legit blank so the operator at least has the official form, but
-    // it has no AcroForm fields to auto-fill (flat/scanned/XFA) — human fills it.
+  return acquireFromBytes(db, llm, { ahj: project.ahj, state: project.state, formType, formName, bytes, sourceUrl: usedUrl });
+}
+
+// Shared acquisition: map a downloaded/uploaded blank PDF (AcroForm first, then
+// vision overlay for flat/scanned), store it, and report what happened.
+export async function acquireFromBytes(
+  db: AppDb,
+  llm: LLMProvider,
+  input: { ahj: string; state: string; formType: string; formName: string; bytes: Uint8Array; sourceUrl: string },
+): Promise<EnsureFormResult> {
+  const { ahj, state, formType, formName, bytes, sourceUrl } = input;
+
+  const acro = await buildFieldMapForPdf(llm, { ahj, state, formName, bytes });
+  if (acro) {
     storeAhjFormTemplate(db, {
-      ahjName: project.ahj, state: project.state, formType,
-      filename: `${formName}.pdf`, bytes,
-      map: { formName, sourceUrl: usedUrl, fillMode: "overlay", textFields: {}, checkboxes: {}, notes: "Flat/scanned/XFA PDF — no fillable fields. Downloaded for manual completion." },
+      ahjName: ahj, state, formType, filename: `${formName}.pdf`, bytes,
+      map: { formName, sourceUrl, fillMode: "acroform", textFields: acro.textFields, checkboxes: acro.checkboxes, notes: acro.notes },
     });
-    return { status: "needs_manual", message: `Downloaded the official ${formName}, but it has no fillable fields (flat/scanned). It's stored as the blank form for manual completion.`, formName, sourceUrl: usedUrl, mappedFields: 0 };
+    const count = Object.keys(acro.textFields).length + Object.keys(acro.checkboxes).length;
+    return { status: "acquired", message: `Acquired and mapped ${formName} (${count} field(s) of ${acro.fieldCount}). It will be auto-filled for ${ahj}.`, formName, sourceUrl, mappedFields: count };
   }
 
+  // No AcroForm fields — flat/scanned. Use vision to derive a coordinate overlay.
+  const overlay = await buildOverlayMapForPdf(llm, { ahj, state, formName, bytes });
+  if (overlay && overlay.overlayFields.length) {
+    storeAhjFormTemplate(db, {
+      ahjName: ahj, state, formType, filename: `${formName}.pdf`, bytes,
+      map: { formName, sourceUrl, fillMode: "overlay", textFields: {}, checkboxes: {}, overlayFields: overlay.overlayFields, notes: `Vision-mapped flat form (${overlay.overlayFields.length} placements). ${overlay.notes} VERIFY the filled PDF — coordinate placement is approximate; re-map if anything is off.` },
+    });
+    return { status: "acquired", message: `Acquired ${formName} (flat PDF) and vision-mapped ${overlay.overlayFields.length} placement(s). Verify the filled output and re-map if needed.`, formName, sourceUrl, mappedFields: overlay.overlayFields.length };
+  }
+
+  // Couldn't map either way — store the legit blank for manual completion.
   storeAhjFormTemplate(db, {
-    ahjName: project.ahj, state: project.state, formType,
-    filename: `${formName}.pdf`, bytes,
-    map: { formName, sourceUrl: usedUrl, fillMode: "acroform", textFields: map.textFields, checkboxes: map.checkboxes, notes: map.notes },
+    ahjName: ahj, state, formType, filename: `${formName}.pdf`, bytes,
+    map: { formName, sourceUrl, fillMode: "overlay", textFields: {}, checkboxes: {}, notes: "Flat/scanned PDF — vision mapping found no placeable fields. Stored as the blank for manual completion." },
   });
-  const count = Object.keys(map.textFields).length + Object.keys(map.checkboxes).length;
-  return { status: "acquired", message: `Acquired and mapped ${formName} (${count} field(s) mapped of ${map.fieldCount}). It will be auto-filled for projects in ${project.ahj}.`, formName, sourceUrl: usedUrl, mappedFields: count };
+  return { status: "needs_manual", message: `Stored the official ${formName}, but it couldn't be auto-mapped. It's saved as the blank for manual completion.`, formName, sourceUrl, mappedFields: 0 };
 }

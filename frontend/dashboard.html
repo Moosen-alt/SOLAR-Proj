@@ -621,6 +621,28 @@
             <p class="muted">Loading…</p>
           </div>
         </details>
+
+        <details id="ahjFormsAccordion" class="kb-accordion" style="margin-top:10px">
+          <summary class="kb-summary">
+            <span>AHJ Forms (official permit PDFs)</span>
+            <span id="ahjFormsSummaryCount" class="muted" style="font-size:12px;font-weight:400"></span>
+          </summary>
+          <p class="muted" style="font-size:12px;margin:6px 0">The official blank permit PDFs the system fills with project data — acquired by AI (web search), or uploaded. Fillable AcroForms map directly; flat/scanned PDFs are vision-mapped to coordinates once and reused. Source links are auto-re-checked every ~60 days to stay current.</p>
+          <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:8px;padding:8px;border:1px dashed var(--line);border-radius:6px">
+            <span style="font-size:12px;font-weight:600;width:100%">Add a form manually (upload a blank AHJ PDF)</span>
+            <input id="addFormAhj" placeholder="AHJ (e.g. City of Bend)" style="flex:1;min-width:140px;padding:5px 7px;font-size:13px" />
+            <input id="addFormState" placeholder="State" style="width:60px;padding:5px 7px;font-size:13px" />
+            <label class="secondary" style="cursor:pointer;display:inline-flex;align-items:center;gap:6px;padding:5px 9px;border:1px solid var(--line);border-radius:6px;font-size:12px">
+              <i data-lucide="upload"></i><span>Choose PDF &amp; map</span>
+              <input id="addFormFile" type="file" accept="application/pdf" style="display:none">
+            </label>
+            <button id="refreshFormsBtn" class="secondary" style="font-size:12px"><i data-lucide="refresh-cw"></i><span>Re-check links now</span></button>
+            <span id="ahjFormsStatus" class="muted" style="font-size:12px;width:100%"></span>
+          </div>
+          <div id="ahjFormsList" class="stack" style="margin-top:8px">
+            <p class="muted">Loading…</p>
+          </div>
+        </details>
       </div>
     </div>
   </div>
