@@ -132,6 +132,13 @@ export interface ProjectListItem extends Omit<ProjectRecord, "parserSnapshot"> {
   latestNemCheckedAt: string | null;
   nemApproved: boolean;
   overdueCorrections: number;
+  // Pipeline stage (computed from status by backend/src/projectStage.ts) so the
+  // dashboard can render the stepper/board without duplicating the lifecycle map.
+  stageKey: string;
+  stageIndex: number;
+  stageLabel: string;
+  stageCount: number;
+  isBlocked: boolean;
 }
 
 export interface QcResult {
@@ -1000,6 +1007,12 @@ export interface ProjectDetail {
   submissions: SubmissionRecord[];
   auditLogs: AuditLog[];
   projectNotes: ProjectNote[];
+  // Pipeline stage (computed from project.status by backend/src/projectStage.ts).
+  stageKey: string;
+  stageIndex: number;
+  stageLabel: string;
+  stageCount: number;
+  isBlocked: boolean;
 }
 
 /** Where an extracted value came from — shown to the PM to verify accuracy. */

@@ -63,6 +63,7 @@ import path from "node:path";
 import { stageWithAccela, stageWithMockPortal, stageWithPowerClerk, stageWithRecipe } from "../../portal-bot/src/index";
 import { findCompleteRecipeForProject, resolveRecipeFieldValues } from "./portalRecipes";
 import { projectDocsByType } from "./projectDocuments";
+import { STAGE_COUNT, stageForStatus, isBlockedStatus } from "./projectStage";
 import { addAuditLog } from "./audit";
 import { clientStagingOverlay, getClient } from "./clients";
 import { buildApplicationDocumentPackage } from "./applicationDocs";
@@ -696,6 +697,7 @@ export function getProjectList(
     const project = mapProject(row);
     const { parserSnapshot: _parserSnapshot, ...listBase } = project;
     const laneSummary = computeLaneStatusSummary(project.status, checksByProject.get(project.id) ?? [], emailsByProject.get(project.id) ?? []);
+    const stage = stageForStatus(project.status);
     return {
       ...listBase,
       qcFailCount: Number(row.qcFailCount ?? 0),
@@ -705,6 +707,11 @@ export function getProjectList(
       overdueCorrections: Number(row.overdueCorrections ?? 0),
       assignedUserId: row.assigned_user_id == null ? null : text(row.assigned_user_id),
       latestPortalStatus: row.latestPortalStatus == null ? null : (text(row.latestPortalStatus) as ProjectListItem["latestPortalStatus"]),
+      stageKey: stage.key,
+      stageIndex: stage.index,
+      stageLabel: stage.label,
+      stageCount: STAGE_COUNT,
+      isBlocked: isBlockedStatus(project.status),
       ...laneSummary,
     };
   });
@@ -716,8 +723,15 @@ export function getProjectDetail(db: AppDb, projectId: string): ProjectDetail {
   const projectRow = db.get<ProjectRow>("SELECT * FROM projects WHERE id = ?", [projectId]);
   if (!projectRow) throw new HttpError(404, "Project not found.");
 
+  const project = mapProject(projectRow);
+  const stage = stageForStatus(project.status);
   return {
-    project: mapProject(projectRow),
+    project,
+    stageKey: stage.key,
+    stageIndex: stage.index,
+    stageLabel: stage.label,
+    stageCount: STAGE_COUNT,
+    isBlocked: isBlockedStatus(project.status),
     qcResults: db.query<Row>("SELECT * FROM qc_results WHERE project_id = ? ORDER BY created_at DESC", [projectId]).map(mapQc),
     humanReviewItems: db
       .query<Row>("SELECT * FROM human_review_items WHERE project_id = ? ORDER BY status DESC, created_at DESC", [projectId])

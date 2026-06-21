@@ -21,9 +21,22 @@ const state = {
   submitGate: null,
   knowledgeProfiles: [],
   emailTracker: null,
+  projectView: (typeof localStorage !== "undefined" && localStorage.getItem("projectView")) || "board",
 };
 
 const $ = (id) => document.getElementById(id);
+
+// Pipeline stages (display labels for the board columns + table pill). The
+// canonical stage mapping lives in backend/src/projectStage.ts; rows arrive
+// carrying stageKey/stageIndex/stageLabel/stageCount, so this is display-only.
+const PROJECT_STAGES = [
+  { key: "intake", label: "1 · Intake" },
+  { key: "qc", label: "2 · QC / Verify" },
+  { key: "build", label: "3 · Build & Validate" },
+  { key: "submit", label: "4 · Submit" },
+  { key: "track", label: "5 · Track Approvals" },
+  { key: "closeout", label: "6 · Closeout" },
+];
 
 async function api(path, options = {}) {
   const res = await fetch(path, {
@@ -87,7 +100,6 @@ async function checkHealth() {
 async function loadProjects() {
   await fetchProjectPage(false);
   await loadOpsReport();
-  await loadOpsBoard();
   await loadOpsActions();
   await loadKnowledgeBase();
   await loadPortalRecipes();
@@ -118,7 +130,6 @@ async function loadProjects() {
 async function refreshProjectListOnly() {
   await fetchProjectPage(false);
   await loadOpsReport();
-  await loadOpsBoard();
   await loadOpsActions();
   await loadKnowledgeBase();
   await loadEmailTracker();
@@ -356,11 +367,37 @@ function renderEmailTracker() {
   $("emailTrackerStatus").textContent = `${sources.filter((source) => source.active).length} active email watch source(s). Last scan: ${active?.lastCheckedAt ? new Date(active.lastCheckedAt).toLocaleString() : "not run"}; last matched ${active?.lastMatchedCount || 0}/${active?.lastMessageCount || 0}; recent matches ${totalMatches}.${active?.lastError ? ` Error: ${active.lastError}` : ""}`;
 }
 
+// Stage pill + "Stage N of 6" progress for the table view.
+function stagePillHtml(project) {
+  const idx = Number.isInteger(project.stageIndex) ? project.stageIndex : 0;
+  const count = project.stageCount || PROJECT_STAGES.length;
+  const pct = Math.round(((idx + 1) / count) * 100);
+  const blocked = project.isBlocked ? " is-blocked" : "";
+  return `<span class="stage-tag stage-${esc(project.stageKey || "intake")}${blocked}" title="${esc(project.status || "")}">${esc(project.stageLabel || "—")}</span>`
+    + `<br><span class="muted">Stage ${idx + 1} of ${count}</span>`
+    + `<div class="stage-progress"><span style="width:${pct}%"></span></div>`;
+}
+
 function renderProjects() {
-  const body = $("projectsBody");
   const projects = state.projects;
   const total = state.projectsTotal ?? projects.length;
   $("projectCount").textContent = `${projects.length}${total > projects.length ? `/${total}` : ""}`;
+  const boardMode = state.projectView !== "table";
+  const board = $("projectBoard");
+  const tableWrap = $("projectTableWrap");
+  if (board) board.hidden = !boardMode;
+  if (tableWrap) tableWrap.hidden = boardMode;
+  const boardBtn = $("viewBoardBtn");
+  const tableBtn = $("viewTableBtn");
+  if (boardBtn) boardBtn.setAttribute("aria-selected", String(boardMode));
+  if (tableBtn) tableBtn.setAttribute("aria-selected", String(!boardMode));
+  if (boardMode) renderBoard(); else renderProjectTable();
+}
+
+function renderProjectTable() {
+  const body = $("projectsBody");
+  const projects = state.projects;
+  const total = state.projectsTotal ?? projects.length;
   if (!projects.length) {
     body.innerHTML = `<tr><td colspan="7" class="muted">No projects saved yet.</td></tr>`;
     return;
@@ -375,7 +412,7 @@ function renderProjects() {
     <tr data-project-id="${project.id}" class="${project.id === state.selectedProjectId ? "active" : ""}">
       <td><strong>${esc(project.homeownerName || "Unnamed")}</strong><br><span class="muted">${esc(project.projectAddress || "No address")}</span></td>
       <td>${assigneeHtml}</td>
-      <td>${statusBadge(project.status)}</td>
+      <td>${stagePillHtml(project)}</td>
       <td>${projectLaneStatusCell(project.latestPermitLabel, project.latestPermitOutcome, project.latestPermitCheckedAt, project.readyForIssue, "ready for issue")}</td>
       <td>${projectLaneStatusCell(project.latestNemLabel, project.latestNemOutcome, project.latestNemCheckedAt, project.nemApproved, "NEM approved")}</td>
       <td>${project.qcFailCount ? `<strong class="danger">${project.qcFailCount} fail</strong>` : "0 fail"}<br><span class="muted">${project.qcWarningCount} warn</span></td>
@@ -391,6 +428,55 @@ function renderProjects() {
   body.querySelectorAll("tr[data-project-id]").forEach((row) => {
     row.addEventListener("click", () => selectProject(row.dataset.projectId));
   });
+}
+
+// Stage board: six columns; each project as a compact card in its current stage.
+function boardCardHtml(p, userMap) {
+  const assignee = p.assignedUserId ? userMap[p.assignedUserId] : null;
+  const permit = p.readyForIssue ? "ready for issue" : (p.latestPermitLabel || (p.latestPermitOutcome ? p.latestPermitOutcome.replaceAll("_", " ") : ""));
+  const nem = p.nemApproved ? "NEM approved" : (p.latestNemLabel || (p.latestNemOutcome ? p.latestNemOutcome.replaceAll("_", " ") : ""));
+  const active = p.id === state.selectedProjectId ? " active" : "";
+  return `<button type="button" class="board-card${active}${p.isBlocked ? " is-blocked" : ""}" data-board-pid="${p.id}">
+    <span class="board-card-name">${esc(p.homeownerName || "Unnamed")}</span>
+    <span class="board-card-addr muted">${esc(p.projectAddress || "No address")}</span>
+    <span class="board-card-meta">
+      ${permit ? `<span class="chip">P: ${esc(permit)}</span>` : ""}
+      ${nem ? `<span class="chip">N: ${esc(nem)}</span>` : ""}
+      ${p.qcFailCount ? `<span class="chip danger">${p.qcFailCount} QC</span>` : ""}
+      ${p.isBlocked ? `<span class="chip danger">blocked</span>` : ""}
+    </span>
+    ${assignee ? `<span class="board-card-assignee"><span class="dot" style="background:${esc(assignee.color)}"></span>${esc(assignee.name)}</span>` : ""}
+  </button>`;
+}
+
+function renderBoard() {
+  const el = $("projectBoard");
+  if (!el) return;
+  const userMap = Object.fromEntries((state.users || []).map((u) => [u.id, u]));
+  const groups = new Map(PROJECT_STAGES.map((s) => [s.key, []]));
+  for (const p of state.projects) {
+    const key = groups.has(p.stageKey) ? p.stageKey : "intake";
+    groups.get(key).push(p);
+  }
+  el.innerHTML = PROJECT_STAGES.map((stage) => {
+    const items = groups.get(stage.key) || [];
+    return `<div class="stage-col" data-stage="${stage.key}">
+      <div class="stage-col-head"><span>${esc(stage.label)}</span><span class="badge">${items.length}</span></div>
+      <div class="stage-col-body">
+        ${items.length ? items.map((p) => boardCardHtml(p, userMap)).join("") : `<p class="muted board-empty">—</p>`}
+      </div>
+    </div>`;
+  }).join("");
+  el.querySelectorAll("[data-board-pid]").forEach((card) => {
+    card.addEventListener("click", () => selectProject(card.dataset.boardPid));
+  });
+  if (window.lucide) window.lucide.createIcons();
+}
+
+function setProjectView(view) {
+  state.projectView = view === "table" ? "table" : "board";
+  try { localStorage.setItem("projectView", state.projectView); } catch { /* ignore */ }
+  renderProjects();
 }
 
 function renderOpsReport() {
@@ -761,6 +847,45 @@ function renderNextStep() {
   banner.innerHTML = `<span class="next-step-step">${esc(guide.step)}</span><span class="next-step-text">${guide.text}</span>`;
 }
 
+// Apply the pipeline-stepper state to the six stage accordions: completed stages
+// collapse with a check, the current stage opens, future stages lock. Driven by
+// state.detail.stageIndex (computed server-side). A blocked project paints a red
+// overlay on its active stage rather than getting its own stage.
+function applyStageState() {
+  const d = state.detail;
+  if (!d) return;
+  const active = Number.isInteger(d.stageIndex) ? d.stageIndex : 0;
+  document.querySelectorAll(".stage-accordion[data-stage-index]").forEach((el) => {
+    const idx = Number(el.dataset.stageIndex);
+    el.classList.remove("is-done", "is-current", "is-locked", "is-blocked");
+    const pill = el.querySelector(".stage-pill");
+    const marker = el.querySelector(".stage-marker");
+    if (idx < active) {
+      el.classList.add("is-done"); el.open = false;
+      if (marker) marker.textContent = "✓";
+      if (pill) pill.textContent = "Done";
+    } else if (idx === active) {
+      el.classList.add("is-current"); el.open = true;
+      if (marker) marker.textContent = "●";
+      if (pill) pill.textContent = d.isBlocked ? "Blocked" : "Current";
+      if (d.isBlocked) el.classList.add("is-blocked");
+    } else {
+      el.classList.add("is-locked"); el.open = false;
+      if (marker) marker.textContent = "\u{1F512}";
+      if (pill) pill.textContent = "Locked";
+    }
+  });
+}
+
+// Prevent a locked (future) stage from being opened by clicking its summary.
+// Completed stages stay manually re-openable; only locked ones are inert.
+document.addEventListener("click", (e) => {
+  const target = e.target;
+  if (target && target.closest && target.closest(".stage-accordion.is-locked > .stage-summary")) {
+    e.preventDefault();
+  }
+}, true);
+
 function renderDetail() {
   const { project } = state.detail;
   $("detailTitle").textContent = project.homeownerName || "Unnamed project";
@@ -802,6 +927,7 @@ function renderDetail() {
   renderPortalRuns();
   renderProjectTimeline();
   renderAudit();
+  applyStageState();
   if (window.lucide) window.lucide.createIcons();
 }
 
@@ -3176,6 +3302,8 @@ $("projectSort").addEventListener("change", (e) => {
   projectFilterState.sort = e.target.value;
   reloadProjects();
 });
+$("viewBoardBtn")?.addEventListener("click", () => setProjectView("board"));
+$("viewTableBtn")?.addEventListener("click", () => setProjectView("table"));
 
 // ----- Batch folder import -----
 async function startBatchScan() {
