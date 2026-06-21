@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import type { CorrectionBucket, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, ProjectRecord } from "../../shared/src/types";
+import type { AhjResearchResult, CorrectionBucket, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, ProjectRecord } from "../../shared/src/types";
 
 const MODEL = "claude-opus-4-8";
 
@@ -44,6 +44,23 @@ export class StubLLMProvider implements LLMProvider {
 
   async synthesizeKnowledge(): Promise<{ requiredDocuments: string[]; commonRejectionReasons: string[]; tips: string[]; confidence: "low" | "medium" | "high" }> {
     return { requiredDocuments: [], commonRejectionReasons: [], tips: [], confidence: "low" };
+  }
+
+  async researchAhjRequirements(): Promise<AhjResearchResult> {
+    return {
+      provider: "stub",
+      portalName: "",
+      portalPlatform: "",
+      portalUrl: "",
+      submissionMethod: "",
+      requiredDocuments: [],
+      commonCorrections: [],
+      tips: [],
+      submissionSteps: [],
+      confidence: "low",
+      needsHumanVerification: true,
+      notes: "No ANTHROPIC_API_KEY configured — AHJ research is off.",
+    };
   }
 }
 
@@ -374,6 +391,47 @@ Correction patterns observed:
 ${input.correctionPatterns.slice(0, 20).join("\n")}`;
     const raw = await this.ask(system, userMsg);
     return this.parseJson(raw, { requiredDocuments: [], commonRejectionReasons: [], tips: [], confidence: "low" as const });
+  }
+
+  async researchAhjRequirements(input: { ahj: string; state: string; utility?: string }): Promise<AhjResearchResult> {
+    const system = `You are a solar permitting onboarding specialist. Given an Authority Having Jurisdiction (AHJ) that the system has never processed, lay out what's needed to permit a residential rooftop solar PV system there, based on your knowledge of US municipal/county solar permitting and the listed utility's interconnection process.
+
+Return ONLY JSON:
+{
+  "portalName": "<the BRANDED portal name as the AHJ refers to it, e.g. 'Oregon ePermitting', 'Portland DevHub', or 'Email/in-person'>",
+  "portalPlatform": "<the UNDERLYING software platform/vendor: one of Accela, ProjectDox, EnerGov, MyGov, OpenGov, CityView, Avolve, Tyler, or 'Other'/'None'. IMPORTANT: many branded portals run on a shared platform — e.g. Oregon ePermitting and most Oregon city/county portals run on ACCELA; ProjectDox is Avolve; EnerGov is Tyler. Identify the platform so existing portal automation can be reused.>",
+  "portalUrl": "<best-known URL or '' if unsure>",
+  "submissionMethod": "<online portal | email | in-person | combination>",
+  "requiredDocuments": ["<each document this AHJ typically requires for residential solar — e.g. completed building+electrical permit application, site/plot plan, electrical SLD/one-line, structural/roof framing plan or stamped calcs, module spec, inverter spec, fire access pathway plan, signed owner authorization, etc.>"],
+  "commonCorrections": ["<typical plan-review correction reasons for this AHJ/region>"],
+  "tips": ["<practical submittal tips: prescriptive vs engineered path, snow/wind load expectations for the region, combo vs separate permits, fees, etc.>"],
+  "submissionSteps": ["<ordered steps a coordinator follows to submit here>"],
+  "confidence": "low|medium|high"
+}
+
+Rules:
+- Be specific to the named AHJ and state when you can; otherwise give the standard requirements for that state/region and say so in tips.
+- This is ADVISORY and must be human-verified — do NOT invent a precise portal URL you are unsure of (use '' instead).
+- Reflect the named utility's interconnection/NEM document needs in requiredDocuments where relevant.
+- Return valid JSON only.`;
+    const userMsg = `AHJ: ${input.ahj}\nState: ${input.state}${input.utility ? `\nUtility: ${input.utility}` : ""}\n\nResearch the residential solar permitting + interconnection requirements for this jurisdiction.`;
+    const raw = await this.askLong(system, userMsg, 3000);
+    const parsed = this.parseJson<Partial<AhjResearchResult>>(raw, {});
+    const arr = (v: unknown): string[] => (Array.isArray(v) ? v.map((x) => String(x)).filter(Boolean) : []);
+    return {
+      provider: "claude",
+      portalName: String(parsed.portalName || ""),
+      portalPlatform: String(parsed.portalPlatform || ""),
+      portalUrl: String(parsed.portalUrl || ""),
+      submissionMethod: String(parsed.submissionMethod || ""),
+      requiredDocuments: arr(parsed.requiredDocuments),
+      commonCorrections: arr(parsed.commonCorrections),
+      tips: arr(parsed.tips),
+      submissionSteps: arr(parsed.submissionSteps),
+      confidence: (["low", "medium", "high"].includes(String(parsed.confidence)) ? parsed.confidence : "low") as "low" | "medium" | "high",
+      needsHumanVerification: true,
+      notes: "AI-researched from model knowledge. Verify against the AHJ's official site before relying on it; the first real submittal will confirm/correct these requirements.",
+    };
   }
 }
 

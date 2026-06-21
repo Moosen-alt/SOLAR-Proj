@@ -9,6 +9,7 @@ import type {
   MboxExtractedLearningRecord,
   MboxKnowledgeImportResult,
   PermitStatusCheck,
+  AhjResearchResult,
   PermitUtilityKnowledgeProfile,
   ProjectRecord,
   ProjectStatus,
@@ -1369,6 +1370,39 @@ export function learnFromHistoricalDocument(
   return { profileKey: profile.profileKey, learnedCorrection: Boolean(classification) };
 }
 
+// Save an AI-researched AHJ profile to the knowledge base so the jurisdiction is
+// known next time. Marked confidence "seeded" + source "ai_researched" + a
+// human-verification note, because model-researched requirements are advisory
+// until a real submittal confirms them.
+export function saveResearchedAhjProfile(
+  db: AppDb,
+  input: { state: string; ahj: string; utility?: string },
+  research: AhjResearchResult,
+): PermitUtilityKnowledgeProfile {
+  const noteParts = [
+    "AI-researched AHJ profile — verify against the official site before relying on it.",
+    research.portalPlatform ? `Portal platform: ${research.portalPlatform} (reuse existing ${research.portalPlatform} portal automation; only the entry URL + login differ per AHJ).` : "",
+    research.submissionMethod ? `Submission: ${research.submissionMethod}.` : "",
+    research.submissionSteps.length ? `Steps: ${research.submissionSteps.join(" → ")}` : "",
+    research.tips.length ? `Tips: ${research.tips.join(" | ")}` : "",
+  ].filter(Boolean);
+  const facts: KnowledgeFacts = {
+    state: input.state,
+    ahj: input.ahj,
+    utility: input.utility,
+    portalName: research.portalName,
+    portalUrl: research.portalUrl,
+    requiredDocuments: research.requiredDocuments,
+    sources: [learnedSource("ai_researched", "AI AHJ research")],
+    confidence: "seeded",
+    notes: noteParts.join(" "),
+  };
+  return upsertKnowledge(db, facts, {
+    eventType: "ahj.ai_researched",
+    details: { ahj: input.ahj, state: input.state, utility: input.utility || "", confidence: research.confidence, docCount: research.requiredDocuments.length },
+  });
+}
+
 export function listKnowledgeProfiles(db: AppDb): PermitUtilityKnowledgeProfile[] {
   return db
     .query<Row>(
@@ -1376,6 +1410,31 @@ export function listKnowledgeProfiles(db: AppDb): PermitUtilityKnowledgeProfile[
        ORDER BY project_count DESC, correction_count DESC, state ASC, ahj ASC, utility ASC`,
     )
     .map(mapKnowledge);
+}
+
+// Find the best-matching LEARNED profile for a project's jurisdiction, so the
+// application-doc builder can use the AHJ's real learned requirements instead of
+// a generic fallback. Tries most-specific key first (state+ahj+utility) down to
+// ahj-only, and only returns a profile that actually carries required documents.
+export function findLearnedProfileForProject(
+  db: AppDb,
+  input: { state?: string; ahj?: string; utility?: string },
+): PermitUtilityKnowledgeProfile | null {
+  if (!input.ahj) return null;
+  const candidates = [
+    knowledgeProfileKey({ state: input.state, ahj: input.ahj, utility: input.utility }),
+    knowledgeProfileKey({ state: input.state, ahj: input.ahj, utility: "" }),
+    knowledgeProfileKey({ state: "", ahj: input.ahj, utility: input.utility }),
+    knowledgeProfileKey({ state: "", ahj: input.ahj, utility: "" }),
+  ];
+  for (const key of candidates) {
+    const row = db.get<Row>("SELECT * FROM permit_utility_knowledge WHERE profile_key = ?", [key]);
+    if (row) {
+      const profile = mapKnowledge(row);
+      if (profile.requiredDocuments.length) return profile;
+    }
+  }
+  return null;
 }
 
 export function getKnowledgeProfile(db: AppDb, profileId: string): PermitUtilityKnowledgeProfile {

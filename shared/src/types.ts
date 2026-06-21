@@ -275,6 +275,17 @@ export interface ApplicationDocumentPackage {
   docs: GeneratedApplicationDocument[];
   missingFields: string[];
   html: string;
+  /** When the knowledge base has a learned profile for this AHJ, its real
+   *  required-document list + portal (so the PM isn't relying on the generic fallback). */
+  learnedRequirements?: {
+    ahj: string;
+    utility: string;
+    portalName: string;
+    portalUrl: string;
+    requiredDocuments: string[];
+    confidence: string;
+    correctionCount: number;
+  };
 }
 
 export interface AhjProcessProfile {
@@ -354,7 +365,7 @@ export interface ReviewerReport {
 export interface KnowledgeSource {
   label: string;
   url: string;
-  sourceType: "official" | "sanitized_reference" | "learned_project" | "learned_correction" | "learned_permit_status" | "learned_batch_import";
+  sourceType: "official" | "sanitized_reference" | "learned_project" | "learned_correction" | "learned_permit_status" | "learned_batch_import" | "ai_researched";
   observedAt: string;
 }
 
@@ -1050,4 +1061,33 @@ export interface LLMProvider {
     tips: string[];
     confidence: "low" | "medium" | "high";
   }>;
+  /** Research an UNKNOWN AHJ's residential-solar permitting requirements from the
+   *  model's knowledge, so a new jurisdiction can be onboarded automatically.
+   *  Advisory — flagged for human verification before relying on it. */
+  researchAhjRequirements(input: {
+    ahj: string;
+    state: string;
+    utility?: string;
+  }): Promise<AhjResearchResult>;
+}
+
+export interface AhjResearchResult {
+  provider: "claude" | "stub";
+  portalName: string;
+  /** The UNDERLYING portal platform/vendor (Accela, ProjectDox/Avolve, EnerGov/Tyler,
+   *  MyGov, etc.) — many branded portals (e.g. "Oregon ePermitting") run on Accela,
+   *  so the Playwright automation for that platform is reusable across AHJs (only the
+   *  entry URL + login differ; no retraining of the automation flow). */
+  portalPlatform: string;
+  portalUrl: string;
+  submissionMethod: string;
+  requiredDocuments: string[];
+  commonCorrections: string[];
+  tips: string[];
+  /** Step-by-step submittal process the model believes this AHJ uses. */
+  submissionSteps: string[];
+  confidence: "low" | "medium" | "high";
+  /** Always true for AI research — a human must verify before trusting it. */
+  needsHumanVerification: boolean;
+  notes: string;
 }

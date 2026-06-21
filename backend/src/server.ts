@@ -44,6 +44,7 @@ import {
   createPermitCheckTarget,
   createProject,
   updateProject,
+  researchAndSaveAhj,
   deleteProject,
   configureEmailTrackingSource,
   getEmailTrackerStatus,
@@ -455,6 +456,36 @@ app.post("/api/projects/:id/corrections", asyncHandler(async (req, res) => {
 app.post("/api/projects/:id/permit-targets", (req, res) => {
   res.status(201).json(createPermitCheckTarget(db, req.params.id, req.body || {}));
 });
+
+// Onboard a new AHJ with the LLM (easy "add a jurisdiction" workflow for new
+// hires): research requirements + portal + docs and save them to the KB.
+app.post("/api/knowledge-base/research-ahj", asyncHandler(async (req, res) => {
+  const ahj = String(req.body?.ahj || "").trim();
+  const state = String(req.body?.state || "").trim();
+  const utility = req.body?.utility ? String(req.body.utility).trim() : undefined;
+  if (!ahj) throw new HttpError(400, "ahj is required.");
+  try {
+    res.status(201).json(await researchAndSaveAhj(db, { ahj, state, utility }));
+  } catch (err) {
+    throw normalizeLlmError(err);
+  }
+}));
+
+// Auto-onboard the AHJ on a specific project (used when the docs builder has no
+// known/learned profile), then return the refreshed application-doc package.
+app.post("/api/projects/:id/research-ahj", asyncHandler(async (req, res) => {
+  const detail = getProjectDetail(db, String(req.params.id));
+  try {
+    const result = await researchAndSaveAhj(db, {
+      ahj: detail.project.ahj,
+      state: detail.project.state,
+      utility: detail.project.utility,
+    });
+    res.json({ ...result, applicationDocs: getApplicationDocumentPackage(db, String(req.params.id)) });
+  } catch (err) {
+    throw normalizeLlmError(err);
+  }
+}));
 
 app.post("/api/projects/:id/permit-checks", asyncHandler(async (req, res) => {
   res.status(201).json(await recordPermitStatusCheck(db, String(req.params.id), req.body || {}));

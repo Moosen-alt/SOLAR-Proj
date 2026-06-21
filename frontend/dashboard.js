@@ -1431,12 +1431,19 @@ function renderApplicationDocs() {
     $("applicationDocs").innerHTML = `<p class="muted">Build the AHJ docs to see required forms for this jurisdiction.</p>`;
     return;
   }
+  const learned = pkg.learnedRequirements;
   $("applicationDocs").innerHTML = `
     <article class="item ${pkg.missingFields?.length ? "warning" : "pass"}">
       <div class="item-title"><span>${esc(pkg.profile.name)}</span>${statusBadge(pkg.profile.requiresAhjApplication || pkg.profile.requiresPortalEntryOnly ? "docs required" : "manifest only")}</div>
       <p>${pkg.profile.notes.map(esc).join("<br>")}</p>
       ${pkg.missingFields?.length ? `<p><strong>Missing fields:</strong> ${esc(pkg.missingFields.join(", "))}</p>` : "<p>No critical document fields missing from the generated packet.</p>"}
     </article>
+    ${learned ? `
+    <article class="item info">
+      <div class="item-title"><span>Learned ${esc(learned.ahj)}${learned.utility ? " / " + esc(learned.utility) : ""} requirements</span>${statusBadge(learned.confidence)}</div>
+      <p class="muted">From the knowledge base${learned.portalName ? ` · Portal: ${esc(learned.portalName)}` : ""}${learned.correctionCount ? ` · ${learned.correctionCount} correction(s) learned` : ""}.</p>
+      <p><strong>Required docs (${learned.requiredDocuments.length}):</strong> ${esc(learned.requiredDocuments.join(" · "))}</p>
+    </article>` : ""}
     ${pkg.docs.map((doc) => `
       <article class="item ${doc.required ? "info" : "pass"}">
         <div class="item-title"><span>${esc(doc.title)}</span>${statusBadge(doc.required ? "required" : "optional")}</div>
@@ -1900,13 +1907,47 @@ async function runQc() {
   state.workflow = null;
   state.reviewerReport = null;
   state.historicalReport = null;
+
+  // Auto-advance: when QC passes, automatically build the AHJ/NEM docs and run
+  // the reviewer gate so the coordinator doesn't have to click each step. Both
+  // are advisory generators (no legal submit happens here).
+  let advanced = "";
+  if (state.detail?.project?.status === "qc_passed") {
+    try {
+      const [docs, reviewer] = await Promise.all([
+        api(`/api/projects/${state.selectedProjectId}/application-docs`),
+        api(`/api/projects/${state.selectedProjectId}/reviewer-report`),
+      ]);
+      state.applicationDocs = docs;
+      state.reviewerReport = reviewer;
+      // Unknown AHJ? Auto-onboard it with the LLM (research requirements + docs,
+      // save to the KB) so it's ready for this and future projects.
+      if (!docs.learnedRequirements && /generic/i.test(docs.profile?.name || "") && state.detail?.project?.ahj) {
+        try {
+          const r = await api(`/api/projects/${state.selectedProjectId}/research-ahj`, { method: "POST", body: "{}" });
+          if (r.saved && r.applicationDocs) {
+            state.applicationDocs = r.applicationDocs;
+            advanced = ` Unknown AHJ — AI-researched ${esc(state.detail.project.ahj)} and saved ${r.research.requiredDocuments.length} required doc(s) to the knowledge base (verify before relying on it).`;
+          } else if (r.research?.provider === "stub") {
+            advanced = ` Unknown AHJ — set ANTHROPIC_API_KEY to auto-research it.`;
+          }
+        } catch (err) { advanced = ` (AHJ auto-research snag: ${err.message || ""})`; }
+      }
+      const blk = (reviewer.findings || []).filter((f) => f.severity === "blocker").length;
+      if (!advanced) advanced = ` Auto-built AHJ/NEM docs (${docs.profile.name}) and ran the reviewer gate — ${blk} blocker(s).`;
+      else advanced += ` Reviewer gate: ${blk} blocker(s).`;
+    } catch (err) {
+      advanced = ` (auto-advance hit a snag: ${err.message || "could not build docs/reviewer"})`;
+    }
+  }
+
   await loadOpsPlan();
   await loadPmPackets();
   await loadLiveReadiness();
   await loadProjectTimeline();
   await loadProcessMap();
   await loadInstallerPacket();
-  showMessage("QC rerun complete.");
+  showMessage("QC complete." + advanced);
   renderDetail();
   await loadProjects();
 }
@@ -2927,6 +2968,36 @@ if ($("kbSearch")) {
     state.kbRenderLimit = KB_PAGE_SIZE;
     clearTimeout(_kbSearchTimer);
     _kbSearchTimer = setTimeout(renderKnowledgeBase, 200);
+  });
+}
+
+// Easy "add a new AHJ" workflow — research it with the LLM and save to the KB.
+if ($("addAhjBtn")) {
+  $("addAhjBtn").addEventListener("click", async () => {
+    const ahj = $("addAhjName").value.trim();
+    const stateVal = $("addAhjState").value.trim();
+    const utility = $("addAhjUtility").value.trim();
+    const statusEl = $("addAhjStatus");
+    if (!ahj) { statusEl.textContent = "Enter an AHJ name."; return; }
+    $("addAhjBtn").disabled = true;
+    statusEl.textContent = `Researching ${ahj}…`;
+    try {
+      const r = await api("/api/knowledge-base/research-ahj", { method: "POST", body: JSON.stringify({ ahj, state: stateVal, utility }) });
+      if (r.saved) {
+        const plat = r.research.portalPlatform ? ` — runs on ${r.research.portalPlatform} (reuse existing ${r.research.portalPlatform} automation)` : "";
+        statusEl.textContent = `✓ Added ${ahj}: ${r.research.requiredDocuments.length} required doc(s), portal "${r.research.portalName}"${plat}. Confidence ${r.research.confidence} — verify before relying on it.`;
+        $("addAhjName").value = ""; $("addAhjUtility").value = "";
+        await loadKnowledgeBase();
+      } else if (r.research?.provider === "stub") {
+        statusEl.textContent = "AI is off — set ANTHROPIC_API_KEY on the server to research AHJs.";
+      } else {
+        statusEl.textContent = "No requirements returned — try a more specific AHJ name/state.";
+      }
+    } catch (err) {
+      statusEl.textContent = err.message || "Research failed.";
+    } finally {
+      $("addAhjBtn").disabled = false;
+    }
   });
 }
 $("projectStatusFilter").addEventListener("change", (e) => {

@@ -76,6 +76,8 @@ import {
   learnFromPermitTarget,
   learnFromProject,
   learnFromSubmissionConfirmation,
+  findLearnedProfileForProject,
+  saveResearchedAhjProfile,
   listKnowledgeProfiles,
   importMboxKnowledge,
   importMboxKnowledgeFromFile,
@@ -419,6 +421,25 @@ export function createProject(db: AppDb, payload: ParserPayload): ProjectDetail 
   const detail = getProjectDetail(db, project.id);
   learnFromProject(db, detail.project, "project.created");
   return getProjectDetail(db, project.id);
+}
+
+// Onboard an unknown AHJ: research its residential-solar permitting requirements
+// with the LLM, then save them as a knowledge-base profile so the jurisdiction is
+// known next time. Advisory — flagged for human verification. Returns the research
+// + the saved profile key (or a stub result when no API key is configured).
+export async function researchAndSaveAhj(
+  db: AppDb,
+  input: { ahj: string; state: string; utility?: string },
+): Promise<{ research: import("../../shared/src/types").AhjResearchResult; profileKey: string | null; saved: boolean }> {
+  if (!input.ahj?.trim()) throw new HttpError(400, "ahj is required.");
+  const { createLLMProvider } = await import("./llm");
+  const llm = createLLMProvider();
+  const research = await llm.researchAhjRequirements({ ahj: input.ahj.trim(), state: (input.state || "").trim(), utility: input.utility?.trim() });
+  if (research.provider === "stub" || !research.requiredDocuments.length) {
+    return { research, profileKey: null, saved: false };
+  }
+  const profile = saveResearchedAhjProfile(db, { ahj: input.ahj.trim(), state: (input.state || "").trim(), utility: input.utility?.trim() }, research);
+  return { research, profileKey: profile.profileKey, saved: true };
 }
 
 // Update an existing project from a (re-)parsed payload. Merges the new fields
@@ -3774,10 +3795,44 @@ export async function importKnowledgeFromMboxFile(
 export function getApplicationDocumentPackage(db: AppDb, projectId: string): ApplicationDocumentPackage {
   const detail = getProjectDetail(db, projectId);
   const pkg = buildApplicationDocumentPackage(detail.project);
+
+  // Enrich with the LEARNED AHJ profile from the knowledge base. The static
+  // builder only knows a handful of hardcoded jurisdictions; the KB knows many
+  // more (seeded + learned from mbox/projects). When it has this AHJ, use its
+  // real required-document list + portal instead of the generic fallback.
+  const learned = findLearnedProfileForProject(db, {
+    state: detail.project.state,
+    ahj: detail.project.ahj,
+    utility: detail.project.utility,
+  });
+  if (learned) {
+    pkg.learnedRequirements = {
+      ahj: learned.ahj,
+      utility: learned.utility,
+      portalName: learned.portalName,
+      portalUrl: learned.portalUrl,
+      requiredDocuments: learned.requiredDocuments,
+      confidence: learned.confidence,
+      correctionCount: learned.correctionCount,
+    };
+    // Merge the learned required docs into the profile's list (dedup), and if the
+    // builder fell back to a generic profile, adopt the learned AHJ identity.
+    pkg.profile = {
+      ...pkg.profile,
+      requiredDocuments: Array.from(new Set([...pkg.profile.requiredDocuments, ...learned.requiredDocuments])),
+      portalName: pkg.profile.portalName || learned.portalName,
+      sourceUrl: pkg.profile.sourceUrl || learned.portalUrl,
+      name: /generic/i.test(pkg.profile.name) && learned.ahj
+        ? `${learned.ahj}${learned.utility ? ` / ${learned.utility}` : ""} (learned)`
+        : pkg.profile.name,
+    };
+  }
+
   addAuditLog(db, projectId, "system", "application doc builder", "application_docs.generated", {
     profile: pkg.profile.id,
     docCount: pkg.docs.length,
     missingFields: pkg.missingFields,
+    learnedProfile: learned ? `${learned.state}:${learned.ahj}:${learned.utility}` : null,
   });
   return pkg;
 }
