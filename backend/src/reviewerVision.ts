@@ -4,7 +4,7 @@ import type { LLMProvider, ReviewerFinding, ReviewerReport, ReviewerVisionVerdic
 import type { AppDb } from "./db";
 import { topicForFinding } from "./reviewerEngine";
 import { StubLLMProvider } from "./llm";
-import { findPlanSetPdf, renderPdfPageToPng, selectPageForTopic } from "./pageImages";
+import { findPlanSetPdf, renderPdfPageToPng, selectTopPagesForTopic } from "./pageImages";
 import { extractPdfPages } from "./batchImport";
 import type { EvidenceTopic } from "./projectEvidence";
 import { nowIso } from "./time";
@@ -117,28 +117,38 @@ async function verifyOne(
   const ev = finding.evidenceFound?.[0];
   const hint = ev?.pageHint || "";
   const excerpt = ev?.excerpt || "";
-  const page = selectPageForTopic(pages, topic, hint, excerpt) || 1;
-  let base64: string;
-  try {
-    const png = await renderPdfPageToPng(pdfPath, page);
-    base64 = png.toString("base64");
-  } catch {
-    return { checked: false, present: false, confidence: "low", page, observed: "", note: "Could not render the plan-set page for vision." };
+  // Try up to 3 candidate pages (best-scored first). Stop as soon as one
+  // returns present=true — this handles the common case where keyword scoring
+  // picks a notes/general sheet when the actual diagram is a nearby page.
+  const candidates = selectTopPagesForTopic(pages, topic, hint, excerpt, 3);
+  if (candidates.length === 0) candidates.push(1);
+
+  let lastVerdict: ReviewerVisionVerdict | null = null;
+  for (const page of candidates) {
+    let base64: string;
+    try {
+      const png = await renderPdfPageToPng(pdfPath, page);
+      base64 = png.toString("base64");
+    } catch {
+      continue;
+    }
+    let raw: Record<string, unknown>;
+    try {
+      raw = await llm.visionExtract({ imageBase64: base64, mimeType: "image/png", prompt: visionPrompt(finding) });
+    } catch (err) {
+      return { checked: false, present: false, confidence: "low", page, observed: "", note: `Vision call failed: ${(err as Error).message || String(err)}` };
+    }
+    const present = raw.present === true;
+    const confidence = raw.confidence === "high" || raw.confidence === "medium" || raw.confidence === "low" ? raw.confidence : "low";
+    const observed = typeof raw.observed === "string" ? raw.observed : "";
+    const missing = typeof raw.missing === "string" ? raw.missing : "";
+    const note = present
+      ? `Vision confirmed on the plan sheet (page ${page}, ${confidence} confidence)\n${observed}`.trim()
+      : `Vision could not confirm on the plan sheet (page ${page}, ${confidence} confidence)\n${observed}${missing ? ` Missing: ${missing}` : ""}`.trim();
+    lastVerdict = { checked: true, present, confidence, page, observed, note };
+    if (present) break; // found it — stop retrying
   }
-  let raw: Record<string, unknown>;
-  try {
-    raw = await llm.visionExtract({ imageBase64: base64, mimeType: "image/png", prompt: visionPrompt(finding) });
-  } catch (err) {
-    return { checked: false, present: false, confidence: "low", page, observed: "", note: `Vision call failed: ${(err as Error).message || String(err)}` };
-  }
-  const present = raw.present === true;
-  const confidence = raw.confidence === "high" || raw.confidence === "medium" || raw.confidence === "low" ? raw.confidence : "low";
-  const observed = typeof raw.observed === "string" ? raw.observed : "";
-  const missing = typeof raw.missing === "string" ? raw.missing : "";
-  const note = present
-    ? `Vision confirmed on sheet page ${page}: ${observed}`.trim()
-    : `Vision could not confirm on sheet page ${page}.${missing ? ` Missing: ${missing}` : ""}${observed ? ` Saw: ${observed}` : ""}`.trim();
-  return { checked: true, present, confidence, page, observed, note };
+  return lastVerdict ?? { checked: false, present: false, confidence: "low", page: candidates[0], observed: "", note: "Could not render any plan-set page for vision." };
 }
 
 // Apply a verdict to a finding: vision confirmation upgrades the evidence status

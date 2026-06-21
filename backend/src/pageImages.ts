@@ -92,18 +92,15 @@ function tokenize(value: string): string[] {
   return value.toLowerCase().match(/[a-z0-9.]{2,}/g) || [];
 }
 
-// Score every page of the plan set against a topic + the excerpt/sheet hint and
-// return the 1-based page number of the best match (or null if nothing scores).
-export function selectPageForTopic(pages: string[], topic: EvidenceTopic, hint: string, excerpt: string): number | null {
-  if (!pages.length) return null;
+// Score every page against a topic + excerpt/hint. Returns the top N 1-based
+// page numbers sorted best-first (or an empty array when nothing scores).
+export function selectTopPagesForTopic(pages: string[], topic: EvidenceTopic, hint: string, excerpt: string, topN = 3): number[] {
+  if (!pages.length) return [];
   const keywords = TOPIC_KEYWORDS[topic] || [];
-  // A sheet label such as "E 1.1" / "PV-1" pulled out of the page hint is the
-  // strongest signal — match it verbatim against page text.
   const sheetLabel = (hint.match(/\b([A-Z]{1,3}[-\s]?\d{1,2}(?:\.\d{1,2})?)\b/) || [])[1] || "";
   const excerptTokens = new Set(tokenize(excerpt).filter((t) => t.length >= 4));
 
-  let best = -1;
-  let bestPage: number | null = null;
+  const scored: { score: number; page: number }[] = [];
   pages.forEach((text, idx) => {
     const lower = text.toLowerCase();
     let score = 0;
@@ -115,12 +112,16 @@ export function selectPageForTopic(pages: string[], topic: EvidenceTopic, hint: 
       for (const t of excerptTokens) if (pageTokens.has(t)) overlap += 1;
       score += Math.min(8, overlap);
     }
-    if (score > best) {
-      best = score;
-      bestPage = idx + 1;
-    }
+    if (score > 0) scored.push({ score, page: idx + 1 });
   });
-  return best > 0 ? bestPage : null;
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, topN).map((s) => s.page);
+}
+
+// Convenience wrapper — returns only the best page (or null).
+export function selectPageForTopic(pages: string[], topic: EvidenceTopic, hint: string, excerpt: string): number | null {
+  const top = selectTopPagesForTopic(pages, topic, hint, excerpt, 1);
+  return top.length > 0 ? top[0] : null;
 }
 
 function cachePathFor(pdfPath: string, page: number, scale: number): string {

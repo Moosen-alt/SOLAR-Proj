@@ -518,6 +518,10 @@ app.get("/api/projects/:id/reviewer-report", asyncHandler(async (req, res) => {
   // by the "Run Reviewer Gate" button). Default stays text-only so the many
   // internal callers (workflow, submit gate) don't pay vision cost on every load.
   if (String(req.query.vision || "") === "1") {
+    // ?refresh=1 clears cached vision verdicts so all pages are re-checked.
+    if (String(req.query.refresh || "") === "1") {
+      db.run("DELETE FROM reviewer_vision_cache WHERE project_id = ?", [String(req.params.id)]);
+    }
     res.json(await getReviewerReportWithVision(db, String(req.params.id)));
     return;
   }

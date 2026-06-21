@@ -2933,12 +2933,11 @@ function openApplicationDocs() {
   window.open(`/api/projects/${state.selectedProjectId}/application-docs?format=html`, "_blank");
 }
 
-async function runReviewerGate() {
+async function runReviewerGate(refresh = false) {
   if (!state.selectedProjectId) return;
-  showMessage("Running reviewer gate with vision verification… this checks the actual plan sheets.", "info");
-  // vision=1 runs the Claude-vision pass that inspects the rendered plan-set
-  // sheets and confirms/relaxes weak text-only findings.
-  state.reviewerReport = await api(`/api/projects/${state.selectedProjectId}/reviewer-report?vision=1`);
+  showMessage(refresh ? "Re-running vision (clearing cache — will re-check all plan sheets)…" : "Running reviewer gate with vision verification…", "info");
+  const qs = refresh ? "vision=1&refresh=1" : "vision=1";
+  state.reviewerReport = await api(`/api/projects/${state.selectedProjectId}/reviewer-report?${qs}`);
   state.workflow = null;
   await loadOpsPlan();
   await loadPmPackets();
@@ -3228,7 +3227,8 @@ $("copyTimelineBtn").addEventListener("click", copyProjectTimeline);
 $("runWorkflowBtn").addEventListener("click", runWorkflow);
 $("runQcBtn").addEventListener("click", runQc);
 $("runHistoricalBtn").addEventListener("click", runHistoricalCheck);
-$("runReviewerGateBtn").addEventListener("click", runReviewerGate);
+$("runReviewerGateBtn").addEventListener("click", () => runReviewerGate(false));
+$("refreshReviewerGateBtn").addEventListener("click", () => runReviewerGate(true));
 $("buildAppDocsBtn").addEventListener("click", buildApplicationDocs);
 $("openAppDocsBtn").addEventListener("click", openApplicationDocs);
 $("openReviewerPacketBtn").addEventListener("click", openReviewerPacket);

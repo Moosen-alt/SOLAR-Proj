@@ -3,6 +3,7 @@ import { PDFDocument } from "pdf-lib";
 import type { AppDb } from "./db";
 import type { LLMProvider, ProjectRecord } from "../../shared/src/types";
 import { inspectFormFields, loadStoredTemplates, type OverlayField, type SignaturePlacement } from "./ahjForms";
+import { findApplicationProfile } from "./applicationDocs";
 import { renderPdfPageToPng } from "./pageImages";
 import { nowIso } from "./time";
 
@@ -247,6 +248,17 @@ export async function ensureAhjFormTemplate(
   // Already have a fillable stored template for this AHJ? Nothing to do.
   if (loadStoredTemplates(db, project.ahj, project.state).length > 0) {
     return { status: "exists", message: "A stored form template already exists for this AHJ." };
+  }
+
+  // Check if the AHJ is known to be online-only (e-permitting portal). These
+  // AHJs don't distribute a standalone PDF — the application is entered directly
+  // in their portal. Skip the web search to save time and cost.
+  const ahjProfile = findApplicationProfile(project);
+  if (ahjProfile.requiresPortalEntryOnly) {
+    return {
+      status: "not_found",
+      message: `${project.ahj} is an online-only e-permit portal — there is no standalone PDF to download. Fill the application in their portal directly. No PDF template needed.`,
+    };
   }
 
   const research = await llm.findAhjFormUrl({ ahj: project.ahj, state: project.state, formType });
