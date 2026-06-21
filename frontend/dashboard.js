@@ -72,6 +72,12 @@ function esc(value) {
     .replaceAll('"', "&quot;");
 }
 
+// Null-safe "snake_case" → "snake case". Avoids the whole class of
+// `someStatus.replaceAll(...)` throwing when a status field is null/undefined.
+function humanize(value) {
+  return String(value ?? "").replaceAll("_", " ");
+}
+
 function statusBadge(status) {
   const label = String(status ?? "unknown").replaceAll("_", " ");
   if (status === "handoff_ready") return `<span class="badge badge-pass">${esc(label)}</span>`;
@@ -757,10 +763,16 @@ async function selectProject(projectId) {
   $("detailView").hidden = false;
   clearMessage();
   renderProjects();
-  renderOpsBoard();
-  renderOpsActions();
-  await loadKnowledgeBase();
-  await Promise.all([loadOpsPlan(), loadSubmitGate(), loadRunbook(), loadHandoffPacket(), loadCommunicationDrafts(), loadLiveReadiness(), loadProjectTimeline(), loadProcessMap(), loadInstallerPacket(), loadProjectDocuments()]);
+  safeRender("opsBoard", renderOpsBoard);
+  safeRender("opsActions", renderOpsActions);
+  // allSettled (not all): one failing/​flaky panel loader must NOT abort the others
+  // or prevent renderDetail from running — otherwise the whole detail view breaks.
+  await Promise.allSettled([
+    loadKnowledgeBase(),
+    loadOpsPlan(), loadSubmitGate(), loadRunbook(), loadHandoffPacket(),
+    loadCommunicationDrafts(), loadLiveReadiness(), loadProjectTimeline(),
+    loadProcessMap(), loadInstallerPacket(), loadProjectDocuments(),
+  ]);
   renderDetail();
 }
 
@@ -1051,7 +1063,7 @@ function renderSubmitGate() {
     return;
   }
   $("copySubmitGateBtn").disabled = !gate.reportText;
-  $("submitGateStatus").textContent = gate.decision.replaceAll("_", " ");
+  $("submitGateStatus").textContent = humanize(gate.decision);
   $("prepareBtn").disabled = !gate.canPrepareSubmission;
   $("prepareBtn").title = gate.canPrepareSubmission ? "Stage to final review. Human submit remains manual." : gate.nextAction || "Submit gate is not ready.";
   const checks = gate.checks || [];
@@ -1396,7 +1408,7 @@ function renderLiveTestReadiness() {
     </article>
     ${(report.items || []).map((item) => `
       <div class="check-row ${item.status === "done" ? "present" : item.status === "blocked" ? "missing" : "needs_review"}">
-        <strong>${esc(item.status.replaceAll("_", " ").toUpperCase())}: ${esc(item.title)}</strong>
+        <strong>${esc(humanize(item.status).toUpperCase())}: ${esc(item.title)}</strong>
         <p>${esc(item.detail)}</p>
         <p><strong>Owner:</strong> ${esc(item.ownerRole)} | <strong>Next:</strong> ${esc(item.nextAction)}</p>
         ${(item.evidence || []).length ? `<ul class="evidence-list">${item.evidence.slice(0, 3).map((line) => `<li>${esc(line)}</li>`).join("")}</ul>` : `<p class="muted">No evidence captured yet.</p>`}
@@ -1415,10 +1427,10 @@ function renderProcessMap() {
     return;
   }
   $("copyProcessMapBtn").disabled = !map.reportText;
-  $("processMapStatus").textContent = map.status.replaceAll("_", " ");
+  $("processMapStatus").textContent = humanize(map.status);
   $("processMap").innerHTML = `
     <article class="item ${opsClass(map.status)}">
-      <div class="item-title"><span>${esc(map.headline)}</span>${statusBadge(`Permit ${map.permitStatus.replaceAll("_", " ")} / NEM ${map.nemStatus.replaceAll("_", " ")}`)}</div>
+      <div class="item-title"><span>${esc(map.headline)}</span>${statusBadge(`Permit ${humanize(map.permitStatus)} / NEM ${humanize(map.nemStatus)}`)}</div>
       <p><strong>Next action:</strong> ${esc(map.nextAction)}</p>
     </article>
     <div class="process-lanes">
@@ -1429,13 +1441,13 @@ function renderProcessMap() {
               <strong>${esc(lane.title)}</strong>
               <span>${esc(lane.summary)}</span>
             </div>
-            ${statusBadge(lane.status.replaceAll("_", " "))}
+            ${statusBadge(humanize(lane.status))}
           </div>
           <p><strong>Current:</strong> ${esc(lane.currentStep)}<br><strong>Next:</strong> ${esc(lane.nextAction)}</p>
           <div class="process-steps">
             ${(lane.steps || []).map((step) => `
               <div class="process-step ${opsClass(step.status)}">
-                <div class="item-title"><span>${esc(step.label)}</span>${statusBadge(step.status.replaceAll("_", " "))}</div>
+                <div class="item-title"><span>${esc(step.label)}</span>${statusBadge(humanize(step.status))}</div>
                 <p>${esc(step.summary)}</p>
                 <p class="muted">${esc(step.ownerRole)} | ${esc(step.source)}</p>
                 <p><strong>Next:</strong> ${esc(step.nextAction)}</p>
@@ -1540,14 +1552,14 @@ function renderWorkflow() {
     return;
   }
 
-  $("workflowStatus").textContent = workflow.status.replaceAll("_", " ");
+  $("workflowStatus").textContent = humanize(workflow.status);
   prepareBtn.disabled = workflow.status === "blocked";
   $("workflowSteps").innerHTML = `
     <article class="item ${workflow.status === "blocked" ? "blocker" : workflow.status === "needs_review" ? "warning" : "pass"}">
       <div class="item-title"><span>Next action</span>${statusBadge(workflow.canPrepareSubmission ? "ready" : workflow.status)}</div>
       <p>${esc(workflow.nextAction)}</p>
     </article>
-    ${workflow.steps.map((step) => `
+    ${(workflow.steps || []).map((step) => `
       <article class="item ${step.status === "blocked" ? "blocker" : step.status === "needs_review" ? "warning" : step.status === "ready" ? "info" : "pass"}">
         <div class="item-title"><span>${esc(step.label)}</span>${statusBadge(step.status)}</div>
         <p>${esc(step.summary)}</p>
@@ -1564,18 +1576,20 @@ function renderHistoricalFailures() {
     $("historicalFailures").innerHTML = `<p class="muted">Run this before submission to compare the project against prior approved, delayed, and rejected patterns.</p>`;
     return;
   }
-  const missing = report.checklist.filter((item) => item.status === "missing").length;
-  const review = report.checklist.filter((item) => item.status === "needs_review").length;
-  $("historicalCounts").textContent = `${report.matchedProjectCount} match / ${missing} missing`;
+  const checklist = report.checklist || [];
+  const rejectionCauses = report.topRejectionCauses || [];
+  const missing = checklist.filter((item) => item.status === "missing").length;
+  const review = checklist.filter((item) => item.status === "needs_review").length;
+  $("historicalCounts").textContent = `${report.matchedProjectCount ?? 0} match / ${missing} missing`;
   $("historicalFailures").innerHTML = `
     <article class="item ${missing ? "warning" : "pass"}">
       <div class="item-title"><span>Historical match</span>${statusBadge(report.dataConfidence)}</div>
       <p>${esc(report.summaryLabel)}</p>
-      <p class="muted">${esc(report.matchTags.slice(0, 12).join(", "))}</p>
+      <p class="muted">${esc((report.matchTags || []).slice(0, 12).join(", "))}</p>
     </article>
-    <article class="item ${report.topRejectionCauses.some((cause) => cause.count > 0) ? "warning" : "info"}">
-      <div class="item-title"><span>Top rejection causes</span>${statusBadge(report.topRejectionCauses.length)}</div>
-      ${report.topRejectionCauses.map((cause) => `
+    <article class="item ${rejectionCauses.some((cause) => cause.count > 0) ? "warning" : "info"}">
+      <div class="item-title"><span>Top rejection causes</span>${statusBadge(rejectionCauses.length)}</div>
+      ${rejectionCauses.map((cause) => `
         <div class="check-row ${esc(cause.severity || "callout")}">
           <strong>${esc(cause.title)}</strong> ${statusBadge(cause.severity || "callout")}
           <p>${cause.count ? `<strong>${cause.count} prior record(s)</strong>` : "Baseline rule (no learned records yet)"}${cause.rootCause ? ` · ${esc(cause.rootCause)}` : ""}. ${esc(cause.requiredAction)}</p>
@@ -1585,11 +1599,11 @@ function renderHistoricalFailures() {
     </article>
     <article class="item ${missing ? "blocker" : review ? "warning" : "pass"}">
       <div class="item-title"><span>Generated checklist</span>${statusBadge(`${missing} missing / ${review} review`)}</div>
-      ${report.checklist.map((item) => `
+      ${checklist.map((item) => `
         <div class="check-row ${esc(item.status)}">
-          <strong>${esc(item.status.toUpperCase())}: ${esc(item.title)}</strong>
+          <strong>${esc(humanize(item.status).toUpperCase())}: ${esc(item.title)}</strong>
           <p>${esc(item.why)} ${esc(item.action)}</p>
-          <p class="muted">${esc(item.evidence.join(", "))}</p>
+          <p class="muted">${esc((item.evidence || []).join(", "))}</p>
         </div>
       `).join("")}
     </article>
@@ -1644,14 +1658,16 @@ function renderReviewerGate() {
     $("reviewerGate").innerHTML = `<p class="muted">Run the reviewer gate to generate city-style correction comments, code anchors, and installer callouts before staging.</p>`;
     return;
   }
-  const blockers = report.findings.filter((item) => item.severity === "blocker");
-  const warnings = report.findings.filter((item) => item.severity === "warning");
+  const findings = report.findings || [];
+  const blockers = findings.filter((item) => item.severity === "blocker");
+  const warnings = findings.filter((item) => item.severity === "warning");
   $("reviewerCounts").textContent = `${blockers.length} blocker / ${warnings.length} warn`;
-  const topFindings = report.findings.slice(0, 18);
+  const topFindings = findings.slice(0, 18);
+  const submitButtonEnough = report.finalSubmitGate?.finalSubmitButtonAloneIsEnough;
   $("reviewerGate").innerHTML = `
     <article class="item ${blockers.length ? "blocker" : warnings.length ? "warning" : "pass"}">
-      <div class="item-title"><span>Final submit gate</span>${statusBadge(report.finalSubmitGate.finalSubmitButtonAloneIsEnough ? "button enough" : "preview required")}</div>
-      <p>Submit button alone is ${report.finalSubmitGate.finalSubmitButtonAloneIsEnough ? "enough" : "not enough"}. The real AHJ/utility preview window or this internal correction packet must be visible before a human submits.</p>
+      <div class="item-title"><span>Final submit gate</span>${statusBadge(submitButtonEnough ? "button enough" : "preview required")}</div>
+      <p>Submit button alone is ${submitButtonEnough ? "enough" : "not enough"}. The real AHJ/utility preview window or this internal correction packet must be visible before a human submits.</p>
       <p class="muted">${report.matchedProcessProfile ? `Matched profile: ${esc(report.matchedProcessProfile.state)} / ${esc(report.matchedProcessProfile.ahj)} / ${esc(report.matchedProcessProfile.submissionMethod)}` : "No seeded AHJ process profile matched."}</p>
     </article>
     ${topFindings.map((finding) => `
@@ -1735,19 +1751,21 @@ function renderApplicationDocs() {
     return;
   }
   const learned = pkg.learnedRequirements;
+  const profile = pkg.profile || {};
+  const learnedDocs = (learned && learned.requiredDocuments) || [];
   $("applicationDocs").innerHTML = `
     <article class="item ${pkg.missingFields?.length ? "warning" : "pass"}">
-      <div class="item-title"><span>${esc(pkg.profile.name)}</span>${statusBadge(pkg.profile.requiresAhjApplication || pkg.profile.requiresPortalEntryOnly ? "docs required" : "manifest only")}</div>
-      <p>${pkg.profile.notes.map(esc).join("<br>")}</p>
+      <div class="item-title"><span>${esc(profile.name)}</span>${statusBadge(profile.requiresAhjApplication || profile.requiresPortalEntryOnly ? "docs required" : "manifest only")}</div>
+      <p>${(profile.notes || []).map(esc).join("<br>")}</p>
       ${pkg.missingFields?.length ? `<p><strong>Missing fields:</strong> ${esc(pkg.missingFields.join(", "))}</p>` : "<p>No critical document fields missing from the generated packet.</p>"}
     </article>
     ${learned ? `
     <article class="item info">
       <div class="item-title"><span>Learned ${esc(learned.ahj)}${learned.utility ? " / " + esc(learned.utility) : ""} requirements</span>${statusBadge(learned.confidence)}</div>
       <p class="muted">From the knowledge base${learned.portalName ? ` · Portal: ${esc(learned.portalName)}` : ""}${learned.correctionCount ? ` · ${learned.correctionCount} correction(s) learned` : ""}.</p>
-      <p><strong>Required docs (${learned.requiredDocuments.length}):</strong> ${esc(learned.requiredDocuments.join(" · "))}</p>
+      <p><strong>Required docs (${learnedDocs.length}):</strong> ${esc(learnedDocs.join(" · "))}</p>
     </article>` : ""}
-    ${pkg.docs.map((doc) => `
+    ${(pkg.docs || []).map((doc) => `
       <article class="item ${doc.required ? "info" : "pass"}">
         <div class="item-title"><span>${esc(doc.title)}</span>${statusBadge(doc.required ? "required" : "optional")}</div>
         <p class="muted">${esc(doc.fileName)} | ${esc(doc.documentType)}</p>
@@ -2318,8 +2336,8 @@ async function runHistoricalCheck() {
   await loadProjectTimeline();
   await loadProcessMap();
   await loadInstallerPacket();
-  const missing = state.historicalReport.checklist.filter((item) => item.status === "missing").length;
-  showMessage(`Historical check complete: ${state.historicalReport.matchedProjectCount} similar project(s), ${state.historicalReport.matchedFailureRecordCount} failure/delay record(s), ${missing} missing checklist item(s).`);
+  const missing = (state.historicalReport.checklist || []).filter((item) => item.status === "missing").length;
+  showMessage(`Historical check complete: ${state.historicalReport.matchedProjectCount ?? 0} similar project(s), ${state.historicalReport.matchedFailureRecordCount ?? 0} failure/delay record(s), ${missing} missing checklist item(s).`);
   renderSubmitGate();
   renderHistoricalFailures();
   renderLiveTestReadiness();
@@ -2438,7 +2456,7 @@ async function buildApplicationDocs() {
   await loadProjectTimeline();
   await loadProcessMap();
   await loadInstallerPacket();
-  showMessage(`Built AHJ docs for ${state.applicationDocs.profile.name}.`);
+  showMessage(`Built AHJ docs for ${state.applicationDocs.profile?.name || "this jurisdiction"}.`);
   renderSubmitGate();
   renderApplicationDocs();
   renderLiveTestReadiness();
@@ -2460,8 +2478,9 @@ async function runReviewerGate() {
   await loadProjectTimeline();
   await loadProcessMap();
   await loadInstallerPacket();
-  const blockers = state.reviewerReport.findings.filter((item) => item.severity === "blocker").length;
-  const warnings = state.reviewerReport.findings.filter((item) => item.severity === "warning").length;
+  const reviewerFindings = state.reviewerReport.findings || [];
+  const blockers = reviewerFindings.filter((item) => item.severity === "blocker").length;
+  const warnings = reviewerFindings.filter((item) => item.severity === "warning").length;
   showMessage(`Reviewer gate complete: ${blockers} blocker(s), ${warnings} warning(s).`);
   renderSubmitGate();
   renderReviewerGate();
