@@ -144,19 +144,10 @@ async function verifyOne(
 // Apply a verdict to a finding: vision confirmation upgrades the evidence status
 // and relaxes a text-only WARNING to a non-blocking callout (never the reverse).
 function applyVerdict(finding: ReviewerFinding, verdict: ReviewerVisionVerdict): ReviewerFinding {
+  // The verdict is rendered once as the finding's "Vision-verified" banner
+  // (visionVerification). Do NOT also push it into evidenceFound — that printed
+  // the same observation twice in each finding.
   const out: ReviewerFinding = { ...finding, visionVerification: verdict };
-  const visionEvidence = {
-    kind: "field_value" as const,
-    label: "Vision check",
-    source: `plan_set page ${verdict.page}`,
-    excerpt: verdict.observed || verdict.note,
-    confidence: verdict.confidence,
-    pageHint: `page ${verdict.page}`,
-    screenshotPath: "",
-    verifier: "vision" as const,
-    note: verdict.note,
-  };
-  out.evidenceFound = [...(finding.evidenceFound || []), visionEvidence];
   if (verdict.checked && verdict.present && (verdict.confidence === "high" || verdict.confidence === "medium")) {
     out.evidenceStatus = "verified";
     // Relax a purely text-derived warning — the data IS on the sheet. Keep it as
