@@ -658,6 +658,20 @@ function migrate(db: AppDb): void {
       updated_at TEXT NOT NULL
     );
 
+    -- Cached AHJ Reviewer Gate vision verdicts. When text-only evidence for a
+    -- finding is weak/missing, Claude vision inspects the rendered plan-set sheet
+    -- to confirm or deny it. Verdicts are cached per (project, finding, source
+    -- signature) so re-opening the gate doesn't re-pay the vision cost until the
+    -- plan set changes. source_sig folds in the plan-set file mtime.
+    CREATE TABLE IF NOT EXISTS reviewer_vision_cache (
+      project_id TEXT NOT NULL,
+      finding_id TEXT NOT NULL,
+      source_sig TEXT NOT NULL,
+      verdict TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (project_id, finding_id, source_sig)
+    );
+
     -- Customers / leads: the homeowner side of a deal, tracked before (and
     -- after) a project packet exists. client_id is the installer who referred
     -- them; project_id links once the lead becomes a real project.

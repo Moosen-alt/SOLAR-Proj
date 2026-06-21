@@ -340,7 +340,18 @@ export interface ReviewerFindingEvidence {
   confidence: "high" | "medium" | "low";
   pageHint: string;
   screenshotPath: string;
-  verifier: "parser" | "normalized_field" | "rule_engine" | "ahj_profile" | "llm";
+  verifier: "parser" | "normalized_field" | "rule_engine" | "ahj_profile" | "llm" | "vision";
+  note: string;
+}
+
+// Result of a Claude vision pass that looked at the actual rendered plan-set
+// sheet to confirm/deny a finding whose text-only evidence was weak or missing.
+export interface ReviewerVisionVerdict {
+  checked: boolean;
+  present: boolean;
+  confidence: "high" | "medium" | "low";
+  page: number; // 1-based plan-set page the model inspected
+  observed: string; // what the model reports seeing on the sheet
   note: string;
 }
 
@@ -357,6 +368,8 @@ export interface ReviewerFinding {
   installerCallout: boolean;
   evidenceStatus?: ReviewerEvidenceStatus;
   evidenceFound?: ReviewerFindingEvidence[];
+  /** Optional Claude-vision confirmation of this finding against the rendered sheet. */
+  visionVerification?: ReviewerVisionVerdict;
 }
 
 export interface FinalSubmitGate {

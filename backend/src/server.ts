@@ -96,6 +96,7 @@ import {
   getSubmitGateReport,
   getProjectTimelineReport,
   getReviewerReport,
+  getReviewerReportWithVision,
   getReviewerReportHtml,
   humanVerify,
   suggestReviewValues,
@@ -506,14 +507,21 @@ app.get("/api/projects/:id/application-docs", (req, res) => {
   res.json(pkg);
 });
 
-app.get("/api/projects/:id/reviewer-report", (req, res) => {
+app.get("/api/projects/:id/reviewer-report", asyncHandler(async (req, res) => {
   if (req.query.format === "html") {
     res.setHeader("Content-Type", "text/html; charset=utf-8");
-    res.send(getReviewerReportHtml(db, req.params.id));
+    res.send(await getReviewerReportHtml(db, String(req.params.id)));
     return;
   }
-  res.json(getReviewerReport(db, req.params.id));
-});
+  // ?vision=1 runs the Claude-vision verification pass over weak findings (used
+  // by the "Run Reviewer Gate" button). Default stays text-only so the many
+  // internal callers (workflow, submit gate) don't pay vision cost on every load.
+  if (String(req.query.vision || "") === "1") {
+    res.json(await getReviewerReportWithVision(db, String(req.params.id)));
+    return;
+  }
+  res.json(getReviewerReport(db, String(req.params.id)));
+}));
 
 // Renders the source plan-set page behind a reviewer-gate evidence topic so the
 // report's "screenshot crop slot" shows the actual sheet. 404 (handled as a soft

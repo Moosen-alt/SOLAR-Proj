@@ -136,7 +136,7 @@ function evidenceStatus(check: ProjectEvidence): ReviewerFinding["evidenceStatus
   return "missing";
 }
 
-function topicForFinding(finding: ReviewerFinding): EvidenceTopic | null {
+export function topicForFinding(finding: ReviewerFinding): EvidenceTopic | null {
   const idTitle = `${finding.id} ${finding.title}`.toLowerCase();
   if (/account/.test(idTitle)) return "accountVerification";
   if (/meter/.test(idTitle)) return "meterPhoto";
@@ -320,12 +320,17 @@ function renderFinding(finding: ReviewerFinding): string {
         return `<li><strong>${esc(item.label)}:</strong> ${esc(item.excerpt)}<br><span>${esc(item.source)}${item.pageHint ? ` | ${esc(item.pageHint)}` : ""} | ${esc(item.confidence)} confidence | ${esc(item.verifier)}</span>${item.note ? `<br><span>${esc(item.note)}</span>` : ""}</li>`;
       }).join("")
     : "<li>No evidence trail attached yet.</li>";
+  const v = finding.visionVerification;
+  const visionHtml = v && v.checked
+    ? `<div class="vision-verdict ${v.present ? "ok" : "warn"}"><strong>${v.present ? "✓ Vision-verified on the plan sheet" : "⚠ Vision could not confirm on the plan sheet"} (page ${esc(String(v.page))}, ${esc(v.confidence)} confidence)</strong><br><span>${esc(v.observed || v.note)}</span></div>`
+    : "";
   return `
     <article class="finding ${findingClass(finding.severity)}">
       <div class="finding-head">
         <h3>${esc(finding.title)}</h3>
         <span>${esc(finding.severity)} | ${esc(finding.category)} | evidence: ${esc(finding.evidenceStatus || "unknown")}</span>
       </div>
+      ${visionHtml}
       <p><strong>Reviewer comment:</strong> ${esc(finding.cityFeedback)}</p>
       <p><strong>Required correction:</strong> ${esc(finding.designTeamAction)}</p>
       <div class="grid">
@@ -361,6 +366,9 @@ export function renderReviewerReportHtml(project: ProjectRecord, report: Reviewe
     .shot-slot { display: block; border: 1px dashed #94a3b8; border-radius: 6px; padding: 10px; color: #475569; background: #f8fafc; }
     img { max-width: 100%; border: 1px solid #d9e0e7; border-radius: 6px; margin-top: 6px; }
     img.crop { display: block; max-width: 520px; box-shadow: 0 1px 4px rgba(15,23,42,.12); }
+    .vision-verdict { margin: 8px 0; padding: 8px 10px; border-radius: 6px; font-size: 13px; }
+    .vision-verdict.ok { background: #ecfdf5; border: 1px solid #0f766e; }
+    .vision-verdict.warn { background: #fffbeb; border: 1px solid #a16207; }
     li { margin-bottom: 6px; } ul { padding-left: 20px; }
     @media print { body { background: #fff; } main { max-width: none; padding: 0; } .finding { break-inside: avoid; } }
     @media (max-width: 760px) { main { padding: 14px; } .grid, .finding-head { grid-template-columns: 1fr; display: grid; } }

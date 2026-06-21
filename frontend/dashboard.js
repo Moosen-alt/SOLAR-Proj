@@ -1801,13 +1801,26 @@ function renderCodeRefs(refs = []) {
   `;
 }
 
+function renderVisionVerdict(finding) {
+  const v = finding.visionVerification;
+  if (!v || !v.checked) return "";
+  const cls = v.present ? "pass" : "warning";
+  const icon = v.present ? "✓ Vision-verified on the sheet" : "⚠ Vision could not confirm on the sheet";
+  return `<div class="evidence-card ${cls}" style="border-left:3px solid ${v.present ? "var(--ok,#1a7f37)" : "var(--warn,#b35900)"}">
+      <strong>${icon} (page ${esc(v.page)}, ${esc(v.confidence)} confidence)</strong>
+      <p>${esc(v.observed || v.note || "")}</p>
+    </div>`;
+}
+
 function renderFindingEvidence(finding) {
   const evidence = finding.evidenceFound || [];
-  if (!evidence.length) return "";
+  const visionHtml = renderVisionVerdict(finding);
+  if (!evidence.length && !visionHtml) return "";
   const visible = evidence.slice(0, 4);
   return `
     <div class="evidence-trail">
       <p><strong>Evidence check:</strong> ${esc(finding.evidenceStatus || "unknown")}</p>
+      ${visionHtml}
       ${visible.map((item) => {
         if (item.kind === "screenshot_placeholder") {
           return `<div class="evidence-card screenshot-slot"><strong>${esc(item.label)}</strong><br><span>${esc(item.note || "Screenshot/crop pending.")}</span></div>`;
@@ -2805,7 +2818,10 @@ function openApplicationDocs() {
 
 async function runReviewerGate() {
   if (!state.selectedProjectId) return;
-  state.reviewerReport = await api(`/api/projects/${state.selectedProjectId}/reviewer-report`);
+  showMessage("Running reviewer gate with vision verification… this checks the actual plan sheets.", "info");
+  // vision=1 runs the Claude-vision pass that inspects the rendered plan-set
+  // sheets and confirms/relaxes weak text-only findings.
+  state.reviewerReport = await api(`/api/projects/${state.selectedProjectId}/reviewer-report?vision=1`);
   state.workflow = null;
   await loadOpsPlan();
   await loadPmPackets();

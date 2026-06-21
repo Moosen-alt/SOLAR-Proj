@@ -3968,9 +3968,34 @@ export function getReviewerReport(db: AppDb, projectId: string): ReviewerReport 
   return report;
 }
 
-export function getReviewerReportHtml(db: AppDb, projectId: string): string {
+// Opt-in: run the base text report, then a Claude-vision pass that inspects the
+// actual plan-set sheets to confirm/deny weak findings (verdicts cached per plan
+// version). Falls back to the text report when no plan set or no LLM is present.
+export async function getReviewerReportWithVision(db: AppDb, projectId: string): Promise<ReviewerReport> {
+  const report = getReviewerReport(db, projectId);
+  const { createLLMProvider } = await import("./llm");
+  const { applyVisionToReviewerReport } = await import("./reviewerVision");
+  const llm = createLLMProvider();
+  const enriched = await applyVisionToReviewerReport(db, llm, report);
+  const upgraded = enriched.findings.filter((f) => f.visionVerification?.checked).length;
+  addAuditLog(db, projectId, "system", "ahj reviewer gate", "reviewer_report.vision_pass", {
+    visionChecks: upgraded,
+    blockerCount: enriched.findings.filter((item) => item.severity === "blocker").length,
+    warningCount: enriched.findings.filter((item) => item.severity === "warning").length,
+  });
+  return enriched;
+}
+
+export async function getReviewerReportHtml(db: AppDb, projectId: string): Promise<string> {
   const detail = getProjectDetail(db, projectId);
-  const report = buildReviewerReport(detail.project);
+  let report = buildReviewerReport(detail.project);
+  // Fold in any cached vision verdicts (no new LLM cost) so the printable packet
+  // matches what the operator saw after running the gate with vision.
+  try {
+    const { createLLMProvider } = await import("./llm");
+    const { applyVisionToReviewerReport } = await import("./reviewerVision");
+    report = await applyVisionToReviewerReport(db, createLLMProvider(), report, { cacheOnly: true });
+  } catch { /* vision is best-effort; fall back to the text report */ }
   addAuditLog(db, projectId, "system", "ahj reviewer gate", "reviewer_report.html_opened", {
     blockerCount: report.findings.filter((item) => item.severity === "blocker").length,
     warningCount: report.findings.filter((item) => item.severity === "warning").length,
