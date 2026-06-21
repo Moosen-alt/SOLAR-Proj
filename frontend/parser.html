@@ -318,8 +318,8 @@
     </div>
   </div>
 
-  <div class="card">
-    <h2>3. Permit path + stamp callout</h2>
+  <details class="card">
+    <summary style="cursor:pointer"><h2 style="display:inline-block;margin:0">3. Permit path + stamp callout</h2> <span class="muted" style="font-size:12px;font-weight:400">— collapsed; backend QC/reviewer gate is the source of truth</span></summary>
     <div class="row">
       <div class="section-note" style="background:rgba(34,197,94,.07);border-color:rgba(34,197,94,.35)">
         <div class="mini">PERMIT PATH</div>
@@ -342,7 +342,7 @@
         <textarea id="stampReasons" class="tall" readonly></textarea>
       </div>
     </div>
-  </div>
+  </details>
 
   <!-- 4. Electrical scope / install-schedule / locate callout — HIDDEN. This submittal
        service does NOT do the electrical work or schedule installs, so these install-side
@@ -396,14 +396,14 @@
     <div style="margin-top:12px"><label>UB OCR / text preview</label><textarea id="ubRawTextPreview" readonly class="tall"></textarea></div>
   </div>
 
-  <div class="card">
-    <h2>6. Submission text builder</h2>
+  <details class="card">
+    <summary style="cursor:pointer"><h2 style="display:inline-block;margin:0">6. Submission text builder</h2> <span class="muted" style="font-size:12px;font-weight:400">— collapsed; the LLM now auto-writes these (editable copy surface)</span></summary>
     <div class="row">
       <div><label>Description of the Work (AHJ permit)</label><textarea id="projectDescriptionText" class="tall"></textarea><div class="btnbar"><button class="blue" data-copy="projectDescriptionText">Copy description of work</button></div></div>
       <div><label>Site plan notes</label><textarea id="sitePlanNotesText" class="tall"></textarea><div class="btnbar"><button class="blue" data-copy="sitePlanNotesText">Copy site plan notes</button></div></div>
     </div>
     <div style="margin-top:10px"><label>Utility upload notes</label><textarea id="utilityUploadNotesText" class="tall"></textarea><div class="btnbar"><button class="blue" data-copy="utilityUploadNotesText">Copy utility notes</button></div></div>
-  </div>
+  </details>
 
   <div class="card">
     <h2>7. Installer / contractor info</h2>
@@ -425,15 +425,15 @@
     </div>
   </div>
 
-  <div class="card">
-    <h2>8. Utility portal spec builder</h2>
+  <details class="card">
+    <summary style="cursor:pointer"><h2 style="display:inline-block;margin:0">8. Utility portal spec builder</h2> <span class="muted" style="font-size:12px;font-weight:400">— collapsed; redundant with the taught portal automation + backend NEM worksheet</span></summary>
     <div class="row">
       <div><label>Utility inverter spec summary</label><textarea id="utilityInvSpecText" class="tall"></textarea><div class="btnbar"><button class="blue" data-copy="utilityInvSpecText">Copy inverter spec</button></div></div>
       <div><label>Utility PV array rows</label><textarea id="utilityArraySpecText" class="tall"></textarea><div class="btnbar"><button class="blue" data-copy="utilityArraySpecText">Copy PV arrays</button></div></div>
       <div><label>Utility inverter rows by roof / string</label><textarea id="utilityInverterRowsText" class="tall"></textarea><div class="btnbar"><button class="blue" data-copy="utilityInverterRowsText">Copy inverter rows</button></div></div>
       <div><label>Packet readiness</label><textarea id="packetReadinessText" class="tall" readonly></textarea></div>
     </div>
-  </div>
+  </details>
 
   <div class="card">
     <h2>9. Utility document splitter / downloads</h2>
