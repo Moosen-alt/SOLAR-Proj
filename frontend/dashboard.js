@@ -2130,26 +2130,78 @@ function renderQc() {
   `).join("") : `<p class="muted">No QC results yet.</p>`;
 }
 
+// Human-readable labels + a short "what to enter" hint for the QC review fields,
+// so the operator never sees a raw key like "inverterOutput". Falls back to a
+// camelCase→Title Case conversion for anything not listed.
+const REVIEW_FIELD_LABELS = {
+  homeownerName: ["Homeowner name", "the homeowner's full name"],
+  projectAddress: ["Service address", "the install service address"],
+  utility: ["Utility", "the electric utility company"],
+  ahj: ["AHJ (city / county)", "the permitting authority"],
+  accountNumber: ["Utility account number", "the utility account number from the bill"],
+  meterNumber: ["Meter number", "the meter number from the plan set / bill / meter photo"],
+  systemSizeDcKw: ["System size — DC (kW)", "the DC system size in kW"],
+  systemSizeAcKw: ["System size — AC (kW)", "the AC system size in kW"],
+  moduleMake: ["Module make", "the PV module manufacturer"],
+  moduleModel: ["Module model", "the PV module model number"],
+  moduleWattage: ["Module wattage (W)", "the per-module wattage"],
+  moduleQty: ["Module quantity", "the number of modules"],
+  inverterModel: ["Inverter / microinverter model", "the inverter or microinverter model number"],
+  inverterQty: ["Inverter quantity", "the number of inverters/microinverters"],
+  inverterOutput: ["Inverter output (A)", "the inverter's rated continuous output current in amps"],
+  interconnectionMethod: ["Interconnection method", "e.g. load-side breaker, line-side tap, supply-side"],
+  busRating: ["MSP bus rating (A)", "the main service panel busbar rating in amps"],
+  mainBreaker: ["Main breaker rating (A)", "the main breaker rating in amps"],
+  pvBreaker: ["PV breaker / OCPD (A)", "the backfed PV breaker / OCPD size in amps"],
+  permitPath: ["Permit path", "the permit path (prescriptive vs engineered)"],
+  locates: ["Required locates", "type 'N/A - roof mount, no excavation' or note the 811/locate callout"],
+  splitPages: ["Required files / page mapping", "confirm the plan-set sheet split mapping"],
+};
+function camelToTitle(key) {
+  return String(key || "")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[_-]+/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+    .trim();
+}
+function reviewLabel(item) {
+  const mapped = REVIEW_FIELD_LABELS[item.fieldName];
+  if (mapped) return mapped[0];
+  // issueType is usually already a friendly rule name (e.g. "Inverter output").
+  // Use it when it reads as a label; otherwise humanize the raw field key.
+  if (item.issueType && item.issueType !== item.fieldName && /[ A-Z]/.test(item.issueType)) {
+    return item.issueType;
+  }
+  return camelToTitle(item.fieldName) || "Review item";
+}
+function reviewHint(item) {
+  const mapped = REVIEW_FIELD_LABELS[item.fieldName];
+  return mapped ? mapped[1] : "";
+}
+
 function renderReview() {
   const items = state.detail.humanReviewItems || [];
   const pending = items.filter((x) => x.status === "pending");
   $("reviewCounts").textContent = `${pending.length} pending`;
-  $("reviewItems").innerHTML = items.length ? items.map((item) => `
+  $("reviewItems").innerHTML = items.length ? items.map((item) => {
+    const label = reviewLabel(item);
+    const hint = reviewHint(item);
+    return `
     <article class="item ${item.status === "pending" ? "warning" : "pass"}">
-      <div class="item-title"><span>${esc(item.issueType)}: ${esc(item.fieldName)}</span>${statusBadge(item.status)}</div>
+      <div class="item-title"><span>${esc(label)}</span>${statusBadge(item.status)}</div>
       <p>${esc(item.notes || "Review required.")}</p>
       ${item.sourceExcerpt ? `<p><strong>Source:</strong> ${esc(item.sourceExcerpt)}</p>` : ""}
       ${item.status === "pending" ? `
         <div class="review-actions">
-          <input id="review-${item.id}" value="${esc(item.llmSuggestedValue || item.parserValue)}" placeholder="Type the value (read it off the plan set), then Save Edit" />
+          <input id="review-${item.id}" value="${esc(item.llmSuggestedValue || item.parserValue)}" placeholder="${esc(hint ? `Enter ${hint}, then Save Edit` : "Type the value (read it off the plan set), then Save Edit")}" />
           <div class="actions">
             <button class="secondary" data-review-action="reject" data-review-id="${item.id}"><i data-lucide="x"></i><span>Reject</span></button>
             <button class="primary" data-review-action="edit" data-review-id="${item.id}"><i data-lucide="pencil"></i><span>Save Edit</span></button>
           </div>
         </div>
       ` : ""}
-    </article>
-  `).join("") : `<p class="muted">No human review items.</p>`;
+    </article>`;
+  }).join("") : `<p class="muted">No human review items.</p>`;
 
   $("reviewItems").querySelectorAll("button[data-review-action]").forEach((button) => {
     button.addEventListener("click", () => updateReview(button.dataset.reviewId, button.dataset.reviewAction));
