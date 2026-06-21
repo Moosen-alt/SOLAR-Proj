@@ -627,6 +627,7 @@ export function getProjectList(
     search?: string;
     status?: string;
     userId?: string;
+    clientId?: string;
     sort?: "updated_desc" | "created_desc" | "name_asc" | "status_asc";
   } = {},
 ): { projects: ProjectListItem[]; total: number } {
@@ -644,6 +645,7 @@ export function getProjectList(
   }
   if (options.status) { conditions.push("p.status = ?"); filterParams.push(options.status); }
   if (options.userId) { conditions.push("p.assigned_user_id = ?"); filterParams.push(options.userId); }
+  if (options.clientId) { conditions.push("p.client_id = ?"); filterParams.push(options.clientId); }
 
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
 
@@ -666,7 +668,8 @@ export function getProjectList(
       (SELECT COUNT(*) FROM corrections c WHERE c.project_id = p.id) AS correctionCount,
       (SELECT COUNT(*) FROM corrections c WHERE c.project_id = p.id AND c.closed_at IS NULL
          AND (c.due_at < ? OR (c.due_at IS NULL AND date(c.created_at, '+' || c.sla_days || ' days') < ?))) AS overdueCorrections,
-      (SELECT pr.status FROM portal_runs pr WHERE pr.project_id = p.id ORDER BY pr.started_at DESC LIMIT 1) AS latestPortalStatus
+      (SELECT pr.status FROM portal_runs pr WHERE pr.project_id = p.id ORDER BY pr.started_at DESC LIMIT 1) AS latestPortalStatus,
+      (SELECT COALESCE(NULLIF(c.company_name, ''), c.legal_business_name) FROM clients c WHERE c.id = p.client_id) AS clientName
      FROM projects p ${where}
      ORDER BY ${order}
      LIMIT ? OFFSET ?`,
@@ -707,6 +710,7 @@ export function getProjectList(
       correctionCount: Number(row.correctionCount ?? 0),
       overdueCorrections: Number(row.overdueCorrections ?? 0),
       assignedUserId: row.assigned_user_id == null ? null : text(row.assigned_user_id),
+      clientName: row.clientName == null ? null : text(row.clientName),
       latestPortalStatus: row.latestPortalStatus == null ? null : (text(row.latestPortalStatus) as ProjectListItem["latestPortalStatus"]),
       stageKey: stage.key,
       stageIndex: stage.index,

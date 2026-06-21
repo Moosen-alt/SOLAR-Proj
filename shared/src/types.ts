@@ -139,6 +139,8 @@ export interface ProjectListItem extends Omit<ProjectRecord, "parserSnapshot"> {
   stageLabel: string;
   stageCount: number;
   isBlocked: boolean;
+  // Submitting client/company name (for the team dashboard's company filter/column).
+  clientName?: string | null;
 }
 
 export interface QcResult {

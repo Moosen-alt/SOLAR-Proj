@@ -578,7 +578,7 @@ function renderProjectTable() {
       : `<span class="muted">—</span>`;
     return `
     <tr data-project-id="${project.id}" class="${project.id === state.selectedProjectId ? "active" : ""}">
-      <td><strong>${esc(project.homeownerName || "Unnamed")}</strong><br><span class="muted">${esc(project.projectAddress || "No address")}</span></td>
+      <td><strong>${esc(project.homeownerName || "Unnamed")}</strong><br><span class="muted">${esc(project.projectAddress || "No address")}</span>${project.clientName ? `<br><span class="muted" style="font-size:11px">🏢 ${esc(project.clientName)}</span>` : ""}</td>
       <td>${assigneeHtml}</td>
       <td>${stagePillHtml(project)}</td>
       <td>${projectLaneStatusCell(project.latestPermitLabel, project.latestPermitOutcome, project.latestPermitCheckedAt, project.readyForIssue, "ready for issue")}</td>
@@ -3271,6 +3271,7 @@ async function loadClients() {
   state.clients = data.clients || [];
   renderClientsList();
   renderProjectClientOptions();
+  renderProjectClientFilterOptions();
 }
 
 function renderClientsList() {
@@ -3683,7 +3684,7 @@ $("customersModal").addEventListener("click", (e) => { if (e.target.id === "cust
 
 // ----- Project search / sort / filter (server-side, paginated) -----
 const PROJECT_PAGE_SIZE = 200;
-const projectFilterState = { search: "", status: "", userId: "", sort: "updated_desc", offset: 0 };
+const projectFilterState = { search: "", status: "", userId: "", clientId: "", sort: "updated_desc", offset: 0 };
 
 // applyProjectFilters kept as a no-op alias — filtering now happens on the server
 function applyProjectFilters(projects) { return projects; }
@@ -3705,6 +3706,7 @@ async function fetchProjectPage(append) {
   if (projectFilterState.search) params.set("search", projectFilterState.search);
   if (projectFilterState.status) params.set("status", projectFilterState.status);
   if (projectFilterState.userId) params.set("userId", projectFilterState.userId);
+  if (projectFilterState.clientId) params.set("clientId", projectFilterState.clientId);
   if (projectFilterState.sort && projectFilterState.sort !== "overdue") params.set("sort", projectFilterState.sort);
   const data = await api(`/api/projects?${params}`);
   const page = data.projects || [];
@@ -3715,6 +3717,17 @@ async function fetchProjectPage(append) {
     state.projects = page;
   }
   renderProjects();
+}
+
+// Populate the company filter (project list) from the loaded clients, used by the
+// team dashboard to scope the board/table to one contractor/company.
+function renderProjectClientFilterOptions() {
+  const sel = $("projectClientFilter");
+  if (!sel) return;
+  const current = sel.value;
+  sel.innerHTML = `<option value="">All companies</option>` +
+    (state.clients || []).map((c) => `<option value="${esc(c.id)}">${esc(c.companyName || c.legalBusinessName || "Unnamed")}</option>`).join("");
+  sel.value = current;
 }
 
 function renderProjectUserOptions() {
@@ -3826,6 +3839,10 @@ if ($("refreshFormsBtn")) $("refreshFormsBtn").addEventListener("click", refresh
 if ($("addSigFile")) $("addSigFile").addEventListener("change", uploadSignature);
 $("projectStatusFilter").addEventListener("change", (e) => {
   projectFilterState.status = e.target.value;
+  reloadProjects();
+});
+$("projectClientFilter").addEventListener("change", (e) => {
+  projectFilterState.clientId = e.target.value;
   reloadProjects();
 });
 $("projectUserFilter").addEventListener("change", (e) => {

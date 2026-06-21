@@ -196,11 +196,12 @@ app.get("/api/projects", (req, res) => {
   const search = req.query.search ? String(req.query.search) : undefined;
   const status = req.query.status ? String(req.query.status) : undefined;
   const userId = req.query.userId ? String(req.query.userId) : undefined;
+  const clientId = req.query.clientId ? String(req.query.clientId) : undefined;
   const sort = (req.query.sort as string | undefined);
   const validSorts = ["updated_desc", "created_desc", "name_asc", "status_asc"] as const;
   type SortOption = typeof validSorts[number];
   const sortVal = validSorts.includes(sort as SortOption) ? (sort as SortOption) : undefined;
-  res.json(getProjectList(db, { limit, offset, search, status, userId, sort: sortVal }));
+  res.json(getProjectList(db, { limit, offset, search, status, userId, clientId, sort: sortVal }));
 });
 
 // --- Clients (contractor profiles + licensing) ---
