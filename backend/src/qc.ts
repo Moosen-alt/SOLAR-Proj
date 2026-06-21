@@ -6,9 +6,23 @@ import { fieldAliases, parserField } from "./normalize";
 import { nowIso } from "./time";
 import type { ParserPayload, QcStatus, Severity } from "../../shared/src/types";
 
+// Look up whether the AHJ for this project uses a portal platform that requires
+// individual sheets to be split and uploaded separately (e.g. ProjectDox, EnerGov).
+function ahjRequiresSplitPages(db: AppDb, ahj: string, state: string): boolean {
+  if (!ahj) return false;
+  const row = db.get<{ portal_platform: string | null }>(
+    "SELECT portal_platform FROM permit_utility_knowledge WHERE ahj = ? AND state = ? ORDER BY updated_at DESC LIMIT 1",
+    [ahj, state],
+  );
+  if (!row?.portal_platform) return false;
+  return /projectdox|energov|etrakit|accela/i.test(row.portal_platform);
+}
+
 interface ProjectRow {
   id: string;
   parser_json: string;
+  ahj: string | null;
+  state: string | null;
 }
 
 interface Check {
@@ -55,22 +69,55 @@ function clean(value: unknown): string {
   return typeof value === "string" ? value.trim() : value == null ? "" : String(value).trim();
 }
 
-function statusFor(check: Check, payload: ParserPayload): QcStatus {
+interface QcContext {
+  db: AppDb;
+  ahj: string;
+  state: string;
+  payload: ParserPayload;
+}
+
+function statusFor(check: Check, ctx: QcContext): QcStatus {
+  const { db, ahj, state, payload } = ctx;
   const aliases = check.aliases ?? fieldAliases[check.fieldName] ?? [check.fieldName];
   const value = aliases.map((alias) => clean(payload[alias])).find(Boolean) || parserField(payload, check.fieldName);
   if (!check.required) return "pass";
+
+  if (check.fieldName === "splitPages") {
+    // Only require human review when the AHJ's portal platform needs individual
+    // sheets uploaded separately (ProjectDox, EnerGov, etc.). For all other AHJs
+    // (City of Portland uses a simple online upload), skip this check.
+    const needsSplit = ahjRequiresSplitPages(db, ahj, state);
+    if (!needsSplit) return "pass";
+    if (!value || /not found|missing|upload and parse/i.test(value)) return "warning";
+    return "pass";
+  }
+
+  if (check.fieldName === "permitPath") {
+    // Microinverter systems are always prescriptive path for residential; auto-pass.
+    const hasMicro = Boolean(clean(payload.pvMicroModel) || clean(payload.pvMicroMake));
+    const engineered = /engineer/i.test(value || "");
+    if (hasMicro && !engineered) return "pass";
+    if (!value) return "warning";
+    if (/review|manual/i.test(value)) return "warning";
+    return "pass";
+  }
+
   if (!value) return check.severity === "warning" ? "warning" : "fail";
-  if (check.fieldName === "splitPages" && /not found|missing|upload and parse/i.test(value)) return "warning";
   if (check.fieldName === "locates" && /not run|waiting/i.test(value)) return "warning";
-  if (check.fieldName === "permitPath" && /review|manual/i.test(value)) return "warning";
   return "pass";
 }
 
 export function runQcForProject(db: AppDb, projectId: string): QcRunResult {
-  const project = db.get<ProjectRow>("SELECT id, parser_json FROM projects WHERE id = ?", [projectId]);
+  const project = db.get<ProjectRow>("SELECT id, parser_json, ahj, state FROM projects WHERE id = ?", [projectId]);
   if (!project) throw new Error("Project not found.");
 
   const payload = parseJson<ParserPayload>(project.parser_json, {});
+  const ctx: QcContext = {
+    db,
+    ahj: project.ahj || clean(payload.ahj) || "",
+    state: project.state || clean(payload.state) || "",
+    payload,
+  };
   const createdAt = nowIso();
   let failCount = 0;
   let warningCount = 0;
@@ -79,7 +126,7 @@ export function runQcForProject(db: AppDb, projectId: string): QcRunResult {
     db.run("DELETE FROM qc_results WHERE project_id = ?", [projectId]);
 
     for (const check of criticalChecks) {
-      const qcStatus = statusFor(check, payload);
+      const qcStatus = statusFor(check, ctx);
       if (qcStatus === "fail") failCount += 1;
       if (qcStatus === "warning") warningCount += 1;
 
