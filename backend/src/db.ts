@@ -688,6 +688,10 @@ function migrate(db: AppDb): void {
   addColumnIfMissing(db, "projects", "customer_id", "TEXT");
   // password auth (used only when AUTH_ENABLED=true)
   addColumnIfMissing(db, "users", "password_hash", "TEXT NOT NULL DEFAULT ''");
+  // AHJ portal platform (Accela/ProjectDox/EnerGov…) + submission method — drives
+  // portal-automation reuse (one Playwright driver per platform across AHJs).
+  addColumnIfMissing(db, "permit_utility_knowledge", "portal_platform", "TEXT NOT NULL DEFAULT ''");
+  addColumnIfMissing(db, "permit_utility_knowledge", "submission_method", "TEXT NOT NULL DEFAULT ''");
 
   // Scale indexes (built after the migrated columns exist) — keep the project
   // list snappy with thousands of rows: default sort is updated_at DESC, with

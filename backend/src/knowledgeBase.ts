@@ -31,6 +31,8 @@ interface KnowledgeFacts {
   utility?: string;
   portalName?: string;
   portalUrl?: string;
+  portalPlatform?: string;
+  submissionMethod?: string;
   requiredDocuments?: string[];
   timelineDays?: number | null;
   timelineNote?: string;
@@ -245,6 +247,8 @@ function mapKnowledge(row: Row): PermitUtilityKnowledgeProfile {
     utility: text(row.utility),
     portalName: text(row.portal_name),
     portalUrl: text(row.portal_url),
+    portalPlatform: text(row.portal_platform),
+    submissionMethod: text(row.submission_method),
     requiredDocuments: parseJson<string[]>(text(row.required_documents_json), []),
     averageTimelineDays: row.average_timeline_days == null ? null : Number(row.average_timeline_days),
     timelineSampleCount: Number(row.timeline_sample_count ?? 0),
@@ -313,6 +317,7 @@ function upsertKnowledge(db: AppDb, facts: KnowledgeFacts, event?: KnowledgeEven
     db.run(
       `UPDATE permit_utility_knowledge
        SET state = ?, ahj = ?, utility = ?, portal_name = ?, portal_url = ?,
+           portal_platform = ?, submission_method = ?,
            required_documents_json = ?, average_timeline_days = ?, timeline_sample_count = ?,
            timeline_notes_json = ?, common_corrections_json = ?, correction_count = ?,
            confidence = ?, sources_json = ?, notes = ?, last_learned_at = ?, updated_at = ?
@@ -323,6 +328,8 @@ function upsertKnowledge(db: AppDb, facts: KnowledgeFacts, event?: KnowledgeEven
         clean(facts.utility) || current.utility,
         clean(facts.portalName) || current.portalName,
         clean(facts.portalUrl) || current.portalUrl,
+        clean(facts.portalPlatform) || current.portalPlatform,
+        clean(facts.submissionMethod) || current.submissionMethod,
         asJson(requiredDocuments),
         averageTimelineDays,
         timelineSampleCount,
@@ -340,10 +347,10 @@ function upsertKnowledge(db: AppDb, facts: KnowledgeFacts, event?: KnowledgeEven
   } else {
     db.run(
       `INSERT INTO permit_utility_knowledge
-        (id, profile_key, state, ahj, utility, portal_name, portal_url, required_documents_json,
+        (id, profile_key, state, ahj, utility, portal_name, portal_url, portal_platform, submission_method, required_documents_json,
          average_timeline_days, timeline_sample_count, timeline_notes_json, common_corrections_json,
          project_count, correction_count, confidence, sources_json, notes, first_seen_at, last_learned_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id(),
         key,
@@ -352,6 +359,8 @@ function upsertKnowledge(db: AppDb, facts: KnowledgeFacts, event?: KnowledgeEven
         clean(facts.utility),
         clean(facts.portalName),
         clean(facts.portalUrl),
+        clean(facts.portalPlatform),
+        clean(facts.submissionMethod),
         asJson(requiredDocuments),
         averageTimelineDays,
         timelineSampleCount,
@@ -1392,6 +1401,8 @@ export function saveResearchedAhjProfile(
     utility: input.utility,
     portalName: research.portalName,
     portalUrl: research.portalUrl,
+    portalPlatform: research.portalPlatform,
+    submissionMethod: research.submissionMethod,
     requiredDocuments: research.requiredDocuments,
     sources: [learnedSource("ai_researched", "AI AHJ research")],
     confidence: "seeded",
@@ -1399,7 +1410,50 @@ export function saveResearchedAhjProfile(
   };
   return upsertKnowledge(db, facts, {
     eventType: "ahj.ai_researched",
-    details: { ahj: input.ahj, state: input.state, utility: input.utility || "", confidence: research.confidence, docCount: research.requiredDocuments.length },
+    details: { ahj: input.ahj, state: input.state, utility: input.utility || "", platform: research.portalPlatform, confidence: research.confidence, docCount: research.requiredDocuments.length },
+  });
+}
+
+// Human-verified AHJ profile upsert — a coordinator confirming/correcting what the
+// AI researched (e.g. "Hillsboro actually uses email + ProjectDox, not Accela").
+// Marks the profile mixed-confidence + a human-verified source so it outranks AI guesses.
+export function saveVerifiedAhjProfile(
+  db: AppDb,
+  input: {
+    state: string;
+    ahj: string;
+    utility?: string;
+    portalName?: string;
+    portalPlatform?: string;
+    portalUrl?: string;
+    submissionMethod?: string;
+    requiredDocuments?: string[];
+    notes?: string;
+  },
+): PermitUtilityKnowledgeProfile {
+  if (!input.ahj?.trim()) throw new Error("ahj is required.");
+  const noteParts = [
+    "Human-verified AHJ profile.",
+    input.portalPlatform ? `Portal platform: ${input.portalPlatform} (reuse existing ${input.portalPlatform} automation; only entry URL + login differ per AHJ).` : "",
+    input.submissionMethod ? `Submission: ${input.submissionMethod}.` : "",
+    input.notes || "",
+  ].filter(Boolean);
+  const facts: KnowledgeFacts = {
+    state: input.state,
+    ahj: input.ahj.trim(),
+    utility: input.utility,
+    portalName: input.portalName,
+    portalUrl: input.portalUrl,
+    portalPlatform: input.portalPlatform,
+    submissionMethod: input.submissionMethod,
+    requiredDocuments: input.requiredDocuments,
+    sources: [learnedSource("official", "Human-verified AHJ profile")],
+    confidence: "mixed",
+    notes: noteParts.join(" "),
+  };
+  return upsertKnowledge(db, facts, {
+    eventType: "ahj.human_verified",
+    details: { ahj: input.ahj, platform: input.portalPlatform || "", method: input.submissionMethod || "" },
   });
 }
 

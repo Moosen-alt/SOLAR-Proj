@@ -7,6 +7,7 @@ import path from "node:path";
 import { openDatabase } from "./db";
 import { HttpError } from "./httpError";
 import { collectDiagnostics, logErrorBlock, logger, requestLogger, startupBanner } from "./logger";
+import { saveVerifiedAhjProfile } from "./knowledgeBase";
 import { createClient, deleteClient, getClient, listClients, updateClient } from "./clients";
 import { enqueueJob, getJob, listJobs, processNextJob, startJobWorker } from "./jobQueue";
 import { createUser, getUserWorkload, listUsers, updateUser, assignProjectToUser } from "./users";
@@ -470,6 +471,25 @@ app.post("/api/knowledge-base/research-ahj", asyncHandler(async (req, res) => {
     throw normalizeLlmError(err);
   }
 }));
+
+// Human-verified AHJ profile — a coordinator confirming/correcting the AI's guess
+// (e.g. "Hillsboro uses email + ProjectDox, not Accela"). Outranks AI research.
+app.post("/api/knowledge-base/ahj-profile", (req, res) => {
+  const b = req.body || {};
+  if (!String(b.ahj || "").trim()) throw new HttpError(400, "ahj is required.");
+  const profile = saveVerifiedAhjProfile(db, {
+    state: String(b.state || ""),
+    ahj: String(b.ahj),
+    utility: b.utility ? String(b.utility) : undefined,
+    portalName: b.portalName ? String(b.portalName) : undefined,
+    portalPlatform: b.portalPlatform ? String(b.portalPlatform) : undefined,
+    portalUrl: b.portalUrl ? String(b.portalUrl) : undefined,
+    submissionMethod: b.submissionMethod ? String(b.submissionMethod) : undefined,
+    requiredDocuments: Array.isArray(b.requiredDocuments) ? b.requiredDocuments.map(String) : undefined,
+    notes: b.notes ? String(b.notes) : undefined,
+  });
+  res.status(201).json({ saved: true, profileKey: profile.profileKey, profile });
+});
 
 // Auto-onboard the AHJ on a specific project (used when the docs builder has no
 // known/learned profile), then return the refreshed application-doc package.

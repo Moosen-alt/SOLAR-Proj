@@ -387,6 +387,10 @@ export interface PermitUtilityKnowledgeProfile {
   utility: string;
   portalName: string;
   portalUrl: string;
+  /** Underlying portal platform (Accela, ProjectDox, EnerGov…) — drives Playwright automation reuse. */
+  portalPlatform: string;
+  /** How submittals are made (online portal, email, in-person, combination). */
+  submissionMethod: string;
   requiredDocuments: string[];
   averageTimelineDays: number | null;
   timelineSampleCount: number;
