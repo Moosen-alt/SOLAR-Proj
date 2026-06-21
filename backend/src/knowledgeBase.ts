@@ -1586,8 +1586,10 @@ export function listKnowledgeProfiles(db: AppDb): PermitUtilityKnowledgeProfile[
 export function findLearnedProfileForProject(
   db: AppDb,
   input: { state?: string; ahj?: string; utility?: string },
+  opts: { requireDocs?: boolean } = {},
 ): PermitUtilityKnowledgeProfile | null {
   if (!input.ahj) return null;
+  const requireDocs = opts.requireDocs !== false;
   const candidates = [
     knowledgeProfileKey({ state: input.state, ahj: input.ahj, utility: input.utility }),
     knowledgeProfileKey({ state: input.state, ahj: input.ahj, utility: "" }),
@@ -1598,7 +1600,7 @@ export function findLearnedProfileForProject(
     const row = db.get<Row>("SELECT * FROM permit_utility_knowledge WHERE profile_key = ?", [key]);
     if (row) {
       const profile = mapKnowledge(row);
-      if (profile.requiredDocuments.length) return profile;
+      if (!requireDocs || profile.requiredDocuments.length) return profile;
     }
   }
   return null;

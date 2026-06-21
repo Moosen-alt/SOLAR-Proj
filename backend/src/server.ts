@@ -8,7 +8,7 @@ import path from "node:path";
 import { openDatabase } from "./db";
 import { HttpError } from "./httpError";
 import { collectDiagnostics, logErrorBlock, logger, requestLogger, startupBanner } from "./logger";
-import { saveVerifiedAhjProfile, saveVerifiedUtilityProfile } from "./knowledgeBase";
+import { findLearnedProfileForProject, saveVerifiedAhjProfile, saveVerifiedUtilityProfile } from "./knowledgeBase";
 import {
   listPortalRecipes,
   getPortalRecipe,
@@ -339,7 +339,19 @@ app.get("/api/projects/:id/submittal-email", (req, res) => {
       companyName = client.companyName || client.legalBusinessName || client.dba || "";
     } catch { /* no client */ }
   }
-  res.json(buildSubmittalEmailDraft(detail.project, { companyName }));
+  // Fold in what the form-finder learned about this AHJ (submission method /
+  // platform), so email-submittal AHJs are detected even when the seeded profile
+  // doesn't say "email" — the learned KB profile does.
+  const learned = findLearnedProfileForProject(
+    db,
+    { state: detail.project.state, ahj: detail.project.ahj, utility: detail.project.utility },
+    { requireDocs: false },
+  );
+  res.json(buildSubmittalEmailDraft(detail.project, {
+    companyName,
+    learnedMethod: learned?.submissionMethod || "",
+    learnedPlatform: learned?.portalPlatform || "",
+  }));
 });
 
 // --- Live Gmail polling (read-only) ---
