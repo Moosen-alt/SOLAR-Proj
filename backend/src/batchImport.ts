@@ -56,6 +56,31 @@ export async function extractPdfText(filePath: string, maxPages = 30): Promise<s
   }
 }
 
+// Per-page text (1-based index → text). Used by the plan-set splitter to map sheets
+// to page ranges. maxPages caps the work for very large sets.
+export async function extractPdfPages(filePath: string, maxPages = 60): Promise<string[]> {
+  const pdfjs = await getPdfjs();
+  const data = new Uint8Array(fs.readFileSync(filePath));
+  const origWarn = console.warn;
+  console.warn = (...args: unknown[]) => {
+    if (typeof args[0] === "string" && PDFJS_WARN_RE.test(args[0])) return;
+    origWarn.apply(console, args);
+  };
+  try {
+    const doc = await pdfjs.getDocument({ data, useSystemFonts: true, disableWorker: true }).promise;
+    const pages = Math.min(doc.numPages, maxPages);
+    const out: string[] = [];
+    for (let i = 1; i <= pages; i++) {
+      const page = await doc.getPage(i);
+      const content = await page.getTextContent();
+      out.push(content.items.map((item) => item.str).join(" ").replace(/\s{3,}/g, "  ").trim());
+    }
+    return out;
+  } finally {
+    console.warn = origWarn;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // File classification
 // ---------------------------------------------------------------------------

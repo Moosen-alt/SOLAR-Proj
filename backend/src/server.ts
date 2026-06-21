@@ -29,6 +29,7 @@ import {
   getProjectDocumentFile,
   deleteProjectDocument,
 } from "./projectDocuments";
+import { buildUtilityPackage } from "./docSplitter";
 import { createClient, deleteClient, getClient, listClients, updateClient } from "./clients";
 import { enqueueJob, getJob, listJobs, processNextJob, startJobWorker } from "./jobQueue";
 import { createUser, getUserWorkload, listUsers, updateUser, assignProjectToUser } from "./users";
@@ -717,6 +718,14 @@ app.get("/api/projects/:id/documents/:docId", (req, res) => {
 app.delete("/api/projects/:id/documents/:docId", (req, res) => {
   res.json(deleteProjectDocument(db, String(req.params.id), String(req.params.docId)));
 });
+// Split the uploaded plan set into the AHJ/utility upload doc set + a ZIP (backend
+// equivalent of the parser's splitter; the bot then attaches these by doc_type).
+app.post("/api/projects/:id/build-utility-package", asyncHandler(async (req, res) => {
+  // target: nem (utility NEM set: meter photo, SLD, site plan, inverter spec) |
+  // permit (AHJ/ProjectDox set) | all. Defaults to nem for the utility submittal.
+  const target = String(req.query.target || req.body?.target || "nem");
+  res.status(201).json(await buildUtilityPackage(db, String(req.params.id), target));
+}));
 
 // Backups (manual trigger + list; a scheduled snapshot also runs automatically)
 app.post("/api/admin/backup", (_req, res) => {
