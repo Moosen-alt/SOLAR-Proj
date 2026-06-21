@@ -691,9 +691,13 @@ app.get("/api/projects/:id/staging-field-values", (req, res) => {
   const portalType = String(req.query.portalType || "");
   res.json({ fieldValues: resolveRecipeFieldValues(db, detail.project, portalType) });
 });
-// Launch a headed portal-record browser session on this machine. The recorder
-// script (portal-bot/src/recordRecipe.ts) drives a local Playwright browser.
-// This only works when the server is running on the operator's own machine.
+// Launch a headed portal-record session on this machine. The recorder
+// (portal-bot/src/recordRecipe.ts) opens a Playwright browser AND blocks on
+// stdin waiting for the operator to type `save` — so it must run in a real,
+// visible terminal window, not a detached/stdio-ignored process (that exits
+// instantly on stdin EOF and the browser closes). We write a small launcher
+// script in the project root and open it in the OS terminal. Only works when
+// the server runs on the operator's own machine.
 app.post("/api/projects/:id/launch-record", (req, res) => {
   const detail = getProjectDetail(db, String(req.params.id));
   const p = detail.project;
@@ -701,24 +705,49 @@ app.post("/api/projects/:id/launch-record", (req, res) => {
   const scope = String(b.scope || "ahj") === "utility" ? "utility" : "ahj";
   const name = scope === "utility" ? (p.utility || "") : (p.ahj || "");
   const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || scope;
-  const args: string[] = [
-    "run", "portal:record", "--",
+  // The server is started from the project root (`tsx backend/src/server.ts`),
+  // so process.cwd() IS the root where `npm run portal:record` resolves.
+  const root = process.cwd();
+  const port = process.env.PORT || 4173;
+  const q = (s: string): string => `"${String(s).replace(/(["\\])/g, "\\$1")}"`;
+  const cmdline = [
+    "npm", "run", "portal:record", "--",
     "--scope", scope,
-    ...(scope === "ahj" ? ["--ahj", p.ahj || ""] : ["--utility", p.utility || ""]),
+    ...(scope === "ahj" ? ["--ahj", q(p.ahj || "")] : ["--utility", q(p.utility || "")]),
     ...(p.state ? ["--state", p.state] : []),
-    ...(b.portalUrl ? ["--url", b.portalUrl] : []),
+    ...(b.portalUrl ? ["--url", q(b.portalUrl)] : []),
     "--project", p.id,
-    "--api", `http://localhost:${process.env.PORT || 4173}`,
+    "--api", `http://localhost:${port}`,
     "--profile", `./.portal-profiles/${slug}`,
-  ];
-  const child = spawn("npm", args, {
-    cwd: path.resolve(process.cwd(), ".."),
-    detached: true,
-    stdio: "ignore",
-    shell: process.platform === "win32",
-  });
-  child.unref();
-  res.json({ ok: true, message: `Record session started for ${name || scope}. Complete the form in the opened browser window, then type save.` });
+  ].join(" ");
+
+  try {
+    if (process.platform === "win32") {
+      const bat = path.join(root, "_record-session.bat");
+      fs.writeFileSync(bat, `@echo off\r\ncd /d "%~dp0"\r\ntitle Portal Recorder - ${(name || scope).replace(/[<>|&]/g, "")}\r\n${cmdline}\r\necho.\r\necho Recording session ended - you can close this window.\r\npause\r\n`);
+      // `start "" <bat>` opens a NEW console window that stays interactive.
+      spawn("cmd.exe", ["/c", "start", "", bat], { cwd: root, detached: true, stdio: "ignore", windowsHide: false }).unref();
+    } else if (process.platform === "darwin") {
+      const cmd = path.join(root, "_record-session.command");
+      fs.writeFileSync(cmd, `#!/bin/bash\ncd "$(dirname "$0")"\n${cmdline}\necho\necho "Recording session ended - you can close this window."\n`, { mode: 0o755 });
+      spawn("open", [cmd], { cwd: root, detached: true, stdio: "ignore" }).unref();
+    } else {
+      // Linux: try common terminal emulators, best-effort.
+      const sh = path.join(root, "_record-session.sh");
+      fs.writeFileSync(sh, `#!/bin/bash\ncd "$(dirname "$0")"\n${cmdline}\necho\necho "Recording session ended."\nexec bash\n`, { mode: 0o755 });
+      const terminals = ["x-terminal-emulator", "gnome-terminal", "konsole", "xfce4-terminal", "xterm"];
+      const tryTerm = (i: number): void => {
+        if (i >= terminals.length) return;
+        const child = spawn(terminals[i], ["-e", "bash", sh], { cwd: root, detached: true, stdio: "ignore" });
+        child.on("error", () => tryTerm(i + 1));
+        child.unref();
+      };
+      tryTerm(0);
+    }
+    res.json({ ok: true, message: `Opening a recorder window + browser for ${name || scope}. In that window: complete the application up to (NOT including) the final submit, then type save and press Enter.` });
+  } catch (err) {
+    res.json({ ok: false, message: `Couldn't auto-open a terminal (${err instanceof Error ? err.message : String(err)}). Use "Download record.bat" instead — double-click it in your SOLAR-Proj folder.` });
+  }
 });
 // LLM-assisted field binding: for fill/select steps the recorder couldn't auto-bind by
 // exact match, ask the model which project/client field each typed value corresponds to.

@@ -10,6 +10,10 @@ dist/
 *.session.json
 playwright/.auth/
 portal-profiles/
+.portal-profiles/
+_record-session.bat
+_record-session.command
+_record-session.sh
 
 
 # Cached AHJ form templates and filled outputs
