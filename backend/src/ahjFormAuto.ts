@@ -4,6 +4,7 @@ import type { AppDb } from "./db";
 import type { LLMProvider, ProjectRecord } from "../../shared/src/types";
 import { inspectFormFields, loadStoredTemplates, type OverlayField, type SignaturePlacement } from "./ahjForms";
 import { findApplicationProfile } from "./applicationDocs";
+import { saveResearchedAhjProfile } from "./knowledgeBase";
 import { renderPdfPageToPng } from "./pageImages";
 import { nowIso } from "./time";
 
@@ -263,6 +264,22 @@ export async function ensureAhjFormTemplate(
 
   const research = await llm.findAhjFormUrl({ ahj: project.ahj, state: project.state, formType });
   if (!research.candidateUrls.length) {
+    // If the LLM says "online portal only", record that in the KB so future
+    // projects for this AHJ skip the search without cost.
+    const portalOnlyNote = /online.*portal|portal.*only|no.*pdf|e-permit/i.test(research.notes);
+    if (portalOnlyNote && project.ahj && project.state) {
+      try {
+        saveResearchedAhjProfile(db, { state: project.state, ahj: project.ahj }, {
+          provider: "claude",
+          portalName: "", portalUrl: "", portalPlatform: "e-permitting",
+          submissionMethod: "portal_only",
+          requiredDocuments: [], commonCorrections: [], submissionSteps: [], tips: [],
+          confidence: "medium",
+          notes: `LLM search found no downloadable PDF: ${research.notes}`,
+          needsHumanVerification: true,
+        });
+      } catch { /* non-fatal */ }
+    }
     return {
       status: "not_found",
       message: research.notes || `No official PDF form was found for ${project.ahj}. It may submit online only — upload the blank PDF if one exists.`,
