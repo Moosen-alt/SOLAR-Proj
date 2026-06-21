@@ -30,6 +30,7 @@ export interface LoadedSignature {
   mime: string;
   widthPx: number;
   heightPx: number;
+  name: string; // the signer's typed name, for the adjacent "Print name" line
 }
 
 function s(value: unknown): string {
@@ -115,13 +116,13 @@ export function deleteSignature(db: AppDb, id: string): void {
 // The default signature image for each role, for the form filler to draw.
 export function loadDefaultSignaturesByRole(db: AppDb): Record<string, LoadedSignature> {
   const rows = db.query<Record<string, unknown>>(
-    "SELECT role, image_png, mime, width_px, height_px FROM signatures WHERE is_default = 1",
+    "SELECT role, name, image_png, mime, width_px, height_px FROM signatures WHERE is_default = 1",
   );
   const out: Record<string, LoadedSignature> = {};
   for (const row of rows) {
     const blob = row.image_png as Buffer | null;
     if (!blob) continue;
-    out[s(row.role)] = { bytes: new Uint8Array(blob), mime: s(row.mime) || "image/png", widthPx: Number(row.width_px ?? 0), heightPx: Number(row.height_px ?? 0) };
+    out[s(row.role)] = { bytes: new Uint8Array(blob), mime: s(row.mime) || "image/png", widthPx: Number(row.width_px ?? 0), heightPx: Number(row.height_px ?? 0), name: s(row.name) };
   }
   return out;
 }

@@ -114,7 +114,7 @@ export const ahjFormRegistry: AhjFormDefinition[] = [
       { source: "lit:X", page: 0, x: 264, y: 643, size: 9 },          // Category -> Other checkbox
       { source: "lit:Solar", page: 0, x: 301, y: 643, size: 9 },      // Category -> Other: blank
       // Job site information
-      { source: "project.projectAddress", page: 0, x: 160, y: 614, maxWidth: 200 },
+      { source: "computed.streetAddress", page: 0, x: 160, y: 614, maxWidth: 200 },
       { source: "computed.cityStateZip", page: 0, x: 115, y: 597, maxWidth: 240 },
       { source: "project.homeownerName", page: 0, x: 215, y: 581, maxWidth: 150 },
       // Description of work (open area below the label)
@@ -122,7 +122,7 @@ export const ahjFormRegistry: AhjFormDefinition[] = [
       // Property owner
       { source: "project.homeownerName", page: 0, x: 63, y: 455, maxWidth: 130 },
       { source: "snapshot.homeownerEmail", page: 0, x: 245, y: 455, maxWidth: 110 },
-      { source: "project.projectAddress", page: 0, x: 75, y: 438, maxWidth: 280 },
+      { source: "computed.streetAddress", page: 0, x: 75, y: 438, maxWidth: 280 },
       { source: "computed.cityStateZip", page: 0, x: 115, y: 421, maxWidth: 240 },
       { source: "snapshot.homeownerPhone", page: 0, x: 66, y: 404, maxWidth: 120 },
       // Contractor
@@ -135,6 +135,8 @@ export const ahjFormRegistry: AhjFormDefinition[] = [
       { source: "client.ccbLicenseNumber", page: 0, x: 267, y: 275, maxWidth: 90 },
       // Supervising electrician
       { source: "client.electricalSupervisorName", page: 0, x: 93, y: 225, maxWidth: 150 },
+      // Printed name under the Authorized signature (operator who signs).
+      { source: "computed.applicantSignerName", page: 0, x: 108, y: 189, maxWidth: 150 },
       // Applicant / Contact Person = our (submitter) info
       { source: "client.installerCompanyName", page: 0, x: 120, y: 161, maxWidth: 230 },
       { source: "client.installerContactName", page: 0, x: 115, y: 144, maxWidth: 230 },
@@ -193,7 +195,7 @@ export interface FillContext {
   snapshot: Record<string, unknown>;
   // Default operator signature image per role, drawn at the form's signature
   // placements. Loaded in buildContext; empty when none are stored.
-  signatures?: Record<string, { bytes: Uint8Array; mime: string; widthPx: number; heightPx: number }>;
+  signatures?: Record<string, { bytes: Uint8Array; mime: string; widthPx: number; heightPx: number; name: string }>;
 }
 
 function str(v: unknown): string {
@@ -273,6 +275,25 @@ function computed(name: string, ctx: FillContext): string {
       return str(ctx.project.systemSizeDcKw);
     case "cityStateZip":
       return [ctx.project.city, ctx.project.state].filter(Boolean).join(", ") + (ctx.project.zip ? ` ${ctx.project.zip}` : "");
+    case "streetAddress": {
+      // The project address often already includes city/state/zip; strip those
+      // so the street line + the separate City/State/ZIP line don't duplicate.
+      const full = str(ctx.project.projectAddress);
+      if (!full) return "";
+      const city = str(ctx.project.city).toLowerCase();
+      const state = str(ctx.project.state).toLowerCase();
+      const zip = str(ctx.project.zip).toLowerCase();
+      const drop = new Set([city, state, zip, `${state} ${zip}`.trim(), `${city} ${state} ${zip}`.trim()].filter(Boolean));
+      const kept = full
+        .split(",")
+        .map((p) => p.trim())
+        .filter((p) => p && !drop.has(p.toLowerCase()));
+      return kept.join(", ");
+    }
+    case "applicantSignerName":
+      // The typed name on the applicant's stored signature, for the "Print name"
+      // line under the authorized signature.
+      return ctx.signatures?.applicant?.name ?? "";
     case "descriptionOfWork": {
       const s = ctx.snapshot;
       const qty = str(s["moduleQuantity"] ?? s["module_quantity"]);
