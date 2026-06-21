@@ -344,7 +344,11 @@
     </div>
   </div>
 
-  <div class="card" id="electricalScopeCard">
+  <!-- 4. Electrical scope / install-schedule / locate callout — HIDDEN. This submittal
+       service does NOT do the electrical work or schedule installs, so these install-side
+       callouts (D/R, locates, "do not schedule install until…") are out of scope. The JS
+       still computes scope into these hidden fields (used elsewhere) so nothing breaks. -->
+  <div class="card" id="electricalScopeCard" style="display:none">
     <h2>4. Electrical work + utility coordination callout</h2>
     <div class="scope-callout-grid">
       <div class="scope-card" id="electricalScopeTypeCard"><div class="scope-kicker">Electrical scope</div><div class="scope-main" id="electricalScopeMain">NOT RUN</div><div class="scope-sub" id="electricalScopeSub">Upload and parse a packet.</div></div>
@@ -863,6 +867,70 @@ async function extractAnyFileText(file, kind){
     return await ocrImageFile(file, kind);
   }
   return {fileName:file.name, text:'', notes:['Unsupported file type.']};
+}
+
+// Fast text extraction that DEFERS slow in-browser OCR. Claude vision reads bill/meter
+// photos faster AND more accurately than Tesseract, so for images we return immediately
+// with no OCR and let the AI vision pass capture the fields. OCR is only run later as a
+// fallback (ocrFallbackIfNeeded) when AI vision is off or didn't capture the key fields.
+// The plan set is always vector text (pdfjs) — no OCR either way.
+async function extractAnyFileTextFast(file, kind){
+  if (!file) return null;
+  const isPdf = /pdf/i.test(file.type) || /\.pdf$/i.test(file.name);
+  const isImage = /^image\//i.test(file.type) || /\.(png|jpe?g|webp|gif|bmp|tiff?)$/i.test(file.name);
+  if (isPdf){
+    const pdfText = await extractPdfText(file, kind === 'plan' ? 45 : 6);
+    // Scanned/image PDF (thin text layer): mark for OCR fallback, but don't OCR yet.
+    pdfText.needsOcrFallback = (kind !== 'plan' && pdfText.text.replace(/\s/g,'').length < 80);
+    return pdfText;
+  }
+  if (isImage){
+    return { fileName:file.name, text:'', notes:[], needsOcrFallback:true, isImage:true };
+  }
+  return { fileName:file.name, text:'', notes:['Unsupported file type.'] };
+}
+
+// Run in-browser OCR ONLY for bill/meter docs that AI vision did not already capture.
+// Re-parses just those docs and fills only empty fields (never clobbers the AI's
+// authoritative values). This keeps the fast path fast (AI on → no OCR) while preserving
+// full accuracy when the AI key is off or vision misses a number.
+async function ocrFallbackIfNeeded(ub, meterPhoto){
+  const setIfEmpty = (idStr, val) => { if (val && !(getVal(idStr) || '').trim()) setVal(idStr, val); };
+  // Utility bill: only OCR if the AI did not capture the account number.
+  if (state.ubFile && state.ubDoc?.needsOcrFallback && !(getVal('account') || '').trim()){
+    try {
+      $('parseStatus').textContent = 'AI did not read the bill — running OCR fallback…';
+      const ocr = await extractAnyFileText(state.ubFile, 'utility bill');
+      if (ocr?.text){
+        state.ubDoc.text = `${state.ubDoc.text || ''}\n\n${ocr.text}`.trim();
+        const re = parseUBData(state.ubDoc); re.rawText = state.ubDoc.text;
+        Object.assign(ub, re);
+        setIfEmpty('account', re.account);
+        setIfEmpty('ubAccountNumber', re.account);
+        setIfEmpty('ubAccountHolder', re.accountHolder);
+        setIfEmpty('ubServiceAddress', re.service);
+        if (re.utility) setIfEmpty('utility', re.utility);
+        setVal('ubRawTextPreview', re.rawText || getVal('ubRawTextPreview'));
+        setVal('ubParserNotes', (re.notes || []).join('\n'));
+      }
+    } catch (e){ state.reviewFlags.push(`UB OCR fallback: ${e.message || e}`); }
+  }
+  // Meter photo: only OCR if the AI did not capture a meter number.
+  if (state.meterFile && state.meterDoc?.needsOcrFallback && !(getVal('ubMeterNumber') || getVal('planMeterNumber') || '').trim()){
+    try {
+      $('parseStatus').textContent = 'AI did not read the meter — running OCR fallback…';
+      const ocr = await extractAnyFileText(state.meterFile, 'meter photo');
+      if (ocr?.text){
+        state.meterDoc.text = `${state.meterDoc.text || ''}\n\n${ocr.text}`.trim();
+        const mp = parseMeterPhotoData(state.meterDoc);
+        if (meterPhoto) Object.assign(meterPhoto, mp);
+        setIfEmpty('ubMeterNumber', mp.meterRaw);
+        setIfEmpty('planMeterNumber', mp.meterRaw);
+        setVal('ubMeterVerification', compareMeters(getVal('meter'), getVal('ubMeterNumber')));
+        setVal('meterRawTextPreview', mp.text || getVal('meterRawTextPreview'));
+      }
+    } catch (e){ state.reviewFlags.push(`Meter OCR fallback: ${e.message || e}`); }
+  }
 }
 
 function pageText(planDoc, pageNums){
@@ -3750,16 +3818,19 @@ async function runParse(){
     fillProjectFields(plan);
   }
 
+  // Fast extraction first (no OCR on photos) — Claude vision reads bill/meter images
+  // faster and more accurately than Tesseract, so we let the AI pass go first and only
+  // OCR as a fallback when AI is off or misses the key fields.
   if (state.ubFile){
     $('parseStatus').textContent = 'Reading utility bill...';
-    state.ubDoc = await extractAnyFileText(state.ubFile, 'utility bill');
+    state.ubDoc = await extractAnyFileTextFast(state.ubFile, 'utility bill');
     ub = parseUBData(state.ubDoc);
     ub.rawText = state.ubDoc.text || '';
   }
 
   if (state.meterFile){
     $('parseStatus').textContent = 'Reading meter photo...';
-    state.meterDoc = await extractAnyFileText(state.meterFile, 'meter photo');
+    state.meterDoc = await extractAnyFileTextFast(state.meterFile, 'meter photo');
     meterPhoto = parseMeterPhotoData(state.meterDoc);
   }
 
@@ -3767,10 +3838,15 @@ async function runParse(){
     fillUBFields(ub, meterPhoto);
   }
 
-  // LLM-assisted pass: send the raw extracted text to Claude, merge structured
-  // fields into the form. The regex/OCR pass above runs first as a fast baseline;
-  // the LLM fills gaps and corrects fields the deterministic parser missed.
+  // LLM-assisted pass: vision reads the bill/meter photos (authoritative for
+  // account/meter/name/address) and text extraction reads the plan set. This is the
+  // fast, accurate path and usually makes OCR unnecessary.
   await runLlmAssist();
+
+  // OCR fallback — runs ONLY for bill/meter docs the AI did not capture (AI off, or a
+  // number it could not read), filling just the empty fields. Skipped entirely on the
+  // fast path, so a fully AI-read packet never pays the OCR cost.
+  await ocrFallbackIfNeeded(ub, meterPhoto);
 
   const finalPlan = {...plan};
   Object.keys(finalPlan).forEach(k => { if ($(k)) finalPlan[k] = getVal(k); });
