@@ -161,6 +161,47 @@ async function loadKnowledgeBase() {
   renderKnowledgeBase();
 }
 
+async function loadProjectDocuments() {
+  const listEl = $("projectDocsList");
+  if (!listEl || !state.selectedProjectId) return;
+  try {
+    const data = await api(`/api/projects/${state.selectedProjectId}/documents`);
+    const docs = data.documents || [];
+    const cnt = $("projectDocsCount"); if (cnt) cnt.textContent = `${docs.length} file${docs.length === 1 ? "" : "s"}`;
+    listEl.innerHTML = docs.length
+      ? docs.map((d) => `<div class="card" style="padding:6px 8px;display:flex;justify-content:space-between;align-items:center;gap:8px">
+          <span style="font-size:13px"><strong>${esc(d.docType || "general")}</strong> · <a href="/api/projects/${esc(state.selectedProjectId)}/documents/${esc(d.id)}">${esc(d.originalFilename)}</a> <span class="muted">(${Math.max(1, Math.round(d.sizeBytes / 1024))} KB)</span></span>
+          <button class="danger" data-doc-del="${esc(d.id)}" style="font-size:11px">Delete</button></div>`).join("")
+      : '<p class="muted" style="font-size:12px">No documents uploaded yet.</p>';
+    listEl.querySelectorAll("[data-doc-del]").forEach((b) => b.addEventListener("click", async () => {
+      try { await api(`/api/projects/${state.selectedProjectId}/documents/${b.getAttribute("data-doc-del")}`, { method: "DELETE" }); await loadProjectDocuments(); }
+      catch (err) { $("docUploadStatus").textContent = err.message || "Delete failed."; }
+    }));
+  } catch (err) {
+    listEl.innerHTML = `<p class="muted">${esc(err.message || "Could not load documents.")}</p>`;
+  }
+}
+
+async function uploadProjectDocument() {
+  const fileInput = $("docUploadFile");
+  const file = fileInput?.files?.[0];
+  if (!state.selectedProjectId) { $("docUploadStatus").textContent = "Select a project first."; return; }
+  if (!file) { $("docUploadStatus").textContent = "Choose a file."; return; }
+  const docType = $("docUploadType").value;
+  $("docUploadStatus").textContent = `Uploading ${file.name}…`;
+  try {
+    const res = await fetch(`/api/projects/${state.selectedProjectId}/documents?filename=${encodeURIComponent(file.name)}&docType=${encodeURIComponent(docType)}`, {
+      method: "POST",
+      headers: { "Content-Type": file.type || "application/octet-stream" },
+      body: file,
+    });
+    if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || `Upload failed: ${res.status}`); }
+    $("docUploadStatus").textContent = "Uploaded.";
+    fileInput.value = "";
+    await loadProjectDocuments();
+  } catch (err) { $("docUploadStatus").textContent = err.message || "Upload failed."; }
+}
+
 async function loadPortalRecipes() {
   try {
     const data = await api("/api/portal-recipes");
@@ -633,7 +674,7 @@ async function selectProject(projectId) {
   renderOpsBoard();
   renderOpsActions();
   await loadKnowledgeBase();
-  await Promise.all([loadOpsPlan(), loadSubmitGate(), loadRunbook(), loadHandoffPacket(), loadCommunicationDrafts(), loadLiveReadiness(), loadProjectTimeline(), loadProcessMap(), loadInstallerPacket()]);
+  await Promise.all([loadOpsPlan(), loadSubmitGate(), loadRunbook(), loadHandoffPacket(), loadCommunicationDrafts(), loadLiveReadiness(), loadProjectTimeline(), loadProcessMap(), loadInstallerPacket(), loadProjectDocuments()]);
   renderDetail();
 }
 
@@ -2781,6 +2822,7 @@ async function assignProjectClient() {
 
 $("openClientsBtn").addEventListener("click", openClientsModal);
 $("closeClientsBtn").addEventListener("click", closeClientsModal);
+if ($("docUploadBtn")) $("docUploadBtn").addEventListener("click", uploadProjectDocument);
 $("newClientBtn").addEventListener("click", blankClientForm);
 $("clientForm").addEventListener("submit", saveClient);
 $("deleteClientBtn").addEventListener("click", removeClient);

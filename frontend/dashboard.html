@@ -406,6 +406,37 @@
 
         <section class="panel">
           <div class="section-head">
+            <h3>Project Documents</h3>
+            <div class="actions">
+              <span id="projectDocsCount" class="badge">0 files</span>
+            </div>
+          </div>
+          <div id="projectDocsList" class="stack" style="margin-bottom:8px"></div>
+          <div class="form-row">
+            <label style="flex:1">Document type
+              <select id="docUploadType">
+                <option value="">(general)</option>
+                <option value="plan_set">Plan set</option>
+                <option value="utility_bill">Utility bill</option>
+                <option value="meter_photo">Meter photo</option>
+                <option value="sld">SLD / one-line</option>
+                <option value="site_plan">Site / plot plan</option>
+                <option value="structural">Structural</option>
+                <option value="module_spec">Module spec</option>
+                <option value="inverter_spec">Inverter spec</option>
+                <option value="other">Other</option>
+              </select>
+            </label>
+            <label style="flex:2">File<input id="docUploadFile" type="file" /></label>
+          </div>
+          <div class="actions">
+            <button id="docUploadBtn" class="secondary"><i data-lucide="upload"></i><span>Upload</span></button>
+            <span id="docUploadStatus" class="muted" style="font-size:12px"></span>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="section-head">
             <h3>Live Project Test Readiness</h3>
             <div class="actions">
               <span id="liveReadinessCounts" class="badge">not checked</span>

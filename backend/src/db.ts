@@ -752,6 +752,26 @@ function migrate(db: AppDb): void {
     CREATE INDEX IF NOT EXISTS idx_portal_credentials_client ON portal_credentials(client_id);
   `);
 
+  // Project documents — uploaded files (plan set, utility bill, specs, photos) and
+  // backend-split upload docs. Stored on disk; the row tracks the path + doc_type so
+  // the submittal package and the bot can attach the right files.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS project_documents (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      doc_type TEXT NOT NULL DEFAULT '',
+      original_filename TEXT NOT NULL DEFAULT '',
+      stored_path TEXT NOT NULL DEFAULT '',
+      content_type TEXT NOT NULL DEFAULT '',
+      size_bytes INTEGER NOT NULL DEFAULT 0,
+      source TEXT NOT NULL DEFAULT 'upload',
+      uploaded_by TEXT NOT NULL DEFAULT '',
+      uploaded_at TEXT NOT NULL,
+      FOREIGN KEY (project_id) REFERENCES projects(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_project_documents_project ON project_documents(project_id);
+  `);
+
   seedBaselineRuleRows(db);
   seedInitialKnowledgeBase(db);
   seedTestInstaller(db);

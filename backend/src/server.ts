@@ -23,6 +23,12 @@ import {
   updatePortalCredential,
   deletePortalCredential,
 } from "./portalCredentials";
+import {
+  listProjectDocuments,
+  saveProjectDocument,
+  getProjectDocumentFile,
+  deleteProjectDocument,
+} from "./projectDocuments";
 import { createClient, deleteClient, getClient, listClients, updateClient } from "./clients";
 import { enqueueJob, getJob, listJobs, processNextJob, startJobWorker } from "./jobQueue";
 import { createUser, getUserWorkload, listUsers, updateUser, assignProjectToUser } from "./users";
@@ -685,6 +691,31 @@ app.post("/api/communications", (req, res) => {
   if (!req.body?.customerId && !req.body?.projectId) throw new HttpError(400, "customerId or projectId is required.");
   if (!req.body?.body && !req.body?.subject) throw new HttpError(400, "A subject or body is required.");
   res.status(201).json(addCommunication(db, req.body || {}));
+});
+
+// --- Project documents (upload / list / download / delete) -----------------
+app.get("/api/projects/:id/documents", (req, res) => {
+  res.json({ documents: listProjectDocuments(db, String(req.params.id)) });
+});
+app.post(
+  "/api/projects/:id/documents",
+  express.raw({ type: "*/*", limit: process.env.DOC_UPLOAD_LIMIT || "100mb" }),
+  (req, res) => {
+    if (!Buffer.isBuffer(req.body) || req.body.length === 0) throw new HttpError(400, "File body required.");
+    const filename = String(req.query.filename || req.headers["x-filename"] || "upload.bin").trim();
+    const docType = String(req.query.docType || req.headers["x-doc-type"] || "").trim();
+    const contentType = String(req.headers["content-type"] || "application/octet-stream");
+    res.status(201).json(saveProjectDocument(db, String(req.params.id), { filename, docType, contentType, buffer: req.body, source: "upload" }));
+  },
+);
+app.get("/api/projects/:id/documents/:docId", (req, res) => {
+  const file = getProjectDocumentFile(db, String(req.params.id), String(req.params.docId));
+  res.setHeader("Content-Type", file.contentType);
+  res.setHeader("Content-Disposition", `attachment; filename="${file.filename.replace(/[^A-Za-z0-9._-]+/g, "_")}"`);
+  res.sendFile(file.path);
+});
+app.delete("/api/projects/:id/documents/:docId", (req, res) => {
+  res.json(deleteProjectDocument(db, String(req.params.id), String(req.params.docId)));
 });
 
 // Backups (manual trigger + list; a scheduled snapshot also runs automatically)
