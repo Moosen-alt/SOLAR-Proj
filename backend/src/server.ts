@@ -263,6 +263,26 @@ app.get("/api/ahj-forms", (req, res) => {
   });
 });
 
+// Vision-detect the signature lines on a built-in REGISTRY form (e.g. Portland
+// electrical) and store them so the operator's signature is stamped there too.
+app.post("/api/ahj-forms/:formId/detect-signatures", asyncHandler(async (req, res) => {
+  const def = ahjFormRegistry.find((d) => d.id === String(req.params.formId));
+  if (!def) throw new HttpError(404, "Registry form not found.");
+  const bytes = await fetchFormTemplate(def);
+  const { buildOverlayMapForPdf } = await import("./ahjFormAuto");
+  const { saveRegistrySignatureOverride } = await import("./ahjForms");
+  const { createLLMProvider } = await import("./llm");
+  let overlay;
+  try {
+    overlay = await buildOverlayMapForPdf(createLLMProvider(), { ahj: def.formName, state: "", formName: def.formName, bytes });
+  } catch (err) {
+    throw normalizeLlmError(err);
+  }
+  const sigs = overlay?.signatureFields || [];
+  saveRegistrySignatureOverride(db, def.id, sigs);
+  res.json({ formId: def.id, signatureCount: sigs.length, signatures: sigs });
+}));
+
 // Inspect a fillable PDF's AcroForm field names — used to map a new form once.
 app.post("/api/ahj-forms/inspect", asyncHandler(async (req, res) => {
   const url = String(req.body?.url || "").trim();
@@ -980,6 +1000,20 @@ app.post("/api/ahj-templates/:id/remap", asyncHandler(async (req, res) => {
   }
   res.json(result);
 }));
+
+// Mark a stored form's mapping verified (or not) — gates real submit. The
+// operator does this after previewing the filled PDF.
+app.patch("/api/ahj-templates/:id/verify", (req, res) => {
+  const row = db.get<{ field_map: string }>("SELECT field_map FROM ahj_form_templates WHERE id = ?", [String(req.params.id)]);
+  if (!row) throw new HttpError(404, "Template not found.");
+  let map: Record<string, unknown> = {};
+  try { map = JSON.parse(row.field_map || "{}"); } catch { map = {}; }
+  const verified = req.body?.verified !== false; // default true
+  map.verified = verified;
+  map.verifiedAt = verified ? new Date().toISOString() : undefined;
+  db.run("UPDATE ahj_form_templates SET field_map = ?, updated_at = ? WHERE id = ?", [JSON.stringify(map), new Date().toISOString(), String(req.params.id)]);
+  res.json({ id: String(req.params.id), verified });
+});
 
 // Fully delete a stored template (blob + map).
 app.delete("/api/ahj-templates/:id", (req, res) => {

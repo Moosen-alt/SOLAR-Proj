@@ -73,6 +73,10 @@ export interface StoredFieldMap {
   sourceHash?: string;
   /** ISO timestamp of the last source-URL freshness check. */
   lastCheckedAt?: string;
+  /** Human-verified that the field/signature mapping is correct. Auto-maps start
+   *  false; a real submit is gated until the operator previews and verifies. */
+  verified?: boolean;
+  verifiedAt?: string;
 }
 
 export function sha256(bytes: Uint8Array): string {
@@ -103,8 +107,9 @@ export function storeAhjFormTemplate(
   const now = nowIso();
   const blob = Buffer.from(input.bytes);
   // Stamp the content hash + check time so the periodic refresh can tell when the
-  // AHJ has revised the form at its source URL.
-  input.map = { ...input.map, sourceHash: sha256(input.bytes), lastCheckedAt: now };
+  // AHJ has revised the form at its source URL. A fresh (re)mapping is always
+  // UNVERIFIED — the operator must preview and verify before a real submit.
+  input.map = { ...input.map, sourceHash: sha256(input.bytes), lastCheckedAt: now, verified: false, verifiedAt: undefined };
   const existing = db.get<{ id: string }>(
     "SELECT id FROM ahj_form_templates WHERE lower(ahj_name) = lower(?) AND lower(state) = lower(?) AND form_type = ? LIMIT 1",
     [input.ahjName, input.state, input.formType],
@@ -207,6 +212,7 @@ export async function buildOverlayMapForPdf(
   const signatureFields: SignaturePlacement[] = mapped.signatures.map((sg) => {
     const sz = pageSizes[sg.page] || pageSizes[0];
     const h = Math.round(sg.heightFrac * sz.h);
+    const hasDate = sg.dateNx != null && sg.dateNy != null;
     return {
       role: sg.role,
       page: sg.page,
@@ -217,6 +223,7 @@ export async function buildOverlayMapForPdf(
       width: Math.round(sg.widthFrac * sz.w),
       height: h,
       label: sg.label,
+      ...(hasDate ? { dateX: Math.round(sg.dateNx! * sz.w), dateY: Math.round((1 - sg.dateNy!) * sz.h), dateSize: 9 } : {}),
     };
   });
   return { overlayFields, signatureFields, notes: mapped.notes };

@@ -1941,15 +1941,25 @@ function renderFilledForms(projectId) {
   }
   return forms.map((f) => {
     const ok = f.status === "filled";
+    const isStored = Boolean(f.templateId);
+    const unverified = isStored && f.verified === false;
     const extra = [
       f.filledFieldCount != null ? `${f.filledFieldCount} field(s) filled` : "",
       (f.unmappedRequested || []).length ? `Unmapped: ${(f.unmappedRequested || []).join(", ")}` : "",
       f.message || "",
     ].filter(Boolean).join(" · ");
-    return `<article class="item ${ok ? "pass" : "warning"}">
-      <div class="item-title"><span>${esc(f.formName || f.formId)}</span>${statusBadge(ok ? "filled PDF" : (f.status || "not filled"))}</div>
-      ${ok ? `<p><a href="/api/projects/${encodeURIComponent(projectId)}/filled-forms/${encodeURIComponent(f.formId)}" target="_blank" rel="noopener"><strong>⬇ Download filled ${esc(f.formName || "AHJ form")} (PDF)</strong></a></p>
-      <p class="muted">Signature lines are intentionally left blank — a human signs before submitting.</p>` : ""}
+    // Cls: unverified auto-maps are a warning (block submit) until confirmed.
+    const cls = !ok ? "warning" : unverified ? "warning" : "pass";
+    const badge = !ok ? (f.status || "not filled") : unverified ? "needs verify" : (isStored ? "verified" : "filled PDF");
+    return `<article class="item ${cls}">
+      <div class="item-title"><span>${esc(f.formName || f.formId)}</span>${statusBadge(badge)}</div>
+      ${ok ? `<p><a href="/api/projects/${encodeURIComponent(projectId)}/filled-forms/${encodeURIComponent(f.formId)}" target="_blank" rel="noopener"><strong>⬇ Download filled ${esc(f.formName || "AHJ form")} (PDF)</strong></a></p>` : ""}
+      ${unverified ? `<p class="muted">AI-mapped — open the PDF, confirm the fields and signature are placed correctly, then verify. A real submit is blocked until you do.</p>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px">
+          <button type="button" class="secondary" data-verify-form="${esc(f.templateId)}" style="font-size:12px">✓ Looks right — mark verified</button>
+          <button type="button" class="secondary" data-remap-form="${esc(f.templateId)}" style="font-size:12px">Re-map</button>
+        </div>` : ""}
+      ${ok && !isStored ? `<p class="muted"><button type="button" class="secondary" data-detect-sign="${esc(f.formId)}" style="font-size:12px">Detect signature lines (AI)</button> — stamp your stored signature on this form.</p>` : ""}
       ${extra ? `<p class="muted">${esc(extra)}</p>` : ""}
     </article>`;
   }).join("");
@@ -1995,6 +2005,50 @@ function bindFilledFormControls() {
   if (findBtn) findBtn.addEventListener("click", findAhjForm);
   const upload = $("uploadAhjFormInput");
   if (upload) upload.addEventListener("change", uploadAhjForm);
+  document.querySelectorAll("[data-verify-form]").forEach((b) => b.addEventListener("click", () => verifyFilledForm(b.getAttribute("data-verify-form"))));
+  document.querySelectorAll("[data-remap-form]").forEach((b) => b.addEventListener("click", () => remapFilledForm(b.getAttribute("data-remap-form"))));
+  document.querySelectorAll("[data-detect-sign]").forEach((b) => b.addEventListener("click", () => detectRegistrySignatures(b.getAttribute("data-detect-sign"))));
+}
+
+// Rebuild the filled forms after a change (verify/remap/detect) and refresh the
+// submit gate so the verification blocker clears.
+async function rebuildFilledForms() {
+  try {
+    state.filledForms = await api(`/api/projects/${state.selectedProjectId}/filled-forms`, { method: "POST", body: "{}" });
+  } catch (err) { showMessage(err.message || "Rebuild failed.", "error"); }
+  await loadSubmitGate();
+  renderApplicationDocs();
+  renderSubmitGate();
+  loadAhjForms();
+}
+
+async function verifyFilledForm(templateId) {
+  if (!templateId) return;
+  try {
+    await api(`/api/ahj-templates/${templateId}/verify`, { method: "PATCH", body: JSON.stringify({ verified: true }) });
+    showMessage("Form mapping marked verified.", "success");
+    await rebuildFilledForms();
+  } catch (err) { showMessage(err.message || "Verify failed.", "error"); }
+}
+
+async function remapFilledForm(templateId) {
+  if (!templateId) return;
+  showMessage("Re-mapping the form…", "info");
+  try {
+    const out = await api(`/api/ahj-templates/${templateId}/remap`, { method: "POST", body: "{}" });
+    showMessage(out.message || "Re-mapped.", "success");
+    await rebuildFilledForms();
+  } catch (err) { showMessage(err.message || "Re-map failed.", "error"); }
+}
+
+async function detectRegistrySignatures(formId) {
+  if (!formId) return;
+  showMessage("Detecting signature lines on the form…", "info");
+  try {
+    const out = await api(`/api/ahj-forms/${encodeURIComponent(formId)}/detect-signatures`, { method: "POST", body: "{}" });
+    showMessage(out.signatureCount ? `Found ${out.signatureCount} signature line(s). Your stored signature will be stamped.` : "No signature lines detected.", out.signatureCount ? "success" : "warning");
+    await rebuildFilledForms();
+  } catch (err) { showMessage(err.message || "Detection failed.", "error"); }
 }
 
 async function findAhjForm() {

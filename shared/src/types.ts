@@ -1169,6 +1169,9 @@ export interface AhjSignaturePlacementNorm {
   widthFrac: number;
   heightFrac: number;
   label?: string;
+  /** Adjacent "date signed" line position (normalized baseline), if present. */
+  dateNx?: number;
+  dateNy?: number;
 }
 
 export interface AhjOverlayPlacement {

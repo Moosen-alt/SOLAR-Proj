@@ -797,6 +797,7 @@ ALSO locate every SIGNATURE line (where a handwritten signature goes) and return
 - "page": 0-based page index
 - "nx","ny": normalized position of the BOTTOM-LEFT corner of the signature area (just above the signature line, at its left)
 - "widthFrac","heightFrac": the signature area size as a fraction of page width/height (a signature line is typically ~0.25 wide, ~0.04 tall)
+- "dateNx","dateNy": if there is a "date" line right next to this signature, the normalized baseline position to write the date; omit if there is none
 - "label": the printed signature label
 
 Return ONLY JSON: {"fields":[ ... ], "signatures":[ ... ], "notes":"<caveats>"}
@@ -856,6 +857,9 @@ Rules:
         const nx = Number(o.nx);
         const ny = Number(o.ny);
         if (!Number.isFinite(nx) || !Number.isFinite(ny) || nx < 0 || nx > 1 || ny < 0 || ny > 1) continue;
+        const dateNx = Number(o.dateNx);
+        const dateNy = Number(o.dateNy);
+        const hasDate = Number.isFinite(dateNx) && Number.isFinite(dateNy) && dateNx >= 0 && dateNx <= 1 && dateNy >= 0 && dateNy <= 1;
         signatures.push({
           role: validRoles.includes(String(o.role)) ? String(o.role) : "applicant",
           page: Number.isFinite(Number(o.page)) ? Math.max(0, Math.floor(Number(o.page))) : 0,
@@ -864,6 +868,7 @@ Rules:
           widthFrac: Number.isFinite(Number(o.widthFrac)) && Number(o.widthFrac) > 0 ? Number(o.widthFrac) : 0.25,
           heightFrac: Number.isFinite(Number(o.heightFrac)) && Number(o.heightFrac) > 0 ? Number(o.heightFrac) : 0.04,
           label: o.label != null ? String(o.label) : undefined,
+          ...(hasDate ? { dateNx, dateNy } : {}),
         });
       }
     }

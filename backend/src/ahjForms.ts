@@ -65,6 +65,11 @@ export interface SignaturePlacement {
   width: number;
   height: number;
   label?: string; // the form's printed signature label, for review
+  // Adjacent "date signed" line (PDF points, baseline). When set, today's date is
+  // written here whenever this signature is stamped (the operator signs today).
+  dateX?: number;
+  dateY?: number;
+  dateSize?: number;
 }
 
 export interface AhjFormDefinition {
@@ -208,6 +213,10 @@ function money(n: number): string {
 
 function computed(name: string, ctx: FillContext): string {
   switch (name) {
+    case "todaySigned": {
+      const d = new Date();
+      return `${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}/${d.getFullYear()}`;
+    }
     case "systemKva": {
       const k = systemKva(ctx);
       return k ? String(k) : "";
@@ -308,6 +317,7 @@ async function drawSignatures(doc: PDFDocument, def: AhjFormDefinition, ctx: Fil
   const sigs = ctx.signatures ?? {};
   if (!placements.length || !Object.keys(sigs).length) return 0;
   const pages = doc.getPages();
+  let dateFont;
   let drawn = 0;
   for (const pl of placements) {
     const sig = sigs[pl.role] || sigs.applicant;
@@ -326,6 +336,11 @@ async function drawSignatures(doc: PDFDocument, def: AhjFormDefinition, ctx: Fil
     const scale = Math.min(boxW / img.width, boxH / img.height) || 1;
     page.drawImage(img, { x: pl.x, y: pl.y, width: img.width * scale, height: img.height * scale });
     drawn += 1;
+    // The operator signs today — write today's date on the adjacent date line.
+    if (pl.dateX != null && pl.dateY != null) {
+      if (!dateFont) dateFont = await doc.embedFont(StandardFonts.Helvetica);
+      page.drawText(computed("todaySigned", ctx), { x: pl.dateX, y: pl.dateY, size: pl.dateSize ?? 9, font: dateFont, color: rgb(0, 0, 0) });
+    }
   }
   return drawn;
 }
@@ -386,6 +401,11 @@ export interface FilledFormResult {
   filledFieldCount?: number;
   unmappedRequested?: string[];
   message?: string;
+  /** Whether this form's mapping is human-verified. Registry forms are inherently
+   *  verified; stored auto/uploaded forms start false until the operator confirms. */
+  verified?: boolean;
+  /** ahj_form_templates row id (stored forms only), for the verify action. */
+  templateId?: string;
 }
 
 export async function fillForm(
@@ -513,14 +533,19 @@ export async function buildFilledFormsForProject(db: AppDb, project: ProjectReco
 
   const forms: FilledFormResult[] = [];
   for (const def of defs) {
-    forms.push(await fillForm(def, ctx, path.join(outDir, `${def.id}.pdf`)));
+    // Built-in registry forms are hand-tuned, so inherently verified. Merge any
+    // vision-detected signature placements stored for this registry form.
+    const sigOverride = loadRegistrySignatureOverride(db, def.id);
+    const effectiveDef = sigOverride.length ? { ...def, signatureFields: sigOverride } : def;
+    forms.push({ ...(await fillForm(effectiveDef, ctx, path.join(outDir, `${def.id}.pdf`))), verified: true });
   }
 
   // Also fill any stored AHJ form templates (operator-uploaded or auto-researched)
   // for this AHJ/state that aren't already covered by a built-in registry form.
   for (const stored of loadStoredTemplates(db, project.ahj, project.state)) {
     if (forms.some((f) => f.formId === stored.def.id)) continue;
-    forms.push(await fillLoadedForm(stored.def, stored.bytes, ctx, path.join(outDir, `${stored.def.id}.pdf`)));
+    const result = await fillLoadedForm(stored.def, stored.bytes, ctx, path.join(outDir, `${stored.def.id}.pdf`));
+    forms.push({ ...result, verified: stored.verified, templateId: stored.templateId });
   }
 
   return {
@@ -534,20 +559,20 @@ export async function buildFilledFormsForProject(db: AppDb, project: ProjectReco
 
 // Build fillable definitions from stored ahj_form_templates rows for this AHJ.
 // The field_map column holds { formName, sourceUrl, fillMode, textFields, checkboxes }.
-export function loadStoredTemplates(db: AppDb, ahj: string, state: string): Array<{ def: AhjFormDefinition; bytes: Uint8Array }> {
+export function loadStoredTemplates(db: AppDb, ahj: string, state: string): Array<{ def: AhjFormDefinition; bytes: Uint8Array; templateId: string; verified: boolean }> {
   const needle = (ahj || "").trim().toLowerCase();
   if (!needle) return [];
   const rows = db.query<{ id: string; ahj_name: string; state: string; original_filename: string; pdf_blob: Buffer | null; field_map: string }>(
     "SELECT id, ahj_name, state, original_filename, pdf_blob, field_map FROM ahj_form_templates WHERE pdf_blob IS NOT NULL ORDER BY updated_at DESC",
   );
-  const out: Array<{ def: AhjFormDefinition; bytes: Uint8Array }> = [];
+  const out: Array<{ def: AhjFormDefinition; bytes: Uint8Array; templateId: string; verified: boolean }> = [];
   for (const row of rows) {
     const rowAhj = String(row.ahj_name || "").trim().toLowerCase();
     if (!rowAhj) continue;
     const nameMatches = rowAhj === needle || needle.includes(rowAhj) || rowAhj.includes(needle);
     const stateOk = !row.state || !state || String(row.state).toLowerCase() === String(state).toLowerCase();
     if (!nameMatches || !stateOk || !row.pdf_blob) continue;
-    let map: { formName?: string; sourceUrl?: string; fillMode?: string; textFields?: Record<string, string>; checkboxes?: Record<string, { source: string; equals?: string }>; overlayFields?: OverlayField[]; signatureFields?: SignaturePlacement[] } = {};
+    let map: { formName?: string; sourceUrl?: string; fillMode?: string; textFields?: Record<string, string>; checkboxes?: Record<string, { source: string; equals?: string }>; overlayFields?: OverlayField[]; signatureFields?: SignaturePlacement[]; verified?: boolean } = {};
     try { map = JSON.parse(row.field_map || "{}"); } catch { map = {}; }
     const textFields = map.textFields || {};
     const overlayFields = map.overlayFields || [];
@@ -571,9 +596,31 @@ export function loadStoredTemplates(db: AppDb, ahj: string, state: string): Arra
         signatureFields,
       },
       bytes: new Uint8Array(row.pdf_blob),
+      templateId: row.id,
+      verified: map.verified === true,
     });
   }
   return out;
+}
+
+// Vision-detected signature placements stored for a built-in registry form.
+export function loadRegistrySignatureOverride(db: AppDb, formId: string): SignaturePlacement[] {
+  const row = db.get<{ signature_fields: string }>("SELECT signature_fields FROM registry_form_overrides WHERE form_id = ?", [formId]);
+  if (!row) return [];
+  try {
+    const arr = JSON.parse(row.signature_fields || "[]");
+    return Array.isArray(arr) ? (arr as SignaturePlacement[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveRegistrySignatureOverride(db: AppDb, formId: string, signatureFields: SignaturePlacement[]): void {
+  db.run(
+    `INSERT INTO registry_form_overrides (form_id, signature_fields, updated_at) VALUES (?, ?, ?)
+     ON CONFLICT(form_id) DO UPDATE SET signature_fields = excluded.signature_fields, updated_at = excluded.updated_at`,
+    [formId, JSON.stringify(signatureFields), nowIso()],
+  );
 }
 
 export function filledFormPath(projectId: string, formId: string): string {

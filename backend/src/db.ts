@@ -648,6 +648,16 @@ function migrate(db: AppDb): void {
     );
     CREATE INDEX IF NOT EXISTS idx_signatures_role ON signatures(role);
 
+    -- Signature placements detected (by vision) for built-in REGISTRY forms, which
+    -- are code-defined and otherwise have no place to store them. Keyed by the
+    -- registry form id; merged onto the def at fill time so the operator's
+    -- signature lands on hand-tuned registry forms (e.g. Portland electrical) too.
+    CREATE TABLE IF NOT EXISTS registry_form_overrides (
+      form_id TEXT PRIMARY KEY,
+      signature_fields TEXT NOT NULL DEFAULT '[]',
+      updated_at TEXT NOT NULL
+    );
+
     -- Customers / leads: the homeowner side of a deal, tracked before (and
     -- after) a project packet exists. client_id is the installer who referred
     -- them; project_id links once the lead becomes a real project.

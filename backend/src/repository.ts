@@ -92,6 +92,7 @@ import { fieldAliases, normalizeProject } from "./normalize";
 import { classifyPermitStatusText, nextCheckIso } from "./permitMonitor";
 import { evidenceForTopic, evidenceLines, type EvidenceTopic } from "./projectEvidence";
 import { runQcForProject } from "./qc";
+import { loadStoredTemplates } from "./ahjForms";
 import { buildReviewerReport, renderReviewerReportHtml } from "./reviewerEngine";
 import { nowIso } from "./time";
 
@@ -2917,6 +2918,9 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
     !sldEvidence.present ? "SLD/one-line evidence missing" : "",
     !inverterEvidence.present ? "Inverter settings/spec evidence missing" : "",
   ].filter(Boolean);
+  // AHJ forms whose auto-derived field/signature mapping the operator hasn't yet
+  // verified. A real submit is gated until each is previewed and confirmed.
+  const unverifiedForms = loadStoredTemplates(db, project.ahj, project.state).filter((t) => !t.verified);
   const stagedRun = detail.portalRuns.find((run) => run.status === "awaiting_human_submit");
   const submittedOrBeyond = detail.submissions.some((submission) => submission.status === "submitted")
     || ["submitted", "approved", "ready_for_issue", "issued", "complete"].includes(project.status);
@@ -2953,6 +2957,21 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
           ? "Add the client's CCB license number in the Clients tab."
           : "Verified — this client's contractor info will be used on the filing.",
       source: "project.client",
+    }),
+    submitGateCheck({
+      id: "ahj-form-mapping-verified",
+      title: "AHJ form mapping verified",
+      lane: "permit",
+      status: unverifiedForms.length ? "blocker" : "pass",
+      ownerRole: "Permit Coordinator",
+      requirement: "Auto-acquired/uploaded AHJ permit forms are filled by AI-derived field and signature placement. A human must preview each filled form and mark its mapping verified before a real submittal.",
+      evidence: unverifiedForms.length
+        ? unverifiedForms.map((t) => `Unverified mapping: ${t.def.formName}`)
+        : ["All matched AHJ forms are built-in or operator-verified."],
+      nextAction: unverifiedForms.length
+        ? `Open Build → App Docs, download each filled form, confirm the fields/signature are correct, then click "Mark verified": ${unverifiedForms.map((t) => t.def.formName).join(", ")}.`
+        : "AHJ form mappings are verified.",
+      source: "ahj_form_templates.verified",
     }),
     submitGateCheck({
       id: "qc-human-review",
