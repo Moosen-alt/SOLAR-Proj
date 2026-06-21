@@ -10,6 +10,7 @@ import type {
   MboxKnowledgeImportResult,
   PermitStatusCheck,
   AhjResearchResult,
+  UtilityResearchResult,
   PermitUtilityKnowledgeProfile,
   ProjectRecord,
   ProjectStatus,
@@ -1457,6 +1458,118 @@ export function saveVerifiedAhjProfile(
   });
 }
 
+// Onboard an UNKNOWN utility the same way as an AHJ: save the AI-researched NEM /
+// interconnection process as a utility-scoped KB profile (ahj = "" so it matches by
+// state+utility for any AHJ). The smart-inverter-settings / disconnect / aggregation
+// facts are folded into the notes so the NEM worksheet and a coordinator can see them.
+export function saveResearchedUtilityProfile(
+  db: AppDb,
+  input: { state: string; utility: string; ahj?: string },
+  research: UtilityResearchResult,
+): PermitUtilityKnowledgeProfile {
+  const noteParts = [
+    "AI-researched utility NEM profile — verify against the utility's official interconnection page before relying on it.",
+    research.portalPlatform ? `Portal platform: ${research.portalPlatform} (reuse existing ${research.portalPlatform} automation; only the entry URL + login differ per utility).` : "",
+    research.submissionMethod ? `Submission: ${research.submissionMethod}.` : "",
+    research.smartInverterSettings ? `Smart inverter settings: ${research.smartInverterSettings}` : "",
+    research.meterAggregation ? `Meter aggregation: ${research.meterAggregation}` : "",
+    research.acDisconnectRule ? `AC disconnect: ${research.acDisconnectRule}` : "",
+    research.exportLimitNote ? `Export limit: ${research.exportLimitNote}` : "",
+    research.submissionSteps.length ? `Steps: ${research.submissionSteps.join(" → ")}` : "",
+    research.tips.length ? `Tips: ${research.tips.join(" | ")}` : "",
+  ].filter(Boolean);
+  const facts: KnowledgeFacts = {
+    state: input.state,
+    ahj: input.ahj || "",
+    utility: input.utility,
+    portalName: research.portalName,
+    portalUrl: research.portalUrl,
+    portalPlatform: research.portalPlatform,
+    submissionMethod: research.submissionMethod,
+    requiredDocuments: research.requiredDocuments,
+    sources: [learnedSource("ai_researched", "AI utility NEM research")],
+    confidence: "seeded",
+    notes: noteParts.join(" "),
+  };
+  return upsertKnowledge(db, facts, {
+    eventType: "utility.ai_researched",
+    details: { utility: input.utility, state: input.state, platform: research.portalPlatform, confidence: research.confidence, docCount: research.requiredDocuments.length },
+  });
+}
+
+// Human-verified utility NEM profile upsert — a coordinator confirming/correcting what
+// the AI researched (or teaching a utility from scratch). Marks it mixed-confidence +
+// a human-verified source so it outranks AI guesses.
+export function saveVerifiedUtilityProfile(
+  db: AppDb,
+  input: {
+    state: string;
+    utility: string;
+    ahj?: string;
+    portalName?: string;
+    portalPlatform?: string;
+    portalUrl?: string;
+    submissionMethod?: string;
+    requiredDocuments?: string[];
+    smartInverterSettings?: string;
+    meterAggregation?: string;
+    acDisconnectRule?: string;
+    exportLimitNote?: string;
+    notes?: string;
+  },
+): PermitUtilityKnowledgeProfile {
+  if (!input.utility?.trim()) throw new Error("utility is required.");
+  const noteParts = [
+    "Human-verified utility NEM profile.",
+    input.portalPlatform ? `Portal platform: ${input.portalPlatform} (reuse existing ${input.portalPlatform} automation; only entry URL + login differ per utility).` : "",
+    input.submissionMethod ? `Submission: ${input.submissionMethod}.` : "",
+    input.smartInverterSettings ? `Smart inverter settings: ${input.smartInverterSettings}` : "",
+    input.meterAggregation ? `Meter aggregation: ${input.meterAggregation}` : "",
+    input.acDisconnectRule ? `AC disconnect: ${input.acDisconnectRule}` : "",
+    input.exportLimitNote ? `Export limit: ${input.exportLimitNote}` : "",
+    input.notes || "",
+  ].filter(Boolean);
+  const facts: KnowledgeFacts = {
+    state: input.state,
+    ahj: input.ahj || "",
+    utility: input.utility.trim(),
+    portalName: input.portalName,
+    portalUrl: input.portalUrl,
+    portalPlatform: input.portalPlatform,
+    submissionMethod: input.submissionMethod,
+    requiredDocuments: input.requiredDocuments,
+    sources: [learnedSource("official", "Human-verified utility NEM profile")],
+    confidence: "mixed",
+    notes: noteParts.join(" "),
+  };
+  return upsertKnowledge(db, facts, {
+    eventType: "utility.human_verified",
+    details: { utility: input.utility, platform: input.portalPlatform || "", method: input.submissionMethod || "" },
+  });
+}
+
+// Find the best-matching learned UTILITY profile (utility-scoped, ahj = "") for a
+// project's utility + state, so the NEM doc builder can use the utility's real learned
+// interconnection requirements. Tries state+utility, then utility-only.
+export function findLearnedUtilityProfile(
+  db: AppDb,
+  input: { state?: string; utility?: string },
+): PermitUtilityKnowledgeProfile | null {
+  if (!input.utility) return null;
+  const candidates = [
+    knowledgeProfileKey({ state: input.state, ahj: "", utility: input.utility }),
+    knowledgeProfileKey({ state: "", ahj: "", utility: input.utility }),
+  ];
+  for (const key of candidates) {
+    const row = db.get<Row>("SELECT * FROM permit_utility_knowledge WHERE profile_key = ?", [key]);
+    if (row) {
+      const profile = mapKnowledge(row);
+      if (profile.requiredDocuments.length > 0) return profile;
+    }
+  }
+  return null;
+}
+
 export function listKnowledgeProfiles(db: AppDb): PermitUtilityKnowledgeProfile[] {
   return db
     .query<Row>(
@@ -1568,7 +1681,7 @@ function seedOfficialKnowledge(db: AppDb): void {
       timelineNote: "PGE maintains PowerClerk access and interconnection resource forms/checklists for renewable installers.",
       sources: [officialSource("PGE Interconnection Resource Library", "https://portlandgeneral.com/resources-for-solar-installers/interconnection-resource-library")],
       confidence: "seeded",
-      notes: "Official PGE seed for interconnection/NEM document package.",
+      notes: "Official PGE seed for interconnection/NEM document package. Portal: PowerClerk (pgenm.powerclerk.com). Smart inverter settings: a Yes/No portal question — 'Will you be using PGE recommended smart inverter settings?' — answer Yes for UL 1741-SB listed inverters (this is a portal answer + inverter spec/cut-sheet upload, NOT a grid-profile drawing on the plan). Meter aggregation: most residential = No aggregation. AC disconnect: lockable AC disconnect within 10 ft of the PGE meter; max AC output without a disconnect is 7.2 kW at 240V single-phase. Export over 25 kW is evaluated as Tier 2. Meter base must meet ESR 3.10.2.1 (no ringless/banjo bases).",
     },
     {
       state: "OR",
@@ -1593,7 +1706,7 @@ function seedOfficialKnowledge(db: AppDb): void {
         officialSource("Pacific Power Oregon Customer Generation Agreement", "https://www.pacificpower.net/content/dam/pcorp/documents/en/pacificpower/savings-energy-choices/customer-generation/OR_CG_Pre-Connection_Agreement.pdf"),
       ],
       confidence: "seeded",
-      notes: "Official Pacific Power seed for customer generation/NEM path.",
+      notes: "Official Pacific Power seed for customer generation/NEM path. Smart inverter settings work like PGE: a Yes/No election to use the utility's recommended smart inverter settings — answer Yes for UL 1741-SB listed inverters, plus an inverter spec/cut-sheet upload (not a grid-profile drawing). Witness test + meter exchange may apply; some projects exceed 70 business days when equipment upgrades are needed.",
     },
   ];
 

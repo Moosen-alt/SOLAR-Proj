@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import type { AhjResearchResult, CorrectionBucket, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, ProjectRecord } from "../../shared/src/types";
+import type { AhjResearchResult, CorrectionBucket, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, ProjectRecord, UtilityResearchResult } from "../../shared/src/types";
 
 const MODEL = "claude-opus-4-8";
 
@@ -60,6 +60,27 @@ export class StubLLMProvider implements LLMProvider {
       confidence: "low",
       needsHumanVerification: true,
       notes: "No ANTHROPIC_API_KEY configured — AHJ research is off.",
+    };
+  }
+
+  async researchUtilityRequirements(): Promise<UtilityResearchResult> {
+    return {
+      provider: "stub",
+      portalName: "",
+      portalPlatform: "",
+      portalUrl: "",
+      submissionMethod: "",
+      requiredDocuments: [],
+      smartInverterSettings: "",
+      meterAggregation: "",
+      acDisconnectRule: "",
+      exportLimitNote: "",
+      commonCorrections: [],
+      tips: [],
+      submissionSteps: [],
+      confidence: "low",
+      needsHumanVerification: true,
+      notes: "No ANTHROPIC_API_KEY configured — utility research is off.",
     };
   }
 }
@@ -446,6 +467,55 @@ Rules:
       confidence: (["low", "medium", "high"].includes(String(parsed.confidence)) ? parsed.confidence : "low") as "low" | "medium" | "high",
       needsHumanVerification: true,
       notes: "AI-researched from model knowledge. Verify against the AHJ's official site before relying on it; the first real submittal will confirm/correct these requirements.",
+    };
+  }
+
+  async researchUtilityRequirements(input: { utility: string; state: string; ahj?: string }): Promise<UtilityResearchResult> {
+    const system = `You are a solar interconnection onboarding specialist. Given an electric UTILITY the system has never processed, lay out what's needed to file a RESIDENTIAL rooftop solar net-metering (NEM) / interconnection application with that utility, based on your knowledge of US utility customer-generation/interconnection processes.
+
+Return ONLY JSON:
+{
+  "portalName": "<the BRANDED interconnection/NEM portal name the utility uses, e.g. 'PowerClerk', 'Customer Generation online application', or 'Email/PDF application'>",
+  "portalPlatform": "<the UNDERLYING software platform/vendor: e.g. 'PowerClerk' (Clean Power Research), 'Tyler', 'Salesforce', 'custom', or 'None'. Many utilities share PowerClerk, so existing automation is reusable — only the entry URL + login differ.>",
+  "portalUrl": "<best-known interconnection portal/library URL or '' if unsure>",
+  "submissionMethod": "<online portal | email | mail | combination>",
+  "requiredDocuments": ["<each document the utility's NEM/interconnection application requires — e.g. electrical one-line/SLD, site plan, inverter technical specifications / cut sheets, module spec, utility account + meter verification/photo, signed interconnection/customer-generation agreement, labeling photos, commissioning/as-built when required>"],
+  "smartInverterSettings": "<how the utility handles smart-inverter settings in its NEM app. Most utilities ask a simple Yes/No: 'Will you use the utility's recommended smart inverter settings?' — answered Yes when the inverter is a UL 1741-SB listed smart inverter. This is a portal answer + an inverter spec-sheet upload, NOT a grid-profile drawing on the plan set. State the utility's specific behavior if known.>",
+  "meterAggregation": "<whether/how meter aggregation is offered; for most single-home residential projects this is 'No aggregation'>",
+  "acDisconnectRule": "<the utility's AC disconnect rule, e.g. 'lockable AC disconnect within 10 ft of the meter; max AC output permitted without a disconnect varies by service type (e.g. 7.2 kW at 240V single-phase)'>",
+  "exportLimitNote": "<export-capacity limit / tier note, e.g. 'systems over 25 kW export are evaluated as Tier 2'>",
+  "commonCorrections": ["<typical NEM-application correction reasons for this utility>"],
+  "tips": ["<practical filing tips: meter-base/socket requirements, witness test, timelines, fees, PTO process, etc.>"],
+  "submissionSteps": ["<ordered steps a coordinator follows in this utility's NEM application>"],
+  "confidence": "low|medium|high"
+}
+
+Rules:
+- Be specific to the named utility and state when you can; otherwise give the standard customer-generation requirements for that region and say so in tips.
+- This is ADVISORY and must be human-verified — do NOT invent a precise portal URL you are unsure of (use '' instead).
+- For smartInverterSettings, reflect the REAL portal behavior: it is a Yes/No election to use the utility's recommended smart-inverter settings (answer Yes for UL 1741-SB listed inverters) plus an inverter spec/cut-sheet upload — never describe it as a required grid-profile drawing on the plan set.
+- Return valid JSON only.`;
+    const userMsg = `Utility: ${input.utility}\nState: ${input.state}${input.ahj ? `\nAHJ context: ${input.ahj}` : ""}\n\nResearch the residential solar net-metering / interconnection requirements for this utility.`;
+    const raw = await this.askLong(system, userMsg, 3000);
+    const parsed = this.parseJson<Partial<UtilityResearchResult>>(raw, {});
+    const arr = (v: unknown): string[] => (Array.isArray(v) ? v.map((x) => String(x)).filter(Boolean) : []);
+    return {
+      provider: "claude",
+      portalName: String(parsed.portalName || ""),
+      portalPlatform: String(parsed.portalPlatform || ""),
+      portalUrl: String(parsed.portalUrl || ""),
+      submissionMethod: String(parsed.submissionMethod || ""),
+      requiredDocuments: arr(parsed.requiredDocuments),
+      smartInverterSettings: String(parsed.smartInverterSettings || ""),
+      meterAggregation: String(parsed.meterAggregation || ""),
+      acDisconnectRule: String(parsed.acDisconnectRule || ""),
+      exportLimitNote: String(parsed.exportLimitNote || ""),
+      commonCorrections: arr(parsed.commonCorrections),
+      tips: arr(parsed.tips),
+      submissionSteps: arr(parsed.submissionSteps),
+      confidence: (["low", "medium", "high"].includes(String(parsed.confidence)) ? parsed.confidence : "low") as "low" | "medium" | "high",
+      needsHumanVerification: true,
+      notes: "AI-researched from model knowledge. Verify against the utility's official interconnection page before relying on it; the first real submittal will confirm/correct these requirements.",
     };
   }
 }

@@ -1078,6 +1078,14 @@ export interface LLMProvider {
     state: string;
     utility?: string;
   }): Promise<AhjResearchResult>;
+  /** Research an UNKNOWN utility's residential NEM / interconnection process from the
+   *  model's knowledge, so a new utility can be onboarded the same way as an AHJ.
+   *  Advisory — flagged for human verification before relying on it. */
+  researchUtilityRequirements(input: {
+    utility: string;
+    state: string;
+    ahj?: string;
+  }): Promise<UtilityResearchResult>;
 }
 
 export interface AhjResearchResult {
@@ -1094,6 +1102,44 @@ export interface AhjResearchResult {
   commonCorrections: string[];
   tips: string[];
   /** Step-by-step submittal process the model believes this AHJ uses. */
+  submissionSteps: string[];
+  confidence: "low" | "medium" | "high";
+  /** Always true for AI research — a human must verify before trusting it. */
+  needsHumanVerification: boolean;
+  notes: string;
+}
+
+/** AI-researched (or human-verified) onboarding profile for a UTILITY's residential
+ *  net-metering / interconnection process. Mirrors AhjResearchResult but focused on
+ *  the NEM/interconnection portal and its application requirements, so a new utility
+ *  can be taught the same way a new AHJ is. */
+export interface UtilityResearchResult {
+  provider: "claude" | "stub";
+  /** Interconnection/NEM portal name as the utility refers to it (e.g. "PowerClerk"). */
+  portalName: string;
+  /** Underlying portal platform/vendor (PowerClerk / Clean Power Research, Tyler,
+   *  custom). Many utilities share PowerClerk, so the automation is reusable across
+   *  utilities on the same platform — only the entry URL + login differ. */
+  portalPlatform: string;
+  portalUrl: string;
+  submissionMethod: string;
+  /** Documents the utility's NEM/interconnection application requires (one-line, site
+   *  plan, inverter technical specs/cut sheets, account/meter proof, signed agreement…). */
+  requiredDocuments: string[];
+  /** How the utility handles smart-inverter settings in its NEM app — e.g. a Yes/No
+   *  question ("Will you use the utility's recommended smart inverter settings?")
+   *  answered Yes for UL 1741-SB listed inverters. NOT a grid-profile drawing. */
+  smartInverterSettings: string;
+  /** Whether/how meter aggregation is offered (most residential projects: no aggregation). */
+  meterAggregation: string;
+  /** AC disconnect rule (e.g. "lockable AC disconnect within 10 ft of the meter; max AC
+   *  output permitted without a disconnect varies by service type"). */
+  acDisconnectRule: string;
+  /** Export-capacity limit / tier note (e.g. "export over 25 kW is evaluated as Tier 2"). */
+  exportLimitNote: string;
+  commonCorrections: string[];
+  tips: string[];
+  /** Ordered steps a coordinator follows in this utility's NEM application. */
   submissionSteps: string[];
   confidence: "low" | "medium" | "high";
   /** Always true for AI research — a human must verify before trusting it. */

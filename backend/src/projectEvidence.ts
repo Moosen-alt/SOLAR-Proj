@@ -271,9 +271,30 @@ export function evidenceForTopic(project: ProjectRecord, topic: EvidenceTopic): 
       return evidence(project, topic, present, high ? "high" : present ? "medium" : "low", patterns);
     }
     case "inverterSettings": {
-      const patterns = [/UL\s*1741\s*SB/i, /inverter settings/i, /smart inverter/i, /IEEE\s*1547/i, /utility settings/i];
+      // For utility NEM (PGE PowerClerk / Pacific Power), "smart inverter settings" is
+      // a portal Yes/No election to use the utility's RECOMMENDED smart inverter settings
+      // — answered Yes for a UL 1741-SB listed smart inverter — plus an inverter technical
+      // specification / cut-sheet upload. It is NOT a grid-profile drawing on the plan set.
+      // So: explicit listing/settings text = high; an identified inverter model OR a spec/
+      // cut-sheet reference = medium (the spec upload + "Yes" answer satisfies the utility).
+      const patterns = [
+        /UL\s*1741\s*SB/i,
+        /inverter settings/i,
+        /smart inverter/i,
+        /IEEE\s*1547/i,
+        /utility[- ]recommended.*settings/i,
+        /recommended smart inverter settings/i,
+        /utility settings/i,
+      ];
       const present = hasAny(project, patterns);
-      const specOnly = !present && hasAny(project, [/inverter spec/i, /microinverter spec/i, /\bUL\s*1741\b/i]);
+      const snapshot = (project.parserSnapshot || {}) as Record<string, unknown>;
+      const inverterModelCaptured = Boolean(
+        text(snapshot.pvMicroModel).trim() || text(snapshot.invModel).trim() || text(snapshot.gatewayModel).trim(),
+      );
+      const specOnly = !present && (
+        inverterModelCaptured ||
+        hasAny(project, [/inverter spec/i, /microinverter spec/i, /cut ?sheet/i, /\bUL\s*1741\b/i, /datasheet/i])
+      );
       return evidence(project, topic, present || specOnly, present ? "high" : specOnly ? "medium" : "low", patterns);
     }
     case "batteryMode": {

@@ -3001,6 +3001,35 @@ if ($("addAhjBtn")) {
     }
   });
 }
+
+if ($("addUtilityBtn")) {
+  $("addUtilityBtn").addEventListener("click", async () => {
+    const utility = $("addUtilityName").value.trim();
+    const stateVal = $("addUtilityState").value.trim();
+    const statusEl = $("addUtilityStatus");
+    if (!utility) { statusEl.textContent = "Enter a utility name."; return; }
+    $("addUtilityBtn").disabled = true;
+    statusEl.textContent = `Researching ${utility}…`;
+    try {
+      const r = await api("/api/knowledge-base/research-utility", { method: "POST", body: JSON.stringify({ utility, state: stateVal }) });
+      if (r.saved) {
+        const plat = r.research.portalPlatform ? ` — NEM portal "${r.research.portalName}" on ${r.research.portalPlatform} (reuse existing ${r.research.portalPlatform} automation)` : (r.research.portalName ? ` — NEM portal "${r.research.portalName}"` : "");
+        const sis = r.research.smartInverterSettings ? ` Smart inverter settings: ${r.research.smartInverterSettings}` : "";
+        statusEl.textContent = `✓ Added ${utility}: ${r.research.requiredDocuments.length} required doc(s)${plat}. Confidence ${r.research.confidence} — verify before relying on it.${sis}`;
+        $("addUtilityName").value = "";
+        await loadKnowledgeBase();
+      } else if (r.research?.provider === "stub") {
+        statusEl.textContent = "AI is off — set ANTHROPIC_API_KEY on the server to research utilities.";
+      } else {
+        statusEl.textContent = "No requirements returned — try a more specific utility name/state.";
+      }
+    } catch (err) {
+      statusEl.textContent = err.message || "Research failed.";
+    } finally {
+      $("addUtilityBtn").disabled = false;
+    }
+  });
+}
 $("projectStatusFilter").addEventListener("change", (e) => {
   projectFilterState.status = e.target.value;
   reloadProjects();

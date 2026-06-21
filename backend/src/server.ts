@@ -7,7 +7,7 @@ import path from "node:path";
 import { openDatabase } from "./db";
 import { HttpError } from "./httpError";
 import { collectDiagnostics, logErrorBlock, logger, requestLogger, startupBanner } from "./logger";
-import { saveVerifiedAhjProfile } from "./knowledgeBase";
+import { saveVerifiedAhjProfile, saveVerifiedUtilityProfile } from "./knowledgeBase";
 import { createClient, deleteClient, getClient, listClients, updateClient } from "./clients";
 import { enqueueJob, getJob, listJobs, processNextJob, startJobWorker } from "./jobQueue";
 import { createUser, getUserWorkload, listUsers, updateUser, assignProjectToUser } from "./users";
@@ -46,6 +46,7 @@ import {
   createProject,
   updateProject,
   researchAndSaveAhj,
+  researchAndSaveUtility,
   deleteProject,
   configureEmailTrackingSource,
   getEmailTrackerStatus,
@@ -486,6 +487,45 @@ app.post("/api/knowledge-base/ahj-profile", (req, res) => {
     portalUrl: b.portalUrl ? String(b.portalUrl) : undefined,
     submissionMethod: b.submissionMethod ? String(b.submissionMethod) : undefined,
     requiredDocuments: Array.isArray(b.requiredDocuments) ? b.requiredDocuments.map(String) : undefined,
+    notes: b.notes ? String(b.notes) : undefined,
+  });
+  res.status(201).json({ saved: true, profileKey: profile.profileKey, profile });
+});
+
+// Onboard a new UTILITY with the LLM — the same easy "add a utility" workflow used for
+// AHJs: research the NEM/interconnection portal + required docs + smart-inverter/disconnect
+// rules and save them to the KB so the utility is known next time.
+app.post("/api/knowledge-base/research-utility", asyncHandler(async (req, res) => {
+  const utility = String(req.body?.utility || "").trim();
+  const state = String(req.body?.state || "").trim();
+  const ahj = req.body?.ahj ? String(req.body.ahj).trim() : undefined;
+  if (!utility) throw new HttpError(400, "utility is required.");
+  try {
+    res.status(201).json(await researchAndSaveUtility(db, { utility, state, ahj }));
+  } catch (err) {
+    throw normalizeLlmError(err);
+  }
+}));
+
+// Human-verified utility NEM profile — a coordinator confirming/correcting the AI's
+// guess, or teaching a utility from scratch (e.g. "Idaho Power uses PowerClerk; smart
+// inverter settings = Yes"). Outranks AI research.
+app.post("/api/knowledge-base/utility-profile", (req, res) => {
+  const b = req.body || {};
+  if (!String(b.utility || "").trim()) throw new HttpError(400, "utility is required.");
+  const profile = saveVerifiedUtilityProfile(db, {
+    state: String(b.state || ""),
+    utility: String(b.utility),
+    ahj: b.ahj ? String(b.ahj) : undefined,
+    portalName: b.portalName ? String(b.portalName) : undefined,
+    portalPlatform: b.portalPlatform ? String(b.portalPlatform) : undefined,
+    portalUrl: b.portalUrl ? String(b.portalUrl) : undefined,
+    submissionMethod: b.submissionMethod ? String(b.submissionMethod) : undefined,
+    requiredDocuments: Array.isArray(b.requiredDocuments) ? b.requiredDocuments.map(String) : undefined,
+    smartInverterSettings: b.smartInverterSettings ? String(b.smartInverterSettings) : undefined,
+    meterAggregation: b.meterAggregation ? String(b.meterAggregation) : undefined,
+    acDisconnectRule: b.acDisconnectRule ? String(b.acDisconnectRule) : undefined,
+    exportLimitNote: b.exportLimitNote ? String(b.exportLimitNote) : undefined,
     notes: b.notes ? String(b.notes) : undefined,
   });
   res.status(201).json({ saved: true, profileKey: profile.profileKey, profile });

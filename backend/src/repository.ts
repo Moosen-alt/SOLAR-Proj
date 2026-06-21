@@ -78,6 +78,7 @@ import {
   learnFromSubmissionConfirmation,
   findLearnedProfileForProject,
   saveResearchedAhjProfile,
+  saveResearchedUtilityProfile,
   listKnowledgeProfiles,
   importMboxKnowledge,
   importMboxKnowledgeFromFile,
@@ -439,6 +440,25 @@ export async function researchAndSaveAhj(
     return { research, profileKey: null, saved: false };
   }
   const profile = saveResearchedAhjProfile(db, { ahj: input.ahj.trim(), state: (input.state || "").trim(), utility: input.utility?.trim() }, research);
+  return { research, profileKey: profile.profileKey, saved: true };
+}
+
+// Onboard an unknown UTILITY: research its residential NEM/interconnection process
+// with the LLM, then save it as a utility-scoped KB profile so the utility is known
+// next time — the same teach-once flow used for AHJs. Advisory — flagged for human
+// verification. Returns the research + saved profile key (stub when no API key).
+export async function researchAndSaveUtility(
+  db: AppDb,
+  input: { utility: string; state: string; ahj?: string },
+): Promise<{ research: import("../../shared/src/types").UtilityResearchResult; profileKey: string | null; saved: boolean }> {
+  if (!input.utility?.trim()) throw new HttpError(400, "utility is required.");
+  const { createLLMProvider } = await import("./llm");
+  const llm = createLLMProvider();
+  const research = await llm.researchUtilityRequirements({ utility: input.utility.trim(), state: (input.state || "").trim(), ahj: input.ahj?.trim() });
+  if (research.provider === "stub" || !research.requiredDocuments.length) {
+    return { research, profileKey: null, saved: false };
+  }
+  const profile = saveResearchedUtilityProfile(db, { utility: input.utility.trim(), state: (input.state || "").trim(), ahj: input.ahj?.trim() }, research);
   return { research, profileKey: profile.profileKey, saved: true };
 }
 
