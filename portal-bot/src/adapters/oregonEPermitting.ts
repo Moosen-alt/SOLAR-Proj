@@ -191,14 +191,22 @@ export class OregonEPermittingAdapter implements PortalAdapter {
       // Applicant / contact — select from account (pre-existing company contact)
       await this.page.locator("#ctl00_PlaceHolderMain_Applicant_19Edit_btnAddNew").click().catch(() => null);
 
-      const installerCompanyName = str(s["installerCompanyName"] ?? s["installer_company_name"]) || "Infinity Solar";
-      const installerEmail = str(s["installerEmail"] ?? s["installer_email"]) || "permit@infinitysolarusa.com";
+      // NEVER hardcode contractor identity. These come from the assigned client via
+      // clientStagingOverlay (prepareSubmission guarantees clientId + CCB). Refuse to
+      // fill the applicant/contact with blank or default info.
+      const installerCompanyName = str(s["installerCompanyName"] ?? s["installer_company_name"]);
+      const installerEmail = str(s["installerEmail"] ?? s["installer_email"]);
+      if (!installerCompanyName || !installerEmail) {
+        throw new Error(
+          "Oregon ePermitting: refusing to fill the applicant/contact — no submitting-client company/email on the staging overlay. Assign a client with full licensing before staging.",
+        );
+      }
 
       const contactFrame = this.page.frameLocator('iframe[name="ACADialogFrame"]');
       const contactFirst = await contactFrame.getByRole("textbox", { name: "First:" }).count();
       if (contactFirst > 0) {
-        const firstName = installerCompanyName.split(" ")[0] ?? "Infinity";
-        const lastName = installerCompanyName.split(" ").slice(1).join(" ") || "Solar";
+        const firstName = installerCompanyName.split(" ")[0] ?? installerCompanyName;
+        const lastName = installerCompanyName.split(" ").slice(1).join(" ") || firstName;
         await contactFrame.getByRole("textbox", { name: "First:" }).fill(firstName);
         await contactFrame.getByRole("textbox", { name: "Last:" }).fill(lastName);
         await contactFrame.getByRole("textbox", { name: "E-mail:" }).fill(installerEmail);

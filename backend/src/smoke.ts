@@ -2,6 +2,7 @@ import "dotenv/config";
 import fs from "node:fs";
 import path from "node:path";
 import { openDatabase } from "./db";
+import { createClient } from "./clients";
 import {
   createPermitCheckTarget,
   createProject,
@@ -45,7 +46,19 @@ if (seededKnowledge.length < 300) {
   throw new Error(`Expected seeded AHJ/utility knowledge base, got ${seededKnowledge.length} profiles.`);
 }
 
+// A submitting client with a CCB is required before staging (the submitting-client
+// gate) — mirror the real intake flow by onboarding one and assigning it.
+const smokeClient = createClient(db, {
+  companyName: "Smoke Solar LLC",
+  legalBusinessName: "Smoke Solar LLC",
+  ccbLicenseNumber: "999999",
+  electricalLicenseNumber: "C9999",
+  businessEmail: "ops@smokesolar.test",
+  businessPhone: "(503) 555-0100",
+});
+
 const detail = createProject(db, {
+  clientId: smokeClient.id,
   owner: "Smoke Test",
   street: "123 Solar Way",
   city: "Portland",

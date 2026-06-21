@@ -127,12 +127,24 @@ export class PowerClerkAdapter implements PortalAdapter {
     try {
       const s = snap(project);
 
-      // --- Submitting party / installer contact -----------------------------
-      const installerFirst = str(s["installerFirstName"] ?? s["installer_first_name"]) || "Seamus";
-      const installerLast = str(s["installerLastName"] ?? s["installer_last_name"]) || "Ericson";
-      const installerAddress = str(s["installerAddress"] ?? s["installer_address"]) || "808 SE Chkalov Dr ST 3-337";
-      const installerEmail = str(s["installerEmail"] ?? s["installer_email"]) || "permit@infinitysolarusa.com";
-      const installerPhone = str(s["installerPhone"] ?? s["installer_phone"]) || "(800) 818-0598";
+      // --- Submitting party / installer contact (from the assigned client overlay) ---
+      // NEVER hardcode contractor identity. clientStagingOverlay populates these from
+      // the project's assigned client (prepareSubmission guarantees clientId + CCB), so
+      // they must be present. The guard below refuses to fill the block with blank or
+      // default info — so we can never submit another client's or a default contractor's
+      // identity to the utility.
+      const installerCompanyName = str(s["installerCompanyName"] ?? s["installer_company_name"]);
+      const installerEmail = str(s["installerEmail"] ?? s["installer_email"]);
+      const installerPhone = str(s["installerPhone"] ?? s["installer_phone"]);
+      const installerAddress = str(s["installerAddress"] ?? s["installer_address"] ?? s["installerStreet"] ?? s["installer_street"]);
+      const installerContact = str(s["installerContactName"] ?? s["installer_contact_name"]);
+      const installerFirst = installerContact.split(/\s+/)[0] ?? "";
+      const installerLast = installerContact.split(/\s+/).slice(1).join(" ") || installerFirst;
+      if (!installerCompanyName || !installerEmail) {
+        throw new Error(
+          "PowerClerk: refusing to fill the installer block — no submitting-client company/email on the staging overlay. Assign a client with full licensing before staging.",
+        );
+      }
 
       // The page may render multiple contact sections; pin the installer block
       // to the first matching field of each kind to stay unambiguous.
@@ -166,8 +178,8 @@ export class PowerClerkAdapter implements PortalAdapter {
       if (ownerEmail) await applicantScope.getByRole("textbox", { name: "Email" }).first().fill(ownerEmail);
       await page.getByRole("button", { name: "Next", exact: true }).click();
 
-      // --- Installer company selection --------------------------------------
-      const installerCompany = str(s["installerCompanyName"] ?? s["installer_company_name"]) || "TML INTERNATIONAL LLC";
+      // --- Installer company selection (same authoritative client value) -----
+      const installerCompany = installerCompanyName;
       await page.getByLabel("Installer Company").selectOption({ label: installerCompany }).catch(async () => {
         // Fall back to first option if exact label is unavailable
         await page.getByLabel("Installer Company").selectOption({ index: 1 }).catch(() => null);

@@ -89,6 +89,9 @@ export async function openDatabase(): Promise<AppDb> {
   db.pragma("journal_mode = WAL");
   db.pragma("synchronous = NORMAL");
   db.pragma("foreign_keys = ON");
+  // Wait up to 5s for a lock instead of failing immediately — brief contention
+  // (e.g. the backup VACUUM INTO overlapping a write) should retry, not error.
+  db.pragma("busy_timeout = 5000");
 
   const appDb = new AppDb(db);
   migrate(appDb);

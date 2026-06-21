@@ -551,7 +551,7 @@ function statusLabel(value: string | null | undefined, fallback: PermitCheckOutc
   return fallback ? fallback.replaceAll("_", " ") : null;
 }
 
-function getProjectLaneStatusSummary(db: AppDb, projectId: string, projectStatus: ProjectRecord["status"]): Pick<
+type LaneStatusSummary = Pick<
   ProjectListItem,
   | "latestPermitLabel"
   | "latestPermitOutcome"
@@ -561,14 +561,28 @@ function getProjectLaneStatusSummary(db: AppDb, projectId: string, projectStatus
   | "latestNemOutcome"
   | "latestNemCheckedAt"
   | "nemApproved"
-> {
+>;
+
+// DB wrapper for single-project callers: load this project's recent checks/emails, then
+// compute. The project-LIST path batch-loads once and calls computeLaneStatusSummary
+// directly (see getProjectList) to avoid an N+1 query per row.
+function getProjectLaneStatusSummary(db: AppDb, projectId: string, projectStatus: ProjectRecord["status"]): LaneStatusSummary {
   const checks = db
     .query<Row>("SELECT * FROM permit_status_checks WHERE project_id = ? ORDER BY created_at DESC LIMIT 50", [projectId])
     .map(mapPermitStatusCheck);
   const emails = db
     .query<Row>("SELECT * FROM email_project_matches WHERE project_id = ? ORDER BY created_at DESC LIMIT 50", [projectId])
     .map(mapEmailProjectMatch);
+  return computeLaneStatusSummary(projectStatus, checks, emails);
+}
 
+// Pure analysis over already-loaded checks/emails — no DB access, so the list path can
+// batch-load all pages' rows in two queries and call this per project.
+function computeLaneStatusSummary(
+  projectStatus: ProjectRecord["status"],
+  checks: ReturnType<typeof mapPermitStatusCheck>[],
+  emails: ReturnType<typeof mapEmailProjectMatch>[],
+): LaneStatusSummary {
   const latestPermitCheck = checks.find(hasPermitSignal) || checks.find((check) => !hasNemSignal(check)) || null;
   const latestNemCheck = checks.find(hasNemSignal) || null;
   const latestPermitEmail = emails.find((email) => hasPermitSignal(email) && email.workflow !== "nem") || null;
@@ -655,10 +669,31 @@ export function getProjectList(
     [today, today, ...filterParams, limit, offset],
   );
 
+  // Batch-load the lane-status inputs for the entire page in TWO queries (not 2 per
+  // row) to avoid an N+1 that stalls the dashboard at thousands of projects. Global
+  // ORDER BY created_at DESC means each project's rows arrive newest-first, so taking
+  // the first 50 per project preserves the original per-project LIMIT 50 semantics.
+  const pageIds = rows.map((r) => text(r.id)).filter(Boolean);
+  const checksByProject = new Map<string, ReturnType<typeof mapPermitStatusCheck>[]>();
+  const emailsByProject = new Map<string, ReturnType<typeof mapEmailProjectMatch>[]>();
+  if (pageIds.length) {
+    const placeholders = pageIds.map(() => "?").join(",");
+    for (const r of db.query<Row>(`SELECT * FROM permit_status_checks WHERE project_id IN (${placeholders}) ORDER BY created_at DESC`, pageIds)) {
+      const pid = text(r.project_id);
+      const arr = checksByProject.get(pid) ?? [];
+      if (arr.length < 50) { arr.push(mapPermitStatusCheck(r)); checksByProject.set(pid, arr); }
+    }
+    for (const r of db.query<Row>(`SELECT * FROM email_project_matches WHERE project_id IN (${placeholders}) ORDER BY created_at DESC`, pageIds)) {
+      const pid = text(r.project_id);
+      const arr = emailsByProject.get(pid) ?? [];
+      if (arr.length < 50) { arr.push(mapEmailProjectMatch(r)); emailsByProject.set(pid, arr); }
+    }
+  }
+
   const projects = rows.map((row) => {
     const project = mapProject(row);
     const { parserSnapshot: _parserSnapshot, ...listBase } = project;
-    const laneSummary = getProjectLaneStatusSummary(db, project.id, project.status);
+    const laneSummary = computeLaneStatusSummary(project.status, checksByProject.get(project.id) ?? [], emailsByProject.get(project.id) ?? []);
     return {
       ...listBase,
       qcFailCount: Number(row.qcFailCount ?? 0),
