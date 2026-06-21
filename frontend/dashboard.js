@@ -1289,6 +1289,37 @@ function submitGateClass(value) {
   return "info";
 }
 
+// Maps each submit-gate blocker to the on-page panel that fixes it: which stage
+// accordion to open and which element to scroll to. Clicking a blocker link in
+// the "can't submit" note jumps the operator straight there.
+const SUBMIT_FIX_TARGETS = {
+  "submitting-client": { el: "projectClientSelect" },
+  "qc-human-review": { stage: 1, el: "reviewItems" },
+  "ahj-form-mapping-verified": { stage: 2, el: "applicationDocs" },
+  "ahj-nem-docs": { stage: 2, el: "applicationDocs" },
+  "permit-requirements": { stage: 2, el: "reviewerGate" },
+  "installer-design-actions": { stage: 2, el: "reviewerGate" },
+  "nem-preflight": { stage: 3, el: "submitGate" },
+};
+
+function gotoSubmitFix(checkId) {
+  const t = SUBMIT_FIX_TARGETS[checkId] || { stage: 3, el: "submitGate" };
+  if (t.stage != null) {
+    const acc = document.querySelector(`.stage-accordion[data-stage-index="${t.stage}"]`);
+    if (acc) acc.open = true;
+  }
+  // Let the accordion expand before scrolling to the (now visible) target.
+  requestAnimationFrame(() => {
+    const el = $(t.el);
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      // Brief highlight so the operator sees what to act on.
+      el.classList.add("fix-flash");
+      setTimeout(() => el.classList.remove("fix-flash"), 1600);
+    }
+  });
+}
+
 function renderSubmitGate() {
   const gate = state.submitGate;
   if (!gate) {
@@ -1314,7 +1345,10 @@ function renderSubmitGate() {
     if (!gate.canPrepareSubmission && blockers.length) {
       note.hidden = false;
       note.innerHTML = `<strong>⛔ Can't submit yet — ${blockers.length} blocker(s):</strong> `
-        + blockers.map((b) => `${esc(b.title)} (${esc(b.nextAction || "resolve this")})`).join(" · ");
+        + blockers.map((b) => `<a href="#" class="fix-link" data-fix="${esc(b.id)}">${esc(b.title)} →</a> <span class="muted">${esc(b.nextAction || "resolve this")}</span>`).join("<br>");
+      note.querySelectorAll(".fix-link").forEach((a) => {
+        a.addEventListener("click", (e) => { e.preventDefault(); gotoSubmitFix(a.dataset.fix); });
+      });
     } else {
       note.hidden = true;
     }
