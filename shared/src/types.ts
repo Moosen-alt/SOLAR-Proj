@@ -71,7 +71,12 @@ export interface ClientRecord {
   ccbLicenseNumber: string;
   ccbExpiration: string;
   electricalLicenseNumber: string;
+  // Metro/city contractor license (e.g. Portland Metro), and the supervising
+  // electrician's own personal license — distinct from the company electrical
+  // contractor license above. Many AHJ permit forms require all three.
+  metroCityLicenseNumber: string;
   electricalSupervisorName: string;
+  electricianLicenseNumber: string;
   businessAddress: string;
   businessCity: string;
   businessState: string;

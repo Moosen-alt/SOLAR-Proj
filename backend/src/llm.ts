@@ -195,11 +195,13 @@ CLIENT ONBOARDING — the INSTALLER/CONTRACTOR shown on the plan set title block
   selected client), they're a suggestion to create/match the client:
 - contractorCompany: installer/contractor business name
 - contractorCcb: CCB / contractor license number
-- contractorElectricalLicense: electrical contractor license number
+- contractorElectricalLicense: the company's electrical contractor license number (e.g. "C1556")
+- contractorMetroCityLicense: metro/city contractor or business license number, if shown (e.g. Portland Metro / city license)
 - contractorAddress: contractor business address
 - contractorPhone: contractor phone
 - contractorEmail: contractor email
 - contractorSupervisor: supervising electrician name
+- contractorElectricianLicense: the supervising electrician's PERSONAL license number (e.g. "5787S") — distinct from the company electrical license above
 
 NARRATIVE EVIDENCE BLOBS — also include these as fields (value = a short factual summary; cite sheet numbers). These let plan review confirm each required element is shown. Write what the plan set ACTUALLY shows; if an element is absent, say so plainly ("No rapid shutdown note found"):
 - electricalCalcText: summarize the SLD/one-line — SLD sheet #, modules→inverter→POI, disconnects/OCPD, busbar/main/PV breaker math (705.12), rapid shutdown (690.12), grounding/bonding, meter/service relationship

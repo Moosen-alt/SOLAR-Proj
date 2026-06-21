@@ -707,6 +707,52 @@ function migrate(db: AppDb): void {
 
   seedBaselineRuleRows(db);
   seedInitialKnowledgeBase(db);
+  seedTestInstaller(db);
+}
+
+// Seeds the primary test installer (TML INTERNATIONAL LLC) so project flows can
+// be exercised end-to-end before onboarding live installers. Idempotent: only
+// inserts if a client with this CCB does not already exist, so edits made in the
+// UI survive within a database. Because the dev DB is ephemeral, this keeps the
+// test client available in every fresh environment. Turn it off for go-live with
+// SEED_TEST_INSTALLER=false (then onboard real installers through the Clients UI).
+function seedTestInstaller(db: AppDb): void {
+  if (process.env.SEED_TEST_INSTALLER === "false") return;
+  const ccb = "223690";
+  const existing = db.get<{ id: string }>("SELECT id FROM clients WHERE ccb_license_number = ?", [ccb]);
+  if (existing) return;
+  db.run(
+    `INSERT INTO clients (
+       id, company_name, legal_business_name, contact_name, contact_email, phone,
+       billing_status, notes,
+       ccb_license_number, electrical_license_number, metro_city_license_number,
+       electrical_supervisor_name, electrician_license_number,
+       business_address, business_city, business_state, business_zip,
+       business_phone, business_email, created_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      "tml-international-llc",
+      "TML INTERNATIONAL LLC",
+      "TML INTERNATIONAL LLC",
+      "Charles Bitton",
+      "permit@infinitysolarusa.com",
+      "(800) 818-0598",
+      "active",
+      "Primary test installer for validating project flows prior to go-live. Onboarded from installer profile; verify licensing before any real submittal.",
+      ccb,
+      "C1556",
+      "14838",
+      "Charles Bitton",
+      "5787S",
+      "808 SE Chkalov Dr ST 3-337",
+      "Vancouver",
+      "WA",
+      "98683",
+      "(800) 818-0598",
+      "permit@infinitysolarusa.com",
+      "2026-06-21T00:00:00.000Z",
+    ],
+  );
 }
 
 const CLIENT_LICENSING_COLUMNS: [string, string][] = [
@@ -715,7 +761,9 @@ const CLIENT_LICENSING_COLUMNS: [string, string][] = [
   ["ccb_license_number", "TEXT NOT NULL DEFAULT ''"],
   ["ccb_expiration", "TEXT NOT NULL DEFAULT ''"],
   ["electrical_license_number", "TEXT NOT NULL DEFAULT ''"],
+  ["metro_city_license_number", "TEXT NOT NULL DEFAULT ''"],
   ["electrical_supervisor_name", "TEXT NOT NULL DEFAULT ''"],
+  ["electrician_license_number", "TEXT NOT NULL DEFAULT ''"],
   ["business_address", "TEXT NOT NULL DEFAULT ''"],
   ["business_city", "TEXT NOT NULL DEFAULT ''"],
   ["business_state", "TEXT NOT NULL DEFAULT ''"],

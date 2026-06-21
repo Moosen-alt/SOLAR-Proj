@@ -105,6 +105,8 @@ function sourcesFor(project: ProjectRecord): EvidenceSource[] {
     ["roofPlanNotesText", "Roof plan notes"],
     ["structuralCalcText", "Structural calculation text"],
     ["electricalCalcText", "Electrical calculation text"],
+    ["inverterSettings", "Inverter settings"],
+    ["inverterSettingsText", "Inverter settings text"],
     ["labelsText", "Labels text"],
     ["ubMeterVerification", "Utility bill/meter verification"],
     ["locateCalloutText", "Locate callout"],

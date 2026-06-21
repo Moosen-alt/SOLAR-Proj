@@ -3603,7 +3603,7 @@ const LLM_SNAPSHOT_KEYS = new Set([
 // Contractor block extracted from the plan set = a SUGGESTED client to onboard.
 // It never fills the project's contractor fields (those come from the selected
 // client) — it's only surfaced so the coordinator can create/match the client.
-const CONTRACTOR_SUGGEST_KEYS = ['contractorCompany','contractorCcb','contractorElectricalLicense','contractorAddress','contractorPhone','contractorEmail','contractorSupervisor'];
+const CONTRACTOR_SUGGEST_KEYS = ['contractorCompany','contractorCcb','contractorElectricalLicense','contractorMetroCityLicense','contractorAddress','contractorPhone','contractorEmail','contractorSupervisor','contractorElectricianLicense'];
 
 function applyExtraction(result, applied, opts = {}){
   const fields = result.fields || {};
@@ -3650,7 +3650,7 @@ function applyExtraction(result, applied, opts = {}){
   // Surface the plan-set contractor as a client-onboarding suggestion.
   if (state.suggestedClient && state.suggestedClient.contractorCompany){
     const s = state.suggestedClient;
-    const bits = [s.contractorCompany, s.contractorCcb ? `CCB ${s.contractorCcb}` : '', s.contractorElectricalLicense ? `Elec ${s.contractorElectricalLicense}` : '', s.contractorPhone, s.contractorEmail].filter(Boolean).join(' | ');
+    const bits = [s.contractorCompany, s.contractorCcb ? `CCB ${s.contractorCcb}` : '', s.contractorElectricalLicense ? `Elec ${s.contractorElectricalLicense}` : '', s.contractorMetroCityLicense ? `Metro/City ${s.contractorMetroCityLicense}` : '', s.contractorSupervisor ? `Supervisor ${s.contractorSupervisor}` : '', s.contractorElectricianLicense ? `Electrician Lic ${s.contractorElectricianLicense}` : '', s.contractorPhone, s.contractorEmail].filter(Boolean).join(' | ');
     state.reviewFlags.push(`Plan-set installer (onboard as client if new): ${bits}`);
   }
 }
@@ -4677,13 +4677,17 @@ async function loadContractorInfo(clientId) {
     setVal('installerZip', client.businessZip || '');
     setVal('electricalLicenseNumber', client.electricalLicenseNumber || '');
     setVal('contractorLicenseNumber', client.ccbLicenseNumber || '');
+    setVal('metroCityLicenseNumber', client.metroCityLicenseNumber || '');
     setVal('supervisingElectrician', client.electricalSupervisorName || '');
+    setVal('electricianLicenseNumber', client.electricianLicenseNumber || '');
     // A readable summary of who will be on this submittal — for the coordinator to verify.
     const notes = [
       client.companyName || client.legalBusinessName,
       client.ccbLicenseNumber ? `CCB ${client.ccbLicenseNumber}` : '',
       client.electricalLicenseNumber ? `Elec Lic ${client.electricalLicenseNumber}` : '',
+      client.metroCityLicenseNumber ? `Metro/City ${client.metroCityLicenseNumber}` : '',
       client.electricalSupervisorName ? `Supervisor ${client.electricalSupervisorName}` : '',
+      client.electricianLicenseNumber ? `Electrician Lic ${client.electricianLicenseNumber}` : '',
       client.businessEmail || client.contactEmail,
       client.businessPhone || client.phone,
     ].filter(Boolean).join(' | ');
