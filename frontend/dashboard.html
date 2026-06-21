@@ -26,6 +26,12 @@
     </nav>
   </header>
 
+  <nav class="page-tabs" aria-label="Primary">
+    <button class="page-tab" data-page="dashboard" aria-selected="true"><i data-lucide="layout-dashboard"></i><span>Dashboard</span></button>
+    <button class="page-tab" data-page="projects" aria-selected="false"><i data-lucide="folder-kanban"></i><span>Projects</span></button>
+    <button class="page-tab" data-page="team" aria-selected="false"><i data-lucide="users-round"></i><span>Team Workload</span></button>
+  </nav>
+
   <details id="startHereGuide" class="start-here">
     <summary>
       <span class="start-here-title"><i data-lucide="compass"></i> Start here — how a project flows</span>
@@ -46,7 +52,7 @@
   </details>
 
   <main class="layout">
-    <section class="project-list" aria-label="Projects">
+    <section class="project-list" id="pageList" aria-label="Projects">
       <!-- Daily Report hidden for solo operation: same role-workload noise as the
            Action Queue (Data QA / Permit Ops / NEM Ops / Submission Specialist
            counts). Kept in DOM with its IDs so loaders/renders never error.
@@ -89,16 +95,12 @@
         </div>
       </div>
       <div class="section-head">
-        <h2>Projects</h2>
+        <h2 id="listPageTitle">Dashboard</h2>
         <div class="actions">
           <span id="projectCount" class="badge">0</span>
-          <div class="view-toggle" role="tablist" aria-label="Project view">
-            <button id="viewBoardBtn" class="view-toggle-btn" role="tab" aria-selected="true"><i data-lucide="kanban"></i><span>Board</span></button>
-            <button id="viewTableBtn" class="view-toggle-btn" role="tab" aria-selected="false"><i data-lucide="table"></i><span>Table</span></button>
-          </div>
         </div>
       </div>
-      <div class="project-filters">
+      <div class="project-filters" id="listFilters">
         <input id="projectSearch" type="search" placeholder="Search homeowner, address, AHJ…" />
         <select id="projectStatusFilter">
           <option value="">All statuses</option>
@@ -146,9 +148,9 @@
         </select>
       </div>
       <!-- Stage board: six columns = pipeline stages; a card per project in its
-           current stage. Default view for the solo "where is everything" glance. -->
+           current stage. The "Dashboard" page — the "where is everything" glance. -->
       <div id="projectBoard" class="stage-board"></div>
-      <div id="projectTableWrap" class="table-wrap" hidden>
+      <div id="projectTableWrap" class="table-wrap">
         <table>
           <thead>
             <tr>
@@ -167,18 +169,21 @@
         </table>
       </div>
 
-      <div class="section-head subhead">
-        <h2>Team Workload</h2>
-        <span id="workloadStatus" class="badge">syncing</span>
-      </div>
-      <div id="teamWorkload" class="team-workload">
-        <p class="muted">Loading team workload...</p>
+      <div id="pageTeam" hidden>
+        <div class="section-head subhead">
+          <h2>Team Workload</h2>
+          <span id="workloadStatus" class="badge">syncing</span>
+        </div>
+        <div id="teamWorkload" class="team-workload">
+          <p class="muted">Loading team workload...</p>
+        </div>
       </div>
       <!-- Knowledge Base, learning imports, and Portal Recipes moved to the
            "Knowledge" modal (top bar) to keep the project column focused. -->
     </section>
 
-    <section class="detail" aria-label="Project detail">
+    <section class="detail" id="pageProject" aria-label="Project detail" hidden>
+      <button id="backToListBtn" class="secondary" style="margin-bottom:12px"><i data-lucide="arrow-left"></i><span>Back to Dashboard</span></button>
       <div id="emptyState" class="empty">
         <h2>No project selected</h2>
         <p>Open the parser, save a parsed project, then it will appear here for QC and staging.</p>

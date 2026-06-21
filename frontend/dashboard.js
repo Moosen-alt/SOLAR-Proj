@@ -116,9 +116,10 @@ async function loadProjects() {
   await loadSignatures();
   await loadEmailTracker();
   const selectedStillExists = state.projects.some((project) => project.id === state.selectedProjectId);
-  if (!state.selectedProjectId && state.projects[0]) {
-    await selectProject(state.projects[0].id);
-  } else if (state.selectedProjectId && selectedStillExists) {
+  // Don't auto-open a project on load — the landing page is the Dashboard board.
+  // Only refresh the open project's detail when the operator is actually on its
+  // workflow page (so a background list refresh doesn't yank them off Dashboard).
+  if (state.selectedProjectId && selectedStillExists && state.page === "project") {
     await selectProject(state.selectedProjectId);
   } else if (!selectedStillExists) {
     state.selectedProjectId = null;
@@ -550,16 +551,10 @@ function renderProjects() {
   const projects = state.projects;
   const total = state.projectsTotal ?? projects.length;
   $("projectCount").textContent = `${projects.length}${total > projects.length ? `/${total}` : ""}`;
-  const boardMode = state.projectView !== "table";
-  const board = $("projectBoard");
-  const tableWrap = $("projectTableWrap");
-  if (board) board.hidden = !boardMode;
-  if (tableWrap) tableWrap.hidden = boardMode;
-  const boardBtn = $("viewBoardBtn");
-  const tableBtn = $("viewTableBtn");
-  if (boardBtn) boardBtn.setAttribute("aria-selected", String(boardMode));
-  if (tableBtn) tableBtn.setAttribute("aria-selected", String(!boardMode));
-  if (boardMode) renderBoard(); else renderProjectTable();
+  // Both views read the same (server-filtered) state.projects; the page router
+  // decides which container is visible. Render both so a page switch is instant.
+  renderBoard();
+  renderProjectTable();
 }
 
 function renderProjectTable() {
@@ -641,10 +636,55 @@ function renderBoard() {
   if (window.lucide) window.lucide.createIcons();
 }
 
-function setProjectView(view) {
-  state.projectView = view === "table" ? "table" : "board";
-  try { localStorage.setItem("projectView", state.projectView); } catch { /* ignore */ }
-  renderProjects();
+// ----- Page router -----
+// Four pages share two top-level sections: #pageList (Dashboard board / Projects
+// table / Team Workload) and #pageProject (the per-project workflow). Driven by
+// the URL hash so back/forward and deep links work: #/dashboard, #/projects,
+// #/team, #/project/<id>.
+const VALID_PAGES = ["dashboard", "projects", "team", "project"];
+
+function showPage(page, opts = {}) {
+  if (!VALID_PAGES.includes(page)) page = "dashboard";
+  state.page = page;
+  const isProject = page === "project";
+  const listPages = page === "dashboard" || page === "projects" || page === "team";
+  $("pageList").hidden = !listPages;
+  $("pageProject").hidden = !isProject;
+  // Sub-pages inside the list section.
+  $("projectBoard").hidden = page !== "dashboard";
+  $("projectTableWrap").hidden = page !== "projects";
+  $("pageTeam").hidden = page !== "team";
+  // The search/status/assignee/company filter bar applies to board + table only.
+  const showFilters = page === "dashboard" || page === "projects";
+  if ($("listFilters")) $("listFilters").hidden = !showFilters;
+  if ($("listPageTitle")) $("listPageTitle").textContent = page === "projects" ? "Projects" : page === "team" ? "Team Workload" : "Dashboard";
+  $("projectCount").parentElement.hidden = page === "team";
+  // Nav tab active state.
+  document.querySelectorAll(".page-tab").forEach((t) => {
+    t.setAttribute("aria-selected", String(t.dataset.page === (isProject ? "" : page)));
+  });
+  if (page === "team" && !opts.skipLoad) loadTeamWorkload();
+  if (window.lucide) window.lucide.createIcons();
+}
+
+// Translate the URL hash into a page (and load a project when deep-linked).
+function routeFromHash() {
+  const hash = (window.location.hash || "").replace(/^#\/?/, "");
+  const [page, id] = hash.split("/");
+  if (page === "project" && id) {
+    if (state.selectedProjectId !== id || !state.detail) {
+      selectProject(id);
+    } else {
+      showPage("project");
+    }
+    return;
+  }
+  showPage(VALID_PAGES.includes(page) ? page : "dashboard");
+}
+
+function navigate(hash) {
+  if (window.location.hash === hash) routeFromHash();
+  else window.location.hash = hash;
 }
 
 function renderOpsReport() {
@@ -925,6 +965,12 @@ async function selectProject(projectId) {
   $("emptyState").hidden = true;
   $("detailView").hidden = false;
   clearMessage();
+  // Navigate to the per-project workflow page (deep-linkable). showPage runs via
+  // the hashchange handler; call it directly too in case the hash is unchanged.
+  if (window.location.hash !== `#/project/${projectId}`) {
+    window.location.hash = `#/project/${projectId}`;
+  }
+  showPage("project");
   renderProjects();
   safeRender("opsBoard", renderOpsBoard);
   safeRender("opsActions", renderOpsActions);
@@ -3853,8 +3899,11 @@ $("projectSort").addEventListener("change", (e) => {
   projectFilterState.sort = e.target.value;
   reloadProjects();
 });
-$("viewBoardBtn")?.addEventListener("click", () => setProjectView("board"));
-$("viewTableBtn")?.addEventListener("click", () => setProjectView("table"));
+document.querySelectorAll(".page-tab").forEach((tab) => {
+  tab.addEventListener("click", () => navigate(`#/${tab.dataset.page}`));
+});
+$("backToListBtn")?.addEventListener("click", () => navigate("#/dashboard"));
+window.addEventListener("hashchange", routeFromHash);
 
 // ----- Batch folder import -----
 async function startBatchScan() {
@@ -4180,6 +4229,9 @@ await loadProjects();
 await loadClients();
 await loadUsers();
 await loadTeamWorkload();
+// Render the page indicated by the URL hash (defaults to Dashboard). Deep links
+// like #/project/<id> load that project's workflow page directly.
+routeFromHash();
 if (window.lucide) window.lucide.createIcons();
 
 
