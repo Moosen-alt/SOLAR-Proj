@@ -236,11 +236,14 @@ function ensureReviewItem(
     [projectId, fieldName],
   );
   if (existing) {
-    // Exception: a BLOCKER that is STILL failing after being approved/edited means the
-    // value never populated the field — re-open it so it's fixable again instead of
-    // silently trapping progress. Respect an explicit 'reject' and never churn warnings.
-    if (reopenIfResolved && (existing.status === "approved" || existing.status === "edited")) {
-      db.run("UPDATE human_review_items SET status = 'pending', notes = ?, updated_at = ? WHERE id = ?", [notes, nowIso(), existing.id]);
+    // Exception: a BLOCKER that is STILL failing after being approved/edited/rejected
+    // means the field is still empty — re-open it so it's fixable again instead of
+    // silently trapping progress. (A rejected REQUIRED blocker would otherwise wedge
+    // the whole project with no way to enter a value.) Re-opening also refreshes the
+    // shown value to whatever is currently on file so a saved-but-still-failing entry
+    // isn't blanked. Warnings are never churned — rejecting a warning is a valid skip.
+    if (reopenIfResolved && existing.status !== "pending") {
+      db.run("UPDATE human_review_items SET status = 'pending', parser_value = ?, notes = ?, updated_at = ? WHERE id = ?", [parserValue, notes, nowIso(), existing.id]);
     }
     return;
   }

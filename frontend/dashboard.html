@@ -300,6 +300,10 @@
                     <button id="autofillSpecsBtn" class="secondary" title="Look up the inverter's rated output from its model and derive the PV breaker"><i data-lucide="sparkles"></i><span>Auto-fill specs (AI)</span></button>
                   </div>
                 </div>
+                <div id="autofillOverrideRow" style="display:flex;gap:.5rem;align-items:center;margin-bottom:.5rem">
+                  <input id="autofillModelInput" type="text" placeholder="Inverter model (e.g. Enphase IQ8M-72-2-US) — only if not detected" style="flex:1" />
+                  <input id="autofillQtyInput" type="number" min="1" placeholder="Qty" style="width:5rem" />
+                </div>
                 <div id="autofillSpecsStatus" class="muted" style="font-size:12px;margin-bottom:6px"></div>
                 <div id="reviewItems" class="stack"></div>
               </div>

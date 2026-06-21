@@ -1308,10 +1308,15 @@ app.post("/api/projects/:id/human-verify", (req, res) => {
 app.post("/api/projects/:id/autofill-specs", asyncHandler(async (req, res) => {
   const detail = getProjectDetail(db, String(req.params.id));
   const snap = (detail.project.parserSnapshot || {}) as Record<string, unknown>;
-  const model = String(snap.invModel || snap.pvMicroModel || "").trim();
-  const qtyRaw = Number(snap.invQty || snap.pvMicroQty || 0);
+  // Projects parsed before the API key was configured (stub mode) have an empty
+  // invModel — let the operator type the model/qty inline instead of hitting a
+  // dead 400. An explicit override always wins over the snapshot.
+  const bodyModel = String((req.body as Record<string, unknown>)?.modelOverride || "").trim();
+  const bodyQty = Number((req.body as Record<string, unknown>)?.qtyOverride || 0);
+  const model = bodyModel || String(snap.invModel || snap.pvMicroModel || "").trim();
+  const qtyRaw = bodyQty > 0 ? bodyQty : Number(snap.invQty || snap.pvMicroQty || 0);
   const qty = Number.isFinite(qtyRaw) && qtyRaw > 0 ? qtyRaw : undefined;
-  if (!model) throw new HttpError(400, "No inverter model on the project yet. Fill the inverter/microinverter model first, then auto-fill specs.");
+  if (!model) throw new HttpError(400, "No inverter model found. Type the inverter/microinverter model in the field above the button, then try Auto-fill again.");
 
   const { createLLMProvider } = await import("./llm");
   const llm = createLLMProvider();

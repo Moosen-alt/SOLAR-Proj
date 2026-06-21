@@ -2206,6 +2206,12 @@ function reviewHint(item) {
   return mapped ? mapped[1] : "";
 }
 
+// Optional/warning-level review fields where "Reject" is a valid skip (they
+// don't block submittal). Every other field is a required blocker — there,
+// Reject would only wedge the project (no value = QC keeps failing), so we
+// hide it and require Save Edit.
+const REVIEW_WARNING_FIELDS = new Set(["permitPath", "locates", "splitPages"]);
+
 function renderReview() {
   const items = state.detail.humanReviewItems || [];
   const pending = items.filter((x) => x.status === "pending");
@@ -2213,16 +2219,25 @@ function renderReview() {
   $("reviewItems").innerHTML = items.length ? items.map((item) => {
     const label = reviewLabel(item);
     const hint = reviewHint(item);
+    const isWarning = REVIEW_WARNING_FIELDS.has(item.fieldName);
+    const known = item.llmSuggestedValue || item.parserValue || "";
+    // Surface every piece of context we have so the operator can verify rather
+    // than hunt: the AI suggestion, what the parser read, and the source snippet.
+    const context = [];
+    if (item.llmSuggestedValue) context.push(`<strong>AI suggestion:</strong> ${esc(item.llmSuggestedValue)}`);
+    if (item.parserValue && item.parserValue !== item.llmSuggestedValue) context.push(`<strong>Parser read:</strong> ${esc(item.parserValue)}`);
+    if (hint) context.push(`<span class="muted">${esc(hint)}</span>`);
     return `
-    <article class="item ${item.status === "pending" ? "warning" : "pass"}">
+    <article class="item ${item.status === "pending" ? (isWarning ? "info" : "warning") : "pass"}">
       <div class="item-title"><span>${esc(label)}</span>${statusBadge(item.status)}</div>
       <p>${esc(item.notes || "Review required.")}</p>
+      ${context.length ? `<p>${context.join("<br>")}</p>` : ""}
       ${item.sourceExcerpt ? `<p><strong>Source:</strong> ${esc(item.sourceExcerpt)}</p>` : ""}
       ${item.status === "pending" ? `
         <div class="review-actions">
-          <input id="review-${item.id}" value="${esc(item.llmSuggestedValue || item.parserValue)}" placeholder="${esc(hint ? `Enter ${hint}, then Save Edit` : `Enter the ${label} (read it off the plan set / bill), then Save Edit`)}" />
+          <input id="review-${item.id}" value="${esc(known)}" placeholder="${esc(hint ? `Enter ${hint}, then Save Edit` : `Enter the ${label} (read it off the plan set / bill), then Save Edit`)}" />
           <div class="actions">
-            <button class="secondary" data-review-action="reject" data-review-id="${item.id}"><i data-lucide="x"></i><span>Reject</span></button>
+            ${isWarning ? `<button class="secondary" data-review-action="reject" data-review-id="${item.id}"><i data-lucide="x"></i><span>Skip (N/A)</span></button>` : ""}
             <button class="primary" data-review-action="edit" data-review-id="${item.id}"><i data-lucide="pencil"></i><span>Save Edit</span></button>
           </div>
         </div>
@@ -2562,7 +2577,10 @@ async function autofillSpecs() {
   if (btn) btn.disabled = true;
   if (status) status.textContent = "Looking up the inverter datasheet (knowledge first, web if needed)…";
   try {
-    const result = await api(`/api/projects/${state.selectedProjectId}/autofill-specs`, { method: "POST", body: "{}" });
+    const modelOverride = ($("autofillModelInput")?.value || "").trim();
+    const qtyOverride = parseInt($("autofillQtyInput")?.value || "0", 10) || 0;
+    const body = JSON.stringify({ modelOverride: modelOverride || undefined, qtyOverride: qtyOverride || undefined });
+    const result = await api(`/api/projects/${state.selectedProjectId}/autofill-specs`, { method: "POST", body });
     if (result.detail) state.detail = result.detail;
     const s = result.spec || {};
     if (result.applied > 0) {
