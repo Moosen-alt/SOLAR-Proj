@@ -879,6 +879,93 @@ function applyStageState() {
   });
 }
 
+// ----- Record this portal (teach the bot a new AHJ/utility portal) -----
+// The recorder's browser must run where the human is, so this hands the worker a
+// ready-to-run, pre-filled command + a launcher that records on their machine and
+// saves the recipe to THIS server (central) — reused next time, admins can revise.
+function recordSlug(s) {
+  return String(s || "portal").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "portal";
+}
+
+function buildRecordCommand() {
+  const p = state.detail?.project;
+  if (!p) return "";
+  const scope = $("recordScope")?.value === "utility" ? "utility" : "ahj";
+  const url = ($("recordPortalUrl")?.value || "").trim();
+  const api = window.location.origin;
+  const name = scope === "utility" ? (p.utility || "") : (p.ahj || "");
+  const parts = ["npm run portal:record --", `--scope ${scope}`];
+  if (scope === "ahj") parts.push(`--ahj "${p.ahj || ""}"`);
+  else parts.push(`--utility "${p.utility || ""}"`);
+  if (p.state) parts.push(`--state ${p.state}`);
+  if (url) parts.push(`--url "${url}"`);
+  parts.push(`--project ${p.id}`, `--api ${api}`, `--profile ./.portal-profiles/${recordSlug(name || scope)}`);
+  return parts.join(" ");
+}
+
+function renderRecordPortal() {
+  if (!$("recordCmdPreview")) return;
+  const p = state.detail?.project;
+  if (!p) return;
+  const urlInput = $("recordPortalUrl");
+  // Pre-fill the portal URL from a learned KB profile when we have one and the box is empty.
+  if (urlInput && !urlInput.value) {
+    const scope = $("recordScope")?.value === "utility" ? "utility" : "ahj";
+    const wanted = String((scope === "utility" ? p.utility : p.ahj) || "").toLowerCase();
+    const prof = (state.knowledgeProfiles || []).find((k) => {
+      const n = String(k.ahj || k.utility || k.name || "").toLowerCase();
+      return wanted.length >= 4 && n.includes(wanted.slice(0, 8));
+    });
+    if (prof && prof.portalUrl) urlInput.value = prof.portalUrl;
+  }
+  $("recordCmdPreview").textContent = buildRecordCommand();
+
+  const snap = p.parserSnapshot || {};
+  const rows = [
+    ["Homeowner", p.homeownerName],
+    ["Address", p.projectAddress],
+    ["City/State/Zip", [p.city, p.state, p.zip].filter(Boolean).join(", ")],
+    ["AHJ", p.ahj],
+    ["Utility", p.utility],
+    ["Account #", p.accountNumber],
+    ["Meter #", p.meterNumber],
+    ["System DC/AC kW", `${p.systemSizeDcKw ?? "?"} / ${p.systemSizeAcKw ?? "?"}`],
+    ["Interconnection", p.interconnectionMethod],
+    ["Module", [snap.moduleMake, snap.moduleModel, snap.moduleWattage && `${snap.moduleWattage}W`, snap.moduleQty && `x${snap.moduleQty}`].filter(Boolean).join(" ")],
+    ["Inverter", [snap.invModel || snap.pvMicroModel, (snap.invQty || snap.pvMicroQty) && `x${snap.invQty || snap.pvMicroQty}`].filter(Boolean).join(" ")],
+    ["Inverter output (A)", snap.invOutputW || snap.pvMicroOutputW],
+    ["Bus / Main / PV breaker (A)", [snap.busRating, snap.mainBreaker, snap.pvBreaker].filter(Boolean).join(" / ")],
+  ];
+  $("recordManualData").innerHTML =
+    rows.filter(([, v]) => v != null && v !== "" && v !== "? / ?").map(([k, v]) => `<div class="record-data-row"><span class="muted">${esc(k)}</span><strong>${esc(v)}</strong></div>`).join("") ||
+    `<p class="muted">No parsed data yet.</p>`;
+}
+
+async function copyRecordCommand() {
+  const cmd = buildRecordCommand();
+  if (!cmd) { showMessage("Open a project first.", "warning"); return; }
+  try {
+    await navigator.clipboard.writeText(cmd);
+    showMessage("Record command copied. Run it in your SOLAR-Proj folder.", "info");
+  } catch {
+    showMessage(cmd, "info");
+  }
+}
+
+function downloadRecordBat() {
+  const cmd = buildRecordCommand();
+  if (!cmd) { showMessage("Open a project first.", "warning"); return; }
+  const bat = `@echo off\r\nREM Record this portal and save the recipe to the central server.\r\nREM Save this file in your SOLAR-Proj folder, then double-click it.\r\ncd /d "%~dp0"\r\n${cmd}\r\npause\r\n`;
+  const blob = new Blob([bat], { type: "application/octet-stream" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "record-portal.bat";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(a.href);
+}
+
 function renderDetail() {
   const { project } = state.detail;
   $("detailTitle").textContent = project.homeownerName || "Unnamed project";
@@ -920,6 +1007,7 @@ function renderDetail() {
   renderPortalRuns();
   renderProjectTimeline();
   renderAudit();
+  renderRecordPortal();
   applyStageState();
   if (window.lucide) window.lucide.createIcons();
 }
@@ -2954,6 +3042,12 @@ function closeKnowledgeModal() { $("knowledgeModal").hidden = true; }
 if ($("openKnowledgeBtn")) $("openKnowledgeBtn").addEventListener("click", openKnowledgeModal);
 if ($("closeKnowledgeBtn")) $("closeKnowledgeBtn").addEventListener("click", closeKnowledgeModal);
 if ($("knowledgeModal")) $("knowledgeModal").addEventListener("click", (e) => { if (e.target.id === "knowledgeModal") closeKnowledgeModal(); });
+
+// Record-this-portal helper (Submit stage): rebuild the command live, copy, download .bat.
+if ($("recordScope")) $("recordScope").addEventListener("change", renderRecordPortal);
+if ($("recordPortalUrl")) $("recordPortalUrl").addEventListener("input", () => { const el = $("recordCmdPreview"); if (el) el.textContent = buildRecordCommand(); });
+if ($("copyRecordCmdBtn")) $("copyRecordCmdBtn").addEventListener("click", copyRecordCommand);
+if ($("downloadRecordBatBtn")) $("downloadRecordBatBtn").addEventListener("click", downloadRecordBat);
 if ($("docUploadBtn")) $("docUploadBtn").addEventListener("click", uploadProjectDocument);
 $("newClientBtn").addEventListener("click", blankClientForm);
 $("clientForm").addEventListener("submit", saveClient);

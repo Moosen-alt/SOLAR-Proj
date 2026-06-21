@@ -352,6 +352,36 @@
               </div>
               <div id="submitGate" class="submit-gate"></div>
             </section>
+
+            <section class="panel record-portal-panel">
+              <div class="section-head">
+                <h3>Record this portal (teach the bot)</h3>
+                <span class="badge">unknown AHJ/utility</span>
+              </div>
+              <p class="muted" style="font-size:13px;margin:4px 0 8px">
+                Hit a portal the bot doesn't know yet? Record it once on the machine you're submitting from — log in, complete the application up to (not including) the final submit, type <code>save</code>. It saves to this server, so the next person who hits this AHJ/utility gets it automatically (admins can revise it later).
+              </p>
+              <div class="form-row">
+                <label style="flex:0 0 120px">Record for
+                  <select id="recordScope">
+                    <option value="ahj">AHJ (permit)</option>
+                    <option value="utility">Utility (NEM)</option>
+                  </select>
+                </label>
+                <label style="flex:1">Portal URL<input id="recordPortalUrl" placeholder="https://…  (the portal login/landing page)" /></label>
+              </div>
+              <div class="actions">
+                <button id="copyRecordCmdBtn" class="secondary"><i data-lucide="clipboard-copy"></i><span>Copy record command</span></button>
+                <button id="downloadRecordBatBtn" class="secondary"><i data-lucide="download"></i><span>Download record.bat</span></button>
+              </div>
+              <pre id="recordCmdPreview" class="record-cmd"></pre>
+              <details class="kb-accordion" style="margin-top:6px">
+                <summary class="kb-summary"><span>Project data (for manual entry / recording reference)</span></summary>
+                <p class="muted" style="font-size:12px;margin:6px 0">The parsed values for this project — copy these into the portal fields as you record (or use for a fully manual submission).</p>
+                <div id="recordManualData" class="stack compact"></div>
+              </details>
+            </section>
+
             <section class="columns">
               <div class="panel">
                 <div class="section-head">
