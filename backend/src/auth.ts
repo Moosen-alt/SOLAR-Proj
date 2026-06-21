@@ -119,15 +119,35 @@ function currentUser(db: AppDb, req: Request): SessionUser | null {
   return row ? { id: String(row.id), name: String(row.name), email: String(row.email), role: String(row.role) } : null;
 }
 
+// Simple in-memory per-IP login throttle to blunt brute force on the internet-facing
+// login. Locks an IP for LOGIN_LOCK_MS after LOGIN_MAX_FAILS consecutive failures;
+// resets on success. (For multi-instance later, move this to a shared store.)
+const loginAttempts = new Map<string, { fails: number; lockedUntil: number }>();
+const LOGIN_MAX_FAILS = 8;
+const LOGIN_LOCK_MS = 15 * 60_000;
+
 // POST /api/auth/login  { email, password }
 export function login(db: AppDb, req: Request, res: Response): void {
+  const ip = String(req.ip || req.socket?.remoteAddress || "unknown");
+  const now = Date.now();
+  const attempt = loginAttempts.get(ip);
+  if (attempt && attempt.lockedUntil > now) {
+    res.status(429).json({ error: "Too many failed login attempts. Try again in a few minutes." });
+    return;
+  }
+
   const email = String(req.body?.email || "").trim().toLowerCase();
   const password = String(req.body?.password || "");
   const row = db.get<Row>("SELECT id, name, email, role, password_hash FROM users WHERE email = ? AND active = 1", [email]);
   if (!row || !row.password_hash || !verifyPassword(password, String(row.password_hash))) {
+    const rec = loginAttempts.get(ip) ?? { fails: 0, lockedUntil: 0 };
+    rec.fails += 1;
+    if (rec.fails >= LOGIN_MAX_FAILS) { rec.lockedUntil = now + LOGIN_LOCK_MS; rec.fails = 0; }
+    loginAttempts.set(ip, rec);
     res.status(401).json({ error: "Invalid email or password." });
     return;
   }
+  loginAttempts.delete(ip);
   const token = makeToken(String(row.id));
   res.cookie(COOKIE, token, {
     httpOnly: true,
