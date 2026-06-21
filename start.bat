@@ -32,6 +32,17 @@ if not exist "node_modules" (
   )
 )
 
+REM First run: create a .env from .env.example with a freshly generated
+REM SESSION_ENCRYPTION_KEY (so portal sessions encrypt and there's no warning).
+REM Add your ANTHROPIC_API_KEY to .env later if you want the AI features.
+if not exist ".env" (
+  if exist ".env.example" (
+    echo Creating .env with a generated encryption key...
+    powershell -NoProfile -Command "$b=New-Object byte[] 32;[System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b);$k=($b|ForEach-Object{$_.ToString('x2')}) -join '';(Get-Content '.env.example') -replace '^SESSION_ENCRYPTION_KEY=.*',('SESSION_ENCRYPTION_KEY='+$k) | Set-Content '.env'"
+    echo .env created. Paste your ANTHROPIC_API_KEY into it to enable AI parsing/drafting.
+  )
+)
+
 REM Read the port from .env if set, otherwise default to 4173.
 set "PORT=4173"
 if exist ".env" (
