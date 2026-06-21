@@ -4,6 +4,7 @@ const state = {
   detail: null,
   workflow: null,
   applicationDocs: null,
+  filledForms: null,
   reviewerReport: null,
   historicalReport: null,
   opsPlan: null,
@@ -747,6 +748,7 @@ async function selectProject(projectId) {
   state.detail = await api(`/api/projects/${projectId}`);
   state.workflow = null;
   state.applicationDocs = null;
+  state.filledForms = null;
   state.reviewerReport = null;
   state.historicalReport = null;
   state.opsPlan = null;
@@ -923,12 +925,21 @@ function renderRecordPortal() {
   // Pre-fill the portal URL from a learned KB profile when we have one and the box is empty.
   if (urlInput && !urlInput.value) {
     const scope = $("recordScope")?.value === "utility" ? "utility" : "ahj";
-    const wanted = String((scope === "utility" ? p.utility : p.ahj) || "").toLowerCase();
-    const prof = (state.knowledgeProfiles || []).find((k) => {
-      const n = String(k.ahj || k.utility || k.name || "").toLowerCase();
-      return wanted.length >= 4 && n.includes(wanted.slice(0, 8));
-    });
-    if (prof && prof.portalUrl) urlInput.value = prof.portalUrl;
+    const norm = (s) => String(s || "").trim().toLowerCase();
+    const wanted = norm(scope === "utility" ? p.utility : p.ahj);
+    if (wanted.length >= 4) {
+      const prof = (state.knowledgeProfiles || []).find((k) => {
+        // Match ONLY on the same-scope field — an AHJ recording must never inherit
+        // a utility's interconnection URL (that bug pulled PGE's URL into a City of
+        // Portland AHJ record). And skip combined AHJ+utility profiles, whose single
+        // portalUrl is ambiguous (it may be the other scope's URL).
+        const field = scope === "utility" ? norm(k.utility) : norm(k.ahj);
+        const other = scope === "utility" ? norm(k.ahj) : norm(k.utility);
+        const nameMatches = field && (field === wanted || field.includes(wanted) || wanted.includes(field));
+        return nameMatches && !other;
+      });
+      if (prof && prof.portalUrl) urlInput.value = prof.portalUrl;
+    }
   }
   $("recordCmdPreview").textContent = buildRecordCommand();
 
@@ -1744,6 +1755,37 @@ function renderReview() {
   });
 }
 
+// The AHJ's REAL permit PDF(s), filled with project data. This is the "legit"
+// form the operator submits — distinct from the markdown transfer worksheets.
+function renderFilledForms(projectId) {
+  const ff = state.filledForms;
+  if (!ff) return "";
+  if (ff.error) {
+    return `<article class="item warning"><div class="item-title"><span>Official AHJ PDF form</span>${statusBadge("error")}</div><p>${esc(ff.error)}</p></article>`;
+  }
+  const forms = ff.forms || [];
+  if (ff.unmatched || !forms.length) {
+    return `<article class="item warning">
+      <div class="item-title"><span>Official AHJ PDF form</span>${statusBadge("none on file")}</div>
+      <p>No built-in fillable PDF form for <strong>${esc(ff.ahj || "this AHJ")}</strong> yet. Either this jurisdiction submits online (no PDF — use the portal recording), or its blank form hasn't been added. Upload the AHJ's blank PDF under Knowledge → AHJ Forms to have it auto-filled for every project here.</p>
+    </article>`;
+  }
+  return forms.map((f) => {
+    const ok = f.status === "filled";
+    const extra = [
+      f.filledFieldCount != null ? `${f.filledFieldCount} field(s) filled` : "",
+      (f.unmappedRequested || []).length ? `Unmapped: ${(f.unmappedRequested || []).join(", ")}` : "",
+      f.message || "",
+    ].filter(Boolean).join(" · ");
+    return `<article class="item ${ok ? "pass" : "warning"}">
+      <div class="item-title"><span>${esc(f.formName || f.formId)}</span>${statusBadge(ok ? "filled PDF" : (f.status || "not filled"))}</div>
+      ${ok ? `<p><a href="/api/projects/${encodeURIComponent(projectId)}/filled-forms/${encodeURIComponent(f.formId)}" target="_blank" rel="noopener"><strong>⬇ Download filled ${esc(f.formName || "AHJ form")} (PDF)</strong></a></p>
+      <p class="muted">Signature lines are intentionally left blank — a human signs before submitting.</p>` : ""}
+      ${extra ? `<p class="muted">${esc(extra)}</p>` : ""}
+    </article>`;
+  }).join("");
+}
+
 function renderApplicationDocs() {
   const pkg = state.applicationDocs;
   if (!pkg) {
@@ -1753,7 +1795,9 @@ function renderApplicationDocs() {
   const learned = pkg.learnedRequirements;
   const profile = pkg.profile || {};
   const learnedDocs = (learned && learned.requiredDocuments) || [];
+  const pid = state.selectedProjectId;
   $("applicationDocs").innerHTML = `
+    ${renderFilledForms(pid)}
     <article class="item ${pkg.missingFields?.length ? "warning" : "pass"}">
       <div class="item-title"><span>${esc(profile.name)}</span>${statusBadge(profile.requiresAhjApplication || profile.requiresPortalEntryOnly ? "docs required" : "manifest only")}</div>
       <p>${(profile.notes || []).map(esc).join("<br>")}</p>
@@ -2450,6 +2494,13 @@ async function buildApplicationDocs() {
   if (!state.selectedProjectId) return;
   state.applicationDocs = await api(`/api/projects/${state.selectedProjectId}/application-docs`);
   state.workflow = null;
+  // Also fill the AHJ's REAL permit PDF(s) — the official blank form filled with
+  // this project's data (not a worksheet). Surfaced as download links below.
+  try {
+    state.filledForms = await api(`/api/projects/${state.selectedProjectId}/filled-forms`, { method: "POST", body: "{}" });
+  } catch (err) {
+    state.filledForms = { error: err.message || "Could not fill the AHJ PDF form." };
+  }
   await loadOpsPlan();
   await loadPmPackets();
   await loadLiveReadiness();
@@ -2686,6 +2737,7 @@ async function deleteSelectedProject() {
   state.detail = null;
   state.workflow = null;
   state.applicationDocs = null;
+  state.filledForms = null;
   state.reviewerReport = null;
   state.historicalReport = null;
   state.opsPlan = null;
