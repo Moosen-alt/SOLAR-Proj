@@ -324,6 +324,9 @@ async function drawSignatures(doc: PDFDocument, def: AhjFormDefinition, ctx: Fil
     if (!sig) continue;
     const page = pages[pl.page];
     if (!page) continue;
+    // A bad vision detection can return NaN/Infinity coords; pdf-lib throws on
+    // those. Skip such placements rather than let them abort the whole fill.
+    if (!Number.isFinite(pl.x) || !Number.isFinite(pl.y)) continue;
     let img;
     try {
       img = sig.mime.includes("jpeg") ? await doc.embedJpg(sig.bytes) : await doc.embedPng(sig.bytes);
@@ -331,13 +334,13 @@ async function drawSignatures(doc: PDFDocument, def: AhjFormDefinition, ctx: Fil
       continue;
     }
     // Fit within the placement box, preserving aspect ratio.
-    const boxW = pl.width > 0 ? pl.width : 130;
-    const boxH = pl.height > 0 ? pl.height : 34;
+    const boxW = Number.isFinite(pl.width) && pl.width > 0 ? pl.width : 130;
+    const boxH = Number.isFinite(pl.height) && pl.height > 0 ? pl.height : 34;
     const scale = Math.min(boxW / img.width, boxH / img.height) || 1;
     page.drawImage(img, { x: pl.x, y: pl.y, width: img.width * scale, height: img.height * scale });
     drawn += 1;
     // The operator signs today — write today's date on the adjacent date line.
-    if (pl.dateX != null && pl.dateY != null) {
+    if (pl.dateX != null && pl.dateY != null && Number.isFinite(pl.dateX) && Number.isFinite(pl.dateY)) {
       if (!dateFont) dateFont = await doc.embedFont(StandardFonts.Helvetica);
       page.drawText(computed("todaySigned", ctx), { x: pl.dateX, y: pl.dateY, size: pl.dateSize ?? 9, font: dateFont, color: rgb(0, 0, 0) });
     }
@@ -535,17 +538,43 @@ export async function buildFilledFormsForProject(db: AppDb, project: ProjectReco
   for (const def of defs) {
     // Built-in registry forms are hand-tuned, so inherently verified. Merge any
     // vision-detected signature placements stored for this registry form.
-    const sigOverride = loadRegistrySignatureOverride(db, def.id);
-    const effectiveDef = sigOverride.length ? { ...def, signatureFields: sigOverride } : def;
-    forms.push({ ...(await fillForm(effectiveDef, ctx, path.join(outDir, `${def.id}.pdf`))), verified: true });
+    // Isolate each fill: a bad signature override (e.g. from a detect-sigs run
+    // with out-of-bounds coords) must not nuke the whole package — surface it as
+    // a per-form error so the operator still sees every other form.
+    try {
+      const sigOverride = loadRegistrySignatureOverride(db, def.id);
+      const effectiveDef = sigOverride.length ? { ...def, signatureFields: sigOverride } : def;
+      forms.push({ ...(await fillForm(effectiveDef, ctx, path.join(outDir, `${def.id}.pdf`))), verified: true });
+    } catch (err) {
+      forms.push({
+        formId: def.id,
+        formName: def.formName,
+        status: "error",
+        message: `Fill failed: ${(err as Error).message || String(err)}`,
+        verified: true,
+      });
+    }
   }
 
   // Also fill any stored AHJ form templates (operator-uploaded or auto-researched)
   // for this AHJ/state that aren't already covered by a built-in registry form.
   for (const stored of loadStoredTemplates(db, project.ahj, project.state)) {
     if (forms.some((f) => f.formId === stored.def.id)) continue;
-    const result = await fillLoadedForm(stored.def, stored.bytes, ctx, path.join(outDir, `${stored.def.id}.pdf`));
-    forms.push({ ...result, verified: stored.verified, templateId: stored.templateId });
+    try {
+      const result = await fillLoadedForm(stored.def, stored.bytes, ctx, path.join(outDir, `${stored.def.id}.pdf`));
+      forms.push({ ...result, verified: stored.verified, templateId: stored.templateId });
+    } catch (err) {
+      // Keep the verify/re-map affordance alive even when the fill errors, so the
+      // operator can re-map or delete a broken template instead of being stuck.
+      forms.push({
+        formId: stored.def.id,
+        formName: stored.def.formName,
+        status: "error",
+        message: `Fill failed: ${(err as Error).message || String(err)}`,
+        verified: stored.verified,
+        templateId: stored.templateId,
+      });
+    }
   }
 
   return {
