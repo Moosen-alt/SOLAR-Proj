@@ -2941,6 +2941,19 @@ async function assignProjectClient() {
 
 $("openClientsBtn").addEventListener("click", openClientsModal);
 $("closeClientsBtn").addEventListener("click", closeClientsModal);
+
+// Knowledge & Learning modal (KB, learning imports, portal recipes). The blocks
+// kept their element IDs when moved, so the existing load/render handlers work as-is.
+function openKnowledgeModal() {
+  $("knowledgeModal").hidden = false;
+  loadKnowledgeBase();
+  loadPortalRecipes();
+  if (window.lucide) window.lucide.createIcons();
+}
+function closeKnowledgeModal() { $("knowledgeModal").hidden = true; }
+if ($("openKnowledgeBtn")) $("openKnowledgeBtn").addEventListener("click", openKnowledgeModal);
+if ($("closeKnowledgeBtn")) $("closeKnowledgeBtn").addEventListener("click", closeKnowledgeModal);
+if ($("knowledgeModal")) $("knowledgeModal").addEventListener("click", (e) => { if (e.target.id === "knowledgeModal") closeKnowledgeModal(); });
 if ($("docUploadBtn")) $("docUploadBtn").addEventListener("click", uploadProjectDocument);
 $("newClientBtn").addEventListener("click", blankClientForm);
 $("clientForm").addEventListener("submit", saveClient);

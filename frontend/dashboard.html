@@ -19,6 +19,7 @@
       <button id="openClientsBtn" class="secondary"><i data-lucide="building-2"></i><span>Clients</span></button>
       <button id="openUsersBtn" class="secondary"><i data-lucide="users"></i><span>Team</span></button>
       <button id="openKpiBtn" class="secondary"><i data-lucide="bar-chart-2"></i><span>KPIs</span></button>
+      <button id="openKnowledgeBtn" class="secondary"><i data-lucide="brain"></i><span>Knowledge</span></button>
       <button id="runPermitMonitorBtn" class="secondary"><i data-lucide="radar"></i><span>Permit Checks</span></button>
       <button id="runNemMonitorBtn" class="secondary"><i data-lucide="zap"></i><span>NEM Checks</span></button>
       <button id="refreshBtn" class="secondary"><i data-lucide="refresh-cw"></i><span>Refresh</span></button>
@@ -157,101 +158,8 @@
       <div id="teamWorkload" class="team-workload">
         <p class="muted">Loading team workload...</p>
       </div>
-      <div class="section-head subhead">
-        <h2>Permit & Utility Knowledge</h2>
-        <div class="actions">
-          <span id="knowledgeCount" class="badge">0</span>
-        </div>
-      </div>
-      <!-- MBOX drag-and-drop drop zone -->
-      <div id="mboxDropZone" class="mbox-drop-zone">
-        <i data-lucide="inbox"></i>
-        <span>Drag &amp; drop an <strong>.mbox</strong> file here, or <label class="drop-browse" for="mboxFile">browse</label></span>
-        <input id="mboxFile" type="file" accept=".mbox,.txt" />
-      </div>
-      <div id="mboxProgressWrap" class="progress-wrap" hidden>
-        <div class="progress-label">
-          <span id="mboxProgressText">Preparing import...</span>
-          <strong id="mboxProgressPercent">0%</strong>
-        </div>
-        <div class="progress-track"><div id="mboxProgressBar" class="progress-bar"></div></div>
-      </div>
-      <div class="mbox-path-form">
-        <input id="mboxPath" placeholder="Optional local MBOX path if browser upload fails" />
-        <button id="importMboxPathBtn" class="secondary"><i data-lucide="folder-input"></i><span>Import Path</span></button>
-      </div>
-      <div class="email-watch-form">
-        <input id="emailWatchPath" placeholder="Live email MBOX path to watch for project corrections/approvals" />
-        <button id="saveEmailWatchBtn" class="secondary"><i data-lucide="mail-check"></i><span>Watch</span></button>
-        <button id="runEmailTrackerBtn" class="secondary"><i data-lucide="radio-tower"></i><span>Scan Email</span></button>
-      </div>
-      <div id="emailTrackerStatus" class="email-tracker-status muted">No email watch source configured.</div>
-
-      <!-- Batch PDF import -->
-      <div class="section-head subhead" style="margin-top:8px">
-        <h2>Learn from Past Projects</h2>
-      </div>
-      <!-- Drag-and-drop a .zip of past-project PDFs -->
-      <div id="batchDropZone" class="mbox-drop-zone">
-        <i data-lucide="file-archive"></i>
-        <span>Drag &amp; drop a <strong>.zip</strong> of past-project PDFs here to train the parser — the system learns document layouts, AHJ/utility patterns, and what a complete packet looks like so it recognizes them better on future projects. Or <label class="drop-browse" for="batchDropInput">browse</label>, or use a folder path below. (For corrections and AHJ required-doc lists, import your mbox data above.)</span>
-        <input id="batchDropInput" type="file" accept=".zip" />
-      </div>
-      <div class="batch-import-form">
-        <input id="batchFolderPath" placeholder="Full path to folder with past project PDFs" style="flex:1;min-width:200px" />
-        <input id="batchDefaultAhj" placeholder="Default AHJ" style="width:140px" />
-        <input id="batchDefaultUtility" placeholder="Default Utility" style="width:140px" />
-        <input id="batchDefaultState" placeholder="State (OR)" style="width:60px" />
-        <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;white-space:nowrap">
-          <input type="checkbox" id="batchUseLlm" /> Use LLM
-        </label>
-        <button id="startBatchScanBtn" class="primary"><i data-lucide="folder-search"></i><span>Scan Folder</span></button>
-      </div>
-      <div id="batchScanStatus" class="muted" style="font-size:13px;padding:6px 0"></div>
-      <div id="batchScanResults" hidden></div>
-
-      <details id="kbAccordion" class="kb-accordion" style="margin-top:10px">
-        <summary class="kb-summary">
-          <span>Knowledge Base</span>
-          <span id="kbSummaryCount" class="muted" style="font-size:12px;font-weight:400"></span>
-        </summary>
-        <p class="muted" style="font-size:12px;margin:6px 0">AHJ profiles, required-document lists, and correction patterns learned from mbox imports, batch scans, and saved projects.</p>
-        <div class="add-ahj-form" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:8px;padding:8px;border:1px dashed var(--line);border-radius:6px">
-          <span style="font-size:12px;font-weight:600;width:100%">Add a new AHJ (AI-researched)</span>
-          <input id="addAhjName" placeholder="AHJ (e.g. City of Bend)" style="flex:1;min-width:140px;padding:5px 7px;font-size:13px" />
-          <input id="addAhjState" placeholder="State" style="width:60px;padding:5px 7px;font-size:13px" />
-          <input id="addAhjUtility" placeholder="Utility (optional)" style="width:130px;padding:5px 7px;font-size:13px" />
-          <button id="addAhjBtn" class="secondary" style="font-size:12px"><i data-lucide="sparkles"></i><span>Research &amp; Add</span></button>
-          <span id="addAhjStatus" class="muted" style="font-size:12px;width:100%"></span>
-        </div>
-        <div class="add-utility-form" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:8px;padding:8px;border:1px dashed var(--line);border-radius:6px">
-          <span style="font-size:12px;font-weight:600;width:100%">Add a new utility (AI-researched NEM process)</span>
-          <input id="addUtilityName" placeholder="Utility (e.g. Idaho Power)" style="flex:1;min-width:140px;padding:5px 7px;font-size:13px" />
-          <input id="addUtilityState" placeholder="State" style="width:60px;padding:5px 7px;font-size:13px" />
-          <button id="addUtilityBtn" class="secondary" style="font-size:12px"><i data-lucide="sparkles"></i><span>Research &amp; Add</span></button>
-          <span id="addUtilityStatus" class="muted" style="font-size:12px;width:100%"></span>
-        </div>
-        <input id="kbSearch" type="search" placeholder="Search by AHJ, state, or utility…" style="width:100%;padding:6px 8px;margin-bottom:8px;font-size:13px;box-sizing:border-box" />
-        <div id="knowledgeBase" class="stack knowledge-stack">
-          <p class="muted">Loading…</p>
-        </div>
-      </details>
-
-      <details id="recipesAccordion" class="kb-accordion" style="margin-top:10px">
-        <summary class="kb-summary">
-          <span>Portal Recipes (taught by recording)</span>
-          <span id="recipesSummaryCount" class="muted" style="font-size:12px;font-weight:400"></span>
-        </summary>
-        <p class="muted" style="font-size:12px;margin:6px 0">Teach the bot a new AHJ or utility portal by recording it once, then it replays for future projects (always stopping before final submit). Admins can delete and re-record an incomplete one.</p>
-        <div class="section-note" style="font-size:12px">
-          To record on the operator's machine:<br>
-          <code style="font-size:11px">npm run portal:record -- --scope ahj --ahj "City of Bend" --state OR --url "&lt;portal url&gt;" --project &lt;projectId&gt; --profile ./.portal-profiles/&lt;name&gt;</code><br>
-          Log in, complete the application up to (not including) final submit, then type <code>save</code>.
-        </div>
-        <div id="portalRecipes" class="stack" style="margin-top:8px">
-          <p class="muted">Loading…</p>
-        </div>
-      </details>
+      <!-- Knowledge Base, learning imports, and Portal Recipes moved to the
+           "Knowledge" modal (top bar) to keep the project column focused. -->
     </section>
 
     <section class="detail" aria-label="Project detail">
@@ -574,6 +482,114 @@
   </main>
 
   <iframe id="opsActionFrame" name="opsActionFrame" title="Action save target" hidden></iframe>
+
+  <!-- Knowledge & Learning Modal — KB, learning imports, and portal recipes,
+       moved out of the project column to keep it focused. -->
+  <div id="knowledgeModal" class="modal" hidden>
+    <div class="modal-card modal-card-wide">
+      <div class="modal-head">
+        <h2>Knowledge &amp; Learning</h2>
+        <button id="closeKnowledgeBtn" class="secondary"><i data-lucide="x"></i><span>Close</span></button>
+      </div>
+      <div class="modal-body modal-body-stack">
+        <div class="section-head subhead">
+          <h2>Permit &amp; Utility Knowledge</h2>
+          <div class="actions">
+            <span id="knowledgeCount" class="badge">0</span>
+          </div>
+        </div>
+        <!-- MBOX drag-and-drop drop zone -->
+        <div id="mboxDropZone" class="mbox-drop-zone">
+          <i data-lucide="inbox"></i>
+          <span>Drag &amp; drop an <strong>.mbox</strong> file here, or <label class="drop-browse" for="mboxFile">browse</label></span>
+          <input id="mboxFile" type="file" accept=".mbox,.txt" />
+        </div>
+        <div id="mboxProgressWrap" class="progress-wrap" hidden>
+          <div class="progress-label">
+            <span id="mboxProgressText">Preparing import...</span>
+            <strong id="mboxProgressPercent">0%</strong>
+          </div>
+          <div class="progress-track"><div id="mboxProgressBar" class="progress-bar"></div></div>
+        </div>
+        <div class="mbox-path-form">
+          <input id="mboxPath" placeholder="Optional local MBOX path if browser upload fails" />
+          <button id="importMboxPathBtn" class="secondary"><i data-lucide="folder-input"></i><span>Import Path</span></button>
+        </div>
+        <div class="email-watch-form">
+          <input id="emailWatchPath" placeholder="Live email MBOX path to watch for project corrections/approvals" />
+          <button id="saveEmailWatchBtn" class="secondary"><i data-lucide="mail-check"></i><span>Watch</span></button>
+          <button id="runEmailTrackerBtn" class="secondary"><i data-lucide="radio-tower"></i><span>Scan Email</span></button>
+        </div>
+        <div id="emailTrackerStatus" class="email-tracker-status muted">No email watch source configured.</div>
+
+        <!-- Batch PDF import -->
+        <div class="section-head subhead" style="margin-top:8px">
+          <h2>Learn from Past Projects</h2>
+        </div>
+        <!-- Drag-and-drop a .zip of past-project PDFs -->
+        <div id="batchDropZone" class="mbox-drop-zone">
+          <i data-lucide="file-archive"></i>
+          <span>Drag &amp; drop a <strong>.zip</strong> of past-project PDFs here to train the parser — the system learns document layouts, AHJ/utility patterns, and what a complete packet looks like so it recognizes them better on future projects. Or <label class="drop-browse" for="batchDropInput">browse</label>, or use a folder path below. (For corrections and AHJ required-doc lists, import your mbox data above.)</span>
+          <input id="batchDropInput" type="file" accept=".zip" />
+        </div>
+        <div class="batch-import-form">
+          <input id="batchFolderPath" placeholder="Full path to folder with past project PDFs" style="flex:1;min-width:200px" />
+          <input id="batchDefaultAhj" placeholder="Default AHJ" style="width:140px" />
+          <input id="batchDefaultUtility" placeholder="Default Utility" style="width:140px" />
+          <input id="batchDefaultState" placeholder="State (OR)" style="width:60px" />
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;white-space:nowrap">
+            <input type="checkbox" id="batchUseLlm" /> Use LLM
+          </label>
+          <button id="startBatchScanBtn" class="primary"><i data-lucide="folder-search"></i><span>Scan Folder</span></button>
+        </div>
+        <div id="batchScanStatus" class="muted" style="font-size:13px;padding:6px 0"></div>
+        <div id="batchScanResults" hidden></div>
+
+        <details id="kbAccordion" class="kb-accordion" style="margin-top:10px" open>
+          <summary class="kb-summary">
+            <span>Knowledge Base</span>
+            <span id="kbSummaryCount" class="muted" style="font-size:12px;font-weight:400"></span>
+          </summary>
+          <p class="muted" style="font-size:12px;margin:6px 0">AHJ profiles, required-document lists, and correction patterns learned from mbox imports, batch scans, and saved projects.</p>
+          <div class="add-ahj-form" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:8px;padding:8px;border:1px dashed var(--line);border-radius:6px">
+            <span style="font-size:12px;font-weight:600;width:100%">Add a new AHJ (AI-researched)</span>
+            <input id="addAhjName" placeholder="AHJ (e.g. City of Bend)" style="flex:1;min-width:140px;padding:5px 7px;font-size:13px" />
+            <input id="addAhjState" placeholder="State" style="width:60px;padding:5px 7px;font-size:13px" />
+            <input id="addAhjUtility" placeholder="Utility (optional)" style="width:130px;padding:5px 7px;font-size:13px" />
+            <button id="addAhjBtn" class="secondary" style="font-size:12px"><i data-lucide="sparkles"></i><span>Research &amp; Add</span></button>
+            <span id="addAhjStatus" class="muted" style="font-size:12px;width:100%"></span>
+          </div>
+          <div class="add-utility-form" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:8px;padding:8px;border:1px dashed var(--line);border-radius:6px">
+            <span style="font-size:12px;font-weight:600;width:100%">Add a new utility (AI-researched NEM process)</span>
+            <input id="addUtilityName" placeholder="Utility (e.g. Idaho Power)" style="flex:1;min-width:140px;padding:5px 7px;font-size:13px" />
+            <input id="addUtilityState" placeholder="State" style="width:60px;padding:5px 7px;font-size:13px" />
+            <button id="addUtilityBtn" class="secondary" style="font-size:12px"><i data-lucide="sparkles"></i><span>Research &amp; Add</span></button>
+            <span id="addUtilityStatus" class="muted" style="font-size:12px;width:100%"></span>
+          </div>
+          <input id="kbSearch" type="search" placeholder="Search by AHJ, state, or utility…" style="width:100%;padding:6px 8px;margin-bottom:8px;font-size:13px;box-sizing:border-box" />
+          <div id="knowledgeBase" class="stack knowledge-stack">
+            <p class="muted">Loading…</p>
+          </div>
+        </details>
+
+        <details id="recipesAccordion" class="kb-accordion" style="margin-top:10px">
+          <summary class="kb-summary">
+            <span>Portal Recipes (taught by recording)</span>
+            <span id="recipesSummaryCount" class="muted" style="font-size:12px;font-weight:400"></span>
+          </summary>
+          <p class="muted" style="font-size:12px;margin:6px 0">Teach the bot a new AHJ or utility portal by recording it once, then it replays for future projects (always stopping before final submit). Admins can delete and re-record an incomplete one.</p>
+          <div class="section-note" style="font-size:12px">
+            To record on the operator's machine:<br>
+            <code style="font-size:11px">npm run portal:record -- --scope ahj --ahj "City of Bend" --state OR --url "&lt;portal url&gt;" --project &lt;projectId&gt; --profile ./.portal-profiles/&lt;name&gt;</code><br>
+            Log in, complete the application up to (not including) final submit, then type <code>save</code>.
+          </div>
+          <div id="portalRecipes" class="stack" style="margin-top:8px">
+            <p class="muted">Loading…</p>
+          </div>
+        </details>
+      </div>
+    </div>
+  </div>
 
   <!-- Customers / Leads Modal -->
   <div id="customersModal" class="modal" hidden>
