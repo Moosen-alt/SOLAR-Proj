@@ -870,21 +870,14 @@ function applyStageState() {
       if (pill) pill.textContent = d.isBlocked ? "Blocked" : "Current";
       if (d.isBlocked) el.classList.add("is-blocked");
     } else {
+      // Future stage: collapsed by default and marked "not reached", but the user can
+      // still click to open it and work out of order (non-linear stepper).
       el.classList.add("is-locked"); el.open = false;
       if (marker) marker.textContent = "\u{1F512}";
-      if (pill) pill.textContent = "Locked";
+      if (pill) pill.textContent = "Not reached";
     }
   });
 }
-
-// Prevent a locked (future) stage from being opened by clicking its summary.
-// Completed stages stay manually re-openable; only locked ones are inert.
-document.addEventListener("click", (e) => {
-  const target = e.target;
-  if (target && target.closest && target.closest(".stage-accordion.is-locked > .stage-summary")) {
-    e.preventDefault();
-  }
-}, true);
 
 function renderDetail() {
   const { project } = state.detail;

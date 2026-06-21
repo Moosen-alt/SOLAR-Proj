@@ -91,7 +91,10 @@ export function runQcForProject(db: AppDb, projectId: string): QcRunResult {
       );
 
       if (qcStatus !== "pass") {
-        ensureReviewItem(db, projectId, check.fieldName, check.ruleName, parserField(payload, check.fieldName), message);
+        // Re-open a still-failing BLOCKER (qcStatus "fail") even if it was previously
+        // resolved — otherwise an approval that didn't populate the field leaves QC
+        // failing with no item to fix (a silent trap). Warnings are not re-opened.
+        ensureReviewItem(db, projectId, check.fieldName, check.ruleName, parserField(payload, check.fieldName), message, qcStatus === "fail");
       }
     }
 
@@ -131,6 +134,7 @@ export function runQcForProject(db: AppDb, projectId: string): QcRunResult {
           baseline.ruleName,
           baseline.fieldName ? parserField(payload, baseline.fieldName) : "",
           baseline.message,
+          baseline.qcStatus === "fail",
         );
       }
     }
@@ -155,17 +159,26 @@ function ensureReviewItem(
   issueType: string,
   parserValue: string,
   notes: string,
+  reopenIfResolved = false,
 ): void {
   // Dedupe against ANY existing item for this field — not just pending ones.
   // If the coordinator already approved/edited/rejected this field, re-running
   // QC must NOT resurrect it as a new pending item (that trapped the submit gate).
-  const existing = db.get<{ id: string }>(
-    `SELECT id FROM human_review_items
+  const existing = db.get<{ id: string; status: string }>(
+    `SELECT id, status FROM human_review_items
      WHERE project_id = ? AND field_name = ?
      LIMIT 1`,
     [projectId, fieldName],
   );
-  if (existing) return;
+  if (existing) {
+    // Exception: a BLOCKER that is STILL failing after being approved/edited means the
+    // value never populated the field — re-open it so it's fixable again instead of
+    // silently trapping progress. Respect an explicit 'reject' and never churn warnings.
+    if (reopenIfResolved && (existing.status === "approved" || existing.status === "edited")) {
+      db.run("UPDATE human_review_items SET status = 'pending', notes = ?, updated_at = ? WHERE id = ?", [notes, nowIso(), existing.id]);
+    }
+    return;
+  }
 
   const ts = nowIso();
   db.run(
