@@ -2317,6 +2317,7 @@ function renderApplicationDocs() {
     <div id="submittalEmailCard"></div>
     <article class="item ${pkg.missingFields?.length ? "warning" : "pass"}">
       <div class="item-title"><span>${esc(profile.name)}</span>${statusBadge(profile.requiresAhjApplication || profile.requiresPortalEntryOnly ? "docs required" : "manifest only")}</div>
+      ${pkg.permitType ? `<p><strong>Permitting type:</strong> ${esc(pkg.permitType)}</p>` : ""}
       <p>${(profile.notes || []).map(esc).join("<br>")}</p>
       ${pkg.missingFields?.length ? `<p><strong>Missing fields:</strong> ${esc(pkg.missingFields.join(", "))}</p>` : "<p>No critical document fields missing from the generated packet.</p>"}
     </article>

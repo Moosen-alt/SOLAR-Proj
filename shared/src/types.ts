@@ -271,6 +271,15 @@ export interface ApplicationRequirementProfile {
   requiresPortalEntryOnly: boolean;
   requiredDocuments: string[];
   notes: string[];
+  /**
+   * How the AHJ structures the solar permit(s):
+   * - "combo": ONE combined building+electrical permit covers the whole job.
+   * - "separate": distinct building (BLD) and electrical (ELE) permits must BOTH be filed.
+   * - "unknown": not yet determined (default).
+   */
+  permitStructure?: "combo" | "separate" | "unknown";
+  /** How the completed application is submitted: email | online portal | in-person | combination. */
+  submissionMethod?: string;
 }
 
 export interface GeneratedApplicationDocument {
@@ -300,6 +309,8 @@ export interface ApplicationDocumentPackage {
     confidence: string;
     correctionCount: number;
   };
+  /** Human callout of the permit TYPE: combo vs separate BLD/ELE + submission method. */
+  permitType?: string;
 }
 
 export interface AhjProcessProfile {
@@ -1224,6 +1235,8 @@ export interface AhjFormUrlResult {
   portalPlatform?: string;
   /** AHJ-specific submittal requirements posted on the site. */
   submittalRequirements?: string;
+  /** Permit structure: "combo" (one combined permit) vs "separate" (distinct BLD + ELE permits). */
+  permitStructure?: "combo" | "separate" | "unknown";
 }
 
 export interface AhjFieldMapResult {

@@ -3,7 +3,7 @@ import { PDFDocument } from "pdf-lib";
 import type { AppDb } from "./db";
 import type { AhjFormUrlResult, LLMProvider, ProjectRecord } from "../../shared/src/types";
 import { inspectFormFields, loadStoredTemplates, type OverlayField, type SignaturePlacement } from "./ahjForms";
-import { findApplicationProfile } from "./applicationDocs";
+import { describePermitType, findApplicationProfile } from "./applicationDocs";
 import { saveResearchedAhjProfile } from "./knowledgeBase";
 import { renderPdfPageToPng } from "./pageImages";
 import { nowIso } from "./time";
@@ -237,6 +237,8 @@ export interface EnsureFormResult {
   formName?: string;
   sourceUrl?: string;
   mappedFields?: number;
+  /** Human callout of the permit TYPE for this AHJ (combo vs separate BLD/ELE, submission method). */
+  permitType?: string;
 }
 
 // Normalize the model's free-text platform label to a canonical platform + method.
@@ -292,9 +294,11 @@ export async function ensureAhjFormTemplate(
   // in their portal. Skip the web search to save time and cost.
   const ahjProfile = findApplicationProfile(project);
   if (ahjProfile.requiresPortalEntryOnly) {
+    const pt = describePermitType(ahjProfile);
     return {
       status: "not_found",
-      message: `${project.ahj} is an online-only e-permit portal — there is no standalone PDF to download. Fill the application in their portal directly. No PDF template needed.`,
+      permitType: pt.callout,
+      message: `Permitting type: ${pt.callout} ${project.ahj} is an online-only portal — there is no standalone PDF to download. Enter the application directly in the portal. No PDF template needed.`,
     };
   }
 
@@ -305,14 +309,20 @@ export async function ensureAhjFormTemplate(
   // search. Runs whether or not a fillable PDF was found.
   learnAhjPortalFromResearch(db, project, research);
 
+  // Always determine + surface the permit TYPE (combo vs separate BLD/ELE, and how
+  // it's submitted), folding in what the search just learned — so even when no PDF
+  // is found the operator is told what kind of permitting this AHJ uses.
+  const permitType = describePermitType(ahjProfile, { submissionMethod: research.submissionMethod, portalPlatform: research.portalPlatform, permitStructure: research.permitStructure });
+
   if (!research.candidateUrls.length) {
-    const portalLike = /online.*portal|portal.*only|no.*pdf|e-permit|projectdox|accela|epermitting|email/i.test(`${research.notes} ${research.portalPlatform || ""} ${research.submissionMethod || ""}`);
     const portalNote = research.submittalPortalUrl
       ? ` Submittal portal: ${research.submittalPortalUrl}${research.portalPlatform ? ` (${research.portalPlatform})` : ""} — it's pre-filled on the record/training step.`
       : "";
+    const reqNote = research.submittalRequirements ? ` Requirements: ${research.submittalRequirements}` : "";
     return {
       status: "not_found",
-      message: (research.notes || `No downloadable PDF form was found for ${project.ahj}.${portalLike ? " It submits online/by email — upload the blank PDF if one exists." : ""}`) + portalNote,
+      permitType: permitType.callout,
+      message: `Permitting type: ${permitType.callout}${research.notes ? ` ${research.notes}` : ` No downloadable PDF form was found for ${project.ahj} — submit through the method above.`}${portalNote}${reqNote}`,
     };
   }
 
@@ -325,12 +335,14 @@ export async function ensureAhjFormTemplate(
   if (!bytes) {
     return {
       status: "not_found",
-      message: `Found candidate links for ${project.ahj} but none returned a valid PDF (link rot or login-gated). Upload the blank PDF to proceed. Tried: ${research.candidateUrls.join(", ")}`,
+      permitType: permitType.callout,
+      message: `Permitting type: ${permitType.callout} Found candidate links for ${project.ahj} but none returned a valid PDF (link rot or login-gated). Upload the blank PDF to proceed. Tried: ${research.candidateUrls.join(", ")}`,
     };
   }
 
   const formName = research.formName || `${project.ahj} ${formType.replace(/_/g, " ")}`;
-  return acquireFromBytes(db, llm, { ahj: project.ahj, state: project.state, formType, formName, bytes, sourceUrl: usedUrl });
+  const acquired = await acquireFromBytes(db, llm, { ahj: project.ahj, state: project.state, formType, formName, bytes, sourceUrl: usedUrl });
+  return { ...acquired, permitType: permitType.callout };
 }
 
 // Shared acquisition: map a downloaded/uploaded blank PDF (AcroForm first, then

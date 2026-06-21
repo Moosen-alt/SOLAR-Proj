@@ -323,7 +323,7 @@ app.post("/api/projects/:id/find-ahj-form", asyncHandler(async (req, res) => {
   } catch (err) {
     throw normalizeLlmError(err);
   }
-  addAuditLog(db, String(req.params.id), "system", "ahj form acquisition", "ahj_form.find", { status: ensure.status, formName: ensure.formName || "", ahj: detail.project.ahj });
+  addAuditLog(db, String(req.params.id), "system", "ahj form acquisition", "ahj_form.find", { status: ensure.status, formName: ensure.formName || "", ahj: detail.project.ahj, permitType: ensure.permitType || "" });
   const filled = await buildFilledFormsForProject(db, detail.project);
   res.json({ ensure, filled });
 }));

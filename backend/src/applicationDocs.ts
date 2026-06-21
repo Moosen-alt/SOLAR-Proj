@@ -195,6 +195,51 @@ export function findApplicationProfile(project: ProjectRecord): ApplicationRequi
   };
 }
 
+export interface PermitTypeInfo {
+  /** "combo" = one combined building+electrical permit; "separate" = distinct BLD + ELE permits. */
+  structure: "combo" | "separate" | "unknown";
+  /** Normalized submission method/platform, e.g. "Oregon ePermitting (Accela)", "ProjectDox", "Email". */
+  submissionMethod: string;
+  /** One-line human callout, e.g. "Separate building (BLD) + electrical (ELE) permits — submitted via Oregon ePermitting." */
+  callout: string;
+}
+
+// Derive the permit TYPE (combo vs separate building/electrical) and how it's
+// submitted, from the profile's flags + portal name (honoring explicit overrides
+// and any learned method/platform). This is what the UI and the form-search
+// callout surface so the operator always knows what kind of permitting an AHJ uses.
+export function describePermitType(
+  profile: ApplicationRequirementProfile,
+  learned: { submissionMethod?: string; portalPlatform?: string; permitStructure?: "combo" | "separate" | "unknown" } = {},
+): PermitTypeInfo {
+  // Structure — prefer an explicit profile value, then what research learned, then derive from flags.
+  let structure: PermitTypeInfo["structure"] = profile.permitStructure || "unknown";
+  if (structure === "unknown" && learned.permitStructure && learned.permitStructure !== "unknown") structure = learned.permitStructure;
+  if (structure === "unknown") {
+    if (profile.requiresStructuralApplication && profile.requiresElectricalApplication) structure = "separate";
+    else if (profile.requiresAhjApplication || profile.requiresStructuralApplication) structure = "combo";
+  }
+
+  // Submission method/platform.
+  const blob = `${profile.portalName} ${(profile.notes || []).join(" ")} ${learned.submissionMethod || ""} ${learned.portalPlatform || ""}`.toLowerCase();
+  let submissionMethod = profile.submissionMethod || "";
+  if (!submissionMethod) {
+    if (/projectdox|avolve/.test(blob)) submissionMethod = "ProjectDox (online plan review)";
+    else if (/portland.*(devhub|hub|portal)/.test(blob)) submissionMethod = "Portland DevHub portal";
+    else if (/epermitting|accela/.test(blob)) submissionMethod = "Oregon ePermitting (Accela)";
+    else if (/email/.test(blob)) submissionMethod = "Email";
+    else if (profile.requiresPortalEntryOnly) submissionMethod = "Online portal";
+    else submissionMethod = "Unknown — verify on the AHJ site";
+  }
+
+  const structureLabel =
+    structure === "separate" ? "Separate building (BLD) + electrical (ELE) permits — both must be filed"
+    : structure === "combo" ? "Combined building + electrical permit (one permit)"
+    : "Permit structure not yet determined";
+  const callout = `${structureLabel} — submitted via ${submissionMethod}.`;
+  return { structure, submissionMethod, callout };
+}
+
 export interface SubmittalEmailDraft {
   isEmailSubmittal: boolean;
   to: string;
@@ -220,10 +265,13 @@ export function buildSubmittalEmailDraft(
 ): SubmittalEmailDraft {
   const profile = findApplicationProfile(project);
   const isEmail = isEmailSubmittalProfile(profile, opts.learnedMethod, opts.learnedPlatform);
+  const permitType = describePermitType(profile, { submissionMethod: opts.learnedMethod, portalPlatform: opts.learnedPlatform });
   const company = (opts.companyName || "").trim() || "Our company";
   const customer = (project.homeownerName || "Customer").trim();
   const addr = [project.projectAddress, [project.city, project.state, project.zip].filter(Boolean).join(", ")].filter(Boolean).join(", ");
-  const subject = `${company} - BLD, ELE Permit submittal - ${customer} - ${project.projectAddress || addr}`;
+  // Subject reflects the permit structure: combo → "Permit submittal"; separate → "BLD, ELE Permit submittal".
+  const permitTag = permitType.structure === "combo" ? "Permit submittal" : "BLD, ELE Permit submittal";
+  const subject = `${company} - ${permitTag} - ${customer} - ${project.projectAddress || addr}`;
 
   const snap = (project.parserSnapshot || {}) as Record<string, unknown>;
   const s = (k: string): string => (snap[k] == null ? "" : String(snap[k]));
@@ -236,10 +284,13 @@ export function buildSubmittalEmailDraft(
     : ["Building permit application", "Electrical permit application", "Plan set", "Equipment specifications"]
   ).map((d) => `  - ${d}`).join("\n");
 
+  const intro = permitType.structure === "combo"
+    ? "Please find attached the combined building + electrical permit submittal for the following residential rooftop solar PV project:"
+    : "Please find attached the building (BLD) and electrical (ELE) permit submittal for the following residential rooftop solar PV project:";
   const body = [
     "Hello,",
     "",
-    `Please find attached the building (BLD) and electrical (ELE) permit submittal for the following residential rooftop solar PV project:`,
+    intro,
     "",
     `Customer: ${customer}`,
     `Site address: ${addr || "[address]"}`,
@@ -281,6 +332,7 @@ export function buildApplicationDocumentPackage(project: ProjectRecord): Applica
     docs,
     missingFields,
     html: packageHtml(project, profile, docs, missingFields),
+    permitType: describePermitType(profile).callout,
   };
 }
 

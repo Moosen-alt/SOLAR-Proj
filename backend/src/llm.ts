@@ -747,7 +747,8 @@ Return ONLY JSON:
   "submissionMethod": "<email | online portal | in-person | combination — how this AHJ takes the completed application, if stated>",
   "submittalPortalUrl": "<the URL of the actual submittal PORTAL where the completed application is uploaded/entered, if there is one (login/landing page), else ''>",
   "portalPlatform": "<which platform the submittal portal runs on, if identifiable: 'Oregon ePermitting' (Accela), 'Portland Portal' (City of Portland Development Hub), 'ProjectDox' (Avolve), 'Email', or 'Other'>",
-  "submittalRequirements": "<any AHJ-specific submittal requirements posted on the site — e.g. 'email BLD+ELE apps + plan set as one PDF to permits@city.gov', 'register in ProjectDox after intake', combined vs separate permits, required cover sheet, fee handling>",
+  "submittalRequirements": "<any AHJ-specific submittal requirements posted on the site — e.g. 'email BLD+ELE apps + plan set as one PDF to permits@city.gov', 'register in ProjectDox after intake', required cover sheet, fee handling>",
+  "permitStructure": "<'combo' if ONE combined building+electrical permit covers residential solar, 'separate' if distinct BUILDING and ELECTRICAL permits must BOTH be filed, or 'unknown'>",
   "confidence": "low|medium|high",
   "notes": "<which site it came from; any caveat>"
 }
@@ -784,6 +785,7 @@ Rules:
       submittalPortalUrl: portalUrl,
       portalPlatform: String(parsed.portalPlatform || ""),
       submittalRequirements: String(parsed.submittalRequirements || ""),
+      permitStructure: (["combo", "separate", "unknown"].includes(String(parsed.permitStructure)) ? parsed.permitStructure : "unknown") as "combo" | "separate" | "unknown",
     };
   }
 
