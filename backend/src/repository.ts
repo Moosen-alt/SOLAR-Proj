@@ -2098,7 +2098,7 @@ export function getLiveProjectReadinessReport(db: AppDb, projectId: string): Liv
       nextAction: qcFails || pendingCritical ? "Resolve QC failures and pending human review fields, then rerun QC." : "Keep warnings visible but continue toward package generation.",
       evidence: [
         ...detail.qcResults.filter((item) => item.qcStatus !== "pass").slice(0, 3).map((item) => `${item.ruleName}: ${item.message}`),
-        ...detail.humanReviewItems.filter((item) => item.status === "pending").slice(0, 3).map((item) => `Human review: ${item.fieldName}`),
+        ...detail.humanReviewItems.filter((item) => item.status === "pending").slice(0, 3).map((item) => `Human review: ${item.issueType || item.fieldName}`),
       ],
       source: "qc.human_review",
     }),
@@ -2367,7 +2367,7 @@ export function getProjectProcessMap(db: AppDb, projectId: string): ProjectProce
         nextAction: qcFails || pendingCritical ? "Resolve QC and human review before staging either lane." : qcWarnings ? "Review warnings before application prep." : "Extraction is ready for package prep.",
         evidence: [
           ...detail.qcResults.filter((item) => item.qcStatus !== "pass").slice(0, 4).map((item) => `${item.ruleName}: ${item.message}`),
-          ...detail.humanReviewItems.filter((item) => item.status === "pending").slice(0, 3).map((item) => `Human review: ${item.fieldName}`),
+          ...detail.humanReviewItems.filter((item) => item.status === "pending").slice(0, 3).map((item) => `Human review: ${item.issueType || item.fieldName}`),
         ],
         source: "qc.human_review",
       }),
@@ -2720,8 +2720,8 @@ export function getInstallerActionPacket(db: AppDb, projectId: string): Installe
       id: `human-review:${review.id}`,
       category: /account|meter|utility|interconnection/i.test(review.fieldName) ? "utility_nem" : "field_verification",
       severity: "warning",
-      title: `Verify ${review.fieldName}`,
-      ask: `Confirm the correct value for ${review.fieldName}.`,
+      title: `Verify ${review.issueType || review.fieldName}`,
+      ask: `Confirm the correct value for ${review.issueType || review.fieldName}.`,
       why: review.notes || review.sourceExcerpt || "The parser marked this value for human verification.",
       ownerRole: /account|meter|utility|interconnection/i.test(review.fieldName) ? "NEM Ops" : "Installer",
       dueBefore: "Before final package lock",
@@ -2987,7 +2987,7 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
       requirement: "QC failures and unresolved critical human-review fields must be cleared before portal staging.",
       evidence: [
         ...qcFails.slice(0, 4).map((item) => `${item.ruleName}: ${item.message}`),
-        ...pendingCritical.slice(0, 4).map((item) => `Pending human review: ${item.fieldName}`),
+        ...pendingCritical.slice(0, 4).map((item) => `Pending human review: ${item.issueType || item.fieldName}`),
         ...qcWarnings.slice(0, 3).map((item) => `Warning: ${item.ruleName}`),
       ],
       nextAction: qcFails.length
@@ -3310,7 +3310,7 @@ export function getProjectTimelineReport(db: AppDb, projectId: string): ProjectT
       occurredAt: item.updatedAt || item.createdAt,
       category: "human_review",
       severity: item.status === "pending" ? "warning" : item.status === "rejected" ? "blocker" : "pass",
-      title: `Human review ${item.status}: ${item.fieldName}`,
+      title: `Human review ${item.status}: ${item.issueType || item.fieldName}`,
       detail: item.notes || item.sourceExcerpt || `${item.issueType} requires human verification.`,
       actor: "Human Review",
       source: item.issueType,
