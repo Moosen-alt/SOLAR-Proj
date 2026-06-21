@@ -966,50 +966,57 @@ function downloadRecordBat() {
   URL.revokeObjectURL(a.href);
 }
 
+// Run a render step in isolation: a failure in one panel (e.g. unexpected project
+// data) must never abort the rest of the detail view, the stepper, or the action
+// buttons. Logs the failure for debugging instead of throwing.
+function safeRender(label, fn) {
+  try {
+    fn();
+  } catch (err) {
+    console.error(`[render] ${label} failed:`, err);
+  }
+}
+
 function renderDetail() {
   const { project } = state.detail;
-  $("detailTitle").textContent = project.homeownerName || "Unnamed project";
-  $("detailSubtitle").textContent = project.projectAddress || "No address captured";
-  $("metricStatus").textContent = statusLabel(project.status);
-  $("metricUtility").textContent = project.utility || "Missing";
-  $("metricAhj").textContent = project.ahj || "Missing";
-  $("metricSystem").textContent = `${project.systemSizeDcKw ?? "?"} DC / ${project.systemSizeAcKw ?? "?"} AC`;
-  $("metricPermit").textContent = state.processMap
-    ? `Permit ${state.processMap.permitStatus.replaceAll("_", " ")} / NEM ${state.processMap.nemStatus.replaceAll("_", " ")}`
-    : "Not checked";
-  syncProjectClientSelect();
-  renderNextStep();
-  renderHandoffBanner();
-  syncPermitForm();
-  renderWorkflow();
-  renderSubmitGate();
-  renderOpsBrief();
-  renderHandoffPacket();
-  renderCommunicationDrafts();
-  renderRunbook();
-  renderProcessMap();
-  renderInstallerPacket();
-  // Auto-open the "later steps" accordion if any panel has real data
-  const laterAccordion = $("laterStepsAccordion");
-  if (laterAccordion) {
-    const hasLaterData = state.opsBrief || state.handoffPacket || state.communicationDrafts?.length || state.runbook || state.processMap || state.installerPacket;
-    laterAccordion.open = Boolean(hasLaterData);
+  safeRender("header", () => {
+    $("detailTitle").textContent = project.homeownerName || "Unnamed project";
+    $("detailSubtitle").textContent = project.projectAddress || "No address captured";
+    $("metricStatus").textContent = statusLabel(project.status);
+    $("metricUtility").textContent = project.utility || "Missing";
+    $("metricAhj").textContent = project.ahj || "Missing";
+    $("metricSystem").textContent = `${project.systemSizeDcKw ?? "?"} DC / ${project.systemSizeAcKw ?? "?"} AC`;
+    const pm = state.processMap;
+    $("metricPermit").textContent = pm
+      ? `Permit ${String(pm.permitStatus || "?").replaceAll("_", " ")} / NEM ${String(pm.nemStatus || "?").replaceAll("_", " ")}`
+      : "Not checked";
+  });
+  // Each panel is isolated so a single bad value can't break the flow or the stepper.
+  safeRender("clientSelect", syncProjectClientSelect);
+  safeRender("nextStep", renderNextStep);
+  safeRender("handoffBanner", renderHandoffBanner);
+  safeRender("permitForm", syncPermitForm);
+  safeRender("workflow", renderWorkflow);
+  safeRender("submitGate", renderSubmitGate);
+  safeRender("processMap", renderProcessMap);
+  safeRender("liveReadiness", renderLiveTestReadiness);
+  safeRender("historical", renderHistoricalFailures);
+  safeRender("reviewerGate", renderReviewerGate);
+  safeRender("qc", renderQc);
+  safeRender("review", renderReview);
+  safeRender("appDocs", renderApplicationDocs);
+  safeRender("permitMonitor", renderPermitMonitor);
+  safeRender("corrections", renderCorrections);
+  safeRender("portalRuns", renderPortalRuns);
+  safeRender("timeline", renderProjectTimeline);
+  safeRender("audit", renderAudit);
+  safeRender("recordPortal", renderRecordPortal);
+  // The stepper state runs LAST and isolated, so completed-stage collapse / current-
+  // stage open / button availability is always applied even if a panel above failed.
+  safeRender("stageState", applyStageState);
+  if (window.lucide) {
+    try { window.lucide.createIcons(); } catch { /* lucide is cosmetic */ }
   }
-  renderOpsPlan();
-  renderLiveTestReadiness();
-  renderHistoricalFailures();
-  renderReviewerGate();
-  renderQc();
-  renderReview();
-  renderApplicationDocs();
-  renderPermitMonitor();
-  renderCorrections();
-  renderPortalRuns();
-  renderProjectTimeline();
-  renderAudit();
-  renderRecordPortal();
-  applyStageState();
-  if (window.lucide) window.lucide.createIcons();
 }
 
 function opsClass(status) {
