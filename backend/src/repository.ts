@@ -62,6 +62,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { stageWithAccela, stageWithMockPortal, stageWithPowerClerk, stageWithRecipe } from "../../portal-bot/src/index";
 import { findCompleteRecipeForProject, resolveRecipeFieldValues } from "./portalRecipes";
+import { projectDocsByType } from "./projectDocuments";
 import { addAuditLog } from "./audit";
 import { clientStagingOverlay, getClient } from "./clients";
 import { buildApplicationDocumentPackage } from "./applicationDocs";
@@ -4464,7 +4465,11 @@ export async function prepareSubmission(db: AppDb, projectId: string): Promise<P
   const runId = id();
   const submissionId = id();
   const ts = nowIso();
-  const files = filesFromProject(detail.project.parserSnapshot);
+  // Prefer the backend-split/uploaded document set (the real upload-ready files, named
+  // so the adapters classify them by keyword); fall back to snapshot file paths.
+  const docsByType = projectDocsByType(db, detail.project.id);
+  const packagedFiles = Object.values(docsByType);
+  const files = packagedFiles.length > 0 ? packagedFiles : filesFromProject(detail.project.parserSnapshot);
 
   // Resolve portal adapter. A project may pin a specific portal_profile_id in
   // its parser snapshot; otherwise fall back to any configured real portal
@@ -4483,15 +4488,26 @@ export async function prepareSubmission(db: AppDb, projectId: string): Promise<P
   const portalLabel = isRealPortal
     ? (portalProfile?.portal_name || portalType)
     : "Mock portal";
-  // Recipe replay: if no hand-coded adapter matches but an admin has recorded a recipe
-  // for this AHJ (or its utility), replay it — so an unknown portal still automates.
-  const recipe = portalType === "accela_oregon" || portalType === "powerclerk_pge"
+  // Platform-driven adapter reuse: a new AHJ on a KNOWN platform (e.g. City of Lafayette
+  // on Accela/Oregon ePermitting) reuses that platform's hand-coded adapter even if its
+  // portal_type isn't the canonical one — only the entry URL + login differ. The platform
+  // comes from the learned KB profile. Gated on a real portal profile so mock/dev is
+  // unaffected.
+  const learnedProfile = isRealPortal
+    ? findLearnedProfileForProject(db, { state: detail.project.state, ahj: detail.project.ahj, utility: detail.project.utility })
+    : null;
+  const platform = String(learnedProfile?.portalPlatform ?? "").toLowerCase();
+  const isAccela = portalType === "accela_oregon" || (isRealPortal && platform.includes("accela"));
+  const isPowerClerk = portalType === "powerclerk_pge" || (isRealPortal && platform.includes("powerclerk"));
+  // Recipe replay: if no hand-coded platform adapter applies but an admin has recorded a
+  // recipe for this AHJ (or its utility), replay it — so an unknown portal still automates.
+  const recipe = isAccela || isPowerClerk
     ? null
     : (findCompleteRecipeForProject(db, { scopeType: "ahj", state: detail.project.state, ahj: detail.project.ahj, utility: detail.project.utility })
        ?? findCompleteRecipeForProject(db, { scopeType: "utility", state: detail.project.state, utility: detail.project.utility }));
-  const adapterActorName = portalType === "accela_oregon"
+  const adapterActorName = isAccela
     ? "OregonEPermittingAdapter"
-    : portalType === "powerclerk_pge"
+    : isPowerClerk
       ? "PowerClerkAdapter"
       : recipe
         ? "RecipeAdapter"
@@ -4511,12 +4527,12 @@ export async function prepareSubmission(db: AppDb, projectId: string): Promise<P
     : detail.project;
 
   const result =
-    portalType === "accela_oregon"
+    isAccela
       ? await stageWithAccela(stagedProject, files, stageOptions)
-      : portalType === "powerclerk_pge"
+      : isPowerClerk
         ? await stageWithPowerClerk(stagedProject, files, stageOptions)
         : recipe
-          ? await stageWithRecipe(recipe, stagedProject, resolveRecipeFieldValues(db, stagedProject, portalType), {}, files, stageOptions)
+          ? await stageWithRecipe(recipe, stagedProject, resolveRecipeFieldValues(db, stagedProject, portalType), docsByType, files, stageOptions)
           : await stageWithMockPortal(stagedProject, files, reviewerReport);
 
   db.transaction(() => {
