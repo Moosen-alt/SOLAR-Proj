@@ -56,7 +56,7 @@ const criticalChecks: Check[] = [
   { ruleId: "critical.main_breaker", ruleName: "Main breaker rating", fieldName: "mainBreaker", required: true, severity: "blocker", message: "Main breaker rating must be present." },
   { ruleId: "critical.pv_breaker", ruleName: "PV breaker/OCPD", fieldName: "pvBreaker", required: true, severity: "blocker", message: "PV breaker/OCPD must be present." },
   { ruleId: "critical.permit_path", ruleName: "Permit path", fieldName: "permitPath", required: true, severity: "warning", message: "Permit path should be reviewed before staging." },
-  { ruleId: "critical.locates", ruleName: "Required locates", fieldName: "locates", required: true, severity: "warning", message: "Locates callout should be reviewed before staging." },
+  { ruleId: "critical.locates", ruleName: "Required locates", fieldName: "locates", required: true, severity: "warning", message: "Utility locates: does this system require underground conduit or trenching? If roof-mount with no digging, type 'N/A - roof mount, no excavation'. If trenching is needed, type '811 call required before dig' or note the plan-set callout. This is a warning, not a blocker — it just needs a value so the reviewer can confirm." },
   { ruleId: "critical.required_files", ruleName: "Required files", fieldName: "splitPages", required: true, severity: "warning", message: "Split page mapping should be reviewed before staging." },
 ];
 
@@ -103,7 +103,11 @@ function statusFor(check: Check, ctx: QcContext): QcStatus {
   }
 
   if (!value) return check.severity === "warning" ? "warning" : "fail";
-  if (check.fieldName === "locates" && /not run|waiting/i.test(value)) return "warning";
+  if (check.fieldName === "locates") {
+    if (/not run|waiting/i.test(value)) return "warning";
+    // Roof mount with no excavation — locates are not applicable.
+    if (/no excavation|roof.mount only|n\/a.*roof|roof.*n\/a|no.*trench|no.*dig/i.test(value)) return "pass";
+  }
   return "pass";
 }
 

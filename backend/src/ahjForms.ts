@@ -139,8 +139,11 @@ export const ahjFormRegistry: AhjFormDefinition[] = [
       { source: "client.installerPhone", page: 0, x: 66, y: 291, maxWidth: 120 },
       { source: "client.electricalLicenseNumber", page: 0, x: 100, y: 275, maxWidth: 90 },
       { source: "client.ccbLicenseNumber", page: 0, x: 267, y: 275, maxWidth: 90 },
-      // Supervising electrician
+      // Supervising electrician — name typed from client profile (supervisor field).
+      // If an electrician signature image is stored, it is stamped via signatureFields below.
       { source: "client.electricalSupervisorName", page: 0, x: 93, y: 225, maxWidth: 150 },
+      // Print name under electrician sig (from stored electrician signature, fallback to supervisor name)
+      { source: "computed.electricianSignerName", page: 0, x: 93, y: 212, maxWidth: 150 },
       // Printed name under the Authorized signature (operator who signs).
       { source: "computed.applicantSignerName", page: 0, x: 108, y: 189, maxWidth: 150 },
       // Applicant / Contact Person = our (submitter) info
@@ -185,12 +188,27 @@ export const ahjFormRegistry: AhjFormDefinition[] = [
         dateY: 189,
         dateSize: 9,
       },
+      {
+        // "Supervising electrician / Signature, required:" line.
+        // Coordinates measured from the actual form (y from bottom, US Letter 792pt).
+        // Stamped only when an electrician signature image has been stored.
+        role: "electrician",
+        page: 0,
+        x: 93,
+        y: 237,
+        width: 150,
+        height: 22,
+        label: "Supervising electrician signature",
+        dateX: 292,
+        dateY: 225,
+        dateSize: 9,
+      },
     ],
     notes: [
       "Flat PDF (no fillable fields) filled by coordinate overlay.",
       "Type of work and Category of construction are marked Other = Solar.",
       "Fees use the rate schedule printed on the form (rev 7/1/2025): per-system kVA brackets + 12% state surcharge; 25% plan review only when over 25 kVA.",
-      "Only the Authorized signature line is auto-stamped with the operator's signature + today's date. Owner and supervising-electrician signatures are left blank for those parties to sign.",
+      "Authorized signature (applicant) and supervising-electrician signature are auto-stamped when images are stored. Owner signature is left blank for homeowner to sign in person.",
     ],
   },
 ];
@@ -300,6 +318,10 @@ function computed(name: string, ctx: FillContext): string {
       // The typed name on the applicant's stored signature, for the "Print name"
       // line under the authorized signature.
       return ctx.signatures?.applicant?.name ?? "";
+    case "electricianSignerName":
+      // Typed name on the stored electrician signature; falls back to the
+      // supervisor name from the client profile when no sig image is stored.
+      return ctx.signatures?.electrician?.name ?? ctx.client.electricalSupervisorName ?? "";
     case "descriptionOfWork": {
       const s = ctx.snapshot;
       const qty = str(s["moduleQuantity"] ?? s["module_quantity"]);

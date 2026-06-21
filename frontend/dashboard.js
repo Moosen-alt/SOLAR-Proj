@@ -2365,7 +2365,11 @@ async function updateReview(reviewItemId, action) {
   await loadProcessMap();
   await loadInstallerPacket();
   showMessage("Human review item updated. QC was rerun automatically.");
+  // Preserve typed values in other pending review inputs before re-render wipes them.
+  const savedInputs = {};
+  document.querySelectorAll("[id^='review-']").forEach((el) => { if (el.value) savedInputs[el.id] = el.value; });
   renderDetail();
+  Object.entries(savedInputs).forEach(([id, val]) => { const el = $(id); if (el && !el.value) el.value = val; });
   await loadProjects();
 }
 

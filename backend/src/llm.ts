@@ -278,7 +278,7 @@ NARRATIVE EVIDENCE BLOBS — also include these as fields (value = a short factu
 - roofPlanNotesText: roof planes, fire access pathways/setbacks/ridge gaps, module layout per plane
 - labelsText: PV label/placard schedule and directory (690.12 / 705.10)
 - projectDescriptionText: one-paragraph scope (size, module/inverter counts, mounting, interconnection)
-- locateCalloutText: any utility-locate / call-before-dig callouts
+- locateCalloutText: any utility-locate / call-before-dig (811) callouts on the plan set. If the system is roof-mounted with no underground conduit or excavation, write "No excavation — roof mount only". If a 811 callout or locate note is shown, quote it. Never leave blank.
 
 Rules:
 - Set confidence honestly; put anything <0.6 or guessed into lowConfidenceFields.
@@ -793,7 +793,7 @@ For each blank/line/box on the form that one of the AVAILABLE DATA SOURCES shoul
 - "label": the form's printed label for this blank (for human review)
 
 ALSO locate every SIGNATURE line (where a handwritten signature goes) and return it under "signatures" with:
-- "role": whose signature — one of "applicant","owner","contractor","electrician","other" (infer from the nearby label; the main applicant/owner signature is "applicant")
+- "role": whose signature — one of "applicant","owner","contractor","electrician","other". Infer from the label: "supervising electrician","licensed electrician","electrician signature" → "electrician"; "property owner","homeowner" → "owner"; "contractor" → "contractor"; the main submittal/authorized signature → "applicant"
 - "page": 0-based page index
 - "nx","ny": normalized position of the BOTTOM-LEFT corner of the signature area (just above the signature line, at its left)
 - "widthFrac","heightFrac": the signature area size as a fraction of page width/height (a signature line is typically ~0.25 wide, ~0.04 tall)
