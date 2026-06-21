@@ -142,6 +142,11 @@ export function runQcForProject(db: AppDb, projectId: string): QcRunResult {
         // resolved — otherwise an approval that didn't populate the field leaves QC
         // failing with no item to fix (a silent trap). Warnings are not re-opened.
         ensureReviewItem(db, projectId, check.fieldName, check.ruleName, parserField(payload, check.fieldName), message, qcStatus === "fail");
+      } else {
+        // A check that now passes (e.g. splitPages/permitPath no longer applicable
+        // for this AHJ, or a value got filled) should clear any stale pending item
+        // it left behind on a prior run — otherwise it lingers in Human Review.
+        resolvePendingReviewItem(db, projectId, check.fieldName);
       }
     }
 
@@ -197,6 +202,15 @@ export function runQcForProject(db: AppDb, projectId: string): QcRunResult {
   });
 
   return { failCount, warningCount };
+}
+
+// Auto-resolve a still-pending review item for a check that now passes. Only
+// touches 'pending' rows — an explicit human approve/edit/reject is left alone.
+function resolvePendingReviewItem(db: AppDb, projectId: string, fieldName: string): void {
+  db.run(
+    "UPDATE human_review_items SET status = 'approved', notes = 'Auto-resolved: QC check passed.', updated_at = ? WHERE project_id = ? AND field_name = ? AND status = 'pending'",
+    [nowIso(), projectId, fieldName],
+  );
 }
 
 function ensureReviewItem(
