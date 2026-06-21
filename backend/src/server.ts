@@ -30,6 +30,7 @@ import {
   deleteProjectDocument,
 } from "./projectDocuments";
 import { buildUtilityPackage } from "./docSplitter";
+import type { EvidenceTopic } from "./projectEvidence";
 import { createClient, deleteClient, getClient, listClients, updateClient } from "./clients";
 import { enqueueJob, getJob, listJobs, processNextJob, startJobWorker } from "./jobQueue";
 import { createUser, getUserWorkload, listUsers, updateUser, assignProjectToUser } from "./users";
@@ -469,6 +470,22 @@ app.get("/api/projects/:id/reviewer-report", (req, res) => {
   }
   res.json(getReviewerReport(db, req.params.id));
 });
+
+// Renders the source plan-set page behind a reviewer-gate evidence topic so the
+// report's "screenshot crop slot" shows the actual sheet. 404 (handled as a soft
+// fallback by the report's <img onerror>) when no plan-set PDF is stored.
+app.get("/api/projects/:id/evidence-image", asyncHandler(async (req, res) => {
+  const { renderEvidenceImage } = await import("./pageImages");
+  const topic = String(req.query.topic || "") as EvidenceTopic;
+  const hint = String(req.query.hint || "");
+  const excerpt = String(req.query.excerpt || "");
+  if (!topic) throw new HttpError(400, "topic is required.");
+  const png = await renderEvidenceImage(db, String(req.params.id), topic, hint, excerpt);
+  if (!png) throw new HttpError(404, "No source page image available for this evidence yet.");
+  res.setHeader("Content-Type", "image/png");
+  res.setHeader("Cache-Control", "private, max-age=600");
+  res.send(png);
+}));
 
 app.post("/api/projects/:id/qc", (req, res) => {
   res.json(rerunQc(db, req.params.id));

@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.105.0",
+    "@napi-rs/canvas": "^1.0.0",
     "@types/adm-zip": "^0.5.8",
     "adm-zip": "^0.5.17",
     "better-sqlite3": "^12.11.1",

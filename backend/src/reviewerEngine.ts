@@ -155,7 +155,7 @@ function topicForFinding(finding: ReviewerFinding): EvidenceTopic | null {
   return null;
 }
 
-function evidenceFromTopic(check: ProjectEvidence): ReviewerFindingEvidence[] {
+function evidenceFromTopic(projectId: string, check: ProjectEvidence): ReviewerFindingEvidence[] {
   const found = check.hits.map<ReviewerFindingEvidence>((hit) => ({
     kind: "source_excerpt",
     label: `${check.topic} evidence`,
@@ -169,6 +169,13 @@ function evidenceFromTopic(check: ProjectEvidence): ReviewerFindingEvidence[] {
   }));
 
   if (found.length) {
+    // Point the crop slot at the on-demand renderer. The endpoint locates the
+    // plan-set PDF, picks the page backing this topic's evidence, and rasterizes
+    // it. If no plan set is stored, the endpoint 404s and the report falls back
+    // to the text hint via the <img onerror> handler in renderFinding.
+    const cropUrl = `/api/projects/${encodeURIComponent(projectId)}/evidence-image?topic=${encodeURIComponent(check.topic)}`
+      + `&hint=${encodeURIComponent(found[0].pageHint || "")}`
+      + `&excerpt=${encodeURIComponent((found[0].excerpt || "").slice(0, 160))}`;
     found.push({
       kind: "screenshot_placeholder",
       label: "Screenshot crop slot",
@@ -176,9 +183,9 @@ function evidenceFromTopic(check: ProjectEvidence): ReviewerFindingEvidence[] {
       excerpt: "",
       confidence: check.confidence,
       pageHint: found[0].pageHint,
-      screenshotPath: "",
+      screenshotPath: cropUrl,
       verifier: "parser",
-      note: "Screenshot/crop will render here after source page image storage is enabled. Use the source/page hint above for now.",
+      note: "Source page will render here. If no plan-set PDF is stored, upload it to Project Documents — then this slot shows the sheet. Use the source/page hint above meanwhile.",
     });
     return found;
   }
@@ -276,7 +283,7 @@ function genericEvidence(project: ProjectRecord, profile: AhjProcessProfile | nu
 function attachEvidence(project: ProjectRecord, profile: AhjProcessProfile | null, finding: ReviewerFinding): ReviewerFinding {
   if (finding.evidenceFound?.length) return finding;
   const topic = topicForFinding(finding);
-  const evidenceFound = topic ? evidenceFromTopic(evidenceForTopic(project, topic)) : genericEvidence(project, profile, finding);
+  const evidenceFound = topic ? evidenceFromTopic(project.id, evidenceForTopic(project, topic)) : genericEvidence(project, profile, finding);
   const status = topic ? evidenceStatus(evidenceForTopic(project, topic)) : evidenceFound.some((item) => item.kind === "process_profile") ? "profile" : evidenceFound.some((item) => item.confidence === "high") ? "verified" : "weak";
   return { ...finding, evidenceFound, evidenceStatus: status };
 }
@@ -304,7 +311,11 @@ function renderFinding(finding: ReviewerFinding): string {
   const found = finding.evidenceFound?.length
     ? finding.evidenceFound.map((item) => {
         if (item.kind === "screenshot_placeholder") {
-          return `<li><strong>${esc(item.label)}:</strong> ${item.screenshotPath ? `<img src="${esc(item.screenshotPath)}" alt="${esc(item.label)}" />` : `<span class="shot-slot">${esc(item.note)}</span>`}</li>`;
+          // Try to render the source page; if the endpoint 404s (no plan-set PDF
+          // stored), hide the broken image and reveal the text-hint fallback.
+          return item.screenshotPath
+            ? `<li><strong>${esc(item.label)}:</strong> <img class="crop" src="${esc(item.screenshotPath)}" alt="${esc(item.label)}" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='block'" /><span class="shot-slot" style="display:none">${esc(item.note)}</span></li>`
+            : `<li><strong>${esc(item.label)}:</strong> <span class="shot-slot">${esc(item.note)}</span></li>`;
         }
         return `<li><strong>${esc(item.label)}:</strong> ${esc(item.excerpt)}<br><span>${esc(item.source)}${item.pageHint ? ` | ${esc(item.pageHint)}` : ""} | ${esc(item.confidence)} confidence | ${esc(item.verifier)}</span>${item.note ? `<br><span>${esc(item.note)}</span>` : ""}</li>`;
       }).join("")
@@ -349,6 +360,7 @@ export function renderReviewerReportHtml(project: ProjectRecord, report: Reviewe
     .evidence-found { border-top: 1px solid #d9e0e7; margin-top: 12px; padding-top: 10px; }
     .shot-slot { display: block; border: 1px dashed #94a3b8; border-radius: 6px; padding: 10px; color: #475569; background: #f8fafc; }
     img { max-width: 100%; border: 1px solid #d9e0e7; border-radius: 6px; margin-top: 6px; }
+    img.crop { display: block; max-width: 520px; box-shadow: 0 1px 4px rgba(15,23,42,.12); }
     li { margin-bottom: 6px; } ul { padding-left: 20px; }
     @media print { body { background: #fff; } main { max-width: none; padding: 0; } .finding { break-inside: avoid; } }
     @media (max-width: 760px) { main { padding: 14px; } .grid, .finding-head { grid-template-columns: 1fr; display: grid; } }
