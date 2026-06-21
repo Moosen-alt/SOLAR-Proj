@@ -1306,6 +1306,19 @@ function renderSubmitGate() {
   const checks = gate.checks || [];
   const manualItems = gate.manualSubmitChecklist || [];
   const blockers = checks.filter((check) => check.status === "blocker");
+  // Surface WHY "Prepare Submittal" is greyed out, right at the top of the
+  // project (where the operator is), instead of only as a button tooltip and a
+  // collapsed Stage-4 panel they have to hunt for.
+  const note = $("submitBlockerNote");
+  if (note) {
+    if (!gate.canPrepareSubmission && blockers.length) {
+      note.hidden = false;
+      note.innerHTML = `<strong>⛔ Can't submit yet — ${blockers.length} blocker(s):</strong> `
+        + blockers.map((b) => `${esc(b.title)} (${esc(b.nextAction || "resolve this")})`).join(" · ");
+    } else {
+      note.hidden = true;
+    }
+  }
   const warnings = checks.filter((check) => check.status === "warning");
   const importantChecks = [
     ...blockers,
