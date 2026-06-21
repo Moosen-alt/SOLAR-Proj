@@ -708,6 +708,31 @@ function migrate(db: AppDb): void {
     CREATE INDEX IF NOT EXISTS idx_projects_status_updated ON projects(status, updated_at DESC);
   `);
 
+  // Portal record/replay recipes — teach the bot a new AHJ or utility portal by
+  // recording the steps once, then replay them. One row per profile_key (latest
+  // version wins); admins can delete + re-record.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS portal_recipes (
+      id TEXT PRIMARY KEY,
+      scope_type TEXT NOT NULL DEFAULT 'ahj',
+      profile_key TEXT NOT NULL,
+      state TEXT NOT NULL DEFAULT '',
+      ahj TEXT NOT NULL DEFAULT '',
+      utility TEXT NOT NULL DEFAULT '',
+      portal_platform TEXT NOT NULL DEFAULT '',
+      portal_url TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'recording',
+      version INTEGER NOT NULL DEFAULT 1,
+      steps_json TEXT NOT NULL DEFAULT '[]',
+      created_by TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      notes TEXT NOT NULL DEFAULT ''
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_portal_recipes_profile ON portal_recipes(profile_key);
+    CREATE INDEX IF NOT EXISTS idx_portal_recipes_status ON portal_recipes(status);
+  `);
+
   seedBaselineRuleRows(db);
   seedInitialKnowledgeBase(db);
   seedTestInstaller(db);

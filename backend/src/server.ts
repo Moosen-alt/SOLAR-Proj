@@ -8,6 +8,15 @@ import { openDatabase } from "./db";
 import { HttpError } from "./httpError";
 import { collectDiagnostics, logErrorBlock, logger, requestLogger, startupBanner } from "./logger";
 import { saveVerifiedAhjProfile, saveVerifiedUtilityProfile } from "./knowledgeBase";
+import {
+  listPortalRecipes,
+  getPortalRecipe,
+  startPortalRecording,
+  savePortalRecipeSteps,
+  markPortalRecipeForRerecord,
+  deletePortalRecipe,
+  resolveRecipeFieldValues,
+} from "./portalRecipes";
 import { createClient, deleteClient, getClient, listClients, updateClient } from "./clients";
 import { enqueueJob, getJob, listJobs, processNextJob, startJobWorker } from "./jobQueue";
 import { createUser, getUserWorkload, listUsers, updateUser, assignProjectToUser } from "./users";
@@ -529,6 +538,54 @@ app.post("/api/knowledge-base/utility-profile", (req, res) => {
     notes: b.notes ? String(b.notes) : undefined,
   });
   res.status(201).json({ saved: true, profileKey: profile.profileKey, profile });
+});
+
+// ---------------------------------------------------------------------------
+// Portal record/replay recipes — teach the bot a new AHJ or utility portal by
+// recording the steps once; admins can list, delete, and re-record. The recorder
+// (npm run portal:record) drives a headed browser on the operator's machine and
+// posts the captured steps to PUT …/steps.
+// ---------------------------------------------------------------------------
+app.get("/api/portal-recipes", (_req, res) => {
+  res.json({ recipes: listPortalRecipes(db) });
+});
+app.get("/api/portal-recipes/:id", (req, res) => {
+  res.json(getPortalRecipe(db, String(req.params.id)));
+});
+app.post("/api/portal-recipes/record", (req, res) => {
+  const b = req.body || {};
+  const scopeType = String(b.scopeType) === "utility" ? "utility" : "ahj";
+  res.status(201).json(
+    startPortalRecording(db, {
+      scopeType,
+      state: b.state ? String(b.state) : undefined,
+      ahj: b.ahj ? String(b.ahj) : undefined,
+      utility: b.utility ? String(b.utility) : undefined,
+      portalPlatform: b.portalPlatform ? String(b.portalPlatform) : undefined,
+      portalUrl: b.portalUrl ? String(b.portalUrl) : undefined,
+      createdBy: b.createdBy ? String(b.createdBy) : undefined,
+    }),
+  );
+});
+app.put("/api/portal-recipes/:id/steps", (req, res) => {
+  const steps = Array.isArray(req.body?.steps) ? req.body.steps : [];
+  res.json(savePortalRecipeSteps(db, String(req.params.id), steps, {
+    status: req.body?.status,
+    notes: req.body?.notes ? String(req.body.notes) : undefined,
+  }));
+});
+app.post("/api/portal-recipes/:id/rerecord", (req, res) => {
+  res.json(markPortalRecipeForRerecord(db, String(req.params.id)));
+});
+app.delete("/api/portal-recipes/:id", (req, res) => {
+  res.json(deletePortalRecipe(db, String(req.params.id)));
+});
+// Resolved project+client field values — the recorder uses these to auto-bind a typed
+// value to its field key (so the recipe replays each future project's own data).
+app.get("/api/projects/:id/staging-field-values", (req, res) => {
+  const detail = getProjectDetail(db, String(req.params.id));
+  const portalType = String(req.query.portalType || "");
+  res.json({ fieldValues: resolveRecipeFieldValues(db, detail.project, portalType) });
 });
 
 // Auto-onboard the AHJ on a specific project (used when the docs builder has no

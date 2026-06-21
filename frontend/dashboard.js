@@ -90,6 +90,7 @@ async function loadProjects() {
   await loadOpsBoard();
   await loadOpsActions();
   await loadKnowledgeBase();
+  await loadPortalRecipes();
   await loadEmailTracker();
   const selectedStillExists = state.projects.some((project) => project.id === state.selectedProjectId);
   if (!state.selectedProjectId && state.projects[0]) {
@@ -158,6 +159,54 @@ async function loadKnowledgeBase() {
   state.knowledgeProfiles = data.profiles || [];
   $("knowledgeCount").textContent = state.knowledgeProfiles.length;
   renderKnowledgeBase();
+}
+
+async function loadPortalRecipes() {
+  try {
+    const data = await api("/api/portal-recipes");
+    state.portalRecipes = data.recipes || [];
+    renderPortalRecipes();
+  } catch (err) {
+    const el = $("portalRecipes");
+    if (el) el.innerHTML = `<p class="muted">${esc(err.message || "Could not load recipes.")}</p>`;
+  }
+}
+
+function renderPortalRecipes() {
+  const el = $("portalRecipes");
+  if (!el) return;
+  const recipes = state.portalRecipes || [];
+  const countEl = $("recipesSummaryCount");
+  if (countEl) countEl.textContent = recipes.length ? `${recipes.length} recorded` : "none yet";
+  if (!recipes.length) { el.innerHTML = '<p class="muted">No portal recipes yet. Record one with the command above.</p>'; return; }
+  const badge = (status) => {
+    const map = { complete: "var(--success)", recording: "var(--warning)", needs_rerecord: "var(--danger)" };
+    return `<span style="font-size:11px;padding:1px 6px;border-radius:4px;background:${map[status] || "var(--info)"};color:#fff">${esc(status)}</span>`;
+  };
+  el.innerHTML = recipes.map((r) => `
+    <div class="card" style="padding:8px 10px;margin-bottom:6px">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+        <div>
+          <strong>${esc(r.ahj || r.utility || r.profileKey)}</strong>
+          <span class="muted" style="font-size:12px">· ${esc(r.scopeType)} · ${esc(r.portalPlatform || "portal")} · ${r.steps.length} step(s) · v${r.version}</span>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center">
+          ${badge(r.status)}
+          <button class="secondary" data-recipe-rerecord="${esc(r.id)}" style="font-size:11px">Flag re-record</button>
+          <button class="danger" data-recipe-delete="${esc(r.id)}" style="font-size:11px">Delete</button>
+        </div>
+      </div>
+      ${r.status === "complete" ? "" : '<div class="muted" style="font-size:11px;margin-top:4px">Not replayable until a complete recording is saved.</div>'}
+    </div>`).join("");
+  el.querySelectorAll("[data-recipe-delete]").forEach((b) => b.addEventListener("click", async () => {
+    if (!confirm("Delete this portal recipe? The bot will fall back to manual until it is re-recorded.")) return;
+    try { await api(`/api/portal-recipes/${b.getAttribute("data-recipe-delete")}`, { method: "DELETE" }); await loadPortalRecipes(); }
+    catch (err) { showMessage(err.message || "Delete failed.", "error"); }
+  }));
+  el.querySelectorAll("[data-recipe-rerecord]").forEach((b) => b.addEventListener("click", async () => {
+    try { await api(`/api/portal-recipes/${b.getAttribute("data-recipe-rerecord")}/rerecord`, { method: "POST" }); await loadPortalRecipes(); }
+    catch (err) { showMessage(err.message || "Failed.", "error"); }
+  }));
 }
 
 async function loadEmailTracker() {

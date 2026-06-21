@@ -1146,3 +1146,81 @@ export interface UtilityResearchResult {
   needsHumanVerification: boolean;
   notes: string;
 }
+
+// ---------------------------------------------------------------------------
+// Portal record/replay recipes — teach the bot a NEW AHJ or utility portal by
+// recording the steps once, then replay them for future projects (substituting
+// project/client data + uploading the right docs, always stopping before final
+// submit). Admins can delete and re-record an incomplete recipe.
+// ---------------------------------------------------------------------------
+
+/** Which phase of the bot run a recorded step belongs to. The replay runner drives
+ *  login → open → fill → upload → review; steps are grouped by phase. */
+export type RecipePhase = "open" | "fill" | "upload" | "review";
+
+export type RecipeAction =
+  | "goto"
+  | "click"
+  | "fill"
+  | "select"
+  | "check"
+  | "uncheck"
+  | "press"
+  | "waitFor"
+  | "upload"
+  | "stopForReview";
+
+/** A portable locator descriptor captured at record time. Replay tries the richest
+ *  available strategy first (role+name, label, placeholder, testId, text, then css). */
+export interface RecipeSelector {
+  role?: string;
+  name?: string;
+  label?: string;
+  placeholder?: string;
+  text?: string;
+  testId?: string;
+  css?: string;
+  /** Optional iframe name to scope the locator into (portals like Accela use dialogs). */
+  frame?: string;
+  /** 0-based index when multiple match; omitted means .first(). */
+  nth?: number;
+  exact?: boolean;
+}
+
+export interface RecipeStep {
+  action: RecipeAction;
+  phase?: RecipePhase;
+  selector?: RecipeSelector;
+  /** For fill/select: the project/client field key to substitute at replay
+   *  (e.g. "accountNumber", "installerCompanyName"). Resolved server-side. */
+  field?: string;
+  /** Literal value (goto url, press key, or a fixed fill/select value). */
+  value?: string;
+  /** For upload: which document type to attach (e.g. "sld", "site_plan"). */
+  docType?: string;
+  /** Don't fail the run if this step's target isn't found. */
+  optional?: boolean;
+  note?: string;
+}
+
+export type PortalRecipeStatus = "recording" | "complete" | "needs_rerecord";
+
+export interface PortalRecipe {
+  id: string;
+  /** Whether this teaches an AHJ permit portal or a utility NEM portal. */
+  scopeType: "ahj" | "utility";
+  /** The KB profile key (state|ahj|utility) this recipe serves. */
+  profileKey: string;
+  state: string;
+  ahj: string;
+  utility: string;
+  portalPlatform: string;
+  portalUrl: string;
+  status: PortalRecipeStatus;
+  version: number;
+  steps: RecipeStep[];
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+  notes: string;
+}

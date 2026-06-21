@@ -1,10 +1,11 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { ProjectRecord, ReviewerReport } from "../../shared/src/types";
+import type { PortalRecipe, ProjectRecord, ReviewerReport } from "../../shared/src/types";
 import { MockPortalAdapter } from "./adapters/mock";
 import { OregonEPermittingAdapter } from "./adapters/oregonEPermitting";
 import { PowerClerkAdapter } from "./adapters/powerClerk";
+import { RecipeAdapter } from "./adapters/recipeAdapter";
 import { decryptStorageState } from "./cryptoStorage";
 
 export async function stageWithMockPortal(project: ProjectRecord, files: string[] = [], reviewerReport?: ReviewerReport): Promise<Record<string, unknown>> {
@@ -88,4 +89,18 @@ export async function stageWithAccela(project: ProjectRecord, files: string[], o
 
 export async function stageWithPowerClerk(project: ProjectRecord, files: string[], options: StageOptions = {}): Promise<Record<string, unknown>> {
   return runAdapter(new PowerClerkAdapter(), project, files, options);
+}
+
+// Replay an admin-recorded recipe for an AHJ/utility portal the bot wasn't hand-coded
+// for. fieldValues + docsByType are resolved server-side (project + client overlay +
+// split docs). Same runner, same guardrail — stops at review, never submits.
+export async function stageWithRecipe(
+  recipe: PortalRecipe,
+  project: ProjectRecord,
+  fieldValues: Record<string, string>,
+  docsByType: Record<string, string>,
+  files: string[],
+  options: StageOptions = {},
+): Promise<Record<string, unknown>> {
+  return runAdapter(new RecipeAdapter(recipe, fieldValues, docsByType), project, files, options);
 }

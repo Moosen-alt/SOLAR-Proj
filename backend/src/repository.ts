@@ -60,7 +60,8 @@ import type {
 import { touchProjectMetrics } from "./kpi";
 import fs from "node:fs";
 import path from "node:path";
-import { stageWithAccela, stageWithMockPortal, stageWithPowerClerk } from "../../portal-bot/src/index";
+import { stageWithAccela, stageWithMockPortal, stageWithPowerClerk, stageWithRecipe } from "../../portal-bot/src/index";
+import { findCompleteRecipeForProject, resolveRecipeFieldValues } from "./portalRecipes";
 import { addAuditLog } from "./audit";
 import { clientStagingOverlay, getClient } from "./clients";
 import { buildApplicationDocumentPackage } from "./applicationDocs";
@@ -4482,11 +4483,19 @@ export async function prepareSubmission(db: AppDb, projectId: string): Promise<P
   const portalLabel = isRealPortal
     ? (portalProfile?.portal_name || portalType)
     : "Mock portal";
+  // Recipe replay: if no hand-coded adapter matches but an admin has recorded a recipe
+  // for this AHJ (or its utility), replay it — so an unknown portal still automates.
+  const recipe = portalType === "accela_oregon" || portalType === "powerclerk_pge"
+    ? null
+    : (findCompleteRecipeForProject(db, { scopeType: "ahj", state: detail.project.state, ahj: detail.project.ahj, utility: detail.project.utility })
+       ?? findCompleteRecipeForProject(db, { scopeType: "utility", state: detail.project.state, utility: detail.project.utility }));
   const adapterActorName = portalType === "accela_oregon"
     ? "OregonEPermittingAdapter"
     : portalType === "powerclerk_pge"
       ? "PowerClerkAdapter"
-      : "MockPortalAdapter";
+      : recipe
+        ? "RecipeAdapter"
+        : "MockPortalAdapter";
   const stageOptions = {
     encryptedStorageStatePath: portalProfile?.encrypted_storage_state ?? undefined,
     headless: false,
@@ -4506,7 +4515,9 @@ export async function prepareSubmission(db: AppDb, projectId: string): Promise<P
       ? await stageWithAccela(stagedProject, files, stageOptions)
       : portalType === "powerclerk_pge"
         ? await stageWithPowerClerk(stagedProject, files, stageOptions)
-        : await stageWithMockPortal(stagedProject, files, reviewerReport);
+        : recipe
+          ? await stageWithRecipe(recipe, stagedProject, resolveRecipeFieldValues(db, stagedProject, portalType), {}, files, stageOptions)
+          : await stageWithMockPortal(stagedProject, files, reviewerReport);
 
   db.transaction(() => {
     db.run(

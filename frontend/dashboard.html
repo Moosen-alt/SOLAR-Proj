@@ -223,6 +223,22 @@
           <p class="muted">Loading…</p>
         </div>
       </details>
+
+      <details id="recipesAccordion" class="kb-accordion" style="margin-top:10px">
+        <summary class="kb-summary">
+          <span>Portal Recipes (taught by recording)</span>
+          <span id="recipesSummaryCount" class="muted" style="font-size:12px;font-weight:400"></span>
+        </summary>
+        <p class="muted" style="font-size:12px;margin:6px 0">Teach the bot a new AHJ or utility portal by recording it once, then it replays for future projects (always stopping before final submit). Admins can delete and re-record an incomplete one.</p>
+        <div class="section-note" style="font-size:12px">
+          To record on the operator's machine:<br>
+          <code style="font-size:11px">npm run portal:record -- --scope ahj --ahj "City of Bend" --state OR --url "&lt;portal url&gt;" --project &lt;projectId&gt; --profile ./.portal-profiles/&lt;name&gt;</code><br>
+          Log in, complete the application up to (not including) final submit, then type <code>save</code>.
+        </div>
+        <div id="portalRecipes" class="stack" style="margin-top:8px">
+          <p class="muted">Loading…</p>
+        </div>
+      </details>
     </section>
 
     <section class="detail" aria-label="Project detail">
