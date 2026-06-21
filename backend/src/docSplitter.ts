@@ -32,12 +32,20 @@ function classifyPage(text: string): string | null {
 // assembled from project_documents of these types — split sheets AND separately-uploaded
 // files (e.g. the meter photo, which is never in the plan set). Extend as new portals
 // surface their needs; eventually this can be driven by the learned KB requiredDocuments.
+//
+// SLD splitting is only needed for two cases:
+//   • utility NEM submittals (nem) — utility portals want the SLD, site plan, and inverter
+//     spec as separate files alongside the meter photo.
+//   • ProjectDox/permit AHJ submittals (permit) — ProjectDox requires each sheet uploaded
+//     to its own document slot. Standard Accela/EnerGov portals receive the FULL plan set
+//     as a single PDF (no splitting needed there).
 const PACKAGE_SETS: Record<string, string[]> = {
-  // PGE / Pacific Power NEM interconnection upload set.
+  // Utility NEM/interconnection upload set (PGE PowerClerk, Pacific Power, etc.).
+  // Meter photo is uploaded separately and never in the plan set.
   nem: ["meter_photo", "sld", "site_plan", "inverter_spec"],
-  // ProjectDox / AHJ permit upload set (SLD split is required for ProjectDox).
+  // ProjectDox AHJ permit upload set — each sheet in its own slot.
   permit: ["sld", "site_plan", "structural", "module_spec", "inverter_spec", "labels"],
-  // Everything we could split/attach.
+  // Everything we could split/attach — for debug or portals with no defined set yet.
   all: ["sld", "site_plan", "structural", "module_spec", "inverter_spec", "labels", "meter_photo", "utility_bill"],
 };
 

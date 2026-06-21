@@ -615,6 +615,48 @@ app.get("/api/projects/:id/staging-field-values", (req, res) => {
   const portalType = String(req.query.portalType || "");
   res.json({ fieldValues: resolveRecipeFieldValues(db, detail.project, portalType) });
 });
+// LLM-assisted field binding: for fill/select steps the recorder couldn't auto-bind by
+// exact match, ask the model which project/client field each typed value corresponds to.
+// Called ONCE at save-time (not per keystroke). Returns the steps array with `field` filled in.
+app.post("/api/portal-recipes/:id/suggest-bindings", asyncHandler(async (req, res) => {
+  const steps = Array.isArray(req.body?.steps) ? req.body.steps : [];
+  const projectId = String(req.body?.projectId || "").trim();
+  let fieldValues: Record<string, string> = {};
+  if (projectId) {
+    try {
+      const detail = getProjectDetail(db, projectId);
+      const portalType = String(req.body?.portalType || "");
+      fieldValues = resolveRecipeFieldValues(db, detail.project, portalType);
+    } catch { /* proceed with empty map; all suggestions will be null */ }
+  }
+  const unbound = steps
+    .map((s: Record<string, unknown>, i: number) => ({ s, i }))
+    .filter(({ s }: { s: Record<string, unknown> }) => (s.action === "fill" || s.action === "select") && !s.field && s.value)
+    .map(({ s, i }: { s: Record<string, unknown>; i: number }) => ({
+      index: i,
+      action: String(s.action),
+      label: s.note ? String(s.note) : (s.selector as Record<string, string>)?.name,
+      value: String(s.value),
+    }));
+
+  if (unbound.length === 0) return res.json({ steps });
+
+  const { createLLMProvider } = await import("./llm");
+  const llm = createLLMProvider();
+  let suggestions: Array<{ index: number; field: string | null }> = [];
+  try {
+    suggestions = await llm.suggestRecipeFieldBindings({ unbound, fieldValues });
+  } catch (err) {
+    console.error("[suggest-bindings] LLM error:", err instanceof Error ? err.message : String(err));
+    return res.json({ steps, warning: "LLM field-binding suggestion failed; steps saved without additional bindings." });
+  }
+  const byIndex = new Map(suggestions.map((s) => [s.index, s.field]));
+  const annotated = steps.map((s: Record<string, unknown>, i: number) => {
+    const suggested = byIndex.get(i);
+    return suggested && !s.field ? { ...s, field: suggested } : s;
+  });
+  res.json({ steps: annotated, suggestionsApplied: suggestions.filter((s) => s.field !== null).length });
+}));
 
 // Auto-onboard the AHJ on a specific project (used when the docs builder has no
 // known/learned profile), then return the refreshed application-doc package.
@@ -718,11 +760,13 @@ app.get("/api/projects/:id/documents/:docId", (req, res) => {
 app.delete("/api/projects/:id/documents/:docId", (req, res) => {
   res.json(deleteProjectDocument(db, String(req.params.id), String(req.params.docId)));
 });
-// Split the uploaded plan set into the AHJ/utility upload doc set + a ZIP (backend
-// equivalent of the parser's splitter; the bot then attaches these by doc_type).
+// Split the plan set and assemble the upload package. SLD splitting is ONLY needed for
+// utility NEM submittals and ProjectDox AHJ portals — standard Accela/EnerGov portals
+// receive the full plan set PDF (no splitting needed for those).
+// target: nem (utility NEM: meter photo + SLD + site plan + inverter spec) |
+//         permit (ProjectDox AHJ: SLD + site plan + structural + specs + labels) |
+//         all (everything, for debug). Defaults to nem.
 app.post("/api/projects/:id/build-utility-package", asyncHandler(async (req, res) => {
-  // target: nem (utility NEM set: meter photo, SLD, site plan, inverter spec) |
-  // permit (AHJ/ProjectDox set) | all. Defaults to nem for the utility submittal.
   const target = String(req.query.target || req.body?.target || "nem");
   res.status(201).json(await buildUtilityPackage(db, String(req.params.id), target));
 }));

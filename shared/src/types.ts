@@ -1086,6 +1086,15 @@ export interface LLMProvider {
     state: string;
     ahj?: string;
   }): Promise<UtilityResearchResult>;
+  /** Given a list of portal form fill/select interactions that weren't auto-bound to a
+   *  field during recording (exact-match missed), ask the model to suggest which project
+   *  or client field each typed value corresponds to. Returns null for portal-literal
+   *  values (dropdown options, fixed text) that shouldn't be data-bound. Called ONCE
+   *  at save-time (not per keystroke) so latency is acceptable. */
+  suggestRecipeFieldBindings(input: {
+    unbound: Array<{ index: number; action: string; label?: string; value: string }>;
+    fieldValues: Record<string, string>;
+  }): Promise<Array<{ index: number; field: string | null }>>;
 }
 
 export interface AhjResearchResult {

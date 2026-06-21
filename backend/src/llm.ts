@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { AhjResearchResult, CorrectionBucket, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, ProjectRecord, UtilityResearchResult } from "../../shared/src/types";
+import { RECIPE_FIELD_DESCRIPTIONS } from "./portalRecipes";
 
 const MODEL = "claude-opus-4-8";
 
@@ -82,6 +83,10 @@ export class StubLLMProvider implements LLMProvider {
       needsHumanVerification: true,
       notes: "No ANTHROPIC_API_KEY configured — utility research is off.",
     };
+  }
+
+  async suggestRecipeFieldBindings(): Promise<Array<{ index: number; field: string | null }>> {
+    return [];
   }
 }
 
@@ -517,6 +522,41 @@ Rules:
       needsHumanVerification: true,
       notes: "AI-researched from model knowledge. Verify against the utility's official interconnection page before relying on it; the first real submittal will confirm/correct these requirements.",
     };
+  }
+
+  async suggestRecipeFieldBindings(input: {
+    unbound: Array<{ index: number; action: string; label?: string; value: string }>;
+    fieldValues: Record<string, string>;
+  }): Promise<Array<{ index: number; field: string | null }>> {
+    if (input.unbound.length === 0) return [];
+    // Build a combined field reference: description + current value for the recording project.
+    const fieldRef: Record<string, string> = {};
+    for (const [key, desc] of Object.entries(RECIPE_FIELD_DESCRIPTIONS)) {
+      const val = input.fieldValues[key];
+      fieldRef[key] = val ? `${desc} (current value: "${val}")` : desc;
+    }
+    // Also include any snapshot/overlay fields that didn't make the descriptions map.
+    for (const [key, val] of Object.entries(input.fieldValues)) {
+      if (!fieldRef[key] && val) fieldRef[key] = `(current value: "${val}")`;
+    }
+
+    const system = `You are a field-binding assistant for a solar permit automation bot.
+For each portal form fill/select interaction, decide if the typed value corresponds to one of the known project/client data fields — even when formatted differently (e.g. "TML INTERNATIONAL LLC" → installerCompanyName).
+Return null for portal-specific literal values (dropdown options, status words, fixed portal text) that should NOT be substituted per-project.
+Respond with ONLY a valid JSON array: [{"index":N,"field":"fieldKey"|null}]`;
+
+    const user = `Known project/client fields:
+${JSON.stringify(fieldRef, null, 2)}
+
+Unbound portal form interactions to classify:
+${JSON.stringify(input.unbound, null, 2)}`;
+
+    const raw = await this.ask(system, user);
+    const suggestions = this.parseJson<Array<{ index: number; field: string | null }>>(raw, []);
+    const validKeys = new Set(Object.keys(input.fieldValues));
+    return suggestions
+      .filter((s) => typeof s.index === "number")
+      .map((s) => ({ index: s.index, field: s.field && validKeys.has(s.field) ? s.field : null }));
   }
 }
 

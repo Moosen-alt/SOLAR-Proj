@@ -121,6 +121,40 @@ export function deletePortalRecipe(db: AppDb, recipeId: string): { deleted: bool
   return { deleted: true };
 }
 
+// Human-readable descriptions for every bindable field key — used by the LLM field-binding
+// classifier to understand what each key means when matching portal form values.
+export const RECIPE_FIELD_DESCRIPTIONS: Record<string, string> = {
+  homeownerName: "Property owner full name",
+  projectAddress: "Installation site street address",
+  city: "Installation site city",
+  state: "Installation site state (2-letter abbreviation, e.g. OR)",
+  zip: "Installation site zip/postal code",
+  ahj: "Authority Having Jurisdiction (city/county) name",
+  utility: "Electric utility company name",
+  accountNumber: "Customer utility account number",
+  meterNumber: "Utility meter number",
+  interconnectionMethod: "Interconnection method (e.g. NEM, Parallel Generation)",
+  systemSizeDcKw: "Solar system DC size in kilowatts",
+  systemSizeAcKw: "Solar system AC size in kilowatts",
+  totalExportKw: "Total export capacity in kilowatts",
+  installerCompanyName: "Installer/contractor company name",
+  installerEmail: "Installer company or contact email address",
+  installerPhone: "Installer company phone number",
+  installerAddress: "Full installer company address (street, city, state, zip combined)",
+  installerStreet: "Installer company street address only",
+  installerCityStateZip: "Installer company city, state, zip (no street)",
+  installerContactName: "Installer contact person full name",
+  ccbLicenseNumber: "CCB (contractor) license number",
+  electricalLicenseNumber: "Electrical contractor license number",
+  metroCityLicenseNumber: "Metro or city business license number",
+  electricalSupervisorName: "Supervising electrician full name",
+  electricianLicenseNumber: "Supervising electrician license number",
+  authorizedSignerName: "Authorized signer or representative full name",
+  authorizedSignerTitle: "Authorized signer's title",
+  powerclerkExistingContact: "PowerClerk existing contact ID code",
+  accelaContactCode: "Accela contact/license lookup code",
+};
+
 // Build the field-substitution map a recipe step's `field` resolves against at replay:
 // the project's authoritative fields + the assigned client's licensing overlay (so the
 // correct contractor identity is always used) + parser-snapshot extras as fallback.

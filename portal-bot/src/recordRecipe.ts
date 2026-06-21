@@ -109,13 +109,41 @@ async function main(): Promise<void> {
   // Terminal review marker so replay always stops before submit.
   steps.push({ action: "stopForReview", phase: "review", note: "Stop at review — human submits manually." });
 
+  // LLM-assisted binding: for fill/select steps without an exact-match field key, ask the
+  // model to identify which project/client field each typed value corresponds to.
+  // This is a single call at save-time (not per keystroke), so LLM latency is fine.
+  let finalSteps = steps;
+  if (projectId) {
+    const unboundCount = steps.filter((s) => (s.action === "fill" || s.action === "select") && !s.field && s.value).length;
+    if (unboundCount > 0) {
+      process.stdout.write(`  · ${unboundCount} unbound step(s) — asking the model to suggest field mappings…\n`);
+      try {
+        const suggestRes = await fetch(`${api}/api/portal-recipes/${recipe.id}/suggest-bindings`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ steps, projectId }),
+        });
+        if (suggestRes.ok) {
+          const body = await suggestRes.json();
+          finalSteps = Array.isArray(body.steps) ? body.steps : steps;
+          const applied = body.suggestionsApplied ?? 0;
+          if (applied > 0) process.stdout.write(`  · LLM bound ${applied} additional field(s) automatically.\n`);
+          if (body.warning) process.stdout.write(`  · ${body.warning}\n`);
+        }
+      } catch (err) {
+        process.stdout.write(`  · LLM field-binding skipped (${err instanceof Error ? err.message : String(err)}); steps saved as-is.\n`);
+      }
+    }
+  }
+
   const saveRes = await fetch(`${api}/api/portal-recipes/${recipe.id}/steps`, {
     method: "PUT",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ steps, status: "complete" }),
+    body: JSON.stringify({ steps: finalSteps, status: "complete" }),
   });
   if (!saveRes.ok) throw new Error(`Failed to save recipe: ${saveRes.status} ${await saveRes.text()}`);
-  console.log(`\nSaved ${steps.length} step(s) to recipe ${recipe.id}. Set any UPLOAD docTypes in the dashboard, then the bot will replay it.`);
+  const boundCount = finalSteps.filter((s: RecipeStep) => s.field).length;
+  console.log(`\nSaved ${finalSteps.length} step(s) to recipe ${recipe.id} (${boundCount} data-bound). Set any UPLOAD docTypes in the dashboard, then the bot will replay it.`);
   process.exit(0);
 }
 
