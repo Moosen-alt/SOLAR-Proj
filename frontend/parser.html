@@ -461,54 +461,21 @@
     </div>
   </details>
 
-  <div class="card">
-    <h2>9. Utility document splitter / downloads</h2>
-    <p class="muted">Build utility upload docs from the uploaded plan set. The splitter uses sheet names in the PDF text first, then falls back to normal sheet order.</p>
-    <div class="row3">
-      <div><label>Utility packet filename base</label><input id="utilityPacketBaseName" placeholder="HO name - address" /></div>
-      <div><label>Utility packet mode</label><select id="utilityPacketMode"><option value="pge">PGE / General Utility</option><option value="pacpower">Pacific Power</option><option value="full">Full permit-style split</option></select></div>
-      <div><label>Page mapping status</label><input id="splitMappingStatus" readonly /></div>
-    </div>
-    <div class="btnbar">
-      <button id="buildUtilityZipBtn" class="green">Download utility ZIP</button>
-      <button id="downloadSldBtn" class="blue">Download SLD / 3-line</button>
-      <button id="downloadSitePlanBtn" class="blue">Download site + plot plan</button>
-      <button id="downloadModuleSpecBtn" class="blue">Download module specs</button>
-      <button id="downloadInverterSpecBtn" class="blue">Download inverter specs</button>
-      <button id="downloadBatterySpecBtn" class="blue">Download battery specs</button>
-      <button id="downloadGatewaySpecBtn" class="blue">Download gateway specs</button>
-      <button id="downloadUtilityBillPdfBtn" class="purple">Download UB as PDF</button>
-      <button id="downloadMeterPhotoPdfBtn" class="purple">Download meter photo as PDF</button>
-    </div>
-    <div class="row">
-      <div><label>Detected split pages</label><textarea id="splitPagesText" readonly class="tall"></textarea></div>
-      <div><label>Utility download checklist</label><textarea id="utilityDownloadChecklistText" readonly class="tall"></textarea></div>
-    </div>
-    <div class="section-note">
-      The ZIP normally includes: SLD / 3-line, site + plot plan, module spec, inverter spec, utility bill PDF if uploaded, and meter photo PDF if uploaded.
-    </div>
-
-    <div class="critical-wrap" style="border-color:rgba(167,139,250,.72);background:linear-gradient(180deg,rgba(76,29,149,.22),rgba(8,18,34,.95));">
-      <div class="critical-title" style="color:#ddd6fe;">ProjectDox / AHJ Permit Splitter</div>
-      <div class="critical-sub" style="color:#ede9fe;">Creates numbered permit upload files from the plan set. Filenames are ordered so ProjectDox sorts them correctly.</div>
-      <div class="row3">
-        <div><label>ProjectDox ZIP filename base</label><input id="projectDoxBaseName" placeholder="HO name - address" /></div>
-        <div><label>ProjectDox split mode</label><select id="projectDoxSplitMode"><option value="individual">One PDF per sheet</option><option value="drawingsOnly">Drawing sheets only</option><option value="docsOnly">Document / spec sheets only</option></select></div>
-        <div><label>ProjectDox naming preset</label><select id="projectDoxNamingPreset"><option value="numericSheet">Numeric + sheet number + sheet name</option><option value="numericName">Numeric + sheet name only</option></select></div>
-      </div>
-      <div class="btnbar">
-        <button id="buildProjectDoxZipBtn" class="purple">Download ProjectDox ZIP</button>
-        <button id="downloadProjectDoxDrawingsBtn" class="blue">Download drawings-only ZIP</button>
-        <button id="downloadProjectDoxDocsBtn" class="blue">Download docs-only ZIP</button>
-      </div>
-      <div class="row">
-        <div><label>ProjectDox detected files</label><textarea id="projectDoxSplitPagesText" readonly class="tall"></textarea></div>
-        <div><label>ProjectDox upload checklist</label><textarea id="projectDoxChecklistText" readonly class="tall"></textarea></div>
-      </div>
-      <div class="section-note">
-        ProjectDox mode splits each detected plan sheet into its own PDF. Drawing sheets are ordered first, followed by DS/spec sheets, then optional utility bill and meter photo files.
-      </div>
-    </div>
+  <!-- Utility / permit document splitter moved to the dashboard's submission panel
+       (uses the stored plan set + backend build-utility-package). Hidden fields below
+       are retained so the parser can still write the detected-pages text into the
+       snapshot for reference. -->
+  <div id="utilitySplitterHidden" style="display:none">
+    <input id="utilityPacketBaseName" />
+    <select id="utilityPacketMode"><option value="pge"></option></select>
+    <input id="splitMappingStatus" />
+    <textarea id="splitPagesText"></textarea>
+    <textarea id="utilityDownloadChecklistText"></textarea>
+    <input id="projectDoxBaseName" />
+    <select id="projectDoxSplitMode"><option value="individual"></option></select>
+    <select id="projectDoxNamingPreset"><option value="numericSheet"></option></select>
+    <textarea id="projectDoxSplitPagesText"></textarea>
+    <textarea id="projectDoxChecklistText"></textarea>
   </div>
 
   <!-- 10. Raw parser text — backend only. Hidden fields retained so the parser can write OCR text. -->
@@ -4603,54 +4570,9 @@ $('downloadJsonBtn').addEventListener('click', () => {
   downloadFile('solar-submission-parsed-data.json', JSON.stringify(collectFields(), null, 2), 'application/json');
 });
 
-$('buildUtilityZipBtn').addEventListener('click', () => {
-  buildUtilityZip().catch(err => {
-    console.error(err);
-    $('parseStatus').textContent = `Utility ZIP failed: ${err.message || err}`;
-  });
-});
-$('downloadSldBtn').addEventListener('click', () => {
-  const map = detectSplitPages();
-  downloadPlanSplit('01 SLD 3-Line Diagram', map.sld).catch(err => $('parseStatus').textContent = `SLD download failed: ${err.message || err}`);
-});
-$('downloadSitePlanBtn').addEventListener('click', () => {
-  const map = detectSplitPages();
-  downloadPlanSplit('02 Site Plot Plan', map.siteAndPlot).catch(err => $('parseStatus').textContent = `Site plan download failed: ${err.message || err}`);
-});
-$('downloadModuleSpecBtn').addEventListener('click', () => {
-  const map = detectSplitPages();
-  downloadPlanSplit('03 Module Spec Sheet', map.moduleSpecs).catch(err => $('parseStatus').textContent = `Module spec download failed: ${err.message || err}`);
-});
-$('downloadInverterSpecBtn').addEventListener('click', () => {
-  const map = detectSplitPages();
-  downloadPlanSplit('04 Inverter Spec Sheet', map.inverterSpecs).catch(err => $('parseStatus').textContent = `Inverter spec download failed: ${err.message || err}`);
-});
-$('downloadBatterySpecBtn').addEventListener('click', () => {
-  const map = detectSplitPages();
-  downloadPlanSplit('07 Battery ESS Spec Sheet', map.batterySpecs).catch(err => $('parseStatus').textContent = `Battery spec download failed: ${err.message || err}`);
-});
-$('downloadGatewaySpecBtn').addEventListener('click', () => {
-  const map = detectSplitPages();
-  downloadPlanSplit('08 Gateway Spec Sheet', map.gatewaySpecs).catch(err => $('parseStatus').textContent = `Gateway spec download failed: ${err.message || err}`);
-});
-$('downloadUtilityBillPdfBtn').addEventListener('click', () => {
-  downloadSupportingPdf('09 Utility Bill', state.ubFile).catch(err => $('parseStatus').textContent = `UB PDF download failed: ${err.message || err}`);
-});
-$('downloadMeterPhotoPdfBtn').addEventListener('click', () => {
-  downloadSupportingPdf('10 Meter Photo', state.meterFile).catch(err => $('parseStatus').textContent = `Meter photo PDF download failed: ${err.message || err}`);
-});
-$('buildProjectDoxZipBtn').addEventListener('click', () => {
-  buildProjectDoxZip().catch(err => {
-    console.error(err);
-    $('parseStatus').textContent = `ProjectDox ZIP failed: ${err.message || err}`;
-  });
-});
-$('downloadProjectDoxDrawingsBtn').addEventListener('click', () => {
-  buildProjectDoxZip('drawingsOnly').catch(err => $('parseStatus').textContent = `ProjectDox drawings ZIP failed: ${err.message || err}`);
-});
-$('downloadProjectDoxDocsBtn').addEventListener('click', () => {
-  buildProjectDoxZip('docsOnly').catch(err => $('parseStatus').textContent = `ProjectDox docs ZIP failed: ${err.message || err}`);
-});
+// Utility / ProjectDox splitter download buttons moved to the dashboard submission
+// panel (backend build-utility-package). The split-detection helpers below still run
+// so the detected-pages text is written into the snapshot for reference.
 ['projectDoxSplitMode','projectDoxNamingPreset'].forEach(id => {
   const el = $(id);
   if (el) el.addEventListener('change', updateProjectDoxUi);

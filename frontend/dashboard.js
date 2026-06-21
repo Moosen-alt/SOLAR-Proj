@@ -1217,6 +1217,72 @@ function renderRecordPortal() {
     return `<div class="record-data-section"><div class="record-data-heading">${esc(heading)}</div>${visibleRows.map(([k, v]) => `<div class="record-data-row"><span class="muted">${esc(k)}</span><strong>${esc(String(v))}</strong></div>`).join("")}</div>`;
   }).join("");
   $("recordManualData").innerHTML = sectionHtml || `<p class="muted">No parsed data yet.</p>`;
+
+  // Roof planes summary (per-plane slope/azimuth/modules) from the parsed snapshot.
+  const planes = Array.isArray(snap.roofPlanes) ? snap.roofPlanes : [];
+  const planesWrap = $("recordRoofPlanesWrap");
+  if (planesWrap) {
+    if (planes.length) {
+      const totalModules = planes.reduce((s, p) => s + (Number(p.modules) || 0), 0);
+      $("recordRoofPlanes").innerHTML =
+        planes.map((p) => `<div class="record-data-row"><span class="muted">Roof #${esc(p.roof ?? "?")}</span><strong>${esc([p.modules && `${p.modules} module(s)`, (p.tilt != null && p.tilt !== "") && `${p.tilt}° tilt`, (p.azimuth != null && p.azimuth !== "") && `${p.azimuth}° azimuth`].filter(Boolean).join(", ") || "—")}</strong></div>`).join("") +
+        `<div class="record-data-row"><span class="muted">Total roof-plane modules</span><strong>${totalModules}</strong></div>`;
+      planesWrap.style.display = "";
+    } else {
+      planesWrap.style.display = "none";
+    }
+  }
+
+  // Description of Work (AHJ permit narrative) from the parsed snapshot.
+  const desc = String(snap.projectDescriptionText || snap.description || "").trim();
+  const descWrap = $("recordDescriptionWrap");
+  if (descWrap) {
+    if (desc) {
+      $("recordDescription").textContent = desc;
+      descWrap.style.display = "";
+    } else {
+      descWrap.style.display = "none";
+    }
+  }
+}
+
+async function copyDescriptionOfWork() {
+  const desc = ($("recordDescription")?.textContent || "").trim();
+  if (!desc) { showMessage("No description of work parsed yet.", "warning"); return; }
+  try {
+    await navigator.clipboard.writeText(desc);
+    showMessage("Description of work copied.", "info");
+  } catch {
+    showMessage(desc, "info");
+  }
+}
+
+async function buildDocumentSplit() {
+  const p = state.detail?.project;
+  if (!p) { showMessage("Open a project first.", "warning"); return; }
+  const target = $("splitTarget")?.value || "nem";
+  const statusEl = $("splitStatus");
+  const resultsEl = $("splitResults");
+  if (statusEl) { statusEl.style.display = ""; statusEl.textContent = "Splitting plan set…"; statusEl.className = "muted"; }
+  if (resultsEl) resultsEl.innerHTML = "";
+  try {
+    const res = await api(`/api/projects/${p.id}/build-utility-package?target=${encodeURIComponent(target)}`, { method: "POST" });
+    const base = `/api/projects/${p.id}/documents`;
+    const rows = [];
+    if (res.zipDocumentId) {
+      rows.push(`<div class="record-data-row"><span><strong>Full package ZIP</strong></span><a class="badge" href="${base}/${res.zipDocumentId}" download>Download ZIP</a></div>`);
+    }
+    for (const part of res.parts || []) {
+      rows.push(`<div class="record-data-row"><span class="muted">${esc(part.label)}${part.pages ? ` <span style="opacity:.6">(p. ${esc((part.pages || []).join(", "))})</span>` : ""}</span><a class="badge" href="${base}/${part.documentId}" download>Download</a></div>`);
+    }
+    if (res.missingDocTypes && res.missingDocTypes.length) {
+      rows.push(`<div class="record-data-row"><span class="muted">Not found in plan set</span><strong style="color:var(--warning,#b45309)">${esc(res.missingDocTypes.join(", "))}</strong></div>`);
+    }
+    if (resultsEl) resultsEl.innerHTML = rows.join("") || `<p class="muted">No documents produced.</p>`;
+    if (statusEl) { statusEl.textContent = `Built ${(res.parts || []).length} split doc(s); ${(res.packagedDocTypes || []).length} packaged into the ZIP.`; statusEl.className = ""; }
+  } catch (err) {
+    if (statusEl) { statusEl.textContent = `Split failed: ${err.message}`; statusEl.className = "muted"; }
+  }
 }
 
 async function copyRecordCommand() {
@@ -3652,6 +3718,8 @@ if ($("recordPortalUrl")) $("recordPortalUrl").addEventListener("input", () => {
 if ($("copyRecordCmdBtn")) $("copyRecordCmdBtn").addEventListener("click", copyRecordCommand);
 if ($("downloadRecordBatBtn")) $("downloadRecordBatBtn").addEventListener("click", downloadRecordBat);
 if ($("launchRecordBtn")) $("launchRecordBtn").addEventListener("click", launchRecordSession);
+if ($("copyDescriptionBtn")) $("copyDescriptionBtn").addEventListener("click", copyDescriptionOfWork);
+if ($("buildSplitBtn")) $("buildSplitBtn").addEventListener("click", buildDocumentSplit);
 if ($("autofillSpecsBtn")) $("autofillSpecsBtn").addEventListener("click", autofillSpecs);
 if ($("docUploadBtn")) $("docUploadBtn").addEventListener("click", uploadProjectDocument);
 $("newClientBtn").addEventListener("click", blankClientForm);

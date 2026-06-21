@@ -407,6 +407,33 @@
                 <summary class="kb-summary"><span>Project data (for manual entry / recording reference)</span></summary>
                 <p class="muted" style="font-size:12px;margin:6px 0">Parsed values for this project — copy into the portal as you record or for manual submission.</p>
                 <div id="recordManualData" class="stack compact"></div>
+                <div id="recordRoofPlanesWrap" style="display:none;margin-top:10px">
+                  <div class="record-data-heading">Roof planes</div>
+                  <div id="recordRoofPlanes" class="stack compact"></div>
+                </div>
+                <div id="recordDescriptionWrap" style="display:none;margin-top:10px">
+                  <div class="record-data-heading" style="display:flex;justify-content:space-between;align-items:center">
+                    <span>Description of Work (AHJ permit)</span>
+                    <button id="copyDescriptionBtn" class="secondary ghost" style="padding:2px 8px;font-size:11px"><i data-lucide="clipboard-copy"></i><span>Copy</span></button>
+                  </div>
+                  <div id="recordDescription" class="record-cmd" style="white-space:pre-wrap;word-break:normal"></div>
+                </div>
+              </details>
+              <details class="kb-accordion" style="margin-top:4px">
+                <summary class="kb-summary"><span>Utility / permit document splitter &amp; downloads</span></summary>
+                <p class="muted" style="font-size:12px;margin:6px 0">Split the stored plan set into the upload docs this submission needs (SLD, site plan, specs), bundled into a ZIP. Standalone meter photo / utility bill are included when uploaded.</p>
+                <div class="form-row">
+                  <label style="flex:0 0 200px">Package
+                    <select id="splitTarget">
+                      <option value="nem">Utility NEM (meter photo + SLD + site plan + inverter spec)</option>
+                      <option value="permit">ProjectDox AHJ permit (SLD + site plan + structural + specs + labels)</option>
+                      <option value="all">Everything (debug)</option>
+                    </select>
+                  </label>
+                  <button id="buildSplitBtn" class="secondary" style="align-self:flex-end"><i data-lucide="scissors"></i><span>Build &amp; split</span></button>
+                </div>
+                <div id="splitStatus" style="display:none;margin:4px 0;font-size:13px"></div>
+                <div id="splitResults" class="stack compact"></div>
               </details>
               <details class="kb-accordion" style="margin-top:4px">
                 <summary class="kb-summary"><span>Record command (advanced)</span></summary>
