@@ -1218,15 +1218,32 @@ function renderRecordPortal() {
   }).join("");
   $("recordManualData").innerHTML = sectionHtml || `<p class="muted">No parsed data yet.</p>`;
 
-  // Roof planes summary (per-plane slope/azimuth/modules) from the parsed snapshot.
-  const planes = Array.isArray(snap.roofPlanes) ? snap.roofPlanes : [];
+  // Roof planes summary (per-plane modules / tilt / azimuth). Prefer the
+  // structured roofPlanes array the parser builds; when it's empty, synthesize a
+  // single plane from the snapshot's tilt/azimuth/module-qty so the summary still
+  // shows. Rendered in the same one-line format as the parser sheet.
+  let planes = Array.isArray(snap.roofPlanes) ? snap.roofPlanes.filter(Boolean) : [];
+  if (!planes.length) {
+    const hasAny = [snap.tilt, snap.azimuth, snap.moduleQty, snap.roofSlope].some((v) => v != null && v !== "");
+    if (hasAny) {
+      planes = [{ roof: 1, modules: snap.moduleQty || "", tilt: snap.tilt ?? snap.roofSlope ?? "", azimuth: snap.azimuth ?? "" }];
+    }
+  }
   const planesWrap = $("recordRoofPlanesWrap");
   if (planesWrap) {
     if (planes.length) {
       const totalModules = planes.reduce((s, p) => s + (Number(p.modules) || 0), 0);
+      const planeLine = (p, i) => {
+        const parts = [
+          (p.modules != null && p.modules !== "") ? `${p.modules} module(s)` : "",
+          (p.tilt != null && p.tilt !== "") ? `tilt ${p.tilt}°` : "",
+          (p.azimuth != null && p.azimuth !== "") ? `azimuth ${p.azimuth}°` : "",
+        ].filter(Boolean).join(", ");
+        return `<div class="record-data-row"><strong>Roof #${esc(p.roof ?? i + 1)}:</strong>&nbsp;<span>${esc(parts || "—")}</span></div>`;
+      };
       $("recordRoofPlanes").innerHTML =
-        planes.map((p) => `<div class="record-data-row"><span class="muted">Roof #${esc(p.roof ?? "?")}</span><strong>${esc([p.modules && `${p.modules} module(s)`, (p.tilt != null && p.tilt !== "") && `${p.tilt}° tilt`, (p.azimuth != null && p.azimuth !== "") && `${p.azimuth}° azimuth`].filter(Boolean).join(", ") || "—")}</strong></div>`).join("") +
-        `<div class="record-data-row"><span class="muted">Total roof-plane modules</span><strong>${totalModules}</strong></div>`;
+        planes.map(planeLine).join("") +
+        `<div class="record-data-row" style="border-top:1px solid var(--line);margin-top:4px;padding-top:4px"><span class="muted">Total parsed roof-plane modules</span><strong>${totalModules}</strong></div>`;
       planesWrap.style.display = "";
     } else {
       planesWrap.style.display = "none";
