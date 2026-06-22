@@ -148,7 +148,7 @@ export class RecipeAdapter implements PortalAdapter {
 
   // Returns true if the step performed an action, false if it was safely skipped.
   private async executeStep(step: RecipeStep): Promise<boolean> {
-    const scoped = this.locator(step.selector);
+    const scoped = await this.resolveLocator(step.selector);
     switch (step.action) {
       case "goto":
         await this.page.goto(this.resolveValue(step));
@@ -195,6 +195,31 @@ export class RecipeAdapter implements PortalAdapter {
       default:
         return false;
     }
+  }
+
+  // Resolve a selector to a present locator: try the primary, and if it matches
+  // nothing, walk the recorded fallbacks in order and use the first that exists.
+  // Returns the primary locator unchanged when there are no fallbacks (so the
+  // action/wait still fails or times out naturally and the retry loop applies).
+  private async resolveLocator(sel?: RecipeSelector) {
+    const primary = this.locator(sel);
+    if (!sel || !sel.fallbacks?.length || !primary) return primary;
+    try {
+      if (await primary.count() > 0) return primary;
+    } catch {
+      // count() can throw on a malformed primary — fall through to fallbacks.
+    }
+    for (const fb of sel.fallbacks) {
+      // Ignore a fallback's own nested fallbacks (one level deep).
+      const loc = this.locator({ ...fb, fallbacks: undefined });
+      if (!loc) continue;
+      try {
+        if (await loc.count() > 0) return loc;
+      } catch {
+        // Try the next fallback.
+      }
+    }
+    return primary;
   }
 
   // Build a Playwright locator from a portable selector descriptor.

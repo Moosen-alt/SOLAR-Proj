@@ -759,9 +759,6 @@ function migrate(db: AppDb): void {
   addColumnIfMissing(db, "portal_runs", "pause_reason", "TEXT");
   addColumnIfMissing(db, "portal_runs", "confirmation_number", "TEXT NOT NULL DEFAULT ''");
 
-  // Recipe login step: selectors for auto-filling the login form on session expiry.
-  addColumnIfMissing(db, "portal_recipes", "login_step_json", "TEXT");
-
   // Scale indexes (built after the migrated columns exist) — keep the project
   // list snappy with thousands of rows: default sort is updated_at DESC, with
   // common filters on assigned user, client, and customer.
@@ -798,6 +795,10 @@ function migrate(db: AppDb): void {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_portal_recipes_profile ON portal_recipes(profile_key);
     CREATE INDEX IF NOT EXISTS idx_portal_recipes_status ON portal_recipes(status);
   `);
+
+  // Recipe login step: selectors for auto-filling the login form on session expiry.
+  // (Migrated here — after the table exists — so a fresh DB doesn't fail.)
+  addColumnIfMissing(db, "portal_recipes", "login_step_json", "TEXT");
 
   // Per-client portal credentials — username/password stored ONLY as an AES-256-GCM
   // encrypted blob (keyed by SESSION_ENCRYPTION_KEY). Plaintext is never persisted or

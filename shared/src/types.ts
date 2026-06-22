@@ -1369,6 +1369,12 @@ export interface RecipeSelector {
   /** 0-based index when multiple match; omitted means .first(). */
   nth?: number;
   exact?: boolean;
+  /** Alternate locator strategies tried in order when the primary selector finds
+   *  nothing — survives portal UI updates that change one attribute but not all.
+   *  Recorder contributors should capture 1-2 fallbacks (e.g. a stable css id as a
+   *  backup for a role+name, or vice versa). Each fallback is a full RecipeSelector
+   *  but its own nested `fallbacks` are ignored (one level deep). */
+  fallbacks?: RecipeSelector[];
 }
 
 export interface RecipeStep {
