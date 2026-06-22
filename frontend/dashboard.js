@@ -2321,6 +2321,16 @@ function renderReview() {
   $("reviewItems").querySelectorAll("button[data-review-action]").forEach((button) => {
     button.addEventListener("click", () => updateReview(button.dataset.reviewId, button.dataset.reviewAction));
   });
+
+  // The auto-fill helper only fills inverter-output / PV-breaker fields, so show it
+  // exclusively when one of those is pending. Otherwise it's an orphaned input box.
+  const autofillRelevant = pending.some((x) => x.fieldName === "inverterOutput" || x.fieldName === "pvBreaker");
+  const autofillPanel = $("autofillSpecsPanel");
+  if (autofillPanel) autofillPanel.style.display = autofillRelevant ? "" : "none";
+  if (!autofillRelevant) {
+    const status = $("autofillSpecsStatus");
+    if (status) status.textContent = "";
+  }
 }
 
 // The AHJ's REAL permit PDF(s), filled with project data. This is the "legit"

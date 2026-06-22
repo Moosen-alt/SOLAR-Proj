@@ -300,17 +300,22 @@
               <div class="panel">
                 <div class="section-head">
                   <h3>Human Review</h3>
-                  <div class="actions">
-                    <span id="reviewCounts" class="badge">0</span>
-                    <button id="autofillSpecsBtn" class="secondary" title="Look up the inverter's rated output from its model and derive the PV breaker"><i data-lucide="sparkles"></i><span>Auto-fill specs (AI)</span></button>
-                  </div>
+                  <span id="reviewCounts" class="badge">0</span>
                 </div>
-                <div id="autofillOverrideRow" style="display:flex;gap:.5rem;align-items:center;margin-bottom:.5rem">
-                  <input id="autofillModelInput" type="text" placeholder="Inverter model (e.g. Enphase IQ8M-72-2-US) — only if not detected" style="flex:1" />
-                  <input id="autofillQtyInput" type="number" min="1" placeholder="Qty" style="width:5rem" />
-                </div>
-                <div id="autofillSpecsStatus" class="muted" style="font-size:12px;margin-bottom:6px"></div>
                 <div id="reviewItems" class="stack"></div>
+                <!-- Auto-fill helper: hidden until an inverter-output or PV-breaker
+                     item is pending (the only fields it can fill). renderReview()
+                     toggles it so it never floats as an orphaned input. -->
+                <div id="autofillSpecsPanel" class="item info autofill-card" style="display:none">
+                  <div class="item-title"><i data-lucide="sparkles"></i><span>Auto-fill inverter specs (AI)</span></div>
+                  <p class="autofill-hint">Looks up the inverter's rated output from its model and derives the PV breaker. Enter the model only if it wasn't auto-detected.</p>
+                  <div class="autofill-row">
+                    <input id="autofillModelInput" type="text" placeholder="Inverter / microinverter model (e.g. Enphase IQ8M-72-2-US)" />
+                    <input id="autofillQtyInput" type="number" min="1" placeholder="Qty" />
+                    <button id="autofillSpecsBtn" class="secondary"><i data-lucide="sparkles"></i><span>Auto-fill specs</span></button>
+                  </div>
+                  <div id="autofillSpecsStatus" class="muted autofill-status"></div>
+                </div>
               </div>
             </section>
           </div>
