@@ -4321,7 +4321,7 @@ export async function recordPermitStatusCheck(
       );
     }
 
-    updateProjectForPermitOutcome(db, detail.project.status, projectId, classification.outcome, classification.message, ts);
+    updateProjectForPermitOutcome(db, detail.project.status, projectId, classification.outcome, classification.message, ts, text(target?.target_type));
     triggerHandoffIfReady(db, projectId, ts);
     addAuditLog(db, projectId, "system", "permit monitor", "permit_status.checked", {
       checkId,
@@ -4438,16 +4438,25 @@ function updateProjectForPermitOutcome(
   outcome: PermitCheckOutcome,
   message: string,
   ts: string,
+  targetType?: string,
 ): void {
   const update = (status: ProjectRecord["status"], stage: string) => {
     db.run("UPDATE projects SET status = ?, current_stage = ?, updated_at = ? WHERE id = ?", [status, stage, ts, projectId]);
   };
 
+  // Track-aware guard: a NEM (utility) target must NEVER drive the project to a PERMIT
+  // status (issued / ready_for_issue / reviewed-by-AHJ) — those are AHJ-permit outcomes.
+  // Likewise a PERMIT target must not set nem_approved. This prevents a utility approval
+  // from masquerading as a permit issuance (and vice-versa). Handoff readiness is derived
+  // from the per-target outcomes in triggerHandoffIfReady, which is already track-aware.
+  const isNem = targetType === "nem";
+  const isPermit = targetType === "permit";
+
   if (outcome === "correction_flagged") update("correction_received", "Permit monitor flagged a correction. Review bucket and next action.");
-  else if (outcome === "ready_for_issue") update("ready_for_issue", message);
-  else if (outcome === "issued") update("issued", message);
-  else if (outcome === "nem_approved") update("nem_approved", message);
-  else if (outcome === "reviewed_by_ahj") update("approved", message);
+  else if (outcome === "nem_approved" && !isPermit) update("nem_approved", message);
+  else if (outcome === "ready_for_issue" && !isNem) update("ready_for_issue", message);
+  else if (outcome === "issued" && !isNem) update("issued", message);
+  else if (outcome === "reviewed_by_ahj" && !isNem) update("approved", message);
   else if (outcome === "waiting" && ["awaiting_human_submit", "submitted", "approved", "ready_for_issue", "issued", "nem_approved", "handoff_ready"].includes(currentStatus)) {
     update("submitted", "Permit monitor checked: AHJ/utility review is still in progress.");
   } else if (outcome === "needs_human_review") {
