@@ -164,26 +164,81 @@ function deriveStatus(state: TrackState): SubmittalTrackStatus {
   return "not_started";
 }
 
-const STATUS_LABELS: Record<SubmittalTrackStatus, string> = {
-  not_started: "Not started",
-  staged: "Staged — awaiting manual submit",
-  submitted: "Submitted",
-  in_review: "In review at AHJ/utility",
-  correction: "Correction requested",
-  issued: "Issued / approved",
-};
+function categoryFor(type: SubmittalTrackType): "utility" | "permit" {
+  return type === "nem" ? "utility" : "permit";
+}
+
+// Status wording differs by category — a utility NEM filing is "approved (PTO)",
+// an AHJ permit is "issued". Keeps the operator's mental model correct.
+function statusLabelFor(status: SubmittalTrackStatus, category: "utility" | "permit"): string {
+  if (category === "utility") {
+    const utilityLabels: Record<SubmittalTrackStatus, string> = {
+      not_started: "Not started",
+      staged: "Staged — awaiting manual submit",
+      submitted: "Submitted to utility",
+      in_review: "Under utility review",
+      correction: "Utility correction requested",
+      issued: "Approved — PTO granted",
+    };
+    return utilityLabels[status];
+  }
+  const permitLabels: Record<SubmittalTrackStatus, string> = {
+    not_started: "Not started",
+    staged: "Staged — awaiting manual submit",
+    submitted: "Submitted to AHJ",
+    in_review: "Under AHJ review",
+    correction: "Correction requested",
+    issued: "Permit issued",
+  };
+  return permitLabels[status];
+}
+
+function nextActionFor(status: SubmittalTrackStatus, channel: string): string {
+  switch (status) {
+    case "not_started": return `Stage in ${channel}, submit manually, then record the number here.`;
+    case "staged": return "Review the staged portal, submit manually, then mark it submitted below.";
+    case "submitted": return "Add the public status URL so the poller can track it to approval.";
+    case "in_review": return "Tracking — the poller is checking the portal for status changes.";
+    case "correction": return "A correction was requested — resolve it and resubmit.";
+    case "issued": return "Done — issued / approved.";
+  }
+}
+
+// Capture fields differ by category: a utility NEM application has no AHJ "permit
+// number" (its final artifact is the PTO/approval, captured as confirmation), while
+// an AHJ permit issues a permit number.
+function captureFieldsFor(type: SubmittalTrackType): SubmittalTrack["captureFields"] {
+  if (categoryFor(type) === "utility") {
+    return [
+      { key: "applicationNumber", label: "Interconnection / case #", placeholder: "e.g. APP-2026-0042" },
+      { key: "confirmationNumber", label: "Confirmation / PTO #", placeholder: "submission or PTO reference" },
+      { key: "trackingUrl", label: "Public status URL", placeholder: "no-login status link, if any" },
+    ];
+  }
+  return [
+    { key: "applicationNumber", label: "Application / record #", placeholder: "e.g. 24-001234-STR" },
+    { key: "permitNumber", label: "Permit # (once issued)", placeholder: "issued permit number" },
+    { key: "confirmationNumber", label: "Confirmation #", placeholder: "submission confirmation" },
+    { key: "trackingUrl", label: "Public status URL", placeholder: "no-login record link (e.g. Accela CapDetail)" },
+  ];
+}
 
 /** Build the full submittal-track view for a project: every required track + status. */
 export function getSubmittalTracks(db: AppDb, project: ProjectRecord): SubmittalTrack[] {
   return requiredTracks(project).map((type) => {
     const state = readTrackState(db, project.id, type);
     const status = deriveStatus(state);
+    const category = categoryFor(type);
+    const channel = channelFor(type, project);
     return {
       type,
       label: TRACK_LABELS[type],
-      channel: channelFor(type, project),
+      category,
+      channel,
       status,
-      statusLabel: state.statusLabel || STATUS_LABELS[status],
+      statusLabel: state.statusLabel || statusLabelFor(status, category),
+      nextAction: nextActionFor(status, channel),
+      captureFields: captureFieldsFor(type),
       applicationNumber: state.applicationNumber,
       permitNumber: state.permitNumber,
       confirmationNumber: state.confirmationNumber,

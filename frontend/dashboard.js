@@ -1645,6 +1645,42 @@ const TRACK_STATUS_CLASS = {
   in_review: "info", correction: "blocker", issued: "pass",
 };
 
+function trackCardHtml(t) {
+  const cls = TRACK_STATUS_CLASS[t.status] || "info";
+  // Captured numbers — only the fields this track actually uses (NEM has no permit #).
+  const captured = (t.captureFields || [])
+    .filter((f) => f.key !== "trackingUrl" && t[f.key])
+    .map((f) => `${esc(f.label.replace(/ \(once issued\)/, ""))}: <strong>${esc(t[f.key])}</strong>`)
+    .join(" &nbsp;·&nbsp; ");
+  const trackLink = t.trackingUrl
+    ? `<a href="${esc(t.trackingUrl)}" target="_blank" rel="noopener">status page ↗</a>`
+    : "";
+  const submitted = t.status !== "not_started" && t.status !== "staged";
+  const fieldsHtml = (t.captureFields || []).map((f) =>
+    `<label class="track-field"><span>${esc(f.label)}</span><input data-track-field="${esc(f.key)}" data-track="${esc(t.type)}" placeholder="${esc(f.placeholder)}" value="${esc(t[f.key] || "")}" /></label>`,
+  ).join("");
+  return `
+  <article class="item ${cls} track-card">
+    <div class="item-title">
+      <span>${esc(t.label)}</span>
+      ${statusBadge(esc(t.statusLabel))}
+    </div>
+    <p class="muted" style="margin:0 0 4px">Channel: ${esc(t.channel)}${t.lastCheckedAt ? ` · last checked ${esc(fmtDate(t.lastCheckedAt))}` : ""}</p>
+    <p style="margin:0 0 6px;font-size:12px">→ ${esc(t.nextAction)}</p>
+    ${captured ? `<p style="margin:0 0 4px">${captured} ${trackLink ? "&nbsp;·&nbsp; " + trackLink : ""}</p>` : (trackLink ? `<p style="margin:0 0 4px">${trackLink}</p>` : "")}
+    <div class="track-actions">
+      <button type="button" class="secondary" data-track-stage="${esc(t.type)}" title="Auto-fill this filing's portal up to the final review screen — you submit manually"><i data-lucide="bot"></i><span>Stage in portal</span></button>
+    </div>
+    <details class="track-submit"${submitted ? "" : " open"}>
+      <summary>${submitted ? "Update numbers / status link" : "I submitted it → capture #"}</summary>
+      <div class="track-submit-form">
+        ${fieldsHtml}
+        <button type="button" class="primary" data-track-submit="${esc(t.type)}"><i data-lucide="check"></i><span>Save &amp; track</span></button>
+      </div>
+    </details>
+  </article>`;
+}
+
 function renderSubmittalTracks() {
   const tracks = state.submittalTracks;
   const wrap = $("submittalTracks");
@@ -1657,39 +1693,16 @@ function renderSubmittalTracks() {
   }
   const issued = tracks.filter((t) => t.status === "issued").length;
   if (statusBadgeEl) statusBadgeEl.textContent = `${issued}/${tracks.length} issued`;
-  wrap.innerHTML = tracks.map((t) => {
-    const cls = TRACK_STATUS_CLASS[t.status] || "info";
-    const nums = [
-      t.applicationNumber ? `App #: <strong>${esc(t.applicationNumber)}</strong>` : "",
-      t.permitNumber ? `Permit #: <strong>${esc(t.permitNumber)}</strong>` : "",
-      t.confirmationNumber ? `Conf #: <strong>${esc(t.confirmationNumber)}</strong>` : "",
-    ].filter(Boolean).join(" &nbsp;·&nbsp; ");
-    const trackLink = t.trackingUrl
-      ? `<a href="${esc(t.trackingUrl)}" target="_blank" rel="noopener">status page ↗</a>`
-      : "";
-    return `
-    <article class="item ${cls}">
-      <div class="item-title">
-        <span>${esc(t.label)}</span>
-        ${statusBadge(humanize(t.status))}
-      </div>
-      <p class="muted" style="margin:0 0 4px">Channel: ${esc(t.channel)}${t.lastCheckedAt ? ` · last checked ${esc(fmtDate(t.lastCheckedAt))}` : ""}</p>
-      ${nums ? `<p style="margin:0 0 4px">${nums} ${trackLink ? "&nbsp;·&nbsp; " + trackLink : ""}</p>` : (trackLink ? `<p style="margin:0 0 4px">${trackLink}</p>` : "")}
-      <div class="track-actions">
-        <button type="button" class="secondary" data-track-stage="${esc(t.type)}" title="Auto-fill this filing's portal up to the final review screen — you submit manually"><i data-lucide="bot"></i><span>Stage in portal</span></button>
-      </div>
-      <details class="track-submit">
-        <summary>${t.status === "not_started" || t.status === "staged" ? "Mark submitted &amp; capture #" : "Update numbers / status link"}</summary>
-        <div class="track-submit-form">
-          <input data-track-field="applicationNumber" data-track="${esc(t.type)}" placeholder="Application / record #" value="${esc(t.applicationNumber)}" />
-          <input data-track-field="permitNumber" data-track="${esc(t.type)}" placeholder="Permit # (once issued)" value="${esc(t.permitNumber)}" />
-          <input data-track-field="confirmationNumber" data-track="${esc(t.type)}" placeholder="Confirmation #" value="${esc(t.confirmationNumber)}" />
-          <input data-track-field="trackingUrl" data-track="${esc(t.type)}" placeholder="Public status URL (no-login record link)" value="${esc(t.trackingUrl)}" />
-          <button type="button" class="primary" data-track-submit="${esc(t.type)}"><i data-lucide="check"></i><span>Save &amp; track</span></button>
-        </div>
-      </details>
-    </article>`;
-  }).join("");
+
+  // Group utility (NEM) and AHJ permit tracks so the two are easy to tell apart and
+  // can be worked in either order (do NEM first, then permits, or vice-versa).
+  const utility = tracks.filter((t) => t.category === "utility");
+  const permits = tracks.filter((t) => t.category === "permit");
+  const group = (title, list) => list.length
+    ? `<div class="track-group"><div class="track-group-head">${title}</div>${list.map(trackCardHtml).join("")}</div>`
+    : "";
+  wrap.innerHTML = group("Utility — Net Metering (NEM)", utility) + group("AHJ — Permit(s)", permits);
+
   wrap.querySelectorAll("button[data-track-submit]").forEach((btn) => {
     btn.addEventListener("click", () => markSubmittalTrack(btn.dataset.trackSubmit));
   });

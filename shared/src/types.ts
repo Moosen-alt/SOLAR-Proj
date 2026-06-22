@@ -266,16 +266,26 @@ export type SubmittalTrackStatus =
 export interface SubmittalTrack {
   type: SubmittalTrackType;
   label: string;
+  /** "utility" = the NEM/interconnection filing; "permit" = an AHJ building/electrical permit. */
+  category: "utility" | "permit";
   /** Short channel hint, e.g. "Oregon ePermitting (Accela)" or "PowerClerk (PGE NEM)". */
   channel: string;
   status: SubmittalTrackStatus;
   statusLabel: string;
+  /** One-line "what to do next" for this track, e.g. "Stage in PowerClerk" / "Submit in the portal". */
+  nextAction: string;
   applicationNumber: string;
   permitNumber: string;
   confirmationNumber: string;
   trackingUrl: string;
   submittedAt: string | null;
   lastCheckedAt: string | null;
+  /**
+   * Which capture fields this track actually uses. NEM is an interconnection
+   * application (no AHJ "permit number"); permits issue a permit number. The UI
+   * renders only these fields + relabels them per category.
+   */
+  captureFields: Array<{ key: "applicationNumber" | "permitNumber" | "confirmationNumber" | "trackingUrl"; label: string; placeholder: string }>;
   /** True when this track is required for the project but has not been submitted. */
   outstanding: boolean;
 }

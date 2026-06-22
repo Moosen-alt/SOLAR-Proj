@@ -3009,7 +3009,12 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
       id: "permit-requirements",
       title: "PermitFlow reviewer and history check",
       lane: "permit",
-      status: reviewerBlockers.length || learnedHistoricalBlockers.length || blockedPermitSteps.length ? "blocker" : reviewerWarnings.length || historicalMissing.length ? "warning" : "pass",
+      // Only REAL AHJ reviewer blockers and blocker-severity historical patterns gate
+      // staging — matching the actual prepareSubmission() guard. Blocked process-map
+      // steps are derived from conditions already covered by the dedicated QC / docs /
+      // reviewer checks, so they're advisory here (warning) and never double-count into
+      // a false "can't submit".
+      status: reviewerBlockers.length || learnedHistoricalBlockers.length ? "blocker" : reviewerWarnings.length || historicalMissing.length || blockedPermitSteps.length ? "warning" : "pass",
       ownerRole: "Permit Ops",
       requirement: "AHJ-style reviewer blockers and learned historical blocker patterns must be resolved before permit staging.",
       evidence: [
@@ -3018,7 +3023,7 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
         ...blockedPermitSteps.slice(0, 3).map((step) => `${step.label}: ${step.nextAction}`),
         ...reviewerWarnings.slice(0, 2).map((finding) => `Warning: ${finding.title}`),
       ],
-      nextAction: reviewerBlockers.length || learnedHistoricalBlockers.length || blockedPermitSteps.length ? "Clear AHJ blocker callouts and learned historical gaps before staging." : reviewerWarnings.length || historicalMissing.length ? "Confirm warnings and checklist gaps with evidence." : "PermitFlow requirements are clear.",
+      nextAction: reviewerBlockers.length || learnedHistoricalBlockers.length ? "Clear AHJ blocker callouts and learned historical gaps before staging." : reviewerWarnings.length || historicalMissing.length || blockedPermitSteps.length ? "Confirm warnings and checklist gaps with evidence." : "PermitFlow requirements are clear.",
       source: "requirements.reviewer.history",
     }),
     submitGateCheck({
@@ -3061,9 +3066,13 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
       id: "installer-design-actions",
       title: "Installer/design action packet",
       lane: installerPacket.nemActionCount ? "nem" : "permit",
-      status: installerPacket.blockerCount ? "blocker" : installerPacket.warningCount ? "warning" : "pass",
+      // Advisory only — this packet aggregates process-step / correction / missing-field
+      // signals that are ALREADY gated by the dedicated QC, docs, and reviewer checks.
+      // Counting it as an independent hard blocker double-counted those and produced a
+      // false "can't submit" when the reviewer gate itself had zero blockers.
+      status: installerPacket.blockerCount || installerPacket.warningCount ? "warning" : "pass",
       ownerRole: installerPacket.items[0]?.ownerRole || "Operations",
-      requirement: "Installer, designer, and NEM Ops callouts must be reviewed before the company sends a package to AHJ or utility intake.",
+      requirement: "Installer, designer, and NEM Ops callouts should be reviewed before the company sends a package to AHJ or utility intake.",
       evidence: [
         installerPacket.headline,
         ...installerPacket.items.slice(0, 5).map((item) => `${item.severity.toUpperCase()}: ${item.title} - ${item.ask}`),
