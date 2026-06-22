@@ -64,7 +64,7 @@ import { acquireFromBytes, ensureAhjFormTemplate } from "./ahjFormAuto";
 import { createSignature, deleteSignature, getSignatureImage, listSignatures, setDefaultSignature } from "./signatures";
 import { addAuditLog } from "./audit";
 import { buildAuthUrl, exchangeCodeForTokens, gmailStatus, pollGmail } from "./gmail";
-import { imapStatus, pollImap } from "./emailPoller";
+import { imapStatus, pollImap, upsertImapSource } from "./emailPoller";
 import { ensureHeartbeat, sseBroadcast, sseSubscribe } from "./events";
 import { detectPlatform, publicPermitStatusCheck } from "./publicPermitStatus";
 import {
@@ -393,6 +393,47 @@ app.get("/api/imap/status", (_req, res) => {
 app.post("/api/imap/poll", asyncHandler(async (_req, res) => {
   res.json(await pollImap(db));
 }));
+
+// List active IMAP sources stored in DB (credentials redacted).
+app.get("/api/imap/sources", (_req, res) => {
+  const rows = db.query(
+    `SELECT id, label, imap_host, imap_port, imap_secure, imap_user, imap_mailbox,
+            imap_max_messages, recipient_tag, client_id, active,
+            last_checked_at, last_message_count, last_matched_count, last_error
+     FROM email_tracking_sources WHERE source_type = 'imap' ORDER BY created_at`,
+  );
+  res.json(rows);
+});
+
+// Add or update an IMAP source. Password encrypted server-side; never returned.
+app.post("/api/imap/sources", asyncHandler(async (req, res) => {
+  const b = req.body as Record<string, unknown>;
+  const id = upsertImapSource(db, {
+    id: typeof b.id === "string" ? b.id : undefined,
+    label: String(b.label ?? ""),
+    host: String(b.host ?? ""),
+    port: b.port ? Number(b.port) : undefined,
+    secure: b.secure !== false,
+    user: String(b.user ?? ""),
+    password: typeof b.password === "string" ? b.password : undefined,
+    mailbox: typeof b.mailbox === "string" ? b.mailbox : undefined,
+    maxMessages: b.maxMessages ? Number(b.maxMessages) : undefined,
+    recipientTag: typeof b.recipientTag === "string" ? b.recipientTag : undefined,
+    clientId: typeof b.clientId === "string" ? b.clientId : undefined,
+    active: b.active !== false,
+  });
+  res.json({ id });
+}));
+
+// Deactivate an IMAP source (soft delete — retains history).
+app.delete("/api/imap/sources/:id", (req, res) => {
+  const now = new Date().toISOString();
+  db.run(
+    "UPDATE email_tracking_sources SET active = 0, updated_at = ? WHERE id = ? AND source_type = 'imap'",
+    [now, req.params.id],
+  );
+  res.json({ ok: true });
+});
 
 // --- Server-Sent Events (live background notifications) ---
 // Frontend subscribes here to receive typed events: correction_received,

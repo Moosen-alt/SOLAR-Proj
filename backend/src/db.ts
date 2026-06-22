@@ -803,6 +803,23 @@ function migrate(db: AppDb): void {
   // (Migrated here — after the table exists — so a fresh DB doesn't fail.)
   addColumnIfMissing(db, "portal_recipes", "login_step_json", "TEXT");
 
+  // IMAP email source support — extend email_tracking_sources so a DB row can
+  // represent a live IMAP inbox (central TML or per-client) in addition to the
+  // existing mbox_path sources. Credentials stored encrypted (SESSION_ENCRYPTION_KEY).
+  // recipient_tag enables address-tag routing: permits+clientA@tml.com → clientA.
+  addColumnIfMissing(db, "email_tracking_sources", "imap_host", "TEXT NOT NULL DEFAULT ''");
+  addColumnIfMissing(db, "email_tracking_sources", "imap_port", "INTEGER NOT NULL DEFAULT 993");
+  addColumnIfMissing(db, "email_tracking_sources", "imap_secure", "INTEGER NOT NULL DEFAULT 1");
+  addColumnIfMissing(db, "email_tracking_sources", "imap_user", "TEXT NOT NULL DEFAULT ''");
+  addColumnIfMissing(db, "email_tracking_sources", "imap_pass_encrypted", "TEXT NOT NULL DEFAULT ''");
+  addColumnIfMissing(db, "email_tracking_sources", "imap_mailbox", "TEXT NOT NULL DEFAULT 'INBOX'");
+  addColumnIfMissing(db, "email_tracking_sources", "imap_max_messages", "INTEGER NOT NULL DEFAULT 100");
+  // recipient_tag: if non-empty, only emails whose To:/CC: contains this string are processed.
+  // E.g. "permits+acme" matches permits+acme@tml.com — routes one inbox to many clients.
+  addColumnIfMissing(db, "email_tracking_sources", "recipient_tag", "TEXT NOT NULL DEFAULT ''");
+  // client_id FK for per-client sources (NULL = central / shared source).
+  addColumnIfMissing(db, "email_tracking_sources", "client_id", "TEXT");
+
   // Per-client portal credentials — username/password stored ONLY as an AES-256-GCM
   // encrypted blob (keyed by SESSION_ENCRYPTION_KEY). Plaintext is never persisted or
   // returned by the API. Client-bound so we never log in with another client's account.
