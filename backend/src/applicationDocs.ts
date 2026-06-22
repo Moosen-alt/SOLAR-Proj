@@ -6,6 +6,37 @@ import type {
   ProjectRecord,
 } from "../../shared/src/types";
 import { nowIso } from "./time";
+import { findAhjProcessProfile } from "./processProfiles";
+
+// Derive combo-vs-separate from the AHJ process knowledge when the static application
+// profile doesn't state it. Many Oregon AHJs (e.g. Beaverton) file SEPARATE building +
+// electrical permits, and that truth lives only in the process profile's notes/flags —
+// not in the generic portal-only application profile. Without this, those AHJs default
+// to "combo" and the electrical permit worksheet is never generated.
+function permitStructureFromAhjProcess(project: ProjectRecord): "separate" | "combo" | "unknown" {
+  const ahj = findAhjProcessProfile(project);
+  if (!ahj) return "unknown";
+  if (ahj.requiresElectricalPermitApplication && ahj.requiresBuildingPermitApplication) return "separate";
+  const notes = `${ahj.reviewerNotes} ${ahj.otherRequirements} ${ahj.submissionMethod}`.toLowerCase();
+  // "Apply for solar and electrical separately" / "Electrical Trade permit" → separate.
+  // Checked before combo so Beaverton's "…can go under one electric trade permit" (which
+  // refers to folding the MPU into the electrical permit) doesn't mislabel it combo.
+  if ((/\bseparate(ly)?\b/.test(notes) && /electric/.test(notes)) || /electrical trade permit/.test(notes)) return "separate";
+  if (/\b(combined|combo)\b/.test(notes) || /one (single )?(combination|building) permit/.test(notes)) return "combo";
+  return "unknown";
+}
+
+/** Resolve a project's permit structure across all signals: static profile → AHJ process
+ *  notes/flags → derived flags. Used for both the submittal tracks and doc generation. */
+export function permitStructureForProject(project: ProjectRecord): "separate" | "combo" | "unknown" {
+  const profile = findApplicationProfile(project);
+  if (profile.permitStructure && profile.permitStructure !== "unknown") return profile.permitStructure;
+  const fromProcess = permitStructureFromAhjProcess(project);
+  if (fromProcess !== "unknown") return fromProcess;
+  if (profile.requiresStructuralApplication && profile.requiresElectricalApplication) return "separate";
+  if (profile.requiresAhjApplication || profile.requiresStructuralApplication) return "combo";
+  return "unknown";
+}
 
 export const applicationProfiles: ApplicationRequirementProfile[] = [
   {
@@ -318,15 +349,19 @@ export function buildSubmittalEmailDraft(
 
 export function buildApplicationDocumentPackage(project: ProjectRecord, client: ClientRecord | null = null): ApplicationDocumentPackage {
   const profile = findApplicationProfile(project);
+  const structure = permitStructureForProject(project);
   const missingFields = requiredProjectFields(project);
   const docs: GeneratedApplicationDocument[] = [
     buildCover(project, profile, client),
-    buildManifest(project, profile),
+    buildManifest(project, profile, structure),
   ];
 
   if (profile.requiresAhjApplication || profile.requiresPortalEntryOnly) docs.push(buildAhjWorksheet(project, profile, client));
-  if (profile.requiresStructuralApplication) docs.push(buildStructuralWorksheet(project, profile));
-  if (profile.requiresElectricalApplication) docs.push(buildElectricalWorksheet(project, profile));
+  // Separate-permit AHJs need BOTH a structural (building) and an electrical worksheet,
+  // even when the portal is online-only and the static flags are unset — otherwise the
+  // electrical permit application is never prepared.
+  if (profile.requiresStructuralApplication || structure === "separate") docs.push(buildStructuralWorksheet(project, profile));
+  if (profile.requiresElectricalApplication || structure === "separate") docs.push(buildElectricalWorksheet(project, profile));
   if (profile.requiresPrescriptiveChecklist) docs.push(buildPrescriptiveChecklist(project, profile));
   if (profile.requiresBidSheet) docs.push(buildBidSheet(project, profile));
   if (/PGE|PORTLAND GENERAL|PACIFIC|PACIFICORP/i.test(project.utility)) docs.push(buildUtilityWorksheet(project));
@@ -338,7 +373,7 @@ export function buildApplicationDocumentPackage(project: ProjectRecord, client: 
     docs,
     missingFields,
     html: packageHtml(project, profile, docs, missingFields, client),
-    permitType: describePermitType(profile).callout,
+    permitType: describePermitType(profile, { permitStructure: structure }).callout,
   };
 }
 
@@ -429,8 +464,14 @@ Operator notes:
   );
 }
 
-function buildManifest(project: ProjectRecord, profile: ApplicationRequirementProfile): GeneratedApplicationDocument {
+function buildManifest(project: ProjectRecord, profile: ApplicationRequirementProfile, structure: "separate" | "combo" | "unknown"): GeneratedApplicationDocument {
   const generatedDocs = profile.requiredDocuments.map((item) => `- ${item}`).join("\n");
+  const separate = structure === "separate";
+  const structureLine = separate
+    ? "Permit structure: SEPARATE building (BLD) + electrical (ELE) permits — file BOTH."
+    : structure === "combo"
+      ? "Permit structure: Combined building + electrical permit (one filing)."
+      : "Permit structure: verify combo vs separate on the AHJ site.";
   return doc(
     "manifest",
     "Required Document Manifest",
@@ -440,6 +481,7 @@ function buildManifest(project: ProjectRecord, profile: ApplicationRequirementPr
     `# Required Document Manifest
 
 Profile: ${profile.name}
+${structureLine}
 
 Required by profile:
 ${generatedDocs || "- No AHJ-specific required documents seeded. Verify manually."}
@@ -448,8 +490,8 @@ Generated by Autopilot:
 - Cover sheet
 - Required document manifest
 ${profile.requiresAhjApplication || profile.requiresPortalEntryOnly ? "- AHJ / portal application worksheet" : ""}
-${profile.requiresStructuralApplication ? "- Structural/building application worksheet" : ""}
-${profile.requiresElectricalApplication ? "- Electrical application worksheet" : ""}
+${profile.requiresStructuralApplication || separate ? "- Structural/building application worksheet" : ""}
+${profile.requiresElectricalApplication || separate ? "- Electrical application worksheet" : ""}
 ${profile.requiresPrescriptiveChecklist ? "- Prescriptive solar checklist worksheet" : ""}
 ${profile.requiresBidSheet ? "- Bid sheet worksheet" : ""}
 ${/PGE|PORTLAND GENERAL|PACIFIC|PACIFICORP/i.test(project.utility) ? "- Utility/NEM application worksheet" : ""}

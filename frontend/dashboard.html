@@ -280,12 +280,13 @@
                     <option value="other">Other</option>
                   </select>
                 </label>
-                <label style="flex:2">File<input id="docUploadFile" type="file" /></label>
+                <label style="flex:2">File(s)<input id="docUploadFile" type="file" accept=".pdf,image/*,application/pdf" multiple /></label>
               </div>
               <div class="actions">
                 <button id="docUploadBtn" class="secondary"><i data-lucide="upload"></i><span>Upload</span></button>
                 <span id="docUploadStatus" class="muted" style="font-size:12px"></span>
               </div>
+              <p class="muted" style="font-size:12px;margin:4px 0 0">Tip: select multiple files at once to attach several checklist docs in one go.</p>
             </section>
           </div>
         </details>

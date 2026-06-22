@@ -22,7 +22,7 @@ import type {
   SubmittalTrackStatus,
   SubmittalTrackType,
 } from "../../shared/src/types";
-import { findApplicationProfile, describePermitType } from "./applicationDocs";
+import { findApplicationProfile, describePermitType, permitStructureForProject } from "./applicationDocs";
 import { HttpError } from "./httpError";
 import { nowIso } from "./time";
 import { randomUUID } from "node:crypto";
@@ -57,9 +57,10 @@ export function requiredTracks(project: ProjectRecord): SubmittalTrackType[] {
   const tracks: SubmittalTrackType[] = [];
   if (hasUtility(project)) tracks.push("nem");
 
-  const profile = findApplicationProfile(project);
-  const info = describePermitType(profile);
-  if (info.structure === "separate") {
+  // Resolve combo vs separate across all signals (AHJ process notes/flags included),
+  // so AHJs like Beaverton that file SEPARATE building + electrical permits split into
+  // two permit tracks instead of one mislabelled "combo".
+  if (permitStructureForProject(project) === "separate") {
     tracks.push("building", "electrical");
   } else {
     tracks.push("combo");

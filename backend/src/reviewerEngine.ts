@@ -722,4 +722,33 @@ function addInstallerCallouts(project: ProjectRecord, profile: AhjProcessProfile
   if (payload(project, "locateCalloutText") && !/no locate|not needed|not found/i.test(payload(project, "locateCalloutText"))) {
     findings.push(finding("installer.locates", "callout", "installer", "Locates/utility coordination", payload(project, "locateCalloutText"), true));
   }
+
+  // Main panel / service upgrade (MPU) — some AHJs fold it into the electrical permit,
+  // others require a separate electrical/service-upgrade permit. Surface it and point at
+  // the AHJ's own process note when it speaks to MPU/electrical-trade handling.
+  if (hasMpuScope(project)) {
+    const note = profile?.reviewerNotes && /mpu|panel upgrade|service upgrade|electric(al)? trade/i.test(profile.reviewerNotes)
+      ? ` ${profile.ahj} note: "${profile.reviewerNotes}"`
+      : "";
+    findings.push(finding(
+      "installer.mpu-permit",
+      "callout",
+      "installer",
+      "Main panel / service upgrade (MPU) — confirm permit handling",
+      `This project includes a main panel / service upgrade. Some AHJs require the MPU on the electrical permit; others require a separate electrical/service-upgrade permit. Verify how ${project.ahj || "this AHJ"} files the MPU before staging.${note}`,
+      true,
+    ));
+  }
+}
+
+// Detect a main-panel / service upgrade in the parsed scope. Drives the MPU permit
+// callout above. Deliberately keyed on upgrade language (not "derate", which also
+// appears as a 120%-rule remedy that isn't itself an MPU).
+function hasMpuScope(project: ProjectRecord): boolean {
+  const snap = (project.parserSnapshot || {}) as Record<string, unknown>;
+  const text = [
+    snap.projectDescriptionText, snap.description, snap.scopeText, snap.electricalCalcText,
+    snap.sitePlanNotesText, snap.mpu, snap.serviceUpgrade,
+  ].map((v) => (v == null ? "" : String(v))).join(" ").toLowerCase();
+  return /\bmpu\b|main panel upgrade|main service panel upgrade|service (panel )?upgrade|\bmsp upgrade\b|panel upgrade|meter.?main upgrade/.test(text);
 }

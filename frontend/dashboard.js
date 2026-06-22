@@ -237,22 +237,35 @@ async function loadProjectDocuments() {
 
 async function uploadProjectDocument() {
   const fileInput = $("docUploadFile");
-  const file = fileInput?.files?.[0];
+  const files = Array.from(fileInput?.files || []);
   if (!state.selectedProjectId) { $("docUploadStatus").textContent = "Select a project first."; return; }
-  if (!file) { $("docUploadStatus").textContent = "Choose a file."; return; }
+  if (!files.length) { $("docUploadStatus").textContent = "Choose one or more files."; return; }
   const docType = $("docUploadType").value;
-  $("docUploadStatus").textContent = `Uploading ${file.name}…`;
-  try {
-    const res = await fetch(`/api/projects/${state.selectedProjectId}/documents?filename=${encodeURIComponent(file.name)}&docType=${encodeURIComponent(docType)}`, {
-      method: "POST",
-      headers: { "Content-Type": file.type || "application/octet-stream" },
-      body: file,
-    });
-    if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || `Upload failed: ${res.status}`); }
-    $("docUploadStatus").textContent = "Uploaded.";
-    fileInput.value = "";
-    await loadProjectDocuments();
-  } catch (err) { $("docUploadStatus").textContent = err.message || "Upload failed."; }
+  const status = $("docUploadStatus");
+  let done = 0;
+  const failed = [];
+  // Upload each selected file in sequence so several checklist docs go up in one action.
+  for (const file of files) {
+    if (status) status.textContent = `Uploading ${file.name} (${done + 1}/${files.length})…`;
+    try {
+      const res = await fetch(`/api/projects/${state.selectedProjectId}/documents?filename=${encodeURIComponent(file.name)}&docType=${encodeURIComponent(docType)}`, {
+        method: "POST",
+        headers: { "Content-Type": file.type || "application/octet-stream" },
+        body: file,
+      });
+      if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || `${res.status}`); }
+      done += 1;
+    } catch (err) {
+      failed.push(`${file.name}: ${err.message || "failed"}`);
+    }
+  }
+  if (status) {
+    status.textContent = failed.length
+      ? `Uploaded ${done}/${files.length}. Failed: ${failed.join("; ")}`
+      : `Uploaded ${done} file(s).`;
+  }
+  fileInput.value = "";
+  await loadProjectDocuments();
 }
 
 async function loadPortalRecipes() {
