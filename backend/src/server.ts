@@ -65,6 +65,7 @@ import { createSignature, deleteSignature, getSignatureImage, listSignatures, se
 import { addAuditLog } from "./audit";
 import { buildAuthUrl, exchangeCodeForTokens, gmailStatus, pollGmail } from "./gmail";
 import { imapStatus, pollImap } from "./emailPoller";
+import { ensureHeartbeat, sseBroadcast, sseSubscribe } from "./events";
 import {
   addManualCorrection,
   draftLatestCorrectionResponse,
@@ -391,6 +392,14 @@ app.get("/api/imap/status", (_req, res) => {
 app.post("/api/imap/poll", asyncHandler(async (_req, res) => {
   res.json(await pollImap(db));
 }));
+
+// --- Server-Sent Events (live background notifications) ---
+// Frontend subscribes here to receive typed events: correction_received,
+// permit_issued, nem_approved, run_paused, run_failed, etc. No sensitive data.
+app.get("/api/events", (req, res) => {
+  sseSubscribe(res);
+  ensureHeartbeat();
+});
 
 app.get("/api/ops-board", (_req, res) => {
   res.json(getOperationsBoard(db));
@@ -1294,7 +1303,18 @@ app.post("/api/parser/vision-extract", asyncHandler(async (req, res) => {
 }));
 
 app.post("/api/projects/:id/prepare-submission", asyncHandler(async (req, res) => {
-  res.json(await prepareSubmission(db, String(req.params.id)));
+  const result = await prepareSubmission(db, String(req.params.id));
+  const run = result.portalRuns?.[0];
+  if (run) {
+    if (run.pauseReason === "mfa_captcha") {
+      sseBroadcast({ type: "run_paused", projectId: String(req.params.id), message: "Portal requires attention — MFA or CAPTCHA detected. Complete it in the browser, then resume.", data: { pauseReason: run.pauseReason } });
+    } else if (run.status === "failed") {
+      sseBroadcast({ type: "run_failed", projectId: String(req.params.id), message: "Portal run failed — see run log for details." });
+    } else if (run.status === "awaiting_human_submit" || run.status === "paused_for_human") {
+      sseBroadcast({ type: "run_complete", projectId: String(req.params.id), message: "Portal staged — verify and submit manually." });
+    }
+  }
+  res.json(result);
 }));
 
 app.post("/api/projects/:id/human-verify", (req, res) => {

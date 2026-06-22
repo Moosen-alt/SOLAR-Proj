@@ -1,5 +1,6 @@
 import type { AppDb } from "./db";
 import { imapStatus, pollImap } from "./emailPoller";
+import { sseBroadcast } from "./events";
 import { logger } from "./logger";
 import { runDuePermitChecks, runEmailTracker } from "./repository";
 
@@ -24,13 +25,34 @@ export function startMonitorScheduler(db: AppDb): void {
         logger.warn("monitor", `permit/NEM checks failed: ${err instanceof Error ? err.message : String(err)}`);
         return { checked: 0, projects: [] };
       });
+      // Broadcast permit-status changes to any open dashboard tabs.
+      for (const detail of permit.projects ?? []) {
+        const projectId = detail.project.id;
+        // Look at the most recent status check for this project.
+        const latest = detail.permitStatusChecks[0];
+        if (!latest) continue;
+        const outcome = latest.outcome;
+        if (outcome === "issued") {
+          sseBroadcast({ type: "permit_issued", projectId, message: `Permit issued for ${detail.project.homeownerName || projectId} — ready for inspection scheduling.` });
+        } else if (outcome === "ready_for_issue") {
+          sseBroadcast({ type: "permit_ready_for_issue", projectId, message: `Permit ready for issue — fees or pickup may be required (${detail.project.homeownerName || projectId}).` });
+        } else if (outcome === "nem_approved") {
+          sseBroadcast({ type: "nem_approved", projectId, message: `NEM / interconnection approved — PTO path open (${detail.project.homeownerName || projectId}).` });
+        } else if (outcome === "correction_flagged") {
+          sseBroadcast({ type: "correction_received", projectId, message: `AHJ correction flagged on permit status check (${detail.project.homeownerName || projectId}).` });
+        }
+      }
 
       let emailMatches = 0;
       const sources = db.query<{ id: string }>("SELECT id FROM email_tracking_sources WHERE active = 1");
       for (const source of sources) {
         try {
           const res = await runEmailTracker(db, { sourceId: source.id });
-          emailMatches += res.matches?.length ?? 0;
+          const matches = res.matches?.length ?? 0;
+          emailMatches += matches;
+          if (matches > 0) {
+            sseBroadcast({ type: "email_matched", message: `${matches} correction/approval email(s) matched and bucketed.`, data: { matches } });
+          }
         } catch (err) {
           logger.warn("monitor", `email tracker source ${source.id} failed: ${err instanceof Error ? err.message : String(err)}`);
         }
@@ -45,6 +67,7 @@ export function startMonitorScheduler(db: AppDb): void {
           imapMatches = imap.matches;
           if (imap.fetched > 0) {
             logger.info("monitor", `IMAP: fetched ${imap.fetched} message(s), ${imap.matches} match(es).`);
+            sseBroadcast({ type: "imap_poll_done", message: `IMAP: ${imap.fetched} fetched, ${imap.matches} matched.`, data: { fetched: imap.fetched, matches: imap.matches } });
           }
         } catch (err) {
           logger.warn("monitor", `IMAP poll failed: ${err instanceof Error ? err.message : String(err)}`);

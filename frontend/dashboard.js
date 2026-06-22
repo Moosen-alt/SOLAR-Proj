@@ -4621,4 +4621,79 @@ await loadTeamWorkload();
 routeFromHash();
 if (window.lucide) window.lucide.createIcons();
 
+// --- SSE notifications -------------------------------------------------------
+// Subscribes to /api/events and routes typed events to toasts + the nav badge.
+// Reconnects automatically if the connection drops (e.g. server restart).
+
+let notifCount = 0;
+
+function showToast(message, kind = "info", durationMs = 6000) {
+  const container = $("toastContainer");
+  if (!container) return;
+  const toast = document.createElement("div");
+  const bg = kind === "error" ? "var(--danger)" : kind === "warning" ? "var(--warning)" : kind === "success" ? "var(--success)" : "var(--info)";
+  toast.style.cssText = `background:${bg};color:#fff;padding:10px 16px;border-radius:8px;font-size:13px;max-width:340px;box-shadow:0 2px 12px rgba(0,0,0,.18);pointer-events:auto;cursor:pointer;opacity:1;transition:opacity .3s`;
+  toast.textContent = message;
+  toast.addEventListener("click", () => toast.remove());
+  container.appendChild(toast);
+  setTimeout(() => { toast.style.opacity = "0"; setTimeout(() => toast.remove(), 350); }, durationMs);
+}
+
+function bumpNotifBadge() {
+  notifCount++;
+  const btn = $("notifBadgeBtn");
+  const badge = $("notifBadge");
+  if (!btn || !badge) return;
+  btn.style.display = "";
+  badge.textContent = String(notifCount);
+}
+
+if ($("notifBadgeBtn")) {
+  $("notifBadgeBtn").addEventListener("click", () => {
+    notifCount = 0;
+    const badge = $("notifBadge");
+    if (badge) badge.textContent = "0";
+    $("notifBadgeBtn").style.display = "none";
+  });
+}
+
+const SSE_EVENT_KINDS = {
+  correction_received: "warning",
+  permit_issued: "success",
+  permit_ready_for_issue: "success",
+  nem_approved: "success",
+  run_paused: "warning",
+  run_failed: "error",
+  run_complete: "info",
+  email_matched: "info",
+  imap_poll_done: "info",
+};
+
+function connectSse() {
+  const es = new EventSource("/api/events");
+  es.addEventListener("ping", () => { /* heartbeat — no action needed */ });
+  for (const [type, kind] of Object.entries(SSE_EVENT_KINDS)) {
+    es.addEventListener(type, (ev) => {
+      try {
+        const data = JSON.parse(ev.data);
+        showToast(data.message || type, kind);
+        bumpNotifBadge();
+        // Refresh the affected project row if it's currently open.
+        if (data.projectId && state.selectedProjectId === data.projectId) {
+          loadProjectDetail(data.projectId).catch(() => null);
+        }
+        // Refresh the project list so board status badges update.
+        loadProjects().catch(() => null);
+      } catch { /* malformed event — ignore */ }
+    });
+  }
+  es.onerror = () => {
+    es.close();
+    // Reconnect after a short delay so a server restart doesn't leave the tab deaf.
+    setTimeout(connectSse, 5000);
+  };
+}
+
+connectSse();
+
 
