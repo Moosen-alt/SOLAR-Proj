@@ -16,9 +16,9 @@ primary_region = "sjc"
 [env]
   PORT = "4173"
   NODE_ENV = "production"
-  # Force Playwright's Chromium browser to headless (no display in cloud).
-  # Set PORTAL_HEADLESS=false in fly secrets to override locally via SSH.
-  PORTAL_HEADLESS = "false"
+  # Playwright Chromium runs headless in production (no display in cloud).
+  # To temporarily see the browser via SSH: fly secrets set PORTAL_HEADLESS=false
+  PORTAL_HEADLESS = "true"
 
 [http_service]
   internal_port = 4173
