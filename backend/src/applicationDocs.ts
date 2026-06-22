@@ -690,8 +690,9 @@ Contractor: ${contractorLine}
 
 ${commonProjectBlock(project)}
 
+Project type: ${payload(project, "projectType") || "Roof-mounted solar PV"}
 Scope of work:
-Install roof-mounted photovoltaic system. ${project.systemSizeDcKw ?? "[verify]"} kW DC / ${project.systemSizeAcKw ?? "[verify]"} kW AC. Interconnection method: ${project.interconnectionMethod || "[verify]"}.
+Install ${(payload(project, "projectType") || "roof-mounted photovoltaic system").toLowerCase()}. ${project.systemSizeDcKw ?? "[verify]"} kW DC / ${project.systemSizeAcKw ?? "[verify]"} kW AC. Interconnection method: ${project.interconnectionMethod || "[verify]"}.
 
 Equipment:
 - Modules: ${yesNo(payload(project, "moduleQty"))} x ${yesNo(payload(project, "moduleMake"))} ${yesNo(payload(project, "moduleModel"))}, ${yesNo(payload(project, "moduleWattage"))} W

@@ -125,7 +125,7 @@ function sourcesFor(project: ProjectRecord): EvidenceSource[] {
     const value = text(snapshot[key]).trim();
     if (value) base.push({ label, text: value });
   }
-  return base.filter((source) => source.text.trim());
+  return base.filter((source) => text(source.text).trim());
 }
 
 export function allProjectEvidenceText(project: ProjectRecord): string {

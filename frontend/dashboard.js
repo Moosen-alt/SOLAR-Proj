@@ -1344,6 +1344,8 @@ function renderRecordPortal() {
     if (el && document.activeElement !== el) el.value = value ?? "";
   };
   setIfIdle("manualJobValue", snap.jobValue != null ? String(snap.jobValue) : "");
+  setIfIdle("manualProjectType", snap.projectType != null ? String(snap.projectType) : "");
+  setIfIdle("manualPermitPath", snap.permitPathOverride != null ? String(snap.permitPathOverride) : "");
   setIfIdle("manualHomeownerEmail", snap.homeownerEmail != null ? String(snap.homeownerEmail) : "");
   setIfIdle("manualHomeownerPhone", snap.homeownerPhone != null ? String(snap.homeownerPhone) : "");
   setIfIdle("manualDescription", desc);
@@ -1357,10 +1359,17 @@ async function saveManualEntry() {
   // parsed value. The keys match what valuation.ts / the reviewer gate read.
   const payload = {};
   const jobValue = ($("manualJobValue")?.value || "").trim();
+  const projectType = ($("manualProjectType")?.value || "").trim();
+  const permitPath = ($("manualPermitPath")?.value || "").trim();
   const email = ($("manualHomeownerEmail")?.value || "").trim();
   const phone = ($("manualHomeownerPhone")?.value || "").trim();
   const desc = ($("manualDescription")?.value || "").trim();
   if (jobValue) payload.jobValue = jobValue;
+  if (projectType) payload.projectType = projectType;
+  // Permit-path override drives which AHJ application is generated (prescriptive vs
+  // structural). An empty selection leaves it on auto-detect — send "" explicitly so
+  // clearing a prior override sticks.
+  if (permitPath) payload.permitPathOverride = permitPath;
   if (email) payload.homeownerEmail = email;
   if (phone) payload.homeownerPhone = phone;
   if (desc) payload.projectDescriptionText = desc;

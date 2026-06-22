@@ -458,6 +458,25 @@
                   <label class="manual-entry-field">Job value / contract price
                     <input id="manualJobValue" type="text" placeholder="e.g. $31,500 — used for the permit fee" />
                   </label>
+                  <label class="manual-entry-field">Project type (as it appears on the permit)
+                    <select id="manualProjectType">
+                      <option value="">Auto / select…</option>
+                      <option value="Roof-mounted solar PV">Roof-mounted solar PV</option>
+                      <option value="Roof-mounted solar PV + energy storage (battery)">Roof-mounted solar PV + battery</option>
+                      <option value="Ground-mounted solar PV">Ground-mounted solar PV</option>
+                      <option value="Solar PV + main panel/service upgrade (MPU)">Solar PV + main panel upgrade (MPU)</option>
+                      <option value="Energy storage (battery) only">Energy storage (battery) only</option>
+                      <option value="Main panel/service upgrade (MPU) only">Main panel upgrade (MPU) only</option>
+                    </select>
+                  </label>
+                  <label class="manual-entry-field">Permit path (prescriptive vs engineered)
+                    <select id="manualPermitPath">
+                      <option value="">Auto-detect from structural screen</option>
+                      <option value="prescriptive">Prescriptive — meets code · no plan review · reduced fee</option>
+                      <option value="engineered">Engineered (non-prescriptive) — plan review · full fees · PE stamp</option>
+                    </select>
+                  </label>
+                  <div id="manualPermitPathHint" class="manual-entry-hint">Prescriptive and structural applications are mutually exclusive — only the matching one is generated and uploaded.</div>
                   <label class="manual-entry-field">Homeowner email
                     <input id="manualHomeownerEmail" type="email" placeholder="owner@example.com" />
                   </label>
