@@ -24,6 +24,7 @@ import type {
 } from "../../shared/src/types";
 import { findApplicationProfile, describePermitType, permitStructureForProject } from "./applicationDocs";
 import { findAhjProcessProfile } from "./processProfiles";
+import { recipeProfileKey } from "./portalRecipes";
 import { HttpError } from "./httpError";
 import { nowIso } from "./time";
 import { randomUUID } from "node:crypto";
@@ -260,6 +261,15 @@ export function getSubmittalTracks(db: AppDb, project: ProjectRecord): Submittal
     const status = deriveStatus(state);
     const category = categoryFor(type);
     const channel = channelFor(type, project);
+
+    // Look up recipe for this track so the UI can show the linear record-portal flow.
+    const scopeType = category === "utility" ? "utility" : "ahj";
+    const profileKey = recipeProfileKey({ scopeType, state: project.state, ahj: project.ahj, utility: project.utility });
+    const recipeRow = db.get<Row>(
+      "SELECT id, status, portal_url FROM portal_recipes WHERE profile_key = ? ORDER BY version DESC LIMIT 1",
+      [profileKey],
+    );
+
     return {
       type,
       label: TRACK_LABELS[type],
@@ -276,6 +286,11 @@ export function getSubmittalTracks(db: AppDb, project: ProjectRecord): Submittal
       submittedAt: state.submittedAt,
       lastCheckedAt: state.lastCheckedAt,
       outstanding: status !== "issued",
+      hasRecipe: !!recipeRow,
+      recipeStatus: recipeRow ? s(recipeRow.status) : undefined,
+      recipePortalUrl: recipeRow ? s(recipeRow.portal_url) : undefined,
+      recipeId: recipeRow ? s(recipeRow.id) : undefined,
+      recipeScopeType: scopeType,
     };
   });
 }

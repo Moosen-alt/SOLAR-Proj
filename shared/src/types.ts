@@ -288,6 +288,16 @@ export interface SubmittalTrack {
   captureFields: Array<{ key: "applicationNumber" | "permitNumber" | "confirmationNumber" | "trackingUrl"; label: string; placeholder: string }>;
   /** True when this track is required for the project but has not been submitted. */
   outstanding: boolean;
+  /** Whether a complete (or in-progress) recipe exists for this track's portal. */
+  hasRecipe: boolean;
+  /** The recipe's status — "complete", "recording", "needs_rerecord", or undefined if no recipe. */
+  recipeStatus?: string;
+  /** The portal URL from the recipe, if any — pre-fills the record command. */
+  recipePortalUrl?: string;
+  /** The recipe id, if any — for "review recording" link. */
+  recipeId?: string;
+  /** The scope type used to look up the recipe — "ahj" or "utility". */
+  recipeScopeType?: "ahj" | "utility";
 }
 
 export interface PermitStatusCheck {

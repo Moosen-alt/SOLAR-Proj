@@ -1433,6 +1433,33 @@ async function copyRecordCommand() {
   }
 }
 
+// Launch a record session scoped to a specific track card's portal type.
+// Called from the "Open recorder" button on each track card (no separate scroll needed).
+async function launchTrackRecorder(trackType, scope, btn) {
+  const p = state.detail?.project;
+  if (!p || !trackType) { showMessage("Open a project first.", "warning"); return; }
+  const resolvedScope = scope === "utility" ? "utility" : "ahj";
+  const track = (state.submittalTracks || []).find((t) => t.type === trackType);
+  const portalUrl = track?.recipePortalUrl || "";
+  if (btn) { btn.disabled = true; btn.textContent = "Launching…"; }
+  try {
+    const res = await api(`/api/projects/${p.id}/launch-record`, {
+      method: "POST",
+      body: JSON.stringify({ scope: resolvedScope, portalUrl: portalUrl || undefined }),
+    });
+    // Update the card inline so the operator sees the status without scrolling.
+    const card = btn?.closest(".track-card");
+    if (card) {
+      const hint = card.querySelector(".track-record-hint");
+      if (hint) hint.textContent = res.message || "Browser open — complete the form, type save when done.";
+    }
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="refresh-cw"></i><span>Re-open recorder</span>'; if (window.lucide) window.lucide.createIcons(); }
+  } catch (err) {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="play"></i><span>Open recorder</span>'; if (window.lucide) window.lucide.createIcons(); }
+    showMessage(`Launch failed: ${err.message}. Use the "Record this portal" section below to download/copy the command.`, "warning");
+  }
+}
+
 async function launchRecordSession() {
   const p = state.detail?.project;
   if (!p) { showMessage("Open a project first.", "warning"); return; }
@@ -1684,6 +1711,33 @@ function trackCardHtml(t) {
   const fieldsHtml = (t.captureFields || []).map((f) =>
     `<label class="track-field"><span>${esc(f.label)}</span><input data-track-field="${esc(f.key)}" data-track="${esc(t.type)}" placeholder="${esc(f.placeholder)}" value="${esc(t[f.key] || "")}" /></label>`,
   ).join("");
+
+  // Linear record flow — shown when the bot has no recipe for this track's portal,
+  // so the operator can teach it right from the card (no need to scroll to the
+  // general "Record this portal" section at the bottom of the stage).
+  const recipeStatusLabel = t.recipeStatus === "complete" ? "recorded ✓"
+    : t.recipeStatus === "needs_rerecord" ? "needs re-record"
+    : t.recipeStatus === "recording" ? "recording in progress"
+    : null;
+  const recipeBlock = t.hasRecipe
+    ? `<div class="track-recipe track-recipe--has" data-track-type="${esc(t.type)}">
+        <span class="track-recipe-badge ${t.recipeStatus === "complete" ? "badge-ok" : "badge-warn"}">
+          <i data-lucide="${t.recipeStatus === "complete" ? "check-circle-2" : "alert-circle"}"></i>
+          Bot recipe: ${esc(recipeStatusLabel)}
+        </span>
+        <button type="button" class="ghost" data-track-review-recipe="${esc(t.type)}" title="Open the recipe detail to review or revise the recorded steps"><i data-lucide="eye"></i><span>Review recording</span></button>
+      </div>`
+    : `<div class="track-recipe track-recipe--none" data-track-type="${esc(t.type)}">
+        <span class="track-recipe-badge badge-none"><i data-lucide="circle-dashed"></i> No bot recipe yet</span>
+        <div class="track-record-steps">
+          <button type="button" class="secondary" data-track-open-recorder="${esc(t.type)}" data-scope="${esc(t.recipeScopeType || "ahj")}" title="Launch a browser session to record this portal — the bot will replay it on future projects"><i data-lucide="play"></i><span>Open recorder</span></button>
+          <span class="track-record-arrow muted">→</span>
+          <span class="track-record-hint muted">complete the form in the browser, type <code>save</code></span>
+          <span class="track-record-arrow muted">→</span>
+          <span class="track-record-hint muted">saved &amp; replayed for future projects in this AHJ/utility</span>
+        </div>
+      </div>`;
+
   return `
   <article class="item ${cls} track-card">
     <div class="item-title">
@@ -1697,6 +1751,7 @@ function trackCardHtml(t) {
       <button type="button" class="secondary" data-track-stage="${esc(t.type)}" title="Auto-fill this filing's portal up to the final review screen — you submit manually"><i data-lucide="bot"></i><span>Stage in portal</span></button>
       <button type="button" class="secondary" data-track-approve="${esc(t.type)}" title="Hybrid: replay through the final application submit — only runs if you've trusted this portal for auto-submit, otherwise it stages to review. Never pays fees; stops for CAPTCHA/MFA."><i data-lucide="check-check"></i><span>Approve &amp; auto-submit</span></button>
     </div>
+    ${recipeBlock}
     <details class="track-submit"${submitted ? "" : " open"}>
       <summary>${submitted ? "Update numbers / status link" : "I submitted it → capture #"}</summary>
       <div class="track-submit-form">
@@ -1740,6 +1795,20 @@ function renderSubmittalTracks() {
   });
   wrap.querySelectorAll("button[data-track-stage]").forEach((btn) => {
     btn.addEventListener("click", () => stageSubmittalTrack(btn.dataset.trackStage, btn));
+  });
+  wrap.querySelectorAll("button[data-track-open-recorder]").forEach((btn) => {
+    btn.addEventListener("click", () => launchTrackRecorder(btn.dataset.trackOpenRecorder, btn.dataset.scope, btn));
+  });
+  wrap.querySelectorAll("button[data-track-review-recipe]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      // Navigate to the Recipes section so the operator can review recorded steps.
+      const track = (state.submittalTracks || []).find((t) => t.type === btn.dataset.trackReviewRecipe);
+      if (track?.recipeId) {
+        window.open(`${window.location.origin}/#recipes`, "_blank");
+      } else {
+        showMessage("No saved recipe found for this track.", "warning");
+      }
+    });
   });
   if (window.lucide) window.lucide.createIcons();
 }

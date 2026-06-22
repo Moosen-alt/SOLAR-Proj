@@ -153,6 +153,20 @@ p, .muted { color: var(--muted); }
 .track-field input { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; font: inherit; font-size: 12px; background: var(--surface); }
 .track-submit-form button { grid-column: 1 / -1; justify-self: start; }
 
+/* --- Per-track inline recipe / record flow --- */
+.track-recipe { margin-top: 8px; padding: 7px 10px; border-radius: 6px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12px; }
+.track-recipe--has { background: #f0fdf4; border: 1px solid #bbf7d0; }
+.track-recipe--none { background: #fafafa; border: 1px dashed var(--line); }
+.track-recipe-badge { display: inline-flex; align-items: center; gap: 4px; font-weight: 600; font-size: 11px; }
+.track-recipe-badge.badge-ok { color: #15803d; }
+.track-recipe-badge.badge-warn { color: #b45309; }
+.track-recipe-badge.badge-none { color: var(--muted); }
+.track-recipe-badge i { width: 14px; height: 14px; }
+.track-record-steps { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 4px; width: 100%; }
+.track-record-arrow { font-size: 13px; }
+.track-record-hint { font-size: 11px; }
+.track-record-hint code { background: var(--surface-2); padding: 1px 4px; border-radius: 3px; }
+
 /* --- Manual project-data entry form (valuation, homeowner, description) --- */
 .manual-entry-form { border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); padding: 10px 12px; margin: 6px 0 10px; display: flex; flex-direction: column; gap: 8px; }
 .manual-entry-field { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
