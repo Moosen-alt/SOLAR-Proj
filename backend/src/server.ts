@@ -66,6 +66,7 @@ import { addAuditLog } from "./audit";
 import { buildAuthUrl, exchangeCodeForTokens, gmailStatus, pollGmail } from "./gmail";
 import { imapStatus, pollImap } from "./emailPoller";
 import { ensureHeartbeat, sseBroadcast, sseSubscribe } from "./events";
+import { detectPlatform, publicPermitStatusCheck } from "./publicPermitStatus";
 import {
   addManualCorrection,
   draftLatestCorrectionResponse,
@@ -865,6 +866,22 @@ app.post("/api/permit-monitor/run", asyncHandler(async (req, res) => {
 
 app.post("/api/nem-monitor/run", asyncHandler(async (_req, res) => {
   res.json(await runDuePermitChecks(db, "nem"));
+}));
+
+// Detect portal platform from a URL (called as the operator pastes a portal URL
+// into the permit target form — shows them what strategy will be used).
+app.get("/api/permit-status/detect-platform", (req, res) => {
+  const url = String(req.query.url || "");
+  if (!url) { res.status(400).json({ error: "url query param required" }); return; }
+  res.json({ platform: detectPlatform(url), url });
+});
+
+// Ad-hoc public status check for a single target: useful for "check now" button.
+app.post("/api/permit-status/public-check", asyncHandler(async (req, res) => {
+  const { portalUrl, applicationNumbers } = req.body || {};
+  if (!portalUrl) throw new HttpError(400, "portalUrl is required.");
+  const result = await publicPermitStatusCheck(String(portalUrl), Array.isArray(applicationNumbers) ? applicationNumbers : []);
+  res.json({ platform: detectPlatform(String(portalUrl)), rawStatusText: result });
 }));
 
 // Users

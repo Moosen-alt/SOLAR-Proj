@@ -239,6 +239,8 @@ export interface PermitCheckTarget {
   latestStatusLabel: string;
   notes: string;
   targetType: "permit" | "nem";
+  /** Auto-detected from portalUrl — drives the public HTTP status-check strategy. */
+  portalPlatform?: string;
   createdAt: string;
   updatedAt: string;
 }

@@ -2536,20 +2536,26 @@ function renderPermitMonitor() {
   const checks = state.detail.permitStatusChecks || [];
   const emailMatches = state.detail.emailProjectMatches || [];
 
-  $("permitTargets").innerHTML = targets.length ? targets.map((target) => `
+  $("permitTargets").innerHTML = targets.length ? targets.map((target) => {
+    const platformLabel = target.portalPlatform && target.portalPlatform !== "unknown" && target.portalPlatform !== "public_url"
+      ? `<span style="font-size:11px;padding:1px 6px;border-radius:4px;background:var(--info);color:#fff;margin-left:6px">${esc(target.portalPlatform)}</span>`
+      : "";
+    const sourceLabel = target.targetType === "nem" ? " (NEM/interconnection)" : " (building permit)";
+    return `
     <article class="item info">
-      <div class="item-title"><span>${esc(target.portalName || target.jurisdiction || "Permit target")}</span>${statusBadge(target.latestOutcome || "active")}</div>
+      <div class="item-title"><span>${esc(target.portalName || target.jurisdiction || "Permit target")}${sourceLabel}</span>${statusBadge(target.latestOutcome || "active")}${platformLabel}</div>
       <p>${esc([target.applicationNumber && `Application ${target.applicationNumber}`, target.permitNumber && `Permit ${target.permitNumber}`].filter(Boolean).join(" | ") || "No application/permit number recorded yet.")}</p>
-      <p class="muted">Every ${target.checkFrequencyDays} day(s). Next check: ${target.nextCheckAt ? esc(new Date(target.nextCheckAt).toLocaleString()) : "not scheduled"}</p>
-    </article>
-  `).join("") : `<p class="muted">No permit check targets yet.</p>`;
+      ${target.portalUrl ? `<p class="muted" style="word-break:break-all">${esc(target.portalUrl)}</p>` : ""}
+      <p class="muted">Checks every ${target.checkFrequencyDays} day(s) · Next: ${target.nextCheckAt ? esc(new Date(target.nextCheckAt).toLocaleString()) : "not scheduled"} · Source strategy: ${esc(target.portalPlatform || "auto")}</p>
+    </article>`;
+  }).join("") : `<p class="muted">No permit check targets yet.</p>`;
 
   $("permitChecks").innerHTML = checks.length ? checks.map((check) => `
     <article class="item ${check.outcome === "correction_flagged" ? "fail" : check.readyForIssue ? "pass" : check.outcome === "needs_human_review" ? "warning" : "info"}">
       <div class="item-title"><span>${esc(check.statusLabel)}</span>${statusBadge(statusLabel(check.outcome))}</div>
       <p>${esc(check.message)}</p>
-      <p class="muted">${esc(fmtDate(check.createdAt))} | confidence ${Math.round((check.confidence || 0) * 100)}%</p>
-      ${check.rawStatusText ? `<p class="muted">${esc(check.rawStatusText.slice(0, 600))}</p>` : ""}
+      <p class="muted">${esc(fmtDate(check.createdAt))} · confidence ${Math.round((check.confidence || 0) * 100)}% · source: ${esc(check.source || "manual")}</p>
+      ${check.rawStatusText ? `<details style="margin-top:4px"><summary class="muted" style="font-size:12px;cursor:pointer">Raw status text</summary><p class="muted" style="font-size:12px;white-space:pre-wrap">${esc(check.rawStatusText.slice(0, 1200))}</p></details>` : ""}
     </article>
   `).join("") : `<p class="muted">No permit status checks yet.</p>`;
 

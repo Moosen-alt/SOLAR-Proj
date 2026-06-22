@@ -62,6 +62,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { checkStatusWithAdapter, stageWithAccela, stageWithMockPortal, stageWithPowerClerk, stageWithRecipe } from "../../portal-bot/src/index";
 import { findCompleteRecipeForProject, resolveRecipeFieldValues } from "./portalRecipes";
+import { detectPlatform, publicPermitStatusCheck } from "./publicPermitStatus";
 import { projectDocsByType } from "./projectDocuments";
 import { STAGE_COUNT, stageForStatus, isBlockedStatus } from "./projectStage";
 import { addAuditLog } from "./audit";
@@ -242,6 +243,7 @@ function mapPermitTarget(row: Row): PermitCheckTarget {
     latestStatusLabel: text(row.latest_status_label),
     notes: text(row.notes),
     targetType: (row.target_type === "nem" ? "nem" : "permit") as "permit" | "nem",
+    portalPlatform: text(row.portal_platform),
     createdAt: text(row.created_at),
     updatedAt: text(row.updated_at),
   };
@@ -4150,13 +4152,16 @@ export function createPermitCheckTarget(
   const ts = nowIso();
   const frequency = Math.max(1, Math.floor(Number(input.checkFrequencyDays || 7)));
   const targetType = input.targetType === "nem" ? "nem" : "permit";
+  // Auto-detect the portal platform from the URL so the status-check strategy is
+  // selected automatically without the operator having to choose a platform.
+  const portalPlatform = input.portalUrl ? detectPlatform(input.portalUrl) : "unknown";
   db.transaction(() => {
     db.run(
       `INSERT INTO permit_check_targets
         (id, project_id, jurisdiction, portal_name, portal_url, application_number, permit_number,
          check_frequency_days, active, last_checked_at, next_check_at, latest_outcome, latest_status_label,
-         notes, target_type, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         notes, target_type, portal_platform, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         targetId,
         projectId,
@@ -4173,6 +4178,7 @@ export function createPermitCheckTarget(
         "",
         input.notes || "",
         targetType,
+        portalPlatform,
         ts,
         ts,
       ],
@@ -4317,14 +4323,13 @@ async function resolveStatusText(target: Row | null, rawStatusText: string, sour
   if (trimmed) return trimmed;
   if (source === "mock") return "Application is under review. Plans assigned to reviewer.";
 
-  if (source === "public_url" && target?.portal_url) {
-    try {
-      const res = await fetch(text(target.portal_url));
-      const body = await res.text();
-      return body.replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 8000);
-    } catch (err) {
-      return `Public URL check failed. ${err instanceof Error ? err.message : "Unknown error"}`;
-    }
+  if ((source === "public_url" || source === "portal") && target?.portal_url) {
+    // Try the platform-aware public fetcher (Accela capID URL, EnerGov CSS API,
+    // SolarAPP+, or generic HTML strip). Passes application/permit numbers so
+    // Accela can construct the direct record-detail URL without login.
+    const appNums = [text(target.application_number), text(target.permit_number)].filter(Boolean);
+    const publicText = await publicPermitStatusCheck(text(target.portal_url), appNums).catch(() => null);
+    if (publicText && publicText.length > 40) return publicText;
   }
 
   return "No status text available. Manual AHJ/utility portal check required.";

@@ -744,6 +744,9 @@ function migrate(db: AppDb): void {
 
   // target_type distinguishes permit vs NEM/interconnection check targets
   addColumnIfMissing(db, "permit_check_targets", "target_type", "TEXT NOT NULL DEFAULT 'permit'");
+  // portal_platform is auto-detected from portal_url (accela, energov, projectdox, etc.)
+  // and drives the public HTTP status-check strategy in publicPermitStatus.ts.
+  addColumnIfMissing(db, "permit_check_targets", "portal_platform", "TEXT NOT NULL DEFAULT ''");
   // project-level user assignment
   addColumnIfMissing(db, "projects", "assigned_user_id", "TEXT");
   // link a project back to the customer/lead it came from
