@@ -77,6 +77,15 @@ function esc(value) {
 
 // Null-safe "snake_case" → "snake case". Avoids the whole class of
 // `someStatus.replaceAll(...)` throwing when a status field is null/undefined.
+// Safe date formatting — a null/empty/malformed timestamp must never render the
+// literal "Invalid Date" to the operator.
+function fmtDate(value, dateOnly = false) {
+  if (!value) return "—";
+  const d = new Date(value);
+  if (isNaN(d.getTime())) return "—";
+  return dateOnly ? d.toLocaleDateString() : d.toLocaleString();
+}
+
 function humanize(value) {
   if (value == null) return "";
   // Title-case each word, replacing underscores/hyphens with spaces.
@@ -186,10 +195,19 @@ async function loadOpsActions() {
 }
 
 async function loadKnowledgeBase() {
-  const data = await api("/api/knowledge-base");
-  state.knowledgeProfiles = data.profiles || [];
-  $("knowledgeCount").textContent = state.knowledgeProfiles.length;
-  renderKnowledgeBase();
+  // Guarded so a KB fetch error can't abort the rest of loadProjects() (portal
+  // recipes, AHJ forms, signatures, email tracker, detail refresh).
+  try {
+    const data = await api("/api/knowledge-base");
+    state.knowledgeProfiles = data.profiles || [];
+    $("knowledgeCount").textContent = state.knowledgeProfiles.length;
+    renderKnowledgeBase();
+  } catch (err) {
+    const countEl = $("knowledgeCount");
+    if (countEl) countEl.textContent = "—";
+    const kbEl = $("knowledgeBase");
+    if (kbEl) kbEl.innerHTML = `<p class="muted">${esc(err.message || "Knowledge base unavailable.")}</p>`;
+  }
 }
 
 async function loadProjectDocuments() {
@@ -1372,10 +1390,12 @@ function renderDetail() {
     $("metricStatus").textContent = statusLabel(project.status);
     $("metricUtility").textContent = project.utility || "Missing";
     $("metricAhj").textContent = project.ahj || "Missing";
-    $("metricSystem").textContent = `${project.systemSizeDcKw ?? "?"} DC / ${project.systemSizeAcKw ?? "?"} AC`;
+    $("metricSystem").textContent = (project.systemSizeDcKw == null && project.systemSizeAcKw == null)
+      ? "Not parsed yet"
+      : `${project.systemSizeDcKw ?? "—"} DC / ${project.systemSizeAcKw ?? "—"} AC`;
     const pm = state.processMap;
     $("metricPermit").textContent = pm
-      ? `Permit ${statusLabel(pm.permitStatus || "?")} / NEM ${statusLabel(pm.nemStatus || "?")}`
+      ? `Permit ${pm.permitStatus ? statusLabel(pm.permitStatus) : "not checked"} / NEM ${pm.nemStatus ? statusLabel(pm.nemStatus) : "not checked"}`
       : "Not checked";
   });
   // Each panel is isolated so a single bad value can't break the flow or the stepper.
@@ -1548,7 +1568,7 @@ function renderOpsBrief() {
     return;
   }
   $("copyHandoffBtn").disabled = !brief.handoffNote;
-  $("opsBriefStatus").textContent = brief.health;
+  $("opsBriefStatus").textContent = humanize(brief.health);
   const counts = brief.counts || {};
   const actions = brief.immediateActions || [];
   const blockers = brief.blockers || [];
@@ -1603,7 +1623,7 @@ function renderOpsBrief() {
           <div class="brief-row ${briefClass(item.severity)}">
             <strong>${esc(item.title)}</strong>
             <p>${esc(item.detail)}</p>
-            <span>${esc(new Date(item.occurredAt).toLocaleString())} | ${esc(item.source)}</span>
+            <span>${esc(fmtDate(item.occurredAt))} | ${esc(item.source)}</span>
           </div>
         `).join("") : `<p class="muted">No recent activity yet.</p>`}
       </article>
@@ -1669,7 +1689,7 @@ function renderRunbook() {
         <article class="brief-row ${note.noteType === "blocker" ? "blocker" : "info"}">
           <strong>${esc(humanize(note.noteType))}</strong>
           <p>${esc(note.body)}</p>
-          <span>${esc(note.createdBy || "Operations")} | ${esc(new Date(note.createdAt).toLocaleString())}</span>
+          <span>${esc(note.createdBy || "Operations")} | ${esc(fmtDate(note.createdAt))}</span>
         </article>
       `).join("") : `<p class="muted">No PM notes yet.</p>`}
     </div>
@@ -1687,7 +1707,7 @@ function renderHandoffPacket() {
     return;
   }
   $("copyHandoffPacketBtn").disabled = !packet.reportText;
-  $("handoffPacketStatus").textContent = packet.health;
+  $("handoffPacketStatus").textContent = humanize(packet.health);
   const sections = packet.sections || [];
   $("handoffPacket").innerHTML = `
     <article class="item ${briefClass(packet.health)}">
@@ -1725,7 +1745,7 @@ function renderCommunicationDrafts() {
     return;
   }
   $("copyCommunicationDraftsBtn").disabled = !packet.reportText;
-  $("communicationDraftsStatus").textContent = packet.status;
+  $("communicationDraftsStatus").textContent = humanize(packet.status);
   const drafts = packet.drafts || [];
   $("communicationDrafts").innerHTML = `
     <article class="item ${briefClass(packet.status)}">
@@ -1801,7 +1821,7 @@ function renderOpsPlan() {
   `;
   $("opsNotes").innerHTML = (plan.notes || []).length ? plan.notes.map((note) => `
     <article class="item ${note.noteType === "blocker" ? "blocker" : note.noteType === "client_update" ? "info" : "pass"}">
-      <div class="item-title"><span>${esc(humanize(note.noteType))}</span><span class="muted" style="font-size:12px">${esc(new Date(note.createdAt).toLocaleString())}</span></div>
+      <div class="item-title"><span>${esc(humanize(note.noteType))}</span><span class="muted" style="font-size:12px">${esc(fmtDate(note.createdAt))}</span></div>
       <p>${esc(note.body)}</p>
       <p class="muted">${esc(note.createdBy || "Operations")}</p>
     </article>
@@ -1953,7 +1973,7 @@ function renderProjectTimeline() {
           ${statusBadge(event.category.replaceAll("_", " "))}
         </div>
         <p>${esc(event.detail)}</p>
-        <p class="timeline-meta">${esc(new Date(event.occurredAt).toLocaleString())} | ${esc(event.actor || "system")} | ${esc(event.source || "source")}</p>
+        <p class="timeline-meta">${esc(fmtDate(event.occurredAt))} | ${esc(event.actor || "system")} | ${esc(event.source || "source")}</p>
         ${event.ownerRole || event.nextAction ? `<p><strong>Owner:</strong> ${esc(event.ownerRole || "Operations")} ${event.nextAction ? `| <strong>Next:</strong> ${esc(event.nextAction)}` : ""}</p>` : ""}
         ${(event.evidence || []).length ? `<ul class="evidence-list">${event.evidence.slice(0, 3).map((line) => `<li>${esc(line)}</li>`).join("")}</ul>` : ""}
       </article>
@@ -2013,23 +2033,23 @@ function renderHistoricalFailures() {
     </article>
     <article class="item ${rejectionCauses.some((cause) => cause.count > 0) ? "warning" : "info"}">
       <div class="item-title"><span>Top rejection causes</span>${statusBadge(rejectionCauses.length)}</div>
-      ${rejectionCauses.map((cause) => `
+      ${rejectionCauses.length ? rejectionCauses.map((cause) => `
         <div class="check-row ${esc(cause.severity || "callout")}">
           <strong>${esc(cause.title)}</strong> ${statusBadge(cause.severity || "callout")}
           <p>${cause.count ? `<strong>${cause.count} prior record(s)</strong>` : "Baseline rule (no learned records yet)"}${cause.rootCause ? ` · ${esc(cause.rootCause)}` : ""}. ${esc(cause.requiredAction)}</p>
           ${cause.sample ? `<p class="muted evidence-sample"><strong>Evidence:</strong> "${esc(String(cause.sample).slice(0, 280))}${String(cause.sample).length > 280 ? "…" : ""}"</p>` : `<p class="muted">No source excerpt — derived from a deterministic baseline rule.</p>`}
         </div>
-      `).join("")}
+      `).join("") : `<p class="muted">No rejection causes on record for this AHJ/utility yet.</p>`}
     </article>
     <article class="item ${missing ? "blocker" : review ? "warning" : "pass"}">
       <div class="item-title"><span>Generated checklist</span>${statusBadge(`${missing} missing / ${review} review`)}</div>
-      ${checklist.map((item) => `
+      ${checklist.length ? checklist.map((item) => `
         <div class="check-row ${esc(item.status)}">
           <strong>${esc(humanize(item.status).toUpperCase())}: ${esc(item.title)}</strong>
           <p>${esc(item.why)} ${esc(item.action)}</p>
           <p class="muted">${esc((item.evidence || []).join(", "))}</p>
         </div>
-      `).join("")}
+      `).join("") : `<p class="muted">No checklist items generated.</p>`}
     </article>
   `;
 }
@@ -2126,12 +2146,20 @@ function renderReviewerGate() {
 function syncPermitForm() {
   const target = state.detail.permitCheckTargets?.[0];
   const project = state.detail.project;
-  $("permitJurisdiction").value = target?.jurisdiction || project.ahj || "";
-  $("permitPortalName").value = target?.portalName || "";
-  $("permitPortalUrl").value = target?.portalUrl || "";
-  $("permitApplicationNumber").value = target?.applicationNumber || latestSubmissionValue("applicationNumber") || "";
-  $("permitTrackingNumber").value = target?.permitNumber || latestSubmissionValue("permitNumber") || "";
-  $("permitCheckFrequencyDays").value = target?.checkFrequencyDays || 7;
+  // Only populate a field when it's empty — re-renders (review save, background
+  // email scan, etc.) must not overwrite a tracking/application number the
+  // operator is in the middle of typing.
+  const fill = (elId, value) => {
+    const el = $(elId);
+    if (el && !el.value) el.value = value || "";
+  };
+  fill("permitJurisdiction", target?.jurisdiction || project.ahj);
+  fill("permitPortalName", target?.portalName);
+  fill("permitPortalUrl", target?.portalUrl);
+  fill("permitApplicationNumber", target?.applicationNumber || latestSubmissionValue("applicationNumber"));
+  fill("permitTrackingNumber", target?.permitNumber || latestSubmissionValue("permitNumber"));
+  const freq = $("permitCheckFrequencyDays");
+  if (freq && !freq.value) freq.value = target?.checkFrequencyDays || 7;
 }
 
 function latestSubmissionValue(key) {
@@ -2520,7 +2548,7 @@ function renderPermitMonitor() {
     <article class="item ${check.outcome === "correction_flagged" ? "fail" : check.readyForIssue ? "pass" : check.outcome === "needs_human_review" ? "warning" : "info"}">
       <div class="item-title"><span>${esc(check.statusLabel)}</span>${statusBadge(statusLabel(check.outcome))}</div>
       <p>${esc(check.message)}</p>
-      <p class="muted">${esc(new Date(check.createdAt).toLocaleString())} | confidence ${Math.round((check.confidence || 0) * 100)}%</p>
+      <p class="muted">${esc(fmtDate(check.createdAt))} | confidence ${Math.round((check.confidence || 0) * 100)}%</p>
       ${check.rawStatusText ? `<p class="muted">${esc(check.rawStatusText.slice(0, 600))}</p>` : ""}
     </article>
   `).join("") : `<p class="muted">No permit status checks yet.</p>`;
@@ -2531,7 +2559,7 @@ function renderPermitMonitor() {
         <div class="item-title"><span>Matched email updates</span>${statusBadge(emailMatches.length)}</div>
         ${emailMatches.slice(0, 6).map((match) => `
           <p><strong>${esc(humanize(match.emailBucket))}</strong> ${esc(match.subject || "No subject")}</p>
-          <p class="muted">${esc(match.matchReason)} | confidence ${Math.round((match.confidence || 0) * 100)}% | ${esc(new Date(match.createdAt).toLocaleString())}</p>
+          <p class="muted">${esc(match.matchReason)} | confidence ${Math.round((match.confidence || 0) * 100)}% | ${esc(fmtDate(match.createdAt))}</p>
         `).join("")}
       </article>
     `;
@@ -2553,7 +2581,7 @@ function renderCorrections() {
       <div class="item-title">
         <span>${esc(humanize(correction.correctionBucket))}</span>
         <span>${correctionSlaBadge(correction)}</span>
-        <span class="muted">${esc(new Date(correction.createdAt).toLocaleDateString())}</span>
+        <span class="muted">${esc(fmtDate(correction.createdAt, true))}</span>
       </div>
       <p>${esc(correction.requiredAction)}</p>
       <p class="muted">${esc(correction.correctionText)}</p>
@@ -2581,7 +2609,7 @@ function renderAudit() {
   const logs = state.detail.auditLogs || [];
   $("auditLog").innerHTML = logs.length ? logs.map((log) => `
     <article class="item info">
-      <div class="item-title"><span>${esc(log.action)}</span><span>${esc(new Date(log.createdAt).toLocaleString())}</span></div>
+      <div class="item-title"><span>${esc(log.action)}</span><span>${esc(fmtDate(log.createdAt))}</span></div>
       <p>${esc(log.actorType)}: ${esc(log.actorName)}</p>
     </article>
   `).join("") : `<p class="muted">No audit entries yet.</p>`;
@@ -3024,7 +3052,7 @@ async function runQc() {
           const r = await api(`/api/projects/${state.selectedProjectId}/research-ahj`, { method: "POST", body: "{}" });
           if (r.saved && r.applicationDocs) {
             state.applicationDocs = r.applicationDocs;
-            advanced = ` Unknown AHJ — AI-researched ${esc(state.detail.project.ahj)} and saved ${r.research.requiredDocuments.length} required doc(s) to the knowledge base (verify before relying on it).`;
+            advanced = ` Unknown AHJ — AI-researched ${state.detail.project.ahj} and saved ${r.research.requiredDocuments.length} required doc(s) to the knowledge base (verify before relying on it).`;
           } else if (r.research?.provider === "stub") {
             advanced = ` Unknown AHJ — set ANTHROPIC_API_KEY to auto-research it.`;
           }
@@ -3099,7 +3127,7 @@ async function prepareSubmission() {
     renderDetail();
     await loadProjects();
   } catch (err) {
-    const details = err.details ? Object.entries(err.details).map(([key, value]) => `${key}: ${Array.isArray(value) ? value.join(", ") : value}`).join(" | ") : "";
+    const details = err.details ? Object.entries(err.details).map(([key, value]) => `${key}: ${Array.isArray(value) ? value.join(", ") : (value && typeof value === "object" ? JSON.stringify(value) : value)}`).join(" | ") : "";
     showMessage([err.message, details].filter(Boolean).join("\n"), "warning");
   }
 }
@@ -4019,7 +4047,7 @@ async function loadCommunications(customerId) {
     <div class="comm-entry">
       <div class="comm-meta">
         <strong>${esc(COMM_CHANNEL_LABELS[m.channel] || m.channel)}</strong>
-        <span class="muted">${esc(m.direction)} · ${esc(new Date(m.occurredAt).toLocaleString())}</span>
+        <span class="muted">${esc(m.direction)} · ${esc(fmtDate(m.occurredAt))}</span>
       </div>
       ${m.subject ? `<div class="comm-subject">${esc(m.subject)}</div>` : ""}
       ${m.body ? `<div class="comm-body">${esc(m.body)}</div>` : ""}
@@ -4513,15 +4541,15 @@ function renderKpi(kpi) {
         <div class="kpi-label">Avg NEM Cycle</div>
       </div>
       <div class="kpi-card ${kpi.throughputPerWeek < 1 ? "kpi-warn" : ""}">
-        <div class="kpi-value">${kpi.throughputPerWeek}</div>
+        <div class="kpi-value">${kpi.throughputPerWeek ?? "—"}</div>
         <div class="kpi-label">Handoffs/Week</div>
       </div>
       <div class="kpi-card ${kpi.correctionRate > 50 ? "kpi-warn" : ""}">
-        <div class="kpi-value">${kpi.correctionRate}%</div>
+        <div class="kpi-value">${kpi.correctionRate == null ? "—" : `${kpi.correctionRate}%`}</div>
         <div class="kpi-label">Correction Rate</div>
       </div>
       <div class="kpi-card">
-        <div class="kpi-value">${kpi.avgCorrectionsPerProject}</div>
+        <div class="kpi-value">${kpi.avgCorrectionsPerProject ?? "—"}</div>
         <div class="kpi-label">Avg Corrections/Project</div>
       </div>
       <div class="kpi-card ${kpi.overdueCorrections > 0 ? "kpi-fail" : ""}">
