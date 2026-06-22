@@ -1033,7 +1033,7 @@ const STATUS_LABELS = {
 };
 
 function statusLabel(status) {
-  return STATUS_LABELS[status] || String(status || "unknown").replaceAll("_", " ");
+  return STATUS_LABELS[status] || humanize(status || "unknown");
 }
 
 // Plain-language "what do I do next" guidance for every canonical status.
