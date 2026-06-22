@@ -199,9 +199,10 @@ export const applicationProfiles: ApplicationRequirementProfile[] = [
     permitStructure: "separate",
     submissionMethod: "Oregon ePermitting (Accela)",
     requiredDocuments: [
-      "Solar STRUCTURAL application — PRESCRIPTIVE checklist (prescriptive path) or STRUCTURAL application (non-prescriptive); upload only the one that matches your path, never both",
+      "PRESCRIPTIVE PATH → 'Prescriptive Solar Photovoltaic Installation Permit Application' (Marion County B-01S) — flat fee, no plan review",
+      "NON-PRESCRIPTIVE PATH → 'Structural Permit Application' (Marion County B-01, the standard building permit) — valuation-based fee + 65% plan-review fee; upload only the one that matches your path, never both",
       "Renewable Energy (electrical) permit application — REQUIRED on every PV interconnection (separate electrical permit, OAR 918-050-0180)",
-      "Solar prescriptive checklist (Oregon BCD 440-5952) on the prescriptive path",
+      "Oregon prescriptive rooftop PV checklist (BCD 440-5952) on the prescriptive path",
       "PE-stamped structural plans + sealed structural letter/calcs on the non-prescriptive path",
       "Plan set: site/plot plan w/ fire pathways, electrical SLD (RSD + 705.12), structural roof framing + attachment detail, module spec, inverter spec, label/placard schedule",
       "Electrical permit covers the main panel/service upgrade (MPU) when in scope",
@@ -209,9 +210,9 @@ export const applicationProfiles: ApplicationRequirementProfile[] = [
     notes: [
       "Marion County processes Keizer/Hubbard/Mount Angel/Gervais roof-mount solar on Oregon ePermitting (Accela).",
       "TWO permits: a structural permit AND a SEPARATE electrical (renewable-energy) permit are required (OAR 918-050-0180). File BOTH.",
-      "PRESCRIPTIVE application = meets prescriptive code, NO plan review, REDUCED permit fee.",
-      "STRUCTURAL application = does NOT meet prescriptive code, WILL require plan review, FULL structural fees, and a PE-stamped plan set + structural engineering letter must be attached.",
-      "Upload ONLY the structural-side application that pertains (prescriptive checklist OR structural application) — do NOT upload both.",
+      "PRESCRIPTIVE = 'Prescriptive Solar Photovoltaic Installation Permit Application' (B-01S): meets OSSC 3111.4.8 + 3111.5 prescriptive path, NO plan review, flat reduced fee (~$67.25 + 12% surcharge).",
+      "NON-PRESCRIPTIVE = 'Structural Permit Application' (B-01, standard building permit): does NOT meet prescriptive code, WILL require plan review (65% of permit fee), valuation-based fees, and a PE-stamped plan set + structural engineering letter must be attached.",
+      "The Prescriptive Solar form states: 'For permits that do not comply with this section use the standard building permit application.' Upload ONLY the one that pertains — do NOT upload both.",
       "The renewable-energy (electrical) permit application is required for EVERY interconnection, not just MPU jobs.",
     ],
   },
@@ -460,6 +461,19 @@ export function buildSubmittalEmailDraft(
   ].filter((l) => l !== "").join("\n");
 
   return { isEmailSubmittal: isEmail, to: (opts.toEmail || "").trim(), subject, body };
+}
+
+// The EXACT named application form an AHJ uses for each path, so the operator/bot pulls
+// the right blank form. Falls back to a generic label for AHJs we haven't named yet.
+export function namedApplicationForm(profile: ApplicationRequirementProfile, path: "prescriptive" | "engineered" | "unknown"): string {
+  if (profile.id === "marion-county-keizer-solar") {
+    if (path === "prescriptive") return "Prescriptive Solar Photovoltaic Installation Permit Application (Marion County B-01S)";
+    if (path === "engineered") return "Structural Permit Application (Marion County B-01 — the standard building permit)";
+    return "Marion County: Prescriptive Solar PV form (B-01S) OR Structural Permit Application (B-01) — pick one by path";
+  }
+  if (path === "prescriptive") return "the AHJ's prescriptive solar application / checklist";
+  if (path === "engineered") return "the AHJ's structural (standard building) permit application";
+  return "the AHJ's prescriptive OR structural application (pick one by path)";
 }
 
 // Local MPU-scope detection (kept here to avoid a circular import with submittalTracks).
@@ -720,16 +734,17 @@ Electrical:
 // on the engineered path. Carries a banner that this is the application to upload and
 // that a PE-stamped plan set + structural letter must accompany it (collected below).
 function buildStructuralWorksheet(project: ProjectRecord, _profile: ApplicationRequirementProfile, permitPath: PermitPathResolution): GeneratedApplicationDocument {
+  const formName = namedApplicationForm(_profile, "engineered");
   const banner = permitPath.path === "engineered"
-    ? "UPLOAD THIS APPLICATION (non-prescriptive). Do NOT upload the prescriptive application. This triggers plan review and full structural fees and requires a PE-stamped plan set + structural engineering letter."
-    : "Draft — only upload the structural application if the project is NON-prescriptive. Otherwise upload the prescriptive application instead.";
+    ? `UPLOAD THIS APPLICATION (non-prescriptive): ${formName}. Do NOT upload the prescriptive application. This triggers plan review and full structural fees and requires a PE-stamped plan set + structural engineering letter.`
+    : `Draft — only upload the structural application (${formName}) if the project is NON-prescriptive. Otherwise upload the prescriptive application instead.`;
   return doc(
     "structural",
-    "Structural (Non-Prescriptive) Application Worksheet",
+    `Structural (Non-Prescriptive) Application — ${formName}`,
     "structural_application",
     true,
     "04-structural-building-worksheet.md",
-    `# Structural (Non-Prescriptive) Application Worksheet
+    `# Structural (Non-Prescriptive) Application Worksheet — ${formName}
 
 > ${banner}
 
@@ -780,12 +795,13 @@ ${hasMpu ? "\nMain panel / service upgrade (MPU) IS in scope — the electrical 
 // only on the prescriptive path. This is the application to upload when the project
 // meets prescriptive code — reduced fee, no plan review.
 function buildPrescriptiveApplication(project: ProjectRecord, _profile: ApplicationRequirementProfile, permitPath: PermitPathResolution): GeneratedApplicationDocument {
+  const formName = namedApplicationForm(_profile, "prescriptive");
   const banner = permitPath.path === "prescriptive"
-    ? "UPLOAD THIS APPLICATION (prescriptive). Do NOT upload the structural application. Indicates the project meets prescriptive code — no plan review, reduced permit fee."
-    : "Draft — only upload the prescriptive application if the project meets prescriptive code. Otherwise upload the structural application instead.";
+    ? `UPLOAD THIS APPLICATION (prescriptive): ${formName}. Do NOT upload the structural application. Indicates the project meets prescriptive code — no plan review, reduced permit fee.`
+    : `Draft — only upload the prescriptive application (${formName}) if the project meets prescriptive code. Otherwise upload the structural application instead.`;
   return doc(
     "prescriptive-application",
-    "Prescriptive Solar Application + Checklist",
+    `Prescriptive Solar Application + Checklist — ${formName}`,
     "checklist",
     true,
     "06-prescriptive-solar-application.md",
