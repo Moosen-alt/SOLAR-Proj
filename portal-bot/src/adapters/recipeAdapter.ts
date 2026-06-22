@@ -104,6 +104,28 @@ export class RecipeAdapter implements PortalAdapter {
     return ok("Capture the application/confirmation number manually after the human submits.");
   }
 
+  // Read-only status scrape: navigate to the portal URL, search the page body for
+  // any of the known application/permit numbers, and return a status text snippet.
+  // NEVER clicks submit, modifies, or pays anything.
+  async checkStatus(applicationNumbers: string[]): Promise<string | null> {
+    if (!this.page || !this.recipe.portalUrl || !applicationNumbers.length) return null;
+    try {
+      await this.page.goto(this.recipe.portalUrl);
+      await this.page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
+      const bodyText = await this.page.locator("body").innerText().catch(() => "");
+      for (const num of applicationNumbers) {
+        if (!num) continue;
+        const idx = bodyText.indexOf(num);
+        if (idx === -1) continue;
+        const snippet = bodyText.slice(Math.max(0, idx - 80), idx + 320).replace(/\s+/g, " ").trim();
+        if (snippet) return snippet;
+      }
+      return bodyText.slice(0, 3000).replace(/\s+/g, " ").trim() || null;
+    } catch {
+      return null;
+    }
+  }
+
   // Replay every recorded step IN ORDER (uploads inline), stopping permanently at the
   // first stopForReview marker so we never proceed to the final submit.
   private async runAll(): Promise<PortalStepResult> {

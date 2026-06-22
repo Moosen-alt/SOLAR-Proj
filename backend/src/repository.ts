@@ -60,7 +60,7 @@ import type {
 import { touchProjectMetrics } from "./kpi";
 import fs from "node:fs";
 import path from "node:path";
-import { stageWithAccela, stageWithMockPortal, stageWithPowerClerk, stageWithRecipe } from "../../portal-bot/src/index";
+import { checkStatusWithAdapter, stageWithAccela, stageWithMockPortal, stageWithPowerClerk, stageWithRecipe } from "../../portal-bot/src/index";
 import { findCompleteRecipeForProject, resolveRecipeFieldValues } from "./portalRecipes";
 import { projectDocsByType } from "./projectDocuments";
 import { STAGE_COUNT, stageForStatus, isBlockedStatus } from "./projectStage";
@@ -4490,11 +4490,44 @@ export async function runDuePermitChecks(
   );
   const projects: ProjectDetail[] = [];
   for (const target of targets) {
-    const detail = await recordPermitStatusCheck(db, text(target.project_id), {
+    const projectId = text(target.project_id);
+    // Try a live authenticated portal scrape when a portal profile is available
+    // for the target type. Falls back to public_url fetch or mock if unavailable.
+    let rawStatusText: string | undefined;
+    let source: "portal" | "public_url" | "mock" = text(target.portal_url) ? "public_url" : "mock";
+    const targetType = text(target.target_type); // "permit" | "nem"
+    const portalType = targetType === "nem" ? "powerclerk_pge" : "accela_oregon";
+    const portalProfile = db.get<{ id: string; portal_type: string; encrypted_storage_state?: string }>(
+      "SELECT * FROM portal_profiles WHERE portal_type = ? ORDER BY created_at DESC LIMIT 1",
+      [portalType],
+    );
+    if (portalProfile?.encrypted_storage_state) {
+      const projectDetail = getProjectDetail(db, projectId);
+      const clientId = projectDetail.project.clientId ?? "";
+      const profileBase = process.env.PORTAL_PROFILES_DIR || path.join(process.cwd(), "portal-profiles");
+      const userDataDir = clientId
+        ? path.join(profileBase, clientId, portalType)
+        : path.join(profileBase, portalType);
+      const credential = clientId ? (getDecryptedCredential(db, clientId, portalType) ?? undefined) : undefined;
+      const applicationNumbers = [text(target.application_number), text(target.permit_number)].filter(Boolean);
+      const adapterType = portalType === "powerclerk_pge" ? "powerclerk" : "accela";
+      const scraped = await checkStatusWithAdapter(adapterType, applicationNumbers, {
+        encryptedStorageStatePath: portalProfile.encrypted_storage_state,
+        headless: true,
+        credential,
+        userDataDir,
+      }).catch(() => null);
+      if (scraped) {
+        rawStatusText = scraped;
+        source = "portal";
+      }
+    }
+    const detail = await recordPermitStatusCheck(db, projectId, {
       targetId: text(target.id),
-      source: text(target.portal_url) ? "public_url" : "mock",
+      source,
+      rawStatusText,
     });
-    touchProjectMetrics(db, text(target.project_id));
+    touchProjectMetrics(db, projectId);
     projects.push(detail);
   }
   return { checked: targets.length, projects };

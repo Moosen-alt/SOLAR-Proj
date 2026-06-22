@@ -112,3 +112,35 @@ export async function stageWithRecipe(
 ): Promise<Record<string, unknown>> {
   return runAdapter(new RecipeAdapter(recipe, fieldValues, docsByType), project, files, options);
 }
+
+// Read-only portal status scrape. Opens a browser session for the given adapter type,
+// calls checkStatus(), and returns the raw status text (or null on failure/not supported).
+// SAFETY: only calls login() + checkStatus() — never fill, click-submit, or pay.
+export async function checkStatusWithAdapter(
+  adapterType: "accela" | "powerclerk" | "recipe",
+  applicationNumbers: string[],
+  options: StageOptions & { recipe?: PortalRecipe; fieldValues?: Record<string, string>; docsByType?: Record<string, string> },
+): Promise<string | null> {
+  let tmpStatePath: string | undefined;
+  try {
+    tmpStatePath = resolveStorageStatePath(options.encryptedStorageStatePath);
+    const ctx = { storageStatePath: tmpStatePath, headless: options.headless ?? true, credential: options.credential, userDataDir: options.userDataDir };
+
+    const adapter =
+      adapterType === "accela" ? new OregonEPermittingAdapter() :
+      adapterType === "powerclerk" ? new PowerClerkAdapter() :
+      options.recipe ? new RecipeAdapter(options.recipe, options.fieldValues ?? {}, options.docsByType ?? {}) :
+      null;
+
+    if (!adapter || !adapter.checkStatus) return null;
+
+    const loginResult = await adapter.login(ctx);
+    if (!loginResult.ok) return null;
+
+    return await adapter.checkStatus(applicationNumbers);
+  } catch {
+    return null;
+  } finally {
+    if (tmpStatePath && fs.existsSync(tmpStatePath)) fs.unlinkSync(tmpStatePath);
+  }
+}

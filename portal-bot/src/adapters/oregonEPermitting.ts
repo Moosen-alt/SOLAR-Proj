@@ -377,4 +377,33 @@ export class OregonEPermittingAdapter implements PortalAdapter {
       return fail(`captureSubmissionConfirmation failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
+
+  // ---------------------------------------------------------------------------
+  // checkStatus — read-only scrape of "My Records" for the given application numbers.
+  // Navigates to the logged-in My Records page, locates the row matching any of the
+  // provided record/permit numbers, and extracts the status text. NEVER modifies,
+  // clicks submit, or pays anything.
+  // ---------------------------------------------------------------------------
+  async checkStatus(applicationNumbers: string[]): Promise<string | null> {
+    if (!this.page || !applicationNumbers.length) return null;
+    try {
+      await this.page.goto(`${BASE_URL}/Cap/CapHome.aspx?module=Building&TabName=Building`);
+      await this.page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
+
+      const bodyText = await this.page.locator("body").innerText().catch(() => "");
+      // Scan the page text for a row that contains one of the known application numbers.
+      for (const num of applicationNumbers) {
+        if (!num) continue;
+        const idx = bodyText.indexOf(num);
+        if (idx === -1) continue;
+        // Take 400 chars around the match — enough to include status label.
+        const snippet = bodyText.slice(Math.max(0, idx - 80), idx + 320).replace(/\s+/g, " ").trim();
+        if (snippet) return snippet;
+      }
+      // Fall back: return the top portion of the My Records page body as raw status text.
+      return bodyText.slice(0, 3000).replace(/\s+/g, " ").trim() || null;
+    } catch {
+      return null;
+    }
+  }
 }

@@ -30,6 +30,11 @@ export interface PortalAdapter {
   uploadFiles(project: ProjectRecord, files: string[]): Promise<PortalStepResult>;
   stopAtReview(project: ProjectRecord, reviewerReport?: ReviewerReport): Promise<PortalStepResult>;
   captureSubmissionConfirmation(): Promise<PortalStepResult>;
+  /** Read-only status scrape — navigates to the portal's project status page and returns
+   *  the raw status text for the given application/permit numbers.
+   *  SAFETY: must never click submit, modify, or pay anything.
+   *  Returns null if the adapter has no live scrape capability. */
+  checkStatus?(applicationNumbers: string[]): Promise<string | null>;
 }
 
 export const HUMAN_REVIEW_MESSAGE =

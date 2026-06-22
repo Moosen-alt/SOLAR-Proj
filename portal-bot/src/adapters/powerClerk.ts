@@ -424,4 +424,30 @@ export class PowerClerkAdapter implements PortalAdapter {
       return fail(`captureSubmissionConfirmation failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
+
+  // ---------------------------------------------------------------------------
+  // checkStatus — read-only scrape of the PowerClerk "My Applications" dashboard
+  // for any of the provided application numbers. NEVER modifies, clicks submit,
+  // or pays anything.
+  // ---------------------------------------------------------------------------
+  async checkStatus(applicationNumbers: string[]): Promise<string | null> {
+    if (!this.page || !applicationNumbers.length) return null;
+    try {
+      // Navigate to the applications list (the home page after login).
+      await this.page.goto("https://pgenm.powerclerk.com/MvcApplication/Index");
+      await this.page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
+
+      const bodyText = await this.page.locator("body").innerText().catch(() => "");
+      for (const num of applicationNumbers) {
+        if (!num) continue;
+        const idx = bodyText.indexOf(num);
+        if (idx === -1) continue;
+        const snippet = bodyText.slice(Math.max(0, idx - 80), idx + 320).replace(/\s+/g, " ").trim();
+        if (snippet) return snippet;
+      }
+      return bodyText.slice(0, 3000).replace(/\s+/g, " ").trim() || null;
+    } catch {
+      return null;
+    }
+  }
 }
