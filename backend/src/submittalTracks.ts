@@ -23,6 +23,7 @@ import type {
   SubmittalTrackType,
 } from "../../shared/src/types";
 import { findApplicationProfile, describePermitType, permitStructureForProject } from "./applicationDocs";
+import { findAhjProcessProfile } from "./processProfiles";
 import { HttpError } from "./httpError";
 import { nowIso } from "./time";
 import { randomUUID } from "node:crypto";
@@ -36,7 +37,28 @@ const TRACK_LABELS: Record<SubmittalTrackType, string> = {
   electrical: "Electrical permit (ELE)",
   combo: "Building + electrical permit (combo)",
   permit: "AHJ permit",
+  mpu: "Main panel / service upgrade permit (MPU)",
 };
+
+// Main-panel / service-upgrade scope detection — mirrors the reviewer's MPU callout.
+// Keyed on upgrade language (not "derate", a 705.12 remedy that isn't itself an MPU).
+function hasMpuScope(project: ProjectRecord): boolean {
+  const snap = (project.parserSnapshot || {}) as Record<string, unknown>;
+  const text = [
+    snap.projectDescriptionText, snap.description, snap.scopeText, snap.electricalCalcText,
+    snap.sitePlanNotesText, snap.mpu, snap.serviceUpgrade,
+  ].map((v) => (v == null ? "" : String(v))).join(" ").toLowerCase();
+  return /\bmpu\b|main panel upgrade|main service panel upgrade|service (panel )?upgrade|\bmsp upgrade\b|panel upgrade|meter.?main upgrade/.test(text);
+}
+
+// Some AHJs fold the MPU into the electrical/combination permit (e.g. Beaverton:
+// "alteration (MPU, et cetera) can go under one electric trade permit"). When the AHJ
+// note says so, the MPU does NOT get its own track. Otherwise it does, so it's tracked.
+function mpuFoldedIntoElectrical(project: ProjectRecord): boolean {
+  const ahj = findAhjProcessProfile(project);
+  const notes = `${ahj?.reviewerNotes || ""} ${ahj?.otherRequirements || ""}`.toLowerCase();
+  return /\bmpu\b|panel upgrade|alteration/.test(notes) && /under one (electric|combination)|one electric trade permit|on (the )?electric(al)? (trade )?(permit|form)/.test(notes);
+}
 
 /** Map a permit track to the permit_check_targets.target_type used by the poller. */
 function targetTypeFor(track: SubmittalTrackType): "permit" | "nem" {
@@ -64,6 +86,13 @@ export function requiredTracks(project: ProjectRecord): SubmittalTrackType[] {
     tracks.push("building", "electrical");
   } else {
     tracks.push("combo");
+  }
+
+  // A main panel / service upgrade gets its OWN tracked permit when it's in scope and
+  // the AHJ doesn't fold it into the electrical/combination permit. Not every project
+  // has one — it only appears when the bot detects MPU scope.
+  if (hasMpuScope(project) && !mpuFoldedIntoElectrical(project)) {
+    tracks.push("mpu");
   }
   return tracks;
 }

@@ -1761,7 +1761,12 @@ async function markSubmittalTrack(type) {
       method: "POST", body: JSON.stringify(body),
     });
     state.submittalTracks = res.tracks || state.submittalTracks;
-    renderSubmittalTracks();
+    // Reload the full project so the status strip, submissions, permit/NEM trackers, and
+    // process map reflect the save — not just the tracks panel. (Previously the save
+    // persisted but the rest of the page stayed stale.)
+    state.detail = await api(`/api/projects/${state.selectedProjectId}`);
+    await loadProcessMap();
+    renderDetail();
     showMessage(`${humanize(type)} marked submitted — now tracking through to issuance.`, "info");
   } catch (err) {
     showMessage(err.message || "Could not save submittal track.", "error");

@@ -1555,7 +1555,7 @@ app.get("/api/projects/:id/submittal-tracks", (req, res) => {
   res.json({ tracks: getSubmittalTracks(db, detail.project) });
 });
 
-const SUBMITTAL_TRACK_TYPES: SubmittalTrackType[] = ["nem", "building", "electrical", "combo", "permit"];
+const SUBMITTAL_TRACK_TYPES: SubmittalTrackType[] = ["nem", "building", "electrical", "combo", "permit", "mpu"];
 app.post("/api/projects/:id/submittal-tracks/:type/mark-submitted", (req, res) => {
   const type = String(req.params.type) as SubmittalTrackType;
   if (!SUBMITTAL_TRACK_TYPES.includes(type)) throw new HttpError(400, "Unknown submittal track type.");

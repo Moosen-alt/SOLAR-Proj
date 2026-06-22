@@ -4621,7 +4621,7 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   // With no track (legacy combined stage) accept either, newest first.
   const trackPortalTypes = track === "nem"
     ? ["powerclerk_pge"]
-    : (track === "building" || track === "electrical" || track === "combo" || track === "permit")
+    : (track === "building" || track === "electrical" || track === "combo" || track === "permit" || track === "mpu")
       ? ["accela_oregon"]
       : ["accela_oregon", "powerclerk_pge"];
   const trackPortalPlaceholders = trackPortalTypes.map(() => "?").join(", ");

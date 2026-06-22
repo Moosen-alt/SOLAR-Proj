@@ -254,7 +254,7 @@ export interface PermitCheckTarget {
 
 // A project's required submittal tracks (utility NEM + building/electrical permits),
 // each submitted to its portal and tracked independently through to issuance.
-export type SubmittalTrackType = "nem" | "building" | "electrical" | "combo" | "permit";
+export type SubmittalTrackType = "nem" | "building" | "electrical" | "combo" | "permit" | "mpu";
 export type SubmittalTrackStatus =
   | "not_started"
   | "staged"
