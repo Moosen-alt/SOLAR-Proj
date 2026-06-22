@@ -64,6 +64,7 @@ import { acquireFromBytes, ensureAhjFormTemplate } from "./ahjFormAuto";
 import { createSignature, deleteSignature, getSignatureImage, listSignatures, setDefaultSignature } from "./signatures";
 import { addAuditLog } from "./audit";
 import { buildAuthUrl, exchangeCodeForTokens, gmailStatus, pollGmail } from "./gmail";
+import { imapStatus, pollImap } from "./emailPoller";
 import {
   addManualCorrection,
   draftLatestCorrectionResponse,
@@ -380,6 +381,15 @@ app.get("/api/gmail/oauth/callback", asyncHandler(async (req, res) => {
 app.post("/api/gmail/poll", asyncHandler(async (req, res) => {
   const query = typeof req.body?.query === "string" ? req.body.query : undefined;
   res.json(await pollGmail(db, query));
+}));
+
+// --- IMAP polling (generic IMAP/IMAPS for corporate/Exchange inboxes) ---
+app.get("/api/imap/status", (_req, res) => {
+  res.json(imapStatus());
+});
+
+app.post("/api/imap/poll", asyncHandler(async (_req, res) => {
+  res.json(await pollImap(db));
 }));
 
 app.get("/api/ops-board", (_req, res) => {

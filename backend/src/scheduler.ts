@@ -1,4 +1,5 @@
 import type { AppDb } from "./db";
+import { imapStatus, pollImap } from "./emailPoller";
 import { logger } from "./logger";
 import { runDuePermitChecks, runEmailTracker } from "./repository";
 
@@ -35,8 +36,23 @@ export function startMonitorScheduler(db: AppDb): void {
         }
       }
 
-      if (permit.checked > 0 || emailMatches > 0) {
-        logger.info("monitor", `auto-run: ${permit.checked} permit/NEM check(s), ${emailMatches} email match(es) across ${sources.length} source(s).`);
+      // IMAP live polling — runs when EMAIL_IMAP_HOST is configured. Fetches
+      // new messages and runs them through the same email tracker pipeline as mbox.
+      let imapMatches = 0;
+      if (imapStatus().configured) {
+        try {
+          const imap = await pollImap(db);
+          imapMatches = imap.matches;
+          if (imap.fetched > 0) {
+            logger.info("monitor", `IMAP: fetched ${imap.fetched} message(s), ${imap.matches} match(es).`);
+          }
+        } catch (err) {
+          logger.warn("monitor", `IMAP poll failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+
+      if (permit.checked > 0 || emailMatches > 0 || imapMatches > 0) {
+        logger.info("monitor", `auto-run: ${permit.checked} permit/NEM check(s), ${emailMatches + imapMatches} email match(es) across ${sources.length} mbox source(s).`);
       }
     } catch (err) {
       logger.warn("monitor", `tick failed: ${err instanceof Error ? err.message : String(err)}`);
