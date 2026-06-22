@@ -28,7 +28,46 @@
   --danger: #b91c1c;
   --warning: #a16207;
   --info: #1d4ed8;
-  --shadow: 0 8px 24px rgba(24, 35, 48, .08);
+  --success: #15803d;
+
+  /* Spacing rhythm (4px base) — use these instead of ad-hoc px for new work. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+
+  /* Radius scale */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+
+  /* Refined, layered shadow scale (subtle borders do most of the work) */
+  --shadow-sm: 0 1px 2px rgba(24, 35, 48, .06);
+  --shadow: 0 1px 2px rgba(24, 35, 48, .05), 0 4px 12px rgba(24, 35, 48, .06);
+  --shadow-lg: 0 8px 28px rgba(24, 35, 48, .12);
+
+  /* Focus ring — consistent, accessible, used by :focus-visible everywhere. */
+  --focus-ring: 0 0 0 2px var(--surface), 0 0 0 4px color-mix(in srgb, var(--primary) 55%, transparent);
+
+  /* Fast, non-distracting micro-transition (transform/opacity/color only). */
+  --t-fast: 130ms cubic-bezier(.4, 0, .2, 1);
+}
+
+/* Accessible focus for keyboard users; mouse clicks don't show the ring. */
+:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+  border-radius: var(--radius-sm);
+}
+button:focus-visible, .button:focus-visible, .file-button:focus-visible,
+.board-card:focus-visible, .page-tab:focus-visible, .view-toggle-btn:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
 }
 
 * { box-sizing: border-box; }
@@ -269,7 +308,11 @@ button,
   font: inherit;
   font-weight: 700;
   text-decoration: none;
+  transition: background-color var(--t-fast), border-color var(--t-fast), color var(--t-fast), box-shadow var(--t-fast), transform var(--t-fast);
 }
+.button:active,
+button:active,
+.file-button:active { transform: translateY(1px); }
 
 button svg,
 .button svg,
@@ -288,6 +331,7 @@ button svg,
   border-color: var(--line);
   color: var(--text);
 }
+.secondary:hover { background: #e3e9ee; border-color: #c6d0d9; }
  .danger-button {
   background: #fef2f2;
   border-color: #fecaca;
@@ -428,8 +472,21 @@ tbody tr:hover, tbody tr.active { background: #f0fdfa; }
 .next-step-step { flex: none; font-weight: 800; text-transform: uppercase; font-size: 11px; letter-spacing: .04em; padding: 3px 8px; border-radius: 999px; background: rgba(255,255,255,.7); }
 .next-step-text strong { font-weight: 800; }
 
-/* Numbered action toolbar */
-.step-actions { row-gap: 8px; }
+/* Numbered action toolbar — sticky so the primary daily-step buttons stay
+   reachable while the operator scrolls a long project. Sits just under the
+   sticky .topbar (≈61px tall). */
+.step-actions {
+  row-gap: 8px;
+  position: sticky;
+  top: 61px;
+  z-index: 9;
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  backdrop-filter: saturate(140%) blur(6px);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 8px 10px;
+  box-shadow: var(--shadow-sm);
+}
 .actions-label { font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; }
 .actions-divider { width: 1px; align-self: stretch; background: var(--line); margin: 0 4px; }
 
@@ -551,10 +608,16 @@ tbody tr:hover, tbody tr.active { background: #f0fdfa; }
   text-align: left; width: 100%; background: var(--surface);
   border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px;
   cursor: pointer; display: flex; flex-direction: column; gap: 4px;
+  box-shadow: var(--shadow-sm);
+  transition: border-color var(--t-fast), box-shadow var(--t-fast), transform var(--t-fast);
 }
-.board-card:hover { border-color: var(--primary); }
+.board-card:hover { border-color: var(--primary); box-shadow: var(--shadow); transform: translateY(-1px); }
 .board-card.active { border-color: var(--primary); box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 25%, transparent); }
-.board-card.is-blocked { border-left: 3px solid var(--danger); }
+/* Blocked work is the operator's "needs attention" signal — make it pop:
+   red left rail + a subtle tinted surface so it reads at a glance. */
+.board-card.is-blocked { border-left: 3px solid var(--danger); background: #fffafa; }
+/* j/k keyboard cursor highlight — distinct from hover/active so it's findable. */
+.board-card.kbd-cursor { outline: none; box-shadow: var(--focus-ring); border-color: var(--primary); }
 .board-card-name { font-weight: 700; font-size: 13px; }
 .board-card-addr { font-size: 12px; }
 .board-card-meta { display: flex; flex-wrap: wrap; gap: 4px; }
@@ -593,13 +656,59 @@ tbody tr:hover, tbody tr.active { background: #f0fdfa; }
 .submit-gate-manual { background: #fffbeb; border-color: #fcd34d; }
 .submit-gate-focus { background: var(--surface-2); }
 
+/* ---------------------------------------------------------------------------
+   Loading skeletons — shown while project list fetches resolve, so the board
+   doesn't flash blank. .is-loading on a container reveals its skeleton block.
+   --------------------------------------------------------------------------- */
+@keyframes skeletonSheen {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+.skeleton {
+  background: linear-gradient(90deg, var(--surface-2) 25%, #e3e9ee 37%, var(--surface-2) 63%);
+  background-size: 200% 100%;
+  animation: skeletonSheen 1.2s ease-in-out infinite;
+  border-radius: var(--radius-sm);
+}
+.board-skeleton { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(190px, 1fr); gap: 10px; padding-bottom: 8px; }
+.board-skeleton-col { background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius-md); padding: 8px; display: flex; flex-direction: column; gap: 8px; }
+.board-skeleton-card { height: 56px; }
+/* Subtle inline spinner for in-place async actions. */
+@keyframes spin { to { transform: rotate(360deg); } }
+.spinner {
+  display: inline-block; width: 14px; height: 14px; border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--primary) 30%, transparent);
+  border-top-color: var(--primary); animation: spin .7s linear infinite;
+  vertical-align: -2px;
+}
+
+/* ---------------------------------------------------------------------------
+   Keyboard shortcuts help overlay (press ?). Lightweight, focus-trapped via JS.
+   --------------------------------------------------------------------------- */
+.shortcuts-overlay { position: fixed; inset: 0; background: rgba(24,35,48,.45); display: flex; align-items: center; justify-content: center; z-index: 100; padding: 24px; }
+.shortcuts-overlay[hidden] { display: none; }
+.shortcuts-card { background: var(--surface); border-radius: var(--radius-lg); box-shadow: var(--shadow-lg); width: min(440px, 100%); max-height: 85vh; overflow: auto; padding: 20px 22px; animation: shortcutsIn 140ms cubic-bezier(.4,0,.2,1); }
+@keyframes shortcutsIn { from { opacity: 0; transform: translateY(6px) scale(.99); } to { opacity: 1; transform: none; } }
+.shortcuts-card h2 { font-size: 16px; margin-bottom: 14px; }
+.shortcuts-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 7px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+.shortcuts-row:last-child { border-bottom: none; }
+.shortcuts-row .keys { display: inline-flex; gap: 4px; flex: none; }
+kbd {
+  display: inline-block; min-width: 20px; text-align: center;
+  padding: 2px 6px; border-radius: 5px; font-size: 11px; font-weight: 700;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: var(--surface-2); border: 1px solid var(--line);
+  border-bottom-width: 2px; color: var(--text); line-height: 1.4;
+}
+
 /* --- Print / Save-as-PDF --- */
 /* The sticky .topbar otherwise gets painted at each page boundary and overlaps
    content (a known Chrome print bug). Neutralize stickiness and drop fixed
    overlays so a printed project packet reads cleanly top-to-bottom. */
 @media print {
   .topbar { position: static; }
-  #toastContainer { display: none !important; }
+  .step-actions { position: static; backdrop-filter: none; }
+  #toastContainer, .shortcuts-overlay { display: none !important; }
   /* Keep cards and the auto-fill helper from splitting across page breaks. */
   .item, .autofill-card, .submit-gate-check, .flow-steps li { break-inside: avoid; }
   /* Open accordions print expanded; collapsed ones stay collapsed. */

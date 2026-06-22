@@ -670,6 +670,7 @@ function boardCardHtml(p, userMap) {
 function renderBoard() {
   const el = $("projectBoard");
   if (!el) return;
+  el.classList.remove("board-skeleton");
   const userMap = Object.fromEntries((state.users || []).map((u) => [u.id, u]));
   const groups = new Map(PROJECT_STAGES.map((s) => [s.key, []]));
   for (const p of state.projects) {
@@ -4545,7 +4546,19 @@ async function loadMoreProjects() {
   await fetchProjectPage(true);
 }
 
+// Paint a board skeleton so a (re)fetch doesn't flash an empty column grid.
+function showBoardSkeleton() {
+  const el = $("projectBoard");
+  if (!el || el.hidden) return;
+  const cols = Array.from({ length: 6 }, () =>
+    `<div class="board-skeleton-col">${Array.from({ length: 3 }, () => `<div class="skeleton board-skeleton-card"></div>`).join("")}</div>`
+  ).join("");
+  el.classList.add("board-skeleton");
+  el.innerHTML = cols;
+}
+
 async function fetchProjectPage(append) {
+  if (!append) showBoardSkeleton();
   const params = new URLSearchParams({ limit: String(PROJECT_PAGE_SIZE), offset: String(projectFilterState.offset) });
   if (projectFilterState.search) params.set("search", projectFilterState.search);
   if (projectFilterState.status) params.set("status", projectFilterState.status);
@@ -5108,3 +5121,122 @@ function connectSse() {
 connectSse();
 
 
+
+// ---------------------------------------------------------------------------
+// Keyboard-first operator shortcuts. Wired only to elements/actions that
+// already exist — no new backend calls. Typing in a field disables single-key
+// shortcuts (Esc and Ctrl/Cmd+K still work) so normal data entry is unaffected.
+// ---------------------------------------------------------------------------
+(function installKeyboardShortcuts() {
+  const MODAL_IDS = ["knowledgeModal", "customersModal", "clientsModal", "usersModal", "kpiModal"];
+  const MODAL_CLOSERS = {
+    knowledgeModal: () => $("closeKnowledgeBtn")?.click(),
+    customersModal: () => $("closeCustomersBtn")?.click(),
+    clientsModal: () => $("closeClientsBtn")?.click(),
+    usersModal: () => $("closeUsersBtn")?.click(),
+    kpiModal: () => $("closeKpiBtn")?.click(),
+  };
+
+  const isTyping = (el) => {
+    if (!el) return false;
+    const tag = el.tagName;
+    return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el.isContentEditable;
+  };
+  const openModalId = () => MODAL_IDS.find((id) => $(id) && !$(id).hidden);
+  const shortcutsOpen = () => $("shortcutsOverlay") && !$("shortcutsOverlay").hidden;
+
+  function toggleShortcuts(show) {
+    const ov = $("shortcutsOverlay");
+    if (!ov) return;
+    ov.hidden = show === undefined ? !ov.hidden : !show;
+  }
+
+  // Which list of project cards/rows is currently visible (board vs table).
+  function visibleProjectNodes() {
+    if (state.page === "dashboard") return Array.from(document.querySelectorAll("#projectBoard [data-board-pid]"));
+    if (state.page === "projects") return Array.from(document.querySelectorAll("#projectsBody tr[data-project-id]"));
+    return [];
+  }
+  function nodePid(node) { return node.dataset.boardPid || node.dataset.projectId; }
+
+  let cursorIndex = -1;
+  function clearCursor() {
+    document.querySelectorAll(".board-card.kbd-cursor, tr.kbd-cursor").forEach((n) => n.classList.remove("kbd-cursor"));
+  }
+  function moveCursor(delta) {
+    const nodes = visibleProjectNodes();
+    if (!nodes.length) return;
+    clearCursor();
+    cursorIndex = Math.max(0, Math.min(nodes.length - 1, (cursorIndex < 0 ? (delta > 0 ? -1 : 0) : cursorIndex) + delta));
+    const node = nodes[cursorIndex];
+    node.classList.add("kbd-cursor");
+    node.scrollIntoView({ block: "nearest" });
+  }
+  function openCursor() {
+    const nodes = visibleProjectNodes();
+    const node = nodes[cursorIndex];
+    if (node) selectProject(nodePid(node));
+  }
+
+  let gPending = false;
+  let gTimer = null;
+
+  document.addEventListener("keydown", (e) => {
+    if (e.altKey || e.metaKey && e.key.toLowerCase() !== "k" || e.ctrlKey && e.key.toLowerCase() !== "k") {
+      // Allow only Cmd/Ctrl+K through the modifier gate below.
+    }
+
+    // Esc: close the top-most overlay, or blur the focused field.
+    if (e.key === "Escape") {
+      if (shortcutsOpen()) { toggleShortcuts(false); e.preventDefault(); return; }
+      const m = openModalId();
+      if (m) { MODAL_CLOSERS[m](); e.preventDefault(); return; }
+      if (isTyping(document.activeElement)) { document.activeElement.blur(); e.preventDefault(); return; }
+      if ($("shortcutsOverlay")) { /* nothing else open */ }
+      return;
+    }
+
+    // Cmd/Ctrl+K: focus project search regardless of focus context.
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+      const search = $("projectSearch");
+      if (search && !search.closest("[hidden]")) { e.preventDefault(); search.focus(); search.select(); }
+      return;
+    }
+
+    // Remaining shortcuts are single-key and must not fire while typing.
+    if (isTyping(document.activeElement)) return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (openModalId()) return; // don't hijack keys inside an open modal
+
+    // `g` prefix for navigation (g d / g p / g t).
+    if (gPending) {
+      gPending = false;
+      clearTimeout(gTimer);
+      const map = { d: "#/dashboard", p: "#/projects", t: "#/team" };
+      const dest = map[e.key.toLowerCase()];
+      if (dest) { e.preventDefault(); navigate(dest); cursorIndex = -1; clearCursor(); }
+      return;
+    }
+
+    switch (e.key) {
+      case "/":
+        if (shortcutsOpen()) return;
+        { const s = $("projectSearch"); if (s && !s.closest("[hidden]")) { e.preventDefault(); s.focus(); s.select(); } }
+        break;
+      case "?":
+        e.preventDefault(); toggleShortcuts();
+        break;
+      case "j": e.preventDefault(); moveCursor(1); break;
+      case "k": e.preventDefault(); moveCursor(-1); break;
+      case "Enter": if (cursorIndex >= 0) { e.preventDefault(); openCursor(); } break;
+      case "r": e.preventDefault(); $("refreshBtn")?.click(); break;
+      case "g": gPending = true; gTimer = setTimeout(() => { gPending = false; }, 800); break;
+      default: break;
+    }
+  });
+
+  // Clicking the shortcuts backdrop closes it.
+  $("shortcutsOverlay")?.addEventListener("click", (e) => {
+    if (e.target.id === "shortcutsOverlay") toggleShortcuts(false);
+  });
+})();

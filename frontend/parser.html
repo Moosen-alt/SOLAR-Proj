@@ -189,7 +189,7 @@
 <body>
 <div class="wrap">
   <h1>Solar Submission Engine</h1>
-  <p class="sub">Rebuild v17.2.47 with Tesla Powerwall 3 inverter/battery parsing fixed. Evidence-based electrical callouts, AHJ description of work, full module model parsing, utility ZIPs, and ProjectDox permit splitting remain included.</p>
+  <p class="sub">Parse a plan set, utility bill, and meter photo into structured project data, submission text, and a permit-ready packet.</p>
 
   <div class="nav">
     <a href="/dashboard" class="pill" style="text-decoration:none;color:inherit">← Dashboard</a>
@@ -201,11 +201,6 @@
     <div class="pill">Submission text</div>
     <div class="pill">Packet builder</div>
     <div class="pill">ProjectDox splitter</div>
-  </div>
-
-  <div class="section-note">
-    <strong>Rebuild v17.2.47</strong><br>
-    Tesla Powerwall 3 inverter/battery parsing fixed. Evidence-based electrical callouts, AHJ <span class="mono">Description of the Work</span>, full module model parsing, utility ZIPs, and ProjectDox permit splitting remain included.
   </div>
 
   <div class="card">
@@ -3966,7 +3961,7 @@ document.addEventListener('click', e => {
 
 
 /* =========================
-   v17.2.47 Evidence Engine + AHJ Description of Work + ProjectDox Splitter, Tesla Powerwall Inverter/Battery Fix
+   Evidence Engine + AHJ Description of Work + ProjectDox Splitter
    ========================= */
 
 const SCOPE_UTILITY_RULES_V40 = {
