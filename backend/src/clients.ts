@@ -50,6 +50,8 @@ function mapClient(row: Row, identities: ClientPortalIdentity[]): ClientRecord {
     insuranceCarrier: s(row.insurance_carrier),
     authorizedSignerName: s(row.authorized_signer_name),
     authorizedSignerTitle: s(row.authorized_signer_title),
+    logoBase64: s(row.logo_base64),
+    logoMime: s(row.logo_mime) || "image/png",
     portalIdentities: identities,
     createdAt: s(row.created_at),
   };

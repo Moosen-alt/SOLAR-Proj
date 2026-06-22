@@ -244,6 +244,7 @@ function mapPermitTarget(row: Row): PermitCheckTarget {
     notes: text(row.notes),
     targetType: (row.target_type === "nem" ? "nem" : "permit") as "permit" | "nem",
     portalPlatform: text(row.portal_platform),
+    trackingUrl: row.tracking_url ? text(row.tracking_url) : undefined,
     createdAt: text(row.created_at),
     updatedAt: text(row.updated_at),
   };
@@ -354,6 +355,7 @@ function mapPortalRun(row: Row): PortalRun {
     logsPath: text(row.logs_path),
     pauseReason: row.pause_reason ? text(row.pause_reason) : undefined,
     confirmationNumber: row.confirmation_number ? text(row.confirmation_number) : undefined,
+    trackingUrl: row.tracking_url ? text(row.tracking_url) : undefined,
   };
 }
 
@@ -3925,7 +3927,8 @@ export async function importKnowledgeFromMboxFile(
 
 export function getApplicationDocumentPackage(db: AppDb, projectId: string): ApplicationDocumentPackage {
   const detail = getProjectDetail(db, projectId);
-  const pkg = buildApplicationDocumentPackage(detail.project);
+  const client = detail.project.clientId ? (() => { try { return getClient(db, detail.project.clientId!); } catch { return null; } })() : null;
+  const pkg = buildApplicationDocumentPackage(detail.project, client);
 
   // Enrich with the LEARNED AHJ profile from the knowledge base. The static
   // builder only knows a handful of hardcoded jurisdictions; the KB knows many

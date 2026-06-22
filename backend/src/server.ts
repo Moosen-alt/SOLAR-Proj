@@ -235,6 +235,29 @@ app.delete("/api/clients/:id", (req, res) => {
   res.json(deleteClient(db, String(req.params.id)));
 });
 
+// Logo upload — accepts base64-encoded image in body { logoBase64, logoMime }.
+// Capped at 400 KB encoded (≈ 300 KB raw) to keep SQLite rows reasonable.
+app.put("/api/clients/:id/logo", (req, res) => {
+  const MAX_B64 = 400 * 1024;
+  const logoBase64 = String(req.body?.logoBase64 || "").trim();
+  const logoMime = ["image/png", "image/jpeg", "image/webp"].includes(String(req.body?.logoMime))
+    ? String(req.body.logoMime)
+    : "image/png";
+  if (!logoBase64) throw new HttpError(400, "logoBase64 is required.");
+  if (logoBase64.length > MAX_B64) throw new HttpError(413, "Logo too large — max 300 KB (400 KB encoded).");
+  db.run("UPDATE clients SET logo_base64 = ?, logo_mime = ?, updated_at = ? WHERE id = ?", [
+    logoBase64, logoMime, new Date().toISOString(), String(req.params.id),
+  ]);
+  res.json({ ok: true });
+});
+
+app.delete("/api/clients/:id/logo", (req, res) => {
+  db.run("UPDATE clients SET logo_base64 = NULL, logo_mime = 'image/png', updated_at = ? WHERE id = ?", [
+    new Date().toISOString(), String(req.params.id),
+  ]);
+  res.json({ ok: true });
+});
+
 app.post("/api/projects/:id/client", (req, res) => {
   const clientId = req.body?.clientId === null ? null : String(req.body?.clientId || "").trim() || null;
   res.json(assignProjectClient(db, String(req.params.id), clientId));
@@ -1458,6 +1481,29 @@ app.post("/api/projects/:id/autofill-specs", asyncHandler(async (req, res) => {
 
 app.post("/api/portal-runs/:id/capture-confirmation", (req, res) => {
   res.json(captureConfirmation(db, req.params.id, req.body || {}));
+});
+
+// Save a public AHJ portal tracking URL (no login required) for a portal run or
+// permit check target. Operators paste the CapDetail / record-detail URL after
+// submission so the system can surface it for unauthenticated status checks.
+app.put("/api/portal-runs/:id/tracking-url", (req, res) => {
+  const url = String(req.body?.url || "").trim();
+  if (!url) throw new HttpError(400, "url is required.");
+  db.run(
+    "UPDATE portal_runs SET tracking_url = ? WHERE id = ?",
+    [url, String(req.params.id)],
+  );
+  res.json({ ok: true, trackingUrl: url });
+});
+
+app.put("/api/permit-check-targets/:id/tracking-url", (req, res) => {
+  const url = String(req.body?.url || "").trim();
+  if (!url) throw new HttpError(400, "url is required.");
+  db.run(
+    "UPDATE permit_check_targets SET tracking_url = ?, updated_at = ? WHERE id = ?",
+    [url, new Date().toISOString(), String(req.params.id)],
+  );
+  res.json({ ok: true, trackingUrl: url });
 });
 
 app.get("/parser", (_req, res) => {

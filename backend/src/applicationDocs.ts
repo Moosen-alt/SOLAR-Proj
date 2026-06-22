@@ -1,6 +1,7 @@
 import type {
   ApplicationDocumentPackage,
   ApplicationRequirementProfile,
+  ClientRecord,
   GeneratedApplicationDocument,
   ProjectRecord,
 } from "../../shared/src/types";
@@ -315,15 +316,15 @@ export function buildSubmittalEmailDraft(
   return { isEmailSubmittal: isEmail, to: (opts.toEmail || "").trim(), subject, body };
 }
 
-export function buildApplicationDocumentPackage(project: ProjectRecord): ApplicationDocumentPackage {
+export function buildApplicationDocumentPackage(project: ProjectRecord, client: ClientRecord | null = null): ApplicationDocumentPackage {
   const profile = findApplicationProfile(project);
   const missingFields = requiredProjectFields(project);
   const docs: GeneratedApplicationDocument[] = [
-    buildCover(project, profile),
+    buildCover(project, profile, client),
     buildManifest(project, profile),
   ];
 
-  if (profile.requiresAhjApplication || profile.requiresPortalEntryOnly) docs.push(buildAhjWorksheet(project, profile));
+  if (profile.requiresAhjApplication || profile.requiresPortalEntryOnly) docs.push(buildAhjWorksheet(project, profile, client));
   if (profile.requiresStructuralApplication) docs.push(buildStructuralWorksheet(project, profile));
   if (profile.requiresElectricalApplication) docs.push(buildElectricalWorksheet(project, profile));
   if (profile.requiresPrescriptiveChecklist) docs.push(buildPrescriptiveChecklist(project, profile));
@@ -336,7 +337,7 @@ export function buildApplicationDocumentPackage(project: ProjectRecord): Applica
     generatedAt: nowIso(),
     docs,
     missingFields,
-    html: packageHtml(project, profile, docs, missingFields),
+    html: packageHtml(project, profile, docs, missingFields, client),
     permitType: describePermitType(profile).callout,
   };
 }
@@ -387,7 +388,19 @@ function commonProjectBlock(project: ProjectRecord): string {
   ].join("\n");
 }
 
-function buildCover(project: ProjectRecord, profile: ApplicationRequirementProfile): GeneratedApplicationDocument {
+function buildCover(project: ProjectRecord, profile: ApplicationRequirementProfile, client: ClientRecord | null): GeneratedApplicationDocument {
+  const contractorBlock = client
+    ? [
+        `Contractor: ${client.legalBusinessName || client.companyName}`,
+        client.businessAddress ? `Address: ${client.businessAddress}, ${client.businessCity}, ${client.businessState} ${client.businessZip}` : "",
+        client.businessPhone ? `Phone: ${client.businessPhone}` : "",
+        client.businessEmail ? `Email: ${client.businessEmail}` : "",
+        client.ccbLicenseNumber ? `CCB: ${client.ccbLicenseNumber}` : "",
+        client.electricalLicenseNumber ? `Electrical license: ${client.electricalLicenseNumber}` : "",
+        client.authorizedSignerName ? `Authorized signer: ${client.authorizedSignerName}${client.authorizedSignerTitle ? `, ${client.authorizedSignerTitle}` : ""}` : "",
+      ].filter(Boolean).join("\n")
+    : "Contractor: [assign client to populate]";
+
   return doc(
     "cover",
     "Submittal Cover Sheet",
@@ -395,6 +408,12 @@ function buildCover(project: ProjectRecord, profile: ApplicationRequirementProfi
     true,
     "01-submittal-cover-sheet.md",
     `# Solar Permit Submittal Cover Sheet
+
+## Submitting Contractor
+
+${contractorBlock}
+
+## Project
 
 ${commonProjectBlock(project)}
 
@@ -441,7 +460,11 @@ ${profile.notes.map((note) => `- ${note}`).join("\n")}
   );
 }
 
-function buildAhjWorksheet(project: ProjectRecord, profile: ApplicationRequirementProfile): GeneratedApplicationDocument {
+function buildAhjWorksheet(project: ProjectRecord, profile: ApplicationRequirementProfile, client: ClientRecord | null): GeneratedApplicationDocument {
+  const contractorLine = client
+    ? `${client.legalBusinessName || client.companyName} | CCB: ${client.ccbLicenseNumber || "[verify]"} | Elec: ${client.electricalLicenseNumber || "[verify]"} | Contact: ${client.contactName || client.authorizedSignerName || "[verify]"}`
+    : "[assign client]";
+
   return doc(
     "ahj-worksheet",
     profile.requiresPortalEntryOnly ? "AHJ Portal Entry Worksheet" : "AHJ Application Transfer Sheet",
@@ -451,6 +474,8 @@ function buildAhjWorksheet(project: ProjectRecord, profile: ApplicationRequireme
     `# ${profile.requiresPortalEntryOnly ? "AHJ Portal Entry Worksheet" : "AHJ Application Transfer Sheet"}
 
 Use this to fill ${profile.portalName}. If the AHJ requires an official PDF form, transfer these values into that form.
+
+Contractor: ${contractorLine}
 
 ${commonProjectBlock(project)}
 
@@ -617,23 +642,62 @@ function packageHtml(
   profile: ApplicationRequirementProfile,
   docs: GeneratedApplicationDocument[],
   missingFields: string[],
+  client: ClientRecord | null,
 ): string {
+  const companyName = client ? escapeHtml(client.legalBusinessName || client.companyName) : "";
+  const companyAddress = client && client.businessAddress
+    ? escapeHtml([client.businessAddress, client.businessCity, client.businessState, client.businessZip].filter(Boolean).join(", "))
+    : "";
+  const companyPhone = client ? escapeHtml(client.businessPhone || client.phone) : "";
+  const companyEmail = client ? escapeHtml(client.businessEmail || client.contactEmail) : "";
+  const ccb = client ? escapeHtml(client.ccbLicenseNumber) : "";
+
+  const logoHtml = client?.logoBase64
+    ? `<img src="data:${escapeHtml(client.logoMime)};base64,${client.logoBase64}" alt="${companyName} logo" style="max-height:64px;max-width:200px;object-fit:contain" />`
+    : "";
+
+  const brandHeader = client
+    ? `<div class="brand-header">
+        ${logoHtml ? `<div class="brand-logo">${logoHtml}</div>` : ""}
+        <div class="brand-info">
+          <div class="brand-name">${companyName}</div>
+          ${companyAddress ? `<div>${companyAddress}</div>` : ""}
+          ${companyPhone || companyEmail ? `<div>${[companyPhone, companyEmail].filter(Boolean).join(" &nbsp;·&nbsp; ")}</div>` : ""}
+          ${ccb ? `<div>CCB #${ccb}</div>` : ""}
+        </div>
+      </div>`
+    : "";
+
+  const pageTitle = client
+    ? `${companyName} — Permit Package: ${escapeHtml(project.homeownerName || project.projectAddress || project.id)}`
+    : `Application Docs — ${escapeHtml(project.homeownerName || project.projectAddress || project.id)}`;
+
   return `<!doctype html>
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>Application Docs - ${escapeHtml(project.homeownerName || project.projectAddress || project.id)}</title>
+  <title>${pageTitle}</title>
   <style>
     body{font-family:Arial,sans-serif;line-height:1.4;color:#17202a;margin:32px;max-width:980px}
     section{break-after:page;border-bottom:1px solid #ddd;padding-bottom:24px;margin-bottom:28px}
     h1{font-size:24px} h2{font-size:18px} p{margin:7px 0} li{margin:4px 0}
     .warn{border:1px solid #d97706;background:#fff7ed;padding:12px;border-radius:6px}
     .meta{color:#596579;font-size:13px}
-    @media print{button{display:none} body{margin:18mm} section{page-break-after:always}}
+    .brand-header{display:flex;align-items:center;gap:18px;border-bottom:2px solid #1a56db;padding-bottom:14px;margin-bottom:20px}
+    .brand-logo{flex-shrink:0}
+    .brand-name{font-size:18px;font-weight:700;color:#1a56db}
+    .brand-info{font-size:13px;color:#374151;line-height:1.6}
+    @media print{
+      button{display:none}
+      body{margin:18mm}
+      section{page-break-after:always}
+      .brand-header{border-bottom:2px solid #1a56db;margin-bottom:14px}
+    }
   </style>
 </head>
 <body>
   <button onclick="window.print()">Print / Save PDF</button>
+  ${brandHeader}
   <h1>AHJ Application Document Package</h1>
   <p class="meta">Profile: ${escapeHtml(profile.name)} | Generated: ${escapeHtml(nowIso())}</p>
   ${missingFields.length ? `<div class="warn"><strong>Missing fields:</strong> ${escapeHtml(missingFields.join(", "))}</div>` : ""}

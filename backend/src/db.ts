@@ -761,6 +761,10 @@ function migrate(db: AppDb): void {
   // Portal run enhancements: pause tracking (MFA/CAPTCHA) and confirmation capture.
   addColumnIfMissing(db, "portal_runs", "pause_reason", "TEXT");
   addColumnIfMissing(db, "portal_runs", "confirmation_number", "TEXT NOT NULL DEFAULT ''");
+  // Public AHJ portal tracking URL — no login required; pastes directly into browser
+  // for unauthenticated status checks (e.g. Accela ACA CapDetail.aspx links).
+  addColumnIfMissing(db, "portal_runs", "tracking_url", "TEXT NOT NULL DEFAULT ''");
+  addColumnIfMissing(db, "permit_check_targets", "tracking_url", "TEXT NOT NULL DEFAULT ''");
 
   // Scale indexes (built after the migrated columns exist) — keep the project
   // list snappy with thousands of rows: default sort is updated_at DESC, with
@@ -951,6 +955,10 @@ const CLIENT_LICENSING_COLUMNS: [string, string][] = [
   ["insurance_carrier", "TEXT NOT NULL DEFAULT ''"],
   ["authorized_signer_name", "TEXT NOT NULL DEFAULT ''"],
   ["authorized_signer_title", "TEXT NOT NULL DEFAULT ''"],
+  // Company logo stored as base64-encoded PNG/JPEG (max ~300 KB after encoding).
+  // Null means no logo uploaded; empty string also treated as no logo.
+  ["logo_base64", "TEXT"],
+  ["logo_mime", "TEXT NOT NULL DEFAULT 'image/png'"],
 ];
 
 const CORRECTION_SLA_COLUMNS: [string, string][] = [

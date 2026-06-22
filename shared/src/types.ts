@@ -89,6 +89,8 @@ export interface ClientRecord {
   insuranceCarrier: string;
   authorizedSignerName: string;
   authorizedSignerTitle: string;
+  logoBase64: string; // base64-encoded PNG/JPEG; empty string = no logo
+  logoMime: string;   // "image/png" | "image/jpeg"
   portalIdentities: ClientPortalIdentity[];
   createdAt: string;
 }
@@ -206,6 +208,9 @@ export interface PortalRun {
   pauseReason?: string;
   // Captured after human completes final submit
   confirmationNumber?: string;
+  // Public AHJ portal URL — no login needed; paste into browser to check status.
+  // e.g. Accela CapDetail.aspx links, DevelopmentDirect record pages.
+  trackingUrl?: string;
 }
 
 export interface SubmissionRecord {
@@ -241,6 +246,8 @@ export interface PermitCheckTarget {
   targetType: "permit" | "nem";
   /** Auto-detected from portalUrl — drives the public HTTP status-check strategy. */
   portalPlatform?: string;
+  /** Public AHJ portal record URL — no login required. Paste into browser to check status. */
+  trackingUrl?: string;
   createdAt: string;
   updatedAt: string;
 }
