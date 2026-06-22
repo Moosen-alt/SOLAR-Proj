@@ -1452,7 +1452,11 @@ app.post("/api/parser/vision-extract", asyncHandler(async (req, res) => {
 }));
 
 app.post("/api/projects/:id/prepare-submission", asyncHandler(async (req, res) => {
-  const result = await prepareSubmission(db, String(req.params.id));
+  // Optional track scopes staging to one filing (nem | building | electrical | combo);
+  // omitted = the legacy combined stage.
+  const rawTrack = String(req.body?.track || "").trim();
+  const track = SUBMITTAL_TRACK_TYPES.includes(rawTrack as SubmittalTrackType) ? (rawTrack as SubmittalTrackType) : undefined;
+  const result = await prepareSubmission(db, String(req.params.id), track);
   const run = result.portalRuns?.[0];
   if (run) {
     if (run.pauseReason === "mfa_captcha") {

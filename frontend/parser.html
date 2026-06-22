@@ -344,13 +344,6 @@
       <label>Parser review flags</label>
       <textarea id="reviewFlags" readonly class="tall"></textarea>
     </div>
-    <div class="critical-wrap">
-      <div class="critical-title">PM project follow-up notes</div>
-      <div class="critical-sub">Auto-detected warnings now live in the backend QC + AHJ reviewer gate on the project page — this is just your free-text follow-up that saves with the project.</div>
-      <div class="row">
-        <div style="flex:1"><textarea id="pmProjectNotes" class="critical-text" placeholder="Add project follow-up notes here (optional)."></textarea></div>
-      </div>
-    </div>
   </div>
 
   <details class="card">
@@ -4703,7 +4696,6 @@ function buildSystemPayload() {
     roofMaterial: getVal('roofMaterial'),
     mounting: getVal('mounting'),
     description: getVal('projectDescriptionText') || payload.projectDescriptionText || '',
-    notes: getVal('pmProjectNotes'),
     // Provenance trail the PM can audit on the project record.
     parserEvidenceText: buildEvidenceText(),
   });

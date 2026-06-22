@@ -1675,6 +1675,9 @@ function renderSubmittalTracks() {
       </div>
       <p class="muted" style="margin:0 0 4px">Channel: ${esc(t.channel)}${t.lastCheckedAt ? ` · last checked ${esc(fmtDate(t.lastCheckedAt))}` : ""}</p>
       ${nums ? `<p style="margin:0 0 4px">${nums} ${trackLink ? "&nbsp;·&nbsp; " + trackLink : ""}</p>` : (trackLink ? `<p style="margin:0 0 4px">${trackLink}</p>` : "")}
+      <div class="track-actions">
+        <button type="button" class="secondary" data-track-stage="${esc(t.type)}" title="Auto-fill this filing's portal up to the final review screen — you submit manually"><i data-lucide="bot"></i><span>Stage in portal</span></button>
+      </div>
       <details class="track-submit">
         <summary>${t.status === "not_started" || t.status === "staged" ? "Mark submitted &amp; capture #" : "Update numbers / status link"}</summary>
         <div class="track-submit-form">
@@ -1690,7 +1693,29 @@ function renderSubmittalTracks() {
   wrap.querySelectorAll("button[data-track-submit]").forEach((btn) => {
     btn.addEventListener("click", () => markSubmittalTrack(btn.dataset.trackSubmit));
   });
+  wrap.querySelectorAll("button[data-track-stage]").forEach((btn) => {
+    btn.addEventListener("click", () => stageSubmittalTrack(btn.dataset.trackStage, btn));
+  });
   if (window.lucide) window.lucide.createIcons();
+}
+
+async function stageSubmittalTrack(type, btn) {
+  if (!state.selectedProjectId || !type) return;
+  if (btn) { btn.disabled = true; }
+  showMessage(`Staging ${humanize(type)} in its portal — automation stops at the final review screen for your manual submit…`, "info");
+  try {
+    const detail = await api(`/api/projects/${state.selectedProjectId}/prepare-submission`, {
+      method: "POST", body: JSON.stringify({ track: type }),
+    });
+    if (detail && detail.project) state.detail = detail;
+    await loadSubmittalTracks();
+    renderDetail();
+    showMessage(`${humanize(type)} staged to final review. Verify every field, then submit manually in the portal and capture the number here.`, "info");
+  } catch (err) {
+    showMessage(err.message || `Could not stage ${type}.`, "error");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 async function markSubmittalTrack(type) {

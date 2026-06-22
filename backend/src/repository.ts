@@ -56,6 +56,7 @@ import type {
   SubmissionRecord,
   SubmitGateCheck,
   SubmitGateReport,
+  SubmittalTrackType,
 } from "../../shared/src/types";
 import { touchProjectMetrics } from "./kpi";
 import fs from "node:fs";
@@ -4558,7 +4559,7 @@ export async function runDuePermitChecks(
   return { checked: targets.length, projects };
 }
 
-export async function prepareSubmission(db: AppDb, projectId: string): Promise<ProjectDetail> {
+export async function prepareSubmission(db: AppDb, projectId: string, track?: SubmittalTrackType): Promise<ProjectDetail> {
   const detail = getProjectDetail(db, projectId);
   const failCount = detail.qcResults.filter((result) => result.qcStatus === "fail").length;
   const pendingCount = detail.humanReviewItems.filter((item) => item.status === "pending" && item.fieldName !== "correction").length;
@@ -4606,10 +4607,20 @@ export async function prepareSubmission(db: AppDb, projectId: string): Promise<P
   const snapshotProfileId = typeof detail.project.parserSnapshot?.["portal_profile_id"] === "string"
     ? detail.project.parserSnapshot["portal_profile_id"]
     : null;
+  // Scope the portal to the track being staged: NEM is the utility portal
+  // (PowerClerk); building/electrical/combo permits are the AHJ portal (Accela).
+  // With no track (legacy combined stage) accept either, newest first.
+  const trackPortalTypes = track === "nem"
+    ? ["powerclerk_pge"]
+    : (track === "building" || track === "electrical" || track === "combo" || track === "permit")
+      ? ["accela_oregon"]
+      : ["accela_oregon", "powerclerk_pge"];
+  const trackPortalPlaceholders = trackPortalTypes.map(() => "?").join(", ");
   const portalProfile = snapshotProfileId
     ? (db.get("SELECT * FROM portal_profiles WHERE id = ?", [snapshotProfileId]) as { id?: string; portal_name?: string; portal_type?: string; encrypted_storage_state?: string } | undefined)
     : (db.get(
-        "SELECT * FROM portal_profiles WHERE portal_type IN ('accela_oregon', 'powerclerk_pge') ORDER BY created_at DESC LIMIT 1"
+        `SELECT * FROM portal_profiles WHERE portal_type IN (${trackPortalPlaceholders}) ORDER BY created_at DESC LIMIT 1`,
+        trackPortalTypes,
       ) as { id?: string; portal_name?: string; portal_type?: string; encrypted_storage_state?: string } | undefined);
   const portalType = portalProfile?.portal_type ?? "mock";
   const isRealPortal = portalType !== "mock";
@@ -4632,8 +4643,12 @@ export async function prepareSubmission(db: AppDb, projectId: string): Promise<P
   // recipe for this AHJ (or its utility), replay it — so an unknown portal still automates.
   const recipe = isAccela || isPowerClerk
     ? null
-    : (findCompleteRecipeForProject(db, { scopeType: "ahj", state: detail.project.state, ahj: detail.project.ahj, utility: detail.project.utility })
-       ?? findCompleteRecipeForProject(db, { scopeType: "utility", state: detail.project.state, utility: detail.project.utility }));
+    : track === "nem"
+      // NEM stages against the utility's recorded recipe.
+      ? findCompleteRecipeForProject(db, { scopeType: "utility", state: detail.project.state, utility: detail.project.utility })
+      // Permit tracks prefer the AHJ recipe, falling back to a utility one.
+      : (findCompleteRecipeForProject(db, { scopeType: "ahj", state: detail.project.state, ahj: detail.project.ahj, utility: detail.project.utility })
+         ?? findCompleteRecipeForProject(db, { scopeType: "utility", state: detail.project.state, utility: detail.project.utility }));
   const adapterActorName = isAccela
     ? "OregonEPermittingAdapter"
     : isPowerClerk
@@ -4685,25 +4700,32 @@ export async function prepareSubmission(db: AppDb, projectId: string): Promise<P
   const pauseReason = typeof result.pauseReason === "string" ? result.pauseReason : null;
   const runStatus = pauseReason ? "paused_for_human" : "awaiting_human_submit";
 
+  // Tag the run + submission with the track being staged so each filing (NEM,
+  // building, electrical, combo) shows separately in the submittal-tracks panel.
+  const permitTypeTag = track ?? "permit";
+  const submissionType = track === "nem" ? "interconnection" : "permit";
+  const trackLabelText = track ? `${permitTypeTag.toUpperCase()} ` : "";
+
   db.transaction(() => {
     db.run(
       `INSERT INTO portal_runs
         (id, project_id, portal_profile_id, run_type, status, started_at, finished_at, error_message,
-         human_action_required, screenshots_path, logs_path, result_json, pause_reason)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [runId, projectId, portalProfileId, "prepare_submit", runStatus, ts, nowIso(), "", 1, "", "", asJson(result), pauseReason],
+         human_action_required, screenshots_path, logs_path, result_json, pause_reason, permit_type)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [runId, projectId, portalProfileId, "prepare_submit", runStatus, ts, nowIso(), "", 1, "", "", asJson(result), pauseReason, permitTypeTag],
     );
 
     db.run(
       `INSERT INTO submissions
-        (id, project_id, portal_profile_id, submission_type, status, application_number, permit_number,
+        (id, project_id, portal_profile_id, submission_type, permit_type, status, application_number, permit_number,
          confirmation_number, submitted_at, submitted_by, screenshots_path, notes, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         submissionId,
         projectId,
         portalProfileId,
-        "permit",
+        submissionType,
+        permitTypeTag,
         "awaiting_human_submit",
         "",
         "",
@@ -4711,14 +4733,14 @@ export async function prepareSubmission(db: AppDb, projectId: string): Promise<P
         null,
         "",
         "",
-        `${portalLabel} staged to final review only. Automation did not click final submit.`,
+        `${trackLabelText}${portalLabel} staged to final review only. Automation did not click final submit.`,
         ts,
       ],
     );
 
     db.run("UPDATE projects SET status = ?, current_stage = ?, updated_at = ? WHERE id = ?", [
       "awaiting_human_submit",
-      `${portalLabel} staged. Human must verify and submit manually.`,
+      `${trackLabelText}${portalLabel} staged. Human must verify and submit manually.`,
       nowIso(),
       projectId,
     ]);

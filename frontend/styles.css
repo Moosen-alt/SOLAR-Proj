@@ -122,6 +122,7 @@ p, .muted { color: var(--muted); }
 .review-actions input[type="text"] { flex: 1; min-width: 120px; }
 
 /* --- Per-permit submittal tracks --- */
+.track-actions { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
 .track-submit { margin-top: 6px; }
 .track-submit > summary { cursor: pointer; font-size: 12px; color: var(--primary-strong); font-weight: 600; }
 .track-submit-form { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; align-items: center; }
