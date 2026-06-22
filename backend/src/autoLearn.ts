@@ -1,0 +1,183 @@
+// ---------------------------------------------------------------------------
+// Autonomous portal learning — "learn a new AHJ/utility portal without a human
+// recording it, then verify the fill is accurate before trusting the recipe."
+//
+// Flow (the hybrid the operator asked for):
+//   1. LEARN  — an LLM-driven Playwright pass (AutoLearnAdapter) logs in with the
+//      client's stored credential, reads each form page, fills it from the project
+//      data, advances page-to-page, and STOPS at the review screen. It records every
+//      action as a reusable recipe and never clicks final submit or pay.
+//   2. VERIFY — the review-screen field/value pairs are checked against the project's
+//      authoritative data (LLM verifier, deterministic fallback). Only a clean,
+//      contradiction-free fill is allowed to promote the recipe to "complete".
+//   3. REPLAY — once trusted, future projects on this AHJ/utility replay the recipe
+//      deterministically (fast, no LLM cost) via the existing RecipeAdapter.
+//
+// Safety: the learner never clicks final submit / resubmit / fee payment / CAPTCHA /
+// MFA. The final-submit button is recorded (isFinalSubmit) for the allowlist but only
+// ever executed later under the explicit per-portal trusted-auto-submit opt-in. A
+// low-confidence or unverified pass is left as a draft for human review, never trusted.
+// ---------------------------------------------------------------------------
+
+import path from "node:path";
+import type { AppDb } from "./db";
+import type { PortalRecipe, ProjectRecord } from "../../shared/src/types";
+import { learnPortal } from "../../portal-bot/src/index";
+import type { LearnPlanRequest, LearnPlanResponse } from "../../portal-bot/src/adapters/autoLearnAdapter";
+import { createLLMProvider } from "./llm";
+import { getDecryptedCredential } from "./portalCredentials";
+import { resolveRecipeFieldValues, startPortalRecording, savePortalRecipeSteps, getPortalRecipe } from "./portalRecipes";
+import { addAuditLog } from "./audit";
+import { HttpError } from "./httpError";
+
+export interface AutoLearnResult {
+  recipe: PortalRecipe;
+  /** "trusted" = verified accurate and promoted to complete; "draft" = recorded but
+   *  needs human verification; "paused" = a challenge (MFA/CAPTCHA) stopped the learn;
+   *  "failed" = couldn't learn the portal. */
+  status: "trusted" | "draft" | "paused" | "failed";
+  pauseReason: string | null;
+  pageCount: number;
+  finalSubmitRecorded: boolean;
+  verification: {
+    accurate: boolean;
+    confidence: "low" | "medium" | "high";
+    matches: Array<{ label: string; expected: string; found: string; ok: boolean }>;
+    issues: string[];
+  };
+  message: string;
+}
+
+/**
+ * Learn an AHJ or utility portal autonomously for a project, record a recipe, verify
+ * the fill, and promote the recipe to "complete" only when the verification passes.
+ */
+export async function autoLearnPortal(
+  db: AppDb,
+  projectId: string,
+  input: { scope: "ahj" | "utility"; portalUrl: string; createdBy?: string },
+): Promise<AutoLearnResult> {
+  const projectRow = db.get<Record<string, unknown>>("SELECT * FROM projects WHERE id = ?", [projectId]);
+  if (!projectRow) throw new HttpError(404, "Project not found.");
+  // getProjectDetail is the canonical mapper; import lazily to avoid a cycle.
+  const { getProjectDetail } = await import("./repository");
+  const project: ProjectRecord = getProjectDetail(db, projectId).project;
+
+  const scopeType = input.scope === "utility" ? "utility" : "ahj";
+  const portalUrl = (input.portalUrl || "").trim();
+  if (!portalUrl) throw new HttpError(400, "portalUrl is required to learn a portal.");
+  if (scopeType === "ahj" && !(project.ahj || "").trim()) throw new HttpError(400, "Project has no AHJ to key the recipe on.");
+  if (scopeType === "utility" && !(project.utility || "").trim()) throw new HttpError(400, "Project has no utility to key the recipe on.");
+
+  const portalType = scopeType === "utility" ? "utility" : "AHJ";
+  const fieldValues = resolveRecipeFieldValues(db, project, portalType);
+  // Secrets must never reach the LLM planner — strip account/meter (the adapter binds
+  // them from the encrypted credential store, not from planner output).
+  const projectFields: Record<string, string> = {};
+  for (const [k, v] of Object.entries(fieldValues)) {
+    if (/password|accountNumber|meterNumber|ssn/i.test(k)) continue;
+    if (v) projectFields[k] = v;
+  }
+
+  const llm = createLLMProvider();
+  // The planner the adapter calls when it has the live fields on a page. The adapter
+  // passes fields positionally (ExtractedField[]); we index them for the LLM and map the
+  // response indices back to selector positions.
+  const planner = async (req: LearnPlanRequest): Promise<LearnPlanResponse> => {
+    const indexedFields = req.fields.map((f, i) => ({ index: i, label: f.label, fieldType: f.fieldType, options: f.options }));
+    const plan = await llm.planPortalFields({
+      url: req.url,
+      pageTitle: req.pageTitle,
+      fields: indexedFields,
+      bodyText: req.bodyText,
+      projectFields,
+      alreadyFilledLabels: req.alreadyFilledLabels,
+    });
+    return {
+      fills: plan.fills.map((f) => ({ selectorIndex: f.index, value: f.value, field: f.field })),
+      advanceSelectorIndex: plan.advanceIndex,
+      finalSubmitSelectorIndex: plan.finalSubmitIndex,
+      atReview: plan.atReview,
+      notes: plan.notes,
+    };
+  };
+
+  const credential = project.clientId ? getDecryptedCredential(db, project.clientId, portalType) ?? undefined : undefined;
+  const profileBase = process.env.PORTAL_PROFILES_DIR || path.join(process.cwd(), "portal-profiles");
+  const userDataDir = project.clientId ? path.join(profileBase, project.clientId, portalType) : path.join(profileBase, portalType);
+
+  let learn;
+  try {
+    learn = await learnPortal({
+      portalName: scopeType === "utility" ? project.utility : project.ahj,
+      portalUrl,
+      project,
+      planner,
+      credential,
+      userDataDir,
+    });
+  } catch (err) {
+    throw new HttpError(502, `Portal learn failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  // Record the learned steps as a recipe (starts in "recording").
+  const stub = startPortalRecording(db, {
+    scopeType,
+    state: project.state,
+    ahj: project.ahj,
+    utility: project.utility,
+    portalPlatform: "auto-learned",
+    portalUrl,
+    createdBy: input.createdBy || "auto-learn",
+  });
+
+  if (learn.pauseReason) {
+    savePortalRecipeSteps(db, stub.id, learn.steps, { status: "recording", notes: `Auto-learn paused: ${learn.pauseReason}. Resume manually.` });
+    addAuditLog(db, projectId, "system", "auto-learn", "portal.auto_learn_paused", { scope: scopeType, pauseReason: learn.pauseReason });
+    return { recipe: getPortalRecipe(db, stub.id), status: "paused", pauseReason: learn.pauseReason, pageCount: learn.pageCount, finalSubmitRecorded: learn.finalSubmitRecorded, verification: { accurate: false, confidence: "low", matches: [], issues: [] }, message: `Learning paused on a ${learn.pauseReason} challenge — a human must complete it. The partial recipe was saved as a draft.` };
+  }
+
+  if (!learn.ok || !learn.steps.length) {
+    savePortalRecipeSteps(db, stub.id, learn.steps, { status: "needs_rerecord", notes: `Auto-learn could not complete: ${learn.message}` });
+    addAuditLog(db, projectId, "system", "auto-learn", "portal.auto_learn_failed", { scope: scopeType });
+    return { recipe: getPortalRecipe(db, stub.id), status: "failed", pauseReason: null, pageCount: learn.pageCount, finalSubmitRecorded: learn.finalSubmitRecorded, verification: { accurate: false, confidence: "low", matches: [], issues: [learn.message] }, message: `Could not learn the portal automatically: ${learn.message}. Record it manually instead.` };
+  }
+
+  // VERIFY the fill against the project data before trusting the recipe.
+  const verification = await llm.verifyPortalFill({
+    reviewFields: learn.reviewScreen.fields,
+    projectFields,
+    bodyText: learn.reviewScreen.bodyTextSnippet,
+  });
+
+  // Promote to "complete" (trusted for deterministic replay) ONLY when the fill verified
+  // accurate. Otherwise keep it a draft pending human verification.
+  const trusted = verification.accurate;
+  savePortalRecipeSteps(db, stub.id, learn.steps, {
+    status: trusted ? "complete" : "recording",
+    notes: trusted
+      ? `Auto-learned and verified (${verification.overallConfidence} confidence) on ${learn.pageCount} page(s). Final submit recorded for the trusted-submit allowlist; never auto-clicked unless the operator opts in.`
+      : `Auto-learned but NOT verified — review the captured fill and confirm before trusting. Issues: ${verification.issues.join("; ") || "low confidence"}.`,
+  });
+
+  addAuditLog(db, projectId, "system", "auto-learn", trusted ? "portal.auto_learned_trusted" : "portal.auto_learned_draft", {
+    scope: scopeType, pageCount: learn.pageCount, confidence: verification.overallConfidence, finalSubmitRecorded: learn.finalSubmitRecorded,
+  });
+
+  return {
+    recipe: getPortalRecipe(db, stub.id),
+    status: trusted ? "trusted" : "draft",
+    pauseReason: null,
+    pageCount: learn.pageCount,
+    finalSubmitRecorded: learn.finalSubmitRecorded,
+    verification: {
+      accurate: verification.accurate,
+      confidence: verification.overallConfidence,
+      matches: verification.matches,
+      issues: verification.issues,
+    },
+    message: trusted
+      ? `Portal learned and verified (${verification.overallConfidence} confidence). The recipe is trusted and will replay on future ${scopeType === "utility" ? "utility" : "AHJ"} projects. Final submit stays manual unless you opt this portal into trusted auto-submit.`
+      : `Portal learned but needs your verification — open the captured fill and confirm it's correct before it's trusted. ${verification.issues.length ? "Flags: " + verification.issues.slice(0, 3).join("; ") : ""}`,
+  };
+}

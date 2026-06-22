@@ -223,6 +223,65 @@ export async function stageWithRecipe(
   return runAdapter(new RecipeAdapter(recipe, fieldValues, docsByType, { autoSubmit: options.autoSubmit }), project, files, options);
 }
 
+// AUTONOMOUS LEARN: drive an unknown portal with an LLM planner, fill the form up to
+// the review screen, record a reusable recipe, and STOP. Never clicks final submit/pay.
+// ALWAYS closes the browser (releases the userDataDir lock) and shreds the session file.
+export async function learnPortal(input: {
+  portalName: string;
+  portalUrl: string;
+  project: ProjectRecord;
+  planner: import("./adapters/autoLearnAdapter").LearnPlanner;
+  credential?: { username: string; password: string };
+  userDataDir?: string;
+  encryptedStorageStatePath?: string;
+  headless?: boolean;
+  maxPages?: number;
+}): Promise<import("./adapters/autoLearnAdapter").LearnResult> {
+  const { AutoLearnAdapter } = await import("./adapters/autoLearnAdapter");
+  const adapter = new AutoLearnAdapter(input.portalName, input.planner, { maxPages: input.maxPages });
+  let tmpStatePath: string | undefined;
+  try {
+    tmpStatePath = resolveStorageStatePath(input.encryptedStorageStatePath);
+    const loginResult = await adapter.login({
+      storageStatePath: tmpStatePath,
+      headless: input.headless ?? false,
+      credential: input.credential,
+      userDataDir: input.userDataDir,
+      startUrl: input.portalUrl,
+    });
+    if (!loginResult.ok) {
+      return {
+        ok: false,
+        portalName: input.portalName,
+        steps: [],
+        reviewScreen: { fields: [], bodyTextSnippet: "" },
+        finalSubmitRecorded: false,
+        pageCount: 0,
+        pauseReason: loginResult.pauseReason ?? null,
+        message: loginResult.message,
+      };
+    }
+    return await adapter.learn(
+      { storageStatePath: tmpStatePath, headless: input.headless ?? false, credential: input.credential, userDataDir: input.userDataDir, startUrl: input.portalUrl },
+      input.project,
+    );
+  } catch (err) {
+    return {
+      ok: false,
+      portalName: input.portalName,
+      steps: [],
+      reviewScreen: { fields: [], bodyTextSnippet: "" },
+      finalSubmitRecorded: false,
+      pageCount: 0,
+      pauseReason: null,
+      message: `Auto-learn errored: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  } finally {
+    await adapter.close();
+    shredTmpStateFile(tmpStatePath);
+  }
+}
+
 // Read-only portal status scrape. Opens a browser session for the given adapter type,
 // calls checkStatus(), and returns the raw status text (or null on failure/not supported).
 // SAFETY: only calls login() + checkStatus() — never fill, click-submit, or pay.

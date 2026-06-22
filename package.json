@@ -11,7 +11,8 @@
     "smoke": "tsx backend/src/smoke.ts",
     "portal:login": "tsx portal-bot/src/testRun.ts login",
     "portal:test": "tsx portal-bot/src/testRun.ts",
-    "portal:test:unit": "tsx portal-bot/src/adapters/recipeAdapter.test.ts",
+    "portal:test:unit": "tsx portal-bot/src/adapters/recipeAdapter.test.ts && tsx portal-bot/src/adapters/autoLearnAdapter.test.ts",
+    "portal:test:learn": "tsx portal-bot/src/adapters/autoLearnAdapter.test.ts",
     "portal:record": "tsx portal-bot/src/recordRecipe.ts",
     "portal:install": "playwright install chromium"
   },

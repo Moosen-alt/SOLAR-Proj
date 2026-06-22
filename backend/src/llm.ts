@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import type { AhjFieldMapResult, AhjFormUrlResult, AhjOverlayMapResult, AhjResearchResult, CorrectionBucket, InverterSpecLookup, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, ProjectRecord, UtilityResearchResult } from "../../shared/src/types";
+import type { AhjFieldMapResult, AhjFormUrlResult, AhjOverlayMapResult, AhjResearchResult, CorrectionBucket, InverterSpecLookup, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, PortalFieldPlan, PortalFieldPlanInput, PortalFillVerification, PortalFillVerifyInput, ProjectRecord, UtilityResearchResult } from "../../shared/src/types";
 import { RECIPE_FIELD_DESCRIPTIONS } from "./portalRecipes";
 
 const MODEL = "claude-opus-4-8";
@@ -89,6 +89,18 @@ export class StubLLMProvider implements LLMProvider {
     return [];
   }
 
+  async planPortalFields(input: PortalFieldPlanInput): Promise<PortalFieldPlan> {
+    // Deterministic heuristic fallback — label-matches the most common fields so the
+    // learner still makes progress without an API key (low confidence, human verifies).
+    return heuristicPortalPlan(input);
+  }
+
+  async verifyPortalFill(input: PortalFillVerifyInput): Promise<PortalFillVerification> {
+    // Deterministic comparison — no LLM. Flags mismatches; never auto-trusts (accurate
+    // stays false on any miss) so an unverified recipe can't be promoted in stub mode.
+    return heuristicVerifyFill(input);
+  }
+
   async lookupInverterSpec(input: { inverterModel: string; inverterQty?: number; acNameplateKw?: number; serviceVoltageV?: number }): Promise<InverterSpecLookup> {
     // Even without an API key, resolve from the built-in equipment table or by deriving
     // from the AC nameplate, so the human-review "inverter output" box can still be filled.
@@ -164,6 +176,104 @@ const KNOWN_INVERTERS: KnownInverter[] = [
 
 function normModel(s: string): string {
   return String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+// ---------------------------------------------------------------------------
+// Autonomous portal-learning helpers (heuristic fallbacks + safety filter).
+// ---------------------------------------------------------------------------
+
+// Pay/fee/submit button labels the learner must NEVER click or treat as "advance".
+const PORTAL_PAY_RE = /\b(pay|payment|checkout|invoice|fee|charge|credit card)\b/i;
+const PORTAL_SUBMIT_RE = /\b(submit|file application|finalize|finish|confirm submission|place order|complete submission)\b/i;
+const PORTAL_ADVANCE_RE = /\b(next|continue|proceed|save and continue|add|step \d)\b/i;
+
+// Field-label → project-field key heuristics, used by the offline planner.
+const PORTAL_FIELD_HINTS: Array<{ re: RegExp; field: string }> = [
+  { re: /owner.*name|applicant name|property owner|customer name|homeowner/i, field: "homeownerName" },
+  { re: /(site|project|installation|service|property).*address|street/i, field: "projectAddress" },
+  { re: /\bcity\b/i, field: "city" },
+  { re: /\bstate\b/i, field: "state" },
+  { re: /\bzip|postal/i, field: "zip" },
+  { re: /county|jurisdiction|ahj/i, field: "ahj" },
+  { re: /utility|electric company/i, field: "utility" },
+  { re: /account (number|no|#)/i, field: "accountNumber" },
+  { re: /meter (number|no|#)/i, field: "meterNumber" },
+  { re: /system size.*dc|dc.*kw|dc size/i, field: "systemSizeDcKw" },
+  { re: /system size.*ac|ac.*kw|ac size|inverter.*kw/i, field: "systemSizeAcKw" },
+  { re: /export|generation capacity/i, field: "totalExportKw" },
+  { re: /interconnection|net.?meter/i, field: "interconnectionMethod" },
+  { re: /business name|company name|contractor name|installer/i, field: "installerCompanyName" },
+  { re: /ccb|contractor.*licens/i, field: "ccbLicenseNumber" },
+  { re: /electrical licens/i, field: "electricalLicenseNumber" },
+  { re: /installer.*email|contractor.*email|business email/i, field: "installerEmail" },
+  { re: /installer.*phone|contractor.*phone|business phone/i, field: "installerPhone" },
+  { re: /valuation|job value|contract (price|value)|cost of/i, field: "jobValue" },
+];
+
+function isSensitivePortalLabel(label: string): boolean {
+  return /password|account (number|no|#)|meter (number|no|#)|ssn|social security|mfa|verification code|card number/i.test(label);
+}
+
+// A read-only review page has no fillable inputs (only buttons + a summary). On such a
+// page a "Continue Application"/"Continue"/"Submit" button SUBMITS — it must be recorded
+// as the final submit, never treated as an advance. (Accela "Continue Application" trap.)
+const PORTAL_REVIEW_MARKERS = /\bstep\s*\d+\s*:?\s*review\b|review all information|continue application button below|please review (all )?information|\(read-only\)/i;
+
+function heuristicPortalPlan(input: PortalFieldPlanInput): PortalFieldPlan {
+  const fills: PortalFieldPlan["fills"] = [];
+  let advanceIndex: number | undefined;
+  let finalSubmitIndex: number | undefined;
+  const hasFillable = input.fields.some((f) => f.fieldType !== "button");
+  const reviewPage = !hasFillable || PORTAL_REVIEW_MARKERS.test(input.bodyText);
+
+  for (const f of input.fields) {
+    const label = f.label || "";
+    if (f.fieldType === "button") {
+      if (PORTAL_PAY_RE.test(label)) continue; // never advance/submit on a pay/fee button.
+      // On a review page, ANY submit/continue button is the FINAL SUBMIT (never advance).
+      if (reviewPage && (PORTAL_SUBMIT_RE.test(label) || PORTAL_ADVANCE_RE.test(label))) {
+        if (finalSubmitIndex == null) finalSubmitIndex = f.index;
+        continue;
+      }
+      if (PORTAL_SUBMIT_RE.test(label)) { if (finalSubmitIndex == null) finalSubmitIndex = f.index; continue; }
+      if (PORTAL_ADVANCE_RE.test(label) && advanceIndex == null) advanceIndex = f.index;
+      continue;
+    }
+    const hint = PORTAL_FIELD_HINTS.find((h) => h.re.test(label));
+    if (hint && input.projectFields[hint.field]) {
+      fills.push({ index: f.index, value: input.projectFields[hint.field], field: hint.field });
+    }
+  }
+  // "At review" on a read-only page, or when there's a submit button and nothing to advance.
+  const atReview = reviewPage || (finalSubmitIndex != null && advanceIndex == null);
+  return {
+    fills,
+    advanceIndex: atReview ? undefined : advanceIndex,
+    finalSubmitIndex,
+    atReview,
+    confidence: "low",
+    notes: "Heuristic label-matching fallback (no LLM). Human verification required before trusting.",
+  };
+}
+
+function heuristicVerifyFill(input: PortalFillVerifyInput): PortalFillVerification {
+  const norm = (v: string) => String(v || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  const projVals = Object.values(input.projectFields).map(norm).filter((v) => v.length >= 3);
+  const matches = input.reviewFields.map((rf) => {
+    const fv = norm(rf.value);
+    // A review value is "ok" if it matches some project value (or is a non-data literal).
+    const ok = fv.length < 3 || projVals.some((pv) => pv === fv || pv.includes(fv) || fv.includes(pv));
+    return { label: rf.label, expected: "(project data)", found: rf.value, ok };
+  });
+  const misses = matches.filter((m) => !m.ok);
+  return {
+    matches,
+    overallConfidence: "low",
+    // Stub never auto-trusts — a human must confirm in stub mode.
+    accurate: false,
+    issues: misses.map((m) => `Unverified value on "${m.label}": ${m.found}`),
+    notes: "Heuristic comparison (no LLM). Confirm each field on the review screen before trusting the recipe.",
+  };
 }
 
 function lookupKnownInverter(model: string): KnownInverter | null {
@@ -742,6 +852,70 @@ ${JSON.stringify(input.unbound, null, 2)}`;
     return suggestions
       .filter((s) => typeof s.index === "number")
       .map((s) => ({ index: s.index, field: s.field && validKeys.has(s.field) ? s.field : null }));
+  }
+
+  async planPortalFields(input: PortalFieldPlanInput): Promise<PortalFieldPlan> {
+    const system = `You are filling a government/utility permit portal form for a solar project. Given the fillable FIELDS on the current page and the project's available DATA, decide what to fill where, which button advances to the next page, and which button is the FINAL SUBMIT.
+HARD SAFETY RULES:
+- NEVER choose a pay / payment / fee / checkout / invoice button as "advance" or anything to click. Omit it entirely.
+- The final submit button is RECORDED ONLY (finalSubmitIndex) and is NEVER clicked — do not put it in advanceIndex.
+- "advanceIndex" is ONLY a Next/Continue/Save-and-continue button that goes to the next INPUT page (not the final submit).
+- CRITICAL (Accela "Continue Application" trap): if this page is a READ-ONLY REVIEW/CONFIRM page (no fillable inputs — only a summary of previously entered data + Edit links, or body text like "Step N: Review" / "review all information" / "click the Continue Application button below" / "(Read-only)"), then set atReview=true and treat the primary button (even if labeled "Continue Application" or "Continue") as the finalSubmitIndex — NEVER as advanceIndex. On Oregon ePermitting/Accela, "Continue Application" advances on input pages but SUBMITS on the Review step. When in doubt and there are no fields to fill, STOP (atReview=true) and record the button as final submit.
+- Prefer binding a field to a reusable project-field KEY (the "field" property, e.g. "homeownerName") over a literal value, so the recipe generalizes. Only use a literal "value" for fixed dropdown selections/portal-specific choices.
+- Do NOT fill a field you can't confidently map. Leave it out.
+Return ONLY JSON:
+{"fills":[{"index":<field index>,"value":"<string>","field":"<projectFieldKey or omit>"}],
+ "advanceIndex": <index or omit>, "finalSubmitIndex": <index or omit>,
+ "atReview": <true if this is the review/confirm screen>, "confidence":"low|medium|high", "notes":"<short>"}`;
+    const user = JSON.stringify({
+      url: input.url, pageTitle: input.pageTitle, fields: input.fields,
+      bodyText: input.bodyText.slice(0, 2000), projectFields: input.projectFields,
+      alreadyFilledLabels: input.alreadyFilledLabels,
+    });
+    let parsed: Partial<PortalFieldPlan> = {};
+    try { parsed = this.parseJson<Partial<PortalFieldPlan>>(await this.ask(system, user), {}); } catch { parsed = {}; }
+    // Safety post-filter: never let a pay/fee button through as advance/submit, and drop
+    // a finalSubmit that was mistakenly set as advance.
+    const labelOf = (i?: number) => (i == null ? "" : input.fields.find((f) => f.index === i)?.label || "");
+    let advanceIndex = typeof parsed.advanceIndex === "number" ? parsed.advanceIndex : undefined;
+    let finalSubmitIndex = typeof parsed.finalSubmitIndex === "number" ? parsed.finalSubmitIndex : undefined;
+    if (advanceIndex != null && (PORTAL_PAY_RE.test(labelOf(advanceIndex)) || PORTAL_SUBMIT_RE.test(labelOf(advanceIndex)))) advanceIndex = undefined;
+    if (finalSubmitIndex != null && PORTAL_PAY_RE.test(labelOf(finalSubmitIndex))) finalSubmitIndex = undefined;
+    const fills = Array.isArray(parsed.fills)
+      ? parsed.fills.filter((f) => typeof f.index === "number" && typeof f.value === "string").map((f) => ({ index: f.index, value: String(f.value), field: f.field ? String(f.field) : undefined }))
+      : [];
+    return {
+      fills,
+      advanceIndex,
+      finalSubmitIndex,
+      atReview: Boolean(parsed.atReview),
+      confidence: (["low", "medium", "high"].includes(String(parsed.confidence)) ? parsed.confidence : "low") as "low" | "medium" | "high",
+      notes: String(parsed.notes || ""),
+    };
+  }
+
+  async verifyPortalFill(input: PortalFillVerifyInput): Promise<PortalFillVerification> {
+    const system = `You verify that a solar permit portal form was filled CORRECTLY before the recorded recipe is trusted for reuse. Compare each review-screen field/value against the project's authoritative DATA. A value is OK if it matches the corresponding project datum (allowing formatting differences) or is a fixed portal literal (a dropdown choice, label, units). Flag any value that contradicts the project data.
+Return ONLY JSON:
+{"matches":[{"label":"<field>","expected":"<project value or '(literal)'>","found":"<review value>","ok":<bool>}],
+ "overallConfidence":"low|medium|high",
+ "accurate": <true ONLY if every data-bearing field matches and nothing contradicts the project — this gates trusting the recipe>,
+ "issues":["<short issue>"], "notes":"<short>"}`;
+    const user = JSON.stringify({ reviewFields: input.reviewFields, projectFields: input.projectFields, bodyText: input.bodyText.slice(0, 1500) });
+    let parsed: Partial<PortalFillVerification> = {};
+    try { parsed = this.parseJson<Partial<PortalFillVerification>>(await this.ask(system, user), {}); } catch { parsed = {}; }
+    const matches = Array.isArray(parsed.matches)
+      ? parsed.matches.map((m) => ({ label: String(m.label || ""), expected: String(m.expected || ""), found: String(m.found || ""), ok: Boolean(m.ok) }))
+      : [];
+    // Defense in depth: never report "accurate" if any match is not ok.
+    const accurate = Boolean(parsed.accurate) && matches.every((m) => m.ok) && matches.length > 0;
+    return {
+      matches,
+      overallConfidence: (["low", "medium", "high"].includes(String(parsed.overallConfidence)) ? parsed.overallConfidence : "low") as "low" | "medium" | "high",
+      accurate,
+      issues: Array.isArray(parsed.issues) ? parsed.issues.map((i) => String(i)) : [],
+      notes: String(parsed.notes || ""),
+    };
   }
 
   // Ask with the server-side web search tool enabled (used as the spec-lookup fallback).

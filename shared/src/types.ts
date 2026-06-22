@@ -1199,6 +1199,16 @@ export interface LLMProvider {
     unbound: Array<{ index: number; action: string; label?: string; value: string }>;
     fieldValues: Record<string, string>;
   }): Promise<Array<{ index: number; field: string | null }>>;
+  /** Autonomous portal-learning: given the fillable fields on the CURRENT portal page
+   *  plus the project's available field values, decide what to fill where, which "next"
+   *  button advances the form, and which button is the final submit (recorded, never
+   *  clicked). Advisory + safety-gated — the result is verified before any recipe is
+   *  trusted. */
+  planPortalFields(input: PortalFieldPlanInput): Promise<PortalFieldPlan>;
+  /** Verify a learned portal fill: compare the review-screen field/value pairs against
+   *  the project's authoritative data and return a per-field match + an overall
+   *  accuracy verdict that gates whether the learned recipe may be trusted for replay. */
+  verifyPortalFill(input: PortalFillVerifyInput): Promise<PortalFillVerification>;
   /** Look up an inverter/microinverter model's rated continuous AC output from datasheet
    *  knowledge (web search as a fallback when unsure), and derive a suggested PV breaker.
    *  Advisory only — the result pre-fills the human-review boxes for approval. */
@@ -1316,6 +1326,48 @@ export interface AhjFieldMapResult {
   textFields: Record<string, string>;
   /** AcroForm checkbox field name -> check rule. */
   checkboxes: Record<string, { source: string; equals?: string }>;
+  notes: string;
+}
+
+// ---- Autonomous portal learning ----
+export interface PortalFieldPlanInput {
+  url: string;
+  pageTitle: string;
+  /** Fillable fields + candidate buttons on the current page (index is stable for this call). */
+  fields: Array<{ index: number; label: string; fieldType: string; options?: string[] }>;
+  /** Short, redacted page text snippet. */
+  bodyText: string;
+  /** The project/client field values available to fill (secrets already redacted). */
+  projectFields: Record<string, string>;
+  /** Labels already filled on prior pages (context for a multi-page form). */
+  alreadyFilledLabels: string[];
+}
+export interface PortalFieldPlan {
+  /** Which field index to fill with what. Prefer `field` (a reusable project-field key,
+   *  e.g. "homeownerName") over a literal `value` so the recorded recipe generalizes. */
+  fills: Array<{ index: number; value: string; field?: string }>;
+  /** A "Next/Continue" button that advances to the next form page (NEVER the final submit). */
+  advanceIndex?: number;
+  /** The final submit button — recorded for the allowlist, never clicked by the learner. */
+  finalSubmitIndex?: number;
+  /** True once this is the review/confirm/submit screen. */
+  atReview: boolean;
+  confidence: "low" | "medium" | "high";
+  notes: string;
+}
+export interface PortalFillVerifyInput {
+  /** The field/value pairs scraped from the review screen. */
+  reviewFields: Array<{ label: string; value: string }>;
+  /** The project's authoritative field values to check against. */
+  projectFields: Record<string, string>;
+  bodyText: string;
+}
+export interface PortalFillVerification {
+  matches: Array<{ label: string; expected: string; found: string; ok: boolean }>;
+  overallConfidence: "low" | "medium" | "high";
+  /** True = the fill matches the project data closely enough to trust the recipe for replay. */
+  accurate: boolean;
+  issues: string[];
   notes: string;
 }
 

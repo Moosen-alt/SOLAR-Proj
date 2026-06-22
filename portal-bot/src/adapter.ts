@@ -11,6 +11,9 @@ export interface PortalContext {
   // Decrypted credential for auto-filling the login form when the persistent
   // session has expired. Passed in-memory only; never logged or persisted.
   credential?: { username: string; password: string };
+  // Portal entry URL to navigate to after opening (used by the auto-learn adapter so
+  // the learn loop starts on the actual application page).
+  startUrl?: string;
 }
 
 export interface PortalStepResult {

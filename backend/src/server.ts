@@ -118,6 +118,7 @@ import {
   runDuePermitChecks,
 } from "./repository";
 import { getSubmittalTracks, markTrackSubmitted } from "./submittalTracks";
+import { autoLearnPortal } from "./autoLearn";
 import type { SubmittalTrackType } from "../../shared/src/types";
 
 const app = express();
@@ -941,6 +942,22 @@ app.post("/api/projects/:id/launch-record", (req, res) => {
 // LLM-assisted field binding: for fill/select steps the recorder couldn't auto-bind by
 // exact match, ask the model which project/client field each typed value corresponds to.
 // Called ONCE at save-time (not per keystroke). Returns the steps array with `field` filled in.
+// Autonomous portal learning — drive an unknown AHJ/utility portal with the LLM,
+// fill it to the review screen, record a recipe, and verify the fill. Never submits.
+// Long-running (a live browser pass), so allow a generous timeout client-side.
+app.post("/api/projects/:id/auto-learn", asyncHandler(async (req, res) => {
+  const b = (req.body || {}) as Record<string, string>;
+  const scope = String(b.scope || "ahj") === "utility" ? "utility" : "ahj";
+  const portalUrl = String(b.portalUrl || "").trim();
+  if (!portalUrl) throw new HttpError(400, "portalUrl is required to auto-learn a portal.");
+  try {
+    const result = await autoLearnPortal(db, String(req.params.id), { scope, portalUrl, createdBy: "operator" });
+    res.json(result);
+  } catch (err) {
+    throw normalizeLlmError(err);
+  }
+}));
+
 app.post("/api/portal-recipes/:id/suggest-bindings", asyncHandler(async (req, res) => {
   const steps = Array.isArray(req.body?.steps) ? req.body.steps : [];
   const projectId = String(req.body?.projectId || "").trim();
