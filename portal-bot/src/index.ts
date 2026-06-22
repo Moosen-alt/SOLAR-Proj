@@ -49,6 +49,10 @@ interface StageOptions {
   credential?: { username: string; password: string };
   // Per-client browser profile directory (profiles/{clientId}/{portalType}).
   userDataDir?: string;
+  // Hybrid auto-submit: when true AND the recipe is a trusted, operator-approved
+  // portal, the recipe adapter may replay through the final application submit
+  // (never fee payment). Default false = guided-manual (stop at review).
+  autoSubmit?: boolean;
 }
 
 // Generic adapter runner: decrypts the session into a temp file, drives the
@@ -110,7 +114,7 @@ export async function stageWithRecipe(
   files: string[],
   options: StageOptions = {},
 ): Promise<Record<string, unknown>> {
-  return runAdapter(new RecipeAdapter(recipe, fieldValues, docsByType), project, files, options);
+  return runAdapter(new RecipeAdapter(recipe, fieldValues, docsByType, { autoSubmit: options.autoSubmit }), project, files, options);
 }
 
 // Read-only portal status scrape. Opens a browser session for the given adapter type,

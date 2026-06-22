@@ -5,10 +5,21 @@ import { openPortal } from "../browser";
 // RecipeAdapter — replays a recorded portal recipe (see portal_recipes / the recorder).
 // Works for ANY AHJ or utility portal an admin has taught by recording. It substitutes
 // the project + assigned-client field values and uploads the right docs, then STOPS at
-// the review screen. SECURITY: it never clicks a final-submit / pay step (terminal
-// `stopForReview` marker + a denylist guard below) — a human always submits manually.
+// the review screen.
+//
+// SECURITY (hybrid submit model):
+//   - DEFAULT (guided manual): stops at the `stopForReview` marker and never clicks the
+//     final application-submit — a human always submits.
+//   - autoSubmit (opt-in per trusted portal, operator-approved): may proceed past the
+//     review marker and click the recorded final APPLICATION submit. It still NEVER
+//     clicks a fee-payment control (PAY_FEE below), and bails to a human if a
+//     CAPTCHA/MFA challenge appears at the final step.
+//
+// PAY_FEE is matched first and is ALWAYS blocked, even in autoSubmit mode.
 
-const FINAL_SUBMIT = /\b(submit application|submit & pay|submit and pay|pay fee|pay now|file application|finalize submission|^submit$)\b/i;
+const PAY_FEE = /\b(pay fee|pay now|submit & pay|submit and pay|make payment|pay \$|add to cart|proceed to (payment|checkout)|checkout)\b/i;
+const FINAL_SUBMIT = /\b(submit application|file application|finalize submission|^submit$|submit now)\b/i;
+const FINAL_CHALLENGE = /captcha|i'?m not a robot|two.factor|authenticat|verify your|verification code/i;
 const RETRY_BACKOFF_MS = [2000, 5000, 10000];
 
 function ok(message: string, data: Record<string, unknown> = {}): PortalStepResult {
@@ -31,6 +42,7 @@ export class RecipeAdapter implements PortalAdapter {
     private recipe: PortalRecipe,
     private fieldValues: Record<string, string>,
     private docsByType: Record<string, string>,
+    private options: { autoSubmit?: boolean } = {},
   ) {
     this.portalName = `Recipe: ${recipe.ahj || recipe.utility || recipe.profileKey} (${recipe.portalPlatform || "portal"})`;
   }
@@ -133,7 +145,12 @@ export class RecipeAdapter implements PortalAdapter {
     let executed = 0;
     const skipped: string[] = [];
     for (const step of this.recipe.steps) {
-      if (step.action === "stopForReview") break;
+      // Guided-manual: stop at review. autoSubmit (trusted, approved): proceed past
+      // the review marker to replay the recorded final application submit.
+      if (step.action === "stopForReview") {
+        if (!this.options.autoSubmit) break;
+        continue;
+      }
       let lastErr: unknown;
       let succeeded = false;
       for (let attempt = 0; attempt <= RETRY_BACKOFF_MS.length; attempt++) {
@@ -177,9 +194,17 @@ export class RecipeAdapter implements PortalAdapter {
         await this.page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
         return true;
       case "click": {
-        // GUARD: never click a final-submit / pay control.
         const name = step.selector?.name || step.selector?.text || "";
-        if (FINAL_SUBMIT.test(name)) return false;
+        // Fee payment is NEVER automated, even on a trusted auto-submit portal.
+        if (PAY_FEE.test(name)) return false;
+        if (FINAL_SUBMIT.test(name)) {
+          // Guided-manual: stop before the final submit so a human clicks it.
+          if (!this.options.autoSubmit) return false;
+          // Trusted auto-submit: bail to a human if a CAPTCHA/MFA challenge is on the
+          // final page — we never solve or bypass challenges.
+          const challenge = await this.page.getByText(FINAL_CHALLENGE).count().catch(() => 0);
+          if (challenge > 0) throw new Error("Final submit needs a human: CAPTCHA/MFA challenge detected.");
+        }
         await scoped!.click();
         return true;
       }
