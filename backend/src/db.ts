@@ -839,6 +839,28 @@ function migrate(db: AppDb): void {
     CREATE INDEX IF NOT EXISTS idx_portal_credentials_client ON portal_credentials(client_id);
   `);
 
+  // Client intake requests — a tokenized, no-login link sent to the installer to
+  // collect submittal data that isn't on the documents (project valuation,
+  // homeowner email, homeowner phone). The token is a random UUID; the public
+  // form reads/writes only the requested fields and writes them to the project
+  // snapshot. No portal secrets or account/meter numbers are ever exposed here.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS project_intake_requests (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      token TEXT NOT NULL UNIQUE,
+      fields_json TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'pending',
+      created_by TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      completed_at TEXT,
+      expires_at TEXT,
+      FOREIGN KEY (project_id) REFERENCES projects(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_intake_requests_project ON project_intake_requests(project_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_intake_requests_token ON project_intake_requests(token);
+  `);
+
   // Project documents — uploaded files (plan set, utility bill, specs, photos) and
   // backend-split upload docs. Stored on disk; the row tracks the path + doc_type so
   // the submittal package and the bot can attach the right files.

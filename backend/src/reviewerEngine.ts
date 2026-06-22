@@ -3,6 +3,7 @@ import { evaluateDesignCodeFindings } from "./codeReviewRules";
 import { findAhjProcessProfile } from "./processProfiles";
 import { evidenceForTopic, evidenceLines, fieldValue, requirementsForTopic, type EvidenceTopic, type ProjectEvidence } from "./projectEvidence";
 import { nowIso } from "./time";
+import { resolveValuation } from "./valuation";
 
 function payload(project: ProjectRecord, key: string): string {
   return fieldValue(project, key);
@@ -64,6 +65,7 @@ export function buildReviewerReport(project: ProjectRecord): ReviewerReport {
   const findings: ReviewerFinding[] = [];
 
   addCoreProjectFindings(project, findings);
+  addSubmittalDataFindings(project, findings);
   findings.push(...evaluateDesignCodeFindings(project, profile));
   addPlanSetFindings(project, findings);
   addUtilityFindings(project, findings);
@@ -452,6 +454,64 @@ function addCoreProjectFindings(project: ProjectRecord, findings: ReviewerFindin
   ];
   for (const [id, value, message] of required) {
     if (value == null || value === "") findings.push(finding(`reviewer.core.${id}`, "blocker", "project_data", "Critical project field missing", message, true));
+  }
+}
+
+// Submittal data that usually isn't on the plan set / utility bill and must come
+// from the client (installer): project valuation, homeowner email, homeowner phone.
+// These are CALLOUTS, never blockers — a missing contact won't deadlock staging,
+// and valuation falls back to a per-watt estimate. The "Send client intake link"
+// action collects them. (See valuation.ts for the contract-vs-estimate logic.)
+function addSubmittalDataFindings(project: ProjectRecord, findings: ReviewerFinding[]): void {
+  const snap = project.parserSnapshot || {};
+  const valuation = resolveValuation(snap, project.systemSizeDcKw);
+
+  if (valuation.method === "per_watt_estimate") {
+    findings.push(finding(
+      "reviewer.submit.valuation-estimate",
+      "callout",
+      "project_data",
+      "Project valuation is an estimate",
+      `No contract value on file; using a per-watt estimate of $${valuation.value?.toLocaleString()}. ${valuation.basis}`,
+      true,
+      { designTeamAction: "Request the actual contract / installed cost from the client via the intake link, or confirm the estimate is acceptable for this AHJ's fee schedule." },
+    ));
+  } else if (valuation.method === "unavailable") {
+    findings.push(finding(
+      "reviewer.submit.valuation-missing",
+      "callout",
+      "project_data",
+      "Project valuation could not be determined",
+      "No contract value provided and system size is unknown, so permit fees can't be valued.",
+      true,
+      { designTeamAction: "Send the client intake link to collect the contract value." },
+    ));
+  }
+
+  const email = typeof snap.homeownerEmail === "string" ? snap.homeownerEmail.trim() : "";
+  if (!email) {
+    findings.push(finding(
+      "reviewer.submit.homeowner-email",
+      "callout",
+      "project_data",
+      "Homeowner email missing",
+      "Many AHJ portals require a property-owner email on the application.",
+      true,
+      { designTeamAction: "Collect the homeowner email via the client intake link." },
+    ));
+  }
+
+  const phone = typeof snap.homeownerPhone === "string" ? snap.homeownerPhone.trim() : "";
+  if (!phone) {
+    findings.push(finding(
+      "reviewer.submit.homeowner-phone",
+      "callout",
+      "project_data",
+      "Homeowner phone missing",
+      "Many AHJ portals require a property-owner phone number on the application.",
+      true,
+      { designTeamAction: "Collect the homeowner phone via the client intake link." },
+    ));
   }
 }
 

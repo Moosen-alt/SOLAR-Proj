@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Project details · Solar Submission Autopilot</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <style>
+    .intake-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; }
+    .intake-card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); width: min(440px, 100%); padding: 28px; }
+    .intake-card h1 { font-size: 20px; margin-bottom: 4px; }
+    .intake-card p.muted { margin-bottom: 18px; font-size: 13px; }
+    .intake-card .project-label { font-weight: 700; margin-bottom: 18px; padding: 10px 12px; background: var(--bg, #f6f7f9); border-radius: 8px; font-size: 14px; }
+    .intake-card label { display: block; font-size: 13px; font-weight: 700; margin: 14px 0 4px; }
+    .intake-card input { width: 100%; padding: 9px 11px; border: 1px solid var(--line); border-radius: 6px; font: inherit; background: var(--surface); }
+    .intake-card button { width: 100%; justify-content: center; margin-top: 20px; }
+    .field-hint { font-weight: 400; font-size: 12px; color: var(--muted, #667); }
+    #intakeMsg { font-size: 13px; margin-top: 14px; min-height: 18px; }
+    #intakeMsg.error { color: var(--danger); }
+    #intakeMsg.ok { color: var(--success, #1a7f37); }
+  </style>
+</head>
+<body>
+  <div class="intake-wrap">
+    <form class="intake-card" id="intakeForm">
+      <h1>Project details needed</h1>
+      <p class="muted">Your permit coordinator needs a few details to submit this solar permit. Please fill in what you can.</p>
+      <div class="project-label" id="projectLabel">Loading…</div>
+      <div id="fields"></div>
+      <button type="submit" class="primary" id="submitBtn" disabled>Submit details</button>
+      <div id="intakeMsg"></div>
+    </form>
+  </div>
+  <script>
+    const token = new URLSearchParams(location.search).get("token");
+    const msg = document.getElementById("intakeMsg");
+    const fieldsEl = document.getElementById("fields");
+    const submitBtn = document.getElementById("submitBtn");
+
+    function setMsg(text, kind) { msg.textContent = text; msg.className = kind || ""; }
+
+    const TYPE = { jobValue: "text", homeownerEmail: "email", homeownerPhone: "tel" };
+    const HINT = {
+      jobValue: "The total contract / installed price for this project (used for the permit fee).",
+      homeownerEmail: "",
+      homeownerPhone: "",
+    };
+
+    async function load() {
+      if (!token) { setMsg("This link is missing its token. Ask your coordinator for a new one.", "error"); return; }
+      try {
+        const res = await fetch("/api/intake/" + encodeURIComponent(token));
+        const data = await res.json();
+        if (!res.ok) { setMsg(data.error || "This link is no longer valid.", "error"); return; }
+        document.getElementById("projectLabel").textContent = data.projectLabel;
+        if (data.status === "completed") setMsg("These details were already submitted. You can update them below if needed.", "ok");
+        fieldsEl.innerHTML = "";
+        for (const f of data.fields) {
+          const id = "fld_" + f.key;
+          const label = document.createElement("label");
+          label.setAttribute("for", id);
+          label.textContent = f.label;
+          if (HINT[f.key]) {
+            const hint = document.createElement("span");
+            hint.className = "field-hint";
+            hint.textContent = " — " + HINT[f.key];
+            label.appendChild(hint);
+          }
+          const input = document.createElement("input");
+          input.id = id;
+          input.name = f.key;
+          input.type = TYPE[f.key] || "text";
+          if (f.value) input.value = f.value;
+          fieldsEl.appendChild(label);
+          fieldsEl.appendChild(input);
+        }
+        submitBtn.disabled = false;
+      } catch (e) {
+        setMsg("Network error: " + e.message, "error");
+      }
+    }
+
+    document.getElementById("intakeForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      setMsg("");
+      submitBtn.disabled = true;
+      const payload = {};
+      for (const input of fieldsEl.querySelectorAll("input")) {
+        if (input.value.trim()) payload[input.name] = input.value.trim();
+      }
+      try {
+        const res = await fetch("/api/intake/" + encodeURIComponent(token), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (res.ok) {
+          setMsg("Thank you — your details were submitted. You can close this page.", "ok");
+        } else {
+          setMsg(data.error || "Submission failed.", "error");
+          submitBtn.disabled = false;
+        }
+      } catch (e2) {
+        setMsg("Network error: " + e2.message, "error");
+        submitBtn.disabled = false;
+      }
+    });
+
+    load();
+  </script>
+</body>
+</html>

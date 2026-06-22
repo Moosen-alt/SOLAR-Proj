@@ -1555,8 +1555,36 @@ function renderSubmitGate() {
           `).join("") : `<p class="muted">No submit gate checks generated yet.</p>`}
         </div>
       </article>
+      <article class="submit-gate-focus">
+        <div class="item-title"><span>Client Intake Link</span>${statusBadge("collect from installer")}</div>
+        <p class="muted">Generate a no-login link to collect project valuation + homeowner email/phone from the installer. Answers write straight to the project.</p>
+        <button type="button" class="secondary" id="genIntakeLinkBtn" style="font-size:12px"><i data-lucide="link"></i><span>Generate &amp; copy intake link</span></button>
+        <div id="intakeLinkOut" class="muted" style="margin-top:8px;word-break:break-all;font-size:12px"></div>
+      </article>
     </div>
   `;
+  const genBtn = $("genIntakeLinkBtn");
+  if (genBtn) genBtn.addEventListener("click", generateIntakeLink);
+}
+
+async function generateIntakeLink() {
+  if (!state.selectedProjectId) return;
+  const out = $("intakeLinkOut");
+  const btn = $("genIntakeLinkBtn");
+  if (btn) btn.disabled = true;
+  try {
+    const res = await api(`/api/projects/${state.selectedProjectId}/intake-request`, { method: "POST", body: "{}" });
+    const url = res.url || (location.origin + res.path);
+    let copied = false;
+    try { await navigator.clipboard.writeText(url); copied = true; } catch (_) { /* clipboard may be blocked */ }
+    if (out) out.innerHTML = `${copied ? "✅ Copied to clipboard. " : ""}<a href="${esc(url)}" target="_blank" rel="noopener">${esc(url)}</a>`;
+    showMessage(copied ? "Intake link copied — paste it into an email to the installer." : "Intake link generated.");
+  } catch (e) {
+    if (out) out.textContent = "Failed to generate link: " + (e.message || e);
+  } finally {
+    if (btn) btn.disabled = false;
+    if (window.lucide) window.lucide.createIcons();
+  }
 }
 
 function renderOpsBrief() {

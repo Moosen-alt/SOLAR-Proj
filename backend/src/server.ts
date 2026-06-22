@@ -65,6 +65,7 @@ import { createSignature, deleteSignature, getSignatureImage, listSignatures, se
 import { addAuditLog } from "./audit";
 import { buildAuthUrl, exchangeCodeForTokens, gmailStatus, pollGmail } from "./gmail";
 import { imapStatus, pollImap, upsertImapSource } from "./emailPoller";
+import { createIntakeRequest, getIntakeRequestPublic, missingIntakeFields, submitIntakeRequest } from "./intakeRequests";
 import { ensureHeartbeat, sseBroadcast, sseSubscribe } from "./events";
 import { detectPlatform, publicPermitStatusCheck } from "./publicPermitStatus";
 import {
@@ -166,6 +167,8 @@ app.post("/api/auth/login", (req, res) => login(db, req, res));
 app.post("/api/auth/logout", (req, res) => logout(req, res));
 app.get("/api/auth/me", (req, res) => me(db, req, res));
 app.get("/login", (_req, res) => res.sendFile(path.join(frontendDir, "login.html")));
+// Public client intake page (tokenized, no login) — served before the auth gate.
+app.get("/intake", (_req, res) => res.sendFile(path.join(frontendDir, "intake.html")));
 app.use(requireAuth(db));
 
 app.use(express.static(frontendDir));
@@ -434,6 +437,38 @@ app.delete("/api/imap/sources/:id", (req, res) => {
   );
   res.json({ ok: true });
 });
+
+// --- Client intake links (collect valuation + homeowner contact from the installer) ---
+
+// Operator: which submittal fields are still missing for a project.
+app.get("/api/projects/:id/intake-missing", (req, res) => {
+  res.json({ missing: missingIntakeFields(db, String(req.params.id)) });
+});
+
+// Operator: create (or reuse) a shareable intake link for a project.
+app.post("/api/projects/:id/intake-request", asyncHandler(async (req, res) => {
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  const result = createIntakeRequest(db, String(req.params.id), {
+    fields: Array.isArray(b.fields) ? (b.fields as ("jobValue" | "homeownerEmail" | "homeownerPhone")[]) : undefined,
+    createdBy: typeof b.createdBy === "string" ? b.createdBy : undefined,
+    expiresInDays: typeof b.expiresInDays === "number" ? b.expiresInDays : 30,
+  });
+  // Absolute URL so the operator can copy/paste it straight into an email.
+  const base = `${req.protocol}://${req.get("host")}`;
+  res.json({ ...result, url: `${base}${result.path}` });
+}));
+
+// Public (no auth): read an intake request by token.
+app.get("/api/intake/:token", asyncHandler(async (req, res) => {
+  res.json(getIntakeRequestPublic(db, String(req.params.token)));
+}));
+
+// Public (no auth): submit answers for an intake request.
+app.post("/api/intake/:token", asyncHandler(async (req, res) => {
+  const result = submitIntakeRequest(db, String(req.params.token), (req.body ?? {}) as Record<string, unknown>);
+  sseBroadcast({ type: "email_matched", projectId: result.projectId, message: "Client submitted intake details — valuation/contact updated." });
+  res.json(result);
+}));
 
 // --- Server-Sent Events (live background notifications) ---
 // Frontend subscribes here to receive typed events: correction_received,
