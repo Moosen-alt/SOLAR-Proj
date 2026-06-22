@@ -93,6 +93,22 @@ body {
 }
 
 h1, h2, h3, p { margin: 0; }
+
+/* Topbar identity: product tagline + a subtle live connection indicator
+   (dot + word — never color-only, so it reads without relying on hue). */
+.tagline { color: var(--muted); font-size: 13px; margin-top: 2px; }
+.conn-status {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; font-weight: 600; margin-top: 3px; color: var(--muted);
+}
+.conn-status::before {
+  content: ""; width: 7px; height: 7px; border-radius: 50%;
+  background: currentColor; flex: none;
+}
+.conn-status--ok { color: var(--primary); }
+.conn-status--down { color: var(--danger); }
+.conn-status--checking { color: var(--muted); }
+
 h1 { font-size: 24px; }
 h2 { font-size: 20px; }
 h3 { font-size: 16px; }
@@ -293,8 +309,8 @@ p, .muted { color: var(--muted); }
 .section-head.subhead { border-top: 1px solid var(--line); }
 .detail-head { margin-bottom: 14px; }
 #detailSubtitle { margin-top: 4px; }
- .actions { justify-content: flex-start; flex-wrap: wrap; }
- .button,
+.actions { justify-content: flex-start; flex-wrap: wrap; }
+.button,
 button,
 .file-button {
   border: 1px solid transparent;
@@ -332,7 +348,7 @@ button svg,
   color: var(--text);
 }
 .secondary:hover { background: #e3e9ee; border-color: #c6d0d9; }
- .danger-button {
+.danger-button {
   background: #fef2f2;
   border-color: #fecaca;
   color: var(--danger);
@@ -341,9 +357,9 @@ button svg,
 .danger-button:hover { background: #fee2e2; }
 
 button:disabled { opacity: .55; cursor: not-allowed; }
- .danger { color: var(--danger); }
+.danger { color: var(--danger); }
 
- .badge {
+.badge {
   display: inline-flex;
   align-items: center;
   min-height: 24px;

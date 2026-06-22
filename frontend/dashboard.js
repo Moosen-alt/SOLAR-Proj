@@ -119,11 +119,14 @@ function projectLaneStatusCell(label, outcome, checkedAt, ready, readyLabel) {
 }
 
 async function checkHealth() {
+  const el = $("serviceStatus");
   try {
-    const health = await api("/health");
-    $("serviceStatus").textContent = `${health.service} is running`;
+    await api("/health");
+    el.textContent = "Connected";
+    el.className = "conn-status conn-status--ok";
   } catch {
-    $("serviceStatus").textContent = "Backend is not reachable";
+    el.textContent = "Backend unreachable";
+    el.className = "conn-status conn-status--down";
   }
 }
 
