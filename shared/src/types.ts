@@ -1379,6 +1379,10 @@ export interface RecipeStep {
   docType?: string;
   /** Don't fail the run if this step's target isn't found. */
   optional?: boolean;
+  /** A credential/secret field (password, account#, meter#, MFA). The recorder
+   *  NEVER stores its literal value — it must be bound to the encrypted credential
+   *  store / redacted project data, not a plaintext recipe value. */
+  sensitive?: boolean;
   note?: string;
 }
 

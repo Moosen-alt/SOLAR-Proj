@@ -1000,7 +1000,7 @@ export async function enrichMboxLearningWithLlm(input: {
       confidence: classification.confidence,
     };
   } catch (err) {
-    console.error("[llm] MBOX enrichment failed:", err);
+    console.error("[llm] MBOX enrichment failed:", err instanceof Error ? err.message : String(err));
     return null;
   }
 }

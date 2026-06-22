@@ -240,7 +240,7 @@ export function startJobWorker(db: AppDb): ReturnType<typeof setInterval> {
   const intervalMs = Number(process.env.JOB_WORKER_INTERVAL_MS ?? 30_000);
   const timer = setInterval(() => {
     processNextJob(db).catch((err) => {
-      console.error("[job-worker] uncaught error:", err);
+      console.error("[job-worker] uncaught error:", err instanceof Error ? err.message : String(err));
     });
   }, intervalMs);
   console.log(`[job-worker] started — polling every ${intervalMs / 1000}s`);

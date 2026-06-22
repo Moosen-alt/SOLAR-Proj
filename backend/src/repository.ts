@@ -67,7 +67,7 @@ import { STAGE_COUNT, stageForStatus, isBlockedStatus } from "./projectStage";
 import { addAuditLog } from "./audit";
 import { clientStagingOverlay, getClient } from "./clients";
 import { buildApplicationDocumentPackage } from "./applicationDocs";
-import { classifyCorrection } from "./corrections";
+import { classifyCorrection, humanizeBucket, humanizeEnum } from "./corrections";
 import type { AppDb } from "./db";
 import { HttpError } from "./httpError";
 import { buildHistoricalFailureReport } from "./historicalFailures";
@@ -2428,7 +2428,7 @@ export function getProjectProcessMap(db: AppDb, projectId: string): ProjectProce
         nextAction: openPermitCorrections.length ? "Assign and resolve AHJ corrections before resubmittal." : hasPortalStaging ? "Monitor AHJ portal/email for review updates." : "Add tracking after AHJ submit.",
         evidence: [
           ...permitChecks.slice(0, 3).map((check) => `${check.statusLabel}: ${check.message}`),
-          ...permitEmails.slice(0, 2).map((email) => `Email: ${email.emailBucket} ${email.subject}`),
+          ...permitEmails.slice(0, 2).map((email) => `Email: ${humanizeEnum(email.emailBucket)} ${email.subject}`),
         ],
         source: "permit.status.email",
       }),
@@ -2440,7 +2440,7 @@ export function getProjectProcessMap(db: AppDb, projectId: string): ProjectProce
         ownerRole: "Operations Coordinator",
         summary: permitApproved ? "Permit approval/ready-for-issue signal is captured." : "Permit is not issued yet.",
         nextAction: permitApproved ? "Download permit/approval evidence and keep install dependencies current." : "Continue tracking AHJ status until ready-for-issue or issued.",
-        evidence: permitChecks.slice(0, 4).map((check) => `${check.statusLabel}: ${check.outcome}`),
+        evidence: permitChecks.slice(0, 4).map((check) => `${check.statusLabel || humanizeEnum(check.outcome)}`),
         source: "permit.issuance",
       }),
     ],
@@ -2494,7 +2494,7 @@ export function getProjectProcessMap(db: AppDb, projectId: string): ProjectProce
         nextAction: nemChecks.length || nemEmails.length ? "Keep NEM status current from email/portal signals." : "Stage or submit the utility interconnection application after packet review.",
         evidence: [
           ...nemChecks.slice(0, 3).map((check) => `${check.statusLabel}: ${check.message}`),
-          ...nemEmails.slice(0, 2).map((email) => `Email: ${email.emailBucket} ${email.subject}`),
+          ...nemEmails.slice(0, 2).map((email) => `Email: ${humanizeEnum(email.emailBucket)} ${email.subject}`),
         ],
         source: "utility.nem.application",
       }),
@@ -2519,7 +2519,7 @@ export function getProjectProcessMap(db: AppDb, projectId: string): ProjectProce
         nextAction: nemApproved ? "Attach approval/PTO evidence and confirm install/inspection dependencies." : "Track utility review until approval/PTO is received.",
         evidence: [
           ...evidenceLines(utilityApprovalEvidence),
-          ...nemChecks.slice(0, 3).map((check) => `${check.statusLabel}: ${check.outcome}`),
+          ...nemChecks.slice(0, 3).map((check) => `${check.statusLabel || humanizeEnum(check.outcome)}`),
           ...nemEmails.filter((email) => email.emailBucket === "nem_approval").slice(0, 2).map((email) => `Email: ${email.subject}`),
         ],
         source: "utility.nem.approval",
@@ -2542,7 +2542,7 @@ export function getProjectProcessMap(db: AppDb, projectId: string): ProjectProce
         nextAction: detail.permitCheckTargets.length || detail.emailProjectMatches.length ? "Keep permit/NEM tracking and email scan current." : "Configure permit/NEM tracking targets and live email watch.",
         evidence: [
           ...detail.permitCheckTargets.slice(0, 2).map((target) => `${target.portalName || "Portal"} ${target.applicationNumber || target.permitNumber || ""}`),
-          ...detail.emailProjectMatches.slice(0, 2).map((email) => `Email: ${email.emailBucket} ${email.subject}`),
+          ...detail.emailProjectMatches.slice(0, 2).map((email) => `Email: ${humanizeEnum(email.emailBucket)} ${email.subject}`),
         ],
         source: "tracking.email",
       }),
@@ -2769,7 +2769,7 @@ export function getInstallerActionPacket(db: AppDb, projectId: string): Installe
       id: `correction:${correction.id}`,
       category: /nem|utility|meter|account|interconnection|inverter|powerclerk/i.test(`${correction.correctionText} ${correction.rootCause} ${correction.requiredAction}`) ? "utility_nem" : "correction",
       severity: "blocker",
-      title: `Open correction: ${correction.rootCause || correction.correctionBucket}`,
+      title: `Open correction: ${correction.rootCause || humanizeBucket(correction.correctionBucket)}`,
       ask: correction.requiredAction || correction.correctionText,
       why: correction.rootCause || "Open correction must be resolved before resubmittal.",
       ownerRole: correction.assignedTo || (correction.correctionBucket === "B_designer_fix" ? "Designer" : "Corrections Coordinator"),
@@ -3328,7 +3328,7 @@ export function getProjectTimelineReport(db: AppDb, projectId: string): ProjectT
       occurredAt: correction.createdAt,
       category: "correction",
       severity: open ? "blocker" : "pass",
-      title: `Correction: ${correction.correctionBucket}`,
+      title: `Correction: ${humanizeBucket(correction.correctionBucket)}`,
       detail: correction.requiredAction || correction.rootCause || correction.correctionText,
       actor: correction.source,
       source: "corrections",
@@ -3345,7 +3345,7 @@ export function getProjectTimelineReport(db: AppDb, projectId: string): ProjectT
       occurredAt: check.createdAt,
       category: "permit_status",
       severity: timelineSeverityForPermit(check.outcome),
-      title: `Permit/NEM status: ${check.statusLabel || check.outcome}`,
+      title: `Permit/NEM status: ${check.statusLabel || humanizeEnum(check.outcome)}`,
       detail: check.message || check.rawStatusText,
       actor: check.source,
       source: "permit_status_checks",
@@ -4057,7 +4057,7 @@ export function addManualCorrection(db: AppDb, projectId: string, correctionText
         classification.requiredAction,
         correctionText.slice(0, 800),
         "pending",
-        `Bucket: ${classification.bucket}. ${classification.rootCause}`,
+        `Bucket: ${humanizeBucket(classification.bucket)}. ${classification.rootCause}`,
         ts,
         ts,
       ],
@@ -4065,7 +4065,7 @@ export function addManualCorrection(db: AppDb, projectId: string, correctionText
 
     db.run("UPDATE projects SET status = ?, current_stage = ?, updated_at = ? WHERE id = ?", [
       "correction_triaged",
-      `Correction triaged: ${classification.bucket}`,
+      `Correction triaged: ${humanizeBucket(classification.bucket)}`,
       ts,
       projectId,
     ]);
@@ -4366,7 +4366,7 @@ function insertMonitorCorrection(db: AppDb, project: ProjectRecord, correctionTe
       classification.requiredAction,
       correctionText.slice(0, 800),
       "pending",
-      `${monitorMessage} Bucket: ${classification.bucket}. ${classification.rootCause}`,
+      `${monitorMessage} Bucket: ${humanizeBucket(classification.bucket)}. ${classification.rootCause}`,
       ts,
       ts,
     ],

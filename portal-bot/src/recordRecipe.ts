@@ -71,10 +71,15 @@ async function main(): Promise<void> {
   // The page calls this binding for every captured interaction.
   await page.exposeBinding(
     "__recordStep",
-    (_src: unknown, payload: { kind: string; selector: RecipeSelector; value?: string; isFile?: boolean; label?: string }) => {
+    (_src: unknown, payload: { kind: string; selector: RecipeSelector; value?: string; sensitive?: boolean; isFile?: boolean; label?: string }) => {
       const sel = payload.selector;
       if (payload.kind === "click") {
         steps.push({ action: "click", selector: sel, note: payload.label });
+      } else if (payload.kind === "fill" && payload.sensitive) {
+        // Credential/secret field — never persist the typed value. Record the
+        // step (so replay knows to type here) and flag it for binding to the
+        // encrypted credential store / redacted project data.
+        steps.push({ action: "fill", selector: sel, sensitive: true, optional: true, note: `SENSITIVE — bind to credential/redacted field (no value stored). ${payload.label ?? ""}`.trim() });
       } else if (payload.kind === "fill") {
         const field = bindField(payload.value || "");
         steps.push(field ? { action: "fill", selector: sel, field, note: payload.label } : { action: "fill", selector: sel, value: payload.value, note: payload.label });
@@ -178,6 +183,22 @@ function captureScript(): void {
     const d = describe(el.closest("button,a,[role]") || el);
     w.__recordStep({ kind: "click", ...d });
   }, true);
+  // A field whose value must never be persisted as a plaintext recipe value:
+  // passwords, and anything whose name/id/autocomplete/placeholder looks like a
+  // credential or portal secret (account/meter/SSN/card). The recipe still records
+  // the fill STEP (so replay knows to type here) but stores no literal value — the
+  // operator binds it to the encrypted credential store / redacted project data.
+  function isSensitiveField(el: HTMLInputElement): boolean {
+    if (el.type === "password") return true;
+    const hay = [
+      el.getAttribute("name"),
+      el.getAttribute("id"),
+      el.getAttribute("autocomplete"),
+      el.placeholder,
+      el.getAttribute("aria-label"),
+    ].filter(Boolean).join(" ").toLowerCase();
+    return /password|passcode|account\s*(no|num|#)|account number|acct|meter|ssn|social security|card\s*number|cvv|security code|mfa|otp|one.time/.test(hay);
+  }
   document.addEventListener("change", (e) => {
     const el = e.target as HTMLInputElement;
     if (!el) return;
@@ -185,6 +206,7 @@ function captureScript(): void {
     if (el.type === "file") w.__recordStep({ kind: "upload", ...d });
     else if (el.tagName === "SELECT") w.__recordStep({ kind: "select", value: el.value, ...d });
     else if (el.type === "checkbox" || el.type === "radio") { if (el.checked) w.__recordStep({ kind: "check", ...d }); }
+    else if (isSensitiveField(el)) w.__recordStep({ kind: "fill", sensitive: true, ...d });
     else w.__recordStep({ kind: "fill", value: el.value, ...d });
   }, true);
 }

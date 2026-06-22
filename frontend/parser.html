@@ -1656,10 +1656,10 @@ function parsePlanData(planDoc){
   const roofPlanes = parseRoofPlanes(planDoc);
   const dominant = roofPlanes[0] || {};
   const meter = parsePlanMeter(planDoc);
-  const ptc = (() => {
-    const ac = Number(acKw);
-    return ac && Number(invQty) ? (ac / Number(invQty)).toFixed(4) : '';
-  })();
+  // PTC is a module DC power rating (watts) read off the module spec sheet —
+  // NOT AC kW ÷ inverter qty. Don't auto-fill a bogus 4-decimal number into a
+  // field the operator might paste into a submission; leave it for manual entry.
+  const ptc = '';
 
   if (!moduleWattage) pushFlag('Module wattage was not confidently parsed. Review module spec sheet or calculate DC kW divided by module quantity.');
   if (!moduleModel) pushFlag('Module model was not confidently parsed.');
@@ -2362,8 +2362,13 @@ function fillProjectFields(plan){
     if ($(k)) setVal(k,v);
   });
   setVal('planMeterNumber', plan.meter || '');
-  const roofText = (plan.roofPlanes || []).map(p => `Roof #${p.roof}: ${p.modules} module(s), tilt ${p.tilt}°, azimuth ${p.azimuth}°`).join('\n');
-  setVal('roofPlanesField', `${roofText}${roofText ? '\n' : ''}Total parsed roof-plane modules: ${(plan.roofPlanes || []).reduce((s,p)=>s + Number(p.modules || 0),0)}`);
+  const roofPlanes = plan.roofPlanes || [];
+  if (roofPlanes.length) {
+    const roofText = roofPlanes.map(p => `Roof #${p.roof}: ${p.modules} module(s), tilt ${p.tilt}°, azimuth ${p.azimuth}°`).join('\n');
+    setVal('roofPlanesField', `${roofText}\nTotal parsed roof-plane modules: ${roofPlanes.reduce((s,p)=>s + Number(p.modules || 0),0)}`);
+  } else {
+    setVal('roofPlanesField', 'No roof planes parsed from the plan set — confirm the array layout (per-plane module count, tilt, azimuth) manually.');
+  }
 }
 
 function fillUBFields(ub, meterPhoto){
@@ -2921,9 +2926,9 @@ function buildSubmissionText(plan, ub){
 
   const inverterParts = [];
   if (plan.pvMicroModel) {
-    inverterParts.push(`${plan.pvMicroQty || plan.invQty || ''} ${plan.pvMicroMake || plan.invMake || ''} ${plan.pvMicroModel} microinverters`.replace(/^\s+/,''));
+    inverterParts.push(clean(`${plan.pvMicroQty || plan.invQty || ''} ${plan.pvMicroMake || plan.invMake || ''} ${plan.pvMicroModel} microinverters`));
   } else if (plan.invModel) {
-    inverterParts.push(`${plan.invQty || ''} ${plan.invMake || ''} ${plan.invModel} inverter${String(plan.invQty || '').replace(/\D/g,'') === '1' ? '' : 's'}`.replace(/^\s+/,''));
+    inverterParts.push(clean(`${plan.invQty || ''} ${plan.invMake || ''} ${plan.invModel} inverter${String(plan.invQty || '').replace(/\D/g,'') === '1' ? '' : 's'}`));
   }
   if (plan.acDiscReq) inverterParts.push(`AC disconnect${plan.acDiscAmp ? ` (${plan.acDiscAmp}A)` : ''}`);
 
@@ -4630,6 +4635,8 @@ async function loadSystemSelects() {
     }
   } catch (e) {
     console.warn('Could not load system selects:', e);
+    const s = $('saveStatus');
+    if (s) s.textContent = '⚠ Could not load the projects/clients list — check your connection. You can still parse and save as a new project.';
   }
 }
 
@@ -4720,15 +4727,17 @@ async function saveToSystem() {
       const id = data.id || (data.project && data.project.id) || existingId || '—';
       // Log the source documents we parsed at intake into the project so the AHJ
       // Reviewer Gate (and submittal package) can use them without a re-upload.
+      let docWarn = '';
       if (id && id !== '—') {
         try {
           if (statusEl) statusEl.textContent = '✅ Saved. Logging parsed documents…';
           await uploadIntakeDocs(id);
         } catch (e) {
           console.warn('Could not log intake documents:', e);
+          docWarn = ' ⚠ but the plan set / bill did NOT attach — re-save or upload them on the project before the Reviewer Gate.';
         }
       }
-      if (statusEl) statusEl.textContent = `✅ Saved. Project ID: ${id}`;
+      if (statusEl) statusEl.textContent = `✅ Saved. Project ID: ${id}.${docWarn}`;
       loadSystemSelects();
     } else {
       if (statusEl) statusEl.textContent = `❌ Error: ${data.error || res.statusText}`;

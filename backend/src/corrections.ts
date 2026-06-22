@@ -9,6 +9,24 @@ export interface CorrectionClassification {
   newRuleRecommended: boolean;
 }
 
+// Human-readable label for a correction bucket. The dashboard humanizes the
+// bucket in the corrections panel, but backend-built timeline/notes/stage strings
+// embed it raw — use this so the operator never sees "B_designer_fix".
+const BUCKET_LABELS: Record<CorrectionBucket, string> = {
+  A_we_fix: "We fix (data/document/portal)",
+  B_designer_fix: "Designer fix (plan-set/engineering)",
+  C_reviewer_clarification: "Reviewer clarification",
+};
+
+export function humanizeBucket(bucket: string): string {
+  return BUCKET_LABELS[bucket as CorrectionBucket] || String(bucket || "").replace(/_/g, " ");
+}
+
+// Human-readable label for a snake_case enum (permit outcome, email bucket, etc.).
+export function humanizeEnum(value: string | null | undefined): string {
+  return String(value || "").replace(/_/g, " ");
+}
+
 export function classifyCorrection(correctionText: string, project?: ProjectRecord): CorrectionClassification {
   const text = correctionText.toLowerCase();
   const mentionsDesign =

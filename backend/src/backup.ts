@@ -55,7 +55,7 @@ export function startBackupScheduler(db: AppDb): void {
       const info = runBackup(db);
       console.log(`[backup] snapshot written: ${info.file} (${Math.round(info.sizeBytes / 1024)} KB)`);
     } catch (err) {
-      console.error("[backup] snapshot failed:", err);
+      console.error("[backup] snapshot failed:", err instanceof Error ? err.message : String(err));
     }
   };
   tick();

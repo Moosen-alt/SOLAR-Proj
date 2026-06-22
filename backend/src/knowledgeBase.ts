@@ -15,7 +15,7 @@ import type {
   ProjectRecord,
   ProjectStatus,
 } from "../../shared/src/types";
-import { classifyCorrection, type CorrectionClassification } from "./corrections";
+import { classifyCorrection, humanizeEnum, type CorrectionClassification } from "./corrections";
 import type { AppDb } from "./db";
 import { id } from "./ids";
 import { asJson, parseJson } from "./json";
@@ -1248,8 +1248,8 @@ export function learnFromPermitStatus(
   const timelineDays = timelineDaysForStatus(db, project.id, target?.createdAt || project.createdAt, statusCheck);
   const timelineNote =
     timelineDays == null
-      ? `${statusCheck.outcome}: ${statusCheck.statusLabel}`
-      : `${statusCheck.outcome}: ${statusCheck.statusLabel} after ${timelineDays.toFixed(1)} day(s)`;
+      ? `${humanizeEnum(statusCheck.outcome)}: ${statusCheck.statusLabel}`
+      : `${humanizeEnum(statusCheck.outcome)}: ${statusCheck.statusLabel} after ${timelineDays.toFixed(1)} day(s)`;
   return upsertKnowledge(
     db,
     {
