@@ -2215,24 +2215,24 @@ const REVIEW_WARNING_FIELDS = new Set(["permitPath", "locates", "splitPages"]);
 function renderReview() {
   const items = state.detail.humanReviewItems || [];
   const pending = items.filter((x) => x.status === "pending");
+  const resolved = items.filter((x) => x.status !== "pending");
   $("reviewCounts").textContent = `${pending.length} pending`;
-  $("reviewItems").innerHTML = items.length ? items.map((item) => {
+
+  function reviewCard(item) {
     const label = reviewLabel(item);
     const hint = reviewHint(item);
     const isWarning = REVIEW_WARNING_FIELDS.has(item.fieldName);
     const known = item.llmSuggestedValue || item.parserValue || "";
-    // Surface every piece of context we have so the operator can verify rather
-    // than hunt: the AI suggestion, what the parser read, and the source snippet.
     const context = [];
     if (item.llmSuggestedValue) context.push(`<strong>AI suggestion:</strong> ${esc(item.llmSuggestedValue)}`);
     if (item.parserValue && item.parserValue !== item.llmSuggestedValue) context.push(`<strong>Parser read:</strong> ${esc(item.parserValue)}`);
     if (hint) context.push(`<span class="muted">${esc(hint)}</span>`);
     return `
     <article class="item ${item.status === "pending" ? (isWarning ? "info" : "warning") : "pass"}">
-      <div class="item-title"><span>${esc(label)}</span>${statusBadge(item.status)}</div>
-      <p>${esc(item.notes || "Review required.")}</p>
-      ${context.length ? `<p>${context.join("<br>")}</p>` : ""}
-      ${item.sourceExcerpt ? `<p><strong>Source:</strong> ${esc(item.sourceExcerpt)}</p>` : ""}
+      <div style="display:flex;align-items:center;gap:.5rem;margin-bottom:.25rem"><strong>${esc(label)}</strong>${statusBadge(item.status)}</div>
+      <p style="margin:0 0 4px">${esc(item.notes || "Review required.")}</p>
+      ${context.length ? `<p style="margin:0 0 4px">${context.join("<br>")}</p>` : ""}
+      ${item.sourceExcerpt ? `<p style="margin:0 0 4px"><strong>Source:</strong> ${esc(item.sourceExcerpt)}</p>` : ""}
       ${item.status === "pending" ? `
         <div class="review-actions">
           <input id="review-${item.id}" value="${esc(known)}" placeholder="${esc(hint ? `Enter ${hint}, then Save Edit` : `Enter the ${label} (read it off the plan set / bill), then Save Edit`)}" />
@@ -2243,7 +2243,16 @@ function renderReview() {
         </div>
       ` : ""}
     </article>`;
-  }).join("") : `<p class="muted">No human review items.</p>`;
+  }
+
+  const pendingHtml = pending.map(reviewCard).join("");
+  const resolvedHtml = resolved.length
+    ? `<details style="margin-top:.5rem"><summary style="cursor:pointer;color:var(--muted);font-size:13px">${resolved.length} resolved item(s)</summary><div class="stack" style="margin-top:.5rem">${resolved.map(reviewCard).join("")}</div></details>`
+    : "";
+
+  $("reviewItems").innerHTML = (pending.length || resolved.length)
+    ? `<div class="stack">${pendingHtml}</div>${resolvedHtml}`
+    : `<p class="muted">No human review items.</p>`;
 
   $("reviewItems").querySelectorAll("button[data-review-action]").forEach((button) => {
     button.addEventListener("click", () => updateReview(button.dataset.reviewId, button.dataset.reviewAction));
