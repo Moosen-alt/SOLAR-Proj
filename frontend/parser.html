@@ -224,6 +224,17 @@
         <input id="meterPhotoFile" type="file" accept=".pdf,image/*,application/pdf" />
       </div>
     </div>
+
+    <div class="section-note" style="margin-top:12px;background:rgba(34,197,94,.06);border-color:rgba(34,197,94,.3)">
+      <div class="mini">HOMEOWNER CONTACT + CONTRACT VALUE (for permit submittal)</div>
+      <div class="muted" style="font-size:12px;margin:4px 0 8px">Most AHJ/utility applications require the property-owner email + phone, and the permit fee is valued off the contract price. Contracts don't reliably contain these, so enter them here (or send the client intake link from the project page). These save with the project and clear the reviewer callouts.</div>
+      <div class="row3">
+        <div><label>Homeowner email</label><input id="homeownerEmail" type="email" placeholder="owner@example.com" /></div>
+        <div><label>Homeowner phone</label><input id="homeownerPhone" type="tel" placeholder="(541) 555-0123" /></div>
+        <div><label>Contract price / job value ($)</label><input id="jobValue" placeholder="e.g. $31,500" /></div>
+      </div>
+    </div>
+
     <div class="btnbar">
       <button id="parseBtn" class="green">Parse uploaded files</button>
       <button id="resetBtn" class="red">Reset</button>
@@ -265,16 +276,6 @@
       <div><label>Meter number</label><input id="meter" /></div>
       <div><label>Account number</label><input id="account" /></div>
       <div><label>Interconnection method</label><input id="interco" /></div>
-    </div>
-
-    <div class="section-note" style="margin-top:12px;background:rgba(34,197,94,.06);border-color:rgba(34,197,94,.3)">
-      <div class="mini">HOMEOWNER CONTACT + CONTRACT VALUE (for permit submittal)</div>
-      <div class="muted" style="font-size:12px;margin:4px 0 8px">Most AHJ/utility applications require the property-owner email + phone, and the permit fee is valued off the contract price. Contracts don't reliably contain these, so enter them here (or send the client intake link from the project page). These save with the project and clear the reviewer callouts.</div>
-      <div class="row3">
-        <div><label>Homeowner email</label><input id="homeownerEmail" type="email" placeholder="owner@example.com" /></div>
-        <div><label>Homeowner phone</label><input id="homeownerPhone" type="tel" placeholder="(541) 555-0123" /></div>
-        <div><label>Contract price / job value ($)</label><input id="jobValue" placeholder="e.g. $31,500" /></div>
-      </div>
     </div>
 
     <div class="row3" style="margin-top:12px">
