@@ -1,0 +1,52 @@
+# GitHub Actions — build, test, deploy to Fly.io
+# Runs on every push to main.
+#
+# Required repository secrets:
+#   FLY_API_TOKEN   — from `fly tokens create deploy`
+#   (all other env vars are set as fly secrets, not here)
+
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Typecheck + Smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # Smoke test runs against a tmp DB — no real credentials needed.
+      - name: Smoke test
+        run: npm run smoke
+        env:
+          SESSION_ENCRYPTION_KEY: "ci-only-not-real-replace-in-production"
+          ANTHROPIC_API_KEY: ""
+
+  deploy:
+    name: Deploy to Fly.io
+    needs: test
+    runs-on: ubuntu-latest
+    concurrency: deploy-production
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Deploy
+        run: flyctl deploy --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

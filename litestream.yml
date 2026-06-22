@@ -1,0 +1,30 @@
+# Litestream — continuous SQLite replication to S3.
+# Runs as a sidecar: `litestream replicate -config litestream.yml`
+# Or wrap the app: `litestream replicate -exec "npm start" -config litestream.yml`
+#
+# Required env vars (add as fly secrets):
+#   LITESTREAM_ACCESS_KEY_ID     — AWS/Backblaze/Cloudflare R2 access key
+#   LITESTREAM_SECRET_ACCESS_KEY — secret key
+#   LITESTREAM_BUCKET            — bucket name (e.g. "solar-autopilot-db")
+#   LITESTREAM_BUCKET_REGION     — region (e.g. "us-west-2" or "auto" for R2)
+#   LITESTREAM_BUCKET_ENDPOINT   — omit for AWS S3; set for R2/Backblaze
+#                                   e.g. "https://<account>.r2.cloudflarestorage.com"
+#
+# To restore from backup on a fresh machine:
+#   litestream restore -config litestream.yml /app/backend/data/autopilot.sqlite
+#
+# Cloudflare R2 is recommended: zero egress fees, free tier covers typical usage.
+
+dbs:
+  - path: /app/backend/data/autopilot.sqlite
+    replicas:
+      - type: s3
+        bucket: ${LITESTREAM_BUCKET}
+        path: autopilot
+        region: ${LITESTREAM_BUCKET_REGION:-us-west-2}
+        endpoint: ${LITESTREAM_BUCKET_ENDPOINT}
+        access-key-id: ${LITESTREAM_ACCESS_KEY_ID}
+        secret-access-key: ${LITESTREAM_SECRET_ACCESS_KEY}
+        # Snapshot every hour; keep 7 days of WAL segments for point-in-time restore.
+        snapshot-interval: 1h
+        retention: 168h

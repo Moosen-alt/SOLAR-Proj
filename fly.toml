@@ -1,0 +1,63 @@
+# fly.toml — Solar Submission Autopilot on Fly.io
+# docs: https://fly.io/docs/reference/configuration/
+#
+# First-time setup:
+#   fly launch --no-deploy          # creates app + sets app name
+#   fly secrets set SESSION_ENCRYPTION_KEY="$(openssl rand -base64 32)"
+#   fly secrets set ANTHROPIC_API_KEY="sk-ant-..."
+#   fly volumes create solar_data --size 10 --region sjc
+#   fly deploy
+
+app = "solar-submission-autopilot"
+primary_region = "sjc"
+
+[build]
+
+[env]
+  PORT = "4173"
+  NODE_ENV = "production"
+  # Force Playwright's Chromium browser to headless (no display in cloud).
+  # Set PORTAL_HEADLESS=false in fly secrets to override locally via SSH.
+  PORTAL_HEADLESS = "false"
+
+[http_service]
+  internal_port = 4173
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+  [http_service.concurrency]
+    type = "requests"
+    hard_limit = 50
+    soft_limit = 25
+
+[[vm]]
+  # Chromium needs at least 512 MB; 1 GB gives comfortable headroom for
+  # concurrent portal runs + the LLM calls.
+  memory = "1gb"
+  cpu_kind = "shared"
+  cpus = 1
+
+# Persistent volume for SQLite DB + backups + uploaded docs + portal profiles.
+# All state lives here; nothing is baked into the image.
+[[mounts]]
+  source = "solar_data"
+  destination = "/app/backend/data"
+  initial_size = "10gb"
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 4173
+
+  [[services.ports]]
+    port = 80
+    handlers = ["http"]
+
+  [[services.ports]]
+    port = 443
+    handlers = ["tls", "http"]
+
+  [services.concurrency]
+    type = "requests"
+    hard_limit = 50
+    soft_limit = 25

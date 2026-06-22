@@ -15,11 +15,14 @@ backend/data/filled
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm
-# Portal auth / sessions
+# Portal auth / sessions — never bake credentials into the image
 playwright/.auth
 portal-profiles
+profiles
 *-session.json
 *.session.json
+# Playwright browser cache — downloaded fresh during docker build
+.playwright-cache
 # Editor / OS cruft
 .DS_Store
 .vscode

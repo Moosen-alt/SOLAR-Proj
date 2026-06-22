@@ -26,9 +26,13 @@ export async function openPortal(opts: {
 }): Promise<OpenedPortal> {
   const { chromium } = await import("playwright");
 
+  // In production / cloud there is no display, so headless is forced.
+  // Set PORTAL_HEADLESS=false locally to see the browser window during recording.
+  const headless = opts.headless ?? (process.env.PORTAL_HEADLESS === "false" ? false : process.env.NODE_ENV === "production" || true);
+
   if (opts.userDataDir) {
     const context = await chromium.launchPersistentContext(opts.userDataDir, {
-      headless: opts.headless ?? false,
+      headless,
       viewport: null,
       args: ["--start-maximized"],
     });
@@ -36,7 +40,7 @@ export async function openPortal(opts: {
     return { page, context };
   }
 
-  const browser = await chromium.launch({ headless: opts.headless ?? false });
+  const browser = await chromium.launch({ headless });
   const context = opts.storageStatePath
     ? await browser.newContext({ storageState: opts.storageStatePath })
     : await browser.newContext();
