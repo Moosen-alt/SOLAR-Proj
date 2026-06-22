@@ -267,6 +267,16 @@
       <div><label>Interconnection method</label><input id="interco" /></div>
     </div>
 
+    <div class="section-note" style="margin-top:12px;background:rgba(34,197,94,.06);border-color:rgba(34,197,94,.3)">
+      <div class="mini">HOMEOWNER CONTACT + CONTRACT VALUE (for permit submittal)</div>
+      <div class="muted" style="font-size:12px;margin:4px 0 8px">Most AHJ/utility applications require the property-owner email + phone, and the permit fee is valued off the contract price. Contracts don't reliably contain these, so enter them here (or send the client intake link from the project page). These save with the project and clear the reviewer callouts.</div>
+      <div class="row3">
+        <div><label>Homeowner email</label><input id="homeownerEmail" type="email" placeholder="owner@example.com" /></div>
+        <div><label>Homeowner phone</label><input id="homeownerPhone" type="tel" placeholder="(541) 555-0123" /></div>
+        <div><label>Contract price / job value ($)</label><input id="jobValue" placeholder="e.g. $31,500" /></div>
+      </div>
+    </div>
+
     <div class="row3" style="margin-top:12px">
       <div><label>System size DC (kW)</label><input id="dcKw" /></div>
       <div><label>System size AC (kW)</label><input id="acKw" /></div>
@@ -335,30 +345,31 @@
       <textarea id="reviewFlags" readonly class="tall"></textarea>
     </div>
     <div class="critical-wrap">
-      <div class="critical-title">Critical PM warnings / follow-up required</div>
-      <div class="critical-sub">Big-callout area for anything the PM needs to follow before install.</div>
+      <div class="critical-title">PM project follow-up notes</div>
+      <div class="critical-sub">Auto-detected warnings now live in the backend QC + AHJ reviewer gate on the project page — this is just your free-text follow-up that saves with the project.</div>
       <div class="row">
-        <div><label>Auto-detected critical warnings</label><textarea id="criticalWarnings" readonly class="critical-text"></textarea></div>
-        <div><label>PM project follow-up notes</label><textarea id="pmProjectNotes" class="critical-text" placeholder="Add project notes here."></textarea></div>
+        <div style="flex:1"><textarea id="pmProjectNotes" class="critical-text" placeholder="Add project follow-up notes here (optional)."></textarea></div>
       </div>
     </div>
   </div>
 
   <details class="card">
-    <summary style="cursor:pointer"><h2 style="display:inline-block;margin:0">3. Permit path + stamp callout</h2> <span class="muted" style="font-size:12px;font-weight:400">— collapsed; backend QC/reviewer gate is the source of truth</span></summary>
-    <div class="row">
-      <div class="section-note" style="background:rgba(34,197,94,.07);border-color:rgba(34,197,94,.35)">
-        <div class="mini">PERMIT PATH</div>
-        <div id="pathMain" style="font-size:44px;font-weight:900;line-height:1;margin:8px 0">REVIEW</div>
-        <div id="pathSub" class="big">Packet needs confirmation on one or more items.</div>
-      </div>
-      <div class="section-note" style="background:rgba(239,68,68,.08);border-color:rgba(239,68,68,.35)">
-        <div class="mini">STAMP RECOMMENDATION</div>
-        <div id="stampMain" style="font-size:44px;font-weight:900;line-height:1;margin:8px 0">MANUAL REVIEW</div>
-        <div id="stampSub" class="big">If a required structural item fails, send to design for stamped path.</div>
+    <summary style="cursor:pointer"><h2 style="display:inline-block;margin:0">3. Permit path + stamp (reference)</h2> <span class="muted" style="font-size:12px;font-weight:400">— informational; the backend QC + AHJ reviewer gate is the source of truth. Prescriptive vs engineered is what drives the correct submittal path.</span></summary>
+    <div class="row" style="margin-top:8px">
+      <div class="mini" style="display:flex;gap:8px;align-items:baseline">
+        <span>PERMIT PATH:</span>
+        <strong id="pathMain" style="font-size:15px;font-weight:800">REVIEW</strong>
+        <span id="pathSub" class="muted" style="font-size:12px;font-weight:400">Packet needs confirmation on one or more items.</span>
       </div>
     </div>
-    <div class="row" style="margin-top:14px">
+    <div class="row" style="margin-top:4px">
+      <div class="mini" style="display:flex;gap:8px;align-items:baseline">
+        <span>STAMP:</span>
+        <strong id="stampMain" style="font-size:15px;font-weight:800">MANUAL REVIEW</strong>
+        <span id="stampSub" class="muted" style="font-size:12px;font-weight:400">If a required structural item fails, send to design for the stamped/engineered path.</span>
+      </div>
+    </div>
+    <div class="row" style="margin-top:12px">
       <div>
         <label>Permit path reasons</label>
         <textarea id="pathReasons" class="tall" readonly></textarea>
@@ -3662,6 +3673,7 @@ const LLM_SNAPSHOT_KEYS = new Set([
   'busRating','mainBreaker','pvBreaker','acDiscReq',
   'snow','deadLoad','roofRafterSpacing','roofRafterSpan','wind','permitPath',
   'utilitySchedule','serviceVoltage','servicePhase','numberOfCircuits','parcelNumber','jobValue',
+  'homeownerEmail','homeownerPhone',
   'azimuth','tilt','roofSlope','mainServiceRating',
   'electricalCalcText','structuralCalcText','sitePlanNotesText','roofPlanNotesText',
   'labelsText','projectDescriptionText','locateCalloutText',
@@ -4658,6 +4670,12 @@ function buildSystemPayload() {
     zip: getVal('zip'),
     ahj: getVal('ahj'),
     utility: getVal('utility'),
+    // Permit-submittal intake: property-owner contact + contract value. These map
+    // to the canonical snapshot keys the reviewer/valuation read, so entering them
+    // here clears the homeowner-email/phone and valuation callouts.
+    homeownerEmail: getVal('homeownerEmail'),
+    homeownerPhone: getVal('homeownerPhone'),
+    jobValue: getVal('jobValue'),
     account: getVal('account') || getVal('ubAccountNumber'),
     meter: getVal('meter') || getVal('planMeterNumber') || getVal('ubMeterNumber'),
     meterNumber: getVal('meter') || getVal('planMeterNumber') || getVal('ubMeterNumber'),
