@@ -191,21 +191,28 @@ export const applicationProfiles: ApplicationRequirementProfile[] = [
     requiresPrescriptiveChecklist: true,
     requiresBidSheet: false,
     requiresPortalEntryOnly: true,
-    permitStructure: "combo",
+    // Oregon requires a SEPARATE structural permit AND electrical permit for solar
+    // (OAR 918-050-0180; Oregon BCD form 440-5952 header: "Separate electrical permits
+    // are required for these installations"). Filing only the structural permit leaves
+    // the electrical (renewable-energy) permit unfiled — the exact "docs still missing"
+    // bounce. So this is "separate", not "combo".
+    permitStructure: "separate",
     submissionMethod: "Oregon ePermitting (Accela)",
     requiredDocuments: [
-      "Solar application — PRESCRIPTIVE or STRUCTURAL (upload only the one that matches your path; never both)",
-      "Renewable Energy (electrical) permit application",
-      "Solar prescriptive checklist",
-      "Electrical permit application (only when a main panel/service upgrade is in scope)",
-      "Plan set and specifications",
+      "Solar STRUCTURAL application — PRESCRIPTIVE checklist (prescriptive path) or STRUCTURAL application (non-prescriptive); upload only the one that matches your path, never both",
+      "Renewable Energy (electrical) permit application — REQUIRED on every PV interconnection (separate electrical permit, OAR 918-050-0180)",
+      "Solar prescriptive checklist (Oregon BCD 440-5952) on the prescriptive path",
+      "PE-stamped structural plans + sealed structural letter/calcs on the non-prescriptive path",
+      "Plan set: site/plot plan w/ fire pathways, electrical SLD (RSD + 705.12), structural roof framing + attachment detail, module spec, inverter spec, label/placard schedule",
+      "Electrical permit covers the main panel/service upgrade (MPU) when in scope",
     ],
     notes: [
       "Marion County processes Keizer/Hubbard/Mount Angel/Gervais roof-mount solar on Oregon ePermitting (Accela).",
+      "TWO permits: a structural permit AND a SEPARATE electrical (renewable-energy) permit are required (OAR 918-050-0180). File BOTH.",
       "PRESCRIPTIVE application = meets prescriptive code, NO plan review, REDUCED permit fee.",
       "STRUCTURAL application = does NOT meet prescriptive code, WILL require plan review, FULL structural fees, and a PE-stamped plan set + structural engineering letter must be attached.",
-      "Upload ONLY the application that pertains to the project — do NOT upload both.",
-      "Use the NON-PRESCRIPTIVE (structural) application for non-prescriptive submissions; fill the electrical application when a main panel/service upgrade (MPU) is in scope.",
+      "Upload ONLY the structural-side application that pertains (prescriptive checklist OR structural application) — do NOT upload both.",
+      "The renewable-energy (electrical) permit application is required for EVERY interconnection, not just MPU jobs.",
     ],
   },
   {

@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { openDatabase } from "./db";
 import { createClient } from "./clients";
+import { saveProjectDocument } from "./projectDocuments";
 import {
   createPermitCheckTarget,
   createProject,
@@ -110,6 +111,13 @@ if (!learnedAfterProject || learnedAfterProject.projectCount < 1) {
 if (!learnedAfterProject.requiredDocuments.some((doc) => /SLD|one-line|3-line/i.test(doc))) {
   throw new Error("Expected knowledge base to learn required electrical one-line/SLD document evidence.");
 }
+
+// Attach the actual plan-set FILE so the document-presence gate is satisfied. The
+// document gate (requiredDocuments.ts) requires the real plan set to exist, then uses
+// the parsed sheet map to confirm the in-plan-set sheets (SLD, site plan, structural,
+// module/inverter spec, labels) — this is the fix for "AHJ emailed back: docs missing".
+const fakePdf = Buffer.from("%PDF-1.4\n% smoke test plan set\n", "utf8");
+saveProjectDocument(db, detail.project.id, { docType: "plan_set", filename: "plan-set.pdf", contentType: "application/pdf", buffer: fakePdf, source: "upload" });
 
 const reviewerReport = getReviewerReport(db, detail.project.id);
 const reviewerBlockers = reviewerReport.findings.filter((finding) => finding.severity === "blocker");

@@ -65,6 +65,7 @@ import { checkStatusWithAdapter, stageWithAccela, stageWithMockPortal, stageWith
 import { findCompleteRecipeForProject, resolveRecipeFieldValues } from "./portalRecipes";
 import { detectPlatform, publicPermitStatusCheck } from "./publicPermitStatus";
 import { projectDocsByType } from "./projectDocuments";
+import { documentInventory } from "./requiredDocuments";
 import { STAGE_COUNT, stageForStatus, isBlockedStatus } from "./projectStage";
 import { addAuditLog } from "./audit";
 import { clientStagingOverlay, getClient } from "./clients";
@@ -2877,6 +2878,7 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
   const historicalReport = buildHistoricalFailureReport(db, projectId);
   const reviewerReport = applyCachedVisionVerdicts(db, buildReviewerReport(project));
   const applicationDocs = buildApplicationDocumentPackage(project);
+  const docInventory = documentInventory(db, project);
   const processMap = getProjectProcessMap(db, projectId);
   const installerPacket = getInstallerActionPacket(db, projectId);
   const activeEmailSources = db.query<Row>(
@@ -3047,6 +3049,31 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
       ],
       nextAction: applicationDocs.missingFields.length ? "Fill missing fields and rebuild AHJ/NEM docs before staging." : "Open the packet and verify each generated form and attachment list.",
       source: "forms.application_docs",
+    }),
+    // THE document-presence gate. Verifies the actual required FILES are attached (or
+    // identified in the uploaded plan set) — not just that the parser mentioned them.
+    // This is what stops "documents still missing" rejections: a missing blocking
+    // document (plan set, SLD, site plan, structural, module/inverter spec, or the
+    // PE-stamped structural docs on the engineered path) hard-blocks submit.
+    submitGateCheck({
+      id: "document-inventory",
+      title: "Required documents attached",
+      lane: docInventory.missingBlocking.some((d) => d.lane === "nem") && !docInventory.missingBlocking.some((d) => d.lane === "permit") ? "nem" : "permit",
+      status: docInventory.missingBlocking.length ? "blocker" : docInventory.missingAdvisory.length ? "warning" : "pass",
+      ownerRole: "Permit Ops",
+      requirement: "Every required submittal document must be attached as a file (or identified in the uploaded plan set) before staging — the AHJ rejects incomplete packages.",
+      evidence: [
+        `${docInventory.presence.filter((d) => d.present).length}/${docInventory.required.length} required documents present.`,
+        ...docInventory.presence.filter((d) => d.present).slice(0, 4).map((d) => `✓ ${d.label} (${d.via})`),
+        ...docInventory.missingBlocking.map((d) => `MISSING (required): ${d.label} — ${d.why}`),
+        ...docInventory.missingAdvisory.map((d) => `Missing (advisory): ${d.label}`),
+      ],
+      nextAction: docInventory.missingBlocking.length
+        ? `Attach or split out the missing document(s) before staging: ${docInventory.missingBlocking.map((d) => d.label).join("; ")}.`
+        : docInventory.missingAdvisory.length
+          ? "Confirm the advisory document(s) are included in the plan set."
+          : "All required documents are attached.",
+      source: "documents.inventory",
     }),
     submitGateCheck({
       id: "nem-preflight",
@@ -4596,6 +4623,31 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
     });
   }
 
+  // DOCUMENT-PRESENCE GATE: never stage a submittal that is missing a required file.
+  // This is the guardrail against the "AHJ emailed back: documents still missing"
+  // failure — the gate only let scalar fields through before. Scope NEM-only gaps out
+  // when staging just the permit track and vice-versa, so a single-track stage isn't
+  // blocked by the other lane's document.
+  const inv = documentInventory(db, detail.project);
+  const lane = track === "nem" ? "nem" : track ? "permit" : null;
+  const missingDocs = inv.missingBlocking.filter((d) => lane == null || d.lane === lane || d.docType === "inverter_spec");
+  if (missingDocs.length > 0) {
+    throw new HttpError(409, `Submission staging blocked: required document(s) not attached — ${missingDocs.map((d) => d.label).join("; ")}. Attach or split out each document before staging so the AHJ/utility receives a complete package.`, {
+      missingDocuments: missingDocs.map((d) => ({ docType: d.docType, label: d.label, lane: d.lane })),
+    });
+  }
+
+  // PERMIT-PATH GATE (AHJ permit lane only): the prescriptive and structural
+  // applications are mutually exclusive and the AHJ takes exactly one. If the path
+  // isn't confirmed we cannot know which application to file — block staging the permit
+  // until the operator sets it (Manual entry → Permit path). NEM staging is unaffected.
+  if (lane !== "nem") {
+    const path = resolvePermitPath(detail.project);
+    if (path.path === "unknown") {
+      throw new HttpError(409, "Submission staging blocked: confirm the permit path (prescriptive vs engineered) before staging the AHJ permit. The two applications are mutually exclusive — set it on Manual entry → Permit path.", { permitPathUnknown: true });
+    }
+  }
+
   // ROCK-SOLID CLIENT GATE: never stage a submittal without an explicitly assigned
   // client whose CCB/license will be on the filing. This is the guardrail against
   // submitting with the wrong (or default/blank) contractor's info.
@@ -4931,14 +4983,19 @@ export function captureConfirmation(
   const run = db.get<Row>("SELECT * FROM portal_runs WHERE id = ?", [portalRunId]);
   if (!run) throw new HttpError(404, "Portal run not found.");
   const projectId = text(run.project_id);
+  const runPermitType = text(run.permit_type);
   const ts = nowIso();
 
   db.transaction(() => {
     db.run("UPDATE portal_runs SET status = ?, finished_at = ? WHERE id = ?", ["submitted", ts, portalRunId]);
+    // Scope the confirmation to THIS run's permit track so a NEM submit doesn't get
+    // stamped with a permit number (and vice-versa). Legacy runs with no permit_type
+    // fall back to the project-wide update (old behavior) so they still capture.
+    const scopeByType = Boolean(runPermitType);
     db.run(
       `UPDATE submissions
        SET status = ?, application_number = ?, permit_number = ?, confirmation_number = ?, submitted_at = ?, submitted_by = ?, notes = ?
-       WHERE project_id = ? AND status = 'awaiting_human_submit'`,
+       WHERE project_id = ? AND status = 'awaiting_human_submit'${scopeByType ? " AND permit_type = ?" : ""}`,
       [
         "submitted",
         input.applicationNumber || "",
@@ -4948,11 +5005,20 @@ export function captureConfirmation(
         input.submittedBy || "human",
         input.notes || "Captured after human completed final portal submit.",
         projectId,
+        ...(scopeByType ? [runPermitType] : []),
       ],
     );
+    // Only advance the whole-project status to "submitted" when there are no OTHER
+    // tracks still awaiting a human submit — otherwise a single-track confirmation would
+    // mark the entire project submitted while the other filing is still pending.
+    const stillAwaiting = db.get<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM submissions WHERE project_id = ? AND status = 'awaiting_human_submit'",
+      [projectId],
+    );
+    const remaining = Number(stillAwaiting?.n ?? 0);
     db.run("UPDATE projects SET status = ?, current_stage = ?, updated_at = ? WHERE id = ?", [
-      "submitted",
-      "Human submitted. Confirmation captured.",
+      remaining > 0 ? "submit_staging" : "submitted",
+      remaining > 0 ? `One filing submitted; ${remaining} track(s) still awaiting human submit.` : "Human submitted. Confirmation captured.",
       ts,
       projectId,
     ]);

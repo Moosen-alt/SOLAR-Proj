@@ -2071,9 +2071,9 @@
       "requiresElectricianSign": false,
       "requiresElectricalStamp": false,
       "requiresStructuralStamp": false,
-      "requiresElectricalPermitApplication": false,
-      "requiresBuildingPermitApplication": false,
-      "requiresSolarChecklist": false,
+      "requiresElectricalPermitApplication": true,
+      "requiresBuildingPermitApplication": true,
+      "requiresSolarChecklist": true,
       "requiresPlanSet": true,
       "requiresUtilityApproval": false,
       "requiresCustomerSignature": false,
@@ -2520,7 +2520,7 @@
       "requiresFloodplainCheck": false,
       "requiresJurisdictionCheck": false,
       "otherRequirements": "",
-      "reviewerNotes": "We\u2019re excited to announce an important update coming to the Redmond ePermitting Service (REPS) platform, designed to make your account even more secure. After 5 p.m. on Friday, June 13, Multi-Factor Authentication (MFA) will be available when signing in to all REPS accounts. This added layer of protection helps ensure that only you can access your information. To facilitate this update, the REPS platform and its affiliated Interactive Voice Response (IVR) system will be down for maintenance from 5 p.m. on Thursday, June 12, through 5 p.m. on Friday, June 13, 2025. Inspection requests and online payments cannot be accepted during this maintenance outage. After the maintenance is completed, MF",
+      "reviewerNotes": "We’re excited to announce an important update coming to the Redmond ePermitting Service (REPS) platform, designed to make your account even more secure. After 5 p.m. on Friday, June 13, Multi-Factor Authentication (MFA) will be available when signing in to all REPS accounts. This added layer of protection helps ensure that only you can access your information. To facilitate this update, the REPS platform and its affiliated Interactive Voice Response (IVR) system will be down for maintenance from 5 p.m. on Thursday, June 12, through 5 p.m. on Friday, June 13, 2025. Inspection requests and online payments cannot be accepted during this maintenance outage. After the maintenance is completed, MF",
       "sourceSheet": "OR PROCESS"
     },
     {
@@ -4720,7 +4720,7 @@
       "requiresFloodplainCheck": false,
       "requiresJurisdictionCheck": false,
       "otherRequirements": "X-bid sheet",
-      "reviewerNotes": "Building res, alteration Tacoma Power, submit online w Tacoma portal - no apps needed CORRECTION NARRATIVE UPLOADED W CORRECTIONS. REMEMBER TO BLACK AND WHITE PLAN SET FOR UPLOAD. REVISIONS: Field revision record: A field revision is applied for online via the applicant\u2019s Tacoma Permits portal (ACA), just like other types of permits. The type of permit will either be Commercial Field Revision or Residential Field Revision, listed under the Additional Services dropdown option. Adoption of 2021 Building Codes postponed to March 15, 2024",
+      "reviewerNotes": "Building res, alteration Tacoma Power, submit online w Tacoma portal - no apps needed CORRECTION NARRATIVE UPLOADED W CORRECTIONS. REMEMBER TO BLACK AND WHITE PLAN SET FOR UPLOAD. REVISIONS: Field revision record: A field revision is applied for online via the applicant’s Tacoma Permits portal (ACA), just like other types of permits. The type of permit will either be Commercial Field Revision or Residential Field Revision, listed under the Additional Services dropdown option. Adoption of 2021 Building Codes postponed to March 15, 2024",
       "sourceSheet": "WA PROCESS"
     },
     {
@@ -7600,7 +7600,7 @@
       "requiresFloodplainCheck": false,
       "requiresJurisdictionCheck": false,
       "otherRequirements": "",
-      "reviewerNotes": "Completed building permit application and electrical permit application. \uf0b7 Interconnection request application approved by utility company. \uf0b7 Site plan for ground mounted PV system, if applicable. \uf0b7 Engineer\u2019s structural analysis of existing roof structure verifying it is adequate to support the attachment of solar arrays. \uf0b7 CAB approval for all ocean front single-family, multi-family and all commercial projects. \uf0b7 HOA approval letter if installing in a HOA community.",
+      "reviewerNotes": "Completed building permit application and electrical permit application.  Interconnection request application approved by utility company.  Site plan for ground mounted PV system, if applicable.  Engineer’s structural analysis of existing roof structure verifying it is adequate to support the attachment of solar arrays.  CAB approval for all ocean front single-family, multi-family and all commercial projects.  HOA approval letter if installing in a HOA community.",
       "sourceSheet": "SC PROCESS"
     },
     {
@@ -7620,7 +7620,7 @@
       "requiresFloodplainCheck": false,
       "requiresJurisdictionCheck": false,
       "otherRequirements": "",
-      "reviewerNotes": "Residential Permit Application. Plans including PV array, inverters, combiners, controllers, solar array mounting system and wiring schematic. Specification sheets and manufacturer\u2019s installation instructions for all manufactured system components that make up the Solar PV System. A signed and sealed document exhibiting that a design professional has performed a solar onsite inspection and states that: All PV equipment\u2019s structural installation has been designed and inspected; Equipment will not create a negative impact of the building's building design; and, The work is in compliance with the applicable North Carolina State Residential Code. Complete the Owner Exemption Affidavit (when requ",
+      "reviewerNotes": "Residential Permit Application. Plans including PV array, inverters, combiners, controllers, solar array mounting system and wiring schematic. Specification sheets and manufacturer’s installation instructions for all manufactured system components that make up the Solar PV System. A signed and sealed document exhibiting that a design professional has performed a solar onsite inspection and states that: All PV equipment’s structural installation has been designed and inspected; Equipment will not create a negative impact of the building's building design; and, The work is in compliance with the applicable North Carolina State Residential Code. Complete the Owner Exemption Affidavit (when requ",
       "sourceSheet": "NC PROCESS"
     }
   ]
