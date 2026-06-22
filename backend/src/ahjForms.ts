@@ -7,6 +7,29 @@ import { clientStagingOverlay } from "./clients";
 import { HttpError } from "./httpError";
 import { loadDefaultSignaturesByRole } from "./signatures";
 import { nowIso } from "./time";
+import { resolvePermitPath } from "./permitPath";
+
+// Classify an AHJ form by which mutually-exclusive solar application it is, from its
+// name/filename. A prescriptive and a structural application must NEVER both be filled
+// for the same project — the AHJ takes exactly one, chosen by the permit path.
+function formApplicationKind(formName: string): "prescriptive" | "structural" | null {
+  const n = (formName || "").toLowerCase();
+  if (/prescriptive/.test(n)) return "prescriptive";
+  if (/structural|non[-\s]?prescriptive|engineered/.test(n)) return "structural";
+  return null;
+}
+
+// Should this form be filled given the project's resolved permit path? Only the
+// application matching the path is filled; non-application forms (electrical, etc.)
+// always pass. When the path is unknown we fill neither application form (the operator
+// must confirm the path first) — surfaced in the form message.
+export function formAllowedForPath(formName: string, path: "prescriptive" | "engineered" | "unknown"): boolean {
+  const kind = formApplicationKind(formName);
+  if (!kind) return true;
+  if (path === "prescriptive") return kind === "prescriptive";
+  if (path === "engineered") return kind === "structural";
+  return false; // unknown path → don't auto-fill either application until confirmed
+}
 
 // =============================================================================
 // AHJ PDF form fill engine
@@ -471,7 +494,7 @@ export async function inspectFormFields(pdfBytes: Uint8Array): Promise<{ isXfa: 
 export interface FilledFormResult {
   formId: string;
   formName: string;
-  status: "filled" | "needs_manual" | "error";
+  status: "filled" | "needs_manual" | "error" | "skipped";
   outputPath?: string;
   filledFieldCount?: number;
   unmappedRequested?: string[];
@@ -605,12 +628,30 @@ export interface FilledFormPackage {
 }
 
 export async function buildFilledFormsForProject(db: AppDb, project: ProjectRecord): Promise<FilledFormPackage> {
+  const permitPath = resolvePermitPath(project).path;
   const defs = matchingForms(project.ahj).filter((d) => d.status === "verified");
   const ctx = buildContext(db, project);
   const outDir = path.join(FILLED_DIR, project.id);
 
   const forms: FilledFormResult[] = [];
+  // Forms skipped because they're the "other" application for this permit path —
+  // reported so the operator can see why only one application was filled.
+  const skipped: FilledFormResult[] = [];
+  const noteSkip = (formId: string, formName: string): void => {
+    const kind = formApplicationKind(formName);
+    skipped.push({
+      formId,
+      formName,
+      status: "skipped",
+      message: permitPath === "unknown"
+        ? `Not filled — permit path not confirmed. ${kind === "prescriptive" ? "Prescriptive" : "Structural"} application is only filled once you set the permit path (Manual entry → Permit path).`
+        : `Not filled — this project is on the ${permitPath} path, so only the ${permitPath === "prescriptive" ? "prescriptive" : "structural"} application is filled. Do NOT upload both applications.`,
+      verified: true,
+    });
+  };
+
   for (const def of defs) {
+    if (!formAllowedForPath(def.formName, permitPath)) { noteSkip(def.id, def.formName); continue; }
     // Built-in registry forms are hand-tuned, so inherently verified. Merge any
     // vision-detected signature placements stored for this registry form.
     // Isolate each fill: a bad signature override (e.g. from a detect-sigs run
@@ -640,6 +681,7 @@ export async function buildFilledFormsForProject(db: AppDb, project: ProjectReco
   // for this AHJ/state that aren't already covered by a built-in registry form.
   for (const stored of loadStoredTemplates(db, project.ahj, project.state)) {
     if (forms.some((f) => f.formId === stored.def.id)) continue;
+    if (!formAllowedForPath(stored.def.formName, permitPath)) { noteSkip(stored.def.id, stored.def.formName); continue; }
     try {
       const result = await fillLoadedForm(stored.def, stored.bytes, ctx, path.join(outDir, `${stored.def.id}.pdf`));
       forms.push({ ...result, verified: stored.verified, templateId: stored.templateId });
@@ -661,7 +703,7 @@ export async function buildFilledFormsForProject(db: AppDb, project: ProjectReco
     projectId: project.id,
     ahj: project.ahj,
     generatedAt: nowIso(),
-    forms,
+    forms: [...forms, ...skipped],
     unmatched: forms.length === 0,
   };
 }

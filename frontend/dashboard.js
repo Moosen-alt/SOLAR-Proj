@@ -2683,6 +2683,9 @@ function renderFilledForms(projectId) {
   }
   return forms.map((f) => {
     const ok = f.status === "filled";
+    // "skipped" = the OTHER application for this permit path (prescriptive vs structural).
+    // It's intentional, not a problem — render it neutral and never block on it.
+    const skipped = f.status === "skipped";
     const isStored = Boolean(f.templateId);
     const unverified = isStored && f.verified === false;
     const extra = [
@@ -2691,8 +2694,8 @@ function renderFilledForms(projectId) {
       f.message || "",
     ].filter(Boolean).join(" · ");
     // Cls: unverified auto-maps are a warning (block submit) until confirmed.
-    const cls = !ok ? "warning" : unverified ? "warning" : "pass";
-    const badge = !ok ? (f.status || "not filled") : unverified ? "needs verify" : (isStored ? "verified" : "filled PDF");
+    const cls = skipped ? "info" : !ok ? "warning" : unverified ? "warning" : "pass";
+    const badge = skipped ? "not this path" : !ok ? (f.status || "not filled") : unverified ? "needs verify" : (isStored ? "verified" : "filled PDF");
     return `<article class="item ${cls}">
       <div class="item-title"><span>${esc(f.formName || f.formId)}</span>${statusBadge(badge)}</div>
       ${ok ? `<p><a href="/api/projects/${encodeURIComponent(projectId)}/filled-forms/${encodeURIComponent(f.formId)}" target="_blank" rel="noopener"><strong>⬇ Download filled ${esc(f.formName || "AHJ form")} (PDF)</strong></a></p>` : ""}

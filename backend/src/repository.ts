@@ -95,7 +95,8 @@ import { fieldAliases, normalizeProject } from "./normalize";
 import { classifyPermitStatusText, nextCheckIso } from "./permitMonitor";
 import { evidenceForTopic, evidenceLines, type EvidenceTopic } from "./projectEvidence";
 import { runQcForProject } from "./qc";
-import { loadStoredTemplates } from "./ahjForms";
+import { loadStoredTemplates, formAllowedForPath } from "./ahjForms";
+import { resolvePermitPath } from "./permitPath";
 import { buildReviewerReport, renderReviewerReportHtml } from "./reviewerEngine";
 import { applyCachedVisionVerdicts } from "./reviewerVision";
 import { nowIso } from "./time";
@@ -2932,8 +2933,13 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
     !inverterEvidence.present ? "Inverter settings/spec evidence missing" : "",
   ].filter(Boolean);
   // AHJ forms whose auto-derived field/signature mapping the operator hasn't yet
-  // verified. A real submit is gated until each is previewed and confirmed.
-  const unverifiedForms = loadStoredTemplates(db, project.ahj, project.state).filter((t) => !t.verified);
+  // verified. A real submit is gated until each is previewed and confirmed — but only
+  // for forms that are actually filled for this project's permit path. The "other"
+  // application (prescriptive vs structural) is skipped, so an unverified off-path
+  // template must NOT block the submit.
+  const gatePermitPath = resolvePermitPath(project).path;
+  const unverifiedForms = loadStoredTemplates(db, project.ahj, project.state)
+    .filter((t) => !t.verified && formAllowedForPath(t.def.formName, gatePermitPath));
   const stagedRun = detail.portalRuns.find((run) => run.status === "awaiting_human_submit");
   const submittedOrBeyond = detail.submissions.some((submission) => submission.status === "submitted")
     || ["submitted", "approved", "ready_for_issue", "issued", "complete"].includes(project.status);
