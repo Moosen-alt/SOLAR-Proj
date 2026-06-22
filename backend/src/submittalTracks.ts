@@ -2,7 +2,8 @@
 // Submittal tracks — a project's independent permit/interconnection filings.
 //
 // A residential solar project usually needs MORE than one filing:
-//   - NEM / interconnection with the utility (PowerClerk, etc.)
+//   - the UTILITY net-metering (NEM) / interconnection application — this is the
+//     utility submission (PowerClerk, etc.), NOT a permit.
 //   - an AHJ permit, which is EITHER one combined building+electrical permit
 //     (combo) OR two separate filings: building (BLD) and electrical (ELE).
 //
@@ -30,7 +31,7 @@ interface Row { [key: string]: unknown }
 const s = (v: unknown): string => (v == null ? "" : String(v));
 
 const TRACK_LABELS: Record<SubmittalTrackType, string> = {
-  nem: "Utility NEM / interconnection",
+  nem: "Utility net metering (NEM) / interconnection",
   building: "Building permit (BLD)",
   electrical: "Electrical permit (ELE)",
   combo: "Building + electrical permit (combo)",
