@@ -604,8 +604,8 @@ function renderProjectTable() {
       <td>${stagePillHtml(project)}</td>
       <td>${projectLaneStatusCell(project.latestPermitLabel, project.latestPermitOutcome, project.latestPermitCheckedAt, project.readyForIssue, "ready for issue")}</td>
       <td>${projectLaneStatusCell(project.latestNemLabel, project.latestNemOutcome, project.latestNemCheckedAt, project.nemApproved, "NEM approved")}</td>
-      <td>${project.qcFailCount ? `<strong class="danger">${project.qcFailCount} fail</strong>` : "0 fail"}<br><span class="muted">${project.qcWarningCount} warn</span></td>
-      <td>${project.pendingReviewCount}</td>
+      <td>${project.qcFailCount ? `<strong class="danger">${project.qcFailCount} fail</strong>` : "0 fail"}<br><span class="muted">${project.qcWarningCount ?? 0} warn</span></td>
+      <td>${project.pendingReviewCount ?? 0}</td>
     </tr>`;
   }).join("");
   if (total > projects.length) {
