@@ -416,26 +416,36 @@
             <section class="panel record-portal-panel">
               <div class="section-head">
                 <h3>Record this portal (teach the bot)</h3>
-                <span class="badge">unknown AHJ/utility</span>
+                <span class="badge">teach once · reused for everyone</span>
               </div>
-              <p class="muted" style="font-size:13px;margin:4px 0 8px">
-                Hit a portal the bot doesn't know yet? Record it once on the machine you're submitting from — log in, complete the application up to (not including) the final submit, type <code>save</code>. It saves to this server, so the next person who hits this AHJ/utility gets it automatically (admins can revise it later).
+              <p class="muted" style="font-size:13px;margin:4px 0 10px">
+                Hit a portal the bot doesn't know yet? Record it once on the machine you submit from. It saves to this server, so the next project that hits this AHJ/utility replays automatically.
               </p>
-              <div class="form-row">
-                <label style="flex:0 0 120px">Record for
+              <ol class="record-steps">
+                <li><span class="record-step-num">1</span><div><strong>Pick what you're recording</strong> and paste the portal's login / landing URL below.</div></li>
+                <li><span class="record-step-num">2</span><div><strong>Launch &amp; record</strong> — a browser opens; log in and complete the application up to the final submit, then type <code>save</code>. <span class="muted">For a trusted portal you can record through submit to enable one-click approve-submit.</span></div></li>
+                <li><span class="record-step-num">3</span><div><strong>Saved centrally</strong> — the recipe replays on future projects for this AHJ/utility (admins can revise it later).</div></li>
+              </ol>
+              <div class="record-config">
+                <label class="record-scope">Recording for
                   <select id="recordScope">
-                    <option value="ahj">AHJ (permit)</option>
-                    <option value="utility">Utility (NEM)</option>
+                    <option value="ahj">AHJ permit portal</option>
+                    <option value="utility">Utility NEM portal</option>
                   </select>
                 </label>
-                <label style="flex:1">Portal URL<input id="recordPortalUrl" placeholder="https://…  (the portal login/landing page)" /></label>
+                <label class="record-url">Portal URL
+                  <input id="recordPortalUrl" placeholder="https://…  login / landing page" />
+                </label>
               </div>
-              <div class="actions">
-                <button id="launchRecordBtn"><i data-lucide="play"></i><span>Launch record session</span></button>
-                <button id="downloadRecordBatBtn" class="secondary"><i data-lucide="download"></i><span>Download record.bat</span></button>
-                <button id="copyRecordCmdBtn" class="secondary ghost"><i data-lucide="clipboard-copy"></i><span>Copy command</span></button>
+              <div class="record-launch">
+                <button id="launchRecordBtn" class="primary"><i data-lucide="play"></i><span>Launch record session</span></button>
+                <div class="record-alt">
+                  <span class="muted">No launcher here?</span>
+                  <button id="downloadRecordBatBtn" class="secondary ghost"><i data-lucide="download"></i><span>Download record.bat</span></button>
+                  <button id="copyRecordCmdBtn" class="secondary ghost"><i data-lucide="clipboard-copy"></i><span>Copy command</span></button>
+                </div>
               </div>
-              <div id="launchRecordStatus" style="display:none;margin:4px 0;font-size:13px"></div>
+              <div id="launchRecordStatus" style="display:none;margin:6px 0;font-size:13px"></div>
               <details class="kb-accordion" style="margin-top:6px" open>
                 <summary class="kb-summary"><span>Project data (for manual entry / recording reference)</span></summary>
                 <p class="muted" style="font-size:12px;margin:6px 0">Parsed values for this project — copy into the portal as you record or for manual submission.</p>
