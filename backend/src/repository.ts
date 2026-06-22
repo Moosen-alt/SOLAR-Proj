@@ -4568,7 +4568,7 @@ export async function runDuePermitChecks(
   return { checked: targets.length, projects };
 }
 
-export async function prepareSubmission(db: AppDb, projectId: string, track?: SubmittalTrackType): Promise<ProjectDetail> {
+export async function prepareSubmission(db: AppDb, projectId: string, track?: SubmittalTrackType, autoSubmit?: boolean): Promise<ProjectDetail> {
   const detail = getProjectDetail(db, projectId);
   const failCount = detail.qcResults.filter((result) => result.qcStatus === "fail").length;
   const pendingCount = detail.humanReviewItems.filter((item) => item.status === "pending" && item.fieldName !== "correction").length;
@@ -4679,12 +4679,31 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
     ? path.join(profileBase, clientId, portalType)
     : path.join(profileBase, portalType);
 
+  // HYBRID AUTO-SUBMIT (opt-in): only honored when the operator approved it AND a
+  // recipe-based portal is in use AND that recipe is explicitly trusted
+  // (auto_submit_enabled). Hand-coded adapters (Accela/PowerClerk) stay guided-manual.
+  // Even then the adapter never clicks a fee-payment control and bails on CAPTCHA/MFA.
+  let resolvedAutoSubmit = false;
+  if (autoSubmit && recipe) {
+    const trustRow = db.get<{ auto_submit_enabled?: number }>(
+      "SELECT auto_submit_enabled FROM portal_recipes WHERE id = ?",
+      [recipe.id],
+    );
+    resolvedAutoSubmit = Boolean(trustRow?.auto_submit_enabled);
+    if (autoSubmit && !resolvedAutoSubmit) {
+      addAuditLog(db, projectId, "system", "submit gate", "portal.auto_submit_declined", {
+        reason: recipe ? "recipe_not_trusted" : "no_recipe", track: track ?? "permit",
+      });
+    }
+  }
+
   const stageOptions = {
     encryptedStorageStatePath: portalProfile?.encrypted_storage_state ?? undefined,
     headless: false,
     reviewerReport,
     credential,
     userDataDir,
+    autoSubmit: resolvedAutoSubmit,
   };
 
   // Overlay the linked client's contractor/licensing identity onto the project
@@ -4707,7 +4726,15 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   // Determine status: if the adapter paused for MFA/CAPTCHA, record it distinctly
   // so the UI can show a specific banner and the operator knows to resume manually.
   const pauseReason = typeof result.pauseReason === "string" ? result.pauseReason : null;
-  const runStatus = pauseReason ? "paused_for_human" : "awaiting_human_submit";
+  // Trusted auto-submit that ran the final application submit cleanly → the filing is
+  // submitted. A pause or adapter failure falls back to the human-submit state.
+  const autoSubmitted = resolvedAutoSubmit && !pauseReason && result.ok !== false;
+  const runStatus = pauseReason ? "paused_for_human" : autoSubmitted ? "submitted" : "awaiting_human_submit";
+  if (autoSubmitted) {
+    addAuditLog(db, projectId, "portal_bot", adapterActorName, "portal.auto_submitted", {
+      track: track ?? "permit", finalSubmitClickedByAutomation: true, feePaymentAutomated: false,
+    });
+  }
 
   // Tag the run + submission with the track being staged so each filing (NEM,
   // building, electrical, combo) shows separately in the submittal-tracks panel.
@@ -4735,21 +4762,25 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
         portalProfileId,
         submissionType,
         permitTypeTag,
-        "awaiting_human_submit",
+        autoSubmitted ? "submitted" : "awaiting_human_submit",
         "",
         "",
         "",
-        null,
+        autoSubmitted ? ts : null,
+        autoSubmitted ? "automation (operator-approved auto-submit)" : "",
         "",
-        "",
-        `${trackLabelText}${portalLabel} staged to final review only. Automation did not click final submit.`,
+        autoSubmitted
+          ? `${trackLabelText}${portalLabel} submitted via approved auto-submit (application submit only; no fee payment).`
+          : `${trackLabelText}${portalLabel} staged to final review only. Automation did not click final submit.`,
         ts,
       ],
     );
 
     db.run("UPDATE projects SET status = ?, current_stage = ?, updated_at = ? WHERE id = ?", [
-      "awaiting_human_submit",
-      `${trackLabelText}${portalLabel} staged. Human must verify and submit manually.`,
+      autoSubmitted ? "submitted" : "awaiting_human_submit",
+      autoSubmitted
+        ? `${trackLabelText}${portalLabel} auto-submitted (operator-approved). Capture confirmation + track status.`
+        : `${trackLabelText}${portalLabel} staged. Human must verify and submit manually.`,
       nowIso(),
       projectId,
     ]);

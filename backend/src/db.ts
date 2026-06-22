@@ -815,6 +815,12 @@ function migrate(db: AppDb): void {
   // (Migrated here — after the table exists — so a fresh DB doesn't fail.)
   addColumnIfMissing(db, "portal_recipes", "login_step_json", "TEXT");
 
+  // Hybrid auto-submit opt-in (per recorded portal). 0 = guided-manual (default):
+  // automation stops at the final review for a human submit. 1 = trusted: the operator
+  // has explicitly enabled one-click approve-submit for this portal, and the recipe was
+  // recorded through the final application submit. Fee payment is never automated.
+  addColumnIfMissing(db, "portal_recipes", "auto_submit_enabled", "INTEGER NOT NULL DEFAULT 0");
+
   // IMAP email source support — extend email_tracking_sources so a DB row can
   // represent a live IMAP inbox (central TML or per-client) in addition to the
   // existing mbox_path sources. Credentials stored encrypted (SESSION_ENCRYPTION_KEY).

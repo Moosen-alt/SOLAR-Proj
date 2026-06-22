@@ -138,6 +138,10 @@ p, .muted { color: var(--muted); }
 .record-alt { display: flex; align-items: center; gap: 6px; font-size: 12px; flex-wrap: wrap; }
 .record-alt button { font-size: 12px; padding: 5px 9px; }
 
+/* --- Recipe trust (hybrid auto-submit opt-in) --- */
+.recipe-trust { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); margin-top: 6px; cursor: pointer; }
+.recipe-trust input { margin: 0; }
+
 /* --- Per-permit submittal tracks --- */
 .track-group + .track-group { margin-top: 14px; }
 .track-group-head { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); margin: 0 0 6px; padding-bottom: 4px; border-bottom: 1px solid var(--line); }

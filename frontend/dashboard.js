@@ -303,8 +303,20 @@ function renderPortalRecipes() {
           <button class="danger" data-recipe-delete="${esc(r.id)}" style="font-size:11px">Delete</button>
         </div>
       </div>
-      ${r.status === "complete" ? "" : '<div class="muted" style="font-size:11px;margin-top:4px">Not replayable until a complete recording is saved.</div>'}
+      ${r.status === "complete" ? `
+        <label class="recipe-trust" title="Only enable if this recipe was recorded THROUGH the final application submit. Fee payment is never automated; CAPTCHA/MFA still stops for a human.">
+          <input type="checkbox" data-recipe-trust="${esc(r.id)}" ${r.autoSubmitEnabled ? "checked" : ""} />
+          Trust for one-click approve-submit (hybrid)
+        </label>` : '<div class="muted" style="font-size:11px;margin-top:4px">Not replayable until a complete recording is saved.</div>'}
     </div>`).join("");
+  el.querySelectorAll("[data-recipe-trust]").forEach((c) => c.addEventListener("change", async () => {
+    const id = c.getAttribute("data-recipe-trust");
+    if (c.checked && !confirm("Enable one-click auto-submit for this portal?\n\nOnly do this if the recipe was recorded through the final application submit. The bot will click the application submit on Approve — it never pays fees and still stops for CAPTCHA/MFA.")) {
+      c.checked = false; return;
+    }
+    try { await api(`/api/portal-recipes/${id}/auto-submit`, { method: "PUT", body: JSON.stringify({ enabled: c.checked }) }); await loadPortalRecipes(); }
+    catch (err) { showMessage(err.message || "Failed to update trust.", "error"); c.checked = !c.checked; }
+  }));
   el.querySelectorAll("[data-recipe-delete]").forEach((b) => b.addEventListener("click", async () => {
     if (!confirm("Delete this portal recipe? The bot will fall back to manual until it is re-recorded.")) return;
     try { await api(`/api/portal-recipes/${b.getAttribute("data-recipe-delete")}`, { method: "DELETE" }); await loadPortalRecipes(); }
@@ -1683,6 +1695,7 @@ function trackCardHtml(t) {
     ${captured ? `<p style="margin:0 0 4px">${captured} ${trackLink ? "&nbsp;·&nbsp; " + trackLink : ""}</p>` : (trackLink ? `<p style="margin:0 0 4px">${trackLink}</p>` : "")}
     <div class="track-actions">
       <button type="button" class="secondary" data-track-stage="${esc(t.type)}" title="Auto-fill this filing's portal up to the final review screen — you submit manually"><i data-lucide="bot"></i><span>Stage in portal</span></button>
+      <button type="button" class="secondary" data-track-approve="${esc(t.type)}" title="Hybrid: replay through the final application submit — only runs if you've trusted this portal for auto-submit, otherwise it stages to review. Never pays fees; stops for CAPTCHA/MFA."><i data-lucide="check-check"></i><span>Approve &amp; auto-submit</span></button>
     </div>
     <details class="track-submit"${submitted ? "" : " open"}>
       <summary>${submitted ? "Update numbers / status link" : "I submitted it → capture #"}</summary>
@@ -1719,19 +1732,27 @@ function renderSubmittalTracks() {
   wrap.querySelectorAll("button[data-track-submit]").forEach((btn) => {
     btn.addEventListener("click", () => markSubmittalTrack(btn.dataset.trackSubmit));
   });
+  wrap.querySelectorAll("button[data-track-approve]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      if (!confirm("Approve & auto-submit this filing?\n\nIf you've trusted this portal, the bot will replay through the final application submit (never fee payment) and stop for any CAPTCHA/MFA. If the portal isn't trusted, it just stages to the review screen for you to submit.")) return;
+      stageSubmittalTrack(btn.dataset.trackApprove, btn, true);
+    });
+  });
   wrap.querySelectorAll("button[data-track-stage]").forEach((btn) => {
     btn.addEventListener("click", () => stageSubmittalTrack(btn.dataset.trackStage, btn));
   });
   if (window.lucide) window.lucide.createIcons();
 }
 
-async function stageSubmittalTrack(type, btn) {
+async function stageSubmittalTrack(type, btn, autoSubmit = false) {
   if (!state.selectedProjectId || !type) return;
   if (btn) { btn.disabled = true; }
-  showMessage(`Staging ${humanize(type)} in its portal — automation stops at the final review screen for your manual submit…`, "info");
+  showMessage(autoSubmit
+    ? `Approving ${humanize(type)} — replaying the portal; it will submit only if this portal is trusted, and never pays fees…`
+    : `Staging ${humanize(type)} in its portal — automation stops at the final review screen for your manual submit…`, "info");
   try {
     const detail = await api(`/api/projects/${state.selectedProjectId}/prepare-submission`, {
-      method: "POST", body: JSON.stringify({ track: type }),
+      method: "POST", body: JSON.stringify({ track: type, autoSubmit }),
     });
     if (detail && detail.project) state.detail = detail;
     await loadSubmittalTracks();

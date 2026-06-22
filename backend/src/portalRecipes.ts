@@ -31,6 +31,7 @@ function mapRecipe(row: Row): PortalRecipe {
     createdAt: s(row.created_at),
     updatedAt: s(row.updated_at),
     notes: s(row.notes),
+    autoSubmitEnabled: Boolean(row.auto_submit_enabled),
   };
 }
 

@@ -1478,4 +1478,6 @@ export interface PortalRecipe {
   createdAt: string;
   updatedAt: string;
   notes: string;
+  /** Hybrid: operator has trusted this portal for one-click approve-submit. Off by default. */
+  autoSubmitEnabled?: boolean;
 }

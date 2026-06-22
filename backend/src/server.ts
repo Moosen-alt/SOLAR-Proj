@@ -863,6 +863,16 @@ app.post("/api/portal-recipes/:id/rerecord", (req, res) => {
 app.delete("/api/portal-recipes/:id", (req, res) => {
   res.json(deletePortalRecipe(db, String(req.params.id)));
 });
+// Hybrid: trust a recorded portal for one-click approve-submit (must have been recorded
+// through the final application submit). Off by default; fee payment is never automated.
+app.put("/api/portal-recipes/:id/auto-submit", (req, res) => {
+  const enabled = req.body?.enabled === true || String(req.body?.enabled) === "true";
+  db.run("UPDATE portal_recipes SET auto_submit_enabled = ?, updated_at = ? WHERE id = ?", [
+    enabled ? 1 : 0, new Date().toISOString(), String(req.params.id),
+  ]);
+  addAuditLog(db, null, "human", "operator", "portal_recipe.auto_submit_toggled", { recipeId: String(req.params.id), enabled });
+  res.json({ ok: true, autoSubmitEnabled: enabled });
+});
 // Resolved project+client field values — the recorder uses these to auto-bind a typed
 // value to its field key (so the recipe replays each future project's own data).
 app.get("/api/projects/:id/staging-field-values", (req, res) => {
@@ -1456,7 +1466,10 @@ app.post("/api/projects/:id/prepare-submission", asyncHandler(async (req, res) =
   // omitted = the legacy combined stage.
   const rawTrack = String(req.body?.track || "").trim();
   const track = SUBMITTAL_TRACK_TYPES.includes(rawTrack as SubmittalTrackType) ? (rawTrack as SubmittalTrackType) : undefined;
-  const result = await prepareSubmission(db, String(req.params.id), track);
+  // Hybrid: operator-approved auto-submit. Only honored backend-side when the resolved
+  // recipe is trusted (auto_submit_enabled); otherwise it falls back to guided-manual.
+  const autoSubmit = req.body?.autoSubmit === true || String(req.body?.autoSubmit) === "true";
+  const result = await prepareSubmission(db, String(req.params.id), track, autoSubmit);
   const run = result.portalRuns?.[0];
   if (run) {
     if (run.pauseReason === "mfa_captcha") {
