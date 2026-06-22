@@ -113,9 +113,32 @@ export class OregonEPermittingAdapter implements PortalAdapter {
         || (await this.page.title()).toLowerCase().includes("dashboard");
 
       if (!isLoggedIn) {
-        return fail(
-          "Oregon ePermitting login page is still showing. Log in manually in the browser window, then re-run. For a persistent login, use: npm run portal:login -- accela"
-        );
+        if (context.credential) {
+          // Session expired — auto-fill the login form with stored credentials.
+          // Never logs the credential; stops if MFA is detected after submit.
+          try {
+            await this.page.getByLabel("Email").fill(context.credential.username);
+            await this.page.getByLabel("Password").fill(context.credential.password);
+            await this.page.getByRole("button", { name: /log in|sign in/i }).click();
+            await this.page.waitForLoadState("networkidle", { timeout: 20000 }).catch(() => null);
+
+            const mfaVisible = await this.page.getByText(/verify|two.factor|authenticat/i).count() > 0;
+            if (mfaVisible) {
+              return { ok: false, message: "MFA/2FA required after credential fill — pausing for human. Complete verification in the browser window, then retry the portal run.", pauseReason: "mfa_captcha" };
+            }
+            const loggedInAfterFill = await this.page.locator('a[href*="Dashboard"]').count() > 0
+              || (await this.page.title()).toLowerCase().includes("dashboard");
+            if (!loggedInAfterFill) {
+              return fail("Credential auto-fill did not result in a successful login. Check the stored username/password in Portal Credentials.");
+            }
+          } catch (fillErr) {
+            return fail(`Credential auto-fill failed: ${fillErr instanceof Error ? fillErr.message : String(fillErr)}`);
+          }
+        } else {
+          return fail(
+            "Oregon ePermitting login page is still showing. Log in manually in the browser window, then re-run. For a persistent login, use: npm run portal:login -- accela"
+          );
+        }
       }
 
       return ok("Logged in to Oregon ePermitting.", { portalProfileId: context.portalProfileId ?? null });

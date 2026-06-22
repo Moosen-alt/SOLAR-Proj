@@ -2592,17 +2592,27 @@ function renderCorrections() {
 function renderPortalRuns() {
   const runs = state.detail.portalRuns || [];
   const awaiting = runs.find((run) => run.status === "awaiting_human_submit");
-  $("portalRuns").innerHTML = runs.length ? runs.map((run) => `
-    <article class="item ${run.status === "failed" ? "fail" : "info"}">
+  const paused = runs.find((run) => run.status === "paused_for_human");
+  $("portalRuns").innerHTML = runs.length ? runs.map((run) => {
+    const isMfa = run.pauseReason === "mfa_captcha";
+    const cardClass = run.status === "failed" ? "fail" : isMfa ? "warning" : "info";
+    const confirmLine = run.confirmationNumber ? `<p class="muted">Confirmation: <strong>${esc(run.confirmationNumber)}</strong></p>` : "";
+    const mfaBanner = isMfa
+      ? `<p class="submit-gate-check warning" style="margin-top:6px">Portal requires your attention — MFA or CAPTCHA detected. Complete it in the browser window, then click Retry to continue.</p>`
+      : "";
+    return `
+    <article class="item ${cardClass}">
       <div class="item-title"><span>${esc(humanize(run.runType))}</span>${statusBadge(run.status)}</div>
       <p>${run.humanActionRequired ? "Human action required before legal submission is complete." : "No human action currently flagged."}</p>
+      ${mfaBanner}
+      ${confirmLine}
       <p class="muted">${esc(run.errorMessage || run.startedAt)}</p>
-    </article>
-  `).join("") : `<p class="muted">No portal runs yet.</p>`;
+    </article>`;
+  }).join("") : `<p class="muted">No portal runs yet.</p>`;
 
   const form = $("confirmationForm");
-  form.hidden = !awaiting;
-  form.dataset.portalRunId = awaiting?.id || "";
+  form.hidden = !awaiting && !paused;
+  form.dataset.portalRunId = (awaiting || paused)?.id || "";
 }
 
 function renderAudit() {

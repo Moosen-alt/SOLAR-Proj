@@ -8,12 +8,18 @@ export interface PortalContext {
   // a normal Chrome profile. Create it once with `npm run portal:login`.
   userDataDir?: string;
   headless?: boolean;
+  // Decrypted credential for auto-filling the login form when the persistent
+  // session has expired. Passed in-memory only; never logged or persisted.
+  credential?: { username: string; password: string };
 }
 
 export interface PortalStepResult {
   ok: boolean;
   message: string;
   data?: Record<string, unknown>;
+  // Set when the run must pause for human action (e.g. "mfa_captcha").
+  // Propagated to the portal_runs record so the UI can show a specific banner.
+  pauseReason?: string;
 }
 
 export interface PortalAdapter {

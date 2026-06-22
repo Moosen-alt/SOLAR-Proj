@@ -66,6 +66,7 @@ import { projectDocsByType } from "./projectDocuments";
 import { STAGE_COUNT, stageForStatus, isBlockedStatus } from "./projectStage";
 import { addAuditLog } from "./audit";
 import { clientStagingOverlay, getClient } from "./clients";
+import { getDecryptedCredential } from "./portalCredentials";
 import { buildApplicationDocumentPackage } from "./applicationDocs";
 import { classifyCorrection, humanizeBucket, humanizeEnum } from "./corrections";
 import type { AppDb } from "./db";
@@ -349,6 +350,8 @@ function mapPortalRun(row: Row): PortalRun {
     humanActionRequired: bool(row.human_action_required),
     screenshotsPath: text(row.screenshots_path),
     logsPath: text(row.logs_path),
+    pauseReason: row.pause_reason ? text(row.pause_reason) : undefined,
+    confirmationNumber: row.confirmation_number ? text(row.confirmation_number) : undefined,
   };
 }
 
@@ -4580,10 +4583,26 @@ export async function prepareSubmission(db: AppDb, projectId: string): Promise<P
       : recipe
         ? "RecipeAdapter"
         : "MockPortalAdapter";
+  // Resolve stored credentials for session-expired auto-login. Passed
+  // in-memory to the adapter; never logged. Falls back gracefully when
+  // no credential has been stored for this client+portal combination.
+  const clientId = detail.project.clientId ?? "";
+  const credential = clientId
+    ? (getDecryptedCredential(db, clientId, portalType) ?? undefined)
+    : undefined;
+
+  // Per-client browser profile so sessions never bleed across clients.
+  const profileBase = process.env.PORTAL_PROFILES_DIR || path.join(process.cwd(), "portal-profiles");
+  const userDataDir = clientId
+    ? path.join(profileBase, clientId, portalType)
+    : path.join(profileBase, portalType);
+
   const stageOptions = {
     encryptedStorageStatePath: portalProfile?.encrypted_storage_state ?? undefined,
     headless: false,
     reviewerReport,
+    credential,
+    userDataDir,
   };
 
   // Overlay the linked client's contractor/licensing identity onto the project
@@ -4603,13 +4622,18 @@ export async function prepareSubmission(db: AppDb, projectId: string): Promise<P
           ? await stageWithRecipe(recipe, stagedProject, resolveRecipeFieldValues(db, stagedProject, portalType), docsByType, files, stageOptions)
           : await stageWithMockPortal(stagedProject, files, reviewerReport);
 
+  // Determine status: if the adapter paused for MFA/CAPTCHA, record it distinctly
+  // so the UI can show a specific banner and the operator knows to resume manually.
+  const pauseReason = typeof result.pauseReason === "string" ? result.pauseReason : null;
+  const runStatus = pauseReason ? "paused_for_human" : "awaiting_human_submit";
+
   db.transaction(() => {
     db.run(
       `INSERT INTO portal_runs
         (id, project_id, portal_profile_id, run_type, status, started_at, finished_at, error_message,
-         human_action_required, screenshots_path, logs_path, result_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [runId, projectId, portalProfileId, "prepare_submit", "awaiting_human_submit", ts, nowIso(), "", 1, "", "", asJson(result)],
+         human_action_required, screenshots_path, logs_path, result_json, pause_reason)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [runId, projectId, portalProfileId, "prepare_submit", runStatus, ts, nowIso(), "", 1, "", "", asJson(result), pauseReason],
     );
 
     db.run(

@@ -32,6 +32,7 @@ export type PortalRunStatus =
   | "queued"
   | "running"
   | "awaiting_human_submit"
+  | "paused_for_human"
   | "submitted"
   | "failed";
 export type PermitCheckSource = "manual" | "portal" | "email" | "mock" | "public_url";
@@ -201,6 +202,10 @@ export interface PortalRun {
   humanActionRequired: boolean;
   screenshotsPath: string;
   logsPath: string;
+  // Set when status is paused_for_human (e.g. "mfa_captcha")
+  pauseReason?: string;
+  // Captured after human completes final submit
+  confirmationNumber?: string;
 }
 
 export interface SubmissionRecord {
@@ -1388,6 +1393,15 @@ export interface RecipeStep {
 
 export type PortalRecipeStatus = "recording" | "complete" | "needs_rerecord";
 
+export interface PortalRecipeLoginStep {
+  /** Selector for the username/email field. */
+  usernameSel?: RecipeSelector;
+  /** Selector for the password field. */
+  passwordSel?: RecipeSelector;
+  /** Selector for the submit/login button. */
+  submitSel?: RecipeSelector;
+}
+
 export interface PortalRecipe {
   id: string;
   /** Whether this teaches an AHJ permit portal or a utility NEM portal. */
@@ -1402,6 +1416,8 @@ export interface PortalRecipe {
   status: PortalRecipeStatus;
   version: number;
   steps: RecipeStep[];
+  /** Optional selectors for auto-filling the login form when a session expires. */
+  loginStep?: PortalRecipeLoginStep;
   createdBy: string;
   createdAt: string;
   updatedAt: string;

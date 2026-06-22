@@ -9,12 +9,17 @@ import { openPortal } from "../browser";
 // `stopForReview` marker + a denylist guard below) — a human always submits manually.
 
 const FINAL_SUBMIT = /\b(submit application|submit & pay|submit and pay|pay fee|pay now|file application|finalize submission|^submit$)\b/i;
+const RETRY_BACKOFF_MS = [2000, 5000, 10000];
 
 function ok(message: string, data: Record<string, unknown> = {}): PortalStepResult {
   return { ok: true, message, data };
 }
 function fail(message: string, data: Record<string, unknown> = {}): PortalStepResult {
   return { ok: false, message, data };
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export class RecipeAdapter implements PortalAdapter {
@@ -42,6 +47,36 @@ export class RecipeAdapter implements PortalAdapter {
         await this.page.goto(this.recipe.portalUrl);
         await this.page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
       }
+
+      // If the recipe has a loginStep and a credential is available, auto-fill
+      // the login form when the session has expired. Never logs credentials.
+      if (context.credential && this.recipe.loginStep) {
+        const loginStep = this.recipe.loginStep;
+        try {
+          if (loginStep.usernameSel) {
+            const uLoc = this.locator(loginStep.usernameSel);
+            if (uLoc && await uLoc.count() > 0) {
+              await uLoc.fill(context.credential.username);
+              if (loginStep.passwordSel) {
+                const pLoc = this.locator(loginStep.passwordSel);
+                if (pLoc) await pLoc.fill(context.credential.password);
+              }
+              if (loginStep.submitSel) {
+                const sLoc = this.locator(loginStep.submitSel);
+                if (sLoc) await sLoc.click();
+              }
+              await this.page.waitForLoadState("networkidle", { timeout: 20000 }).catch(() => null);
+              const mfaVisible = await this.page.getByText(/verify|two.factor|authenticat/i).count() > 0;
+              if (mfaVisible) {
+                return { ok: false, message: "MFA/2FA required after credential fill — pausing for human. Complete verification in the browser window, then retry the portal run.", pauseReason: "mfa_captcha" };
+              }
+            }
+          }
+        } catch (fillErr) {
+          return fail(`Recipe credential auto-fill failed: ${fillErr instanceof Error ? fillErr.message : String(fillErr)}`);
+        }
+      }
+
       return ok(`Opened ${this.portalName}. Using the persistent login session (log in once with npm run portal:login if prompted).`);
     } catch (err) {
       return fail(`Recipe login failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -77,16 +112,30 @@ export class RecipeAdapter implements PortalAdapter {
     const skipped: string[] = [];
     for (const step of this.recipe.steps) {
       if (step.action === "stopForReview") break;
-      try {
-        const done = await this.executeStep(step);
-        if (done) executed++;
-        else skipped.push(step.note || step.action);
-      } catch (err) {
+      let lastErr: unknown;
+      let succeeded = false;
+      for (let attempt = 0; attempt <= RETRY_BACKOFF_MS.length; attempt++) {
+        try {
+          const done = await this.executeStep(step);
+          if (done) executed++;
+          else skipped.push(step.note || step.action);
+          succeeded = true;
+          break;
+        } catch (err) {
+          lastErr = err;
+          const isTimeout = err instanceof Error && /timeout|TimeoutError/i.test(err.message);
+          if (!isTimeout || attempt >= RETRY_BACKOFF_MS.length) break;
+          await sleep(RETRY_BACKOFF_MS[attempt]);
+          // Reload on timeout retries to recover from stale page state.
+          await this.page.reload({ waitUntil: "networkidle", timeout: 15000 }).catch(() => null);
+        }
+      }
+      if (!succeeded) {
         if (step.optional) {
-          skipped.push(`${step.note || step.action} (optional, skipped: ${err instanceof Error ? err.message : String(err)})`);
+          skipped.push(`${step.note || step.action} (optional, skipped: ${lastErr instanceof Error ? lastErr.message : String(lastErr)})`);
           continue;
         }
-        return fail(`Recipe step failed (${step.action}${step.note ? ` — ${step.note}` : ""}): ${err instanceof Error ? err.message : String(err)}`, { executed, skipped });
+        return fail(`Recipe step failed (${step.action}${step.note ? ` — ${step.note}` : ""}): ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`, { executed, skipped });
       }
     }
     return ok(`Replayed ${executed} recorded step(s); stopped at review.`, { executed, skipped });

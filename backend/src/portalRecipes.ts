@@ -26,6 +26,7 @@ function mapRecipe(row: Row): PortalRecipe {
     status: (["recording", "complete", "needs_rerecord"].includes(s(row.status)) ? s(row.status) : "recording") as PortalRecipeStatus,
     version: Number(row.version ?? 1),
     steps: parseJson<RecipeStep[]>(s(row.steps_json) || "[]", []),
+    loginStep: row.login_step_json ? parseJson(s(row.login_step_json), undefined) : undefined,
     createdBy: s(row.created_by),
     createdAt: s(row.created_at),
     updatedAt: s(row.updated_at),

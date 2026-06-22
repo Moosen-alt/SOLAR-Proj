@@ -90,10 +90,30 @@ export class PowerClerkAdapter implements PortalAdapter {
 
       const loginVisible = await this.page.getByRole("button", { name: "Log In" }).count();
       if (loginVisible > 0) {
-        // Session didn't persist — let the user log in manually in the open window
-        return fail(
-          "PowerClerk login form is still visible. Log in manually in the browser window, then re-run. For a persistent login, use: npm run portal:login -- powerclerk"
-        );
+        if (context.credential) {
+          // Session expired — auto-fill the login form with stored credentials.
+          try {
+            await this.page.getByLabel(/email|username/i).fill(context.credential.username);
+            await this.page.getByLabel(/password/i).fill(context.credential.password);
+            await this.page.getByRole("button", { name: "Log In" }).click();
+            await this.page.waitForLoadState("networkidle", { timeout: 20000 }).catch(() => null);
+
+            const mfaVisible = await this.page.getByText(/verify|two.factor|authenticat/i).count() > 0;
+            if (mfaVisible) {
+              return { ok: false, message: "MFA/2FA required after credential fill — pausing for human. Complete verification in the browser window, then retry the portal run.", pauseReason: "mfa_captcha" };
+            }
+            const stillVisible = await this.page.getByRole("button", { name: "Log In" }).count();
+            if (stillVisible > 0) {
+              return fail("Credential auto-fill did not result in a successful login. Check the stored username/password in Portal Credentials.");
+            }
+          } catch (fillErr) {
+            return fail(`Credential auto-fill failed: ${fillErr instanceof Error ? fillErr.message : String(fillErr)}`);
+          }
+        } else {
+          return fail(
+            "PowerClerk login form is still visible. Log in manually in the browser window, then re-run. For a persistent login, use: npm run portal:login -- powerclerk"
+          );
+        }
       }
 
       return ok("Logged in to PowerClerk (PGE).", { portalProfileId: context.portalProfileId ?? null });

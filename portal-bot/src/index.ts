@@ -43,6 +43,12 @@ interface StageOptions {
   encryptedStorageStatePath?: string;
   headless?: boolean;
   reviewerReport?: ReviewerReport;
+  // Decrypted credential for auto-filling expired sessions.
+  // Resolved server-side from the encrypted portal_credentials store;
+  // passed in-memory only and never logged.
+  credential?: { username: string; password: string };
+  // Per-client browser profile directory (profiles/{clientId}/{portalType}).
+  userDataDir?: string;
 }
 
 // Generic adapter runner: decrypts the session into a temp file, drives the
@@ -61,8 +67,10 @@ async function runAdapter(
     const loginResult = await adapter.login({
       storageStatePath: tmpStatePath,
       headless: options.headless ?? false,
+      credential: options.credential,
+      userDataDir: options.userDataDir,
     });
-    if (!loginResult.ok) return { portalName: adapter.portalName, finalSubmitClickedByAutomation: false, steps: [loginResult] };
+    if (!loginResult.ok) return { portalName: adapter.portalName, finalSubmitClickedByAutomation: false, pauseReason: loginResult.pauseReason ?? null, steps: [loginResult] };
 
     const openResult = await adapter.openSubmission(project);
     const fillResult = openResult.ok ? await adapter.fillApplication(project) : openResult;

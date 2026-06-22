@@ -755,6 +755,13 @@ function migrate(db: AppDb): void {
   addColumnIfMissing(db, "permit_utility_knowledge", "portal_platform", "TEXT NOT NULL DEFAULT ''");
   addColumnIfMissing(db, "permit_utility_knowledge", "submission_method", "TEXT NOT NULL DEFAULT ''");
 
+  // Portal run enhancements: pause tracking (MFA/CAPTCHA) and confirmation capture.
+  addColumnIfMissing(db, "portal_runs", "pause_reason", "TEXT");
+  addColumnIfMissing(db, "portal_runs", "confirmation_number", "TEXT NOT NULL DEFAULT ''");
+
+  // Recipe login step: selectors for auto-filling the login form on session expiry.
+  addColumnIfMissing(db, "portal_recipes", "login_step_json", "TEXT");
+
   // Scale indexes (built after the migrated columns exist) — keep the project
   // list snappy with thousands of rows: default sort is updated_at DESC, with
   // common filters on assigned user, client, and customer.
