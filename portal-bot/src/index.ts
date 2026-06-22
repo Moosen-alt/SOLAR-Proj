@@ -171,6 +171,9 @@ async function runAdapter(
         || (adapter as { finalSubmitClicked?: boolean }).finalSubmitClicked === true);
     // ok: every step must have succeeded AND the review screen must have been reached.
     const ok = steps.every((s) => s.ok);
+    // Surface a permit/record number + record link captured off the completion page
+    // after an authorized final submit, so the backend can store them automatically.
+    const captured = steps.map((s) => s.data).find((d) => d && (d.permitNumber || d.recordLink));
 
     return {
       portalName: adapter.portalName,
@@ -178,6 +181,9 @@ async function runAdapter(
       finalSubmitClicked,
       // Legacy field kept for older consumers; mirrors finalSubmitClicked.
       finalSubmitClickedByAutomation: finalSubmitClicked,
+      capturedPermitNumber: captured?.permitNumber || "",
+      capturedConfirmationNumber: captured?.confirmationNumber || "",
+      capturedRecordLink: captured?.recordLink || "",
       pauseReason: reviewResult.pauseReason ?? null,
       internalFinalReviewPacketRequired: true,
       reviewerBlockerCount: options.reviewerReport?.findings.filter((f) => f.severity === "blocker").length ?? 0,

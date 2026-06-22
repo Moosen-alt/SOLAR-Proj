@@ -4800,6 +4800,11 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   const adapterOk = result.ok === true;
   const finalSubmitClicked = result.finalSubmitClicked === true;
   const autoSubmitted = resolvedAutoSubmit && !pauseReason && adapterOk && finalSubmitClicked;
+  // Permit/record number + record link scraped off the completion page after an
+  // operator-authorized final submit (the "relay continuation" capture).
+  const capturedPermitNumber = autoSubmitted ? String((result as Record<string, unknown>).capturedPermitNumber || "").trim() : "";
+  const capturedConfirmation = autoSubmitted ? String((result as Record<string, unknown>).capturedConfirmationNumber || "").trim() : "";
+  const capturedRecordLink = autoSubmitted ? String((result as Record<string, unknown>).capturedRecordLink || "").trim() : "";
   const runStatus = pauseReason ? "paused_for_human" : autoSubmitted ? "submitted" : "awaiting_human_submit";
   if (autoSubmitted) {
     addAuditLog(db, projectId, "portal_bot", adapterActorName, "portal.auto_submitted", {
@@ -4835,8 +4840,8 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
         permitTypeTag,
         autoSubmitted ? "submitted" : "awaiting_human_submit",
         "",
-        "",
-        "",
+        capturedPermitNumber,
+        capturedConfirmation,
         autoSubmitted ? ts : null,
         autoSubmitted ? "automation (operator-approved auto-submit)" : "",
         "",
@@ -4850,11 +4855,27 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
     db.run("UPDATE projects SET status = ?, current_stage = ?, updated_at = ? WHERE id = ?", [
       autoSubmitted ? "submitted" : "awaiting_human_submit",
       autoSubmitted
-        ? `${trackLabelText}${portalLabel} auto-submitted (operator-approved). Capture confirmation + track status.`
+        ? `${trackLabelText}${portalLabel} auto-submitted (operator-approved)${capturedPermitNumber ? ` — record ${capturedPermitNumber}` : ""}. Tracking status.`
         : `${trackLabelText}${portalLabel} staged. Human must verify and submit manually.`,
       nowIso(),
       projectId,
     ]);
+
+    // Persist the captured permit/record number + record link onto the track's tracking
+    // target so the status poller follows it and the operator sees the number + link.
+    if (autoSubmitted && (capturedPermitNumber || capturedRecordLink)) {
+      const tgt = db.get<Row>(
+        "SELECT id FROM permit_check_targets WHERE project_id = ? AND permit_type = ? AND active = 1 ORDER BY updated_at DESC LIMIT 1",
+        [projectId, permitTypeTag],
+      );
+      if (tgt) {
+        db.run(
+          "UPDATE permit_check_targets SET permit_number = COALESCE(NULLIF(?, ''), permit_number), tracking_url = COALESCE(NULLIF(?, ''), tracking_url), updated_at = ? WHERE id = ?",
+          [capturedPermitNumber, capturedRecordLink, nowIso(), text(tgt.id)],
+        );
+      }
+      db.run("UPDATE portal_runs SET tracking_url = COALESCE(NULLIF(?, ''), tracking_url) WHERE id = ?", [capturedRecordLink, runId]);
+    }
 
     addAuditLog(db, projectId, "portal_bot", adapterActorName, "portal.staged_to_review", {
       runId,

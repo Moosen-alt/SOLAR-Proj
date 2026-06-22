@@ -135,8 +135,34 @@ export class RecipeAdapter extends BasePortalAdapter {
       { finalSubmitClicked: false },
     );
   }
+  // After a final submit, scrape the COMPLETION page for the issued permit/record number
+  // and the record link, so the operator's "relay continuation" click captures them
+  // automatically. Read-only — never clicks anything. (Accela completion page shows
+  // "Your application has been successfully submitted." + a record number like
+  // 517-26-000274-STR and a record/summary link.)
   async captureSubmissionConfirmation(): Promise<PortalStepResult> {
-    return ok("Capture the application/confirmation number manually after the human submits.");
+    if (!this.page) return ok("No open page to capture confirmation from.", { permitNumber: "", recordLink: "" });
+    try {
+      await this.page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
+      const bodyText = String((await this.page.locator("body").innerText().catch(() => "")) || "");
+      // Accela-style record number: 517-26-000274-STR (digits/dashes + optional type suffix).
+      const accela = bodyText.match(/\b\d{2,4}-\d{2}-\d{4,7}-?[A-Z]{0,4}\b/);
+      // Generic confirmation/record number fallback (avoid pure phone/zip).
+      const generic = bodyText.match(/\b(?:record|permit|application|confirmation)\s*(?:no\.?|number|#)?\s*[:#]?\s*([A-Z0-9][A-Z0-9-]{5,})\b/i);
+      const permitNumber = (accela?.[0] || generic?.[1] || "").trim();
+      const recordLink = typeof this.page.url === "function" ? String(this.page.url() ?? "") : "";
+      const submitted = /successfully submitted|application has been submitted|record (number|#)/i.test(bodyText);
+      if (permitNumber || submitted) {
+        return ok(`Captured submission confirmation${permitNumber ? `: ${permitNumber}` : ""}.`, {
+          permitNumber,
+          confirmationNumber: permitNumber,
+          recordLink,
+        });
+      }
+      return ok("Submitted; no record number found on the completion page yet.", { permitNumber: "", recordLink });
+    } catch (err) {
+      return ok(`Confirmation capture skipped: ${err instanceof Error ? err.message : String(err)}`, { permitNumber: "", recordLink: "" });
+    }
   }
 
   // Read-only status scrape: navigate to the portal URL, search the page body for
@@ -212,7 +238,15 @@ export class RecipeAdapter extends BasePortalAdapter {
     }
 
     if (this.finalSubmitClicked) {
-      return ok(`Replayed ${executed} recorded step(s) and clicked the approved final submit.`, { executed, skipped, finalSubmitClicked: true });
+      // The operator authorized the final submit — grab the permit number + record link
+      // off the completion page so they're captured automatically.
+      const capture = await this.captureSubmissionConfirmation();
+      return ok(`Replayed ${executed} recorded step(s) and clicked the approved final submit.`, {
+        executed, skipped, finalSubmitClicked: true,
+        permitNumber: capture.data?.permitNumber || "",
+        confirmationNumber: capture.data?.confirmationNumber || "",
+        recordLink: capture.data?.recordLink || "",
+      });
     }
     return ok(`Replayed ${executed} recorded step(s); stopped at review.`, { executed, skipped, finalSubmitClicked: false });
   }
