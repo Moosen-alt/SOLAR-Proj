@@ -73,6 +73,8 @@ export interface LearnResult {
   /** "mfa_captcha" if a challenge stopped us, else null. */
   pauseReason: string | null;
   message: string;
+  /** Base64 PNG screenshot taken when the review/confirm page is reached. */
+  reviewScreenshotBase64?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -509,6 +511,13 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         ? `Auto-learn filled ${pageCount} page(s) and recorded the steps, but did not reach a review screen.`
         : `Auto-learn found nothing fillable on ${pageCount} page(s); no steps recorded.`;
 
+    // Capture review page screenshot when we've reached the review screen
+    let reviewScreenshotBase64: string | undefined;
+    try {
+      const buf = await this.page.screenshot({ type: "png", fullPage: false });
+      reviewScreenshotBase64 = buf.toString("base64");
+    } catch { /* non-fatal */ }
+
     return {
       ok,
       portalName: this.portalName,
@@ -518,6 +527,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       pageCount,
       pauseReason: null,
       message,
+      reviewScreenshotBase64,
     };
   }
 

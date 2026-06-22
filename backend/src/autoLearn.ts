@@ -20,6 +20,7 @@
 // ---------------------------------------------------------------------------
 
 import path from "node:path";
+import fs from "node:fs";
 import type { AppDb } from "./db";
 import type { PortalRecipe, ProjectRecord } from "../../shared/src/types";
 import { learnPortal } from "../../portal-bot/src/index";
@@ -79,6 +80,18 @@ export async function autoLearnPortal(
     if (v) projectFields[k] = v;
   }
 
+  // Fetch KB context for this AHJ/utility to guide the planner
+  let kbContext = "";
+  try {
+    const kbEntry = db.get<{ portal_name: string; portal_url: string; notes: string }>(
+      `SELECT portal_name, portal_url, notes FROM permit_utility_knowledge WHERE (ahj = ? OR utility = ?) LIMIT 1`,
+      [project.ahj, project.utility],
+    ) as any;
+    if (kbEntry) {
+      kbContext = `KB CONTEXT for this AHJ/utility:\nPortal: ${kbEntry.portal_name || ""}\nURL: ${kbEntry.portal_url || ""}\nNotes: ${kbEntry.notes || ""}`.trim();
+    }
+  } catch { /* KB table may not exist yet */ }
+
   const llm = createLLMProvider();
   // The planner the adapter calls when it has the live fields on a page. The adapter
   // passes fields positionally (ExtractedField[]); we index them for the LLM and map the
@@ -92,6 +105,7 @@ export async function autoLearnPortal(
       bodyText: req.bodyText,
       projectFields,
       alreadyFilledLabels: req.alreadyFilledLabels,
+      kbContext: kbContext || undefined,
     });
     return {
       fills: plan.fills.map((f) => ({ selectorIndex: f.index, value: f.value, field: f.field })),
@@ -159,6 +173,27 @@ export async function autoLearnPortal(
       ? `Auto-learned and verified (${verification.overallConfidence} confidence) on ${learn.pageCount} page(s). Final submit recorded for the trusted-submit allowlist; never auto-clicked unless the operator opts in.`
       : `Auto-learned but NOT verified — review the captured fill and confirm before trusting. Issues: ${verification.issues.join("; ") || "low confidence"}.`,
   });
+
+  // Write review screenshot to disk if captured.
+  if (learn.reviewScreenshotBase64) {
+    try {
+      const screenshotDir = path.join(process.cwd(), "data", "screenshots");
+      fs.mkdirSync(screenshotDir, { recursive: true });
+      const screenshotPath = path.join(screenshotDir, `review-${stub.id}-${Date.now()}.png`);
+      fs.writeFileSync(screenshotPath, Buffer.from(learn.reviewScreenshotBase64, "base64"));
+      db.run("UPDATE portal_recipes SET notes = notes || ? WHERE id = ?", [` [screenshot:${screenshotPath}]`, stub.id]);
+    } catch { /* non-fatal */ }
+  }
+
+  // After a successful auto-learn, upsert learned portal URL back to KB (best-effort).
+  if (trusted) {
+    try {
+      db.run(
+        `UPDATE permit_utility_knowledge SET portal_url = ?, updated_at = ? WHERE ahj = ?`,
+        [portalUrl, new Date().toISOString(), project.ahj],
+      );
+    } catch { /* KB upsert is best-effort */ }
+  }
 
   addAuditLog(db, projectId, "system", "auto-learn", trusted ? "portal.auto_learned_trusted" : "portal.auto_learned_draft", {
     scope: scopeType, pageCount: learn.pageCount, confidence: verification.overallConfidence, finalSubmitRecorded: learn.finalSubmitRecorded,

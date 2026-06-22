@@ -1341,6 +1341,8 @@ export interface PortalFieldPlanInput {
   projectFields: Record<string, string>;
   /** Labels already filled on prior pages (context for a multi-page form). */
   alreadyFilledLabels: string[];
+  /** Optional knowledge-base context for the AHJ/utility (portal hints, required docs, etc.). */
+  kbContext?: string;
 }
 export interface PortalFieldPlan {
   /** Which field index to fill with what. Prefer `field` (a reusable project-field key,

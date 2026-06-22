@@ -871,6 +871,7 @@ Return ONLY JSON:
       url: input.url, pageTitle: input.pageTitle, fields: input.fields,
       bodyText: input.bodyText.slice(0, 2000), projectFields: input.projectFields,
       alreadyFilledLabels: input.alreadyFilledLabels,
+      ...(input.kbContext ? { kbContext: input.kbContext } : {}),
     });
     let parsed: Partial<PortalFieldPlan> = {};
     try { parsed = this.parseJson<Partial<PortalFieldPlan>>(await this.ask(system, user), {}); } catch { parsed = {}; }

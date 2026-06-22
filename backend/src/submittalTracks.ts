@@ -101,7 +101,8 @@ export function requiredTracks(project: ProjectRecord): SubmittalTrackType[] {
 function channelFor(track: SubmittalTrackType, project: ProjectRecord): string {
   if (track === "nem") {
     const u = (project.utility || "").toLowerCase();
-    if (/pge|pacific|portland general|pacificorp/.test(u)) return "PowerClerk / utility NEM portal";
+    if (/pge|portland general(?!\s*electric\s*pac)/.test(u)) return "PowerClerk (PGE NEM portal)";
+      if (/pacificorp|pacific power/.test(u)) return "Pacific Power NEM portal (pacificpower.net)";
     return "Utility NEM portal";
   }
   const profile = findApplicationProfile(project);

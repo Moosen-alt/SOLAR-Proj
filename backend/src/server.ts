@@ -1566,6 +1566,39 @@ app.post("/api/portal-runs/:id/capture-confirmation", (req, res) => {
 // Save a public AHJ portal tracking URL (no login required) for a portal run or
 // permit check target. Operators paste the CapDetail / record-detail URL after
 // submission so the system can surface it for unauthenticated status checks.
+// Serve the auto-captured review-page screenshot for a portal run (or auto-learn recipe).
+app.get("/api/projects/:id/portal-runs/:runId/review-screenshot", (req, res) => {
+  const projectId = String(req.params.id);
+  const runId = String(req.params.runId);
+  // Check portal_runs first (for recipe-replay runs that generate portal_run records).
+  const run = db.get<{ screenshots_path: string; project_id: string }>(
+    "SELECT screenshots_path, project_id FROM portal_runs WHERE id = ?",
+    [runId],
+  );
+  if (run && run.project_id === projectId && run.screenshots_path && fs.existsSync(run.screenshots_path)) {
+    res.setHeader("Content-Type", "image/png");
+    res.sendFile(run.screenshots_path);
+    return;
+  }
+  // Fall back to portal_recipes (auto-learn stores recipe id; screenshot path in notes).
+  const recipe = db.get<{ notes: string; ahj: string; utility: string }>(
+    "SELECT notes, ahj, utility FROM portal_recipes WHERE id = ?",
+    [runId],
+  );
+  if (recipe) {
+    const match = recipe.notes.match(/\[screenshot:([^\]]+)\]/);
+    if (match) {
+      const screenshotPath = match[1];
+      if (fs.existsSync(screenshotPath)) {
+        res.setHeader("Content-Type", "image/png");
+        res.sendFile(screenshotPath);
+        return;
+      }
+    }
+  }
+  res.status(404).json({ error: "No review screenshot available." });
+});
+
 app.put("/api/portal-runs/:id/tracking-url", (req, res) => {
   const url = String(req.body?.url || "").trim();
   if (!url) throw new HttpError(400, "url is required.");
