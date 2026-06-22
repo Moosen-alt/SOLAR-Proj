@@ -1205,6 +1205,12 @@ export interface LLMProvider {
   lookupInverterSpec(input: {
     inverterModel: string;
     inverterQty?: number;
+    /** System AC nameplate (kW). When the model can't be resolved, the inverter's
+     *  continuous AC output current is derived from the nameplate (VA / voltage),
+     *  which is the most reliable fallback (the AC nameplate IS the inverter output). */
+    acNameplateKw?: number;
+    /** Service line-to-line voltage (default 240 for residential split-phase). */
+    serviceVoltageV?: number;
   }): Promise<InverterSpecLookup>;
 
   /** Web-search for the AHJ's official blank permit application PDF and return

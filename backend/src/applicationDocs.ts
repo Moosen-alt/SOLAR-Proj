@@ -7,6 +7,7 @@ import type {
 } from "../../shared/src/types";
 import { nowIso } from "./time";
 import { findAhjProcessProfile } from "./processProfiles";
+import { resolvePermitPath, permitPathCallout, hasStampedStructuralEvidence, type PermitPathResolution } from "./permitPath";
 
 // Derive combo-vs-separate from the AHJ process knowledge when the static application
 // profile doesn't state it. Many Oregon AHJs (e.g. Beaverton) file SEPARATE building +
@@ -173,6 +174,41 @@ export const applicationProfiles: ApplicationRequirementProfile[] = [
     notes: ["Salem lists Solar Array as an online permit application through the PAC Portal."],
   },
   {
+    id: "marion-county-keizer-solar",
+    name: "Marion County / Keizer Solar (Oregon ePermitting)",
+    // Marion County processes solar permits for Keizer, Hubbard, Mount Angel, Gervais,
+    // Scotts Mills and unincorporated Marion County. Match all of them.
+    matchJurisdictions: ["keizer", "marion county", "marion co", "hubbard", "mount angel", "gervais", "scotts mills"],
+    portalName: "Oregon ePermitting (Accela)",
+    sourceUrl: "https://aca-oregon.accela.com/oregon/",
+    requiresAhjApplication: false,
+    // Structural application is required for the NON-prescriptive (engineered) path only;
+    // the prescriptive path uses the prescriptive application instead. The doc builder
+    // resolves which one from the project's permit path — never both.
+    requiresStructuralApplication: true,
+    // The "renewable energy" (electrical) application is required for the PV interconnection.
+    requiresElectricalApplication: true,
+    requiresPrescriptiveChecklist: true,
+    requiresBidSheet: false,
+    requiresPortalEntryOnly: true,
+    permitStructure: "combo",
+    submissionMethod: "Oregon ePermitting (Accela)",
+    requiredDocuments: [
+      "Solar application — PRESCRIPTIVE or STRUCTURAL (upload only the one that matches your path; never both)",
+      "Renewable Energy (electrical) permit application",
+      "Solar prescriptive checklist",
+      "Electrical permit application (only when a main panel/service upgrade is in scope)",
+      "Plan set and specifications",
+    ],
+    notes: [
+      "Marion County processes Keizer/Hubbard/Mount Angel/Gervais roof-mount solar on Oregon ePermitting (Accela).",
+      "PRESCRIPTIVE application = meets prescriptive code, NO plan review, REDUCED permit fee.",
+      "STRUCTURAL application = does NOT meet prescriptive code, WILL require plan review, FULL structural fees, and a PE-stamped plan set + structural engineering letter must be attached.",
+      "Upload ONLY the application that pertains to the project — do NOT upload both.",
+      "Use the NON-PRESCRIPTIVE (structural) application for non-prescriptive submissions; fill the electrical application when a main panel/service upgrade (MPU) is in scope.",
+    ],
+  },
+  {
     id: "oregon-generic-epermitting",
     name: "Generic Oregon ePermitting Solar",
     matchJurisdictions: ["oregon", "generic"],
@@ -201,12 +237,84 @@ function yesNo(value: string): string {
   return value ? value : "[verify]";
 }
 
+// Synthesize an application profile from the AHJ PROCESS profile (the 380+ seeded
+// jurisdiction records). This is the generalized accuracy fix: any AHJ we have real
+// process knowledge for gets its true required-document set + submission method, even
+// without a hand-written static profile — so the doc builder pulls the right forms
+// for "the AHJs we give it" instead of falling back to a generic package.
+function applicationProfileFromProcess(project: ProjectRecord): ApplicationRequirementProfile | null {
+  const proc = findAhjProcessProfile(project);
+  if (!proc) return null;
+  const notes = `${proc.reviewerNotes || ""} ${proc.otherRequirements || ""} ${proc.submissionMethod || ""}`.toLowerCase();
+  // Treat the profile as "informative" only when it actually carries some signal —
+  // a bare stub (all flags false, no method, no notes) shouldn't override the OR generic.
+  const hasSignal =
+    proc.requiresPlanSet || proc.requiresStructuralStamp || proc.requiresElectricalStamp ||
+    proc.requiresElectricalPermitApplication || proc.requiresBuildingPermitApplication ||
+    proc.requiresSolarChecklist || proc.requiresCustomerSignature ||
+    Boolean((proc.submissionMethod || "").trim()) || notes.replace(/\s+/g, "").length > 12;
+  if (!hasSignal) return null;
+
+  const method = (proc.submissionMethod || "").toLowerCase();
+  const isEpermitting = /e-?permitting|accela|aca/.test(method) || /e-?permitting|accela/.test(notes);
+  const isProjectDox = /projectdox|avolve/.test(method) || /projectdox|avolve/.test(notes);
+  const isEmail = /email/.test(method) || /email/.test(notes);
+  const portalOnly = isEpermitting || isProjectDox || /portal|online/.test(method);
+
+  const wantsElectricalApp = proc.requiresElectricalPermitApplication || proc.requiresElectricalStamp || /renewable energy app|electrical app/.test(notes);
+  const wantsBuildingApp = proc.requiresBuildingPermitApplication;
+  const wantsStructuralApp = proc.requiresStructuralStamp || /struct app|structural app/.test(notes) || wantsBuildingApp;
+  const wantsChecklist = proc.requiresSolarChecklist || /checklist/.test(notes) || project.state.toUpperCase() === "OR";
+
+  const requiredDocuments: string[] = [];
+  if (wantsStructuralApp || wantsChecklist) {
+    requiredDocuments.push("Solar application — PRESCRIPTIVE or STRUCTURAL (upload only the one that matches your path; never both)");
+  }
+  if (wantsElectricalApp) requiredDocuments.push("Renewable Energy (electrical) permit application");
+  if (wantsChecklist) requiredDocuments.push("Solar prescriptive checklist");
+  if (/mpu|panel upgrade|service upgrade/.test(notes)) requiredDocuments.push("Electrical permit application (when a main panel/service upgrade is in scope)");
+  if (proc.requiresPlanSet) requiredDocuments.push("Plan set and specifications");
+  if (proc.requiresStructuralStamp) requiredDocuments.push("PE-stamped structural plans + engineering letter (non-prescriptive path)");
+  if (!requiredDocuments.length) requiredDocuments.push("Plan set and specifications");
+
+  const submissionMethod = isEpermitting ? "Oregon ePermitting (Accela)"
+    : isProjectDox ? "ProjectDox (online plan review)"
+    : isEmail ? "Email"
+    : (proc.submissionMethod || "Verify on the AHJ site");
+
+  const notesOut = [`Synthesized from the seeded ${proc.ahj} process profile.`];
+  if (proc.reviewerNotes) notesOut.push(proc.reviewerNotes);
+  if (proc.timeline) notesOut.push(`Typical timeline: ${proc.timeline}.`);
+
+  return {
+    id: `process-${proc.ahj.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 40)}`,
+    name: `${proc.ahj} (from process knowledge)`,
+    matchJurisdictions: [],
+    portalName: submissionMethod,
+    sourceUrl: "",
+    requiresAhjApplication: wantsBuildingApp && !portalOnly,
+    requiresStructuralApplication: wantsStructuralApp,
+    requiresElectricalApplication: wantsElectricalApp,
+    requiresPrescriptiveChecklist: wantsChecklist,
+    requiresBidSheet: false,
+    requiresPortalEntryOnly: portalOnly,
+    permitStructure: wantsBuildingApp && wantsElectricalApp ? "separate" : "unknown",
+    submissionMethod,
+    requiredDocuments,
+    notes: notesOut,
+  };
+}
+
 export function findApplicationProfile(project: ProjectRecord): ApplicationRequirementProfile {
   const haystack = `${project.ahj} ${project.city} ${project.state}`.toLowerCase();
   const specific = applicationProfiles.find((profile) =>
     profile.id !== "oregon-generic-epermitting" && profile.matchJurisdictions.some((term) => haystack.includes(term)),
   );
   if (specific) return specific;
+  // No hand-written profile — synthesize from the AHJ's seeded process knowledge so
+  // we still pull the right forms for jurisdictions we have real data on.
+  const synthesized = applicationProfileFromProcess(project);
+  if (synthesized) return synthesized;
   if (project.state.toUpperCase() === "OR" || /oregon/.test(haystack)) {
     return applicationProfiles.find((profile) => profile.id === "oregon-generic-epermitting")!;
   }
@@ -347,22 +455,52 @@ export function buildSubmittalEmailDraft(
   return { isEmailSubmittal: isEmail, to: (opts.toEmail || "").trim(), subject, body };
 }
 
+// Local MPU-scope detection (kept here to avoid a circular import with submittalTracks).
+function applicationHasMpuScope(project: ProjectRecord): boolean {
+  const text = [
+    payload(project, "projectDescriptionText"), payload(project, "description"),
+    payload(project, "scopeText"), payload(project, "electricalCalcText"),
+    payload(project, "sitePlanNotesText"), payload(project, "mpu"), payload(project, "serviceUpgrade"),
+  ].join(" ").toLowerCase();
+  return /\bmpu\b|main panel upgrade|main service panel upgrade|service (panel )?upgrade|\bmsp upgrade\b|panel upgrade|meter.?main upgrade/.test(text);
+}
+
 export function buildApplicationDocumentPackage(project: ProjectRecord, client: ClientRecord | null = null): ApplicationDocumentPackage {
   const profile = findApplicationProfile(project);
   const structure = permitStructureForProject(project);
+  const permitPath = resolvePermitPath(project);
+  const hasMpu = applicationHasMpuScope(project);
   const missingFields = requiredProjectFields(project);
   const docs: GeneratedApplicationDocument[] = [
-    buildCover(project, profile, client),
-    buildManifest(project, profile, structure),
+    buildCover(project, profile, client, permitPath),
+    buildManifest(project, profile, structure, permitPath, hasMpu),
   ];
 
   if (profile.requiresAhjApplication || profile.requiresPortalEntryOnly) docs.push(buildAhjWorksheet(project, profile, client));
-  // Separate-permit AHJs need BOTH a structural (building) and an electrical worksheet,
-  // even when the portal is online-only and the static flags are unset — otherwise the
-  // electrical permit application is never prepared.
-  if (profile.requiresStructuralApplication || structure === "separate") docs.push(buildStructuralWorksheet(project, profile));
-  if (profile.requiresElectricalApplication || structure === "separate") docs.push(buildElectricalWorksheet(project, profile));
-  if (profile.requiresPrescriptiveChecklist) docs.push(buildPrescriptiveChecklist(project, profile));
+
+  // PRESCRIPTIVE vs STRUCTURAL application are MUTUALLY EXCLUSIVE — the AHJ publishes
+  // both and you upload exactly one. Generate only the application that matches the
+  // resolved path. Prescriptive → prescriptive application/checklist (no plan review,
+  // reduced fee). Engineered → structural application + collect PE-stamped plans +
+  // structural letter (plan review, full fees). When the path is still unknown we emit
+  // a chooser doc so the operator picks before anything is uploaded.
+  if (permitPath.path === "engineered") {
+    docs.push(buildStructuralWorksheet(project, profile, permitPath));
+    docs.push(buildEngineeredDocCollection(project, permitPath));
+  } else if (permitPath.path === "prescriptive") {
+    docs.push(buildPrescriptiveApplication(project, profile, permitPath));
+  } else {
+    docs.push(buildPathChooser(project, permitPath));
+    docs.push(buildPrescriptiveApplication(project, profile, permitPath));
+    docs.push(buildStructuralWorksheet(project, profile, permitPath));
+  }
+
+  // Electrical / Renewable-Energy permit application — needed for separate-permit AHJs,
+  // when the profile calls for it, or when an MPU is in scope (the MPU rides the
+  // electrical/renewable-energy permit unless the AHJ folds it elsewhere).
+  if (profile.requiresElectricalApplication || structure === "separate" || hasMpu) {
+    docs.push(buildElectricalWorksheet(project, profile, hasMpu));
+  }
   if (profile.requiresBidSheet) docs.push(buildBidSheet(project, profile));
   if (/PGE|PORTLAND GENERAL|PACIFIC|PACIFICORP/i.test(project.utility)) docs.push(buildUtilityWorksheet(project));
 
@@ -373,7 +511,7 @@ export function buildApplicationDocumentPackage(project: ProjectRecord, client: 
     docs,
     missingFields,
     html: packageHtml(project, profile, docs, missingFields, client),
-    permitType: describePermitType(profile, { permitStructure: structure }).callout,
+    permitType: `${describePermitType(profile, { permitStructure: structure }).callout} ${permitPathCallout(permitPath)}`,
   };
 }
 
@@ -423,7 +561,7 @@ function commonProjectBlock(project: ProjectRecord): string {
   ].join("\n");
 }
 
-function buildCover(project: ProjectRecord, profile: ApplicationRequirementProfile, client: ClientRecord | null): GeneratedApplicationDocument {
+function buildCover(project: ProjectRecord, profile: ApplicationRequirementProfile, client: ClientRecord | null, permitPath: PermitPathResolution): GeneratedApplicationDocument {
   const contractorBlock = client
     ? [
         `Contractor: ${client.legalBusinessName || client.companyName}`,
@@ -435,6 +573,10 @@ function buildCover(project: ProjectRecord, profile: ApplicationRequirementProfi
         client.authorizedSignerName ? `Authorized signer: ${client.authorizedSignerName}${client.authorizedSignerTitle ? `, ${client.authorizedSignerTitle}` : ""}` : "",
       ].filter(Boolean).join("\n")
     : "Contractor: [assign client to populate]";
+
+  const pathLabel = permitPath.path === "prescriptive" ? "PRESCRIPTIVE (meets prescriptive code · no plan review · reduced fee)"
+    : permitPath.path === "engineered" ? "STRUCTURAL / ENGINEERED (non-prescriptive · plan review · full fees · PE stamp required)"
+    : "NOT YET CONFIRMED — choose prescriptive vs engineered before uploading";
 
   return doc(
     "cover",
@@ -452,6 +594,11 @@ ${contractorBlock}
 
 ${commonProjectBlock(project)}
 
+## Permit Path: ${pathLabel}
+
+${permitPathCallout(permitPath)}
+${permitPath.basis.map((b) => `- ${b}`).join("\n")}
+
 Submission profile: ${profile.name}
 Portal/process: ${profile.portalName}
 Official reference: ${profile.sourceUrl || "[verify AHJ source]"}
@@ -460,11 +607,18 @@ Operator notes:
 - Verify all required fields before legal submission.
 - Do not submit this package automatically.
 - Transfer worksheet values into official AHJ forms or portal fields where required.
+- Upload ONLY the application that matches the permit path above — never both.
 `,
   );
 }
 
-function buildManifest(project: ProjectRecord, profile: ApplicationRequirementProfile, structure: "separate" | "combo" | "unknown"): GeneratedApplicationDocument {
+function buildManifest(
+  project: ProjectRecord,
+  profile: ApplicationRequirementProfile,
+  structure: "separate" | "combo" | "unknown",
+  permitPath: PermitPathResolution,
+  hasMpu: boolean,
+): GeneratedApplicationDocument {
   const generatedDocs = profile.requiredDocuments.map((item) => `- ${item}`).join("\n");
   const separate = structure === "separate";
   const structureLine = separate
@@ -472,6 +626,14 @@ function buildManifest(project: ProjectRecord, profile: ApplicationRequirementPr
     : structure === "combo"
       ? "Permit structure: Combined building + electrical permit (one filing)."
       : "Permit structure: verify combo vs separate on the AHJ site.";
+
+  // The application line is path-driven — upload exactly one.
+  const appLine = permitPath.path === "prescriptive"
+    ? "- Prescriptive solar application + checklist  ← UPLOAD THIS ONE (do NOT upload the structural application)"
+    : permitPath.path === "engineered"
+      ? "- Structural (non-prescriptive) application + PE-stamped plans + structural letter  ← UPLOAD THIS ONE (do NOT upload the prescriptive application)"
+      : "- Permit path NOT confirmed — choose prescriptive vs structural, then upload only that one application";
+
   return doc(
     "manifest",
     "Required Document Manifest",
@@ -483,6 +645,11 @@ function buildManifest(project: ProjectRecord, profile: ApplicationRequirementPr
 Profile: ${profile.name}
 ${structureLine}
 
+## Application to upload (mutually exclusive)
+${appLine}
+
+> ${permitPathCallout(permitPath)}
+
 Required by profile:
 ${generatedDocs || "- No AHJ-specific required documents seeded. Verify manually."}
 
@@ -490,9 +657,11 @@ Generated by Autopilot:
 - Cover sheet
 - Required document manifest
 ${profile.requiresAhjApplication || profile.requiresPortalEntryOnly ? "- AHJ / portal application worksheet" : ""}
-${profile.requiresStructuralApplication || separate ? "- Structural/building application worksheet" : ""}
-${profile.requiresElectricalApplication || separate ? "- Electrical application worksheet" : ""}
-${profile.requiresPrescriptiveChecklist ? "- Prescriptive solar checklist worksheet" : ""}
+${permitPath.path === "engineered" ? "- Structural (non-prescriptive) application worksheet\n- Engineered document collection checklist (stamped plans + structural letter)" : ""}
+${permitPath.path === "prescriptive" ? "- Prescriptive solar application worksheet (with checklist)" : ""}
+${permitPath.path === "unknown" ? "- Permit-path chooser\n- Prescriptive application (draft)\n- Structural application (draft)" : ""}
+${profile.requiresElectricalApplication || separate || hasMpu ? "- Electrical / Renewable-Energy application worksheet" : ""}
+${hasMpu ? "- Electrical permit application is required because a main panel/service upgrade (MPU) is in scope" : ""}
 ${profile.requiresBidSheet ? "- Bid sheet worksheet" : ""}
 ${/PGE|PORTLAND GENERAL|PACIFIC|PACIFICORP/i.test(project.utility) ? "- Utility/NEM application worksheet" : ""}
 
@@ -539,14 +708,22 @@ Electrical:
   );
 }
 
-function buildStructuralWorksheet(project: ProjectRecord, _profile: ApplicationRequirementProfile): GeneratedApplicationDocument {
+// The STRUCTURAL (non-prescriptive / engineered) application worksheet. Generated only
+// on the engineered path. Carries a banner that this is the application to upload and
+// that a PE-stamped plan set + structural letter must accompany it (collected below).
+function buildStructuralWorksheet(project: ProjectRecord, _profile: ApplicationRequirementProfile, permitPath: PermitPathResolution): GeneratedApplicationDocument {
+  const banner = permitPath.path === "engineered"
+    ? "UPLOAD THIS APPLICATION (non-prescriptive). Do NOT upload the prescriptive application. This triggers plan review and full structural fees and requires a PE-stamped plan set + structural engineering letter."
+    : "Draft — only upload the structural application if the project is NON-prescriptive. Otherwise upload the prescriptive application instead.";
   return doc(
     "structural",
-    "Structural / Building Application Worksheet",
+    "Structural (Non-Prescriptive) Application Worksheet",
     "structural_application",
     true,
     "04-structural-building-worksheet.md",
-    `# Structural / Building Application Worksheet
+    `# Structural (Non-Prescriptive) Application Worksheet
+
+> ${banner}
 
 ${commonProjectBlock(project)}
 
@@ -560,20 +737,22 @@ Roof framing: ${yesNo(payload(project, "roofRafterSize"))} @ ${yesNo(payload(pro
 Wood grade/species: ${yesNo(payload(project, "woodGrade"))}
 Rafter span: ${yesNo(payload(project, "roofRafterSpanFeet"))} ft
 
-Prescriptive path shown by parser: ${yesNo(payload(project, "permitPath"))}
+Permit path: ${permitPath.path}
+Path basis:
+${permitPath.basis.map((b) => `- ${b}`).join("\n")}
 Stamp recommendation: ${yesNo(payload(project, "stampRecommendation"))}
 `,
   );
 }
 
-function buildElectricalWorksheet(project: ProjectRecord, _profile: ApplicationRequirementProfile): GeneratedApplicationDocument {
+function buildElectricalWorksheet(project: ProjectRecord, _profile: ApplicationRequirementProfile, hasMpu: boolean): GeneratedApplicationDocument {
   return doc(
     "electrical",
-    "Electrical Permit Application Worksheet",
+    "Electrical / Renewable-Energy Application Worksheet",
     "electrical_application",
     true,
     "05-electrical-application-worksheet.md",
-    `# Electrical Permit Application Worksheet
+    `# Electrical / Renewable-Energy Application Worksheet
 
 ${commonProjectBlock(project)}
 
@@ -584,29 +763,105 @@ Electrical scope:
 - PV OCPD: ${yesNo(payload(project, "pvBreaker"))}
 - AC disconnect: ${yesNo(payload(project, "acDiscReq"))}
 - Locate callout: ${yesNo(payload(project, "locateCalloutText"))}
+${hasMpu ? "\nMain panel / service upgrade (MPU) IS in scope — the electrical permit application is REQUIRED. Capture the new service/bus/main rating and any meter-main change on this application." : ""}
 `,
   );
 }
 
-function buildPrescriptiveChecklist(project: ProjectRecord, _profile: ApplicationRequirementProfile): GeneratedApplicationDocument {
+// The PRESCRIPTIVE solar application (with embedded prescriptive checklist). Generated
+// only on the prescriptive path. This is the application to upload when the project
+// meets prescriptive code — reduced fee, no plan review.
+function buildPrescriptiveApplication(project: ProjectRecord, _profile: ApplicationRequirementProfile, permitPath: PermitPathResolution): GeneratedApplicationDocument {
+  const banner = permitPath.path === "prescriptive"
+    ? "UPLOAD THIS APPLICATION (prescriptive). Do NOT upload the structural application. Indicates the project meets prescriptive code — no plan review, reduced permit fee."
+    : "Draft — only upload the prescriptive application if the project meets prescriptive code. Otherwise upload the structural application instead.";
   return doc(
-    "prescriptive-checklist",
-    "Solar Prescriptive Checklist Worksheet",
+    "prescriptive-application",
+    "Prescriptive Solar Application + Checklist",
     "checklist",
     true,
-    "06-prescriptive-solar-checklist.md",
-    `# Solar Prescriptive Checklist Worksheet
+    "06-prescriptive-solar-application.md",
+    `# Prescriptive Solar Application + Checklist
 
-Answer each item before submittal.
+> ${banner}
 
+${commonProjectBlock(project)}
+
+Prescriptive code screen (all must be Yes to remain prescriptive):
 - Roof-mounted PV: ${/roof/i.test(payload(project, "mounting")) ? "Yes" : "[verify]"}
 - Conventional light-frame construction: [verify]
-- Ground snow load <= 70 psf: ${Number(payload(project, "snow")) <= 70 ? "Yes" : "[verify]"}
+- Ground snow load <= 70 psf: ${payload(project, "snow") && Number(payload(project, "snow")) <= 70 ? "Yes" : "[verify]"}
 - Wind exposure B or C: ${/^(B|C)$/i.test(payload(project, "wind")) ? "Yes" : "[verify]"}
-- Rafter/truss spacing <= 24 in. o.c.: ${Number(payload(project, "roofRafterSpacing")) <= 24 ? "Yes" : "[verify]"}
-- PV dead load <= 4.5 psf: ${Number(payload(project, "deadLoad")) <= 4.5 ? "Yes" : "[verify]"}
+- Rafter/truss spacing <= 24 in. o.c.: ${payload(project, "roofRafterSpacing") && Number(payload(project, "roofRafterSpacing")) <= 24 ? "Yes" : "[verify]"}
+- PV dead load <= 4.5 psf: ${payload(project, "deadLoad") && Number(payload(project, "deadLoad")) <= 4.5 ? "Yes" : "[verify]"}
 - Firefighter access/pathways shown: ${/pathway|fire|access/i.test(`${payload(project, "sitePlanNotesText")} ${payload(project, "splitPagesText")}`) ? "Yes" : "[verify]"}
 - Attachment/racking details included: ${payload(project, "racking") ? "Yes" : "[verify]"}
+
+If ANY item above is No, the project is NON-prescriptive — switch to the structural
+application, attach PE-stamped plans + a structural letter, and expect plan review + full fees.
+`,
+  );
+}
+
+// Engineered-path document collection. When a project is non-prescriptive, the submittal
+// MUST carry a PE-stamped plan set + structural engineering letter/calcs. The autopilot
+// does not produce a wet stamp — these come from the installer/engineer. We check whether
+// they already appear in the parsed evidence and flag what still needs to be collected.
+function buildEngineeredDocCollection(project: ProjectRecord, permitPath: PermitPathResolution): GeneratedApplicationDocument {
+  const haveStamp = hasStampedStructuralEvidence(project);
+  const status = haveStamp
+    ? "DETECTED in the uploaded plan set/evidence — confirm the stamp is current and on the structural sheets."
+    : "NOT detected in the uploaded files — REQUEST the stamped plans + structural letter from the installer/engineer of record before submitting.";
+  const items = permitPath.requiredEngineeredDocs.map((d) => `- [${haveStamp ? "x" : " "}] ${d}`).join("\n");
+  return doc(
+    "engineered-docs",
+    "Engineered Submittal — Stamped Plans & Structural Letter",
+    "worksheet",
+    true,
+    "04b-engineered-documents.md",
+    `# Engineered Submittal — Stamped Plans & Structural Letter
+
+This project is on the NON-PRESCRIPTIVE (engineered) path, so the AHJ requires sealed
+structural documentation in addition to the structural application.
+
+Status: ${status}
+
+Collect / attach:
+${items}
+
+Notes:
+- The PE stamp must appear on the structural sheets (wet or digital seal) and the
+  engineering letter/calcs must be signed/sealed by the engineer of record.
+- If the client/installer already provided these, attach them to the submittal package.
+- Path basis:
+${permitPath.basis.map((b) => `  - ${b}`).join("\n")}
+`,
+  );
+}
+
+// Path chooser — emitted only when the path is still ambiguous, so the operator picks
+// before any application is uploaded (the two applications are mutually exclusive).
+function buildPathChooser(project: ProjectRecord, permitPath: PermitPathResolution): GeneratedApplicationDocument {
+  return doc(
+    "path-chooser",
+    "CHOOSE: Prescriptive vs Structural Application",
+    "worksheet",
+    true,
+    "00-choose-permit-path.md",
+    `# CHOOSE: Prescriptive vs Structural Application
+
+The permit path is not yet confirmed for this project. The AHJ publishes TWO solar
+applications and you upload EXACTLY ONE:
+
+- PRESCRIPTIVE application → meets prescriptive code, NO plan review, REDUCED fee.
+- STRUCTURAL application → does NOT meet prescriptive code, plan review, FULL fees, and a
+  PE-stamped plan set + structural letter must be attached.
+
+Set the permit path on the project (Manual entry → Permit path) to lock this in. Both
+draft applications below are provided ONLY so you can review them — do NOT upload both.
+
+Why it's still unconfirmed:
+${permitPath.basis.map((b) => `- ${b}`).join("\n")}
 `,
   );
 }

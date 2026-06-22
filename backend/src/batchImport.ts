@@ -29,7 +29,10 @@ async function getPdfjs(): Promise<PdfjsModule> {
   return _pdfjs;
 }
 
-const PDFJS_WARN_RE = /^Warning: (TT: undefined function:|Font "[^"]+" is not available|getHexString|Indexing all PDF objects)/;
+// Harmless pdfjs console noise we suppress. The JBig2/JPEG2000/wasm warnings fire when
+// a PDF embeds JBig2-encoded scans and pdfjs can't load the optional wasm decoder — that
+// only affects IMAGE decoding, not the TEXT extraction we do here, so it's safe to drop.
+const PDFJS_WARN_RE = /^Warning: (TT: undefined function:|Font "[^"]+" is not available|getHexString|Indexing all PDF objects|#instantiateWasm|#getJsModule|Unable to decode image|Dependent image isn't ready|.*[Jj]Big2|.*JBIG2|.*wasmUrl|.*nulljbig2|.*OpenJPEG|.*JpxError)/;
 
 export async function extractPdfText(filePath: string, maxPages = 30): Promise<string> {
   const pdfjs = await getPdfjs();

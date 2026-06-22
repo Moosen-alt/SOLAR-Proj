@@ -89,7 +89,11 @@ export class StubLLMProvider implements LLMProvider {
     return [];
   }
 
-  async lookupInverterSpec(input: { inverterModel: string; inverterQty?: number }): Promise<InverterSpecLookup> {
+  async lookupInverterSpec(input: { inverterModel: string; inverterQty?: number; acNameplateKw?: number; serviceVoltageV?: number }): Promise<InverterSpecLookup> {
+    // Even without an API key, resolve from the built-in equipment table or by deriving
+    // from the AC nameplate, so the human-review "inverter output" box can still be filled.
+    const offline = resolveInverterOffline(input);
+    if (offline) return offline;
     return {
       provider: "stub",
       inverterModel: input.inverterModel,
@@ -100,7 +104,7 @@ export class StubLLMProvider implements LLMProvider {
       derivedPvBreakerA: null,
       confidence: "low",
       source: "",
-      notes: "No ANTHROPIC_API_KEY configured — equipment spec lookup is off.",
+      notes: "No ANTHROPIC_API_KEY configured and the model isn't in the built-in table — enter the rated output from the inverter datasheet/SLD manually.",
       needsHumanVerification: true,
     };
   }
@@ -130,6 +134,106 @@ const STANDARD_BREAKER_SIZES = [15, 20, 25, 30, 35, 40, 45, 50, 60, 70, 80, 90, 
 function nextStandardBreaker(amps: number): number | null {
   if (!Number.isFinite(amps) || amps <= 0) return null;
   return STANDARD_BREAKER_SIZES.find((s) => s >= amps) ?? STANDARD_BREAKER_SIZES[STANDARD_BREAKER_SIZES.length - 1];
+}
+
+// ---------------------------------------------------------------------------
+// Built-in inverter/microinverter rating table — per-unit rated CONTINUOUS AC
+// output current (A) at the unit's nominal voltage. Matched on normalized model or
+// manufacturer PART NUMBER so common units (and manufacturers that publish part
+// numbers rather than friendly model names, like Tesla) resolve instantly without a
+// web round-trip. `matches` are normalized substrings (lowercased, alnum-only).
+// ---------------------------------------------------------------------------
+interface KnownInverter { label: string; matches: string[]; outputCurrentA: number; outputVa: number; note?: string }
+const KNOWN_INVERTERS: KnownInverter[] = [
+  // Tesla — published by part number; "1538000" is the Tesla 7.6 kW string inverter.
+  { label: "Tesla Inverter 7.6 kW", matches: ["1538000", "tesla76", "teslainverter76", "teslainverter1538000"], outputCurrentA: 31.7, outputVa: 7600, note: "Tesla Inverter 7.6 kW @ 240 V single-phase." },
+  { label: "Tesla Inverter 3.8 kW", matches: ["1707000", "1530000", "tesla38", "teslainverter38"], outputCurrentA: 15.8, outputVa: 3800, note: "Tesla Inverter 3.8 kW @ 240 V single-phase." },
+  // Tesla Powerwall 3 — integrated PV+battery inverter, 11.5 kVA continuous on-grid.
+  { label: "Tesla Powerwall 3", matches: ["powerwall3", "pw3", "1850000", "1707000ess"], outputCurrentA: 48, outputVa: 11500, note: "Powerwall 3 integrated inverter, 11.5 kVA / 48 A continuous @ 240 V. Verify the backfed PV portion against the SLD." },
+  // Enphase microinverters (per-unit).
+  { label: "Enphase IQ8+", matches: ["iq8plus", "iq8", "iq8a", "iq8h", "iq8m", "iq8mc", "iq8x"], outputCurrentA: 1.0, outputVa: 240, note: "Enphase IQ8-series microinverter (per unit ~ 240 VA / 1.0 A; multiply by qty)." },
+  { label: "Enphase IQ7", matches: ["iq7plus", "iq7", "iq7a", "iq7x", "iq7pd"], outputCurrentA: 0.96, outputVa: 230, note: "Enphase IQ7-series microinverter (per unit; multiply by qty)." },
+  // SolarEdge HD-Wave string inverters (240 V).
+  { label: "SolarEdge SE7600H", matches: ["se7600h", "se7600"], outputCurrentA: 32, outputVa: 7600 },
+  { label: "SolarEdge SE7600H", matches: ["se10000h", "se10000"], outputCurrentA: 41.7, outputVa: 10000 },
+  { label: "SolarEdge SE11400H", matches: ["se11400h", "se11400"], outputCurrentA: 47.5, outputVa: 11400 },
+  { label: "SolarEdge SE3800H", matches: ["se3800h", "se3800"], outputCurrentA: 16, outputVa: 3800 },
+  // Generac/SMA/Fronius common units.
+  { label: "SMA Sunny Boy 7.7", matches: ["sb77", "sunnyboy77", "sb7-7"], outputCurrentA: 32, outputVa: 7700 },
+];
+
+function normModel(s: string): string {
+  return String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function lookupKnownInverter(model: string): KnownInverter | null {
+  const n = normModel(model);
+  if (!n) return null;
+  for (const k of KNOWN_INVERTERS) {
+    if (k.matches.some((m) => n.includes(m) || m.includes(n))) return k;
+  }
+  return null;
+}
+
+// Build the final lookup result from a per-unit current, with PV breaker derivation.
+function buildInverterResult(opts: {
+  model: string; qty: number; perUnitA: number; perUnitVa: number | null;
+  confidence: "low" | "medium" | "high"; source: string; notes: string;
+}): InverterSpecLookup {
+  const totalA = opts.perUnitA * opts.qty;
+  return {
+    provider: "claude",
+    inverterModel: opts.model,
+    inverterQty: opts.qty,
+    outputCurrentA: Math.round(opts.perUnitA * 100) / 100,
+    outputVa: opts.perUnitVa,
+    totalContinuousCurrentA: Math.round(totalA * 100) / 100,
+    derivedPvBreakerA: nextStandardBreaker(totalA * 1.25),
+    confidence: opts.confidence,
+    source: opts.source,
+    notes: `${opts.notes} Derived PV breaker = next standard size ≥ 1.25 × ${Math.round(totalA * 100) / 100} A total (verify against the SLD, especially multi-branch microinverter layouts).`.trim(),
+    needsHumanVerification: true,
+  };
+}
+
+// Resolve an inverter rating WITHOUT the network: first the built-in table, then by
+// deriving the continuous output current from the AC nameplate (VA / voltage). The
+// nameplate derivation is the most reliable fallback because the AC nameplate IS the
+// inverter's continuous output — it always works when the AC size is known.
+function resolveInverterOffline(input: { inverterModel: string; inverterQty?: number; acNameplateKw?: number; serviceVoltageV?: number }): InverterSpecLookup | null {
+  const model = String(input.inverterModel || "").trim();
+  const qty = input.inverterQty && input.inverterQty > 0 ? Math.round(input.inverterQty) : 1;
+
+  const known = model ? lookupKnownInverter(model) : null;
+  if (known) {
+    return buildInverterResult({
+      model, qty, perUnitA: known.outputCurrentA, perUnitVa: known.outputVa,
+      confidence: "high", source: "built-in equipment table",
+      notes: `${known.label}. ${known.note || ""}`.trim(),
+    });
+  }
+
+  // Nameplate derivation — total system continuous current from AC kW. This is a SYSTEM
+  // total (not per-unit), so don't multiply by qty again.
+  const acKw = Number(input.acNameplateKw);
+  if (Number.isFinite(acKw) && acKw > 0) {
+    const voltage = Number(input.serviceVoltageV) > 0 ? Number(input.serviceVoltageV) : 240;
+    const totalA = (acKw * 1000) / voltage;
+    return {
+      provider: "claude",
+      inverterModel: model || "(derived from AC nameplate)",
+      inverterQty: qty,
+      outputCurrentA: Math.round((totalA / Math.max(qty, 1)) * 100) / 100,
+      outputVa: Math.round(acKw * 1000),
+      totalContinuousCurrentA: Math.round(totalA * 100) / 100,
+      derivedPvBreakerA: nextStandardBreaker(totalA * 1.25),
+      confidence: "medium",
+      source: "derived from AC nameplate",
+      notes: `Derived from the ${acKw} kW AC nameplate at ${voltage} V → ${Math.round(totalA * 100) / 100} A continuous (system total). Derived PV breaker = next standard size ≥ 1.25 × that. Confirm against the inverter datasheet/SLD.`,
+      needsHumanVerification: true,
+    };
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -672,7 +776,7 @@ ${JSON.stringify(input.unbound, null, 2)}`;
     }
   }
 
-  async lookupInverterSpec(input: { inverterModel: string; inverterQty?: number }): Promise<InverterSpecLookup> {
+  async lookupInverterSpec(input: { inverterModel: string; inverterQty?: number; acNameplateKw?: number; serviceVoltageV?: number }): Promise<InverterSpecLookup> {
     const model = String(input.inverterModel || "").trim();
     const qty = input.inverterQty && input.inverterQty > 0 ? Math.round(input.inverterQty) : 1;
     const empty = (notes: string, source = ""): InverterSpecLookup => ({
@@ -680,54 +784,72 @@ ${JSON.stringify(input.unbound, null, 2)}`;
       outputCurrentA: null, outputVa: null, totalContinuousCurrentA: null, derivedPvBreakerA: null,
       confidence: "low", source, notes, needsHumanVerification: true,
     });
-    if (!model) return empty("No inverter model provided — enter the inverter/microinverter model first.");
 
-    const system = `You are a solar PV equipment datasheet expert. Given an inverter or microinverter MODEL, return its rated CONTINUOUS AC output from datasheet knowledge.
+    // 1. Built-in equipment table — instant, exact for Tesla/Enphase/SolarEdge part
+    //    numbers + common models. No network round-trip needed.
+    const known = model ? lookupKnownInverter(model) : null;
+    if (known) {
+      return buildInverterResult({
+        model, qty, perUnitA: known.outputCurrentA, perUnitVa: known.outputVa,
+        confidence: "high", source: "built-in equipment table",
+        notes: `${known.label}. ${known.note || ""}`.trim(),
+      });
+    }
+    if (!model && !(Number(input.acNameplateKw) > 0)) {
+      return empty("No inverter model provided — enter the inverter/microinverter model first (or the AC system size to derive it).");
+    }
+
+    const system = `You are a solar PV equipment datasheet expert. Given an inverter or microinverter MODEL or manufacturer PART NUMBER, return its rated CONTINUOUS AC output from datasheet knowledge.
 Return ONLY JSON:
 {"outputCurrentA": <number|null — per-unit rated continuous AC output current in amps>,
  "outputVa": <number|null — per-unit rated continuous AC output power in VA or W>,
  "confidence": "low|medium|high",
  "notes": "<short note: full model name, voltage basis, any caveat>"}
-Use the MAXIMUM CONTINUOUS output (not peak). Set confidence "low" and outputCurrentA null if you do not recognize the exact model or aren't sure — do NOT guess.`;
+Notes:
+- Some manufacturers (e.g. Tesla) publish PART NUMBERS rather than friendly model names (Tesla string inverter part 1538000 = 7.6 kW / 31.7 A @ 240 V; Powerwall 3 = 11.5 kVA / 48 A).
+- For microinverters return the PER-UNIT rating (the caller multiplies by quantity).
+- Use the MAXIMUM CONTINUOUS output (not peak). Set confidence "low" and outputCurrentA null only if you genuinely can't identify it — do NOT guess a wrong number.`;
 
     let parsed: { outputCurrentA?: number; outputVa?: number; confidence?: string; notes?: string } = {};
     let source = "model knowledge";
-    try {
-      parsed = this.parseJson(await this.ask(system, `Model: ${model}`), {});
-    } catch { parsed = {}; }
-
-    // Web fallback only when knowledge is unsure/unknown (honors "knowledge first, web fallback").
-    if (parsed.outputCurrentA == null || parsed.confidence === "low") {
+    if (model) {
       try {
-        const webRaw = await this.askWithWebSearch(
-          `${system}\nFirst search the web for the official manufacturer datasheet for this EXACT model, then return the JSON. Put the datasheet URL in "notes".`,
-          `Find the rated continuous AC output current (amps) for inverter model: ${model}`,
-        );
-        const webParsed = this.parseJson<typeof parsed>(webRaw, {});
-        if (webParsed.outputCurrentA != null) { parsed = webParsed; source = "web search"; }
-      } catch (err) {
-        console.warn("[llm] inverter spec web fallback failed:", err instanceof Error ? err.message : String(err));
+        parsed = this.parseJson(await this.ask(system, `Model / part number: ${model}`), {});
+      } catch { parsed = {}; }
+
+      // Web fallback when knowledge is unsure/unknown — search the manufacturer datasheet
+      // AND the part number, with more uses for an exhaustive look.
+      if (parsed.outputCurrentA == null || parsed.confidence === "low") {
+        try {
+          const webRaw = await this.askWithWebSearch(
+            `${system}\nSearch the web thoroughly for the official manufacturer datasheet for this EXACT model OR part number, then return the JSON. Try the manufacturer's site, distributor spec pages, and the part number itself. Put the datasheet URL in "notes".`,
+            `Find the rated continuous AC output current (amps) for inverter model/part number: ${model}`,
+            1500,
+            6,
+          );
+          const webParsed = this.parseJson<typeof parsed>(webRaw, {});
+          if (webParsed.outputCurrentA != null) { parsed = webParsed; source = "web search"; }
+        } catch (err) {
+          console.warn("[llm] inverter spec web fallback failed:", err instanceof Error ? err.message : String(err));
+        }
       }
     }
 
     const perUnitA = Number(parsed.outputCurrentA);
     if (!Number.isFinite(perUnitA) || perUnitA <= 0) {
-      return empty(`Could not determine a rated output for "${model}". Enter the value from the inverter datasheet/SLD manually.`, source);
+      // 3. Final fallback — derive from the AC nameplate (the inverter's continuous output
+      //    IS the AC nameplate). This is what makes "in-depth search" always land a number.
+      const offline = resolveInverterOffline(input);
+      if (offline && offline.outputCurrentA != null) return offline;
+      return empty(`Could not determine a rated output for "${model}". Enter the value from the inverter datasheet/SLD manually, or set the AC system size so it can be derived.`, source);
     }
-    const totalA = perUnitA * qty;
-    return {
-      provider: "claude",
-      inverterModel: model,
-      inverterQty: qty,
-      outputCurrentA: Math.round(perUnitA * 100) / 100,
-      outputVa: Number.isFinite(Number(parsed.outputVa)) ? Number(parsed.outputVa) : null,
-      totalContinuousCurrentA: Math.round(totalA * 100) / 100,
-      derivedPvBreakerA: nextStandardBreaker(totalA * 1.25),
+    return buildInverterResult({
+      model, qty, perUnitA,
+      perUnitVa: Number.isFinite(Number(parsed.outputVa)) ? Number(parsed.outputVa) : null,
       confidence: (["low", "medium", "high"].includes(String(parsed.confidence)) ? parsed.confidence : "medium") as "low" | "medium" | "high",
       source,
-      notes: `${String(parsed.notes || "")} Derived PV breaker = next standard size ≥ 1.25 × ${Math.round(totalA * 100) / 100}A total (verify against the SLD, especially multi-branch microinverter layouts).`.trim(),
-      needsHumanVerification: true,
-    };
+      notes: String(parsed.notes || ""),
+    });
   }
 
   async findAhjFormUrl(input: { ahj: string; state: string; formType?: string }): Promise<AhjFormUrlResult> {

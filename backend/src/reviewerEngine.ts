@@ -4,6 +4,7 @@ import { findAhjProcessProfile } from "./processProfiles";
 import { evidenceForTopic, evidenceLines, fieldValue, requirementsForTopic, type EvidenceTopic, type ProjectEvidence } from "./projectEvidence";
 import { nowIso } from "./time";
 import { resolveValuation } from "./valuation";
+import { resolvePermitPath, hasStampedStructuralEvidence } from "./permitPath";
 
 function payload(project: ProjectRecord, key: string): string {
   return fieldValue(project, key);
@@ -70,6 +71,7 @@ export function buildReviewerReport(project: ProjectRecord): ReviewerReport {
   addPlanSetFindings(project, findings);
   addUtilityFindings(project, findings);
   addProfileFindings(project, profile, findings);
+  addPermitPathFindings(project, findings);
   addInstallerCallouts(project, profile, findings);
 
   // Deduplicate findings. Two subsystems independently check the same topics with
@@ -697,6 +699,54 @@ function addProfileFindings(project: ProjectRecord, profile: AhjProcessProfile |
   }
   if (profile.requiresJurisdictionCheck) {
     findings.push(finding("reviewer.profile.jurisdiction", "callout", "ahj_profile", "Jurisdiction/address verification recommended", `${profile.ahj} process profile calls out jurisdiction or address verification. Confirm before submittal.`, true));
+  }
+}
+
+// Permit-path findings — prescriptive vs engineered (non-prescriptive). On the
+// engineered path the AHJ requires sealed structural documentation, so we make sure
+// the PE-stamped plans + structural letter are collected (a real gap, surfaced as a
+// warning when they're not already in hand). The path itself is always a callout so
+// the operator can see and confirm the routing that drives which application uploads.
+function addPermitPathFindings(project: ProjectRecord, findings: ReviewerFinding[]): void {
+  const path = resolvePermitPath(project);
+
+  if (path.path === "engineered") {
+    const haveStamp = hasStampedStructuralEvidence(project);
+    findings.push(finding(
+      "reviewer.permit-path.engineered",
+      haveStamp ? "callout" : "warning",
+      "structural",
+      haveStamp ? "Engineered path — stamped structural docs detected" : "Engineered path — collect stamped structural docs",
+      haveStamp
+        ? `Non-prescriptive (engineered) path: a PE-stamped plan set / structural letter was detected in the uploads. Confirm the seal is current and on the structural sheets, then upload ONLY the structural application (not the prescriptive one).`
+        : `Non-prescriptive (engineered) path: this submittal needs a PE-stamped plan set + structural engineering letter/calcs, which are NOT yet in the uploaded files. Collect them from the installer/engineer of record before submitting. Upload ONLY the structural application (not the prescriptive one).`,
+      true,
+      {
+        cityFeedback: "Non-prescriptive solar requires a stamped structural plan set and engineer's letter/calcs, plus the structural (not prescriptive) application; it triggers plan review and full structural fees.",
+        designTeamAction: haveStamp
+          ? "Verify the PE stamp is on the structural sheets and the engineering letter is sealed; attach both to the submittal."
+          : "Request the PE-stamped structural plans + structural engineering letter from the installer/engineer of record and attach them before staging.",
+        evidenceNeeded: path.requiredEngineeredDocs,
+      },
+    ));
+  } else if (path.path === "unknown") {
+    findings.push(finding(
+      "reviewer.permit-path.unconfirmed",
+      "callout",
+      "structural",
+      "Confirm prescriptive vs engineered path",
+      `The permit path isn't confirmed yet (${path.basis.join(" ")}). Set it on the project (Manual entry → Permit path). It decides which application uploads — prescriptive (no plan review, reduced fee) or structural (plan review, full fees, PE stamp). Upload only the one that matches; never both.`,
+      true,
+    ));
+  } else {
+    findings.push(finding(
+      "reviewer.permit-path.prescriptive",
+      "callout",
+      "structural",
+      "Prescriptive path",
+      `Prescriptive path: ${path.basis.join(" ")} Upload ONLY the prescriptive application — meets prescriptive code, no plan review, reduced fee. Do NOT also upload the structural application.`,
+      true,
+    ));
   }
 }
 

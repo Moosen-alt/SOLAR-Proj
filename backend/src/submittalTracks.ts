@@ -224,11 +224,19 @@ function statusLabelFor(status: SubmittalTrackStatus, category: "utility" | "per
   return permitLabels[status];
 }
 
-function nextActionFor(status: SubmittalTrackStatus, channel: string): string {
+function nextActionFor(status: SubmittalTrackStatus, channel: string, type: SubmittalTrackType): string {
+  // Accela (Oregon ePermitting) instant-issues most ELECTRICAL/renewable-energy permits
+  // right after the fee is paid and the final submit is clicked — the approval arrives by
+  // email, which the email tracker already detects. Set that expectation on those tracks.
+  const isAccela = /accela|epermitting/i.test(channel);
+  const isElectricalLike = type === "electrical" || type === "combo" || type === "permit" || type === "mpu";
+  const accelaInstantNote = isAccela && isElectricalLike
+    ? " On Accela this electrical/renewable-energy permit is usually issued instantly once fees are paid and the final submit is clicked — watch for the approval email."
+    : "";
   switch (status) {
-    case "not_started": return `Stage in ${channel}, submit manually, then record the number here.`;
-    case "staged": return "Review the staged portal, submit manually, then mark it submitted below.";
-    case "submitted": return "Add the public status URL so the poller can track it to approval.";
+    case "not_started": return `Stage in ${channel}, submit manually, then record the number here.${accelaInstantNote}`;
+    case "staged": return `Review the staged portal, submit manually, then mark it submitted below.${accelaInstantNote}`;
+    case "submitted": return `Add the public status URL so the poller can track it to approval.${accelaInstantNote}`;
     case "in_review": return "Tracking — the poller is checking the portal for status changes.";
     case "correction": return "A correction was requested — resolve it and resubmit.";
     case "issued": return "Done — issued / approved.";
@@ -277,7 +285,7 @@ export function getSubmittalTracks(db: AppDb, project: ProjectRecord): Submittal
       channel,
       status,
       statusLabel: state.statusLabel || statusLabelFor(status, category),
-      nextAction: nextActionFor(status, channel),
+      nextAction: nextActionFor(status, channel, type),
       captureFields: captureFieldsFor(type),
       applicationNumber: state.applicationNumber,
       permitNumber: state.permitNumber,

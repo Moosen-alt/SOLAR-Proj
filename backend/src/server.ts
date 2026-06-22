@@ -1516,9 +1516,17 @@ app.post("/api/projects/:id/autofill-specs", asyncHandler(async (req, res) => {
 
   const { createLLMProvider } = await import("./llm");
   const llm = createLLMProvider();
+  // Pass the AC nameplate + service voltage so the lookup can derive the continuous
+  // output current when the model/part number can't be resolved (the AC nameplate IS
+  // the inverter's continuous output) — this is what unblocks Tesla part numbers etc.
+  const acNameplateKw = detail.project.systemSizeAcKw != null && Number(detail.project.systemSizeAcKw) > 0
+    ? Number(detail.project.systemSizeAcKw)
+    : undefined;
+  const voltageRaw = String(snap.voltage || "").replace(/[^0-9.]/g, "");
+  const serviceVoltageV = voltageRaw && Number(voltageRaw) > 0 ? Number(voltageRaw) : undefined;
   let spec;
   try {
-    spec = await llm.lookupInverterSpec({ inverterModel: model, inverterQty: qty });
+    spec = await llm.lookupInverterSpec({ inverterModel: model, inverterQty: qty, acNameplateKw, serviceVoltageV });
   } catch (err) {
     throw normalizeLlmError(err);
   }

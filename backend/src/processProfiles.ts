@@ -61,6 +61,39 @@ function ahjFrom(input: ProjectRecord | ParserPayload): string {
   return [direct, city].filter(Boolean).join(" ");
 }
 
+// Split a multi-jurisdiction AHJ name into its individual jurisdictions and strip a
+// trailing 2-letter state token + parentheticals, so a combined record like
+// "Marion Co/Hubbard OR/Keizer OR / Mount Angel / Salem / Gervais" matches a project
+// in "Keizer". Without this, a bare "Keizer" stub outscores the rich combined record.
+function jurisdictionNames(rawAhj: string): string[] {
+  const parts = rawAhj.split(/[/,;]+/).map((p) => p.trim()).filter(Boolean);
+  const names = new Set<string>();
+  for (const part of parts) {
+    const noParen = part.replace(/\([^)]*\)/g, " ");
+    const norm = normalize(noParen).replace(/\b(or|wa|ca|id|tx|nm|az|nj|fl|oh|sc|nc)\b\s*$/i, "").trim();
+    if (norm) names.add(norm);
+  }
+  return Array.from(names);
+}
+
+// How much real, actionable data a profile carries — used as a tiebreak so a populated
+// record beats an empty stub that happens to match the name exactly.
+function richness(profile: AhjProcessProfile): number {
+  let r = 0;
+  const flags: Array<keyof AhjProcessProfile> = [
+    "requiresElectricianSign", "requiresElectricalStamp", "requiresStructuralStamp",
+    "requiresElectricalPermitApplication", "requiresBuildingPermitApplication",
+    "requiresSolarChecklist", "requiresPlanSet", "requiresUtilityApproval",
+    "requiresCustomerSignature", "requiresFloodplainCheck", "requiresJurisdictionCheck",
+  ];
+  for (const f of flags) if (profile[f]) r += 1;
+  if ((profile.submissionMethod || "").trim()) r += 1;
+  if ((profile.timeline || "").trim()) r += 1;
+  if ((profile.reviewerNotes || "").trim().length > 20) r += 2;
+  if ((profile.otherRequirements || "").trim().length > 20) r += 1;
+  return r;
+}
+
 export function findAhjProcessProfile(input: ProjectRecord | ParserPayload): AhjProcessProfile | null {
   const profiles = loadProfiles();
   const state = stateFrom(input);
@@ -68,7 +101,7 @@ export function findAhjProcessProfile(input: ProjectRecord | ParserPayload): Ahj
   if (!state || !haystack) return null;
 
   const stateProfiles = profiles.filter((profile) => profile.state.toUpperCase() === state);
-  let best: { profile: AhjProcessProfile; score: number } | null = null;
+  const candidates: Array<{ profile: AhjProcessProfile; score: number; rich: number }> = [];
   const hayTokens = new Set(tokens(haystack));
   for (const profile of stateProfiles) {
     const ahj = normalize(profile.ahj);
@@ -76,12 +109,32 @@ export function findAhjProcessProfile(input: ProjectRecord | ParserPayload): Ahj
     let score = 0;
     if (haystack === ahj) score += 100;
     if ((ahj.length > 5 && haystack.includes(ahj)) || (haystack.length > 5 && ahj.includes(haystack))) score += 70;
+    // Per-jurisdiction match for combined records: a project in "Keizer" should match
+    // the "…/Keizer OR/…" sub-name strongly even though the full string differs.
+    for (const name of jurisdictionNames(profile.ahj)) {
+      if (!name || name.length < 3) continue;
+      if (haystack === name) { score += 90; break; }
+      if (haystack.includes(name) || hayTokens.has(name)) score += 55;
+    }
     for (const token of tokens(ahj)) {
       if (hayTokens.has(token)) score += 12;
     }
-    if (score > (best?.score || 0)) best = { profile, score };
+    if (score >= 24) candidates.push({ profile, score, rich: richness(profile) });
   }
-  return best && best.score >= 24 ? best.profile : null;
+  if (!candidates.length) return null;
+  candidates.sort((a, b) => b.score - a.score);
+  const top = candidates[0];
+  // If the highest-scoring match is an empty stub (a name with no actionable data —
+  // e.g. the bare "Keizer" record whose only note is the delegation pointer "Marion
+  // County"), prefer the richest related record instead so we use the real process
+  // knowledge (submission method, plan-set/stamp requirements, reviewer notes).
+  if (top.rich <= 1) {
+    const richer = candidates
+      .filter((c) => c.rich >= 2)
+      .sort((a, b) => b.rich - a.rich || b.score - a.score);
+    if (richer.length) return richer[0].profile;
+  }
+  return top.profile;
 }
 
 export function allAhjProcessProfiles(): AhjProcessProfile[] {

@@ -30,7 +30,9 @@ type PdfjsRenderPage = {
   render: (opts: { canvasContext: unknown; viewport: unknown; canvas: unknown }) => { promise: Promise<void> };
 };
 
-const PDFJS_WARN_RE = /^Warning: (TT: undefined function:|Font "[^"]+" is not available|getHexString|Indexing all PDF objects)/;
+// See batchImport.ts — JBig2/JPEG2000/wasm image-decode warnings are harmless for our
+// text + raster pipeline (we fall back to the page's vector/text content), so drop them.
+const PDFJS_WARN_RE = /^Warning: (TT: undefined function:|Font "[^"]+" is not available|getHexString|Indexing all PDF objects|#instantiateWasm|#getJsModule|Unable to decode image|Dependent image isn't ready|.*[Jj]Big2|.*JBIG2|.*wasmUrl|.*nulljbig2|.*OpenJPEG|.*JpxError)/;
 
 let _pdfjs: PdfjsRenderModule | null = null;
 async function getPdfjs(): Promise<PdfjsRenderModule> {
