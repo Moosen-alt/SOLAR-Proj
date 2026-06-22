@@ -1460,6 +1460,12 @@ export interface RecipeStep {
    *  NEVER stores its literal value — it must be bound to the encrypted credential
    *  store / redacted project data, not a plaintext recipe value. */
   sensitive?: boolean;
+  /** The SINGLE approved final-submit click. autoSubmit replay will ONLY click a
+   *  step flagged isFinalSubmit (an allowlist) — never a step inferred from button
+   *  text. The operator sets this at approval time. Fee-payment steps are NEVER
+   *  flagged; they are always blocked regardless. Without this flag, autoSubmit
+   *  safely stops at the review screen and never clicks final submit. */
+  isFinalSubmit?: boolean;
   note?: string;
 }
 

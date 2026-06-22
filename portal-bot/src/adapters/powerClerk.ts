@@ -1,7 +1,8 @@
 import path from "node:path";
 import type { ProjectRecord, ReviewerReport } from "../../../shared/src/types";
-import { HUMAN_REVIEW_MESSAGE, type PortalAdapter, type PortalContext, type PortalStepResult } from "../adapter";
+import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, type PortalContext, type PortalStepResult } from "../adapter";
 import { openPortal } from "../browser";
+import { redactStatusText, safeAction } from "../safeAction";
 
 // PowerClerk (PGE Net Metering) adapter
 // Built from an operator codegen recording captured up to the final submit page.
@@ -65,7 +66,7 @@ function readArrays(project: ProjectRecord): PvArray[] {
   return single.quantity || single.moduleModel ? [single] : [];
 }
 
-export class PowerClerkAdapter implements PortalAdapter {
+export class PowerClerkAdapter extends BasePortalAdapter {
   portalName = "PowerClerk (PGE Net Metering)";
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -78,12 +79,13 @@ export class PowerClerkAdapter implements PortalAdapter {
   // ---------------------------------------------------------------------------
   async login(context: PortalContext): Promise<PortalStepResult> {
     try {
-      const { page } = await openPortal({
+      const opened = await openPortal({
         userDataDir: context.userDataDir,
         storageStatePath: context.storageStatePath,
         headless: context.headless ?? false,
       });
-      this.page = page;
+      this.opened = opened;
+      this.page = opened.page;
 
       await this.page.goto(PGE_LOGIN_URL);
       await this.page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
@@ -144,6 +146,13 @@ export class PowerClerkAdapter implements PortalAdapter {
   async fillApplication(project: ProjectRecord): Promise<PortalStepResult> {
     if (!this.page) return fail("Not logged in. Call login() first.");
     const page = this.page;
+    // Collect REQUIRED-field failures (redacted field-name labels only). A required
+    // fill that fails after retries sets ok:false instead of silently passing.
+    const requiredFailures: string[] = [];
+    const collect = async (label: string, action: () => Promise<void>): Promise<void> => {
+      const r = await safeAction(label, action, { required: true });
+      if (!r.ok) requiredFailures.push(`${r.field}: ${r.message ?? "failed"}`);
+    };
     try {
       const s = snap(project);
 
@@ -167,12 +176,14 @@ export class PowerClerkAdapter implements PortalAdapter {
       }
 
       // The page may render multiple contact sections; pin the installer block
-      // to the first matching field of each kind to stay unambiguous.
-      await page.getByRole("textbox", { name: "Name" }).first().fill(installerFirst);
-      await page.getByRole("textbox", { name: "Last" }).first().fill(installerLast);
-      await page.getByRole("textbox", { name: "Address", exact: true }).first().fill(installerAddress);
-      await page.getByRole("textbox", { name: "Email" }).first().fill(installerEmail);
-      await page.getByRole("textbox", { name: "Phone" }).first().fill(installerPhone);
+      // to the first matching field of each kind to stay unambiguous. These are
+      // REQUIRED (submitting-party identity) — route through safeAction so a missed
+      // fill fails the run instead of submitting a half-populated installer block.
+      await collect("installerName", () => page.getByRole("textbox", { name: "Name" }).first().fill(installerFirst));
+      await collect("installerLast", () => page.getByRole("textbox", { name: "Last" }).first().fill(installerLast));
+      await collect("installerAddress", () => page.getByRole("textbox", { name: "Address", exact: true }).first().fill(installerAddress));
+      await collect("installerEmail", () => page.getByRole("textbox", { name: "Email" }).first().fill(installerEmail));
+      await collect("installerPhone", () => page.getByRole("textbox", { name: "Phone" }).first().fill(installerPhone));
       await page.getByRole("button", { name: "Next", exact: true }).click();
 
       // --- Applicant (PGE Customer / homeowner) -----------------------------
@@ -185,12 +196,14 @@ export class PowerClerkAdapter implements PortalAdapter {
       const applicant = page.getByRole("group", { name: "Applicant (PGE Customer)" });
       const applicantScope = (await applicant.count()) > 0 ? applicant : page;
 
-      await applicantScope.getByRole("textbox", { name: "Name" }).first().fill(ownerFirst);
-      await applicantScope.getByPlaceholder("Last").first().fill(ownerLast);
-      await applicantScope.getByRole("textbox", { name: "Address", exact: true }).first().fill(project.projectAddress ?? "");
-      await applicantScope.getByRole("textbox", { name: "City" }).first().fill(project.city ?? "");
-      await applicantScope.getByLabel("State").first().selectOption(project.state || "OR");
-      await applicantScope.getByRole("textbox", { name: "Zip Code" }).first().fill(project.zip ?? "");
+      // Applicant identity is REQUIRED — surface failures (field names only; never the
+      // owner name / address value itself).
+      await collect("applicantName", () => applicantScope.getByRole("textbox", { name: "Name" }).first().fill(ownerFirst));
+      await collect("applicantLast", () => applicantScope.getByPlaceholder("Last").first().fill(ownerLast));
+      await collect("applicantAddress", () => applicantScope.getByRole("textbox", { name: "Address", exact: true }).first().fill(project.projectAddress ?? ""));
+      await collect("applicantCity", () => applicantScope.getByRole("textbox", { name: "City" }).first().fill(project.city ?? ""));
+      await collect("applicantState", () => applicantScope.getByLabel("State").first().selectOption(project.state || "OR"));
+      await collect("applicantZip", () => applicantScope.getByRole("textbox", { name: "Zip Code" }).first().fill(project.zip ?? ""));
 
       const ownerPhone = str(s["homeownerPhone"] ?? s["owner_phone"]);
       const ownerEmail = str(s["homeownerEmail"] ?? s["owner_email"]);
@@ -218,8 +231,10 @@ export class PowerClerkAdapter implements PortalAdapter {
       const schedule = str(s["pgeSchedule"] ?? s["schedule"]) || "7";
       await page.getByLabel("Schedule").first().selectOption(schedule).catch(() => null);
 
-      await page.getByRole("textbox", { name: "PGE Account Number for point" }).fill(project.accountNumber ?? "");
-      await page.getByRole("textbox", { name: "Meter Number" }).fill(project.meterNumber ?? "");
+      // Account + meter number are REQUIRED to bind the interconnection to the right
+      // service point — a missed fill must fail the run, never pass silently.
+      await collect("pgeAccountNumber", () => page.getByRole("textbox", { name: "PGE Account Number for point" }).fill(project.accountNumber ?? ""));
+      await collect("meterNumber", () => page.getByRole("textbox", { name: "Meter Number" }).fill(project.meterNumber ?? ""));
       await page.getByRole("checkbox", { name: /Click here to confirm/i }).check().catch(() => null);
 
       // Service configuration
@@ -230,7 +245,7 @@ export class PowerClerkAdapter implements PortalAdapter {
       await page.getByRole("radio", { name: "/240" }).check().catch(() => null);
 
       const serviceRating = str(s["mainServiceRating"] ?? s["main_service_rating"] ?? s["serviceRating"]) || "200";
-      await page.getByRole("textbox", { name: "Main Service Entrance Rating" }).fill(serviceRating);
+      await collect("mainServiceRating", () => page.getByRole("textbox", { name: "Main Service Entrance Rating" }).fill(serviceRating));
       await page.getByRole("button", { name: "Next", exact: true }).click();
 
       // --- Generation: inverter + N PV arrays -------------------------------
@@ -274,11 +289,20 @@ export class PowerClerkAdapter implements PortalAdapter {
       await page.getByRole("radio", { name: "Yes" }).check().catch(() => null);
       await page.getByRole("button", { name: "Next", exact: true }).click();
 
+      // If any REQUIRED field failed, the form is half-filled — report ok:false with a
+      // redacted (field-name-only) message rather than a clean success.
+      if (requiredFailures.length > 0) {
+        return fail(
+          `fillApplication: ${requiredFailures.length} required field(s) could not be filled — manual review required.`,
+          { requiredFailures, arrayCount: arrays.length },
+        );
+      }
+
+      // PII redaction: do NOT return installerCompany (client identity), homeowner
+      // name, address, or account/meter numbers in the result payload.
       return ok(`Application filled with ${arrays.length} PV array(s).`, {
         projectId: project.id,
         arrayCount: arrays.length,
-        installerCompany,
-        accountNumber: "REDACTED",
       });
     } catch (err) {
       return fail(`fillApplication failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -438,14 +462,16 @@ export class PowerClerkAdapter implements PortalAdapter {
       await this.page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
 
       const bodyText = await this.page.locator("body").innerText().catch(() => "");
+      // Return a REDACTED, capped snippet (account/meter-like digit runs masked) —
+      // never a multi-thousand-char raw portal body dump.
       for (const num of applicationNumbers) {
         if (!num) continue;
         const idx = bodyText.indexOf(num);
         if (idx === -1) continue;
-        const snippet = bodyText.slice(Math.max(0, idx - 80), idx + 320).replace(/\s+/g, " ").trim();
+        const snippet = redactStatusText(bodyText.slice(Math.max(0, idx - 80), idx + 320));
         if (snippet) return snippet;
       }
-      return bodyText.slice(0, 3000).replace(/\s+/g, " ").trim() || null;
+      return redactStatusText(bodyText.slice(0, 600));
     } catch {
       return null;
     }

@@ -10,32 +10,98 @@ import { decryptStorageState } from "./cryptoStorage";
 
 export async function stageWithMockPortal(project: ProjectRecord, files: string[] = [], reviewerReport?: ReviewerReport): Promise<Record<string, unknown>> {
   const adapter = new MockPortalAdapter();
-  const steps = [
-    await adapter.login({ portalProfileId: null }),
-    await adapter.openSubmission(project),
-    await adapter.fillApplication(project),
-    await adapter.uploadFiles(project, files),
-    await adapter.stopAtReview(project, reviewerReport),
-  ];
-  return {
-    portalName: adapter.portalName,
-    finalSubmitClickedByAutomation: false,
-    ahjPreviewVisibleRequired: reviewerReport?.finalSubmitGate.mustShowAhjPreviewWindow ?? true,
-    finalSubmitButtonAloneIsEnough: reviewerReport?.finalSubmitGate.finalSubmitButtonAloneIsEnough ?? false,
-    internalFinalReviewPacketRequired: true,
-    reviewerBlockerCount: reviewerReport?.findings.filter((finding) => finding.severity === "blocker").length ?? 0,
-    steps,
+  try {
+    const steps = [
+      await adapter.login({ portalProfileId: null }),
+      await adapter.openSubmission(project),
+      await adapter.fillApplication(project),
+      await adapter.uploadFiles(project, files),
+      await adapter.stopAtReview(project, reviewerReport),
+    ];
+    const allOk = steps.every((s) => s.ok);
+    return {
+      portalName: adapter.portalName,
+      // Contract consumed by the backend: ok + finalSubmitClicked.
+      ok: allOk,
+      finalSubmitClicked: false,
+      finalSubmitClickedByAutomation: false,
+      ahjPreviewVisibleRequired: reviewerReport?.finalSubmitGate.mustShowAhjPreviewWindow ?? true,
+      finalSubmitButtonAloneIsEnough: reviewerReport?.finalSubmitGate.finalSubmitButtonAloneIsEnough ?? false,
+      internalFinalReviewPacketRequired: true,
+      reviewerBlockerCount: reviewerReport?.findings.filter((finding) => finding.severity === "blocker").length ?? 0,
+      steps,
+    };
+  } finally {
+    // Mock opens no browser, but call close() for symmetry / future-proofing.
+    await adapter.close();
+  }
+}
+
+// Tracks every decrypted plaintext session file currently on disk so a crash exit
+// handler can shred them even if a finally never runs. Paths only — never contents.
+const activeTmpStateFiles = new Set<string>();
+
+// Best-effort shred that unlinks the plaintext file, removes its private parent
+// dir, and drops the path from the active set.
+function shredTmpStateFile(tmp: string | undefined): void {
+  if (!tmp) return;
+  activeTmpStateFiles.delete(tmp);
+  try {
+    if (fs.existsSync(tmp)) fs.unlinkSync(tmp);
+  } catch {
+    // ignore — best effort
+  }
+  try {
+    fs.rmdirSync(path.dirname(tmp));
+  } catch {
+    // ignore — dir may be shared or already gone
+  }
+}
+
+// Crash safety (P0-6): on any abrupt exit, unlink every outstanding plaintext
+// session file. Registered once. Never logs the (secret) contents.
+let exitHandlerRegistered = false;
+function registerTmpStateCleanup(): void {
+  if (exitHandlerRegistered) return;
+  exitHandlerRegistered = true;
+  const cleanupAll = () => {
+    for (const tmp of [...activeTmpStateFiles]) shredTmpStateFile(tmp);
   };
+  process.once("exit", cleanupAll);
+  for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+    process.once(sig, () => {
+      cleanupAll();
+      // Re-raise default behaviour after cleanup.
+      process.exit(130);
+    });
+  }
+  process.once("uncaughtException", (err) => {
+    cleanupAll();
+    throw err;
+  });
 }
 
 // Resolves the encrypted session state file for a portal profile, writes a
-// temp plaintext file for Playwright to consume, and returns its path.
-// The temp file is deleted after the portal run completes.
+// PRIVATE temp plaintext file (0700 dir + 0600 file) for Playwright to consume,
+// and returns its path. The decrypted contents are NEVER logged. The caller MUST
+// shred the file on every exit path (runAdapter does so in finally; a crash handler
+// is the backstop).
 function resolveStorageStatePath(encryptedStatePath: string | null | undefined): string | undefined {
   if (!encryptedStatePath || !fs.existsSync(encryptedStatePath)) return undefined;
+  registerTmpStateCleanup();
   const decrypted = decryptStorageState(fs.readFileSync(encryptedStatePath, "utf8"));
-  const tmp = path.join(os.tmpdir(), `portal-session-${Date.now()}.json`);
-  fs.writeFileSync(tmp, JSON.stringify(decrypted), "utf8");
+  // mkdtempSync creates a directory with 0700 perms (owner-only), so the filename is
+  // unpredictable AND unreadable by other users even before we tighten the file mode.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "portal-session-"));
+  const tmp = path.join(dir, "state.json");
+  // Owner read/write only (0600). Write via an explicit fd so perms apply atomically.
+  const fd = fs.openSync(tmp, "wx", 0o600);
+  try {
+    fs.writeFileSync(fd, JSON.stringify(decrypted), "utf8");
+  } finally {
+    fs.closeSync(fd);
+  }
+  activeTmpStateFiles.add(tmp);
   return tmp;
 }
 
@@ -56,8 +122,15 @@ interface StageOptions {
 }
 
 // Generic adapter runner: decrypts the session into a temp file, drives the
-// adapter through login → open → fill → upload → stopAtReview, and always
-// cleans up the plaintext session file. Never clicks final submit.
+// adapter through login → open → fill → upload → stopAtReview, ALWAYS closes the
+// browser (releasing the per-client userDataDir lock so the next run can launch),
+// and ALWAYS shreds the plaintext session file.
+//
+// Returns the backend contract { ...details, ok, finalSubmitClicked } where:
+//   - ok: false if any step failed, the run errored, or the review screen was not
+//         reached; true only when the adapter staged cleanly through review.
+//   - finalSubmitClicked: true ONLY when the automation actually clicked an approved
+//         (allowlisted) final-submit step in autoSubmit mode AND the portal accepted it.
 async function runAdapter(
   adapter: import("./adapter").PortalAdapter,
   project: ProjectRecord,
@@ -74,24 +147,57 @@ async function runAdapter(
       credential: options.credential,
       userDataDir: options.userDataDir,
     });
-    if (!loginResult.ok) return { portalName: adapter.portalName, finalSubmitClickedByAutomation: false, pauseReason: loginResult.pauseReason ?? null, steps: [loginResult] };
+    if (!loginResult.ok) {
+      return {
+        portalName: adapter.portalName,
+        ok: false,
+        finalSubmitClicked: false,
+        finalSubmitClickedByAutomation: false,
+        pauseReason: loginResult.pauseReason ?? null,
+        steps: [loginResult],
+      };
+    }
 
     const openResult = await adapter.openSubmission(project);
     const fillResult = openResult.ok ? await adapter.fillApplication(project) : openResult;
     const uploadResult = fillResult.ok ? await adapter.uploadFiles(project, files) : fillResult;
     const reviewResult = await adapter.stopAtReview(project, options.reviewerReport);
 
+    const steps = [loginResult, openResult, fillResult, uploadResult, reviewResult];
+    // The adapter reports whether it actually clicked the allowlisted final submit.
+    // Default false; only the RecipeAdapter sets it true on a clean autoSubmit click.
+    const finalSubmitClicked =
+      reviewResult.ok && (reviewResult.data?.finalSubmitClicked === true
+        || (adapter as { finalSubmitClicked?: boolean }).finalSubmitClicked === true);
+    // ok: every step must have succeeded AND the review screen must have been reached.
+    const ok = steps.every((s) => s.ok);
+
     return {
       portalName: adapter.portalName,
-      finalSubmitClickedByAutomation: false,
+      ok,
+      finalSubmitClicked,
+      // Legacy field kept for older consumers; mirrors finalSubmitClicked.
+      finalSubmitClickedByAutomation: finalSubmitClicked,
+      pauseReason: reviewResult.pauseReason ?? null,
       internalFinalReviewPacketRequired: true,
       reviewerBlockerCount: options.reviewerReport?.findings.filter((f) => f.severity === "blocker").length ?? 0,
-      steps: [loginResult, openResult, fillResult, uploadResult, reviewResult],
+      steps,
+    };
+  } catch (err) {
+    // Any thrown error → ok:false (never let an exception read as success).
+    return {
+      portalName: adapter.portalName,
+      ok: false,
+      finalSubmitClicked: false,
+      finalSubmitClickedByAutomation: false,
+      pauseReason: null,
+      steps: [{ ok: false, message: `Portal run errored: ${err instanceof Error ? err.message : String(err)}` }],
     };
   } finally {
-    if (tmpStatePath && fs.existsSync(tmpStatePath)) {
-      fs.unlinkSync(tmpStatePath);
-    }
+    // P0-1: ALWAYS close the browser/context so the userDataDir lock is released and
+    // the second run for the same client+portal can launch.
+    await adapter.close();
+    shredTmpStateFile(tmpStatePath);
   }
 }
 
@@ -126,11 +232,12 @@ export async function checkStatusWithAdapter(
   options: StageOptions & { recipe?: PortalRecipe; fieldValues?: Record<string, string>; docsByType?: Record<string, string> },
 ): Promise<string | null> {
   let tmpStatePath: string | undefined;
+  let adapter: import("./adapter").PortalAdapter | null = null;
   try {
     tmpStatePath = resolveStorageStatePath(options.encryptedStorageStatePath);
     const ctx = { storageStatePath: tmpStatePath, headless: options.headless ?? true, credential: options.credential, userDataDir: options.userDataDir };
 
-    const adapter =
+    adapter =
       adapterType === "accela" ? new OregonEPermittingAdapter() :
       adapterType === "powerclerk" ? new PowerClerkAdapter() :
       options.recipe ? new RecipeAdapter(options.recipe, options.fieldValues ?? {}, options.docsByType ?? {}) :
@@ -145,6 +252,9 @@ export async function checkStatusWithAdapter(
   } catch {
     return null;
   } finally {
-    if (tmpStatePath && fs.existsSync(tmpStatePath)) fs.unlinkSync(tmpStatePath);
+    // P0-1: always close the browser (release the userDataDir lock) and shred the
+    // plaintext session file, even on the status-check path.
+    if (adapter) await adapter.close();
+    shredTmpStateFile(tmpStatePath);
   }
 }

@@ -35,6 +35,35 @@ export interface PortalAdapter {
    *  SAFETY: must never click submit, modify, or pay anything.
    *  Returns null if the adapter has no live scrape capability. */
   checkStatus?(applicationNumbers: string[]): Promise<string | null>;
+  /** Close the underlying browser/context and release the per-client userDataDir
+   *  lock. MUST be called in a finally for every run/status-check so a second run
+   *  for the same client+portal can launch. Always safe to call (idempotent, never
+   *  throws); a no-op when nothing was opened. */
+  close(): Promise<void>;
+}
+
+// Base class: provides a no-op close() default and a protected helper to store
+// the opened browser handle so every concrete adapter shares the same teardown.
+export abstract class BasePortalAdapter implements PortalAdapter {
+  abstract portalName: string;
+  abstract login(context: PortalContext): Promise<PortalStepResult>;
+  abstract openSubmission(project: ProjectRecord): Promise<PortalStepResult>;
+  abstract fillApplication(project: ProjectRecord): Promise<PortalStepResult>;
+  abstract uploadFiles(project: ProjectRecord, files: string[]): Promise<PortalStepResult>;
+  abstract stopAtReview(project: ProjectRecord, reviewerReport?: ReviewerReport): Promise<PortalStepResult>;
+  abstract captureSubmissionConfirmation(): Promise<PortalStepResult>;
+
+  // The handle returned by openPortal(), stored so close() can tear it down.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  protected opened: any = null;
+
+  async close(): Promise<void> {
+    const opened = this.opened;
+    this.opened = null;
+    if (!opened) return;
+    const { closePortal } = await import("./browser");
+    await closePortal(opened);
+  }
 }
 
 export const HUMAN_REVIEW_MESSAGE =

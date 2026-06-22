@@ -17,6 +17,20 @@ export interface OpenedPortal {
   page: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   context: any;
+  // The owning Browser, present only in the non-persistent (browser.launch) mode.
+  // In persistent-context mode the context IS the browser, so this is undefined.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  browser?: any;
+}
+
+// Resolve the headless setting honestly:
+//   - explicit opts.headless wins;
+//   - PORTAL_HEADLESS=false forces a visible window (local debugging / recording);
+//   - otherwise default to headless true (production/cloud has no display).
+export function resolveHeadless(explicit?: boolean): boolean {
+  if (typeof explicit === "boolean") return explicit;
+  if (process.env.PORTAL_HEADLESS === "false") return false;
+  return true;
 }
 
 export async function openPortal(opts: {
@@ -26,9 +40,7 @@ export async function openPortal(opts: {
 }): Promise<OpenedPortal> {
   const { chromium } = await import("playwright");
 
-  // In production / cloud there is no display, so headless is forced.
-  // Set PORTAL_HEADLESS=false locally to see the browser window during recording.
-  const headless = opts.headless ?? (process.env.PORTAL_HEADLESS === "false" ? false : process.env.NODE_ENV === "production" || true);
+  const headless = resolveHeadless(opts.headless);
 
   if (opts.userDataDir) {
     const context = await chromium.launchPersistentContext(opts.userDataDir, {
@@ -37,6 +49,7 @@ export async function openPortal(opts: {
       args: ["--start-maximized"],
     });
     const page = context.pages()[0] ?? (await context.newPage());
+    // Persistent context owns its own browser process; closing the context closes it.
     return { page, context };
   }
 
@@ -45,5 +58,27 @@ export async function openPortal(opts: {
     ? await browser.newContext({ storageState: opts.storageStatePath })
     : await browser.newContext();
   const page = await context.newPage();
-  return { page, context };
+  return { page, context, browser };
+}
+
+// Always-safe teardown: closes the context (persistent or not) and the owning
+// browser if there is a separate one. Swallows errors so cleanup never masks the
+// real run result, and is idempotent (safe to call from a finally even if open
+// partially failed).
+export async function closePortal(opened: OpenedPortal | null | undefined): Promise<void> {
+  if (!opened) return;
+  try {
+    if (opened.context && typeof opened.context.close === "function") {
+      await opened.context.close();
+    }
+  } catch {
+    // ignore — best-effort teardown
+  }
+  try {
+    if (opened.browser && typeof opened.browser.close === "function") {
+      await opened.browser.close();
+    }
+  } catch {
+    // ignore — best-effort teardown
+  }
 }

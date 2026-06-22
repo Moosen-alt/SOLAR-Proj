@@ -1,7 +1,7 @@
 import type { ProjectRecord } from "../../../shared/src/types";
-import { HUMAN_REVIEW_MESSAGE, type PortalAdapter, type PortalContext, type PortalStepResult } from "../adapter";
+import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, type PortalContext, type PortalStepResult } from "../adapter";
 
-export class DevelopmentDirectAdapter implements PortalAdapter {
+export class DevelopmentDirectAdapter extends BasePortalAdapter {
   portalName = "Development Direct";
 
   async login(_context: PortalContext): Promise<PortalStepResult> {
@@ -35,4 +35,6 @@ export class DevelopmentDirectAdapter implements PortalAdapter {
   async captureSubmissionConfirmation(): Promise<PortalStepResult> {
     return { ok: false, message: "Development Direct confirmation capture is not implemented yet." };
   }
+
+  // Skeleton adapter opens no browser — close() is a no-op (base default).
 }

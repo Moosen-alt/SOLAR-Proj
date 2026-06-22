@@ -1,11 +1,11 @@
 import type { ProjectRecord, ReviewerReport } from "../../../shared/src/types";
-import { HUMAN_REVIEW_MESSAGE, type PortalAdapter, type PortalContext, type PortalStepResult } from "../adapter";
+import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, type PortalContext, type PortalStepResult } from "../adapter";
 
 function result(message: string, data: Record<string, unknown> = {}): PortalStepResult {
   return { ok: true, message, data };
 }
 
-export class MockPortalAdapter implements PortalAdapter {
+export class MockPortalAdapter extends BasePortalAdapter {
   portalName = "Mock Portal Adapter";
 
   async login(context: PortalContext): Promise<PortalStepResult> {
@@ -15,15 +15,15 @@ export class MockPortalAdapter implements PortalAdapter {
   }
 
   async openSubmission(project: ProjectRecord): Promise<PortalStepResult> {
+    // PII redaction: do not echo the project street address back into the result.
     return result("Mock new application flow opened.", {
       projectId: project.id,
-      address: project.projectAddress,
     });
   }
 
   async fillApplication(project: ProjectRecord): Promise<PortalStepResult> {
+    // PII redaction: drop homeownerName; keep only non-identifying system facts.
     return result("Mock portal fields filled from project JSON.", {
-      homeownerName: project.homeownerName,
       utility: project.utility,
       ahj: project.ahj,
       dcKw: project.systemSizeDcKw,
@@ -34,7 +34,7 @@ export class MockPortalAdapter implements PortalAdapter {
   async uploadFiles(project: ProjectRecord, files: string[]): Promise<PortalStepResult> {
     return result("Mock file upload staged.", {
       projectId: project.id,
-      files,
+      fileCount: files.length,
     });
   }
 
@@ -52,4 +52,6 @@ export class MockPortalAdapter implements PortalAdapter {
   async captureSubmissionConfirmation(): Promise<PortalStepResult> {
     return result("Confirmation capture is a manual app action after the human submits.");
   }
+
+  // Mock opens no browser — close() is a no-op (BasePortalAdapter default handles it).
 }

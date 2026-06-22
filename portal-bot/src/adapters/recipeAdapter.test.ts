@@ -26,6 +26,12 @@ function makeFakePage(opts: {
   // Map of a stable key -> whether that locator is "present" on the page.
   present?: Record<string, boolean>;
   log: ActionLog;
+  // Frame URLs returned by page.frames() (for structural challenge detection).
+  frameUrls?: string[];
+  // iframe src attributes returned by locator("iframe").evaluateAll(...).
+  iframeSrcs?: string[];
+  // When true, getByText(<challenge regex>).count() returns 1 (visible challenge text).
+  challengeText?: boolean;
 }) {
   const present = opts.present ?? {};
   const log = opts.log;
@@ -44,6 +50,8 @@ function makeFakePage(opts: {
       press: async () => undefined,
       waitFor: async () => undefined,
       setInputFiles: async () => undefined,
+      // Used by detectChallengeFrame to read iframe src attributes.
+      evaluateAll: async () => opts.iframeSrcs ?? [],
     };
     return loc;
   }
@@ -52,11 +60,19 @@ function makeFakePage(opts: {
     goto: async (url: string) => { log.gotos.push(url); },
     waitForLoadState: async () => undefined,
     reload: async () => undefined,
+    frames: () => (opts.frameUrls ?? []).map((u) => ({ url: () => u })),
     getByRole: (role: string, o?: { name?: string }) => locatorFor(`role:${role}:${o?.name ?? ""}`),
     getByLabel: (label: string) => locatorFor(`label:${label}`),
     getByPlaceholder: (p: string) => locatorFor(`placeholder:${p}`),
     getByTestId: (t: string) => locatorFor(`testId:${t}`),
-    getByText: (t: string) => locatorFor(`text:${t}`),
+    getByText: (t: any) => {
+      // detectChallengeFrame calls getByText(<RegExp containing "captcha">).count();
+      // honor the challengeText flag for any such challenge-text query.
+      if (t instanceof RegExp && /captcha/i.test(t.source)) {
+        return { ...locatorFor(`text:challenge`), count: async () => (opts.challengeText ? 1 : 0) };
+      }
+      return locatorFor(`text:${String(t)}`);
+    },
     locator: (css: string) => locatorFor(`css:${css}`),
     frameLocator: () => page,
   };
@@ -112,7 +128,7 @@ async function testStopForReviewHalts() {
 async function testFinalSubmitDenylist() {
   const log: ActionLog = { clicks: [], fills: [], gotos: [], checks: 0 };
   const recipe = baseRecipe([
-    // A click whose target name matches the final-submit denylist must be skipped.
+    // A click whose target name matches a pay keyword must be skipped.
     { action: "click", selector: { role: "button", name: "Submit & Pay" } },
     // A safe click must go through.
     { action: "click", selector: { role: "button", name: "Next" } },
@@ -122,6 +138,108 @@ async function testFinalSubmitDenylist() {
   const result = await adapter.fillApplication(fakeProject);
   assert.equal(result.ok, true);
   assert.deepEqual(log.clicks, ["role:button:Next"], "final-submit click must be blocked; only the safe click runs");
+}
+
+// P0-3: an id/css-only final-submit step whose recorded selector `name` is EMPTY
+// (typical for ASP.NET id-based buttons) must NOT be clicked in autoSubmit unless it
+// carries the explicit isFinalSubmit allowlist flag.
+async function testIdOnlyFinalSubmitNotClickedWithoutFlag() {
+  const log: ActionLog = { clicks: [], fills: [], gotos: [], checks: 0 };
+  const recipe = baseRecipe([
+    { action: "stopForReview" },
+    // No name/text — only a css id. Past the review marker. NOT flagged → must be blocked.
+    { action: "click", selector: { css: "#ctl00_btnSubmit" } },
+  ]);
+  // autoSubmit ON — the bypass would let this slip through under the old denylist.
+  const adapter = new RecipeAdapter(recipe, {}, {}, { autoSubmit: true });
+  withFakePage(adapter, makeFakePage({ log }));
+  const result = await adapter.fillApplication(fakeProject);
+  assert.equal(result.ok, true);
+  assert.deepEqual(log.clicks, [], "id/css-only final submit past review must NOT be clicked without isFinalSubmit");
+  assert.equal((adapter as unknown as { finalSubmitClicked: boolean }).finalSubmitClicked, false, "finalSubmitClicked must stay false");
+  assert.equal(result.data?.finalSubmitClicked, false);
+}
+
+// P0-3: the SAME id/css-only step IS clicked when explicitly flagged isFinalSubmit in
+// autoSubmit mode, and finalSubmitClicked is reported true.
+async function testFlaggedFinalSubmitClickedInAutoSubmit() {
+  const log: ActionLog = { clicks: [], fills: [], gotos: [], checks: 0 };
+  const recipe = baseRecipe([
+    { action: "stopForReview" },
+    { action: "click", selector: { css: "#ctl00_btnSubmit" }, isFinalSubmit: true } as RecipeStep,
+  ]);
+  const adapter = new RecipeAdapter(recipe, {}, {}, { autoSubmit: true });
+  withFakePage(adapter, makeFakePage({ log }));
+  const result = await adapter.fillApplication(fakeProject);
+  assert.equal(result.ok, true);
+  assert.deepEqual(log.clicks, ["css:#ctl00_btnSubmit"], "flagged final submit must be clicked in autoSubmit");
+  assert.equal((adapter as unknown as { finalSubmitClicked: boolean }).finalSubmitClicked, true, "finalSubmitClicked must be true");
+  assert.equal(result.data?.finalSubmitClicked, true);
+}
+
+// A flagged final submit must STILL never be clicked in guided-manual (autoSubmit off).
+async function testFlaggedFinalSubmitNotClickedWithoutAutoSubmit() {
+  const log: ActionLog = { clicks: [], fills: [], gotos: [], checks: 0 };
+  const recipe = baseRecipe([
+    { action: "click", selector: { css: "#ctl00_btnSubmit" }, isFinalSubmit: true } as RecipeStep,
+  ]);
+  const adapter = new RecipeAdapter(recipe, {}, {}); // autoSubmit OFF
+  withFakePage(adapter, makeFakePage({ log }));
+  const result = await adapter.fillApplication(fakeProject);
+  assert.equal(result.ok, true);
+  assert.deepEqual(log.clicks, [], "guided-manual must never click the final submit, even when flagged");
+  assert.equal(result.data?.finalSubmitClicked, false);
+}
+
+// PAY_FEE is ALWAYS blocked, even in autoSubmit and even if (wrongly) flagged.
+async function testPayFeeBlockedInAutoSubmit() {
+  const log: ActionLog = { clicks: [], fills: [], gotos: [], checks: 0 };
+  const recipe = baseRecipe([
+    { action: "stopForReview" },
+    { action: "click", selector: { role: "button", name: "Pay Now" }, isFinalSubmit: true } as RecipeStep,
+  ]);
+  const adapter = new RecipeAdapter(recipe, {}, {}, { autoSubmit: true });
+  withFakePage(adapter, makeFakePage({ log }));
+  const result = await adapter.fillApplication(fakeProject);
+  assert.equal(result.ok, true);
+  assert.deepEqual(log.clicks, [], "PAY_FEE must be hard-blocked even in autoSubmit even if flagged final");
+  assert.equal(result.data?.finalSubmitClicked, false);
+}
+
+// P0-4: an iframe-based CAPTCHA/MFA challenge on the final page must STOP the run
+// (the flagged final submit is NOT clicked) — detected structurally by frame URL.
+async function testIframeChallengeStopsAutoSubmit() {
+  const log: ActionLog = { clicks: [], fills: [], gotos: [], checks: 0 };
+  const recipe = baseRecipe([
+    { action: "stopForReview" },
+    { action: "click", selector: { css: "#ctl00_btnSubmit" }, isFinalSubmit: true } as RecipeStep,
+  ]);
+  const adapter = new RecipeAdapter(recipe, {}, {}, { autoSubmit: true });
+  withFakePage(adapter, makeFakePage({
+    log,
+    frameUrls: ["https://www.google.com/recaptcha/api2/anchor?k=abc"],
+  }));
+  const result = await adapter.fillApplication(fakeProject);
+  assert.equal(result.ok, false, "an iframe challenge at the final step must fail the run");
+  assert.deepEqual(log.clicks, [], "must NOT click final submit when a challenge iframe is present");
+  assert.equal((adapter as unknown as { finalSubmitClicked: boolean }).finalSubmitClicked, false);
+}
+
+// The default guided-manual path still stops at review and reports finalSubmitClicked:false.
+async function testGuidedManualReportsNotSubmitted() {
+  const log: ActionLog = { clicks: [], fills: [], gotos: [], checks: 0 };
+  const recipe = baseRecipe([
+    { action: "fill", selector: { label: "Account" }, field: "accountNumber" },
+    { action: "stopForReview" },
+  ]);
+  const adapter = new RecipeAdapter(recipe, { accountNumber: "12345" }, {});
+  withFakePage(adapter, makeFakePage({ log }));
+  const fillResult = await adapter.fillApplication(fakeProject);
+  assert.equal(fillResult.ok, true);
+  assert.equal(fillResult.data?.finalSubmitClicked, false);
+  const reviewResult = await adapter.stopAtReview();
+  assert.equal(reviewResult.ok, true);
+  assert.equal(reviewResult.data?.finalSubmitClicked, false, "stopAtReview must report not-submitted in guided-manual");
 }
 
 async function testFieldSubstitution() {
@@ -191,7 +309,13 @@ async function testCredentialNeverLogged() {
 
 const tests: Array<[string, () => Promise<void>]> = [
   ["stopForReview halts replay and blocks later clicks", testStopForReviewHalts],
-  ["final-submit denylist blocks pay/submit clicks", testFinalSubmitDenylist],
+  ["pay/submit keyword clicks are blocked; safe clicks run", testFinalSubmitDenylist],
+  ["P0-3: id/css-only final submit NOT clicked in autoSubmit without isFinalSubmit", testIdOnlyFinalSubmitNotClickedWithoutFlag],
+  ["P0-3: flagged final submit IS clicked in autoSubmit and reports finalSubmitClicked", testFlaggedFinalSubmitClickedInAutoSubmit],
+  ["P0-3: flagged final submit NOT clicked in guided-manual", testFlaggedFinalSubmitNotClickedWithoutAutoSubmit],
+  ["P0-3: PAY_FEE always blocked in autoSubmit even if flagged", testPayFeeBlockedInAutoSubmit],
+  ["P0-4: iframe CAPTCHA/MFA challenge stops autoSubmit final click", testIframeChallengeStopsAutoSubmit],
+  ["P0-2: guided-manual reports finalSubmitClicked:false", testGuidedManualReportsNotSubmitted],
   ["field values are substituted; empty fields are skipped", testFieldSubstitution],
   ["selector fallbacks are used when the primary is absent", testSelectorFallback],
   ["credentials are never written to stdout/stderr", testCredentialNeverLogged],

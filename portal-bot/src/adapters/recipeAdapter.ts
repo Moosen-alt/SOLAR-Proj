@@ -1,6 +1,7 @@
 import type { PortalRecipe, ProjectRecord, RecipeSelector, RecipeStep } from "../../../shared/src/types";
-import { HUMAN_REVIEW_MESSAGE, type PortalAdapter, type PortalContext, type PortalStepResult } from "../adapter";
+import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, type PortalContext, type PortalStepResult } from "../adapter";
 import { openPortal } from "../browser";
+import { detectChallengeFrame, redactStatusText, RETRY_BACKOFF_MS, sleep } from "../safeAction";
 
 // RecipeAdapter — replays a recorded portal recipe (see portal_recipes / the recorder).
 // Works for ANY AHJ or utility portal an admin has taught by recording. It substitutes
@@ -11,16 +12,28 @@ import { openPortal } from "../browser";
 //   - DEFAULT (guided manual): stops at the `stopForReview` marker and never clicks the
 //     final application-submit — a human always submits.
 //   - autoSubmit (opt-in per trusted portal, operator-approved): may proceed past the
-//     review marker and click the recorded final APPLICATION submit. It still NEVER
-//     clicks a fee-payment control (PAY_FEE below), and bails to a human if a
-//     CAPTCHA/MFA challenge appears at the final step.
+//     review marker, but ONLY to click a step the operator/recorder EXPLICITLY flagged
+//     `isFinalSubmit: true`. Everything past the review marker without that flag is
+//     hard-blocked, as is any step whose selector name/text matches submit/pay keywords.
+//     It still NEVER clicks a fee-payment control (PAY_FEE), and bails to a human if a
+//     CAPTCHA/MFA challenge (including iframe-based) appears at the final step.
 //
-// PAY_FEE is matched first and is ALWAYS blocked, even in autoSubmit mode.
+// P0-3: the final-submit decision is an ALLOWLIST (explicit isFinalSubmit flag set by a
+// trusted recorder/operator), NOT a denylist over recorded selector `name` text — which
+// is empty for id-based ASP.NET buttons and would let submit/pay slip through.
 
+// ALWAYS-blocked fee-payment controls (even on a trusted auto-submit portal).
 const PAY_FEE = /\b(pay fee|pay now|submit & pay|submit and pay|make payment|pay \$|add to cart|proceed to (payment|checkout)|checkout)\b/i;
-const FINAL_SUBMIT = /\b(submit application|file application|finalize submission|^submit$|submit now)\b/i;
-const FINAL_CHALLENGE = /captcha|i'?m not a robot|two.factor|authenticat|verify your|verification code/i;
-const RETRY_BACKOFF_MS = [2000, 5000, 10000];
+// Submit-ish keywords. A step matching these is HARD-BLOCKED in autoSubmit UNLESS it
+// also carries the explicit isFinalSubmit flag — we never decide "this is the submit
+// button" purely from a regex over recorded names.
+const SUBMIT_KEYWORDS = /\b(submit|file application|finalize|finish|complete application|send application|confirm submission)\b/i;
+
+// A recorded step may carry an operator/recorder-set `isFinalSubmit` flag. This field
+// is not (yet) in the shared RecipeStep type, so read it structurally + type-safely.
+function isFinalSubmitStep(step: RecipeStep): boolean {
+  return (step as { isFinalSubmit?: unknown }).isFinalSubmit === true;
+}
 
 function ok(message: string, data: Record<string, unknown> = {}): PortalStepResult {
   return { ok: true, message, data };
@@ -29,14 +42,15 @@ function fail(message: string, data: Record<string, unknown> = {}): PortalStepRe
   return { ok: false, message, data };
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-export class RecipeAdapter implements PortalAdapter {
+export class RecipeAdapter extends BasePortalAdapter {
   portalName: string;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private page: any = null;
+  // Set true ONLY when the automation actually clicked an explicit isFinalSubmit step
+  // in autoSubmit mode and the portal accepted it (no challenge / no error).
+  finalSubmitClicked = false;
+  // Set true once the replay reaches the review marker (or clicks the final submit).
+  reachedReview = false;
 
   constructor(
     private recipe: PortalRecipe,
@@ -44,17 +58,19 @@ export class RecipeAdapter implements PortalAdapter {
     private docsByType: Record<string, string>,
     private options: { autoSubmit?: boolean } = {},
   ) {
+    super();
     this.portalName = `Recipe: ${recipe.ahj || recipe.utility || recipe.profileKey} (${recipe.portalPlatform || "portal"})`;
   }
 
   async login(context: PortalContext): Promise<PortalStepResult> {
     try {
-      const { page } = await openPortal({
+      const opened = await openPortal({
         userDataDir: context.userDataDir,
         storageStatePath: context.storageStatePath,
         headless: context.headless ?? false,
       });
-      this.page = page;
+      this.opened = opened;
+      this.page = opened.page;
       if (this.recipe.portalUrl) {
         await this.page.goto(this.recipe.portalUrl);
         await this.page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
@@ -108,8 +124,15 @@ export class RecipeAdapter implements PortalAdapter {
     return ok("Uploads are replayed inline within the recorded sequence.");
   }
   async stopAtReview(): Promise<PortalStepResult> {
+    if (this.finalSubmitClicked) {
+      return ok(
+        `${this.portalName}: approved auto-submit clicked the recorded final application submit and the portal accepted it. No fee payment was automated.`,
+        { finalSubmitClicked: true },
+      );
+    }
     return ok(
       `${HUMAN_REVIEW_MESSAGE} The recipe staged ${this.portalName} to the review screen. Verify every field and uploaded file, handle any MFA/fee, then click submit manually. AUTOMATION HAS STOPPED.`,
+      { finalSubmitClicked: false },
     );
   }
   async captureSubmissionConfirmation(): Promise<PortalStepResult> {
@@ -117,8 +140,9 @@ export class RecipeAdapter implements PortalAdapter {
   }
 
   // Read-only status scrape: navigate to the portal URL, search the page body for
-  // any of the known application/permit numbers, and return a status text snippet.
-  // NEVER clicks submit, modifies, or pays anything.
+  // any of the known application/permit numbers, and return a REDACTED status snippet.
+  // NEVER clicks submit, modifies, or pays anything. PII (long digit runs such as
+  // account/meter numbers) is masked and the text is capped to a short snippet.
   async checkStatus(applicationNumbers: string[]): Promise<string | null> {
     if (!this.page || !this.recipe.portalUrl || !applicationNumbers.length) return null;
     try {
@@ -129,33 +153,42 @@ export class RecipeAdapter implements PortalAdapter {
         if (!num) continue;
         const idx = bodyText.indexOf(num);
         if (idx === -1) continue;
-        const snippet = bodyText.slice(Math.max(0, idx - 80), idx + 320).replace(/\s+/g, " ").trim();
-        if (snippet) return snippet;
+        const snippet = bodyText.slice(Math.max(0, idx - 80), idx + 320);
+        const redacted = redactStatusText(snippet);
+        if (redacted) return redacted;
       }
-      return bodyText.slice(0, 3000).replace(/\s+/g, " ").trim() || null;
+      return redactStatusText(bodyText.slice(0, 600));
     } catch {
       return null;
     }
   }
 
-  // Replay every recorded step IN ORDER (uploads inline), stopping permanently at the
-  // first stopForReview marker so we never proceed to the final submit.
+  // Replay every recorded step IN ORDER (uploads inline). In guided-manual mode it stops
+  // permanently at the first stopForReview marker so we never proceed to the final submit.
+  // In autoSubmit mode it may proceed past the marker but only to perform explicitly
+  // allowlisted (isFinalSubmit) steps — everything else past the marker is hard-blocked.
   private async runAll(): Promise<PortalStepResult> {
     if (!this.page) return fail("Recipe replay has no open page.");
     let executed = 0;
     const skipped: string[] = [];
+    // Tracks whether we are past the review marker (autoSubmit-only territory).
+    let pastReview = false;
+
     for (const step of this.recipe.steps) {
       // Guided-manual: stop at review. autoSubmit (trusted, approved): proceed past
-      // the review marker to replay the recorded final application submit.
+      // the review marker to replay ONLY allowlisted final-submit steps.
       if (step.action === "stopForReview") {
+        this.reachedReview = true;
         if (!this.options.autoSubmit) break;
+        pastReview = true;
         continue;
       }
+
       let lastErr: unknown;
       let succeeded = false;
       for (let attempt = 0; attempt <= RETRY_BACKOFF_MS.length; attempt++) {
         try {
-          const done = await this.executeStep(step);
+          const done = await this.executeStep(step, pastReview);
           if (done) executed++;
           else skipped.push(step.note || step.action);
           succeeded = true;
@@ -177,7 +210,11 @@ export class RecipeAdapter implements PortalAdapter {
         return fail(`Recipe step failed (${step.action}${step.note ? ` — ${step.note}` : ""}): ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`, { executed, skipped });
       }
     }
-    return ok(`Replayed ${executed} recorded step(s); stopped at review.`, { executed, skipped });
+
+    if (this.finalSubmitClicked) {
+      return ok(`Replayed ${executed} recorded step(s) and clicked the approved final submit.`, { executed, skipped, finalSubmitClicked: true });
+    }
+    return ok(`Replayed ${executed} recorded step(s); stopped at review.`, { executed, skipped, finalSubmitClicked: false });
   }
 
   private resolveValue(step: RecipeStep): string {
@@ -186,28 +223,16 @@ export class RecipeAdapter implements PortalAdapter {
   }
 
   // Returns true if the step performed an action, false if it was safely skipped.
-  private async executeStep(step: RecipeStep): Promise<boolean> {
+  // `pastReview` is true only in autoSubmit mode AFTER the stopForReview marker.
+  private async executeStep(step: RecipeStep, pastReview: boolean): Promise<boolean> {
     const scoped = await this.resolveLocator(step.selector);
     switch (step.action) {
       case "goto":
         await this.page.goto(this.resolveValue(step));
         await this.page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
         return true;
-      case "click": {
-        const name = step.selector?.name || step.selector?.text || "";
-        // Fee payment is NEVER automated, even on a trusted auto-submit portal.
-        if (PAY_FEE.test(name)) return false;
-        if (FINAL_SUBMIT.test(name)) {
-          // Guided-manual: stop before the final submit so a human clicks it.
-          if (!this.options.autoSubmit) return false;
-          // Trusted auto-submit: bail to a human if a CAPTCHA/MFA challenge is on the
-          // final page — we never solve or bypass challenges.
-          const challenge = await this.page.getByText(FINAL_CHALLENGE).count().catch(() => 0);
-          if (challenge > 0) throw new Error("Final submit needs a human: CAPTCHA/MFA challenge detected.");
-        }
-        await scoped!.click();
-        return true;
-      }
+      case "click":
+        return this.executeClick(step, scoped, pastReview);
       case "fill": {
         const v = this.resolveValue(step);
         if (!v) return false;
@@ -242,6 +267,53 @@ export class RecipeAdapter implements PortalAdapter {
       default:
         return false;
     }
+  }
+
+  // Click safety gate (P0-3 allowlist + P0-4 structural challenge detection).
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async executeClick(step: RecipeStep, scoped: any, pastReview: boolean): Promise<boolean> {
+    const name = step.selector?.name || step.selector?.text || "";
+    const flaggedFinal = isFinalSubmitStep(step);
+
+    // 1) Fee payment is NEVER automated — always blocked, even if (wrongly) flagged.
+    if (PAY_FEE.test(name)) return false;
+
+    // 2) Anything past the review marker (autoSubmit territory) is hard-blocked unless
+    //    it carries the explicit isFinalSubmit allowlist flag. This catches id/css-only
+    //    submit buttons whose recorded name is empty (the P0-3 bypass).
+    if (pastReview && !flaggedFinal) return false;
+
+    // 3) Any step whose name/text matches submit keywords is hard-blocked UNLESS it is
+    //    the explicitly flagged final submit. We never infer "submit button" from regex.
+    if (SUBMIT_KEYWORDS.test(name) && !flaggedFinal) return false;
+
+    // 4) The explicitly allowlisted final submit.
+    if (flaggedFinal) {
+      // Guided-manual: never click the final submit — a human always does.
+      if (!this.options.autoSubmit) return false;
+      // Trusted auto-submit: STRUCTURALLY detect a CAPTCHA/MFA challenge (iframe-based
+      // included) on the final page and bail to a human if present. Never solve/bypass.
+      const challenge = await detectChallengeFrame(this.page);
+      if (challenge) {
+        throw new Error(`Final submit needs a human: ${challenge}. Automation stopped without clicking.`);
+      }
+      await scoped!.click();
+      // Let the portal settle, then verify we did not land back on a challenge or an
+      // error page. "Unknown page state after the click" is treated as a STOP, not a
+      // success — finalSubmitClicked stays false unless the portal cleanly accepted it.
+      await this.page.waitForLoadState("networkidle", { timeout: 20000 }).catch(() => null);
+      const postChallenge = await detectChallengeFrame(this.page);
+      if (postChallenge) {
+        throw new Error(`Final submit triggered a challenge after the click (${postChallenge}); pausing for human verification.`);
+      }
+      this.finalSubmitClicked = true;
+      this.reachedReview = true;
+      return true;
+    }
+
+    // 5) Ordinary navigation/UI click (pre-review). Safe to perform.
+    await scoped!.click();
+    return true;
   }
 
   // Resolve a selector to a present locator: try the primary, and if it matches

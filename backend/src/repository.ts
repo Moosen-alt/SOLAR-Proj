@@ -4793,9 +4793,13 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   // Determine status: if the adapter paused for MFA/CAPTCHA, record it distinctly
   // so the UI can show a specific banner and the operator knows to resume manually.
   const pauseReason = typeof result.pauseReason === "string" ? result.pauseReason : null;
-  // Trusted auto-submit that ran the final application submit cleanly → the filing is
-  // submitted. A pause or adapter failure falls back to the human-submit state.
-  const autoSubmitted = resolvedAutoSubmit && !pauseReason && result.ok !== false;
+  // A filing is recorded "submitted" by automation ONLY when the adapter explicitly
+  // reports it actually clicked the allowlisted final-submit step (finalSubmitClicked)
+  // AND the run was clean (ok). We never infer submission from "didn't fail" — the old
+  // `result.ok !== false` fabricated a legal-submission record when nothing was clicked.
+  const adapterOk = result.ok === true;
+  const finalSubmitClicked = result.finalSubmitClicked === true;
+  const autoSubmitted = resolvedAutoSubmit && !pauseReason && adapterOk && finalSubmitClicked;
   const runStatus = pauseReason ? "paused_for_human" : autoSubmitted ? "submitted" : "awaiting_human_submit";
   if (autoSubmitted) {
     addAuditLog(db, projectId, "portal_bot", adapterActorName, "portal.auto_submitted", {

@@ -1,7 +1,8 @@
 import path from "node:path";
 import type { ProjectRecord, ReviewerReport } from "../../../shared/src/types";
-import { HUMAN_REVIEW_MESSAGE, type PortalAdapter, type PortalContext, type PortalStepResult } from "../adapter";
+import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, type PortalContext, type PortalStepResult } from "../adapter";
 import { openPortal } from "../browser";
+import { redactStatusText, safeAction } from "../safeAction";
 
 // Oregon ePermitting (Accela ACA) adapter
 // Codegen recording captured by operator up to the review page.
@@ -88,7 +89,7 @@ function parseStreetName(address: string): string {
   return (unitIdx === -1 ? parts : parts.slice(0, unitIdx)).join(" ");
 }
 
-export class OregonEPermittingAdapter implements PortalAdapter {
+export class OregonEPermittingAdapter extends BasePortalAdapter {
   portalName = "Oregon ePermitting (Accela ACA)";
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -99,12 +100,13 @@ export class OregonEPermittingAdapter implements PortalAdapter {
   // ---------------------------------------------------------------------------
   async login(context: PortalContext): Promise<PortalStepResult> {
     try {
-      const { page } = await openPortal({
+      const opened = await openPortal({
         userDataDir: context.userDataDir,
         storageStatePath: context.storageStatePath,
         headless: context.headless ?? false,
       });
-      this.page = page;
+      this.opened = opened;
+      this.page = opened.page;
 
       await this.page.goto(`${BASE_URL}/Default.aspx`);
       await this.page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
@@ -175,11 +177,11 @@ export class OregonEPermittingAdapter implements PortalAdapter {
       await this.page.getByRole("checkbox", { name: "Residential - Structural" }).check();
       await this.page.getByRole("link", { name: "Continue Application »" }).click();
 
+      // PII redaction: do NOT return the street number/name/full address — only a
+      // boolean confirming the address search resolved.
       return ok("Application opened and address confirmed.", {
         projectId: project.id,
-        address: project.projectAddress,
-        streetNumber: streetNum,
-        streetName,
+        addressResolved: Boolean(streetNum || streetName),
       });
     } catch (err) {
       return fail(`openSubmission failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -191,6 +193,13 @@ export class OregonEPermittingAdapter implements PortalAdapter {
   // ---------------------------------------------------------------------------
   async fillApplication(project: ProjectRecord): Promise<PortalStepResult> {
     if (!this.page) return fail("Not logged in. Call login() first.");
+    // Collect REQUIRED-field failures (redacted field names only) so a half-filled
+    // form reports ok:false instead of silently looking successful.
+    const requiredFailures: string[] = [];
+    const collect = async (label: string, action: () => Promise<void>, required = true): Promise<void> => {
+      const r = await safeAction(label, action, { required });
+      if (!r.ok) requiredFailures.push(`${r.field}: ${r.message ?? "failed"}`);
+    };
     try {
       const descriptionOfWork = buildDescriptionOfWork(project);
       const projectName = buildProjectName(project);
@@ -202,13 +211,14 @@ export class OregonEPermittingAdapter implements PortalAdapter {
       await this.page.getByRole("link", { name: "Continue Application »" }).click();
       await this.page.getByRole("link", { name: "Continue Application »" }).click();
 
-      // Project info — jobValue lives in parserSnapshot
+      // Project info — jobValue lives in parserSnapshot. These are REQUIRED fields:
+      // route them through safeAction (retry+timeout) and surface any failure.
       const s = snap(project);
       const jobValue = str(s["jobValue"] ?? s["job_value"]) || String((project.systemSizeDcKw ?? 0) * 4000) || "0";
-      await this.page.getByRole("textbox", { name: "Job Value($):" }).fill(jobValue);
-      await this.page.getByLabel("Category of Construction").selectOption("1");
-      await this.page.getByRole("textbox", { name: "Project Name" }).fill(projectName);
-      await this.page.getByRole("textbox", { name: "Description of Work" }).fill(descriptionOfWork);
+      await collect("jobValue", () => this.page.getByRole("textbox", { name: "Job Value($):" }).fill(jobValue));
+      await collect("categoryOfConstruction", () => this.page.getByLabel("Category of Construction").selectOption("1"));
+      await collect("projectName", () => this.page.getByRole("textbox", { name: "Project Name" }).fill(projectName));
+      await collect("descriptionOfWork", () => this.page.getByRole("textbox", { name: "Description of Work" }).fill(descriptionOfWork));
       await this.page.getByRole("link", { name: "Continue Application »" }).click();
 
       // Applicant / contact — select from account (pre-existing company contact)
@@ -251,20 +261,31 @@ export class OregonEPermittingAdapter implements PortalAdapter {
 
       await this.page.getByRole("link", { name: "Continue Application »" }).click();
 
-      // Construction details
-      await this.page.getByLabel("Category of Construction:", { exact: true }).selectOption("Other");
-      await this.page.getByRole("textbox", { name: /Other Category of/i }).fill("Solar");
-      await this.page.getByLabel("Type of Work:", { exact: true }).selectOption("New");
-      await this.page.getByRole("textbox", { name: "Building Height - Feet:" }).fill("0");
-      await this.page.getByRole("textbox", { name: "Number of Stories:" }).fill("0");
-      await this.page.getByRole("textbox", { name: "New Building Area:" }).fill("0");
-      await this.page.getByRole("textbox", { name: "Existing Building Area:" }).fill("0");
+      // Construction details — REQUIRED fields, routed through safeAction.
+      await collect("constructionCategory", () => this.page.getByLabel("Category of Construction:", { exact: true }).selectOption("Other"));
+      await collect("otherCategory", () => this.page.getByRole("textbox", { name: /Other Category of/i }).fill("Solar"));
+      await collect("typeOfWork", () => this.page.getByLabel("Type of Work:", { exact: true }).selectOption("New"));
+      await collect("buildingHeight", () => this.page.getByRole("textbox", { name: "Building Height - Feet:" }).fill("0"));
+      await collect("numberOfStories", () => this.page.getByRole("textbox", { name: "Number of Stories:" }).fill("0"));
+      await collect("newBuildingArea", () => this.page.getByRole("textbox", { name: "New Building Area:" }).fill("0"));
+      await collect("existingBuildingArea", () => this.page.getByRole("textbox", { name: "Existing Building Area:" }).fill("0"));
       await this.page.getByRole("link", { name: "Continue Application »" }).click();
 
+      // If any REQUIRED field failed, the form is half-filled — report ok:false with a
+      // redacted (field-name-only) message so the backend never records a clean fill.
+      if (requiredFailures.length > 0) {
+        return fail(
+          `fillApplication: ${requiredFailures.length} required field(s) could not be filled — manual review required.`,
+          { requiredFailures, jobValue },
+        );
+      }
+
+      // PII redaction: do NOT return projectName (homeowner name / address) or the
+      // free-text descriptionOfWork (contains owner name/address). Return only
+      // non-identifying confirmation of what was filled.
       return ok("All application fields filled.", {
-        projectName,
-        descriptionOfWork,
         jobValue,
+        descriptionFilled: descriptionOfWork.length > 0,
       });
     } catch (err) {
       return fail(`fillApplication failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -392,16 +413,17 @@ export class OregonEPermittingAdapter implements PortalAdapter {
 
       const bodyText = await this.page.locator("body").innerText().catch(() => "");
       // Scan the page text for a row that contains one of the known application numbers.
+      // Return a REDACTED, capped snippet (account/meter-like digit runs masked) — never
+      // a multi-thousand-char raw portal body dump.
       for (const num of applicationNumbers) {
         if (!num) continue;
         const idx = bodyText.indexOf(num);
         if (idx === -1) continue;
-        // Take 400 chars around the match — enough to include status label.
-        const snippet = bodyText.slice(Math.max(0, idx - 80), idx + 320).replace(/\s+/g, " ").trim();
+        const snippet = redactStatusText(bodyText.slice(Math.max(0, idx - 80), idx + 320));
         if (snippet) return snippet;
       }
-      // Fall back: return the top portion of the My Records page body as raw status text.
-      return bodyText.slice(0, 3000).replace(/\s+/g, " ").trim() || null;
+      // Fall back: a short, redacted slice of the My Records page body.
+      return redactStatusText(bodyText.slice(0, 600));
     } catch {
       return null;
     }
