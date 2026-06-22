@@ -78,16 +78,24 @@ function esc(value) {
 // Null-safe "snake_case" → "snake case". Avoids the whole class of
 // `someStatus.replaceAll(...)` throwing when a status field is null/undefined.
 function humanize(value) {
-  return String(value ?? "").replaceAll("_", " ");
+  if (value == null) return "";
+  // Title-case each word, replacing underscores/hyphens with spaces.
+  return String(value).replaceAll("_", " ").replaceAll("-", " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 function statusBadge(status) {
-  const label = String(status ?? "unknown").replaceAll("_", " ");
+  // Count badges: color by zero vs non-zero so callers can pass a plain number.
+  if (typeof status === "number") {
+    const cls = status > 0 ? "badge-warning" : "badge-pass";
+    return `<span class="badge ${cls}">${status}</span>`;
+  }
+  const label = humanize(status ?? "unknown");
   if (status === "handoff_ready") return `<span class="badge badge-pass">${esc(label)}</span>`;
-  if (status === "nem_approved") return `<span class="badge badge-info">${esc(label)}</span>`;
+  if (status === "approved" || status === "edited" || status === "nem_approved") return `<span class="badge badge-pass">${esc(label)}</span>`;
   if (status === "issued" || status === "ready_for_issue") return `<span class="badge badge-info">${esc(label)}</span>`;
-  if (status === "correction_received" || status === "correction_triaged") return `<span class="badge badge-warning">${esc(label)}</span>`;
-  if (status === "blocked") return `<span class="badge badge-fail">${esc(label)}</span>`;
+  if (status === "correction_received" || status === "correction_triaged" || status === "pending") return `<span class="badge badge-warning">${esc(label)}</span>`;
+  if (status === "blocked" || status === "rejected" || status === "failed") return `<span class="badge badge-fail">${esc(label)}</span>`;
   return `<span class="badge">${esc(label)}</span>`;
 }
 
@@ -245,7 +253,7 @@ function renderPortalRecipes() {
   if (!recipes.length) { el.innerHTML = '<p class="muted">No portal recipes yet. Record one with the command above.</p>'; return; }
   const badge = (status) => {
     const map = { complete: "var(--success)", recording: "var(--warning)", needs_rerecord: "var(--danger)" };
-    return `<span style="font-size:11px;padding:1px 6px;border-radius:4px;background:${map[status] || "var(--info)"};color:#fff">${esc(status)}</span>`;
+    return `<span style="font-size:11px;padding:1px 6px;border-radius:4px;background:${map[status] || "var(--info)"};color:#fff">${esc(humanize(status))}</span>`;
   };
   el.innerHTML = recipes.map((r) => `
     <div class="card" style="padding:8px 10px;margin-bottom:6px">
@@ -1367,7 +1375,7 @@ function renderDetail() {
     $("metricSystem").textContent = `${project.systemSizeDcKw ?? "?"} DC / ${project.systemSizeAcKw ?? "?"} AC`;
     const pm = state.processMap;
     $("metricPermit").textContent = pm
-      ? `Permit ${String(pm.permitStatus || "?").replaceAll("_", " ")} / NEM ${String(pm.nemStatus || "?").replaceAll("_", " ")}`
+      ? `Permit ${statusLabel(pm.permitStatus || "?")} / NEM ${statusLabel(pm.nemStatus || "?")}`
       : "Not checked";
   });
   // Each panel is isolated so a single bad value can't break the flow or the stepper.
@@ -1612,7 +1620,7 @@ function renderRunbook() {
     return;
   }
   $("copyRunbookBtn").disabled = !runbook.reportText;
-  $("runbookStatus").textContent = runbook.status.replaceAll("_", " ");
+  $("runbookStatus").textContent = humanize(runbook.status);
   const steps = runbook.steps || [];
   const notes = runbook.recentNotes || [];
   const currentStep = steps.find((step) => step.isCurrent) || steps.find((step) => ["blocked", "waiting", "in_progress", "not_started"].includes(step.status));
@@ -1659,7 +1667,7 @@ function renderRunbook() {
       <div class="item-title"><span>Recent PM Notes</span>${statusBadge(notes.length)}</div>
       ${notes.length ? notes.slice(0, 5).map((note) => `
         <article class="brief-row ${note.noteType === "blocker" ? "blocker" : "info"}">
-          <strong>${esc(note.noteType.replaceAll("_", " "))}</strong>
+          <strong>${esc(humanize(note.noteType))}</strong>
           <p>${esc(note.body)}</p>
           <span>${esc(note.createdBy || "Operations")} | ${esc(new Date(note.createdAt).toLocaleString())}</span>
         </article>
@@ -1758,7 +1766,7 @@ function renderOpsPlan() {
     $("opsNotes").innerHTML = `<p class="muted">No PM notes yet.</p>`;
     return;
   }
-  $("opsPlanStatus").textContent = plan.status.replaceAll("_", " ");
+  $("opsPlanStatus").textContent = humanize(plan.status);
   const counts = plan.counts || {};
   $("opsPlan").innerHTML = `
     <article class="item ${opsClass(plan.status)}">
@@ -1793,7 +1801,7 @@ function renderOpsPlan() {
   `;
   $("opsNotes").innerHTML = (plan.notes || []).length ? plan.notes.map((note) => `
     <article class="item ${note.noteType === "blocker" ? "blocker" : note.noteType === "client_update" ? "info" : "pass"}">
-      <div class="item-title"><span>${esc(note.noteType.replaceAll("_", " "))}</span><span>${esc(new Date(note.createdAt).toLocaleString())}</span></div>
+      <div class="item-title"><span>${esc(humanize(note.noteType))}</span><span class="muted" style="font-size:12px">${esc(new Date(note.createdAt).toLocaleString())}</span></div>
       <p>${esc(note.body)}</p>
       <p class="muted">${esc(note.createdBy || "Operations")}</p>
     </article>
@@ -1886,7 +1894,7 @@ function renderInstallerPacket() {
     return;
   }
   $("copyInstallerPacketBtn").disabled = !packet.reportText;
-  $("installerPacketStatus").textContent = packet.status.replaceAll("_", " ");
+  $("installerPacketStatus").textContent = humanize(packet.status);
   const items = packet.items || [];
   $("installerPacket").innerHTML = `
     <article class="item ${packet.status === "blocked" ? "blocker" : packet.status === "needs_action" ? "warning" : "pass"}">
@@ -2229,7 +2237,7 @@ function renderReview() {
     if (hint) context.push(`<span class="muted">${esc(hint)}</span>`);
     return `
     <article class="item ${item.status === "pending" ? (isWarning ? "info" : "warning") : "pass"}">
-      <div style="display:flex;align-items:center;gap:.5rem;margin-bottom:.25rem"><strong>${esc(label)}</strong>${statusBadge(item.status)}</div>
+      <div class="item-title"><strong>${esc(label)}</strong>${statusBadge(item.status)}</div>
       <p style="margin:0 0 4px">${esc(item.notes || "Review required.")}</p>
       ${context.length ? `<p style="margin:0 0 4px">${context.join("<br>")}</p>` : ""}
       ${item.sourceExcerpt ? `<p style="margin:0 0 4px"><strong>Source:</strong> ${esc(item.sourceExcerpt)}</p>` : ""}
@@ -2510,7 +2518,7 @@ function renderPermitMonitor() {
 
   $("permitChecks").innerHTML = checks.length ? checks.map((check) => `
     <article class="item ${check.outcome === "correction_flagged" ? "fail" : check.readyForIssue ? "pass" : check.outcome === "needs_human_review" ? "warning" : "info"}">
-      <div class="item-title"><span>${esc(check.statusLabel)}</span>${statusBadge(check.outcome)}</div>
+      <div class="item-title"><span>${esc(check.statusLabel)}</span>${statusBadge(statusLabel(check.outcome))}</div>
       <p>${esc(check.message)}</p>
       <p class="muted">${esc(new Date(check.createdAt).toLocaleString())} | confidence ${Math.round((check.confidence || 0) * 100)}%</p>
       ${check.rawStatusText ? `<p class="muted">${esc(check.rawStatusText.slice(0, 600))}</p>` : ""}
@@ -2522,7 +2530,7 @@ function renderPermitMonitor() {
       <article class="item info">
         <div class="item-title"><span>Matched email updates</span>${statusBadge(emailMatches.length)}</div>
         ${emailMatches.slice(0, 6).map((match) => `
-          <p><strong>${esc(match.emailBucket.replaceAll("_", " "))}</strong> ${esc(match.subject || "No subject")}</p>
+          <p><strong>${esc(humanize(match.emailBucket))}</strong> ${esc(match.subject || "No subject")}</p>
           <p class="muted">${esc(match.matchReason)} | confidence ${Math.round((match.confidence || 0) * 100)}% | ${esc(new Date(match.createdAt).toLocaleString())}</p>
         `).join("")}
       </article>
@@ -2543,7 +2551,7 @@ function renderCorrections() {
   $("corrections").innerHTML = corrections.length ? corrections.map((correction) => `
     <article class="item ${correction.isOverdue ? "fail" : correction.closedAt ? "pass" : "info"}">
       <div class="item-title">
-        <span>${esc(correction.correctionBucket)}</span>
+        <span>${esc(humanize(correction.correctionBucket))}</span>
         <span>${correctionSlaBadge(correction)}</span>
         <span class="muted">${esc(new Date(correction.createdAt).toLocaleDateString())}</span>
       </div>
@@ -2558,7 +2566,7 @@ function renderPortalRuns() {
   const awaiting = runs.find((run) => run.status === "awaiting_human_submit");
   $("portalRuns").innerHTML = runs.length ? runs.map((run) => `
     <article class="item ${run.status === "failed" ? "fail" : "info"}">
-      <div class="item-title"><span>${esc(run.runType)}</span>${statusBadge(run.status)}</div>
+      <div class="item-title"><span>${esc(humanize(run.runType))}</span>${statusBadge(run.status)}</div>
       <p>${run.humanActionRequired ? "Human action required before legal submission is complete." : "No human action currently flagged."}</p>
       <p class="muted">${esc(run.errorMessage || run.startedAt)}</p>
     </article>
