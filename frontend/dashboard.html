@@ -310,20 +310,23 @@
                   <h3>Human Review</h3>
                   <span id="reviewCounts" class="badge">0</span>
                 </div>
-                <div id="reviewItems" class="stack"></div>
-                <!-- Auto-fill helper: hidden until an inverter-output or PV-breaker
-                     item is pending (the only fields it can fill). renderReview()
-                     toggles it so it never floats as an orphaned input. -->
-                <div id="autofillSpecsPanel" class="item info autofill-card" style="display:none">
-                  <div class="item-title"><i data-lucide="sparkles"></i><span>Auto-fill inverter specs (AI)</span></div>
-                  <p class="autofill-hint">Looks up the inverter's rated output from its model and derives the PV breaker. Enter the model only if it wasn't auto-detected.</p>
+                <!-- Auto-fill helper sits at the TOP so it's the first thing you reach
+                     when inverter-output / PV-breaker items need values. renderReview()
+                     shows it only when one of those is pending. -->
+                <div id="autofillSpecsPanel" class="autofill-card" style="display:none">
+                  <div class="autofill-head">
+                    <i data-lucide="sparkles"></i>
+                    <span>Auto-fill inverter specs (AI)</span>
+                  </div>
+                  <p class="autofill-hint">Looks up the inverter's rated output from its model and derives the PV breaker, then fills the items below. Enter the model only if it wasn't auto-detected.</p>
                   <div class="autofill-row">
                     <input id="autofillModelInput" type="text" placeholder="Inverter / microinverter model (e.g. Enphase IQ8M-72-2-US)" />
                     <input id="autofillQtyInput" type="number" min="1" placeholder="Qty" />
-                    <button id="autofillSpecsBtn" class="secondary"><i data-lucide="sparkles"></i><span>Auto-fill specs</span></button>
+                    <button id="autofillSpecsBtn" class="primary"><i data-lucide="sparkles"></i><span>Auto-fill specs</span></button>
                   </div>
                   <div id="autofillSpecsStatus" class="muted autofill-status"></div>
                 </div>
+                <div id="reviewItems" class="stack"></div>
               </div>
             </section>
           </div>

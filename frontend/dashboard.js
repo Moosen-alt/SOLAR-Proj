@@ -2870,11 +2870,15 @@ async function autofillSpecs() {
     const result = await api(`/api/projects/${state.selectedProjectId}/autofill-specs`, { method: "POST", body });
     if (result.detail) state.detail = result.detail;
     const s = result.spec || {};
+    // System total is what gets filled into "Inverter output (A)" (per-unit × qty for
+    // microinverters); show that, noting the per-unit basis for clarity.
+    const totalA = s.totalContinuousCurrentA ?? s.outputCurrentA;
+    const perUnitNote = (s.inverterQty > 1 && s.outputCurrentA != null) ? ` (${s.outputCurrentA} A × ${s.inverterQty})` : "";
     if (result.applied > 0) {
-      if (status) status.textContent = `Filled ${result.applied} field(s) from ${esc(s.source || "lookup")} (${esc(s.confidence || "?")} confidence): inverter output ${s.outputCurrentA ?? "?"} A, suggested PV breaker ${s.derivedPvBreakerA ?? "?"} A. Review and Save Edit each. ${esc(s.notes || "")}`;
+      if (status) status.textContent = `Filled ${result.applied} field(s) from ${esc(s.source || "lookup")} (${esc(s.confidence || "?")} confidence): inverter output ${totalA ?? "?"} A${perUnitNote}, suggested PV breaker ${s.derivedPvBreakerA ?? "?"} A. Review and Save Edit each. ${esc(s.notes || "")}`;
       renderDetail();
-    } else if (s.outputCurrentA != null) {
-      if (status) status.textContent = `Found inverter output ${s.outputCurrentA} A / suggested breaker ${s.derivedPvBreakerA ?? "?"} A, but there were no pending inverter-output/PV-breaker items to fill (run QC first if needed).`;
+    } else if (totalA != null) {
+      if (status) status.textContent = `Found inverter output ${totalA} A${perUnitNote} / suggested breaker ${s.derivedPvBreakerA ?? "?"} A, but there were no pending inverter-output/PV-breaker items to fill (run QC first if needed).`;
     } else {
       if (status) status.textContent = s.notes || "Could not determine the inverter spec — enter it manually from the datasheet/SLD.";
     }

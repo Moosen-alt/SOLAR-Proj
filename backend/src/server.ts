@@ -1510,7 +1510,12 @@ app.post("/api/projects/:id/autofill-specs", asyncHandler(async (req, res) => {
     throw normalizeLlmError(err);
   }
   const suggestions: Record<string, string> = {};
-  if (spec.outputCurrentA != null) suggestions.inverterOutput = String(spec.outputCurrentA);
+  // The "Inverter output (A)" review item wants the SYSTEM TOTAL current used for
+  // PV-breaker sizing — for microinverters that's per-unit × qty. totalContinuousCurrentA
+  // already equals the per-unit value for a single string inverter (qty 1), so it's
+  // correct in both cases. Fall back to per-unit only if the total wasn't computed.
+  const inverterOutputA = spec.totalContinuousCurrentA ?? spec.outputCurrentA;
+  if (inverterOutputA != null) suggestions.inverterOutput = String(inverterOutputA);
   if (spec.derivedPvBreakerA != null) suggestions.pvBreaker = String(spec.derivedPvBreakerA);
   const applied = Object.keys(suggestions).length ? suggestReviewValues(db, String(req.params.id), suggestions) : 0;
   res.json({ spec, suggestions, applied, detail: getProjectDetail(db, String(req.params.id)) });
