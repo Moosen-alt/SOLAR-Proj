@@ -114,6 +114,9 @@ p, .muted { color: var(--muted); }
 .check-row.present, .check-row.pass, .check-row.done { border-left-color: #34d399; background: #f0fdf4; }
 .check-row.missing, .check-row.blocker, .check-row.failed { border-left-color: #f87171; background: #fff1f2; }
 .check-row.needs_review, .check-row.warning, .check-row.callout { border-left-color: #fbbf24; background: #fffbeb; }
+/* External = provided by installer/homeowner/utility — advisory, neutral (not a gap). */
+.check-row.external { border-left-color: #94a3b8; background: #f8fafc; }
+.check-row.external strong { color: #475569; }
 
 /* --- Human Review action row (input + buttons inline) --- */
 .review-actions {

@@ -658,38 +658,42 @@ function addProfileFindings(project: ProjectRecord, profile: AhjProcessProfile |
   }
   const ownerAuthorization = evidenceForTopic(project, "ownerAuthorization");
   if (profile.requiresCustomerSignature && ownerAuthorization.confidence !== "high") {
+    // Homeowner-provided document — the autopilot doesn't generate it. Advisory callout
+    // (never a service-side gap): just remind the operator the installer includes it.
     findings.push(finding(
       "reviewer.profile.customer-signature",
-      "warning",
+      "callout",
       "ahj_profile",
-      ownerAuthorization.present ? "Verify customer/owner authorization" : "Customer/owner authorization may be required",
-      `${profile.ahj} process profile indicates customer signature/authorization may be required. ${evidenceSummary(ownerAuthorization)}`,
+      "Customer/owner authorization (installer-provided)",
+      `${profile.ahj} may require a signed owner authorization. This is provided by the installer/homeowner with the package, not produced here.`,
       true,
       {
-        cityFeedback: `${profile.ahj} appears to require customer/owner authorization. The parsed package does not prove this is complete.`,
-        designTeamAction: "Confirm signed application, owner authorization, or representative authorization before submittal.",
+        cityFeedback: `${profile.ahj} appears to require customer/owner authorization.`,
+        designTeamAction: "Confirm the installer/homeowner includes the signed owner authorization in the submittal package.",
         evidenceNeeded: evidenceNeeded(ownerAuthorization),
       },
     ));
   }
   const utilityApproval = evidenceForTopic(project, "utilityApproval");
   if (profile.requiresUtilityApproval && utilityApproval.confidence !== "high") {
+    // Utility-issued (PTO / interconnection approval) — not an autopilot deliverable.
     findings.push(finding(
       "reviewer.profile.utility-approval",
-      "warning",
+      "callout",
       "utility_nem",
-      utilityApproval.present ? "Verify utility approval before permit" : "Utility approval may be required before permit",
-      `${profile.ahj} process profile indicates utility approval/interconnection evidence may be needed before permit submission. ${evidenceSummary(utilityApproval)}`,
+      "Utility approval sequencing (utility-issued)",
+      `${profile.ahj} may need utility approval/interconnection evidence before permit submission. This is issued by the utility, not produced here.`,
       true,
       {
-        cityFeedback: `${profile.ahj} profile references utility approval/interconnection sequencing. The parsed package does not prove approval is ready.`,
-        designTeamAction: "Confirm whether utility/NEM approval must be attached or completed before permit submission.",
+        cityFeedback: `${profile.ahj} profile references utility approval/interconnection sequencing.`,
+        designTeamAction: "Confirm whether the utility/NEM approval must be attached or completed before permit submission.",
         evidenceNeeded: evidenceNeeded(utilityApproval),
       },
     ));
   }
   if (profile.requiresFloodplainCheck && !/flood|FEMA/i.test(docs)) {
-    findings.push(finding("reviewer.profile.flood", "warning", "ahj_profile", "Floodplain check required by profile", `${profile.ahj} process profile references flood/FEMA review. Confirm before submittal.`, true));
+    // Jurisdiction/FEMA determination — external to the autopilot. Advisory only.
+    findings.push(finding("reviewer.profile.flood", "callout", "ahj_profile", "Floodplain/FEMA check (jurisdiction-determined)", `${profile.ahj} references flood/FEMA review. Confirm the jurisdiction/design team has addressed it before submittal.`, true));
   }
   if (profile.requiresJurisdictionCheck) {
     findings.push(finding("reviewer.profile.jurisdiction", "callout", "ahj_profile", "Jurisdiction/address verification recommended", `${profile.ahj} process profile calls out jurisdiction or address verification. Confirm before submittal.`, true));

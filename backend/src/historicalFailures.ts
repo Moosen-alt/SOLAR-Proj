@@ -147,7 +147,17 @@ function fallbackCauses(project: ProjectRecord): HistoricalFailureCause[] {
   return out.slice(0, 5);
 }
 
-function statusFor(project: ProjectRecord, title: string): HistoricalChecklistItem["status"] {
+// Documents the autopilot does NOT produce — the homeowner, installer, engineer, or
+// utility provides them with the package (signed owner authorization, customer/owner
+// signature, notarized forms, proof of ownership, fee payment). These must never read
+// as "MISSING" gaps the service has to fix; they're advisory reminders only.
+const OUT_OF_SCOPE = /signature|owner authorization|customer authorization|notar|proof of ownership|\bdeed\b|\bhoa\b|fee payment|\bpay (the )?fee/i;
+export function isOutOfScopeItem(title: string, ...extra: string[]): boolean {
+  return OUT_OF_SCOPE.test(`${title} ${extra.join(" ")}`.toLowerCase());
+}
+
+function statusFor(project: ProjectRecord, title: string, cause?: HistoricalFailureCause): HistoricalChecklistItem["status"] {
+  if (isOutOfScopeItem(title, cause?.rootCause || "", cause?.requiredAction || "")) return "external";
   const topic = historicalTopicForTitle(title);
   if (!topic) return "needs_review";
   return statusFromEvidence(evidenceForTopic(project, topic));
@@ -157,14 +167,20 @@ function checklistFromCauses(project: ProjectRecord, causes: HistoricalFailureCa
   const map = new Map<string, HistoricalChecklistItem>();
   for (const cause of causes) {
     const title = cause.title;
+    const status = statusFor(project, title, cause);
+    const external = status === "external";
     map.set(cause.signature, {
       id: cause.signature,
-      status: statusFor(project, title),
+      status,
       title,
-      why: cause.count
-        ? `Seen in ${cause.count} similar historical rejection/delay record(s).`
-        : "Baseline prevention item for this project type.",
-      action: cause.requiredAction,
+      why: external
+        ? "Provided by the installer/homeowner with the package — not produced by this service."
+        : cause.count
+          ? `Seen in ${cause.count} similar historical rejection/delay record(s).`
+          : "Baseline prevention item for this project type.",
+      action: external
+        ? "Confirm the installer/homeowner includes this in the submittal package."
+        : cause.requiredAction,
       evidence: evidenceForTitle(project, title),
       sourceCauseSignature: cause.signature,
     });

@@ -2259,13 +2259,16 @@ function renderHistoricalFailures() {
     </article>
     <article class="item ${missing ? "blocker" : review ? "warning" : "pass"}">
       <div class="item-title"><span>Generated checklist</span>${statusBadge(`${missing} missing / ${review} review`)}</div>
-      ${checklist.length ? checklist.map((item) => `
+      ${checklist.length ? checklist.map((item) => {
+        const label = item.status === "external" ? "Provided by installer/homeowner" : humanize(item.status);
+        return `
         <div class="check-row ${esc(item.status)}">
-          <strong>${esc(humanize(item.status).toUpperCase())}: ${esc(item.title)}</strong>
+          <strong>${esc(label.toUpperCase())}: ${esc(item.title)}</strong>
           <p>${esc(item.why)} ${esc(item.action)}</p>
           <p class="muted">${esc((item.evidence || []).join(", "))}</p>
         </div>
-      `).join("") : `<p class="muted">No checklist items generated.</p>`}
+      `;
+      }).join("") : `<p class="muted">No checklist items generated.</p>`}
     </article>
   `;
 }

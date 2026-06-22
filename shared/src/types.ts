@@ -508,8 +508,11 @@ export interface HistoricalFailureCause {
 }
 
 export interface HistoricalChecklistItem {
+  // "external" = a document the homeowner/installer/utility provides with the package
+  // (e.g. signed owner authorization). The autopilot does not produce it, so it is an
+  // advisory reminder — never a "missing" gap or blocker on the service's side.
+  status: "present" | "missing" | "needs_review" | "external";
   id: string;
-  status: "present" | "missing" | "needs_review";
   title: string;
   why: string;
   action: string;
