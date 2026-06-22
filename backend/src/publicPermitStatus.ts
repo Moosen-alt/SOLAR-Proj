@@ -72,26 +72,36 @@ function accelaBaseUrl(portalUrl: string): string {
 async function fetchAccelaStatus(portalUrl: string, applicationNumbers: string[]): Promise<string | null> {
   const base = accelaBaseUrl(portalUrl);
 
+  // Strategy 1: if the tracking URL IS the CapDetail page, fetch it directly.
+  // This is the best path — the operator pasted the exact public record link.
+  // Preserve the full query string (includes agencyCode, TabName, Module, capIDs).
+  if (portalUrl.toLowerCase().includes("capdetail.aspx")) {
+    const text = await htmlToText(portalUrl);
+    if (text && text.length > 40) return text;
+  }
+
+  // Strategy 2: construct a CapDetail URL from the application/permit number.
+  // Try to extract agencyCode from the portalUrl if present.
+  let agencyCodeParam = "";
+  try {
+    const u = new URL(portalUrl);
+    const code = u.searchParams.get("agencyCode");
+    if (code) agencyCodeParam = `&agencyCode=${encodeURIComponent(code)}`;
+  } catch { /* ignore */ }
+
   for (const num of applicationNumbers) {
     if (!num) continue;
-
-    // Strategy 1: if the portalUrl itself IS the CapDetail page, fetch it directly.
-    if (portalUrl.toLowerCase().includes("capdetail.aspx")) {
-      const text = await htmlToText(portalUrl);
-      if (text) return text;
-    }
-
-    // Strategy 2: try to construct a CapDetail URL from capID parts.
     const capId = parseAccelaCapId(num);
     if (capId) {
-      const detailUrl = `${base}/Cap/CapDetail.aspx?Module=Building&capID1=${encodeURIComponent(capId.capID1)}&capID2=${encodeURIComponent(capId.capID2)}&capID3=${encodeURIComponent(capId.capID3)}`;
+      const detailUrl = `${base}/Cap/CapDetail.aspx?Module=Building&TabName=Building&capID1=${encodeURIComponent(capId.capID1)}&capID2=${encodeURIComponent(capId.capID2)}&capID3=${encodeURIComponent(capId.capID3)}${agencyCodeParam}`;
       const text = await htmlToText(detailUrl);
       if (text && text.length > 100) return text;
     }
+  }
 
-    // Strategy 3: hit the public record search page; Accela returns search results
-    // as HTML for plain GET requests with a record number in the query string on some
-    // configurations (e.g. City of Portland uses ?capcapid=<number>).
+  // Strategy 3: public record search page (works on some ACA configurations).
+  for (const num of applicationNumbers) {
+    if (!num) continue;
     const searchUrl = `${base}/Cap/CapHome.aspx?module=Building&TabName=Building&capCapId=${encodeURIComponent(num)}`;
     const text = await htmlToText(searchUrl);
     if (text && text.length > 100) return text;

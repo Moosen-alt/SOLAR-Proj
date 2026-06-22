@@ -4532,6 +4532,21 @@ export async function runDuePermitChecks(
         source = "portal";
       }
     }
+    // No authenticated scrape — try the public tracking URL (exact CapDetail / record-detail
+    // link that requires no login), then fall back to the generic portal_url.
+    if (!rawStatusText) {
+      const trackingUrl = text(target.tracking_url);
+      const portalUrl = text(target.portal_url);
+      const checkUrl = trackingUrl || portalUrl;
+      const appNums = [text(target.application_number), text(target.permit_number)].filter(Boolean);
+      if (checkUrl) {
+        const publicText = await publicPermitStatusCheck(checkUrl, appNums).catch(() => null);
+        if (publicText && publicText.length > 40) {
+          rawStatusText = publicText;
+          source = "public_url";
+        }
+      }
+    }
     const detail = await recordPermitStatusCheck(db, projectId, {
       targetId: text(target.id),
       source,
