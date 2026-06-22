@@ -290,8 +290,13 @@ const appDocs = getApplicationDocumentPackage(db, detail.project.id);
 if (appDocs.profile.id !== "portland-devhub-solar") {
   throw new Error(`Expected Portland application profile, got ${appDocs.profile.id}`);
 }
-if (!appDocs.docs.some((doc) => doc.id === "prescriptive-checklist")) {
-  throw new Error("Expected Portland docs to include a prescriptive checklist worksheet.");
+if (!appDocs.docs.some((doc) => doc.id === "prescriptive-application")) {
+  throw new Error("Expected Portland docs to include the prescriptive solar application/checklist.");
+}
+// A prescriptive-path project must NOT also generate the structural application — the
+// two are mutually exclusive and the AHJ takes exactly one.
+if (appDocs.docs.some((doc) => doc.id === "structural")) {
+  throw new Error("Prescriptive project should not also generate the structural application.");
 }
 if (!appDocs.html.includes("AHJ Application Document Package")) {
   throw new Error("Expected printable application document HTML.");
