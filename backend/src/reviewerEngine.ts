@@ -513,6 +513,18 @@ function addSubmittalDataFindings(project: ProjectRecord, findings: ReviewerFind
       { designTeamAction: "Collect the homeowner phone via the client intake link." },
     ));
   }
+
+  if (!project.clientId) {
+    findings.push(finding(
+      "reviewer.submit.no-client",
+      "callout",
+      "project_data",
+      "No company assigned",
+      "This project has not been assigned to an installer company. Assign a client before staging the submittal so the correct portal credentials and browser profile are used.",
+      false,
+      { designTeamAction: "Open the project detail and assign a client company from the Client dropdown." },
+    ));
+  }
 }
 
 function addPlanSetFindings(project: ProjectRecord, findings: ReviewerFinding[]): void {

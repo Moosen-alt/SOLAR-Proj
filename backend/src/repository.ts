@@ -3547,10 +3547,12 @@ function extractTrackingNumber(raw: string, labels: RegExp[]): string {
   return "";
 }
 
-function matchProjectForEmail(db: AppDb, message: ClassifiedMboxMessage): { project: ProjectRecord; confidence: number; reason: string } | null {
+function matchProjectForEmail(db: AppDb, message: ClassifiedMboxMessage, clientId?: string): { project: ProjectRecord; confidence: number; reason: string } | null {
   const raw = message.rawSearchText;
   const haystack = searchNormalize(raw);
-  const projects = db.query<ProjectRow>("SELECT * FROM projects ORDER BY updated_at DESC").map(mapProject);
+  const projects = clientId
+    ? db.query<ProjectRow>("SELECT * FROM projects WHERE client_id = ? ORDER BY updated_at DESC", [clientId]).map(mapProject)
+    : db.query<ProjectRow>("SELECT * FROM projects ORDER BY updated_at DESC").map(mapProject);
   let best: { project: ProjectRecord; score: number; reasons: string[] } | null = null;
 
   for (const project of projects) {
@@ -3621,7 +3623,7 @@ function emailStatusText(message: ClassifiedMboxMessage): string {
 
 export async function runEmailTracker(
   db: AppDb,
-  input: { sourceId?: string; filePath?: string } = {},
+  input: { sourceId?: string; filePath?: string; clientId?: string } = {},
 ): Promise<EmailTrackerRunResult> {
   const sourceRows = input.filePath
     ? [{
@@ -3687,7 +3689,7 @@ export async function runEmailTracker(
           result.skippedDuplicates += 1;
           continue;
         }
-        const match = matchProjectForEmail(db, message);
+        const match = matchProjectForEmail(db, message, input.clientId);
         if (!match) {
           result.unmatchedMessages += 1;
           continue;

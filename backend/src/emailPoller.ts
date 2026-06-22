@@ -29,6 +29,7 @@ import { encryptStorageState, decryptStorageState } from "../../portal-bot/src/c
 
 interface ImapSourceConfig {
   sourceId?: string; // DB row id; undefined for the env-based source
+  clientId?: string; // DB client_id for this source; constrains project matching
   label: string;
   host: string;
   port: number;
@@ -82,12 +83,13 @@ interface ImapSourceRow {
   imap_mailbox: string;
   imap_max_messages: number;
   recipient_tag: string;
+  client_id: string | null;
 }
 
 function dbImapSources(db: AppDb): ImapSourceConfig[] {
   const rows = db.query<ImapSourceRow>(
     `SELECT id, label, imap_host, imap_port, imap_secure, imap_user,
-            imap_pass_encrypted, imap_mailbox, imap_max_messages, recipient_tag
+            imap_pass_encrypted, imap_mailbox, imap_max_messages, recipient_tag, client_id
      FROM email_tracking_sources
      WHERE source_type = 'imap' AND active = 1 AND imap_host != ''
      ORDER BY created_at`,
@@ -107,6 +109,7 @@ function dbImapSources(db: AppDb): ImapSourceConfig[] {
     return [
       {
         sourceId: row.id,
+        clientId: row.client_id ?? undefined,
         label: row.label || row.id,
         host: row.imap_host,
         port: row.imap_port || 993,
@@ -294,7 +297,7 @@ async function runSourcePoll(
     count = result.count;
 
     if (count > 0) {
-      const tracked = await runEmailTracker(db, { filePath });
+      const tracked = await runEmailTracker(db, { filePath, clientId: cfg.clientId });
       matches = tracked.matches?.length ?? 0;
     }
 
