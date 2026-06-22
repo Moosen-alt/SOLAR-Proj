@@ -426,6 +426,25 @@
               <details class="kb-accordion" style="margin-top:6px" open>
                 <summary class="kb-summary"><span>Project data (for manual entry / recording reference)</span></summary>
                 <p class="muted" style="font-size:12px;margin:6px 0">Parsed values for this project — copy into the portal as you record or for manual submission.</p>
+                <div id="manualEntryForm" class="manual-entry-form">
+                  <div class="record-data-heading">Manual entry — saves straight to the project (alternative to the client intake link)</div>
+                  <label class="manual-entry-field">Job value / contract price
+                    <input id="manualJobValue" type="text" placeholder="e.g. $31,500 — used for the permit fee" />
+                  </label>
+                  <label class="manual-entry-field">Homeowner email
+                    <input id="manualHomeownerEmail" type="email" placeholder="owner@example.com" />
+                  </label>
+                  <label class="manual-entry-field">Homeowner phone
+                    <input id="manualHomeownerPhone" type="tel" placeholder="(541) 555-0123" />
+                  </label>
+                  <label class="manual-entry-field">Description of work (AHJ permit narrative)
+                    <textarea id="manualDescription" rows="3" placeholder="Install roof-mounted photovoltaic system…"></textarea>
+                  </label>
+                  <div class="manual-entry-actions">
+                    <button id="saveManualEntryBtn" class="secondary"><i data-lucide="save"></i><span>Save project data</span></button>
+                    <span id="manualEntryStatus" class="muted" style="font-size:12px"></span>
+                  </div>
+                </div>
                 <div id="recordManualData" class="stack compact"></div>
                 <div id="recordRoofPlanesWrap" style="display:none;margin-top:10px">
                   <div class="record-data-heading">Roof planes</div>

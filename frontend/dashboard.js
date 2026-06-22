@@ -20,6 +20,10 @@ const state = {
   processMap: null,
   installerPacket: null,
   submitGate: null,
+  // Per-project manual stage open/close overrides so the operator can pin a stage
+  // (e.g. Submit) open and have it persist across re-renders and navigation.
+  stageOverrides: {},
+  stageActiveSeen: {},
   knowledgeProfiles: [],
   ahjForms: [],
   signatures: [],
@@ -1102,27 +1106,45 @@ function applyStageState() {
   const d = state.detail;
   if (!d) return;
   const active = Number.isInteger(d.stageIndex) ? d.stageIndex : 0;
+  // Default expand/collapse: current stage open, others closed. But a stage the
+  // operator manually opened (tracked in state.stageOverrides via summary clicks)
+  // must STAY open across re-renders and navigation — otherwise the Submit gate
+  // felt "locked out and I can't get back to it". Overrides reset when the project
+  // actually advances to a new stage (so fresh defaults apply for the new step).
+  const pid = state.selectedProjectId || "";
+  // Reset a project's manual overrides ONLY when its active stage genuinely changes
+  // (the project advanced), never on first observation — otherwise a re-render or a
+  // background refresh would wipe the operator's pinned-open stage. Comparing the
+  // per-project active value (not a global key) avoids stale-key resets.
+  const prevActive = state.stageActiveSeen[pid];
+  if (prevActive !== undefined && prevActive !== active) {
+    state.stageOverrides[pid] = {};
+  }
+  state.stageActiveSeen[pid] = active;
+  const overrides = state.stageOverrides[pid] || {};
   document.querySelectorAll(".stage-accordion[data-stage-index]").forEach((el) => {
     const idx = Number(el.dataset.stageIndex);
     el.classList.remove("is-done", "is-current", "is-locked", "is-blocked");
     const pill = el.querySelector(".stage-pill");
     const marker = el.querySelector(".stage-marker");
+    let defaultOpen = false;
     if (idx < active) {
-      el.classList.add("is-done"); el.open = false;
+      el.classList.add("is-done"); defaultOpen = false;
       if (marker) marker.textContent = "✓";
       if (pill) pill.textContent = "Done";
     } else if (idx === active) {
-      el.classList.add("is-current"); el.open = true;
+      el.classList.add("is-current"); defaultOpen = true;
       if (marker) marker.textContent = "●";
       if (pill) pill.textContent = d.isBlocked ? "Blocked" : "Current";
       if (d.isBlocked) el.classList.add("is-blocked");
     } else {
       // Future stage: collapsed by default and marked "not reached", but the user can
       // still click to open it and work out of order (non-linear stepper).
-      el.classList.add("is-locked"); el.open = false;
+      el.classList.add("is-locked"); defaultOpen = false;
       if (marker) marker.textContent = "\u{1F512}";
       if (pill) pill.textContent = "Not reached";
     }
+    el.open = overrides[idx] !== undefined ? overrides[idx] : defaultOpen;
   });
 
   // Pending human-review items block the submit gate but live in Stage 2, which is
@@ -1286,6 +1308,51 @@ function renderRecordPortal() {
     } else {
       descWrap.style.display = "none";
     }
+  }
+
+  // Manual-entry inputs — prefill from the snapshot, but never clobber what the
+  // operator is actively typing (a background re-render must not wipe the field).
+  const setIfIdle = (id, value) => {
+    const el = $(id);
+    if (el && document.activeElement !== el) el.value = value ?? "";
+  };
+  setIfIdle("manualJobValue", snap.jobValue != null ? String(snap.jobValue) : "");
+  setIfIdle("manualHomeownerEmail", snap.homeownerEmail != null ? String(snap.homeownerEmail) : "");
+  setIfIdle("manualHomeownerPhone", snap.homeownerPhone != null ? String(snap.homeownerPhone) : "");
+  setIfIdle("manualDescription", desc);
+}
+
+async function saveManualEntry() {
+  if (!state.selectedProjectId) return;
+  const btn = $("saveManualEntryBtn");
+  const status = $("manualEntryStatus");
+  // Only send fields the operator actually filled, so a blank input never wipes a
+  // parsed value. The keys match what valuation.ts / the reviewer gate read.
+  const payload = {};
+  const jobValue = ($("manualJobValue")?.value || "").trim();
+  const email = ($("manualHomeownerEmail")?.value || "").trim();
+  const phone = ($("manualHomeownerPhone")?.value || "").trim();
+  const desc = ($("manualDescription")?.value || "").trim();
+  if (jobValue) payload.jobValue = jobValue;
+  if (email) payload.homeownerEmail = email;
+  if (phone) payload.homeownerPhone = phone;
+  if (desc) payload.projectDescriptionText = desc;
+  if (!Object.keys(payload).length) {
+    if (status) { status.textContent = "Nothing to save — fill at least one field."; status.className = "muted"; }
+    return;
+  }
+  if (btn) btn.disabled = true;
+  if (status) { status.textContent = "Saving…"; status.className = "muted"; }
+  try {
+    const detail = await api(`/api/projects/${state.selectedProjectId}`, { method: "PUT", body: JSON.stringify(payload) });
+    if (detail && detail.project) state.detail = detail;
+    if (status) { status.textContent = "Saved."; status.className = "muted"; }
+    renderDetail();
+    showMessage("Project data saved.", "info");
+  } catch (err) {
+    if (status) { status.textContent = "Save failed: " + (err.message || err); status.className = "muted"; }
+  } finally {
+    if (btn) btn.disabled = false;
   }
 }
 
@@ -3950,6 +4017,19 @@ if ($("copyDescriptionBtn")) $("copyDescriptionBtn").addEventListener("click", c
 if ($("buildSplitBtn")) $("buildSplitBtn").addEventListener("click", buildDocumentSplit);
 if ($("autofillSpecsBtn")) $("autofillSpecsBtn").addEventListener("click", autofillSpecs);
 if ($("genIntakeLinkBtn")) $("genIntakeLinkBtn").addEventListener("click", generateIntakeLink);
+if ($("saveManualEntryBtn")) $("saveManualEntryBtn").addEventListener("click", saveManualEntry);
+// Record manual stage open/close so a pinned-open stage (e.g. Submit) survives
+// re-renders. A summary click is user-only (programmatic el.open never fires it),
+// and the open state flips AFTER this handler, so the upcoming value is !el.open.
+document.querySelectorAll(".stage-accordion[data-stage-index]").forEach((el) => {
+  const summary = el.querySelector(".stage-summary");
+  if (!summary) return;
+  summary.addEventListener("click", () => {
+    const pid = state.selectedProjectId || "";
+    if (!state.stageOverrides[pid]) state.stageOverrides[pid] = {};
+    state.stageOverrides[pid][Number(el.dataset.stageIndex)] = !el.open;
+  });
+});
 if ($("docUploadBtn")) $("docUploadBtn").addEventListener("click", uploadProjectDocument);
 $("newClientBtn").addEventListener("click", blankClientForm);
 $("clientForm").addEventListener("submit", saveClient);
