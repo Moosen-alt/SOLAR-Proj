@@ -1469,6 +1469,42 @@ async function launchTrackRecorder(trackType, scope, btn) {
   }
 }
 
+// Auto-learn: the bot fills the portal to the review screen, records a recipe, and
+// verifies the fill — no human recording needed. Never submits (operator approves that).
+async function autoLearnPortalUI() {
+  const p = state.detail?.project;
+  if (!p) { showMessage("Open a project first.", "warning"); return; }
+  const scope = $("recordScope")?.value === "utility" ? "utility" : "ahj";
+  const url = ($("recordPortalUrl")?.value || "").trim();
+  if (!url) { showMessage("Paste the portal login/landing URL first (the field above).", "warning"); return; }
+  const name = scope === "utility" ? (p.utility || "the utility") : (p.ahj || "the AHJ");
+  if (!confirm(`Auto-learn ${name}'s portal?\n\nThe bot will log in (using this client's stored credential), fill the application from the project data up to the review screen, and verify the fill. It will NOT submit — you approve the final submit with one click afterward. This opens a browser and may take a minute.`)) return;
+  const btn = $("autoLearnBtn");
+  const statusEl = $("autoLearnStatus");
+  if (btn) btn.disabled = true;
+  if (statusEl) { statusEl.style.display = ""; statusEl.textContent = "Learning the portal — logging in, filling the form to the review screen…"; statusEl.className = "muted"; }
+  try {
+    const res = await api(`/api/projects/${p.id}/auto-learn`, { method: "POST", body: JSON.stringify({ scope, portalUrl: url }) });
+    const v = res.verification || {};
+    const verdict = res.status === "trusted"
+      ? `✓ Learned & verified (${v.confidence} confidence) over ${res.pageCount} page(s). The recipe is now trusted and will replay on future ${scope === "utility" ? "utility" : "AHJ"} projects. Final submit stays your one-click approval.`
+      : res.status === "draft"
+        ? `Learned, but needs your verification before it's trusted. ${(v.issues || []).slice(0, 3).join("; ")}`
+        : res.status === "paused"
+          ? `Paused on an MFA/CAPTCHA — complete it in the browser, then retry. A draft recipe was saved.`
+          : `Could not learn it automatically: ${res.message || ""} — record it manually instead.`;
+    if (statusEl) { statusEl.textContent = verdict; statusEl.className = res.status === "trusted" ? "" : "muted"; }
+    showMessage(res.message || verdict, res.status === "trusted" ? "info" : "warning");
+    await loadKnowledgeBase();
+    await selectProject(p.id);
+  } catch (err) {
+    if (statusEl) { statusEl.textContent = `Auto-learn failed: ${err.message || err}. You can still record it manually.`; statusEl.className = "muted"; }
+    showMessage(err.message || "Auto-learn failed.", "error");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
 async function launchRecordSession() {
   const p = state.detail?.project;
   if (!p) { showMessage("Open a project first.", "warning"); return; }
@@ -4269,6 +4305,7 @@ if ($("recordPortalUrl")) $("recordPortalUrl").addEventListener("input", () => {
 if ($("copyRecordCmdBtn")) $("copyRecordCmdBtn").addEventListener("click", copyRecordCommand);
 if ($("downloadRecordBatBtn")) $("downloadRecordBatBtn").addEventListener("click", downloadRecordBat);
 if ($("launchRecordBtn")) $("launchRecordBtn").addEventListener("click", launchRecordSession);
+if ($("autoLearnBtn")) $("autoLearnBtn").addEventListener("click", autoLearnPortalUI);
 if ($("copyDescriptionBtn")) $("copyDescriptionBtn").addEventListener("click", copyDescriptionOfWork);
 if ($("buildSplitBtn")) $("buildSplitBtn").addEventListener("click", buildDocumentSplit);
 if ($("autofillSpecsBtn")) $("autofillSpecsBtn").addEventListener("click", autofillSpecs);

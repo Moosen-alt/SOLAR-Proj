@@ -449,6 +449,11 @@
                   <button id="copyRecordCmdBtn" class="secondary ghost"><i data-lucide="clipboard-copy"></i><span>Copy command</span></button>
                 </div>
               </div>
+              <div class="record-autolearn">
+                <button id="autoLearnBtn" class="secondary" title="The bot logs in with this client's stored credential, fills the form from the project data up to the review screen, records a reusable recipe, and verifies the fill. It NEVER clicks final submit — you authorize that with one click on the track card."><i data-lucide="sparkles"></i><span>Auto-learn this portal (AI)</span></button>
+                <span class="muted" style="font-size:12px">No recording needed — the bot fills it to the review screen and verifies. Final submit always stays your one-click approval.</span>
+              </div>
+              <div id="autoLearnStatus" style="display:none;margin:6px 0;font-size:13px"></div>
               <div id="launchRecordStatus" style="display:none;margin:6px 0;font-size:13px"></div>
               <details class="kb-accordion" style="margin-top:6px" open>
                 <summary class="kb-summary"><span>Project data (for manual entry / recording reference)</span></summary>

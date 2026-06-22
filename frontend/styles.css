@@ -137,6 +137,7 @@ p, .muted { color: var(--muted); }
 .record-launch { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
 .record-alt { display: flex; align-items: center; gap: 6px; font-size: 12px; flex-wrap: wrap; }
 .record-alt button { font-size: 12px; padding: 5px 9px; }
+.record-autolearn { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line); }
 
 /* --- Recipe trust (hybrid auto-submit opt-in) --- */
 .recipe-trust { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); margin-top: 6px; cursor: pointer; }
