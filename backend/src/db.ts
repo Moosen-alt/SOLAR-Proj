@@ -766,6 +766,14 @@ function migrate(db: AppDb): void {
   addColumnIfMissing(db, "portal_runs", "tracking_url", "TEXT NOT NULL DEFAULT ''");
   addColumnIfMissing(db, "permit_check_targets", "tracking_url", "TEXT NOT NULL DEFAULT ''");
 
+  // Per-permit submittal tracks — a project can need NEM (utility), plus either a
+  // combined building+electrical permit or SEPARATE building (BLD) and electrical
+  // (ELE) permits, each submitted and tracked independently. permit_type names the
+  // track: 'nem' | 'building' | 'electrical' | 'combo' | 'permit' (legacy default).
+  addColumnIfMissing(db, "submissions", "permit_type", "TEXT NOT NULL DEFAULT 'permit'");
+  addColumnIfMissing(db, "permit_check_targets", "permit_type", "TEXT NOT NULL DEFAULT ''");
+  addColumnIfMissing(db, "portal_runs", "permit_type", "TEXT NOT NULL DEFAULT 'permit'");
+
   // Scale indexes (built after the migrated columns exist) — keep the project
   // list snappy with thousands of rows: default sort is updated_at DESC, with
   // common filters on assigned user, client, and customer.

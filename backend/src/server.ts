@@ -117,6 +117,8 @@ import {
   runProjectWorkflow,
   runDuePermitChecks,
 } from "./repository";
+import { getSubmittalTracks, markTrackSubmitted } from "./submittalTracks";
+import type { SubmittalTrackType } from "../../shared/src/types";
 
 const app = express();
 const db = await openDatabase();
@@ -1535,6 +1537,30 @@ app.put("/api/permit-check-targets/:id/tracking-url", (req, res) => {
     [url, new Date().toISOString(), String(req.params.id)],
   );
   res.json({ ok: true, trackingUrl: url });
+});
+
+// Per-permit submittal tracks — NEM + building/electrical (or combo), each tracked
+// independently through to issuance.
+app.get("/api/projects/:id/submittal-tracks", (req, res) => {
+  const detail = getProjectDetail(db, String(req.params.id));
+  res.json({ tracks: getSubmittalTracks(db, detail.project) });
+});
+
+const SUBMITTAL_TRACK_TYPES: SubmittalTrackType[] = ["nem", "building", "electrical", "combo", "permit"];
+app.post("/api/projects/:id/submittal-tracks/:type/mark-submitted", (req, res) => {
+  const type = String(req.params.type) as SubmittalTrackType;
+  if (!SUBMITTAL_TRACK_TYPES.includes(type)) throw new HttpError(400, "Unknown submittal track type.");
+  const detail = getProjectDetail(db, String(req.params.id));
+  const b = req.body || {};
+  markTrackSubmitted(db, detail.project, type, {
+    applicationNumber: b.applicationNumber ? String(b.applicationNumber) : undefined,
+    permitNumber: b.permitNumber ? String(b.permitNumber) : undefined,
+    confirmationNumber: b.confirmationNumber ? String(b.confirmationNumber) : undefined,
+    trackingUrl: b.trackingUrl ? String(b.trackingUrl) : undefined,
+    submittedBy: b.submittedBy ? String(b.submittedBy) : undefined,
+    notes: b.notes ? String(b.notes) : undefined,
+  });
+  res.status(201).json({ ok: true, tracks: getSubmittalTracks(db, getProjectDetail(db, String(req.params.id)).project) });
 });
 
 app.get("/parser", (_req, res) => {

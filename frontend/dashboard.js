@@ -992,6 +992,7 @@ async function selectProject(projectId) {
   state.processMap = null;
   state.installerPacket = null;
   state.submitGate = null;
+  state.submittalTracks = null;
   $("emptyState").hidden = true;
   $("detailView").hidden = false;
   clearMessage();
@@ -1011,6 +1012,7 @@ async function selectProject(projectId) {
     loadOpsPlan(), loadSubmitGate(), loadRunbook(), loadHandoffPacket(),
     loadCommunicationDrafts(), loadLiveReadiness(), loadProjectTimeline(),
     loadProcessMap(), loadInstallerPacket(), loadProjectDocuments(),
+    loadSubmittalTracks(),
   ]);
   renderDetail();
 }
@@ -1473,6 +1475,7 @@ function renderDetail() {
   safeRender("permitForm", syncPermitForm);
   safeRender("workflow", renderWorkflow);
   safeRender("submitGate", renderSubmitGate);
+  safeRender("submittalTracks", renderSubmittalTracks);
   safeRender("processMap", renderProcessMap);
   safeRender("liveReadiness", renderLiveTestReadiness);
   safeRender("historical", renderHistoricalFailures);
@@ -1624,6 +1627,94 @@ function renderSubmitGate() {
       </article>
     </div>
   `;
+}
+
+// ----- Per-permit submittal tracks (NEM + building/electrical, tracked apart) -----
+async function loadSubmittalTracks() {
+  if (!state.selectedProjectId) { state.submittalTracks = null; return; }
+  try {
+    const res = await api(`/api/projects/${state.selectedProjectId}/submittal-tracks`);
+    state.submittalTracks = res.tracks || [];
+  } catch {
+    state.submittalTracks = null;
+  }
+}
+
+const TRACK_STATUS_CLASS = {
+  not_started: "warning", staged: "info", submitted: "info",
+  in_review: "info", correction: "blocker", issued: "pass",
+};
+
+function renderSubmittalTracks() {
+  const tracks = state.submittalTracks;
+  const wrap = $("submittalTracks");
+  const statusBadgeEl = $("submittalTracksStatus");
+  if (!wrap) return;
+  if (!tracks || !tracks.length) {
+    if (statusBadgeEl) statusBadgeEl.textContent = "—";
+    wrap.innerHTML = `<p class="muted">No submittal tracks resolved yet.</p>`;
+    return;
+  }
+  const issued = tracks.filter((t) => t.status === "issued").length;
+  if (statusBadgeEl) statusBadgeEl.textContent = `${issued}/${tracks.length} issued`;
+  wrap.innerHTML = tracks.map((t) => {
+    const cls = TRACK_STATUS_CLASS[t.status] || "info";
+    const nums = [
+      t.applicationNumber ? `App #: <strong>${esc(t.applicationNumber)}</strong>` : "",
+      t.permitNumber ? `Permit #: <strong>${esc(t.permitNumber)}</strong>` : "",
+      t.confirmationNumber ? `Conf #: <strong>${esc(t.confirmationNumber)}</strong>` : "",
+    ].filter(Boolean).join(" &nbsp;·&nbsp; ");
+    const trackLink = t.trackingUrl
+      ? `<a href="${esc(t.trackingUrl)}" target="_blank" rel="noopener">status page ↗</a>`
+      : "";
+    return `
+    <article class="item ${cls}">
+      <div class="item-title">
+        <span>${esc(t.label)}</span>
+        ${statusBadge(humanize(t.status))}
+      </div>
+      <p class="muted" style="margin:0 0 4px">Channel: ${esc(t.channel)}${t.lastCheckedAt ? ` · last checked ${esc(fmtDate(t.lastCheckedAt))}` : ""}</p>
+      ${nums ? `<p style="margin:0 0 4px">${nums} ${trackLink ? "&nbsp;·&nbsp; " + trackLink : ""}</p>` : (trackLink ? `<p style="margin:0 0 4px">${trackLink}</p>` : "")}
+      <details class="track-submit">
+        <summary>${t.status === "not_started" || t.status === "staged" ? "Mark submitted &amp; capture #" : "Update numbers / status link"}</summary>
+        <div class="track-submit-form">
+          <input data-track-field="applicationNumber" data-track="${esc(t.type)}" placeholder="Application / record #" value="${esc(t.applicationNumber)}" />
+          <input data-track-field="permitNumber" data-track="${esc(t.type)}" placeholder="Permit # (once issued)" value="${esc(t.permitNumber)}" />
+          <input data-track-field="confirmationNumber" data-track="${esc(t.type)}" placeholder="Confirmation #" value="${esc(t.confirmationNumber)}" />
+          <input data-track-field="trackingUrl" data-track="${esc(t.type)}" placeholder="Public status URL (no-login record link)" value="${esc(t.trackingUrl)}" />
+          <button type="button" class="primary" data-track-submit="${esc(t.type)}"><i data-lucide="check"></i><span>Save &amp; track</span></button>
+        </div>
+      </details>
+    </article>`;
+  }).join("");
+  wrap.querySelectorAll("button[data-track-submit]").forEach((btn) => {
+    btn.addEventListener("click", () => markSubmittalTrack(btn.dataset.trackSubmit));
+  });
+  if (window.lucide) window.lucide.createIcons();
+}
+
+async function markSubmittalTrack(type) {
+  if (!state.selectedProjectId || !type) return;
+  const field = (name) => {
+    const el = document.querySelector(`[data-track-field="${name}"][data-track="${type}"]`);
+    return (el?.value || "").trim();
+  };
+  const body = {
+    applicationNumber: field("applicationNumber"),
+    permitNumber: field("permitNumber"),
+    confirmationNumber: field("confirmationNumber"),
+    trackingUrl: field("trackingUrl"),
+  };
+  try {
+    const res = await api(`/api/projects/${state.selectedProjectId}/submittal-tracks/${type}/mark-submitted`, {
+      method: "POST", body: JSON.stringify(body),
+    });
+    state.submittalTracks = res.tracks || state.submittalTracks;
+    renderSubmittalTracks();
+    showMessage(`${humanize(type)} marked submitted — now tracking through to issuance.`, "info");
+  } catch (err) {
+    showMessage(err.message || "Could not save submittal track.", "error");
+  }
 }
 
 async function generateIntakeLink() {
