@@ -1555,16 +1555,8 @@ function renderSubmitGate() {
           `).join("") : `<p class="muted">No submit gate checks generated yet.</p>`}
         </div>
       </article>
-      <article class="submit-gate-focus">
-        <div class="item-title"><span>Client Intake Link</span>${statusBadge("collect from installer")}</div>
-        <p class="muted">Generate a no-login link to collect project valuation + homeowner email/phone from the installer. Answers write straight to the project.</p>
-        <button type="button" class="secondary" id="genIntakeLinkBtn" style="font-size:12px"><i data-lucide="link"></i><span>Generate &amp; copy intake link</span></button>
-        <div id="intakeLinkOut" class="muted" style="margin-top:8px;word-break:break-all;font-size:12px"></div>
-      </article>
     </div>
   `;
-  const genBtn = $("genIntakeLinkBtn");
-  if (genBtn) genBtn.addEventListener("click", generateIntakeLink);
 }
 
 async function generateIntakeLink() {
@@ -3957,6 +3949,7 @@ if ($("launchRecordBtn")) $("launchRecordBtn").addEventListener("click", launchR
 if ($("copyDescriptionBtn")) $("copyDescriptionBtn").addEventListener("click", copyDescriptionOfWork);
 if ($("buildSplitBtn")) $("buildSplitBtn").addEventListener("click", buildDocumentSplit);
 if ($("autofillSpecsBtn")) $("autofillSpecsBtn").addEventListener("click", autofillSpecs);
+if ($("genIntakeLinkBtn")) $("genIntakeLinkBtn").addEventListener("click", generateIntakeLink);
 if ($("docUploadBtn")) $("docUploadBtn").addEventListener("click", uploadProjectDocument);
 $("newClientBtn").addEventListener("click", blankClientForm);
 $("clientForm").addEventListener("submit", saveClient);

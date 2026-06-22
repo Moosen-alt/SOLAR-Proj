@@ -543,19 +543,50 @@ app.post("/api/knowledge-base/import-mbox", asyncHandler(async (req, res) => {
   );
 }));
 
-app.post("/api/knowledge-base/import-mbox-file", express.raw({ type: "*/*", limit: process.env.MBOX_IMPORT_LIMIT || "1gb" }), asyncHandler(async (req, res) => {
-  const body = req.body;
-  const mboxText = Buffer.isBuffer(body) ? body.toString("utf8") : String(body || "");
-  if (!mboxText.trim()) throw new HttpError(400, "Uploaded MBOX file was empty or unreadable.");
-  res.status(201).json(
-    await importKnowledgeFromMbox(db, {
-      mboxText,
-      sourceLabel: String(req.header("x-source-label") || req.query.sourceLabel || "Imported MBOX file"),
-      defaultState: req.query.defaultState ? String(req.query.defaultState) : undefined,
-      defaultAhj: req.query.defaultAhj ? String(req.query.defaultAhj) : undefined,
-      defaultUtility: req.query.defaultUtility ? String(req.query.defaultUtility) : undefined,
-    }),
-  );
+app.post("/api/knowledge-base/import-mbox-file", asyncHandler(async (req, res) => {
+  // Stream the upload straight to a temp file, then import via the same on-disk
+  // streaming path that the "Import Path" button uses. We deliberately do NOT
+  // buffer the body with express.raw + Buffer.toString("utf8"): a mbox larger
+  // than ~512MB exceeds Node's maximum string length and throws
+  // "Cannot create a string longer than 0x1fffffe8 characters" — which is why
+  // a 1GB upload failed while the local-path import (which streams) worked.
+  const os = await import("node:os");
+  const { pipeline } = await import("node:stream/promises");
+  const { Transform } = await import("node:stream");
+
+  const maxBytes = Number(process.env.MBOX_IMPORT_MAX_BYTES || 2 * 1024 * 1024 * 1024); // 2 GB default
+  const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "solar-mbox-upload-"));
+  const tmpFile = path.join(tmpDir, "upload.mbox");
+
+  try {
+    let bytes = 0;
+    const limiter = new Transform({
+      transform(chunk, _enc, cb) {
+        bytes += chunk.length;
+        if (bytes > maxBytes) {
+          cb(new HttpError(413, `Uploaded MBOX exceeds the ${Math.round(maxBytes / (1024 ** 3))} GB limit. Paste the file's full local path and click Import Path instead.`));
+          return;
+        }
+        cb(null, chunk);
+      },
+    });
+    await pipeline(req, limiter, fs.createWriteStream(tmpFile));
+
+    const stat = await fs.promises.stat(tmpFile);
+    if (stat.size === 0) throw new HttpError(400, "Uploaded MBOX file was empty or unreadable.");
+
+    res.status(201).json(
+      await importKnowledgeFromMboxFile(db, {
+        filePath: tmpFile,
+        sourceLabel: String(req.header("x-source-label") || req.query.sourceLabel || "Imported MBOX file"),
+        defaultState: req.query.defaultState ? String(req.query.defaultState) : undefined,
+        defaultAhj: req.query.defaultAhj ? String(req.query.defaultAhj) : undefined,
+        defaultUtility: req.query.defaultUtility ? String(req.query.defaultUtility) : undefined,
+      }),
+    );
+  } finally {
+    await fs.promises.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+  }
 }));
 
 app.post("/api/knowledge-base/import-mbox-path", asyncHandler(async (req, res) => {
