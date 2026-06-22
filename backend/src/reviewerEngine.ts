@@ -114,10 +114,12 @@ export function buildReviewerReport(project: ProjectRecord): ReviewerReport {
   ));
   }
 
-  const blockerCount = findings.filter((item) => item.severity === "blocker").length;
+  // Always "callout" — this is a process safety control, not a content deficiency.
+  // It is satisfied BY staging (automation stops at review), so it must never be
+  // a blocker that prevents staging from happening. See: deadlock audit check.
   findings.push(finding(
     "reviewer.submit.preview-required",
-    blockerCount ? "blocker" : "callout",
+    "callout",
     "portal",
     "Final AHJ preview is required",
     "Do not rely on seeing only a submit button. The operator must see the actual AHJ/utility final-review page or generated final review packet, compare all fields/uploads, then manually click submit.",

@@ -116,6 +116,15 @@ const reviewerBlockers = reviewerReport.findings.filter((finding) => finding.sev
 if (reviewerBlockers.length) {
   throw new Error(`Expected reviewer gate to have no blockers, got ${reviewerBlockers.map((finding) => finding.title).join(", ")}`);
 }
+// DEADLOCK AUDIT: reviewer.submit.preview-required must never be a blocker.
+// It is satisfied BY staging (automation stops at review, human submits manually),
+// so making it a blocker would prevent staging from ever happening — a circular deadlock.
+// This finding must always be severity "callout". If this assertion fires, check
+// reviewerEngine.ts — the blockerCount conditional was removed for exactly this reason.
+const previewRequiredFinding = reviewerReport.findings.find((finding) => finding.id === "reviewer.submit.preview-required");
+if (previewRequiredFinding && previewRequiredFinding.severity === "blocker") {
+  throw new Error("DEADLOCK: reviewer.submit.preview-required has severity 'blocker' — this prevents staging and creates a circular deadlock. It must always be 'callout'.");
+}
 if (reviewerReport.finalSubmitGate.finalSubmitButtonAloneIsEnough) {
   throw new Error("Expected reviewer gate to require AHJ preview/final packet instead of submit button only.");
 }
