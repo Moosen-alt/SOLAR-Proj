@@ -319,7 +319,11 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   ) {
     super();
     this.portalName = portalName;
-    this.maxPages = options.maxPages ?? 8;
+    // Default page budget. Multi-step utility/permit wizards (PowerClerk NEM, Accela)
+    // routinely run 10-15 input steps before the review screen, so 8 was too low — it
+    // capped out mid-form. The stuck-page guard + review detection bound the loop, so a
+    // higher cap can't run away; it just allows long wizards to reach review.
+    this.maxPages = options.maxPages ?? 18;
     this.docsByType = options.docsByType ?? {};
     this.uploadMode = options.uploadMode ?? "split";
   }
