@@ -123,3 +123,47 @@ export function getDecryptedCredential(
     return null;
   }
 }
+
+// Match by hostname of the stored portal_url — handles the common case where the
+// operator stored the credential with a different portal_type string.
+export function getDecryptedCredentialByUrl(
+  db: AppDb,
+  clientId: string,
+  portalUrl: string,
+): { username: string; password: string } | null {
+  if (!portalUrl) return null;
+  let targetHost: string;
+  try { targetHost = new URL(portalUrl).hostname.toLowerCase(); } catch { return null; }
+  const rows = db.query<Row>(
+    "SELECT encrypted_secret, portal_url FROM portal_credentials WHERE client_id = ? ORDER BY updated_at DESC",
+    [clientId],
+  );
+  for (const row of rows) {
+    const stored = s(row.portal_url);
+    if (!stored) continue;
+    try {
+      const storedHost = new URL(stored).hostname.toLowerCase();
+      if (storedHost === targetHost || targetHost.endsWith(`.${storedHost}`) || storedHost.endsWith(`.${targetHost}`)) {
+        const dec = decryptStorageState(s(row.encrypted_secret)) as { username?: string; password?: string };
+        return { username: s(dec.username), password: s(dec.password) };
+      }
+    } catch { continue; }
+  }
+  return null;
+}
+
+// Last-resort fallback: the most recently updated credential for this client, any portal.
+export function getDecryptedCredentialAny(
+  db: AppDb,
+  clientId: string,
+): { username: string; password: string } | null {
+  const row = db.get<Row>(
+    "SELECT encrypted_secret FROM portal_credentials WHERE client_id = ? ORDER BY updated_at DESC LIMIT 1",
+    [clientId],
+  );
+  if (!row || !s(row.encrypted_secret)) return null;
+  try {
+    const dec = decryptStorageState(s(row.encrypted_secret)) as { username?: string; password?: string };
+    return { username: s(dec.username), password: s(dec.password) };
+  } catch { return null; }
+}

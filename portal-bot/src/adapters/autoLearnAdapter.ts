@@ -298,10 +298,12 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           if (challenge) {
             return { ok: false, message: `Login paused: ${challenge}. Complete verification in the browser, then retry.`, pauseReason: "mfa_captcha" };
           }
+          // Accela (Oregon ePermitting): #txtLoginEmail / #txtLoginPassword / #hlLogin.
+          // Broad CSS fallbacks cover non-Accela portals with standard login forms.
           const loginStep: PortalRecipeLoginStep = {
-            usernameSel: { css: 'input[type="email"], input[name*="user" i], input[name*="email" i]' },
-            passwordSel: { css: 'input[type="password"]' },
-            submitSel: { role: "button", name: /log\s*in|sign\s*in|submit/i.source },
+            usernameSel: { css: '#txtLoginEmail, #txtUserName, input[type="email"], input[name*="user" i], input[name*="email" i], input[id*="login"][id*="email" i], input[id*="login"][id*="user" i]' },
+            passwordSel: { css: '#txtLoginPassword, input[type="password"]' },
+            submitSel: { css: '#hlLogin, #btnLogin, input[type="submit"], button[type="submit"], a.btn-login, button.btn-login, a.LoginButton' },
           };
           const uLoc = this.locator(loginStep.usernameSel);
           if (uLoc && (await uLoc.count().catch(() => 0)) > 0) {

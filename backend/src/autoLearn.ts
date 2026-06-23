@@ -26,7 +26,7 @@ import type { PortalRecipe, ProjectRecord } from "../../shared/src/types";
 import { learnPortal } from "../../portal-bot/src/index";
 import type { LearnPlanRequest, LearnPlanResponse } from "../../portal-bot/src/adapters/autoLearnAdapter";
 import { createLLMProvider } from "./llm";
-import { getDecryptedCredential } from "./portalCredentials";
+import { getDecryptedCredential, getDecryptedCredentialByUrl, getDecryptedCredentialAny } from "./portalCredentials";
 import { resolveRecipeFieldValues, startPortalRecording, savePortalRecipeSteps, getPortalRecipe } from "./portalRecipes";
 import { addAuditLog } from "./audit";
 import { HttpError } from "./httpError";
@@ -116,7 +116,14 @@ export async function autoLearnPortal(
     };
   };
 
-  const credential = project.clientId ? getDecryptedCredential(db, project.clientId, portalType) ?? undefined : undefined;
+  // Credential lookup: try exact portalType match first, then URL hostname match, then
+  // most-recent credential for this client (handles mismatched portal_type strings).
+  const credential = project.clientId
+    ? (getDecryptedCredential(db, project.clientId, portalType)
+        ?? getDecryptedCredentialByUrl(db, project.clientId, portalUrl)
+        ?? getDecryptedCredentialAny(db, project.clientId))
+      ?? undefined
+    : undefined;
   const profileBase = process.env.PORTAL_PROFILES_DIR || path.join(process.cwd(), "portal-profiles");
   const userDataDir = project.clientId ? path.join(profileBase, project.clientId, portalType) : path.join(profileBase, portalType);
 
