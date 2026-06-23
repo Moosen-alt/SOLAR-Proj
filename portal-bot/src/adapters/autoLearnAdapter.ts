@@ -973,8 +973,13 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     const dbg = process.env.AUTOLEARN_DEBUG === "1";
     let lastErr: unknown;
     for (let attempt = 0; attempt < 4; attempt++) {
-      await this.dismissModals();
+      // clearOverlays BEFORE dismissModals: PowerClerk's onboarding popover is removed by
+      // clearOverlays, but if dismissModals runs first it clicks the popover's "Got it"
+      // button, which consumes the gesture / soft-re-renders the toolbar and leaves the
+      // subsequent navigate click registering without navigating. Clearing the popover
+      // first means dismissModals has no stray "Got it" to click. (Proven on live PGE.)
       await this.clearOverlays();
+      await this.dismissModals();
       // Wait for the element to be visible before clicking. On Accela/ExtJS this is critical:
       // the ExtJS loading mask clears asynchronously; the link exists in the DOM but isn't
       // actionable until the mask is fully gone. Give the first attempt extra time (12s) so
@@ -1133,6 +1138,13 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           // PowerClerk (Bootstrap/Vue): semi-transparent position-absolute loading scrims
           "div.position-absolute.opacity-50.bg-black",
           ".modal-backdrop",
+          // PowerClerk "new feature" onboarding popover — a Bootstrap popover (z-index 900)
+          // anchored ON the toolbar buttons (e.g. "New Net Metering Application"), so its
+          // header overlaps and intercepts the click. The backdrop above is removed but the
+          // popover itself must be too, or every navigate click is intercepted. It has a
+          // sequence of "Got it" steps, so clicking-through is unreliable — just remove it.
+          ".popover.new-feature-popper",
+          ".new-feature-popper",
           // Generic loading/spinner overlays
           "[class*='loading-overlay']",
           "[class*='spinner-overlay']",
