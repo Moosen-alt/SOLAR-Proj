@@ -489,8 +489,97 @@ async function testAccelaContinueApplicationNeverClicked() {
   assert.ok(result.reviewScreen != null, "should stop at the review screen");
 }
 
+// 8) NEW-TAB ADOPTION (the PowerClerk failure mode): clicking "Start Application" on the
+// dashboard opens the real form in a NEW TAB. The loop must SWITCH to the popup and fill it,
+// instead of re-scraping the dead dashboard until it reports "nothing fillable".
+async function testNewTabPopupAdopted() {
+  const log: ActionLog = { clicks: [], fills: [], selects: [], checks: [] };
+
+  // A minimal multi-tab fake: a shared `pages` array IS the browser context. Clicking the
+  // dashboard's nav link pushes the form page into `pages` (a new tab opening).
+  const pages: any[] = [];
+  function fakeLoc(key: string, onClick?: () => void): any {
+    const loc: any = {
+      first: () => loc, nth: () => loc, count: async () => 1, isVisible: async () => false,
+      waitFor: async () => undefined, scrollIntoViewIfNeeded: async () => undefined,
+      click: async () => { log.clicks.push(key); if (onClick) onClick(); },
+      fill: async (v: string) => { log.fills.push({ key, value: v }); },
+      selectOption: async (v: any) => { log.selects.push({ key, value: typeof v === "string" ? v : v?.label ?? "" }); },
+      check: async () => { log.checks.push(key); }, press: async () => undefined,
+      setInputFiles: async () => undefined, dispatchEvent: async () => undefined,
+      bringToFront: async () => undefined, evaluateAll: async () => [],
+    };
+    return loc;
+  }
+  function fakePage(opts: { url: string; title: string; body: string; rawFields: RawFieldRow[]; fp: string; navKey?: string; onNav?: () => void; reviewPairs?: Array<{ label: string; value: string }> }): any {
+    const page: any = {
+      url: () => opts.url, title: async () => opts.title, goto: async () => undefined,
+      waitForLoadState: async () => undefined, reload: async () => undefined,
+      isClosed: () => false, bringToFront: async () => undefined,
+      keyboard: { press: async () => undefined }, frames: () => [],
+      evaluate: async () => opts.fp, // clearOverlays ignores the return; pageFingerprint uses it
+      screenshot: async () => Buffer.from(""),
+      getByRole: (role: string, o?: { name?: string }) => {
+        const key = `role:${role}:${o?.name ?? ""}`;
+        return fakeLoc(key, opts.navKey && key === opts.navKey ? opts.onNav : undefined);
+      },
+      getByLabel: (l: string) => fakeLoc(`label:${l}`),
+      getByPlaceholder: (p: string) => fakeLoc(`placeholder:${p}`),
+      getByTestId: (t: string) => fakeLoc(`testId:${t}`),
+      getByText: () => fakeLoc("text"),
+      locator: (css: string) => {
+        if (css === "body") return { innerText: async () => opts.body };
+        if (css === "iframe") return { evaluateAll: async () => [] };
+        return fakeLoc(`css:${css}`);
+      },
+      frameLocator: () => page,
+      $$eval: async (selector: string, _fn: any) => (selector.includes("button") ? opts.rawFields : (opts.reviewPairs ?? [])),
+    };
+    return page;
+  }
+
+  const formPage = fakePage({
+    url: "https://pacificorpnetmetering.powerclerk.com/Form/Apply", title: "Application",
+    body: "Interconnection application form", fp: "form-fp",
+    rawFields: [{ label: "Homeowner Name", fieldType: "text", id: "hn" }],
+    reviewPairs: [{ label: "Homeowner Name", value: "Jane Solar" }],
+  });
+  const dashboard = fakePage({
+    url: "https://pacificorpnetmetering.powerclerk.com/Homepage/ProgramHome", title: "Program Home",
+    body: "Welcome to your program home", fp: "dash-fp",
+    rawFields: [{ label: "Start Application", fieldType: "button", role: "link", text: "Start Application", id: "start" }],
+    navKey: "role:link:Start Application",
+    onNav: () => { pages.push(formPage); }, // clicking the nav link opens the form in a NEW TAB
+  });
+  pages.push(dashboard);
+
+  let call = 0;
+  const planner: LearnPlanner = async (req: LearnPlanRequest): Promise<LearnPlanResponse> => {
+    call++;
+    if (call === 1) {
+      assert.equal(req.isDashboard, true, "page 1 is recognised as a dashboard");
+      return { fills: [], navigateSelectorIndex: 0, atReview: false };
+    }
+    // After adoption we must be on the FORM page (not the dashboard).
+    assert.match(req.url, /\/Form\/Apply/, "after the nav click the loop is on the popup form, not the dashboard");
+    return { fills: [{ selectorIndex: 0, value: "Jane Solar", field: "homeownerName" }], atReview: true };
+  };
+
+  const adapter = new AutoLearnAdapter("Pacific Power", planner);
+  (adapter as unknown as { page: unknown }).page = dashboard;
+  (adapter as unknown as { opened: unknown }).opened = { context: { pages: () => pages } };
+
+  const result = await adapter.learn(fakeContext, fakeProject);
+  assert.equal(result.ok, true, "should succeed: adopted the popup and filled the form");
+  assert.equal(log.fills.length, 1, "the form field on the popup tab was filled");
+  assert.ok(result.steps.some((s) => s.action === "fill" && s.field === "homeownerName"), "form fill recorded from the adopted tab");
+  // The nav link was clicked exactly once; the dashboard was not re-scraped into a stuck loop.
+  assert.ok(log.clicks.includes("role:link:Start Application"), "the dashboard nav link was clicked");
+}
+
 const tests: Array<[string, () => Promise<void>]> = [
   ["fields are extracted, filled, and recorded as steps", testFieldsExtractedFilledRecorded],
+  ["a click that opens the form in a NEW TAB is adopted (PowerClerk)", testNewTabPopupAdopted],
   ["final submit is recorded isFinalSubmit:true and NEVER clicked", testFinalSubmitRecordedNeverClicked],
   ["a pay/fee button returned by the planner is never clicked", testPayFeeButtonNeverClicked],
   ["a challenge frame stops the run with pauseReason mfa_captcha", testChallengeStopsRun],

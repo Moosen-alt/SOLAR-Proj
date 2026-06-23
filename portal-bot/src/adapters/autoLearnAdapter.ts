@@ -382,6 +382,15 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     // instead of burning every remaining page re-planning the same screen.
     let lastLoopFp = "";
     let stuckStreak = 0;
+    // Diagnostics: a compact, redacted breadcrumb per page (title + host/path + field
+    // counts + classification + the planner's decision). Surfaced in the result message
+    // and logs so a "nothing fillable" run is debuggable WITHOUT re-running blind.
+    const pageTrace: string[] = [];
+    // Did we ever reach a page with editable fields? Distinguishes "wandered through
+    // dashboards/links and never found a form" from "found a form but couldn't finish".
+    let everFoundFillable = false;
+    // How many navigation-link clicks we've followed from dashboard/home pages.
+    let navCount = 0;
 
     if (!this.page) {
       return fail(steps, this.portalName, "learn() called before login() opened a page.");
@@ -442,6 +451,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       const hasSubmitIntentBtn = fields.some((f) => f.fieldType === "button" && SUBMIT_INTENT.test(f.label));
       const reviewSignals = REVIEW_MARKERS.test(bodyText) || looksLikeReviewUrl(url);
       const isDashboard = !hasFillable && !hasSubmitIntentBtn && !reviewSignals;
+      if (hasFillable) everFoundFillable = true;
 
       // a0) STUCK-PAGE GUARD — bail if the same page recurs across iterations (advance had
       //     no effect). Stops a silent infinite loop without waiting out maxPages.
@@ -511,11 +521,30 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         plan = { ...plan, atReview: true, advanceSelectorIndex: undefined, finalSubmitSelectorIndex: promotedFinal };
       }
 
+      // c2b) DIAGNOSTIC BREADCRUMB — record what we saw + what the planner decided on this
+      //      page. host+pathname only (NO query string — avoids leaking any ids), title
+      //      capped, no field values. This is the trace surfaced when a run finds nothing.
+      {
+        let hostPath = "";
+        try { const u = new URL(url); hostPath = u.host + u.pathname; } catch { hostPath = (url || "").slice(0, 60); }
+        const fillCount = fields.filter((f) => f.fieldType !== "button").length;
+        const btnCount = fields.filter((f) => f.fieldType === "button").length;
+        const linkCount = fields.filter((f) => f.fieldType === "button" && f.selector?.role === "link").length;
+        const cls = isReviewPage ? "review" : isDashboard ? "dashboard" : hasFillable ? "form" : "empty";
+        pageTrace.push(
+          `p${pageCount} "${(pageTitle || "").slice(0, 40)}" [${hostPath}] ${cls} ` +
+          `fields=${fields.length}(fill=${fillCount},btn=${btnCount},link=${linkCount}) ` +
+          `plan:nav=${plan.navigateSelectorIndex ?? "-"} adv=${plan.advanceSelectorIndex ?? "-"} ` +
+          `fills=${(plan.fills ?? []).length} review=${plan.atReview}`,
+        );
+      }
+
       // c3) DASHBOARD NAVIGATION — click a link/button to get from the portal home to the
       //     actual application form. Recorded as a click step (phase:"open") then loop again.
       if (typeof plan.navigateSelectorIndex === "number") {
         const navField = fields[plan.navigateSelectorIndex];
         if (navField && !this.isOffLimitsButton(navField)) {
+          navCount++;
           steps.push({
             action: "click",
             phase: "open",
@@ -533,13 +562,14 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           await this.clearOverlays();
           const navBeforeUrl = typeof this.page.url === "function" ? String(this.page.url() ?? "") : "";
           const navBeforeFp = await this.pageFingerprint();
+          const navTabsBefore = this.tabCount(); // capture BEFORE the click — the popup opens during it
           const res = await safeAction(
             "navigate",
             async () => {
               const loc = await this.locator(navField.selector);
               if (!loc) throw new Error("navigate selector unresolved");
               await this.clickResilient(loc);
-              await this.waitAfterClick(navBeforeUrl, navBeforeFp);
+              await this.waitAfterClick(navBeforeUrl, navBeforeFp, navTabsBefore);
             },
             { required: true },
           );
@@ -640,13 +670,14 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         });
         const advBeforeUrl = typeof this.page.url === "function" ? String(this.page.url() ?? "") : "";
         const advBeforeFp = await this.pageFingerprint();
+        const advTabsBefore = this.tabCount(); // capture BEFORE the click — the popup opens during it
         const res = await safeAction(
           "advance",
           async () => {
             const loc = await this.locator(advanceField.selector);
             if (!loc) throw new Error("advance selector unresolved");
             await this.clickResilient(loc);
-            await this.waitAfterClick(advBeforeUrl, advBeforeFp);
+            await this.waitAfterClick(advBeforeUrl, advBeforeFp, advTabsBefore);
           },
           { required: true },
         );
@@ -671,11 +702,29 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     // 6) ok:true only when it reached a review screen, or filled >=1 page cleanly.
     const filledSomething = steps.some((s) => s.action === "fill" || s.action === "select" || s.action === "check");
     const ok = reachedReview || filledSomething;
+
+    // Compact, redacted page trace for diagnostics. Always logged; appended to the result
+    // message when the run didn't reach a review screen so the operator can see WHERE the
+    // bot got lost (which page, what fields, what the planner chose) without re-running blind.
+    const traceLine = pageTrace.join(" | ");
+    if (!ok || process.env.AUTOLEARN_DEBUG === "1") {
+      console.error(`[auto-learn] ${this.portalName}: ${pageCount} page(s), navigated ${navCount} link(s), foundFillable=${everFoundFillable}\n  ${pageTrace.join("\n  ")}`);
+    }
+
+    // When nothing was fillable, explain the most likely cause so the message is actionable.
+    // The dominant failure mode on PowerClerk-style portals is "Start/Create Application"
+    // opening the real form in a NEW TAB or behind a program/type picker — the bot then
+    // re-scrapes the dead home page until the stuck-guard bails. (New-tab adoption now
+    // handles the common case; this guidance covers what's left.)
+    const nothingFillableHint = !everFoundFillable && navCount > 0
+      ? ` It followed ${navCount} navigation link(s) from the portal home but never reached a form with editable fields — the start URL may point at the wrong page, the "start application" action may open a new tab or a program/record-type picker the bot couldn't follow, or a program must be selected first. Verify the start URL is the program's application/home page.`
+      : "";
+
     const message = reachedReview
       ? `${HUMAN_REVIEW_MESSAGE} Auto-learn reached the review screen after ${pageCount} page(s). Verify every field/value below before a human submits.`
       : filledSomething
-        ? `Auto-learn filled ${pageCount} page(s) and recorded the steps, but did not reach a review screen.`
-        : `Auto-learn found nothing fillable on ${pageCount} page(s); no steps recorded.`;
+        ? `Auto-learn filled ${pageCount} page(s) and recorded the steps, but did not reach a review screen. Page trace: ${traceLine}`
+        : `Auto-learn found nothing fillable on ${pageCount} page(s); no steps recorded.${nothingFillableHint} Page trace: ${traceLine}`;
 
     // Capture review page screenshot when we've reached the review screen
     let reviewScreenshotBase64: string | undefined;
@@ -958,11 +1007,16 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   // smartWait alone returns on the still-current page, so the loop would re-scrape the stale
   // transitioning page. Wait for the URL to change (navigation) OR the network to settle,
   // then let the destination render — so the next iteration scrapes the REAL next page.
-  private async waitAfterClick(beforeUrl: string, beforeFp = ""): Promise<void> {
+  // `tabsBefore` is the open-tab count captured by the CALLER *before* the click (the popup
+  // can open during the click, i.e. before this method runs), so we can early-break the wait
+  // the moment a new tab appears instead of burning the full 12s deadline on the dead tab.
+  private async waitAfterClick(beforeUrl: string, beforeFp = "", tabsBefore = this.tabCount()): Promise<void> {
     if (!this.page) return;
     const deadline = Date.now() + 12000;
     while (Date.now() < deadline) {
       await sleep(350);
+      // A new tab opened → the next step rendered in a popup; stop waiting and adopt it.
+      if (this.tabCount() > tabsBefore) break;
       const u = typeof this.page.url === "function" ? String(this.page.url() ?? "") : "";
       if (u && u !== beforeUrl) break; // URL navigation (new page)
       // Same-URL SPA wizard: wait until the page content actually changes (the next step
@@ -972,6 +1026,10 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         if (fp && fp !== beforeFp) break;
       }
     }
+    // If the click spawned a NEW tab (the real form), switch this.page to it BEFORE settling.
+    // adoptPopupIfAny only moves FORWARD (to a higher-index tab), so a later in-form advance
+    // can never switch back to the still-open dashboard tab.
+    await this.adoptPopupIfAny();
     // Let the destination settle (domcontentloaded + a networkidle race), then a short dwell
     // so client-rendered form fields are present before the next scrape.
     await this.page.waitForLoadState?.("domcontentloaded", { timeout: 9000 }).catch(() => null);
@@ -980,6 +1038,54 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       sleep(6000),
     ]);
     await sleep(700);
+  }
+
+  // Count open tabs in the browser context (1 when there's no context, e.g. a mock page).
+  private tabCount(): number {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const ctx: any = this.opened?.context;
+      return typeof ctx?.pages === "function" ? ctx.pages().length : 1;
+    } catch { return 1; }
+  }
+
+  // PowerClerk (and several portals) open the "Start/Create Application" form in a NEW TAB.
+  // When that happens the original page (this.page) never navigates, so the learn loop would
+  // keep re-scraping the dead dashboard until the stuck-guard bails ("nothing fillable on N
+  // pages"). Switch this.page to the newest SAME-ORIGIN tab that is NEWER (higher index in the
+  // context's page list) than the current one. Moving only forward means a later in-form
+  // advance can never switch BACK to the still-open dashboard tab (a lower index), and a
+  // same-origin filter means an external help/docs popup is never mistaken for the form.
+  // Best-effort; never throws.
+  private async adoptPopupIfAny(): Promise<void> {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const ctx: any = this.opened?.context;
+      if (!ctx || typeof ctx.pages !== "function" || !this.page) return;
+      const current = this.page;
+      let currentHost = "";
+      try { currentHost = new URL(String(current.url?.() ?? "")).host; } catch { currentHost = ""; }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pages: any[] = ctx.pages().filter((p: any) => {
+        try { return !(typeof p.isClosed === "function" && p.isClosed()); } catch { return true; }
+      });
+      const curIdx = pages.indexOf(current); // -1 if the current tab was closed
+      // Walk newest → oldest; only adopt a tab strictly NEWER than the current one.
+      for (let i = pages.length - 1; i > curIdx; i--) {
+        const p = pages[i];
+        if (p === current) continue;
+        let u = "";
+        try { u = String(p.url?.() ?? ""); } catch { u = ""; }
+        if (!u || u === "about:blank") continue;
+        let host = ""; try { host = new URL(u).host; } catch { host = ""; }
+        if (currentHost && host && host !== currentHost) continue; // skip external popups
+        try { await p.bringToFront?.(); } catch { /* ignore */ }
+        try { await p.waitForLoadState?.("domcontentloaded", { timeout: 9000 }); } catch { /* ignore */ }
+        this.page = p;
+        if (process.env.AUTOLEARN_DEBUG === "1") console.error(`[auto-learn] adopted new tab (${host})`);
+        return;
+      }
+    } catch { /* non-fatal — mock page or no context */ }
   }
 
   // A cheap content fingerprint used to detect when a same-URL SPA wizard has advanced to
