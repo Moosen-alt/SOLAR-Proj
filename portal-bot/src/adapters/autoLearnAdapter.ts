@@ -701,6 +701,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       }
 
       // d) Apply the fills and record each as a RecipeStep.
+      let pageFillCount = 0;
       for (const fillReq of plan.fills ?? []) {
         const field = fields[fillReq.selectorIndex];
         if (!field) continue; // out-of-range index from the planner — skip safely.
@@ -709,8 +710,26 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         const step = await this.applyFill(field, fillReq, sensitive);
         if (step) {
           steps.push(step);
+          pageFillCount++;
           if (field.label) alreadyFilledLabels.push(field.label);
         }
+      }
+
+      // d1) PERSIST SETTLE. Portals like PowerClerk autosave each page's fields via an AJAX
+      //     round-trip (~3s/page). If we advance before that completes, the entered values are
+      //     LOST — the visibly-filled form saves a BLANK draft. After filling a page, wait for
+      //     the network to settle and give the autosave time to commit before advancing.
+      //     Tunable via AUTOLEARN_SAVE_SETTLE_MS (default 3000).
+      if (pageFillCount > 0) {
+        const settleNetwork = async (timeout: number) => {
+          if (typeof this.page?.waitForLoadState === "function") {
+            await this.page.waitForLoadState("networkidle", { timeout }).catch(() => null);
+          }
+        };
+        await settleNetwork(8000);
+        const settleMs = Number(process.env.AUTOLEARN_SAVE_SETTLE_MS) || 3000;
+        await sleep(settleMs);
+        await settleNetwork(4000);
       }
 
       // e) Record the final submit (if any) — NEVER click it. Reject pay/fee buttons.
@@ -859,6 +878,11 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           await loc.check();
         } else {
           await loc.fill(value);
+          // Blur to COMMIT the value into the portal's JS model. Playwright's fill() fires
+          // input+change, but some frameworks (PowerClerk's Vue) only push a field into their
+          // saved model on blur — and PowerClerk autosaves per field. Without the blur the
+          // value shows on screen but is never persisted, so the saved draft comes back blank.
+          if (typeof loc.blur === "function") await loc.blur().catch(() => {});
         }
       },
       { required: false },

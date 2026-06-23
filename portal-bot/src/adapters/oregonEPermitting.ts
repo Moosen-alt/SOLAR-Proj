@@ -242,12 +242,11 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
       const descriptionOfWork = buildDescriptionOfWork(project);
       const projectName = buildProjectName(project);
 
-      // Step 2 page 2 — skip filler pages
-      await this.page.goto(
-        `${BASE_URL}/Cap/CapEdit.aspx?stepNumber=2&pageNumber=2&currentStep=0&currentPage=1&Module=Building&isRenewal=N&isFromShoppingCart=&isFromConfirmPage=&confirmStepNumber=0&isFromConfirmPage=N`
-      );
-      await this.page.getByRole("link", { name: "Continue Application »" }).click();
-      await this.page.getByRole("link", { name: "Continue Application »" }).click();
+      // Continue from where openSubmission left off — the wizard is already on the project /
+      // additional-info step. (Do NOT jump by URL: Accela's CapEdit step URLs are stateful
+      // and abort if navigated to directly.) Click through any intro/filler step that has no
+      // inputs; best-effort so a page that IS the project-detail form isn't skipped.
+      await this.page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
 
       // Project info — jobValue lives in parserSnapshot. These are REQUIRED fields:
       // route them through safeAction (retry+timeout) and surface any failure.
