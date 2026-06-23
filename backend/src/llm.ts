@@ -887,6 +887,8 @@ ${JSON.stringify(input.unbound, null, 2)}`;
   async planPortalFields(input: PortalFieldPlanInput): Promise<PortalFieldPlan> {
     const system = `You are filling a government/utility permit portal form for a solar project. Given the FIELDS (fillable inputs, buttons, and navigation links) on the current page and the project's available DATA, decide what to fill, which button navigates to the form (if on a dashboard), which button advances to the next page, and which button is the FINAL SUBMIT.
 
+RECOVERY MODE: if the user message contains a "RECOVERY" field, the automation is STUCK or CYCLING — a prior action looped it back. Treat that directive as top priority: pick a DIFFERENT action than the one implied last time. Never return a navigateIndex that restarts an already-started application (no "New/Start/Building Dept Application" when mid-flow); instead make forward progress on THIS page — fill remaining required fields, Select the correct results row, check the required application-type option, or advance with this page's Continue/Next.
+
 ADDRESS SEARCH & JURISDICTION SELECTION (Accela / Oregon ePermitting and similar):
 - The SAME street address can appear MULTIPLE times in a results grid under different jurisdictions — e.g. "CITY APPLICATIONS" (the city) vs "COUNTY APPLICATIONS" (the county). These are DIFFERENT permitting authorities and expose DIFFERENT application-type lists. Picking the wrong row gets the wrong permit.
 - When jurisdictionContext is provided, use it to choose the correct "Select" link: pick the row whose city/county matches the target jurisdiction for THIS permit discipline, and put that row's Select link in navigateIndex.
@@ -935,6 +937,7 @@ Return ONLY JSON:
       ...(input.isDashboard ? { isDashboard: true } : {}),
       ...(input.kbContext ? { kbContext: input.kbContext } : {}),
       ...(input.jurisdictionContext ? { jurisdictionContext: input.jurisdictionContext } : {}),
+      ...(input.recoveryHint ? { RECOVERY: input.recoveryHint } : {}),
     });
     let parsed: Partial<PortalFieldPlan> = {};
     // Use askLong: planning responses can be large (many fills + notes).

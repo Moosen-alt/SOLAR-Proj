@@ -131,6 +131,7 @@ export async function autoLearnPortal(
       kbContext: kbContext || undefined,
       jurisdictionContext: jurisdictionContext || undefined,
       isDashboard: req.isDashboard,
+      recoveryHint: req.recoveryHint,
     });
     return {
       fills: plan.fills.map((f) => ({ selectorIndex: f.index, value: f.value, field: f.field })),

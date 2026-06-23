@@ -1351,6 +1351,9 @@ export interface PortalFieldPlanInput {
   /** True when no fillable inputs were found on this page — likely a dashboard/home/landing page.
    *  The planner should look for a navigation link/button to reach the application form. */
   isDashboard?: boolean;
+  /** Set when the learn loop detected it is stuck or cycling. Carries a directive + recent
+   *  step trace so the planner picks a different, forward-progress action instead of looping. */
+  recoveryHint?: string;
 }
 export interface PortalFieldPlan {
   /** Which field index to fill with what. Prefer `field` (a reusable project-field key,

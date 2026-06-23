@@ -51,6 +51,10 @@ export interface LearnPlanRequest {
   alreadyFilledLabels: string[];
   /** True when no fillable inputs were found — page is likely a dashboard/home screen. */
   isDashboard?: boolean;
+  /** Set when the loop has detected it is stuck or cycling. Carries a directive + the recent
+   *  step trace so the planner can pick a DIFFERENT, forward-progress action instead of
+   *  repeating the one that looped. Empty/undefined on normal iterations. */
+  recoveryHint?: string;
 }
 
 export interface LearnPlanResponse {
@@ -416,6 +420,14 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     // instead of burning every remaining page re-planning the same screen.
     let lastLoopFp = "";
     let stuckStreak = 0;
+    // Cycle detection + LLM self-recovery: a ring buffer of recent page fingerprints catches
+    // an A→B→C→A LOOP (which the consecutive-identical guard misses), e.g. a planner that
+    // keeps restarting an application it already began. On stuck OR cycle we don't bail
+    // immediately — we re-plan with a loop-aware recovery directive (up to MAX_RECOVERY
+    // times) so the model can pick a different, forward-progress action and heal itself.
+    const recentFingerprints: string[] = [];
+    let recoveryAttempts = 0;
+    const MAX_RECOVERY = 3;
     // Diagnostics: a compact, redacted breadcrumb per page (title + host/path + field
     // counts + classification + the planner's decision). Surfaced in the result message
     // and logs so a "nothing fillable" run is debuggable WITHOUT re-running blind.
@@ -487,17 +499,38 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       const isDashboard = !hasFillable && !hasSubmitIntentBtn && !reviewSignals;
       if (hasFillable) everFoundFillable = true;
 
-      // a0) STUCK-PAGE GUARD — bail if the same page recurs across iterations (advance had
-      //     no effect). Stops a silent infinite loop without waiting out maxPages.
+      // a0) STUCK / CYCLE GUARD with SELF-RECOVERY. Two failure shapes:
+      //   - STUCK: the same page recurs on consecutive iterations (an advance had no effect).
+      //   - CYCLE: an EARLIER page reappears (A→B→C→A) — e.g. the planner keeps restarting an
+      //     application it already began. The consecutive guard alone misses this.
+      // On either, instead of bailing we re-plan THIS iteration with a loop-aware recovery
+      // directive (capped at MAX_RECOVERY) so the model can choose a different action and heal.
+      let recoveryHint = "";
       const loopFp = await this.pageFingerprint();
-      if (loopFp && loopFp === lastLoopFp) {
-        if (++stuckStreak >= 2) {
-          if (process.env.AUTOLEARN_DEBUG === "1") console.error(`[learn] stuck on the same page for 3 iterations — stopping.`);
+      const consecutiveStuck = !!loopFp && loopFp === lastLoopFp;
+      const cycling = !!loopFp && !consecutiveStuck && recentFingerprints.includes(loopFp);
+      if (loopFp) {
+        recentFingerprints.push(loopFp);
+        if (recentFingerprints.length > 8) recentFingerprints.shift();
+      }
+      if (consecutiveStuck) stuckStreak++; else stuckStreak = 0;
+      lastLoopFp = loopFp;
+      if ((consecutiveStuck && stuckStreak >= 2) || cycling) {
+        if (recoveryAttempts >= MAX_RECOVERY) {
+          if (process.env.AUTOLEARN_DEBUG === "1") console.error(`[learn] ${cycling ? "cycling" : "stuck"} and recovery budget exhausted — stopping.`);
           break;
         }
-      } else {
-        stuckStreak = 0;
-        lastLoopFp = loopFp;
+        recoveryAttempts++;
+        const problem = cycling
+          ? "You are CYCLING: this page was already visited earlier in this run, so a previous action looped you back to the start."
+          : "You are STUCK: the last action did not change the page.";
+        recoveryHint =
+          `${problem} Recent steps: ${pageTrace.slice(-4).join("  ->  ") || "(none)"}. ` +
+          `Do NOT repeat the action that caused this. In particular, do NOT click a navigation link that RESTARTS the flow ` +
+          `(e.g. "Building Dept Application", "New Application", "Start Application") if the application is already begun. ` +
+          `Choose a DIFFERENT action that makes FORWARD progress on THIS page: fill the remaining required fields, ` +
+          `Select the correct results row, check the required option (e.g. the application type), or click this page's Continue/Next button.`;
+        if (process.env.AUTOLEARN_DEBUG === "1") console.error(`[learn] recovery attempt ${recoveryAttempts}/${MAX_RECOVERY} (${cycling ? "cycle" : "stuck"})`);
       }
 
       // a) CHALLENGE GATE (after extraction so it can use field counts). A real MFA/CAPTCHA
@@ -529,7 +562,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       // c) Ask the planner what to do on this page.
       let plan: LearnPlanResponse;
       try {
-        plan = await this.planner({ url, pageTitle, fields, bodyText, alreadyFilledLabels, isDashboard });
+        plan = await this.planner({ url, pageTitle, fields, bodyText, alreadyFilledLabels, isDashboard, recoveryHint: recoveryHint || undefined });
       } catch (err) {
         return fail(steps, this.portalName, `Planner failed on page ${pageCount}: ${err instanceof Error ? err.message : String(err)}`);
       }
