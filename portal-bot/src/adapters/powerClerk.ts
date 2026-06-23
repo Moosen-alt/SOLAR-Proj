@@ -132,9 +132,12 @@ export class PowerClerkAdapter extends BasePortalAdapter {
     if (!this.page) return fail("Not logged in. Call login() first.");
     try {
       await this.page.getByRole("button", { name: "New Net Metering Application" }).click();
-      // Two intro/instruction pages
+      await this.page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => null);
+      // Two intro/instruction pages — no data to settle, just advance.
       await this.page.getByRole("button", { name: "Next", exact: true }).click();
+      await this.page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => null);
       await this.page.getByRole("button", { name: "Next", exact: true }).click();
+      await this.page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => null);
       return ok("New Net Metering Application started.", { projectId: project.id });
     } catch (err) {
       return fail(`openSubmission failed: ${err instanceof Error ? err.message : String(err)}`);
