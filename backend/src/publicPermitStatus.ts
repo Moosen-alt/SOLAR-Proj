@@ -156,7 +156,7 @@ async function fetchSolarAppStatus(portalUrl: string, applicationNumbers: string
 }
 
 // ---------------------------------------------------------------------------
-// Generic public URL — strip HTML and return visible text
+// Generic public URL — parse HTML and return visible text (cheerio-powered)
 // ---------------------------------------------------------------------------
 export async function htmlToText(url: string): Promise<string | null> {
   try {
@@ -166,13 +166,38 @@ export async function htmlToText(url: string): Promise<string | null> {
     });
     if (!res.ok) return null;
     const html = await res.text();
-    return html
-      .replace(/<script[\s\S]*?<\/script>/gi, " ")
-      .replace(/<style[\s\S]*?<\/style>/gi, " ")
-      .replace(/<[^>]+>/g, " ")
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 8000) || null;
+
+    const { load } = await import("cheerio");
+    const $ = load(html);
+
+    // Remove noise: scripts, styles, navigation chrome, cookie banners.
+    $("script, style, noscript, nav, header, footer, iframe, svg").remove();
+    $("[class*='nav' i], [class*='menu' i], [class*='cookie' i], [class*='banner' i], [id*='nav' i], [id*='menu' i]").remove();
+
+    // Try to extract the most status-relevant section first.
+    const statusSelectors = [
+      "[class*='status' i]",
+      "[id*='status' i]",
+      "[class*='permit' i]",
+      "[id*='permit' i]",
+      "[class*='record' i]",
+      "[class*='detail' i]",
+      "main",
+      "article",
+      "[role='main']",
+      "table",
+    ];
+
+    for (const sel of statusSelectors) {
+      const el = $(sel).first();
+      if (el.length) {
+        const t = el.text().replace(/\s+/g, " ").trim();
+        if (t.length > 80) return t.slice(0, 8000);
+      }
+    }
+
+    const bodyText = $("body").text().replace(/\s+/g, " ").trim();
+    return bodyText.slice(0, 8000) || null;
   } catch {
     return null;
   }

@@ -248,22 +248,38 @@ async function fetchImapToMbox(
       if (total === 0) return { filePath: mboxPath, count: 0 };
       const startSeq = Math.max(1, total - cfg.maxMessages + 1);
 
+      const { simpleParser } = await import("mailparser");
       for await (const msg of client.fetch(`${startSeq}:*`, { source: true, envelope: true })) {
         if (!msg.source) continue;
-        const raw = msg.source.toString("utf8");
 
-        // Recipient tag filtering — if configured, skip emails whose To:/CC: headers
-        // don't include the tag. Checked on the raw RFC 5322 source so no full parse needed.
-        if (cfg.recipientTag) {
-          const headerEnd = raw.indexOf("\r\n\r\n");
-          const headers = headerEnd >= 0 ? raw.slice(0, headerEnd) : raw.slice(0, 4096);
-          const toLines = headers
-            .split("\r\n")
-            .filter((l) => /^(To|CC|Delivered-To|X-Original-To):/i.test(l));
-          const toBlock = toLines.join(" ").toLowerCase();
-          if (!toBlock.includes(cfg.recipientTag.toLowerCase())) continue;
+        // Parse full MIME structure in-memory — properly handles folded headers,
+        // encoded words (=?UTF-8?...), and multipart bodies that raw string scanning misses.
+        let parsed: Awaited<ReturnType<typeof simpleParser>> | null = null;
+        try {
+          parsed = await simpleParser(msg.source);
+        } catch {
+          // Fall back to raw source if mailparser can't handle this message.
         }
 
+        // Recipient tag filtering using parsed addresses (handles encoded display names).
+        if (cfg.recipientTag) {
+          const recipientAddrs = [
+            ...(parsed?.to ? (Array.isArray(parsed.to) ? parsed.to : [parsed.to]) : []),
+            ...(parsed?.cc ? (Array.isArray(parsed.cc) ? parsed.cc : [parsed.cc]) : []),
+          ].flatMap((a) => ("value" in a ? a.value : [])).map((a) => `${a.name ?? ""} ${a.address ?? ""}`).join(" ").toLowerCase();
+
+          if (recipientAddrs && !recipientAddrs.includes(cfg.recipientTag.toLowerCase())) continue;
+          // Fallback to raw header scan if mailparser gave no addresses.
+          if (!recipientAddrs) {
+            const raw = msg.source.toString("utf8");
+            const headerEnd = raw.indexOf("\r\n\r\n");
+            const headers = headerEnd >= 0 ? raw.slice(0, headerEnd) : raw.slice(0, 4096);
+            const toBlock = headers.split("\r\n").filter((l) => /^(To|CC|Delivered-To|X-Original-To):/i.test(l)).join(" ").toLowerCase();
+            if (!toBlock.includes(cfg.recipientTag.toLowerCase())) continue;
+          }
+        }
+
+        const raw = msg.source.toString("utf8");
         out.write(`From imap@local ${new Date().toUTCString()}\n`);
         out.write(raw.replace(/\r\n/g, "\n").replace(/\n(From )/g, "\n>$1"));
         out.write("\n\n");

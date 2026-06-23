@@ -21,6 +21,7 @@
 
 import path from "node:path";
 import fs from "node:fs";
+import pLimit from "p-limit";
 import type { AppDb } from "./db";
 import type { PortalRecipe, ProjectRecord } from "../../shared/src/types";
 import { learnPortal } from "../../portal-bot/src/index";
@@ -30,6 +31,10 @@ import { getDecryptedCredential, getDecryptedCredentialByUrl, getDecryptedCreden
 import { resolveRecipeFieldValues, startPortalRecording, savePortalRecipeSteps, getPortalRecipe } from "./portalRecipes";
 import { addAuditLog } from "./audit";
 import { HttpError } from "./httpError";
+
+// At most 2 Playwright browser instances open simultaneously. Each consumes ~200 MB;
+// more than 2-3 on a typical dev/server machine causes OOM and Chrome sandbox failures.
+const portalLimiter = pLimit(Number(process.env.MAX_CONCURRENT_PORTAL_RUNS ?? 2));
 
 export interface AutoLearnResult {
   recipe: PortalRecipe;
@@ -129,14 +134,14 @@ export async function autoLearnPortal(
 
   let learn;
   try {
-    learn = await learnPortal({
+    learn = await portalLimiter(() => learnPortal({
       portalName: scopeType === "utility" ? project.utility : project.ahj,
       portalUrl,
       project,
       planner,
       credential,
       userDataDir,
-    });
+    }));
   } catch (err) {
     throw new HttpError(502, `Portal learn failed: ${err instanceof Error ? err.message : String(err)}`);
   }

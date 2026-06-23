@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { validate, portalCredentialCreateSchema, portalCredentialUpdateSchema, autoLearnSchema } from "./validation";
 import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import express, { type NextFunction, type Request, type Response } from "express";
@@ -271,10 +272,12 @@ app.get("/api/clients/:id/portal-credentials", (req, res) => {
   res.json({ credentials: listPortalCredentials(db, String(req.params.id)) });
 });
 app.post("/api/clients/:id/portal-credentials", (req, res) => {
-  res.status(201).json(createPortalCredential(db, String(req.params.id), req.body || {}));
+  const body = validate(portalCredentialCreateSchema, req.body);
+  res.status(201).json(createPortalCredential(db, String(req.params.id), body));
 });
 app.put("/api/clients/:id/portal-credentials/:credId", (req, res) => {
-  res.json(updatePortalCredential(db, String(req.params.id), String(req.params.credId), req.body || {}));
+  const body = validate(portalCredentialUpdateSchema, req.body);
+  res.json(updatePortalCredential(db, String(req.params.id), String(req.params.credId), body));
 });
 app.delete("/api/clients/:id/portal-credentials/:credId", (req, res) => {
   res.json(deletePortalCredential(db, String(req.params.id), String(req.params.credId)));
@@ -946,12 +949,12 @@ app.post("/api/projects/:id/launch-record", (req, res) => {
 // fill it to the review screen, record a recipe, and verify the fill. Never submits.
 // Long-running (a live browser pass), so allow a generous timeout client-side.
 app.post("/api/projects/:id/auto-learn", asyncHandler(async (req, res) => {
-  const b = (req.body || {}) as Record<string, string>;
-  const scope = String(b.scope || "ahj") === "utility" ? "utility" : "ahj";
-  const portalUrl = String(b.portalUrl || "").trim();
+  const b = validate(autoLearnSchema, req.body);
+  const scope = b.scope === "utility" || b.scope === "nem" ? "utility" : "ahj";
+  const portalUrl = (b.portalUrl || "").trim();
   if (!portalUrl) throw new HttpError(400, "portalUrl is required to auto-learn a portal.");
   try {
-    const result = await autoLearnPortal(db, String(req.params.id), { scope, portalUrl, createdBy: "operator" });
+    const result = await autoLearnPortal(db, String(req.params.id), { scope, portalUrl, createdBy: b.createdBy ?? "operator" });
     res.json(result);
   } catch (err) {
     throw normalizeLlmError(err);
