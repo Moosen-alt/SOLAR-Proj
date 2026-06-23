@@ -111,10 +111,12 @@ export async function autoLearnPortal(
       projectFields,
       alreadyFilledLabels: req.alreadyFilledLabels,
       kbContext: kbContext || undefined,
+      isDashboard: req.isDashboard,
     });
     return {
       fills: plan.fills.map((f) => ({ selectorIndex: f.index, value: f.value, field: f.field })),
       advanceSelectorIndex: plan.advanceIndex,
+      navigateSelectorIndex: plan.navigateIndex,
       finalSubmitSelectorIndex: plan.finalSubmitIndex,
       atReview: plan.atReview,
       notes: plan.notes,

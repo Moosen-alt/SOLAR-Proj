@@ -855,9 +855,13 @@ ${JSON.stringify(input.unbound, null, 2)}`;
   }
 
   async planPortalFields(input: PortalFieldPlanInput): Promise<PortalFieldPlan> {
-    const system = `You are filling a government/utility permit portal form for a solar project. Given the fillable FIELDS on the current page and the project's available DATA, decide what to fill where, which button advances to the next page, and which button is the FINAL SUBMIT.
+    const system = `You are filling a government/utility permit portal form for a solar project. Given the FIELDS (fillable inputs, buttons, and navigation links) on the current page and the project's available DATA, decide what to fill, which button navigates to the form (if on a dashboard), which button advances to the next page, and which button is the FINAL SUBMIT.
+
+DASHBOARD / HOME PAGES:
+- If isDashboard=true (no fillable inputs — only buttons and navigation links), the bot just logged in and landed on the portal home/dashboard. Your ONLY job is to return "navigateIndex": the index of the link or button that starts a new application / interconnection request / permit application. Look for labels like "New Application", "Start Application", "New Pacific Power Customer Generation Application", "Start New Project", "Apply Now", "Create Application", or a tab/link for the relevant program. Set fills=[], advanceIndex=omit, atReview=false, and ONLY navigateIndex. Do NOT treat any dashboard navigation link as advanceIndex.
+
 HARD SAFETY RULES:
-- NEVER choose a pay / payment / fee / checkout / invoice button as "advance" or anything to click. Omit it entirely.
+- NEVER choose a pay / payment / fee / checkout / invoice button as "advance", "navigate", or anything to click. Omit it entirely.
 - The final submit button is RECORDED ONLY (finalSubmitIndex) and is NEVER clicked — do not put it in advanceIndex.
 - "advanceIndex" is ONLY a Next/Continue/Save-and-continue button that goes to the next INPUT page (not the final submit).
 - CRITICAL (Accela "Continue Application" trap): if this page is a READ-ONLY REVIEW/CONFIRM page (no fillable inputs — only a summary of previously entered data + Edit links, or body text like "Step N: Review" / "review all information" / "click the Continue Application button below" / "(Read-only)"), then set atReview=true and treat the primary button (even if labeled "Continue Application" or "Continue") as the finalSubmitIndex — NEVER as advanceIndex. On Oregon ePermitting/Accela, "Continue Application" advances on input pages but SUBMITS on the Review step. When in doubt and there are no fields to fill, STOP (atReview=true) and record the button as final submit.
@@ -865,6 +869,7 @@ HARD SAFETY RULES:
 - Do NOT fill a field you can't confidently map. Leave it out.
 Return ONLY JSON:
 {"fills":[{"index":<field index>,"value":"<string>","field":"<projectFieldKey or omit>"}],
+ "navigateIndex": <index of dashboard nav link, or omit>,
  "advanceIndex": <index or omit>, "finalSubmitIndex": <index or omit>,
  "atReview": <true if this is the review/confirm screen>, "confidence":"low|medium|high", "notes":"<short>"}`;
     const user = JSON.stringify({
@@ -880,14 +885,17 @@ Return ONLY JSON:
     const labelOf = (i?: number) => (i == null ? "" : input.fields.find((f) => f.index === i)?.label || "");
     let advanceIndex = typeof parsed.advanceIndex === "number" ? parsed.advanceIndex : undefined;
     let finalSubmitIndex = typeof parsed.finalSubmitIndex === "number" ? parsed.finalSubmitIndex : undefined;
+    let navigateIndex = typeof parsed.navigateIndex === "number" ? parsed.navigateIndex : undefined;
     if (advanceIndex != null && (PORTAL_PAY_RE.test(labelOf(advanceIndex)) || PORTAL_SUBMIT_RE.test(labelOf(advanceIndex)))) advanceIndex = undefined;
     if (finalSubmitIndex != null && PORTAL_PAY_RE.test(labelOf(finalSubmitIndex))) finalSubmitIndex = undefined;
+    if (navigateIndex != null && PORTAL_PAY_RE.test(labelOf(navigateIndex))) navigateIndex = undefined;
     const fills = Array.isArray(parsed.fills)
       ? parsed.fills.filter((f) => typeof f.index === "number" && typeof f.value === "string").map((f) => ({ index: f.index, value: String(f.value), field: f.field ? String(f.field) : undefined }))
       : [];
     return {
       fills,
       advanceIndex,
+      navigateIndex,
       finalSubmitIndex,
       atReview: Boolean(parsed.atReview),
       confidence: (["low", "medium", "high"].includes(String(parsed.confidence)) ? parsed.confidence : "low") as "low" | "medium" | "high",

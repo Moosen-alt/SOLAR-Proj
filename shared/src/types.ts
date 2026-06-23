@@ -1343,6 +1343,9 @@ export interface PortalFieldPlanInput {
   alreadyFilledLabels: string[];
   /** Optional knowledge-base context for the AHJ/utility (portal hints, required docs, etc.). */
   kbContext?: string;
+  /** True when no fillable inputs were found on this page — likely a dashboard/home/landing page.
+   *  The planner should look for a navigation link/button to reach the application form. */
+  isDashboard?: boolean;
 }
 export interface PortalFieldPlan {
   /** Which field index to fill with what. Prefer `field` (a reusable project-field key,
@@ -1350,6 +1353,10 @@ export interface PortalFieldPlan {
   fills: Array<{ index: number; value: string; field?: string }>;
   /** A "Next/Continue" button that advances to the next form page (NEVER the final submit). */
   advanceIndex?: number;
+  /** A link/button on a dashboard/home page that navigates TO the application form.
+   *  Used when the current page has no fillable fields (e.g. portal home after login).
+   *  Clicking it is recorded as a "goto" step, then learning continues on the next page. */
+  navigateIndex?: number;
   /** The final submit button — recorded for the allowlist, never clicked by the learner. */
   finalSubmitIndex?: number;
   /** True once this is the review/confirm/submit screen. */

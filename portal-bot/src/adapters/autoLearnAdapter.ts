@@ -39,12 +39,14 @@ export interface ExtractedField {
 export interface LearnPlanRequest {
   url: string;
   pageTitle: string;
-  /** The fillable fields + candidate buttons on the CURRENT page. */
+  /** The fillable fields + candidate buttons + navigation links on the CURRENT page. */
   fields: ExtractedField[];
   /** Short, redacted page text snippet (<= 2000 chars). */
   bodyText: string;
   /** Labels filled on prior pages (for context). */
   alreadyFilledLabels: string[];
+  /** True when no fillable inputs were found — page is likely a dashboard/home screen. */
+  isDashboard?: boolean;
 }
 
 export interface LearnPlanResponse {
@@ -52,6 +54,9 @@ export interface LearnPlanResponse {
   fills: Array<{ selectorIndex: number; value: string; field?: string }>;
   /** A "Next/Continue" button to click to reach the NEXT form page (NOT final submit). */
   advanceSelectorIndex?: number;
+  /** A link/button to click when we're on a dashboard/home page — navigates to the
+   *  actual application form so learning can begin. Recorded as a click "open" step. */
+  navigateSelectorIndex?: number;
   /** The final submit button — RECORD it, NEVER click it. */
   finalSubmitSelectorIndex?: number;
   /** True once the review/confirm/submit screen is reached. */
@@ -167,7 +172,7 @@ function extractFieldsInPage(els: Element[]): RawField[] {
         .filter((t) => t.length > 0);
     } else if (tag === "textarea") {
       fieldType = "text";
-    } else if (tag === "button" || (tag === "input" && (typeAttr === "submit" || typeAttr === "button"))) {
+    } else if (tag === "button" || tag === "a" || (tag === "input" && (typeAttr === "submit" || typeAttr === "button"))) {
       fieldType = "button";
     } else if (tag === "input") {
       if (typeAttr === "checkbox") fieldType = "checkbox";
@@ -350,14 +355,17 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       }
       pageCount++;
 
-      // b) Extract fields + candidate buttons on the current page.
+      // a2) Dismiss any modals/popups/banners before extracting fields.
+      await this.dismissModals();
+
+      // b) Extract fields + candidate buttons + nav links on the current page.
       let fields: ExtractedField[];
       let pageTitle = "";
       let url = "";
       let bodyText = "";
       try {
         const raws: RawField[] = await this.page
-          .$$eval("input, select, textarea, button, [role=button]", extractFieldsInPage)
+          .$$eval("input, select, textarea, button, [role=button], a[href]:not([href='#']):not([href=''])", extractFieldsInPage)
           .catch(() => [] as RawField[]);
         fields = raws.map(toExtractedField);
         pageTitle = typeof this.page.title === "function" ? String((await this.page.title().catch(() => "")) ?? "") : "";
@@ -368,10 +376,13 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         return fail(steps, this.portalName, `Failed to scrape page ${pageCount}: ${err instanceof Error ? err.message : String(err)}`);
       }
 
+      // Is this a dashboard/home with no fillable inputs? (only buttons/links present)
+      const isDashboard = !fields.some((f) => f.fieldType !== "button");
+
       // c) Ask the planner what to do on this page.
       let plan: LearnPlanResponse;
       try {
-        plan = await this.planner({ url, pageTitle, fields, bodyText, alreadyFilledLabels });
+        plan = await this.planner({ url, pageTitle, fields, bodyText, alreadyFilledLabels, isDashboard });
       } catch (err) {
         return fail(steps, this.portalName, `Planner failed on page ${pageCount}: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -396,6 +407,35 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           if (idx >= 0) promotedFinal = idx;
         }
         plan = { ...plan, atReview: true, advanceSelectorIndex: undefined, finalSubmitSelectorIndex: promotedFinal };
+      }
+
+      // c3) DASHBOARD NAVIGATION — click a link/button to get from the portal home to the
+      //     actual application form. Recorded as a click step (phase:"open") then loop again.
+      if (typeof plan.navigateSelectorIndex === "number") {
+        const navField = fields[plan.navigateSelectorIndex];
+        if (navField && !this.isOffLimitsButton(navField)) {
+          steps.push({
+            action: "click",
+            phase: "open",
+            selector: navField.selector,
+            note: `navigate to application: ${navField.label || "link"}`,
+          });
+          const res = await safeAction(
+            "navigate",
+            async () => {
+              const loc = this.locator(navField.selector);
+              if (!loc) throw new Error("navigate selector unresolved");
+              await waitForElement(loc);
+              await loc.click();
+              await smartWait(this.page);
+            },
+            { required: true },
+          );
+          if (!res.ok) {
+            return fail(steps, this.portalName, `Failed to click navigation link "${navField.label}" on page ${pageCount}: ${res.message ?? "unknown"}`);
+          }
+          continue; // re-enter the loop on the new page
+        }
       }
 
       // d) Apply the fills and record each as a RecipeStep.
@@ -646,6 +686,40 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   }
   async captureSubmissionConfirmation(): Promise<PortalStepResult> {
     return { ok: true, message: "Capture the confirmation number manually after the human submits." };
+  }
+
+  // Dismiss common modal/popup/banner overlays before extracting page fields.
+  // Covers: PowerClerk "What's new?" → "Got it", cookie consent banners, generic close buttons.
+  // Best-effort: never throws, never retries.
+  private async dismissModals(): Promise<void> {
+    const dismissSelectors = [
+      // PowerClerk "What's new?" popup
+      'button:has-text("Got it")',
+      'button:has-text("Got It")',
+      'button:has-text("Dismiss")',
+      'button:has-text("Close")',
+      'button[aria-label="Close"]',
+      'button[aria-label="close"]',
+      '[class*="modal"] button[class*="close"]',
+      '[class*="dialog"] button[class*="close"]',
+      // Cookie consent
+      'button:has-text("Accept")',
+      'button:has-text("Accept All")',
+      'button:has-text("OK")',
+      // Generic "×" close
+      'button:has-text("×")',
+      '[role="dialog"] button',
+    ];
+    for (const sel of dismissSelectors) {
+      try {
+        const loc = this.page.locator(sel).first();
+        if ((await loc.count()) > 0 && (await loc.isVisible().catch(() => false))) {
+          await loc.click({ timeout: 2000 });
+          await smartWait(this.page, 500);
+          break; // only dismiss one modal per call — re-check next iteration
+        }
+      } catch { /* non-fatal */ }
+    }
   }
 
   // Build a Playwright locator from a portable selector descriptor (mirrors recipeAdapter).
