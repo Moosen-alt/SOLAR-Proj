@@ -69,8 +69,8 @@ import { documentInventory } from "./requiredDocuments";
 import { STAGE_COUNT, stageForStatus, isBlockedStatus } from "./projectStage";
 import { addAuditLog } from "./audit";
 import { clientStagingOverlay, getClient } from "./clients";
-import { getDecryptedCredential } from "./portalCredentials";
-import { buildApplicationDocumentPackage } from "./applicationDocs";
+import { getDecryptedCredential, getDecryptedCredentialByUrl, getDecryptedCredentialAny } from "./portalCredentials";
+import { buildApplicationDocumentPackage, findApplicationProfile } from "./applicationDocs";
 import { buildUtilityPackage } from "./docSplitter";
 import { classifyCorrection, humanizeBucket, humanizeEnum } from "./corrections";
 import type { AppDb } from "./db";
@@ -4572,7 +4572,12 @@ export async function runDuePermitChecks(
       const userDataDir = clientId
         ? path.join(profileBase, clientId, portalType)
         : path.join(profileBase, portalType);
-      const credential = clientId ? (getDecryptedCredential(db, clientId, portalType) ?? undefined) : undefined;
+      const credential = clientId
+        ? (getDecryptedCredential(db, clientId, portalType)
+            ?? (text(target.portal_url) ? getDecryptedCredentialByUrl(db, clientId, text(target.portal_url)) : null)
+            ?? getDecryptedCredentialAny(db, clientId))
+          ?? undefined
+        : undefined;
       const applicationNumbers = [text(target.application_number), text(target.permit_number)].filter(Boolean);
       const adapterType = portalType === "powerclerk_pge" ? "powerclerk" : "accela";
       const scraped = await checkStatusWithAdapter(adapterType, applicationNumbers, {
@@ -4751,9 +4756,39 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   // Resolve stored credentials for session-expired auto-login. Passed
   // in-memory to the adapter; never logged. Falls back gracefully when
   // no credential has been stored for this client+portal combination.
+  //
+  // Lookup chain (the operator may store a credential keyed by any of these):
+  //   1. exact portal_type (the canonical "accela_oregon"/"powerclerk_pge")
+  //   2. portal URL hostname — covers credentials saved via the per-project
+  //      "Manage logins" panel, whose portal_type is a channel-derived slug
+  //      (e.g. "oregon_epermitting_accela") that won't equal the canonical type.
+  //   3. the client's single credential when unambiguous.
+  // Resolve the portal's login URL for the hostname match: learned KB profile,
+  // recorded recipe, else the built-in applicationDocs sourceUrl.
   const clientId = detail.project.clientId ?? "";
+  // The fallback URL MUST be scoped to the track so a NEM stage never matches the AHJ
+  // permit credential (and vice-versa). learnedProfile/recipe are already track-scoped
+  // above; the applicationDocs sourceUrl is AHJ-scoped, so only use it for permit tracks.
+  // For the NEM track, the fallback URL is the UTILITY's portal URL from the KB
+  // (e.g. Pacific Power → pacificpower.net), never the AHJ permit portal.
+  let utilityPortalUrl = "";
+  if (track === "nem" && detail.project.utility) {
+    const utilRow = db.get<{ portal_url?: string }>(
+      "SELECT portal_url FROM permit_utility_knowledge WHERE utility = ? AND portal_url IS NOT NULL AND portal_url != '' LIMIT 1",
+      [detail.project.utility],
+    );
+    utilityPortalUrl = utilRow?.portal_url ?? "";
+  }
+  const credentialUrl =
+    (learnedProfile && (learnedProfile as { portalUrl?: string }).portalUrl) ||
+    (recipe && (recipe as { portalUrl?: string }).portalUrl) ||
+    (track === "nem" ? utilityPortalUrl : findApplicationProfile(detail.project).sourceUrl) ||
+    "";
   const credential = clientId
-    ? (getDecryptedCredential(db, clientId, portalType) ?? undefined)
+    ? (getDecryptedCredential(db, clientId, portalType)
+        ?? (credentialUrl ? getDecryptedCredentialByUrl(db, clientId, credentialUrl) : null)
+        ?? getDecryptedCredentialAny(db, clientId))
+      ?? undefined
     : undefined;
 
   // Per-client browser profile so sessions never bleed across clients.
