@@ -522,6 +522,15 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             selector: navField.selector,
             note: `navigate to application: ${navField.label || "link"}`,
           });
+          // Extra settle before the first navigation click. Accela/ExtJS dashboards render
+          // their permit-type links via AJAX after the page shell loads; the links are in the
+          // DOM a few ms after extraction but may still have an ExtJS loading mask above them.
+          // A short networkidle race clears that window without blocking indefinitely.
+          await Promise.race([
+            this.page.waitForLoadState?.("networkidle", { timeout: 4000 }).catch(() => null),
+            sleep(2000),
+          ]);
+          await this.clearOverlays();
           const navBeforeUrl = typeof this.page.url === "function" ? String(this.page.url() ?? "") : "";
           const navBeforeFp = await this.pageFingerprint();
           const res = await safeAction(
@@ -848,6 +857,10 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       '[aria-label="close"]',
       '[class*="modal"] [class*="close"]',
       '[class*="popover"] [class*="close"]',
+      // Accela ACA (ExtJS): window/dialog close tools (.x-tool-close is the ExtJS close icon)
+      '.x-tool-close',
+      '.x-window-header-right .x-tool',
+      '[class*="x-window"] [class*="close"]',
       `${clickable}:has-text("Dismiss")`,
       `${clickable}:has-text("Close")`,
       // Cookie consent
@@ -886,38 +899,57 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     }
   }
 
-  // Click that survives a modal/popover overlay intercepting pointer events. Dismisses
-  // overlays first, clicks with a short timeout, and on an interception/timeout failure
-  // dismisses again (+ Escape) and retries. Used for navigate/advance clicks on portals
-  // (PowerClerk) whose announcement popover renders after the page settles.
+  // Click that survives a modal/popover overlay intercepting pointer events. Works for
+  // both PowerClerk (Vue backdrop) and Accela (ExtJS .x-mask page-wide loading masks).
+  // Strategy per attempt: dismiss modals → clear overlays → wait for visible → scroll into
+  // view → click. Falls back to force-click (bypasses coverage check) then dispatchEvent.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private async clickResilient(loc: any): Promise<void> {
     const dbg = process.env.AUTOLEARN_DEBUG === "1";
     let lastErr: unknown;
-    // Clear overlays + scrims IMMEDIATELY before each click attempt. PowerClerk re-adds its
-    // loading scrim over content cards (it reappears during the seconds of LLM planning), so
-    // clearing once up front isn't enough — the scrim must be gone the instant we click.
     for (let attempt = 0; attempt < 4; attempt++) {
       await this.dismissModals();
       await this.clearOverlays();
+      // Wait for the element to be visible before clicking. On Accela/ExtJS this is critical:
+      // the ExtJS loading mask clears asynchronously; the link exists in the DOM but isn't
+      // actionable until the mask is fully gone. Give the first attempt extra time (12s) so
+      // slow AJAX dashboard renders don't fail immediately.
+      await waitForElement(loc, attempt === 0 ? 12000 : 6000);
+      // Scroll into viewport — elements below the fold are not clickable until scrolled.
+      try { await loc.scrollIntoViewIfNeeded?.({ timeout: 2000 }); } catch { /* off-screen or mock — ignore */ }
       if (dbg) {
         const cnt = await loc.count?.().catch(() => "?");
         const vis = await loc.isVisible?.().catch(() => "?");
         console.error(`[clickResilient] attempt ${attempt}: count=${cnt} visible=${vis}`);
       }
       try {
-        await loc.click({ timeout: 5000 });
+        // Longer timeout (8s) to survive Accela's slow AJAX actionability transition.
+        await loc.click({ timeout: 8000 });
         if (dbg) console.error(`[clickResilient] attempt ${attempt}: CLICK OK`);
         return;
       } catch (err) {
         lastErr = err;
         if (dbg) console.error(`[clickResilient] attempt ${attempt}: FAIL ${(err as Error).message.split("\n")[0]}`);
         try { await this.page!.keyboard?.press?.("Escape"); } catch { /* no keyboard (mock) */ }
-        await smartWait(this.page!, 400);
+        await smartWait(this.page!, 600);
       }
     }
-    // Fallback: dispatch a synthetic click (links that navigate via href respond to it).
-    try { await this.clearOverlays(); await loc.dispatchEvent("click"); if (dbg) console.error(`[clickResilient] dispatchEvent OK`); return; } catch (e) { if (dbg) console.error(`[clickResilient] dispatchEvent FAIL ${(e as Error).message.split("\n")[0]}`); }
+    // Fallback 1: force-click — bypasses Playwright's coverage/actionability check. Useful
+    // when a transparent or zero-opacity overlay still passes the CSS pointer-events rule but
+    // Playwright's hit-test sees it as an interception (Accela overlays sometimes do this).
+    try {
+      await this.clearOverlays();
+      await loc.click({ force: true, timeout: 4000 });
+      if (dbg) console.error(`[clickResilient] force-click OK`);
+      return;
+    } catch (e) { if (dbg) console.error(`[clickResilient] force-click FAIL ${(e as Error).message.split("\n")[0]}`); }
+    // Fallback 2: synthetic JS click — works for <a href> navigation links on any portal.
+    try {
+      await this.clearOverlays();
+      await loc.dispatchEvent("click");
+      if (dbg) console.error(`[clickResilient] dispatchEvent OK`);
+      return;
+    } catch (e) { if (dbg) console.error(`[clickResilient] dispatchEvent FAIL ${(e as Error).message.split("\n")[0]}`); }
     throw lastErr instanceof Error ? lastErr : new Error("clickResilient: click failed after retries");
   }
 
@@ -967,20 +999,41 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   }
 
   // Remove stubborn overlay SCRIMS that intercept pointer events but aren't dismissible by a
-  // button — chiefly PowerClerk's per-card loading backdrop (a semi-transparent
-  // position-absolute opacity-50 bg-black div that lingers over content) and generic modal
-  // backdrops. Scoped to backdrop/scrim selectors only — never removes form fields or modal
+  // button — covers PowerClerk (Bootstrap/Vue semi-transparent backdrop), Accela ACA
+  // (ExtJS .x-mask / #divGlobalCover page-wide loading masks), and generic jQuery UI / BlockUI
+  // overlays. Scoped to backdrop/scrim selectors only — never removes form fields or modal
   // content, just the transparent layer on top. Best-effort; never throws.
   private async clearOverlays(): Promise<void> {
     if (!this.page || typeof this.page.evaluate !== "function") return;
     try {
       await this.page.evaluate(() => {
-        const sel = "div.position-absolute.opacity-50.bg-black, .modal-backdrop, [class*='loading-overlay'], [class*='spinner-overlay']";
+        const sel = [
+          // PowerClerk (Bootstrap/Vue): semi-transparent position-absolute loading scrims
+          "div.position-absolute.opacity-50.bg-black",
+          ".modal-backdrop",
+          // Generic loading/spinner overlays
+          "[class*='loading-overlay']",
+          "[class*='spinner-overlay']",
+          // Accela ACA (ExtJS): page-wide loading masks that cover ALL content during AJAX
+          ".x-mask",
+          ".x-mask-loading",
+          // Accela-specific global cover divs
+          "#divGlobalCover",
+          "#divProgress",
+          ".ACA_Loading",
+          // ExtJS/Accela pattern: any div whose ID contains "loadingMask" or "Loading"
+          "[id*='loadingMask']",
+          "[id*='LoadingMask']",
+          // jQuery BlockUI / jQuery UI overlay (used by some Accela modules)
+          ".blockUI",
+          ".ui-widget-overlay",
+          ".ui-blocker",
+        ].join(", ");
         // Remove any scrims present right now...
         document.querySelectorAll(sel).forEach((el) => el.remove());
         // ...AND inject a persistent rule so RE-RENDERED scrims (PowerClerk's Vue re-adds its
-        // loading backdrop reactively) can't intercept clicks. Removal alone loses the race;
-        // pointer-events:none lets every click pass straight through to the real control.
+        // loading backdrop reactively; Accela's ExtJS re-renders masks on each AJAX call)
+        // can't intercept clicks. pointer-events:none lets clicks pass through to the real control.
         if (!document.getElementById("__autolearn_scrim_bypass")) {
           const style = document.createElement("style");
           style.id = "__autolearn_scrim_bypass";
