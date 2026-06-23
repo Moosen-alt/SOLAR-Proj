@@ -1,3 +1,4 @@
+import type { Page } from "playwright";
 import type { ProjectRecord, RecipeSelector, RecipeStep } from "../../../shared/src/types";
 import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, type PortalContext, type PortalStepResult } from "../adapter";
 import { openPortal } from "../browser";
@@ -189,7 +190,10 @@ function extractFieldsInPage(els: Element[]): RawField[] {
     const name = el.getAttribute("name") || undefined;
     const placeholder = el.getAttribute("placeholder") || undefined;
     const id = el.getAttribute("id") || undefined;
-    const role = el.getAttribute("role") || (fieldType === "button" ? "button" : undefined);
+    // <a> elements have ARIA role "link", not "button", even though we treat them as
+    // button-type fields for extraction. Use "link" so Playwright's getByRole locator
+    // resolves correctly; explicit [role="button"] overrides this.
+    const role = el.getAttribute("role") || (tag === "a" ? "link" : fieldType === "button" ? "button" : undefined);
     const text = fieldType === "button" ? (el.textContent || "").trim() || undefined : undefined;
 
     out.push({ label, fieldType, options, role, name, placeholder, id, text });
@@ -202,15 +206,19 @@ function extractFieldsInPage(els: Element[]): RawField[] {
 function toExtractedField(raw: RawField): ExtractedField {
   const selector: RecipeSelector = {};
   if (raw.fieldType === "button") {
-    // Buttons: prefer role+name (visible text), else css id.
+    // Use the element's actual ARIA role ("link" for <a> tags, "button" otherwise).
+    // getByRole("button", {name}) never matches a plain <a> — it must be "link".
+    const ariaRole = raw.role || "button";
     if (raw.text) {
-      selector.role = "button";
+      selector.role = ariaRole;
       selector.name = raw.text;
+      // Always keep a css fallback so a role-name miss still resolves the element.
+      if (raw.id) selector.fallbacks = [{ css: `#${raw.id}` }];
     } else if (raw.id) {
       selector.css = `#${raw.id}`;
     } else if (raw.name) {
       selector.name = raw.name;
-      selector.role = "button";
+      selector.role = ariaRole;
     }
   } else {
     // Inputs/selects: prefer label, then placeholder, then name, then css id.
@@ -265,8 +273,7 @@ function fail(steps: RecipeStep[], portalName: string, message: string, pauseRea
 
 export class AutoLearnAdapter extends BasePortalAdapter {
   portalName: string;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private page: any = null;
+  private page: Page | null = null;
   private maxPages: number;
 
   constructor(
@@ -392,8 +399,12 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       // button (e.g. "Continue Application") SUBMITS. We NEVER advance-click on such a
       // page — we force the review stop and record that button as the final submit,
       // overriding the planner if it mistook the submit button for an "advance/next".
+      //
+      // IMPORTANT: skip this guard when isDashboard is true. A dashboard/home page also
+      // has no fillable inputs, but it is NOT a review page — it's the portal's entry
+      // screen after login, handled by navigateSelectorIndex below.
       const hasFillable = fields.some((f) => f.fieldType !== "button");
-      const isReviewPage = !hasFillable || ((REVIEW_MARKERS.test(bodyText) || looksLikeReviewUrl(url)) && fields.some((f) => f.fieldType === "button" && SUBMIT_INTENT.test(f.label)));
+      const isReviewPage = !isDashboard && (!hasFillable || ((REVIEW_MARKERS.test(bodyText) || looksLikeReviewUrl(url)) && fields.some((f) => f.fieldType === "button" && SUBMIT_INTENT.test(f.label))));
       if (isReviewPage && !plan.atReview) {
         // Promote a planner "advance" that is actually a submit-intent button to finalSubmit.
         let promotedFinal = typeof plan.finalSubmitSelectorIndex === "number" ? plan.finalSubmitSelectorIndex : undefined;
@@ -423,11 +434,11 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           const res = await safeAction(
             "navigate",
             async () => {
-              const loc = this.locator(navField.selector);
+              const loc = await this.locator(navField.selector);
               if (!loc) throw new Error("navigate selector unresolved");
               await waitForElement(loc);
               await loc.click();
-              await smartWait(this.page);
+              await smartWait(this.page!);
             },
             { required: true },
           );
@@ -497,11 +508,11 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         const res = await safeAction(
           "advance",
           async () => {
-            const loc = this.locator(advanceField.selector);
+            const loc = await this.locator(advanceField.selector);
             if (!loc) throw new Error("advance selector unresolved");
             await waitForElement(loc);
             await loc.click();
-            await smartWait(this.page);
+            await smartWait(this.page!);
           },
           { required: true },
         );
@@ -568,7 +579,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       // The label is non-PII enough for a log line, but keep it short.
       (field.label || field.fieldType).slice(0, 40),
       async () => {
-        const loc = this.locator(field.selector);
+        const loc = await this.locator(field.selector);
         if (!loc) throw new Error("selector unresolved");
         if (action === "select") {
           await loc.selectOption(value).catch(async () => loc.selectOption({ label: value }));
@@ -615,6 +626,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   // Scrape visible label/value pairs on the review screen. Values are redacted. Best
   // effort: reads input/select/textarea current values plus their derived labels.
   private async scrapeReviewScreen(): Promise<LearnResult["reviewScreen"]> {
+    if (!this.page) return { fields: [], bodyTextSnippet: "" };
     const pairs: Array<{ label: string; value: string }> = await this.page
       .$$eval("input, select, textarea", (els: Element[]) => {
         function labelFor(el: Element): string {
@@ -661,7 +673,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       value: redactStatusText(p.value) ?? "",
     }));
 
-    const rawBody = await this.page.locator("body").innerText().catch(() => "");
+    const rawBody = await this.page!.locator("body").innerText().catch(() => "");
     const bodyTextSnippet = (redactStatusText(String(rawBody)) ?? "").slice(0, 2000);
 
     return { fields: redactedFields, bodyTextSnippet };
@@ -690,8 +702,10 @@ export class AutoLearnAdapter extends BasePortalAdapter {
 
   // Dismiss common modal/popup/banner overlays before extracting page fields.
   // Covers: PowerClerk "What's new?" → "Got it", cookie consent banners, generic close buttons.
-  // Best-effort: never throws, never retries.
+  // Loops up to 3 times so back-to-back modals (cookie banner then announcement) are both
+  // dismissed in one call. Best-effort: never throws.
   private async dismissModals(): Promise<void> {
+    if (!this.page) return;
     const dismissSelectors = [
       // PowerClerk "What's new?" popup
       'button:has-text("Got it")',
@@ -710,26 +724,31 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       'button:has-text("×")',
       '[role="dialog"] button',
     ];
-    for (const sel of dismissSelectors) {
-      try {
-        const loc = this.page.locator(sel).first();
-        if ((await loc.count()) > 0 && (await loc.isVisible().catch(() => false))) {
-          await loc.click({ timeout: 2000 });
-          await smartWait(this.page, 500);
-          break; // only dismiss one modal per call — re-check next iteration
-        }
-      } catch { /* non-fatal */ }
+    for (let attempt = 0; attempt < 3; attempt++) {
+      let dismissed = false;
+      for (const sel of dismissSelectors) {
+        try {
+          const loc = this.page.locator(sel).first();
+          if ((await loc.count()) > 0 && (await loc.isVisible().catch(() => false))) {
+            await loc.click({ timeout: 2000 });
+            await smartWait(this.page, 500);
+            dismissed = true;
+            break;
+          }
+        } catch { /* non-fatal */ }
+      }
+      if (!dismissed) break;
     }
   }
 
-  // Build a Playwright locator from a portable selector descriptor (mirrors recipeAdapter).
-  private locator(sel?: RecipeSelector) {
-    if (!sel) return null;
+  // Build a Playwright locator for a single selector descriptor (no fallback chain).
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private _buildLocator(page: Page, sel: RecipeSelector): any {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const scope: any = sel.frame ? this.page.frameLocator(`iframe[name="${sel.frame}"]`) : this.page;
+    const scope: any = sel.frame ? page.frameLocator(`iframe[name="${sel.frame}"]`) : page;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let loc: any;
-    if (sel.role && sel.name) loc = scope.getByRole(sel.role, { name: sel.name, exact: sel.exact });
+    if (sel.role && sel.name) loc = scope.getByRole(sel.role, { name: sel.name, exact: sel.exact ?? false });
     else if (sel.label) loc = scope.getByLabel(sel.label, { exact: sel.exact });
     else if (sel.placeholder) loc = scope.getByPlaceholder(sel.placeholder, { exact: sel.exact });
     else if (sel.testId) loc = scope.getByTestId(sel.testId);
@@ -738,5 +757,23 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     else if (sel.role) loc = scope.getByRole(sel.role);
     else throw new Error("AutoLearn selector has no usable strategy.");
     return typeof sel.nth === "number" ? loc.nth(sel.nth) : loc.first();
+  }
+
+  // Resolve a selector descriptor to the first locator that has ≥1 matching element on
+  // the current page. Tries the primary strategy first, then each fallback in order.
+  // Returns null when the page is unavailable or no strategy finds the element.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async locator(sel?: RecipeSelector): Promise<any | null> {
+    if (!sel || !this.page) return null;
+    const primary = this._buildLocator(this.page, sel);
+    if ((await primary.count().catch(() => 0)) > 0) return primary;
+    for (const fb of sel.fallbacks ?? []) {
+      try {
+        const loc = this._buildLocator(this.page, fb);
+        if ((await loc.count().catch(() => 0)) > 0) return loc;
+      } catch { /* bad fallback selector — skip */ }
+    }
+    // Return the primary even if empty — the caller's waitFor will surface a clear timeout.
+    return primary;
   }
 }

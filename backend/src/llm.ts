@@ -876,10 +876,13 @@ Return ONLY JSON:
       url: input.url, pageTitle: input.pageTitle, fields: input.fields,
       bodyText: input.bodyText.slice(0, 2000), projectFields: input.projectFields,
       alreadyFilledLabels: input.alreadyFilledLabels,
+      // isDashboard must be in the user message so the LLM actually sees it.
+      ...(input.isDashboard ? { isDashboard: true } : {}),
       ...(input.kbContext ? { kbContext: input.kbContext } : {}),
     });
     let parsed: Partial<PortalFieldPlan> = {};
-    try { parsed = this.parseJson<Partial<PortalFieldPlan>>(await this.ask(system, user), {}); } catch { parsed = {}; }
+    // Use askLong: planning responses can be large (many fills + notes).
+    try { parsed = this.parseJson<Partial<PortalFieldPlan>>(await this.askLong(system, user, 3000), {}); } catch { parsed = {}; }
     // Safety post-filter: never let a pay/fee button through as advance/submit, and drop
     // a finalSubmit that was mistakenly set as advance.
     const labelOf = (i?: number) => (i == null ? "" : input.fields.find((f) => f.index === i)?.label || "");

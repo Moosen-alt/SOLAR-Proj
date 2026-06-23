@@ -11,13 +11,9 @@
 // SECURITY: never logs the username or password. On MFA/CAPTCHA it stops for a human and
 // never attempts to solve it. It only fills + clicks the login control — nothing else.
 
+import type { Page, Locator } from "playwright";
 import type { RecipeSelector } from "../../../shared/src/types";
-import { detectChallengeFrame, smartWait, waitForElement } from "../safeAction";
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type Page = any;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type Locator = any;
+import { detectChallengeFrame, sleep, smartWait, waitForElement } from "../safeAction";
 
 export interface Credential {
   username: string;
@@ -94,17 +90,23 @@ const REVEAL_TRIGGERS: RecipeSelector[] = [
 // own locator()). Standalone so it has no adapter-state dependency.
 function buildLocator(page: Page, sel: RecipeSelector): Locator | null {
   if (!sel) return null;
-  const scope: Page = sel.frame ? page.frameLocator(`iframe[name="${sel.frame}"]`) : page;
-  let loc: Locator;
-  if (sel.role && sel.name) loc = scope.getByRole(sel.role, { name: sel.name, exact: sel.exact });
+  // scope is Page or FrameLocator — both expose the same locator API; use any internally.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const scope: any = sel.frame ? page.frameLocator(`iframe[name="${sel.frame}"]`) : page;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let loc: any;
+  // sel.role is stored as a string; cast to the ARIA role union expected by getByRole.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const role = sel.role as any;
+  if (sel.role && sel.name) loc = scope.getByRole(role, { name: sel.name, exact: sel.exact });
   else if (sel.label) loc = scope.getByLabel(sel.label, { exact: sel.exact });
   else if (sel.placeholder) loc = scope.getByPlaceholder(sel.placeholder, { exact: sel.exact });
   else if (sel.testId) loc = scope.getByTestId(sel.testId);
   else if (sel.text) loc = scope.getByText(sel.text, { exact: sel.exact });
   else if (sel.css) loc = scope.locator(sel.css);
-  else if (sel.role) loc = scope.getByRole(sel.role);
+  else if (sel.role) loc = scope.getByRole(role);
   else return null;
-  return typeof sel.nth === "number" ? loc.nth(sel.nth) : loc.first();
+  return (typeof sel.nth === "number" ? loc.nth(sel.nth) : loc.first()) as Locator;
 }
 
 // Return the first candidate locator that resolves to a visible element, else null.
@@ -209,7 +211,7 @@ export async function performLogin(
       if (formGone || urlMoved) {
         return { ok: true, status: "logged_in", message: "Logged in successfully." };
       }
-      await page.waitForTimeout(500);
+      await sleep(500);
     }
 
     // 8) Timed out with the form still showing → credentials were rejected (or login stalled).

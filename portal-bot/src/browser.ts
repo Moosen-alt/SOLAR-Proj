@@ -12,16 +12,32 @@
  * login browser before starting a run.
  */
 
+import type { Page, BrowserContext, Browser } from "playwright";
+
 export interface OpenedPortal {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  page: any;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  context: any;
-  // The owning Browser, present only in the non-persistent (browser.launch) mode.
-  // In persistent-context mode the context IS the browser, so this is undefined.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  browser?: any;
+  page: Page;
+  context: BrowserContext;
+  // Present only in the non-persistent (browser.launch) mode. In persistent-context
+  // mode the context IS the browser, so this is undefined.
+  browser?: Browser;
 }
+
+// Chromium flags for stability in server/container environments.
+// --disable-dev-shm-usage prevents OOM crashes when /dev/shm is small (common in Docker).
+// --no-sandbox / --disable-setuid-sandbox required for non-privileged container users.
+// Background-throttling flags keep JS timers and animations responsive even when headless.
+const CHROMIUM_ARGS = [
+  "--start-maximized",
+  "--disable-dev-shm-usage",
+  "--no-sandbox",
+  "--disable-setuid-sandbox",
+  "--disable-extensions",
+  "--disable-background-timer-throttling",
+  "--disable-backgrounding-occluded-windows",
+  "--disable-renderer-backgrounding",
+  "--disable-features=TranslateUI",
+  "--disable-ipc-flooding-protection",
+];
 
 // Resolve the headless setting honestly:
 //   - explicit opts.headless wins;
@@ -37,23 +53,27 @@ export async function openPortal(opts: {
   userDataDir?: string;
   storageStatePath?: string;
   headless?: boolean;
+  /** Milliseconds between each action — useful for debugging; 0 in production. */
+  slowMo?: number;
 }): Promise<OpenedPortal> {
   const { chromium } = await import("playwright");
 
   const headless = resolveHeadless(opts.headless);
+  const slowMo = opts.slowMo ?? 0;
 
   if (opts.userDataDir) {
     const context = await chromium.launchPersistentContext(opts.userDataDir, {
       headless,
+      slowMo,
       viewport: null,
-      args: ["--start-maximized"],
+      args: CHROMIUM_ARGS,
     });
     const page = context.pages()[0] ?? (await context.newPage());
     // Persistent context owns its own browser process; closing the context closes it.
     return { page, context };
   }
 
-  const browser = await chromium.launch({ headless });
+  const browser = await chromium.launch({ headless, slowMo, args: CHROMIUM_ARGS });
   const context = opts.storageStatePath
     ? await browser.newContext({ storageState: opts.storageStatePath })
     : await browser.newContext();

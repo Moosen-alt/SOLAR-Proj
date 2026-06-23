@@ -1,3 +1,5 @@
+import type { Page, Locator } from "playwright";
+
 // Shared hardening helpers for portal adapters.
 //
 // These lift the retry + timeout + fallback pattern out of the recipe replay loop
@@ -55,8 +57,7 @@ function isTimeout(err: unknown): boolean {
 // continuous background requests (React/Angular polling). This resolves on
 // `domcontentloaded` (fast) and then races networkidle against a short ceiling so
 // we never block more than ~extraMs on a busy SPA.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export async function smartWait(page: any, extraMs = 2000): Promise<void> {
+export async function smartWait(page: Page, extraMs = 2000): Promise<void> {
   await page.waitForLoadState("domcontentloaded", { timeout: 15000 }).catch(() => null);
   await Promise.race([
     page.waitForLoadState("networkidle", { timeout: extraMs }).catch(() => null),
@@ -67,8 +68,7 @@ export async function smartWait(page: any, extraMs = 2000): Promise<void> {
 // Wait for a locator to be attached and visible before interacting. More reliable
 // than fill()/click() alone on portals that render fields progressively or animate
 // them in. Falls back gracefully so callers never need to guard against nulls.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export async function waitForElement(loc: any, timeout = 10000): Promise<void> {
+export async function waitForElement(loc: Locator | null | undefined, timeout = 10000): Promise<void> {
   if (!loc) return;
   await loc.waitFor({ state: "visible", timeout }).catch(() => null);
 }
@@ -131,33 +131,45 @@ const CHALLENGE_FRAME_HOSTS = [
   "duosecurity",
   "duo.com",
   "okta.com",
+  "ping.identity",
+  "pingone.com",
+  "auth0.com",
+  "microsoft.com/mfa",
+  "microsoftonline.com",
   "/mfa",
   "/2fa",
   "/otp",
   "verify",
 ];
 
+// Page titles that signal a challenge screen (checked before scraping body text).
+const CHALLENGE_TITLE = /captcha|verify|two.factor|2fa|authenticat|identity check|security check|are you human/i;
+
 // Visible challenge text fallback (covers no-iframe MFA prompts).
-const CHALLENGE_TEXT = /captcha|i'?m not a robot|two.factor|2fa|authenticat|verify your|verification code|one.time (code|password)/i;
+const CHALLENGE_TEXT = /captcha|i'?m not a robot|two.factor|2fa|authenticat|verify your identity|verification code|one.time (code|password)|enter the code|approve the sign.in/i;
 
 // STRUCTURALLY detect a CAPTCHA/MFA challenge on the page. Returns a short reason
 // string if a challenge is present (so the caller can stop for a human), else null.
-// Inspects every iframe's src/url for known challenge hosts, then falls back to
-// visible challenge text. Never throws — detection failure returns null only after
-// best effort.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export async function detectChallengeFrame(page: any): Promise<string | null> {
+// Checks in order: page title (fast), frame URLs (structural), iframe src attributes,
+// visible body text. Never throws — detection failure returns null only after best effort.
+export async function detectChallengeFrame(page: Page | null | undefined): Promise<string | null> {
   if (!page) return null;
   try {
+    // 0) Page title — the fastest check; challenge pages almost always have a distinctive title.
+    try {
+      const title = typeof (page as { title?: () => Promise<string> }).title === "function"
+        ? await (page as { title: () => Promise<string> }).title().catch(() => "")
+        : "";
+      if (CHALLENGE_TITLE.test(title)) return `challenge page title detected ("${title.slice(0, 40)}")`;
+    } catch { /* ignore */ }
+
     // 1) Inspect frame URLs (the structural signal — works even with no visible text).
-    const frames: any[] = typeof page.frames === "function" ? page.frames() : [];
+    const frames: Array<{ url: () => string }> = typeof (page as { frames?: () => unknown[] }).frames === "function"
+      ? ((page as { frames: () => Array<{ url: () => string }> }).frames())
+      : [];
     for (const frame of frames) {
       let url = "";
-      try {
-        url = typeof frame.url === "function" ? String(frame.url() ?? "") : "";
-      } catch {
-        url = "";
-      }
+      try { url = typeof frame.url === "function" ? String(frame.url() ?? "") : ""; } catch { url = ""; }
       const lower = url.toLowerCase();
       const hit = CHALLENGE_FRAME_HOSTS.find((h) => lower.includes(h));
       if (hit) return `challenge frame detected (${hit})`;
@@ -165,26 +177,24 @@ export async function detectChallengeFrame(page: any): Promise<string | null> {
 
     // 2) Inspect iframe element src attributes (catches frames not yet navigated).
     try {
-      const srcs: string[] = await page
+      const srcs: string[] = await (page as { locator: (s: string) => { evaluateAll: (fn: (e: Element[]) => string[]) => Promise<string[]> } })
         .locator("iframe")
         .evaluateAll((els: Element[]) => els.map((el) => (el as HTMLIFrameElement).getAttribute("src") || ""))
-        .catch(() => []);
+        .catch(() => [] as string[]);
       for (const src of srcs) {
         const lower = String(src).toLowerCase();
         const hit = CHALLENGE_FRAME_HOSTS.find((h) => lower.includes(h));
         if (hit) return `challenge iframe src detected (${hit})`;
       }
-    } catch {
-      // ignore — fall through to text check
-    }
+    } catch { /* ignore */ }
 
     // 3) Visible challenge text fallback.
     try {
-      const textHits = await page.getByText(CHALLENGE_TEXT).count().catch(() => 0);
+      const textHits = await (page as { getByText: (r: RegExp) => { count: () => Promise<number> } })
+        .getByText(CHALLENGE_TEXT).count().catch(() => 0);
       if (textHits > 0) return "challenge text detected on page";
-    } catch {
-      // ignore
-    }
+    } catch { /* ignore */ }
+
     return null;
   } catch {
     return null;
