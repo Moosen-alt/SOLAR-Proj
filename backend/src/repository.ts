@@ -854,6 +854,7 @@ export function deleteProject(db: AppDb, projectId: string): { deleted: true; pr
     // Project-scoped tables added later — must also be cleared or the FK on projects fails.
     db.run("DELETE FROM project_metrics WHERE project_id = ?", [projectId]);
     db.run("DELETE FROM project_documents WHERE project_id = ?", [projectId]);
+    db.run("DELETE FROM project_intake_requests WHERE project_id = ?", [projectId]);
     // Communications may belong to a customer too — unlink rather than destroy correspondence.
     db.run("UPDATE communications SET project_id = NULL WHERE project_id = ?", [projectId]);
     db.run("DELETE FROM projects WHERE id = ?", [projectId]);
