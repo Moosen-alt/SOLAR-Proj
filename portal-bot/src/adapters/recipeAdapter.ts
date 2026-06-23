@@ -191,6 +191,9 @@ export class RecipeAdapter extends BasePortalAdapter {
     const skipped: string[] = [];
     // Tracks whether we are past the review marker (autoSubmit-only territory).
     let pastReview = false;
+    // Tracks whether the previous executed step entered data, so we can let the portal's
+    // autosave commit before an advancing click (mirrors the auto-learn persist-settle).
+    let prevWasInput = false;
 
     for (const step of this.recipe.steps) {
       // Guided-manual: stop at review. autoSubmit (trusted, approved): proceed past
@@ -200,6 +203,17 @@ export class RecipeAdapter extends BasePortalAdapter {
         if (!this.options.autoSubmit) break;
         pastReview = true;
         continue;
+      }
+
+      // PERSIST SETTLE before an advancing click. PowerClerk autosaves each page (~3s) and
+      // only commits fields on blur; advancing too soon saves a BLANK draft. If the prior
+      // steps filled fields, wait for the autosave to settle before this click.
+      if (step.action === "click" && prevWasInput) {
+        if (typeof this.page.waitForLoadState === "function") {
+          await this.page.waitForLoadState("networkidle", { timeout: 8000 }).catch(() => null);
+        }
+        await sleep(Number(process.env.AUTOLEARN_SAVE_SETTLE_MS) || 3000);
+        prevWasInput = false;
       }
 
       let lastErr: unknown;
@@ -227,6 +241,10 @@ export class RecipeAdapter extends BasePortalAdapter {
         }
         return fail(`Recipe step failed (${step.action}${step.note ? ` — ${step.note}` : ""}): ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`, { executed, skipped });
       }
+      // Remember whether this step entered data, so the next advancing click waits for the
+      // portal's autosave to commit (prevents blank-draft saves on PowerClerk).
+      if (["fill", "select", "check", "uncheck", "press"].includes(step.action)) prevWasInput = true;
+      else if (step.action === "click" || step.action === "goto") prevWasInput = false;
     }
 
     if (this.finalSubmitClicked) {
@@ -264,6 +282,9 @@ export class RecipeAdapter extends BasePortalAdapter {
         if (!v) return false;
         await waitForElement(scoped);
         await scoped!.fill(v);
+        // Blur to COMMIT the value into the portal's JS model (PowerClerk's Vue saves on
+        // blur). Without it the field shows filled but never persists → blank draft.
+        if (typeof scoped!.blur === "function") await scoped!.blur().catch(() => {});
         return true;
       }
       case "select": {
