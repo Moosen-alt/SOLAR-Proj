@@ -38,8 +38,9 @@ export const portalCredentialUpdateSchema = z.object({
   notes: z.string().max(2000).optional(),
 });
 
+// scope: the frontend sends "ahj" or "utility"; "permit"/"nem" accepted as aliases.
 export const autoLearnSchema = z.object({
-  scope: z.enum(["permit", "utility", "nem"]).optional(),
+  scope: z.enum(["ahj", "permit", "utility", "nem"]).optional(),
   portalUrl: z.string().url().max(1000).optional(),
   createdBy: z.string().max(120).optional(),
 });
