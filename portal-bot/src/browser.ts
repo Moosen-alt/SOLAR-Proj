@@ -78,6 +78,15 @@ export async function openPortal(opts: {
   const slowMo = opts.slowMo ?? 0;
   const ignoreHTTPSErrors = opts.ignoreHTTPSErrors ?? process.env.PORTAL_IGNORE_HTTPS_ERRORS === "true";
 
+  // Route Playwright's Chromium through the same egress proxy that Node/curl use.
+  // Chromium does NOT inherit HTTPS_PROXY from the environment — it must be wired
+  // explicitly. When running under the agent proxy (e.g. Claude Code remote), all
+  // outbound HTTPS goes through a TLS-intercepting local proxy; the proxy's CA cert
+  // is pre-installed in the system NSS store and NODE_EXTRA_CA_CERTS, so Chromium
+  // trusts it automatically when the proxy server is set correctly.
+  const httpsProxy = process.env.HTTPS_PROXY || process.env.https_proxy;
+  const proxyOpts = httpsProxy ? { server: httpsProxy } : undefined;
+
   if (opts.userDataDir) {
     const context = await chromium.launchPersistentContext(opts.userDataDir, {
       headless,
@@ -85,6 +94,7 @@ export async function openPortal(opts: {
       viewport: null,
       args: CHROMIUM_ARGS,
       ignoreHTTPSErrors,
+      proxy: proxyOpts,
     });
     await context.addInitScript({ content: NAME_SHIM });
     const page = context.pages()[0] ?? (await context.newPage());
@@ -92,10 +102,10 @@ export async function openPortal(opts: {
     return { page, context };
   }
 
-  const browser = await chromium.launch({ headless, slowMo, args: CHROMIUM_ARGS });
+  const browser = await chromium.launch({ headless, slowMo, args: CHROMIUM_ARGS, proxy: proxyOpts });
   const context = opts.storageStatePath
-    ? await browser.newContext({ storageState: opts.storageStatePath, ignoreHTTPSErrors })
-    : await browser.newContext({ ignoreHTTPSErrors });
+    ? await browser.newContext({ storageState: opts.storageStatePath, ignoreHTTPSErrors, proxy: proxyOpts })
+    : await browser.newContext({ ignoreHTTPSErrors, proxy: proxyOpts });
   await context.addInitScript({ content: NAME_SHIM });
   const page = await context.newPage();
   return { page, context, browser };

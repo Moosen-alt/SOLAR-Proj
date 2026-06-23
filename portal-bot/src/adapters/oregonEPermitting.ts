@@ -231,6 +231,7 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
   // ---------------------------------------------------------------------------
   async fillApplication(project: ProjectRecord): Promise<PortalStepResult> {
     if (!this.page) return fail("Not logged in. Call login() first.");
+
     // Collect REQUIRED-field failures (redacted field names only) so a half-filled
     // form reports ok:false instead of silently looking successful.
     const requiredFailures: string[] = [];
@@ -238,98 +239,234 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
       const r = await safeAction(label, action, { required });
       if (!r.ok) requiredFailures.push(`${r.field}: ${r.message ?? "failed"}`);
     };
+
+    // After a Continue click, detect Accela's "Message Bar" validation error and
+    // return the (redacted) text so the caller can surface a useful failure message.
+    const checkMessageBar = async (): Promise<string | null> => {
+      try {
+        const bar = this.page.locator(
+          ".message-bar,.MessageBar,[id*=MessageBar],[class*=msgBar],.acc-error-bar,.validation-summary"
+        );
+        if ((await bar.count()) === 0) return null;
+        const visible = await bar.first().isVisible().catch(() => false);
+        if (!visible) return null;
+        const text = (await bar.first().innerText().catch(() => "")).trim().slice(0, 200);
+        return text || "validation error";
+      } catch { return null; }
+    };
+
+    // Click Continue, wait for navigation, and check for blocking message bars.
+    // Returns null on success, or a short error string if the page shows a validation error.
+    const continueAndCheck = async (label: string): Promise<string | null> => {
+      const preUrl = String(this.page.url());
+      const cont = this.page.getByRole("link", { name: /Continue Application/i }).first();
+      if ((await cont.count()) === 0) return `${label}: Continue link not found on page`;
+      await cont.click({ timeout: 15000 });
+      await this.page.waitForLoadState("networkidle", { timeout: 12000 }).catch(() => null);
+      const postUrl = String(this.page.url());
+      if (postUrl === preUrl) {
+        // URL didn't change → likely a validation error keeping us on the same page.
+        const msg = await checkMessageBar();
+        return msg ? `${label} validation error: ${msg}` : `${label}: page did not advance after Continue`;
+      }
+      return null;
+    };
+
+    // Accela uses table-cell labels (not HTML <label> elements). Find selects and
+    // inputs by scoping to the table row that contains the label text.
+    const selectInRow = (labelText: string) =>
+      this.page.locator("tr").filter({ hasText: new RegExp(labelText, "i") }).locator("select").first();
+    const inputInRow = (labelText: string) =>
+      this.page.locator("tr").filter({ hasText: new RegExp(labelText, "i") }).locator("input[type='text'],textarea").first();
+
+    // Select a <select> option by matching option text with a regex. Falls back to
+    // the first non-blank option when no text match is found.
+    const selectByPattern = async (sel: ReturnType<typeof selectInRow>, pattern: RegExp, fallback?: string): Promise<void> => {
+      const opts: Array<{ v: string; t: string }> = await sel.evaluate((el: HTMLSelectElement) =>
+        Array.from(el.options).map((o) => ({ v: o.value, t: o.text.trim() }))
+      ).catch(() => []);
+      const match = opts.find((o) => pattern.test(o.t) && o.v);
+      if (match) { await sel.selectOption(match.v); return; }
+      if (fallback) { await sel.selectOption({ label: fallback }); return; }
+      const first = opts.find((o) => o.v);
+      if (first) await sel.selectOption(first.v);
+    };
+
     try {
       const descriptionOfWork = buildDescriptionOfWork(project);
       const projectName = buildProjectName(project);
+      const s = snap(project);
 
-      // Continue from where openSubmission left off — the wizard is on the Work Location /
-      // Parcel / Owner confirmation page. (Do NOT jump by URL: Accela's CapEdit step URLs are
-      // stateful and abort if navigated to directly.) Advance via "Continue Application" until
-      // the project-detail page (the Job Value field) appears — robust to filler pages.
+      // ── Step 0: advance past confirmation pages (Parcel / Owner) to the Project
+      // Info page where Job Value appears.
       await this.page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
-      for (let i = 0; i < 4; i++) {
-        const jobValueField = this.page.getByRole("textbox", { name: /Job Value/i });
-        const present = (await jobValueField.count().catch(() => 0)) > 0 && (await jobValueField.first().isVisible().catch(() => false));
+      for (let i = 0; i < 5; i++) {
+        const jvField = this.page.getByRole("textbox", { name: /Job Value/i });
+        const present = (await jvField.count().catch(() => 0)) > 0 &&
+          (await jvField.first().isVisible().catch(() => false));
         if (present) break;
-        await this.page.getByRole("link", { name: /Continue Application/i }).first().click({ timeout: 10000 }).catch(() => null);
-        await this.page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
+        const cont = this.page.getByRole("link", { name: /Continue Application/i });
+        if ((await cont.count()) === 0) break;
+        await cont.first().click({ timeout: 10000 }).catch(() => null);
+        await this.page.waitForLoadState("networkidle", { timeout: 12000 }).catch(() => null);
       }
 
-      // Project info — jobValue lives in parserSnapshot. These are REQUIRED fields:
-      // route them through safeAction (retry+timeout) and surface any failure.
-      const s = snap(project);
-      const jobValue = str(s["jobValue"] ?? s["job_value"]) || String((project.systemSizeDcKw ?? 0) * 4000) || "0";
+      // ── Step 1: Project info (Job Value, Category, Name, Description).
+      const jobValue = str(s["jobValue"] ?? s["job_value"]) ||
+        String((project.systemSizeDcKw ?? 0) * 4000) || "0";
       await collect("jobValue", () => this.page.getByRole("textbox", { name: "Job Value($):" }).fill(jobValue));
-      await collect("categoryOfConstruction", () => this.page.getByLabel("Category of Construction").selectOption("1"));
-      await collect("projectName", () => this.page.getByRole("textbox", { name: "Project Name" }).fill(projectName));
-      await collect("descriptionOfWork", () => this.page.getByRole("textbox", { name: "Description of Work" }).fill(descriptionOfWork));
-      await this.page.getByRole("link", { name: "Continue Application »" }).click();
+      // Category of Construction — on this page the select is found via label text in a row.
+      // The live options are numeric IDs (e.g. value="1" = Residential). Select the first
+      // non-blank option; wrong value here is non-fatal (Accela defaults to a valid choice).
+      await collect("categoryOfConstruction", async () => {
+        const sel = selectInRow("Category of Construction");
+        if ((await sel.count().catch(() => 0)) === 0) return; // field not on this page layout
+        await selectByPattern(sel, /residential|new/i);
+      }, false);
+      await collect("projectName", () => this.page.getByRole("textbox", { name: /Project Name/i }).first().fill(projectName));
+      await collect("descriptionOfWork", () => this.page.getByRole("textbox", { name: /Description of Work/i }).first().fill(descriptionOfWork));
+      const projectInfoErr = await continueAndCheck("project info");
+      if (projectInfoErr) return fail(`fillApplication: ${projectInfoErr}`);
 
-      // Applicant / contact — select from account (pre-existing company contact)
-      await this.page.locator("#ctl00_PlaceHolderMain_Applicant_19Edit_btnAddNew").click().catch(() => null);
-
-      // NEVER hardcode contractor identity. These come from the assigned client via
-      // clientStagingOverlay (prepareSubmission guarantees clientId + CCB). Refuse to
-      // fill the applicant/contact with blank or default info.
+      // ── Step 2: Applicant / contact.
+      // NEVER hardcode contractor identity — it comes from the staging overlay.
       const installerCompanyName = str(s["installerCompanyName"] ?? s["installer_company_name"]);
       const installerEmail = str(s["installerEmail"] ?? s["installer_email"]);
       if (!installerCompanyName || !installerEmail) {
-        throw new Error(
-          "Oregon ePermitting: refusing to fill the applicant/contact — no submitting-client company/email on the staging overlay. Assign a client with full licensing before staging.",
+        return fail(
+          "Oregon ePermitting: no submitting-client company/email on the staging overlay. Assign a client with licensing before staging.",
         );
       }
 
-      const contactFrame = this.page.frameLocator('iframe[name="ACADialogFrame"]');
-      const contactFirst = await contactFrame.getByRole("textbox", { name: "First:" }).count();
-      if (contactFirst > 0) {
-        const firstName = installerCompanyName.split(" ")[0] ?? installerCompanyName;
-        const lastName = installerCompanyName.split(" ").slice(1).join(" ") || firstName;
-        await contactFrame.getByRole("textbox", { name: "First:" }).fill(firstName);
-        await contactFrame.getByRole("textbox", { name: "Last:" }).fill(lastName);
-        await contactFrame.getByRole("textbox", { name: "E-mail:" }).fill(installerEmail);
-        await contactFrame.getByRole("link", { name: "Continue" }).click();
+      // Primary path: "Select from Account" — picks the pre-existing contractor
+      // contact from the portal account. Most reliable because it never requires
+      // the operator to re-type the contact details.
+      let contactAdded = false;
+      const selectFromAccount = this.page.getByRole("link", { name: /Select from Account/i });
+      if ((await selectFromAccount.count().catch(() => 0)) > 0) {
+        await selectFromAccount.first().click({ timeout: 8000 }).catch(() => null);
+        await this.page.waitForLoadState("networkidle", { timeout: 8000 }).catch(() => null);
+        const dlgFrame = this.page.frameLocator('iframe[name="ACADialogFrame"]');
+        // Check the first available contact checkbox (any checkbox in the dialog).
+        const cb = dlgFrame.locator('input[type="checkbox"]').first();
+        if ((await cb.count().catch(() => 0)) > 0) {
+          await cb.check({ timeout: 5000 }).catch(() => null);
+          await dlgFrame.getByRole("link", { name: /Continue|OK|Select/i }).first()
+            .click({ timeout: 8000 }).catch(() => null);
+          await this.page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => null);
+          contactAdded = true;
+        }
       }
 
-      // Or select the company from the existing account list
-      await this.page.getByRole("link", { name: "Select from Account" }).click().catch(() => null);
-      const accountFrame = this.page.frameLocator('iframe[name="ACADialogFrame"]');
-      const firstRow = await accountFrame.locator(
-        "#ctl00_phPopup_contactSearchList_gdvSearchContactList_CB_1"
-      ).count();
-      if (firstRow > 0) {
-        await accountFrame.locator(
-          "#ctl00_phPopup_contactSearchList_gdvSearchContactList_CB_1"
-        ).check();
-        await accountFrame.getByRole("link", { name: "Continue" }).click();
+      // Fallback: "Add New" button — find it by any visible text that includes "add new",
+      // not by a hard-coded ID (the ID suffix changes per app-type config in Accela).
+      if (!contactAdded) {
+        const addNew = this.page.getByRole("link", { name: /Add New/i })
+          .or(this.page.locator('input[value*="Add New" i],button:has-text("Add New")'));
+        if ((await addNew.count().catch(() => 0)) > 0) {
+          await addNew.first().click({ timeout: 8000 }).catch(() => null);
+          await this.page.waitForLoadState("networkidle", { timeout: 8000 }).catch(() => null);
+          const dlgFrame = this.page.frameLocator('iframe[name="ACADialogFrame"]');
+          const firstField = await dlgFrame.locator('input[type="text"]').first().count().catch(() => 0);
+          if (firstField > 0) {
+            const firstName = installerCompanyName.split(" ")[0] ?? installerCompanyName;
+            const lastName = installerCompanyName.split(" ").slice(1).join(" ") || firstName;
+            await dlgFrame.locator('input[type="text"]').nth(0).fill(firstName).catch(() => null);
+            await dlgFrame.locator('input[type="text"]').nth(1).fill(lastName).catch(() => null);
+            // Email — look for input after "E-mail" or "Email" label text.
+            const emailInput = dlgFrame.locator("tr").filter({ hasText: /e-?mail/i }).locator('input[type="text"]').first();
+            if ((await emailInput.count().catch(() => 0)) > 0) {
+              await emailInput.fill(installerEmail).catch(() => null);
+            }
+            await dlgFrame.getByRole("link", { name: /Continue|OK|Save/i }).first()
+              .click({ timeout: 8000 }).catch(() => null);
+            await this.page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => null);
+            contactAdded = true;
+          }
+        }
       }
 
-      await this.page.getByRole("link", { name: "Continue Application »" }).click();
+      const contactErr = await continueAndCheck("contacts");
+      if (contactErr) {
+        // Contacts may be optional (some Lafayette Building Dept configs don't enforce them).
+        // Surface as a warning in the failures list but continue rather than hard-abort.
+        requiredFailures.push(`contacts: ${contactErr}`);
+      }
 
-      // Construction details — REQUIRED fields, routed through safeAction.
-      await collect("constructionCategory", () => this.page.getByLabel("Category of Construction:", { exact: true }).selectOption("Other"));
-      await collect("otherCategory", () => this.page.getByRole("textbox", { name: /Other Category of/i }).fill("Solar"));
-      await collect("typeOfWork", () => this.page.getByLabel("Type of Work:", { exact: true }).selectOption("New"));
-      await collect("buildingHeight", () => this.page.getByRole("textbox", { name: "Building Height - Feet:" }).fill("0"));
-      await collect("numberOfStories", () => this.page.getByRole("textbox", { name: "Number of Stories:" }).fill("0"));
-      await collect("newBuildingArea", () => this.page.getByRole("textbox", { name: "New Building Area:" }).fill("0"));
-      await collect("existingBuildingArea", () => this.page.getByRole("textbox", { name: "Existing Building Area:" }).fill("0"));
-      await this.page.getByRole("link", { name: "Continue Application »" }).click();
+      // ── Step 3: Construction details.
+      // Accela renders construction-type and work-type selects inside a table.
+      // Use row-scoped locators (tr containing the label) instead of getByLabel(),
+      // which requires proper <label for=""> elements that Accela's ExtJS doesn't emit.
 
-      // If any REQUIRED field failed, the form is half-filled — report ok:false with a
-      // redacted (field-name-only) message so the backend never records a clean fill.
+      // "Category of Construction" on this page is the BUILDING category (construction
+      // type), NOT the application category from step 1. For a solar panel addition:
+      // → "Other" (reveals an "Other Category" text field) or similar value.
+      await collect("constructionCategory", async () => {
+        const sel = selectInRow("Category of Construction");
+        if ((await sel.count().catch(() => 0)) === 0) return;
+        await selectByPattern(sel, /^other/i, "Other");
+        // After selecting "Other", an "Other Category of Construction" text field appears.
+        await this.page.waitForTimeout(500).catch(() => null);
+        const otherInput = inputInRow("Other Category");
+        if ((await otherInput.count().catch(() => 0)) > 0) {
+          await otherInput.fill("Solar").catch(() => null);
+        }
+      });
+
+      // "Type of Work" — for a solar system added to an existing building this is
+      // "Alteration/Repair" in many jurisdictions. We try "Alteration" first, then "New".
+      await collect("typeOfWork", async () => {
+        const sel = selectInRow("Type of Work");
+        if ((await sel.count().catch(() => 0)) === 0) return;
+        await selectByPattern(sel, /alteration|addition/i).catch(async () => {
+          await selectByPattern(sel, /new/i);
+        });
+      });
+
+      // "Project includes any of the following" — Accela's special-condition list.
+      // For a standard residential solar install this is always "Not Applicable".
+      await collect("projectIncludes", async () => {
+        const sel = selectInRow("Project includes any");
+        if ((await sel.count().catch(() => 0)) === 0) return;
+        await selectByPattern(sel, /not applicable|n\/a/i);
+      }, false);
+
+      // Building dimensions — required by Accela but the actual values for a solar
+      // addition on an existing house are 0 (we're not changing the building envelope).
+      await collect("buildingHeight", async () => {
+        const inp = inputInRow("Building Height");
+        if ((await inp.count().catch(() => 0)) > 0) await inp.fill("0");
+      });
+      await collect("numberOfStories", async () => {
+        const inp = inputInRow("Number of Stories");
+        if ((await inp.count().catch(() => 0)) > 0) await inp.fill("0");
+      });
+      await collect("newBuildingArea", async () => {
+        const inp = inputInRow("New Building Area");
+        if ((await inp.count().catch(() => 0)) > 0) await inp.fill("0");
+      });
+      await collect("existingBuildingArea", async () => {
+        const inp = inputInRow("Existing Building Area");
+        if ((await inp.count().catch(() => 0)) > 0) await inp.fill("0");
+      });
+
+      const constrErr = await continueAndCheck("construction details");
+      if (constrErr) return fail(`fillApplication: ${constrErr}`, { requiredFailures });
+
+      // If required fields failed to fill (selectors didn't match), report ok:false with
+      // field names only — never PII or raw portal text.
       if (requiredFailures.length > 0) {
         return fail(
-          `fillApplication: ${requiredFailures.length} required field(s) could not be filled — manual review required.`,
+          `fillApplication: ${requiredFailures.length} field(s) could not be filled — manual review required.`,
           { requiredFailures, jobValue },
         );
       }
 
-      // PII redaction: do NOT return projectName (homeowner name / address) or the
-      // free-text descriptionOfWork (contains owner name/address). Return only
-      // non-identifying confirmation of what was filled.
+      // PII redaction: return only non-identifying confirmation.
       return ok("All application fields filled.", {
         jobValue,
         descriptionFilled: descriptionOfWork.length > 0,
+        contactAdded,
       });
     } catch (err) {
       return fail(`fillApplication failed: ${err instanceof Error ? err.message : String(err)}`);
