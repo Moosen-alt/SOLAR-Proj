@@ -188,11 +188,22 @@ export async function detectChallengeFrame(page: Page | null | undefined): Promi
       }
     } catch { /* ignore */ }
 
-    // 3) Visible challenge text fallback.
+    // 3) Visible challenge text fallback — only count a match that is actually VISIBLE. A
+    //    hidden template / tooltip / aria string containing a keyword (e.g. "verification")
+    //    on a normal application form must NOT trigger a false MFA stop. Real no-iframe MFA
+    //    prompts render their challenge text visibly.
     try {
-      const textHits = await (page as { getByText: (r: RegExp) => { count: () => Promise<number> } })
-        .getByText(CHALLENGE_TEXT).count().catch(() => 0);
-      if (textHits > 0) return "challenge text detected on page";
+      const loc = (page as {
+        getByText: (r: RegExp) => {
+          count: () => Promise<number>;
+          nth: (i: number) => { isVisible: () => Promise<boolean> };
+        };
+      }).getByText(CHALLENGE_TEXT);
+      const n = await loc.count().catch(() => 0);
+      for (let i = 0; i < Math.min(n, 6); i++) {
+        const visible = await loc.nth(i).isVisible().catch(() => false);
+        if (visible) return "challenge text detected on page";
+      }
     } catch { /* ignore */ }
 
     return null;

@@ -2,7 +2,7 @@ import type { Page } from "playwright";
 import type { ProjectRecord, RecipeSelector, RecipeStep } from "../../../shared/src/types";
 import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, type PortalContext, type PortalStepResult } from "../adapter";
 import { openPortal } from "../browser";
-import { detectChallengeFrame, redactStatusText, safeAction, smartWait, waitForElement } from "../safeAction";
+import { detectChallengeFrame, redactStatusText, safeAction, sleep, smartWait, waitForElement } from "../safeAction";
 import { performLogin } from "./loginFlow";
 
 // AutoLearnAdapter — AUTONOMOUSLY learns an unknown AHJ/utility portal form instead of
@@ -377,6 +377,11 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     let pageCount = 0;
     let finalSubmitRecorded = false;
     let reachedReview = false;
+    // Stuck-page detection: if the page fingerprint doesn't change across consecutive
+    // iterations (an advance silently failed — e.g. blocked by a validation error), stop
+    // instead of burning every remaining page re-planning the same screen.
+    let lastLoopFp = "";
+    let stuckStreak = 0;
 
     if (!this.page) {
       return fail(steps, this.portalName, "learn() called before login() opened a page.");
@@ -393,34 +398,30 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     }
 
     for (let pageIdx = 0; pageIdx < this.maxPages; pageIdx++) {
-      // a) Challenge gate BEFORE any page action.
-      const challenge = await detectChallengeFrame(this.page);
-      if (challenge) {
-        return {
-          ok: false,
-          portalName: this.portalName,
-          steps,
-          reviewScreen: { fields: [], bodyTextSnippet: "" },
-          finalSubmitRecorded,
-          pageCount,
-          pauseReason: "mfa_captcha",
-          message: `Stopped: ${challenge}. A human must complete the MFA/CAPTCHA. The recipe was recorded up to this page.`,
-        };
-      }
       pageCount++;
 
-      // a2) Dismiss any modals/popups/banners before extracting fields.
+      // a2) Dismiss any modals/popups/banners and clear lingering loading scrims before
+      //     extracting fields, so overlays can't intercept the actions we take this page.
       await this.dismissModals();
+      await this.clearOverlays();
 
-      // b) Extract fields + candidate buttons + nav links on the current page.
+      // b) Extract fields + candidate buttons + nav links on the current page. Retry while
+      //    EMPTY — right after a login redirect / SPA navigation the page can be mid-render
+      //    (0 elements); scraping then would wrongly look like an empty page and stop the run.
       let fields: ExtractedField[];
       let pageTitle = "";
       let url = "";
       let bodyText = "";
       try {
-        const raws: RawField[] = await this.page
-          .$$eval("input, select, textarea, button, [role=button], a[href]:not([href='#']):not([href=''])", extractFieldsInPage)
-          .catch(() => [] as RawField[]);
+        const extractSel = "input, select, textarea, button, [role=button], a[href]:not([href='#']):not([href=''])";
+        let raws: RawField[] = [];
+        for (let tryN = 0; tryN < 4; tryN++) {
+          raws = await this.page.$$eval(extractSel, extractFieldsInPage).catch(() => [] as RawField[]);
+          if (raws.length > 0) break;
+          await smartWait(this.page, 1500);
+          await this.dismissModals();
+          await this.clearOverlays();
+        }
         fields = raws.map(toExtractedField);
         pageTitle = typeof this.page.title === "function" ? String((await this.page.title().catch(() => "")) ?? "") : "";
         url = typeof this.page.url === "function" ? String(this.page.url() ?? "") : "";
@@ -441,6 +442,45 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       const hasSubmitIntentBtn = fields.some((f) => f.fieldType === "button" && SUBMIT_INTENT.test(f.label));
       const reviewSignals = REVIEW_MARKERS.test(bodyText) || looksLikeReviewUrl(url);
       const isDashboard = !hasFillable && !hasSubmitIntentBtn && !reviewSignals;
+
+      // a0) STUCK-PAGE GUARD — bail if the same page recurs across iterations (advance had
+      //     no effect). Stops a silent infinite loop without waiting out maxPages.
+      const loopFp = await this.pageFingerprint();
+      if (loopFp && loopFp === lastLoopFp) {
+        if (++stuckStreak >= 2) {
+          if (process.env.AUTOLEARN_DEBUG === "1") console.error(`[learn] stuck on the same page for 3 iterations — stopping.`);
+          break;
+        }
+      } else {
+        stuckStreak = 0;
+        lastLoopFp = loopFp;
+      }
+
+      // a) CHALLENGE GATE (after extraction so it can use field counts). A real MFA/CAPTCHA
+      //    page is STRUCTURAL (an iframe / distinctive title) or SPARSE (a code box + submit).
+      //    Structural/title/iframe signals always stop. A TEXT-only match is treated as a
+      //    challenge ONLY on a sparse page (≤2 fillable inputs) — otherwise it's a false
+      //    positive on a real application form that merely contains words like "verification"
+      //    or "authenticate". We never proceed past a genuine challenge; we just don't let a
+      //    keyword on a 35-field form halt the whole run.
+      const challenge = await detectChallengeFrame(this.page);
+      if (challenge) {
+        const textOnly = /challenge text detected/i.test(challenge);
+        const fillableCount = fields.filter((f) => f.fieldType !== "button").length;
+        if (!textOnly || fillableCount <= 2) {
+          return {
+            ok: false,
+            portalName: this.portalName,
+            steps,
+            reviewScreen: { fields: [], bodyTextSnippet: "" },
+            finalSubmitRecorded,
+            pageCount,
+            pauseReason: "mfa_captcha",
+            message: `Stopped: ${challenge}. A human must complete the MFA/CAPTCHA. The recipe was recorded up to this page.`,
+          };
+        }
+        // else: text keyword on a field-rich form — false positive, continue learning.
+      }
 
       // c) Ask the planner what to do on this page.
       let plan: LearnPlanResponse;
@@ -482,14 +522,15 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             selector: navField.selector,
             note: `navigate to application: ${navField.label || "link"}`,
           });
+          const navBeforeUrl = typeof this.page.url === "function" ? String(this.page.url() ?? "") : "";
+          const navBeforeFp = await this.pageFingerprint();
           const res = await safeAction(
             "navigate",
             async () => {
               const loc = await this.locator(navField.selector);
               if (!loc) throw new Error("navigate selector unresolved");
-              await waitForElement(loc);
-              await loc.click();
-              await smartWait(this.page!);
+              await this.clickResilient(loc);
+              await this.waitAfterClick(navBeforeUrl, navBeforeFp);
             },
             { required: true },
           );
@@ -588,14 +629,15 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           selector: advanceField.selector,
           note: `advance: ${advanceField.label || "next"}`,
         });
+        const advBeforeUrl = typeof this.page.url === "function" ? String(this.page.url() ?? "") : "";
+        const advBeforeFp = await this.pageFingerprint();
         const res = await safeAction(
           "advance",
           async () => {
             const loc = await this.locator(advanceField.selector);
             if (!loc) throw new Error("advance selector unresolved");
-            await waitForElement(loc);
-            await loc.click();
-            await smartWait(this.page!);
+            await this.clickResilient(loc);
+            await this.waitAfterClick(advBeforeUrl, advBeforeFp);
           },
           { required: true },
         );
@@ -783,28 +825,37 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     return { ok: true, message: "Capture the confirmation number manually after the human submits." };
   }
 
-  // Dismiss common modal/popup/banner overlays before extracting page fields.
-  // Covers: PowerClerk "What's new?" → "Got it", cookie consent banners, generic close buttons.
-  // Loops up to 3 times so back-to-back modals (cookie banner then announcement) are both
-  // dismissed in one call. Best-effort: never throws.
+  // Dismiss common modal/popup/banner overlays so they can't intercept clicks.
+  // Covers: PowerClerk "What's new?" popover → "Got it", its semi-transparent backdrop,
+  // Bootstrap/Vue popovers + their close buttons, cookie banners, generic close buttons.
+  // Loops up to 3 times (back-to-back modals) and falls back to Escape for popovers with no
+  // matched button. Best-effort: never throws.
   private async dismissModals(): Promise<void> {
     if (!this.page) return;
+    // Match dismiss controls whether they're <button>, <a>, or .btn (PowerClerk uses
+    // Bootstrap .btn links/buttons), so a "Got it"/"Close" link is caught too.
+    const clickable = ":is(button, a, .btn, [role=button])";
     const dismissSelectors = [
-      // PowerClerk "What's new?" popup
-      'button:has-text("Got it")',
-      'button:has-text("Got It")',
-      'button:has-text("Dismiss")',
-      'button:has-text("Close")',
-      'button[aria-label="Close"]',
-      'button[aria-label="close"]',
-      '[class*="modal"] button[class*="close"]',
-      '[class*="dialog"] button[class*="close"]',
+      // PowerClerk "What's new?" popover
+      `${clickable}:has-text("Got it")`,
+      `${clickable}:has-text("Got It")`,
+      // Bootstrap/Vue popover + modal close controls (PowerClerk uses these).
+      '.popover-header button',
+      '.popover .btn-close',
+      '.modal .btn-close',
+      '.btn-close',
+      '[aria-label="Close"]',
+      '[aria-label="close"]',
+      '[class*="modal"] [class*="close"]',
+      '[class*="popover"] [class*="close"]',
+      `${clickable}:has-text("Dismiss")`,
+      `${clickable}:has-text("Close")`,
       // Cookie consent
-      'button:has-text("Accept")',
-      'button:has-text("Accept All")',
-      'button:has-text("OK")',
+      `${clickable}:has-text("Accept All")`,
+      `${clickable}:has-text("Accept")`,
+      `${clickable}:has-text("OK")`,
       // Generic "×" close
-      'button:has-text("×")',
+      `${clickable}:has-text("×")`,
       '[role="dialog"] button',
     ];
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -813,15 +864,131 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         try {
           const loc = this.page.locator(sel).first();
           if ((await loc.count()) > 0 && (await loc.isVisible().catch(() => false))) {
-            await loc.click({ timeout: 2000 });
-            await smartWait(this.page, 500);
+            await loc.click({ timeout: 2000 }).catch(() => null);
+            await smartWait(this.page, 400);
             dismissed = true;
             break;
           }
         } catch { /* non-fatal */ }
       }
+      // Fallback: a lingering backdrop/popover with no matched button — press Escape.
+      if (!dismissed) {
+        const backdrop = await this.page
+          .locator('.modal-backdrop, [class*="backdrop"], div.position-absolute.opacity-50.bg-black, .popover')
+          .first().count().catch(() => 0);
+        if (backdrop > 0) {
+          try { await this.page.keyboard?.press?.("Escape"); } catch { /* no keyboard (mock) */ }
+          await smartWait(this.page, 300);
+          dismissed = true; // loop once more to confirm it cleared
+        }
+      }
       if (!dismissed) break;
     }
+  }
+
+  // Click that survives a modal/popover overlay intercepting pointer events. Dismisses
+  // overlays first, clicks with a short timeout, and on an interception/timeout failure
+  // dismisses again (+ Escape) and retries. Used for navigate/advance clicks on portals
+  // (PowerClerk) whose announcement popover renders after the page settles.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async clickResilient(loc: any): Promise<void> {
+    const dbg = process.env.AUTOLEARN_DEBUG === "1";
+    let lastErr: unknown;
+    // Clear overlays + scrims IMMEDIATELY before each click attempt. PowerClerk re-adds its
+    // loading scrim over content cards (it reappears during the seconds of LLM planning), so
+    // clearing once up front isn't enough — the scrim must be gone the instant we click.
+    for (let attempt = 0; attempt < 4; attempt++) {
+      await this.dismissModals();
+      await this.clearOverlays();
+      if (dbg) {
+        const cnt = await loc.count?.().catch(() => "?");
+        const vis = await loc.isVisible?.().catch(() => "?");
+        console.error(`[clickResilient] attempt ${attempt}: count=${cnt} visible=${vis}`);
+      }
+      try {
+        await loc.click({ timeout: 5000 });
+        if (dbg) console.error(`[clickResilient] attempt ${attempt}: CLICK OK`);
+        return;
+      } catch (err) {
+        lastErr = err;
+        if (dbg) console.error(`[clickResilient] attempt ${attempt}: FAIL ${(err as Error).message.split("\n")[0]}`);
+        try { await this.page!.keyboard?.press?.("Escape"); } catch { /* no keyboard (mock) */ }
+        await smartWait(this.page!, 400);
+      }
+    }
+    // Fallback: dispatch a synthetic click (links that navigate via href respond to it).
+    try { await this.clearOverlays(); await loc.dispatchEvent("click"); if (dbg) console.error(`[clickResilient] dispatchEvent OK`); return; } catch (e) { if (dbg) console.error(`[clickResilient] dispatchEvent FAIL ${(e as Error).message.split("\n")[0]}`); }
+    throw lastErr instanceof Error ? lastErr : new Error("clickResilient: click failed after retries");
+  }
+
+  // Wait for a page transition to COMPLETE after a navigate/advance click. PowerClerk (and
+  // similar SPAs) take several seconds to create the new project / load the next form page;
+  // smartWait alone returns on the still-current page, so the loop would re-scrape the stale
+  // transitioning page. Wait for the URL to change (navigation) OR the network to settle,
+  // then let the destination render — so the next iteration scrapes the REAL next page.
+  private async waitAfterClick(beforeUrl: string, beforeFp = ""): Promise<void> {
+    if (!this.page) return;
+    const deadline = Date.now() + 12000;
+    while (Date.now() < deadline) {
+      await sleep(350);
+      const u = typeof this.page.url === "function" ? String(this.page.url() ?? "") : "";
+      if (u && u !== beforeUrl) break; // URL navigation (new page)
+      // Same-URL SPA wizard: wait until the page content actually changes (the next step
+      // rendered) so we don't re-scrape the stale current step.
+      if (beforeFp) {
+        const fp = await this.pageFingerprint();
+        if (fp && fp !== beforeFp) break;
+      }
+    }
+    // Let the destination settle (domcontentloaded + a networkidle race), then a short dwell
+    // so client-rendered form fields are present before the next scrape.
+    await this.page.waitForLoadState?.("domcontentloaded", { timeout: 9000 }).catch(() => null);
+    await Promise.race([
+      this.page.waitForLoadState?.("networkidle", { timeout: 6000 }).catch(() => null),
+      sleep(6000),
+    ]);
+    await sleep(700);
+  }
+
+  // A cheap content fingerprint used to detect when a same-URL SPA wizard has advanced to
+  // the next step (input count + the step heading + body length). Not a security hash —
+  // just "did the page meaningfully change". Returns "" on a mock/no-DOM page.
+  private async pageFingerprint(): Promise<string> {
+    if (!this.page || typeof this.page.evaluate !== "function") return "";
+    try {
+      return await this.page.evaluate(() => {
+        const inputs = document.querySelectorAll("input, select, textarea").length;
+        const heading = (document.querySelector("h1, h2, legend, .wizard-step.active, .active")?.textContent || "").trim().slice(0, 50);
+        return `${location.href}|${inputs}|${heading}|${(document.body?.innerText || "").length}`;
+      });
+    } catch {
+      return "";
+    }
+  }
+
+  // Remove stubborn overlay SCRIMS that intercept pointer events but aren't dismissible by a
+  // button — chiefly PowerClerk's per-card loading backdrop (a semi-transparent
+  // position-absolute opacity-50 bg-black div that lingers over content) and generic modal
+  // backdrops. Scoped to backdrop/scrim selectors only — never removes form fields or modal
+  // content, just the transparent layer on top. Best-effort; never throws.
+  private async clearOverlays(): Promise<void> {
+    if (!this.page || typeof this.page.evaluate !== "function") return;
+    try {
+      await this.page.evaluate(() => {
+        const sel = "div.position-absolute.opacity-50.bg-black, .modal-backdrop, [class*='loading-overlay'], [class*='spinner-overlay']";
+        // Remove any scrims present right now...
+        document.querySelectorAll(sel).forEach((el) => el.remove());
+        // ...AND inject a persistent rule so RE-RENDERED scrims (PowerClerk's Vue re-adds its
+        // loading backdrop reactively) can't intercept clicks. Removal alone loses the race;
+        // pointer-events:none lets every click pass straight through to the real control.
+        if (!document.getElementById("__autolearn_scrim_bypass")) {
+          const style = document.createElement("style");
+          style.id = "__autolearn_scrim_bypass";
+          style.textContent = sel + " { pointer-events: none !important; }";
+          document.head.appendChild(style);
+        }
+      });
+    } catch { /* mock page or no DOM — non-fatal */ }
   }
 
   // Build a Playwright locator for a single selector descriptor (no fallback chain).

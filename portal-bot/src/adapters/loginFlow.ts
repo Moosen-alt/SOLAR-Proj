@@ -149,11 +149,32 @@ export async function performLogin(
   credential: Credential | undefined,
 ): Promise<LoginResult> {
   try {
+    // 0) Let the page settle — a single domcontentloaded fires before an MVC/SPA login
+    //    form is painted, so checking immediately races the render.
+    await smartWait(page, 1500);
+
     // 1) Make sure a login form is actually showing (reveal it if the portal hides it).
     let present = await loginFormPresent(page);
     if (!present) present = await revealLoginForm(page);
 
-    // 2) No form at all → the persistent session is still valid (or no login needed).
+    // 2) No form yet. Distinguish "session valid (redirected off the login page)" from
+    //    "form just hasn't rendered". If we're STILL on a login/sign-in URL, the form is
+    //    almost certainly mid-render — poll a few seconds before concluding anything, so
+    //    we never mistake an unrendered login page for an authenticated session.
+    if (!present) {
+      const url = (typeof page.url === "function" ? page.url() : "").toLowerCase();
+      const onLoginUrl = /login|sign-?in|account\/(login|signin)|logon/.test(url);
+      if (onLoginUrl) {
+        const deadline = Date.now() + 8000;
+        while (!present && Date.now() < deadline) {
+          await smartWait(page, 1500);
+          present = await loginFormPresent(page);
+          if (!present) present = await revealLoginForm(page);
+        }
+      }
+    }
+
+    // 3) Still no form (and not on a login URL) → the persistent session is valid.
     if (!present) {
       return { ok: true, status: "already_authenticated", message: "No login form present — using the existing session." };
     }
