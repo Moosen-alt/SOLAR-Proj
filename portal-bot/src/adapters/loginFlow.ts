@@ -11,7 +11,7 @@
 // SECURITY: never logs the username or password. On MFA/CAPTCHA it stops for a human and
 // never attempts to solve it. It only fills + clicks the login control — nothing else.
 
-import type { Page, Locator } from "playwright";
+import type { Page, Frame, Locator } from "playwright";
 import type { RecipeSelector } from "../../../shared/src/types";
 import { detectChallengeFrame, sleep, smartWait, waitForElement } from "../safeAction";
 
@@ -46,6 +46,7 @@ const LOGIN_RESULT_TIMEOUT_MS = 15000;
 // type=text, so id- and placeholder-based candidates are essential.
 const USERNAME_CANDIDATES: RecipeSelector[] = [
   { css: "#UserName" }, // PowerClerk (verified live)
+  { css: "#username" }, // Accela ACA AngularUI login (in an iframe — verified live)
   { css: "#txtLoginEmail" }, // Accela ACA (newer)
   { css: "#txtUserName, #txtUserId, #ctl00_PlaceHolderMain_LoginBox_txtUserId" }, // Accela (classic)
   { label: "Username" },
@@ -59,6 +60,7 @@ const USERNAME_CANDIDATES: RecipeSelector[] = [
 
 const PASSWORD_CANDIDATES: RecipeSelector[] = [
   { css: "#Password" }, // PowerClerk (verified live)
+  { css: "#passwordRequired" }, // Accela ACA AngularUI login (in an iframe — verified live)
   { css: "#txtLoginPassword, #ctl00_PlaceHolderMain_LoginBox_txtPassword" }, // Accela
   { css: 'input[type="password"]' }, // universal
 ];
@@ -88,11 +90,11 @@ const REVEAL_TRIGGERS: RecipeSelector[] = [
 
 // Build a Playwright locator from a portable selector descriptor (mirrors the adapters'
 // own locator()). Standalone so it has no adapter-state dependency.
-function buildLocator(page: Page, sel: RecipeSelector): Locator | null {
+function buildLocator(pageOrFrame: Page | Frame, sel: RecipeSelector): Locator | null {
   if (!sel) return null;
-  // scope is Page or FrameLocator — both expose the same locator API; use any internally.
+  // scope is Page, Frame, or FrameLocator — all expose the same locator API; use any internally.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const scope: any = sel.frame ? page.frameLocator(`iframe[name="${sel.frame}"]`) : page;
+  const scope: any = sel.frame ? (pageOrFrame as any).frameLocator(`iframe[name="${sel.frame}"]`) : pageOrFrame;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let loc: any;
   // sel.role is stored as a string; cast to the ARIA role union expected by getByRole.
@@ -110,14 +112,20 @@ function buildLocator(page: Page, sel: RecipeSelector): Locator | null {
 }
 
 // Return the first candidate locator that resolves to a visible element, else null.
+// Frame-aware: searches the main document AND every same-origin iframe, because some
+// portals (Accela ACA's AngularUI login) render the login form inside an iframe.
+// page.frames() includes the main frame first, so the main document is still tried first.
 async function firstVisible(page: Page, candidates: RecipeSelector[]): Promise<Locator | null> {
+  const scopes: Array<Page | Frame> = typeof page.frames === "function" ? page.frames() : [page];
   for (const sel of candidates) {
-    const loc = buildLocator(page, sel);
-    if (!loc) continue;
-    try {
-      if ((await loc.count()) > 0 && (await loc.isVisible().catch(() => false))) return loc;
-    } catch {
-      // malformed selector for this page — try the next candidate
+    for (const scope of scopes) {
+      const loc = buildLocator(scope, sel);
+      if (!loc) continue;
+      try {
+        if ((await loc.count()) > 0 && (await loc.isVisible().catch(() => false))) return loc;
+      } catch {
+        // malformed selector or cross-origin frame — try the next scope/candidate
+      }
     }
   }
   return null;
@@ -174,8 +182,14 @@ export async function performLogin(
       }
     }
 
-    // 3) Still no form (and not on a login URL) → the persistent session is valid.
+    // 3) Still no form. If we're STILL on a login URL, do NOT claim an authenticated
+    //    session — that's a detection miss (e.g. an iframed/odd login form), not success.
+    //    Only conclude "authenticated" when we're off any login URL.
     if (!present) {
+      const url = (typeof page.url === "function" ? page.url() : "").toLowerCase();
+      if (/login|sign-?in|account\/(login|signin)|logon/.test(url)) {
+        return { ok: false, status: "still_on_login", message: "On a login page but the login form could not be located (it may be inside an iframe or use an unusual layout). Record this portal manually." };
+      }
       return { ok: true, status: "already_authenticated", message: "No login form present — using the existing session." };
     }
 
