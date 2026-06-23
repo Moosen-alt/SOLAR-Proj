@@ -1,7 +1,7 @@
 import type { PortalRecipe, ProjectRecord, RecipeSelector, RecipeStep } from "../../../shared/src/types";
 import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, type PortalContext, type PortalStepResult } from "../adapter";
 import { openPortal } from "../browser";
-import { detectChallengeFrame, redactStatusText, RETRY_BACKOFF_MS, sleep } from "../safeAction";
+import { detectChallengeFrame, redactStatusText, RETRY_BACKOFF_MS, sleep, smartWait, waitForElement } from "../safeAction";
 
 // RecipeAdapter — replays a recorded portal recipe (see portal_recipes / the recorder).
 // Works for ANY AHJ or utility portal an admin has taught by recording. It substitutes
@@ -73,7 +73,7 @@ export class RecipeAdapter extends BasePortalAdapter {
       this.page = opened.page;
       if (this.recipe.portalUrl) {
         await this.page.goto(this.recipe.portalUrl);
-        await this.page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
+        await smartWait(this.page);
       }
 
       // If the recipe has a loginStep and a credential is available, auto-fill
@@ -84,16 +84,28 @@ export class RecipeAdapter extends BasePortalAdapter {
           if (loginStep.usernameSel) {
             const uLoc = this.locator(loginStep.usernameSel);
             if (uLoc && await uLoc.count() > 0) {
+              await waitForElement(uLoc);
               await uLoc.fill(context.credential.username);
               if (loginStep.passwordSel) {
                 const pLoc = this.locator(loginStep.passwordSel);
-                if (pLoc) await pLoc.fill(context.credential.password);
+                if (pLoc) {
+                  await waitForElement(pLoc);
+                  await pLoc.fill(context.credential.password);
+                }
               }
               if (loginStep.submitSel) {
                 const sLoc = this.locator(loginStep.submitSel);
-                if (sLoc) await sLoc.click();
+                if (sLoc) {
+                  await waitForElement(sLoc);
+                  await sLoc.click();
+                }
               }
-              await this.page.waitForLoadState("networkidle", { timeout: 20000 }).catch(() => null);
+              await smartWait(this.page, 3000);
+              // Verify login succeeded: form should be gone.
+              const stillOnLogin = await uLoc.count().catch(() => 0) > 0;
+              if (stillOnLogin) {
+                return fail("still on login form after submitting credentials — check username/password");
+              }
               const mfaVisible = await this.page.getByText(/verify|two.factor|authenticat/i).count() > 0;
               if (mfaVisible) {
                 return { ok: false, message: "MFA/2FA required after credential fill — pausing for human. Complete verification in the browser window, then retry the portal run.", pauseReason: "mfa_captcha" };
@@ -143,7 +155,7 @@ export class RecipeAdapter extends BasePortalAdapter {
   async captureSubmissionConfirmation(): Promise<PortalStepResult> {
     if (!this.page) return ok("No open page to capture confirmation from.", { permitNumber: "", recordLink: "" });
     try {
-      await this.page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
+      await smartWait(this.page);
       const bodyText = String((await this.page.locator("body").innerText().catch(() => "")) || "");
       // Accela-style record number: 517-26-000274-STR (digits/dashes + optional type suffix).
       const accela = bodyText.match(/\b\d{2,4}-\d{2}-\d{4,7}-?[A-Z]{0,4}\b/);
@@ -263,34 +275,39 @@ export class RecipeAdapter extends BasePortalAdapter {
     switch (step.action) {
       case "goto":
         await this.page.goto(this.resolveValue(step));
-        await this.page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
+        await smartWait(this.page);
         return true;
       case "click":
         return this.executeClick(step, scoped, pastReview);
       case "fill": {
         const v = this.resolveValue(step);
         if (!v) return false;
+        await waitForElement(scoped);
         await scoped!.fill(v);
         return true;
       }
       case "select": {
         const v = this.resolveValue(step);
         if (!v) return false;
+        await waitForElement(scoped);
         await scoped!.selectOption(v).catch(async () => scoped!.selectOption({ label: v }));
         return true;
       }
       case "check":
+        await waitForElement(scoped);
         await scoped!.check();
         return true;
       case "uncheck":
+        await waitForElement(scoped);
         await scoped!.uncheck();
         return true;
       case "press":
+        await waitForElement(scoped);
         await scoped!.press(step.value || "Enter");
         return true;
       case "waitFor":
-        if (scoped) await scoped.waitFor({ timeout: 15000 });
-        else await this.page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
+        if (scoped) await scoped.waitFor({ state: "visible", timeout: 15000 });
+        else await smartWait(this.page);
         return true;
       case "upload": {
         const file = step.docType ? this.docsByType[step.docType] : undefined;
@@ -335,7 +352,7 @@ export class RecipeAdapter extends BasePortalAdapter {
       // Let the portal settle, then verify we did not land back on a challenge or an
       // error page. "Unknown page state after the click" is treated as a STOP, not a
       // success — finalSubmitClicked stays false unless the portal cleanly accepted it.
-      await this.page.waitForLoadState("networkidle", { timeout: 20000 }).catch(() => null);
+      await smartWait(this.page, 3000);
       const postChallenge = await detectChallengeFrame(this.page);
       if (postChallenge) {
         throw new Error(`Final submit triggered a challenge after the click (${postChallenge}); pausing for human verification.`);
@@ -346,6 +363,7 @@ export class RecipeAdapter extends BasePortalAdapter {
     }
 
     // 5) Ordinary navigation/UI click (pre-review). Safe to perform.
+    await waitForElement(scoped);
     await scoped!.click();
     return true;
   }

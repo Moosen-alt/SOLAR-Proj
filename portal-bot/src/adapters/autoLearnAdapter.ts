@@ -1,7 +1,7 @@
 import type { ProjectRecord, RecipeSelector, RecipeStep, PortalRecipeLoginStep } from "../../../shared/src/types";
 import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, type PortalContext, type PortalStepResult } from "../adapter";
 import { openPortal } from "../browser";
-import { detectChallengeFrame, redactStatusText, safeAction } from "../safeAction";
+import { detectChallengeFrame, redactStatusText, safeAction, smartWait, waitForElement } from "../safeAction";
 
 // AutoLearnAdapter — AUTONOMOUSLY learns an unknown AHJ/utility portal form instead of
 // having a human record it. Each page is scraped into a structured snapshot
@@ -287,7 +287,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       // Navigate to the portal entry URL so the learn loop starts on the application page.
       if (context.startUrl) {
         await this.page.goto(context.startUrl, { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => null);
-        await this.page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
+        await smartWait(this.page);
       }
 
       // If a credential is available, auto-fill a login form when the session expired.
@@ -319,22 +319,22 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           if (challenge) {
             return { ok: false, message: `Login paused: ${challenge}. Complete verification in the browser, then retry.`, pauseReason: "mfa_captcha" };
           }
+          await waitForElement(uLoc);
           await uLoc!.fill(context.credential.username);
           const pLoc = this.locator(loginStep.passwordSel);
           if (!pLoc || (await pLoc.count().catch(() => 0)) === 0) {
             return { ok: false, message: `Could not find the password field on ${this.portalName}'s login page. The portal layout may have changed — record it manually.` };
           }
+          await waitForElement(pLoc);
           await pLoc.fill(context.credential.password);
           const sLoc = this.locator(loginStep.submitSel);
           if (!sLoc || (await sLoc.count().catch(() => 0)) === 0) {
             return { ok: false, message: `Could not find the login/submit button on ${this.portalName}'s login page. The portal layout may have changed — record it manually.` };
           }
-          // Click submit and wait for the login form to go away (proof of login),
-          // racing a navigation so JS-postback logins (Accela #hlLogin) are covered.
-          await Promise.all([
-            this.page.waitForLoadState("networkidle", { timeout: 20000 }).catch(() => null),
-            sLoc.click().catch(() => null),
-          ]);
+          // Click submit and wait for the login form to go away (proof of login).
+          await waitForElement(sLoc);
+          await sLoc.click().catch(() => null);
+          await smartWait(this.page, 3000);
           // Give a slow portal a moment to render the post-login page.
           const stillOnLogin = await uLoc!
             .waitFor({ state: "detached", timeout: 15000 })
@@ -509,8 +509,9 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           async () => {
             const loc = this.locator(advanceField.selector);
             if (!loc) throw new Error("advance selector unresolved");
+            await waitForElement(loc);
             await loc.click();
-            await this.page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
+            await smartWait(this.page);
           },
           { required: true },
         );

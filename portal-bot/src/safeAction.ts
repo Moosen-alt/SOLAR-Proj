@@ -51,6 +51,28 @@ function isTimeout(err: unknown): boolean {
   return err instanceof Error && /timeout|TimeoutError/i.test(err.message);
 }
 
+// SPA-aware navigation wait. `networkidle` hangs indefinitely on portals that fire
+// continuous background requests (React/Angular polling). This resolves on
+// `domcontentloaded` (fast) and then races networkidle against a short ceiling so
+// we never block more than ~extraMs on a busy SPA.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function smartWait(page: any, extraMs = 2000): Promise<void> {
+  await page.waitForLoadState("domcontentloaded", { timeout: 15000 }).catch(() => null);
+  await Promise.race([
+    page.waitForLoadState("networkidle", { timeout: extraMs }).catch(() => null),
+    sleep(extraMs),
+  ]);
+}
+
+// Wait for a locator to be attached and visible before interacting. More reliable
+// than fill()/click() alone on portals that render fields progressively or animate
+// them in. Falls back gracefully so callers never need to guard against nulls.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function waitForElement(loc: any, timeout = 10000): Promise<void> {
+  if (!loc) return;
+  await loc.waitFor({ state: "visible", timeout }).catch(() => null);
+}
+
 // Run `action` up to RETRY_BACKOFF_MS.length + 1 times. Only timeouts are retried;
 // other errors fail fast. `onRetry` lets the caller recover stale page state
 // (e.g. reload) between attempts. Re-throws the last error if every attempt fails.
