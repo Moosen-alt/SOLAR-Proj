@@ -1787,16 +1787,22 @@ async function updatePortalLoginsSummary() {
   let creds = [];
   try { creds = (await api(`/api/clients/${client.id}/portal-credentials`)).credentials || []; }
   catch { summary.textContent = ""; return; }
-  const hosts = new Set();
-  for (const c of creds) { try { if (c.portalUrl) hosts.add(new URL(c.portalUrl).hostname.toLowerCase()); } catch { /* ignore */ } }
   let total = 0, ready = 0; const seen = new Set();
   for (const t of tracks) {
     const url = t.recipePortalUrl || ""; let host = "";
     try { host = url ? new URL(url).hostname.toLowerCase() : ""; } catch { /* ignore */ }
-    const key = host || (t.channel || t.type || "").toLowerCase();
+    const slug = plPortalSlug(t.channel || t.label || t.type);
+    const key = host || slug;
     if (seen.has(key)) continue; seen.add(key);
     total++;
-    if (host && hosts.has(host)) ready++;
+    const matched = creds.some((c) => {
+      if (host && c.portalUrl) { try { if (new URL(c.portalUrl).hostname.toLowerCase() === host) return true; } catch { /* continue */ } }
+      const ct = (c.portalType || "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+      if (ct && ct === slug) return true;
+      if (ct && slug && (ct.includes(slug.slice(0, 10)) || slug.includes(ct.slice(0, 10)))) return true;
+      return false;
+    });
+    if (matched) ready++;
   }
   summary.textContent = total ? `${ready}/${total} portal logins saved` : (creds.length ? `${creds.length} saved` : "");
   if (ready < total) summary.style.color = "var(--warn, #b45309)";
@@ -4460,10 +4466,19 @@ async function renderPortalLogins() {
     const key = (url || slug).toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
-    let host = ""; try { host = url ? new URL(url).hostname : ""; } catch { /* ignore */ }
+    let host = ""; try { host = url ? new URL(url).hostname.toLowerCase() : ""; } catch { /* ignore */ }
     const matched = creds.some((c) => {
-      try { return host && c.portalUrl && new URL(c.portalUrl).hostname.toLowerCase() === host.toLowerCase(); }
-      catch { return false; }
+      // 1. URL hostname match (most precise).
+      if (host && c.portalUrl) {
+        try { if (new URL(c.portalUrl).hostname.toLowerCase() === host) return true; } catch { /* continue */ }
+      }
+      // 2. portalType slug match: the chip pre-fills pl_portalType with the slug, so a
+      //    credential saved via this modal will have portalType === slug.
+      const ct = (c.portalType || "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+      if (ct && ct === slug) return true;
+      // 3. Loose substring: handles minor slug variants (e.g. "accela" inside "accela_oregon").
+      if (ct && slug && (ct.includes(slug.slice(0, 10)) || slug.includes(ct.slice(0, 10)))) return true;
+      return false;
     });
     chips.push(`<button type="button" class="pl-chip" data-pl-slug="${esc(slug)}" data-pl-url="${esc(url)}" data-has-secret="${matched ? 1 : 0}">
       <i data-lucide="${matched ? "shield-check" : "key-round"}"></i>

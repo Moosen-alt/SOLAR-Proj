@@ -124,6 +124,23 @@ export function getDecryptedCredential(
   }
 }
 
+// Known hostname aliases: portals that redirect to each other / share a login.
+// e.g. epermitting.oregon.gov redirects to aca.oregon.gov/CitizenAccess — same Accela instance.
+// Keys and values are all lowercase hostnames. The set is symmetric: add one direction and
+// the resolver checks both.
+const HOSTNAME_ALIASES: Record<string, string[]> = {
+  "aca.oregon.gov": ["epermitting.oregon.gov", "aca-oregon.accela.com"],
+  "epermitting.oregon.gov": ["aca.oregon.gov", "aca-oregon.accela.com"],
+  "aca-oregon.accela.com": ["aca.oregon.gov", "epermitting.oregon.gov"],
+};
+
+function hostsMatch(a: string, b: string): boolean {
+  if (a === b) return true;
+  if (a.endsWith(`.${b}`) || b.endsWith(`.${a}`)) return true;
+  const aliases = HOSTNAME_ALIASES[a] || [];
+  return aliases.includes(b);
+}
+
 // Match by hostname of the stored portal_url — handles the common case where the
 // operator stored the credential with a different portal_type string.
 export function getDecryptedCredentialByUrl(
@@ -143,7 +160,7 @@ export function getDecryptedCredentialByUrl(
     if (!stored) continue;
     try {
       const storedHost = new URL(stored).hostname.toLowerCase();
-      if (storedHost === targetHost || targetHost.endsWith(`.${storedHost}`) || storedHost.endsWith(`.${targetHost}`)) {
+      if (hostsMatch(targetHost, storedHost)) {
         const dec = decryptStorageState(s(row.encrypted_secret)) as { username?: string; password?: string };
         return { username: s(dec.username), password: s(dec.password) };
       }

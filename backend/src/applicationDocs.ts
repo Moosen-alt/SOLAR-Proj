@@ -180,7 +180,7 @@ export const applicationProfiles: ApplicationRequirementProfile[] = [
     // Scotts Mills and unincorporated Marion County. Match all of them.
     matchJurisdictions: ["keizer", "marion county", "marion co", "hubbard", "mount angel", "gervais", "scotts mills"],
     portalName: "Oregon ePermitting (Accela)",
-    sourceUrl: "https://aca-oregon.accela.com/oregon/",
+    sourceUrl: "https://aca.oregon.gov/CitizenAccess/",
     requiresAhjApplication: false,
     // Structural application is required for the NON-prescriptive (engineered) path only;
     // the prescriptive path uses the prescriptive application instead. The doc builder
@@ -221,7 +221,7 @@ export const applicationProfiles: ApplicationRequirementProfile[] = [
     name: "Junction City Solar (Oregon ePermitting / Accela)",
     matchJurisdictions: ["junction city", "city of junction city"],
     portalName: "Oregon ePermitting (Accela)",
-    sourceUrl: "https://ePermitting.oregon.gov",
+    sourceUrl: "https://aca.oregon.gov/CitizenAccess/",
     requiresAhjApplication: false,
     requiresStructuralApplication: true,
     requiresElectricalApplication: true,

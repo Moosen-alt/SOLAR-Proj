@@ -279,6 +279,26 @@ export function getSubmittalTracks(db: AppDb, project: ProjectRecord): Submittal
       [profileKey],
     );
 
+    // Fallback portal URL when no recipe exists yet — used by the credential-matching
+    // chip so the operator can store a login before recording. Try in order:
+    // 1. KB profile (user-accumulated knowledge from previous projects)
+    // 2. applicationDocs profile (built-in AHJ/utility definitions)
+    let kbPortalUrl: string | undefined;
+    if (!recipeRow || !s(recipeRow.portal_url)) {
+      const kbField = scopeType === "utility" ? "utility" : "ahj";
+      const kbVal = scopeType === "utility" ? project.utility : project.ahj;
+      const kbRow = kbVal
+        ? db.get<Row>(`SELECT portal_url FROM permit_utility_knowledge WHERE ${kbField} = ? AND portal_url IS NOT NULL AND portal_url != '' LIMIT 1`, [kbVal])
+        : null;
+      if (kbRow) {
+        kbPortalUrl = s(kbRow.portal_url) || undefined;
+      } else {
+        // Fall back to applicationDocs profile sourceUrl (built-in AHJ/utility definitions).
+        const appProfile = findApplicationProfile(project);
+        if (appProfile?.sourceUrl) kbPortalUrl = appProfile.sourceUrl;
+      }
+    }
+
     return {
       type,
       label: TRACK_LABELS[type],
@@ -297,7 +317,7 @@ export function getSubmittalTracks(db: AppDb, project: ProjectRecord): Submittal
       outstanding: status !== "issued",
       hasRecipe: !!recipeRow,
       recipeStatus: recipeRow ? s(recipeRow.status) : undefined,
-      recipePortalUrl: recipeRow ? s(recipeRow.portal_url) : undefined,
+      recipePortalUrl: (recipeRow ? s(recipeRow.portal_url) : undefined) || kbPortalUrl,
       recipeId: recipeRow ? s(recipeRow.id) : undefined,
       recipeScopeType: scopeType,
     };
