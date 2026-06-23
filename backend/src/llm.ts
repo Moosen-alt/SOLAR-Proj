@@ -186,6 +186,10 @@ function normModel(s: string): string {
 const PORTAL_PAY_RE = /\b(pay|payment|checkout|invoice|fee|charge|credit card)\b/i;
 const PORTAL_SUBMIT_RE = /\b(submit|file application|finalize|finish|confirm submission|place order|complete submission)\b/i;
 const PORTAL_ADVANCE_RE = /\b(next|continue|proceed|save and continue|add|step \d)\b/i;
+// Dashboard "start a new application" link/button labels — used by the offline planner to
+// navigate from a portal home page INTO the application form. Matches PowerClerk's "New
+// Pacific Power Customer Generation Application", Accela's "Create an Application", etc.
+const PORTAL_NEW_APP_RE = /\b(new|start|begin|create|apply|file|add)\b[^.]{0,40}\b(application|interconnection|generation|project|request|permit|submittal|submission|service)\b|\b(apply now|get started|start now)\b/i;
 
 // Field-label → project-field key heuristics, used by the offline planner.
 const PORTAL_FIELD_HINTS: Array<{ re: RegExp; field: string }> = [
@@ -220,6 +224,32 @@ function isSensitivePortalLabel(label: string): boolean {
 const PORTAL_REVIEW_MARKERS = /\bstep\s*\d+\s*:?\s*review\b|review all information|continue application button below|please review (all )?information|\(read-only\)/i;
 
 function heuristicPortalPlan(input: PortalFieldPlanInput): PortalFieldPlan {
+  // DASHBOARD / HOME PAGE (no fillable inputs, only navigation links). Find the link that
+  // starts a new application and return it as navigateIndex so the learner can reach the
+  // actual form. Without this, the offline (no-API-key) planner can't get past the portal
+  // home screen — it would mistake the dashboard for a review page and stop.
+  if (input.isDashboard) {
+    const navField = input.fields.find(
+      (f) => f.fieldType === "button" && PORTAL_NEW_APP_RE.test(f.label || "") && !PORTAL_PAY_RE.test(f.label || ""),
+    );
+    if (navField) {
+      return {
+        fills: [],
+        navigateIndex: navField.index,
+        atReview: false,
+        confidence: "low",
+        notes: `Heuristic dashboard navigation (no LLM): clicking "${navField.label}" to start a new application. Human verification required.`,
+      };
+    }
+    // No recognizable "new application" link — don't guess at a random nav link; stop cleanly.
+    return {
+      fills: [],
+      atReview: false,
+      confidence: "low",
+      notes: "Heuristic fallback: a page with no fillable inputs and no recognizable 'new application' link. A human must navigate to the application form (or set ANTHROPIC_API_KEY so the LLM planner can find it).",
+    };
+  }
+
   const fills: PortalFieldPlan["fills"] = [];
   let advanceIndex: number | undefined;
   let finalSubmitIndex: number | undefined;

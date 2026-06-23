@@ -39,6 +39,17 @@ const CHROMIUM_ARGS = [
   "--disable-ipc-flooding-protection",
 ];
 
+// CRITICAL: the backend + portal-bot run under tsx, whose esbuild transpile wraps every
+// named function with a `__name(fn, "name")` helper call (esbuild "keepNames"). When a
+// such a function is serialized and run INSIDE the browser via page.$$eval / page.evaluate,
+// `__name` is undefined there → ReferenceError → the adapter's `.catch(() => [])` swallows
+// it and silently returns an EMPTY result. That makes every page look like it has no
+// fields, so auto-learn can never navigate/fill/advance. Shimming `__name` to an identity
+// function in the page (on every navigation, before page scripts run) makes those
+// serialized functions work. Harmless in a non-tsx/build environment (the shim is a no-op
+// the wrapped code never needs). Applied to the whole context so EVERY adapter benefits.
+const NAME_SHIM = "globalThis.__name = globalThis.__name || function (fn) { return fn; };";
+
 // Resolve the headless setting honestly:
 //   - explicit opts.headless wins;
 //   - PORTAL_HEADLESS=false forces a visible window (local debugging / recording);
@@ -68,6 +79,7 @@ export async function openPortal(opts: {
       viewport: null,
       args: CHROMIUM_ARGS,
     });
+    await context.addInitScript({ content: NAME_SHIM });
     const page = context.pages()[0] ?? (await context.newPage());
     // Persistent context owns its own browser process; closing the context closes it.
     return { page, context };
@@ -77,6 +89,7 @@ export async function openPortal(opts: {
   const context = opts.storageStatePath
     ? await browser.newContext({ storageState: opts.storageStatePath })
     : await browser.newContext();
+  await context.addInitScript({ content: NAME_SHIM });
   const page = await context.newPage();
   return { page, context, browser };
 }

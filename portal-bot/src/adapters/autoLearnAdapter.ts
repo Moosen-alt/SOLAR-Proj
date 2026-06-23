@@ -383,8 +383,17 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         return fail(steps, this.portalName, `Failed to scrape page ${pageCount}: ${err instanceof Error ? err.message : String(err)}`);
       }
 
-      // Is this a dashboard/home with no fillable inputs? (only buttons/links present)
-      const isDashboard = !fields.some((f) => f.fieldType !== "button");
+      // PAGE CLASSIFICATION. A page with NO fillable inputs is EITHER a dashboard/home
+      // (just navigation links — the portal entry screen after login) OR a read-only
+      // REVIEW/confirm page (a data summary + a submit-intent button). They look identical
+      // by "no inputs" alone, so discriminate by submit-intent button + review markers:
+      //   - REVIEW  → has a submit-intent button (Continue Application/Submit/Finish) or
+      //               review markers ("Step N: Review", "review all information", /review URL).
+      //   - DASHBOARD → no inputs, no submit-intent button, no review markers → only links.
+      const hasFillable = fields.some((f) => f.fieldType !== "button");
+      const hasSubmitIntentBtn = fields.some((f) => f.fieldType === "button" && SUBMIT_INTENT.test(f.label));
+      const reviewSignals = REVIEW_MARKERS.test(bodyText) || looksLikeReviewUrl(url);
+      const isDashboard = !hasFillable && !hasSubmitIntentBtn && !reviewSignals;
 
       // c) Ask the planner what to do on this page.
       let plan: LearnPlanResponse;
@@ -395,16 +404,11 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       }
 
       // c2) STRUCTURAL REVIEW GUARD — the Accela "Continue Application" trap.
-      // A page with NO fillable inputs is a read-only review/confirm page; its primary
-      // button (e.g. "Continue Application") SUBMITS. We NEVER advance-click on such a
-      // page — we force the review stop and record that button as the final submit,
-      // overriding the planner if it mistook the submit button for an "advance/next".
-      //
-      // IMPORTANT: skip this guard when isDashboard is true. A dashboard/home page also
-      // has no fillable inputs, but it is NOT a review page — it's the portal's entry
-      // screen after login, handled by navigateSelectorIndex below.
-      const hasFillable = fields.some((f) => f.fieldType !== "button");
-      const isReviewPage = !isDashboard && (!hasFillable || ((REVIEW_MARKERS.test(bodyText) || looksLikeReviewUrl(url)) && fields.some((f) => f.fieldType === "button" && SUBMIT_INTENT.test(f.label))));
+      // On a review page its primary button (e.g. "Continue Application") SUBMITS, so we
+      // NEVER advance-click — we force the review stop and record that button as the final
+      // submit, overriding a planner that mistook the submit button for an "advance/next".
+      // A no-input page that is NOT a dashboard is, by definition, a review page.
+      const isReviewPage = (!hasFillable && !isDashboard) || (reviewSignals && hasSubmitIntentBtn);
       if (isReviewPage && !plan.atReview) {
         // Promote a planner "advance" that is actually a submit-intent button to finalSubmit.
         let promotedFinal = typeof plan.finalSubmitSelectorIndex === "number" ? plan.finalSubmitSelectorIndex : undefined;
