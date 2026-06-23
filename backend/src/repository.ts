@@ -4667,7 +4667,7 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   // document gate below will still report exactly what's missing.
   try {
     const existingDocs = projectDocsByType(db, detail.project.id);
-    const hasSheets = ["sld", "site_plan", "structural", "module_spec", "inverter_spec"].some((t) => existingDocs[t]);
+    const hasSheets = ["sld", "site_plan", "structural", "module_spec", "inverter_spec"].every((t) => existingDocs[t]);
     if (!hasSheets) {
       const target = track === "nem" ? "nem" : track === "building" ? "permit" : "all";
       await buildUtilityPackage(db, detail.project.id, target);

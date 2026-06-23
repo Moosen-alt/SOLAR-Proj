@@ -327,7 +327,7 @@ export class PowerClerkAdapter extends BasePortalAdapter {
         await this.selectSearchable(inverterManufacturer);
       }
       if (inverterModel) {
-        await this.selectSearchable(inverterModel, true);
+        await this.selectSearchable(inverterModel);
       }
 
       // PV arrays — fill the first, clone for each additional array
@@ -373,18 +373,11 @@ export class PowerClerkAdapter extends BasePortalAdapter {
   }
 
   // Selects a value from a PowerClerk searchable "Please select..." dropdown.
-  // When `isModel` is true it matches the option containing the term anywhere
-  // (model rows include extra wattage/voltage text).
-  private async selectSearchable(term: string, isModel = false): Promise<void> {
-    const page = this.page;
-    await page.getByText("Please select...").first().click();
-    await page.getByRole("combobox", { name: "search term" }).fill(term);
-    if (isModel) {
-      await page.getByText(new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i")).first().click();
-    } else {
-      // Exact manufacturer label
-      await page.locator("div").filter({ hasText: new RegExp(`^${term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`) }).nth(4).click();
-    }
+  // Clicks the trigger, types the term into the search box, then delegates
+  // option picking to fillCustomCombobox (ARIA-role or list-item fallback).
+  private async selectSearchable(term: string): Promise<void> {
+    const trigger = this.page.getByText("Please select...").first();
+    await fillCustomCombobox(this.page, trigger, term);
   }
 
   // Fills the first PV array, then clones and fills each additional array.
@@ -397,7 +390,7 @@ export class PowerClerkAdapter extends BasePortalAdapter {
     const firstGroup = page.getByRole("group", { name: "PV Array Delete Array" }).first();
     await firstGroup.getByPlaceholder("Qty").fill(first.quantity).catch(() => null);
     if (first.moduleManufacturer) await this.selectSearchable(first.moduleManufacturer);
-    if (first.moduleModel) await this.selectSearchable(first.moduleModel, true);
+    if (first.moduleModel) await this.selectSearchable(first.moduleModel);
     await page.getByRole("textbox", { name: "Tilt" }).first().fill(first.tilt).catch(() => null);
     await page.getByRole("textbox", { name: "Azimuth" }).first().fill(first.azimuth).catch(() => null);
 

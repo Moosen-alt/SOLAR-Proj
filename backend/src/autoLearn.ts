@@ -161,7 +161,7 @@ export async function autoLearnPortal(
   let docsByType: Record<string, string> = {};
   try {
     const existing = projectDocsByType(db, projectId);
-    const hasSheets = ["sld", "site_plan", "inverter_spec"].some((t) => existing[t]);
+    const hasSheets = ["sld", "site_plan", "inverter_spec"].every((t) => existing[t]);
     if (!hasSheets) {
       await buildUtilityPackage(db, projectId, scopeType === "utility" ? "nem" : "permit").catch(() => null);
     }
