@@ -635,20 +635,27 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             async () => {
               const loc = await this.locator(navField.selector);
               if (!loc) throw new Error("navigate selector unresolved");
-              try {
-                await this.clickResilient(loc);
-              } catch (clickErr) {
-                // Fallback for a hidden/menu-nested nav link we can't click: if it's an
-                // anchor with an href, navigate to it directly. (Accela's "Building Dept
-                // Application" is a hidden <a href="...CapApplyDisclaimer.aspx?module=Building">
-                // in the dashboard quick-links — never actionable, but the href works.)
-                const href = navField.href;
-                if (href && href !== "#" && this.page) {
-                  const abs = new URL(href, String(this.page.url())).href;
-                  if (process.env.AUTOLEARN_DEBUG === "1") console.error(`[navigate] click failed; navigating to href ${abs}`);
-                  await this.page.goto(abs, { waitUntil: "domcontentloaded", timeout: 30000 });
-                } else {
-                  throw clickErr;
+              const href = navField.href;
+              const realHref = !!href && href !== "#" && !/^javascript:/i.test(href);
+              const gotoHref = async () => {
+                const abs = new URL(href!, String(this.page!.url())).href;
+                if (process.env.AUTOLEARN_DEBUG === "1") console.error(`[navigate] navigating to href ${abs}`);
+                await this.page!.goto(abs, { waitUntil: "domcontentloaded", timeout: 30000 });
+              };
+              // FAST PATH: a hidden/menu-nested anchor with a real href is never clickable —
+              // don't burn ~80s on click retries; navigate straight to the href. (Accela's
+              // "Building Dept Application" is a hidden <a href="...CapApplyDisclaimer.aspx">.)
+              let visible = false;
+              try { visible = (await loc.count()) > 0 && (await loc.isVisible().catch(() => false)); } catch { visible = false; }
+              if (!visible && realHref) {
+                await gotoHref();
+              } else {
+                try {
+                  await this.clickResilient(loc);
+                } catch (clickErr) {
+                  // Fallback: a link we couldn't click but that has a usable href.
+                  if (realHref && this.page) await gotoHref();
+                  else throw clickErr;
                 }
               }
               await this.waitAfterClick(navBeforeUrl, navBeforeFp, navTabsBefore);

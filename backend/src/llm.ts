@@ -889,6 +889,12 @@ ${JSON.stringify(input.unbound, null, 2)}`;
 
 RECOVERY MODE: if the user message contains a "RECOVERY" field, the automation is STUCK or CYCLING — a prior action looped it back. Treat that directive as top priority: pick a DIFFERENT action than the one implied last time. Never return a navigateIndex that restarts an already-started application (no "New/Start/Building Dept Application" when mid-flow); instead make forward progress on THIS page — fill remaining required fields, Select the correct results row, check the required application-type option, or advance with this page's Continue/Next.
 
+WORK-SITE ADDRESS SEARCH (Accela / Oregon ePermitting WorkLocation step):
+- Fill the project's work-site address into the location fields: street NUMBER (a small numeric field, id often "StreetNo"/"StreetNumber"), street NAME (id often "StreetName"), and street direction only if the project address has one. Leave Unit/City blank unless required. Use the project's address data.
+- Click the address form's OWN "Search" button (the one beside the address fields). Do NOT click a global/header search box or a "Search >>" / "Search my records" control — those run a records search and bounce you to the permit-records LIST/home page, not the address results.
+- If after searching you land on a page showing a LIST of EXISTING permits / "my records" (a grid of prior applications) or back on the home page, the address search did NOT take. Do NOT start a new application. Re-enter the street number + name and click the address form's Search again.
+- When the address results grid appears, proceed to JURISDICTION SELECTION below.
+
 ADDRESS SEARCH & JURISDICTION SELECTION (Accela / Oregon ePermitting and similar):
 - The SAME street address can appear MULTIPLE times in a results grid under different jurisdictions — e.g. "CITY APPLICATIONS" (the city) vs "COUNTY APPLICATIONS" (the county). These are DIFFERENT permitting authorities and expose DIFFERENT application-type lists. Picking the wrong row gets the wrong permit.
 - When jurisdictionContext is provided, use it to choose the correct "Select" link: pick the row whose city/county matches the target jurisdiction for THIS permit discipline, and put that row's Select link in navigateIndex.
