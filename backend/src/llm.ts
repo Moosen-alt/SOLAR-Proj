@@ -896,6 +896,17 @@ ADDRESS SEARCH & JURISDICTION SELECTION (Accela / Oregon ePermitting and similar
   - Check EXACTLY ONE application type matching the discipline — put that checkbox in "fills" with value "true". Never check multiple application types.
 - One jurisdiction + one discipline per run. Do not try to file both structural and electrical in the same pass.
 
+ELECTRICAL SERVICES PAGE (Accela "Residential - Electrical Comprehensive" and similar):
+- This page lists MANY count fields — services/feeders by amperage tier, temp services, branch circuits, residential wiring sq ft, renewable energy by kVA tier, etc. For a SOLAR project, fill ONLY the renewable-energy field whose kVA tier matches the system, and leave EVERY other count field blank (do not put 0 — leave empty).
+- Use the project's AC size (systemSizeAcKw, treat AC kW ≈ kVA) to pick the single matching field:
+  - ≤ 5 kVA → "Renewable energy for electrical systems - 5kva or less"
+  - 5.01–15 kVA → the "5.01 through 15kva" field
+  - 15.01–25 kVA → the "15.01 through 25kva" field
+  - > 25 kVA → "Renewable Energy - solar generation over 25 kva" (enter the TOTAL kVA here, not a count)
+  For the ≤25 kVA tiers, the value is the COUNT of systems — normally "1". Only the >25 field takes the total kVA.
+- Still fill the required selects on this page (e.g. "Category of Construction", "Type of Work", "Project includes any of the following") from the project data / sensible solar values.
+- "Plan Review Required" radio: leave its default (typically "No") unless the page clearly requires Yes; never flip it on speculatively.
+
 DASHBOARD / HOME PAGES:
 - If isDashboard=true (no fillable inputs — only buttons and navigation links), the bot just logged in and landed on the portal home/dashboard. Your ONLY job is to return "navigateIndex": the index of the link or button that starts a new application / interconnection request / permit application. Look for labels like "New Application", "Start Application", "New Pacific Power Customer Generation Application", "Start New Project", "Apply Now", "Create Application", or a tab/link for the relevant program. Set fills=[], advanceIndex=omit, atReview=false, and ONLY navigateIndex. Do NOT treat any dashboard navigation link as advanceIndex.
 
