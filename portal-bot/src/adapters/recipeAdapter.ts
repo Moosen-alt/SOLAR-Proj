@@ -1,6 +1,7 @@
 import type { PortalRecipe, ProjectRecord, RecipeSelector, RecipeStep } from "../../../shared/src/types";
 import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, type PortalContext, type PortalStepResult } from "../adapter";
 import { openPortal } from "../browser";
+import { fillCustomCombobox } from "../comboboxFill";
 import { detectChallengeFrame, redactStatusText, RETRY_BACKOFF_MS, sleep, smartWait, waitForElement } from "../safeAction";
 import { performLogin } from "./loginFlow";
 
@@ -291,7 +292,11 @@ export class RecipeAdapter extends BasePortalAdapter {
         const v = this.resolveValue(step);
         if (!v) return false;
         await waitForElement(scoped);
-        await scoped!.selectOption(v).catch(async () => scoped!.selectOption({ label: v }));
+        // Native <select> first; fall back to the custom-combobox interaction for styled
+        // div dropdowns (PowerClerk "Please select...", select2, ExtJS) selectOption can't drive.
+        await scoped!.selectOption(v)
+          .catch(async () => scoped!.selectOption({ label: v }))
+          .catch(async () => { await fillCustomCombobox(this.page, scoped, v); });
         return true;
       }
       case "check":

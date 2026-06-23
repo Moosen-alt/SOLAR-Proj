@@ -3,6 +3,16 @@ import type { ProjectRecord, ReviewerReport } from "../../../shared/src/types";
 import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, type PortalContext, type PortalStepResult } from "../adapter";
 import { openPortal } from "../browser";
 import { detectChallengeFrame, redactStatusText, safeAction, sleep } from "../safeAction";
+import { fillCustomCombobox } from "../comboboxFill";
+
+// Select a value on a PowerClerk dropdown that may be a native <select> OR a custom
+// "Please select..." widget. Native selectOption first; fall back to the open->type->pick
+// interaction. Replaces the old `.catch(() => null)` that silently left these fields blank.
+async function selectAny(page: any, locator: any, value: string): Promise<void> {
+  await locator.selectOption(value)
+    .catch(async () => locator.selectOption({ label: value }))
+    .catch(async () => { await fillCustomCombobox(page, locator, value); });
+}
 
 // PowerClerk (PGE Net Metering) adapter
 // Built from an operator codegen recording captured up to the final submit page.
@@ -276,9 +286,9 @@ export class PowerClerkAdapter extends BasePortalAdapter {
       await page.getByText("New net metering system at a location currently served by PGE").click().catch(() => null);
 
       const serviceType = str(s["serviceType"] ?? s["service_type"]) || "Residential";
-      await page.getByLabel("Type").first().selectOption(serviceType).catch(() => null);
+      await selectAny(page, page.getByLabel("Type").first(), serviceType);
       const schedule = str(s["pgeSchedule"] ?? s["schedule"]) || "7";
-      await page.getByLabel("Schedule").first().selectOption(schedule).catch(() => null);
+      await selectAny(page, page.getByLabel("Schedule").first(), schedule);
 
       // Account + meter number are REQUIRED to bind the interconnection to the right
       // service point — a missed fill must fail the run, never pass silently.
@@ -298,13 +308,13 @@ export class PowerClerkAdapter extends BasePortalAdapter {
       await settleAndNext("system / service point");
 
       // --- Generation: inverter + N PV arrays -------------------------------
-      await page.getByLabel("Energy Source").selectOption("a. Solar").catch(() => null);
-      await page.getByLabel("Prime Mover").selectOption("Photovoltaic").catch(() => null);
-      await page.getByLabel("Type").selectOption("Static Inverter").catch(() => null);
+      await selectAny(page, page.getByLabel("Energy Source"), "a. Solar");
+      await selectAny(page, page.getByLabel("Prime Mover"), "Photovoltaic");
+      await selectAny(page, page.getByLabel("Type"), "Static Inverter");
 
       const hasStorage = String(s["hasBattery"] ?? s["energyStorage"] ?? "").toLowerCase();
       const storageAnswer = hasStorage === "true" || hasStorage === "yes" ? "Yes" : "No";
-      await page.getByLabel("Energy Storage").selectOption(storageAnswer).catch(() => null);
+      await selectAny(page, page.getByLabel("Energy Storage"), storageAnswer);
 
       // Inverter quantity + manufacturer/model via searchable dropdowns
       const inverterQty = str(s["inverterQuantity"] ?? s["inverter_quantity"]) || "1";

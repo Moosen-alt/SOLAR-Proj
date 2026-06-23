@@ -2,6 +2,7 @@ import type { Page } from "playwright";
 import type { ProjectRecord, RecipeSelector, RecipeStep } from "../../../shared/src/types";
 import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, type PortalContext, type PortalStepResult } from "../adapter";
 import { openPortal } from "../browser";
+import { fillCustomCombobox } from "../comboboxFill";
 import { detectChallengeFrame, redactStatusText, safeAction, sleep, smartWait, waitForElement } from "../safeAction";
 import { performLogin } from "./loginFlow";
 
@@ -210,6 +211,32 @@ function extractFieldsInPage(els: Element[]): RawField[] {
       else if (typeAttr === "file") fieldType = "file";
       else if (typeAttr === "hidden" || typeAttr === "password") fieldType = typeAttr === "password" ? "text" : "other";
       else fieldType = "text";
+    }
+
+    // Custom (non-native-<select>) dropdowns: PowerClerk "Please select..." widgets,
+    // select2 / chosen / ui-select / ExtJS comboboxes. These render as styled divs, so
+    // the tag checks above miss them and the planner never sees a dropdown to fill.
+    // Detect by ARIA role / haspopup / known widget classes / the "Select..." prompt text,
+    // and mark them "select" so applyFill's combobox fallback drives them.
+    if (fieldType === "other") {
+      const aria = (el.getAttribute("role") || "").toLowerCase();
+      const haspopup = (el.getAttribute("aria-haspopup") || "").toLowerCase();
+      const cls = (el.getAttribute("class") || "").toLowerCase();
+      const ownText = (el.textContent || "").trim();
+      const widgetClass = /\b(select2|chosen|ui-select|ng-select|v-select|x-combo|k-dropdown|multiselect|dropdown-toggle)\b/.test(cls);
+      const promptText = /^(please\s+)?select\.{0,3}$/i.test(ownText);
+      if (aria === "combobox" || aria === "listbox" || haspopup === "listbox" || haspopup === "true" || widgetClass || promptText) {
+        fieldType = "select";
+        // Capture any options already rendered in an associated open listbox.
+        const listId = el.getAttribute("aria-controls") || el.getAttribute("aria-owns");
+        const list = listId ? document.getElementById(listId) : el.querySelector('[role="listbox"]');
+        if (list) {
+          const opts = Array.from(list.querySelectorAll('[role="option"], li, .dropdown-item'))
+            .map((o) => (o.textContent || "").trim())
+            .filter((t) => t.length > 0);
+          if (opts.length) options = opts;
+        }
+      }
     }
 
     // Skip hidden inputs entirely.
@@ -873,7 +900,12 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         const loc = await this.locator(field.selector);
         if (!loc) throw new Error("selector unresolved");
         if (action === "select") {
-          await loc.selectOption(value).catch(async () => loc.selectOption({ label: value }));
+          // Native <select> first; fall back to the custom-combobox interaction for
+          // styled-div dropdowns (PowerClerk "Please select...", select2, ExtJS, etc.)
+          // that selectOption() can't drive.
+          await loc.selectOption(value)
+            .catch(async () => loc.selectOption({ label: value }))
+            .catch(async () => { await fillCustomCombobox(this.page, loc, value); });
         } else if (action === "check") {
           await loc.check();
         } else {
