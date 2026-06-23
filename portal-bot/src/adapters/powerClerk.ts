@@ -161,12 +161,28 @@ export class PowerClerkAdapter extends BasePortalAdapter {
     // 2. networkidle catches the autosave XHR.
     // 3. A configurable sleep covers slow-network/slow-save edge cases.
     // 4. After clicking Next, another networkidle waits for the next section.
-    const settleAndNext = async () => {
+    // 5. URL check: if Next didn't navigate, surface any visible validation text
+    //    so the run fails with a meaningful message rather than filling the wrong section.
+    const settleAndNext = async (section = "") => {
       await page.keyboard.press("Tab").catch(() => null);
       await page.waitForLoadState("networkidle", { timeout: 8000 }).catch(() => null);
       await sleep(Number(process.env.POWERCLERK_SETTLE_MS) || 2000);
+      const beforeUrl = String(page.url());
       await page.getByRole("button", { name: "Next", exact: true }).click();
       await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
+      // If the URL didn't change, Next was blocked by a validation error.
+      // Extract visible error text (field names only — never field values).
+      const afterUrl = String(page.url());
+      if (beforeUrl === afterUrl) {
+        const errEl = page.locator(
+          ".validation-summary-errors,.field-validation-error,[class*=error-message],[class*=alert-danger],[class*=text-danger]"
+        ).first();
+        const errText = await errEl.isVisible().then(() => errEl.textContent()).catch(() => null);
+        const loc = section ? ` (${section})` : "";
+        throw new Error(
+          `PowerClerk Next click did not advance${loc}${errText ? `: ${errText.trim().slice(0, 120)}` : " — possible validation error or required field missing"}`
+        );
+      }
     };
 
     try {
@@ -200,7 +216,7 @@ export class PowerClerkAdapter extends BasePortalAdapter {
       await collect("installerAddress", () => page.getByRole("textbox", { name: "Address", exact: true }).first().fill(installerAddress));
       await collect("installerEmail", () => page.getByRole("textbox", { name: "Email" }).first().fill(installerEmail));
       await collect("installerPhone", () => page.getByRole("textbox", { name: "Phone" }).first().fill(installerPhone));
-      await settleAndNext();
+      await settleAndNext("installer contact");
 
       // --- Applicant (PGE Customer / homeowner) -----------------------------
       // Scope the whole block to the Applicant group so it never collides with
@@ -225,7 +241,7 @@ export class PowerClerkAdapter extends BasePortalAdapter {
       const ownerEmail = str(s["homeownerEmail"] ?? s["owner_email"]);
       if (ownerPhone) await applicantScope.getByRole("textbox", { name: "Phone" }).first().fill(ownerPhone);
       if (ownerEmail) await applicantScope.getByRole("textbox", { name: "Email" }).first().fill(ownerEmail);
-      await settleAndNext();
+      await settleAndNext("applicant");
 
       // --- Installer company selection (same authoritative client value) -----
       const installerCompany = installerCompanyName;
@@ -233,7 +249,7 @@ export class PowerClerkAdapter extends BasePortalAdapter {
         // Fall back to first option if exact label is unavailable
         await page.getByLabel("Installer Company").selectOption({ index: 1 }).catch(() => null);
       });
-      await settleAndNext();
+      await settleAndNext("installer company");
 
       // --- System / point of interconnection --------------------------------
       const existingContact = str(s["powerclerkExistingContact"] ?? s["existing_contact"]);
@@ -262,7 +278,7 @@ export class PowerClerkAdapter extends BasePortalAdapter {
 
       const serviceRating = str(s["mainServiceRating"] ?? s["main_service_rating"] ?? s["serviceRating"]) || "200";
       await collect("mainServiceRating", () => page.getByRole("textbox", { name: "Main Service Entrance Rating" }).fill(serviceRating));
-      await settleAndNext();
+      await settleAndNext("system / service point");
 
       // --- Generation: inverter + N PV arrays -------------------------------
       await page.getByLabel("Energy Source").selectOption("a. Solar").catch(() => null);
@@ -298,12 +314,12 @@ export class PowerClerkAdapter extends BasePortalAdapter {
       const limitExport = String(s["limitExport"] ?? "").toLowerCase() === "true" ? "Yes" : "No";
       await page.getByRole("group", { name: /Do you propose to limit/i }).getByLabel(limitExport).check().catch(() => null);
       await page.getByRole("group", { name: /Is your disconnect within 10/i }).getByLabel("Yes").check().catch(() => null);
-      await settleAndNext();
+      await settleAndNext("generation / inverter");
 
       // --- Aggregation ------------------------------------------------------
       await page.getByRole("radio", { name: "No aggregation" }).check().catch(() => null);
       await page.getByRole("radio", { name: "Yes" }).check().catch(() => null);
-      await settleAndNext();
+      await settleAndNext("aggregation");
 
       // If any REQUIRED field failed, the form is half-filled — report ok:false with a
       // redacted (field-name-only) message rather than a clean success.
