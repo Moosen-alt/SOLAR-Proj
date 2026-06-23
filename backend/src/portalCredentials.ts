@@ -152,18 +152,21 @@ export function getDecryptedCredentialByUrl(
   return null;
 }
 
-// Last-resort fallback: the most recently updated credential for this client, any portal.
+// Last-resort fallback: ONLY when the client has exactly one stored credential is it
+// unambiguous which login to use. When a client has credentials for multiple portals
+// (e.g. a utility NEM portal AND an AHJ permit portal), guessing could fill one portal's
+// login with the other's secret — so refuse and require a portalType/URL match instead.
 export function getDecryptedCredentialAny(
   db: AppDb,
   clientId: string,
 ): { username: string; password: string } | null {
-  const row = db.get<Row>(
-    "SELECT encrypted_secret FROM portal_credentials WHERE client_id = ? ORDER BY updated_at DESC LIMIT 1",
+  const rows = db.query<Row>(
+    "SELECT encrypted_secret FROM portal_credentials WHERE client_id = ?",
     [clientId],
   );
-  if (!row || !s(row.encrypted_secret)) return null;
+  if (rows.length !== 1 || !s(rows[0].encrypted_secret)) return null;
   try {
-    const dec = decryptStorageState(s(row.encrypted_secret)) as { username?: string; password?: string };
+    const dec = decryptStorageState(s(rows[0].encrypted_secret)) as { username?: string; password?: string };
     return { username: s(dec.username), password: s(dec.password) };
   } catch { return null; }
 }
