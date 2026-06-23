@@ -1707,7 +1707,7 @@ function renderSubmitGate() {
             const res = await api(`/api/projects/${p.id}/build-utility-package?target=${encodeURIComponent(target)}`, { method: "POST" });
             const count = (res.parts || []).length;
             if (statusEl) statusEl.textContent = `✓ Split into ${count} document(s). Refreshing gate…`;
-            setTimeout(() => loadProjectDetail(p.id), 1200);
+            setTimeout(() => selectProject(p.id), 1200);
           } catch (err) {
             if (statusEl) statusEl.textContent = `Failed: ${err.message}`;
             inlineBtn.disabled = false;
@@ -5142,7 +5142,7 @@ function connectSse() {
         bumpNotifBadge();
         // Refresh the affected project row if it's currently open.
         if (data.projectId && state.selectedProjectId === data.projectId) {
-          loadProjectDetail(data.projectId).catch(() => null);
+          selectProject(data.projectId).catch(() => null);
         }
         // Refresh the project list so board status badges update.
         loadProjects().catch(() => null);

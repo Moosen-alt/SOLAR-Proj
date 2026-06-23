@@ -10,22 +10,42 @@ import { saveProjectDocument, listProjectDocuments, projectDocsByType } from "./
 // Sheet/content patterns → upload doc category. Ported from the parser's detectSplitPages;
 // pages are scored against each category and assigned to the best match. The categories are
 // the files an AHJ/utility upload package needs.
+//
+// Real plan sets identify each sheet by the Sheet Name spelled out in the title block —
+// present as extractable text even when the body of the sheet is an image (equipment
+// cut-sheets, spec sheets). So we match the sheet-name text, and a single page may satisfy
+// MORE THAN ONE category (e.g. Infinity's "PV MODULE / INV SPECIFICATION SHEET" is both the
+// module spec and the inverter spec). The general-notes / sheet-index page lists every sheet
+// name, so it would match everything — it is detected and skipped before classification.
 const CATEGORY_PATTERNS: Array<{ docType: string; label: string; patterns: RegExp[] }> = [
-  { docType: "sld", label: "SLD / one-line", patterns: [/\b3-?LINE DIAGRAM\b/i, /\bONE-?LINE\b/i, /\bSINGLE-?LINE\b/i, /\bE\s*1\.1\b/i, /UTILITY COMPANY/i] },
+  { docType: "sld", label: "SLD / one-line", patterns: [/\b3-?LINE DIAGRAM\b/i, /\bONE-?LINE\b/i, /\bSINGLE-?LINE\b/i, /\bE\s*1\.1\b/i] },
   { docType: "site_plan", label: "Site / plot plan", patterns: [/\bSITE PLAN\b/i, /\bPLOT PLAN\b/i, /\bPV\s*1\.[01]\b/i] },
   { docType: "structural", label: "Structural / roof framing", patterns: [/\bMOUNT DETAIL\b/i, /\bATTACHMENT DETAIL\b/i, /\bROOF SECTION\b/i, /\bRAFTER\b/i, /\bTRUSS\b/i, /\bS\s*1\.\d\b/i, /STRUCTURAL/i] },
-  { docType: "module_spec", label: "Module spec", patterns: [/MODULE SPECIFICATION/i, /PV MODULE SPEC/i, /ZXM7|Q\.TRON|ZNSHINE/i] },
-  { docType: "inverter_spec", label: "Inverter spec", patterns: [/MICROINVERTER SPECIFICATION/i, /INVERTER SPECIFICATION/i, /DS3 Series|Q\.MI|IQ8/i] },
+  // Match the dedicated SPEC SHEET by its title-block Sheet Name only. Model strings
+  // (Q.TRON, Q.MI) and the word "PV MODULE" appear in the spec-callout block on the site
+  // plan, SLD, etc., so they are NOT reliable — only the sheet name "… SPECIFICATION SHEET"
+  // identifies the actual cut-sheet page. The combined "MODULE / INV SPECIFICATION SHEET"
+  // counts as BOTH module and inverter spec.
+  { docType: "module_spec", label: "Module spec", patterns: [/MODULE\s*[\/&]?\s*INV(?:ERTER)?\.?\s*SPEC/i, /MODULE\s+SPECIFICATION\s+SHEET/i, /PV MODULE SPEC/i] },
+  { docType: "inverter_spec", label: "Inverter spec", patterns: [/MODULE\s*[\/&]?\s*INV(?:ERTER)?\.?\s*SPEC/i, /MICRO-?INVERTER\s+SPECIFICATION/i, /INVERTER\s+SPECIFICATION\s+SHEET/i] },
   { docType: "labels", label: "Labels / placards", patterns: [/\bWARNING LABELS\b/i, /\bLABEL LOCATION\b/i, /\bE\s*1\.3\b/i] },
 ];
 
-function classifyPage(text: string): string | null {
-  let best: { docType: string; score: number } | null = null;
+// The general-notes / sheet-index cover page lists every sheet name and would otherwise
+// match every category. It is never an uploadable single-category doc, so skip it.
+function isIndexOrNotesPage(text: string): boolean {
+  return /SHEET INDEX/i.test(text) || /GENERAL NOTES AND PROJECT DATA/i.test(text);
+}
+
+// A page may belong to several categories (a combined spec sheet counts as both module and
+// inverter spec). Returns every category whose sheet-name pattern is present on the page.
+function classifyPage(text: string): string[] {
+  if (isIndexOrNotesPage(text)) return [];
+  const out: string[] = [];
   for (const cat of CATEGORY_PATTERNS) {
-    const score = cat.patterns.reduce((n, re) => (re.test(text) ? n + 1 : n), 0);
-    if (score > 0 && (!best || score > best.score)) best = { docType: cat.docType, score };
+    if (cat.patterns.some((re) => re.test(text))) out.push(cat.docType);
   }
-  return best?.docType ?? null;
+  return out;
 }
 
 // Which documents each submission TYPE needs in its upload package. The package is
@@ -89,11 +109,13 @@ export async function buildUtilityPackage(db: AppDb, projectId: string, target =
   const byCategory = new Map<string, number[]>();
   const unclassified: number[] = [];
   for (let i = 0; i < total; i++) {
-    const docType = classifyPage(pageTexts[i] ?? "");
-    if (docType) {
-      const arr = byCategory.get(docType) ?? [];
-      arr.push(i);
-      byCategory.set(docType, arr);
+    const docTypes = classifyPage(pageTexts[i] ?? "");
+    if (docTypes.length) {
+      for (const docType of docTypes) {
+        const arr = byCategory.get(docType) ?? [];
+        arr.push(i);
+        byCategory.set(docType, arr);
+      }
     } else {
       unclassified.push(i + 1);
     }
