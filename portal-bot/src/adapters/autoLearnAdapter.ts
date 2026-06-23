@@ -1,7 +1,8 @@
-import type { ProjectRecord, RecipeSelector, RecipeStep, PortalRecipeLoginStep } from "../../../shared/src/types";
+import type { ProjectRecord, RecipeSelector, RecipeStep } from "../../../shared/src/types";
 import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, type PortalContext, type PortalStepResult } from "../adapter";
 import { openPortal } from "../browser";
 import { detectChallengeFrame, redactStatusText, safeAction, smartWait, waitForElement } from "../safeAction";
+import { performLogin } from "./loginFlow";
 
 // AutoLearnAdapter — AUTONOMOUSLY learns an unknown AHJ/utility portal form instead of
 // having a human record it. Each page is scraped into a structured snapshot
@@ -290,72 +291,21 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         await smartWait(this.page);
       }
 
-      // If a credential is available, auto-fill a login form when the session expired.
-      // Never logs credentials. The login selectors are best-effort/structural.
-      // Detect whether a login form is even present first — if the persistent profile
-      // session is still valid there is no form and we proceed straight to learning.
-      const loginStep: PortalRecipeLoginStep = {
-        // Accela (Oregon ePermitting): #txtLoginEmail / #txtLoginPassword / #hlLogin.
-        // Broad CSS fallbacks cover non-Accela portals with standard login forms.
-        usernameSel: { css: '#txtLoginEmail, #txtUserName, input[type="email"], input[name*="user" i], input[name*="email" i], input[id*="login"][id*="email" i], input[id*="login"][id*="user" i]' },
-        passwordSel: { css: '#txtLoginPassword, input[type="password"]' },
-        submitSel: { css: '#hlLogin, #btnLogin, input[type="submit"], button[type="submit"], a.btn-login, button.btn-login, a.LoginButton' },
-      };
-      const uLoc = this.locator(loginStep.usernameSel);
-      const loginFormPresent = uLoc ? (await uLoc.count().catch(() => 0)) > 0 : false;
-
-      if (loginFormPresent && !context.credential) {
-        // A login form is showing but we have no credential to fill it. Stop with a
-        // clear message instead of silently learning the login page.
-        return {
-          ok: false,
-          message: `${this.portalName} is showing a login page but no stored credential was found for this client/portal. Add the portal username + password under the client's credentials, then retry. (Or run \`npm run portal:login\` once to establish a persistent session.)`,
-        };
+      // Log in via the shared, portal-agnostic login flow. It detects/reveals the login
+      // form, fills it (known + unknown portals), verifies success, and stops on MFA.
+      // Never logs credentials.
+      const result = await performLogin(this.page, context.credential);
+      if (result.status === "logged_in" || result.status === "already_authenticated") {
+        return { ok: true, message: `Opened ${this.portalName} for autonomous learning. ${result.message}` };
       }
-
-      if (loginFormPresent && context.credential) {
-        try {
-          const challenge = await detectChallengeFrame(this.page);
-          if (challenge) {
-            return { ok: false, message: `Login paused: ${challenge}. Complete verification in the browser, then retry.`, pauseReason: "mfa_captcha" };
-          }
-          await waitForElement(uLoc);
-          await uLoc!.fill(context.credential.username);
-          const pLoc = this.locator(loginStep.passwordSel);
-          if (!pLoc || (await pLoc.count().catch(() => 0)) === 0) {
-            return { ok: false, message: `Could not find the password field on ${this.portalName}'s login page. The portal layout may have changed — record it manually.` };
-          }
-          await waitForElement(pLoc);
-          await pLoc.fill(context.credential.password);
-          const sLoc = this.locator(loginStep.submitSel);
-          if (!sLoc || (await sLoc.count().catch(() => 0)) === 0) {
-            return { ok: false, message: `Could not find the login/submit button on ${this.portalName}'s login page. The portal layout may have changed — record it manually.` };
-          }
-          // Click submit and wait for the login form to go away (proof of login).
-          await waitForElement(sLoc);
-          await sLoc.click().catch(() => null);
-          await smartWait(this.page, 3000);
-          // Give a slow portal a moment to render the post-login page.
-          const stillOnLogin = await uLoc!
-            .waitFor({ state: "detached", timeout: 15000 })
-            .then(() => false)
-            .catch(async () => ((await uLoc!.count().catch(() => 0)) > 0));
-
-          const postChallenge = await detectChallengeFrame(this.page);
-          if (postChallenge) {
-            return { ok: false, message: `MFA/2FA required after credential fill — pausing for human (${postChallenge}). Complete verification in the browser window, then retry.`, pauseReason: "mfa_captcha" };
-          }
-          if (stillOnLogin) {
-            // The login form is still present — credentials were rejected or the
-            // submit didn't advance. Never log the credential; report the state only.
-            return { ok: false, message: `Logged-in page did not load — still on ${this.portalName}'s login form after submitting the stored credential. Verify the username/password are correct for this portal, then retry.` };
-          }
-        } catch (fillErr) {
-          return { ok: false, message: `Auto-learn credential auto-fill failed: ${fillErr instanceof Error ? fillErr.message : String(fillErr)}` };
-        }
+      if (result.status === "mfa_captcha") {
+        return { ok: false, message: result.message, pauseReason: "mfa_captcha" };
       }
-
-      return { ok: true, message: `Opened ${this.portalName} for autonomous learning. Using the persistent login session (log in once with npm run portal:login if prompted).` };
+      if (result.status === "no_credential") {
+        return { ok: false, message: `${this.portalName} is showing a login page but no stored credential was found for this client/portal. Add the portal username + password under the client's logins, then retry. (Or run \`npm run portal:login\` once to establish a persistent session.)` };
+      }
+      // still_on_login / no_username_field / no_submit_control / error
+      return { ok: false, message: `${this.portalName}: ${result.message}` };
     } catch (err) {
       return { ok: false, message: `Auto-learn login failed: ${err instanceof Error ? err.message : String(err)}` };
     }

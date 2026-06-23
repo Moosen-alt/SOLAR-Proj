@@ -2,6 +2,7 @@ import type { PortalRecipe, ProjectRecord, RecipeSelector, RecipeStep } from "..
 import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, type PortalContext, type PortalStepResult } from "../adapter";
 import { openPortal } from "../browser";
 import { detectChallengeFrame, redactStatusText, RETRY_BACKOFF_MS, sleep, smartWait, waitForElement } from "../safeAction";
+import { performLogin } from "./loginFlow";
 
 // RecipeAdapter — replays a recorded portal recipe (see portal_recipes / the recorder).
 // Works for ANY AHJ or utility portal an admin has taught by recording. It substitutes
@@ -76,48 +77,22 @@ export class RecipeAdapter extends BasePortalAdapter {
         await smartWait(this.page);
       }
 
-      // If the recipe has a loginStep and a credential is available, auto-fill
-      // the login form when the session has expired. Never logs credentials.
-      if (context.credential && this.recipe.loginStep) {
-        const loginStep = this.recipe.loginStep;
-        try {
-          if (loginStep.usernameSel) {
-            const uLoc = this.locator(loginStep.usernameSel);
-            if (uLoc && await uLoc.count() > 0) {
-              await waitForElement(uLoc);
-              await uLoc.fill(context.credential.username);
-              if (loginStep.passwordSel) {
-                const pLoc = this.locator(loginStep.passwordSel);
-                if (pLoc) {
-                  await waitForElement(pLoc);
-                  await pLoc.fill(context.credential.password);
-                }
-              }
-              if (loginStep.submitSel) {
-                const sLoc = this.locator(loginStep.submitSel);
-                if (sLoc) {
-                  await waitForElement(sLoc);
-                  await sLoc.click();
-                }
-              }
-              await smartWait(this.page, 3000);
-              // Verify login succeeded: form should be gone.
-              const stillOnLogin = await uLoc.count().catch(() => 0) > 0;
-              if (stillOnLogin) {
-                return fail("still on login form after submitting credentials — check username/password");
-              }
-              const mfaVisible = await this.page.getByText(/verify|two.factor|authenticat/i).count() > 0;
-              if (mfaVisible) {
-                return { ok: false, message: "MFA/2FA required after credential fill — pausing for human. Complete verification in the browser window, then retry the portal run.", pauseReason: "mfa_captcha" };
-              }
-            }
-          }
-        } catch (fillErr) {
-          return fail(`Recipe credential auto-fill failed: ${fillErr instanceof Error ? fillErr.message : String(fillErr)}`);
-        }
+      // Log in via the shared, portal-agnostic login flow. It detects/reveals the login
+      // form, fills it (known + unknown portals), verifies success, and stops on MFA.
+      // When the persistent session is still valid there's no form and it's a no-op.
+      // Never logs credentials.
+      const login = await performLogin(this.page, context.credential);
+      if (login.status === "mfa_captcha") {
+        return { ok: false, message: login.message, pauseReason: "mfa_captcha" };
+      }
+      if (login.status === "no_credential") {
+        return fail(`${this.portalName}: a login page is showing but no stored credential was found for this client/portal. Add the portal login under the client's logins and re-stage.`);
+      }
+      if (!login.ok && login.status !== "already_authenticated") {
+        return fail(`${this.portalName}: ${login.message}`);
       }
 
-      return ok(`Opened ${this.portalName}. Using the persistent login session (log in once with npm run portal:login if prompted).`);
+      return ok(`Opened ${this.portalName}. ${login.message}`);
     } catch (err) {
       return fail(`Recipe login failed: ${err instanceof Error ? err.message : String(err)}`);
     }

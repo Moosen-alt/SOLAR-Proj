@@ -129,9 +129,24 @@ export function getDecryptedCredential(
 // Keys and values are all lowercase hostnames. The set is symmetric: add one direction and
 // the resolver checks both.
 const HOSTNAME_ALIASES: Record<string, string[]> = {
+  // Oregon ePermitting / Accela — the AHJ permit portal (covers both BLD and ELE
+  // submittals; they share one login). epermitting.oregon.gov redirects to aca.oregon.gov.
   "aca.oregon.gov": ["epermitting.oregon.gov", "aca-oregon.accela.com"],
   "epermitting.oregon.gov": ["aca.oregon.gov", "aca-oregon.accela.com"],
   "aca-oregon.accela.com": ["aca.oregon.gov", "epermitting.oregon.gov"],
+  // PacifiCorp (Pacific Power / Rocky Mountain Power) NEM — the utility interconnection
+  // portal is PowerClerk at pacificorpnetmetering.powerclerk.com, but operators often
+  // store the credential against the utility's marketing site (pacificpower.net /
+  // rockymountainpower.net). Treat them as the same login target.
+  "pacificorpnetmetering.powerclerk.com": ["pacificpower.net", "rockymountainpower.net", "www.pacificpower.net", "www.rockymountainpower.net"],
+  "pacificpower.net": ["pacificorpnetmetering.powerclerk.com", "www.pacificpower.net"],
+  "www.pacificpower.net": ["pacificorpnetmetering.powerclerk.com", "pacificpower.net"],
+  "rockymountainpower.net": ["pacificorpnetmetering.powerclerk.com", "www.rockymountainpower.net"],
+  "www.rockymountainpower.net": ["pacificorpnetmetering.powerclerk.com", "rockymountainpower.net"],
+  // PGE NEM — PowerClerk at pgenm.powerclerk.com; operators may store portlandgeneral.com.
+  "pgenm.powerclerk.com": ["portlandgeneral.com", "www.portlandgeneral.com"],
+  "portlandgeneral.com": ["pgenm.powerclerk.com", "www.portlandgeneral.com"],
+  "www.portlandgeneral.com": ["pgenm.powerclerk.com", "portlandgeneral.com"],
 };
 
 function hostsMatch(a: string, b: string): boolean {
