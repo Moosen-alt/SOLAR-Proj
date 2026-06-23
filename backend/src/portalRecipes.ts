@@ -72,6 +72,10 @@ export function startPortalRecording(
   const scopeType = input.scopeType === "utility" ? "utility" : "ahj";
   if (scopeType === "ahj" && !s(input.ahj).trim()) throw new HttpError(400, "ahj is required for an AHJ recipe.");
   if (scopeType === "utility" && !s(input.utility).trim()) throw new HttpError(400, "utility is required for a utility recipe.");
+  // A utility recipe is keyed by utility ONLY (it replays for any AHJ in that utility's
+  // territory), so it must NOT carry the originating project's AHJ city — otherwise it
+  // gets mislabeled as a city ("PGE shown as City of Dayton"). Null out ahj for utility.
+  const ahj = scopeType === "utility" ? "" : s(input.ahj);
   const key = recipeProfileKey(input);
   const existing = db.get<Row>("SELECT * FROM portal_recipes WHERE profile_key = ?", [key]);
   const now = nowIso();
@@ -89,7 +93,7 @@ export function startPortalRecording(
     `INSERT INTO portal_recipes
       (id, scope_type, profile_key, state, ahj, utility, portal_platform, portal_url, status, version, steps_json, created_by, created_at, updated_at, notes)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'recording', 1, '[]', ?, ?, ?, '')`,
-    [recipeId, scopeType, key, s(input.state), s(input.ahj), s(input.utility), s(input.portalPlatform), s(input.portalUrl), s(input.createdBy), now, now],
+    [recipeId, scopeType, key, s(input.state), ahj, s(input.utility), s(input.portalPlatform), s(input.portalUrl), s(input.createdBy), now, now],
   );
   return getPortalRecipe(db, recipeId);
 }

@@ -297,7 +297,7 @@ function renderPortalRecipes() {
     <div class="card" style="padding:8px 10px;margin-bottom:6px">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
         <div>
-          <strong>${esc(r.ahj || r.utility || r.profileKey)}</strong>
+          <strong>${esc(r.scopeType === "utility" ? (r.utility || r.ahj || r.profileKey) : (r.ahj || r.utility || r.profileKey))}</strong>
           <span class="muted" style="font-size:12px">· ${esc(r.scopeType)} · ${esc(r.portalPlatform || "portal")} · ${r.steps.length} step(s) · v${r.version}</span>
         </div>
         <div style="display:flex;gap:6px;align-items:center">
