@@ -35,6 +35,9 @@ export interface ExtractedField {
   fieldType: "text" | "select" | "checkbox" | "radio" | "file" | "button" | "other";
   /** For <select>, the option labels. */
   options?: string[];
+  /** For <a> nav links: the href, so a hidden/menu-nested link that can't be clicked can
+   *  still be reached by navigating to it directly. */
+  href?: string;
 }
 
 export interface LearnPlanRequest {
@@ -152,6 +155,7 @@ interface RawField {
   id?: string;
   css?: string;
   text?: string;
+  href?: string;
 }
 
 // Serializable extractor — derives a label and selector hints for each interactive
@@ -216,8 +220,11 @@ function extractFieldsInPage(els: Element[]): RawField[] {
     // resolves correctly; explicit [role="button"] overrides this.
     const role = el.getAttribute("role") || (tag === "a" ? "link" : fieldType === "button" ? "button" : undefined);
     const text = fieldType === "button" ? (el.textContent || "").trim() || undefined : undefined;
+    // Capture href for anchors so a hidden/menu-nested nav link can be reached by direct
+    // navigation when it can't be clicked.
+    const href = tag === "a" ? (el.getAttribute("href") || undefined) : undefined;
 
-    out.push({ label, fieldType, options, role, name, placeholder, id, text });
+    out.push({ label, fieldType, options, role, name, placeholder, id, text, href });
   }
   return out;
 }
@@ -276,6 +283,7 @@ function toExtractedField(raw: RawField): ExtractedField {
     fieldType: raw.fieldType,
   };
   if (raw.options && raw.options.length) field.options = raw.options;
+  if (raw.href) field.href = raw.href;
   return field;
 }
 
@@ -594,7 +602,22 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             async () => {
               const loc = await this.locator(navField.selector);
               if (!loc) throw new Error("navigate selector unresolved");
-              await this.clickResilient(loc);
+              try {
+                await this.clickResilient(loc);
+              } catch (clickErr) {
+                // Fallback for a hidden/menu-nested nav link we can't click: if it's an
+                // anchor with an href, navigate to it directly. (Accela's "Building Dept
+                // Application" is a hidden <a href="...CapApplyDisclaimer.aspx?module=Building">
+                // in the dashboard quick-links — never actionable, but the href works.)
+                const href = navField.href;
+                if (href && href !== "#" && this.page) {
+                  const abs = new URL(href, String(this.page.url())).href;
+                  if (process.env.AUTOLEARN_DEBUG === "1") console.error(`[navigate] click failed; navigating to href ${abs}`);
+                  await this.page.goto(abs, { waitUntil: "domcontentloaded", timeout: 30000 });
+                } else {
+                  throw clickErr;
+                }
+              }
               await this.waitAfterClick(navBeforeUrl, navBeforeFp, navTabsBefore);
             },
             { required: true },
@@ -1034,6 +1057,14 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   private async clickResilient(loc: any): Promise<void> {
     const dbg = process.env.AUTOLEARN_DEBUG === "1";
     let lastErr: unknown;
+    // Capture the URL + tab count BEFORE clicking. On slow ExtJS/AJAX portals (Accela) a
+    // click can actually land and navigate even though Playwright reports a click timeout;
+    // the target element then vanishes (count=0) and naive retries thrash a gone element and
+    // ultimately throw "failed" — despite the navigation having succeeded. After any failed
+    // attempt we check whether the page moved (URL changed or a new tab opened) and, if so,
+    // treat the click as successful.
+    const preClickUrl = (this.page && typeof this.page.url === "function") ? String(this.page.url() ?? "") : "";
+    const preClickTabs = this.tabCount();
     for (let attempt = 0; attempt < 4; attempt++) {
       // clearOverlays BEFORE dismissModals: PowerClerk's onboarding popover is removed by
       // clearOverlays, but if dismissModals runs first it clicks the popover's "Got it"
@@ -1062,6 +1093,15 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       } catch (err) {
         lastErr = err;
         if (dbg) console.error(`[clickResilient] attempt ${attempt}: FAIL ${(err as Error).message.split("\n")[0]}`);
+        // Did the click actually navigate despite the reported timeout? (common on slow
+        // ExtJS portals). If the URL changed or a new tab opened, the click succeeded —
+        // stop retrying a now-vanished element.
+        await smartWait(this.page!, 500);
+        const nowUrl = (this.page && typeof this.page.url === "function") ? String(this.page.url() ?? "") : "";
+        if ((nowUrl && nowUrl !== preClickUrl) || this.tabCount() > preClickTabs) {
+          if (dbg) console.error(`[clickResilient] attempt ${attempt}: click navigated despite timeout — treating as success`);
+          return;
+        }
         // GENERIC interception breaker (works on UNKNOWN portals): a timed-out click means
         // something is covering the target. Find whatever element is actually at the
         // target's center and neutralize that overlay (pointer-events:none on its positioned/
