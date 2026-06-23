@@ -2,7 +2,7 @@ import path from "node:path";
 import type { ProjectRecord, ReviewerReport } from "../../../shared/src/types";
 import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, type PortalContext, type PortalStepResult } from "../adapter";
 import { openPortal } from "../browser";
-import { redactStatusText, safeAction, sleep } from "../safeAction";
+import { detectChallengeFrame, redactStatusText, safeAction, sleep } from "../safeAction";
 
 // PowerClerk (PGE Net Metering) adapter
 // Built from an operator codegen recording captured up to the final submit page.
@@ -176,6 +176,14 @@ export class PowerClerkAdapter extends BasePortalAdapter {
       // If the URL didn't change, Next was blocked by a validation error.
       // Extract visible error text (field names only — never field values).
       const afterUrl = String(page.url());
+      // If a challenge appeared after navigation, stop for human immediately.
+      const midChallenge = await detectChallengeFrame(page);
+      if (midChallenge) {
+        throw Object.assign(
+          new Error(`PowerClerk MFA/CAPTCHA appeared after ${section || "Next"}: ${midChallenge}`),
+          { pauseReason: "mfa_captcha" },
+        );
+      }
       if (beforeUrl === afterUrl) {
         const errEl = page.locator(
           ".validation-summary-errors,.field-validation-error,[class*=error-message],[class*=alert-danger],[class*=text-danger]"
@@ -189,6 +197,12 @@ export class PowerClerkAdapter extends BasePortalAdapter {
     };
 
     try {
+      // Bail immediately if a challenge is already on-screen (e.g. session expired + MFA).
+      const initialChallenge = await detectChallengeFrame(page);
+      if (initialChallenge) {
+        return { ok: false, message: `PowerClerk challenge detected before fill: ${initialChallenge}. Complete verification in the browser, then retry.`, pauseReason: "mfa_captcha" };
+      }
+
       const s = snap(project);
 
       // --- Submitting party / installer contact (from the assigned client overlay) ---
@@ -340,6 +354,10 @@ export class PowerClerkAdapter extends BasePortalAdapter {
         arrayCount: arrays.length,
       });
     } catch (err) {
+      const pauseReason = (err as { pauseReason?: string })?.pauseReason;
+      if (pauseReason === "mfa_captcha") {
+        return { ok: false, message: err instanceof Error ? err.message : String(err), pauseReason: "mfa_captcha" };
+      }
       return fail(`fillApplication failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
