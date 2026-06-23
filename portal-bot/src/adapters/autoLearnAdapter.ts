@@ -107,6 +107,27 @@ function looksLikeReviewUrl(url: string): boolean {
 // Sensitive field labels whose literal value must NEVER be stored in a recorded step.
 const SENSITIVE_LABEL = /\b(password|passcode|account\s*(number|no|#)?|acct|meter\s*(number|no|#)?|ssn|social security|tax\s*id|ein|routing|card\s*number|cvv|security code)\b/i;
 
+// Portal upload-field label → document type. Maps a file-input's visible label to the
+// docType produced by the existing doc-splitting tools (docSplitter.ts / projectDocsByType),
+// so the learner attaches the RIGHT split document to each upload control. Ordered most-
+// specific first (a combined "module/inverter" label resolves to inverter_spec first).
+const UPLOAD_LABEL_PATTERNS: Array<{ re: RegExp; docType: string }> = [
+  { re: /one[-\s]?line|single[-\s]?line|\bsld\b|electrical\s*(diagram|schematic|one)/i, docType: "sld" },
+  { re: /site\s*plan|plot\s*plan/i, docType: "site_plan" },
+  { re: /structural|roof\s*framing|mounting|attachment\s*detail/i, docType: "structural" },
+  { re: /inverter|micro[-\s]?inverter/i, docType: "inverter_spec" },
+  { re: /module|panel\s*(spec|data\s*sheet)/i, docType: "module_spec" },
+  { re: /meter\s*(photo|picture|image|spec|reading|tag)/i, docType: "meter_photo" },
+  { re: /label|placard/i, docType: "labels" },
+  { re: /utility\s*bill|electric(ity)?\s*bill/i, docType: "utility_bill" },
+  { re: /plan\s*set|full\s*plan|construction\s*(plan|doc)|drawings?/i, docType: "plan_set" },
+];
+
+// When an upload control's label doesn't name a specific document (a generic "Upload
+// documents" / "Attach files" control), attach the full package/plan set instead — most
+// portals with a single upload slot want the complete set. Tried in order.
+const UPLOAD_FALLBACK_DOCTYPES = ["utility_package_zip", "plan_set", "sld", "site_plan"];
+
 function isPayFee(text: string | undefined): boolean {
   return !!text && PAY_FEE.test(text);
 }
@@ -275,15 +296,38 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   portalName: string;
   private page: Page | null = null;
   private maxPages: number;
+  // docType → absolute file path of the upload-ready document (from the doc-splitting
+  // tools). Used to attach the right split document at each portal upload control.
+  private docsByType: Record<string, string>;
 
   constructor(
     portalName: string,
     private planner: LearnPlanner,
-    private options: { maxPages?: number; autoSubmit?: false } = {},
+    private options: { maxPages?: number; autoSubmit?: false; docsByType?: Record<string, string> } = {},
   ) {
     super();
     this.portalName = portalName;
     this.maxPages = options.maxPages ?? 8;
+    this.docsByType = options.docsByType ?? {};
+  }
+
+  // Resolve the document file to attach to a given file-input field. Matches the field's
+  // label to a docType, then to an available split file in docsByType. Falls back to the
+  // full package/plan set for a generic upload control. Returns null when nothing is
+  // available (the upload is then left for the human, never faked).
+  private resolveUpload(field: ExtractedField): { docType: string; file: string } | null {
+    const label = field.label || "";
+    // 1) Label names a specific document → attach that docType if we have the split file.
+    for (const { re, docType } of UPLOAD_LABEL_PATTERNS) {
+      if (re.test(label) && this.docsByType[docType]) return { docType, file: this.docsByType[docType] };
+    }
+    // 2) Generic/unlabeled upload control → fall back to the full package/plan set.
+    for (const docType of UPLOAD_FALLBACK_DOCTYPES) {
+      if (this.docsByType[docType]) return { docType, file: this.docsByType[docType] };
+    }
+    // 3) Last resort: any available document, so a required upload isn't silently skipped.
+    const firstKey = Object.keys(this.docsByType)[0];
+    return firstKey ? { docType: firstKey, file: this.docsByType[firstKey] } : null;
   }
 
   // --- credential injection (mirrors recipeAdapter.login) -------------------
@@ -292,7 +336,10 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       const opened = await openPortal({
         userDataDir: context.userDataDir,
         storageStatePath: context.storageStatePath,
-        headless: context.headless ?? false,
+        // Pass headless through as-is (undefined when unset) so resolveHeadless applies its
+        // server-correct default (headless unless PORTAL_HEADLESS=false). Defaulting to
+        // false here would force a headed launch that crashes on a display-less server.
+        headless: context.headless,
       });
       this.opened = opened;
       this.page = opened.page;
@@ -453,10 +500,42 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         }
       }
 
+      // d0) UPLOAD PASS — attach the right split document to every file-input on this page.
+      //     Deterministic (no LLM): each upload control's label is matched to a docType and
+      //     the corresponding split file is attached, then recorded as an `upload` step so
+      //     the replayed recipe uploads the same document. File inputs are often visually
+      //     hidden behind a styled button, so we DON'T require visibility before setting.
+      for (const field of fields) {
+        if (field.fieldType !== "file") continue;
+        const resolved = this.resolveUpload(field);
+        if (!resolved) continue; // no document available — leave it for the human, never fake it.
+        const res = await safeAction(
+          `upload ${resolved.docType}`,
+          async () => {
+            const loc = await this.locator(field.selector);
+            if (!loc) throw new Error("upload selector unresolved");
+            await loc.setInputFiles(resolved.file);
+            await smartWait(this.page!, 500);
+          },
+          { required: false },
+        );
+        if (res.ok && !res.message) {
+          steps.push({
+            action: "upload",
+            phase: "fill",
+            selector: field.selector,
+            docType: resolved.docType,
+            note: `upload ${resolved.docType}: ${field.label || "document"}`,
+          });
+          if (field.label) alreadyFilledLabels.push(field.label);
+        }
+      }
+
       // d) Apply the fills and record each as a RecipeStep.
       for (const fillReq of plan.fills ?? []) {
         const field = fields[fillReq.selectorIndex];
         if (!field) continue; // out-of-range index from the planner — skip safely.
+        if (field.fieldType === "file") continue; // handled by the upload pass above.
         const sensitive = isSensitiveLabel(field.label);
         const step = await this.applyFill(field, fillReq, sensitive);
         if (step) {

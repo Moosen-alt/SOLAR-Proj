@@ -66,11 +66,17 @@ export async function openPortal(opts: {
   headless?: boolean;
   /** Milliseconds between each action — useful for debugging; 0 in production. */
   slowMo?: number;
+  /** Tolerate invalid HTTPS certificates. OFF by default — turning it on disables TLS
+   *  trust checking, which is a MITM risk in production. It exists ONLY so the bot can run
+   *  inside a sandbox/CI whose egress goes through a TLS-intercepting proxy with an
+   *  untrusted CA. Enable per-call or via PORTAL_IGNORE_HTTPS_ERRORS=true; never in prod. */
+  ignoreHTTPSErrors?: boolean;
 }): Promise<OpenedPortal> {
   const { chromium } = await import("playwright");
 
   const headless = resolveHeadless(opts.headless);
   const slowMo = opts.slowMo ?? 0;
+  const ignoreHTTPSErrors = opts.ignoreHTTPSErrors ?? process.env.PORTAL_IGNORE_HTTPS_ERRORS === "true";
 
   if (opts.userDataDir) {
     const context = await chromium.launchPersistentContext(opts.userDataDir, {
@@ -78,6 +84,7 @@ export async function openPortal(opts: {
       slowMo,
       viewport: null,
       args: CHROMIUM_ARGS,
+      ignoreHTTPSErrors,
     });
     await context.addInitScript({ content: NAME_SHIM });
     const page = context.pages()[0] ?? (await context.newPage());
@@ -87,8 +94,8 @@ export async function openPortal(opts: {
 
   const browser = await chromium.launch({ headless, slowMo, args: CHROMIUM_ARGS });
   const context = opts.storageStatePath
-    ? await browser.newContext({ storageState: opts.storageStatePath })
-    : await browser.newContext();
+    ? await browser.newContext({ storageState: opts.storageStatePath, ignoreHTTPSErrors })
+    : await browser.newContext({ ignoreHTTPSErrors });
   await context.addInitScript({ content: NAME_SHIM });
   const page = await context.newPage();
   return { page, context, browser };

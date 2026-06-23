@@ -39,3 +39,7 @@ backend/data/page-images/
 # Stored project documents (original PDFs)
 backend/data/project-documents/
 .claude/worktrees/
+
+# local verification screenshots (not source)
+autolearn-*final-page*.png
+real-*.png

@@ -103,7 +103,8 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
       const opened = await openPortal({
         userDataDir: context.userDataDir,
         storageStatePath: context.storageStatePath,
-        headless: context.headless ?? false,
+        // Pass headless through so resolveHeadless picks the server-correct default.
+        headless: context.headless,
       });
       this.opened = opened;
       this.page = opened.page;

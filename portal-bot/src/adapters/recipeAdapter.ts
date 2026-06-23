@@ -68,7 +68,9 @@ export class RecipeAdapter extends BasePortalAdapter {
       const opened = await openPortal({
         userDataDir: context.userDataDir,
         storageStatePath: context.storageStatePath,
-        headless: context.headless ?? false,
+        // Pass headless through (undefined when unset) so resolveHeadless picks the
+        // server-correct default; a hard `?? false` would crash on a display-less server.
+        headless: context.headless,
       });
       this.opened = opened;
       this.page = opened.page;

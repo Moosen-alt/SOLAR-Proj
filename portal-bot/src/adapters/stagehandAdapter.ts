@@ -60,7 +60,7 @@ export class StagehandAdapter {
         // Use the project's Anthropic key; never Browserbase cloud unless BB_API_KEY is set.
         apiKey,
         model: "claude-opus-4-8",
-        localBrowserLaunchOptions: { headless: context.headless ?? false },
+        localBrowserLaunchOptions: { headless: context.headless ?? (process.env.PORTAL_HEADLESS !== "false") },
       });
       await sh.init();
       this.stagehand = sh;

@@ -13,6 +13,7 @@
     "portal:test": "tsx portal-bot/src/testRun.ts",
     "portal:test:unit": "tsx portal-bot/src/adapters/recipeAdapter.test.ts && tsx portal-bot/src/adapters/autoLearnAdapter.test.ts",
     "portal:test:learn": "tsx portal-bot/src/adapters/autoLearnAdapter.test.ts",
+    "portal:test:live": "tsx portal-bot/src/adapters/autoLearnLive.smoke.ts",
     "portal:record": "tsx portal-bot/src/recordRecipe.ts",
     "portal:install": "playwright install chromium"
   },

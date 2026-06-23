@@ -143,7 +143,9 @@ async function runAdapter(
 
     const loginResult = await adapter.login({
       storageStatePath: tmpStatePath,
-      headless: options.headless ?? false,
+      // Pass headless through so resolveHeadless picks the server-correct default
+      // (headless unless PORTAL_HEADLESS=false). A hard `?? false` crashes on a server.
+      headless: options.headless,
       credential: options.credential,
       userDataDir: options.userDataDir,
     });
@@ -242,15 +244,18 @@ export async function learnPortal(input: {
   encryptedStorageStatePath?: string;
   headless?: boolean;
   maxPages?: number;
+  // docType → upload-ready file path (from the doc-splitting tools). Lets the learner
+  // attach the right split document at each portal upload control while learning.
+  docsByType?: Record<string, string>;
 }): Promise<import("./adapters/autoLearnAdapter").LearnResult> {
   const { AutoLearnAdapter } = await import("./adapters/autoLearnAdapter");
-  const adapter = new AutoLearnAdapter(input.portalName, input.planner, { maxPages: input.maxPages });
+  const adapter = new AutoLearnAdapter(input.portalName, input.planner, { maxPages: input.maxPages, docsByType: input.docsByType });
   let tmpStatePath: string | undefined;
   try {
     tmpStatePath = resolveStorageStatePath(input.encryptedStorageStatePath);
     const loginResult = await adapter.login({
       storageStatePath: tmpStatePath,
-      headless: input.headless ?? false,
+      headless: input.headless,
       credential: input.credential,
       userDataDir: input.userDataDir,
       startUrl: input.portalUrl,
@@ -268,7 +273,7 @@ export async function learnPortal(input: {
       };
     }
     return await adapter.learn(
-      { storageStatePath: tmpStatePath, headless: input.headless ?? false, credential: input.credential, userDataDir: input.userDataDir, startUrl: input.portalUrl },
+      { storageStatePath: tmpStatePath, headless: input.headless, credential: input.credential, userDataDir: input.userDataDir, startUrl: input.portalUrl },
       input.project,
     );
   } catch (err) {

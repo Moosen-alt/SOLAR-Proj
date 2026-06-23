@@ -29,6 +29,8 @@ import type { LearnPlanRequest, LearnPlanResponse } from "../../portal-bot/src/a
 import { createLLMProvider } from "./llm";
 import { getDecryptedCredential, getDecryptedCredentialByUrl, getDecryptedCredentialAny } from "./portalCredentials";
 import { resolveRecipeFieldValues, startPortalRecording, savePortalRecipeSteps, getPortalRecipe } from "./portalRecipes";
+import { projectDocsByType } from "./projectDocuments";
+import { buildUtilityPackage } from "./docSplitter";
 import { addAuditLog } from "./audit";
 import { HttpError } from "./httpError";
 
@@ -134,6 +136,22 @@ export async function autoLearnPortal(
   const profileBase = process.env.PORTAL_PROFILES_DIR || path.join(process.cwd(), "portal-profiles");
   const userDataDir = project.clientId ? path.join(profileBase, project.clientId, portalType) : path.join(profileBase, portalType);
 
+  // Assemble the upload-ready document set so the learner can attach the right split
+  // document at each portal upload control. Split the plan set into typed sheets first
+  // (best-effort) if it hasn't been split yet, then collect docType → file path. The
+  // adapter only uploads what's actually available; a missing doc is left for the human.
+  let docsByType: Record<string, string> = {};
+  try {
+    const existing = projectDocsByType(db, projectId);
+    const hasSheets = ["sld", "site_plan", "inverter_spec"].some((t) => existing[t]);
+    if (!hasSheets) {
+      await buildUtilityPackage(db, projectId, scopeType === "utility" ? "nem" : "permit").catch(() => null);
+    }
+    docsByType = projectDocsByType(db, projectId);
+  } catch {
+    docsByType = {};
+  }
+
   let learn;
   try {
     learn = await portalLimiter(() => learnPortal({
@@ -143,6 +161,7 @@ export async function autoLearnPortal(
       planner,
       credential,
       userDataDir,
+      docsByType,
     }));
   } catch (err) {
     throw new HttpError(502, `Portal learn failed: ${err instanceof Error ? err.message : String(err)}`);

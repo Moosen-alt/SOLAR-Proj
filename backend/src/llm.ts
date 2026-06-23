@@ -897,6 +897,7 @@ HARD SAFETY RULES:
 - CRITICAL (Accela "Continue Application" trap): if this page is a READ-ONLY REVIEW/CONFIRM page (no fillable inputs — only a summary of previously entered data + Edit links, or body text like "Step N: Review" / "review all information" / "click the Continue Application button below" / "(Read-only)"), then set atReview=true and treat the primary button (even if labeled "Continue Application" or "Continue") as the finalSubmitIndex — NEVER as advanceIndex. On Oregon ePermitting/Accela, "Continue Application" advances on input pages but SUBMITS on the Review step. When in doubt and there are no fields to fill, STOP (atReview=true) and record the button as final submit.
 - Prefer binding a field to a reusable project-field KEY (the "field" property, e.g. "homeownerName") over a literal value, so the recipe generalizes. Only use a literal "value" for fixed dropdown selections/portal-specific choices.
 - Do NOT fill a field you can't confidently map. Leave it out.
+- FILE UPLOADS: ignore file-input fields (fieldType "file") entirely — do NOT put them in "fills". The bot attaches the correct split document (SLD, site plan, inverter spec, meter photo, etc.) to each upload control automatically. Still return "advanceIndex" for the Next/Continue button on an upload page so the form proceeds.
 Return ONLY JSON:
 {"fills":[{"index":<field index>,"value":"<string>","field":"<projectFieldKey or omit>"}],
  "navigateIndex": <index of dashboard nav link, or omit>,
