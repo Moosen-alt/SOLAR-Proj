@@ -980,6 +980,52 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     }
   }
 
+  // GENERIC overlay breaker for UNKNOWN portals. Given the locator we're trying to click,
+  // find the element actually sitting at its center point (document.elementFromPoint). When
+  // a click times out the target is, by definition, covered — so that hit element is an
+  // interceptor. Walk up from it and disable pointer-events on any positioned (fixed/absolute/
+  // sticky) and/or high-z-index and/or large-area ancestor (popover, modal, backdrop, cookie/
+  // announcement banner, loading mask). pointer-events:none lets the click fall through to the
+  // real control beneath without removing portal content. No portal-specific selectors needed.
+  // Returns true if it neutralized at least one element. Best-effort; never throws.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async neutralizeInterceptor(loc: any): Promise<boolean> {
+    if (!this.page || typeof this.page.evaluate !== "function") return false;
+    try {
+      const box = await loc.boundingBox?.().catch(() => null);
+      if (!box) return false;
+      const x = box.x + box.width / 2;
+      const y = box.y + box.height / 2;
+      return await this.page.evaluate(
+        ({ x, y }: { x: number; y: number }) => {
+          const hit = document.elementFromPoint(x, y) as HTMLElement | null;
+          if (!hit || hit === document.body || hit === document.documentElement) return false;
+          const vw = window.innerWidth, vh = window.innerHeight;
+          let el: HTMLElement | null = hit;
+          let neutralized = false;
+          for (let i = 0; el && i < 6 && el !== document.body; i++) {
+            const s = getComputedStyle(el);
+            const z = parseInt(s.zIndex || "0") || 0;
+            const r = el.getBoundingClientRect();
+            const bigArea = r.width * r.height > vw * vh * 0.12;
+            const positioned = s.position === "fixed" || s.position === "absolute" || s.position === "sticky";
+            // Overlay signature: a positioned element that's either stacked above content
+            // (z-index) or covers a large slice of the viewport (modal/banner/backdrop).
+            if (positioned && (z >= 10 || bigArea)) {
+              el.style.setProperty("pointer-events", "none", "important");
+              neutralized = true;
+            }
+            el = el.parentElement;
+          }
+          return neutralized;
+        },
+        { x, y },
+      );
+    } catch {
+      return false;
+    }
+  }
+
   // Click that survives a modal/popover overlay intercepting pointer events. Works for
   // both PowerClerk (Vue backdrop) and Accela (ExtJS .x-mask page-wide loading masks).
   // Strategy per attempt: dismiss modals → clear overlays → wait for visible → scroll into
@@ -1016,6 +1062,14 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       } catch (err) {
         lastErr = err;
         if (dbg) console.error(`[clickResilient] attempt ${attempt}: FAIL ${(err as Error).message.split("\n")[0]}`);
+        // GENERIC interception breaker (works on UNKNOWN portals): a timed-out click means
+        // something is covering the target. Find whatever element is actually at the
+        // target's center and neutralize that overlay (pointer-events:none on its positioned/
+        // high-z ancestors) so the next click reaches the real control — without needing to
+        // know the overlay's class/id. This is what makes new portals' popovers, cookie
+        // banners, announcement modals, and masks non-blocking the first time we meet them.
+        const broke = await this.neutralizeInterceptor(loc);
+        if (dbg && broke) console.error(`[clickResilient] attempt ${attempt}: neutralized an interceptor`);
         try { await this.page!.keyboard?.press?.("Escape"); } catch { /* no keyboard (mock) */ }
         await smartWait(this.page!, 600);
       }
