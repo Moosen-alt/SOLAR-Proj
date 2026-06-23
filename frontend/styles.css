@@ -427,6 +427,26 @@ tbody tr:hover, tbody tr.active { background: #f0fdfa; }
 /* Knowledge & Learning modal: single scrolling column (not the 2-col grid). */
 .modal-card-wide { width: min(820px, 100%); }
 .modal-body-stack { display: block; overflow-y: auto; padding: 16px 20px; }
+.modal-body-stack > * + * { margin-top: 14px; }
+
+/* Portal-logins modal: quick-fill chips per portal this project files to */
+.pl-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.pl-chips:empty { display: none; }
+.pl-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; padding: 6px 10px; border-radius: var(--radius-md, 8px);
+  border: 1px solid var(--line); background: var(--surface, #fff); cursor: pointer;
+  transition: background var(--t-fast, .12s) ease, border-color var(--t-fast, .12s) ease;
+}
+.pl-chip:hover { background: var(--surface-2, #f4f6f8); border-color: var(--accent, #2563eb); }
+.pl-chip[data-has-secret="1"] { border-color: var(--ok, #16a34a); }
+.pl-chip .pl-chip-state { font-size: 11px; color: var(--muted); }
+.pl-cred-row {
+  display: flex; justify-content: space-between; align-items: center; gap: 8px;
+  padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius-md, 8px);
+}
+.pl-cred-row .pl-cred-meta { font-size: 13px; }
+.pl-cred-row .pl-cred-url { font-size: 11px; color: var(--muted); word-break: break-all; }
 
 /* Record-this-portal helper (Submit stage) */
 .record-cmd { background: var(--surface-2); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; font-size: 11.5px; white-space: pre-wrap; word-break: break-all; margin: 8px 0 0; }

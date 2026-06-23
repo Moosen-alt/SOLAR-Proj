@@ -218,6 +218,12 @@
               <button type="button" class="secondary" id="genIntakeLinkBtn" style="font-size:12px" title="No-login link to collect valuation + homeowner email/phone from the installer"><span>Generate &amp; copy link</span></button>
               <span id="intakeLinkOut" class="muted" style="word-break:break-all;font-size:12px"></span>
             </div>
+            <div class="client-assign">
+              <i data-lucide="key-round"></i>
+              <label>Portal logins:</label>
+              <button type="button" class="secondary" id="managePortalLoginsBtn" style="font-size:12px" title="Store the encrypted username/password the bot uses to log into this project's utility NEM and AHJ permit portals"><span>Manage logins</span></button>
+              <span id="portalLoginsSummary" class="muted" style="font-size:12px"></span>
+            </div>
           </div>
           <div class="actions step-actions">
             <span class="actions-label">Daily steps:</span>
@@ -1010,6 +1016,39 @@
           <div class="actions">
             <button type="button" id="addCredentialBtn" class="secondary"><i data-lucide="key-round"></i><span>Save login</span></button>
             <span id="credStatus" class="muted" style="font-size:12px"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Portal logins (scoped to the open project's submitting client) -->
+  <div id="portalLoginsModal" class="modal" hidden>
+    <div class="modal-card">
+      <div class="modal-head">
+        <h2>Portal logins</h2>
+        <button id="closePortalLoginsBtn" class="secondary"><i data-lucide="x"></i><span>Close</span></button>
+      </div>
+      <div class="modal-body modal-body-stack">
+        <p class="muted" style="font-size:13px;margin:0">
+          Stored encrypted (AES-256-GCM) for <strong id="plClientName">this client</strong> and never shown again.
+          The bot matches the right login to each portal by its URL, so add one per portal this project files to.
+        </p>
+        <div id="plPortalChips" class="pl-chips"></div>
+        <div id="plList" class="stack"></div>
+        <div style="border-top:1px solid var(--line);padding-top:12px">
+          <h3 style="margin:0 0 8px">Add / update a login</h3>
+          <div class="form-row">
+            <label>Portal<input id="pl_portalType" placeholder="e.g. accela_oregon" /></label>
+            <label>Portal URL<input id="pl_portalUrl" placeholder="https://…" /></label>
+          </div>
+          <div class="form-row">
+            <label>Username<input id="pl_username" autocomplete="off" /></label>
+            <label>Password<input id="pl_password" type="password" autocomplete="new-password" /></label>
+          </div>
+          <div class="actions">
+            <button type="button" id="plSaveBtn" class="primary"><i data-lucide="key-round"></i><span>Save login (encrypted)</span></button>
+            <span id="plStatus" class="muted" style="font-size:12px"></span>
           </div>
         </div>
       </div>

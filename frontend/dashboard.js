@@ -1774,6 +1774,33 @@ async function loadSubmittalTracks() {
   } catch {
     state.submittalTracks = null;
   }
+  updatePortalLoginsSummary();
+}
+
+// Header chip: how many of this project's portals have a saved login. Best-effort.
+async function updatePortalLoginsSummary() {
+  const summary = $("portalLoginsSummary");
+  if (!summary) return;
+  const client = plClient();
+  const tracks = state.submittalTracks || [];
+  if (!client || !tracks.length) { summary.textContent = ""; return; }
+  let creds = [];
+  try { creds = (await api(`/api/clients/${client.id}/portal-credentials`)).credentials || []; }
+  catch { summary.textContent = ""; return; }
+  const hosts = new Set();
+  for (const c of creds) { try { if (c.portalUrl) hosts.add(new URL(c.portalUrl).hostname.toLowerCase()); } catch { /* ignore */ } }
+  let total = 0, ready = 0; const seen = new Set();
+  for (const t of tracks) {
+    const url = t.recipePortalUrl || ""; let host = "";
+    try { host = url ? new URL(url).hostname.toLowerCase() : ""; } catch { /* ignore */ }
+    const key = host || (t.channel || t.type || "").toLowerCase();
+    if (seen.has(key)) continue; seen.add(key);
+    total++;
+    if (host && hosts.has(host)) ready++;
+  }
+  summary.textContent = total ? `${ready}/${total} portal logins saved` : (creds.length ? `${creds.length} saved` : "");
+  if (ready < total) summary.style.color = "var(--warn, #b45309)";
+  else summary.style.color = "var(--ok, #16a34a)";
 }
 
 const TRACK_STATUS_CLASS = {
@@ -4386,6 +4413,116 @@ if ($("addCredentialBtn")) {
     } catch (err) { $("credStatus").textContent = err.message || "Save failed."; }
   });
 }
+// ----- Portal logins modal (scoped to the open project's submitting client) -----
+function plClient() {
+  const p = state.detail?.project;
+  if (!p || !p.clientId) return null;
+  const client = (state.clients || []).find((c) => c.id === p.clientId);
+  return { id: p.clientId, name: client?.companyName || client?.name || "this client" };
+}
+
+// Slug a portal channel/utility/ahj into a stable portal_type token for matching.
+function plPortalSlug(label) {
+  return String(label || "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 40) || "portal";
+}
+
+async function openPortalLogins() {
+  const client = plClient();
+  const status = $("plStatus");
+  if (!client) {
+    showMessage("Assign a submitting client to this project first, then add its portal logins.", "warn");
+    return;
+  }
+  $("plClientName").textContent = client.name;
+  if (status) status.textContent = "";
+  $("pl_portalType").value = ""; $("pl_portalUrl").value = "";
+  $("pl_username").value = ""; $("pl_password").value = "";
+  $("portalLoginsModal").hidden = false;
+  if (window.lucide) window.lucide.createIcons();
+  await renderPortalLogins();
+}
+
+async function renderPortalLogins() {
+  const client = plClient();
+  if (!client) return;
+  let creds = [];
+  try { creds = (await api(`/api/clients/${client.id}/portal-credentials`)).credentials || []; }
+  catch (err) { $("plStatus").textContent = err.message || "Could not load logins."; }
+
+  // Quick-fill chips: one per portal this project actually files to (from its tracks).
+  const tracks = state.submittalTracks || [];
+  const chips = [];
+  const seen = new Set();
+  for (const t of tracks) {
+    const url = t.recipePortalUrl || "";
+    const label = t.label || t.channel || t.type;
+    const slug = plPortalSlug(t.channel || t.label || t.type);
+    const key = (url || slug).toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    let host = ""; try { host = url ? new URL(url).hostname : ""; } catch { /* ignore */ }
+    const matched = creds.some((c) => {
+      try { return host && c.portalUrl && new URL(c.portalUrl).hostname.toLowerCase() === host.toLowerCase(); }
+      catch { return false; }
+    });
+    chips.push(`<button type="button" class="pl-chip" data-pl-slug="${esc(slug)}" data-pl-url="${esc(url)}" data-has-secret="${matched ? 1 : 0}">
+      <i data-lucide="${matched ? "shield-check" : "key-round"}"></i>
+      <span>${esc(label)}</span>
+      <span class="pl-chip-state">${matched ? "login saved" : "needs login"}</span>
+    </button>`);
+  }
+  $("plPortalChips").innerHTML = chips.join("");
+  $("plPortalChips").querySelectorAll("[data-pl-slug]").forEach((chip) => chip.addEventListener("click", () => {
+    $("pl_portalType").value = chip.getAttribute("data-pl-slug");
+    $("pl_portalUrl").value = chip.getAttribute("data-pl-url") || "";
+    $("pl_username").focus();
+  }));
+
+  $("plList").innerHTML = creds.length
+    ? creds.map((c) => `<div class="pl-cred-row">
+        <div>
+          <div class="pl-cred-meta"><strong>${esc(c.portalType || "portal")}</strong> · ${esc(c.usernameReference)} ${c.hasSecret ? "🔒" : ""}</div>
+          ${c.portalUrl ? `<div class="pl-cred-url">${esc(c.portalUrl)}</div>` : ""}
+        </div>
+        <button class="danger" data-pl-del="${esc(c.id)}" style="font-size:11px">Delete</button>
+      </div>`).join("")
+    : '<p class="muted" style="font-size:12px">No saved logins yet. Pick a portal above to pre-fill, then enter the username and password.</p>';
+  $("plList").querySelectorAll("[data-pl-del]").forEach((b) => b.addEventListener("click", async () => {
+    try { await api(`/api/clients/${client.id}/portal-credentials/${b.getAttribute("data-pl-del")}`, { method: "DELETE" }); await renderPortalLogins(); }
+    catch (err) { $("plStatus").textContent = err.message || "Delete failed."; }
+  }));
+
+  // Header summary: X of Y portals have a saved login.
+  const summary = $("portalLoginsSummary");
+  if (summary) {
+    const total = chips.length;
+    const ready = $("plPortalChips").querySelectorAll('[data-has-secret="1"]').length;
+    summary.textContent = total ? `${ready}/${total} portal logins saved` : (creds.length ? `${creds.length} saved` : "");
+  }
+  if (window.lucide) window.lucide.createIcons();
+}
+
+if ($("managePortalLoginsBtn")) $("managePortalLoginsBtn").addEventListener("click", openPortalLogins);
+if ($("closePortalLoginsBtn")) $("closePortalLoginsBtn").addEventListener("click", () => { $("portalLoginsModal").hidden = true; });
+if ($("plSaveBtn")) $("plSaveBtn").addEventListener("click", async () => {
+  const client = plClient();
+  if (!client) { $("plStatus").textContent = "No submitting client assigned."; return; }
+  const body = {
+    portalType: $("pl_portalType").value.trim(),
+    portalUrl: $("pl_portalUrl").value.trim(),
+    username: $("pl_username").value.trim(),
+    password: $("pl_password").value,
+  };
+  if (!body.username || !body.password) { $("plStatus").textContent = "Username and password are required."; return; }
+  if (!body.portalUrl) { $("plStatus").textContent = "Portal URL is required so the bot matches this login to the right portal."; return; }
+  try {
+    await api(`/api/clients/${client.id}/portal-credentials`, { method: "POST", body: JSON.stringify(body) });
+    $("pl_username").value = ""; $("pl_password").value = "";
+    $("plStatus").textContent = "Saved (encrypted).";
+    await renderPortalLogins();
+  } catch (err) { $("plStatus").textContent = err.message || "Save failed."; }
+});
+
 $("addPortalIdentityBtn").addEventListener("click", () => {
   state.portalIdentitiesDraft = state.portalIdentitiesDraft || [];
   state.portalIdentitiesDraft.push({ portalType: "powerclerk_pge", installerCompanyLabel: "", installerContactCode: "", notes: "" });
