@@ -21,7 +21,6 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.105.0",
-    "@browserbasehq/stagehand": "^3.6.0",
     "@napi-rs/canvas": "^1.0.0",
     "@types/adm-zip": "^0.5.8",
     "@types/mailparser": "^3.4.6",

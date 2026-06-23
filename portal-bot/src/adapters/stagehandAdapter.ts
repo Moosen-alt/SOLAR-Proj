@@ -45,7 +45,15 @@ export class StagehandAdapter {
     if (!apiKey) return { ok: false, message: "ANTHROPIC_API_KEY not set — Stagehand requires it for local AI element finding." };
 
     try {
-      const { Stagehand } = await import("@browserbasehq/stagehand");
+      // OPTIONAL dependency — not in the default install (it pulls in the whole
+      // @ai-sdk/* tree). To enable the AI fallback: `npm install @browserbasehq/stagehand`.
+      // The @ts-ignore lets the project typecheck/run without the package present.
+      // @ts-ignore — optional peer dependency, resolved at runtime only when installed
+      const mod: any = await import("@browserbasehq/stagehand").catch(() => null);
+      if (!mod?.Stagehand) {
+        return { ok: false, message: "Stagehand is not installed. To enable the AI portal fallback, run: npm install @browserbasehq/stagehand" };
+      }
+      const Stagehand = mod.Stagehand;
       const sh = new Stagehand({
         env: "LOCAL",
         verbose: process.env.STAGEHAND_VERBOSE === "1" ? 1 : 0,
