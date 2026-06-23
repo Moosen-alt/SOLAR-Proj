@@ -1630,6 +1630,7 @@ const SUBMIT_FIX_TARGETS = {
   "permit-requirements": { stage: 2, el: "reviewerGate" },
   "installer-design-actions": { stage: 2, el: "reviewerGate" },
   "nem-preflight": { stage: 3, el: "submitGate" },
+  "document-inventory": { stage: 3, el: "inlineDocSplitWidget" },
 };
 
 function gotoSubmitFix(checkId) {
@@ -1674,11 +1675,45 @@ function renderSubmitGate() {
   if (note) {
     if (!gate.canPrepareSubmission && blockers.length) {
       note.hidden = false;
+      const hasDocBlocker = blockers.some((b) => b.id === "document-inventory");
       note.innerHTML = `<strong>⛔ Can't submit yet — ${blockers.length} blocker(s):</strong> `
-        + blockers.map((b) => `<a href="#" class="fix-link" data-fix="${esc(b.id)}">${esc(b.title)} →</a> <span class="muted">${esc(b.nextAction || "resolve this")}</span>`).join("<br>");
+        + blockers.map((b) => `<a href="#" class="fix-link" data-fix="${esc(b.id)}">${esc(b.title)} →</a> <span class="muted">${esc(b.nextAction || "resolve this")}</span>`).join("<br>")
+        + (hasDocBlocker ? `
+          <div id="inlineDocSplitWidget" style="margin-top:10px;padding:10px 12px;background:#fef9ee;border:1px solid #f59e0b;border-radius:7px">
+            <strong style="font-size:13px">Plan set uploaded? Split it into individual sheets now:</strong>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;align-items:center">
+              <select id="inlineSplitTarget" style="font-size:13px;padding:4px 8px;border-radius:6px;border:1px solid #d1d5db">
+                <option value="all">All sheets (permit + NEM)</option>
+                <option value="permit">Permit only (SLD + site plan + structural + specs)</option>
+                <option value="nem">NEM only (meter photo + SLD + site plan + inverter spec)</option>
+              </select>
+              <button id="inlineSplitBtn" class="secondary" style="font-size:13px;padding:4px 14px">✂ Split plan set now</button>
+              <span id="inlineSplitStatus" style="font-size:12px;color:var(--muted)"></span>
+            </div>
+          </div>` : "");
       note.querySelectorAll(".fix-link").forEach((a) => {
         a.addEventListener("click", (e) => { e.preventDefault(); gotoSubmitFix(a.dataset.fix); });
       });
+      const inlineBtn = $("inlineSplitBtn");
+      if (inlineBtn) {
+        inlineBtn.addEventListener("click", async () => {
+          const p = state.detail?.project;
+          if (!p) return;
+          const target = $("inlineSplitTarget")?.value || "all";
+          const statusEl = $("inlineSplitStatus");
+          inlineBtn.disabled = true;
+          if (statusEl) statusEl.textContent = "Splitting…";
+          try {
+            const res = await api(`/api/projects/${p.id}/build-utility-package?target=${encodeURIComponent(target)}`, { method: "POST" });
+            const count = (res.parts || []).length;
+            if (statusEl) statusEl.textContent = `✓ Split into ${count} document(s). Refreshing gate…`;
+            setTimeout(() => loadProjectDetail(p.id), 1200);
+          } catch (err) {
+            if (statusEl) statusEl.textContent = `Failed: ${err.message}`;
+            inlineBtn.disabled = false;
+          }
+        });
+      }
     } else {
       note.hidden = true;
     }

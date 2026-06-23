@@ -71,6 +71,7 @@ import { addAuditLog } from "./audit";
 import { clientStagingOverlay, getClient } from "./clients";
 import { getDecryptedCredential } from "./portalCredentials";
 import { buildApplicationDocumentPackage } from "./applicationDocs";
+import { buildUtilityPackage } from "./docSplitter";
 import { classifyCorrection, humanizeBucket, humanizeEnum } from "./corrections";
 import type { AppDb } from "./db";
 import { HttpError } from "./httpError";
@@ -4635,6 +4636,20 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
 
   // DOCUMENT-PRESENCE GATE: never stage a submittal that is missing a required file.
   // This is the guardrail against the "AHJ emailed back: documents still missing"
+  // Auto-split the plan set into individual sheet documents if the plan set is uploaded
+  // but individual sheet docs (SLD, site plan, etc.) haven't been split yet. This lets
+  // the operator upload a single plan-set PDF and stage immediately without a separate
+  // manual split step. Failures are non-fatal — if the plan set can't be split the
+  // document gate below will still report exactly what's missing.
+  try {
+    const existingDocs = projectDocsByType(db, detail.project.id);
+    const hasSheets = ["sld", "site_plan", "structural", "module_spec", "inverter_spec"].some((t) => existingDocs[t]);
+    if (!hasSheets) {
+      const target = track === "nem" ? "nem" : track === "building" ? "permit" : "all";
+      await buildUtilityPackage(db, detail.project.id, target);
+    }
+  } catch { /* non-fatal — document gate will surface what's still missing */ }
+
   // failure — the gate only let scalar fields through before. Scope NEM-only gaps out
   // when staging just the permit track and vice-versa, so a single-track stage isn't
   // blocked by the other lane's document.

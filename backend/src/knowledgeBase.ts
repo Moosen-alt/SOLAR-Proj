@@ -598,7 +598,7 @@ function portalFromProject(project: ProjectRecord): { portalName: string; portal
     portalUrl = "https://portlandgeneral.com/resources-for-solar-installers/interconnection-resource-library";
   }
   if (/PACIFIC|PACIFICORP/i.test(project.utility)) {
-    portalName = "PowerClerk";
+    portalName = "Pacific Power Customer Generation Portal";
     portalUrl = "https://www.pacificpower.net/savings-energy-choices/customer-generation.html";
   }
   return { portalName, portalUrl };
@@ -1689,7 +1689,7 @@ function seedOfficialKnowledge(db: AppDb): void {
       state: "OR",
       ahj: "",
       utility: "Pacific Power",
-      portalName: "PowerClerk",
+      portalName: "Pacific Power Customer Generation Portal",
       portalUrl: "https://www.pacificpower.net/savings-energy-choices/customer-generation.html",
       requiredDocuments: [
         "Pacific Power customer generation online application",
