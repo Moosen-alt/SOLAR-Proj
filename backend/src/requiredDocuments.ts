@@ -70,7 +70,7 @@ const PLAN_SHEET_HINTS: Record<string, RegExp> = {
   site_plan: /\b(site\s*plan|plot\s*plan|site\/?roof)\b/i,
   structural: /\b(structural|roof\s*fram|rafter|truss|attachment\s*detail|mount\s*detail)\b/i,
   module_spec: /\bmodule\s*spec/i,
-  inverter_spec: /\b(inverter|microinverter)\s*spec/i,
+  inverter_spec: /\b(inverter|microinverter)\s*spec|\bUL[\s-]*1741\b/i,
   labels: /\b(label|placard)/i,
 };
 

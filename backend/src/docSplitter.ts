@@ -27,7 +27,7 @@ const CATEGORY_PATTERNS: Array<{ docType: string; label: string; patterns: RegEx
   // identifies the actual cut-sheet page. The combined "MODULE / INV SPECIFICATION SHEET"
   // counts as BOTH module and inverter spec.
   { docType: "module_spec", label: "Module spec", patterns: [/MODULE\s*[\/&]?\s*INV(?:ERTER)?\.?\s*SPEC/i, /MODULE\s+SPECIFICATION\s+SHEET/i, /PV MODULE SPEC/i] },
-  { docType: "inverter_spec", label: "Inverter spec", patterns: [/MODULE\s*[\/&]?\s*INV(?:ERTER)?\.?\s*SPEC/i, /MICRO-?INVERTER\s+SPECIFICATION/i, /INVERTER\s+SPECIFICATION\s+SHEET/i] },
+  { docType: "inverter_spec", label: "Inverter spec", patterns: [/MODULE\s*[\/&]?\s*INV(?:ERTER)?\.?\s*SPEC/i, /MICRO-?INVERTER\s+SPEC(?:IFICATION)?S?\b/i, /\bINVERTER\s+SPEC(?:IFICATION)?S?\b/i, /\bUL[\s-]*1741\b/i] },
   { docType: "labels", label: "Labels / placards", patterns: [/\bWARNING LABELS\b/i, /\bLABEL LOCATION\b/i, /\bE\s*1\.3\b/i] },
 ];
 
