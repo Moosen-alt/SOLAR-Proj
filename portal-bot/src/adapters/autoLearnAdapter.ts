@@ -233,6 +233,11 @@ function toExtractedField(raw: RawField): ExtractedField {
     if (raw.text) {
       selector.role = ariaRole;
       selector.name = raw.text;
+      // EXACT name match: a substring match makes "Next" also match "Next page" (a decoy
+      // pager button), and .first() then resolves to whichever is first in the DOM — the
+      // wrong control. Exact matching pins it to the button whose accessible name IS the
+      // text; the #id fallback below still resolves it if the exact name happens to miss.
+      selector.exact = true;
       // Always keep a css fallback so a role-name miss still resolves the element.
       if (raw.id) selector.fallbacks = [{ css: `#${raw.id}` }];
     } else if (raw.id) {
@@ -240,6 +245,7 @@ function toExtractedField(raw: RawField): ExtractedField {
     } else if (raw.name) {
       selector.name = raw.name;
       selector.role = ariaRole;
+      selector.exact = true;
     }
   } else {
     // Inputs/selects: prefer label, then placeholder, then name, then css id.
