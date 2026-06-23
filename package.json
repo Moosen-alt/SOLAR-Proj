@@ -14,6 +14,7 @@
     "portal:test:unit": "tsx portal-bot/src/adapters/recipeAdapter.test.ts && tsx portal-bot/src/adapters/autoLearnAdapter.test.ts",
     "portal:test:learn": "tsx portal-bot/src/adapters/autoLearnAdapter.test.ts",
     "portal:test:live": "tsx portal-bot/src/adapters/autoLearnLive.smoke.ts",
+    "portal:test:stress": "tsx portal-bot/src/adapters/powerClerk.stress.test.ts && tsx portal-bot/src/adapters/oregonEPermitting.stress.smoke.ts",
     "portal:record": "tsx portal-bot/src/recordRecipe.ts",
     "portal:install": "playwright install chromium"
   },
