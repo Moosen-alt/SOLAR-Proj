@@ -1343,6 +1343,11 @@ export interface PortalFieldPlanInput {
   alreadyFilledLabels: string[];
   /** Optional knowledge-base context for the AHJ/utility (portal hints, required docs, etc.). */
   kbContext?: string;
+  /** Optional jurisdiction + permit-discipline context for portals (e.g. Accela / Oregon
+   *  ePermitting) where the SAME street address resolves to multiple authorities — a CITY
+   *  row and a COUNTY row — each exposing a different application-type list. Tells the planner
+   *  which results row to Select and which application type to check (structural vs electrical). */
+  jurisdictionContext?: string;
   /** True when no fillable inputs were found on this page — likely a dashboard/home/landing page.
    *  The planner should look for a navigation link/button to reach the application form. */
   isDashboard?: boolean;

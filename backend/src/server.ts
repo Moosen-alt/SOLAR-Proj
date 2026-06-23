@@ -954,7 +954,7 @@ app.post("/api/projects/:id/auto-learn", asyncHandler(async (req, res) => {
   const portalUrl = (b.portalUrl || "").trim();
   if (!portalUrl) throw new HttpError(400, "portalUrl is required to auto-learn a portal.");
   try {
-    const result = await autoLearnPortal(db, String(req.params.id), { scope, portalUrl, createdBy: b.createdBy ?? "operator" });
+    const result = await autoLearnPortal(db, String(req.params.id), { scope, portalUrl, createdBy: b.createdBy ?? "operator", permitType: b.permitType });
     res.json(result);
   } catch (err) {
     throw normalizeLlmError(err);

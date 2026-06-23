@@ -43,6 +43,9 @@ export const autoLearnSchema = z.object({
   scope: z.enum(["ahj", "permit", "utility", "nem"]).optional(),
   portalUrl: z.string().url().max(1000).optional(),
   createdBy: z.string().max(120).optional(),
+  // For AHJ portals where one address resolves to both a city and a county authority
+  // (e.g. Accela / Oregon ePermitting), which permit discipline this pass files.
+  permitType: z.enum(["structural", "electrical"]).optional(),
 });
 
 export const knowledgeQuerySchema = z.object({

@@ -63,7 +63,7 @@ export interface AutoLearnResult {
 export async function autoLearnPortal(
   db: AppDb,
   projectId: string,
-  input: { scope: "ahj" | "utility"; portalUrl: string; createdBy?: string },
+  input: { scope: "ahj" | "utility"; portalUrl: string; createdBy?: string; permitType?: "structural" | "electrical" },
 ): Promise<AutoLearnResult> {
   const projectRow = db.get<Record<string, unknown>>("SELECT * FROM projects WHERE id = ?", [projectId]);
   if (!projectRow) throw new HttpError(404, "Project not found.");
@@ -99,6 +99,22 @@ export async function autoLearnPortal(
     }
   } catch { /* KB table may not exist yet */ }
 
+  // Jurisdiction + permit-discipline context for portals (Accela / Oregon ePermitting)
+  // where the same street address resolves to both a CITY and a COUNTY authority, each with
+  // its own application-type list. Tells the planner which results row to Select and which
+  // application type (structural vs electrical) to check. Defaults to structural — the prior
+  // hardcoded behavior — so single-discipline runs are unchanged.
+  let jurisdictionContext = "";
+  if (scopeType === "ahj") {
+    const discipline = input.permitType === "electrical" ? "electrical" : "structural";
+    jurisdictionContext = [
+      `permitDiscipline: ${discipline}`,
+      project.ahj ? `targetJurisdiction (AHJ): ${project.ahj}` : "",
+      project.city ? `projectCity: ${project.city}` : "",
+      project.state ? `state: ${project.state}` : "",
+    ].filter(Boolean).join("\n");
+  }
+
   const llm = createLLMProvider();
   // The planner the adapter calls when it has the live fields on a page. The adapter
   // passes fields positionally (ExtractedField[]); we index them for the LLM and map the
@@ -113,6 +129,7 @@ export async function autoLearnPortal(
       projectFields,
       alreadyFilledLabels: req.alreadyFilledLabels,
       kbContext: kbContext || undefined,
+      jurisdictionContext: jurisdictionContext || undefined,
       isDashboard: req.isDashboard,
     });
     return {

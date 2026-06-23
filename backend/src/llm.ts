@@ -887,6 +887,15 @@ ${JSON.stringify(input.unbound, null, 2)}`;
   async planPortalFields(input: PortalFieldPlanInput): Promise<PortalFieldPlan> {
     const system = `You are filling a government/utility permit portal form for a solar project. Given the FIELDS (fillable inputs, buttons, and navigation links) on the current page and the project's available DATA, decide what to fill, which button navigates to the form (if on a dashboard), which button advances to the next page, and which button is the FINAL SUBMIT.
 
+ADDRESS SEARCH & JURISDICTION SELECTION (Accela / Oregon ePermitting and similar):
+- The SAME street address can appear MULTIPLE times in a results grid under different jurisdictions — e.g. "CITY APPLICATIONS" (the city) vs "COUNTY APPLICATIONS" (the county). These are DIFFERENT permitting authorities and expose DIFFERENT application-type lists. Picking the wrong row gets the wrong permit.
+- When jurisdictionContext is provided, use it to choose the correct "Select" link: pick the row whose city/county matches the target jurisdiction for THIS permit discipline, and put that row's Select link in navigateIndex.
+- After a row is selected, an application-type checklist appears. The "permitDiscipline" in jurisdictionContext tells you which ONE to check:
+  - "structural" → check the Building/Structural type (e.g. "Residential - Structural"); this is usually under the CITY's list.
+  - "electrical" → check the Electrical type (e.g. "Residential - Electrical"). If the city's list has NO electrical option, select the COUNTY APPLICATIONS row for the SAME address instead, then check "Residential - Electrical".
+  - Check EXACTLY ONE application type matching the discipline — put that checkbox in "fills" with value "true". Never check multiple application types.
+- One jurisdiction + one discipline per run. Do not try to file both structural and electrical in the same pass.
+
 DASHBOARD / HOME PAGES:
 - If isDashboard=true (no fillable inputs — only buttons and navigation links), the bot just logged in and landed on the portal home/dashboard. Your ONLY job is to return "navigateIndex": the index of the link or button that starts a new application / interconnection request / permit application. Look for labels like "New Application", "Start Application", "New Pacific Power Customer Generation Application", "Start New Project", "Apply Now", "Create Application", or a tab/link for the relevant program. Set fills=[], advanceIndex=omit, atReview=false, and ONLY navigateIndex. Do NOT treat any dashboard navigation link as advanceIndex.
 
@@ -910,6 +919,7 @@ Return ONLY JSON:
       // isDashboard must be in the user message so the LLM actually sees it.
       ...(input.isDashboard ? { isDashboard: true } : {}),
       ...(input.kbContext ? { kbContext: input.kbContext } : {}),
+      ...(input.jurisdictionContext ? { jurisdictionContext: input.jurisdictionContext } : {}),
     });
     let parsed: Partial<PortalFieldPlan> = {};
     // Use askLong: planning responses can be large (many fills + notes).
