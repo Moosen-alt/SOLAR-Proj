@@ -89,7 +89,7 @@ export interface LearnResult {
 // ---------------------------------------------------------------------------
 
 // ALWAYS-blocked fee-payment controls — never recorded as advance/finalSubmit, never clicked.
-const PAY_FEE = /\b(pay fee|pay now|submit & pay|submit and pay|make payment|pay \$|add to cart|proceed to (payment|checkout)|checkout|fee)\b/i;
+const PAY_FEE = /\b(pay fee|pay now|submit & pay|submit and pay|make payment|continue to payment|pay \$|add to cart|proceed to (payment|checkout)|checkout|fee)\b/i;
 
 // Submit-intent button labels. On a READ-ONLY review page these SUBMIT (Accela's
 // "Continue Application" on Step 3: Review is the submit gate — it advances on input

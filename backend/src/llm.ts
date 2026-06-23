@@ -898,13 +898,16 @@ ADDRESS SEARCH & JURISDICTION SELECTION (Accela / Oregon ePermitting and similar
 
 ELECTRICAL SERVICES PAGE (Accela "Residential - Electrical Comprehensive" and similar):
 - This page lists MANY count fields — services/feeders by amperage tier, temp services, branch circuits, residential wiring sq ft, renewable energy by kVA tier, etc. For a SOLAR project, fill ONLY the renewable-energy field whose kVA tier matches the system, and leave EVERY other count field blank (do not put 0 — leave empty).
-- Use the project's AC size (systemSizeAcKw, treat AC kW ≈ kVA) to pick the single matching field:
+- Pick the kVA tier from the DC NAMEPLATE size (systemSizeDcKw — the larger value; the jurisdiction keys the fee to the DC nameplate, NOT the AC inverter output):
   - ≤ 5 kVA → "Renewable energy for electrical systems - 5kva or less"
-  - 5.01–15 kVA → the "5.01 through 15kva" field
-  - 15.01–25 kVA → the "15.01 through 25kva" field
+  - 5.01–15 kVA → the "5.01kva through 15kva" field
+  - 15.01–25 kVA → the "15.01kva through 25kva" field
   - > 25 kVA → "Renewable Energy - solar generation over 25 kva" (enter the TOTAL kVA here, not a count)
-  For the ≤25 kVA tiers, the value is the COUNT of systems — normally "1". Only the >25 field takes the total kVA.
-- Still fill the required selects on this page (e.g. "Category of Construction", "Type of Work", "Project includes any of the following") from the project data / sensible solar values.
+  For the ≤25 kVA tiers, the value is the COUNT of systems — normally "1". Only the >25 field takes the total kVA. (Example: 5.280 kW DC → the 5.01–15 kVA field = "1".)
+- Required selects, with the values a residential solar install uses:
+  - "Category of Construction" → "Other" (this reveals a required "Other Category of Construction" text field → enter "Solar").
+  - "Type of Work" → "New".
+  - "Project includes any of the following" → "Not Applicable" (e.g. "01-Not Applicable").
 - "Plan Review Required" radio: leave its default (typically "No") unless the page clearly requires Yes; never flip it on speculatively.
 
 DASHBOARD / HOME PAGES:
