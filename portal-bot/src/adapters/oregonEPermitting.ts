@@ -242,11 +242,18 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
       const descriptionOfWork = buildDescriptionOfWork(project);
       const projectName = buildProjectName(project);
 
-      // Continue from where openSubmission left off — the wizard is already on the project /
-      // additional-info step. (Do NOT jump by URL: Accela's CapEdit step URLs are stateful
-      // and abort if navigated to directly.) Click through any intro/filler step that has no
-      // inputs; best-effort so a page that IS the project-detail form isn't skipped.
+      // Continue from where openSubmission left off — the wizard is on the Work Location /
+      // Parcel / Owner confirmation page. (Do NOT jump by URL: Accela's CapEdit step URLs are
+      // stateful and abort if navigated to directly.) Advance via "Continue Application" until
+      // the project-detail page (the Job Value field) appears — robust to filler pages.
       await this.page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
+      for (let i = 0; i < 4; i++) {
+        const jobValueField = this.page.getByRole("textbox", { name: /Job Value/i });
+        const present = (await jobValueField.count().catch(() => 0)) > 0 && (await jobValueField.first().isVisible().catch(() => false));
+        if (present) break;
+        await this.page.getByRole("link", { name: /Continue Application/i }).first().click({ timeout: 10000 }).catch(() => null);
+        await this.page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
+      }
 
       // Project info — jobValue lives in parserSnapshot. These are REQUIRED fields:
       // route them through safeAction (retry+timeout) and surface any failure.
