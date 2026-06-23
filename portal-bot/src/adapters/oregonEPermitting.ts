@@ -384,16 +384,23 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
       const url = this.page.url();
       const title = await this.page.title();
 
-      // Extract the record/permit number from the confirmation page
+      // Extract the record/permit number from the completion page. Accela's receipt shows
+      // the number as a BARE green link (e.g. "495-26-000071-STR") with no "Record Number:"
+      // label, so match the structured Accela record pattern first, then fall back to a
+      // labeled match. The trailing suffix encodes the discipline: -STR (structural),
+      // -ELE (electrical), -MEC (mechanical), etc.
       const bodyText = await this.page.locator("body").innerText();
-      const recordMatch = bodyText.match(/Record\s*(?:Number|#|No\.?)[:\s]+([A-Z0-9-]+)/i)
-        ?? bodyText.match(/Permit\s*(?:Number|#|No\.?)[:\s]+([A-Z0-9-]+)/i);
-      const permitNumber = recordMatch?.[1] ?? null;
+      const accela = bodyText.match(/\b\d{2,4}-\d{2}-\d{4,7}-[A-Z]{2,4}\b/);
+      const labeled = bodyText.match(/(?:Record|Permit)\s*(?:Number|#|No\.?)[:\s]+([A-Z0-9-]+)/i);
+      const permitNumber = (accela?.[0] ?? labeled?.[1] ?? null);
+      const discipline = permitNumber?.match(/-([A-Z]{2,4})$/)?.[1] ?? null;
 
       return ok("Confirmation page captured.", {
         url,
         title,
         permitNumber,
+        confirmationNumber: permitNumber,
+        discipline,
       });
     } catch (err) {
       return fail(`captureSubmissionConfirmation failed: ${err instanceof Error ? err.message : String(err)}`);

@@ -299,16 +299,23 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   // docType → absolute file path of the upload-ready document (from the doc-splitting
   // tools). Used to attach the right split document at each portal upload control.
   private docsByType: Record<string, string>;
+  // "split" attaches the matching split sheet to each labeled upload control (utility
+  // portals like PowerClerk, which have a slot per document). "combined" attaches the
+  // single full construction plan-set PDF to every upload control — Oregon ePermitting /
+  // Accela explicitly require "all plan pages as one PDF" under a single "Plans -
+  // Construction" attachment, so splitting would attach the wrong (partial) document.
+  private uploadMode: "split" | "combined";
 
   constructor(
     portalName: string,
     private planner: LearnPlanner,
-    private options: { maxPages?: number; autoSubmit?: false; docsByType?: Record<string, string> } = {},
+    private options: { maxPages?: number; autoSubmit?: false; docsByType?: Record<string, string>; uploadMode?: "split" | "combined" } = {},
   ) {
     super();
     this.portalName = portalName;
     this.maxPages = options.maxPages ?? 8;
     this.docsByType = options.docsByType ?? {};
+    this.uploadMode = options.uploadMode ?? "split";
   }
 
   // Resolve the document file to attach to a given file-input field. Matches the field's
@@ -317,6 +324,15 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   // available (the upload is then left for the human, never faked).
   private resolveUpload(field: ExtractedField): { docType: string; file: string } | null {
     const label = field.label || "";
+    // Combined mode (Accela / Oregon ePermitting): attach the SINGLE full plan-set PDF to
+    // every upload control regardless of label — the AHJ wants all plan pages as one PDF.
+    if (this.uploadMode === "combined") {
+      for (const docType of ["plan_set", "combined_plan_set", "full_plan_set"]) {
+        if (this.docsByType[docType]) return { docType, file: this.docsByType[docType] };
+      }
+      const firstKey = Object.keys(this.docsByType)[0];
+      return firstKey ? { docType: firstKey, file: this.docsByType[firstKey] } : null;
+    }
     // 1) Label names a specific document → attach that docType if we have the split file.
     for (const { re, docType } of UPLOAD_LABEL_PATTERNS) {
       if (re.test(label) && this.docsByType[docType]) return { docType, file: this.docsByType[docType] };

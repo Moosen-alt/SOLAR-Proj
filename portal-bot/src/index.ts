@@ -247,9 +247,12 @@ export async function learnPortal(input: {
   // docType → upload-ready file path (from the doc-splitting tools). Lets the learner
   // attach the right split document at each portal upload control while learning.
   docsByType?: Record<string, string>;
+  // "combined" (AHJ/Accela) attaches the full plan-set PDF to every upload control;
+  // "split" (utility/PowerClerk) attaches the matching split sheet per control. Default split.
+  uploadMode?: "split" | "combined";
 }): Promise<import("./adapters/autoLearnAdapter").LearnResult> {
   const { AutoLearnAdapter } = await import("./adapters/autoLearnAdapter");
-  const adapter = new AutoLearnAdapter(input.portalName, input.planner, { maxPages: input.maxPages, docsByType: input.docsByType });
+  const adapter = new AutoLearnAdapter(input.portalName, input.planner, { maxPages: input.maxPages, docsByType: input.docsByType, uploadMode: input.uploadMode });
   let tmpStatePath: string | undefined;
   try {
     tmpStatePath = resolveStorageStatePath(input.encryptedStorageStatePath);

@@ -9,6 +9,11 @@ import type { ParserPayload } from "../../shared/src/types";
 // configurable $/watt) so a submittal always has a usable figure. The estimate
 // is clearly labelled and the client can override it with the true contract value.
 //
+// NOTE: the valuation METHOD (full contract, contract × 0.4 per OAR 918-050-0180,
+// racking + labor, prescriptive flat fee, etc.) varies by installer and AHJ, so it
+// is NOT computed here — the operator decides it and supplies the final number as
+// jobValue. The bot just places that figure on the application unchanged.
+//
 // Per-watt rate is configurable via PERMIT_VALUATION_PER_WATT (default $3.00/W).
 
 const DEFAULT_PER_WATT_RATE = 3.0;

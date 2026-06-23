@@ -139,12 +139,15 @@ export class RecipeAdapter extends BasePortalAdapter {
       // Generic confirmation/record number fallback (avoid pure phone/zip).
       const generic = bodyText.match(/\b(?:record|permit|application|confirmation)\s*(?:no\.?|number|#)?\s*[:#]?\s*([A-Z0-9][A-Z0-9-]{5,})\b/i);
       const permitNumber = (accela?.[0] || generic?.[1] || "").trim();
+      // Accela record suffix encodes the discipline: -STR (structural), -ELE (electrical), etc.
+      const discipline = permitNumber.match(/-([A-Z]{2,4})$/)?.[1] ?? null;
       const recordLink = typeof this.page.url === "function" ? String(this.page.url() ?? "") : "";
       const submitted = /successfully submitted|application has been submitted|record (number|#)/i.test(bodyText);
       if (permitNumber || submitted) {
         return ok(`Captured submission confirmation${permitNumber ? `: ${permitNumber}` : ""}.`, {
           permitNumber,
           confirmationNumber: permitNumber,
+          discipline,
           recordLink,
         });
       }

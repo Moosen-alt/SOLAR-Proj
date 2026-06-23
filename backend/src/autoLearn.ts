@@ -179,6 +179,9 @@ export async function autoLearnPortal(
       credential,
       userDataDir,
       docsByType,
+      // AHJ portals (Accela / Oregon ePermitting) require one combined plan-set PDF per
+      // upload control; utility portals (PowerClerk) want the split sheets per slot.
+      uploadMode: scopeType === "ahj" ? "combined" : "split",
     }));
   } catch (err) {
     throw new HttpError(502, `Portal learn failed: ${err instanceof Error ? err.message : String(err)}`);
