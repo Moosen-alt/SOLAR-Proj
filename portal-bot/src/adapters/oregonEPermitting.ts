@@ -76,17 +76,47 @@ function buildProjectName(project: ProjectRecord): string {
   return project.homeownerName || project.projectAddress || "Solar PV Project";
 }
 
-function parseStreetNumber(address: string): string {
-  return address.trim().split(/\s+/)[0] ?? "";
+// The street LINE only — the part before the first comma. projectAddress is stored as
+// "925 N Grant St, Lafayette, OR, 97127"; everything after the first comma is city/state/zip
+// and must not leak into the street-number/name/direction parsing (it returns zero results).
+function streetLine(address: string): string {
+  return (address || "").split(",")[0].trim();
 }
 
+function parseStreetNumber(address: string): string {
+  return streetLine(address).split(/\s+/)[0] ?? "";
+}
+
+const STREET_DIRECTIONS = new Set(["n", "s", "e", "w", "ne", "nw", "se", "sw", "north", "south", "east", "west"]);
+const STREET_SUFFIXES = new Set([
+  "st", "street", "ave", "avenue", "blvd", "boulevard", "rd", "road", "dr", "drive",
+  "ln", "lane", "ct", "court", "way", "pl", "place", "ter", "terrace", "cir", "circle",
+  "hwy", "highway", "pkwy", "parkway", "loop", "trl", "trail",
+]);
+const clean = (w: string) => w.toLowerCase().replace(/[.,]/g, "");
+
+// Accela's "Street Name" search field wants the CORE name only — e.g. "925 N Grant St" must
+// be searched as "Grant" (the leading direction and trailing street-type suffix belong in
+// separate fields). Including them returns zero results, which silently breaks the flow.
 function parseStreetName(address: string): string {
-  const parts = address.trim().split(/\s+/);
+  const parts = streetLine(address).split(/\s+/);
   parts.shift(); // remove street number
-  // Strip unit designators from the end
+  if (parts.length > 1 && STREET_DIRECTIONS.has(clean(parts[0]))) parts.shift(); // leading direction
   const unitKeywords = new Set(["apt", "unit", "ste", "suite", "#"]);
   const unitIdx = parts.findIndex((p) => unitKeywords.has(p.toLowerCase()));
-  return (unitIdx === -1 ? parts : parts.slice(0, unitIdx)).join(" ");
+  let core = unitIdx === -1 ? parts : parts.slice(0, unitIdx);
+  // strip trailing street-type suffix and/or trailing direction (e.g. "Grant St", "Main St NW")
+  while (core.length > 1 && (STREET_SUFFIXES.has(clean(core[core.length - 1])) || STREET_DIRECTIONS.has(clean(core[core.length - 1])))) {
+    core = core.slice(0, -1);
+  }
+  return core.join(" ");
+}
+
+// Leading directional (N/S/E/W) of the street, for Accela's separate direction dropdown.
+function parseStreetDirection(address: string): string {
+  const parts = streetLine(address).split(/\s+/);
+  parts.shift(); // street number
+  return parts.length > 1 && STREET_DIRECTIONS.has(clean(parts[0])) ? parts[0].toUpperCase().replace(/[.,]/g, "") : "";
 }
 
 export class OregonEPermittingAdapter extends BasePortalAdapter {
@@ -112,39 +142,22 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
       await this.page.goto(`${BASE_URL}/Default.aspx`);
       await this.page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
 
-      const isLoggedIn = await this.page.locator('a[href*="Dashboard"]').count() > 0
-        || (await this.page.title()).toLowerCase().includes("dashboard");
-
-      if (!isLoggedIn) {
-        if (context.credential) {
-          // Session expired — auto-fill the login form with stored credentials.
-          // Never logs the credential; stops if MFA is detected after submit.
-          try {
-            await this.page.getByLabel("Email").fill(context.credential.username);
-            await this.page.getByLabel("Password").fill(context.credential.password);
-            await this.page.getByRole("button", { name: /log in|sign in/i }).click();
-            await this.page.waitForLoadState("networkidle", { timeout: 20000 }).catch(() => null);
-
-            const mfaVisible = await this.page.getByText(/verify|two.factor|authenticat/i).count() > 0;
-            if (mfaVisible) {
-              return { ok: false, message: "MFA/2FA required after credential fill — pausing for human. Complete verification in the browser window, then retry the portal run.", pauseReason: "mfa_captcha" };
-            }
-            const loggedInAfterFill = await this.page.locator('a[href*="Dashboard"]').count() > 0
-              || (await this.page.title()).toLowerCase().includes("dashboard");
-            if (!loggedInAfterFill) {
-              return fail("Credential auto-fill did not result in a successful login. Check the stored username/password in Portal Credentials.");
-            }
-          } catch (fillErr) {
-            return fail(`Credential auto-fill failed: ${fillErr instanceof Error ? fillErr.message : String(fillErr)}`);
-          }
-        } else {
-          return fail(
-            "Oregon ePermitting login page is still showing. Log in manually in the browser window, then re-run. For a persistent login, use: npm run portal:login -- accela"
-          );
-        }
+      // Log in via the shared, portal-agnostic flow. It is FRAME-AWARE — Accela ACA renders
+      // its login form (#username / #passwordRequired / "SIGN IN") inside an AngularUI iframe,
+      // which the old getByLabel("Email") path on the main document could never see. It also
+      // handles the "reveal login" link pattern and stops on MFA. Never logs the credential.
+      const { performLogin } = await import("./loginFlow");
+      const result = await performLogin(this.page, context.credential);
+      if (result.status === "logged_in" || result.status === "already_authenticated") {
+        return ok(`Logged in to Oregon ePermitting. ${result.message}`, { portalProfileId: context.portalProfileId ?? null });
       }
-
-      return ok("Logged in to Oregon ePermitting.", { portalProfileId: context.portalProfileId ?? null });
+      if (result.status === "mfa_captcha") {
+        return { ok: false, message: result.message, pauseReason: "mfa_captcha" };
+      }
+      if (result.status === "no_credential") {
+        return fail("Oregon ePermitting is showing a login form but no stored credential was found for this client/portal. Add the portal username + password under the client's logins, then retry.");
+      }
+      return fail(`Oregon ePermitting login failed: ${result.message}`);
     } catch (err) {
       return fail(`Login failed: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -156,27 +169,51 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
   async openSubmission(project: ProjectRecord): Promise<PortalStepResult> {
     if (!this.page) return fail("Not logged in. Call login() first.");
     try {
-      await this.page.goto(`${BASE_URL}/Dashboard.aspx`);
-      await this.page.getByRole("link", { name: "Building Dept Application" }).click();
-      await this.page.getByRole("checkbox", { name: /I have read and agree/i }).check();
-      await this.page.getByRole("link", { name: "Continue Application »" }).click();
+      // Go straight to the Building disclaimer page. The dashboard "Building Dept
+      // Application" link is a HIDDEN quick-link (not actionable); its href is this URL, so
+      // navigating directly is more robust than clicking the hidden anchor.
+      await this.page.goto(`${BASE_URL}/Cap/CapApplyDisclaimer.aspx?module=Building`, { waitUntil: "domcontentloaded", timeout: 30000 });
+      await this.page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
+      // Accept the disclaimer (checkbox id is termAccept on the current layout) and continue.
+      await this.page.getByRole("checkbox", { name: /I have read and agree/i }).check({ timeout: 10000 })
+        .catch(async () => { await this.page.locator('input[id$="termAccept"]').first().check({ timeout: 8000 }); });
+      await this.page.getByRole("link", { name: /Continue Application/i }).first().click({ timeout: 10000 });
+      await this.page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
 
-      // Step 1: Address search
+      // Step 1: Work-site address search. On the current WorkLocation.aspx the fields are
+      // id-only (no accessible labels): street number = ...txtStreetNo4Search_ChildControl0,
+      // street name = ...txtStreetName. Use id-suffix locators rather than role+name.
       const streetNum = parseStreetNumber(project.projectAddress ?? "");
       const streetName = parseStreetName(project.projectAddress ?? "");
+      await this.page.locator('input[id*="StreetNo4Search"]').first().fill(streetNum, { timeout: 10000 });
+      await this.page.locator('input[id$="txtStreetName"]').first().fill(streetName, { timeout: 10000 });
+      // Best-effort: set the street direction dropdown (separate field on Accela) to narrow
+      // the results. Non-fatal — row selection below disambiguates jurisdiction regardless.
+      const streetDir = parseStreetDirection(project.projectAddress ?? "");
+      if (streetDir) {
+        await this.page.locator('select[id$="ddlStreetDirection"]').first().selectOption(streetDir).catch(() => null);
+      }
+      // The address form's OWN search button: id ends in WorkLocationEdit_btnSearch. (Use the
+      // precise suffix — a looser match also hits the street field's "_help" anchor.)
+      await this.page.locator('a[id$="WorkLocationEdit_btnSearch"]').first().click({ timeout: 10000 });
+      await this.page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
 
-      await this.page.getByRole("textbox", { name: /Street Number/i }).fill(streetNum);
-      await this.page.getByRole("textbox", { name: "Street Name:" }).fill(streetName);
-      await this.page.getByRole("link", { name: "Search", description: "Search" }).click();
+      // The results grid lists the SAME street address under multiple jurisdictions (CITY
+      // APPLICATIONS vs COUNTY APPLICATIONS). Structural permits are issued by the CITY, so
+      // Select the CITY APPLICATIONS row for the project's city — never just the first row
+      // (which is a different town). (Electrical goes through the COUNTY row — see the
+      // jurisdiction split; this adapter currently drives the structural/city track.)
+      const cityUpper = (project.city || "").toUpperCase();
+      const cityRow = this.page.locator("tr", { hasText: /CITY APPLICATIONS/i }).filter({ hasText: cityUpper });
+      const selectLink = (await cityRow.count()) > 0
+        ? cityRow.getByRole("link", { name: /^Select$/i }).first()
+        : this.page.getByRole("link", { name: /^Select$/i }).first();
+      await selectLink.click({ timeout: 15000 });
+      await this.page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
 
-      // Select first address result
-      await this.page.locator(
-        "#ctl00_PlaceHolderMain_WorkLocationEdit_ucAddressList_gvAddress_ctl03_lnkGetService"
-      ).click({ timeout: 15000 });
-
-      // Choose Residential - Structural application type
-      await this.page.getByRole("checkbox", { name: "Residential - Structural" }).check();
-      await this.page.getByRole("link", { name: "Continue Application »" }).click();
+      // Choose Residential - Structural application type, then continue.
+      await this.page.getByRole("checkbox", { name: /Residential\s*-?\s*Structural/i }).first().check({ timeout: 10000 });
+      await this.page.getByRole("link", { name: /Continue Application/i }).first().click({ timeout: 10000 });
 
       // PII redaction: do NOT return the street number/name/full address — only a
       // boolean confirming the address search resolved.
