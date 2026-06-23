@@ -198,28 +198,41 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
       await this.page.locator('a[id$="WorkLocationEdit_btnSearch"]').first().click({ timeout: 10000 });
       await this.page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
 
-      // The results grid lists the SAME street address under multiple jurisdictions (CITY
-      // APPLICATIONS vs COUNTY APPLICATIONS). Structural permits are issued by the CITY, so
-      // Select the CITY APPLICATIONS row for the project's city — never just the first row
-      // (which is a different town). (Electrical goes through the COUNTY row — see the
-      // jurisdiction split; this adapter currently drives the structural/city track.)
+      // The results grid lists the SAME street address under multiple jurisdictions:
+      //   CITY APPLICATIONS  → structural permits (Building Dept)
+      //   COUNTY APPLICATIONS → electrical permits (Yamhill County / state electrical)
+      // Select the row that matches the permit type. Default to structural if unspecified.
+      const isElectrical = /elec/i.test(project.permitType ?? "");
+      const jurisdictionPattern = isElectrical ? /COUNTY APPLICATIONS/i : /CITY APPLICATIONS/i;
       const cityUpper = (project.city || "").toUpperCase();
-      const cityRow = this.page.locator("tr", { hasText: /CITY APPLICATIONS/i }).filter({ hasText: cityUpper });
-      const selectLink = (await cityRow.count()) > 0
-        ? cityRow.getByRole("link", { name: /^Select$/i }).first()
+      const jurisdictionRow = this.page.locator("tr", { hasText: jurisdictionPattern }).filter({ hasText: cityUpper });
+      const selectLink = (await jurisdictionRow.count()) > 0
+        ? jurisdictionRow.getByRole("link", { name: /^Select$/i }).first()
         : this.page.getByRole("link", { name: /^Select$/i }).first();
       await selectLink.click({ timeout: 15000 });
       await this.page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
 
-      // Choose Residential - Structural application type, then continue.
-      await this.page.getByRole("checkbox", { name: /Residential\s*-?\s*Structural/i }).first().check({ timeout: 10000 });
+      // Choose application type matching the permit discipline. The selector tries the most
+      // specific match first (e.g. "Residential – Electrical Comprehensive") then falls back
+      // to a broader pattern. Both structural and electrical tracks use a single checkbox.
+      const appTypePattern = isElectrical
+        ? /Residential\s*-?\s*Electrical/i
+        : /Residential\s*-?\s*Structural/i;
+      const appTypeCheckbox = this.page.getByRole("checkbox", { name: appTypePattern });
+      if ((await appTypeCheckbox.count().catch(() => 0)) > 0) {
+        await appTypeCheckbox.first().check({ timeout: 10000 });
+      } else {
+        // Fallback: check the first available checkbox (only one option on the page)
+        await this.page.locator('input[type="checkbox"]').first().check({ timeout: 8000 });
+      }
       await this.page.getByRole("link", { name: /Continue Application/i }).first().click({ timeout: 10000 });
 
       // PII redaction: do NOT return the street number/name/full address — only a
-      // boolean confirming the address search resolved.
-      return ok("Application opened and address confirmed.", {
+      // boolean confirming the address search resolved, plus the permit discipline chosen.
+      return ok(`Application opened (${isElectrical ? "electrical/county" : "structural/city"}) and address confirmed.`, {
         projectId: project.id,
         addressResolved: Boolean(streetNum || streetName),
+        permitDiscipline: isElectrical ? "electrical" : "structural",
       });
     } catch (err) {
       return fail(`openSubmission failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -279,8 +292,9 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
     const inputInRow = (labelText: string) =>
       this.page.locator("tr").filter({ hasText: new RegExp(labelText, "i") }).locator("input[type='text'],textarea").first();
 
-    // Select a <select> option by matching option text with a regex. Falls back to
-    // the first non-blank option when no text match is found.
+    // Select a <select> option by matching option text with a regex.
+    // Throws when no match is found (so callers can use try/catch for fallback logic).
+    // Pass `fallback` to select by exact label text when the regex matches nothing.
     const selectByPattern = async (sel: ReturnType<typeof selectInRow>, pattern: RegExp, fallback?: string): Promise<void> => {
       const opts: Array<{ v: string; t: string }> = await sel.evaluate((el: HTMLSelectElement) =>
         Array.from(el.options).map((o) => ({ v: o.value, t: o.text.trim() }))
@@ -288,8 +302,7 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
       const match = opts.find((o) => pattern.test(o.t) && o.v);
       if (match) { await sel.selectOption(match.v); return; }
       if (fallback) { await sel.selectOption({ label: fallback }); return; }
-      const first = opts.find((o) => o.v);
-      if (first) await sel.selectOption(first.v);
+      throw new Error(`No option matching /${pattern.source}/ found in select`);
     };
 
     try {
@@ -393,62 +406,110 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
         requiredFailures.push(`contacts: ${contactErr}`);
       }
 
-      // ── Step 3: Construction details.
-      // Accela renders construction-type and work-type selects inside a table.
-      // Use row-scoped locators (tr containing the label) instead of getByLabel(),
-      // which requires proper <label for=""> elements that Accela's ExtJS doesn't emit.
+      // ── Step 3: Construction details / Electrical services.
+      // The page content differs by permit discipline:
+      //   Structural → building dimensions, construction type, type of work
+      //   Electrical → kVA-tier renewable-energy count, service type selects
+      const isElectrical = /elec/i.test(project.permitType ?? "");
 
-      // "Category of Construction" on this page is the BUILDING category (construction
-      // type), NOT the application category from step 1. For a solar panel addition:
-      // → "Other" (reveals an "Other Category" text field) or similar value.
-      await collect("constructionCategory", async () => {
-        const sel = selectInRow("Category of Construction");
-        if ((await sel.count().catch(() => 0)) === 0) return;
-        await selectByPattern(sel, /^other/i, "Other");
-        // After selecting "Other", an "Other Category of Construction" text field appears.
-        await this.page.waitForTimeout(500).catch(() => null);
-        const otherInput = inputInRow("Other Category");
-        if ((await otherInput.count().catch(() => 0)) > 0) {
-          await otherInput.fill("Solar").catch(() => null);
-        }
-      });
+      if (!isElectrical) {
+        // ── STRUCTURAL construction details.
+        // Accela renders table-cell labels (not HTML <label> elements) so use row-scoped locators.
 
-      // "Type of Work" — for a solar system added to an existing building this is
-      // "Alteration/Repair" in many jurisdictions. We try "Alteration" first, then "New".
-      await collect("typeOfWork", async () => {
-        const sel = selectInRow("Type of Work");
-        if ((await sel.count().catch(() => 0)) === 0) return;
-        await selectByPattern(sel, /alteration|addition/i).catch(async () => {
-          await selectByPattern(sel, /new/i);
+        // "Category of Construction" on this page is the BUILDING construction type.
+        // For a solar panel addition → "Other" (which reveals an "Other Category" text field).
+        await collect("constructionCategory", async () => {
+          const sel = selectInRow("Category of Construction");
+          if ((await sel.count().catch(() => 0)) === 0) return;
+          await selectByPattern(sel, /^other/i, "Other");
+          // After selecting "Other", an "Other Category of Construction" text field appears.
+          await this.page.waitForTimeout(800).catch(() => null);
+          const otherInput = inputInRow("Other Category");
+          if ((await otherInput.count().catch(() => 0)) > 0) {
+            await otherInput.fill("Solar").catch(() => null);
+          }
         });
-      });
 
-      // "Project includes any of the following" — Accela's special-condition list.
-      // For a standard residential solar install this is always "Not Applicable".
-      await collect("projectIncludes", async () => {
-        const sel = selectInRow("Project includes any");
-        if ((await sel.count().catch(() => 0)) === 0) return;
-        await selectByPattern(sel, /not applicable|n\/a/i);
-      }, false);
+        // "Type of Work" — solar on existing home = "Alteration" or "Addition".
+        await collect("typeOfWork", async () => {
+          const sel = selectInRow("Type of Work");
+          if ((await sel.count().catch(() => 0)) === 0) return;
+          // Try alteration first; fall back to "New" if the select only has that option.
+          const selected = await selectByPattern(sel, /alteration|addition/i).then(() => true).catch(() => false);
+          if (!selected) await selectByPattern(sel, /new/i).catch(() => null);
+        });
 
-      // Building dimensions — required by Accela but the actual values for a solar
-      // addition on an existing house are 0 (we're not changing the building envelope).
-      await collect("buildingHeight", async () => {
-        const inp = inputInRow("Building Height");
-        if ((await inp.count().catch(() => 0)) > 0) await inp.fill("0");
-      });
-      await collect("numberOfStories", async () => {
-        const inp = inputInRow("Number of Stories");
-        if ((await inp.count().catch(() => 0)) > 0) await inp.fill("0");
-      });
-      await collect("newBuildingArea", async () => {
-        const inp = inputInRow("New Building Area");
-        if ((await inp.count().catch(() => 0)) > 0) await inp.fill("0");
-      });
-      await collect("existingBuildingArea", async () => {
-        const inp = inputInRow("Existing Building Area");
-        if ((await inp.count().catch(() => 0)) > 0) await inp.fill("0");
-      });
+        // "Project includes any of the following" — for solar: "Not Applicable".
+        await collect("projectIncludes", async () => {
+          const sel = selectInRow("Project includes any");
+          if ((await sel.count().catch(() => 0)) === 0) return;
+          await selectByPattern(sel, /not applicable|n\/a/i);
+        }, false);
+
+        // Building dimensions — 0 for a roof-mounted solar addition (no new building area).
+        await collect("buildingHeight", async () => {
+          const inp = inputInRow("Building Height");
+          if ((await inp.count().catch(() => 0)) > 0) await inp.fill("0");
+        });
+        await collect("numberOfStories", async () => {
+          const inp = inputInRow("Number of Stories");
+          if ((await inp.count().catch(() => 0)) > 0) await inp.fill("0");
+        });
+        await collect("newBuildingArea", async () => {
+          const inp = inputInRow("New Building Area");
+          if ((await inp.count().catch(() => 0)) > 0) await inp.fill("0");
+        });
+        await collect("existingBuildingArea", async () => {
+          const inp = inputInRow("Existing Building Area");
+          if ((await inp.count().catch(() => 0)) > 0) await inp.fill("0");
+        });
+      } else {
+        // ── ELECTRICAL services page.
+        // Category of Construction → "Other" (reveals "Other Category" → "Solar").
+        await collect("constructionCategory", async () => {
+          const sel = selectInRow("Category of Construction");
+          if ((await sel.count().catch(() => 0)) === 0) return;
+          await selectByPattern(sel, /^other/i, "Other");
+          await this.page.waitForTimeout(800).catch(() => null);
+          const otherInput = inputInRow("Other Category");
+          if ((await otherInput.count().catch(() => 0)) > 0) await otherInput.fill("Solar").catch(() => null);
+        });
+
+        // Type of Work → "New".
+        await collect("typeOfWork", async () => {
+          const sel = selectInRow("Type of Work");
+          if ((await sel.count().catch(() => 0)) === 0) return;
+          await selectByPattern(sel, /^new/i);
+        });
+
+        // "Project includes any of the following" → "Not Applicable".
+        await collect("projectIncludes", async () => {
+          const sel = selectInRow("Project includes any");
+          if ((await sel.count().catch(() => 0)) === 0) return;
+          await selectByPattern(sel, /not applicable|n\/a/i);
+        }, false);
+
+        // Renewable-energy kVA tier: fill the count field matching the DC system size.
+        // Accela fees key off DC nameplate (systemSizeDcKw). Fill exactly ONE tier field
+        // with "1" (count of systems); leave all others empty (do NOT zero them out).
+        const dcKw = project.systemSizeDcKw ?? 0;
+        const kvaRowPattern =
+          dcKw <= 5
+            ? /5\s*kva or less|renewable.*5\s*kva/i
+            : dcKw <= 15
+            ? /5\.?0?1.*15\s*kva|5\.01.*15|renewable.*15\s*kva/i
+            : dcKw <= 25
+            ? /15\.?0?1.*25\s*kva|renewable.*25\s*kva/i
+            : /over\s*25\s*kva|solar.*generation.*25/i;
+        await collect("renewableEnergyKva", async () => {
+          const inp = this.page.locator("tr").filter({ hasText: kvaRowPattern }).locator('input[type="text"]').first();
+          if ((await inp.count().catch(() => 0)) === 0) return;
+          // For ≤25 kVA tiers the value is the COUNT of systems (typically "1");
+          // >25 kVA tier takes the total kVA.
+          const value = dcKw > 25 ? String(Math.ceil(dcKw)) : "1";
+          await inp.fill(value);
+        });
+      }
 
       const constrErr = await continueAndCheck("construction details");
       if (constrErr) return fail(`fillApplication: ${constrErr}`, { requiredFailures });

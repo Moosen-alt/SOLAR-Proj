@@ -118,6 +118,10 @@ export interface ProjectRecord {
   assignedUserId?: string | null;
   createdAt: string;
   updatedAt: string;
+  /** Which permit discipline to file: "structural" (BLD) or "electrical" (ELE).
+   *  Drives jurisdiction row selection (city vs county) and app-type checkbox
+   *  in the Accela ACA flow. Undefined defaults to structural. */
+  permitType?: "structural" | "electrical";
 }
 
 export interface ProjectListItem extends Omit<ProjectRecord, "parserSnapshot"> {
