@@ -910,6 +910,12 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     // Bootstrap .btn links/buttons), so a "Got it"/"Close" link is caught too.
     const clickable = ":is(button, a, .btn, [role=button])";
     const dismissSelectors = [
+      // PowerClerk cookie-consent banner — a high z-index (999999) "shadow-lg border"
+      // floating div that covers the bottom of the page (where the wizard "Next" button
+      // sits), intercepting the click. Dismiss it by its specific Close button.
+      '#cpr-banner-dimiss-btn',
+      '[id*="cpr-banner"][id*="dismiss"]',
+      '[id*="cookie"] [class*="dismiss"], [class*="cookie-banner"] [aria-label="Close"]',
       // PowerClerk "What's new?" popover
       `${clickable}:has-text("Got it")`,
       `${clickable}:has-text("Got It")`,
