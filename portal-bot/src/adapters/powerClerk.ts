@@ -2,7 +2,7 @@ import path from "node:path";
 import type { ProjectRecord, ReviewerReport } from "../../../shared/src/types";
 import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, type PortalContext, type PortalStepResult } from "../adapter";
 import { openPortal } from "../browser";
-import { redactStatusText, safeAction } from "../safeAction";
+import { redactStatusText, safeAction, sleep } from "../safeAction";
 
 // PowerClerk (PGE Net Metering) adapter
 // Built from an operator codegen recording captured up to the final submit page.
@@ -154,6 +154,21 @@ export class PowerClerkAdapter extends BasePortalAdapter {
       const r = await safeAction(label, action, { required: true });
       if (!r.ok) requiredFailures.push(`${r.field}: ${r.message ?? "failed"}`);
     };
+
+    // Settle the page before advancing. PowerClerk's Vue autosaves each section
+    // on blur/change; clicking Next too soon snapshots blank values.
+    // 1. Tab-blur commits any focused input into Vue's reactive model.
+    // 2. networkidle catches the autosave XHR.
+    // 3. A configurable sleep covers slow-network/slow-save edge cases.
+    // 4. After clicking Next, another networkidle waits for the next section.
+    const settleAndNext = async () => {
+      await page.keyboard.press("Tab").catch(() => null);
+      await page.waitForLoadState("networkidle", { timeout: 8000 }).catch(() => null);
+      await sleep(Number(process.env.POWERCLERK_SETTLE_MS) || 2000);
+      await page.getByRole("button", { name: "Next", exact: true }).click();
+      await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
+    };
+
     try {
       const s = snap(project);
 
@@ -185,7 +200,7 @@ export class PowerClerkAdapter extends BasePortalAdapter {
       await collect("installerAddress", () => page.getByRole("textbox", { name: "Address", exact: true }).first().fill(installerAddress));
       await collect("installerEmail", () => page.getByRole("textbox", { name: "Email" }).first().fill(installerEmail));
       await collect("installerPhone", () => page.getByRole("textbox", { name: "Phone" }).first().fill(installerPhone));
-      await page.getByRole("button", { name: "Next", exact: true }).click();
+      await settleAndNext();
 
       // --- Applicant (PGE Customer / homeowner) -----------------------------
       // Scope the whole block to the Applicant group so it never collides with
@@ -210,7 +225,7 @@ export class PowerClerkAdapter extends BasePortalAdapter {
       const ownerEmail = str(s["homeownerEmail"] ?? s["owner_email"]);
       if (ownerPhone) await applicantScope.getByRole("textbox", { name: "Phone" }).first().fill(ownerPhone);
       if (ownerEmail) await applicantScope.getByRole("textbox", { name: "Email" }).first().fill(ownerEmail);
-      await page.getByRole("button", { name: "Next", exact: true }).click();
+      await settleAndNext();
 
       // --- Installer company selection (same authoritative client value) -----
       const installerCompany = installerCompanyName;
@@ -218,7 +233,7 @@ export class PowerClerkAdapter extends BasePortalAdapter {
         // Fall back to first option if exact label is unavailable
         await page.getByLabel("Installer Company").selectOption({ index: 1 }).catch(() => null);
       });
-      await page.getByRole("button", { name: "Next", exact: true }).click();
+      await settleAndNext();
 
       // --- System / point of interconnection --------------------------------
       const existingContact = str(s["powerclerkExistingContact"] ?? s["existing_contact"]);
@@ -247,7 +262,7 @@ export class PowerClerkAdapter extends BasePortalAdapter {
 
       const serviceRating = str(s["mainServiceRating"] ?? s["main_service_rating"] ?? s["serviceRating"]) || "200";
       await collect("mainServiceRating", () => page.getByRole("textbox", { name: "Main Service Entrance Rating" }).fill(serviceRating));
-      await page.getByRole("button", { name: "Next", exact: true }).click();
+      await settleAndNext();
 
       // --- Generation: inverter + N PV arrays -------------------------------
       await page.getByLabel("Energy Source").selectOption("a. Solar").catch(() => null);
@@ -283,12 +298,12 @@ export class PowerClerkAdapter extends BasePortalAdapter {
       const limitExport = String(s["limitExport"] ?? "").toLowerCase() === "true" ? "Yes" : "No";
       await page.getByRole("group", { name: /Do you propose to limit/i }).getByLabel(limitExport).check().catch(() => null);
       await page.getByRole("group", { name: /Is your disconnect within 10/i }).getByLabel("Yes").check().catch(() => null);
-      await page.getByRole("button", { name: "Next", exact: true }).click();
+      await settleAndNext();
 
       // --- Aggregation ------------------------------------------------------
       await page.getByRole("radio", { name: "No aggregation" }).check().catch(() => null);
       await page.getByRole("radio", { name: "Yes" }).check().catch(() => null);
-      await page.getByRole("button", { name: "Next", exact: true }).click();
+      await settleAndNext();
 
       // If any REQUIRED field failed, the form is half-filled — report ok:false with a
       // redacted (field-name-only) message rather than a clean success.
