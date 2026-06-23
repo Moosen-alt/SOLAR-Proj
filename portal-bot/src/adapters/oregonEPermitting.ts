@@ -483,17 +483,58 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
 
     for (const filePath of files) {
       try {
-        await this.page.getByRole("link", { name: "Add" }).first().click();
+        // Open the file-upload dialog. Accela renders an "Add" link in the documents
+        // section — click the FIRST visible one in the page body (not inside any frame).
+        const addLink = this.page.getByRole("link", { name: /^Add$/i }).first();
+        await addLink.click({ timeout: 10000 });
+        await this.page.waitForLoadState("networkidle", { timeout: 8000 }).catch(() => null);
 
         const uploadFrame = this.page.frameLocator('iframe[name="ACADialogFrame"]');
-        await uploadFrame.getByRole("link", { name: "Add" }).click();
-        await uploadFrame.getByTitle("Add").setInputFiles(filePath);
-        await uploadFrame.getByRole("link", { name: "Continue" }).click();
 
+        // The dialog has an inner "Add" link that opens a second step (the actual file-
+        // picker area). Click it, then set the files directly on the hidden file input —
+        // this bypasses the OS file dialog and works in headless mode.
+        await uploadFrame.getByRole("link", { name: /^Add$/i }).first()
+          .click({ timeout: 8000 }).catch(() => null);
+        await this.page.waitForTimeout(500).catch(() => null);
+
+        // Playwright's setInputFiles() must target the <input type="file"> element.
+        // Accela's upload frame uses a hidden file input — find it by type.
+        const fileInput = uploadFrame.locator('input[type="file"]').first();
+        if ((await fileInput.count().catch(() => 0)) > 0) {
+          await fileInput.setInputFiles(filePath);
+        } else {
+          // Fallback: the input may be attached to a button with title "Add" or "Browse".
+          await uploadFrame.locator('[title="Add"],[title="Browse"]').first()
+            .setInputFiles(filePath).catch(() => {
+              throw new Error(`Could not locate file input in upload dialog for ${path.basename(filePath)}`);
+            });
+        }
+        await uploadFrame.getByRole("link", { name: /Continue|Upload/i }).first()
+          .click({ timeout: 8000 });
+        await this.page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => null);
+
+        // After upload, fill the description and document type on the main page.
         const descriptionOfWork = buildDescriptionOfWork(project);
-        await this.page.getByRole("textbox", { name: "Description:" }).fill(descriptionOfWork);
-        await this.page.getByLabel("*Type (Required):").selectOption("BUILDING DOCUMENTS::Plans - Construction");
-        await this.page.getByRole("link", { name: "Save", exact: true }).click();
+        await this.page.getByRole("textbox", { name: /Description/i }).first()
+          .fill(descriptionOfWork).catch(() => null);
+
+        // "Type (Required)" select — Accela renders required-field labels with a leading
+        // asterisk in visible text, so use a partial label match via locator chain.
+        const typeSelect = this.page.locator("tr").filter({ hasText: /Type.*Required/i })
+          .locator("select").first();
+        if ((await typeSelect.count().catch(() => 0)) > 0) {
+          // Try to select "Plans - Construction" by partial text match.
+          const opts: Array<{ v: string; t: string }> = await typeSelect.evaluate((el: HTMLSelectElement) =>
+            Array.from(el.options).map((o) => ({ v: o.value, t: o.text.trim() }))
+          ).catch(() => []);
+          const match = opts.find((o) => /plans.*construction|construction.*plan/i.test(o.t) && o.v);
+          if (match) await typeSelect.selectOption(match.v).catch(() => null);
+        }
+
+        await this.page.getByRole("link", { name: /^Save$/i }).first()
+          .click({ timeout: 10000 });
+        await this.page.waitForLoadState("networkidle", { timeout: 8000 }).catch(() => null);
 
         uploaded.push(path.basename(filePath));
       } catch (err) {
@@ -501,7 +542,9 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
       }
     }
 
-    await this.page.getByRole("link", { name: "Continue Application »" }).click().catch(() => null);
+    await this.page.getByRole("link", { name: /Continue Application/i }).first()
+      .click({ timeout: 10000 }).catch(() => null);
+    await this.page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => null);
 
     if (failed.length > 0 && uploaded.length === 0) {
       return fail(`All uploads failed.`, { failed });
@@ -520,18 +563,25 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
     if (!this.page) return fail("Not logged in. Call login() first.");
     try {
       // Navigate forward through any remaining wizard steps to reach the review page.
-      // We click Continue until we reach a page whose URL or title indicates "Review".
-      let reviewReached = false;
-      for (let i = 0; i < 6; i++) {
-        const url = this.page.url();
-        if (url.includes("Review") || url.includes("review") || url.includes("Confirm")) {
-          reviewReached = true;
-          break;
-        }
-        const continueLink = this.page.getByRole("link", { name: "Continue Application »" });
-        if (await continueLink.count() === 0) break;
-        await continueLink.click();
-        await this.page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => null);
+      // Stop when URL contains "Review"/"Confirm" OR a final-submit button is visible
+      // (that's a structural indicator of the review page, regardless of URL pattern).
+      const isReviewPage = async (): Promise<boolean> => {
+        const url = String(this.page.url());
+        if (/review|confirm/i.test(url)) return true;
+        // Accela's review page typically has a "Submit Application" or "Submit" final button.
+        // We detect it by presence but NEVER click it.
+        const submitBtn = this.page.getByRole("link", { name: /Submit Application|Submit/i })
+          .or(this.page.locator('input[value*="Submit" i]'));
+        return (await submitBtn.count().catch(() => 0)) > 0;
+      };
+
+      let reviewReached = await isReviewPage();
+      for (let i = 0; i < 8 && !reviewReached; i++) {
+        const continueLink = this.page.getByRole("link", { name: /Continue Application/i });
+        if ((await continueLink.count().catch(() => 0)) === 0) break;
+        await continueLink.first().click({ timeout: 10000 });
+        await this.page.waitForLoadState("networkidle", { timeout: 12000 }).catch(() => null);
+        reviewReached = await isReviewPage();
       }
 
       const finalUrl = this.page.url();
