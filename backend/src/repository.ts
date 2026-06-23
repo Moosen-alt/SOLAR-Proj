@@ -4617,6 +4617,25 @@ export async function runDuePermitChecks(
   return { checked: targets.length, projects };
 }
 
+// Extract a concise, non-sensitive failure reason from a stage result for operator
+// display. Walks the steps for the first failure and takes its first line — the adapter
+// puts the human-readable reason first; verbose browser launch logs follow after a
+// newline and are dropped. Adapters already redact credentials/tokens from step
+// messages, so this never surfaces secrets.
+function extractStageFailureMessage(result: Record<string, unknown>): string {
+  const steps = Array.isArray(result.steps)
+    ? (result.steps as Array<{ ok?: boolean; message?: unknown }>)
+    : [];
+  const firstFail = steps.find((s) => s && s.ok === false);
+  const raw = typeof firstFail?.message === "string"
+    ? firstFail.message
+    : typeof result.message === "string"
+      ? (result.message as string)
+      : "Portal run failed before reaching review.";
+  const firstLine = raw.split("\n")[0].trim();
+  return firstLine.slice(0, 300) || "Portal run failed before reaching review.";
+}
+
 export async function prepareSubmission(db: AppDb, projectId: string, track?: SubmittalTrackType, autoSubmit?: boolean): Promise<ProjectDetail> {
   const detail = getProjectDetail(db, projectId);
   const failCount = detail.qcResults.filter((result) => result.qcStatus === "fail").length;
@@ -4851,12 +4870,20 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   const adapterOk = result.ok === true;
   const finalSubmitClicked = result.finalSubmitClicked === true;
   const autoSubmitted = resolvedAutoSubmit && !pauseReason && adapterOk && finalSubmitClicked;
+  // FAILURE GATE: a run where the adapter returned ok:false and did NOT pause for
+  // MFA/CAPTCHA staged nothing — login failed, a step errored, or the review screen was
+  // never reached. This MUST NOT read as "awaiting_human_submit": that fabricates a
+  // "staged, ready to submit" state for a run that never touched the portal, so the
+  // operator looks for an application that doesn't exist. Mark it failed and surface the
+  // concise (non-sensitive) reason from the first failing step.
+  const adapterFailed = !adapterOk && !pauseReason;
+  const failureMessage = adapterFailed ? extractStageFailureMessage(result) : "";
   // Permit/record number + record link scraped off the completion page after an
   // operator-authorized final submit (the "relay continuation" capture).
   const capturedPermitNumber = autoSubmitted ? String((result as Record<string, unknown>).capturedPermitNumber || "").trim() : "";
   const capturedConfirmation = autoSubmitted ? String((result as Record<string, unknown>).capturedConfirmationNumber || "").trim() : "";
   const capturedRecordLink = autoSubmitted ? String((result as Record<string, unknown>).capturedRecordLink || "").trim() : "";
-  const runStatus = pauseReason ? "paused_for_human" : autoSubmitted ? "submitted" : "awaiting_human_submit";
+  const runStatus = pauseReason ? "paused_for_human" : autoSubmitted ? "submitted" : adapterFailed ? "failed" : "awaiting_human_submit";
   if (autoSubmitted) {
     addAuditLog(db, projectId, "portal_bot", adapterActorName, "portal.auto_submitted", {
       track: track ?? "permit", finalSubmitClickedByAutomation: true, feePaymentAutomated: false,
@@ -4875,7 +4902,7 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
         (id, project_id, portal_profile_id, run_type, status, started_at, finished_at, error_message,
          human_action_required, screenshots_path, logs_path, result_json, pause_reason, permit_type)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [runId, projectId, portalProfileId, "prepare_submit", runStatus, ts, nowIso(), "", 1, "", "", asJson(result), pauseReason, permitTypeTag],
+      [runId, projectId, portalProfileId, "prepare_submit", runStatus, ts, nowIso(), failureMessage, 1, "", "", asJson(result), pauseReason, permitTypeTag],
     );
 
     db.run(
@@ -4889,7 +4916,7 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
         portalProfileId,
         submissionType,
         permitTypeTag,
-        autoSubmitted ? "submitted" : "awaiting_human_submit",
+        autoSubmitted ? "submitted" : adapterFailed ? "failed" : "awaiting_human_submit",
         "",
         capturedPermitNumber,
         capturedConfirmation,
@@ -4898,16 +4925,22 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
         "",
         autoSubmitted
           ? `${trackLabelText}${portalLabel} submitted via approved auto-submit (application submit only; no fee payment).`
-          : `${trackLabelText}${portalLabel} staged to final review only. Automation did not click final submit.`,
+          : adapterFailed
+            ? `${trackLabelText}${portalLabel} run FAILED before review — nothing was staged on the portal. ${failureMessage}`
+            : `${trackLabelText}${portalLabel} staged to final review only. Automation did not click final submit.`,
         ts,
       ],
     );
 
     db.run("UPDATE projects SET status = ?, current_stage = ?, updated_at = ? WHERE id = ?", [
-      autoSubmitted ? "submitted" : "awaiting_human_submit",
+      // On failure, leave the project in its prior (pre-run) status — never advance a
+      // project to "awaiting_human_submit" for a run that staged nothing.
+      autoSubmitted ? "submitted" : adapterFailed ? detail.project.status : "awaiting_human_submit",
       autoSubmitted
         ? `${trackLabelText}${portalLabel} auto-submitted (operator-approved)${capturedPermitNumber ? ` — record ${capturedPermitNumber}` : ""}. Tracking status.`
-        : `${trackLabelText}${portalLabel} staged. Human must verify and submit manually.`,
+        : adapterFailed
+          ? `${trackLabelText}${portalLabel} run failed — not staged. ${failureMessage}`
+          : `${trackLabelText}${portalLabel} staged. Human must verify and submit manually.`,
       nowIso(),
       projectId,
     ]);
@@ -4928,11 +4961,12 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
       db.run("UPDATE portal_runs SET tracking_url = COALESCE(NULLIF(?, ''), tracking_url) WHERE id = ?", [capturedRecordLink, runId]);
     }
 
-    addAuditLog(db, projectId, "portal_bot", adapterActorName, "portal.staged_to_review", {
+    addAuditLog(db, projectId, "portal_bot", adapterActorName, adapterFailed ? "portal.run_failed" : "portal.staged_to_review", {
       runId,
       portalProfileId,
       portalType,
       finalSubmitClickedByAutomation: false,
+      ...(adapterFailed ? { failureReason: failureMessage } : {}),
       mustShowAhjPreviewWindow: reviewerReport.finalSubmitGate.mustShowAhjPreviewWindow,
       finalSubmitButtonAloneIsEnough: reviewerReport.finalSubmitGate.finalSubmitButtonAloneIsEnough,
     });
