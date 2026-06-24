@@ -629,6 +629,75 @@ async function testNewTabPopupAdopted() {
   assert.ok(log.clicks.includes("role:link:Start Application"), "the dashboard nav link was clicked");
 }
 
+// 9) T&C PASS-THROUGH: a Terms & Conditions/billing page (no inputs + "Continue Application"
+// but NO review markers) must NOT be treated as the review screen. The loop should click
+// through it and continue to the real application form.
+async function testTermsPagePassThrough() {
+  const log: ActionLog = { clicks: [], fills: [], selects: [], checks: [] };
+  let call = 0;
+  const planner: LearnPlanner = async (): Promise<LearnPlanResponse> => {
+    call++;
+    if (call === 1) {
+      // T&C page: planner correctly says navigate past it.
+      return { fills: [], navigateSelectorIndex: 0, atReview: false };
+    }
+    // Real form page with a fill field and an advance button.
+    if (call === 2) return { fills: [{ selectorIndex: 0, value: "John", field: "homeownerName" }], advanceSelectorIndex: 1, atReview: false };
+    // Review screen — return finalSubmitSelectorIndex so the Continue Application is recorded.
+    return { fills: [], atReview: true, finalSubmitSelectorIndex: 0 };
+  };
+  const adapter = new AutoLearnAdapter("Oregon ePermitting", planner);
+  withFakePage(
+    adapter,
+    makeFakePage(
+      {
+        pages: [
+          {
+            // T&C/billing page: no inputs, "Continue Application" button, NO review markers.
+            url: "https://aca-oregon.accela.com/oregon/Cap/CapApplyDisclaimer.aspx",
+            title: "Disclaimer",
+            body: "By clicking Continue Application you agree to the Terms and Conditions of this portal.",
+            rawFields: [
+              { label: "Continue Application", fieldType: "button", role: "button", text: "Continue Application" },
+            ],
+          },
+          {
+            url: "https://aca-oregon.accela.com/oregon/Cap/CapApplyStep1.aspx",
+            title: "Step 1",
+            body: "Application form step 1",
+            rawFields: [
+              { label: "Homeowner Name", fieldType: "text", id: "hn" },
+              { label: "Next", fieldType: "button", role: "button", text: "Next" },
+            ],
+          },
+          {
+            url: "https://aca-oregon.accela.com/oregon/Cap/CapConfirm.aspx",
+            title: "Review",
+            body: "Step 3: Review. Please review all information. Click Continue Application button below.",
+            rawFields: [
+              { label: "Continue Application", fieldType: "button", role: "button", text: "Continue Application" },
+            ],
+            reviewPairs: [{ label: "Homeowner Name", value: "John" }],
+          },
+        ],
+      },
+      log,
+    ),
+  );
+
+  const result = await adapter.learn(fakeContext, fakeProject);
+  assert.equal(result.ok, true, "should succeed: clicked through T&C and reached real review");
+  assert.equal(result.pageCount, 3, "visited all 3 pages (T&C, form, review)");
+  // The T&C continue click must NOT be recorded as finalSubmit.
+  const finalSteps = result.steps.filter((s) => s.isFinalSubmit === true);
+  // The only finalSubmit must be the REVIEW page's Continue Application, not the T&C one.
+  assert.equal(finalSteps.length, 1, "exactly one finalSubmit recorded (the review page one)");
+  assert.ok(result.finalSubmitRecorded, "finalSubmit on the review page is recorded");
+  // The homeowner name fill was on the actual form page, not on the T&C page.
+  assert.ok(result.steps.some((s) => s.action === "fill" && s.field === "homeownerName"), "form fill recorded");
+  assert.equal(result.reviewScreen.fields.length, 1, "review screen fields scraped");
+}
+
 const tests: Array<[string, () => Promise<void>]> = [
   ["fields are extracted, filled, and recorded as steps", testFieldsExtractedFilledRecorded],
   ["a click that opens the form in a NEW TAB is adopted (PowerClerk)", testNewTabPopupAdopted],
@@ -639,6 +708,7 @@ const tests: Array<[string, () => Promise<void>]> = [
   ["progress callback fires per page and at review", testProgressEmitted],
   ["sensitive fields don't store literal values", testSensitiveFieldsRedacted],
   ["ACCELA TRAP: Continue Application on review page recorded, never clicked", testAccelaContinueApplicationNeverClicked],
+  ["T&C PASS-THROUGH: disclaimer page is not treated as review screen", testTermsPagePassThrough],
 ];
 
 let failures = 0;

@@ -692,10 +692,9 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       // On a review page its primary button (e.g. "Continue Application") SUBMITS, so we
       // NEVER advance-click — we force the review stop and record that button as the final
       // submit, overriding a planner that mistook the submit button for an "advance/next".
-      // Requires at least ONE positive review signal (URL or body) to avoid misclassifying
-      // T&C/billing/disclaimer pages as review screens (they have no inputs + Continue btn
-      // but are pass-throughs, already excluded via isTermsPage → isDashboard above).
-      const isReviewPage = !isTermsPage && ((!hasFillable && reviewSignals) || (reviewSignals && hasSubmitIntentBtn));
+      // T&C pages are implicitly excluded: isTermsPage → isDashboard=true → !isDashboard=false,
+      // so the first clause never fires for them. No need for an explicit isTermsPage check.
+      const isReviewPage = (!hasFillable && !isDashboard) || (reviewSignals && hasSubmitIntentBtn);
       if (isReviewPage && !plan.atReview) {
         // Promote a planner "advance" that is actually a submit-intent button to finalSubmit.
         let promotedFinal = typeof plan.finalSubmitSelectorIndex === "number" ? plan.finalSubmitSelectorIndex : undefined;
