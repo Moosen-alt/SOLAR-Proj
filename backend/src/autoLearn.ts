@@ -248,8 +248,12 @@ export async function autoLearnPortal(
     projectFields,
     bodyText: reviewBody,
   });
+  // Vision verification can be disabled (PORTAL_VISION_VERIFY=0). NOTE: the review screenshot
+  // is a RAW render and may contain portal-rendered PII (account/meter numbers shown as text)
+  // that the DOM/text path masks — it is sent to the model and written to data/screenshots, so
+  // treat it as sensitive.
   let visionVerification: typeof textVerification | null = null;
-  if (learn.reviewScreenshotBase64) {
+  if (learn.reviewScreenshotBase64 && process.env.PORTAL_VISION_VERIFY !== "0") {
     try {
       visionVerification = await llm.verifyPortalFillVision({
         screenshotBase64: learn.reviewScreenshotBase64,
@@ -260,39 +264,44 @@ export async function autoLearnPortal(
       });
     } catch { visionVerification = null; }
   }
-  const reviewReadable = learn.reviewScreen.fields.length > 0 || reviewBody.trim().length > 0 || !!learn.reviewScreenshotBase64;
-  const deterministicMismatches = compareReviewFields(learn.reviewScreen.fields, project, reviewBody);
 
-  // Vision is authoritative WHEN it produced field-level matches — it saw the actual page,
-  // so it correctly passes a good fill the DOM scrape couldn't read. Otherwise fall back to
-  // the text verifier. Merge every signal's issues so the operator sees the full picture.
-  const verification = (visionVerification && visionVerification.matches.length > 0)
-    ? { ...visionVerification }
-    : { ...textVerification };
+  // The deterministic check returns a single "reviewScreen" SENTINEL when it could read
+  // nothing — that is an honest "couldn't read", NOT a per-field mismatch, so don't let it
+  // masquerade as one or veto trust.
+  const allDetMismatches = compareReviewFields(learn.reviewScreen.fields, project, reviewBody);
+  const isUnreadableSentinel = allDetMismatches.length === 1 && allDetMismatches[0].field === "reviewScreen";
+  const deterministicMismatches = isUnreadableSentinel ? [] : allDetMismatches;
+
+  // "Usable" = a signal actually had something to compare. A captured-but-unverified
+  // screenshot does NOT count (the vision call may have failed/returned nothing), so the
+  // honest "could not be read" message isn't suppressed.
+  const visionUsable = !!(visionVerification && visionVerification.matches.length > 0);
+  const reviewReadable = learn.reviewScreen.fields.length > 0 || reviewBody.trim().length > 0 || visionUsable;
+
+  // Vision is authoritative for DISPLAY when it actually read the page (it sees read-only
+  // review screens the DOM scrape can't). But TRUST is granted only when the signals AGREE —
+  // defense in depth may only ever LOWER trust, never raise it past a concrete mismatch.
+  const verification = visionUsable ? { ...visionVerification! } : { ...textVerification };
   const mergedIssues = [...verification.issues];
-  if (visionVerification && visionVerification.matches.length > 0 && textVerification.issues.length) {
-    mergedIssues.push(`text-check: ${textVerification.issues.join("; ")}`);
-  }
+  // Always surface the OTHER signals' NEGATIVE findings so a contradiction is never hidden.
+  if (visionUsable && textVerification.issues.length) mergedIssues.push(`text-check: ${textVerification.issues.join("; ")}`);
+  if (deterministicMismatches.length) mergedIssues.push(`deterministic-check flagged: ${deterministicMismatches.map((m) => m.field).join(", ")}.`);
+
   if (!reviewReadable) {
-    mergedIssues.push("Review screen could not be read (no fields, text, or screenshot) — the fill could not be verified; a human must confirm before this recipe is trusted.");
-  } else if (verification.matches.length === 0) {
-    // No field-level matches from text OR vision (common on a read-only page with no
-    // screenshot). Surface the deterministic findings so the dashboard shows specific
-    // fields, not a blank result.
-    if (deterministicMismatches.length > 0) {
-      verification.matches = deterministicMismatches.map((m) => ({ label: m.field, expected: m.expected, found: m.found, ok: false }));
-    }
-    mergedIssues.push(
-      deterministicMismatches.length === 0
-        ? "Verifier returned no structured matches; deterministic check found the key project fields present on the review page."
-        : `Deterministic review check flagged possible missing/altered fields: ${deterministicMismatches.map((m) => m.field).join(", ")}.`,
-    );
+    mergedIssues.push("Review screen could not be read (no fields, text, or readable screenshot) — the fill could not be verified; a human must confirm before this recipe is trusted.");
+  } else if (verification.matches.length === 0 && deterministicMismatches.length > 0) {
+    // Neither LLM produced matches but the deterministic check found concrete issues — show
+    // them as the matches so the dashboard isn't blank.
+    verification.matches = deterministicMismatches.map((m) => ({ label: m.field, expected: m.expected, found: m.found, ok: false }));
   }
   verification.issues = mergedIssues;
 
-  // Promote to "complete" (trusted for deterministic replay) ONLY when the fill verified
-  // accurate (via the authoritative signal above). Otherwise keep it a draft pending review.
-  const trusted = verification.accurate;
+  // TRUST GATE (promotes the recipe to "complete" for deterministic replay + the trusted-
+  // submit allowlist): require the authoritative verdict to be accurate AND no concrete
+  // deterministic mismatch AND the text verifier didn't actively contradict. A single
+  // optimistic signal can never override a concrete contradiction to RAISE trust.
+  const textContradicts = textVerification.matches.length > 0 && !textVerification.accurate;
+  const trusted = verification.accurate && deterministicMismatches.length === 0 && !textContradicts;
   savePortalRecipeSteps(db, stub.id, learn.steps, {
     status: trusted ? "complete" : "recording",
     notes: trusted

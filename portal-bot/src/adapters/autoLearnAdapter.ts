@@ -991,10 +991,12 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         ? `Auto-learn filled ${pageCount} page(s) and recorded the steps, but did not reach a review screen. Page trace: ${traceLine}`
         : `Auto-learn found nothing fillable on ${pageCount} page(s); no steps recorded.${nothingFillableHint} Page trace: ${traceLine}`) + verifyWarning;
 
-    // Capture review page screenshot when we've reached the review screen
+    // Capture the review page screenshot when we've reached the review screen. fullPage:true
+    // so the vision verifier sees the WHOLE review — a viewport-only shot would let an
+    // off-screen blank/wrong required field pass unseen.
     let reviewScreenshotBase64: string | undefined;
     try {
-      const buf = await this.page.screenshot({ type: "png", fullPage: false });
+      const buf = await this.page.screenshot({ type: "png", fullPage: true });
       reviewScreenshotBase64 = buf.toString("base64");
     } catch { /* non-fatal */ }
 

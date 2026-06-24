@@ -98,9 +98,10 @@ export class StubLLMProvider implements LLMProvider {
     return heuristicVerifyFill(input);
   }
 
-  async verifyPortalFillVision(input: PortalFillVisionVerifyInput): Promise<PortalFillVerification> {
-    // No vision without an API key — fall back to the deterministic DOM/text comparison.
-    return heuristicVerifyFill({ reviewFields: input.reviewFields, projectFields: input.projectFields, bodyText: input.bodyText });
+  async verifyPortalFillVision(_input: PortalFillVisionVerifyInput): Promise<PortalFillVerification> {
+    // No vision without an API key — return empty matches so this stub is never
+    // authoritative and the caller falls back to text/deterministic signals.
+    return { accurate: false, matches: [], issues: ["vision unavailable: no API key"], overallConfidence: "low", notes: "No ANTHROPIC_API_KEY configured — vision verification is off." };
   }
 
   async lookupInverterSpec(input: { inverterModel: string; inverterQty?: number; acNameplateKw?: number; serviceVoltageV?: number }): Promise<InverterSpecLookup> {
