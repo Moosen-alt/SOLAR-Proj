@@ -55,6 +55,9 @@ export async function submitStagedRun(
   options: StageOptions = {},
 ): Promise<Record<string, unknown>> {
   let tmpStatePath: string | undefined;
+  // Close any browser left open by a prior guided-manual stage on this profile so the lock
+  // is free and this submit re-opens cleanly.
+  await closePriorStagingBrowser(options.userDataDir);
   try {
     tmpStatePath = resolveStorageStatePath(options.encryptedStorageStatePath);
     const loginResult = await adapter.login({
@@ -193,10 +196,32 @@ interface StageOptions {
   gapFillFields?: Record<string, string>;
 }
 
+// Headed, guided-manual staging leaves the browser OPEN at the review screen so the human
+// can verify every field and click Submit themselves — closing it (as the old code always
+// did) destroyed the very window they were meant to submit in. We track each left-open
+// adapter by its per-client userDataDir so the NEXT stage for the same client+portal closes
+// the prior window first, releasing the profile lock and preventing orphan browsers.
+const openStagingAdapters = new Map<string, import("./adapter").PortalAdapter>();
+async function closePriorStagingBrowser(userDataDir: string | undefined): Promise<void> {
+  if (!userDataDir) return;
+  const prior = openStagingAdapters.get(userDataDir);
+  if (!prior) return;
+  openStagingAdapters.delete(userDataDir);
+  try { await prior.close(); } catch { /* best effort — the human may have closed it already */ }
+}
+
+// Close every browser left open for human submit (call on server shutdown).
+export async function closeAllStagingBrowsers(): Promise<void> {
+  for (const [dir, adapter] of [...openStagingAdapters]) {
+    openStagingAdapters.delete(dir);
+    try { await adapter.close(); } catch { /* best effort */ }
+  }
+}
+
 // Generic adapter runner: decrypts the session into a temp file, drives the
-// adapter through login → open → fill → upload → stopAtReview, ALWAYS closes the
-// browser (releasing the per-client userDataDir lock so the next run can launch),
-// and ALWAYS shreds the plaintext session file.
+// adapter through login → open → fill → upload → stopAtReview, then either CLOSES the
+// browser (autosubmit / headless / failed run) or LEAVES IT OPEN at the review screen for
+// the human to submit (guided-manual headed run). ALWAYS shreds the plaintext session file.
 //
 // Returns the backend contract { ...details, ok, finalSubmitClicked } where:
 //   - ok: false if any step failed, the run errored, or the review screen was not
@@ -210,6 +235,12 @@ async function runAdapter(
   options: StageOptions
 ): Promise<Record<string, unknown>> {
   let tmpStatePath: string | undefined;
+  // A headed, guided-manual run (stop at review, no autosubmit) leaves the browser open for
+  // the human to submit. Set once we've staged cleanly to review; checked in finally.
+  let leaveBrowserOpen = false;
+  // Re-staging the same client+portal? Close the previously left-open window first so the
+  // persistent-profile lock is free for this run to launch.
+  await closePriorStagingBrowser(options.userDataDir);
   try {
     tmpStatePath = resolveStorageStatePath(options.encryptedStorageStatePath);
 
@@ -255,12 +286,20 @@ async function runAdapter(
     // after an authorized final submit, so the backend can store them automatically.
     const captured = steps.map((s) => s.data).find((d) => d && (d.permitNumber || d.recordLink));
 
+    // Leave the browser OPEN for the human ONLY when: this is a guided-manual run (no
+    // autosubmit), it's headed (the human is watching), it staged cleanly to review, and we
+    // have a userDataDir to track/close it by later. Otherwise fall through to close().
+    leaveBrowserOpen = !options.autoSubmit && options.headless === false && reviewResult.ok && !finalSubmitClicked && !!options.userDataDir;
+
     return {
       portalName: adapter.portalName,
       ok,
       finalSubmitClicked,
       // Legacy field kept for older consumers; mirrors finalSubmitClicked.
       finalSubmitClickedByAutomation: finalSubmitClicked,
+      // True when the staged browser is left open at the review screen for the human to
+      // submit (so the UI can say "the portal is open — verify and click Submit").
+      browserLeftOpen: leaveBrowserOpen,
       capturedPermitNumber: captured?.permitNumber || "",
       capturedConfirmationNumber: captured?.confirmationNumber || "",
       capturedRecordLink: captured?.recordLink || "",
@@ -280,9 +319,17 @@ async function runAdapter(
       steps: [{ ok: false, message: `Portal run errored: ${err instanceof Error ? err.message : String(err)}` }],
     };
   } finally {
-    // P0-1: ALWAYS close the browser/context so the userDataDir lock is released and
-    // the second run for the same client+portal can launch.
-    await adapter.close();
+    // Guided-manual headed run that staged cleanly: KEEP the browser open at the review
+    // screen so the human can submit, tracked by userDataDir so the next run closes it.
+    // Every other path (autosubmit, headless, failed, errored) closes so the profile lock
+    // is released and the next run can launch.
+    if (leaveBrowserOpen && options.userDataDir) {
+      openStagingAdapters.set(options.userDataDir, adapter);
+    } else {
+      await adapter.close();
+    }
+    // The plaintext session file is always shredded — it's already loaded into the open
+    // context, so removing it from disk does not affect a left-open browser.
     shredTmpStateFile(tmpStatePath);
   }
 }
@@ -334,6 +381,9 @@ export async function learnPortal(input: {
   const { AutoLearnAdapter } = await import("./adapters/autoLearnAdapter");
   const adapter = new AutoLearnAdapter(input.portalName, input.planner, { maxPages: input.maxPages, docsByType: input.docsByType, uploadMode: input.uploadMode, onProgress: input.onProgress });
   let tmpStatePath: string | undefined;
+  // A browser left open by a prior guided-manual stage holds this profile's lock — close it
+  // so the recorder can launch.
+  await closePriorStagingBrowser(input.userDataDir);
   try {
     tmpStatePath = resolveStorageStatePath(input.encryptedStorageStatePath);
     const loginResult = await adapter.login({
@@ -392,6 +442,8 @@ export async function checkStatusWithAdapter(
 ): Promise<string | null> {
   let tmpStatePath: string | undefined;
   let adapter: import("./adapter").PortalAdapter | null = null;
+  // Release a left-open guided-manual browser on this profile before opening a status check.
+  await closePriorStagingBrowser(options.userDataDir);
   try {
     tmpStatePath = resolveStorageStatePath(options.encryptedStorageStatePath);
     const ctx = { storageStatePath: tmpStatePath, headless: options.headless ?? true, credential: options.credential, userDataDir: options.userDataDir };
