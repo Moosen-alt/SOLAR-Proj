@@ -244,6 +244,67 @@ export class PowerClerkAdapter extends BasePortalAdapter {
     await fillCustomCombobox(page, loc, value);
   }
 
+  // Wait until the current wizard SECTION has actually rendered before we fill it. PGE
+  // PowerClerk is a Vue SPA with FormSense auto-load: `networkidle` fires when the XHRs go
+  // quiet, but the section's inputs can still be mid-mount — so a fill fired the instant after
+  // navigation hits a not-yet-present field and silently no-ops, which is exactly how the
+  // wizard gets walked to the end with NOTHING filled in. This actively polls until the page is
+  // interactive (≥1 visible, enabled fillable control) instead of trusting a blind sleep, so it
+  // is faster on quick loads and patient on slow ones. When an `anchor` is supplied it also
+  // confirms the EXPECTED section is on screen, so a sequence drift (e.g. an extra/missing intro
+  // page that knocks every later step off-by-one) is visible in the logs rather than quietly
+  // filling blanks. Best-effort + non-throwing: the caller fills regardless of the return value
+  // (readiness detection must never SKIP a real section), but a false return is logged.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async waitForSectionReady(
+    label = "section",
+    opts: { anchor?: RegExp; timeoutMs?: number } = {},
+  ): Promise<boolean> {
+    const page = this.page;
+    // Mock pages (tests) have no waitForFunction — nothing to wait on, treat as ready.
+    if (!page || typeof page.waitForFunction !== "function") return true;
+    const dbg = process.env.POWERCLERK_DEBUG === "1";
+    const timeoutMs = opts.timeoutMs ?? (Number(process.env.POWERCLERK_SECTION_READY_MS) || 12000);
+    await page.waitForLoadState("networkidle", { timeout: Math.min(timeoutMs, 15000) }).catch(() => null);
+    await clearPowerClerkOverlays(page);
+    // 1. Wait for the SPA to mount at least one interactive, fillable control — proof the
+    //    section actually rendered (networkidle alone doesn't mean Vue finished mounting).
+    let interactive = false;
+    try {
+      await page.waitForFunction(
+        () => {
+          const vis = (el: Element): boolean => {
+            const r = (el as HTMLElement).getBoundingClientRect();
+            const st = window.getComputedStyle(el as HTMLElement);
+            return r.width > 0 && r.height > 0 && st.visibility !== "hidden" && st.display !== "none";
+          };
+          const controls = Array.from(document.querySelectorAll(
+            "input:not([type=hidden]):not([disabled]):not([readonly]), select:not([disabled]), textarea:not([disabled]), [role=radio], [role=checkbox]",
+          ));
+          return controls.some(vis);
+        },
+        undefined,
+        { timeout: timeoutMs, polling: 250 },
+      );
+      interactive = true;
+    } catch { /* no interactive control mounted in time */ }
+    // 2. If we know which section this should be, confirm it is the one on screen so a
+    //    sequence drift surfaces instead of silently filling the wrong/empty page.
+    if (opts.anchor) {
+      const anchorVisible = await page.getByText(opts.anchor).first()
+        .waitFor({ state: "visible", timeout: Math.min(timeoutMs, 6000) })
+        .then(() => true).catch(() => false);
+      if (!anchorVisible) {
+        if (dbg) console.error(`[powerclerk] ${label}: expected section not visible after load — page may have drifted or not rendered.`);
+        return false;
+      }
+    }
+    if (!interactive && dbg) {
+      console.error(`[powerclerk] ${label}: no interactive fields detected after ${timeoutMs}ms — section may not have rendered.`);
+    }
+    return interactive;
+  }
+
   // ---------------------------------------------------------------------------
   // openSubmission — start a New Net Metering Application
   // ---------------------------------------------------------------------------
@@ -260,13 +321,23 @@ export class PowerClerkAdapter extends BasePortalAdapter {
       await this.clickResilient(newApp, "New Net Metering Application");
       await page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => null);
 
-      // Two intro/instruction pages — no data to settle, just advance. Clear overlays
-      // before each Next in case the Vue loading scrim re-rendered, and match link-or-button.
-      for (const step of ["intro 1", "intro 2"]) {
+      // The wizard opens on one or more intro/instruction pages (a Welcome page, sometimes a
+      // second disclaimer) that have NO fillable inputs — only a Next button. That count is NOT
+      // fixed across PGE program versions, and the old hardcoded "click Next twice" silently
+      // clicked PAST the first DATA page (Preparer) whenever there was only one intro page —
+      // leaving fillApplication to type onto the wrong sections and stage a blank application.
+      // Advance Next ONLY while the current page has no fillable inputs, and STOP the instant
+      // the first real section renders. waitForSectionReady returns true as soon as a fillable
+      // control mounts (data page) or false after its timeout on a pure intro page (no inputs).
+      const MAX_INTRO_PAGES = 5;
+      for (let i = 0; i < MAX_INTRO_PAGES; i++) {
+        const reachedData = await this.waitForSectionReady(`intro/data probe ${i + 1}`);
+        if (reachedData) break; // first data section is up — do NOT click past it
         await clearPowerClerkOverlays(page);
         const next = page.getByRole("button", { name: "Next", exact: true })
           .or(page.getByRole("link", { name: "Next", exact: true }));
-        await this.clickResilient(next, `Next (${step})`);
+        if ((await next.count().catch(() => 0)) === 0) break; // nothing left to advance with
+        await this.clickResilient(next, `Next (intro ${i + 1})`);
         await page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => null);
       }
       return ok("New Net Metering Application started.", { projectId: project.id });
@@ -306,7 +377,11 @@ export class PowerClerkAdapter extends BasePortalAdapter {
     // 4. After clicking Next, another networkidle waits for the next section.
     // 5. URL check: if Next didn't navigate, surface any visible validation text
     //    so the run fails with a meaningful message rather than filling the wrong section.
-    const settleAndNext = async (section = "") => {
+    // 6. Section-ready wait: after navigating, block until the NEXT section's inputs have
+    //    actually rendered (not just networkidle) so the caller's first fill on that section
+    //    doesn't race an unmounted Vue page and silently no-op. `nextAnchor` (when known)
+    //    confirms we landed on the expected section.
+    const settleAndNext = async (section = "", nextAnchor?: RegExp) => {
       await page.keyboard.press("Tab").catch(() => null);
       await page.waitForLoadState("networkidle", { timeout: 8000 }).catch(() => null);
       await sleep(Number(process.env.POWERCLERK_SETTLE_MS) || 2000);
@@ -345,6 +420,11 @@ export class PowerClerkAdapter extends BasePortalAdapter {
           `PowerClerk Next click did not advance${loc}${errText ? `: ${errText.trim().slice(0, 120)}` : " — possible validation error or required field missing"}`
         );
       }
+      // The URL advanced — now WAIT for the next section to actually render before the caller
+      // starts filling it. This is the fix for "walks to the end and fills nothing": a Vue
+      // section that hasn't mounted yet has no fields to fill, so without this the next block
+      // of fills no-ops against a blank page.
+      await this.waitForSectionReady(`after ${section || "section"}`, { anchor: nextAnchor });
     };
 
     try {
@@ -355,6 +435,14 @@ export class PowerClerkAdapter extends BasePortalAdapter {
       }
 
       const s = snap(project);
+
+      // openSubmission just clicked through the intro page(s); the first DATA section may still
+      // be mounting. Wait for it to render before the first fill so we don't no-op against a
+      // blank Vue page (the "fills nothing along the way" bug). Anchor on the Preparer/contact
+      // heading so landing on the wrong page (intro-count drift) is visible in the logs.
+      await this.waitForSectionReady("preparer/installer contact", {
+        anchor: /Preparer Information|Submitting Party|Installer|Contact Information/i,
+      });
 
       // --- Submitting party / installer contact (from the assigned client overlay) ---
       // NEVER hardcode contractor identity. clientStagingOverlay populates these from
@@ -384,7 +472,7 @@ export class PowerClerkAdapter extends BasePortalAdapter {
       await collect("installerAddress", () => page.getByRole("textbox", { name: "Address", exact: true }).first().fill(installerAddress));
       await collect("installerEmail", () => page.getByRole("textbox", { name: "Email" }).first().fill(installerEmail));
       await collect("installerPhone", () => page.getByRole("textbox", { name: "Phone" }).first().fill(installerPhone));
-      await settleAndNext("installer contact");
+      await settleAndNext("installer contact", /PGE Customer Information|Applicant/i);
 
       // --- Applicant (PGE Customer / homeowner) -----------------------------
       // Scope the whole block to the Applicant group so it never collides with
@@ -500,7 +588,7 @@ export class PowerClerkAdapter extends BasePortalAdapter {
       const limitExport = String(s["limitExport"] ?? "").toLowerCase() === "true" ? "Yes" : "No";
       await page.getByRole("group", { name: /Do you propose to limit/i }).getByLabel(limitExport).check().catch(() => null);
       await page.getByRole("group", { name: /Is your disconnect within 10/i }).getByLabel("Yes").check().catch(() => null);
-      await settleAndNext("generation / inverter");
+      await settleAndNext("generation / inverter", /Net Metering Options|Meter Aggregation|Description of Service|Smart Inverter/i);
 
       // --- Aggregation ------------------------------------------------------
       await page.getByRole("radio", { name: "No aggregation" }).check().catch(() => null);
