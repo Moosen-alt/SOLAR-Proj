@@ -35,14 +35,14 @@ function testGroundingRules() {
 
 // --- gapFillCurrentPage: end-to-end with a fake page ----------------------------
 
-interface FState { type: ExtractedField["fieldType"]; value: string; checked: boolean; options?: string[] }
+interface FState { type: ExtractedField["fieldType"]; value: string; checked: boolean; options?: string[]; required?: boolean }
 
 function makeFakePage(fields: Array<{ label: string } & FState>) {
   const state = new Map<string, FState>();
   const raws: RawField[] = [];
   for (const f of fields) {
     state.set(f.label, { type: f.type, value: f.value, checked: f.checked, options: f.options });
-    raws.push({ label: f.label, fieldType: f.type, options: f.options } as RawField);
+    raws.push({ label: f.label, fieldType: f.type, options: f.options, required: f.required } as RawField);
   }
   function locatorFor(label: string): any {
     const st = state.get(label);
@@ -87,6 +87,8 @@ async function testGapFillAppliesOnlyGroundedData() {
     { label: "Estimated Commissioning Date", type: "text", value: "", checked: false },
     { label: "Smart Inverter Settings", type: "select", value: "", checked: false, options: ["Yes", "No"] },
     { label: "Random Notes", type: "text", value: "", checked: false },
+    // Required, empty, and no project data to fill it → must be reported, not guessed.
+    { label: "Special Permit ID", type: "text", value: "", checked: false, required: true },
     { label: "Homeowner Name", type: "text", value: "Jeffery Bienvenu", checked: false }, // already filled
   ]);
 
@@ -112,7 +114,9 @@ async function testGapFillAppliesOnlyGroundedData() {
   assert.ok(outcome.filled.includes("Estimated Commissioning Date"), "reports the date as filled");
   assert.ok(outcome.filled.includes("Smart Inverter Settings"), "reports the option as filled");
   assert.ok(outcome.skippedUngrounded.includes("Random Notes"), "reports the guess as skipped");
-  console.log("  ✅ gapFillCurrentPage applies grounded data and rejects guesses");
+  assert.equal(state.get("Special Permit ID")!.value, "", "required no-data field left blank, not guessed");
+  assert.ok(outcome.reportedMissing.includes("Special Permit ID"), "reports the required no-data field as missing");
+  console.log("  ✅ gapFillCurrentPage applies grounded data, rejects guesses, reports required gaps");
 }
 
 async function testGapFillNoPlannerSafe() {

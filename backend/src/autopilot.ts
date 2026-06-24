@@ -68,6 +68,9 @@ export interface AutopilotState {
   // Review-screen comparison: fields the portal shows vs. the project record.
   reviewMismatches: ReviewMismatch[];
   reviewAccurate: boolean | null;
+  // Required portal fields the LLM gap-fill could NOT fill (no backing project data — left
+  // blank, never guessed). The operator should add this data to the project and re-stage.
+  gapFillMissing: string[];
 }
 
 const PRE_STAGE_STATUSES = new Set([
@@ -126,12 +129,18 @@ function awaitingPortalRun(db: AppDb, projectId: string, track?: SubmittalTrackT
 
 // Extract review-screen mismatches from a portal_run's result_json. The adapter stores
 // reviewMismatches + reviewAccurate in the stopAtReview step's data payload.
-function reviewInfoFromRun(run: Row | null): { reviewMismatches: ReviewMismatch[]; reviewAccurate: boolean | null } {
-  const empty = { reviewMismatches: [], reviewAccurate: null };
+function gapMissingFrom(data: Record<string, unknown> | undefined): string[] {
+  const gf = data?.gapFill as { reportedMissing?: unknown } | undefined;
+  const list = gf && Array.isArray(gf.reportedMissing) ? gf.reportedMissing.map((x) => String(x)) : [];
+  return Array.from(new Set(list)).slice(0, 20);
+}
+
+function reviewInfoFromRun(run: Row | null): { reviewMismatches: ReviewMismatch[]; reviewAccurate: boolean | null; gapFillMissing: string[] } {
+  const empty = { reviewMismatches: [], reviewAccurate: null, gapFillMissing: [] };
   if (!run?.result_json) return empty;
   try {
     const result = JSON.parse(String(run.result_json)) as Record<string, unknown>;
-    // result_json shape: { steps: [{ok, data: {reviewMismatches, reviewAccurate}}] }
+    // result_json shape: { steps: [{ok, data: {reviewMismatches, reviewAccurate, gapFill}}] }
     const steps = Array.isArray(result.steps) ? result.steps as Array<Record<string, unknown>> : [];
     for (const step of steps) {
       const data = step.data as Record<string, unknown> | undefined;
@@ -139,6 +148,7 @@ function reviewInfoFromRun(run: Row | null): { reviewMismatches: ReviewMismatch[
         return {
           reviewMismatches: data.reviewMismatches as ReviewMismatch[],
           reviewAccurate: typeof data.reviewAccurate === "boolean" ? data.reviewAccurate : null,
+          gapFillMissing: gapMissingFrom(data),
         };
       }
     }
@@ -147,6 +157,7 @@ function reviewInfoFromRun(run: Row | null): { reviewMismatches: ReviewMismatch[
       return {
         reviewMismatches: result.reviewMismatches as ReviewMismatch[],
         reviewAccurate: typeof result.reviewAccurate === "boolean" ? result.reviewAccurate : null,
+        gapFillMissing: gapMissingFrom(result),
       };
     }
   } catch { /* ignore parse errors */ }
@@ -162,7 +173,7 @@ export function getAutopilotState(db: AppDb, projectId: string): AutopilotState 
   const ts = project.updatedAt || nowIso();
   const run = latestPortalRun(db, projectId);
   const pauseReason = run && typeof run.pause_reason === "string" && run.pause_reason ? String(run.pause_reason) : null;
-  const noReview = { reviewMismatches: [] as ReviewMismatch[], reviewAccurate: null as boolean | null };
+  const noReview = { reviewMismatches: [] as ReviewMismatch[], reviewAccurate: null as boolean | null, gapFillMissing: [] as string[] };
 
   // A run that paused mid-fill for MFA/CAPTCHA needs a human at the browser.
   if (pauseReason) {
@@ -181,9 +192,17 @@ export function getAutopilotState(db: AppDb, projectId: string): AutopilotState 
   if (project.status === "awaiting_human_submit") {
     const blockers = reviewerBlockerList(project);
     const reviewInfo = reviewInfoFromRun(run);
+    // If the gap-fill left required portal fields blank (no project data to fill them from),
+    // advise the operator to add the data and re-stage rather than submit an incomplete app.
+    const gapAdvisory = reviewInfo.gapFillMissing.length
+      ? ` ${reviewInfo.gapFillMissing.length} required portal field(s) had no project data and were left blank — add them to the project and re-stage before submitting: ${reviewInfo.gapFillMissing.join(", ")}.`
+      : "";
+    const baseMsg = blockers.length
+      ? "Staged, but reviewer blockers must be cleared before approval."
+      : "Staged to portal review. Click Approve & Submit to file.";
     return {
       projectId, phase: "awaiting_approval", stage: "Awaiting approval",
-      message: blockers.length ? "Staged, but reviewer blockers must be cleared before approval." : "Staged to portal review. Click Approve & Submit to file.",
+      message: baseMsg + gapAdvisory,
       blockers, canApprove: blockers.length === 0, pauseReason: null, portalRunId: run ? String(run.id) : null, updatedAt: ts,
       ...reviewInfo,
     };

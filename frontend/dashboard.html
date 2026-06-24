@@ -235,6 +235,10 @@
             <strong><i data-lucide="alert-triangle" style="width:13px;height:13px;vertical-align:-2px"></i> Portal review mismatch</strong> — the staged portal form may not match the project record. Review before approving.<br>
             <span id="reviewMismatchList" style="font-family:monospace;font-size:11px"></span>
           </div>
+          <div id="gapFillBanner" style="display:none;margin:6px 0 2px;padding:8px 12px;background:#fde2e1;border:1px solid #f1948a;border-radius:6px;font-size:12px;color:#7b241c">
+            <strong><i data-lucide="alert-circle" style="width:13px;height:13px;vertical-align:-2px"></i> Required fields left blank</strong> — these portal fields had no project data, so the automation left them blank instead of guessing. Add the data to the project, then re-stage before submitting.<br>
+            <span id="gapFillList" style="font-family:monospace;font-size:11px"></span>
+          </div>
           <div class="actions step-actions">
             <span class="actions-label">Advanced / override:</span>
             <button id="runQcBtn" class="secondary"><i data-lucide="shield-check"></i><span>2 · Run QC</span></button>

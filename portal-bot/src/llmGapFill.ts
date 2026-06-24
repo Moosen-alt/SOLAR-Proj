@@ -228,6 +228,15 @@ export async function gapFillCurrentPage(
       const applied = await applyGrounded(page, loc as any, field, fill.value);
       if (applied) out.filled.push(field.label || field.fieldType);
     }
+
+    // Any REQUIRED field still empty after the grounded fills had no usable project data —
+    // report it (never guessed) so the operator can add the data and re-stage.
+    for (const { field } of empties) {
+      if (!field.required) continue;
+      const lbl = field.label || field.fieldType;
+      if (out.filled.includes(lbl)) continue;
+      if (!out.reportedMissing.includes(lbl)) out.reportedMissing.push(lbl);
+    }
     return out;
   } catch {
     return out;

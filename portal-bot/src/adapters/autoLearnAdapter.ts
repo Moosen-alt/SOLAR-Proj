@@ -37,6 +37,8 @@ export interface ExtractedField {
   fieldType: "text" | "select" | "checkbox" | "radio" | "file" | "button" | "other";
   /** For <select>, the option labels. */
   options?: string[];
+  /** True when the portal marks this field required (attribute or "*" in the label). */
+  required?: boolean;
   /** For <a> nav links: the href, so a hidden/menu-nested link that can't be clicked can
    *  still be reached by navigating to it directly. */
   href?: string;
@@ -168,6 +170,9 @@ export interface RawField {
   label: string;
   fieldType: ExtractedField["fieldType"];
   options?: string[];
+  // True when the portal marks the field required (required/aria-required attribute or a
+  // "*" in its label). Used by the gap-fill to report required fields it had no data for.
+  required?: boolean;
   // Selector hints captured from the element.
   role?: string;
   name?: string;
@@ -269,8 +274,17 @@ export function extractFieldsInPage(els: Element[]): RawField[] {
     // Capture href for anchors so a hidden/menu-nested nav link can be reached by direct
     // navigation when it can't be clicked.
     const href = tag === "a" ? (el.getAttribute("href") || undefined) : undefined;
+    // Required signal: the native/ARIA attribute, or a "*"/"required" marker in the label
+    // (PowerClerk & Accela both flag required fields with a red asterisk in the label text).
+    const required =
+      (el as HTMLInputElement).required === true ||
+      el.getAttribute("aria-required") === "true" ||
+      el.hasAttribute("required") ||
+      /[*]/.test(label) ||
+      /\brequired\b/i.test(label) ||
+      undefined;
 
-    out.push({ label, fieldType, options, role, name, placeholder, id, text, href });
+    out.push({ label, fieldType, options, required, role, name, placeholder, id, text, href });
   }
   return out;
 }
@@ -329,6 +343,7 @@ export function toExtractedField(raw: RawField): ExtractedField {
     fieldType: raw.fieldType,
   };
   if (raw.options && raw.options.length) field.options = raw.options;
+  if (raw.required) field.required = true;
   if (raw.href) field.href = raw.href;
   return field;
 }

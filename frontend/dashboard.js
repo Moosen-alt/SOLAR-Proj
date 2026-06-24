@@ -2045,6 +2045,18 @@ function applyAutopilotState(s) {
       banner.style.display = "none";
     }
   }
+  // Advise the operator about required fields the gap-fill left blank (no project data).
+  const gapBanner = $("gapFillBanner");
+  const gapList = $("gapFillList");
+  if (gapBanner && gapList) {
+    const missing = Array.isArray(s.gapFillMissing) ? s.gapFillMissing : [];
+    if (missing.length > 0 && s.phase === "awaiting_approval") {
+      gapList.textContent = missing.join(" | ");
+      gapBanner.style.display = "";
+    } else {
+      gapBanner.style.display = "none";
+    }
+  }
 }
 
 async function refreshAutopilot() {
