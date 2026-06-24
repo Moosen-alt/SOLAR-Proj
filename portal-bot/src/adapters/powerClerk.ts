@@ -2,7 +2,7 @@ import path from "node:path";
 import type { ProjectRecord, ReviewerReport } from "../../../shared/src/types";
 import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, ok, fail, type PortalContext, type PortalStepResult } from "../adapter";
 import { openPortal } from "../browser";
-import { detectChallengeFrame, scanStatusFromBody, safeAction, sleep } from "../safeAction";
+import { detectChallengeFrame, scanStatusFromBody, safeAction, sleep, waitForInteractiveControls } from "../safeAction";
 import { snap, str } from "../snapshot";
 import { fillCustomCombobox, selectWithFallback } from "../comboboxFill";
 import { scrapeReviewScreen, compareReviewFields } from "../reviewScreenScraper";
@@ -273,25 +273,8 @@ export class PowerClerkAdapter extends BasePortalAdapter {
     await clearPowerClerkOverlays(page);
     // 1. Wait for the SPA to mount at least one interactive, fillable control — proof the
     //    section actually rendered (networkidle alone doesn't mean Vue finished mounting).
-    let interactive = false;
-    try {
-      await page.waitForFunction(
-        () => {
-          const vis = (el: Element): boolean => {
-            const r = (el as HTMLElement).getBoundingClientRect();
-            const st = window.getComputedStyle(el as HTMLElement);
-            return r.width > 0 && r.height > 0 && st.visibility !== "hidden" && st.display !== "none";
-          };
-          const controls = Array.from(document.querySelectorAll(
-            "input:not([type=hidden]):not([disabled]):not([readonly]), select:not([disabled]), textarea:not([disabled]), [role=radio], [role=checkbox]",
-          ));
-          return controls.some(vis);
-        },
-        undefined,
-        { timeout: timeoutMs, polling: 250 },
-      );
-      interactive = true;
-    } catch { /* no interactive control mounted in time */ }
+    //    Shared with the RecipeAdapter replay so both paths use the identical readiness poll.
+    const interactive = await waitForInteractiveControls(page, timeoutMs);
     // 2. If we know which section this should be, confirm it is the one on screen so a
     //    sequence drift surfaces instead of silently filling the wrong/empty page.
     if (opts.anchor) {

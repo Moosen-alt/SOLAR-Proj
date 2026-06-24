@@ -119,6 +119,47 @@ export async function waitForElement(loc: Locator | null | undefined, timeout = 
   await loc.waitFor({ state: "visible", timeout }).catch(() => null);
 }
 
+// Section-level render-readiness: poll until the SPA has MOUNTED at least one visible,
+// interactive, fillable control — proof the section actually rendered. `networkidle` (or a
+// plain visibility wait) is not enough on a Vue/React/ExtJS wizard: the page chrome and even
+// the inputs can be present-but-unbound for a beat, so a fill fired too early sets the DOM
+// value but it never commits to the JS model → a blank draft at review. Shared by the
+// PowerClerk hand-coded adapter (waitForSectionReady) and the universal RecipeAdapter replay.
+//
+// Best-effort + NON-THROWING: a `false` return (no control mounted in time) must NEVER make a
+// caller SKIP a section — callers fill regardless and the surrounding retry/reload recovers a
+// genuine miss. On a page object without waitForFunction (the browser-free unit-test fakes)
+// there is nothing to poll, so treat it as ready.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function waitForInteractiveControls(page: any, timeoutMs?: number): Promise<boolean> {
+  if (!page || typeof page.waitForFunction !== "function") return true;
+  const budget = timeoutMs
+    || Number(process.env.PORTAL_SECTION_READY_MS)
+    || Number(process.env.POWERCLERK_SECTION_READY_MS)
+    || 12000;
+  try {
+    await page.waitForFunction(
+      () => {
+        const vis = (el: Element): boolean => {
+          const r = (el as HTMLElement).getBoundingClientRect();
+          const st = window.getComputedStyle(el as HTMLElement);
+          return r.width > 0 && r.height > 0 && st.visibility !== "hidden" && st.display !== "none";
+        };
+        const controls = Array.from(document.querySelectorAll(
+          "input:not([type=hidden]):not([disabled]):not([readonly]), select:not([disabled]), textarea:not([disabled]), [role=radio], [role=checkbox]",
+        ));
+        return controls.some(vis);
+      },
+      undefined,
+      { timeout: budget, polling: 250 },
+    );
+    return true;
+  } catch {
+    // No interactive control mounted within the budget — best-effort, never throw.
+    return false;
+  }
+}
+
 // Run `action` up to RETRY_BACKOFF_MS.length + 1 times. Only timeouts are retried;
 // other errors fail fast. `onRetry` lets the caller recover stale page state
 // (e.g. reload) between attempts. Re-throws the last error if every attempt fails.

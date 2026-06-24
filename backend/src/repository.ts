@@ -4613,6 +4613,20 @@ function extractStageFailureMessage(result: Record<string, unknown>): string {
 // Check that a project record has the portal-specific fields required to run the adapter.
 // Returns a list of human-readable missing field labels (empty = all good).
 // This runs BEFORE any Playwright browser opens so failures surface cheaply.
+// Adapter-selection precedence — single source of truth shared by the actor-name label and the
+// staging dispatch. UNIVERSAL recipe-replay is FIRST-LINE: when a trusted recorded recipe exists
+// it wins for EVERY portal; the hand-coded platform adapters (Accela/PowerClerk) are the FALLBACK
+// "in case there is a need"; mock is the last resort. The returned name maps 1:1 to the dispatched
+// stage function: RecipeAdapter→stageWithRecipe, OregonEPermittingAdapter→stageWithAccela,
+// PowerClerkAdapter→stageWithPowerClerk, MockPortalAdapter→stageWithMockPortal. Pure + exported so
+// the precedence is unit-tested without standing up a browser/DB.
+export function selectAdapterActor(hasRecipe: boolean, isAccela: boolean, isPowerClerk: boolean): string {
+  if (hasRecipe) return "RecipeAdapter";
+  if (isAccela) return "OregonEPermittingAdapter";
+  if (isPowerClerk) return "PowerClerkAdapter";
+  return "MockPortalAdapter";
+}
+
 function validatePortalFields(
   project: ProjectRecord,
   track: SubmittalTrackType | undefined,
@@ -4770,23 +4784,18 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   const platform = String(learnedProfile?.portalPlatform ?? "").toLowerCase();
   const isAccela = portalType === "accela_oregon" || (isRealPortal && platform.includes("accela"));
   const isPowerClerk = portalType === "powerclerk_pge" || (isRealPortal && platform.includes("powerclerk"));
-  // Recipe replay: if no hand-coded platform adapter applies but an admin has recorded a
-  // recipe for this AHJ (or its utility), replay it — so an unknown portal still automates.
-  const recipe = isAccela || isPowerClerk
-    ? null
-    : track === "nem"
-      // NEM stages against the utility's recorded recipe.
-      ? findCompleteRecipeForProject(db, { scopeType: "utility", state: detail.project.state, utility: detail.project.utility })
-      // Permit tracks prefer the AHJ recipe, falling back to a utility one.
-      : (findCompleteRecipeForProject(db, { scopeType: "ahj", state: detail.project.state, ahj: detail.project.ahj, utility: detail.project.utility })
-         ?? findCompleteRecipeForProject(db, { scopeType: "utility", state: detail.project.state, utility: detail.project.utility }));
-  const adapterActorName = isAccela
-    ? "OregonEPermittingAdapter"
-    : isPowerClerk
-      ? "PowerClerkAdapter"
-      : recipe
-        ? "RecipeAdapter"
-        : "MockPortalAdapter";
+  // Recipe replay is the FIRST-LINE (universal) path: if an admin has recorded a complete recipe
+  // for this AHJ (or its utility), replay it — even on a known platform (PowerClerk/Accela). The
+  // hand-coded platform adapters are the FALLBACK when no recipe exists. The lookup is track-
+  // scoped so a NEM stage never picks up an AHJ permit recipe (and vice-versa).
+  const recipe = track === "nem"
+    // NEM stages against the utility's recorded recipe.
+    ? findCompleteRecipeForProject(db, { scopeType: "utility", state: detail.project.state, utility: detail.project.utility })
+    // Permit tracks prefer the AHJ recipe, falling back to a utility one.
+    : (findCompleteRecipeForProject(db, { scopeType: "ahj", state: detail.project.state, ahj: detail.project.ahj, utility: detail.project.utility })
+       ?? findCompleteRecipeForProject(db, { scopeType: "utility", state: detail.project.state, utility: detail.project.utility }));
+  // Precedence: recipe (universal, first-line) → hand-coded platform adapter → mock.
+  const adapterActorName = selectAdapterActor(Boolean(recipe), isAccela, isPowerClerk);
 
   // PORTAL FIELD GATE: before opening a browser, verify that the project has the
   // fields each portal requires. This catches "forgot to enter the meter number"
@@ -4875,21 +4884,26 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   // LLM). Best-effort: if no LLM is configured, staging proceeds with the hand-coded fills only.
   let gapFillPlanner: import("../../portal-bot/src/adapters/autoLearnAdapter").LearnPlanner | undefined;
   let gapFillFields: Record<string, string> | undefined;
-  // Both hand-coded adapters call runGapFill in their page-advance helper (PowerClerk's
-  // settleAndNext, Accela's continueAndCheck), so build the planner for either track.
-  if (isPowerClerk || isAccela) {
+  // Build the planner whenever a real automation path could use it. The first-line RecipeAdapter
+  // calls runGapFill during replay, and the hand-coded fallbacks call it in their page-advance
+  // helper (PowerClerk's settleAndNext, Accela's continueAndCheck). Drive scope off the TRACK (not
+  // the adapter flags) so a NEM recipe gets a utility-scoped planner and a permit recipe an AHJ-
+  // scoped one; the `recipe ||` clause is what makes gap-fill available to RecipeAdapter, while
+  // `isPowerClerk || isAccela` keeps it available to the hand-coded fallback. Skip only pure mock.
+  if (recipe || isPowerClerk || isAccela) {
     try {
       const { buildPortalPlanner } = await import("./autoLearn");
+      const isNemTrack = track === "nem";
       const built = buildPortalPlanner(db, stagedProject, {
         portalType,
-        scopeType: isAccela ? "ahj" : "utility",
-        // Accela's electrical vs structural application lists differ; default to structural
-        // (the prior hardcoded behavior) since the staging track doesn't carry the discipline.
-        permitType: isAccela ? "structural" : undefined,
+        scopeType: isNemTrack ? "utility" : "ahj",
+        // The permit/AHJ application lists differ by discipline; default to structural (the prior
+        // hardcoded behavior) since the staging track doesn't carry the discipline.
+        permitType: isNemTrack ? undefined : "structural",
       });
       gapFillPlanner = built.planner;
       gapFillFields = built.projectFields;
-    } catch { /* no planner available — stage with hand-coded fills only */ }
+    } catch { /* no planner available — stage with hand-coded/recipe fills only */ }
   }
 
   const stageOptions = {
@@ -4903,13 +4917,15 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
     gapFillFields,
   };
 
+  // Dispatch mirrors selectAdapterActor's precedence exactly: recipe (universal, first-line) →
+  // hand-coded platform adapter (fallback) → mock.
   const result =
-    isAccela
-      ? await stageWithAccela(stagedProject, files, stageOptions)
-      : isPowerClerk
-        ? await stageWithPowerClerk(stagedProject, files, stageOptions)
-        : recipe
-          ? await stageWithRecipe(recipe, stagedProject, resolveRecipeFieldValues(db, stagedProject, portalType), docsByType, files, stageOptions)
+    recipe
+      ? await stageWithRecipe(recipe, stagedProject, resolveRecipeFieldValues(db, stagedProject, portalType), docsByType, files, stageOptions)
+      : isAccela
+        ? await stageWithAccela(stagedProject, files, stageOptions)
+        : isPowerClerk
+          ? await stageWithPowerClerk(stagedProject, files, stageOptions)
           : await stageWithMockPortal(stagedProject, files, reviewerReport);
 
   // Determine status: if the adapter paused for MFA/CAPTCHA, record it distinctly

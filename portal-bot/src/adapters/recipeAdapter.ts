@@ -2,7 +2,7 @@ import type { PortalRecipe, ProjectRecord, RecipeSelector, RecipeStep } from "..
 import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, ok, fail, type PortalContext, type PortalStepResult } from "../adapter";
 import { openPortal } from "../browser";
 import { selectWithFallback } from "../comboboxFill";
-import { detectChallengeFrame, hasNumericValidationError, scanStatusFromBody, RETRY_BACKOFF_MS, sleep, smartWait, toBareNumber, waitForElement } from "../safeAction";
+import { detectChallengeFrame, hasNumericValidationError, scanStatusFromBody, RETRY_BACKOFF_MS, sleep, smartWait, toBareNumber, waitForElement, waitForInteractiveControls } from "../safeAction";
 import { performLogin } from "./loginFlow";
 
 // RecipeAdapter — replays a recorded portal recipe (see portal_recipes / the recorder).
@@ -182,7 +182,13 @@ export class RecipeAdapter extends BasePortalAdapter {
       // Guided-manual: stop at review. autoSubmit (trusted, approved): proceed past
       // the review marker to replay ONLY allowlisted final-submit steps.
       if (step.action === "stopForReview") {
-        if (!this.options.autoSubmit) break;
+        if (!this.options.autoSubmit) {
+          // Gap-fill the LAST data section once more before review: it is not followed by an
+          // advancing click, so any required field the recipe missed (selector drift / a newly
+          // added field) would otherwise reach review blank. No-op when gap-fill is not enabled.
+          await this.runGapFill(this.page);
+          break;
+        }
         pastReview = true;
         continue;
       }
@@ -195,6 +201,11 @@ export class RecipeAdapter extends BasePortalAdapter {
           await this.page.waitForLoadState("networkidle", { timeout: 8000 }).catch(() => null);
         }
         await sleep(Number(process.env.AUTOLEARN_SAVE_SETTLE_MS) || 3000);
+        // Now that the recipe's fills have committed (blurred + autosaved), let the LLM gap-fill
+        // any REQUIRED field the recipe didn't cover — from real project data only. Run it AFTER
+        // the persist-settle so the LLM reads a stable page; the advancing click that follows is
+        // the commit window for the gap-filled values. No-op when gap-fill is not enabled.
+        await this.runGapFill(this.page);
         prevWasInput = false;
       }
 
@@ -238,9 +249,12 @@ export class RecipeAdapter extends BasePortalAdapter {
         permitNumber: capture.data?.permitNumber || "",
         confirmationNumber: capture.data?.confirmationNumber || "",
         recordLink: capture.data?.recordLink || "",
+        // What the LLM gap-fill added (and what it left blank for lack of real data) — same key
+        // the hand-coded adapters surface, so the operator/UI sees a uniform report.
+        gapFill: this.gapFillReport,
       });
     }
-    return ok(`Replayed ${executed} recorded step(s); stopped at review.`, { executed, skipped, finalSubmitClicked: false });
+    return ok(`Replayed ${executed} recorded step(s); stopped at review.`, { executed, skipped, finalSubmitClicked: false, gapFill: this.gapFillReport });
   }
 
   private resolveValue(step: RecipeStep): string {
@@ -256,6 +270,10 @@ export class RecipeAdapter extends BasePortalAdapter {
       case "goto":
         await this.page.goto(this.resolveValue(step));
         await smartWait(this.page);
+        // A recorded goto lands on a fresh section that a Vue/SPA portal may still be mounting.
+        // Wait until an interactive control is up so the next step's fill targets a bound input
+        // (best-effort; never skips — the retry/reload loop still recovers a genuine miss).
+        await waitForInteractiveControls(this.page);
         return true;
       case "click":
         return this.executeClick(step, scoped, pastReview);
@@ -359,6 +377,10 @@ export class RecipeAdapter extends BasePortalAdapter {
     // 5) Ordinary navigation/UI click (pre-review). Safe to perform.
     await waitForElement(scoped);
     await scoped!.click();
+    // A recorded Next/Continue advances a Vue wizard to a not-yet-bound section. Wait for an
+    // interactive control to mount before the next fill so we never type onto an unmounted page
+    // (best-effort; never skips — the retry/reload loop still recovers a genuine miss).
+    await waitForInteractiveControls(this.page);
     return true;
   }
 

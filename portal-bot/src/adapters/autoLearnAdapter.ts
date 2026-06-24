@@ -3,7 +3,7 @@ import type { ProjectRecord, RecipeSelector, RecipeStep } from "../../../shared/
 import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, type PortalContext, type PortalStepResult } from "../adapter";
 import { openPortal } from "../browser";
 import { selectWithFallback } from "../comboboxFill";
-import { detectChallengeFrame, hasNumericValidationError, readbackMatches, redactStatusText, safeAction, sleep, smartWait, toBareNumber, waitForElement } from "../safeAction";
+import { detectChallengeFrame, hasNumericValidationError, readbackMatches, redactStatusText, safeAction, sleep, smartWait, toBareNumber, waitForElement, waitForInteractiveControls } from "../safeAction";
 import { scrapeReviewScreen as scrapeReviewScreenShared } from "../reviewScreenScraper";
 import { performLogin } from "./loginFlow";
 
@@ -585,6 +585,11 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         const isInput = (r: RawField) => r.fieldType === "text" || r.fieldType === "select" || r.fieldType === "checkbox" || r.fieldType === "radio" || r.fieldType === "file";
         for (let tryN = 0; tryN < 6; tryN++) {
           await this.waitForContentLoaders();
+          // After the loaders clear, give the SPA a short window to MOUNT an interactive control
+          // before scraping, so a recording made on a Vue mount race captures the real fields (not
+          // chrome-only). Short (4s) budget so a genuinely input-less page (terms/dashboard) does
+          // not pay the full section-ready timeout before the settled-empty break below fires.
+          await waitForInteractiveControls(this.page, 4000);
           raws = await this.page.$$eval(EXTRACT_SEL, extractFieldsInPage).catch(() => [] as RawField[]);
           if (raws.some(isInput)) break;            // real fields rendered — proceed
           if (raws.length > 0 && tryN >= 2 && !(await this.hasVisibleLoader())) break; // settled, genuinely no inputs

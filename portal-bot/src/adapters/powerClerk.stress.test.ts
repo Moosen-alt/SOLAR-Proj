@@ -16,6 +16,7 @@
 //
 // Browser-free. Run:  npm run portal:test:stress
 import type { ProjectRecord } from "../../../shared/src/types";
+import { waitForInteractiveControls } from "../safeAction";
 
 // ── synthetic past-project fixture (PII-free, type-correct ProjectRecord) ─────
 const project: ProjectRecord = {
@@ -140,6 +141,22 @@ check("energy storage answer resolves", ["Yes", "No"].includes(storageAnswer), `
 //    (Asserted structurally: fillApplication's ok() returns only {projectId, arrayCount}.)
 check("PII redaction: owner/account/meter are NOT in adapter success payload (by construction)",
   true, "fillApplication returns only {projectId, arrayCount}");
+
+// 9. Render-readiness contract (post-refactor). waitForSectionReady now delegates its
+//    interactive-control poll to the shared waitForInteractiveControls(). That helper MUST
+//    no-op to ready=true on a page object lacking waitForFunction (the browser-free fakes /
+//    any non-Playwright mock) — never block, never throw — which is the exact behavior
+//    waitForSectionReady relied on before the hoist. If this broke, every PowerClerk section
+//    would stall on a 12s timeout in tests.
+console.log("\n──────── render-readiness helper contract (waitForSectionReady refactor) ────────");
+const mockNoPoll: Record<string, unknown> = { goto: async () => {}, fill: async () => {} };
+const readyNoPoll = await waitForInteractiveControls(mockNoPoll);
+check("waitForInteractiveControls returns ready=true on a page lacking waitForFunction", readyNoPoll === true, `returned ${readyNoPoll}`);
+
+let polled = 0;
+const mockMounts: Record<string, unknown> = { waitForFunction: async () => { polled += 1; return true; } };
+const readyMounts = await waitForInteractiveControls(mockMounts, 50);
+check("waitForInteractiveControls polls once + returns ready=true when a control mounts", readyMounts === true && polled === 1, `polled=${polled} ready=${readyMounts}`);
 
 console.log("\n════════════════ POWERCLERK DATA CONTRACT SUMMARY ════════════════");
 const failed = results.filter((r) => !r.ok);
