@@ -228,24 +228,39 @@ function heuristicPortalPlan(input: PortalFieldPlanInput): PortalFieldPlan {
   // actual form. Without this, the offline (no-API-key) planner can't get past the portal
   // home screen — it would mistake the dashboard for a review page and stop.
   if (input.isDashboard) {
-    const navField = input.fields.find(
+    // Primary: find a "new application" link (portal home page).
+    const newAppField = input.fields.find(
       (f) => f.fieldType === "button" && PORTAL_NEW_APP_RE.test(f.label || "") && !PORTAL_PAY_RE.test(f.label || ""),
     );
-    if (navField) {
+    if (newAppField) {
       return {
         fills: [],
-        navigateIndex: navField.index,
+        navigateIndex: newAppField.index,
         atReview: false,
         confidence: "low",
-        notes: `Heuristic dashboard navigation (no LLM): clicking "${navField.label}" to start a new application. Human verification required.`,
+        notes: `Heuristic dashboard navigation (no LLM): clicking "${newAppField.label}" to start a new application. Human verification required.`,
       };
     }
-    // No recognizable "new application" link — don't guess at a random nav link; stop cleanly.
+    // Fallback: T&C/disclaimer/billing pass-through — click the advance/continue button to
+    // proceed past the terms screen to the actual application form. Never recorded as submit.
+    const continueField = input.fields.find(
+      (f) => f.fieldType === "button" && PORTAL_ADVANCE_RE.test(f.label || "") && !PORTAL_PAY_RE.test(f.label || ""),
+    );
+    if (continueField) {
+      return {
+        fills: [],
+        navigateIndex: continueField.index,
+        atReview: false,
+        confidence: "low",
+        notes: `Heuristic pass-through (no LLM): clicking "${continueField.label}" to proceed past a T&C/disclaimer screen. Human verification required.`,
+      };
+    }
+    // No recognizable navigation link — don't guess at a random button; stop cleanly.
     return {
       fills: [],
       atReview: false,
       confidence: "low",
-      notes: "Heuristic fallback: a page with no fillable inputs and no recognizable 'new application' link. A human must navigate to the application form (or set ANTHROPIC_API_KEY so the LLM planner can find it).",
+      notes: "Heuristic fallback: a page with no fillable inputs and no recognizable navigation button. A human must navigate to the application form (or set ANTHROPIC_API_KEY so the LLM planner can find it).",
     };
   }
 

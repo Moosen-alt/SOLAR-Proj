@@ -141,6 +141,15 @@ function looksLikeReviewUrl(url: string): boolean {
   return /capconfirm|confirm\.aspx|\/review/i.test(url || "");
 }
 
+// T&C / billing / disclaimer pages have no inputs but DO have a "Continue Application"
+// button — the same surface as a review page. Without this guard they get misclassified
+// as review screens (no inputs + no dashboard → isReviewPage). Detect by body text and
+// treat as pass-through dashboards: the planner navigates by clicking the continue button.
+const TERMS_MARKERS = /\b(terms\s*(and\s*)?conditions|disclaimer|billing\s*(agreement|information|policy)|you\s+(agree|must\s+agree)\s+to|i\s+agree|accept\s+the\s+terms|privacy\s+policy|legal\s+notice|refund\s+policy)\b/i;
+function looksLikeTermsUrl(url: string): boolean {
+  return /disclaimer|\/terms|\/billing|\/agreement|\/privacy|CapApplyDisclaimer/i.test(url || "");
+}
+
 // Sensitive field labels whose literal value must NEVER be stored in a recorded step.
 const SENSITIVE_LABEL = /\b(password|passcode|account\s*(number|no|#)?|acct|meter\s*(number|no|#)?|ssn|social security|tax\s*id|ein|routing|card\s*number|cvv|security code)\b/i;
 
@@ -596,13 +605,19 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       // (just navigation links — the portal entry screen after login) OR a read-only
       // REVIEW/confirm page (a data summary + a submit-intent button). They look identical
       // by "no inputs" alone, so discriminate by submit-intent button + review markers:
-      //   - REVIEW  → has a submit-intent button (Continue Application/Submit/Finish) or
-      //               review markers ("Step N: Review", "review all information", /review URL).
-      //   - DASHBOARD → no inputs, no submit-intent button, no review markers → only links.
+      //   - REVIEW  → positive review signals (URL or body) + (no inputs OR submit-intent btn).
+      //   - TERMS   → T&C/billing/disclaimer page — pass-through, treated as dashboard so the
+      //               planner clicks the Continue/I-Agree button without recording it as submit.
+      //   - DASHBOARD → no inputs, no submit-intent button, no review signals → only links.
       const hasFillable = fields.some((f) => f.fieldType !== "button");
       const hasSubmitIntentBtn = fields.some((f) => f.fieldType === "button" && SUBMIT_INTENT.test(f.label));
       const reviewSignals = REVIEW_MARKERS.test(bodyText) || looksLikeReviewUrl(url);
-      const isDashboard = !hasFillable && !hasSubmitIntentBtn && !reviewSignals;
+      // T&C pages look like review pages (no inputs + Continue Application) but are not —
+      // detect before the isDashboard/isReviewPage split so they're treated as pass-throughs.
+      const isTermsPage = !hasFillable && !reviewSignals && (TERMS_MARKERS.test(bodyText) || looksLikeTermsUrl(url));
+      // isDashboard: no inputs, no submit intent, no review signals — ALSO treats T&C as
+      // dashboard so the planner navigates by clicking the Continue/Agree button.
+      const isDashboard = (!hasFillable && !hasSubmitIntentBtn && !reviewSignals) || isTermsPage;
       if (hasFillable) everFoundFillable = true;
 
       // a0) STUCK / CYCLE GUARD with SELF-RECOVERY. Two failure shapes:
@@ -677,8 +692,10 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       // On a review page its primary button (e.g. "Continue Application") SUBMITS, so we
       // NEVER advance-click — we force the review stop and record that button as the final
       // submit, overriding a planner that mistook the submit button for an "advance/next".
-      // A no-input page that is NOT a dashboard is, by definition, a review page.
-      const isReviewPage = (!hasFillable && !isDashboard) || (reviewSignals && hasSubmitIntentBtn);
+      // Requires at least ONE positive review signal (URL or body) to avoid misclassifying
+      // T&C/billing/disclaimer pages as review screens (they have no inputs + Continue btn
+      // but are pass-throughs, already excluded via isTermsPage → isDashboard above).
+      const isReviewPage = !isTermsPage && ((!hasFillable && reviewSignals) || (reviewSignals && hasSubmitIntentBtn));
       if (isReviewPage && !plan.atReview) {
         // Promote a planner "advance" that is actually a submit-intent button to finalSubmit.
         let promotedFinal = typeof plan.finalSubmitSelectorIndex === "number" ? plan.finalSubmitSelectorIndex : undefined;
