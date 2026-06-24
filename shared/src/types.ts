@@ -1576,3 +1576,81 @@ export interface PortalRecipe {
   /** Hybrid: operator has trusted this portal for one-click approve-submit. Off by default. */
   autoSubmitEnabled?: boolean;
 }
+
+// ---------------------------------------------------------------------------
+// Network-level recipes (Path B — bypass the DOM, replay the portal's own
+// save requests). PowerClerk/Accela are server-rendered apps whose SPA POSTs
+// every field to backend endpoints with the session cookie + an anti-forgery
+// token. Capturing and replaying those requests is far more robust than
+// driving brittle custom dropdowns, and it runs headless on the cloud.
+// ---------------------------------------------------------------------------
+
+/** One value inside a captured request body that matched a known project/client
+ *  field at record time, so replay substitutes the NEW project's value.
+ *  The literal recorded value of a SENSITIVE field (account#, meter#, password)
+ *  is NEVER stored — `sensitive` is set and `recordedValue` is omitted. */
+export interface NetworkFieldBinding {
+  /** The project/client field key whose value appeared (e.g. "accountNumber"). */
+  field: string;
+  /** Location of the value in the body. For JSON bodies a dot/bracket path
+   *  (e.g. "Fields[3].Value"); for urlencoded/form bodies the form key. */
+  jsonPath?: string;
+  formKey?: string;
+  /** The value seen at record time — for NON-sensitive fields only, used to
+   *  locate-and-replace at replay. Omitted when `sensitive`. */
+  recordedValue?: string;
+  /** A credential/PII field: literal value is redacted; replay pulls it from the
+   *  encrypted credential store / project data, never from the recipe. */
+  sensitive?: boolean;
+}
+
+/** A single save/mutation request captured during recording. Replay re-fires it
+ *  with a freshly-scraped anti-forgery token and the new project's field values. */
+export interface NetworkRequestRecord {
+  /** Capture order — replay fires requests in this sequence. */
+  seq: number;
+  method: string;
+  /** Full URL as captured. Per-project path segments (ProjectId/FormId) are
+   *  templated via `pathParamKeys` so replay swaps in the new draft's IDs. */
+  url: string;
+  resourceType: string;
+  contentType?: string;
+  /** Raw request body as captured (with sensitive values already redacted to a
+   *  placeholder token). Replay rehydrates bindings before sending. */
+  bodyRaw?: string;
+  /** Header name that carried the anti-forgery/CSRF token, if any. Replay never
+   *  reuses the recorded token value — it re-scrapes a live one. */
+  csrfHeaderName?: string;
+  /** Whether the body itself carried the token (e.g. __RequestVerificationToken). */
+  csrfBodyKey?: string;
+  bindings?: NetworkFieldBinding[];
+  /** HTTP status observed at record time — replay verifies it matches. */
+  responseStatus?: number;
+  /** True if this request is (or precedes) the final submit. Replay STOPS here in
+   *  guided-manual mode and never fires it; the human submits. */
+  isFinalSubmit?: boolean;
+  note?: string;
+}
+
+export type NetworkRecipeStatus = "recording" | "complete" | "needs_rerecord";
+
+export interface NetworkRecipe {
+  id: string;
+  scopeType: "ahj" | "utility";
+  profileKey: string;
+  state: string;
+  ahj: string;
+  utility: string;
+  portalPlatform: string;
+  portalUrl: string;
+  status: NetworkRecipeStatus;
+  version: number;
+  /** Which URL path segments are per-project, captured so replay can template them.
+   *  e.g. { programId: "JYEHFEPJXQ00", projectId: "NPAA8645J795", formId: "6FJDHPYAD2H1" } */
+  pathParamKeys?: { programId?: string; projectId?: string; formId?: string };
+  requests: NetworkRequestRecord[];
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+  notes: string;
+}
