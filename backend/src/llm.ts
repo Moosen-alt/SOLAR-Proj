@@ -930,6 +930,12 @@ ELECTRICAL SERVICES PAGE (Accela "Residential - Electrical Comprehensive" and si
 DASHBOARD / HOME PAGES:
 - If isDashboard=true (no fillable inputs — only buttons and navigation links), the bot just logged in and landed on the portal home/dashboard. Your ONLY job is to return "navigateIndex": the index of the link or button that starts a new application / interconnection request / permit application. Look for labels like "New Application", "Start Application", "New Pacific Power Customer Generation Application", "Start New Project", "Apply Now", "Create Application", or a tab/link for the relevant program. Set fills=[], advanceIndex=omit, atReview=false, and ONLY navigateIndex. Do NOT treat any dashboard navigation link as advanceIndex.
 
+DROPDOWN / SELECT FIELDS:
+- A field with fieldType "select" carries an "options" array of the EXACT choice labels the control offers. This covers BOTH native <select> menus AND custom "Please select…" / select2 / chosen / ui-select / ExtJS combobox widgets — the bot drives either kind, so treat any field marked "select" the same way.
+- When you fill a select, the "value" you return MUST be ONE of that field's listed options, copied VERBATIM (same spelling, casing, and punctuation). A dropdown can only accept a value it actually lists; a near-miss string silently fails to select and the field stays blank. Choose the option that best matches the project datum (e.g. "200A main service" → the "200"/"200 Amps" option that exists in the list; "battery: none" → "No"; a phase/voltage/schedule choice → the listed option closest to the project value).
+- If "options" is present but NONE of them reasonably matches the project data, leave the field OUT rather than inventing a value the control cannot accept.
+- If a "select" field has NO options array (its menu had not rendered when the page was read), fall back to the plain project value as the label, but prefer an exact listed option whenever one is available.
+
 VALUE FORMATTING:
 - Numeric / decimal fields (amperage "Amps"/"(A)", kVA, kW, voltage, counts, ratings, quantities) take a BARE number with NO unit letters, symbols, or thousands separators — e.g. "225" not "225A", "8.6" not "8.6 kW". These are validated as plain decimals and reject unit suffixes.
 
