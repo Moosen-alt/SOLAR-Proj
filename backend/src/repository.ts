@@ -62,7 +62,7 @@ import { touchProjectMetrics } from "./kpi";
 import fs from "node:fs";
 import path from "node:path";
 import { checkStatusWithAdapter, stageWithAccela, stageWithMockPortal, stageWithPowerClerk, stageWithRecipe } from "../../portal-bot/src/index";
-import { findCompleteRecipeForProject, resolveRecipeFieldValues } from "./portalRecipes";
+import { findCompleteRecipeForProject, findAnyRecipeForProject, resolveRecipeFieldValues } from "./portalRecipes";
 import { detectPlatform, publicPermitStatusCheck } from "./publicPermitStatus";
 import { projectDocsByType } from "./projectDocuments";
 import { documentInventory } from "./requiredDocuments";
@@ -4815,7 +4815,10 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   const portalType = portalProfile?.portal_type ?? "mock";
   const isRealPortal = portalType !== "mock";
   const portalProfileId = portalProfile?.id ?? null;
-  const portalLabel = isRealPortal
+  // Refined below to the track's portal identity when a real adapter will actually drive a portal
+  // that has no portal_profiles row (the common case — nothing populates that table), so status/
+  // audit text isn't mislabeled "Mock portal". A genuine mock run keeps the "Mock portal" label.
+  let portalLabel = isRealPortal
     ? (portalProfile?.portal_name || portalType)
     : "Mock portal";
   // Platform-driven adapter reuse: a new AHJ on a KNOWN platform (e.g. City of Lafayette
@@ -4879,9 +4882,18 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
     );
     utilityPortalUrl = utilRow?.portal_url ?? "";
   }
+  // A draft/recording recipe (not yet promoted to "complete") still carries the entry URL the
+  // operator — or a prior auto-learn pass — pointed the recorder at. Recover it so the universal
+  // self-seed can launch the right portal even before any recipe is verified. Track-scoped exactly
+  // like the complete-recipe lookup above (NEM → utility key; permit → AHJ then utility).
+  const draftRecipe = track === "nem"
+    ? findAnyRecipeForProject(db, { scopeType: "utility", state: detail.project.state, utility: detail.project.utility })
+    : (findAnyRecipeForProject(db, { scopeType: "ahj", state: detail.project.state, ahj: detail.project.ahj, utility: detail.project.utility })
+       ?? findAnyRecipeForProject(db, { scopeType: "utility", state: detail.project.state, utility: detail.project.utility }));
   const credentialUrl =
     (learnedProfile && (learnedProfile as { portalUrl?: string }).portalUrl) ||
     (recipe && (recipe as { portalUrl?: string }).portalUrl) ||
+    (draftRecipe && draftRecipe.portalUrl) ||
     (track === "nem" ? utilityPortalUrl : findApplicationProfile(detail.project).sourceUrl) ||
     "";
   const credential = clientId
@@ -4974,7 +4986,31 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   //   3. PowerClerk/Accela    — reachable ONLY when auto-seed is disabled (PORTAL_AUTOSEED=0).
   //   4. MockPortalAdapter    — dev / no real portal.
   const autoSeedEnabled = process.env.PORTAL_AUTOSEED !== "0" && process.env.PORTAL_AUTOSEED !== "false";
-  const runActorLabel = selectStagingActor({ hasRecipe: Boolean(recipe), isRealPortal, isAccela, isPowerClerk, autoSeedEnabled });
+  // A portal is "real" (worth driving live automation against — incl. self-seeding a recipe) when
+  // EITHER a configured portal_profiles row exists OR we know a genuine PORTAL ENTRY URL for it.
+  // Nothing in the app ever writes portal_profiles, so without this URL-based fallback every stage
+  // lacking a complete recipe would silently route to the no-op mock and never open a browser.
+  // The entry URL is deliberately NARROWER than credentialUrl: a recorded recipe (complete OR
+  // draft), a learned KB profile, or the utility's KB portal URL (NEM) — but NOT the permit-track
+  // findApplicationProfile().sourceUrl, which is an AHJ *info/landing* page, not a login/portal
+  // entry. Launching the learner there would burn a pass on a non-portal AND would turn every
+  // mock/dev/smoke permit stage into a live browser run. To self-seed a permit portal, the operator
+  // points the recorder at the real portal URL first (which yields a draftRecipe entry URL here).
+  const portalEntryUrl =
+    (learnedProfile && (learnedProfile as { portalUrl?: string }).portalUrl) ||
+    (recipe && (recipe as { portalUrl?: string }).portalUrl) ||
+    (draftRecipe && draftRecipe.portalUrl) ||
+    (track === "nem" ? utilityPortalUrl : "") ||
+    "";
+  const hasLaunchablePortal = isRealPortal || Boolean(portalEntryUrl);
+  const runActorLabel = selectStagingActor({ hasRecipe: Boolean(recipe), isRealPortal: hasLaunchablePortal, isAccela, isPowerClerk, autoSeedEnabled });
+  // Now that the actor is known, name a real-but-profile-less portal by its track identity so the
+  // status/audit text below doesn't read "Mock portal" for a run that actually drives a browser.
+  if (!isRealPortal && runActorLabel !== "MockPortalAdapter") {
+    portalLabel = track === "nem"
+      ? (detail.project.utility ? `${detail.project.utility} (NEM portal)` : "Utility NEM portal")
+      : (detail.project.ahj ? `${detail.project.ahj} (permit portal)` : "AHJ permit portal");
+  }
   let result: Record<string, unknown>;
   if (recipe && runActorLabel === "RecipeAdapter") {
     result = await stageWithRecipe(recipe, stagedProject, resolveRecipeFieldValues(db, stagedProject, portalType), docsByType, files, stageOptions);
@@ -5007,7 +5043,19 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
     result = await stageWithAccela(stagedProject, files, stageOptions);
   } else if (runActorLabel === "PowerClerkAdapter") {
     result = await stageWithPowerClerk(stagedProject, files, stageOptions);
+  } else if (autoSeedEnabled) {
+    // REAL MODE (auto-seed on) with nothing real to drive: no recorded recipe, no portal_profiles
+    // row, and no known portal-ENTRY URL for this AHJ/utility. Do NOT silently run the mock — that
+    // fabricates a "staged to review" for a run that never touched a portal (the exact silent-mock
+    // confusion this whole change removes). Stop and surface a clear, actionable blocker so the
+    // operator knows to register the portal. The mock no-op is reachable only with PORTAL_AUTOSEED=0
+    // (offline dev / smoke / simulated rehearsal).
+    const where = track === "nem" ? (detail.project.utility || "this utility") : (detail.project.ahj || "this AHJ");
+    const msg = `No portal is registered for ${where} yet, so there's nothing to stage against. Record the portal once (paste its login/landing URL under "Record this portal") or add its URL to the knowledge base, then re-stage.`;
+    result = { ok: false, finalSubmitClicked: false, pauseReason: null, message: msg, steps: [{ ok: false, message: msg }] };
   } else {
+    // Offline / simulated fallback (PORTAL_AUTOSEED=0): the mock no-op stands in for a real portal
+    // in dev, smoke, and the CI rehearsal. Never reached in normal (auto-seed on) operation.
     result = await stageWithMockPortal(stagedProject, files, reviewerReport);
   }
 

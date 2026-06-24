@@ -1,5 +1,8 @@
 // Simulated-portal rehearsal (CI). Drives a realistic project intake → autopilot →
 // approval → submit against the MockPortalAdapter, deterministically. Run: npm run rehearse:sim
+// The mock IS the simulated portal here, so pin auto-seed OFF: in normal (auto-seed ON) operation a
+// stage with no registered portal surfaces a blocker rather than silently mocking.
+process.env.PORTAL_AUTOSEED = "0";
 import { rehearse } from "./rehearsal.harness";
 
 const result = await rehearse({ live: false });

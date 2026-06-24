@@ -40,6 +40,10 @@ import {
 const smokeDb = path.resolve(process.cwd(), "backend/data/smoke.sqlite");
 fs.rmSync(smokeDb, { force: true });
 process.env.AUTOPILOT_DB_PATH = smokeDb;
+// Offline smoke: no real portal is registered, so staging uses the MockPortalAdapter. In normal
+// (auto-seed ON) operation a stage with no registered portal surfaces a blocker instead of silently
+// mocking; pin auto-seed OFF here so the smoke path keeps exercising the mock end-to-end.
+process.env.PORTAL_AUTOSEED = "0";
 
 const db = await openDatabase();
 const seededKnowledge = getKnowledgeBase(db).profiles;

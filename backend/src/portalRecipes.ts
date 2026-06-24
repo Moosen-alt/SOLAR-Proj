@@ -59,6 +59,20 @@ export function findCompleteRecipeForProject(
   return row ? mapRecipe(row) : null;
 }
 
+// Like findCompleteRecipeForProject, but matches a recipe of ANY status (recording / needs_rerecord
+// / complete), newest first. Used by staging to recover a launchable portal URL even before a recipe
+// is verified-complete: a draft/recording recipe still carries the entry URL the operator (or a prior
+// auto-learn pass) pointed the recorder at. Without it, a real portal whose only recipe is still a
+// draft has no URL to launch and the self-seed can't fire — staging silently falls to the no-op mock.
+export function findAnyRecipeForProject(
+  db: AppDb,
+  input: { scopeType: "ahj" | "utility"; state?: string; ahj?: string; utility?: string },
+): PortalRecipe | null {
+  const key = recipeProfileKey(input);
+  const row = db.get<Row>("SELECT * FROM portal_recipes WHERE profile_key = ? ORDER BY updated_at DESC LIMIT 1", [key]);
+  return row ? mapRecipe(row) : null;
+}
+
 // Start (or reset) a recording for a portal. Creates a 'recording' stub keyed by
 // profile_key; if a recipe already exists for that key, bumps the version and clears
 // the steps so the admin re-records cleanly (used for "delete & re-record").
