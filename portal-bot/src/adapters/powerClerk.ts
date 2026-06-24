@@ -487,6 +487,87 @@ export class PowerClerkAdapter extends BasePortalAdapter {
   }
 
   // ---------------------------------------------------------------------------
+  // submitFromReview — POST-APPROVAL only. Called by submitStagedRun() after
+  // stopAtReview() has already checked the terms checkbox and positioned the
+  // browser at the PowerClerk final review screen. Clicks the Next/Submit
+  // button (the final submit on this page) and captures confirmation.
+  // NEVER starts a new application, pays fees, or bypasses MFA.
+  // ---------------------------------------------------------------------------
+  override async submitFromReview(_project: ProjectRecord): Promise<PortalStepResult> {
+    if (!this.page) return fail("Not logged in.");
+    const page = this.page;
+    try {
+      // 1. Assert position: terms checkbox must be present (confirms we are on the
+      //    PowerClerk review page, not some other step).
+      const termsBox = page.getByRole("checkbox", { name: /Click to Accept Terms/i });
+      const termsPresent = (await termsBox.count().catch(() => 0)) > 0;
+      if (!termsPresent) {
+        return fail("submitFromReview: PowerClerk terms checkbox not found — not on review page. Run stopAtReview() first.");
+      }
+
+      // 2. MFA/CAPTCHA pre-check before touching the submit button.
+      const preChallenge = await detectChallengeFrame(page);
+      if (preChallenge) {
+        return { ok: false, message: `submitFromReview: MFA/CAPTCHA detected before submit — pausing for human: ${preChallenge}`, pauseReason: "mfa_captcha" };
+      }
+
+      // 3. Ensure terms checkbox is checked (stopAtReview already does this, but
+      //    be defensive in case the page reloaded between segments).
+      await termsBox.check({ timeout: 8000 }).catch(() => null);
+
+      // 4. Locate the Next/Submit button. On this PowerClerk page "Next" IS the
+      //    final submit — clicking it navigates to the confirmation page.
+      //    Fee-payment denylist: if the button text mentions pay/fee, refuse.
+      const nextBtn = page.getByRole("button", { name: "Next", exact: true })
+        .or(page.locator('[type="submit"]'));
+      const btnTexts = await nextBtn.allInnerTexts().catch(() => [] as string[]);
+      const feeGated = btnTexts.some((t: string) => /pay|fee|payment|checkout/i.test(t));
+      if (feeGated) {
+        return { ok: false, message: "submitFromReview: PowerClerk submit button appears to trigger fee payment — pausing for human.", pauseReason: "mfa_captcha" };
+      }
+
+      // 5. Click Next (final submit).
+      const beforeUrl = String(page.url());
+      await nextBtn.first().click({ timeout: 15000 });
+      await page.waitForLoadState("networkidle", { timeout: 20000 }).catch(() => null);
+
+      // 6. Post-click challenge check.
+      const postChallenge = await detectChallengeFrame(page);
+      if (postChallenge) {
+        return { ok: false, message: `submitFromReview: MFA/CAPTCHA appeared after submit click — pausing for human: ${postChallenge}`, pauseReason: "mfa_captcha" };
+      }
+
+      // 7. URL should have changed to a confirmation page; if not, surface any
+      //    visible validation error.
+      const afterUrl = String(page.url());
+      if (beforeUrl === afterUrl) {
+        const errEl = page.locator(
+          ".validation-summary-errors,.field-validation-error,[class*=error-message],[class*=alert-danger],[class*=text-danger]"
+        ).first();
+        const errText = await errEl.isVisible().then(() => errEl.textContent()).catch(() => null);
+        return fail(`submitFromReview: PowerClerk Next click did not navigate to confirmation${errText ? `: ${errText.trim().slice(0, 120)}` : " — possible validation error"}`);
+      }
+
+      // 8. Capture confirmation.
+      const confirmation = await this.captureSubmissionConfirmation();
+      const appNum = String(confirmation.data?.["applicationNumber"] ?? "captured");
+      return {
+        ok: confirmation.ok,
+        message: confirmation.ok
+          ? `PowerClerk application submitted. Application: ${appNum}`
+          : `submitFromReview: submit appeared to succeed but confirmation capture failed: ${confirmation.message}`,
+        data: {
+          finalSubmitClicked: true,
+          confirmationNumber: appNum,
+          ...(confirmation.data ?? {}),
+        },
+      };
+    } catch (err) {
+      return fail(`submitFromReview failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // captureSubmissionConfirmation — called after the human clicks submit
   // ---------------------------------------------------------------------------
   async captureSubmissionConfirmation(): Promise<PortalStepResult> {

@@ -666,6 +666,74 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
   }
 
   // ---------------------------------------------------------------------------
+  // submitFromReview — POST-APPROVAL only. Called by submitStagedRun() after
+  // stopAtReview() has already positioned the browser on the final review page.
+  // Clicks the allowlisted final-submit control and captures confirmation.
+  // NEVER navigates to a new application, pays fees, or bypasses MFA.
+  // ---------------------------------------------------------------------------
+  override async submitFromReview(_project: ProjectRecord): Promise<PortalStepResult> {
+    if (!this.page) return fail("Not logged in.");
+    try {
+      // 1. Assert we are on the Accela review/confirmation page.
+      const url = String(this.page.url());
+      const submitBtn = this.page.getByRole("link", { name: /Submit Application|Submit/i })
+        .or(this.page.locator('input[value*="Submit Application" i], input[value*="Submit" i]'));
+      const onReviewPage = /review|confirm/i.test(url) || (await submitBtn.count().catch(() => 0)) > 0;
+      if (!onReviewPage) {
+        return fail("submitFromReview: not on the Accela review page — refusing to submit. Run stopAtReview() first.");
+      }
+
+      // 2. Fee-payment denylist: if every visible submit-like control contains fee-related text,
+      //    pause for human rather than risk triggering a payment.
+      const allSubmitText = await submitBtn.allInnerTexts().catch(() => [] as string[]);
+      const allAreFeeGated = allSubmitText.length > 0 &&
+        allSubmitText.every((t: string) => /pay|fee|payment|checkout/i.test(t));
+      if (allAreFeeGated) {
+        return { ok: false, message: "submitFromReview: Accela review page shows a fee-payment gate before submit — pausing for human to complete payment.", pauseReason: "mfa_captcha" };
+      }
+
+      // 3. Click the allowlisted final-submit button. Accela may render it as a link or
+      //    an input[type=submit]; prefer the more specific text first.
+      const submitTarget = this.page.locator('input[value*="Submit Application" i]')
+        .or(this.page.locator('input[value*="Submit" i]'))
+        .or(this.page.getByRole("link", { name: /Submit Application/i }))
+        .or(this.page.getByRole("link", { name: /^Submit$/i }));
+      await submitTarget.first().click({ timeout: 15000 });
+      await this.page.waitForLoadState("networkidle", { timeout: 20000 }).catch(() => null);
+
+      // 4. Post-click: if URL didn't change, a challenge or validation may be blocking.
+      const postUrl = String(this.page.url());
+      if (/review|confirm/i.test(postUrl) && postUrl === url) {
+        // Check for MFA/CAPTCHA text on the page.
+        const bodyText = await this.page.locator("body").innerText().catch(() => "");
+        if (/captcha|recaptcha|two.?factor|mfa|authenticat/i.test(bodyText)) {
+          return { ok: false, message: "submitFromReview: MFA/CAPTCHA appeared after submit click — pausing for human.", pauseReason: "mfa_captcha" };
+        }
+        // Validation message?
+        const msgBar = await this.page.locator(
+          ".message-bar,.MessageBar,[id*=MessageBar],[class*=msgBar],.acc-error-bar,.validation-summary"
+        ).first().innerText().catch(() => "");
+        if (msgBar) return fail(`submitFromReview: Accela blocked the submit: ${msgBar.trim().slice(0, 200)}`);
+      }
+
+      // 5. Capture the confirmation page.
+      const confirmation = await this.captureSubmissionConfirmation();
+      return {
+        ok: confirmation.ok,
+        message: confirmation.ok
+          ? `Accela application submitted. Permit: ${String(confirmation.data?.["permitNumber"] ?? "captured")}`
+          : `submitFromReview: submit appeared to succeed but confirmation capture failed: ${confirmation.message}`,
+        data: {
+          finalSubmitClicked: true,
+          ...(confirmation.data ?? {}),
+        },
+      };
+    } catch (err) {
+      return fail(`submitFromReview failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // captureSubmissionConfirmation — called after the human clicks submit
   // ---------------------------------------------------------------------------
   async captureSubmissionConfirmation(): Promise<PortalStepResult> {
