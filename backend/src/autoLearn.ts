@@ -134,15 +134,21 @@ export async function autoLearnPortal(
     portalUrl: string;
     createdBy?: string;
     permitType?: "structural" | "electrical";
+    // Optional pre-resolved project record. The staging self-seed path passes its
+    // client-contractor *overlaid* stagedProject (authoritative CCB#/installer identity) so the
+    // learner fills the same data the hand-coded adapters would. When omitted (the manual
+    // /auto-learn endpoint), the raw project is loaded from the DB.
+    project?: ProjectRecord;
     // Optional live-progress sink (drives the UI progress bar). Non-PII signals only.
     onProgress?: import("../../portal-bot/src/adapters/autoLearnAdapter").LearnProgressFn;
   },
 ): Promise<AutoLearnResult> {
   const projectRow = db.get<Record<string, unknown>>("SELECT * FROM projects WHERE id = ?", [projectId]);
   if (!projectRow) throw new HttpError(404, "Project not found.");
-  // getProjectDetail is the canonical mapper; import lazily to avoid a cycle.
+  // getProjectDetail is the canonical mapper; import lazily to avoid a cycle. A caller may pass
+  // a pre-overlaid project (staging self-seed); otherwise load the canonical record.
   const { getProjectDetail } = await import("./repository");
-  const project: ProjectRecord = getProjectDetail(db, projectId).project;
+  const project: ProjectRecord = input.project ?? getProjectDetail(db, projectId).project;
 
   const scopeType = input.scope === "utility" ? "utility" : "ahj";
   const portalUrl = (input.portalUrl || "").trim();

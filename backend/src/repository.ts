@@ -4627,6 +4627,51 @@ export function selectAdapterActor(hasRecipe: boolean, isAccela: boolean, isPowe
   return "MockPortalAdapter";
 }
 
+// Which actor actually RUNS a stage under the UNIVERSAL-FIRST + SELF-SEED policy. Distinct from
+// selectAdapterActor() (which names the PLATFORM for field validation): once a portal has no
+// recorded complete recipe, the universal learner SEEDS one on this very stage (AutoLearnAdapter)
+// — it records a recipe AND stages this project to review in one pass, auto-promoting to
+// "complete" only on a clean triple-verification so the NEXT stage replays it deterministically.
+// On a learn failure we STOP AND SURFACE to the operator (no silent drop to the hand-coded path).
+// The hand-coded Accela/PowerClerk adapters are reachable ONLY as the legacy fallback when
+// auto-seed is disabled (PORTAL_AUTOSEED=0). Pure + exported so the precedence is unit-tested
+// without a browser/DB.
+export function selectStagingActor(opts: {
+  hasRecipe: boolean;
+  isRealPortal: boolean;
+  isAccela: boolean;
+  isPowerClerk: boolean;
+  autoSeedEnabled: boolean;
+}): string {
+  if (opts.hasRecipe) return "RecipeAdapter";
+  if (opts.isRealPortal && opts.autoSeedEnabled) return "AutoLearnAdapter";
+  if (opts.isRealPortal && opts.isAccela) return "OregonEPermittingAdapter";
+  if (opts.isRealPortal && opts.isPowerClerk) return "PowerClerkAdapter";
+  return "MockPortalAdapter";
+}
+
+// Map a universal self-seed (auto-learn) outcome onto the staging-result contract the
+// prepareSubmission persistence block reads ({ ok, finalSubmitClicked, pauseReason, message,
+// steps }). The learner NEVER clicks final submit, so finalSubmitClicked is ALWAYS false:
+//   trusted | draft → reached the review screen and stopped there (→ awaiting_human_submit;
+//                     trusted seeded a reusable recipe, draft will re-seed next stage);
+//   paused          → an MFA/CAPTCHA challenge halted the learn (→ paused_for_human);
+//   failed          → couldn't learn (→ failed: stop and surface; no hand-coded fallback).
+// Exported pure so the mapping is unit-tested.
+export function seedOutcomeToStageResult(seed: {
+  status: "trusted" | "draft" | "paused" | "failed";
+  pauseReason: string | null;
+  message: string;
+}): Record<string, unknown> {
+  if (seed.status === "paused") {
+    return { ok: false, finalSubmitClicked: false, pauseReason: seed.pauseReason, message: seed.message, steps: [] };
+  }
+  if (seed.status === "failed") {
+    return { ok: false, finalSubmitClicked: false, pauseReason: null, message: seed.message, steps: [{ ok: false, message: seed.message }] };
+  }
+  return { ok: true, finalSubmitClicked: false, pauseReason: null, message: seed.message, steps: [] };
+}
+
 function validatePortalFields(
   project: ProjectRecord,
   track: SubmittalTrackType | undefined,
@@ -4917,16 +4962,54 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
     gapFillFields,
   };
 
-  // Dispatch mirrors selectAdapterActor's precedence exactly: recipe (universal, first-line) →
-  // hand-coded platform adapter (fallback) → mock.
-  const result =
-    recipe
-      ? await stageWithRecipe(recipe, stagedProject, resolveRecipeFieldValues(db, stagedProject, portalType), docsByType, files, stageOptions)
-      : isAccela
-        ? await stageWithAccela(stagedProject, files, stageOptions)
-        : isPowerClerk
-          ? await stageWithPowerClerk(stagedProject, files, stageOptions)
-          : await stageWithMockPortal(stagedProject, files, reviewerReport);
+  // UNIVERSAL-FIRST dispatch with SELF-SEED (see selectStagingActor):
+  //   1. RecipeAdapter        — a recorded complete recipe replays first-line for every portal;
+  //   2. AutoLearnAdapter     — no recipe yet → SEED one now: the universal learner records a
+  //                             recipe AND stages this project to review in one pass, then
+  //                             auto-promotes it to "complete" only on a clean triple-verification
+  //                             so the next stage replays deterministically. The learner never
+  //                             clicks final submit / pays a fee / solves a CAPTCHA and bails to a
+  //                             human on MFA/CAPTCHA. On a learn failure we STOP AND SURFACE — no
+  //                             silent fallback to the hand-coded adapter.
+  //   3. PowerClerk/Accela    — reachable ONLY when auto-seed is disabled (PORTAL_AUTOSEED=0).
+  //   4. MockPortalAdapter    — dev / no real portal.
+  const autoSeedEnabled = process.env.PORTAL_AUTOSEED !== "0" && process.env.PORTAL_AUTOSEED !== "false";
+  const runActorLabel = selectStagingActor({ hasRecipe: Boolean(recipe), isRealPortal, isAccela, isPowerClerk, autoSeedEnabled });
+  let result: Record<string, unknown>;
+  if (recipe && runActorLabel === "RecipeAdapter") {
+    result = await stageWithRecipe(recipe, stagedProject, resolveRecipeFieldValues(db, stagedProject, portalType), docsByType, files, stageOptions);
+  } else if (runActorLabel === "AutoLearnAdapter") {
+    // Self-seed: learn + stage in one pass. Reuse the entry URL already resolved for the
+    // credential match; pass the client-overlaid stagedProject so the learner fills authoritative
+    // contractor identity (not the raw parse).
+    if (!credentialUrl) {
+      // No entry URL to launch the learner — stop and surface rather than guess a portal.
+      const msg = `No portal URL is known for ${portalLabel}, so the universal learner can't seed a recipe yet. Record the portal once (or add its URL to the knowledge base) and re-stage.`;
+      result = { ok: false, finalSubmitClicked: false, pauseReason: null, message: msg, steps: [{ ok: false, message: msg }] };
+    } else {
+      try {
+        const { autoLearnPortal } = await import("./autoLearn");
+        const seed = await autoLearnPortal(db, projectId, {
+          scope: track === "nem" ? "utility" : "ahj",
+          portalUrl: credentialUrl,
+          createdBy: "auto-seed (staging)",
+          permitType: track === "nem" ? undefined : (detail.project.permitType === "electrical" ? "electrical" : "structural"),
+          project: stagedProject,
+        });
+        result = seedOutcomeToStageResult(seed);
+      } catch (err) {
+        // Learner couldn't even start (network/login/validation) — stop and surface.
+        const msg = `Universal learn failed before staging: ${err instanceof Error ? err.message : String(err)}. Resolve the blocker and re-stage, or record the portal manually.`;
+        result = { ok: false, finalSubmitClicked: false, pauseReason: null, message: msg, steps: [{ ok: false, message: msg }] };
+      }
+    }
+  } else if (runActorLabel === "OregonEPermittingAdapter") {
+    result = await stageWithAccela(stagedProject, files, stageOptions);
+  } else if (runActorLabel === "PowerClerkAdapter") {
+    result = await stageWithPowerClerk(stagedProject, files, stageOptions);
+  } else {
+    result = await stageWithMockPortal(stagedProject, files, reviewerReport);
+  }
 
   // Determine status: if the adapter paused for MFA/CAPTCHA, record it distinctly
   // so the UI can show a specific banner and the operator knows to resume manually.
@@ -4953,7 +5036,7 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   const capturedRecordLink = autoSubmitted ? String((result as Record<string, unknown>).capturedRecordLink || "").trim() : "";
   const runStatus = pauseReason ? "paused_for_human" : autoSubmitted ? "submitted" : adapterFailed ? "failed" : "awaiting_human_submit";
   if (autoSubmitted) {
-    addAuditLog(db, projectId, "portal_bot", adapterActorName, "portal.auto_submitted", {
+    addAuditLog(db, projectId, "portal_bot", runActorLabel, "portal.auto_submitted", {
       track: track ?? "permit", finalSubmitClickedByAutomation: true, feePaymentAutomated: false,
     });
   }
@@ -5029,7 +5112,7 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
       db.run("UPDATE portal_runs SET tracking_url = COALESCE(NULLIF(?, ''), tracking_url) WHERE id = ?", [capturedRecordLink, runId]);
     }
 
-    addAuditLog(db, projectId, "portal_bot", adapterActorName, adapterFailed ? "portal.run_failed" : "portal.staged_to_review", {
+    addAuditLog(db, projectId, "portal_bot", runActorLabel, adapterFailed ? "portal.run_failed" : "portal.staged_to_review", {
       runId,
       portalProfileId,
       portalType,
