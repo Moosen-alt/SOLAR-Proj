@@ -235,40 +235,63 @@ export async function autoLearnPortal(
     maxPages: learn.pageCount,
     message: "Verifying the filled values against the project record…",
   });
-  const verification = await createLLMProvider().verifyPortalFill({
+  const llm = createLLMProvider();
+  const reviewBody = learn.reviewScreen.bodyTextSnippet || "";
+
+  // THREE independent verification signals, combined for defense in depth:
+  //  1. text — the LLM compares the DOM-scraped field/value pairs to the project data;
+  //  2. vision — the LLM LOOKS AT the review screenshot (works even when the DOM scrape is
+  //     thin, which is exactly the read-only-review case that produced the "blank app");
+  //  3. deterministic — code-level compare of scraped fields + rendered page text.
+  const textVerification = await llm.verifyPortalFill({
     reviewFields: learn.reviewScreen.fields,
     projectFields,
-    bodyText: learn.reviewScreen.bodyTextSnippet,
+    bodyText: reviewBody,
   });
-
-  // Deterministic cross-check against the SAME review data (structured fields + rendered
-  // text). This guarantees the operator gets a concrete signal even when the LLM verifier
-  // returns nothing — e.g. the review screen rendered every value as read-only text, so the
-  // structured scrape was thin. Without this, an empty LLM result reads as a blank app.
-  const reviewBody = learn.reviewScreen.bodyTextSnippet || "";
-  const reviewReadable = learn.reviewScreen.fields.length > 0 || reviewBody.trim().length > 0;
+  let visionVerification: typeof textVerification | null = null;
+  if (learn.reviewScreenshotBase64) {
+    try {
+      visionVerification = await llm.verifyPortalFillVision({
+        screenshotBase64: learn.reviewScreenshotBase64,
+        mimeType: "image/png",
+        reviewFields: learn.reviewScreen.fields,
+        projectFields,
+        bodyText: reviewBody,
+      });
+    } catch { visionVerification = null; }
+  }
+  const reviewReadable = learn.reviewScreen.fields.length > 0 || reviewBody.trim().length > 0 || !!learn.reviewScreenshotBase64;
   const deterministicMismatches = compareReviewFields(learn.reviewScreen.fields, project, reviewBody);
+
+  // Vision is authoritative WHEN it produced field-level matches — it saw the actual page,
+  // so it correctly passes a good fill the DOM scrape couldn't read. Otherwise fall back to
+  // the text verifier. Merge every signal's issues so the operator sees the full picture.
+  const verification = (visionVerification && visionVerification.matches.length > 0)
+    ? { ...visionVerification }
+    : { ...textVerification };
+  const mergedIssues = [...verification.issues];
+  if (visionVerification && visionVerification.matches.length > 0 && textVerification.issues.length) {
+    mergedIssues.push(`text-check: ${textVerification.issues.join("; ")}`);
+  }
   if (!reviewReadable) {
-    verification.issues = [
-      ...verification.issues,
-      "Review screen could not be read (no fields or text captured) — the fill could not be verified; a human must confirm before this recipe is trusted.",
-    ];
+    mergedIssues.push("Review screen could not be read (no fields, text, or screenshot) — the fill could not be verified; a human must confirm before this recipe is trusted.");
   } else if (verification.matches.length === 0) {
-    // LLM produced no field-level matches (common on read-only review pages). Surface the
-    // deterministic findings so the dashboard shows specific fields, not a blank result.
+    // No field-level matches from text OR vision (common on a read-only page with no
+    // screenshot). Surface the deterministic findings so the dashboard shows specific
+    // fields, not a blank result.
     if (deterministicMismatches.length > 0) {
       verification.matches = deterministicMismatches.map((m) => ({ label: m.field, expected: m.expected, found: m.found, ok: false }));
     }
-    verification.issues = [
-      ...verification.issues,
+    mergedIssues.push(
       deterministicMismatches.length === 0
-        ? "LLM verifier returned no structured matches; deterministic check found the key project fields present on the review page."
+        ? "Verifier returned no structured matches; deterministic check found the key project fields present on the review page."
         : `Deterministic review check flagged possible missing/altered fields: ${deterministicMismatches.map((m) => m.field).join(", ")}.`,
-    ];
+    );
   }
+  verification.issues = mergedIssues;
 
   // Promote to "complete" (trusted for deterministic replay) ONLY when the fill verified
-  // accurate. Otherwise keep it a draft pending human verification.
+  // accurate (via the authoritative signal above). Otherwise keep it a draft pending review.
   const trusted = verification.accurate;
   savePortalRecipeSteps(db, stub.id, learn.steps, {
     status: trusted ? "complete" : "recording",

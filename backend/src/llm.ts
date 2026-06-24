@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import type { AhjFieldMapResult, AhjFormUrlResult, AhjOverlayMapResult, AhjResearchResult, CorrectionBucket, InverterSpecLookup, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, PortalFieldPlan, PortalFieldPlanInput, PortalFillVerification, PortalFillVerifyInput, ProjectRecord, UtilityResearchResult } from "../../shared/src/types";
+import type { AhjFieldMapResult, AhjFormUrlResult, AhjOverlayMapResult, AhjResearchResult, CorrectionBucket, InverterSpecLookup, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, PortalFieldPlan, PortalFieldPlanInput, PortalFillVerification, PortalFillVerifyInput, PortalFillVisionVerifyInput, ProjectRecord, UtilityResearchResult } from "../../shared/src/types";
 import { RECIPE_FIELD_DESCRIPTIONS } from "./portalRecipes";
 import { compactAlnum } from "./normalize";
 
@@ -96,6 +96,11 @@ export class StubLLMProvider implements LLMProvider {
     // Deterministic comparison — no LLM. Flags mismatches; never auto-trusts (accurate
     // stays false on any miss) so an unverified recipe can't be promoted in stub mode.
     return heuristicVerifyFill(input);
+  }
+
+  async verifyPortalFillVision(input: PortalFillVisionVerifyInput): Promise<PortalFillVerification> {
+    // No vision without an API key — fall back to the deterministic DOM/text comparison.
+    return heuristicVerifyFill({ reviewFields: input.reviewFields, projectFields: input.projectFields, bodyText: input.bodyText });
   }
 
   async lookupInverterSpec(input: { inverterModel: string; inverterQty?: number; acNameplateKw?: number; serviceVoltageV?: number }): Promise<InverterSpecLookup> {
@@ -399,14 +404,29 @@ export class ClaudeLLMProvider implements LLMProvider {
       model: MODEL,
       max_tokens: maxTokens,
       thinking: { type: "adaptive" },
-      system: systemPrompt,
+      // Cache the (static, reused) system prompt: repeat calls in a run/session read it at
+      // ~0.1x input cost instead of reprocessing it. The per-request user message stays after
+      // the breakpoint so it never invalidates the cache. Silent no-op below Opus 4.8's
+      // ~4096-token minimum cacheable prefix — set LLM_CACHE_DEBUG=1 to confirm hits.
+      system: [{ type: "text", text: systemPrompt, cache_control: { type: "ephemeral" } }],
       messages: [{ role: "user", content: userMessage }],
     });
     const msg = await stream.finalMessage();
+    this.logCacheUsage("askLong", msg.usage);
     for (const block of msg.content) {
       if (block.type === "text") return block.text;
     }
     return "";
+  }
+
+  // Emit cache hit/miss telemetry so we can VERIFY prompt caching is actually engaging
+  // (it silently won't on a prefix below the model's minimum cacheable size). Off unless
+  // LLM_CACHE_DEBUG=1 so normal runs stay quiet.
+  private logCacheUsage(label: string, usage: { input_tokens?: number; cache_read_input_tokens?: number | null; cache_creation_input_tokens?: number | null } | undefined): void {
+    if (process.env.LLM_CACHE_DEBUG !== "1" || !usage) return;
+    const read = usage.cache_read_input_tokens ?? 0;
+    const write = usage.cache_creation_input_tokens ?? 0;
+    console.error(`[llm-cache] ${label}: input=${usage.input_tokens ?? 0} cache_read=${read} cache_write=${write}`);
   }
 
   async extractProjectFields(input: {
@@ -911,19 +931,30 @@ Return ONLY JSON:
  "navigateIndex": <index of dashboard nav link, or omit>,
  "advanceIndex": <index or omit>, "finalSubmitIndex": <index or omit>,
  "atReview": <true if this is the review/confirm screen>, "confidence":"low|medium|high", "notes":"<short>"}`;
+    // The project data + KB/jurisdiction context are STABLE across every page of one run,
+    // so they live in the (cached) system prefix — not re-billed per page — while only the
+    // volatile page data goes in the user message after the cache breakpoint. projectFields
+    // keys are sorted so the serialized prefix is byte-identical across pages; any drift
+    // would silently break the prompt cache.
+    const stableProjectData = JSON.stringify(input.projectFields, Object.keys(input.projectFields).sort());
+    const systemWithData = [
+      system,
+      input.kbContext ? `\n\n${input.kbContext}` : "",
+      input.jurisdictionContext ? `\n\nJURISDICTION CONTEXT:\n${input.jurisdictionContext}` : "",
+      `\n\nPROJECT DATA — the ONLY values you may use to fill fields (secrets are excluded; prefer binding a field to one of these keys):\n${stableProjectData}`,
+    ].join("");
+
     const user = JSON.stringify({
       url: input.url, pageTitle: input.pageTitle, fields: input.fields,
-      bodyText: input.bodyText.slice(0, 2000), projectFields: input.projectFields,
+      bodyText: input.bodyText.slice(0, 2000),
       alreadyFilledLabels: input.alreadyFilledLabels,
       // isDashboard must be in the user message so the LLM actually sees it.
       ...(input.isDashboard ? { isDashboard: true } : {}),
-      ...(input.kbContext ? { kbContext: input.kbContext } : {}),
-      ...(input.jurisdictionContext ? { jurisdictionContext: input.jurisdictionContext } : {}),
       ...(input.recoveryHint ? { RECOVERY: input.recoveryHint } : {}),
     });
     let parsed: Partial<PortalFieldPlan> = {};
     // Use askLong: planning responses can be large (many fills + notes).
-    try { parsed = this.parseJson<Partial<PortalFieldPlan>>(await this.askLong(system, user, 3000), {}); } catch { parsed = {}; }
+    try { parsed = this.parseJson<Partial<PortalFieldPlan>>(await this.askLong(systemWithData, user, 3000), {}); } catch { parsed = {}; }
     // Safety post-filter: never let a pay/fee button through as advance/submit, and drop
     // a finalSubmit that was mistakenly set as advance.
     const labelOf = (i?: number) => (i == null ? "" : input.fields.find((f) => f.index === i)?.label || "");
@@ -961,6 +992,53 @@ Return ONLY JSON:
       ? parsed.matches.map((m) => ({ label: String(m.label || ""), expected: String(m.expected || ""), found: String(m.found || ""), ok: Boolean(m.ok) }))
       : [];
     // Defense in depth: never report "accurate" if any match is not ok.
+    const accurate = Boolean(parsed.accurate) && matches.every((m) => m.ok) && matches.length > 0;
+    return {
+      matches,
+      overallConfidence: (["low", "medium", "high"].includes(String(parsed.overallConfidence)) ? parsed.overallConfidence : "low") as "low" | "medium" | "high",
+      accurate,
+      issues: Array.isArray(parsed.issues) ? parsed.issues.map((i) => String(i)) : [],
+      notes: String(parsed.notes || ""),
+    };
+  }
+
+  // Vision verification — the model SEES the rendered review screen, so it works even when
+  // the DOM scrape came back thin (the read-only-review failure mode that produced the
+  // "almost blank application"). The scraped fields + project data are passed alongside the
+  // image as hints; the screenshot is authoritative. Same JSON contract + accurate-gating as
+  // the text verifier so callers can use the two interchangeably.
+  async verifyPortalFillVision(input: PortalFillVisionVerifyInput): Promise<PortalFillVerification> {
+    const system = `You verify a solar permit portal application BEFORE a human submits it, by LOOKING AT A SCREENSHOT of the portal's review/confirm screen. You can SEE the actual rendered page (on Accela the "Step N: Review" page lists the entire application). Compare every value visible on the screen against the project's authoritative DATA provided. Rules:
+- A value is OK if it matches the corresponding project datum (allowing formatting differences — "7.5 kW" vs "7.50", masked account digits) or is a fixed portal literal (a dropdown choice, label, units).
+- Flag any visible value that CONTRADICTS the project data.
+- Flag any REQUIRED field that appears BLANK/empty on the screen (this is the main thing we are guarding against).
+- Do not invent fields that aren't on the screen.
+Return ONLY JSON:
+{"matches":[{"label":"<field>","expected":"<project value or '(literal)'>","found":"<what the screen shows>","ok":<bool>}],
+ "overallConfidence":"low|medium|high",
+ "accurate": <true ONLY if every data-bearing field shown matches the project AND no required field is blank — this gates trusting the recipe>,
+ "issues":["<short issue>"], "notes":"<short>"}`;
+    const hints = JSON.stringify({
+      projectData: input.projectFields,
+      domScrapedFields: input.reviewFields,
+      pageText: (input.bodyText || "").slice(0, 1500),
+    });
+    const content: Anthropic.Messages.ContentBlockParam[] = [
+      { type: "image", source: { type: "base64", media_type: input.mimeType ?? "image/png", data: input.screenshotBase64 } },
+      { type: "text", text: `Verify this review screen against the project data and DOM hints:\n${hints}` },
+    ];
+    let parsed: Partial<PortalFillVerification> = {};
+    try {
+      const msg = await this.client.messages.create({ model: MODEL, max_tokens: 2048, system, messages: [{ role: "user", content }] });
+      let raw = "";
+      for (const block of msg.content) if (block.type === "text") raw += block.text;
+      parsed = this.parseJson<Partial<PortalFillVerification>>(raw, {});
+    } catch { parsed = {}; }
+    const matches = Array.isArray(parsed.matches)
+      ? parsed.matches.map((m) => ({ label: String(m.label || ""), expected: String(m.expected || ""), found: String(m.found || ""), ok: Boolean(m.ok) }))
+      : [];
+    // Same guardrail as the text verifier: never report accurate unless every match is ok
+    // and there is at least one data-bearing match to stand on.
     const accurate = Boolean(parsed.accurate) && matches.every((m) => m.ok) && matches.length > 0;
     return {
       matches,

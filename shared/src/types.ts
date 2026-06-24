@@ -1211,6 +1211,11 @@ export interface LLMProvider {
    *  the project's authoritative data and return a per-field match + an overall
    *  accuracy verdict that gates whether the learned recipe may be trusted for replay. */
   verifyPortalFill(input: PortalFillVerifyInput): Promise<PortalFillVerification>;
+  /** Vision verification: look at a SCREENSHOT of the rendered review/confirm screen
+   *  (what a human sees — on Accela the review step shows the whole application) and check
+   *  the visible values against the project data, flagging contradictions and blank required
+   *  fields. More robust than DOM scraping on read-only review pages. */
+  verifyPortalFillVision(input: PortalFillVisionVerifyInput): Promise<PortalFillVerification>;
   /** Look up an inverter/microinverter model's rated continuous AC output from datasheet
    *  knowledge (web search as a fallback when unsure), and derive a suggested PV breaker.
    *  Advisory only — the result pre-fills the human-review boxes for approval. */
@@ -1376,6 +1381,16 @@ export interface PortalFieldPlan {
 }
 export interface PortalFillVerifyInput {
   /** The field/value pairs scraped from the review screen. */
+  reviewFields: Array<{ label: string; value: string }>;
+  /** The project's authoritative field values to check against. */
+  projectFields: Record<string, string>;
+  bodyText: string;
+}
+export interface PortalFillVisionVerifyInput {
+  /** Base64 PNG/JPEG of the rendered review/confirm screen (what a human would see). */
+  screenshotBase64: string;
+  mimeType?: "image/png" | "image/jpeg" | "image/webp";
+  /** Field/value pairs scraped from the DOM (may be thin on read-only review pages). */
   reviewFields: Array<{ label: string; value: string }>;
   /** The project's authoritative field values to check against. */
   projectFields: Record<string, string>;
