@@ -1473,8 +1473,31 @@ async function launchTrackRecorder(trackType, scope, btn) {
   }
 }
 
-// Render the auto-learn progress bar into the status element. Progress is driven by
-// `autolearn_progress` SSE events streamed while the bot works (see connectSse).
+// Auto-learn progress bar. The bar is driven by TWO sources so it works even if the
+// live SSE stream is blocked/buffered (proxies, etc.):
+//   1. an optimistic client-side "creep" that always advances toward 85% while the
+//      request is in flight — so the bar is never frozen even with zero events;
+//   2. `autolearn_progress` SSE events that snap it forward to the real percent and
+//      update the step label when they do arrive (see connectSse).
+// Progress is monotonic (never goes backward).
+let autoLearnTimer = null;
+let autoLearnPct = 0;
+
+// Set the bar to at least `percent` (monotonic) and optionally update the label.
+// No-op once the bar is unmounted (the verdict text replaced it).
+function setAutoLearnBar(percent, message) {
+  const fill = $("autoLearnProgressFill");
+  if (!fill) return;
+  if (typeof percent === "number" && !Number.isNaN(percent)) {
+    autoLearnPct = Math.max(autoLearnPct, Math.min(100, percent));
+    fill.style.width = autoLearnPct + "%";
+    const pct = $("autoLearnProgressPct");
+    if (pct) pct.textContent = Math.round(autoLearnPct) + "%";
+  }
+  const label = $("autoLearnProgressLabel");
+  if (label && message) label.textContent = message;
+}
+
 function renderAutoLearnProgress(statusEl, initialMsg) {
   statusEl.style.display = "";
   statusEl.className = "";
@@ -1486,23 +1509,25 @@ function renderAutoLearnProgress(statusEl, initialMsg) {
       '</div>' +
       '<div id="autoLearnProgressPct" style="font-size:11px;color:var(--muted,#6b7280);margin-top:3px">6%</div>' +
     '</div>';
-  const label = $("autoLearnProgressLabel");
-  if (label) label.textContent = initialMsg;
+  autoLearnPct = 6;
+  setAutoLearnBar(6, initialMsg);
+  // Optimistic creep: ease toward 85% and stop there, so the bar visibly moves the
+  // whole time even if not a single SSE event arrives. Real events overtake it.
+  if (autoLearnTimer) clearInterval(autoLearnTimer);
+  autoLearnTimer = setInterval(() => {
+    if (!$("autoLearnProgressFill")) { stopAutoLearnProgress(); return; }
+    if (autoLearnPct < 85) setAutoLearnBar(autoLearnPct + (85 - autoLearnPct) * 0.07);
+  }, 700);
 }
 
-// Advance the bar. percent clamps to [0,100]; message updates the label. No-op if the
-// bar isn't mounted (run already finished and the verdict replaced it).
+// Refinement from an SSE progress event (snaps the bar to the real percent + label).
 function updateAutoLearnProgress(percent, message) {
-  const fill = $("autoLearnProgressFill");
-  const label = $("autoLearnProgressLabel");
-  const pct = $("autoLearnProgressPct");
-  if (!fill) return;
-  if (typeof percent === "number") {
-    const clamped = Math.max(0, Math.min(100, percent));
-    fill.style.width = clamped + "%";
-    if (pct) pct.textContent = Math.round(clamped) + "%";
-  }
-  if (label && message) label.textContent = message;
+  setAutoLearnBar(percent, message);
+}
+
+// Stop the creep timer (call when the run resolves or the bar is gone).
+function stopAutoLearnProgress() {
+  if (autoLearnTimer) { clearInterval(autoLearnTimer); autoLearnTimer = null; }
 }
 
 // Auto-learn: the bot fills the portal to the review screen, records a recipe, and
@@ -1529,14 +1554,18 @@ async function autoLearnPortalUI() {
         : res.status === "paused"
           ? `Paused on an MFA/CAPTCHA — complete it in the browser, then retry. A draft recipe was saved.`
           : `Could not learn it automatically: ${res.message || ""} — record it manually instead.`;
+    stopAutoLearnProgress();
+    setAutoLearnBar(100);
     if (statusEl) { statusEl.textContent = verdict; statusEl.className = res.status === "trusted" ? "" : "muted"; }
     showMessage(res.message || verdict, res.status === "trusted" ? "info" : "warning");
     await loadKnowledgeBase();
     await selectProject(p.id);
   } catch (err) {
+    stopAutoLearnProgress();
     if (statusEl) { statusEl.textContent = `Auto-learn failed: ${err.message || err}. You can still record it manually.`; statusEl.className = "muted"; }
     showMessage(err.message || "Auto-learn failed.", "error");
   } finally {
+    stopAutoLearnProgress();
     if (btn) btn.disabled = false;
   }
 }
