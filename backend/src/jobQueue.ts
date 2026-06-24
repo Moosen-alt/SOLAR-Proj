@@ -11,7 +11,8 @@ export type JobType =
   | "mbox_import"
   | "folder_scan"
   | "email_scan"
-  | "portal_run";
+  | "portal_run"
+  | "autopilot";
 
 export type JobStatus = "pending" | "running" | "done" | "failed";
 
@@ -279,6 +280,11 @@ export async function processNextJob(db: AppDb): Promise<boolean> {
       result = await runMboxImportJob(db, job);
     } else if (job.jobType === "folder_scan") {
       result = await runFolderScanJob(db, job);
+    } else if (job.jobType === "autopilot") {
+      const { runAutopilotSegmentA } = await import("./autopilot");
+      const track = (job.payload.track as string | undefined) || undefined;
+      const seg = await runAutopilotSegmentA(db, String(job.projectId), track as never);
+      result = { blocked: seg.blocked, blockers: seg.blockers, message: seg.message, phase: seg.state.phase };
     } else {
       result = { skipped: true, reason: "job type handled externally" };
     }

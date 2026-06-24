@@ -49,6 +49,18 @@ export class MockPortalAdapter extends BasePortalAdapter {
     });
   }
 
+  // Post-approval autonomous final submit. Mock never touches a real portal, so it
+  // simulates a clean submit and returns a synthetic record/confirmation number so the
+  // autopilot approval path can be exercised end-to-end in tests/rehearsals.
+  async submitFromReview(project: ProjectRecord): Promise<PortalStepResult> {
+    return result("Mock final submit clicked (no real portal, no fee paid).", {
+      finalSubmitClicked: true,
+      permitNumber: `MOCK-${String(project.id).slice(0, 8).toUpperCase()}`,
+      confirmationNumber: `CONF-${String(project.id).slice(0, 8).toUpperCase()}`,
+      recordLink: "",
+    });
+  }
+
   async captureSubmissionConfirmation(): Promise<PortalStepResult> {
     return result("Confirmation capture is a manual app action after the human submits.");
   }

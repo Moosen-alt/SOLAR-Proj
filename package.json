@@ -9,6 +9,8 @@
     "typecheck": "tsc --noEmit",
     "build": "tsc --noEmit",
     "smoke": "tsx backend/src/smoke.ts",
+    "rehearse:sim": "tsx backend/test/rehearsal.simulated.test.ts",
+    "rehearse:live": "tsx backend/test/rehearsal.live.smoke.ts",
     "portal:login": "tsx portal-bot/src/testRun.ts login",
     "portal:test": "tsx portal-bot/src/testRun.ts",
     "portal:test:unit": "tsx portal-bot/src/adapters/recipeAdapter.test.ts && tsx portal-bot/src/adapters/autoLearnAdapter.test.ts && tsx portal-bot/src/networkRecorder.test.ts",

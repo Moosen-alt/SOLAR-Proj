@@ -41,7 +41,8 @@ import { listBackups, runBackup, startBackupScheduler } from "./backup";
 import { startMonitorScheduler } from "./scheduler";
 import { startAhjFormRefreshScheduler } from "./ahjFormRefresh";
 import { extractZipToWorkdir } from "./batchZip";
-import { AUTH_ENABLED, login, logout, me, requireAuth, seedAdminUser } from "./auth";
+import { AUTH_ENABLED, currentUser, login, logout, me, requireAuth, seedAdminUser } from "./auth";
+import { getAutopilotState, runAutopilotApproval } from "./autopilot";
 import {
   addCommunication,
   createCustomer,
@@ -1502,6 +1503,44 @@ app.post("/api/projects/:id/prepare-submission", asyncHandler(async (req, res) =
   }
   res.json(result);
 }));
+
+// AUTOPILOT — autonomous run to the approval gate. Start enqueues Segment A (QC →
+// build → reviewer-gate → stage) as a background job so it survives HTTP timeouts.
+app.post("/api/projects/:id/autopilot/start", (req, res) => {
+  const projectId = String(req.params.id);
+  const rawTrack = String(req.body?.track || "").trim();
+  const track = SUBMITTAL_TRACK_TYPES.includes(rawTrack as SubmittalTrackType) ? rawTrack : undefined;
+  const job = enqueueJob(db, "autopilot", { track }, { projectId, priority: 7, maxRetries: 0 });
+  // Kick the worker immediately so Segment A starts without waiting for the poll
+  // interval. The claim is atomic, so the background worker can't double-process it.
+  processNextJob(db)
+    .then(() => sseBroadcast({ type: "run_complete", projectId, message: "Autopilot reached the approval gate." }))
+    .catch((err) => logger.warn("autopilot", `segment A error: ${err instanceof Error ? err.message : String(err)}`));
+  sseBroadcast({ type: "autopilot_started", projectId, message: "Autopilot started — running QC, build, reviewer gate, and staging." });
+  res.status(202).json({ jobId: job.id, state: getAutopilotState(db, projectId) });
+});
+
+// The single regulatory-submission gate. Auth-gated and audit-logged with the
+// approver's identity. Only a staged (awaiting_human_submit), blocker-free project
+// can be approved.
+app.post("/api/projects/:id/autopilot/approve", asyncHandler(async (req, res) => {
+  const projectId = String(req.params.id);
+  const rawTrack = String(req.body?.track || "").trim();
+  const track = SUBMITTAL_TRACK_TYPES.includes(rawTrack as SubmittalTrackType) ? (rawTrack as SubmittalTrackType) : undefined;
+  const user = currentUser(db, req);
+  const approverName = user?.name || String(req.body?.approverName || "").trim() || "dashboard";
+  const state = await runAutopilotApproval(db, projectId, { approverUserId: user?.id ?? null, approverName, track });
+  if (state.phase === "submitted") {
+    sseBroadcast({ type: "run_complete", projectId, message: "Approved & submitted — confirmation captured." });
+  } else {
+    sseBroadcast({ type: "run_complete", projectId, message: "Approval recorded — complete the final submit in the portal." });
+  }
+  res.json({ state });
+}));
+
+app.get("/api/projects/:id/autopilot", (req, res) => {
+  res.json({ state: getAutopilotState(db, String(req.params.id)) });
+});
 
 app.post("/api/projects/:id/human-verify", (req, res) => {
   const reviewItemId = String(req.body?.reviewItemId || "").trim();

@@ -7,6 +7,7 @@ import { OregonEPermittingAdapter } from "./adapters/oregonEPermitting";
 import { PowerClerkAdapter } from "./adapters/powerClerk";
 import { RecipeAdapter } from "./adapters/recipeAdapter";
 import { decryptStorageState } from "./cryptoStorage";
+import { HUMAN_REVIEW_MESSAGE } from "./adapter";
 
 export async function stageWithMockPortal(project: ProjectRecord, files: string[] = [], reviewerReport?: ReviewerReport): Promise<Record<string, unknown>> {
   const adapter = new MockPortalAdapter();
@@ -34,6 +35,72 @@ export async function stageWithMockPortal(project: ProjectRecord, files: string[
   } finally {
     // Mock opens no browser, but call close() for symmetry / future-proofing.
     await adapter.close();
+  }
+}
+
+// POST-APPROVAL final submit (Segment B of the autopilot). Called ONLY after an
+// authorized human has clicked Approve & Submit on an already-staged application. Re-opens
+// the portal session, navigates back to the staged application's review screen, and asks
+// the adapter to click the allowlisted final-submit control (never a fee-payment control).
+// Returns the same backend contract as runAdapter so the caller can capture the permit /
+// confirmation number. ALWAYS closes the browser and shreds the plaintext session file.
+//
+// Safety: when the adapter does not implement an autonomous submit (BasePortalAdapter
+// default), this returns ok:false with finalSubmitClicked:false — the project stays
+// awaiting_human_submit and a human completes the submit in the portal. Nothing is ever
+// filed without an adapter that explicitly supports it.
+export async function submitStagedRun(
+  adapter: import("./adapter").PortalAdapter,
+  project: ProjectRecord,
+  options: StageOptions = {},
+): Promise<Record<string, unknown>> {
+  let tmpStatePath: string | undefined;
+  try {
+    tmpStatePath = resolveStorageStatePath(options.encryptedStorageStatePath);
+    const loginResult = await adapter.login({
+      storageStatePath: tmpStatePath,
+      headless: options.headless,
+      credential: options.credential,
+      userDataDir: options.userDataDir,
+    });
+    if (!loginResult.ok) {
+      return { portalName: adapter.portalName, ok: false, finalSubmitClicked: false, pauseReason: loginResult.pauseReason ?? null, steps: [loginResult] };
+    }
+    // Re-open the existing application and return to its review screen before submitting.
+    const openResult = await adapter.openSubmission(project);
+    if (!openResult.ok) {
+      return { portalName: adapter.portalName, ok: false, finalSubmitClicked: false, pauseReason: openResult.pauseReason ?? null, steps: [loginResult, openResult] };
+    }
+    const reviewResult = await adapter.stopAtReview(project, options.reviewerReport);
+    if (!reviewResult.ok) {
+      return { portalName: adapter.portalName, ok: false, finalSubmitClicked: false, pauseReason: reviewResult.pauseReason ?? null, steps: [loginResult, openResult, reviewResult] };
+    }
+    const submitResult = adapter.submitFromReview
+      ? await adapter.submitFromReview(project)
+      : { ok: false, message: HUMAN_REVIEW_MESSAGE };
+    const finalSubmitClicked = submitResult.ok && submitResult.data?.finalSubmitClicked === true;
+    return {
+      portalName: adapter.portalName,
+      ok: submitResult.ok,
+      finalSubmitClicked,
+      finalSubmitClickedByAutomation: finalSubmitClicked,
+      capturedPermitNumber: String(submitResult.data?.permitNumber ?? ""),
+      capturedConfirmationNumber: String(submitResult.data?.confirmationNumber ?? ""),
+      capturedRecordLink: String(submitResult.data?.recordLink ?? ""),
+      pauseReason: submitResult.pauseReason ?? null,
+      steps: [loginResult, openResult, reviewResult, submitResult],
+    };
+  } catch (err) {
+    return {
+      portalName: adapter.portalName,
+      ok: false,
+      finalSubmitClicked: false,
+      pauseReason: null,
+      steps: [{ ok: false, message: `Post-approval submit errored: ${err instanceof Error ? err.message : String(err)}` }],
+    };
+  } finally {
+    await adapter.close();
+    shredTmpStateFile(tmpStatePath);
   }
 }
 

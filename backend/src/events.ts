@@ -19,6 +19,7 @@ export type SseEventType =
   | "run_paused"
   | "run_failed"
   | "run_complete"
+  | "autopilot_started"
   | "email_matched"
   | "imap_poll_done"
   | "ping";

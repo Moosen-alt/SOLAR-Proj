@@ -1568,6 +1568,7 @@ function renderDetail() {
       ? `Permit ${pm.permitStatus ? statusLabel(pm.permitStatus) : "not checked"} / NEM ${pm.nemStatus ? statusLabel(pm.nemStatus) : "not checked"}`
       : "Not checked";
   });
+  safeRender("autopilot", () => { refreshAutopilot(); });
   // Each panel is isolated so a single bad value can't break the flow or the stepper.
   safeRender("clientSelect", syncProjectClientSelect);
   safeRender("assignSelect", syncProjectAssignSelect);
@@ -1949,6 +1950,86 @@ async function stageSubmittalTrack(type, btn, autoSubmit = false) {
     showMessage(err.message || `Could not stage ${type}.`, "error");
   } finally {
     if (btn) btn.disabled = false;
+  }
+}
+
+// ----- Autopilot: autonomous run to the single human-approval gate -----
+function applyAutopilotState(s) {
+  if (!s) return;
+  const badge = $("autopilotStatus");
+  if (badge) {
+    badge.textContent = s.stage || s.phase || "idle";
+    badge.title = s.message || "";
+  }
+  const approveBtn = $("approveSubmitBtn");
+  if (approveBtn) {
+    approveBtn.disabled = !s.canApprove;
+    approveBtn.title = s.canApprove
+      ? "Authorize and file. The system completes the portal submit (or you finish it in the portal)."
+      : (s.blockers && s.blockers.length
+          ? `Blocked: ${s.blockers.map((b) => b.detail).join("; ")}`
+          : "Available once the project is staged to the portal review screen.");
+  }
+}
+
+async function refreshAutopilot() {
+  if (!state.selectedProjectId) return;
+  try {
+    const { state: s } = await api(`/api/projects/${state.selectedProjectId}/autopilot`);
+    applyAutopilotState(s);
+  } catch { /* non-fatal — leave the badge as-is */ }
+}
+
+async function pollAutopilot(tries = 12) {
+  for (let i = 0; i < tries; i++) {
+    await new Promise((r) => setTimeout(r, 2500));
+    try {
+      const { state: s } = await api(`/api/projects/${state.selectedProjectId}/autopilot`);
+      applyAutopilotState(s);
+      if (s.phase !== "running") {
+        if (state.detail) state.detail = await api(`/api/projects/${state.selectedProjectId}`);
+        renderDetail();
+        return s;
+      }
+    } catch { /* keep polling */ }
+  }
+  return null;
+}
+
+async function startAutopilot() {
+  if (!state.selectedProjectId) return;
+  const btn = $("startAutopilotBtn");
+  btn.disabled = true;
+  showMessage("Autopilot started — running QC, build, reviewer gate, and staging to the portal review screen…", "info");
+  try {
+    await api(`/api/projects/${state.selectedProjectId}/autopilot/start`, { method: "POST", body: "{}" });
+    const s = await pollAutopilot();
+    if (s && s.phase === "awaiting_approval") showMessage("Staged to portal review. Verify, then click Approve & Submit to file.", "info");
+    else if (s && s.phase === "blocked") showMessage(`Autopilot blocked: ${s.blockers.map((b) => b.detail).join("; ")}`, "error");
+  } catch (err) {
+    showMessage(err.message || "Could not start autopilot.", "error");
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function approveAndSubmit() {
+  if (!state.selectedProjectId) return;
+  if (!confirm("Authorize this regulatory submission? This records your approval and files (or stages for your final click in) the portal.")) return;
+  const btn = $("approveSubmitBtn");
+  btn.disabled = true;
+  showMessage("Approval recorded — completing the portal submission…", "info");
+  try {
+    const { state: s } = await api(`/api/projects/${state.selectedProjectId}/autopilot/approve`, { method: "POST", body: "{}" });
+    applyAutopilotState(s);
+    if (state.detail) state.detail = await api(`/api/projects/${state.selectedProjectId}`);
+    renderDetail();
+    showMessage(s.phase === "submitted"
+      ? "Approved & submitted — confirmation captured."
+      : "Approval recorded. Complete the final submit in the portal, then capture the number here.", "info");
+  } catch (err) {
+    showMessage(err.message || "Could not approve.", "error");
+    btn.disabled = false;
   }
 }
 
@@ -4023,6 +4104,8 @@ $("buildAppDocsBtn").addEventListener("click", buildApplicationDocs);
 $("openAppDocsBtn").addEventListener("click", openApplicationDocs);
 $("openReviewerPacketBtn").addEventListener("click", openReviewerPacket);
 $("prepareBtn").addEventListener("click", prepareSubmission);
+$("startAutopilotBtn").addEventListener("click", startAutopilot);
+$("approveSubmitBtn").addEventListener("click", approveAndSubmit);
 $("deleteProjectBtn").addEventListener("click", deleteSelectedProject);
 $("addCorrectionBtn").addEventListener("click", addCorrection);
 $("addPermitTargetBtn").addEventListener("click", addPermitTarget);

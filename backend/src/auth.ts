@@ -110,7 +110,7 @@ export interface SessionUser {
   role: string;
 }
 
-function currentUser(db: AppDb, req: Request): SessionUser | null {
+export function currentUser(db: AppDb, req: Request): SessionUser | null {
   const token = readCookie(req, COOKIE);
   if (!token) return null;
   const parsed = readToken(token);

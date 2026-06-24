@@ -225,9 +225,15 @@
               <span id="portalLoginsSummary" class="muted" style="font-size:12px"></span>
             </div>
           </div>
+          <div class="actions autopilot-actions">
+            <span class="actions-label">Autopilot:</span>
+            <button id="startAutopilotBtn" class="primary"><i data-lucide="rocket"></i><span>Start Autopilot</span></button>
+            <button id="approveSubmitBtn" class="primary" disabled><i data-lucide="check-circle-2"></i><span>Approve &amp; Submit</span></button>
+            <span id="autopilotStatus" class="badge">idle</span>
+          </div>
           <div class="actions step-actions">
-            <span class="actions-label">Daily steps:</span>
-            <button id="runQcBtn" class="primary"><i data-lucide="shield-check"></i><span>2 · Run QC</span></button>
+            <span class="actions-label">Advanced / override:</span>
+            <button id="runQcBtn" class="secondary"><i data-lucide="shield-check"></i><span>2 · Run QC</span></button>
             <button id="buildAppDocsBtn" class="secondary"><i data-lucide="files"></i><span>3 · Build AHJ/NEM Docs</span></button>
             <button id="runReviewerGateBtn" class="secondary"><i data-lucide="clipboard-list"></i><span>4 · Reviewer Gate</span></button>
             <button id="refreshReviewerGateBtn" class="secondary" style="font-size:11px" title="Clear vision cache and re-check all plan sheets"><i data-lucide="refresh-cw"></i><span>Re-run vision</span></button>

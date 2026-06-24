@@ -32,6 +32,13 @@ export interface PortalAdapter {
   fillApplication(project: ProjectRecord): Promise<PortalStepResult>;
   uploadFiles(project: ProjectRecord, files: string[]): Promise<PortalStepResult>;
   stopAtReview(project: ProjectRecord, reviewerReport?: ReviewerReport): Promise<PortalStepResult>;
+  /** Post-approval final submit. Called ONLY after an authorized human has clicked
+   *  Approve & Submit. Navigates to the ALREADY-STAGED application's review screen
+   *  (never starts a new application) and clicks the allowlisted final-submit control.
+   *  MUST never click a fee-payment / pay control. Returns a not-supported result by
+   *  default; hand-coded + recipe adapters override it. On success, data should carry
+   *  { finalSubmitClicked: true, permitNumber?, confirmationNumber?, recordLink? }. */
+  submitFromReview?(project: ProjectRecord): Promise<PortalStepResult>;
   captureSubmissionConfirmation(): Promise<PortalStepResult>;
   /** Read-only status scrape — navigates to the portal's project status page and returns
    *  the raw status text for the given application/permit numbers.
@@ -55,6 +62,12 @@ export abstract class BasePortalAdapter implements PortalAdapter {
   abstract uploadFiles(project: ProjectRecord, files: string[]): Promise<PortalStepResult>;
   abstract stopAtReview(project: ProjectRecord, reviewerReport?: ReviewerReport): Promise<PortalStepResult>;
   abstract captureSubmissionConfirmation(): Promise<PortalStepResult>;
+
+  /** Default: this adapter cannot finish the submission autonomously — a human must
+   *  click submit in the portal. Hand-coded + recipe adapters override this. */
+  async submitFromReview(_project: ProjectRecord): Promise<PortalStepResult> {
+    return { ok: false, message: HUMAN_REVIEW_MESSAGE };
+  }
 
   // The handle returned by openPortal(), stored so close() can tear it down.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
