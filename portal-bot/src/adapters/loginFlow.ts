@@ -90,7 +90,7 @@ const REVEAL_TRIGGERS: RecipeSelector[] = [
 
 // Build a Playwright locator from a portable selector descriptor (mirrors the adapters'
 // own locator()). Standalone so it has no adapter-state dependency.
-function buildLocator(pageOrFrame: Page | Frame, sel: RecipeSelector): Locator | null {
+export function buildLocator(pageOrFrame: Page | Frame, sel: RecipeSelector): Locator | null {
   if (!sel) return null;
   // scope is Page, Frame, or FrameLocator — all expose the same locator API; use any internally.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

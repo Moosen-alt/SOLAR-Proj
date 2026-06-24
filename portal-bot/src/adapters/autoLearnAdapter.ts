@@ -151,11 +151,11 @@ const UPLOAD_LABEL_PATTERNS: Array<{ re: RegExp; docType: string }> = [
 // portals with a single upload slot want the complete set. Tried in order.
 const UPLOAD_FALLBACK_DOCTYPES = ["utility_package_zip", "plan_set", "sld", "site_plan"];
 
-function isPayFee(text: string | undefined): boolean {
+export function isPayFee(text: string | undefined): boolean {
   return !!text && PAY_FEE.test(text);
 }
 
-function isSensitiveLabel(label: string): boolean {
+export function isSensitiveLabel(label: string): boolean {
   return SENSITIVE_LABEL.test(label);
 }
 
@@ -164,7 +164,7 @@ function isSensitiveLabel(label: string): boolean {
 // adapter state) so it can be serialized into the browser. Returns plain JSON.
 // ---------------------------------------------------------------------------
 
-interface RawField {
+export interface RawField {
   label: string;
   fieldType: ExtractedField["fieldType"];
   options?: string[];
@@ -180,7 +180,7 @@ interface RawField {
 
 // Serializable extractor — derives a label and selector hints for each interactive
 // element. Defined as a string-compatible function so it runs inside the page.
-function extractFieldsInPage(els: Element[]): RawField[] {
+export function extractFieldsInPage(els: Element[]): RawField[] {
   function labelFor(el: Element): string {
     const id = el.getAttribute("id");
     if (id) {
@@ -277,7 +277,7 @@ function extractFieldsInPage(els: Element[]): RawField[] {
 
 // Turn a RawField captured in the page into the contract's ExtractedField, building a
 // stable RecipeSelector preferring label / role+name / name, falling back to css #id.
-function toExtractedField(raw: RawField): ExtractedField {
+export function toExtractedField(raw: RawField): ExtractedField {
   const selector: RecipeSelector = {};
   if (raw.fieldType === "button") {
     // Use the element's actual ARIA role ("link" for <a> tags, "button" otherwise).

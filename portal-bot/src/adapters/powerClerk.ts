@@ -327,6 +327,11 @@ export class PowerClerkAdapter extends BasePortalAdapter {
       await page.keyboard.press("Tab").catch(() => null);
       await page.waitForLoadState("networkidle", { timeout: 8000 }).catch(() => null);
       await sleep(Number(process.env.POWERCLERK_SETTLE_MS) || 2000);
+      // LLM-assisted gap-fill: after the fixed-selector fills, let the planner fill any
+      // REQUIRED field still empty on THIS page (Estimated Commissioning Date, Smart Inverter
+      // Settings, Single Phase Voltage, …) — from real project data only. No-op unless the
+      // staging runner enabled it; best-effort, never throws.
+      await this.runGapFill(page);
       const beforeUrl = String(page.url());
       // Clear the Vue loading scrim that re-renders on autosave before clicking Next, and
       // match link-or-button + click resiliently so a re-rendered overlay can't strand the
@@ -670,6 +675,8 @@ export class PowerClerkAdapter extends BasePortalAdapter {
         finalReviewPacketUrl: `/api/projects/${project.id}/reviewer-report?format=html`,
         reviewMismatches,
         reviewAccurate: reviewMismatches.length === 0,
+        // What the LLM gap-fill added (and what it left blank for lack of real data).
+        gapFill: this.gapFillReport,
         nextHumanAction:
           "The browser is staged at the PowerClerk final review screen with terms accepted. Verify all fields, arrays, and attachments, then click Submit manually. AUTOMATION HAS STOPPED.",
       });

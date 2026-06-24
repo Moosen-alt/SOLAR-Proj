@@ -45,6 +45,13 @@ export interface PortalAdapter {
    *  SAFETY: must never click submit, modify, or pay anything.
    *  Returns null if the adapter has no live scrape capability. */
   checkStatus?(applicationNumbers: string[]): Promise<string | null>;
+  /** Enable LLM-assisted gap-fill: after the adapter's fixed fills on each page, an LLM
+   *  planner fills any REQUIRED field the fixed selectors missed — from real project data
+   *  only (never invented). Optional; a no-op for adapters that don't implement it. */
+  enableLlmGapFill?(
+    planner: import("./adapters/autoLearnAdapter").LearnPlanner,
+    projectFields: Record<string, string>,
+  ): void;
   /** Close the underlying browser/context and release the per-client userDataDir
    *  lock. MUST be called in a finally for every run/status-check so a second run
    *  for the same client+portal can launch. Always safe to call (idempotent, never
@@ -72,6 +79,47 @@ export abstract class BasePortalAdapter implements PortalAdapter {
   // The handle returned by openPortal(), stored so close() can tear it down.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   protected opened: any = null;
+
+  // --- LLM-assisted gap-fill (hybrid staging) ------------------------------
+  // A planner + the project's secret-free field values, injected by the staging runner.
+  // When set, hand-coded adapters call runGapFill() after their fixed fills on each page to
+  // fill any required field they missed — from real project data only. Off by default, so
+  // nothing changes unless staging enables it.
+  protected gapPlanner: import("./adapters/autoLearnAdapter").LearnPlanner | null = null;
+  protected gapFields: Record<string, string> = {};
+  protected gapFilledLabels: string[] = [];
+  /** Accumulated across pages; surfaced in the run result so the operator can see what the
+   *  LLM filled and which required fields had no backing data (left blank, not guessed). */
+  public gapFillReport: { filled: string[]; skippedUngrounded: string[]; reportedMissing: string[] } = {
+    filled: [],
+    skippedUngrounded: [],
+    reportedMissing: [],
+  };
+
+  enableLlmGapFill(
+    planner: import("./adapters/autoLearnAdapter").LearnPlanner,
+    projectFields: Record<string, string>,
+  ): void {
+    this.gapPlanner = planner;
+    this.gapFields = projectFields ?? {};
+  }
+
+  /** Run the LLM gap-fill on the current page (best-effort, never throws). No-op when not
+   *  enabled. Accumulates results into gapFillReport. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  protected async runGapFill(page: any): Promise<void> {
+    if (!this.gapPlanner) return;
+    try {
+      const { gapFillCurrentPage } = await import("./llmGapFill");
+      const r = await gapFillCurrentPage(page, this.gapPlanner, this.gapFields, this.gapFilledLabels);
+      this.gapFilledLabels.push(...r.filled);
+      this.gapFillReport.filled.push(...r.filled);
+      this.gapFillReport.skippedUngrounded.push(...r.skippedUngrounded);
+      this.gapFillReport.reportedMissing.push(...r.reportedMissing);
+    } catch {
+      // gap-fill is best-effort; never let it break a staging run.
+    }
+  }
 
   async close(): Promise<void> {
     const opened = this.opened;

@@ -4887,15 +4887,6 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
     }
   }
 
-  const stageOptions = {
-    encryptedStorageStatePath: portalProfile?.encrypted_storage_state ?? undefined,
-    headless: false,
-    reviewerReport,
-    credential,
-    userDataDir,
-    autoSubmit: resolvedAutoSubmit,
-  };
-
   // Overlay the linked client's contractor/licensing identity onto the project
   // snapshot the adapters read, so submissions use authoritative client data
   // (CCB#, electrical license, installer company) instead of hardcoded names.
@@ -4903,6 +4894,38 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   const stagedProject = Object.keys(overlay).length > 0
     ? { ...detail.project, parserSnapshot: { ...detail.project.parserSnapshot, ...overlay } }
     : detail.project;
+
+  // LLM-assisted gap-fill for the hand-coded adapters: build the same planner the auto-learn
+  // engine uses so PowerClerk/Accela fill any REQUIRED field their fixed selectors miss — from
+  // real project data only (secrets are stripped inside buildPortalPlanner and never reach the
+  // LLM). Best-effort: if no LLM is configured, staging proceeds with the hand-coded fills only.
+  let gapFillPlanner: import("../../portal-bot/src/adapters/autoLearnAdapter").LearnPlanner | undefined;
+  let gapFillFields: Record<string, string> | undefined;
+  // Wired for PowerClerk today (the adapter calls runGapFill in settleAndNext). Accela can
+  // opt in the same way once its fill loop calls runGapFill.
+  if (isPowerClerk) {
+    try {
+      const { buildPortalPlanner } = await import("./autoLearn");
+      const built = buildPortalPlanner(db, stagedProject, {
+        portalType,
+        scopeType: "utility",
+        permitType: undefined,
+      });
+      gapFillPlanner = built.planner;
+      gapFillFields = built.projectFields;
+    } catch { /* no planner available — stage with hand-coded fills only */ }
+  }
+
+  const stageOptions = {
+    encryptedStorageStatePath: portalProfile?.encrypted_storage_state ?? undefined,
+    headless: false,
+    reviewerReport,
+    credential,
+    userDataDir,
+    autoSubmit: resolvedAutoSubmit,
+    gapFillPlanner,
+    gapFillFields,
+  };
 
   const result =
     isAccela

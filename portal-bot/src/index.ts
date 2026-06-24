@@ -186,6 +186,11 @@ interface StageOptions {
   // portal, the recipe adapter may replay through the final application submit
   // (never fee payment). Default false = guided-manual (stop at review).
   autoSubmit?: boolean;
+  // LLM-assisted gap-fill: an injectable planner + the project's secret-free field values.
+  // When both are present, hand-coded adapters fill any required field their fixed selectors
+  // missed, from real project data only. Resolved server-side; secrets already stripped.
+  gapFillPlanner?: import("./adapters/autoLearnAdapter").LearnPlanner;
+  gapFillFields?: Record<string, string>;
 }
 
 // Generic adapter runner: decrypts the session into a temp file, drives the
@@ -207,6 +212,12 @@ async function runAdapter(
   let tmpStatePath: string | undefined;
   try {
     tmpStatePath = resolveStorageStatePath(options.encryptedStorageStatePath);
+
+    // Enable LLM-assisted gap-fill when the runner provided a planner + project values, so the
+    // adapter fills any required field its fixed selectors miss (from real data only).
+    if (options.gapFillPlanner && options.gapFillFields && adapter.enableLlmGapFill) {
+      adapter.enableLlmGapFill(options.gapFillPlanner, options.gapFillFields);
+    }
 
     const loginResult = await adapter.login({
       storageStatePath: tmpStatePath,

@@ -56,6 +56,71 @@ export interface AutoLearnResult {
   message: string;
 }
 
+// Build the LLM planner the portal fill loop calls when it has the live fields on a page,
+// plus the project's secret-free field values. Shared by autonomous learning AND the hybrid
+// staging gap-fill so both use identical data + safety handling. Secrets (account/meter/SSN/
+// password) are stripped here and NEVER reach the LLM — the adapter binds those deterministically.
+export function buildPortalPlanner(
+  db: AppDb,
+  project: ProjectRecord,
+  opts: { portalType: string; scopeType?: "ahj" | "utility"; permitType?: "structural" | "electrical" },
+): { planner: (req: LearnPlanRequest) => Promise<LearnPlanResponse>; projectFields: Record<string, string> } {
+  const fieldValues = resolveRecipeFieldValues(db, project, opts.portalType);
+  const projectFields: Record<string, string> = {};
+  for (const [k, v] of Object.entries(fieldValues)) {
+    if (/password|accountNumber|meterNumber|ssn/i.test(k)) continue;
+    if (v) projectFields[k] = v;
+  }
+
+  let kbContext = "";
+  try {
+    const kbEntry = db.get<{ portal_name: string; portal_url: string; notes: string }>(
+      `SELECT portal_name, portal_url, notes FROM permit_utility_knowledge WHERE (ahj = ? OR utility = ?) LIMIT 1`,
+      [project.ahj, project.utility],
+    ) as { portal_name?: string; portal_url?: string; notes?: string } | undefined;
+    if (kbEntry) {
+      kbContext = `KB CONTEXT for this AHJ/utility:\nPortal: ${kbEntry.portal_name || ""}\nURL: ${kbEntry.portal_url || ""}\nNotes: ${kbEntry.notes || ""}`.trim();
+    }
+  } catch { /* KB table may not exist yet */ }
+
+  let jurisdictionContext = "";
+  if (opts.scopeType === "ahj") {
+    const discipline = opts.permitType === "electrical" ? "electrical" : "structural";
+    jurisdictionContext = [
+      `permitDiscipline: ${discipline}`,
+      project.ahj ? `targetJurisdiction (AHJ): ${project.ahj}` : "",
+      project.city ? `projectCity: ${project.city}` : "",
+      project.state ? `state: ${project.state}` : "",
+    ].filter(Boolean).join("\n");
+  }
+
+  const llm = createLLMProvider();
+  const planner = async (req: LearnPlanRequest): Promise<LearnPlanResponse> => {
+    const indexedFields = req.fields.map((f, i) => ({ index: i, label: f.label, fieldType: f.fieldType, options: f.options }));
+    const plan = await llm.planPortalFields({
+      url: req.url,
+      pageTitle: req.pageTitle,
+      fields: indexedFields,
+      bodyText: req.bodyText,
+      projectFields,
+      alreadyFilledLabels: req.alreadyFilledLabels,
+      kbContext: kbContext || undefined,
+      jurisdictionContext: jurisdictionContext || undefined,
+      isDashboard: req.isDashboard,
+      recoveryHint: req.recoveryHint,
+    });
+    return {
+      fills: plan.fills.map((f) => ({ selectorIndex: f.index, value: f.value, field: f.field })),
+      advanceSelectorIndex: plan.advanceIndex,
+      navigateSelectorIndex: plan.navigateIndex,
+      finalSubmitSelectorIndex: plan.finalSubmitIndex,
+      atReview: plan.atReview,
+      notes: plan.notes,
+    };
+  };
+  return { planner, projectFields };
+}
+
 /**
  * Learn an AHJ or utility portal autonomously for a project, record a recipe, verify
  * the fill, and promote the recipe to "complete" only when the verification passes.
@@ -85,70 +150,13 @@ export async function autoLearnPortal(
   if (scopeType === "utility" && !(project.utility || "").trim()) throw new HttpError(400, "Project has no utility to key the recipe on.");
 
   const portalType = scopeType === "utility" ? "utility" : "AHJ";
-  const fieldValues = resolveRecipeFieldValues(db, project, portalType);
-  // Secrets must never reach the LLM planner — strip account/meter (the adapter binds
-  // them from the encrypted credential store, not from planner output).
-  const projectFields: Record<string, string> = {};
-  for (const [k, v] of Object.entries(fieldValues)) {
-    if (/password|accountNumber|meterNumber|ssn/i.test(k)) continue;
-    if (v) projectFields[k] = v;
-  }
-
-  // Fetch KB context for this AHJ/utility to guide the planner
-  let kbContext = "";
-  try {
-    const kbEntry = db.get<{ portal_name: string; portal_url: string; notes: string }>(
-      `SELECT portal_name, portal_url, notes FROM permit_utility_knowledge WHERE (ahj = ? OR utility = ?) LIMIT 1`,
-      [project.ahj, project.utility],
-    ) as any;
-    if (kbEntry) {
-      kbContext = `KB CONTEXT for this AHJ/utility:\nPortal: ${kbEntry.portal_name || ""}\nURL: ${kbEntry.portal_url || ""}\nNotes: ${kbEntry.notes || ""}`.trim();
-    }
-  } catch { /* KB table may not exist yet */ }
-
-  // Jurisdiction + permit-discipline context for portals (Accela / Oregon ePermitting)
-  // where the same street address resolves to both a CITY and a COUNTY authority, each with
-  // its own application-type list. Tells the planner which results row to Select and which
-  // application type (structural vs electrical) to check. Defaults to structural — the prior
-  // hardcoded behavior — so single-discipline runs are unchanged.
-  let jurisdictionContext = "";
-  if (scopeType === "ahj") {
-    const discipline = input.permitType === "electrical" ? "electrical" : "structural";
-    jurisdictionContext = [
-      `permitDiscipline: ${discipline}`,
-      project.ahj ? `targetJurisdiction (AHJ): ${project.ahj}` : "",
-      project.city ? `projectCity: ${project.city}` : "",
-      project.state ? `state: ${project.state}` : "",
-    ].filter(Boolean).join("\n");
-  }
-
-  const llm = createLLMProvider();
-  // The planner the adapter calls when it has the live fields on a page. The adapter
-  // passes fields positionally (ExtractedField[]); we index them for the LLM and map the
-  // response indices back to selector positions.
-  const planner = async (req: LearnPlanRequest): Promise<LearnPlanResponse> => {
-    const indexedFields = req.fields.map((f, i) => ({ index: i, label: f.label, fieldType: f.fieldType, options: f.options }));
-    const plan = await llm.planPortalFields({
-      url: req.url,
-      pageTitle: req.pageTitle,
-      fields: indexedFields,
-      bodyText: req.bodyText,
-      projectFields,
-      alreadyFilledLabels: req.alreadyFilledLabels,
-      kbContext: kbContext || undefined,
-      jurisdictionContext: jurisdictionContext || undefined,
-      isDashboard: req.isDashboard,
-      recoveryHint: req.recoveryHint,
-    });
-    return {
-      fills: plan.fills.map((f) => ({ selectorIndex: f.index, value: f.value, field: f.field })),
-      advanceSelectorIndex: plan.advanceIndex,
-      navigateSelectorIndex: plan.navigateIndex,
-      finalSubmitSelectorIndex: plan.finalSubmitIndex,
-      atReview: plan.atReview,
-      notes: plan.notes,
-    };
-  };
+  // Secrets are stripped inside buildPortalPlanner — they never reach the LLM; the adapter
+  // binds account/meter deterministically from the encrypted credential store.
+  const { planner, projectFields } = buildPortalPlanner(db, project, {
+    portalType,
+    scopeType,
+    permitType: input.permitType,
+  });
 
   // Credential lookup: try exact portalType match first, then URL hostname match, then
   // most-recent credential for this client (handles mismatched portal_type strings).
@@ -226,7 +234,7 @@ export async function autoLearnPortal(
     maxPages: learn.pageCount,
     message: "Verifying the filled values against the project record…",
   });
-  const verification = await llm.verifyPortalFill({
+  const verification = await createLLMProvider().verifyPortalFill({
     reviewFields: learn.reviewScreen.fields,
     projectFields,
     bodyText: learn.reviewScreen.bodyTextSnippet,
