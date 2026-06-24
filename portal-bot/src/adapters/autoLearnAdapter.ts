@@ -3,7 +3,7 @@ import type { ProjectRecord, RecipeSelector, RecipeStep } from "../../../shared/
 import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, type PortalContext, type PortalStepResult } from "../adapter";
 import { openPortal } from "../browser";
 import { selectWithFallback } from "../comboboxFill";
-import { detectChallengeFrame, hasNumericValidationError, redactStatusText, safeAction, sleep, smartWait, toBareNumber, waitForElement } from "../safeAction";
+import { detectChallengeFrame, hasNumericValidationError, readbackMatches, redactStatusText, safeAction, sleep, smartWait, toBareNumber, waitForElement } from "../safeAction";
 import { scrapeReviewScreen as scrapeReviewScreenShared } from "../reviewScreenScraper";
 import { performLogin } from "./loginFlow";
 
@@ -42,6 +42,18 @@ export interface ExtractedField {
   /** For <a> nav links: the href, so a hidden/menu-nested link that can't be clicked can
    *  still be reached by navigating to it directly. */
   href?: string;
+}
+
+// A fill we applied on the current page, retained so we can read it back and confirm it
+// actually held its value before advancing to the next page.
+interface AppliedFill {
+  selector: RecipeSelector;
+  label: string;
+  fieldType: ExtractedField["fieldType"];
+  /** Value typed (empty for sensitive fields, which are only checked for non-emptiness). */
+  expected: string;
+  sensitive: boolean;
+  required: boolean;
 }
 
 export interface LearnPlanRequest {
@@ -496,6 +508,10 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     let pageCount = 0;
     let finalSubmitRecorded = false;
     let reachedReview = false;
+    // Fields we filled that did NOT hold their value when we read them back before advancing
+    // (a portal silently dropped the fill). Accumulated across pages and surfaced so the
+    // operator knows exactly which fields to fix — instead of finding them blank at review.
+    const fillVerifyMisses: string[] = [];
     // Stuck-page detection: if the page fingerprint doesn't change across consecutive
     // iterations (an advance silently failed — e.g. blocked by a validation error), stop
     // instead of burning every remaining page re-planning the same screen.
@@ -804,6 +820,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
 
       // d) Apply the fills and record each as a RecipeStep.
       let pageFillCount = 0;
+      const appliedThisPage: AppliedFill[] = [];
       for (const fillReq of plan.fills ?? []) {
         const field = fields[fillReq.selectorIndex];
         if (!field) continue; // out-of-range index from the planner — skip safely.
@@ -814,6 +831,17 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           steps.push(step);
           pageFillCount++;
           if (field.label) alreadyFilledLabels.push(field.label);
+          appliedThisPage.push({
+            selector: field.selector,
+            label: field.label || field.fieldType,
+            fieldType: field.fieldType,
+            // The value typed into the control (literal, data-bound, or numeric-sanitized),
+            // used to re-apply if the fill didn't hold. Empty for sensitive fields — those
+            // are never logged or retyped here; we only confirm the control is non-empty.
+            expected: sensitive ? "" : (step.value ?? fillReq.value ?? ""),
+            sensitive,
+            required: Boolean(field.required),
+          });
         }
       }
 
@@ -832,6 +860,17 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         const settleMs = Number(process.env.AUTOLEARN_SAVE_SETTLE_MS) || 3000;
         await sleep(settleMs);
         await settleNetwork(4000);
+      }
+
+      // d2) VERIFY THE FILLS LANDED before advancing. A portal can silently drop a fill — a
+      //     Vue/React model rejects it, an overlay eats the keystrokes, inline validation
+      //     clears it, or an autosave round-trip blanks it. If we advance blindly the field
+      //     is gone and only resurfaces (if at all) as a blank at the review screen. Read each
+      //     filled control back; re-apply once if it didn't hold; record any required field
+      //     that STILL won't hold its value so the operator sees exactly what to fix.
+      if (appliedThisPage.length > 0) {
+        const misses = await this.verifyFillsLanded(appliedThisPage);
+        for (const m of misses) if (!fillVerifyMisses.includes(m)) fillVerifyMisses.push(m);
       }
 
       // e) Record the final submit (if any) — NEVER click it. Reject pay/fee buttons.
@@ -930,11 +969,17 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       ? ` It followed ${navCount} navigation link(s) from the portal home but never reached a form with editable fields — the start URL may point at the wrong page, the "start application" action may open a new tab or a program/record-type picker the bot couldn't follow, or a program must be selected first. Verify the start URL is the program's application/home page.`
       : "";
 
-    const message = reachedReview
+    // Surface any field that didn't hold its value after we filled it (caught by the
+    // pre-advance readback) so the operator knows what to fix instead of finding it blank.
+    const verifyWarning = fillVerifyMisses.length > 0
+      ? ` ⚠ ${fillVerifyMisses.length} required field(s) did not hold their value after filling and may be blank in the portal: ${fillVerifyMisses.slice(0, 12).join(", ")}${fillVerifyMisses.length > 12 ? ", …" : ""}. Re-check these before submit.`
+      : "";
+
+    const message = (reachedReview
       ? `${HUMAN_REVIEW_MESSAGE} Auto-learn reached the review screen after ${pageCount} page(s). Verify every field/value below before a human submits.`
       : filledSomething
         ? `Auto-learn filled ${pageCount} page(s) and recorded the steps, but did not reach a review screen. Page trace: ${traceLine}`
-        : `Auto-learn found nothing fillable on ${pageCount} page(s); no steps recorded.${nothingFillableHint} Page trace: ${traceLine}`;
+        : `Auto-learn found nothing fillable on ${pageCount} page(s); no steps recorded.${nothingFillableHint} Page trace: ${traceLine}`) + verifyWarning;
 
     // Capture review page screenshot when we've reached the review screen
     let reviewScreenshotBase64: string | undefined;
@@ -1031,6 +1076,66 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       step.value = filledValue;
     }
     return step;
+  }
+
+  // Read each just-filled control back and confirm it still HOLDS a value before we advance.
+  // The goal is catching the "silently blanked" failure mode (Vue/React rejected the fill, an
+  // overlay ate it, autosave wiped it), not exact-value correctness — so the check is "is it
+  // still non-empty / in the expected checked state". A control that came back empty gets one
+  // re-apply attempt; a REQUIRED field that still won't hold is returned so the caller can
+  // surface it. Best-effort: an unreadable control is treated as fine (never block on it).
+  private async verifyFillsLanded(applied: AppliedFill[]): Promise<string[]> {
+    const misses: string[] = [];
+    for (const a of applied) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const loc = (await this.locator(a.selector)) as any;
+      if (!loc) continue;
+      if (await this.fieldHoldsValue(loc, a)) continue;
+
+      // One re-apply attempt. Sensitive fields are never retyped here (we don't keep the
+      // literal); select fields go back through the combobox fallback.
+      try {
+        if (a.sensitive || !a.expected) {
+          // nothing to retype — fall through to the re-check
+        } else if (a.fieldType === "select") {
+          await selectWithFallback(this.page!, loc, a.expected);
+        } else if (a.fieldType === "checkbox" || a.fieldType === "radio") {
+          if (/^(true|yes|on|1)$/i.test(a.expected) && typeof loc.check === "function") await loc.check({ timeout: 5000 });
+        } else if (typeof loc.fill === "function") {
+          await loc.fill(a.expected, { timeout: 5000 });
+          if (typeof loc.blur === "function") await loc.blur().catch(() => {});
+        }
+      } catch { /* re-apply is best-effort */ }
+
+      if (!(await this.fieldHoldsValue(loc, a)) && a.required) misses.push(a.label);
+    }
+    return misses;
+  }
+
+  // True when the control still holds a value consistent with what we filled. For text/select
+  // that means non-empty (and not a "please select" placeholder); for checkbox/radio it means
+  // the checked state matches the intended boolean. Unreadable → treated as held (don't block).
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async fieldHoldsValue(loc: any, a: AppliedFill): Promise<boolean> {
+    try {
+      if (a.fieldType === "checkbox" || a.fieldType === "radio") {
+        if (typeof loc.isChecked !== "function") return true;
+        const want = /^(true|yes|on|1)$/i.test(a.expected);
+        const isChecked = await loc.isChecked().catch(() => false);
+        return Boolean(isChecked) === want;
+      }
+      if (typeof loc.inputValue !== "function") return true;
+      const v = String((await loc.inputValue().catch(() => "")) ?? "").trim();
+      if (!v) return false;
+      if (/^(please select|select\.\.\.|-- ?select|choose)/i.test(v)) return false;
+      // When we have the literal we filled, a non-empty value that matches is best; but a
+      // non-empty value that DIFFERS is still "filled" (the portal may reformat dates/numbers),
+      // so we only treat truly-empty as a miss. readbackMatches is used opportunistically.
+      if (a.expected) return v.length > 0 || readbackMatches(v, a.expected);
+      return v.length > 0;
+    } catch {
+      return true;
+    }
   }
 
   // A button is off-limits if its label/selector text matches a pay/fee/checkout keyword.

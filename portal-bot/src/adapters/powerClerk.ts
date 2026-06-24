@@ -644,9 +644,12 @@ export class PowerClerkAdapter extends BasePortalAdapter {
 
       const blockerCount = reviewerReport?.findings.filter((f) => f.severity === "blocker").length ?? 0;
 
-      // Compare what the PowerClerk review page shows against the project record.
+      // Compare what the PowerClerk review page shows against the project record. Pass the
+      // rendered page text too: PowerClerk's summary renders many values as read-only text,
+      // so the structured scrape alone can miss them — the body fallback confirms presence.
       const reviewFields = await scrapeReviewScreen(this.page).catch(() => []);
-      const reviewMismatches = compareReviewFields(reviewFields, project);
+      const reviewBody = (await this.page.locator("body").innerText().catch(() => "")).slice(0, 20000);
+      const reviewMismatches = compareReviewFields(reviewFields, project, reviewBody);
 
       return ok(HUMAN_REVIEW_MESSAGE, {
         projectId: project.id,

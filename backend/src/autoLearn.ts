@@ -25,6 +25,7 @@ import pLimit from "p-limit";
 import type { AppDb } from "./db";
 import type { PortalRecipe, ProjectRecord } from "../../shared/src/types";
 import { learnPortal } from "../../portal-bot/src/index";
+import { compareReviewFields } from "../../portal-bot/src/reviewScreenScraper";
 import type { LearnPlanRequest, LearnPlanResponse } from "../../portal-bot/src/adapters/autoLearnAdapter";
 import { createLLMProvider } from "./llm";
 import { getDecryptedCredential, getDecryptedCredentialByUrl, getDecryptedCredentialAny } from "./portalCredentials";
@@ -239,6 +240,32 @@ export async function autoLearnPortal(
     projectFields,
     bodyText: learn.reviewScreen.bodyTextSnippet,
   });
+
+  // Deterministic cross-check against the SAME review data (structured fields + rendered
+  // text). This guarantees the operator gets a concrete signal even when the LLM verifier
+  // returns nothing — e.g. the review screen rendered every value as read-only text, so the
+  // structured scrape was thin. Without this, an empty LLM result reads as a blank app.
+  const reviewBody = learn.reviewScreen.bodyTextSnippet || "";
+  const reviewReadable = learn.reviewScreen.fields.length > 0 || reviewBody.trim().length > 0;
+  const deterministicMismatches = compareReviewFields(learn.reviewScreen.fields, project, reviewBody);
+  if (!reviewReadable) {
+    verification.issues = [
+      ...verification.issues,
+      "Review screen could not be read (no fields or text captured) — the fill could not be verified; a human must confirm before this recipe is trusted.",
+    ];
+  } else if (verification.matches.length === 0) {
+    // LLM produced no field-level matches (common on read-only review pages). Surface the
+    // deterministic findings so the dashboard shows specific fields, not a blank result.
+    if (deterministicMismatches.length > 0) {
+      verification.matches = deterministicMismatches.map((m) => ({ label: m.field, expected: m.expected, found: m.found, ok: false }));
+    }
+    verification.issues = [
+      ...verification.issues,
+      deterministicMismatches.length === 0
+        ? "LLM verifier returned no structured matches; deterministic check found the key project fields present on the review page."
+        : `Deterministic review check flagged possible missing/altered fields: ${deterministicMismatches.map((m) => m.field).join(", ")}.`,
+    ];
+  }
 
   // Promote to "complete" (trusted for deterministic replay) ONLY when the fill verified
   // accurate. Otherwise keep it a draft pending human verification.

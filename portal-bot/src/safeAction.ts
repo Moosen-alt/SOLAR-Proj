@@ -158,7 +158,7 @@ export interface SafeActionResult {
 // Compare a portal read-back against the value we tried to fill. Normalizes both
 // (lowercase, strip non-alphanumerics) so formatting differences ("$1,000" vs "1000",
 // "7.5 kW" vs "7.5") don't register as mismatches. Empty expected = nothing to judge.
-function readbackMatches(actual: string, expected: string): boolean {
+export function readbackMatches(actual: string, expected: string): boolean {
   const n = (v: string) => v.toLowerCase().replace(/[^a-z0-9]/g, "");
   const a = n(actual);
   const e = n(expected);

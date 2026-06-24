@@ -666,9 +666,12 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
 
       // Compare what the Accela review page shows against the project record.
       // Mismatches are surfaced to the dashboard so the operator can catch a silently
-      // wrong field before clicking Approve & Submit.
+      // wrong field before clicking Approve & Submit. Accela's "Step N: Review" is a
+      // read-only summary (no inputs), so pass the rendered page text as the fallback
+      // haystack — otherwise the structured scrape is empty and every field looks missing.
       const reviewFields = await scrapeReviewScreen(this.page).catch(() => []);
-      const reviewMismatches = compareReviewFields(reviewFields, project);
+      const reviewBody = (await this.page.locator("body").innerText().catch(() => "")).slice(0, 20000);
+      const reviewMismatches = compareReviewFields(reviewFields, project, reviewBody);
 
       return ok(HUMAN_REVIEW_MESSAGE, {
         projectId: project.id,
