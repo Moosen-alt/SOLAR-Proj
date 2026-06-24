@@ -3,6 +3,7 @@ import type { ProjectRecord, ReviewerReport } from "../../../shared/src/types";
 import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, type PortalContext, type PortalStepResult } from "../adapter";
 import { openPortal } from "../browser";
 import { redactStatusText, safeAction } from "../safeAction";
+import { scrapeReviewScreen, compareReviewFields } from "../reviewScreenScraper";
 
 // Oregon ePermitting (Accela ACA) adapter
 // Codegen recording captured by operator up to the review page.
@@ -248,9 +249,14 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
     // Collect REQUIRED-field failures (redacted field names only) so a half-filled
     // form reports ok:false instead of silently looking successful.
     const requiredFailures: string[] = [];
-    const collect = async (label: string, action: () => Promise<void>, required = true): Promise<void> => {
-      const r = await safeAction(label, action, { required });
+    const readbackMismatches: string[] = [];
+    const collect = async (label: string, action: () => Promise<void>, required = true, readback?: () => Promise<string>): Promise<void> => {
+      const r = await safeAction(label, action, { required, readback });
       if (!r.ok) requiredFailures.push(`${r.field}: ${r.message ?? "failed"}`);
+      // Surface readback values so the caller can spot a fill that didn't stick.
+      if (r.readbackValue !== undefined) {
+        readbackMismatches.push(`${r.field}:${r.readbackValue.slice(0, 40)}`);
+      }
     };
 
     // After a Continue click, detect Accela's "Message Bar" validation error and
@@ -327,7 +333,8 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
       // ── Step 1: Project info (Job Value, Category, Name, Description).
       const jobValue = str(s["jobValue"] ?? s["job_value"]) ||
         String((project.systemSizeDcKw ?? 0) * 4000) || "0";
-      await collect("jobValue", () => this.page.getByRole("textbox", { name: "Job Value($):" }).fill(jobValue));
+      const jobValueLoc = () => this.page.getByRole("textbox", { name: "Job Value($):" });
+      await collect("jobValue", () => jobValueLoc().fill(jobValue), true, () => jobValueLoc().inputValue().catch(() => ""));
       // Category of Construction — on this page the select is found via label text in a row.
       // The live options are numeric IDs (e.g. value="1" = Residential). Select the first
       // non-blank option; wrong value here is non-fatal (Accela defaults to a valid choice).
@@ -336,7 +343,8 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
         if ((await sel.count().catch(() => 0)) === 0) return; // field not on this page layout
         await selectByPattern(sel, /residential|new/i);
       }, false);
-      await collect("projectName", () => this.page.getByRole("textbox", { name: /Project Name/i }).first().fill(projectName));
+      const projectNameLoc = () => this.page.getByRole("textbox", { name: /Project Name/i }).first();
+      await collect("projectName", () => projectNameLoc().fill(projectName), true, () => projectNameLoc().inputValue().catch(() => ""));
       await collect("descriptionOfWork", () => this.page.getByRole("textbox", { name: /Description of Work/i }).first().fill(descriptionOfWork));
       const projectInfoErr = await continueAndCheck("project info");
       if (projectInfoErr) return fail(`fillApplication: ${projectInfoErr}`);
@@ -501,14 +509,15 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
             : dcKw <= 25
             ? /15\.?0?1.*25\s*kva|renewable.*25\s*kva/i
             : /over\s*25\s*kva|solar.*generation.*25/i;
+        const kvaLoc = () => this.page.locator("tr").filter({ hasText: kvaRowPattern }).locator('input[type="text"]').first();
+        const kvaValue = dcKw > 25 ? String(Math.ceil(dcKw)) : "1";
         await collect("renewableEnergyKva", async () => {
-          const inp = this.page.locator("tr").filter({ hasText: kvaRowPattern }).locator('input[type="text"]').first();
+          const inp = kvaLoc();
           if ((await inp.count().catch(() => 0)) === 0) return;
           // For ≤25 kVA tiers the value is the COUNT of systems (typically "1");
           // >25 kVA tier takes the total kVA.
-          const value = dcKw > 25 ? String(Math.ceil(dcKw)) : "1";
-          await inp.fill(value);
-        });
+          await inp.fill(kvaValue);
+        }, true, () => kvaLoc().inputValue().catch(() => ""));
       }
 
       const constrErr = await continueAndCheck("construction details");
@@ -519,7 +528,7 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
       if (requiredFailures.length > 0) {
         return fail(
           `fillApplication: ${requiredFailures.length} field(s) could not be filled — manual review required.`,
-          { requiredFailures, jobValue },
+          { requiredFailures, readbackMismatches, jobValue },
         );
       }
 
@@ -528,6 +537,7 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
         jobValue,
         descriptionFilled: descriptionOfWork.length > 0,
         contactAdded,
+        readbackMismatches,
       });
     } catch (err) {
       return fail(`fillApplication failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -597,7 +607,21 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
           .click({ timeout: 10000 });
         await this.page.waitForLoadState("networkidle", { timeout: 8000 }).catch(() => null);
 
-        uploaded.push(path.basename(filePath));
+        // After Save, check for visible error messages — the portal may accept the click
+        // but show a validation error (wrong file type, size limit). Treat an error message
+        // as an upload failure so it surfaces to the operator rather than disappearing silently.
+        const baseName = path.basename(filePath);
+        const errorBar = this.page.locator(
+          ".message-bar,.MessageBar,[id*=MessageBar],[class*=msgBar],.acc-error-bar,.validation-summary"
+        );
+        const errorVisible = (await errorBar.count().catch(() => 0)) > 0 &&
+          (await errorBar.first().isVisible().catch(() => false));
+        if (errorVisible) {
+          const errText = await errorBar.first().innerText().catch(() => "upload error");
+          failed.push(`${baseName}: ${errText.trim().slice(0, 120)}`);
+        } else {
+          uploaded.push(baseName);
+        }
       } catch (err) {
         failed.push(`${path.basename(filePath)}: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -648,6 +672,12 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
       const finalUrl = this.page.url();
       const blockerCount = reviewerReport?.findings.filter((f) => f.severity === "blocker").length ?? 0;
 
+      // Compare what the Accela review page shows against the project record.
+      // Mismatches are surfaced to the dashboard so the operator can catch a silently
+      // wrong field before clicking Approve & Submit.
+      const reviewFields = await scrapeReviewScreen(this.page).catch(() => []);
+      const reviewMismatches = compareReviewFields(reviewFields, project);
+
       return ok(HUMAN_REVIEW_MESSAGE, {
         projectId: project.id,
         portalReviewUrl: finalUrl,
@@ -657,6 +687,8 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
         finalSubmitButtonAloneIsEnough: reviewerReport?.finalSubmitGate.finalSubmitButtonAloneIsEnough ?? false,
         internalFinalReviewPacketRequired: true,
         finalReviewPacketUrl: `/api/projects/${project.id}/reviewer-report?format=html`,
+        reviewMismatches,
+        reviewAccurate: reviewMismatches.length === 0,
         nextHumanAction:
           "The browser is staged at the final review screen. Verify all fields and uploaded files, handle any MFA or fee payment, then click submit manually. AUTOMATION HAS STOPPED.",
       });

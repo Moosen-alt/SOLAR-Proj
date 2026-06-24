@@ -4,6 +4,7 @@ import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, type PortalContext, type Porta
 import { openPortal } from "../browser";
 import { detectChallengeFrame, redactStatusText, safeAction, sleep } from "../safeAction";
 import { fillCustomCombobox } from "../comboboxFill";
+import { scrapeReviewScreen, compareReviewFields } from "../reviewScreenScraper";
 
 // Select a value on a PowerClerk dropdown that may be a native <select> OR a custom
 // "Please select..." widget. Native selectOption first; fall back to the open->type->pick
@@ -163,9 +164,13 @@ export class PowerClerkAdapter extends BasePortalAdapter {
     // Collect REQUIRED-field failures (redacted field-name labels only). A required
     // fill that fails after retries sets ok:false instead of silently passing.
     const requiredFailures: string[] = [];
-    const collect = async (label: string, action: () => Promise<void>): Promise<void> => {
-      const r = await safeAction(label, action, { required: true });
+    const readbackMismatches: string[] = [];
+    const collect = async (label: string, action: () => Promise<void>, readback?: () => Promise<string>): Promise<void> => {
+      const r = await safeAction(label, action, { required: true, readback });
       if (!r.ok) requiredFailures.push(`${r.field}: ${r.message ?? "failed"}`);
+      if (r.readbackValue !== undefined) {
+        readbackMismatches.push(`${r.field}:${r.readbackValue.slice(0, 40)}`);
+      }
     };
 
     // Settle the page before advancing. PowerClerk's Vue autosaves each section
@@ -292,8 +297,10 @@ export class PowerClerkAdapter extends BasePortalAdapter {
 
       // Account + meter number are REQUIRED to bind the interconnection to the right
       // service point — a missed fill must fail the run, never pass silently.
-      await collect("pgeAccountNumber", () => page.getByRole("textbox", { name: "PGE Account Number for point" }).fill(project.accountNumber ?? ""));
-      await collect("meterNumber", () => page.getByRole("textbox", { name: "Meter Number" }).fill(project.meterNumber ?? ""));
+      const acctLoc = () => page.getByRole("textbox", { name: "PGE Account Number for point" });
+      await collect("pgeAccountNumber", () => acctLoc().fill(project.accountNumber ?? ""), () => acctLoc().inputValue().catch(() => ""));
+      const meterLoc = () => page.getByRole("textbox", { name: "Meter Number" });
+      await collect("meterNumber", () => meterLoc().fill(project.meterNumber ?? ""), () => meterLoc().inputValue().catch(() => ""));
       await page.getByRole("checkbox", { name: /Click here to confirm/i }).check().catch(() => null);
 
       // Service configuration
@@ -304,7 +311,8 @@ export class PowerClerkAdapter extends BasePortalAdapter {
       await page.getByRole("radio", { name: "/240" }).check().catch(() => null);
 
       const serviceRating = str(s["mainServiceRating"] ?? s["main_service_rating"] ?? s["serviceRating"]) || "200";
-      await collect("mainServiceRating", () => page.getByRole("textbox", { name: "Main Service Entrance Rating" }).fill(serviceRating));
+      const serviceRatingLoc = () => page.getByRole("textbox", { name: "Main Service Entrance Rating" });
+      await collect("mainServiceRating", () => serviceRatingLoc().fill(serviceRating), () => serviceRatingLoc().inputValue().catch(() => ""));
       await settleAndNext("system / service point");
 
       // --- Generation: inverter + N PV arrays -------------------------------
@@ -353,7 +361,7 @@ export class PowerClerkAdapter extends BasePortalAdapter {
       if (requiredFailures.length > 0) {
         return fail(
           `fillApplication: ${requiredFailures.length} required field(s) could not be filled — manual review required.`,
-          { requiredFailures, arrayCount: arrays.length },
+          { requiredFailures, readbackMismatches, arrayCount: arrays.length },
         );
       }
 
@@ -362,6 +370,7 @@ export class PowerClerkAdapter extends BasePortalAdapter {
       return ok(`Application filled with ${arrays.length} PV array(s).`, {
         projectId: project.id,
         arrayCount: arrays.length,
+        readbackMismatches,
       });
     } catch (err) {
       const pauseReason = (err as { pauseReason?: string })?.pauseReason;
@@ -426,6 +435,7 @@ export class PowerClerkAdapter extends BasePortalAdapter {
     if (!this.page) return fail("Not logged in. Call login() first.");
     const page = this.page;
     const uploaded: string[] = [];
+    const failed: string[] = [];
 
     try {
       // The document step has labelled file inputs. Classify each file by name.
@@ -436,24 +446,35 @@ export class PowerClerkAdapter extends BasePortalAdapter {
       const sitePlan = byKeyword(["site", "plot", "plan"]);
       const inverterSpec = byKeyword(["inverter", "spec"]);
 
-      if (sld) {
-        await page.getByLabel("One-Line Electrical Diagram").setInputFiles(sld);
-        uploaded.push(path.basename(sld));
-      }
-      if (sitePlan) {
-        await page.getByLabel("Site Plan", { exact: true }).setInputFiles(sitePlan);
-        uploaded.push(path.basename(sitePlan));
-      }
-      if (inverterSpec) {
-        await page.getByLabel("Inverter Technical").setInputFiles(inverterSpec);
-        uploaded.push(path.basename(inverterSpec));
-      }
+      // Helper: set files on a labelled input and confirm the portal accepted them.
+      // PowerClerk typically shows the filename near the upload control after selection;
+      // if not visible, fall back to checking for an error class on the input container.
+      const setAndConfirm = async (_label: string, filePath: string, labelSelector: ReturnType<typeof page.getByLabel>): Promise<void> => {
+        await labelSelector.setInputFiles(filePath);
+        await page.waitForLoadState("networkidle", { timeout: 5000 }).catch(() => null);
+        // Look for an error indicator on the upload control's container.
+        const container = labelSelector.locator(".."); // parent element
+        const hasError = await container.locator("[class*=error],[class*=invalid],[class*=danger]").count()
+          .then((n: number) => n > 0).catch(() => false);
+        if (hasError) {
+          failed.push(path.basename(filePath));
+        } else {
+          uploaded.push(path.basename(filePath));
+        }
+      };
+
+      if (sld) await setAndConfirm("One-Line Electrical Diagram", sld, page.getByLabel("One-Line Electrical Diagram")).catch(() => { failed.push(path.basename(sld!)); });
+      if (sitePlan) await setAndConfirm("Site Plan", sitePlan, page.getByLabel("Site Plan", { exact: true })).catch(() => { failed.push(path.basename(sitePlan!)); });
+      if (inverterSpec) await setAndConfirm("Inverter Technical", inverterSpec, page.getByLabel("Inverter Technical")).catch(() => { failed.push(path.basename(inverterSpec!)); });
 
       await page.getByRole("button", { name: "Next" }).click().catch(() => null);
 
-      return ok(`Uploaded ${uploaded.length} document(s).`, { uploaded });
+      if (failed.length > 0 && uploaded.length === 0) {
+        return fail(`All ${failed.length} upload(s) failed.`, { uploaded, failed });
+      }
+      return ok(`Uploaded ${uploaded.length} document(s).`, { uploaded, failed });
     } catch (err) {
-      return fail(`uploadFiles failed: ${err instanceof Error ? err.message : String(err)}`, { uploaded });
+      return fail(`uploadFiles failed: ${err instanceof Error ? err.message : String(err)}`, { uploaded, failed });
     }
   }
 
@@ -470,6 +491,10 @@ export class PowerClerkAdapter extends BasePortalAdapter {
 
       const blockerCount = reviewerReport?.findings.filter((f) => f.severity === "blocker").length ?? 0;
 
+      // Compare what the PowerClerk review page shows against the project record.
+      const reviewFields = await scrapeReviewScreen(this.page).catch(() => []);
+      const reviewMismatches = compareReviewFields(reviewFields, project);
+
       return ok(HUMAN_REVIEW_MESSAGE, {
         projectId: project.id,
         portalReviewUrl: this.page.url(),
@@ -478,6 +503,8 @@ export class PowerClerkAdapter extends BasePortalAdapter {
         finalSubmitButtonAloneIsEnough: reviewerReport?.finalSubmitGate.finalSubmitButtonAloneIsEnough ?? false,
         internalFinalReviewPacketRequired: true,
         finalReviewPacketUrl: `/api/projects/${project.id}/reviewer-report?format=html`,
+        reviewMismatches,
+        reviewAccurate: reviewMismatches.length === 0,
         nextHumanAction:
           "The browser is staged at the PowerClerk final review screen with terms accepted. Verify all fields, arrays, and attachments, then click Submit manually. AUTOMATION HAS STOPPED.",
       });

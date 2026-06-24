@@ -4,6 +4,7 @@ import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, type PortalContext, type Porta
 import { openPortal } from "../browser";
 import { fillCustomCombobox } from "../comboboxFill";
 import { detectChallengeFrame, redactStatusText, safeAction, sleep, smartWait, waitForElement } from "../safeAction";
+import { scrapeReviewScreen as scrapeReviewScreenShared } from "../reviewScreenScraper";
 import { performLogin } from "./loginFlow";
 
 // AutoLearnAdapter — AUTONOMOUSLY learns an unknown AHJ/utility portal form instead of
@@ -951,60 +952,14 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     return isPayFee(field.label) || isPayFee(sel?.name) || isPayFee(sel?.text);
   }
 
-  // Scrape visible label/value pairs on the review screen. Values are redacted. Best
-  // effort: reads input/select/textarea current values plus their derived labels.
+  // Scrape visible label/value pairs on the review screen. Delegates to the shared
+  // utility in reviewScreenScraper.ts so the same logic serves all adapters.
   private async scrapeReviewScreen(): Promise<LearnResult["reviewScreen"]> {
     if (!this.page) return { fields: [], bodyTextSnippet: "" };
-    const pairs: Array<{ label: string; value: string }> = await this.page
-      .$$eval("input, select, textarea", (els: Element[]) => {
-        function labelFor(el: Element): string {
-          const id = el.getAttribute("id");
-          if (id) {
-            const lbl = document.querySelector(`label[for="${CSS.escape(id)}"]`);
-            if (lbl && lbl.textContent) return lbl.textContent.trim();
-          }
-          const parentLabel = el.closest("label");
-          if (parentLabel && parentLabel.textContent) {
-            const t = parentLabel.textContent.trim();
-            if (t) return t;
-          }
-          return (
-            el.getAttribute("aria-label") ||
-            el.getAttribute("placeholder") ||
-            el.getAttribute("name") ||
-            ""
-          ).trim();
-        }
-        const out: Array<{ label: string; value: string }> = [];
-        for (const el of els) {
-          const tag = el.tagName.toLowerCase();
-          const typeAttr = (el.getAttribute("type") || "").toLowerCase();
-          if (tag === "input" && (typeAttr === "hidden" || typeAttr === "password" || typeAttr === "file")) continue;
-          let value = "";
-          if (tag === "select") {
-            const sel = el as HTMLSelectElement;
-            const opt = sel.selectedOptions && sel.selectedOptions[0];
-            value = opt ? (opt.textContent || "").trim() : sel.value;
-          } else {
-            value = (el as HTMLInputElement).value || "";
-          }
-          if (!value) continue;
-          const label = labelFor(el);
-          out.push({ label, value });
-        }
-        return out;
-      })
-      .catch(() => [] as Array<{ label: string; value: string }>);
-
-    const redactedFields = pairs.map((p) => ({
-      label: p.label,
-      value: redactStatusText(p.value) ?? "",
-    }));
-
-    const rawBody = await this.page!.locator("body").innerText().catch(() => "");
+    const fields = await scrapeReviewScreenShared(this.page);
+    const rawBody = await this.page.locator("body").innerText().catch(() => "");
     const bodyTextSnippet = (redactStatusText(String(rawBody)) ?? "").slice(0, 2000);
-
-    return { fields: redactedFields, bodyTextSnippet };
+    return { fields, bodyTextSnippet };
   }
 
   // --- PortalAdapter interface (minimal — learn() is the real entrypoint) ---

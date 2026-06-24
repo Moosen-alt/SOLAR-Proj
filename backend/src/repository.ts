@@ -4636,6 +4636,47 @@ function extractStageFailureMessage(result: Record<string, unknown>): string {
   return firstLine.slice(0, 300) || "Portal run failed before reaching review.";
 }
 
+// Check that a project record has the portal-specific fields required to run the adapter.
+// Returns a list of human-readable missing field labels (empty = all good).
+// This runs BEFORE any Playwright browser opens so failures surface cheaply.
+function validatePortalFields(
+  project: ProjectRecord,
+  track: SubmittalTrackType | undefined,
+  adapterActorName: string,
+): string[] {
+  const missing: string[] = [];
+  const req = (label: string, value: unknown) => {
+    if (!hasValue(value)) missing.push(label);
+  };
+
+  // Fields every portal needs regardless of platform.
+  req("Homeowner name", project.homeownerName);
+  req("Project address", project.projectAddress);
+
+  // NEM / utility portal (PowerClerk).
+  const isNem = track === "nem" || adapterActorName === "PowerClerkAdapter";
+  if (isNem) {
+    req("Utility account number", project.accountNumber);
+    req("Meter number", project.meterNumber);
+    req("DC system size (kW)", project.systemSizeDcKw);
+    req("AC system size (kW)", project.systemSizeAcKw);
+    req("Utility", project.utility);
+  }
+
+  // AHJ permit portal (Accela / Recipe).
+  const isPermit = !isNem && adapterActorName !== "MockPortalAdapter";
+  if (isPermit) {
+    req("DC system size (kW)", project.systemSizeDcKw);
+    req("AHJ", project.ahj);
+    // permitType drives Accela's residential-electrical vs. residential-structural path.
+    if (adapterActorName === "OregonEPermittingAdapter") {
+      req("Permit type (structural or electrical)", project.permitType);
+    }
+  }
+
+  return missing;
+}
+
 export async function prepareSubmission(db: AppDb, projectId: string, track?: SubmittalTrackType, autoSubmit?: boolean): Promise<ProjectDetail> {
   const detail = getProjectDetail(db, projectId);
   const failCount = detail.qcResults.filter((result) => result.qcStatus === "fail").length;
@@ -4772,6 +4813,18 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
       : recipe
         ? "RecipeAdapter"
         : "MockPortalAdapter";
+
+  // PORTAL FIELD GATE: before opening a browser, verify that the project has the
+  // fields each portal requires. This catches "forgot to enter the meter number"
+  // before a Playwright session starts, surfacing a clear blocker to the operator.
+  const missingPortalFields = validatePortalFields(detail.project, track, adapterActorName);
+  if (missingPortalFields.length > 0) {
+    throw new HttpError(409,
+      `Submission staging blocked: required portal field(s) missing — ${missingPortalFields.join("; ")}. Complete the project record before staging.`,
+      { missingPortalFields },
+    );
+  }
+
   // Resolve stored credentials for session-expired auto-login. Passed
   // in-memory to the adapter; never logged. Falls back gracefully when
   // no credential has been stored for this client+portal combination.

@@ -1970,6 +1970,20 @@ function applyAutopilotState(s) {
           ? `Blocked: ${s.blockers.map((b) => b.detail).join("; ")}`
           : "Available once the project is staged to the portal review screen.");
   }
+  // Show review-screen mismatch warning when the portal form doesn't match the project.
+  const banner = $("reviewMismatchBanner");
+  const mismatchList = $("reviewMismatchList");
+  if (banner && mismatchList) {
+    const mismatches = Array.isArray(s.reviewMismatches) ? s.reviewMismatches : [];
+    if (mismatches.length > 0 && s.phase === "awaiting_approval") {
+      mismatchList.textContent = mismatches
+        .map((m) => `${m.field}: expected "${m.expected}" — portal shows "${m.found}"`)
+        .join(" | ");
+      banner.style.display = "";
+    } else {
+      banner.style.display = "none";
+    }
+  }
 }
 
 async function refreshAutopilot() {

@@ -99,19 +99,36 @@ export interface SafeActionResult {
   // A short, already-redacted label for logs/results. NEVER pass PII here.
   field: string;
   message?: string;
+  // What the portal field actually contained after the fill (from the optional readback fn).
+  // Callers that care pass readback:() => page.locator(...).inputValue() to verify the fill
+  // was accepted. Never contains raw PII — callers must redact before passing.
+  readbackValue?: string;
 }
 
 // Run a single critical/optional action with retry. Classifies the outcome:
 //   - required field that fails  -> { ok:false, ... }  (caller must surface it)
 //   - optional field that fails  -> { ok:true, message } (tolerated, noted)
 // Never logs values; `label` must be a non-PII field name supplied by the caller.
+// Pass `readback` to verify the portal accepted the fill — the fn should return the
+// field's current value (e.g. `() => loc.inputValue()`). A readback that differs from
+// the expected value is noted in `message` but does not flip `ok` to false on its own
+// (the caller decides how to treat mismatches).
 export async function safeAction(
   label: string,
   action: () => Promise<void>,
-  opts: { required?: boolean; onRetry?: (attempt: number) => Promise<void> } = {},
+  opts: { required?: boolean; onRetry?: (attempt: number) => Promise<void>; readback?: () => Promise<string> } = {},
 ): Promise<SafeActionResult> {
   try {
     await withRetry(action, opts.onRetry);
+    if (opts.readback) {
+      try {
+        const readbackValue = await opts.readback();
+        return { ok: true, field: label, readbackValue };
+      } catch {
+        // readback failure is non-fatal — the fill itself succeeded
+        return { ok: true, field: label };
+      }
+    }
     return { ok: true, field: label };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

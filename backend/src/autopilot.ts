@@ -49,6 +49,12 @@ export interface AutopilotBlocker {
   detail: string;
 }
 
+export interface ReviewMismatch {
+  field: string;
+  expected: string;
+  found: string;
+}
+
 export interface AutopilotState {
   projectId: string;
   phase: AutopilotPhase;
@@ -59,6 +65,9 @@ export interface AutopilotState {
   pauseReason: string | null;
   portalRunId: string | null;
   updatedAt: string;
+  // Review-screen comparison: fields the portal shows vs. the project record.
+  reviewMismatches: ReviewMismatch[];
+  reviewAccurate: boolean | null;
 }
 
 const PRE_STAGE_STATUSES = new Set([
@@ -115,6 +124,35 @@ function awaitingPortalRun(db: AppDb, projectId: string, track?: SubmittalTrackT
   return db.get<Row>(sql, params);
 }
 
+// Extract review-screen mismatches from a portal_run's result_json. The adapter stores
+// reviewMismatches + reviewAccurate in the stopAtReview step's data payload.
+function reviewInfoFromRun(run: Row | null): { reviewMismatches: ReviewMismatch[]; reviewAccurate: boolean | null } {
+  const empty = { reviewMismatches: [], reviewAccurate: null };
+  if (!run?.result_json) return empty;
+  try {
+    const result = JSON.parse(String(run.result_json)) as Record<string, unknown>;
+    // result_json shape: { steps: [{ok, data: {reviewMismatches, reviewAccurate}}] }
+    const steps = Array.isArray(result.steps) ? result.steps as Array<Record<string, unknown>> : [];
+    for (const step of steps) {
+      const data = step.data as Record<string, unknown> | undefined;
+      if (data && Array.isArray(data.reviewMismatches)) {
+        return {
+          reviewMismatches: data.reviewMismatches as ReviewMismatch[],
+          reviewAccurate: typeof data.reviewAccurate === "boolean" ? data.reviewAccurate : null,
+        };
+      }
+    }
+    // Also check top-level (some portal results flatten the step data).
+    if (Array.isArray(result.reviewMismatches)) {
+      return {
+        reviewMismatches: result.reviewMismatches as ReviewMismatch[],
+        reviewAccurate: typeof result.reviewAccurate === "boolean" ? result.reviewAccurate : null,
+      };
+    }
+  } catch { /* ignore parse errors */ }
+  return empty;
+}
+
 // Derive the current autopilot snapshot for the UI from the project status, the
 // latest portal run, and the latest autopilot job result. No dedicated table —
 // the state machine is a pure function of state we already persist.
@@ -124,6 +162,7 @@ export function getAutopilotState(db: AppDb, projectId: string): AutopilotState 
   const ts = project.updatedAt || nowIso();
   const run = latestPortalRun(db, projectId);
   const pauseReason = run && typeof run.pause_reason === "string" && run.pause_reason ? String(run.pause_reason) : null;
+  const noReview = { reviewMismatches: [] as ReviewMismatch[], reviewAccurate: null as boolean | null };
 
   // A run that paused mid-fill for MFA/CAPTCHA needs a human at the browser.
   if (pauseReason) {
@@ -131,19 +170,22 @@ export function getAutopilotState(db: AppDb, projectId: string): AutopilotState 
       projectId, phase: "paused_for_human", stage: "Portal paused for human",
       message: "Portal run paused for MFA/CAPTCHA. A human must complete the challenge.",
       blockers: [], canApprove: false, pauseReason, portalRunId: run ? String(run.id) : null, updatedAt: ts,
+      ...noReview,
     };
   }
 
   if (project.status === "submitted" || project.status === "ready_for_issue" || project.status === "issued" || project.status === "nem_approved" || project.status === "handoff_ready") {
-    return { projectId, phase: "submitted", stage: "Submitted", message: "Filing submitted; tracking approval.", blockers: [], canApprove: false, pauseReason: null, portalRunId: run ? String(run.id) : null, updatedAt: ts };
+    return { projectId, phase: "submitted", stage: "Submitted", message: "Filing submitted; tracking approval.", blockers: [], canApprove: false, pauseReason: null, portalRunId: run ? String(run.id) : null, updatedAt: ts, ...noReview };
   }
 
   if (project.status === "awaiting_human_submit") {
     const blockers = reviewerBlockerList(project);
+    const reviewInfo = reviewInfoFromRun(run);
     return {
       projectId, phase: "awaiting_approval", stage: "Awaiting approval",
       message: blockers.length ? "Staged, but reviewer blockers must be cleared before approval." : "Staged to portal review. Click Approve & Submit to file.",
       blockers, canApprove: blockers.length === 0, pauseReason: null, portalRunId: run ? String(run.id) : null, updatedAt: ts,
+      ...reviewInfo,
     };
   }
 
@@ -155,18 +197,18 @@ export function getAutopilotState(db: AppDb, projectId: string): AutopilotState 
   if (job) {
     const status = String(job.status);
     if (status === "pending" || status === "running") {
-      return { projectId, phase: "running", stage: "Autopilot running", message: "Running QC → build → reviewer gate → stage.", blockers: [], canApprove: false, pauseReason: null, portalRunId: null, updatedAt: ts };
+      return { projectId, phase: "running", stage: "Autopilot running", message: "Running QC → build → reviewer gate → stage.", blockers: [], canApprove: false, pauseReason: null, portalRunId: null, updatedAt: ts, ...noReview };
     }
     const result = job.result ? (JSON.parse(String(job.result)) as { blocked?: boolean; blockers?: AutopilotBlocker[]; message?: string }) : null;
     if (result?.blocked) {
-      return { projectId, phase: "blocked", stage: "Blocked", message: result.message ?? "Autopilot stopped on a gate.", blockers: result.blockers ?? [], canApprove: false, pauseReason: null, portalRunId: null, updatedAt: ts };
+      return { projectId, phase: "blocked", stage: "Blocked", message: result.message ?? "Autopilot stopped on a gate.", blockers: result.blockers ?? [], canApprove: false, pauseReason: null, portalRunId: null, updatedAt: ts, ...noReview };
     }
     if (status === "failed") {
-      return { projectId, phase: "failed", stage: "Failed", message: job.error ? String(job.error) : "Autopilot run failed.", blockers: [], canApprove: false, pauseReason: null, portalRunId: null, updatedAt: ts };
+      return { projectId, phase: "failed", stage: "Failed", message: job.error ? String(job.error) : "Autopilot run failed.", blockers: [], canApprove: false, pauseReason: null, portalRunId: null, updatedAt: ts, ...noReview };
     }
   }
 
-  return { projectId, phase: "idle", stage: "Idle", message: "Autopilot has not been started for this project.", blockers: [], canApprove: false, pauseReason: null, portalRunId: null, updatedAt: ts };
+  return { projectId, phase: "idle", stage: "Idle", message: "Autopilot has not been started for this project.", blockers: [], canApprove: false, pauseReason: null, portalRunId: null, updatedAt: ts, ...noReview };
 }
 
 // SEGMENT A — drive the project automatically to the approval gate. Reuses the
