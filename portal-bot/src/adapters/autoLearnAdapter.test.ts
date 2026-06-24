@@ -388,6 +388,58 @@ async function testMultiPageAdvance() {
   assert.ok(result.reviewScreen.fields.length >= 1, "review screen fields scraped");
 }
 
+// 5b) Progress callback fires per page and at review (drives the UI progress bar).
+async function testProgressEmitted() {
+  const log: ActionLog = { clicks: [], fills: [], selects: [], checks: [] };
+  let call = 0;
+  const planner: LearnPlanner = async (): Promise<LearnPlanResponse> => {
+    call++;
+    if (call === 1) return { fills: [{ selectorIndex: 0, value: "John", field: "homeownerName" }], advanceSelectorIndex: 1, atReview: false };
+    return { fills: [{ selectorIndex: 0, value: "240", field: "systemSize" }], atReview: true };
+  };
+  const progress: Array<{ phase: string; pageCount: number; classification?: string }> = [];
+  const adapter = new AutoLearnAdapter("Test AHJ", planner, {
+    onProgress: (p) => progress.push({ phase: p.phase, pageCount: p.pageCount, classification: p.classification }),
+  });
+  withFakePage(
+    adapter,
+    makeFakePage(
+      {
+        pages: [
+          {
+            url: "https://portal.example/p1",
+            title: "Page 1",
+            body: "Step 1",
+            rawFields: [
+              { label: "Homeowner Name", fieldType: "text", id: "hn" },
+              { label: "Next", fieldType: "button", role: "button", text: "Next" },
+            ],
+          },
+          {
+            url: "https://portal.example/p2",
+            title: "Page 2",
+            body: "Step 2",
+            rawFields: [{ label: "System Size", fieldType: "text", id: "ss" }],
+            reviewPairs: [{ label: "Homeowner Name", value: "John" }],
+          },
+        ],
+      },
+      log,
+    ),
+  );
+
+  const result = await adapter.learn(fakeContext, fakeProject);
+  assert.equal(result.ok, true);
+  // One progress signal per page visited (2), the second classified as review.
+  assert.ok(progress.length >= 2, `expected ≥2 progress signals, got ${progress.length}`);
+  assert.equal(progress[0].pageCount, 1, "first progress is page 1");
+  assert.ok(progress.some((p) => p.phase === "review"), "a review-phase progress signal is emitted");
+  // Page counters never go backwards (the bar advances monotonically).
+  for (let i = 1; i < progress.length; i++) {
+    assert.ok(progress[i].pageCount >= progress[i - 1].pageCount, "pageCount is monotonic");
+  }
+}
+
 // 6) Sensitive fields don't store literal values.
 async function testSensitiveFieldsRedacted() {
   const log: ActionLog = { clicks: [], fills: [], selects: [], checks: [] };
@@ -584,6 +636,7 @@ const tests: Array<[string, () => Promise<void>]> = [
   ["a pay/fee button returned by the planner is never clicked", testPayFeeButtonNeverClicked],
   ["a challenge frame stops the run with pauseReason mfa_captcha", testChallengeStopsRun],
   ["multi-page advance clicks Next, continues, stops at review", testMultiPageAdvance],
+  ["progress callback fires per page and at review", testProgressEmitted],
   ["sensitive fields don't store literal values", testSensitiveFieldsRedacted],
   ["ACCELA TRAP: Continue Application on review page recorded, never clicked", testAccelaContinueApplicationNeverClicked],
 ];

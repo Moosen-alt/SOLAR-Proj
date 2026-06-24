@@ -317,9 +317,11 @@ export async function learnPortal(input: {
   // "combined" (AHJ/Accela) attaches the full plan-set PDF to every upload control;
   // "split" (utility/PowerClerk) attaches the matching split sheet per control. Default split.
   uploadMode?: "split" | "combined";
+  // Optional live-progress sink so callers can drive a UI progress bar. Non-PII signals only.
+  onProgress?: import("./adapters/autoLearnAdapter").LearnProgressFn;
 }): Promise<import("./adapters/autoLearnAdapter").LearnResult> {
   const { AutoLearnAdapter } = await import("./adapters/autoLearnAdapter");
-  const adapter = new AutoLearnAdapter(input.portalName, input.planner, { maxPages: input.maxPages, docsByType: input.docsByType, uploadMode: input.uploadMode });
+  const adapter = new AutoLearnAdapter(input.portalName, input.planner, { maxPages: input.maxPages, docsByType: input.docsByType, uploadMode: input.uploadMode, onProgress: input.onProgress });
   let tmpStatePath: string | undefined;
   try {
     tmpStatePath = resolveStorageStatePath(input.encryptedStorageStatePath);
@@ -342,6 +344,12 @@ export async function learnPortal(input: {
         message: loginResult.message,
       };
     }
+    input.onProgress?.({
+      phase: "login",
+      pageCount: 0,
+      maxPages: input.maxPages ?? 18,
+      message: "Logged in — opening the application…",
+    });
     return await adapter.learn(
       { storageStatePath: tmpStatePath, headless: input.headless, credential: input.credential, userDataDir: input.userDataDir, startUrl: input.portalUrl },
       input.project,

@@ -93,6 +93,20 @@ export interface LearnResult {
   reviewScreenshotBase64?: string;
 }
 
+// Live progress signal emitted while learning a portal, so the UI can show a real
+// progress bar instead of a static "learning…" spinner. Carries no PII — only phase,
+// page counters, a coarse classification, and a short human-readable message.
+export interface LearnProgress {
+  phase: "login" | "page" | "review" | "verify" | "done";
+  pageCount: number;
+  maxPages: number;
+  classification?: "form" | "dashboard" | "review" | "empty";
+  fillsPlanned?: number;
+  message: string;
+}
+
+export type LearnProgressFn = (p: LearnProgress) => void;
+
 // ---------------------------------------------------------------------------
 // Safety classifiers (shared shape with recipeAdapter's gate).
 // ---------------------------------------------------------------------------
@@ -352,13 +366,24 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   // Construction" attachment, so splitting would attach the wrong (partial) document.
   private uploadMode: "split" | "combined";
 
+  // Optional progress sink — called at each page/phase so callers can drive a UI bar.
+  // Wrapped so a throwing callback can never break the learn loop.
+  private onProgress?: LearnProgressFn;
+
   constructor(
     portalName: string,
     private planner: LearnPlanner,
-    private options: { maxPages?: number; autoSubmit?: false; docsByType?: Record<string, string>; uploadMode?: "split" | "combined" } = {},
+    private options: {
+      maxPages?: number;
+      autoSubmit?: false;
+      docsByType?: Record<string, string>;
+      uploadMode?: "split" | "combined";
+      onProgress?: LearnProgressFn;
+    } = {},
   ) {
     super();
     this.portalName = portalName;
+    this.onProgress = options.onProgress;
     // Default page budget. Multi-step utility/permit wizards (PowerClerk NEM, Accela)
     // routinely run 10-15 input steps before the review screen, so 8 was too low — it
     // capped out mid-form. The stuck-page guard + review detection bound the loop, so a
@@ -437,6 +462,13 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   }
 
   // --- the real entrypoint --------------------------------------------------
+  // Emit a progress signal, swallowing any callback error so UI plumbing can never
+  // interfere with the learn run itself.
+  private emitProgress(p: LearnProgress): void {
+    if (!this.onProgress) return;
+    try { this.onProgress(p); } catch { /* progress sink must never break the run */ }
+  }
+
   async learn(context: PortalContext, _project: ProjectRecord): Promise<LearnResult> {
     const steps: RecipeStep[] = [];
     const alreadyFilledLabels: string[] = [];
@@ -632,6 +664,28 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           `plan:nav=${plan.navigateSelectorIndex ?? "-"} adv=${plan.advanceSelectorIndex ?? "-"} ` +
           `fills=${(plan.fills ?? []).length} review=${plan.atReview}`,
         );
+
+        // Live progress for the UI — a short, non-PII description of this page. The
+        // review phase is driven by the planner's atReview (or a structural review page),
+        // even if the screen still carries a trailing field (e.g. a terms checkbox).
+        const plannedFills = (plan.fills ?? []).length;
+        const atReview = plan.atReview || cls === "review";
+        const progressMsg =
+          atReview
+            ? "Review screen reached — checking the filled values…"
+            : cls === "dashboard"
+              ? `Navigating to the application form (step ${pageCount})…`
+              : cls === "form"
+                ? `Filling step ${pageCount}${plannedFills ? ` — ${plannedFills} field${plannedFills === 1 ? "" : "s"}` : ""}…`
+                : `Reading step ${pageCount}…`;
+        this.emitProgress({
+          phase: atReview ? "review" : "page",
+          pageCount,
+          maxPages: this.maxPages,
+          classification: cls,
+          fillsPlanned: plannedFills,
+          message: progressMsg,
+        });
       }
 
       // c3) DASHBOARD NAVIGATION — click a link/button to get from the portal home to the

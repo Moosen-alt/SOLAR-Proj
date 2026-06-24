@@ -954,8 +954,26 @@ app.post("/api/projects/:id/auto-learn", asyncHandler(async (req, res) => {
   const scope = b.scope === "utility" || b.scope === "nem" ? "utility" : "ahj";
   const portalUrl = (b.portalUrl || "").trim();
   if (!portalUrl) throw new HttpError(400, "portalUrl is required to auto-learn a portal.");
+  const projectId = String(req.params.id);
+  // Stream learning progress to the dashboard so it can show a real progress bar
+  // instead of a static spinner. Coarse phase→percent so the bar advances monotonically
+  // without needing to know the total page count up front.
+  const onProgress: import("../../portal-bot/src/adapters/autoLearnAdapter").LearnProgressFn = (p) => {
+    const percent =
+      p.phase === "login" ? 8
+        : p.phase === "page" ? Math.min(82, 12 + p.pageCount * 12)
+          : p.phase === "review" ? 90
+            : p.phase === "verify" ? 96
+              : 100;
+    sseBroadcast({
+      type: "autolearn_progress",
+      projectId,
+      message: p.message,
+      data: { phase: p.phase, percent, pageCount: p.pageCount, maxPages: p.maxPages, classification: p.classification ?? null },
+    });
+  };
   try {
-    const result = await autoLearnPortal(db, String(req.params.id), { scope, portalUrl, createdBy: b.createdBy ?? "operator", permitType: b.permitType });
+    const result = await autoLearnPortal(db, projectId, { scope, portalUrl, createdBy: b.createdBy ?? "operator", permitType: b.permitType, onProgress });
     res.json(result);
   } catch (err) {
     throw normalizeLlmError(err);

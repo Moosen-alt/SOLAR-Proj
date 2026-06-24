@@ -1473,6 +1473,38 @@ async function launchTrackRecorder(trackType, scope, btn) {
   }
 }
 
+// Render the auto-learn progress bar into the status element. Progress is driven by
+// `autolearn_progress` SSE events streamed while the bot works (see connectSse).
+function renderAutoLearnProgress(statusEl, initialMsg) {
+  statusEl.style.display = "";
+  statusEl.className = "";
+  statusEl.innerHTML =
+    '<div style="margin-top:4px">' +
+      '<div id="autoLearnProgressLabel" style="font-size:12px"></div>' +
+      '<div style="height:8px;background:var(--border,#e5e7eb);border-radius:999px;overflow:hidden;margin-top:6px">' +
+        '<div id="autoLearnProgressFill" style="height:100%;width:6%;background:var(--info,#3b82f6);border-radius:999px;transition:width .4s ease"></div>' +
+      '</div>' +
+      '<div id="autoLearnProgressPct" style="font-size:11px;color:var(--muted,#6b7280);margin-top:3px">6%</div>' +
+    '</div>';
+  const label = $("autoLearnProgressLabel");
+  if (label) label.textContent = initialMsg;
+}
+
+// Advance the bar. percent clamps to [0,100]; message updates the label. No-op if the
+// bar isn't mounted (run already finished and the verdict replaced it).
+function updateAutoLearnProgress(percent, message) {
+  const fill = $("autoLearnProgressFill");
+  const label = $("autoLearnProgressLabel");
+  const pct = $("autoLearnProgressPct");
+  if (!fill) return;
+  if (typeof percent === "number") {
+    const clamped = Math.max(0, Math.min(100, percent));
+    fill.style.width = clamped + "%";
+    if (pct) pct.textContent = Math.round(clamped) + "%";
+  }
+  if (label && message) label.textContent = message;
+}
+
 // Auto-learn: the bot fills the portal to the review screen, records a recipe, and
 // verifies the fill — no human recording needed. Never submits (operator approves that).
 async function autoLearnPortalUI() {
@@ -1486,7 +1518,7 @@ async function autoLearnPortalUI() {
   const btn = $("autoLearnBtn");
   const statusEl = $("autoLearnStatus");
   if (btn) btn.disabled = true;
-  if (statusEl) { statusEl.style.display = ""; statusEl.textContent = "Learning the portal — logging in, filling the form to the review screen…"; statusEl.className = "muted"; }
+  if (statusEl) renderAutoLearnProgress(statusEl, "Starting — opening a browser and logging in…");
   try {
     const res = await api(`/api/projects/${p.id}/auto-learn`, { method: "POST", body: JSON.stringify({ scope, portalUrl: url }) });
     const v = res.verification || {};
@@ -5398,6 +5430,17 @@ function connectSse() {
       } catch { /* malformed event — ignore */ }
     });
   }
+  // Auto-learn progress drives the inline bar only — no toast, no badge, no refetch
+  // (it fires several times per run). Applied only when the run's project is open and
+  // the bar is currently mounted.
+  es.addEventListener("autolearn_progress", (ev) => {
+    try {
+      const evt = JSON.parse(ev.data);
+      if (evt.projectId && state.selectedProjectId === evt.projectId) {
+        updateAutoLearnProgress(evt.data && evt.data.percent, evt.message);
+      }
+    } catch { /* malformed event — ignore */ }
+  });
   es.onerror = () => {
     es.close();
     // Reconnect after a short delay so a server restart doesn't leave the tab deaf.

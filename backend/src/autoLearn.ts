@@ -63,7 +63,14 @@ export interface AutoLearnResult {
 export async function autoLearnPortal(
   db: AppDb,
   projectId: string,
-  input: { scope: "ahj" | "utility"; portalUrl: string; createdBy?: string; permitType?: "structural" | "electrical" },
+  input: {
+    scope: "ahj" | "utility";
+    portalUrl: string;
+    createdBy?: string;
+    permitType?: "structural" | "electrical";
+    // Optional live-progress sink (drives the UI progress bar). Non-PII signals only.
+    onProgress?: import("../../portal-bot/src/adapters/autoLearnAdapter").LearnProgressFn;
+  },
 ): Promise<AutoLearnResult> {
   const projectRow = db.get<Record<string, unknown>>("SELECT * FROM projects WHERE id = ?", [projectId]);
   if (!projectRow) throw new HttpError(404, "Project not found.");
@@ -183,6 +190,7 @@ export async function autoLearnPortal(
       // AHJ portals (Accela / Oregon ePermitting) require one combined plan-set PDF per
       // upload control; utility portals (PowerClerk) want the split sheets per slot.
       uploadMode: scopeType === "ahj" ? "combined" : "split",
+      onProgress: input.onProgress,
     }));
   } catch (err) {
     throw new HttpError(502, `Portal learn failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -212,6 +220,12 @@ export async function autoLearnPortal(
   }
 
   // VERIFY the fill against the project data before trusting the recipe.
+  input.onProgress?.({
+    phase: "verify",
+    pageCount: learn.pageCount,
+    maxPages: learn.pageCount,
+    message: "Verifying the filled values against the project record…",
+  });
   const verification = await llm.verifyPortalFill({
     reviewFields: learn.reviewScreen.fields,
     projectFields,
