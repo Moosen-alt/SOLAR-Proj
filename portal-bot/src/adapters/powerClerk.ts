@@ -265,7 +265,11 @@ export class PowerClerkAdapter extends BasePortalAdapter {
     if (!page || typeof page.waitForFunction !== "function") return true;
     const dbg = process.env.POWERCLERK_DEBUG === "1";
     const timeoutMs = opts.timeoutMs ?? (Number(process.env.POWERCLERK_SECTION_READY_MS) || 12000);
-    await page.waitForLoadState("networkidle", { timeout: Math.min(timeoutMs, 15000) }).catch(() => null);
+    // networkidle is just a pre-wait — cap it well under the section budget so the interactivity
+    // poll (the real readiness signal) always gets the bulk of `timeoutMs`. On a data section
+    // networkidle resolves in 1-2s anyway; the old min(timeoutMs,15000) cap never bit at the 12s
+    // default and could starve the poll if the env override was raised.
+    await page.waitForLoadState("networkidle", { timeout: Math.min(timeoutMs, 8000) }).catch(() => null);
     await clearPowerClerkOverlays(page);
     // 1. Wait for the SPA to mount at least one interactive, fillable control — proof the
     //    section actually rendered (networkidle alone doesn't mean Vue finished mounting).
@@ -305,6 +309,43 @@ export class PowerClerkAdapter extends BasePortalAdapter {
     return interactive;
   }
 
+  // Returns true only when the current page is the first DATA section (the Preparer/contact
+  // form), false while it is still a pure intro/instruction/disclaimer page. This drives the
+  // openSubmission Next loop so it stops the instant the real form is up and never advances
+  // past it. CRITICAL: a lone "I have read / I agree" acknowledgment checkbox or a single
+  // language/program <select> on a disclaimer page must NOT count as "reached data" — otherwise
+  // the loop breaks ON the intro page and fillApplication types onto the wrong section (the
+  // exact "walks the wizard but fills nothing" bug). So the signal is: the expected section
+  // heading is visible, OR a real data FORM (≥2 visible text-like inputs) has mounted — never a
+  // single stray control. A short, dedicated timeout (vs the 12s section budget) keeps a pure
+  // intro page — which will never mount a data form — from burning the full budget per page.
+  private async dataSectionReached(anchor: RegExp, timeoutMs: number): Promise<boolean> {
+    const page = this.page;
+    if (!page || typeof page.waitForFunction !== "function") return true;
+    await page.waitForLoadState("networkidle", { timeout: Math.min(timeoutMs, 4000) }).catch(() => null);
+    await clearPowerClerkOverlays(page);
+    // Strong signal: the expected data-section heading is on screen (renders with/just before
+    // its inputs). Poll up to the full short budget — this is the dominant cost on a pure intro
+    // page, where it correctly never resolves and we fall through to the form-shape check.
+    const anchorVisible = await page.getByText(anchor).first()
+      .waitFor({ state: "visible", timeout: timeoutMs }).then(() => true).catch(() => false);
+    if (anchorVisible) return true;
+    // Fallback (live heading wording may drift from the regex): a genuine data form has two or
+    // more visible, enabled text-like inputs. A disclaimer page's lone checkbox/select fails
+    // this, so the loop keeps clicking Next instead of stranding on the acknowledgment page.
+    return await page.evaluate(() => {
+      const vis = (el: Element): boolean => {
+        const r = (el as HTMLElement).getBoundingClientRect();
+        const st = window.getComputedStyle(el as HTMLElement);
+        return r.width > 0 && r.height > 0 && st.visibility !== "hidden" && st.display !== "none";
+      };
+      const textInputs = Array.from(document.querySelectorAll(
+        "input:not([type=hidden]):not([type=checkbox]):not([type=radio]):not([type=button]):not([type=submit]):not([type=reset]):not([disabled]):not([readonly]), textarea:not([disabled])",
+      )).filter(vis);
+      return textInputs.length >= 2;
+    }).catch(() => false);
+  }
+
   // ---------------------------------------------------------------------------
   // openSubmission — start a New Net Metering Application
   // ---------------------------------------------------------------------------
@@ -322,16 +363,21 @@ export class PowerClerkAdapter extends BasePortalAdapter {
       await page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => null);
 
       // The wizard opens on one or more intro/instruction pages (a Welcome page, sometimes a
-      // second disclaimer) that have NO fillable inputs — only a Next button. That count is NOT
-      // fixed across PGE program versions, and the old hardcoded "click Next twice" silently
-      // clicked PAST the first DATA page (Preparer) whenever there was only one intro page —
-      // leaving fillApplication to type onto the wrong sections and stage a blank application.
-      // Advance Next ONLY while the current page has no fillable inputs, and STOP the instant
-      // the first real section renders. waitForSectionReady returns true as soon as a fillable
-      // control mounts (data page) or false after its timeout on a pure intro page (no inputs).
+      // second disclaimer) that have NO data form — only a Next button, and sometimes an "I
+      // agree" acknowledgment checkbox. That count is NOT fixed across PGE program versions, and
+      // the old hardcoded "click Next twice" silently clicked PAST the first DATA page (Preparer)
+      // whenever there was only one intro page — leaving fillApplication to type onto the wrong
+      // sections and stage a blank application. Advance Next ONLY while the current page is still
+      // an intro page, and STOP the instant the first real DATA section renders. dataSectionReached
+      // is true only when the Preparer/contact heading is up OR a real ≥2-input form has mounted —
+      // a lone acknowledgment checkbox on a disclaimer page does NOT satisfy it, so the loop won't
+      // strand on the intro page (which would re-introduce the "fills nothing" bug).
       const MAX_INTRO_PAGES = 5;
+      const introProbeMs = Number(process.env.POWERCLERK_INTRO_PROBE_MS) || 3500;
+      const firstSection = /Preparer Information|Submitting Party|Installer|Contact Information/i;
+      let reachedData = false;
       for (let i = 0; i < MAX_INTRO_PAGES; i++) {
-        const reachedData = await this.waitForSectionReady(`intro/data probe ${i + 1}`);
+        reachedData = await this.dataSectionReached(firstSection, introProbeMs);
         if (reachedData) break; // first data section is up — do NOT click past it
         await clearPowerClerkOverlays(page);
         const next = page.getByRole("button", { name: "Next", exact: true })
@@ -339,6 +385,9 @@ export class PowerClerkAdapter extends BasePortalAdapter {
         if ((await next.count().catch(() => 0)) === 0) break; // nothing left to advance with
         await this.clickResilient(next, `Next (intro ${i + 1})`);
         await page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => null);
+      }
+      if (!reachedData && process.env.POWERCLERK_DEBUG === "1") {
+        console.error(`[powerclerk] openSubmission: did not reach the first data section after ${MAX_INTRO_PAGES} intro pages — fillApplication will surface required-field failures if it landed wrong.`);
       }
       return ok("New Net Metering Application started.", { projectId: project.id });
     } catch (err) {
