@@ -2,7 +2,7 @@ import type { PortalRecipe, ProjectRecord, RecipeSelector, RecipeStep } from "..
 import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, ok, fail, type PortalContext, type PortalStepResult } from "../adapter";
 import { openPortal } from "../browser";
 import { selectWithFallback } from "../comboboxFill";
-import { detectChallengeFrame, scanStatusFromBody, RETRY_BACKOFF_MS, sleep, smartWait, waitForElement } from "../safeAction";
+import { detectChallengeFrame, hasNumericValidationError, scanStatusFromBody, RETRY_BACKOFF_MS, sleep, smartWait, toBareNumber, waitForElement } from "../safeAction";
 import { performLogin } from "./loginFlow";
 
 // RecipeAdapter — replays a recorded portal recipe (see portal_recipes / the recorder).
@@ -267,6 +267,16 @@ export class RecipeAdapter extends BasePortalAdapter {
         // Blur to COMMIT the value into the portal's JS model (PowerClerk's Vue saves on
         // blur). Without it the field shows filled but never persists → blank draft.
         if (typeof scoped!.blur === "function") await scoped!.blur().catch(() => {});
+        // A data-bound value can carry a unit suffix ("225A") that a decimal field (e.g.
+        // PowerClerk "Amps") rejects with "Please enter a valid decimal number." Retry once
+        // with a bare number so replayed recipes don't re-introduce the invalid value.
+        if (await hasNumericValidationError(scoped)) {
+          const bare = toBareNumber(v);
+          if (bare && bare !== v) {
+            await scoped!.fill(bare);
+            if (typeof scoped!.blur === "function") await scoped!.blur().catch(() => {});
+          }
+        }
         return true;
       }
       case "select": {

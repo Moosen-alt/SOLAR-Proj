@@ -3,7 +3,7 @@ import type { ProjectRecord, RecipeSelector, RecipeStep } from "../../../shared/
 import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, type PortalContext, type PortalStepResult } from "../adapter";
 import { openPortal } from "../browser";
 import { selectWithFallback } from "../comboboxFill";
-import { detectChallengeFrame, redactStatusText, safeAction, sleep, smartWait, waitForElement } from "../safeAction";
+import { detectChallengeFrame, hasNumericValidationError, redactStatusText, safeAction, sleep, smartWait, toBareNumber, waitForElement } from "../safeAction";
 import { scrapeReviewScreen as scrapeReviewScreenShared } from "../reviewScreenScraper";
 import { performLogin } from "./loginFlow";
 
@@ -968,6 +968,9 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     const action: RecipeStep["action"] =
       field.fieldType === "select" ? "select" : field.fieldType === "checkbox" ? "check" : "fill";
 
+    // The value actually committed (may be sanitized below if the portal rejects it as a
+    // non-number); recorded so a literal step replays the value the portal accepted.
+    let filledValue = value;
     const res = await safeAction(
       // The label is non-PII enough for a log line, but keep it short.
       (field.label || field.fieldType).slice(0, 40),
@@ -988,6 +991,18 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           // saved model on blur — and PowerClerk autosaves per field. Without the blur the
           // value shows on screen but is never persisted, so the saved draft comes back blank.
           if (typeof loc.blur === "function") await loc.blur().catch(() => {});
+          // Decimal fields (e.g. PowerClerk's "Main Service Entrance Rating (Amps)") reject
+          // unit-suffixed values like "225A" with "Please enter a valid decimal number." When
+          // the portal flags the value as a non-number, retry once with a bare decimal so the
+          // run doesn't carry an invalid required field forward to the submit page.
+          if (await hasNumericValidationError(loc)) {
+            const bare = toBareNumber(value);
+            if (bare && bare !== value) {
+              await loc.fill(bare);
+              if (typeof loc.blur === "function") await loc.blur().catch(() => {});
+              filledValue = bare;
+            }
+          }
         }
       },
       { required: false },
@@ -1012,8 +1027,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       // Data-bound to a project/client field — resolved at replay time.
       step.field = fillReq.field;
     } else if (action !== "check") {
-      // A portal-literal value (dropdown option / fixed text).
-      step.value = value;
+      // A portal-literal value (dropdown option / fixed text) — the value the portal accepted.
+      step.value = filledValue;
     }
     return step;
   }

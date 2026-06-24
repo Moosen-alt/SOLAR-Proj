@@ -894,6 +894,9 @@ ELECTRICAL SERVICES PAGE (Accela "Residential - Electrical Comprehensive" and si
 DASHBOARD / HOME PAGES:
 - If isDashboard=true (no fillable inputs — only buttons and navigation links), the bot just logged in and landed on the portal home/dashboard. Your ONLY job is to return "navigateIndex": the index of the link or button that starts a new application / interconnection request / permit application. Look for labels like "New Application", "Start Application", "New Pacific Power Customer Generation Application", "Start New Project", "Apply Now", "Create Application", or a tab/link for the relevant program. Set fills=[], advanceIndex=omit, atReview=false, and ONLY navigateIndex. Do NOT treat any dashboard navigation link as advanceIndex.
 
+VALUE FORMATTING:
+- Numeric / decimal fields (amperage "Amps"/"(A)", kVA, kW, voltage, counts, ratings, quantities) take a BARE number with NO unit letters, symbols, or thousands separators — e.g. "225" not "225A", "8.6" not "8.6 kW". These are validated as plain decimals and reject unit suffixes.
+
 HARD SAFETY RULES:
 - NEVER choose a pay / payment / fee / checkout / invoice button as "advance", "navigate", or anything to click. Omit it entirely.
 - The final submit button is RECORDED ONLY (finalSubmitIndex) and is NEVER clicked — do not put it in advanceIndex.

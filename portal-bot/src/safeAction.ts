@@ -66,6 +66,35 @@ export async function scanStatusFromBody(page: Page, applicationNumbers: string[
   return redactStatusText(bodyText.slice(0, 600));
 }
 
+// Strip a value to a bare decimal number (digits, optional single decimal, optional leading
+// minus), dropping unit suffixes/symbols and thousands separators: "225A" -> "225",
+// "8.6 kW" -> "8.6", "1,200" -> "1200". Returns "" when there is no number to extract, so
+// callers can skip rather than blank a field.
+export function toBareNumber(value: string): string {
+  const match = String(value ?? "").match(/-?\d[\d,]*(?:\.\d+)?/);
+  return match ? match[0].replace(/,/g, "") : "";
+}
+
+// True when a visible inline validation message near this field complains the value is not a
+// valid number/decimal (e.g. PowerClerk's "Please enter a valid decimal number."). Walks a
+// few ancestors so it catches the message whether it sits beside or below the input.
+// Read-only; swallows its own errors.
+export async function hasNumericValidationError(loc: Locator): Promise<boolean> {
+  // Guard for test doubles / locators without a real evaluate(): treat as "no error".
+  if (!loc || typeof (loc as { evaluate?: unknown }).evaluate !== "function") return false;
+  return loc.evaluate((el: Element) => {
+    let node: Element | null = el;
+    for (let i = 0; i < 5 && node; i++) {
+      const parent: Element | null = node.parentElement;
+      if (!parent) break;
+      const txt = (parent.textContent || "").toLowerCase();
+      if (/valid (decimal|number)|enter a valid (decimal|number)|must be a (number|decimal)|not a valid number|numbers? only/.test(txt)) return true;
+      node = parent;
+    }
+    return false;
+  }).catch(() => false);
+}
+
 function isTimeout(err: unknown): boolean {
   return err instanceof Error && /timeout|TimeoutError/i.test(err.message);
 }
