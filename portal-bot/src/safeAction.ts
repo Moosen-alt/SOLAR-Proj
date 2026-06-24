@@ -99,31 +99,59 @@ export interface SafeActionResult {
   // A short, already-redacted label for logs/results. NEVER pass PII here.
   field: string;
   message?: string;
-  // What the portal field actually contained after the fill (from the optional readback fn).
-  // Callers that care pass readback:() => page.locator(...).inputValue() to verify the fill
-  // was accepted. Never contains raw PII — callers must redact before passing.
+  // True when a readback was performed AND the portal's value did not match the
+  // `expected` value supplied by the caller. Only meaningful when both `readback`
+  // and `expected` are passed; undefined otherwise.
+  readbackMismatch?: boolean;
+  // A redacted snippet of what the portal field actually contained after the fill,
+  // included only when a mismatch was detected (for operator diagnostics). Already
+  // run through redactStatusText — never raw PII.
   readbackValue?: string;
+}
+
+// Compare a portal read-back against the value we tried to fill. Normalizes both
+// (lowercase, strip non-alphanumerics) so formatting differences ("$1,000" vs "1000",
+// "7.5 kW" vs "7.5") don't register as mismatches. Empty expected = nothing to judge.
+function readbackMatches(actual: string, expected: string): boolean {
+  const n = (v: string) => v.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const a = n(actual);
+  const e = n(expected);
+  if (!e) return true; // no expected value to compare against
+  if (!a) return false; // expected something, portal shows nothing
+  return a === e || a.includes(e) || e.includes(a);
 }
 
 // Run a single critical/optional action with retry. Classifies the outcome:
 //   - required field that fails  -> { ok:false, ... }  (caller must surface it)
 //   - optional field that fails  -> { ok:true, message } (tolerated, noted)
 // Never logs values; `label` must be a non-PII field name supplied by the caller.
-// Pass `readback` to verify the portal accepted the fill — the fn should return the
-// field's current value (e.g. `() => loc.inputValue()`). A readback that differs from
-// the expected value is noted in `message` but does not flip `ok` to false on its own
-// (the caller decides how to treat mismatches).
+// Pass `readback` + `expected` to verify the portal accepted the fill — `readback`
+// returns the field's current value (e.g. `() => loc.inputValue()`) and it is compared
+// against `expected`. A mismatch sets `readbackMismatch:true` but does NOT flip `ok` to
+// false on its own (the caller decides how to treat mismatches).
 export async function safeAction(
   label: string,
   action: () => Promise<void>,
-  opts: { required?: boolean; onRetry?: (attempt: number) => Promise<void>; readback?: () => Promise<string> } = {},
+  opts: {
+    required?: boolean;
+    onRetry?: (attempt: number) => Promise<void>;
+    readback?: () => Promise<string>;
+    expected?: string;
+  } = {},
 ): Promise<SafeActionResult> {
   try {
     await withRetry(action, opts.onRetry);
     if (opts.readback) {
       try {
-        const readbackValue = await opts.readback();
-        return { ok: true, field: label, readbackValue };
+        const actual = await opts.readback();
+        // Only judge a mismatch when the caller told us what to expect.
+        if (opts.expected !== undefined && opts.expected !== "") {
+          if (readbackMatches(actual, opts.expected)) {
+            return { ok: true, field: label, readbackMismatch: false };
+          }
+          return { ok: true, field: label, readbackMismatch: true, readbackValue: redactStatusText(actual) ?? "" };
+        }
+        return { ok: true, field: label };
       } catch {
         // readback failure is non-fatal — the fill itself succeeded
         return { ok: true, field: label };

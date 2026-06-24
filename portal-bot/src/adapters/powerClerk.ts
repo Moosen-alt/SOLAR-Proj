@@ -164,13 +164,18 @@ export class PowerClerkAdapter extends BasePortalAdapter {
     // Collect REQUIRED-field failures (redacted field-name labels only). A required
     // fill that fails after retries sets ok:false instead of silently passing.
     const requiredFailures: string[] = [];
+    // Field names (non-PII) whose post-fill read-back did not match what we tried to
+    // fill — a strong signal the portal's Vue model silently rejected the value.
     const readbackMismatches: string[] = [];
-    const collect = async (label: string, action: () => Promise<void>, readback?: () => Promise<string>): Promise<void> => {
-      const r = await safeAction(label, action, { required: true, readback });
+    const collect = async (
+      label: string,
+      action: () => Promise<void>,
+      readback?: () => Promise<string>,
+      expected?: string,
+    ): Promise<void> => {
+      const r = await safeAction(label, action, { required: true, readback, expected });
       if (!r.ok) requiredFailures.push(`${r.field}: ${r.message ?? "failed"}`);
-      if (r.readbackValue !== undefined) {
-        readbackMismatches.push(`${r.field}:${r.readbackValue.slice(0, 40)}`);
-      }
+      if (r.readbackMismatch) readbackMismatches.push(r.field);
     };
 
     // Settle the page before advancing. PowerClerk's Vue autosaves each section
@@ -298,9 +303,9 @@ export class PowerClerkAdapter extends BasePortalAdapter {
       // Account + meter number are REQUIRED to bind the interconnection to the right
       // service point — a missed fill must fail the run, never pass silently.
       const acctLoc = () => page.getByRole("textbox", { name: "PGE Account Number for point" });
-      await collect("pgeAccountNumber", () => acctLoc().fill(project.accountNumber ?? ""), () => acctLoc().inputValue().catch(() => ""));
+      await collect("pgeAccountNumber", () => acctLoc().fill(project.accountNumber ?? ""), () => acctLoc().inputValue().catch(() => ""), project.accountNumber ?? "");
       const meterLoc = () => page.getByRole("textbox", { name: "Meter Number" });
-      await collect("meterNumber", () => meterLoc().fill(project.meterNumber ?? ""), () => meterLoc().inputValue().catch(() => ""));
+      await collect("meterNumber", () => meterLoc().fill(project.meterNumber ?? ""), () => meterLoc().inputValue().catch(() => ""), project.meterNumber ?? "");
       await page.getByRole("checkbox", { name: /Click here to confirm/i }).check().catch(() => null);
 
       // Service configuration
@@ -312,7 +317,7 @@ export class PowerClerkAdapter extends BasePortalAdapter {
 
       const serviceRating = str(s["mainServiceRating"] ?? s["main_service_rating"] ?? s["serviceRating"]) || "200";
       const serviceRatingLoc = () => page.getByRole("textbox", { name: "Main Service Entrance Rating" });
-      await collect("mainServiceRating", () => serviceRatingLoc().fill(serviceRating), () => serviceRatingLoc().inputValue().catch(() => ""));
+      await collect("mainServiceRating", () => serviceRatingLoc().fill(serviceRating), () => serviceRatingLoc().inputValue().catch(() => ""), serviceRating);
       await settleAndNext("system / service point");
 
       // --- Generation: inverter + N PV arrays -------------------------------
@@ -447,25 +452,27 @@ export class PowerClerkAdapter extends BasePortalAdapter {
       const inverterSpec = byKeyword(["inverter", "spec"]);
 
       // Helper: set files on a labelled input and confirm the portal accepted them.
-      // PowerClerk typically shows the filename near the upload control after selection;
-      // if not visible, fall back to checking for an error class on the input container.
-      const setAndConfirm = async (_label: string, filePath: string, labelSelector: ReturnType<typeof page.getByLabel>): Promise<void> => {
-        await labelSelector.setInputFiles(filePath);
-        await page.waitForLoadState("networkidle", { timeout: 5000 }).catch(() => null);
-        // Look for an error indicator on the upload control's container.
-        const container = labelSelector.locator(".."); // parent element
-        const hasError = await container.locator("[class*=error],[class*=invalid],[class*=danger]").count()
-          .then((n: number) => n > 0).catch(() => false);
-        if (hasError) {
-          failed.push(path.basename(filePath));
-        } else {
-          uploaded.push(path.basename(filePath));
+      // Owns ALL classification — every path pushes exactly once to uploaded[] or
+      // failed[], and the helper never throws (so callers don't double-classify).
+      const setAndConfirm = async (filePath: string, labelSelector: ReturnType<typeof page.getByLabel>): Promise<void> => {
+        const name = path.basename(filePath);
+        try {
+          await labelSelector.setInputFiles(filePath);
+          await page.waitForLoadState("networkidle", { timeout: 5000 }).catch(() => null);
+          // Look for an error indicator on the upload control's parent element. Playwright
+          // locators don't accept raw XPath axes — the parent must be addressed as "xpath=..".
+          const container = labelSelector.locator("xpath=..");
+          const hasError = await container.locator("[class*=error],[class*=invalid],[class*=danger]").count()
+            .then((n: number) => n > 0).catch(() => false);
+          (hasError ? failed : uploaded).push(name);
+        } catch {
+          failed.push(name);
         }
       };
 
-      if (sld) await setAndConfirm("One-Line Electrical Diagram", sld, page.getByLabel("One-Line Electrical Diagram")).catch(() => { failed.push(path.basename(sld!)); });
-      if (sitePlan) await setAndConfirm("Site Plan", sitePlan, page.getByLabel("Site Plan", { exact: true })).catch(() => { failed.push(path.basename(sitePlan!)); });
-      if (inverterSpec) await setAndConfirm("Inverter Technical", inverterSpec, page.getByLabel("Inverter Technical")).catch(() => { failed.push(path.basename(inverterSpec!)); });
+      if (sld) await setAndConfirm(sld, page.getByLabel("One-Line Electrical Diagram"));
+      if (sitePlan) await setAndConfirm(sitePlan, page.getByLabel("Site Plan", { exact: true }));
+      if (inverterSpec) await setAndConfirm(inverterSpec, page.getByLabel("Inverter Technical"));
 
       await page.getByRole("button", { name: "Next" }).click().catch(() => null);
 

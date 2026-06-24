@@ -77,44 +77,64 @@ function norm(v: unknown): string {
 
 // Compare the review-screen fields the portal shows against the project's canonical values.
 // Only checks fields we know the portal definitely renders (homeowner, address, account,
-// meter, system size, installer). Returns mismatches where the portal value is non-empty
-// and doesn't contain the expected value as a substring (after normalization).
+// meter, system size). Each check is SCOPED to the review fields whose label matches that
+// field's keywords — so an expected value appearing in some unrelated field (e.g. a street
+// name that also occurs in an installer field) cannot mask a real mismatch. When no field
+// label matches, it falls back to the whole page so a totally-absent value is still caught.
 export function compareReviewFields(
   reviewFields: ReviewField[],
   project: ProjectRecord,
 ): ReviewMismatch[] {
   const mismatches: ReviewMismatch[] = [];
 
-  // Build a search corpus: concatenate all review field values into one searchable string.
-  const corpus = reviewFields.map((f) => norm(f.value)).join(" ");
+  // Pick the review fields whose (normalized) label contains one of the keywords. Falls
+  // back to all fields when nothing matches, so absence is still detectable.
+  const scopeFor = (labelKeywords: string[]): ReviewField[] => {
+    const scoped = reviewFields.filter((f) => {
+      const nl = norm(f.label);
+      return labelKeywords.some((k) => nl.includes(k));
+    });
+    return scoped.length > 0 ? scoped : reviewFields;
+  };
+  const summarize = (fields: ReviewField[]): string =>
+    fields.length > 0 ? fields.map((f) => f.value).join("; ").slice(0, 80) : "(not found on review page)";
 
-  function check(fieldName: string, expected: unknown): void {
+  // Text check: the first meaningful word of the expected value must appear among the
+  // label-scoped fields' values.
+  const checkText = (fieldName: string, expected: unknown, labelKeywords: string[]): void => {
     const e = norm(expected);
-    if (!e || e.length < 2) return; // skip empty or trivially short values
-    // For multi-word values (names, addresses) check that the first meaningful word appears.
+    if (!e || e.length < 2) return;
     const firstWord = e.split(" ")[0];
-    if (firstWord.length >= 3 && !corpus.includes(firstWord)) {
-      // Try to find the field's label in reviewFields for a more specific mismatch message.
-      const found = reviewFields.length > 0 ? reviewFields.map((f) => f.value).join("; ").slice(0, 80) : "(not found on review page)";
-      mismatches.push({ field: fieldName, expected: String(expected ?? "").slice(0, 60), found });
+    if (firstWord.length < 3) return; // too short to match reliably
+    const scope = scopeFor(labelKeywords);
+    const haystack = scope.map((f) => norm(f.value)).join(" ");
+    if (!haystack.includes(firstWord)) {
+      mismatches.push({ field: fieldName, expected: String(expected ?? "").slice(0, 60), found: summarize(scope) });
     }
-  }
+  };
 
-  check("homeownerName", project.homeownerName);
-  check("projectAddress", (project.projectAddress ?? "").split(",")[0]); // street line only
-  check("systemSizeDcKw", project.systemSizeDcKw);
-
-  // Account and meter numbers: only the last 4 digits are reliable since the portal
-  // may mask middle digits. Check that the last 4 chars of the number appear.
-  for (const [fieldName, raw] of [["accountNumber", project.accountNumber], ["meterNumber", project.meterNumber]] as [string, string | null | undefined][]) {
-    if (!raw) continue;
-    const digits = String(raw).replace(/\D/g, "");
-    if (digits.length < 4) continue;
-    const last4 = digits.slice(-4);
-    if (!corpus.includes(last4)) {
-      mismatches.push({ field: fieldName, expected: `…${last4}`, found: "(last 4 digits not found on review page)" });
+  // Digit check: the significant digit run of the expected value must appear among the
+  // label-scoped fields' values (handles "7.5 kW" vs "7.50", masked account numbers, etc.).
+  const checkDigits = (fieldName: string, expected: unknown, labelKeywords: string[], opts: { last4?: boolean } = {}): void => {
+    const digits = String(expected ?? "").replace(/\D/g, "");
+    if (digits.length < (opts.last4 ? 4 : 2)) return;
+    const needle = opts.last4 ? digits.slice(-4) : digits;
+    const scope = scopeFor(labelKeywords);
+    const haystack = scope.map((f) => norm(f.value)).join(" ");
+    if (!haystack.includes(needle)) {
+      mismatches.push({
+        field: fieldName,
+        expected: opts.last4 ? `…${needle}` : String(expected ?? "").slice(0, 60),
+        found: opts.last4 ? "(digits not found on review page)" : summarize(scope),
+      });
     }
-  }
+  };
+
+  checkText("homeownerName", project.homeownerName, ["name", "owner", "applicant", "customer", "contact"]);
+  checkText("projectAddress", (project.projectAddress ?? "").split(",")[0], ["address", "street", "site", "location", "premise", "service"]);
+  checkDigits("systemSizeDcKw", project.systemSizeDcKw, ["size", "kw", "kva", "dc", "capacity", "nameplate", "rating", "system"]);
+  checkDigits("accountNumber", project.accountNumber, ["account"], { last4: true });
+  checkDigits("meterNumber", project.meterNumber, ["meter"], { last4: true });
 
   return mismatches;
 }

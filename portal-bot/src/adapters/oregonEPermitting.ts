@@ -249,14 +249,19 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
     // Collect REQUIRED-field failures (redacted field names only) so a half-filled
     // form reports ok:false instead of silently looking successful.
     const requiredFailures: string[] = [];
+    // Field names (non-PII) whose post-fill read-back did not match what we tried to
+    // fill — a strong signal the portal silently dropped or overwrote the value.
     const readbackMismatches: string[] = [];
-    const collect = async (label: string, action: () => Promise<void>, required = true, readback?: () => Promise<string>): Promise<void> => {
-      const r = await safeAction(label, action, { required, readback });
+    const collect = async (
+      label: string,
+      action: () => Promise<void>,
+      required = true,
+      readback?: () => Promise<string>,
+      expected?: string,
+    ): Promise<void> => {
+      const r = await safeAction(label, action, { required, readback, expected });
       if (!r.ok) requiredFailures.push(`${r.field}: ${r.message ?? "failed"}`);
-      // Surface readback values so the caller can spot a fill that didn't stick.
-      if (r.readbackValue !== undefined) {
-        readbackMismatches.push(`${r.field}:${r.readbackValue.slice(0, 40)}`);
-      }
+      if (r.readbackMismatch) readbackMismatches.push(r.field);
     };
 
     // After a Continue click, detect Accela's "Message Bar" validation error and
@@ -334,7 +339,7 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
       const jobValue = str(s["jobValue"] ?? s["job_value"]) ||
         String((project.systemSizeDcKw ?? 0) * 4000) || "0";
       const jobValueLoc = () => this.page.getByRole("textbox", { name: "Job Value($):" });
-      await collect("jobValue", () => jobValueLoc().fill(jobValue), true, () => jobValueLoc().inputValue().catch(() => ""));
+      await collect("jobValue", () => jobValueLoc().fill(jobValue), true, () => jobValueLoc().inputValue().catch(() => ""), jobValue);
       // Category of Construction — on this page the select is found via label text in a row.
       // The live options are numeric IDs (e.g. value="1" = Residential). Select the first
       // non-blank option; wrong value here is non-fatal (Accela defaults to a valid choice).
@@ -344,7 +349,7 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
         await selectByPattern(sel, /residential|new/i);
       }, false);
       const projectNameLoc = () => this.page.getByRole("textbox", { name: /Project Name/i }).first();
-      await collect("projectName", () => projectNameLoc().fill(projectName), true, () => projectNameLoc().inputValue().catch(() => ""));
+      await collect("projectName", () => projectNameLoc().fill(projectName), true, () => projectNameLoc().inputValue().catch(() => ""), projectName);
       await collect("descriptionOfWork", () => this.page.getByRole("textbox", { name: /Description of Work/i }).first().fill(descriptionOfWork));
       const projectInfoErr = await continueAndCheck("project info");
       if (projectInfoErr) return fail(`fillApplication: ${projectInfoErr}`);
@@ -511,13 +516,17 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
             : /over\s*25\s*kva|solar.*generation.*25/i;
         const kvaLoc = () => this.page.locator("tr").filter({ hasText: kvaRowPattern }).locator('input[type="text"]').first();
         const kvaValue = dcKw > 25 ? String(Math.ceil(dcKw)) : "1";
+        // No read-back comparison here: the tier row legitimately may not render for
+        // small systems (we skip the fill), and the value's meaning differs by tier
+        // (count of systems for ≤25 kVA vs. total kVA above), so a read-back would
+        // produce false mismatches rather than real signal.
         await collect("renewableEnergyKva", async () => {
           const inp = kvaLoc();
           if ((await inp.count().catch(() => 0)) === 0) return;
           // For ≤25 kVA tiers the value is the COUNT of systems (typically "1");
           // >25 kVA tier takes the total kVA.
           await inp.fill(kvaValue);
-        }, true, () => kvaLoc().inputValue().catch(() => ""));
+        });
       }
 
       const constrErr = await continueAndCheck("construction details");
