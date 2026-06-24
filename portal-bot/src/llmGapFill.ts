@@ -91,6 +91,40 @@ export function isGrounded(
   return false;
 }
 
+// Best-effort: neutralize the transparent loading scrims / onboarding popovers that
+// intercept clicks so the gap-fill's fills actually land. Portal-agnostic — covers
+// PowerClerk's Vue scrim + "new feature" popover and Accela's ExtJS .x-mask. Never throws.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function neutralizeOverlays(page: any): Promise<void> {
+  if (!page || typeof page.evaluate !== "function") return;
+  try {
+    await page.evaluate(() => {
+      const sel = [
+        "div.position-absolute.opacity-50.bg-black",
+        ".modal-backdrop",
+        ".popover.new-feature-popper",
+        ".new-feature-popper",
+        "[class*='loading-overlay']",
+        "[class*='spinner-overlay']",
+        ".x-mask",
+        ".x-mask-loading",
+        "#divGlobalCover",
+        "[id*='loadingMask']",
+        "[id*='LoadingMask']",
+        ".blockUI",
+        ".ui-widget-overlay",
+      ].join(", ");
+      document.querySelectorAll(sel).forEach((el) => el.remove());
+      if (!document.getElementById("__gapfill_scrim_bypass")) {
+        const style = document.createElement("style");
+        style.id = "__gapfill_scrim_bypass";
+        style.textContent = sel + " { pointer-events: none !important; }";
+        document.head.appendChild(style);
+      }
+    });
+  } catch { /* mock page or no DOM — non-fatal */ }
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function isFieldEmpty(loc: any, fieldType: ExtractedField["fieldType"]): Promise<boolean> {
   try {
@@ -140,6 +174,7 @@ export async function gapFillCurrentPage(
   const out = emptyOutcome();
   if (!page || typeof page.$$eval !== "function") return out;
   try {
+    await neutralizeOverlays(page);
     const raws: RawField[] = await page.$$eval(EXTRACT_SEL, extractFieldsInPage).catch(() => [] as RawField[]);
     const candidates = raws
       .map(toExtractedField)

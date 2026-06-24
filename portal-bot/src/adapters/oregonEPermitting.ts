@@ -282,6 +282,10 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
     // Click Continue, wait for navigation, and check for blocking message bars.
     // Returns null on success, or a short error string if the page shows a validation error.
     const continueAndCheck = async (label: string): Promise<string | null> => {
+      // LLM-assisted gap-fill: after the fixed-selector fills, let the planner fill any
+      // REQUIRED field still empty on THIS page — from real project data only. No-op unless
+      // the staging runner enabled it; best-effort, never throws.
+      await this.runGapFill(this.page);
       const preUrl = String(this.page.url());
       const cont = this.page.getByRole("link", { name: /Continue Application/i }).first();
       if ((await cont.count()) === 0) return `${label}: Continue link not found on page`;
@@ -698,6 +702,8 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
         finalReviewPacketUrl: `/api/projects/${project.id}/reviewer-report?format=html`,
         reviewMismatches,
         reviewAccurate: reviewMismatches.length === 0,
+        // What the LLM gap-fill added (and what it left blank for lack of real data).
+        gapFill: this.gapFillReport,
         nextHumanAction:
           "The browser is staged at the final review screen. Verify all fields and uploaded files, handle any MFA or fee payment, then click submit manually. AUTOMATION HAS STOPPED.",
       });

@@ -4901,15 +4901,17 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   // LLM). Best-effort: if no LLM is configured, staging proceeds with the hand-coded fills only.
   let gapFillPlanner: import("../../portal-bot/src/adapters/autoLearnAdapter").LearnPlanner | undefined;
   let gapFillFields: Record<string, string> | undefined;
-  // Wired for PowerClerk today (the adapter calls runGapFill in settleAndNext). Accela can
-  // opt in the same way once its fill loop calls runGapFill.
-  if (isPowerClerk) {
+  // Both hand-coded adapters call runGapFill in their page-advance helper (PowerClerk's
+  // settleAndNext, Accela's continueAndCheck), so build the planner for either track.
+  if (isPowerClerk || isAccela) {
     try {
       const { buildPortalPlanner } = await import("./autoLearn");
       const built = buildPortalPlanner(db, stagedProject, {
         portalType,
-        scopeType: "utility",
-        permitType: undefined,
+        scopeType: isAccela ? "ahj" : "utility",
+        // Accela's electrical vs structural application lists differ; default to structural
+        // (the prior hardcoded behavior) since the staging track doesn't carry the discipline.
+        permitType: isAccela ? "structural" : undefined,
       });
       gapFillPlanner = built.planner;
       gapFillFields = built.projectFields;
