@@ -27,7 +27,11 @@ const CATEGORY_PATTERNS: Array<{ docType: string; label: string; patterns: RegEx
   // identifies the actual cut-sheet page. The combined "MODULE / INV SPECIFICATION SHEET"
   // counts as BOTH module and inverter spec.
   { docType: "module_spec", label: "Module spec", patterns: [/MODULE\s*[\/&]?\s*INV(?:ERTER)?\.?\s*SPEC/i, /MODULE\s+SPECIFICATION\s+SHEET/i, /PV MODULE SPEC/i] },
-  { docType: "inverter_spec", label: "Inverter spec", patterns: [/MODULE\s*[\/&]?\s*INV(?:ERTER)?\.?\s*SPEC/i, /MICRO-?INVERTER\s+SPEC(?:IFICATION)?S?\b/i, /\bINVERTER\s+SPEC(?:IFICATION)?S?\b/i, /\bUL[\s-]*1741\b/i] },
+  // NOTE: do NOT match on the UL listing standard (/UL 1741/) — that number is cited on the
+  // SLD, general notes, and most electrical sheets, so it pulled those dense pages into the
+  // inverter_spec split and bloated it past PowerClerk's 5 MB upload limit. Match the dedicated
+  // SPEC SHEET by its title-block name only, per this file's stated discipline.
+  { docType: "inverter_spec", label: "Inverter spec", patterns: [/MODULE\s*[\/&]?\s*INV(?:ERTER)?\.?\s*SPEC/i, /MICRO-?INVERTER\s+SPEC(?:IFICATION)?S?\b/i, /\bINVERTER\s+SPEC(?:IFICATION)?S?\b/i] },
   { docType: "labels", label: "Labels / placards", patterns: [/\bWARNING LABELS\b/i, /\bLABEL LOCATION\b/i, /\bE\s*1\.3\b/i] },
 ];
 
@@ -37,13 +41,27 @@ function isIndexOrNotesPage(text: string): boolean {
   return /SHEET INDEX/i.test(text) || /GENERAL NOTES AND PROJECT DATA/i.test(text);
 }
 
-// A page may belong to several categories (a combined spec sheet counts as both module and
-// inverter spec). Returns every category whose sheet-name pattern is present on the page.
+// Assign a page to its SINGLE best-matching category (most pattern hits wins), the original
+// winner-take-all discipline. Returning EVERY matching category instead let a dense SLD page
+// that merely cites "INVERTER SPECIFICATIONS" / "UL 1741" in a callout block leak into the
+// inverter_spec split alongside the real cut-sheet — several heavy pages per category, which
+// blew the per-file size past PowerClerk's 5 MB upload limit (every required upload failed).
+//
+// The one legitimate multi-category case is preserved explicitly: a COMBINED
+// "MODULE / INV SPECIFICATION SHEET" genuinely IS both the module spec and the inverter spec,
+// so that single sheet is added to both — and nothing else fans out.
 function classifyPage(text: string): string[] {
   if (isIndexOrNotesPage(text)) return [];
-  const out: string[] = [];
+  let best: { docType: string; score: number } | null = null;
   for (const cat of CATEGORY_PATTERNS) {
-    if (cat.patterns.some((re) => re.test(text))) out.push(cat.docType);
+    const score = cat.patterns.reduce((n, re) => (re.test(text) ? n + 1 : n), 0);
+    if (score > 0 && (!best || score > best.score)) best = { docType: cat.docType, score };
+  }
+  if (!best) return [];
+  const out = [best.docType];
+  if (/MODULE\s*[\/&]?\s*INV(?:ERTER)?\.?\s*SPEC/i.test(text)) {
+    if (!out.includes("module_spec")) out.push("module_spec");
+    if (!out.includes("inverter_spec")) out.push("inverter_spec");
   }
   return out;
 }

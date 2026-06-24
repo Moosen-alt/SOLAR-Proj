@@ -77,6 +77,41 @@ function readArrays(project: ProjectRecord): PvArray[] {
   return single.quantity || single.moduleModel ? [single] : [];
 }
 
+// Remove the overlays PowerClerk's Program Home / wizard layer on top of clickable
+// controls, then inject a persistent `pointer-events: none` rule so RE-RENDERED scrims
+// (PowerClerk's Vue re-adds its loading backdrop reactively) can't re-intercept clicks.
+// Two things block clicks on live PGE PowerClerk:
+//   1. A Bootstrap "new feature" onboarding popover (`.new-feature-popper`) anchored ON
+//      the toolbar buttons (e.g. "New Net Metering Application") whose header overlaps and
+//      intercepts the click. It has a multi-step "Got it" flow, so clicking through is
+//      unreliable — just remove it.
+//   2. A semi-transparent Vue loading scrim shown during autosave/section transitions.
+// Scoped to backdrop/scrim/popover selectors ONLY — never touches form fields or modal
+// content. Best-effort; never throws. (Selectors proven on live PGE in autoLearnAdapter.)
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function clearPowerClerkOverlays(page: any): Promise<void> {
+  if (!page || typeof page.evaluate !== "function") return;
+  try {
+    await page.evaluate(() => {
+      const sel = [
+        "div.position-absolute.opacity-50.bg-black",
+        ".modal-backdrop",
+        ".popover.new-feature-popper",
+        ".new-feature-popper",
+        "[class*='loading-overlay']",
+        "[class*='spinner-overlay']",
+      ].join(", ");
+      document.querySelectorAll(sel).forEach((el) => el.remove());
+      if (!document.getElementById("__pc_scrim_bypass")) {
+        const style = document.createElement("style");
+        style.id = "__pc_scrim_bypass";
+        style.textContent = sel + " { pointer-events: none !important; }";
+        document.head.appendChild(style);
+      }
+    });
+  } catch { /* mock page or no DOM — non-fatal */ }
+}
+
 export class PowerClerkAdapter extends BasePortalAdapter {
   portalName = "PowerClerk (PGE Net Metering)";
 
@@ -136,19 +171,121 @@ export class PowerClerkAdapter extends BasePortalAdapter {
     }
   }
 
+  // Resilient click for PowerClerk toolbar / wizard controls. Two failure modes on live
+  // PGE PowerClerk make a plain `.click()` hang to timeout:
+  //   - "New Net Metering Application" is rendered as an <a class="btn"> LINK, not a
+  //     <button>; `getByRole("button")` never matches a link, so callers must pass a
+  //     link-or-button locator (see openSubmission).
+  //   - The onboarding popover / Vue loading scrim covers the control and intercepts the
+  //     pointer event.
+  // Strategy (mirrors AutoLearnAdapter.clickResilient, proven on live PGE): clear overlays,
+  // then click with escalating fallbacks — normal click → force-click (bypasses the
+  // actionability/coverage check) → synthetic dispatchEvent (fires the handler directly,
+  // which navigates <a href> links even under a stubborn overlay). A URL change during a
+  // timed-out click is treated as success (PowerClerk's Vue navigation is slow).
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async clickResilient(loc: any, label = "control"): Promise<void> {
+    const page = this.page;
+    const beforeUrl = typeof page.url === "function" ? String(page.url() ?? "") : "";
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await clearPowerClerkOverlays(page);
+      try {
+        await loc.first().click({ timeout: 8000 });
+        return;
+      } catch (err) {
+        // Did the click navigate despite the reported timeout? If so, it landed.
+        await sleep(400);
+        const nowUrl = typeof page.url === "function" ? String(page.url() ?? "") : "";
+        if (nowUrl && nowUrl !== beforeUrl) return;
+        if (attempt < 2) {
+          await sleep(500);
+          continue;
+        }
+        // Final attempt exhausted normal clicks — escalate.
+        // Fallback 1: force-click (bypass actionability/coverage hit-test).
+        await clearPowerClerkOverlays(page);
+        try { await loc.first().click({ force: true, timeout: 4000 }); return; } catch { /* try synthetic */ }
+        // Fallback 2: synthetic JS click — navigates <a href> links on any overlay.
+        await clearPowerClerkOverlays(page);
+        try { await loc.first().dispatchEvent("click"); return; } catch { /* fall through to throw */ }
+        throw err instanceof Error ? err : new Error(`clickResilient(${label}) failed`);
+      }
+    }
+  }
+
+  // Check a radio/checkbox identified by its visible label text. PowerClerk renders these
+  // as <input type=radio/checkbox> with an adjacent <label>; the ARIA role-name, the
+  // associated label, and (last resort) clicking the label text are tried in turn. Clears
+  // the Vue loading scrim first — it silently intercepts these clicks, which the old
+  // `.catch(() => null)` hid, leaving REQUIRED choices (Description of Service, Service Type)
+  // blank on the staged application. Throws if nothing lands so the caller (collect) surfaces
+  // the miss instead of fabricating a complete-looking review screen.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async checkOption(name: string | RegExp): Promise<void> {
+    const page = this.page;
+    await clearPowerClerkOverlays(page);
+    const candidates = [
+      page.getByRole("radio", { name }),
+      page.getByRole("checkbox", { name }),
+      page.getByLabel(name),
+    ];
+    for (const loc of candidates) {
+      if ((await loc.count().catch(() => 0)) > 0) {
+        try { await loc.first().scrollIntoViewIfNeeded?.({ timeout: 2000 }); } catch { /* off-screen/mock */ }
+        try { await loc.first().check({ timeout: 6000 }); return; } catch { /* try next strategy */ }
+      }
+    }
+    // Last resort: click the visible option text (toggles its associated input).
+    await clearPowerClerkOverlays(page);
+    await page.getByText(name).first().click({ timeout: 6000 });
+  }
+
+  // Select a value on a PowerClerk dropdown where the option label may be richer than the bare
+  // value — Schedule "7" maps to an option that reads e.g. "Schedule 7 — Residential", so a
+  // plain selectOption("7") silently fails and the field stays on "Select…". Tries exact value,
+  // exact label, an option whose visible text CONTAINS the value (word-bounded), then the
+  // custom "Please select…" combobox path. Throws if none match so the caller surfaces it.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async selectDropdownSmart(loc: any, value: string): Promise<void> {
+    const page = this.page;
+    await clearPowerClerkOverlays(page);
+    try { await loc.selectOption(value); return; } catch { /* try label */ }
+    try { await loc.selectOption({ label: value }); return; } catch { /* try contains */ }
+    try {
+      const opt = loc.locator("option").filter({ hasText: new RegExp(`(^|\\D)${value}(\\D|$)`) }).first();
+      if ((await opt.count()) > 0) {
+        const val = await opt.getAttribute("value");
+        if (val != null) { await loc.selectOption(val); return; }
+      }
+    } catch { /* try custom combobox */ }
+    await fillCustomCombobox(page, loc, value);
+  }
+
   // ---------------------------------------------------------------------------
   // openSubmission — start a New Net Metering Application
   // ---------------------------------------------------------------------------
   async openSubmission(project: ProjectRecord): Promise<PortalStepResult> {
     if (!this.page) return fail("Not logged in. Call login() first.");
+    const page = this.page;
     try {
-      await this.page.getByRole("button", { name: "New Net Metering Application" }).click();
-      await this.page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => null);
-      // Two intro/instruction pages — no data to settle, just advance.
-      await this.page.getByRole("button", { name: "Next", exact: true }).click();
-      await this.page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => null);
-      await this.page.getByRole("button", { name: "Next", exact: true }).click();
-      await this.page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => null);
+      // PowerClerk's Program Home renders "New Net Metering Application" as an <a class="btn">
+      // LINK (matched by role "link") with an onboarding popover anchored on it that
+      // intercepts clicks. Match link-OR-button and click through the overlay.
+      await clearPowerClerkOverlays(page);
+      const newApp = page.getByRole("link", { name: "New Net Metering Application" })
+        .or(page.getByRole("button", { name: "New Net Metering Application" }));
+      await this.clickResilient(newApp, "New Net Metering Application");
+      await page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => null);
+
+      // Two intro/instruction pages — no data to settle, just advance. Clear overlays
+      // before each Next in case the Vue loading scrim re-rendered, and match link-or-button.
+      for (const step of ["intro 1", "intro 2"]) {
+        await clearPowerClerkOverlays(page);
+        const next = page.getByRole("button", { name: "Next", exact: true })
+          .or(page.getByRole("link", { name: "Next", exact: true }));
+        await this.clickResilient(next, `Next (${step})`);
+        await page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => null);
+      }
       return ok("New Net Metering Application started.", { projectId: project.id });
     } catch (err) {
       return fail(`openSubmission failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -191,7 +328,13 @@ export class PowerClerkAdapter extends BasePortalAdapter {
       await page.waitForLoadState("networkidle", { timeout: 8000 }).catch(() => null);
       await sleep(Number(process.env.POWERCLERK_SETTLE_MS) || 2000);
       const beforeUrl = String(page.url());
-      await page.getByRole("button", { name: "Next", exact: true }).click();
+      // Clear the Vue loading scrim that re-renders on autosave before clicking Next, and
+      // match link-or-button + click resiliently so a re-rendered overlay can't strand the
+      // run mid-wizard the way it strands openSubmission's first click.
+      await clearPowerClerkOverlays(page);
+      const nextBtn = page.getByRole("button", { name: "Next", exact: true })
+        .or(page.getByRole("link", { name: "Next", exact: true }));
+      await this.clickResilient(nextBtn, `Next (${section || "section"})`);
       await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
       // If the URL didn't change, Next was blocked by a validation error.
       // Extract visible error text (field names only — never field values).
@@ -262,7 +405,12 @@ export class PowerClerkAdapter extends BasePortalAdapter {
       const ownerFirst = ownerFull.split(/\s+/)[0] ?? "";
       const ownerLast = ownerFull.split(/\s+/).slice(1).join(" ") || ownerFirst;
 
-      const applicant = page.getByRole("group", { name: "Applicant (PGE Customer)" });
+      // The customer step is titled "PGE Customer Information" on the live portal (older
+      // builds said "Applicant (PGE Customer)"). Match either so the homeowner block is
+      // scoped to the right group instead of falling back to `page` and re-filling the
+      // preparer's first-matching Name/Address fields (seen on the live review: the customer
+      // step held the preparer's last name + the installer's WA/zip).
+      const applicant = page.getByRole("group", { name: /PGE Customer Information|Applicant \(PGE Customer\)/i });
       const applicantScope = (await applicant.count()) > 0 ? applicant : page;
 
       // Applicant identity is REQUIRED — surface failures (field names only; never the
@@ -288,17 +436,25 @@ export class PowerClerkAdapter extends BasePortalAdapter {
       });
       await settleAndNext("installer company");
 
-      // --- System / point of interconnection --------------------------------
+      // --- System / point of interconnection / Description of Service -------
       const existingContact = str(s["powerclerkExistingContact"] ?? s["existing_contact"]);
       if (existingContact) {
         await page.getByLabel("Existing contact to use for").selectOption(existingContact).catch(() => null);
       }
-      await page.getByText("New net metering system at a location currently served by PGE").click().catch(() => null);
+      // Description of Service is a REQUIRED radio. The old getByText().click().catch(()=>null)
+      // silently no-op'd when the loading scrim intercepted the click, staging the application
+      // with NO service description selected (confirmed blank on the live review screen). Route
+      // it through collect so a miss fails the run instead of looking complete.
+      await collect("descriptionOfService", () =>
+        this.checkOption(/New net metering system at a location currently served by PGE/i));
 
       const serviceType = str(s["serviceType"] ?? s["service_type"]) || "Residential";
       await selectAny(page, page.getByLabel("Type").first(), serviceType);
+      // Schedule is REQUIRED. "7" must match an option that may read "Schedule 7 — Residential",
+      // so use the contains-aware selector and surface a miss (it was silently left on "Select…").
       const schedule = str(s["pgeSchedule"] ?? s["schedule"]) || "7";
-      await selectAny(page, page.getByLabel("Schedule").first(), schedule);
+      await collect("pgeSchedule", () =>
+        this.selectDropdownSmart(page.getByLabel("Schedule").first(), schedule));
 
       // Account + meter number are REQUIRED to bind the interconnection to the right
       // service point — a missed fill must fail the run, never pass silently.
@@ -308,11 +464,13 @@ export class PowerClerkAdapter extends BasePortalAdapter {
       await collect("meterNumber", () => meterLoc().fill(project.meterNumber ?? ""), () => meterLoc().inputValue().catch(() => ""), project.meterNumber ?? "");
       await page.getByRole("checkbox", { name: /Click here to confirm/i }).check().catch(() => null);
 
-      // Service configuration
+      // Service configuration. Single / 3-Phase is a REQUIRED radio that was silently left
+      // unselected (the old .check().catch(()=>null) hid scrim interception). Route through
+      // collect so the run reports it instead of staging a blank required choice.
       const phase = str(s["phase"]).toLowerCase();
-      if (phase.includes("single") || !phase) {
-        await page.getByRole("radio", { name: "Single" }).check().catch(() => null);
-      }
+      const phaseLabel = phase.includes("3") || phase.includes("three") ? "3-Phase" : "Single";
+      await collect("serviceTypePhase", () => this.checkOption(phaseLabel));
+      // Service voltage (e.g. 120/240) — best-effort; not present on every schedule.
       await page.getByRole("radio", { name: "/240" }).check().catch(() => null);
 
       const serviceRating = str(s["mainServiceRating"] ?? s["main_service_rating"] ?? s["serviceRating"]) || "200";
