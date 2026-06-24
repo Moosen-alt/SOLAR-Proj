@@ -49,6 +49,23 @@ export function redactStatusText(text: string | null | undefined): string | null
   return masked.slice(0, MAX_STATUS_SNIPPET);
 }
 
+// Read-only status scrape tail shared by the live adapters' checkStatus(): reads the page
+// body text, finds the first known application/permit number, and returns a REDACTED,
+// capped snippet around it (account/meter-like digit runs masked) — never a multi-thousand-
+// char raw portal body dump. Falls back to a short redacted slice of the page head when no
+// number matches. Callers own their own navigation + null-guards before calling this.
+export async function scanStatusFromBody(page: Page, applicationNumbers: string[]): Promise<string | null> {
+  const bodyText = await page.locator("body").innerText().catch(() => "");
+  for (const num of applicationNumbers) {
+    if (!num) continue;
+    const idx = bodyText.indexOf(num);
+    if (idx === -1) continue;
+    const snippet = redactStatusText(bodyText.slice(Math.max(0, idx - 80), idx + 320));
+    if (snippet) return snippet;
+  }
+  return redactStatusText(bodyText.slice(0, 600));
+}
+
 function isTimeout(err: unknown): boolean {
   return err instanceof Error && /timeout|TimeoutError/i.test(err.message);
 }

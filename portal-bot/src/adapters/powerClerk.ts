@@ -1,18 +1,17 @@
 import path from "node:path";
 import type { ProjectRecord, ReviewerReport } from "../../../shared/src/types";
-import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, type PortalContext, type PortalStepResult } from "../adapter";
+import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, ok, fail, type PortalContext, type PortalStepResult } from "../adapter";
 import { openPortal } from "../browser";
-import { detectChallengeFrame, redactStatusText, safeAction, sleep } from "../safeAction";
-import { fillCustomCombobox } from "../comboboxFill";
+import { detectChallengeFrame, scanStatusFromBody, safeAction, sleep } from "../safeAction";
+import { snap, str } from "../snapshot";
+import { fillCustomCombobox, selectWithFallback } from "../comboboxFill";
 import { scrapeReviewScreen, compareReviewFields } from "../reviewScreenScraper";
 
 // Select a value on a PowerClerk dropdown that may be a native <select> OR a custom
 // "Please select..." widget. Native selectOption first; fall back to the open->type->pick
 // interaction. Replaces the old `.catch(() => null)` that silently left these fields blank.
 async function selectAny(page: any, locator: any, value: string): Promise<void> {
-  await locator.selectOption(value)
-    .catch(async () => locator.selectOption({ label: value }))
-    .catch(async () => { await fillCustomCombobox(page, locator, value); });
+  await selectWithFallback(page, locator, value);
 }
 
 // PowerClerk (PGE Net Metering) adapter
@@ -21,22 +20,6 @@ async function selectAny(page: any, locator: any, value: string): Promise<void> 
 // handles MFA. Credentials are never hardcoded — login uses encrypted session state.
 
 const PGE_LOGIN_URL = "https://pgenm.powerclerk.com/MvcAccount/Login";
-
-function ok(message: string, data: Record<string, unknown> = {}): PortalStepResult {
-  return { ok: true, message, data };
-}
-
-function fail(message: string, data: Record<string, unknown> = {}): PortalStepResult {
-  return { ok: false, message, data };
-}
-
-function snap(project: ProjectRecord): Record<string, unknown> {
-  return (project.parserSnapshot ?? {}) as Record<string, unknown>;
-}
-
-function str(v: unknown): string {
-  return typeof v === "string" ? v : v == null ? "" : String(v);
-}
 
 interface PvArray {
   quantity: string;
@@ -796,18 +779,9 @@ export class PowerClerkAdapter extends BasePortalAdapter {
       // Navigate to the applications list (the home page after login).
       await this.page.goto("https://pgenm.powerclerk.com/MvcApplication/Index");
       await this.page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
-
-      const bodyText = await this.page.locator("body").innerText().catch(() => "");
       // Return a REDACTED, capped snippet (account/meter-like digit runs masked) —
       // never a multi-thousand-char raw portal body dump.
-      for (const num of applicationNumbers) {
-        if (!num) continue;
-        const idx = bodyText.indexOf(num);
-        if (idx === -1) continue;
-        const snippet = redactStatusText(bodyText.slice(Math.max(0, idx - 80), idx + 320));
-        if (snippet) return snippet;
-      }
-      return redactStatusText(bodyText.slice(0, 600));
+      return scanStatusFromBody(this.page, applicationNumbers);
     } catch {
       return null;
     }

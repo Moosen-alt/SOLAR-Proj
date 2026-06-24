@@ -12,7 +12,6 @@ const state = {
   handoffPacket: null,
   communicationDrafts: null,
   runbook: null,
-  opsBoard: null,
   opsActions: null,
   opsReport: null,
   liveReadiness: null,
@@ -169,16 +168,6 @@ async function refreshProjectListOnly() {
   await loadOpsActions();
   await loadKnowledgeBase();
   await loadEmailTracker();
-}
-
-async function loadOpsBoard() {
-  try {
-    state.opsBoard = await api("/api/ops-board");
-    renderOpsBoard();
-  } catch (err) {
-    $("opsBoardStatus").textContent = "error";
-    $("opsBoard").innerHTML = `<p class="muted">${esc(err.message || "Ops Board unavailable.")}</p>`;
-  }
 }
 
 async function loadOpsReport() {
@@ -511,36 +500,28 @@ async function loadOpsPlan() {
   state.opsBrief = brief;
 }
 
-async function loadLiveReadiness() {
+async function loadProjectResource(key, endpoint) {
   if (!state.selectedProjectId) {
-    state.liveReadiness = null;
+    state[key] = null;
     return;
   }
-  state.liveReadiness = await api(`/api/projects/${state.selectedProjectId}/live-readiness`);
+  state[key] = await api(`/api/projects/${state.selectedProjectId}/${endpoint}`);
+}
+
+async function loadLiveReadiness() {
+  await loadProjectResource("liveReadiness", "live-readiness");
 }
 
 async function loadRunbook() {
-  if (!state.selectedProjectId) {
-    state.runbook = null;
-    return;
-  }
-  state.runbook = await api(`/api/projects/${state.selectedProjectId}/runbook`);
+  await loadProjectResource("runbook", "runbook");
 }
 
 async function loadHandoffPacket() {
-  if (!state.selectedProjectId) {
-    state.handoffPacket = null;
-    return;
-  }
-  state.handoffPacket = await api(`/api/projects/${state.selectedProjectId}/handoff-packet`);
+  await loadProjectResource("handoffPacket", "handoff-packet");
 }
 
 async function loadCommunicationDrafts() {
-  if (!state.selectedProjectId) {
-    state.communicationDrafts = null;
-    return;
-  }
-  state.communicationDrafts = await api(`/api/projects/${state.selectedProjectId}/communication-drafts`);
+  await loadProjectResource("communicationDrafts", "communication-drafts");
 }
 
 async function loadPmPackets() {
@@ -551,35 +532,19 @@ async function loadPmPackets() {
 }
 
 async function loadProjectTimeline() {
-  if (!state.selectedProjectId) {
-    state.projectTimeline = null;
-    return;
-  }
-  state.projectTimeline = await api(`/api/projects/${state.selectedProjectId}/timeline`);
+  await loadProjectResource("projectTimeline", "timeline");
 }
 
 async function loadProcessMap() {
-  if (!state.selectedProjectId) {
-    state.processMap = null;
-    return;
-  }
-  state.processMap = await api(`/api/projects/${state.selectedProjectId}/process-map`);
+  await loadProjectResource("processMap", "process-map");
 }
 
 async function loadInstallerPacket() {
-  if (!state.selectedProjectId) {
-    state.installerPacket = null;
-    return;
-  }
-  state.installerPacket = await api(`/api/projects/${state.selectedProjectId}/installer-actions`);
+  await loadProjectResource("installerPacket", "installer-actions");
 }
 
 async function loadSubmitGate() {
-  if (!state.selectedProjectId) {
-    state.submitGate = null;
-    return;
-  }
-  state.submitGate = await api(`/api/projects/${state.selectedProjectId}/submit-gate`);
+  await loadProjectResource("submitGate", "submit-gate");
 }
 
 function renderEmailTracker() {
@@ -785,40 +750,6 @@ function renderOpsReport() {
       </article>
     </div>
   `;
-}
-
-function renderOpsBoard() {
-  const board = state.opsBoard;
-  if (!board) {
-    $("opsBoardStatus").textContent = "not synced";
-    $("opsBoard").innerHTML = `<p class="muted">Portfolio action board has not loaded yet.</p>`;
-    return;
-  }
-  $("opsBoardStatus").textContent = `${board.blockedProjects} blocked`;
-  const projects = board.projects || [];
-  $("opsBoard").innerHTML = `
-    <div class="ops-board-metrics">
-      <div><strong>${board.totalProjects || 0}</strong><span>Projects</span></div>
-      <div><strong>${board.totalBlockers || 0}</strong><span>Blockers</span></div>
-      <div><strong>${board.totalActiveActions || 0}</strong><span>Actions</span></div>
-    </div>
-    <div class="ops-board-list">
-      ${projects.length ? projects.slice(0, 8).map((project) => `
-        <button class="ops-board-card ${briefClass(project.health)} ${project.projectId === state.selectedProjectId ? "active" : ""}" data-board-project-id="${project.projectId}">
-          <span class="ops-board-card-head">
-            <strong>${esc(project.homeownerName || "Unnamed")}</strong>
-            ${statusBadge(project.health)}
-          </span>
-          <span>${esc(project.projectAddress || "No address")}</span>
-          <span><strong>${esc(project.currentPhase)}</strong>: ${esc(project.nextAction)}</span>
-          <span class="muted">${esc(project.ownerRole)} | ${project.blockerCount} blocker(s) | ${project.activeActionCount} action(s)</span>
-        </button>
-      `).join("") : `<p class="muted">No projects on the board yet.</p>`}
-    </div>
-  `;
-  $("opsBoard").querySelectorAll("button[data-board-project-id]").forEach((button) => {
-    button.addEventListener("click", () => selectProject(button.dataset.boardProjectId));
-  });
 }
 
 function dueLabel(action) {
@@ -1032,7 +963,6 @@ async function selectProject(projectId) {
   }
   showPage("project");
   renderProjects();
-  safeRender("opsBoard", renderOpsBoard);
   safeRender("opsActions", renderOpsActions);
   // allSettled (not all): one failing/​flaky panel loader must NOT abort the others
   // or prevent renderDetail from running — otherwise the whole detail view breaks.
@@ -3482,17 +3412,7 @@ async function copyHandoff() {
     showMessage("No handoff note generated yet.", "warning");
     return;
   }
-  try {
-    await navigator.clipboard.writeText(note);
-  } catch {
-    const fallback = document.createElement("textarea");
-    fallback.value = note;
-    document.body.appendChild(fallback);
-    fallback.select();
-    document.execCommand("copy");
-    fallback.remove();
-  }
-  showMessage("PM handoff copied.");
+  await writeClipboardText(note, "PM handoff copied.");
 }
 
 async function copyRunbook() {
@@ -3501,17 +3421,7 @@ async function copyRunbook() {
     showMessage("No PM runbook generated yet.", "warning");
     return;
   }
-  try {
-    await navigator.clipboard.writeText(text);
-  } catch {
-    const fallback = document.createElement("textarea");
-    fallback.value = text;
-    document.body.appendChild(fallback);
-    fallback.select();
-    document.execCommand("copy");
-    fallback.remove();
-  }
-  showMessage("PM runbook copied.");
+  await writeClipboardText(text, "PM runbook copied.");
 }
 
 async function copyHandoffPacket() {
@@ -3520,17 +3430,7 @@ async function copyHandoffPacket() {
     showMessage("No project handoff packet generated yet.", "warning");
     return;
   }
-  try {
-    await navigator.clipboard.writeText(text);
-  } catch {
-    const fallback = document.createElement("textarea");
-    fallback.value = text;
-    document.body.appendChild(fallback);
-    fallback.select();
-    document.execCommand("copy");
-    fallback.remove();
-  }
-  showMessage("Project handoff packet copied.");
+  await writeClipboardText(text, "Project handoff packet copied.");
 }
 
 function communicationDraftText(draft) {
@@ -3584,17 +3484,7 @@ async function copyOpsReport() {
     showMessage("No Daily Ops Report generated yet.", "warning");
     return;
   }
-  try {
-    await navigator.clipboard.writeText(text);
-  } catch {
-    const fallback = document.createElement("textarea");
-    fallback.value = text;
-    document.body.appendChild(fallback);
-    fallback.select();
-    document.execCommand("copy");
-    fallback.remove();
-  }
-  showMessage("Daily Ops Report copied.");
+  await writeClipboardText(text, "Daily Ops Report copied.");
 }
 
 async function copyLiveReadiness() {
@@ -3603,17 +3493,7 @@ async function copyLiveReadiness() {
     showMessage("No live readiness report generated yet.", "warning");
     return;
   }
-  try {
-    await navigator.clipboard.writeText(text);
-  } catch {
-    const fallback = document.createElement("textarea");
-    fallback.value = text;
-    document.body.appendChild(fallback);
-    fallback.select();
-    document.execCommand("copy");
-    fallback.remove();
-  }
-  showMessage("Live readiness report copied.");
+  await writeClipboardText(text, "Live readiness report copied.");
 }
 
 async function copyProcessMap() {
@@ -3622,17 +3502,7 @@ async function copyProcessMap() {
     showMessage("No PermitFlow + NEMflow map generated yet.", "warning");
     return;
   }
-  try {
-    await navigator.clipboard.writeText(text);
-  } catch {
-    const fallback = document.createElement("textarea");
-    fallback.value = text;
-    document.body.appendChild(fallback);
-    fallback.select();
-    document.execCommand("copy");
-    fallback.remove();
-  }
-  showMessage("PermitFlow + NEMflow map copied.");
+  await writeClipboardText(text, "PermitFlow + NEMflow map copied.");
 }
 
 async function copyInstallerPacket() {
@@ -3641,17 +3511,7 @@ async function copyInstallerPacket() {
     showMessage("No installer action packet generated yet.", "warning");
     return;
   }
-  try {
-    await navigator.clipboard.writeText(text);
-  } catch {
-    const fallback = document.createElement("textarea");
-    fallback.value = text;
-    document.body.appendChild(fallback);
-    fallback.select();
-    document.execCommand("copy");
-    fallback.remove();
-  }
-  showMessage("Installer action packet copied.");
+  await writeClipboardText(text, "Installer action packet copied.");
 }
 
 async function copyProjectTimeline() {
@@ -3660,17 +3520,7 @@ async function copyProjectTimeline() {
     showMessage("No project timeline generated yet.", "warning");
     return;
   }
-  try {
-    await navigator.clipboard.writeText(text);
-  } catch {
-    const fallback = document.createElement("textarea");
-    fallback.value = text;
-    document.body.appendChild(fallback);
-    fallback.select();
-    document.execCommand("copy");
-    fallback.remove();
-  }
-  showMessage("Project timeline copied.");
+  await writeClipboardText(text, "Project timeline copied.");
 }
 
 async function runQc() {

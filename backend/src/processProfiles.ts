@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { AhjProcessProfile, ParserPayload, ProjectRecord } from "../../shared/src/types";
+import { normalizeTokens } from "./normalize";
 
 interface ProfileData {
   profiles: AhjProcessProfile[];
@@ -24,10 +25,6 @@ function clean(value: unknown): string {
   return typeof value === "string" ? value.trim() : value == null ? "" : String(value).trim();
 }
 
-function normalize(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-}
-
 const stopWords = new Set([
   "and",
   "city",
@@ -46,7 +43,7 @@ const stopWords = new Set([
 ]);
 
 function tokens(value: string): string[] {
-  return normalize(value)
+  return normalizeTokens(value)
     .split(/\s+/)
     .filter((token) => token.length > 2 && !stopWords.has(token));
 }
@@ -70,7 +67,7 @@ function jurisdictionNames(rawAhj: string): string[] {
   const names = new Set<string>();
   for (const part of parts) {
     const noParen = part.replace(/\([^)]*\)/g, " ");
-    const norm = normalize(noParen).replace(/\b(or|wa|ca|id|tx|nm|az|nj|fl|oh|sc|nc)\b\s*$/i, "").trim();
+    const norm = normalizeTokens(noParen).replace(/\b(or|wa|ca|id|tx|nm|az|nj|fl|oh|sc|nc)\b\s*$/i, "").trim();
     if (norm) names.add(norm);
   }
   return Array.from(names);
@@ -97,14 +94,14 @@ function richness(profile: AhjProcessProfile): number {
 export function findAhjProcessProfile(input: ProjectRecord | ParserPayload): AhjProcessProfile | null {
   const profiles = loadProfiles();
   const state = stateFrom(input);
-  const haystack = normalize(ahjFrom(input));
+  const haystack = normalizeTokens(ahjFrom(input));
   if (!state || !haystack) return null;
 
   const stateProfiles = profiles.filter((profile) => profile.state.toUpperCase() === state);
   const candidates: Array<{ profile: AhjProcessProfile; score: number; rich: number }> = [];
   const hayTokens = new Set(tokens(haystack));
   for (const profile of stateProfiles) {
-    const ahj = normalize(profile.ahj);
+    const ahj = normalizeTokens(profile.ahj);
     if (!ahj) continue;
     let score = 0;
     if (haystack === ahj) score += 100;

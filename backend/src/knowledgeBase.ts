@@ -18,7 +18,7 @@ import type {
 import { classifyCorrection, humanizeEnum, type CorrectionClassification } from "./corrections";
 import type { AppDb } from "./db";
 import { id } from "./ids";
-import { asJson, parseJson } from "./json";
+import { asJson, bool, parseJson, text } from "./json";
 import { findApplicationProfile } from "./applicationDocs";
 import { enrichMboxLearningWithLlm } from "./llm";
 import { allAhjProcessProfiles, findAhjProcessProfile } from "./processProfiles";
@@ -52,10 +52,6 @@ interface KnowledgeEventInput {
   projectId?: string | null;
   eventType: string;
   details?: Record<string, unknown>;
-}
-
-function text(value: unknown): string {
-  return typeof value === "string" ? value : value == null ? "" : String(value);
 }
 
 function clean(value: unknown): string {
@@ -118,22 +114,23 @@ function correctionSignature(correction: KnowledgeFacts["correction"]): string {
   return normalize(`${correction.bucket} ${correction.rootCause} ${correction.requiredAction}`);
 }
 
-function redactSample(value: string): string {
+// Strip PII (emails, street addresses, long digit runs, phone numbers) from a
+// learning/email sample and cap its length. Shared by redactSample/redactEmailText.
+function redact(value: string, maxLen: number): string {
   return clean(value)
     .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[email]")
     .replace(/\b\d{2,6}\s+[A-Z0-9 .'-]{3,60}\s+(?:ST|STREET|AVE|AVENUE|RD|ROAD|DR|DRIVE|LN|LANE|CT|COURT|PL|PLACE|WAY|BLVD|CIR|CIRCLE)\b(?:[, ]+[A-Z .'-]{2,40})?/gi, "[address]")
     .replace(/\b\d{5,}\b/g, "[number]")
     .replace(/\b\d{3}[-.\s]\d{3}[-.\s]\d{4}\b/g, "[phone]")
-    .slice(0, 240);
+    .slice(0, maxLen);
+}
+
+function redactSample(value: string): string {
+  return redact(value, 240);
 }
 
 export function redactEmailText(value: string): string {
-  return clean(value)
-    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[email]")
-    .replace(/\b\d{2,6}\s+[A-Z0-9 .'-]{3,60}\s+(?:ST|STREET|AVE|AVENUE|RD|ROAD|DR|DRIVE|LN|LANE|CT|COURT|PL|PLACE|WAY|BLVD|CIR|CIRCLE)\b(?:[, ]+[A-Z .'-]{2,40})?/gi, "[address]")
-    .replace(/\b\d{5,}\b/g, "[number]")
-    .replace(/\b\d{3}[-.\s]\d{3}[-.\s]\d{4}\b/g, "[phone]")
-    .slice(0, 6000);
+  return redact(value, 6000);
 }
 
 export interface ClassifiedMboxMessage {
@@ -264,10 +261,6 @@ function mapKnowledge(row: Row): PermitUtilityKnowledgeProfile {
     lastLearnedAt: text(row.last_learned_at),
     updatedAt: text(row.updated_at),
   };
-}
-
-function bool(value: unknown): boolean {
-  return value === true || value === 1 || value === "1";
 }
 
 function projectFromRow(row: Row): ProjectRecord {
@@ -1548,28 +1541,6 @@ export function saveVerifiedUtilityProfile(
   });
 }
 
-// Find the best-matching learned UTILITY profile (utility-scoped, ahj = "") for a
-// project's utility + state, so the NEM doc builder can use the utility's real learned
-// interconnection requirements. Tries state+utility, then utility-only.
-export function findLearnedUtilityProfile(
-  db: AppDb,
-  input: { state?: string; utility?: string },
-): PermitUtilityKnowledgeProfile | null {
-  if (!input.utility) return null;
-  const candidates = [
-    knowledgeProfileKey({ state: input.state, ahj: "", utility: input.utility }),
-    knowledgeProfileKey({ state: "", ahj: "", utility: input.utility }),
-  ];
-  for (const key of candidates) {
-    const row = db.get<Row>("SELECT * FROM permit_utility_knowledge WHERE profile_key = ?", [key]);
-    if (row) {
-      const profile = mapKnowledge(row);
-      if (profile.requiredDocuments.length > 0) return profile;
-    }
-  }
-  return null;
-}
-
 export function listKnowledgeProfiles(db: AppDb): PermitUtilityKnowledgeProfile[] {
   return db
     .query<Row>(
@@ -1604,12 +1575,6 @@ export function findLearnedProfileForProject(
     }
   }
   return null;
-}
-
-export function getKnowledgeProfile(db: AppDb, profileId: string): PermitUtilityKnowledgeProfile {
-  const row = db.get<Row>("SELECT * FROM permit_utility_knowledge WHERE id = ?", [profileId]);
-  if (!row) throw new Error("Knowledge profile not found.");
-  return mapKnowledge(row);
 }
 
 export function seedInitialKnowledgeBase(db: AppDb): void {

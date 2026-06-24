@@ -47,10 +47,3 @@ export const autoLearnSchema = z.object({
   // (e.g. Accela / Oregon ePermitting), which permit discipline this pass files.
   permitType: z.enum(["structural", "electrical"]).optional(),
 });
-
-export const knowledgeQuerySchema = z.object({
-  query: z.string().min(1).max(2000),
-  projectId: z.string().optional(),
-  ahj: z.string().max(200).optional(),
-  utility: z.string().max(200).optional(),
-});

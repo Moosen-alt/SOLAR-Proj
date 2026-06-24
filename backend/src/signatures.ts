@@ -3,6 +3,7 @@ import { PDFDocument } from "pdf-lib";
 import type { AppDb } from "./db";
 import { HttpError } from "./httpError";
 import { nowIso } from "./time";
+import { text as s } from "./json";
 
 // ---------------------------------------------------------------------------
 // Operator signatures. The operator stores their own signature image(s) once and
@@ -33,9 +34,6 @@ export interface LoadedSignature {
   name: string; // the signer's typed name, for the adjacent "Print name" line
 }
 
-function s(value: unknown): string {
-  return typeof value === "string" ? value : value == null ? "" : String(value);
-}
 
 function mapRow(row: Record<string, unknown>): SignatureView {
   return {

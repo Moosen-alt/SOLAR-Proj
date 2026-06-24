@@ -1,8 +1,8 @@
 import type { PortalRecipe, ProjectRecord, RecipeSelector, RecipeStep } from "../../../shared/src/types";
-import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, type PortalContext, type PortalStepResult } from "../adapter";
+import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, ok, fail, type PortalContext, type PortalStepResult } from "../adapter";
 import { openPortal } from "../browser";
-import { fillCustomCombobox } from "../comboboxFill";
-import { detectChallengeFrame, redactStatusText, RETRY_BACKOFF_MS, sleep, smartWait, waitForElement } from "../safeAction";
+import { selectWithFallback } from "../comboboxFill";
+import { detectChallengeFrame, scanStatusFromBody, RETRY_BACKOFF_MS, sleep, smartWait, waitForElement } from "../safeAction";
 import { performLogin } from "./loginFlow";
 
 // RecipeAdapter — replays a recorded portal recipe (see portal_recipes / the recorder).
@@ -37,13 +37,6 @@ function isFinalSubmitStep(step: RecipeStep): boolean {
   return (step as { isFinalSubmit?: unknown }).isFinalSubmit === true;
 }
 
-function ok(message: string, data: Record<string, unknown> = {}): PortalStepResult {
-  return { ok: true, message, data };
-}
-function fail(message: string, data: Record<string, unknown> = {}): PortalStepResult {
-  return { ok: false, message, data };
-}
-
 export class RecipeAdapter extends BasePortalAdapter {
   portalName: string;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -51,8 +44,6 @@ export class RecipeAdapter extends BasePortalAdapter {
   // Set true ONLY when the automation actually clicked an explicit isFinalSubmit step
   // in autoSubmit mode and the portal accepted it (no challenge / no error).
   finalSubmitClicked = false;
-  // Set true once the replay reaches the review marker (or clicks the final submit).
-  reachedReview = false;
 
   constructor(
     private recipe: PortalRecipe,
@@ -167,16 +158,7 @@ export class RecipeAdapter extends BasePortalAdapter {
     try {
       await this.page.goto(this.recipe.portalUrl);
       await this.page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
-      const bodyText = await this.page.locator("body").innerText().catch(() => "");
-      for (const num of applicationNumbers) {
-        if (!num) continue;
-        const idx = bodyText.indexOf(num);
-        if (idx === -1) continue;
-        const snippet = bodyText.slice(Math.max(0, idx - 80), idx + 320);
-        const redacted = redactStatusText(snippet);
-        if (redacted) return redacted;
-      }
-      return redactStatusText(bodyText.slice(0, 600));
+      return scanStatusFromBody(this.page, applicationNumbers);
     } catch {
       return null;
     }
@@ -200,7 +182,6 @@ export class RecipeAdapter extends BasePortalAdapter {
       // Guided-manual: stop at review. autoSubmit (trusted, approved): proceed past
       // the review marker to replay ONLY allowlisted final-submit steps.
       if (step.action === "stopForReview") {
-        this.reachedReview = true;
         if (!this.options.autoSubmit) break;
         pastReview = true;
         continue;
@@ -294,9 +275,7 @@ export class RecipeAdapter extends BasePortalAdapter {
         await waitForElement(scoped);
         // Native <select> first; fall back to the custom-combobox interaction for styled
         // div dropdowns (PowerClerk "Please select...", select2, ExtJS) selectOption can't drive.
-        await scoped!.selectOption(v)
-          .catch(async () => scoped!.selectOption({ label: v }))
-          .catch(async () => { await fillCustomCombobox(this.page, scoped, v); });
+        await selectWithFallback(this.page, scoped, v);
         return true;
       }
       case "check":
@@ -364,7 +343,6 @@ export class RecipeAdapter extends BasePortalAdapter {
         throw new Error(`Final submit triggered a challenge after the click (${postChallenge}); pausing for human verification.`);
       }
       this.finalSubmitClicked = true;
-      this.reachedReview = true;
       return true;
     }
 

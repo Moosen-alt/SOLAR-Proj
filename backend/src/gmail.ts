@@ -4,6 +4,7 @@ import path from "node:path";
 import type { AppDb } from "./db";
 import { HttpError } from "./httpError";
 import { runEmailTracker } from "./repository";
+import { writeMboxMessage } from "./mbox";
 import type { EmailTrackerRunResult } from "../../shared/src/types";
 
 // =============================================================================
@@ -133,9 +134,7 @@ export async function fetchGmailToMbox(query = "newer_than:30d", maxResults = 10
     // Gmail returns the full RFC822 message base64url-encoded.
     const rfc822 = Buffer.from(msg.raw.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
     // MBOX separator line + escape any lines that start with "From " in the body.
-    out.write(`From gmail@local ${new Date().toUTCString()}\n`);
-    out.write(rfc822.replace(/\r\n/g, "\n").replace(/\n(From )/g, "\n>$1"));
-    out.write("\n\n");
+    writeMboxMessage(out, rfc822, "gmail@local");
     count += 1;
   }
 

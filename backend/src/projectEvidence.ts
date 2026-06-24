@@ -1,4 +1,5 @@
 import type { HistoricalChecklistItem, ProjectRecord } from "../../shared/src/types";
+import { text } from "./json";
 
 export type EvidenceConfidence = "high" | "medium" | "low";
 
@@ -55,10 +56,6 @@ const topicRequirements: Record<EvidenceTopic, string[]> = {
   utilityApproval: ["Utility approval or interconnection approval", "Utility application confirmation", "Approval letter if AHJ requires it"],
   ownerAuthorization: ["Signed application", "Owner authorization", "Customer/owner signature"],
 };
-
-function text(value: unknown): string {
-  return typeof value === "string" ? value : value == null ? "" : String(value);
-}
 
 export function fieldValue(project: ProjectRecord, key: string): string {
   return text(project.parserSnapshot[key]).trim();

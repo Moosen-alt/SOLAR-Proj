@@ -1,4 +1,5 @@
 import type { AppDb, SqlParam } from "./db";
+import { nowIso } from "./time";
 
 export interface UserRecord {
   id: string;
@@ -22,10 +23,6 @@ function mapUser(row: Row): UserRecord {
     active: Boolean(row.active),
     createdAt: String(row.created_at),
   };
-}
-
-function nowIso(): string {
-  return new Date().toISOString();
 }
 
 export function listUsers(db: AppDb): UserRecord[] {

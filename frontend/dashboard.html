@@ -77,17 +77,6 @@
           <p class="muted">Loading daily operations report...</p>
         </div>
       </div>
-      <!-- Ops Board hidden for solo operation (team portfolio view); kept in DOM
-           with its IDs so loaders/renders never error. Restore by removing `hidden`. -->
-      <div id="opsBoardWrap" hidden>
-        <div class="section-head">
-          <h2>Ops Board</h2>
-          <span id="opsBoardStatus" class="badge">syncing</span>
-        </div>
-        <div id="opsBoard" class="ops-board">
-          <p class="muted">Loading portfolio action board...</p>
-        </div>
-      </div>
       <!-- Action Queue hidden for solo operation: it restated each project's
            blockers as role-based PM actions (Data QA / Permit Ops / NEM Ops /
            Submission Specialist), which is noise for a one-person operator — the

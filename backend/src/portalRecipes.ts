@@ -3,15 +3,12 @@ import { clientStagingOverlay } from "./clients";
 import type { AppDb } from "./db";
 import { HttpError } from "./httpError";
 import { id } from "./ids";
-import { asJson, parseJson } from "./json";
+import { asJson, parseJson, text as s } from "./json";
 import { knowledgeProfileKey } from "./knowledgeBase";
 import { nowIso } from "./time";
 
 type Row = Record<string, unknown>;
 
-function s(value: unknown): string {
-  return typeof value === "string" ? value : value == null ? "" : String(value);
-}
 
 function mapRecipe(row: Row): PortalRecipe {
   return {

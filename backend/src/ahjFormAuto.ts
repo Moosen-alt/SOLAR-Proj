@@ -86,7 +86,7 @@ export function sha256(bytes: Uint8Array): string {
 }
 
 // Fetch a URL and return the bytes only if it looks like a real PDF.
-async function fetchPdf(url: string): Promise<Uint8Array | null> {
+export async function fetchPdf(url: string): Promise<Uint8Array | null> {
   try {
     const res = await fetch(url, { redirect: "follow" });
     if (!res.ok) return null;

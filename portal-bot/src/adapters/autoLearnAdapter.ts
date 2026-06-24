@@ -2,7 +2,7 @@ import type { Page } from "playwright";
 import type { ProjectRecord, RecipeSelector, RecipeStep } from "../../../shared/src/types";
 import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, type PortalContext, type PortalStepResult } from "../adapter";
 import { openPortal } from "../browser";
-import { fillCustomCombobox } from "../comboboxFill";
+import { selectWithFallback } from "../comboboxFill";
 import { detectChallengeFrame, redactStatusText, safeAction, sleep, smartWait, waitForElement } from "../safeAction";
 import { scrapeReviewScreen as scrapeReviewScreenShared } from "../reviewScreenScraper";
 import { performLogin } from "./loginFlow";
@@ -182,6 +182,12 @@ export interface RawField {
   text?: string;
   href?: string;
 }
+
+// The CSS selector that enumerates every interactive control on a page (inputs, selects,
+// textareas, buttons, role=button, and real <a href> links). Shared with llmGapFill so both
+// the learn loop and the gap-fill pass scrape the exact same element set. NOTE: a test mock
+// dispatches on selector.includes("button") — keep this literal string byte-identical.
+export const EXTRACT_SEL = "input, select, textarea, button, [role=button], a[href]:not([href='#']):not([href=''])";
 
 // Serializable extractor — derives a label and selector hints for each interactive
 // element. Defined as a string-compatible function so it runs inside the page.
@@ -543,10 +549,9 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       let url = "";
       let bodyText = "";
       try {
-        const extractSel = "input, select, textarea, button, [role=button], a[href]:not([href='#']):not([href=''])";
         let raws: RawField[] = [];
         for (let tryN = 0; tryN < 4; tryN++) {
-          raws = await this.page.$$eval(extractSel, extractFieldsInPage).catch(() => [] as RawField[]);
+          raws = await this.page.$$eval(EXTRACT_SEL, extractFieldsInPage).catch(() => [] as RawField[]);
           if (raws.length > 0) break;
           await smartWait(this.page, 1500);
           await this.dismissModals();
@@ -973,9 +978,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           // Native <select> first; fall back to the custom-combobox interaction for
           // styled-div dropdowns (PowerClerk "Please select...", select2, ExtJS, etc.)
           // that selectOption() can't drive.
-          await loc.selectOption(value)
-            .catch(async () => loc.selectOption({ label: value }))
-            .catch(async () => { await fillCustomCombobox(this.page, loc, value); });
+          await selectWithFallback(this.page, loc, value);
         } else if (action === "check") {
           await loc.check();
         } else {

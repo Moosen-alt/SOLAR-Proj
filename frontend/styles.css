@@ -61,8 +61,8 @@
   box-shadow: var(--focus-ring);
   border-radius: var(--radius-sm);
 }
-button:focus-visible, .button:focus-visible, .file-button:focus-visible,
-.board-card:focus-visible, .page-tab:focus-visible, .view-toggle-btn:focus-visible {
+button:focus-visible, .button:focus-visible,
+.board-card:focus-visible, .page-tab:focus-visible {
   outline: none;
   box-shadow: var(--focus-ring);
 }
@@ -311,8 +311,7 @@ p, .muted { color: var(--muted); }
 #detailSubtitle { margin-top: 4px; }
 .actions { justify-content: flex-start; flex-wrap: wrap; }
 .button,
-button,
-.file-button {
+button {
   border: 1px solid transparent;
   border-radius: 6px;
   cursor: pointer;
@@ -327,14 +326,10 @@ button,
   transition: background-color var(--t-fast), border-color var(--t-fast), color var(--t-fast), box-shadow var(--t-fast), transform var(--t-fast);
 }
 .button:active,
-button:active,
-.file-button:active { transform: translateY(1px); }
+button:active { transform: translateY(1px); }
 
 button svg,
-.button svg,
-.file-button svg { width: 17px; height: 17px; }
-
-.file-button input { display: none; }
+.button svg { width: 17px; height: 17px; }
 
 .primary {
   background: var(--primary);
@@ -548,16 +543,6 @@ tbody tr:hover, tbody tr.active { background: #f0fdfa; }
 .progress-track { background: var(--line); border-radius: 99px; height: 6px; overflow: hidden; }
 .progress-bar { height: 100%; background: var(--primary); border-radius: 99px; transition: width 0.3s; width: 0%; }
 
-/* Later-steps accordion */
-.later-steps-accordion { border: 1px solid var(--line); border-radius: 6px; margin: 8px 0; }
-.later-steps-summary { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; cursor: pointer; font-size: 13px; font-weight: 600; list-style: none; user-select: none; }
-.later-steps-summary::-webkit-details-marker { display: none; }
-.later-steps-summary::before { content: "▸"; margin-right: 8px; font-size: 11px; transition: transform 0.15s; }
-.later-steps-accordion[open] > .later-steps-summary::before { content: "▾"; }
-.later-steps-hint { font-size: 11px; font-weight: 400; color: var(--muted, #888); }
-.later-steps-accordion > .panel, .later-steps-accordion > section { margin-top: 0; border-top: 1px solid var(--line); border-radius: 0; }
-.later-steps-accordion[open] { padding-bottom: 4px; }
-
 /* Knowledge Base accordion */
 .kb-accordion { border: 1px solid var(--line); border-radius: 6px; padding: 0 12px; }
 .kb-summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 0; cursor: pointer; font-size: 15px; font-weight: 600; list-style: none; user-select: none; }
@@ -623,17 +608,6 @@ tbody tr:hover, tbody tr.active { background: #f0fdfa; }
 .stage-progress { margin-top: 4px; background: var(--line); border-radius: 99px; height: 4px; overflow: hidden; }
 .stage-progress > span { display: block; height: 100%; background: var(--primary); border-radius: 99px; }
 
-/* Board / Table view toggle */
-.view-toggle { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
-.view-toggle-btn {
-  display: inline-flex; align-items: center; gap: 5px;
-  padding: 5px 10px; font-size: 12px; font-weight: 600;
-  background: var(--surface); color: var(--muted); border: none; cursor: pointer;
-}
-.view-toggle-btn svg { width: 14px; height: 14px; }
-.view-toggle-btn + .view-toggle-btn { border-left: 1px solid var(--line); }
-.view-toggle-btn[aria-selected="true"] { background: var(--primary); color: #fff; }
-
 /* Stage board (kanban-lite): six columns, a card per project */
 .stage-board { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(190px, 1fr); gap: 10px; overflow-x: auto; padding-bottom: 8px; }
 .stage-col { background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; display: flex; flex-direction: column; min-height: 80px; }
@@ -694,7 +668,7 @@ tbody tr:hover, tbody tr.active { background: #f0fdfa; }
 
 /* ---------------------------------------------------------------------------
    Loading skeletons — shown while project list fetches resolve, so the board
-   doesn't flash blank. .is-loading on a container reveals its skeleton block.
+   doesn't flash blank.
    --------------------------------------------------------------------------- */
 @keyframes skeletonSheen {
   0% { background-position: 200% 0; }
@@ -709,14 +683,6 @@ tbody tr:hover, tbody tr.active { background: #f0fdfa; }
 .board-skeleton { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(190px, 1fr); gap: 10px; padding-bottom: 8px; }
 .board-skeleton-col { background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius-md); padding: 8px; display: flex; flex-direction: column; gap: 8px; }
 .board-skeleton-card { height: 56px; }
-/* Subtle inline spinner for in-place async actions. */
-@keyframes spin { to { transform: rotate(360deg); } }
-.spinner {
-  display: inline-block; width: 14px; height: 14px; border-radius: 50%;
-  border: 2px solid color-mix(in srgb, var(--primary) 30%, transparent);
-  border-top-color: var(--primary); animation: spin .7s linear infinite;
-  vertical-align: -2px;
-}
 
 /* ---------------------------------------------------------------------------
    Keyboard shortcuts help overlay (press ?). Lightweight, focus-trapped via JS.

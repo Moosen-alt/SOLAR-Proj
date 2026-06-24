@@ -20,7 +20,6 @@ export type ProjectStatus =
   | "handoff_ready"
   | "blocked";
 
-export type PortalType = "AHJ" | "utility" | "finance" | "other";
 export type QcStatus = "pass" | "fail" | "warning";
 export type Severity = "info" | "warning" | "error" | "blocker";
 export type HumanReviewStatus = "pending" | "approved" | "edited" | "rejected";
@@ -1138,7 +1137,6 @@ export interface ParserLlmExtraction {
 }
 
 export interface LLMProvider {
-  extractFields(input: Record<string, unknown>): Promise<Record<string, unknown>>;
   /** LLM-assisted extraction of all project fields from raw document text (plan set, utility bill, meter photo). */
   extractProjectFields(input: {
     planText?: string;

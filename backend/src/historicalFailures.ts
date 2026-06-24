@@ -8,7 +8,8 @@ import type {
   ProjectStatus,
 } from "../../shared/src/types";
 import type { AppDb } from "./db";
-import { parseJson } from "./json";
+import { parseJson, text } from "./json";
+import { normalizeTokens } from "./normalize";
 import { extractProjectFeatureTags, knowledgeProfileKey } from "./knowledgeBase";
 import {
   allProjectEvidenceText,
@@ -21,10 +22,6 @@ import {
 import { nowIso } from "./time";
 
 type Row = Record<string, unknown>;
-
-function text(value: unknown): string {
-  return typeof value === "string" ? value : value == null ? "" : String(value);
-}
 
 function projectFromRow(row: Row): ProjectRecord {
   return {
@@ -52,12 +49,8 @@ function projectFromRow(row: Row): ProjectRecord {
   };
 }
 
-function normalize(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-}
-
 function signatureFor(row: Row): string {
-  return normalize(`${text(row.correction_bucket)} ${text(row.root_cause)} ${text(row.required_action)}`) || normalize(text(row.sample));
+  return normalizeTokens(`${text(row.correction_bucket)} ${text(row.root_cause)} ${text(row.required_action)}`) || normalizeTokens(text(row.sample));
 }
 
 function titleForCause(cause: string, action: string, sample: string): string {
@@ -125,7 +118,7 @@ function fallbackCauses(project: ProjectRecord): HistoricalFailureCause[] {
   const out: HistoricalFailureCause[] = [];
   const push = (title: string, rootCause: string, requiredAction: string, sample: string) => {
     out.push({
-      signature: normalize(`${title} ${rootCause}`),
+      signature: normalizeTokens(`${title} ${rootCause}`),
       title,
       count: 0,
       correctionBucket: "A_we_fix",
@@ -152,7 +145,7 @@ function fallbackCauses(project: ProjectRecord): HistoricalFailureCause[] {
 // signature, notarized forms, proof of ownership, fee payment). These must never read
 // as "MISSING" gaps the service has to fix; they're advisory reminders only.
 const OUT_OF_SCOPE = /signature|owner authorization|customer authorization|notar|proof of ownership|\bdeed\b|\bhoa\b|fee payment|\bpay (the )?fee/i;
-export function isOutOfScopeItem(title: string, ...extra: string[]): boolean {
+function isOutOfScopeItem(title: string, ...extra: string[]): boolean {
   return OUT_OF_SCOPE.test(`${title} ${extra.join(" ")}`.toLowerCase());
 }
 

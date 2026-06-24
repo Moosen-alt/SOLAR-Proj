@@ -25,6 +25,16 @@ export interface PortalStepResult {
   pauseReason?: string;
 }
 
+// Shared PortalStepResult constructors. Adapters route every step return through these
+// instead of redefining identical local ok()/fail() helpers.
+export function ok(message: string, data: Record<string, unknown> = {}): PortalStepResult {
+  return { ok: true, message, data };
+}
+
+export function fail(message: string, data: Record<string, unknown> = {}): PortalStepResult {
+  return { ok: false, message, data };
+}
+
 export interface PortalAdapter {
   portalName: string;
   login(context: PortalContext): Promise<PortalStepResult>;

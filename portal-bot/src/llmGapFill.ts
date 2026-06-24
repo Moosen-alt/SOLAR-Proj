@@ -1,4 +1,5 @@
 import {
+  EXTRACT_SEL,
   extractFieldsInPage,
   toExtractedField,
   isPayFee,
@@ -9,7 +10,7 @@ import {
   type LearnPlanRequest,
 } from "./adapters/autoLearnAdapter";
 import { buildLocator } from "./adapters/loginFlow";
-import { fillCustomCombobox } from "./comboboxFill";
+import { selectWithFallback } from "./comboboxFill";
 import { redactStatusText } from "./safeAction";
 
 // ---------------------------------------------------------------------------
@@ -32,8 +33,6 @@ import { redactStatusText } from "./safeAction";
 // the human rather than filled with an invented value. Secrets (account/meter/SSN/password)
 // are never touched here — those are bound deterministically by the adapter.
 // ---------------------------------------------------------------------------
-
-const EXTRACT_SEL = "input, select, textarea, button, [role=button], a[href]:not([href='#']):not([href=''])";
 
 export interface GapFillOutcome {
   /** Field labels the LLM filled this page (non-PII labels only). */
@@ -142,9 +141,7 @@ async function isFieldEmpty(loc: any, fieldType: ExtractedField["fieldType"]): P
 async function applyGrounded(page: any, loc: any, field: ExtractedField, value: string): Promise<boolean> {
   try {
     if (field.fieldType === "select") {
-      await loc.selectOption(value)
-        .catch(async () => loc.selectOption({ label: value }))
-        .catch(async () => { await fillCustomCombobox(page, loc, value); });
+      await selectWithFallback(page, loc, value);
     } else if (field.fieldType === "checkbox" || field.fieldType === "radio") {
       const on = /^(true|yes|on|1)$/i.test(value);
       if (on) await loc.check({ timeout: 6000 });

@@ -6,6 +6,7 @@ import type { AppDb } from "./db";
 import { logger } from "./logger";
 import { runEmailTracker } from "./repository";
 import { encryptStorageState, decryptStorageState } from "../../portal-bot/src/cryptoStorage";
+import { writeMboxMessage } from "./mbox";
 
 // IMAP email polling — supports two source modes:
 //
@@ -127,10 +128,6 @@ function dbImapSources(db: AppDb): ImapSourceConfig[] {
 // ---------------------------------------------------------------------------
 // Credential management for DB sources
 // ---------------------------------------------------------------------------
-
-export function encryptImapPassword(password: string): string {
-  return encryptStorageState({ password });
-}
 
 /** Upsert an IMAP source row. Pass password only when setting or rotating credentials. */
 export function upsertImapSource(
@@ -280,9 +277,7 @@ async function fetchImapToMbox(
         }
 
         const raw = msg.source.toString("utf8");
-        out.write(`From imap@local ${new Date().toUTCString()}\n`);
-        out.write(raw.replace(/\r\n/g, "\n").replace(/\n(From )/g, "\n>$1"));
-        out.write("\n\n");
+        writeMboxMessage(out, raw, "imap@local");
         count++;
       }
     } finally {

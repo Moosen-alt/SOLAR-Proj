@@ -2,7 +2,8 @@ import type { AppDb } from "./db";
 import type { LLMProvider } from "../../shared/src/types";
 import { logger } from "./logger";
 import { nowIso } from "./time";
-import { buildFieldMapForPdf, sha256, storeAhjFormTemplate, type StoredFieldMap } from "./ahjFormAuto";
+import { parseJson } from "./json";
+import { buildFieldMapForPdf, fetchPdf, sha256, storeAhjFormTemplate, type StoredFieldMap } from "./ahjFormAuto";
 
 // ---------------------------------------------------------------------------
 // Keep auto-acquired AHJ form templates current. AHJs revise their PDF forms
@@ -20,20 +21,6 @@ interface TemplateRow {
   field_map: string;
 }
 
-async function fetchPdf(url: string): Promise<Uint8Array | null> {
-  try {
-    const res = await fetch(url, { redirect: "follow" });
-    if (!res.ok) return null;
-    const buf = new Uint8Array(await res.arrayBuffer());
-    const type = res.headers.get("content-type") || "";
-    if (buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46) return buf;
-    if (type.includes("pdf") && buf.length > 1000) return buf;
-    return null;
-  } catch {
-    return null;
-  }
-}
-
 export interface RefreshSummary {
   checked: number;
   updated: number;
@@ -48,8 +35,7 @@ export async function refreshAhjFormTemplates(db: AppDb, llm: LLMProvider): Prom
   const summary: RefreshSummary = { checked: 0, updated: 0, brokenLinks: 0, unchanged: 0 };
 
   for (const row of rows) {
-    let map: StoredFieldMap;
-    try { map = JSON.parse(row.field_map || "{}"); } catch { continue; }
+    const map = parseJson<StoredFieldMap>(row.field_map, {} as StoredFieldMap);
     if (!map.sourceUrl) continue; // operator-uploaded with no source link — nothing to re-check
     summary.checked += 1;
 

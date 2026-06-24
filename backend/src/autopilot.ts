@@ -38,7 +38,6 @@ export type AutopilotPhase =
   | "idle"
   | "running"
   | "awaiting_approval"
-  | "submitting"
   | "submitted"
   | "blocked"
   | "paused_for_human"

@@ -77,7 +77,7 @@ import type { AppDb } from "./db";
 import { HttpError } from "./httpError";
 import { buildHistoricalFailureReport } from "./historicalFailures";
 import { id } from "./ids";
-import { asJson, parseJson } from "./json";
+import { asJson, bool, parseJson, text } from "./json";
 import {
   learnFromCorrection,
   learnFromPermitStatus,
@@ -93,7 +93,7 @@ import {
   classifyMboxMessages,
   type ClassifiedMboxMessage,
 } from "./knowledgeBase";
-import { fieldAliases, normalizeProject } from "./normalize";
+import { compactAlnum, fieldAliases, normalizeProject, normalizeTokens } from "./normalize";
 import { classifyPermitStatusText, nextCheckIso } from "./permitMonitor";
 import { evidenceForTopic, evidenceLines, type EvidenceTopic } from "./projectEvidence";
 import { runQcForProject } from "./qc";
@@ -130,13 +130,7 @@ interface ProjectRow extends Row {
   updated_at: string;
 }
 
-function bool(value: unknown): boolean {
-  return value === true || value === 1 || value === "1";
-}
 
-function text(value: unknown): string {
-  return typeof value === "string" ? value : value == null ? "" : String(value);
-}
 
 function mapProject(row: ProjectRow): ProjectRecord {
   return {
@@ -578,19 +572,6 @@ type LaneStatusSummary = Pick<
   | "latestNemCheckedAt"
   | "nemApproved"
 >;
-
-// DB wrapper for single-project callers: load this project's recent checks/emails, then
-// compute. The project-LIST path batch-loads once and calls computeLaneStatusSummary
-// directly (see getProjectList) to avoid an N+1 query per row.
-function getProjectLaneStatusSummary(db: AppDb, projectId: string, projectStatus: ProjectRecord["status"]): LaneStatusSummary {
-  const checks = db
-    .query<Row>("SELECT * FROM permit_status_checks WHERE project_id = ? ORDER BY created_at DESC LIMIT 50", [projectId])
-    .map(mapPermitStatusCheck);
-  const emails = db
-    .query<Row>("SELECT * FROM email_project_matches WHERE project_id = ? ORDER BY created_at DESC LIMIT 50", [projectId])
-    .map(mapEmailProjectMatch);
-  return computeLaneStatusSummary(projectStatus, checks, emails);
-}
 
 // Pure analysis over already-loaded checks/emails — no DB access, so the list path can
 // batch-load all pages' rows in two queries and call this per project.
@@ -3551,22 +3532,15 @@ export function configureEmailTrackingSource(
   return getEmailTrackerStatus(db);
 }
 
-function searchNormalize(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-}
-
-function compactIdentifier(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9]/g, "");
-}
 
 function containsLoose(haystack: string, needle: string): boolean {
-  const normalizedNeedle = searchNormalize(needle);
+  const normalizedNeedle = normalizeTokens(needle);
   return normalizedNeedle.length >= 4 && haystack.includes(normalizedNeedle);
 }
 
 function containsIdentifier(raw: string, value: string): boolean {
-  const needle = compactIdentifier(value);
-  return needle.length >= 5 && compactIdentifier(raw).includes(needle);
+  const needle = compactAlnum(value);
+  return needle.length >= 5 && compactAlnum(raw).includes(needle);
 }
 
 function trackingNumbersForProject(db: AppDb, projectId: string): string[] {
@@ -3596,7 +3570,7 @@ function extractTrackingNumber(raw: string, labels: RegExp[]): string {
 
 function matchProjectForEmail(db: AppDb, message: ClassifiedMboxMessage, clientId?: string): { project: ProjectRecord; confidence: number; reason: string } | null {
   const raw = message.rawSearchText;
-  const haystack = searchNormalize(raw);
+  const haystack = normalizeTokens(raw);
   const projects = clientId
     ? db.query<ProjectRow>("SELECT * FROM projects WHERE client_id = ? ORDER BY updated_at DESC", [clientId]).map(mapProject)
     : db.query<ProjectRow>("SELECT * FROM projects ORDER BY updated_at DESC").map(mapProject);
@@ -3629,12 +3603,12 @@ function matchProjectForEmail(db: AppDb, message: ClassifiedMboxMessage, clientI
         break;
       }
     }
-    if (project.utility && (containsLoose(haystack, project.utility) || searchNormalize(message.record.utility || "") === searchNormalize(project.utility))) {
+    if (project.utility && (containsLoose(haystack, project.utility) || normalizeTokens(message.record.utility || "") === normalizeTokens(project.utility))) {
       score += 15;
       reasons.push("utility");
     }
     const jurisdiction = message.record.jurisdiction || "";
-    if (project.ahj && (containsLoose(haystack, project.ahj) || searchNormalize(jurisdiction) === searchNormalize(project.ahj))) {
+    if (project.ahj && (containsLoose(haystack, project.ahj) || normalizeTokens(jurisdiction) === normalizeTokens(project.ahj))) {
       score += 15;
       reasons.push("AHJ");
     }

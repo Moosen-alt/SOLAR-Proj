@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { AhjFieldMapResult, AhjFormUrlResult, AhjOverlayMapResult, AhjResearchResult, CorrectionBucket, InverterSpecLookup, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, PortalFieldPlan, PortalFieldPlanInput, PortalFillVerification, PortalFillVerifyInput, ProjectRecord, UtilityResearchResult } from "../../shared/src/types";
 import { RECIPE_FIELD_DESCRIPTIONS } from "./portalRecipes";
+import { compactAlnum } from "./normalize";
 
 const MODEL = "claude-opus-4-8";
 
@@ -9,10 +10,6 @@ const MODEL = "claude-opus-4-8";
 // ---------------------------------------------------------------------------
 
 export class StubLLMProvider implements LLMProvider {
-  async extractFields(): Promise<Record<string, unknown>> {
-    return { provider: "stub", confidence: 0, notes: "No ANTHROPIC_API_KEY configured. Human review required." };
-  }
-
   async extractProjectFields(): Promise<ParserLlmExtraction> {
     return {
       provider: "stub",
@@ -174,10 +171,6 @@ const KNOWN_INVERTERS: KnownInverter[] = [
   { label: "SMA Sunny Boy 7.7", matches: ["sb77", "sunnyboy77", "sb7-7"], outputCurrentA: 32, outputVa: 7700 },
 ];
 
-function normModel(s: string): string {
-  return String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
-}
-
 // ---------------------------------------------------------------------------
 // Autonomous portal-learning helpers (heuristic fallbacks + safety filter).
 // ---------------------------------------------------------------------------
@@ -287,10 +280,9 @@ function heuristicPortalPlan(input: PortalFieldPlanInput): PortalFieldPlan {
 }
 
 function heuristicVerifyFill(input: PortalFillVerifyInput): PortalFillVerification {
-  const norm = (v: string) => String(v || "").toLowerCase().replace(/[^a-z0-9]/g, "");
-  const projVals = Object.values(input.projectFields).map(norm).filter((v) => v.length >= 3);
+  const projVals = Object.values(input.projectFields).map(compactAlnum).filter((v) => v.length >= 3);
   const matches = input.reviewFields.map((rf) => {
-    const fv = norm(rf.value);
+    const fv = compactAlnum(rf.value);
     // A review value is "ok" if it matches some project value (or is a non-data literal).
     const ok = fv.length < 3 || projVals.some((pv) => pv === fv || pv.includes(fv) || fv.includes(pv));
     return { label: rf.label, expected: "(project data)", found: rf.value, ok };
@@ -307,7 +299,7 @@ function heuristicVerifyFill(input: PortalFillVerifyInput): PortalFillVerificati
 }
 
 function lookupKnownInverter(model: string): KnownInverter | null {
-  const n = normModel(model);
+  const n = compactAlnum(model);
   if (!n) return null;
   for (const k of KNOWN_INVERTERS) {
     if (k.matches.some((m) => n.includes(m) || m.includes(n))) return k;
@@ -387,19 +379,9 @@ export class ClaudeLLMProvider implements LLMProvider {
     this.client = new Anthropic({ apiKey });
   }
 
+  // Thin wrapper over askLong with a smaller token budget for short prompts.
   private async ask(systemPrompt: string, userMessage: string): Promise<string> {
-    const stream = await this.client.messages.stream({
-      model: MODEL,
-      max_tokens: 2048,
-      thinking: { type: "adaptive" },
-      system: systemPrompt,
-      messages: [{ role: "user", content: userMessage }],
-    });
-    const msg = await stream.finalMessage();
-    for (const block of msg.content) {
-      if (block.type === "text") return block.text;
-    }
-    return "";
+    return this.askLong(systemPrompt, userMessage, 2048);
   }
 
   private parseJson<T>(text: string, fallback: T): T {
@@ -409,15 +391,6 @@ export class ClaudeLLMProvider implements LLMProvider {
     } catch {
       return fallback;
     }
-  }
-
-  async extractFields(input: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const system = `You are a solar permit document parser. Extract structured data from solar permit application text.
-Return a JSON object with any of these fields you can find: customerName, address, city, state, zip, systemKw, panelCount, panelModel, inverterModel, inverterCount, batteryModel, batteryCount, utilityAccount, meterNumber, ahj, utility, roofType, mountType, azimuth, tilt.
-IMPORTANT: Do NOT include utility account numbers — omit that field entirely for privacy.
-Set confidence (0-1) for each field. Return only valid JSON.`;
-    const raw = await this.ask(system, JSON.stringify(input));
-    return this.parseJson<Record<string, unknown>>(raw, { provider: "claude", confidence: 0 });
   }
 
   // Larger budget than ask() — plan sets are dense and we want every field.

@@ -88,3 +88,14 @@ export async function fillCustomCombobox(page: any, loc: any, value: string): Pr
   await page.keyboard?.press("Enter").catch(() => {});
   return false;
 }
+
+/**
+ * Select a value on a dropdown that may be a native <select> OR a custom div widget.
+ * Three-step cascade: native selectOption(value) → selectOption({ label }) → the
+ * custom-combobox open/type/pick fallback. Shared by every adapter's select path.
+ */
+export async function selectWithFallback(page: any, loc: any, value: string): Promise<void> {
+  await loc.selectOption(value)
+    .catch(async () => loc.selectOption({ label: value }))
+    .catch(async () => { await fillCustomCombobox(page, loc, value); });
+}

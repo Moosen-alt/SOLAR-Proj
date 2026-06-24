@@ -1968,13 +1968,6 @@ function findPacificAccountCandidatesInText(text='', sectionName='', requireLabe
   return candidates;
 }
 
-function findPacificAccountInText(text='', requireLabel=false, sectionName=''){
-  const candidates = findPacificAccountCandidatesInText(text, sectionName, requireLabel);
-  candidates.sort((a,b)=>b.score-a.score);
-  return candidates[0]?.value || '';
-}
-
-
 function parseUBAccountNumber(rawText, utilityHint=''){
   const raw = normalizeText(rawText || '');
   const flat = normalizeAccountSearchText(raw);
@@ -2422,13 +2415,6 @@ function collectElectricalScopeWindows(rawText){
   addWindow('UTILITY SERVICE', /\bUTILITY\s+SERVICE\s*:\s*[^\n]{0,180}/i, 80, 420);
 
   return windows.join('\n\n');
-}
-
-function detectUtilityProvider(text, fallback=''){
-  const combined = normalizeText(`${fallback || ''} ${text || ''}`).toUpperCase();
-  if (/\bPGE\b|PORTLAND\s+GENERAL/i.test(combined)) return 'PGE';
-  if (/PACIFICORP|PACIFIC\s+POWER|PAC\s*POWER/i.test(combined)) return 'PACIFICORP';
-  return String(fallback || '').toUpperCase();
 }
 
 function detectElectricalScope(plan){
@@ -3074,10 +3060,6 @@ function getUtilityPacketBaseName(){
   return safeFilePart(`${owner} - ${address}`);
 }
 
-function makeSplitFilename(label){
-  return `${getUtilityPacketBaseName()} - ${label}.pdf`;
-}
-
 function actualSheetCode(pageText){
   const t = normalizeText(pageText || '');
 
@@ -3303,120 +3285,6 @@ function updateSplitUi(){
   updateProjectDoxUi();
 }
 
-async function createPdfFromPlanPages(pageNums){
-  if (!state.planFile) throw new Error('Upload and parse a plan set first.');
-  if (!window.PDFLib) throw new Error('PDFLib is not loaded.');
-
-  const srcBytes = await fileToArrayBuffer(state.planFile);
-  const srcPdf = await PDFLib.PDFDocument.load(srcBytes);
-  const outPdf = await PDFLib.PDFDocument.create();
-  const valid = [...new Set(pageNums || [])].filter(n => n >= 1 && n <= srcPdf.getPageCount());
-
-  if (!valid.length) throw new Error('No valid pages found for this split.');
-
-  const copied = await outPdf.copyPages(srcPdf, valid.map(n => n - 1));
-  copied.forEach(p => outPdf.addPage(p));
-
-  return await outPdf.save();
-}
-
-async function imageOrPdfFileToPdfBytes(file){
-  if (!file) return null;
-  if (!window.PDFLib) throw new Error('PDFLib is not loaded.');
-
-  const isPdf = /pdf/i.test(file.type) || /\.pdf$/i.test(file.name);
-  const bytes = await fileToArrayBuffer(file);
-
-  if (isPdf) return new Uint8Array(bytes);
-
-  const pdfDoc = await PDFLib.PDFDocument.create();
-  let image;
-  if (/png/i.test(file.type) || /\.png$/i.test(file.name)) image = await pdfDoc.embedPng(bytes);
-  else image = await pdfDoc.embedJpg(bytes);
-
-  const maxW = 612;
-  const maxH = 792;
-  const scale = Math.min(maxW / image.width, maxH / image.height, 1);
-  const w = image.width * scale;
-  const h = image.height * scale;
-
-  const page = pdfDoc.addPage([maxW, maxH]);
-  page.drawImage(image, {x:(maxW-w)/2, y:(maxH-h)/2, width:w, height:h});
-
-  return await pdfDoc.save();
-}
-
-async function downloadPlanSplit(label, pages){
-  const bytes = await createPdfFromPlanPages(pages);
-  saveAs(new Blob([bytes], {type:'application/pdf'}), makeSplitFilename(label));
-}
-
-async function downloadSupportingPdf(label, file){
-  if (!file) throw new Error(`${label} file has not been uploaded.`);
-  const bytes = await imageOrPdfFileToPdfBytes(file);
-  saveAs(new Blob([bytes], {type:'application/pdf'}), makeSplitFilename(label));
-}
-
-async function buildUtilityZip(){
-  if (!state.planFile) throw new Error('Upload and parse a plan set first.');
-  if (!window.JSZip) throw new Error('JSZip is not loaded.');
-
-  const zip = new JSZip();
-  const map = detectSplitPages();
-  const mode = getVal('utilityPacketMode') || 'pge';
-
-  const addPlanPdf = async (label, pages) => {
-    if (!pages || !pages.length) return;
-    const bytes = await createPdfFromPlanPages(pages);
-    zip.file(makeSplitFilename(label), bytes);
-  };
-
-  // Prior-style utility required docs.
-  await addPlanPdf('01 SLD 3-Line Diagram', map.sld);
-  await addPlanPdf('02 Site Plot Plan', map.siteAndPlot);
-  await addPlanPdf('03 Module Spec Sheet', map.moduleSpecs);
-  await addPlanPdf('04 Inverter Spec Sheet', map.inverterSpecs);
-
-  // Common optional utility docs.
-  await addPlanPdf('05 Combiner Spec Sheet', map.combinerSpecs);
-  await addPlanPdf('06 AC Disconnect Spec Sheet', map.acDisconnectSpecs);
-  await addPlanPdf('07 Battery ESS Spec Sheet', map.batterySpecs);
-  await addPlanPdf('08 Gateway Spec Sheet', map.gatewaySpecs);
-
-  if (state.ubFile) {
-    zip.file(makeSplitFilename('09 Utility Bill'), await imageOrPdfFileToPdfBytes(state.ubFile));
-  }
-  if (state.meterFile) {
-    zip.file(makeSplitFilename('10 Meter Photo'), await imageOrPdfFileToPdfBytes(state.meterFile));
-  }
-
-  if (mode === 'full'){
-    await addPlanPdf('09 General Notes Project Data', map.cover);
-    await addPlanPdf('10 Roof Section', map.roof);
-    await addPlanPdf('11 Inverter Map', map.inverterMap);
-    await addPlanPdf('12 Mount Details', map.mount);
-    await addPlanPdf('13 Warning Labels', map.labels);
-    await addPlanPdf('14 Junction Box Spec Sheet', map.junctionSpecs);
-    await addPlanPdf('15 Wiring Spec Sheet', map.wiringSpecs);
-    await addPlanPdf('16 Racking Mounting Spec Sheets', map.rackingSpecs);
-  }
-
-  const manifest = [
-    `Utility packet for ${getUtilityPacketBaseName()}`,
-    `Created: ${new Date().toLocaleString()}`,
-    '',
-    getVal('utilityDownloadChecklistText') || '',
-    '',
-    'Detected pages:',
-    getVal('splitPagesText') || ''
-  ].join('\n');
-
-  zip.file(`${getUtilityPacketBaseName()} - Upload Checklist.txt`, manifest);
-
-  const blob = await zip.generateAsync({type:'blob'});
-  saveAs(blob, `${getUtilityPacketBaseName()} - Utility Upload Packet.zip`);
-}
-
 function getProjectDoxBaseName(){
   const manual = getVal('projectDoxBaseName');
   if (manual) return safeFilePart(manual);
@@ -3520,15 +3388,6 @@ function getProjectDoxEntries(options={}){
   return filtered.map((e, idx) => ({...e, seq: idx + 1}));
 }
 
-function makeProjectDoxEntryFilename(entry){
-  const preset = getVal('projectDoxNamingPreset') || 'numericSheet';
-  const seq = String(entry.seq).padStart(2, '0');
-  const code = safeFilePart(entry.code).replace(/^PAGE\s+/i, 'Page ');
-  const name = safeFilePart(entry.name || 'Plan Sheet');
-  if (preset === 'numericName') return `${seq} ${name}.pdf`;
-  return `${seq} ${code} ${name}.pdf`;
-}
-
 function updateProjectDoxUi(){
   const statusEl = $('projectDoxSplitPagesText');
   const checklistEl = $('projectDoxChecklistText');
@@ -3566,40 +3425,6 @@ function updateProjectDoxUi(){
     'ProjectDox naming: numeric prefix first so files sort in sheet order.'
   ];
   checklistEl.value = checklist.join('\n');
-}
-
-async function buildProjectDoxZip(modeOverride){
-  if (!state.planFile) throw new Error('Upload and parse a plan set first.');
-  if (!window.JSZip) throw new Error('JSZip is not loaded.');
-
-  const mode = modeOverride || getVal('projectDoxSplitMode') || 'individual';
-  const zip = new JSZip();
-  const entries = getProjectDoxEntries({mode});
-
-  for (const entry of entries){
-    const bytes = await createPdfFromPlanPages([entry.page]);
-    zip.file(makeProjectDoxEntryFilename(entry), bytes);
-  }
-
-  if (mode === 'individual'){
-    if (state.ubFile) zip.file('98 Utility Bill.pdf', await imageOrPdfFileToPdfBytes(state.ubFile));
-    if (state.meterFile) zip.file('99 Meter Photo.pdf', await imageOrPdfFileToPdfBytes(state.meterFile));
-  }
-
-  const manifest = [
-    `ProjectDox split for ${getProjectDoxBaseName()}`,
-    `Created: ${new Date().toLocaleString()}`,
-    `Mode: ${mode}`,
-    '',
-    getVal('projectDoxChecklistText') || '',
-    '',
-    'Files:',
-    entries.map(e => `${makeProjectDoxEntryFilename(e)} | source page ${e.page}`).join('\n')
-  ].join('\n');
-  zip.file(`${getProjectDoxBaseName()} - ProjectDox Manifest.txt`, manifest);
-
-  const blob = await zip.generateAsync({type:'blob'});
-  saveAs(blob, `${getProjectDoxBaseName()} - ProjectDox ${mode === 'drawingsOnly' ? 'Drawings' : mode === 'docsOnly' ? 'Documents' : 'Full'} Split.zip`);
 }
 
 
