@@ -566,9 +566,19 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       let bodyText = "";
       try {
         let raws: RawField[] = [];
-        for (let tryN = 0; tryN < 4; tryN++) {
+        // PowerClerk (and Bootstrap/jQuery/ExtJS SPAs generally) render each wizard step's
+        // INPUTS asynchronously behind a loader while the page chrome (sidebar nav, Next
+        // button) is already present. Breaking the retry the instant raws is non-empty would
+        // capture the chrome but ZERO form fields, so the page looks empty and the bot
+        // advances past it WITHOUT filling — the "customer info page skipped" failure. So:
+        // wait for loaders to clear each attempt, and keep retrying until REAL input fields
+        // appear (not just buttons/links), only giving up after the loaders are gone.
+        const isInput = (r: RawField) => r.fieldType === "text" || r.fieldType === "select" || r.fieldType === "checkbox" || r.fieldType === "radio" || r.fieldType === "file";
+        for (let tryN = 0; tryN < 6; tryN++) {
+          await this.waitForContentLoaders();
           raws = await this.page.$$eval(EXTRACT_SEL, extractFieldsInPage).catch(() => [] as RawField[]);
-          if (raws.length > 0) break;
+          if (raws.some(isInput)) break;            // real fields rendered — proceed
+          if (raws.length > 0 && tryN >= 2 && !(await this.hasVisibleLoader())) break; // settled, genuinely no inputs
           await smartWait(this.page, 1500);
           await this.dismissModals();
           await this.clearOverlays();
@@ -1483,6 +1493,37 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   // (ExtJS .x-mask / #divGlobalCover page-wide loading masks), and generic jQuery UI / BlockUI
   // overlays. Scoped to backdrop/scrim selectors only — never removes form fields or modal
   // content, just the transparent layer on top. Best-effort; never throws.
+  // Loader/spinner selectors that indicate the SPA is still fetching this step's content.
+  // Covers PowerClerk's `.loader`, generic Bootstrap/jQuery spinners, ExtJS load masks, and
+  // blockUI. We WAIT for these to clear (not remove them — removing a loader doesn't make the
+  // data arrive) before trusting a "no fillable fields" read of the page.
+  private static readonly LOADER_SEL = ".loader, .loading, [class*='loading-'], [class*='spinner'], .spinner-border, .x-mask-loading, [id*='loadingMask'], [id*='LoadingMask'], .blockUI.blockOverlay, [aria-busy='true']";
+
+  // True if any known loader/spinner is currently visible on the page. Best-effort.
+  private async hasVisibleLoader(): Promise<boolean> {
+    if (!this.page || typeof this.page.locator !== "function") return false;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const loc = this.page.locator(AutoLearnAdapter.LOADER_SEL) as any;
+      if (!loc || typeof loc.count !== "function" || typeof loc.nth !== "function") return false;
+      const n = await loc.count().catch(() => 0);
+      for (let i = 0; i < Math.min(n, 8); i++) {
+        if (await loc.nth(i).isVisible?.().catch(() => false)) return true;
+      }
+    } catch { /* mock/no DOM — treat as not loading */ }
+    return false;
+  }
+
+  // Poll until no loader/spinner is visible (the async form has rendered) or we time out.
+  // Returns fast when nothing is loading; bounded so a perpetually-"busy" SPA can't hang us.
+  private async waitForContentLoaders(timeoutMs = 12000): Promise<void> {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      if (!(await this.hasVisibleLoader())) return;
+      await sleep(400);
+    }
+  }
+
   private async clearOverlays(): Promise<void> {
     if (!this.page || typeof this.page.evaluate !== "function") return;
     try {
