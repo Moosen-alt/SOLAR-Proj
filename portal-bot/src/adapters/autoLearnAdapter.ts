@@ -262,6 +262,28 @@ export function extractFieldsInPage(els: Element[]): RawField[] {
     return "";
   }
 
+  // Is the element actually rendered (not display:none / visibility:hidden, and not collapsed
+  // to zero size by a hidden ancestor)? PowerClerk keeps hidden modal TEMPLATES in the DOM —
+  // e.g. an "I understand…" confirmation checkbox and a row of OK/Cancel buttons — and not-yet-
+  // revealed cascade fields are display:none until a parent dropdown is selected. Extracting
+  // those phantom fields makes a content-less wizard page (the "Welcome" step) look like a
+  // fillable form, which misclassifies it and sends the loop into stuck/recovery churn.
+  // STRICT test only: display/visibility + offsetParent+zero-rect. Deliberately NOT filtering
+  // on opacity / off-screen position / aria-hidden, since some portals fade-in or position
+  // revealed fields and a looser test could drop a genuinely interactable control.
+  function isRendered(el: Element): boolean {
+    const he = el as HTMLElement;
+    const style = typeof getComputedStyle === "function" ? getComputedStyle(he) : null;
+    if (style && (style.display === "none" || style.visibility === "hidden")) return false;
+    // offsetParent is null when an ancestor is display:none (also for position:fixed, which we
+    // exclude). Pair with a zero-size rect so a fixed-position visible control isn't dropped.
+    if (he.offsetParent === null && (!style || style.position !== "fixed")) {
+      const rect = he.getBoundingClientRect();
+      if (rect.width === 0 && rect.height === 0) return false;
+    }
+    return true;
+  }
+
   const out: RawField[] = [];
   for (const el of els) {
     const tag = el.tagName.toLowerCase();
@@ -314,6 +336,14 @@ export function extractFieldsInPage(els: Element[]): RawField[] {
 
     // Skip hidden inputs entirely.
     if (tag === "input" && typeAttr === "hidden") continue;
+
+    // Skip elements that aren't rendered (display:none modal templates, not-yet-revealed
+    // cascade fields, etc.). EXCEPTION: a non-visible <a> with a REAL href is kept — clickResilient's
+    // fast path navigates straight to that href for menu-nested/hidden nav links (e.g. Accela's
+    // "Building Dept Application"), so dropping it here would break dashboard navigation.
+    const hrefAttr = tag === "a" ? (el.getAttribute("href") || "") : "";
+    const anchorWithRealHref = !!hrefAttr && hrefAttr !== "#" && !/^javascript:/i.test(hrefAttr);
+    if (!anchorWithRealHref && !isRendered(el)) continue;
 
     const label = labelFor(el);
     const name = el.getAttribute("name") || undefined;
