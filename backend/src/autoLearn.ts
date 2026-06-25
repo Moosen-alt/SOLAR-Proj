@@ -325,8 +325,12 @@ export async function autoLearnPortal(
       : `Auto-learned but NOT verified — review the captured fill and confirm before trusting. Issues: ${verification.issues.join("; ") || "low confidence"}.`,
   });
 
-  // Write review screenshot to disk if captured.
-  if (learn.reviewScreenshotBase64) {
+  // Write the review screenshot to disk if captured (the dashboard shows it as the captured review).
+  // NOTE: a portal-rendered review page can show account/meter numbers as plain text, so this PNG may
+  // contain customer PII AT REST under data/screenshots. Operators who don't want PII on disk can set
+  // PORTAL_SAVE_REVIEW_SCREENSHOT=0 to skip the write (the in-memory vision check is separately gated
+  // by PORTAL_VISION_VERIFY). Default on.
+  if (learn.reviewScreenshotBase64 && process.env.PORTAL_SAVE_REVIEW_SCREENSHOT !== "0") {
     try {
       const screenshotDir = path.join(process.cwd(), "data", "screenshots");
       fs.mkdirSync(screenshotDir, { recursive: true });
