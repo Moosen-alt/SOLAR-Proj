@@ -150,7 +150,19 @@ function normalizeLlmError(err: unknown): HttpError {
   return new HttpError(502, `AI-assist failed: ${raw.slice(0, 200)}`);
 }
 
-app.use(cors());
+// CORS: when ALLOWED_ORIGINS is set (comma-separated), restrict to those origins
+// for internet-facing deploys. Unset = reflect any origin (same-origin SPA default).
+const allowedOrigins = String(process.env.ALLOWED_ORIGINS || "")
+  .split(",")
+  .map((o) => o.trim())
+  .filter(Boolean);
+app.use(
+  cors(
+    allowedOrigins.length
+      ? { origin: allowedOrigins, credentials: true }
+      : undefined,
+  ),
+);
 app.use(requestLogger);
 app.use(express.json({ limit: "80mb" }));
 app.use(express.urlencoded({ extended: false, limit: "1mb" }));

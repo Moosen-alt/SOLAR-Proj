@@ -37,11 +37,22 @@ export interface JobRecord {
 
 type Row = Record<string, SqlParam>;
 
+// Tolerate a corrupt JSON column on a single row rather than crashing the
+// whole job worker loop; fall back to `fallback` and keep processing.
+function safeParse<T>(raw: SqlParam, fallback: T): T {
+  if (raw == null) return fallback;
+  try {
+    return JSON.parse(String(raw)) as T;
+  } catch {
+    return fallback;
+  }
+}
+
 function mapJob(row: Row): JobRecord {
   return {
     id: String(row.id),
     jobType: String(row.job_type) as JobType,
-    payload: JSON.parse(String(row.payload || "{}")),
+    payload: safeParse(row.payload, {}),
     status: String(row.status) as JobStatus,
     priority: Number(row.priority ?? 5),
     assignedToUser: row.assigned_to_user == null ? null : String(row.assigned_to_user),
@@ -52,7 +63,7 @@ function mapJob(row: Row): JobRecord {
     finishedAt: row.finished_at == null ? null : String(row.finished_at),
     progress: Number(row.progress ?? 0),
     progressTotal: Number(row.progress_total ?? 0),
-    result: row.result == null ? null : JSON.parse(String(row.result)),
+    result: row.result == null ? null : safeParse(row.result, null),
     error: row.error == null ? null : String(row.error),
     retryCount: Number(row.retry_count ?? 0),
     maxRetries: Number(row.max_retries ?? 3),
