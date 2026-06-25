@@ -135,8 +135,16 @@ const PAY_FEE = /\b(pay fee|pay now|submit & pay|submit and pay|make payment|con
 const SUBMIT_INTENT = /\b(continue application|submit application|file application|submit|finish|finalize|confirm submission|place order|complete submission)\b/i;
 
 // Markers that a page is the review/confirm step (Accela: "Step 3: Review", read-only
-// summary, "click the Continue Application button below", CapConfirm URL).
-const REVIEW_MARKERS = /\bstep\s*\d+\s*:?\s*review\b|review all information|continue application button below|please review (all )?information|\(read-only\)/i;
+// summary, "click the Continue Application button below", CapConfirm URL; PowerClerk and
+// similar: an accept-terms gate / "will not be submitted until" acknowledgment).
+const REVIEW_MARKERS = /\bstep\s*\d+\s*:?\s*review\b|review all information|continue application button below|please review (all )?information|\(read-only\)|accept terms and conditions|will not be submitted until/i;
+
+// Terms-acceptance / certification / acknowledgment checkboxes that gate a final submit.
+// Portal-agnostic: PowerClerk "Click to Accept Terms and Conditions" + "I understand that
+// my form will not be submitted until…", Accela/Salesforce "I certify/I agree" attestations.
+// Used both to (a) recognize a review/submit screen and (b) auto-check these required gates
+// before recording the submit. Deliberately narrow so it never matches a normal form toggle.
+const ACCEPT_TERMS = /\b(accept (the )?terms|terms (and|&) conditions|i agree\b|i understand\b|i acknowledge|acknowledge that|i certify|i attest|i confirm that|agree to the)\b/i;
 function looksLikeReviewUrl(url: string): boolean {
   return /capconfirm|confirm\.aspx|\/review/i.test(url || "");
 }
@@ -836,6 +844,10 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       //   - DASHBOARD → no inputs, no submit-intent button, no review markers → only links.
       const hasFillable = fields.some((f) => f.fieldType !== "button");
       const hasSubmitIntentBtn = fields.some((f) => f.fieldType === "button" && SUBMIT_INTENT.test(f.label));
+      // A terms/certification gate checkbox is a strong, portal-agnostic review-screen signal:
+      // mid-flow form pages advance with "Next/Continue", not a terminal Submit alongside an
+      // "Accept Terms and Conditions" / "I certify" attestation. Only checkboxes count.
+      const hasAcceptTermsCheckbox = fields.some((f) => f.fieldType === "checkbox" && ACCEPT_TERMS.test(f.label));
       const reviewSignals = REVIEW_MARKERS.test(bodyText) || looksLikeReviewUrl(url);
       const isDashboard = !hasFillable && !hasSubmitIntentBtn && !reviewSignals;
       if (hasFillable) everFoundFillable = true;
@@ -916,7 +928,14 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       // NEVER advance-click — we force the review stop and record that button as the final
       // submit, overriding a planner that mistook the submit button for an "advance/next".
       // A no-input page that is NOT a dashboard is, by definition, a review page.
-      const isReviewPage = (!hasFillable && !isDashboard) || (reviewSignals && hasSubmitIntentBtn);
+      // A review/submit screen takes three shapes: a no-input read-only summary; a page
+      // carrying review markers + a submit button; OR a submit button gated by a terms/
+      // certification checkbox (PowerClerk's final page has a live "Accept Terms" checkbox,
+      // so it IS fillable — the first clause would miss it). The last shape is portal-agnostic.
+      const isReviewPage =
+        (!hasFillable && !isDashboard) ||
+        (reviewSignals && hasSubmitIntentBtn) ||
+        (hasSubmitIntentBtn && hasAcceptTermsCheckbox);
       if (isReviewPage && !plan.atReview) {
         // Promote a planner "advance" that is actually a submit-intent button to finalSubmit.
         let promotedFinal = typeof plan.finalSubmitSelectorIndex === "number" ? plan.finalSubmitSelectorIndex : undefined;
@@ -929,7 +948,22 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           const idx = fields.findIndex((f) => f.fieldType === "button" && SUBMIT_INTENT.test(f.label) && !this.isOffLimitsButton(f));
           if (idx >= 0) promotedFinal = idx;
         }
-        plan = { ...plan, atReview: true, advanceSelectorIndex: undefined, finalSubmitSelectorIndex: promotedFinal };
+        // Auto-check the required terms/certification gate(s) so the recorded recipe ticks them
+        // and the live submit isn't blocked. The planner often returns no fills on a review page
+        // it didn't recognize, so inject them here. Only ACCEPT_TERMS checkboxes — never the
+        // submit button or other toggles (e.g. an optional "alternative billing contact").
+        const termsFills = fields
+          .map((f, i) => ({ f, i }))
+          .filter(({ f }) => f.fieldType === "checkbox" && ACCEPT_TERMS.test(f.label))
+          .filter(({ i }) => !(plan.fills ?? []).some((fl) => fl.selectorIndex === i))
+          .map(({ i }) => ({ selectorIndex: i, value: "true" }));
+        plan = {
+          ...plan,
+          fills: [...(plan.fills ?? []), ...termsFills],
+          atReview: true,
+          advanceSelectorIndex: undefined,
+          finalSubmitSelectorIndex: promotedFinal,
+        };
       }
 
       // c2b) DIAGNOSTIC BREADCRUMB — record what we saw + what the planner decided on this
@@ -1149,12 +1183,18 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       //     binding (account/meter). Best-effort and single-pass-with-cascade: it loops a
       //     few times so a reveal that triggers a further reveal is also caught. Never throws.
       if (pageFillCount > 0 && !plan.atReview && this.page) {
-        const MAX_RESCAN_PASSES = 3;
+        // Deep cascades chain one reveal per pass (PowerClerk: Energy Source → Prime Mover →
+        // Type → Energy Storage → the PV equipment repeater — 5+ levels), so allow enough
+        // passes to walk the whole chain. Cheap pages still exit immediately via the
+        // converged/no-new-fields breaks below, so this only costs time when reveals keep coming.
+        const MAX_RESCAN_PASSES = 6;
         for (let rescanPass = 0; rescanPass < MAX_RESCAN_PASSES; rescanPass++) {
           let revealedThisPass = 0;
           try {
-            // Let the AJAX/Vue re-render settle, then clear any overlay the reveal popped.
-            await sleep(1200);
+            // Wait for the AJAX that ENABLES + POPULATES the next dependent control to land
+            // before scraping — a flat sleep raced it, so the just-revealed <select> scraped
+            // empty/disabled and the planner had no options to choose. Then clear any overlay.
+            await this.waitForDynamicFieldsSettle();
             await this.clearOverlays();
             const raws2 = await this.page
               .$$eval(EXTRACT_SEL, extractFieldsInPage)
@@ -1476,6 +1516,68 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   // Apply a single fill/select/check and return the RecipeStep that records it (or null
   // if the action could not be applied). Sensitive fields are recorded WITHOUT a literal
   // value (sensitive:true, value:"") and are bound by `field` instead.
+  // Count enabled <select>s that already hold a REAL (non-placeholder) option. A cascading
+  // dropdown is disabled with only a "Select…"/"Please select…" option until a prior field's
+  // AJAX enables and populates it, so this count rises by one as each level reveals. Used to
+  // know when a post-selection re-render has actually landed. Never throws.
+  private async countReadySelects(): Promise<number> {
+    if (!this.page || typeof this.page.evaluate !== "function") return 0;
+    const n = await this.page
+      .evaluate(() => {
+        let n = 0;
+        for (const s of Array.from(document.querySelectorAll("select"))) {
+          if ((s as HTMLSelectElement).disabled) continue;
+          const real = Array.from(s.querySelectorAll("option"))
+            .map((o) => (o.textContent || "").trim())
+            .filter((t) => t && !/^(please\s+)?select\.{0,3}$/i.test(t));
+          if (real.length >= 1) n++;
+        }
+        return n;
+      })
+      .catch(() => 0);
+    return typeof n === "number" ? n : 0;
+  }
+
+  // Wait for a post-selection re-render to settle before re-scraping: first the AJAX network,
+  // then poll until the count of populated <select>s stops changing (a cascade enables/fills
+  // the next dropdown via that round-trip). Bounded; portal-agnostic; never throws.
+  private async waitForDynamicFieldsSettle(): Promise<void> {
+    if (!this.page) { await sleep(1200); return; }
+    if (typeof this.page.waitForLoadState === "function") {
+      await this.page.waitForLoadState("networkidle", { timeout: 6000 }).catch(() => null);
+    }
+    let last = -1;
+    let stable = 0;
+    for (let i = 0; i < 16; i++) { // ~4s cap (16 * 250ms)
+      const n = await this.countReadySelects();
+      if (n === last) { if (++stable >= 2) break; } else { stable = 0; last = n; }
+      await sleep(250);
+    }
+  }
+
+  // Block until a <select> is enabled AND contains an option matching `value` (by visible text
+  // or value attribute), so a cascading dropdown isn't selected against an empty/stale option
+  // list. Returns immediately for custom comboboxes (non-<select> widgets) and on timeout, so
+  // the existing combobox fallback still runs. Bounded (~5s); never throws.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async waitForOptionReady(loc: any, value: string): Promise<void> {
+    if (!loc || !value || typeof loc.evaluate !== "function") return;
+    for (let i = 0; i < 20; i++) { // ~5s cap (20 * 250ms)
+      const ready = await loc
+        .evaluate((el: Element, want: string) => {
+          if ((el.tagName || "").toLowerCase() !== "select") return true; // custom combobox — don't block
+          if ((el as HTMLSelectElement).disabled) return false;
+          const norm = (s: string) => (s || "").trim().toLowerCase();
+          return Array.from((el as HTMLSelectElement).options).some(
+            (o) => norm(o.textContent || "") === norm(want) || norm(o.value) === norm(want),
+          );
+        }, value)
+        .catch(() => true);
+      if (ready) return;
+      await sleep(250);
+    }
+  }
+
   private async applyFill(
     field: ExtractedField,
     fillReq: { value: string; field?: string },
@@ -1499,6 +1601,11 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         const loc = await this.locator(field.selector);
         if (!loc) throw new Error("selector unresolved");
         if (action === "select") {
+          // A dependent/cascading <select> may still be disabled or have an empty option list
+          // when we reach it (its options arrive via the AJAX a prior field triggered). Wait
+          // for the target option to actually exist before selecting, so the choice isn't a
+          // silent no-op. Bounded; custom comboboxes don't block. Portal-agnostic.
+          await this.waitForOptionReady(loc, value);
           // Native <select> first; fall back to the custom-combobox interaction for
           // styled-div dropdowns (PowerClerk "Please select...", select2, ExtJS, etc.)
           // that selectOption() can't drive.

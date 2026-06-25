@@ -818,6 +818,80 @@ async function testValidationGuardBlockedAdvance() {
   assert.ok(!result.steps.some((s) => s.note?.startsWith("advance:")), "dead advance step was dropped");
 }
 
+// 12) POWERCLERK REVIEW GATE: the final review/submit screen carries a LIVE "Accept Terms and
+//     Conditions" checkbox plus a "Submit" button and no Accela-style review markers. The page
+//     is therefore "fillable", so the no-input structural guard misses it. The terms-gate guard
+//     must still classify it as review: auto-check the ACCEPT_TERMS box, record Submit as the
+//     finalSubmit (never click it), and stop at review. An unrelated optional checkbox on the
+//     same page must NOT be auto-checked.
+async function testPowerClerkTermsGateReview() {
+  const log: ActionLog = { clicks: [], fills: [], selects: [], checks: [] };
+  const planner: LearnPlanner = async (req: LearnPlanRequest): Promise<LearnPlanResponse> => {
+    // Page 1: a normal form page that advances to the review screen.
+    if (req.fields.some((f) => f.label === "System Size (kW)")) {
+      return { fills: [{ selectorIndex: 0, value: "7.2", field: "systemSizeKw" }], advanceSelectorIndex: 1, atReview: false };
+    }
+    // Page 2: the review/submit screen. The planner FAILS to recognize it (the real-world
+    // bug): no fills, no atReview, no finalSubmit. The structural terms-gate guard must fix it.
+    return { fills: [], atReview: false };
+  };
+  const adapter = new AutoLearnAdapter("Portland General Electric", planner);
+  withFakePage(
+    adapter,
+    makeFakePage(
+      {
+        pages: [
+          {
+            url: "https://pgenm.powerclerk.com/MvcProjects/EditProject",
+            title: "Edit Project",
+            body: "System information form.",
+            rawFields: [
+              { label: "System Size (kW)", fieldType: "text", id: "sz" },
+              { label: "Next", fieldType: "button", role: "button", text: "Next" },
+            ],
+          },
+          {
+            url: "https://pgenm.powerclerk.com/MvcProjects/EditProject",
+            title: "Edit Project",
+            body: "Please complete the items below. Your form will not be submitted until you click Submit.",
+            rawFields: [
+              { label: "Checkbox - Alternative Billing Contact", fieldType: "checkbox", id: "abc" },
+              { label: "Click to Accept Terms and Conditions", fieldType: "checkbox", id: "terms" },
+              { label: "Back", fieldType: "button", role: "button", text: "Back" },
+              { label: "Submit", fieldType: "button", role: "button", text: "Submit" },
+            ],
+            reviewPairs: [{ label: "System Size (kW)", value: "7.2" }],
+          },
+        ],
+      },
+      log,
+    ),
+  );
+
+  const result = await adapter.learn(fakeContext, fakeProject);
+  assert.equal(result.ok, true, "run succeeds and reaches the review gate");
+  assert.ok(result.reachedReview, "the terms-gated submit page is recognized as review");
+  // The Accept-Terms checkbox is auto-checked and recorded.
+  assert.ok(
+    log.checks.some((k) => /terms/i.test(k)),
+    "ACCEPT_TERMS checkbox was checked live",
+  );
+  assert.ok(
+    result.steps.some((s) => s.action === "check" && /accept terms/i.test(s.note ?? "")),
+    "ACCEPT_TERMS checkbox recorded as a check step",
+  );
+  // The unrelated optional checkbox must NOT be auto-checked.
+  assert.ok(
+    !log.checks.some((k) => /billing contact/i.test(k)),
+    "unrelated optional checkbox left untouched",
+  );
+  // Submit is recorded as finalSubmit and NEVER clicked.
+  const finalSteps = result.steps.filter((s) => s.isFinalSubmit === true);
+  assert.equal(finalSteps.length, 1, "exactly one finalSubmit recorded (Submit)");
+  assert.ok(result.finalSubmitRecorded, "finalSubmit recorded");
+  assert.ok(!log.clicks.some((k) => /Submit/i.test(k)), "Submit button was never clicked");
+}
+
 const tests: Array<[string, () => Promise<void>]> = [
   ["fields are extracted, filled, and recorded as steps", testFieldsExtractedFilledRecorded],
   ["RADIO REGRESSION: radio selected via check(), false radio/checkbox skipped", testRadioSelectedViaCheck],
@@ -831,6 +905,7 @@ const tests: Array<[string, () => Promise<void>]> = [
   ["sensitive fields don't store literal values", testSensitiveFieldsRedacted],
   ["ACCELA TRAP: Continue Application on review page recorded, never clicked", testAccelaContinueApplicationNeverClicked],
   ["T&C PASS-THROUGH: disclaimer page is not treated as review screen", testTermsPagePassThrough],
+  ["POWERCLERK REVIEW GATE: terms-checkbox submit page is review, box auto-checked, submit recorded", testPowerClerkTermsGateReview],
 ];
 
 let failures = 0;
