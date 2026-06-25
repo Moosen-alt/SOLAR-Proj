@@ -107,6 +107,9 @@ export interface LearnResult {
    *  conflates this with "filled something" — callers must use reachedReview to tell a real
    *  stage-to-review from a run that got lost mid-wizard (which must NOT report a staged draft). */
   reachedReview?: boolean;
+  /** True when at least one data field (fill/select/check) was entered. A reachedReview that filled
+   *  nothing is a landing/disclaimer page misread as review — callers require BOTH for a clean stage. */
+  filledSomething?: boolean;
   /** Base64 PNG screenshot taken when the review/confirm page is reached. */
   reviewScreenshotBase64?: string;
 }
@@ -1089,6 +1092,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       pauseReason: null,
       message,
       reachedReview,
+      filledSomething,
       reviewScreenshotBase64,
     };
   }

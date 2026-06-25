@@ -234,14 +234,21 @@ export async function autoLearnPortal(
     return { recipe: getPortalRecipe(db, stub.id), status: "failed", pauseReason: null, pageCount: learn.pageCount, finalSubmitRecorded: learn.finalSubmitRecorded, verification: { accurate: false, confidence: "low", matches: [], issues: [learn.message] }, message: `Could not learn the portal automatically: ${learn.message}. Record it manually instead.` };
   }
 
-  // Filled pages but never reached the portal's REVIEW screen — nothing is actually staged for a
-  // human to verify and submit. `learn.ok` is true here only because it filled something, so without
-  // this gate the run would fall through to verification (no review to check) and be reported as a
-  // draft "staged to review" — a silent fake success. Mark it failed and surface where it got lost.
-  if (learn.reachedReview === false) {
-    savePortalRecipeSteps(db, stub.id, learn.steps, { status: "needs_rerecord", notes: `Auto-learn did not reach the review screen: ${learn.message}` });
-    addAuditLog(db, projectId, "system", "auto-learn", "portal.auto_learn_failed", { scope: scopeType, reason: "no_review" });
-    return { recipe: getPortalRecipe(db, stub.id), status: "failed", pauseReason: null, pageCount: learn.pageCount, finalSubmitRecorded: learn.finalSubmitRecorded, verification: { accurate: false, confidence: "low", matches: [], issues: [learn.message] }, message: `The learner filled fields but never reached the portal's review screen, so nothing was staged. ${learn.message}` };
+  // A CLEAN stage requires BOTH reaching the portal's review screen AND having filled at least one
+  // field. `learn.ok` is true if EITHER held, so without this gate two fake-success modes slip
+  // through to verification and get reported as a draft "staged to review": (a) filled pages but
+  // never reached review (got lost mid-wizard), and (b) a premature atReview on a landing/disclaimer
+  // page that filled nothing. Both stage nothing for a human to verify/submit — mark failed and say
+  // which so the operator can fix the start URL or record manually.
+  const reachedReview = learn.reachedReview === true;
+  const filledSomething = learn.filledSomething === true;
+  if (!reachedReview || !filledSomething) {
+    const why = !reachedReview
+      ? "filled fields but never reached the portal's review screen"
+      : "reached a screen treated as review but filled no fields (likely a landing/disclaimer page misread as the review screen)";
+    savePortalRecipeSteps(db, stub.id, learn.steps, { status: "needs_rerecord", notes: `Auto-learn did not stage cleanly: ${why}. ${learn.message}` });
+    addAuditLog(db, projectId, "system", "auto-learn", "portal.auto_learn_failed", { scope: scopeType, reason: !reachedReview ? "no_review" : "premature_review" });
+    return { recipe: getPortalRecipe(db, stub.id), status: "failed", pauseReason: null, pageCount: learn.pageCount, finalSubmitRecorded: learn.finalSubmitRecorded, verification: { accurate: false, confidence: "low", matches: [], issues: [learn.message] }, message: `Nothing was staged — ${why}. ${learn.message}` };
   }
 
   // VERIFY the fill against the project data before trusting the recipe.
