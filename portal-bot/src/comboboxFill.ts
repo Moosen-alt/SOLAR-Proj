@@ -133,5 +133,27 @@ export async function fillCustomCombobox(page: any, loc: any, value: string): Pr
 export async function selectWithFallback(page: any, loc: any, value: string): Promise<void> {
   await loc.selectOption(value)
     .catch(async () => loc.selectOption({ label: value }))
+    // NATIVE PARTIAL MATCH: selectOption(value)/{label} require an EXACT option text/value.
+    // Portals routinely list "Schedule 7 - Residential Net Metering" while the bound value is
+    // just "Schedule 7", so both exact attempts miss and the value is silently dropped. Before
+    // falling to the combobox path, scan the real <select> options for a case-insensitive
+    // contains-match (either direction) and select by that option's value. No-op (throws) for
+    // non-<select> custom widgets so the combobox fallback still runs. Shared by learn + replay.
+    .catch(async () => {
+      const matchedValue = await loc.evaluate((el: Element, want: string) => {
+        if ((el.tagName || "").toLowerCase() !== "select") return "";
+        const norm = (s: string) => (s || "").trim().toLowerCase();
+        const w = norm(want);
+        if (!w) return "";
+        for (const o of Array.from((el as HTMLSelectElement).options)) {
+          const t = norm(o.textContent || "");
+          if (!t || /^(please\s+)?select\.{0,3}$/i.test(t)) continue;
+          if (t === w || t.includes(w) || w.includes(t)) return o.value;
+        }
+        return "";
+      }, value).catch(() => "");
+      if (matchedValue) return loc.selectOption(matchedValue);
+      throw new Error("no native option match");
+    })
     .catch(async () => { await fillCustomCombobox(page, loc, value); });
 }

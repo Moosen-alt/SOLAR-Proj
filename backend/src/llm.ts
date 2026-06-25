@@ -914,11 +914,15 @@ SMART INVERTER SETTINGS (PGE PowerClerk and similar utility NEM portals):
 - This is a Yes/No radio or dropdown — not a file upload or a drawing requirement on the plan set.
 - "Will meter aggregation be used?" or "Meter aggregation?" → answer "No" for a standard single-home residential project unless the project data says otherwise.
 - "Is meter mounted on a pole?" or "Pole-mounted meter?" → answer "No" for the vast majority of residential rooftop solar; only answer "Yes" when the project address explicitly calls out a pole mount or the site plan shows a pole-mounted service.
+- "Do you propose to limit the export capacity?" (or "Will you limit export?") → answer "No" for a standard residential net-metering project (the full system output is exported); only answer "Yes" if the project data explicitly specifies an export-capacity limit/cap.
+- REQUIRED CHOICE GROUPS: any required (asterisk-marked) Yes/No radio or dropdown MUST be answered — do not leave a required choice group blank. If the kbContext notes give the utility's policy answer (smart inverter, aggregation, export limit), follow it; otherwise use the residential defaults above.
 
 SYSTEM INFORMATION / TECHNICAL DETAILS PAGE (PowerClerk step "System Information", "Technical Information", "PV System Details"):
 - This page MUST be filled — do NOT skip it or set atReview=true on it. It is a required input page, not a review screen.
 - Fill ALL available fields using project data: DC system size (systemSizeDcKw), AC system size (systemSizeAcKw), inverter model (inverterModel), module make/model (moduleMake, moduleModel), module count (moduleQty), panel wattage (moduleWattage), battery info if present.
 - "Number of inverters" → inverterQty. "Inverter manufacturer" → inverterMake. "Module manufacturer" → moduleMake.
+- EQUIPMENT REPEATER (PV System Specification with an Inverter row + one or more PV Array rows, each its own model dropdown + Qty): the inverter "Qty" is inverterQty; each PV Array's "Qty" is that array's module count. Per-array values are in projectFields as array1ModuleQuantity / array1ModuleModel / array1ModuleManufacturer (array2…, etc.). Map each array's Qty to arrayNModuleQuantity and its model dropdown to arrayNModuleModel — do NOT put the module count into the inverter Qty. If there is one combined module field instead of a repeater, use the totals (moduleQty, moduleModel, moduleMake).
+- CALCULATE / UPDATE TOTALS button (e.g. "Calculate", "Recalculate", "Update Totals"): this is NOT the wizard advance button and NOT a submit — it only computes derived values (system rating, export capacity) from the equipment you entered. Do NOT return it as advanceIndex/finalSubmitIndex; the bot clicks it automatically after the equipment is filled. Still return the real "Next"/"Continue" button as advanceIndex.
 - After filling system fields, identify the correct "Next" or "Continue" wizard button and return it as advanceIndex so the form proceeds to the next step.
 
 ELECTRICAL SERVICES PAGE (Accela "Residential - Electrical Comprehensive" and similar):

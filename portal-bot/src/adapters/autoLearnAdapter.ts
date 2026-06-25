@@ -4,7 +4,7 @@ import type { Page } from "playwright";
 import type { ProjectRecord, RecipeSelector, RecipeStep } from "../../../shared/src/types";
 import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, type PortalContext, type PortalStepResult } from "../adapter";
 import { openPortal } from "../browser";
-import { fillCustomCombobox, selectWithFallback } from "../comboboxFill";
+import { selectWithFallback } from "../comboboxFill";
 import { detectChallengeFrame, readbackMatches, redactStatusText, safeAction, sleep, smartWait, waitForElement } from "../safeAction";
 import { scrapeReviewScreen as scrapeReviewScreenShared } from "../reviewScreenScraper";
 import { performLogin } from "./loginFlow";
@@ -1217,7 +1217,10 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         // Type → Energy Storage → the PV equipment repeater — 5+ levels), so allow enough
         // passes to walk the whole chain. Cheap pages still exit immediately via the
         // converged/no-new-fields breaks below, so this only costs time when reveals keep coming.
-        const MAX_RESCAN_PASSES = 6;
+        // +1 pass headroom: a Calculate/Update-Totals click consumes one extra pass to fill
+        // whatever the computation then reveals (e.g. an export-capacity question).
+        const MAX_RESCAN_PASSES = 7;
+        let computedThisPage = false;
         for (let rescanPass = 0; rescanPass < MAX_RESCAN_PASSES; rescanPass++) {
           let revealedThisPass = 0;
           try {
@@ -1237,7 +1240,16 @@ export class AutoLearnAdapter extends BasePortalAdapter {
                 f.label &&
                 !alreadyFilledLabels.includes(f.label),
             );
-            if (newFillable.length === 0) break; // nothing new appeared — done cascading.
+            if (newFillable.length === 0) {
+              // No more cascade reveals. Before giving up, click any Calculate/Update-Totals
+              // button once and loop again so the values it computes (and any field it then
+              // reveals) are captured. Universal — no portal coupling.
+              if (!computedThisPage) {
+                computedThisPage = true;
+                if (await this.clickComputeButton(steps)) continue;
+              }
+              break; // nothing new appeared — done cascading.
+            }
 
             // Re-derive the page text so the planner reasons over the post-reveal content.
             let postBodyText = bodyText;
@@ -1335,7 +1347,15 @@ export class AutoLearnAdapter extends BasePortalAdapter {
               await this.page.waitForLoadState("networkidle", { timeout: 6000 }).catch(() => null);
             }
           } catch { /* post-selection re-scrape is best-effort — never break the loop */ }
-          if (revealedThisPass === 0) break; // converged — no further reveals to chase.
+          if (revealedThisPass === 0) {
+            // Converged on field reveals — try the compute button once before stopping, in
+            // case totals/derived fields still need calculating (and may reveal more).
+            if (!computedThisPage) {
+              computedThisPage = true;
+              if (await this.clickComputeButton(steps)) continue;
+            }
+            break; // converged — no further reveals to chase.
+          }
         }
       }
 
@@ -1650,36 +1670,11 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           // for the target option to actually exist before selecting, so the choice isn't a
           // silent no-op. Bounded; custom comboboxes don't block. Portal-agnostic.
           await this.waitForOptionReady(loc, value);
-          // Native <select> first; fall back to the custom-combobox interaction for
-          // styled-div dropdowns (PowerClerk "Please select...", select2, ExtJS, etc.)
-          // that selectOption() can't drive.
-          await loc.selectOption(value)
-            .catch(async () => loc.selectOption({ label: value }))
-            // NATIVE PARTIAL MATCH: selectOption(value)/{label} require an EXACT option
-            // text/value. PowerClerk's "Account Schedule" lists options like
-            // "Schedule 7 - Residential Net Metering" while the bound value is just
-            // "Schedule 7", so both exact attempts miss and the value is silently dropped.
-            // Before giving up to the combobox path, look through the real <select> options
-            // for a case-insensitive contains-match (either direction) and select it by its
-            // option value. Returns the chosen value or "" so the next catch only runs on a
-            // genuine miss. No-op for non-<select> (custom) widgets.
-            .catch(async () => {
-              const matchedValue = await loc.evaluate((el: Element, want: string) => {
-                if ((el.tagName || "").toLowerCase() !== "select") return "";
-                const norm = (s: string) => (s || "").trim().toLowerCase();
-                const w = norm(want);
-                if (!w) return "";
-                for (const o of Array.from((el as HTMLSelectElement).options)) {
-                  const t = norm(o.textContent || "");
-                  if (!t || /^(please\s+)?select\.{0,3}$/i.test(t)) continue;
-                  if (t === w || t.includes(w) || w.includes(t)) return o.value;
-                }
-                return "";
-              }, value).catch(() => "");
-              if (matchedValue) return loc.selectOption(matchedValue);
-              throw new Error("no native option match");
-            })
-            .catch(async () => { await fillCustomCombobox(this.page, loc, value); });
+          // Native <select> exact → native partial/normalized contains-match → custom-combobox
+          // interaction for styled-div dropdowns. Shared with replay via selectWithFallback so
+          // a value like "Schedule 7" resolves to "Schedule 7 - Residential…" identically in
+          // both paths (a learn that fills it must replay it the same way).
+          await selectWithFallback(this.page, loc, value);
         } else if (action === "check") {
           if (negated) {
             // Explicit false/no → uncheck the box (leave it unchecked).
@@ -1737,6 +1732,37 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       step.value = value;
     }
     return step;
+  }
+
+  // Click a "Calculate" / "Update Totals" style button that computes derived values from the
+  // equipment just entered (system rating, export capacity) WITHOUT advancing the wizard.
+  // Portal-agnostic: matched purely by an anchored compute-intent label, never a pay/submit/
+  // navigation control, so it can't derail the flow. Records a replayable click step (replay
+  // must recompute too, or the saved draft carries stale 0.00 totals). Returns true if clicked.
+  private async clickComputeButton(steps: RecipeStep[]): Promise<boolean> {
+    if (!this.page || typeof this.page.getByRole !== "function") return false;
+    const COMPUTE = /^\s*(calculate|recalculate|re-calculate|compute|update\s+totals?|refresh\s+totals?|update\s+calculation)\s*$/i;
+    try {
+      const btn = this.page.getByRole("button", { name: COMPUTE }).first();
+      if (!(await btn.count().catch(() => 0))) return false;
+      if (!(await btn.isVisible().catch(() => false))) return false;
+      if (!(await btn.isEnabled().catch(() => true))) return false;
+      const label = ((await btn.textContent().catch(() => "")) || "").trim();
+      // Defense in depth: never click something that's actually a pay or submit control.
+      if (isPayFee(label) || SUBMIT_INTENT.test(label)) return false;
+      await this.clickResilient(btn);
+      await this.waitForDynamicFieldsSettle();
+      await this.clearOverlays();
+      steps.push({
+        action: "click",
+        phase: "fill",
+        selector: { role: "button", name: label || "Calculate", exact: true },
+        note: `compute totals: ${label || "Calculate"}`,
+      });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   // Sweep the LIVE page for REQUIRED fields that are still empty/unselected after this page's

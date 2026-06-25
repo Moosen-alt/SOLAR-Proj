@@ -159,6 +159,23 @@ export const RECIPE_FIELD_DESCRIPTIONS: Record<string, string> = {
   systemSizeDcKw: "Solar system DC size in kilowatts",
   systemSizeAcKw: "Solar system AC size in kilowatts",
   totalExportKw: "Total export capacity in kilowatts",
+  inverterManufacturer: "Inverter manufacturer/make (e.g. Tesla, Enphase, SolarEdge)",
+  inverterMake: "Inverter manufacturer/make (alias of inverterManufacturer)",
+  inverterModel: "Inverter model number",
+  inverterQuantity: "Number of inverters",
+  inverterQty: "Number of inverters (alias of inverterQuantity)",
+  moduleManufacturer: "PV module/panel manufacturer/make",
+  moduleMake: "PV module/panel manufacturer/make (alias of moduleManufacturer)",
+  moduleModel: "PV module/panel model number",
+  moduleQuantity: "Total number of PV modules/panels across all arrays",
+  moduleQty: "Total number of PV modules/panels (alias of moduleQuantity)",
+  totalModuleQuantity: "Total number of PV modules/panels across all arrays",
+  moduleWattage: "Per-module DC wattage (W)",
+  mainServiceRating: "Main service panel/entrance rating in amps",
+  hasBattery: "Whether the system includes battery storage (Yes/No)",
+  batteryManufacturer: "Battery/storage manufacturer/make",
+  batteryModel: "Battery/storage model number",
+  batteryQuantity: "Number of battery units",
   installerCompanyName: "Installer/contractor company name",
   installerEmail: "Installer company or contact email address",
   installerPhone: "Installer company phone number",
@@ -217,7 +234,69 @@ export function resolveRecipeFieldValues(db: AppDb, project: ProjectRecord, port
     totalExportKw: project.totalExportKw == null ? "" : String(project.totalExportKw),
     interconnectionMethod: project.interconnectionMethod,
   };
+  // EQUIPMENT BINDING (portal-agnostic). The PV module spec lives in a nested `pvArrays`
+  // array in the parser snapshot, which the scalar-only flatten above drops — so the module
+  // make/model/quantity never reached the planner and the equipment dropdowns came back
+  // blank. Flatten it into scalar keys here, plus the key ALIASES the planner prompt already
+  // references (moduleMake/moduleQty/inverterMake/inverterQty), so a value exists regardless
+  // of which name a given portal's field maps to. Every utility/AHJ on any platform benefits;
+  // nothing here is portal-specific. Only non-empty values are emitted (so they never blank
+  // out a snapshot/overlay value via the merge below).
+  const equipment: Record<string, string> = {};
+  const put = (k: string, v: unknown) => {
+    const s = v == null ? "" : String(v).trim();
+    if (s) equipment[k] = s;
+  };
+  // Inverter aliases (snapshot uses *Manufacturer/*Quantity; the prompt/portals also say make/qty).
+  put("inverterMake", snapshotFlat.inverterManufacturer || snapshotFlat.inverterMake);
+  put("inverterQty", snapshotFlat.inverterQuantity || snapshotFlat.inverterQty);
+  const arraysRaw = (snapshot as Record<string, unknown>).pvArrays;
+  if (Array.isArray(arraysRaw) && arraysRaw.length) {
+    let totalModules = 0;
+    let firstMake = "";
+    let firstModel = "";
+    let firstWattage = "";
+    arraysRaw.forEach((a, i) => {
+      const arr = (a && typeof a === "object" ? a : {}) as Record<string, unknown>;
+      const qty = arr.quantity ?? arr.moduleQuantity ?? arr.qty;
+      const make = arr.moduleManufacturer ?? arr.moduleMake ?? arr.manufacturer;
+      const model = arr.moduleModel ?? arr.model;
+      const watt = arr.moduleWattage ?? arr.wattage ?? arr.watts;
+      const n = Number(qty);
+      if (!isNaN(n)) totalModules += n;
+      if (!firstMake && make) firstMake = String(make);
+      if (!firstModel && model) firstModel = String(model);
+      if (!firstWattage && watt) firstWattage = String(watt);
+      // Per-array indexed keys for portals with a repeater (one row per array/string).
+      const p = `array${i + 1}`;
+      put(`${p}ModuleQuantity`, qty);
+      put(`${p}ModuleManufacturer`, make);
+      put(`${p}ModuleModel`, model);
+      put(`${p}ModuleWattage`, watt);
+      put(`${p}Azimuth`, arr.azimuth);
+      put(`${p}Tilt`, arr.tilt);
+    });
+    put("moduleManufacturer", firstMake);
+    put("moduleMake", firstMake);
+    put("moduleModel", firstModel);
+    put("moduleWattage", firstWattage);
+    if (totalModules > 0) {
+      put("moduleQuantity", totalModules);
+      put("moduleQty", totalModules);
+      put("totalModuleQuantity", totalModules);
+    }
+  } else {
+    // No array repeater — carry any flat module scalars + their aliases through.
+    put("moduleManufacturer", snapshotFlat.moduleManufacturer || snapshotFlat.moduleMake);
+    put("moduleMake", snapshotFlat.moduleManufacturer || snapshotFlat.moduleMake);
+    put("moduleModel", snapshotFlat.moduleModel);
+    put("moduleQty", snapshotFlat.moduleQuantity || snapshotFlat.moduleQty);
+    put("moduleQuantity", snapshotFlat.moduleQuantity || snapshotFlat.moduleQty);
+    put("moduleWattage", snapshotFlat.moduleWattage);
+  }
+
   const overlay = project.clientId ? clientStagingOverlay(db, project.clientId, portalType) : {};
-  // Overlay (client licensing) and explicit project fields win over snapshot.
-  return { ...snapshotFlat, ...projectFields, ...overlay };
+  // Precedence: snapshot scalars → derived equipment aliases → explicit project fields →
+  // client licensing overlay (each later layer wins).
+  return { ...snapshotFlat, ...equipment, ...projectFields, ...overlay };
 }
