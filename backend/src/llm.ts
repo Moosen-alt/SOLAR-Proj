@@ -935,6 +935,27 @@ ELECTRICAL SERVICES PAGE (Accela "Residential - Electrical Comprehensive" and si
   - "Project includes any of the following" → "Not Applicable" (e.g. "01-Not Applicable").
 - "Plan Review Required" radio: leave its default (typically "No") unless the page clearly requires Yes; never flip it on speculatively.
 
+PGE POWERCLERK NET METERING FORM RULES (applies when URL contains "powerclerk.com"):
+- Several wizard steps show a NEAR-IDENTICAL contact block ("Name / Last / Company / Address / City / State / Zip / Email / Phone"). Do NOT decide whose data to fill from the FIELD LABELS — they are the same on every contact step. Decide ONLY from the page/section HEADING and the wizard step name (in pageTitle/bodyText, e.g. the highlighted stepper item "Preparer Information" / "PGE Customer Information" / "Installer Information", or the section heading like "Applicant (PGE Customer) Information").
+- PREPARER INFORMATION step / heading ("Preparer Information") → the person preparing/submitting the application = the INSTALLER. Fill: installerContactName (First), installer last name (Last), installerCompanyName (Company), installerStreet (Address), installerCity/installerState/installerZip, installerEmail (Email), installerPhone (Phone).
+- APPLICANT / PGE CUSTOMER step / heading ("PGE Customer Information", "Applicant (PGE Customer) Information", "Customer Information", "Property Owner") → the HOMEOWNER. Fill: homeownerFirstName (First), homeownerLastName (Last), homeownerCompany if present else leave Company blank, street (Address), city (City), state (State), zip (Zip), homeownerEmail (Email), homeownerPhone (Phone). NEVER put installer name/company/email/phone here. If homeownerEmail or homeownerPhone are empty, leave those fields blank rather than substituting installer values.
+- INSTALLER INFORMATION step / heading ("Installer Information") → the INSTALLER company contact, same installer fields as the Preparer step.
+- "Existing contact to use for this contact" dropdown → leave on its default ("New Contact") unless project data names an existing contact to reuse.
+- "Co-applicant" name fields → leave blank unless project data provides a co-applicant.
+- SERVICE LOCATION step ("Street / City / State / Zip / Type / Schedule" for the PGE service address):
+  - Fill Street with "street", City with "city", State with "state", Zip with "zip" from project.
+  - "Type" dropdown → "Residential" for residential solar. "Schedule" dropdown → "utilitySchedule" if present, otherwise "Schedule 7" for residential.
+  - After Type + Schedule are set, ACCOUNT NUMBER and METER NUMBER fields appear: label "Account Number"/"Account #"/"PGE Account" → field: "accountNumber" (sensitive, no literal value); label "Meter Number"/"Meter #" → field: "meterNumber" (sensitive, no literal value).
+  - "meter is mounted on a pole" / "Primary Service Account" / "Customer-Owned Transformer" checkboxes → do NOT check unless project data explicitly says so.
+  - "Estimated Commissioning Date" → today + 28 days (todayDate is in projectFields as YYYY-MM-DD; format MM/DD/YYYY); leave blank if todayDate absent.
+- AGGREGATION step ("aggregate my meters" / "No aggregation") → select "No aggregation" as a literal FIXED choice; never bind to a project field.
+
+HOMEOWNER vs. INSTALLER FIELD DISAMBIGUATION (for ANY portal):
+- When field labels are GENERIC ("Name", "Email", "Phone", "Address", "Company") and don't themselves say customer-vs-installer, use the SECTION HEADING / wizard-step name / surrounding bodyText to decide whose contact the block is for. The heading is authoritative over the field shape.
+- Pages/sections for the APPLICANT / PROPERTY OWNER / CUSTOMER → homeownerFirstName, homeownerLastName, homeownerEmail, homeownerPhone, street, city, state, zip.
+- Pages/sections for the INSTALLER / CONTRACTOR / PREPARER / APPLICANT'S REPRESENTATIVE → installerContactName (first), installer last name, installerCompanyName, installerEmail, installerPhone, installerStreet.
+- Never cross-fill: installer email must NEVER go into a homeowner email field, and vice versa.
+
 DASHBOARD / HOME PAGES:
 - If isDashboard=true (no fillable inputs — only buttons and navigation links), the bot just logged in and landed on the portal home/dashboard. Your ONLY job is to return "navigateIndex": the index of the link or button that starts a new application / interconnection request / permit application. Look for labels like "New Application", "Start Application", "New Pacific Power Customer Generation Application", "Start New Project", "Apply Now", "Create Application", or a tab/link for the relevant program. Set fills=[], advanceIndex=omit, atReview=false, and ONLY navigateIndex. Do NOT treat any dashboard navigation link as advanceIndex.
 
