@@ -45,6 +45,9 @@ interface FakePageSpec {
     rawFields: RawFieldRow[];
     // Review-screen value pairs returned by scrapeReviewScreen's $$eval, if any.
     reviewPairs?: Array<{ label: string; value: string }>;
+    // When set, clicking this page's advance button does NOT move forward (the portal blocked
+    // it), and page.evaluate() returns these as inline-validation blockers.
+    blockedValidationErrors?: string[];
   }>;
   // Frame URLs returned by page.frames() (for structural challenge detection).
   frameUrls?: string[];
@@ -84,8 +87,9 @@ function makeFakePage(spec: FakePageSpec, log: ActionLog) {
       count: async () => 1,
       click: async () => {
         log.clicks.push(key);
-        // Clicking an "advance" (Next/Continue) navigates to the next page.
-        pageIdx++;
+        // Clicking an "advance" (Next/Continue) navigates to the next page — UNLESS this page
+        // is configured to block the advance (validation error), in which case pageIdx stays.
+        if (!curPage().blockedValidationErrors) pageIdx++;
       },
       fill: async (v: string) => { log.fills.push({ key, value: v }); },
       selectOption: async (v: any) => {
@@ -109,6 +113,9 @@ function makeFakePage(spec: FakePageSpec, log: ActionLog) {
     goto: async () => undefined,
     waitForLoadState: async () => undefined,
     reload: async () => undefined,
+    // collectValidationErrors() runs its scrape via page.evaluate; return the page's configured
+    // blockers so the validation guard can be exercised without a real DOM.
+    evaluate: async () => curPage().blockedValidationErrors ?? [],
     frames: () => (spec.frameUrls ?? []).map((u) => ({ url: () => u })),
     getByRole: (role: string, o?: { name?: string }) => locatorFor(`role:${role}:${o?.name ?? ""}`),
     getByLabel: (label: string) => locatorFor(`label:${label}`),
@@ -763,9 +770,58 @@ async function testRadioSelectedViaCheck() {
   assert.equal(checkSteps.length, 1, "exactly one check step recorded (the selected radio)");
 }
 
+// 12) VALIDATION GUARD: a blocked advance (page didn't move) is detected, the dead advance step
+//     is dropped, and the portal's validation errors are surfaced in the result message — instead
+//     of silently recording a broken page or looping with no explanation.
+async function testValidationGuardBlockedAdvance() {
+  const log: ActionLog = { clicks: [], fills: [], selects: [], checks: [] };
+  // Planner: fill a field and try to advance every time. Once it's been told (via recoveryHint)
+  // that validation blocked it, stop the run (atReview) so the test terminates promptly.
+  let sawValidationInHint = false;
+  const planner: LearnPlanner = async (req: LearnPlanRequest): Promise<LearnPlanResponse> => {
+    if (req.recoveryHint && /validation error/i.test(req.recoveryHint)) {
+      sawValidationInHint = true;
+      return { fills: [], atReview: true };
+    }
+    return { fills: [{ selectorIndex: 0, value: "225", field: "mainServiceRating" }], advanceSelectorIndex: 1, atReview: false };
+  };
+  const adapter = new AutoLearnAdapter("Test Utility", planner);
+  withFakePage(
+    adapter,
+    makeFakePage(
+      {
+        pages: [
+          {
+            url: "https://pgenm.powerclerk.com/MvcProjects/EditProject",
+            title: "Edit Project",
+            body: "Description of Service",
+            rawFields: [
+              { label: "Main Service Entrance Rating (Amps)", fieldType: "text", id: "msr" },
+              { label: "Next", fieldType: "button", role: "button", text: "Next" },
+            ],
+            // The advance is blocked: Schedule is required and empty (the classic PGE failure).
+            blockedValidationErrors: ["Schedule: This field is required."],
+          },
+        ],
+      },
+      log,
+    ),
+  );
+
+  const result = await adapter.learn(fakeContext, fakeProject);
+  // The blocker is surfaced in the message, NOT silently swallowed.
+  assert.ok(/Schedule: This field is required/i.test(result.message), "validation blocker surfaced in message");
+  assert.ok(/blocked an advance/i.test(result.message), "message explains the advance was blocked");
+  // The recovery hint carried the specific validation error to the planner.
+  assert.ok(sawValidationInHint, "planner received the validation error in its recovery hint");
+  // No advance step survives for a click that never advanced the form.
+  assert.ok(!result.steps.some((s) => s.note?.startsWith("advance:")), "dead advance step was dropped");
+}
+
 const tests: Array<[string, () => Promise<void>]> = [
   ["fields are extracted, filled, and recorded as steps", testFieldsExtractedFilledRecorded],
   ["RADIO REGRESSION: radio selected via check(), false radio/checkbox skipped", testRadioSelectedViaCheck],
+  ["VALIDATION GUARD: blocked advance is detected and surfaced", testValidationGuardBlockedAdvance],
   ["a click that opens the form in a NEW TAB is adopted (PowerClerk)", testNewTabPopupAdopted],
   ["final submit is recorded isFinalSubmit:true and NEVER clicked", testFinalSubmitRecordedNeverClicked],
   ["a pay/fee button returned by the planner is never clicked", testPayFeeButtonNeverClicked],
