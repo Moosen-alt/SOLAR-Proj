@@ -1,9 +1,11 @@
+import fs from "fs";
+import path from "path";
 import type { Page } from "playwright";
 import type { ProjectRecord, RecipeSelector, RecipeStep } from "../../../shared/src/types";
 import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, type PortalContext, type PortalStepResult } from "../adapter";
 import { openPortal } from "../browser";
-import { fillCustomCombobox } from "../comboboxFill";
-import { detectChallengeFrame, redactStatusText, safeAction, sleep, smartWait, waitForElement } from "../safeAction";
+import { fillCustomCombobox, selectWithFallback } from "../comboboxFill";
+import { detectChallengeFrame, readbackMatches, redactStatusText, safeAction, sleep, smartWait, waitForElement } from "../safeAction";
 import { scrapeReviewScreen as scrapeReviewScreenShared } from "../reviewScreenScraper";
 import { performLogin } from "./loginFlow";
 
@@ -353,6 +355,17 @@ function isLikelyOnlyName(raw: RawField): boolean {
   return !!raw.name && raw.label === raw.name && !raw.placeholder;
 }
 
+// A fill we applied this page, retained so d2 can read it back and confirm the portal kept it.
+interface AppliedFill {
+  selector: RecipeSelector;
+  label: string;
+  fieldType: ExtractedField["fieldType"];
+  /** Value typed (empty for sensitive fields, which are only checked for non-emptiness). */
+  expected: string;
+  sensitive: boolean;
+  required: boolean;
+}
+
 export interface UploadSlot {
   /** A unique per-page key; the matching element is tagged with data-al-upl="<key>". */
   key: string;
@@ -700,6 +713,30 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       // url() can fail on a fake/odd page — non-fatal.
     }
 
+    // Debug forensic trail — created once if AUTOLEARN_DEBUG_SCREENSHOTS=1. Writes a full-page
+    // PNG before and after fills for every wizard step into data/screenshots/learn-<timestamp>/,
+    // plus pNNN-plan.json / pNNN-rescan.json sidecars (see .env.example). Lets the operator see
+    // exactly what the bot saw and what it changed without re-running blind. Best-effort only.
+    let debugScreenshotDir: string | null = null;
+    if (process.env.AUTOLEARN_DEBUG_SCREENSHOTS === "1") {
+      const ts = Date.now();
+      debugScreenshotDir = path.resolve(process.cwd(), "data", "screenshots", `learn-${ts}`);
+      try { fs.mkdirSync(debugScreenshotDir, { recursive: true }); } catch { debugScreenshotDir = null; }
+    }
+    const saveDebugShot = async (label: string) => {
+      if (!debugScreenshotDir || !this.page) return;
+      const safe = label.replace(/[^a-z0-9_-]/gi, "_").slice(0, 80);
+      const dest = path.join(debugScreenshotDir, `${safe}.png`);
+      try {
+        const buf = await (this.page as Page).screenshot({ type: "png", fullPage: true });
+        fs.writeFileSync(dest, buf);
+      } catch { /* non-fatal */ }
+    };
+
+    // Required fields that did NOT hold their value after filling (portal silently dropped them).
+    // Surfaced in the final message so the operator re-checks them before a human submits.
+    const fillVerifyMisses: string[] = [];
+
     for (let pageIdx = 0; pageIdx < this.maxPages; pageIdx++) {
       pageCount++;
       // Reset per-page label tracking so the planner sees a clean slate on each page —
@@ -737,6 +774,9 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       } catch (err) {
         return fail(steps, this.portalName, `Failed to scrape page ${pageCount}: ${err instanceof Error ? err.message : String(err)}`);
       }
+
+      // Debug: capture the page as-seen BEFORE any fills.
+      await saveDebugShot(`p${pageCount.toString().padStart(3, "0")}-before-${(pageTitle || "page").replace(/\s+/g, "_").slice(0, 40)}`);
 
       // PAGE CLASSIFICATION. A page with NO fillable inputs is EITHER a dashboard/home
       // (just navigation links — the portal entry screen after login) OR a read-only
@@ -881,6 +921,39 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           fillsPlanned: plannedFills,
           message: progressMsg,
         });
+
+        // Debug: write a JSON sidecar next to this page's screenshots showing what the bot SAW
+        // (field labels) and DECIDED (each fill's bound-field/value, sensitive masked). Pair it
+        // with the pNNN-before/after PNGs for the "real vs guessing" record.
+        if (debugScreenshotDir) {
+          const sidecar = {
+            page: pageCount,
+            title: pageTitle,
+            url: hostPath,
+            classification: cls,
+            atReview: plan.atReview ?? false,
+            navigateIndex: plan.navigateSelectorIndex ?? null,
+            advanceIndex: plan.advanceSelectorIndex ?? null,
+            finalSubmitIndex: plan.finalSubmitSelectorIndex ?? null,
+            recoveryHint: recoveryHint || null,
+            fieldsSeen: fields.map((f, i) => ({ i, type: f.fieldType, label: (f.label || "").slice(0, 80) })),
+            decisions: (plan.fills ?? []).map((fl) => {
+              const f = fields[fl.selectorIndex];
+              const sensitive = f ? isSensitiveLabel(f.label) : false;
+              return {
+                index: fl.selectorIndex,
+                label: (f?.label || "?").slice(0, 80),
+                boundField: fl.field || null,
+                value: sensitive ? "***sensitive (bound at replay)***" : (fl.value ?? ""),
+                source: fl.field ? "data-bound" : "literal",
+              };
+            }),
+          };
+          try {
+            const dest = path.join(debugScreenshotDir, `p${pageCount.toString().padStart(3, "0")}-plan.json`);
+            fs.writeFileSync(dest, JSON.stringify(sidecar, null, 2));
+          } catch { /* non-fatal */ }
+        }
       }
 
       // c3) DASHBOARD NAVIGATION — click a link/button to get from the portal home to the
@@ -958,6 +1031,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
 
       // d) Apply the fills and record each as a RecipeStep.
       let pageFillCount = 0;
+      // Fills applied this page, retained so d2 can read them back and confirm they held.
+      const appliedThisPage: AppliedFill[] = [];
       for (const fillReq of plan.fills ?? []) {
         const field = fields[fillReq.selectorIndex];
         if (!field) continue; // out-of-range index from the planner — skip safely.
@@ -968,6 +1043,14 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           steps.push(step);
           pageFillCount++;
           if (field.label) alreadyFilledLabels.push(field.label);
+          appliedThisPage.push({
+            selector: field.selector,
+            label: field.label || "",
+            fieldType: field.fieldType,
+            expected: sensitive ? "" : (fillReq.value ?? ""),
+            sensitive,
+            required: !!field.required,
+          });
         }
       }
 
@@ -995,6 +1078,14 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           steps.push(step);
           pageFillCount++;
           if (field.label) alreadyFilledLabels.push(field.label);
+          appliedThisPage.push({
+            selector: field.selector,
+            label: field.label || "",
+            fieldType: field.fieldType,
+            expected: "",
+            sensitive: true,
+            required: !!field.required,
+          });
         }
       }
 
@@ -1026,7 +1117,27 @@ export class AutoLearnAdapter extends BasePortalAdapter {
               steps.push(step);
               pageFillCount++;
               if (nf.label) alreadyFilledLabels.push(nf.label);
+              appliedThisPage.push({
+                selector: nf.selector,
+                label: nf.label || "",
+                fieldType: nf.fieldType,
+                expected: "",
+                sensitive: true,
+                required: !!nf.required,
+              });
             }
+          }
+          // Debug: dump the revealed conditional fields so the operator can see what appeared
+          // after the dropdown selection.
+          if (debugScreenshotDir) {
+            try {
+              const dest = path.join(debugScreenshotDir, `p${pageCount.toString().padStart(3, "0")}-rescan.json`);
+              fs.writeFileSync(dest, JSON.stringify({
+                page: pageCount,
+                title: pageTitle,
+                revealedFields: newFields.map((f) => (f.label || "?").slice(0, 80)),
+              }, null, 2));
+            } catch { /* non-fatal */ }
           }
         } catch { /* non-fatal rescan failure */ }
       }
@@ -1048,6 +1159,20 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         await this.waitForAutosaveIndicator(4000);
         const settleMs = Number(process.env.AUTOLEARN_SAVE_SETTLE_MS) || 800;
         await sleep(settleMs);
+
+        // Debug: capture the page AFTER fills have settled so it can be compared with "before".
+        await saveDebugShot(`p${pageCount.toString().padStart(3, "0")}-after-${(pageTitle || "page").replace(/\s+/g, "_").slice(0, 40)}`);
+      }
+
+      // d4) VERIFY THE FILLS LANDED before advancing. A portal can silently drop a fill — a
+      //     Vue/React model rejects it, an overlay eats the keystrokes, inline validation clears
+      //     it, or an autosave round-trip blanks it. If we advance blindly the field is gone and
+      //     only resurfaces (if at all) as a blank at the review screen. Read each filled control
+      //     back; re-apply once if it didn't hold; record any REQUIRED field that still won't hold
+      //     its value so the operator sees exactly what to fix.
+      if (appliedThisPage.length > 0) {
+        const misses = await this.verifyFillsLanded(appliedThisPage);
+        for (const m of misses) if (!fillVerifyMisses.includes(m)) fillVerifyMisses.push(m);
       }
 
       // e) Record the final submit (if any) — NEVER click it. Reject pay/fee buttons.
@@ -1174,23 +1299,28 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     const docsWarning = missingRequiredDocs.length > 0
       ? ` 📎 ${missingRequiredDocs.length} required document upload(s) had no matching project file and were left empty — attach before submit: ${missingRequiredDocs.slice(0, 8).join("; ")}.`
       : "";
+    const verifyWarning = fillVerifyMisses.length > 0
+      ? ` ⚠ ${fillVerifyMisses.length} required field(s) did not hold their value after filling and may be blank in the portal: ${fillVerifyMisses.slice(0, 12).join(", ")}${fillVerifyMisses.length > 12 ? ", …" : ""}. Re-check these before submit.`
+      : "";
     const message = reachedReview
-      ? `${HUMAN_REVIEW_MESSAGE} Auto-learn reached the review screen after ${pageCount} page(s). Verify every field/value below before a human submits.${validationWarning}${docsWarning}`
+      ? `${HUMAN_REVIEW_MESSAGE} Auto-learn reached the review screen after ${pageCount} page(s). Verify every field/value below before a human submits.${validationWarning}${docsWarning}${verifyWarning}`
       : filledSomething
-        ? `Auto-learn filled ${pageCount} page(s) and recorded the steps, but did not reach a review screen. Page trace: ${traceLine}${validationWarning}${docsWarning}`
-        : `Auto-learn found nothing fillable on ${pageCount} page(s); no steps recorded.${nothingFillableHint} Page trace: ${traceLine}${validationWarning}${docsWarning}`;
+        ? `Auto-learn filled ${pageCount} page(s) and recorded the steps, but did not reach a review screen. Page trace: ${traceLine}${validationWarning}${docsWarning}${verifyWarning}`
+        : `Auto-learn found nothing fillable on ${pageCount} page(s); no steps recorded.${nothingFillableHint} Page trace: ${traceLine}${validationWarning}${docsWarning}${verifyWarning}`;
 
-    // Capture review page screenshot when we've reached the review screen. Best-effort, but a
-    // SILENT failure here is why "screenshots stopped showing up in the folder" — the backend
-    // only writes data/screenshots when this base64 is present. Let the page settle first, retry
-    // once, and log the reason on failure so a missing screenshot is diagnosable, not invisible.
+    // Capture the review page screenshot when we've reached the review screen. fullPage:true so
+    // the vision verifier sees the WHOLE review — a viewport-only shot would let an off-screen
+    // blank/wrong required field pass unseen. Best-effort, but a SILENT failure here is why
+    // "screenshots stopped showing up in the folder" — the backend only writes data/screenshots
+    // when this base64 is present. Settle the page first, retry once, and log the reason on
+    // failure so a missing screenshot is diagnosable, not invisible.
     let reviewScreenshotBase64: string | undefined;
     for (let attempt = 0; attempt < 2 && !reviewScreenshotBase64; attempt++) {
       try {
         if (typeof this.page.waitForLoadState === "function") {
           await this.page.waitForLoadState("domcontentloaded", { timeout: 3000 }).catch(() => {});
         }
-        const buf = await this.page.screenshot({ type: "png", fullPage: false });
+        const buf = await this.page.screenshot({ type: "png", fullPage: true });
         reviewScreenshotBase64 = buf.toString("base64");
       } catch (err) {
         if (attempt === 1) {
@@ -1294,6 +1424,62 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       step.value = value;
     }
     return step;
+  }
+
+  // Read each applied fill back; re-apply once if it didn't hold; return the labels of REQUIRED
+  // fields that STILL won't hold their value (the portal silently dropped them).
+  private async verifyFillsLanded(applied: AppliedFill[]): Promise<string[]> {
+    const misses: string[] = [];
+    for (const a of applied) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const loc = (await this.locator(a.selector)) as any;
+      if (!loc) continue;
+      if (await this.fieldHoldsValue(loc, a)) continue;
+
+      // One re-apply attempt. Sensitive fields are never retyped here (we don't keep the
+      // literal); select fields go back through the combobox fallback.
+      try {
+        if (a.sensitive || !a.expected) {
+          // nothing to retype — fall through to the re-check
+        } else if (a.fieldType === "select") {
+          await selectWithFallback(this.page!, loc, a.expected);
+        } else if (a.fieldType === "checkbox" || a.fieldType === "radio") {
+          if (/^(true|yes|on|1)$/i.test(a.expected) && typeof loc.check === "function") await loc.check({ timeout: 5000 });
+        } else if (typeof loc.fill === "function") {
+          await loc.fill(a.expected, { timeout: 5000 });
+          if (typeof loc.blur === "function") await loc.blur().catch(() => {});
+        }
+      } catch { /* re-apply is best-effort */ }
+
+      if (!(await this.fieldHoldsValue(loc, a)) && a.required) misses.push(a.label);
+    }
+    return misses;
+  }
+
+  // True when the control still holds a value consistent with what we filled. For text/select
+  // that means non-empty (and not a "please select" placeholder); for checkbox/radio it means
+  // the checked state matches the intended boolean. Unreadable → treated as held (don't block).
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async fieldHoldsValue(loc: any, a: AppliedFill): Promise<boolean> {
+    try {
+      if (a.fieldType === "checkbox" || a.fieldType === "radio") {
+        if (typeof loc.isChecked !== "function") return true;
+        const want = /^(true|yes|on|1)$/i.test(a.expected);
+        const isChecked = await loc.isChecked().catch(() => false);
+        return Boolean(isChecked) === want;
+      }
+      if (typeof loc.inputValue !== "function") return true;
+      const v = String((await loc.inputValue().catch(() => "")) ?? "").trim();
+      if (!v) return false;
+      if (/^(please select|select\.\.\.|-- ?select|choose)/i.test(v)) return false;
+      // When we have the literal we filled, a non-empty value that matches is best; but a
+      // non-empty value that DIFFERS is still "filled" (the portal may reformat dates/numbers),
+      // so we only treat truly-empty as a miss. readbackMatches is used opportunistically.
+      if (a.expected) return v.length > 0 || readbackMatches(v, a.expected);
+      return v.length > 0;
+    } catch {
+      return true;
+    }
   }
 
   // A button is off-limits if its label/selector text matches a pay/fee/checkout keyword.
