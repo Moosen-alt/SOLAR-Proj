@@ -1540,6 +1540,10 @@ export interface RecipeStep {
   value?: string;
   /** For upload: which document type to attach (e.g. "sld", "site_plan"). */
   docType?: string;
+  /** For upload: the control is a custom Browse/Upload widget whose real <input> is
+   *  created on click — replay it via the browser file-chooser dialog (click + setFiles)
+   *  rather than setInputFiles on a (non-existent) static input. */
+  viaFileChooser?: boolean;
   /** Don't fail the run if this step's target isn't found. */
   optional?: boolean;
   /** A credential/secret field (password, account#, meter#, MFA). The recorder

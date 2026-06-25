@@ -4,6 +4,7 @@ import { openPortal } from "../browser";
 import { selectWithFallback } from "../comboboxFill";
 import { detectChallengeFrame, hasNumericValidationError, scanStatusFromBody, RETRY_BACKOFF_MS, sleep, smartWait, toBareNumber, waitForElement, waitForInteractiveControls } from "../safeAction";
 import { performLogin } from "./loginFlow";
+import { tagUploadControls } from "./autoLearnAdapter";
 
 // RecipeAdapter — replays a recorded portal recipe (see portal_recipes / the recorder).
 // Works for ANY AHJ or utility portal an admin has taught by recording. It substitutes
@@ -331,6 +332,21 @@ export class RecipeAdapter extends BasePortalAdapter {
       case "upload": {
         const file = step.docType ? this.docsByType[step.docType] : undefined;
         if (!file) return false;
+        // Custom Browse/Upload widgets tag their controls with data-al-upl at record time;
+        // that attribute is gone on a fresh page, so deterministically re-tag (same DOM →
+        // same keys) before resolving the selector.
+        if (step.selector?.css?.includes("data-al-upl")) {
+          await this.page.evaluate(tagUploadControls).catch(() => null);
+        }
+        if (step.viaFileChooser) {
+          // The real <input> is created on click — intercept the file-chooser dialog.
+          const [chooser] = await Promise.all([
+            this.page.waitForEvent("filechooser", { timeout: 8000 }),
+            scoped!.click({ timeout: 6000 }),
+          ]);
+          await chooser.setFiles(file);
+          return true;
+        }
         await scoped!.setInputFiles(file);
         return true;
       }

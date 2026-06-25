@@ -343,6 +343,7 @@ export function toExtractedField(raw: RawField): ExtractedField {
   };
   if (raw.options && raw.options.length) field.options = raw.options;
   if (raw.href) field.href = raw.href;
+  if (raw.required) field.required = true;
   return field;
 }
 
@@ -350,6 +351,87 @@ export function toExtractedField(raw: RawField): ExtractedField {
 // be unreliable, so prefer a more structural selector.
 function isLikelyOnlyName(raw: RawField): boolean {
   return !!raw.name && raw.label === raw.name && !raw.placeholder;
+}
+
+export interface UploadSlot {
+  /** A unique per-page key; the matching element is tagged with data-al-upl="<key>". */
+  key: string;
+  /** The human label of the upload field (e.g. "One-Line Electrical Diagram"). */
+  label: string;
+  /** "input" → a real <input type=file> (use setInputFiles); "browse" → a click-to-open
+   *  trigger whose real input is created dynamically (use the filechooser event). */
+  kind: "input" | "browse";
+  /** True when the field is marked required (asterisk / required attr / aria-required). */
+  required: boolean;
+}
+
+// Serializable in-page detector for document-upload controls. Runs via page.evaluate.
+// Universal: handles native <input type=file> AND custom "Browse"/"Upload"/"Choose File"
+// widgets (PowerClerk, Telerik/Kendo, jQuery-file-upload) whose real input is created only
+// when the trigger is clicked — those never appear in the normal field scrape. Each matched
+// control is tagged with a data-al-upl attribute so the adapter can locate it deterministically.
+// Returns one slot per control with its derived label + required flag. Never throws.
+export function tagUploadControls(): UploadSlot[] {
+  const slots: UploadSlot[] = [];
+  let n = 0;
+
+  // Derive the field label for an upload control: nearest <label>, else the closest
+  // form-group/row container's leading label/heading/text, else the trigger's own text.
+  function deriveLabel(el: Element): string {
+    const id = el.getAttribute("id");
+    if (id) {
+      const forLbl = document.querySelector(`label[for="${(window.CSS && CSS.escape) ? CSS.escape(id) : id}"]`);
+      if (forLbl && forLbl.textContent && forLbl.textContent.trim()) return forLbl.textContent.trim();
+    }
+    const wrapLbl = el.closest("label");
+    if (wrapLbl && wrapLbl.textContent && wrapLbl.textContent.trim()) return wrapLbl.textContent.trim();
+    const container = el.closest('[class*="form-group"], [class*="field"], [class*="row"], li, tr, dd, p, div');
+    if (container) {
+      const lbl = container.querySelector("label, .control-label, .field-label, strong, b, h1, h2, h3, h4, h5, legend");
+      if (lbl && lbl.textContent && lbl.textContent.trim()) return lbl.textContent.trim().replace(/\s+/g, " ");
+      // Fall back to the container's leading text node (e.g. "Cut Sheets" before the Browse box).
+      const own = (container.textContent || "").trim().replace(/\s+/g, " ");
+      if (own) return own.slice(0, 80);
+    }
+    const aria = el.getAttribute("aria-label");
+    if (aria) return aria.trim();
+    return (el.textContent || "").trim() || "Document";
+  }
+
+  function isRequired(el: Element): boolean {
+    if ((el as HTMLInputElement).required) return true;
+    if (el.getAttribute("aria-required") === "true") return true;
+    const container = el.closest('[class*="form-group"], [class*="field"], [class*="row"], li, tr, dd, p, div');
+    const lbl = container?.querySelector("label, .control-label, .field-label");
+    // PowerClerk/Bootstrap mark required with a red asterisk in/after the label text.
+    if (lbl && /\*/.test(lbl.textContent || "")) return true;
+    return false;
+  }
+
+  // 1) Native file inputs (even when visually hidden behind a styled Browse button).
+  const fileInputs = Array.from(document.querySelectorAll('input[type="file"]'));
+  for (const el of fileInputs) {
+    const key = `f${n++}`;
+    el.setAttribute("data-al-upl", key);
+    slots.push({ key, label: deriveLabel(el), kind: "input", required: isRequired(el) });
+  }
+
+  // 2) Browse/Upload/Choose-File triggers whose real input is created dynamically — these
+  //    have NO file input anywhere in their container, so the scrape above missed them.
+  const TRIGGER = /^(browse|upload|choose(\s+file)?|attach|add\s+file|select\s+file|choose\s+files?|upload\s+file)\.{0,3}$/i;
+  const clickables = Array.from(document.querySelectorAll('button, a, [role="button"], input[type="button"], .btn, span[class*="upload"], span[class*="browse"]'));
+  for (const el of clickables) {
+    const txt = ((el as HTMLInputElement).value || el.textContent || "").trim();
+    if (!TRIGGER.test(txt)) continue;
+    const container = el.closest('[class*="form-group"], [class*="field"], [class*="row"], li, tr, dd, p, div, td');
+    // If a real file input already lives in this container, it's covered by pass 1 — skip.
+    if (container && container.querySelector('input[type="file"]')) continue;
+    const key = `b${n++}`;
+    el.setAttribute("data-al-upl", key);
+    slots.push({ key, label: deriveLabel(el), kind: "browse", required: isRequired(el) });
+  }
+
+  return slots;
 }
 
 function fail(steps: RecipeStep[], portalName: string, message: string, pauseReason: string | null = null): LearnResult {
@@ -434,6 +516,79 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     return firstKey ? { docType: firstKey, file: this.docsByType[firstKey] } : null;
   }
 
+  // Resolve a docType for an upload control by its label only (no ExtractedField wrapper).
+  private resolveUploadByLabel(label: string): { docType: string; file: string } | null {
+    return this.resolveUpload({ selector: {}, label, fieldType: "file" });
+  }
+
+  // Universal upload pass. Detects every document-upload control on the current page —
+  // native <input type=file> AND custom Browse/Upload widgets whose real input is created
+  // only on click — attaches the matching split document, and records a replayable `upload`
+  // step. Returns labels filled + the labels of REQUIRED slots we had no document for.
+  // Best-effort and non-throwing: a stuck upload never aborts the learn run.
+  private async performUploads(
+    steps: RecipeStep[],
+    alreadyFilledLabels: string[],
+  ): Promise<{ filled: string[]; missingRequired: string[] }> {
+    const filled: string[] = [];
+    const missingRequired: string[] = [];
+    if (!this.page || typeof this.page.evaluate !== "function") return { filled, missingRequired };
+
+    let slots: UploadSlot[] = [];
+    try {
+      slots = await this.page.evaluate(tagUploadControls);
+    } catch { return { filled, missingRequired }; }
+    if (!Array.isArray(slots) || slots.length === 0) return { filled, missingRequired };
+
+    for (const slot of slots) {
+      const resolved = this.resolveUploadByLabel(slot.label);
+      if (!resolved) {
+        // No document for this control — never fake it. Report it if the portal requires it.
+        if (slot.required) missingRequired.push(slot.label || "Required document");
+        continue;
+      }
+      const selector: RecipeSelector = { css: `[data-al-upl="${slot.key}"]` };
+      const res = await safeAction(
+        `upload ${resolved.docType}`,
+        async () => {
+          if (slot.kind === "input") {
+            // Native input — set files directly even when visually hidden behind a button.
+            const loc = this.page!.locator(selector.css!);
+            await loc.setInputFiles(resolved.file);
+          } else {
+            // Custom widget — the real <input> is created on click, so intercept the
+            // browser's file-chooser dialog (works for ANY uploader, no DOM coupling).
+            const [chooser] = await Promise.all([
+              this.page!.waitForEvent("filechooser", { timeout: 8000 }),
+              this.page!.locator(selector.css!).click({ timeout: 6000 }),
+            ]);
+            await chooser.setFiles(resolved.file);
+          }
+          await smartWait(this.page!, 500);
+        },
+        { required: false },
+      );
+      if (res.ok && !res.message) {
+        steps.push({
+          action: "upload",
+          phase: "fill",
+          selector,
+          docType: resolved.docType,
+          viaFileChooser: slot.kind === "browse",
+          note: `upload ${resolved.docType}: ${slot.label || "document"}`,
+        });
+        if (slot.label) {
+          filled.push(slot.label);
+          alreadyFilledLabels.push(slot.label);
+        }
+      } else if (slot.required) {
+        // Detected + required + we had a file, but the attach failed — still flag for the human.
+        missingRequired.push(slot.label || "Required document");
+      }
+    }
+    return { filled, missingRequired };
+  }
+
   // --- credential injection (mirrors recipeAdapter.login) -------------------
   async login(context: PortalContext): Promise<PortalStepResult> {
     try {
@@ -506,6 +661,9 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     // and surfaced in the final message so the operator can see WHICH fields the portal rejected.
     const validationBlocks: string[] = [];
     let lastValidationErrors: string[] = [];
+    // Required document-upload slots we detected but had NO matching project file for —
+    // surfaced in the final message so the human can attach them before submitting.
+    const missingRequiredDocs: string[] = [];
     // Diagnostics: a compact, redacted breadcrumb per page (title + host/path + field
     // counts + classification + the planner's decision). Surfaced in the result message
     // and logs so a "nothing fillable" run is debuggable WITHOUT re-running blind.
@@ -532,6 +690,10 @@ export class AutoLearnAdapter extends BasePortalAdapter {
 
     for (let pageIdx = 0; pageIdx < this.maxPages; pageIdx++) {
       pageCount++;
+      // Reset per-page label tracking so the planner sees a clean slate on each page —
+      // PowerClerk reuses field labels ("Name", "Email", "Phone") across wizard steps and
+      // passing stale labels from page N to page N+1 caused the planner to skip re-fills.
+      alreadyFilledLabels.length = 0;
 
       // a2) Dismiss any modals/popups/banners and clear lingering loading scrims before
       //     extracting fields, so overlays can't intercept the actions we take this page.
@@ -772,35 +934,14 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         }
       }
 
-      // d0) UPLOAD PASS — attach the right split document to every file-input on this page.
-      //     Deterministic (no LLM): each upload control's label is matched to a docType and
-      //     the corresponding split file is attached, then recorded as an `upload` step so
-      //     the replayed recipe uploads the same document. File inputs are often visually
-      //     hidden behind a styled button, so we DON'T require visibility before setting.
-      for (const field of fields) {
-        if (field.fieldType !== "file") continue;
-        const resolved = this.resolveUpload(field);
-        if (!resolved) continue; // no document available — leave it for the human, never fake it.
-        const res = await safeAction(
-          `upload ${resolved.docType}`,
-          async () => {
-            const loc = await this.locator(field.selector);
-            if (!loc) throw new Error("upload selector unresolved");
-            await loc.setInputFiles(resolved.file);
-            await smartWait(this.page!, 500);
-          },
-          { required: false },
-        );
-        if (res.ok && !res.message) {
-          steps.push({
-            action: "upload",
-            phase: "fill",
-            selector: field.selector,
-            docType: resolved.docType,
-            note: `upload ${resolved.docType}: ${field.label || "document"}`,
-          });
-          if (field.label) alreadyFilledLabels.push(field.label);
-        }
+      // d0) UPLOAD PASS — attach the right split document to every upload control on this
+      //     page. Universal: handles native <input type=file> (setInputFiles) AND custom
+      //     "Browse"/"Upload"/"Choose File" widgets whose real input is created only on click
+      //     (driven via the browser's filechooser event). Required slots with no matching
+      //     document are reported (never faked) so the human can complete them.
+      {
+        const up = await this.performUploads(steps, alreadyFilledLabels);
+        for (const m of up.missingRequired) if (!missingRequiredDocs.includes(m)) missingRequiredDocs.push(m);
       }
 
       // d) Apply the fills and record each as a RecipeStep.
@@ -811,6 +952,31 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         if (field.fieldType === "file") continue; // handled by the upload pass above.
         const sensitive = isSensitiveLabel(field.label);
         const step = await this.applyFill(field, fillReq, sensitive);
+        if (step) {
+          steps.push(step);
+          pageFillCount++;
+          if (field.label) alreadyFilledLabels.push(field.label);
+        }
+      }
+
+      // d2) SENSITIVE-FIELD DETERMINISTIC PASS — any sensitive text field (account/meter number)
+      //     already present in the initial scrape that the planner didn't fill gets bound to
+      //     project data here. Restricted to text/select inputs — never checkboxes, radios, or
+      //     file controls (a checkbox whose label mentions "meter" is NOT a meter-number field).
+      //     Never stored with a literal value; never includes password fields (login credentials).
+      for (const field of fields) {
+        if (!isSensitiveLabel(field.label)) continue;
+        if (/\bpassword\b|\bpasscode\b/i.test(field.label)) continue; // login credential — skip
+        // Only text/select fields can hold account/meter numbers — checkboxes/radios with labels
+        // that happen to contain "meter" (e.g. "Is meter mounted on a pole?") are NOT number inputs.
+        if (field.fieldType !== "text" && field.fieldType !== "select" && field.fieldType !== "other") continue;
+        if (field.fieldType === "file" || field.fieldType === "button") continue;
+        if (alreadyFilledLabels.includes(field.label)) continue;
+        const syntheticFill = {
+          value: "",
+          field: /account/i.test(field.label) ? "accountNumber" : /meter/i.test(field.label) ? "meterNumber" : undefined,
+        };
+        const step = await this.applyFill(field, syntheticFill, true);
         if (step) {
           steps.push(step);
           pageFillCount++;
@@ -851,11 +1017,13 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         } catch { /* non-fatal rescan failure */ }
       }
 
-      // d1) PERSIST SETTLE. Portals like PowerClerk autosave each page's fields via an AJAX
-      //     round-trip (~3s/page). If we advance before that completes, the entered values are
-      //     LOST — the visibly-filled form saves a BLANK draft. After filling a page, wait for
-      //     the network to settle and give the autosave time to commit before advancing.
-      //     Tunable via AUTOLEARN_SAVE_SETTLE_MS (default 3000).
+      // d1) PERSIST SETTLE (ADAPTIVE). Portals like PowerClerk autosave each page's fields via
+      //     an AJAX round-trip. If we advance before that completes, the entered values are LOST
+      //     (a blank draft saves). The OLD approach slept a flat 3s every page; instead we now
+      //     wait for the network to go idle (which IS the autosave XHR completing) and only keep
+      //     waiting while a "Saving…" indicator is actually visible — so a fast page proceeds in
+      //     well under a second and a slow save is still given the time it genuinely needs.
+      //     AUTOLEARN_SAVE_SETTLE_MS (default 800) is just the final commit buffer.
       if (pageFillCount > 0) {
         const settleNetwork = async (timeout: number) => {
           if (typeof this.page?.waitForLoadState === "function") {
@@ -863,9 +1031,9 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           }
         };
         await settleNetwork(8000);
-        const settleMs = Number(process.env.AUTOLEARN_SAVE_SETTLE_MS) || 3000;
+        await this.waitForAutosaveIndicator(4000);
+        const settleMs = Number(process.env.AUTOLEARN_SAVE_SETTLE_MS) || 800;
         await sleep(settleMs);
-        await settleNetwork(4000);
       }
 
       // e) Record the final submit (if any) — NEVER click it. Reject pay/fee buttons.
@@ -989,11 +1157,14 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     const validationWarning = validationBlocks.length > 0
       ? ` ⛔ The portal blocked an advance with ${validationBlocks.length} validation error(s) — fix before submit: ${validationBlocks.slice(0, 8).join("; ")}.`
       : "";
+    const docsWarning = missingRequiredDocs.length > 0
+      ? ` 📎 ${missingRequiredDocs.length} required document upload(s) had no matching project file and were left empty — attach before submit: ${missingRequiredDocs.slice(0, 8).join("; ")}.`
+      : "";
     const message = reachedReview
-      ? `${HUMAN_REVIEW_MESSAGE} Auto-learn reached the review screen after ${pageCount} page(s). Verify every field/value below before a human submits.${validationWarning}`
+      ? `${HUMAN_REVIEW_MESSAGE} Auto-learn reached the review screen after ${pageCount} page(s). Verify every field/value below before a human submits.${validationWarning}${docsWarning}`
       : filledSomething
-        ? `Auto-learn filled ${pageCount} page(s) and recorded the steps, but did not reach a review screen. Page trace: ${traceLine}${validationWarning}`
-        : `Auto-learn found nothing fillable on ${pageCount} page(s); no steps recorded.${nothingFillableHint} Page trace: ${traceLine}${validationWarning}`;
+        ? `Auto-learn filled ${pageCount} page(s) and recorded the steps, but did not reach a review screen. Page trace: ${traceLine}${validationWarning}${docsWarning}`
+        : `Auto-learn found nothing fillable on ${pageCount} page(s); no steps recorded.${nothingFillableHint} Page trace: ${traceLine}${validationWarning}${docsWarning}`;
 
     // Capture review page screenshot when we've reached the review screen
     let reviewScreenshotBase64: string | undefined;
@@ -1030,11 +1201,11 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     const action: RecipeStep["action"] =
       field.fieldType === "select" ? "select" : isCheckable ? "check" : "fill";
 
-    // A "false/no/off/0" value on a checkbox means UN-check it; on a radio it means "don't
-    // select this option" (the LLM returned false for an option it wants left unselected) —
-    // skip it entirely rather than calling check() which would select it.
+    // A "false/no/off/0" value on a radio means "don't select this option" — skip entirely.
+    // A "false" on a checkbox means "leave unchecked" — the default portal state needs no
+    // recorded step (and we never recorded a spurious "uncheck" of an already-unchecked box).
     const negated = isCheckable && /^(false|no|off|0|unchecked|none)$/i.test(value.trim());
-    if (field.fieldType === "radio" && negated) return null;
+    if (negated) return null; // both radio AND checkbox: false = no action needed
 
     const res = await safeAction(
       // The label is non-PII enough for a log line, but keep it short.
@@ -1079,6 +1250,10 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       note: field.label || undefined,
     };
     if (sensitive) {
+      // Password fields are login credentials handled by the login step — never record as
+      // a form fill step (the planner may send one but we drop it here to avoid replaying
+      // a stored blank into a plain-text login form on review/settings pages).
+      if (/\bpassword\b|\bpasscode\b/i.test(field.label)) return null;
       // NEVER store the literal value of a sensitive field.
       step.sensitive = true;
       step.value = "";
@@ -1502,6 +1677,45 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     else if (sel.role) loc = scope.getByRole(sel.role);
     else throw new Error("AutoLearn selector has no usable strategy.");
     return typeof sel.nth === "number" ? loc.nth(sel.nth) : loc.first();
+  }
+
+  // Wait — only as long as needed — for a portal "Saving…/Processing…" indicator to clear.
+  // Universal: many SPA wizards (PowerClerk, Accela, generic Bootstrap) show a transient
+  // "Saving…" / "Saved✓" status or a spinner while the autosave XHR runs. We poll for one;
+  // if none is present the page already saved (network was idle) and we return immediately.
+  // Best-effort, never throws. Returns when no saving indicator is visible OR the budget ends.
+  private async waitForAutosaveIndicator(maxMs: number): Promise<void> {
+    if (!this.page || typeof this.page.evaluate !== "function") return;
+    const deadline = Date.now() + maxMs;
+    const savingVisible = async (): Promise<boolean> => {
+      try {
+        return await this.page!.evaluate(() => {
+          const vis = (el: Element): boolean => {
+            const r = (el as HTMLElement).getBoundingClientRect();
+            const st = window.getComputedStyle(el as HTMLElement);
+            return r.width > 0 && r.height > 0 && st.visibility !== "hidden" && st.display !== "none";
+          };
+          // Text-based "Saving…/Processing…" status (PowerClerk's top-right "Saving…").
+          const texts = Array.from(document.querySelectorAll<HTMLElement>("span, div, small, p, label"));
+          for (const el of texts) {
+            const t = (el.textContent || "").trim();
+            if (/^(saving|processing|uploading|please wait)(\.{0,3}|…)?$/i.test(t) && vis(el)) return true;
+          }
+          // Common spinner/overlay classes used by SPA wizards while an XHR is in flight.
+          const spinners = document.querySelectorAll(
+            "[class*='saving'], [class*='spinner']:not([style*='display: none']), .loading-overlay, .x-mask-loading, [aria-busy='true']",
+          );
+          for (const el of spinners) if (vis(el)) return true;
+          return false;
+        });
+      } catch { return false; }
+    };
+    // Quick exit: if nothing is saving right now, don't wait at all.
+    if (!(await savingVisible())) return;
+    while (Date.now() < deadline) {
+      await sleep(200);
+      if (!(await savingVisible())) return;
+    }
   }
 
   // Scrape visible inline validation errors from the page — works on ASP.NET field-validation
