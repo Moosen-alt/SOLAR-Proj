@@ -892,6 +892,57 @@ async function testPowerClerkTermsGateReview() {
   assert.ok(!log.clicks.some((k) => /Submit/i.test(k)), "Submit button was never clicked");
 }
 
+// 13) DATE FIELD: a "...Date" text input is filled and recorded normally — the date-picker
+//     dismissal path (page Escape + overlay sweep) must not break or drop the fill. Guards the
+//     P006 commissioning-date handling.
+async function testDateFieldFilledAndRecorded() {
+  const log: ActionLog = { clicks: [], fills: [], selects: [], checks: [] };
+  const planner: LearnPlanner = async (req: LearnPlanRequest): Promise<LearnPlanResponse> => {
+    if (req.fields.some((f) => f.label === "Estimated Commissioning Date")) {
+      return { fills: [{ selectorIndex: 0, value: "08/15/2026" }], advanceSelectorIndex: 1, atReview: false };
+    }
+    return { fills: [], atReview: true, finalSubmitSelectorIndex: 0 };
+  };
+  const adapter = new AutoLearnAdapter("Portland General Electric", planner);
+  withFakePage(
+    adapter,
+    makeFakePage(
+      {
+        pages: [
+          {
+            url: "https://pgenm.powerclerk.com/MvcProjects/EditProject",
+            title: "Edit Project",
+            body: "Service details.",
+            rawFields: [
+              { label: "Estimated Commissioning Date", fieldType: "text", id: "ecd" },
+              { label: "Next", fieldType: "button", role: "button", text: "Next" },
+            ],
+          },
+          {
+            url: "https://pgenm.powerclerk.com/MvcProjects/EditProject",
+            title: "Edit Project",
+            body: "Step review. Submit your application.",
+            rawFields: [{ label: "Submit", fieldType: "button", role: "button", text: "Submit" }],
+            reviewPairs: [{ label: "Estimated Commissioning Date", value: "08/15/2026" }],
+          },
+        ],
+      },
+      log,
+    ),
+  );
+
+  const result = await adapter.learn(fakeContext, fakeProject);
+  assert.equal(result.ok, true, "run completes (no date-picker hang)");
+  assert.ok(
+    log.fills.some((f) => f.value === "08/15/2026"),
+    "date value typed into the input",
+  );
+  assert.ok(
+    result.steps.some((s) => s.action === "fill" && /commissioning date/i.test(s.note ?? "")),
+    "date fill recorded as a step",
+  );
+}
+
 const tests: Array<[string, () => Promise<void>]> = [
   ["fields are extracted, filled, and recorded as steps", testFieldsExtractedFilledRecorded],
   ["RADIO REGRESSION: radio selected via check(), false radio/checkbox skipped", testRadioSelectedViaCheck],
@@ -906,6 +957,7 @@ const tests: Array<[string, () => Promise<void>]> = [
   ["ACCELA TRAP: Continue Application on review page recorded, never clicked", testAccelaContinueApplicationNeverClicked],
   ["T&C PASS-THROUGH: disclaimer page is not treated as review screen", testTermsPagePassThrough],
   ["POWERCLERK REVIEW GATE: terms-checkbox submit page is review, box auto-checked, submit recorded", testPowerClerkTermsGateReview],
+  ["DATE FIELD: commissioning date filled and recorded, picker dismissal does not drop it", testDateFieldFilledAndRecorded],
 ];
 
 let failures = 0;

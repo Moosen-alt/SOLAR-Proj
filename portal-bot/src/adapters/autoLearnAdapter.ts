@@ -1626,6 +1626,17 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           // saved model on blur — and PowerClerk autosaves per field. Without the blur the
           // value shows on screen but is never persisted, so the saved draft comes back blank.
           if (typeof loc.blur === "function") await loc.blur().catch(() => {});
+          // A date/calendar text input pops a floating date-picker on focus that overlays the
+          // page and intercepts the NEXT click — the P006 "getting caught up after putting the
+          // calendar dates in" hang. We type the date straight into the input (above) and never
+          // touch the Calendar button, so the picker is pure obstruction: dismiss it with a
+          // page-level Escape (no element refocus) and sweep any lingering popup. Portal-agnostic.
+          if (/\bdate\b|\bcalendar\b|datepicker/i.test(field.label || "")) {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const kb = (this.page as any)?.keyboard;
+            if (kb && typeof kb.press === "function") await kb.press("Escape").catch(() => {});
+            await this.clearOverlays();
+          }
         }
       },
       { required: false },
@@ -1989,7 +2000,11 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       this.page.waitForLoadState?.("networkidle", { timeout: 6000 }).catch(() => null),
       sleep(6000),
     ]);
-    await sleep(700);
+    // Final dwell so a client-rendered destination (a slow PowerClerk/Accela page still
+    // "downloading"/hydrating its form fields after networkidle) is fully present before the
+    // next scrape — scraping too early misses fields. Tunable via AUTOLEARN_NAV_DWELL_MS.
+    const navDwellMs = Number(process.env.AUTOLEARN_NAV_DWELL_MS) || 1100;
+    await sleep(navDwellMs);
   }
 
   // Count open tabs in the browser context (1 when there's no context, e.g. a mock page).
@@ -2093,6 +2108,19 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           ".blockUI",
           ".ui-widget-overlay",
           ".ui-blocker",
+          // Floating date-picker popups. We type dates straight into the input and never click
+          // the calendar, so an open picker is pure click-interception (the P006 hang). These
+          // only exist while a picker is open; pointer-events:none lets the next click through.
+          "#ui-datepicker-div",            // jQuery UI datepicker
+          ".datepicker.dropdown-menu",     // bootstrap-datepicker
+          ".datepicker-dropdown",          // bootstrap-datepicker (alt)
+          ".flatpickr-calendar.open",      // flatpickr
+          ".react-datepicker__portal",     // react-datepicker (portal mode)
+          ".react-datepicker-popper",      // react-datepicker (popper mode)
+          ".air-datepicker.-active-",      // air-datepicker
+          ".k-calendar-container",         // Kendo UI
+          ".mat-datepicker-popup",         // Angular Material
+          ".p-datepicker-panel",           // PrimeNG/PrimeReact
         ].join(", ");
         // Remove any scrims present right now...
         document.querySelectorAll(sel).forEach((el) => el.remove());
