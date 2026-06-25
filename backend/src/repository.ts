@@ -5127,7 +5127,7 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
         safePortalProfileId,
         submissionType,
         permitTypeTag,
-        autoSubmitted ? "submitted" : adapterFailed ? "failed" : "awaiting_human_submit",
+        autoSubmitted ? "submitted" : pauseReason ? "paused_for_human" : adapterFailed ? "failed" : "awaiting_human_submit",
         "",
         capturedPermitNumber,
         capturedConfirmation,
@@ -5136,22 +5136,27 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
         "",
         autoSubmitted
           ? `${trackLabelText}${portalLabel} submitted via approved auto-submit (application submit only; no fee payment).`
-          : adapterFailed
-            ? `${trackLabelText}${portalLabel} run FAILED before review — nothing was staged on the portal. ${failureMessage}`
-            : `${trackLabelText}${portalLabel} staged to final review only. Automation did not click final submit.`,
+          : pauseReason
+            ? `${trackLabelText}${portalLabel} run PAUSED for a human at a ${pauseReason} challenge — nothing was staged. Complete the challenge in the open browser, then re-stage.`
+            : adapterFailed
+              ? `${trackLabelText}${portalLabel} run FAILED before review — nothing was staged on the portal. ${failureMessage}`
+              : `${trackLabelText}${portalLabel} staged to final review only. Automation did not click final submit.`,
         ts,
       ],
     );
 
     db.run("UPDATE projects SET status = ?, current_stage = ?, updated_at = ? WHERE id = ?", [
-      // On failure, leave the project in its prior (pre-run) status — never advance a
-      // project to "awaiting_human_submit" for a run that staged nothing.
-      autoSubmitted ? "submitted" : adapterFailed ? detail.project.status : "awaiting_human_submit",
+      // On failure OR an MFA/CAPTCHA pause, leave the project in its prior (pre-run) status — never
+      // advance a project to "awaiting_human_submit" for a run that staged nothing (a pause means the
+      // learner was walled at the challenge and never reached review).
+      autoSubmitted ? "submitted" : (pauseReason || adapterFailed) ? detail.project.status : "awaiting_human_submit",
       autoSubmitted
         ? `${trackLabelText}${portalLabel} auto-submitted (operator-approved)${capturedPermitNumber ? ` — record ${capturedPermitNumber}` : ""}. Tracking status.`
-        : adapterFailed
-          ? `${trackLabelText}${portalLabel} run failed — not staged. ${failureMessage}`
-          : `${trackLabelText}${portalLabel} staged. Human must verify and submit manually.`,
+        : pauseReason
+          ? `${trackLabelText}${portalLabel} run paused at a ${pauseReason} challenge — not staged. Complete it in the open browser, then re-stage.`
+          : adapterFailed
+            ? `${trackLabelText}${portalLabel} run failed — not staged. ${failureMessage}`
+            : `${trackLabelText}${portalLabel} staged. Human must verify and submit manually.`,
       nowIso(),
       projectId,
     ]);
@@ -5172,7 +5177,7 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
       db.run("UPDATE portal_runs SET tracking_url = COALESCE(NULLIF(?, ''), tracking_url) WHERE id = ?", [capturedRecordLink, runId]);
     }
 
-    addAuditLog(db, projectId, "portal_bot", runActorLabel, adapterFailed ? "portal.run_failed" : "portal.staged_to_review", {
+    addAuditLog(db, projectId, "portal_bot", runActorLabel, pauseReason ? "portal.paused_for_human" : adapterFailed ? "portal.run_failed" : "portal.staged_to_review", {
       runId,
       portalProfileId,
       portalType,

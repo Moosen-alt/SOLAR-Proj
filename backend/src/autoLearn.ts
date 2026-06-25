@@ -234,6 +234,16 @@ export async function autoLearnPortal(
     return { recipe: getPortalRecipe(db, stub.id), status: "failed", pauseReason: null, pageCount: learn.pageCount, finalSubmitRecorded: learn.finalSubmitRecorded, verification: { accurate: false, confidence: "low", matches: [], issues: [learn.message] }, message: `Could not learn the portal automatically: ${learn.message}. Record it manually instead.` };
   }
 
+  // Filled pages but never reached the portal's REVIEW screen — nothing is actually staged for a
+  // human to verify and submit. `learn.ok` is true here only because it filled something, so without
+  // this gate the run would fall through to verification (no review to check) and be reported as a
+  // draft "staged to review" — a silent fake success. Mark it failed and surface where it got lost.
+  if (learn.reachedReview === false) {
+    savePortalRecipeSteps(db, stub.id, learn.steps, { status: "needs_rerecord", notes: `Auto-learn did not reach the review screen: ${learn.message}` });
+    addAuditLog(db, projectId, "system", "auto-learn", "portal.auto_learn_failed", { scope: scopeType, reason: "no_review" });
+    return { recipe: getPortalRecipe(db, stub.id), status: "failed", pauseReason: null, pageCount: learn.pageCount, finalSubmitRecorded: learn.finalSubmitRecorded, verification: { accurate: false, confidence: "low", matches: [], issues: [learn.message] }, message: `The learner filled fields but never reached the portal's review screen, so nothing was staged. ${learn.message}` };
+  }
+
   // VERIFY the fill against the project data before trusting the recipe.
   input.onProgress?.({
     phase: "verify",

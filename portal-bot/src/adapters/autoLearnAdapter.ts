@@ -103,6 +103,10 @@ export interface LearnResult {
   /** "mfa_captcha" if a challenge stopped us, else null. */
   pauseReason: string | null;
   message: string;
+  /** True only when the learner actually reached the portal's review/confirm screen. `ok` alone
+   *  conflates this with "filled something" — callers must use reachedReview to tell a real
+   *  stage-to-review from a run that got lost mid-wizard (which must NOT report a staged draft). */
+  reachedReview?: boolean;
   /** Base64 PNG screenshot taken when the review/confirm page is reached. */
   reviewScreenshotBase64?: string;
 }
@@ -1084,6 +1088,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       pageCount,
       pauseReason: null,
       message,
+      reachedReview,
       reviewScreenshotBase64,
     };
   }
