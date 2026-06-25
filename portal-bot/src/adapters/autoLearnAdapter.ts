@@ -1099,25 +1099,25 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         }
       }
 
-      // d2) POST-FILL RESCAN — catch conditional fields revealed by dropdown/select fills.
-      //     On portals like PGE PowerClerk, selecting "Type=Residential" and "Schedule=Schedule 7"
-      //     dynamically reveals additional inputs (account number, meter number, etc.) that were
-      //     not present when the page was first scraped. After any select/dropdown fill, re-scrape
-      //     the page and ask the planner to fill any newly revealed inputs before advancing.
-      const hadSelectFill = (plan.fills ?? []).some((f) => {
+      // d2) POST-FILL RESCAN — catch conditional fields revealed by a prior selection on THIS page.
+      //     On portals like PGE PowerClerk, selecting "Type=Residential" + "Schedule=Schedule 7" OR
+      //     choosing a "Description of Service" radio dynamically reveals additional inputs (account
+      //     number, meter number, commissioning date, etc.) that were not present at first scrape.
+      //     Any select/radio/checkbox fill can trigger a reveal, so rescan after ALL of them — then
+      //     re-plan the newly revealed fields AND deterministically fill any revealed account/meter.
+      const hadRevealingFill = (plan.fills ?? []).some((f) => {
         const field = fields[f.selectorIndex];
-        return field && field.fieldType === "select";
+        return field && (field.fieldType === "select" || field.fieldType === "radio" || field.fieldType === "checkbox");
       });
-      if (hadSelectFill && this.page) {
+      if (hadRevealingFill && this.page) {
         await smartWait(this.page, 1500); // let the DOM reveal conditional fields
         try {
-          const extractSel = "input, select, textarea, button, [role=button], a[href]:not([href='#']):not([href=''])";
-          const rescanRaws = await this.page.$$eval(extractSel, extractFieldsInPage).catch(() => [] as RawField[]);
+          const rescanRaws = await this.page.$$eval(EXTRACT_SEL, extractFieldsInPage).catch(() => [] as RawField[]);
           const rescanFields = rescanRaws.map(toExtractedField);
           const alreadyFilled = new Set(alreadyFilledLabels);
           const newFillable = rescanFields.filter((f) => f.fieldType !== "button" && f.label && !alreadyFilled.has(f.label));
           if (newFillable.length > 0) {
-            // Re-plan only the newly revealed fields.
+            // Re-plan the newly revealed NON-sensitive fields via the LLM.
             const rescanPageTitle = typeof this.page.title === "function" ? String((await this.page.title().catch(() => "")) ?? "") : "";
             const rescanUrl = typeof this.page.url === "function" ? String(this.page.url() ?? "") : "";
             const rescanBody = (await this.page.locator("body").innerText().catch(() => "")).slice(0, 2000);
@@ -1128,12 +1128,28 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             for (const fillReq of rescanPlan.fills ?? []) {
               const rf = rescanFields[fillReq.selectorIndex];
               if (!rf || rf.fieldType === "file" || (rf.label && alreadyFilled.has(rf.label))) continue;
-              const sensitive = isSensitiveLabel(rf.label);
-              const step = await this.applyFill(rf, fillReq, sensitive);
+              if (isSensitiveLabel(rf.label)) continue; // handled deterministically below.
+              const step = await this.applyFill(rf, fillReq, false);
               if (step) {
                 steps.push(step);
                 pageFillCount++;
-                if (rf.label) alreadyFilledLabels.push(rf.label);
+                if (rf.label) { alreadyFilledLabels.push(rf.label); alreadyFilled.add(rf.label); }
+              }
+            }
+            // Deterministically fill any revealed sensitive account/meter fields from the project —
+            // these only appear after Type+Schedule, so the initial deterministic pass missed them.
+            for (const rf of rescanFields) {
+              if (rf.fieldType === "file" || !isSensitiveLabel(rf.label)) continue;
+              if (rf.label && alreadyFilled.has(rf.label)) continue;
+              const sensKey = sensitiveFieldKey(rf.label);
+              if (!sensKey) continue;
+              const sensVal = sensitiveValues[sensKey];
+              if (!sensVal) continue;
+              const step = await this.applyFill(rf, { value: sensVal, field: sensKey }, true);
+              if (step) {
+                steps.push(step);
+                pageFillCount++;
+                if (rf.label) { alreadyFilledLabels.push(rf.label); alreadyFilled.add(rf.label); }
               }
             }
           }
@@ -1435,8 +1451,20 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     sensitive: boolean,
   ): Promise<RecipeStep | null> {
     const value = fillReq.value ?? "";
+    // Radios are CHECKABLE like checkboxes — selecting one is a check(), NOT a fill().
+    // The previous code routed radio to the text-fill branch (loc.fill), which throws on a
+    // radio input, so radio choices (PGE "Description of Service", "Service Type: Single")
+    // silently never got selected. Treat checkbox AND radio as the "check" action.
+    const isCheckable = field.fieldType === "checkbox" || field.fieldType === "radio";
     const action: RecipeStep["action"] =
-      field.fieldType === "select" ? "select" : field.fieldType === "checkbox" ? "check" : "fill";
+      field.fieldType === "select" ? "select" : isCheckable ? "check" : "fill";
+
+    // Whether the planner wants this checkable control OFF. A planner that returns a
+    // checkbox/radio with value "false"/"no"/"off"/"0" means "do NOT select it" — without
+    // this, loc.check() would force-enable it (e.g. wrongly ticking "meter mounted on a pole").
+    const negated = isCheckable && /^(false|no|off|0|unchecked|none)$/i.test(value.trim());
+    // A negated RADIO is simply not selected — there's nothing to record, so skip it entirely.
+    if (field.fieldType === "radio" && negated) return null;
 
     // The value actually committed (may be sanitized below if the portal rejects it as a
     // non-number); recorded so a literal step replays the value the portal accepted.
@@ -1453,7 +1481,12 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           // that selectOption() can't drive.
           await selectWithFallback(this.page, loc, value);
         } else if (action === "check") {
-          await loc.check();
+          // Respect negation for checkboxes: uncheck rather than force-enable.
+          if (negated) {
+            if (typeof loc.uncheck === "function") await loc.uncheck({ timeout: 5000 }).catch(() => {});
+          } else {
+            await loc.check({ timeout: 5000 });
+          }
         } else {
           await loc.fill(value);
           // Blur to COMMIT the value into the portal's JS model. Playwright's fill() fires

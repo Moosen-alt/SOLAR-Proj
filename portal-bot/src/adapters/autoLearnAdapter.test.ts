@@ -715,8 +715,57 @@ async function testTermsPagePassThrough() {
   assert.equal(result.reviewScreen.fields.length, 1, "review screen fields scraped");
 }
 
+// 11) RADIO REGRESSION: a radio choice is SELECTED via check(), not fill(), and a radio the
+//     planner marks false is left unselected. Previously radios fell through to loc.fill(),
+//     which throws on a radio input, so PGE "Description of Service" / "Service Type" were never
+//     selected. A checkbox marked false must be unchecked, not force-checked (meter-on-pole).
+async function testRadioSelectedViaCheck() {
+  const log: ActionLog = { clicks: [], fills: [], selects: [], checks: [] };
+  const planner: LearnPlanner = async (): Promise<LearnPlanResponse> => ({
+    fills: [
+      { selectorIndex: 0, value: "true" },   // radio we DO want selected
+      { selectorIndex: 1, value: "false" },  // radio we do NOT want (must be skipped)
+      { selectorIndex: 2, value: "false" },  // checkbox marked false (must NOT be checked)
+    ],
+    atReview: true,
+  });
+  const adapter = new AutoLearnAdapter("Test Utility", planner);
+  withFakePage(
+    adapter,
+    makeFakePage(
+      {
+        pages: [
+          {
+            url: "https://pgenm.powerclerk.com/MvcProjects/EditProject",
+            title: "Edit Project",
+            body: "Description of Service",
+            rawFields: [
+              { label: "Single", fieldType: "radio", id: "single" },
+              { label: "3-Phase", fieldType: "radio", id: "phase3" },
+              { label: "Click here if your existing meter is mounted on a pole.", fieldType: "checkbox", id: "pole" },
+            ],
+            reviewPairs: [{ label: "Service Type", value: "Single" }],
+          },
+        ],
+      },
+      log,
+    ),
+  );
+
+  const result = await adapter.learn(fakeContext, fakeProject);
+  assert.equal(result.ok, true, "run should succeed");
+  // The "true" radio was checked; nothing was filled (radios are not text fills).
+  assert.equal(log.fills.length, 0, "radios/checkboxes must NOT go through fill()");
+  assert.ok(log.checks.some((k) => k.includes("Single")), "the selected radio is checked");
+  assert.ok(!log.checks.some((k) => k.includes("3-Phase")), "a false radio is never selected");
+  // Recorded steps: only the selected radio is a check step; the false radio/checkbox produce none.
+  const checkSteps = result.steps.filter((s) => s.action === "check");
+  assert.equal(checkSteps.length, 1, "exactly one check step recorded (the selected radio)");
+}
+
 const tests: Array<[string, () => Promise<void>]> = [
   ["fields are extracted, filled, and recorded as steps", testFieldsExtractedFilledRecorded],
+  ["RADIO REGRESSION: radio selected via check(), false radio/checkbox skipped", testRadioSelectedViaCheck],
   ["a click that opens the form in a NEW TAB is adopted (PowerClerk)", testNewTabPopupAdopted],
   ["final submit is recorded isFinalSubmit:true and NEVER clicked", testFinalSubmitRecordedNeverClicked],
   ["a pay/fee button returned by the planner is never clicked", testPayFeeButtonNeverClicked],
