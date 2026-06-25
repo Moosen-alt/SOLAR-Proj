@@ -5095,13 +5095,25 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   const submissionType = track === "nem" ? "interconnection" : "permit";
   const trackLabelText = track ? `${permitTypeTag.toUpperCase()} ` : "";
 
+  // The self-seed/learn can run for minutes (a live browser pass); the project — or a stored portal
+  // profile — may be deleted or reset during that window. Persisting a portal_run/submission whose
+  // project_id (or portal_profile_id) no longer exists violates a FOREIGN KEY and 500s the whole
+  // request, discarding the run record. Re-validate both right before committing: fail cleanly if the
+  // project vanished, and drop an orphaned portal_profile_id to null (a valid, FK-satisfying value).
+  if (!db.get<{ id?: string }>("SELECT id FROM projects WHERE id = ?", [projectId])) {
+    throw new HttpError(409, "The project was deleted or reset while the portal run was in progress, so the run could not be recorded. Re-create the project and re-stage. (Any browser the bot opened may still be at the portal.)");
+  }
+  const safePortalProfileId = portalProfileId && db.get<{ id?: string }>("SELECT id FROM portal_profiles WHERE id = ?", [portalProfileId])
+    ? portalProfileId
+    : null;
+
   db.transaction(() => {
     db.run(
       `INSERT INTO portal_runs
         (id, project_id, portal_profile_id, run_type, status, started_at, finished_at, error_message,
          human_action_required, screenshots_path, logs_path, result_json, pause_reason, permit_type)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [runId, projectId, portalProfileId, "prepare_submit", runStatus, ts, nowIso(), failureMessage, 1, "", "", asJson(result), pauseReason, permitTypeTag],
+      [runId, projectId, safePortalProfileId, "prepare_submit", runStatus, ts, nowIso(), failureMessage, 1, "", "", asJson(result), pauseReason, permitTypeTag],
     );
 
     db.run(
@@ -5112,7 +5124,7 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
       [
         submissionId,
         projectId,
-        portalProfileId,
+        safePortalProfileId,
         submissionType,
         permitTypeTag,
         autoSubmitted ? "submitted" : adapterFailed ? "failed" : "awaiting_human_submit",
