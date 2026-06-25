@@ -4839,9 +4839,9 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   const recipe = track === "nem"
     // NEM stages against the utility's recorded recipe.
     ? findCompleteRecipeForProject(db, { scopeType: "utility", state: detail.project.state, utility: detail.project.utility })
-    // Permit tracks prefer the AHJ recipe, falling back to a utility one.
-    : (findCompleteRecipeForProject(db, { scopeType: "ahj", state: detail.project.state, ahj: detail.project.ahj, utility: detail.project.utility })
-       ?? findCompleteRecipeForProject(db, { scopeType: "utility", state: detail.project.state, utility: detail.project.utility }));
+    // Permit tracks replay ONLY an AHJ-scoped recipe — never a utility (NEM) recipe, which is a
+    // different portal and form. No AHJ recipe → self-seed / hand-coded fallback, not a wrong-track replay.
+    : findCompleteRecipeForProject(db, { scopeType: "ahj", state: detail.project.state, ahj: detail.project.ahj, utility: detail.project.utility });
   // Precedence: recipe (universal, first-line) → hand-coded platform adapter → mock.
   const adapterActorName = selectAdapterActor(Boolean(recipe), isAccela, isPowerClerk);
 
@@ -4875,26 +4875,35 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   // For the NEM track, the fallback URL is the UTILITY's portal URL from the KB
   // (e.g. Pacific Power → pacificpower.net), never the AHJ permit portal.
   let utilityPortalUrl = "";
+  let ahjPortalUrl = "";
   if (track === "nem" && detail.project.utility) {
     const utilRow = db.get<{ portal_url?: string }>(
       "SELECT portal_url FROM permit_utility_knowledge WHERE utility = ? AND portal_url IS NOT NULL AND portal_url != '' LIMIT 1",
       [detail.project.utility],
     );
     utilityPortalUrl = utilRow?.portal_url ?? "";
+  } else if (track !== "nem" && detail.project.ahj) {
+    // A human-verified AHJ in the KB may carry a portal URL even without a required-documents list,
+    // so a permit self-seed can launch from it (mirrors the NEM utility-URL lookup). This is a real
+    // portal ENTRY, unlike the applicationDocs sourceUrl (an AHJ info page), so it gates the gate.
+    const ahjRow = db.get<{ portal_url?: string }>(
+      "SELECT portal_url FROM permit_utility_knowledge WHERE ahj = ? AND portal_url IS NOT NULL AND portal_url != '' LIMIT 1",
+      [detail.project.ahj],
+    );
+    ahjPortalUrl = ahjRow?.portal_url ?? "";
   }
   // A draft/recording recipe (not yet promoted to "complete") still carries the entry URL the
   // operator — or a prior auto-learn pass — pointed the recorder at. Recover it so the universal
   // self-seed can launch the right portal even before any recipe is verified. Track-scoped exactly
-  // like the complete-recipe lookup above (NEM → utility key; permit → AHJ then utility).
+  // like the complete-recipe lookup above (NEM → utility key; permit → AHJ only, never utility).
   const draftRecipe = track === "nem"
     ? findAnyRecipeForProject(db, { scopeType: "utility", state: detail.project.state, utility: detail.project.utility })
-    : (findAnyRecipeForProject(db, { scopeType: "ahj", state: detail.project.state, ahj: detail.project.ahj, utility: detail.project.utility })
-       ?? findAnyRecipeForProject(db, { scopeType: "utility", state: detail.project.state, utility: detail.project.utility }));
+    : findAnyRecipeForProject(db, { scopeType: "ahj", state: detail.project.state, ahj: detail.project.ahj, utility: detail.project.utility });
   const credentialUrl =
     (learnedProfile && (learnedProfile as { portalUrl?: string }).portalUrl) ||
     (recipe && (recipe as { portalUrl?: string }).portalUrl) ||
     (draftRecipe && draftRecipe.portalUrl) ||
-    (track === "nem" ? utilityPortalUrl : findApplicationProfile(detail.project).sourceUrl) ||
+    (track === "nem" ? utilityPortalUrl : (ahjPortalUrl || findApplicationProfile(detail.project).sourceUrl)) ||
     "";
   const credential = clientId
     ? (getDecryptedCredential(db, clientId, portalType)
@@ -5000,7 +5009,7 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
     (learnedProfile && (learnedProfile as { portalUrl?: string }).portalUrl) ||
     (recipe && (recipe as { portalUrl?: string }).portalUrl) ||
     (draftRecipe && draftRecipe.portalUrl) ||
-    (track === "nem" ? utilityPortalUrl : "") ||
+    (track === "nem" ? utilityPortalUrl : ahjPortalUrl) ||
     "";
   const hasLaunchablePortal = isRealPortal || Boolean(portalEntryUrl);
   const runActorLabel = selectStagingActor({ hasRecipe: Boolean(recipe), isRealPortal: hasLaunchablePortal, isAccela, isPowerClerk, autoSeedEnabled });
