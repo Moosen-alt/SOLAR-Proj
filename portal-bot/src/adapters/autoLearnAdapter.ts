@@ -810,6 +810,46 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           fillsPlanned: plannedFills,
           message: progressMsg,
         });
+
+        // Debug: write a JSON sidecar next to this page's screenshots showing what the bot
+        // SAW (field labels) and DECIDED (each fill's field/value, sensitive masked). This is
+        // the "real vs guessing" record — pair it with the p{n}-before/after PNGs.
+        if (debugScreenshotDir) {
+          const sidecar = {
+            page: pageCount,
+            title: pageTitle,
+            url: hostPath,
+            classification: cls,
+            atReview: plan.atReview,
+            navigateIndex: plan.navigateSelectorIndex ?? null,
+            advanceIndex: plan.advanceSelectorIndex ?? null,
+            finalSubmitIndex: plan.finalSubmitSelectorIndex ?? null,
+            recoveryHint: recoveryHint || null,
+            fieldsSeen: fields.map((f, i) => ({
+              i,
+              type: f.fieldType,
+              label: (f.label || "").slice(0, 80),
+            })),
+            decisions: (plan.fills ?? []).map((fl) => {
+              const f = fields[fl.selectorIndex];
+              const sensitive = f ? isSensitiveLabel(f.label) : false;
+              return {
+                index: fl.selectorIndex,
+                label: (f?.label || "?").slice(0, 80),
+                boundField: fl.field || null,
+                value: sensitive ? "***sensitive (bound at replay)***" : (fl.value ?? ""),
+                source: fl.field ? "data-bound" : "literal",
+              };
+            }),
+          };
+          try {
+            const dest = path.join(
+              debugScreenshotDir,
+              `p${pageCount.toString().padStart(3, "0")}-plan.json`,
+            );
+            fs.writeFileSync(dest, JSON.stringify(sidecar, null, 2));
+          } catch { /* non-fatal */ }
+        }
       }
 
       // c3) DASHBOARD NAVIGATION — click a link/button to get from the portal home to the
