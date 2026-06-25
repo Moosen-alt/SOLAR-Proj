@@ -84,8 +84,13 @@ export async function openPortal(opts: {
   // outbound HTTPS goes through a TLS-intercepting local proxy; the proxy's CA cert
   // is pre-installed in the system NSS store and NODE_EXTRA_CA_CERTS, so Chromium
   // trusts it automatically when the proxy server is set correctly.
+  // bypass: loopback addresses + any user-supplied comma-separated hosts should
+  // NEVER route through the proxy — this lets local fixture servers and
+  // localhost dev portals work correctly even when HTTPS_PROXY is set.
   const httpsProxy = process.env.HTTPS_PROXY || process.env.https_proxy;
-  const proxyOpts = httpsProxy ? { server: httpsProxy } : undefined;
+  const proxyBypassExtra = process.env.PORTAL_PROXY_BYPASS || "";
+  const proxyBypass = ["127.0.0.1", "localhost", "[::1]", proxyBypassExtra].filter(Boolean).join(",");
+  const proxyOpts = httpsProxy ? { server: httpsProxy, bypass: proxyBypass } : undefined;
 
   if (opts.userDataDir) {
     const context = await chromium.launchPersistentContext(opts.userDataDir, {
