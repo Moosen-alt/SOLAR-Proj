@@ -3619,7 +3619,7 @@ async function prepareSubmission() {
     await loadProjectTimeline();
     await loadProcessMap();
     await loadInstallerPacket();
-    showMessage("Mock portal staged to final review. Automation did not click final submit.");
+    showMessage("Staged to final review. Verify every field, then submit manually in the portal — automation never clicks final submit. Check the submit gate / run log for any per-track failures.");
     renderDetail();
     await loadProjects();
   } catch (err) {
