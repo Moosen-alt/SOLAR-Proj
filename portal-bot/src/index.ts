@@ -7,6 +7,7 @@ import { OregonEPermittingAdapter } from "./adapters/oregonEPermitting";
 import { PowerClerkAdapter } from "./adapters/powerClerk";
 import { RecipeAdapter } from "./adapters/recipeAdapter";
 import { decryptStorageState } from "./cryptoStorage";
+import { resolveHeadless } from "./browser";
 import { HUMAN_REVIEW_MESSAGE } from "./adapter";
 
 export async function stageWithMockPortal(project: ProjectRecord, files: string[] = [], reviewerReport?: ReviewerReport): Promise<Record<string, unknown>> {
@@ -358,7 +359,9 @@ export async function stageWithRecipe(
 
 // AUTONOMOUS LEARN: drive an unknown portal with an LLM planner, fill the form up to
 // the review screen, record a reusable recipe, and STOP. Never clicks final submit/pay.
-// ALWAYS closes the browser (releases the userDataDir lock) and shreds the session file.
+// Leaves a HEADED browser open at the review screen (tracked by userDataDir, released by the next
+// stage) when the learn reached review so the human can verify + submit; otherwise closes the
+// browser (releases the userDataDir lock). Always shreds the session file.
 export async function learnPortal(input: {
   portalName: string;
   portalUrl: string;
@@ -381,6 +384,7 @@ export async function learnPortal(input: {
   const { AutoLearnAdapter } = await import("./adapters/autoLearnAdapter");
   const adapter = new AutoLearnAdapter(input.portalName, input.planner, { maxPages: input.maxPages, docsByType: input.docsByType, uploadMode: input.uploadMode, onProgress: input.onProgress });
   let tmpStatePath: string | undefined;
+  let leaveOpen = false;
   // A browser left open by a prior guided-manual stage holds this profile's lock — close it
   // so the recorder can launch.
   await closePriorStagingBrowser(input.userDataDir);
@@ -411,10 +415,16 @@ export async function learnPortal(input: {
       maxPages: input.maxPages ?? 18,
       message: "Logged in — opening the application…",
     });
-    return await adapter.learn(
+    const learnResult = await adapter.learn(
       { storageStatePath: tmpStatePath, headless: input.headless, credential: input.credential, userDataDir: input.userDataDir, startUrl: input.portalUrl },
       input.project,
     );
+    // Leave the headed browser OPEN at the review screen (tracked by userDataDir, released by the
+    // next stage's closePriorStagingBrowser) so the human can verify + submit — mirroring the
+    // guided-manual replay. Only when the learn actually REACHED review AND we're headed (the human
+    // is watching); a headless/server run or a learn that never reached review still closes.
+    leaveOpen = learnResult.reachedReview === true && !resolveHeadless(input.headless) && !!input.userDataDir;
+    return learnResult;
   } catch (err) {
     return {
       ok: false,
@@ -427,7 +437,13 @@ export async function learnPortal(input: {
       message: `Auto-learn errored: ${err instanceof Error ? err.message : String(err)}`,
     };
   } finally {
-    await adapter.close();
+    // Keep a reached-review headed browser open for the human (tracked for cleanup); every other
+    // path (login fail, headless/server, error, never-reached-review) closes to release the lock.
+    if (leaveOpen && input.userDataDir) {
+      openStagingAdapters.set(input.userDataDir, adapter);
+    } else {
+      await adapter.close();
+    }
     shredTmpStateFile(tmpStatePath);
   }
 }

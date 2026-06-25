@@ -5040,6 +5040,9 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
           createdBy: "auto-seed (staging)",
           permitType: track === "nem" ? undefined : (detail.project.permitType === "electrical" ? "electrical" : "structural"),
           project: stagedProject,
+          // Match the hand-coded/replay adapters' headed setting so the self-seed opens a visible
+          // browser locally and leaves it open at review for the human (headless on a server).
+          headless: stageOptions.headless,
         });
         result = seedOutcomeToStageResult(seed);
       } catch (err) {

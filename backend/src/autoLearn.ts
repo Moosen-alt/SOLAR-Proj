@@ -139,6 +139,10 @@ export async function autoLearnPortal(
     // learner fills the same data the hand-coded adapters would. When omitted (the manual
     // /auto-learn endpoint), the raw project is loaded from the DB.
     project?: ProjectRecord;
+    // Headed/headless for the learn browser. The staging self-seed passes the operator-intended
+    // setting (headed locally) so it matches the hand-coded/replay adapters and leaves the browser
+    // open at review; when omitted, resolveHeadless falls back to PORTAL_HEADLESS / server default.
+    headless?: boolean;
     // Optional live-progress sink (drives the UI progress bar). Non-PII signals only.
     onProgress?: import("../../portal-bot/src/adapters/autoLearnAdapter").LearnProgressFn;
   },
@@ -202,6 +206,7 @@ export async function autoLearnPortal(
       credential,
       userDataDir,
       docsByType,
+      headless: input.headless,
       // AHJ portals (Accela / Oregon ePermitting) require one combined plan-set PDF per
       // upload control; utility portals (PowerClerk) want the split sheets per slot.
       uploadMode: scopeType === "ahj" ? "combined" : "split",
