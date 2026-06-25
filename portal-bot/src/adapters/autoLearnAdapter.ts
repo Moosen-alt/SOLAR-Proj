@@ -423,6 +423,18 @@ export function tagUploadControls(): UploadSlot[] {
   for (const el of clickables) {
     const txt = ((el as HTMLInputElement).value || el.textContent || "").trim();
     if (!TRIGGER.test(txt)) continue;
+    // Guard against false positives that actually SUBMIT or NAVIGATE the wizard. A button
+    // labelled "Upload" can be a page-advance action, not a file picker; clicking it derails
+    // the run (and skips the review screen, so no review screenshot is ever captured). Never
+    // tag a submit button, or an anchor that navigates to a real URL.
+    const tag = el.tagName.toLowerCase();
+    const type = (el.getAttribute("type") || "").toLowerCase();
+    if (tag === "button" && (type === "submit" || (el as HTMLButtonElement).type === "submit")) continue;
+    if (type === "submit") continue;
+    if (tag === "a") {
+      const href = el.getAttribute("href") || "";
+      if (href && !/^#|^javascript:/i.test(href)) continue; // real navigation link — not a picker
+    }
     const container = el.closest('[class*="form-group"], [class*="field"], [class*="row"], li, tr, dd, p, div, td');
     // If a real file input already lives in this container, it's covered by pass 1 — skip.
     if (container && container.querySelector('input[type="file"]')) continue;
@@ -969,8 +981,10 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         if (/\bpassword\b|\bpasscode\b/i.test(field.label)) continue; // login credential — skip
         // Only text/select fields can hold account/meter numbers — checkboxes/radios with labels
         // that happen to contain "meter" (e.g. "Is meter mounted on a pole?") are NOT number inputs.
+        // Only text/select/other can hold a number — checkbox/radio/file/button are excluded
+        // by this single guard (the earlier file/button re-check was dead code: tsc flagged the
+        // comparison as impossible and it broke `npm run build`).
         if (field.fieldType !== "text" && field.fieldType !== "select" && field.fieldType !== "other") continue;
-        if (field.fieldType === "file" || field.fieldType === "button") continue;
         if (alreadyFilledLabels.includes(field.label)) continue;
         const syntheticFill = {
           value: "",
@@ -1166,12 +1180,26 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         ? `Auto-learn filled ${pageCount} page(s) and recorded the steps, but did not reach a review screen. Page trace: ${traceLine}${validationWarning}${docsWarning}`
         : `Auto-learn found nothing fillable on ${pageCount} page(s); no steps recorded.${nothingFillableHint} Page trace: ${traceLine}${validationWarning}${docsWarning}`;
 
-    // Capture review page screenshot when we've reached the review screen
+    // Capture review page screenshot when we've reached the review screen. Best-effort, but a
+    // SILENT failure here is why "screenshots stopped showing up in the folder" — the backend
+    // only writes data/screenshots when this base64 is present. Let the page settle first, retry
+    // once, and log the reason on failure so a missing screenshot is diagnosable, not invisible.
     let reviewScreenshotBase64: string | undefined;
-    try {
-      const buf = await this.page.screenshot({ type: "png", fullPage: false });
-      reviewScreenshotBase64 = buf.toString("base64");
-    } catch { /* non-fatal */ }
+    for (let attempt = 0; attempt < 2 && !reviewScreenshotBase64; attempt++) {
+      try {
+        if (typeof this.page.waitForLoadState === "function") {
+          await this.page.waitForLoadState("domcontentloaded", { timeout: 3000 }).catch(() => {});
+        }
+        const buf = await this.page.screenshot({ type: "png", fullPage: false });
+        reviewScreenshotBase64 = buf.toString("base64");
+      } catch (err) {
+        if (attempt === 1) {
+          console.error(`[auto-learn] ${this.portalName}: review screenshot capture failed — ${(err as Error)?.message || err}`);
+        } else {
+          await sleep(500);
+        }
+      }
+    }
 
     return {
       ok,
