@@ -346,6 +346,53 @@ export async function autoLearnPortal(
       : `Auto-learned but NOT verified — review the captured fill and confirm before trusting. Issues: ${verification.issues.join("; ") || "low confidence"}.`,
   });
 
+  // Debug: dump the three verification signals + the trust-gate decision to disk so the
+  // operator can see WHY a recipe was (or wasn't) trusted — text vs vision vs deterministic,
+  // and which signal disagreed. Gated on AUTOLEARN_DEBUG_SCREENSHOTS=1 (same flag as the
+  // per-page screenshots). Sensitive review fields are masked out of the match lists.
+  if (process.env.AUTOLEARN_DEBUG_SCREENSHOTS === "1") {
+    try {
+      const maskMatches = (ms: Array<{ label: string; expected: string; found: string; ok: boolean }>) =>
+        ms.map((m) => SENSITIVE_REVIEW_RE.test(m.label)
+          ? { label: m.label, expected: "***sensitive***", found: "***sensitive***", ok: m.ok }
+          : m);
+      const screenshotDir = path.join(process.cwd(), "data", "screenshots");
+      fs.mkdirSync(screenshotDir, { recursive: true });
+      const dest = path.join(screenshotDir, `verdict-${stub.id}-${Date.now()}.json`);
+      fs.writeFileSync(dest, JSON.stringify({
+        recipeId: stub.id,
+        trusted,
+        trustGate: {
+          verificationAccurate: verification.accurate,
+          textContradicts,
+          reviewReadable,
+          note: "trusted = verificationAccurate && !textContradicts. Deterministic mismatches are warnings only.",
+        },
+        textSignal: {
+          accurate: textVerification.accurate,
+          confidence: textVerification.overallConfidence,
+          matches: maskMatches(textVerification.matches),
+          issues: textVerification.issues,
+        },
+        visionSignal: visionVerification ? {
+          usable: visionUsable,
+          accurate: visionVerification.accurate,
+          confidence: visionVerification.overallConfidence,
+          matches: maskMatches(visionVerification.matches),
+          issues: visionVerification.issues,
+        } : { usable: false, note: "vision verify disabled or returned nothing" },
+        deterministicSignal: {
+          unreadableSentinel: isUnreadableSentinel,
+          mismatchesGating: deterministicMismatches.map((m) => m.field),
+          allMismatches: allDetMismatches
+            .filter((m) => !SENSITIVE_DET_FIELDS.has(m.field))
+            .map((m) => ({ field: m.field, expected: m.expected, found: m.found })),
+        },
+        finalIssues: verification.issues,
+      }, null, 2));
+    } catch { /* non-fatal */ }
+  }
+
   // Write the review screenshot to disk if captured (the dashboard shows it as the captured review).
   // NOTE: a portal-rendered review page can show account/meter numbers as plain text, so this PNG may
   // contain customer PII AT REST under data/screenshots. Operators who don't want PII on disk can set

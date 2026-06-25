@@ -1052,6 +1052,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           const newFillable = postFields.filter(
             (f) => f.fieldType !== "button" && f.label && !alreadyFilledLabels.includes(f.label),
           );
+          // Debug: record what the re-scrape revealed and what it decided to fill.
+          const rescanDecisions: Array<{ label: string; boundField: string | null; value: string; source: string }> = [];
           if (newFillable.length > 0) {
             // Ask the planner to fill the newly-visible fields. Use the full postFields list
             // so index math is correct; supply alreadyFilledLabels so it skips already-done fields.
@@ -1075,6 +1077,12 @@ export class AutoLearnAdapter extends BasePortalAdapter {
                 postFillCount++;
                 pageFillCount++;
                 if (field.label) alreadyFilledLabels.push(field.label);
+                rescanDecisions.push({
+                  label: (field.label || "?").slice(0, 80),
+                  boundField: fillReq.field || null,
+                  value: fillReq.field ? "" : (fillReq.value ?? ""),
+                  source: fillReq.field ? "data-bound" : "literal",
+                });
               }
             }
             // Deterministic sensitive binding for newly-visible account/meter fields.
@@ -1092,6 +1100,12 @@ export class AutoLearnAdapter extends BasePortalAdapter {
                 postFillCount++;
                 pageFillCount++;
                 if (field.label) alreadyFilledLabels.push(field.label);
+                rescanDecisions.push({
+                  label: (field.label || "?").slice(0, 80),
+                  boundField: sensKey,
+                  value: "***sensitive (bound at replay)***",
+                  source: "sensitive-deterministic",
+                });
               }
             }
             // Let the portal autosave the conditional-field fills before advancing.
@@ -1101,6 +1115,23 @@ export class AutoLearnAdapter extends BasePortalAdapter {
               }
               await sleep(2000);
             }
+          }
+          // Debug: dump the re-scrape result (revealed fields + decisions) and an after-shot
+          // so the operator can see what conditional fields appeared post-dropdown.
+          if (debugScreenshotDir && newFillable.length > 0) {
+            try {
+              const dest = path.join(
+                debugScreenshotDir,
+                `p${pageCount.toString().padStart(3, "0")}-rescan.json`,
+              );
+              fs.writeFileSync(dest, JSON.stringify({
+                page: pageCount,
+                title: pageTitle,
+                revealedFields: newFillable.map((f) => (f.label || "?").slice(0, 80)),
+                decisions: rescanDecisions,
+              }, null, 2));
+            } catch { /* non-fatal */ }
+            await saveDebugShot(`p${pageCount.toString().padStart(3, "0")}-rescan-${(pageTitle || "page").replace(/\s+/g, "_").slice(0, 40)}`);
           }
         } catch { /* post-selection re-scrape is best-effort — never break the loop */ }
       }
