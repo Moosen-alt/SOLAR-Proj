@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import type { AhjFieldMapResult, AhjFormUrlResult, AhjOverlayMapResult, AhjResearchResult, CorrectionBucket, InverterSpecLookup, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, PortalFieldPlan, PortalFieldPlanInput, PortalFillVerification, PortalFillVerifyInput, ProjectRecord, UtilityResearchResult } from "../../shared/src/types";
+import type { AhjFieldMapResult, AhjFormUrlResult, AhjOverlayMapResult, AhjResearchResult, CorrectionBucket, InverterSpecLookup, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, PortalFieldPlan, PortalFieldPlanInput, PortalFillVerification, PortalFillVerifyInput, PortalFillVisionVerifyInput, ProjectRecord, UtilityResearchResult } from "../../shared/src/types";
 import { RECIPE_FIELD_DESCRIPTIONS } from "./portalRecipes";
 
 const MODEL = "claude-opus-4-8";
@@ -99,6 +99,11 @@ export class StubLLMProvider implements LLMProvider {
     // Deterministic comparison — no LLM. Flags mismatches; never auto-trusts (accurate
     // stays false on any miss) so an unverified recipe can't be promoted in stub mode.
     return heuristicVerifyFill(input);
+  }
+
+  async verifyPortalFillVision(input: PortalFillVisionVerifyInput): Promise<PortalFillVerification> {
+    // No vision capability in stub mode — fall back to heuristic using the DOM fields.
+    return heuristicVerifyFill({ reviewFields: input.reviewFields, projectFields: input.projectFields, bodyText: input.bodyText });
   }
 
   async lookupInverterSpec(input: { inverterModel: string; inverterQty?: number; acNameplateKw?: number; serviceVoltageV?: number }): Promise<InverterSpecLookup> {
@@ -1003,6 +1008,37 @@ Return ONLY JSON:
       ? parsed.matches.map((m) => ({ label: String(m.label || ""), expected: String(m.expected || ""), found: String(m.found || ""), ok: Boolean(m.ok) }))
       : [];
     // Defense in depth: never report "accurate" if any match is not ok.
+    const accurate = Boolean(parsed.accurate) && matches.every((m) => m.ok) && matches.length > 0;
+    return {
+      matches,
+      overallConfidence: (["low", "medium", "high"].includes(String(parsed.overallConfidence)) ? parsed.overallConfidence : "low") as "low" | "medium" | "high",
+      accurate,
+      issues: Array.isArray(parsed.issues) ? parsed.issues.map((i) => String(i)) : [],
+      notes: String(parsed.notes || ""),
+    };
+  }
+
+  async verifyPortalFillVision(input: PortalFillVisionVerifyInput): Promise<PortalFillVerification> {
+    const system = `You are a QA agent verifying that a solar permit portal was filled correctly. You will be shown a screenshot of the review/confirm screen. Compare what you see against the project's authoritative data. Flag any mismatch.
+Return ONLY JSON:
+{"matches":[{"label":"<field>","expected":"<project value>","found":"<value on screen>","ok":<bool>}],
+ "overallConfidence":"low|medium|high",
+ "accurate": <true ONLY if every data-bearing field matches the project data>,
+ "issues":["<short issue>"], "notes":"<short>"}`;
+    const mimeType = input.mimeType ?? "image/png";
+    const user = [
+      { type: "image" as const, source: { type: "base64" as const, media_type: mimeType, data: input.screenshotBase64 } },
+      { type: "text" as const, text: JSON.stringify({ reviewFields: input.reviewFields, projectFields: input.projectFields, bodyText: input.bodyText.slice(0, 800) }) },
+    ];
+    let parsed: Partial<PortalFillVerification> = {};
+    try {
+      const msg = await this.client.messages.create({ model: MODEL, max_tokens: 1024, system, messages: [{ role: "user", content: user }] });
+      const text = msg.content.filter((b) => b.type === "text").map((b) => (b as { text: string }).text).join("");
+      parsed = this.parseJson<Partial<PortalFillVerification>>(text, {});
+    } catch { parsed = {}; }
+    const matches = Array.isArray(parsed.matches)
+      ? parsed.matches.map((m) => ({ label: String(m.label || ""), expected: String(m.expected || ""), found: String(m.found || ""), ok: Boolean(m.ok) }))
+      : [];
     const accurate = Boolean(parsed.accurate) && matches.every((m) => m.ok) && matches.length > 0;
     return {
       matches,

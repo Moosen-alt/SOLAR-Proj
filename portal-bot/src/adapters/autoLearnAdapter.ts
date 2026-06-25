@@ -94,6 +94,10 @@ export interface LearnResult {
   message: string;
   /** Base64 PNG screenshot taken when the review/confirm page is reached. */
   reviewScreenshotBase64?: string;
+  /** True when the bot reached a review/confirm page. */
+  reachedReview?: boolean;
+  /** True when at least one fill/select/check step was recorded. */
+  filledSomething?: boolean;
 }
 
 // Live progress signal emitted while learning a portal, so the UI can show a real
@@ -1008,6 +1012,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       pauseReason: null,
       message,
       reviewScreenshotBase64,
+      reachedReview,
+      filledSomething,
     };
   }
 
