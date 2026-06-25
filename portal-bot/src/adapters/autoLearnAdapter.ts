@@ -1844,6 +1844,13 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   private async verifyFillsLanded(applied: AppliedFill[]): Promise<string[]> {
     const misses: string[] = [];
     for (const a of applied) {
+      // Sensitive fields (account/meter) are INTENTIONALLY left blank during a learn run — we
+      // never keep their literal value; it's bound at replay from the credential/project store.
+      // So they read back empty by design. Flagging that emptiness as a required-field miss would
+      // make hasHardBlockers true → trusted=false → the recipe is stuck in "recording" forever
+      // and staging re-runs autolearn instead of replaying. Skip them here (collectUnfilledRequired
+      // and the deterministic trust check already exclude sensitive fields for the same reason).
+      if (a.sensitive) continue;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const loc = (await this.locator(a.selector)) as any;
       if (!loc) continue;
