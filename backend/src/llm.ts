@@ -1,7 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
-import type { AhjFieldMapResult, AhjFormUrlResult, AhjOverlayMapResult, AhjResearchResult, CorrectionBucket, InverterSpecLookup, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, PortalFieldPlan, PortalFieldPlanInput, PortalFillVerification, PortalFillVerifyInput, PortalFillVisionVerifyInput, ProjectRecord, UtilityResearchResult } from "../../shared/src/types";
+import type { AhjFieldMapResult, AhjFormUrlResult, AhjOverlayMapResult, AhjResearchResult, CorrectionBucket, InverterSpecLookup, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, PortalFieldPlan, PortalFieldPlanInput, PortalFillVerification, PortalFillVerifyInput, ProjectRecord, UtilityResearchResult } from "../../shared/src/types";
 import { RECIPE_FIELD_DESCRIPTIONS } from "./portalRecipes";
-import { compactAlnum } from "./normalize";
 
 const MODEL = "claude-opus-4-8";
 
@@ -10,6 +9,10 @@ const MODEL = "claude-opus-4-8";
 // ---------------------------------------------------------------------------
 
 export class StubLLMProvider implements LLMProvider {
+  async extractFields(): Promise<Record<string, unknown>> {
+    return { provider: "stub", confidence: 0, notes: "No ANTHROPIC_API_KEY configured. Human review required." };
+  }
+
   async extractProjectFields(): Promise<ParserLlmExtraction> {
     return {
       provider: "stub",
@@ -98,12 +101,6 @@ export class StubLLMProvider implements LLMProvider {
     return heuristicVerifyFill(input);
   }
 
-  async verifyPortalFillVision(_input: PortalFillVisionVerifyInput): Promise<PortalFillVerification> {
-    // No vision without an API key — return empty matches so this stub is never
-    // authoritative and the caller falls back to text/deterministic signals.
-    return { accurate: false, matches: [], issues: ["vision unavailable: no API key"], overallConfidence: "low", notes: "No ANTHROPIC_API_KEY configured — vision verification is off." };
-  }
-
   async lookupInverterSpec(input: { inverterModel: string; inverterQty?: number; acNameplateKw?: number; serviceVoltageV?: number }): Promise<InverterSpecLookup> {
     // Even without an API key, resolve from the built-in equipment table or by deriving
     // from the AC nameplate, so the human-review "inverter output" box can still be filled.
@@ -177,6 +174,10 @@ const KNOWN_INVERTERS: KnownInverter[] = [
   { label: "SMA Sunny Boy 7.7", matches: ["sb77", "sunnyboy77", "sb7-7"], outputCurrentA: 32, outputVa: 7700 },
 ];
 
+function normModel(s: string): string {
+  return String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
 // ---------------------------------------------------------------------------
 // Autonomous portal-learning helpers (heuristic fallbacks + safety filter).
 // ---------------------------------------------------------------------------
@@ -228,39 +229,24 @@ function heuristicPortalPlan(input: PortalFieldPlanInput): PortalFieldPlan {
   // actual form. Without this, the offline (no-API-key) planner can't get past the portal
   // home screen — it would mistake the dashboard for a review page and stop.
   if (input.isDashboard) {
-    // Primary: find a "new application" link (portal home page).
-    const newAppField = input.fields.find(
+    const navField = input.fields.find(
       (f) => f.fieldType === "button" && PORTAL_NEW_APP_RE.test(f.label || "") && !PORTAL_PAY_RE.test(f.label || ""),
     );
-    if (newAppField) {
+    if (navField) {
       return {
         fills: [],
-        navigateIndex: newAppField.index,
+        navigateIndex: navField.index,
         atReview: false,
         confidence: "low",
-        notes: `Heuristic dashboard navigation (no LLM): clicking "${newAppField.label}" to start a new application. Human verification required.`,
+        notes: `Heuristic dashboard navigation (no LLM): clicking "${navField.label}" to start a new application. Human verification required.`,
       };
     }
-    // Fallback: T&C/disclaimer/billing pass-through — click the advance/continue button to
-    // proceed past the terms screen to the actual application form. Never recorded as submit.
-    const continueField = input.fields.find(
-      (f) => f.fieldType === "button" && PORTAL_ADVANCE_RE.test(f.label || "") && !PORTAL_PAY_RE.test(f.label || ""),
-    );
-    if (continueField) {
-      return {
-        fills: [],
-        navigateIndex: continueField.index,
-        atReview: false,
-        confidence: "low",
-        notes: `Heuristic pass-through (no LLM): clicking "${continueField.label}" to proceed past a T&C/disclaimer screen. Human verification required.`,
-      };
-    }
-    // No recognizable navigation link — don't guess at a random button; stop cleanly.
+    // No recognizable "new application" link — don't guess at a random nav link; stop cleanly.
     return {
       fills: [],
       atReview: false,
       confidence: "low",
-      notes: "Heuristic fallback: a page with no fillable inputs and no recognizable navigation button. A human must navigate to the application form (or set ANTHROPIC_API_KEY so the LLM planner can find it).",
+      notes: "Heuristic fallback: a page with no fillable inputs and no recognizable 'new application' link. A human must navigate to the application form (or set ANTHROPIC_API_KEY so the LLM planner can find it).",
     };
   }
 
@@ -301,9 +287,10 @@ function heuristicPortalPlan(input: PortalFieldPlanInput): PortalFieldPlan {
 }
 
 function heuristicVerifyFill(input: PortalFillVerifyInput): PortalFillVerification {
-  const projVals = Object.values(input.projectFields).map(compactAlnum).filter((v) => v.length >= 3);
+  const norm = (v: string) => String(v || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  const projVals = Object.values(input.projectFields).map(norm).filter((v) => v.length >= 3);
   const matches = input.reviewFields.map((rf) => {
-    const fv = compactAlnum(rf.value);
+    const fv = norm(rf.value);
     // A review value is "ok" if it matches some project value (or is a non-data literal).
     const ok = fv.length < 3 || projVals.some((pv) => pv === fv || pv.includes(fv) || fv.includes(pv));
     return { label: rf.label, expected: "(project data)", found: rf.value, ok };
@@ -320,7 +307,7 @@ function heuristicVerifyFill(input: PortalFillVerifyInput): PortalFillVerificati
 }
 
 function lookupKnownInverter(model: string): KnownInverter | null {
-  const n = compactAlnum(model);
+  const n = normModel(model);
   if (!n) return null;
   for (const k of KNOWN_INVERTERS) {
     if (k.matches.some((m) => n.includes(m) || m.includes(n))) return k;
@@ -400,9 +387,19 @@ export class ClaudeLLMProvider implements LLMProvider {
     this.client = new Anthropic({ apiKey });
   }
 
-  // Thin wrapper over askLong with a smaller token budget for short prompts.
   private async ask(systemPrompt: string, userMessage: string): Promise<string> {
-    return this.askLong(systemPrompt, userMessage, 2048);
+    const stream = await this.client.messages.stream({
+      model: MODEL,
+      max_tokens: 2048,
+      thinking: { type: "adaptive" },
+      system: systemPrompt,
+      messages: [{ role: "user", content: userMessage }],
+    });
+    const msg = await stream.finalMessage();
+    for (const block of msg.content) {
+      if (block.type === "text") return block.text;
+    }
+    return "";
   }
 
   private parseJson<T>(text: string, fallback: T): T {
@@ -414,35 +411,29 @@ export class ClaudeLLMProvider implements LLMProvider {
     }
   }
 
+  async extractFields(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const system = `You are a solar permit document parser. Extract structured data from solar permit application text.
+Return a JSON object with any of these fields you can find: customerName, address, city, state, zip, systemKw, panelCount, panelModel, inverterModel, inverterCount, batteryModel, batteryCount, utilityAccount, meterNumber, ahj, utility, roofType, mountType, azimuth, tilt.
+IMPORTANT: Do NOT include utility account numbers — omit that field entirely for privacy.
+Set confidence (0-1) for each field. Return only valid JSON.`;
+    const raw = await this.ask(system, JSON.stringify(input));
+    return this.parseJson<Record<string, unknown>>(raw, { provider: "claude", confidence: 0 });
+  }
+
   // Larger budget than ask() — plan sets are dense and we want every field.
   private async askLong(systemPrompt: string, userMessage: string, maxTokens = 4096): Promise<string> {
     const stream = await this.client.messages.stream({
       model: MODEL,
       max_tokens: maxTokens,
       thinking: { type: "adaptive" },
-      // Cache the (static, reused) system prompt: repeat calls in a run/session read it at
-      // ~0.1x input cost instead of reprocessing it. The per-request user message stays after
-      // the breakpoint so it never invalidates the cache. Silent no-op below Opus 4.8's
-      // ~4096-token minimum cacheable prefix — set LLM_CACHE_DEBUG=1 to confirm hits.
-      system: [{ type: "text", text: systemPrompt, cache_control: { type: "ephemeral" } }],
+      system: systemPrompt,
       messages: [{ role: "user", content: userMessage }],
     });
     const msg = await stream.finalMessage();
-    this.logCacheUsage("askLong", msg.usage);
     for (const block of msg.content) {
       if (block.type === "text") return block.text;
     }
     return "";
-  }
-
-  // Emit cache hit/miss telemetry so we can VERIFY prompt caching is actually engaging
-  // (it silently won't on a prefix below the model's minimum cacheable size). Off unless
-  // LLM_CACHE_DEBUG=1 so normal runs stay quiet.
-  private logCacheUsage(label: string, usage: { input_tokens?: number; cache_read_input_tokens?: number | null; cache_creation_input_tokens?: number | null } | undefined): void {
-    if (process.env.LLM_CACHE_DEBUG !== "1" || !usage) return;
-    const read = usage.cache_read_input_tokens ?? 0;
-    const write = usage.cache_creation_input_tokens ?? 0;
-    console.error(`[llm-cache] ${label}: input=${usage.input_tokens ?? 0} cache_read=${read} cache_write=${write}`);
   }
 
   async extractProjectFields(input: {
@@ -913,6 +904,18 @@ ADDRESS SEARCH & JURISDICTION SELECTION (Accela / Oregon ePermitting and similar
   - Check EXACTLY ONE application type matching the discipline — put that checkbox in "fills" with value "true". Never check multiple application types.
 - One jurisdiction + one discipline per run. Do not try to file both structural and electrical in the same pass.
 
+SMART INVERTER SETTINGS (PGE PowerClerk and similar utility NEM portals):
+- "Will you be using PGE recommended smart inverter settings?" (or similar "utility recommended smart inverter settings" question) → answer "Yes" for standard grid-tied residential solar systems. UL 1741 SB listed inverters (IQ8, IQ7, SolarEdge HD-Wave, Tesla Inverter, etc.) all support the utility's default smart-inverter profile. Only answer "No" if the plans explicitly show a non-UL-1741-SB inverter.
+- This is a Yes/No radio or dropdown — not a file upload or a drawing requirement on the plan set.
+- "Will meter aggregation be used?" or "Meter aggregation?" → answer "No" for a standard single-home residential project unless the project data says otherwise.
+- "Is meter mounted on a pole?" or "Pole-mounted meter?" → answer "No" for the vast majority of residential rooftop solar; only answer "Yes" when the project address explicitly calls out a pole mount or the site plan shows a pole-mounted service.
+
+SYSTEM INFORMATION / TECHNICAL DETAILS PAGE (PowerClerk step "System Information", "Technical Information", "PV System Details"):
+- This page MUST be filled — do NOT skip it or set atReview=true on it. It is a required input page, not a review screen.
+- Fill ALL available fields using project data: DC system size (systemSizeDcKw), AC system size (systemSizeAcKw), inverter model (inverterModel), module make/model (moduleMake, moduleModel), module count (moduleQty), panel wattage (moduleWattage), battery info if present.
+- "Number of inverters" → inverterQty. "Inverter manufacturer" → inverterMake. "Module manufacturer" → moduleMake.
+- After filling system fields, identify the correct "Next" or "Continue" wizard button and return it as advanceIndex so the form proceeds to the next step.
+
 ELECTRICAL SERVICES PAGE (Accela "Residential - Electrical Comprehensive" and similar):
 - This page lists MANY count fields — services/feeders by amperage tier, temp services, branch circuits, residential wiring sq ft, renewable energy by kVA tier, etc. For a SOLAR project, fill ONLY the renewable-energy field whose kVA tier matches the system, and leave EVERY other count field blank (do not put 0 — leave empty).
 - Pick the kVA tier from the DC NAMEPLATE size (systemSizeDcKw — the larger value; the jurisdiction keys the fee to the DC nameplate, NOT the AC inverter output):
@@ -927,46 +930,14 @@ ELECTRICAL SERVICES PAGE (Accela "Residential - Electrical Comprehensive" and si
   - "Project includes any of the following" → "Not Applicable" (e.g. "01-Not Applicable").
 - "Plan Review Required" radio: leave its default (typically "No") unless the page clearly requires Yes; never flip it on speculatively.
 
-PGE POWERCLERK NET METERING FORM RULES (applies when URL contains "pgenm.powerclerk.com"):
-- INSTALLER CONTACT PAGE (page showing "Name / Last / Company / Address / Email / Phone" for the installer):
-  Use installerContactName for the First Name field, the installer last name for Last, installerCompanyName for Company, installerStreet for Address, installerEmail for Email, installerPhone for Phone. These are YOUR (the installer's) fields — do NOT use homeowner data here.
-- HOMEOWNER / APPLICANT PAGE (page showing a second contact block with Name / Last / Address / City / State / Zip / Email / Phone for the property owner / applicant):
-  Use homeownerFirstName for First Name, homeownerLastName for Last, street for Address, city for City, state for State, zip for Zip, homeownerEmail for Email, homeownerPhone for Phone. These are the HOMEOWNER's fields — do NOT use installer data here. If homeownerEmail or homeownerPhone are empty, leave those fields blank.
-- SERVICE LOCATION PAGE (page with "Street / City / State / Zip / Type / Schedule" for the PGE service address):
-  - Fill Street with "street", City with "city", State with "state", Zip with "zip" from project.
-  - Select "Type" dropdown → "Residential" (for residential solar, almost always Residential).
-  - Select "Schedule" dropdown → use "utilitySchedule" project field if present, otherwise "Schedule 7" for residential.
-  - After setting Type and Schedule, ACCOUNT NUMBER and METER NUMBER fields will appear. Include them in fills:
-    - Any field labeled "Account Number", "Account #", "PGE Account", or similar → field: "accountNumber" (no literal value — it is sensitive and resolved at replay).
-    - Any field labeled "Meter Number", "Meter #", "Service/Meter" or similar → field: "meterNumber" (sensitive, no literal value).
-  - "Click here if your existing meter is mounted on a pole" checkbox → do NOT check this (leave unchecked / false) for a standard residential install unless project data explicitly says the meter is on a pole. Most residential solar sites do NOT have a pole-mounted meter.
-  - "Click here if this is a Primary Service Account" → do NOT check unless project data says so.
-  - "Click here if this is a Customer-Owned Transformer" → do NOT check unless project data says so.
-  - Service voltage / Phase: select "Single" radio for single-phase (residential). For the service voltage description (if a dropdown appears), select the value matching the project's service voltage — typically "120/240V" or "240V" for residential. If the project has a "serviceType" field use it; otherwise default to the 240V option.
-  - "Estimated Commissioning Date": fill with a date approximately 4 weeks (28 days) from today. Today's date is provided in projectFields as "todayDate" (YYYY-MM-DD format); add 28 days and format as MM/DD/YYYY. If todayDate is not available, leave blank.
-- AGGREGATION PAGE (page asking "I want to aggregate my meters" / "No aggregation"):
-  Select "No aggregation" as a literal value — this is a FIXED CHOICE (a standard single-site install never aggregates meters). Do NOT bind it to hasBattery or any project field.
-- BATTERY / STORAGE PAGE (page asking "Yes" / "No" whether the system includes storage):
-  If the project has hasBattery="Yes" select "Yes", otherwise select "No". Bind to field: "hasBattery".
-- EQUIPMENT PAGE (inverter / module selection tables):
-  Use the "Show Details" buttons to reveal and fill equipment specs from project data where possible.
-
-HOMEOWNER vs. INSTALLER FIELD DISAMBIGUATION (for ANY portal):
-- Pages that ask for the APPLICANT / PROPERTY OWNER contact: use homeownerFirstName, homeownerLastName, homeownerEmail, homeownerPhone, street, city, state, zip.
-- Pages that ask for the INSTALLER / CONTRACTOR / APPLICANT'S REPRESENTATIVE contact: use installerContactName (first), the installer last name (literal from data), installerCompanyName, installerEmail, installerPhone, installerStreet.
-- Never cross-fill: installer email must NEVER go into a homeowner email field, and vice versa.
-
 DASHBOARD / HOME PAGES:
 - If isDashboard=true (no fillable inputs — only buttons and navigation links), the bot just logged in and landed on the portal home/dashboard. Your ONLY job is to return "navigateIndex": the index of the link or button that starts a new application / interconnection request / permit application. Look for labels like "New Application", "Start Application", "New Pacific Power Customer Generation Application", "Start New Project", "Apply Now", "Create Application", or a tab/link for the relevant program. Set fills=[], advanceIndex=omit, atReview=false, and ONLY navigateIndex. Do NOT treat any dashboard navigation link as advanceIndex.
 
-DROPDOWN / SELECT FIELDS:
-- A field with fieldType "select" carries an "options" array of the EXACT choice labels the control offers. This covers BOTH native <select> menus AND custom "Please select…" / select2 / chosen / ui-select / ExtJS combobox widgets — the bot drives either kind, so treat any field marked "select" the same way.
-- When you fill a select, the "value" you return MUST be ONE of that field's listed options, copied VERBATIM (same spelling, casing, and punctuation). A dropdown can only accept a value it actually lists; a near-miss string silently fails to select and the field stays blank. Choose the option that best matches the project datum (e.g. "200A main service" → the "200"/"200 Amps" option that exists in the list; "battery: none" → "No"; a phase/voltage/schedule choice → the listed option closest to the project value).
-- If "options" is present but NONE of them reasonably matches the project data, leave the field OUT rather than inventing a value the control cannot accept.
-- If a "select" field has NO options array (its menu had not rendered when the page was read), fall back to the plain project value as the label, but prefer an exact listed option whenever one is available.
-
-VALUE FORMATTING:
-- Numeric / decimal fields (amperage "Amps"/"(A)", kVA, kW, voltage, counts, ratings, quantities) take a BARE number with NO unit letters, symbols, or thousands separators — e.g. "225" not "225A", "8.6" not "8.6 kW". These are validated as plain decimals and reject unit suffixes.
+CUSTOMER vs INSTALLER FIELDS — CRITICAL DISTINCTION:
+- Fields labeled "Customer", "Homeowner", "Property Owner", "Account Holder", "Site Owner", "Applicant" (when referring to the property owner), "Primary Contact" → use homeowner data: homeownerName, homeownerEmail, homeownerPhone.
+- Fields labeled "Contractor", "Installer", "Solar Company", "Company", "Business", "Vendor", "Licensed Contractor", "Applicant" (when referring to the submitting company) → use installer data: installerCompanyName, installerEmail, installerPhone, ccbLicenseNumber.
+- NEVER put the installer's email in a homeowner/customer email field. NEVER put the homeowner's name in the contractor/company name field.
+- When a page has both "Customer Email" and "Contractor Email" (or similar pair), fill both correctly with the appropriate person's email.
 
 HARD SAFETY RULES:
 - NEVER choose a pay / payment / fee / checkout / invoice button as "advance", "navigate", or anything to click. Omit it entirely.
@@ -982,30 +953,19 @@ Return ONLY JSON:
  "navigateIndex": <index of dashboard nav link, or omit>,
  "advanceIndex": <index or omit>, "finalSubmitIndex": <index or omit>,
  "atReview": <true if this is the review/confirm screen>, "confidence":"low|medium|high", "notes":"<short>"}`;
-    // The project data + KB/jurisdiction context are STABLE across every page of one run,
-    // so they live in the (cached) system prefix — not re-billed per page — while only the
-    // volatile page data goes in the user message after the cache breakpoint. projectFields
-    // keys are sorted so the serialized prefix is byte-identical across pages; any drift
-    // would silently break the prompt cache.
-    const stableProjectData = JSON.stringify(input.projectFields, Object.keys(input.projectFields).sort());
-    const systemWithData = [
-      system,
-      input.kbContext ? `\n\n${input.kbContext}` : "",
-      input.jurisdictionContext ? `\n\nJURISDICTION CONTEXT:\n${input.jurisdictionContext}` : "",
-      `\n\nPROJECT DATA — the ONLY values you may use to fill fields (secrets are excluded; prefer binding a field to one of these keys):\n${stableProjectData}`,
-    ].join("");
-
     const user = JSON.stringify({
       url: input.url, pageTitle: input.pageTitle, fields: input.fields,
-      bodyText: input.bodyText.slice(0, 2000),
+      bodyText: input.bodyText.slice(0, 2000), projectFields: input.projectFields,
       alreadyFilledLabels: input.alreadyFilledLabels,
       // isDashboard must be in the user message so the LLM actually sees it.
       ...(input.isDashboard ? { isDashboard: true } : {}),
+      ...(input.kbContext ? { kbContext: input.kbContext } : {}),
+      ...(input.jurisdictionContext ? { jurisdictionContext: input.jurisdictionContext } : {}),
       ...(input.recoveryHint ? { RECOVERY: input.recoveryHint } : {}),
     });
     let parsed: Partial<PortalFieldPlan> = {};
     // Use askLong: planning responses can be large (many fills + notes).
-    try { parsed = this.parseJson<Partial<PortalFieldPlan>>(await this.askLong(systemWithData, user, 3000), {}); } catch { parsed = {}; }
+    try { parsed = this.parseJson<Partial<PortalFieldPlan>>(await this.askLong(system, user, 3000), {}); } catch { parsed = {}; }
     // Safety post-filter: never let a pay/fee button through as advance/submit, and drop
     // a finalSubmit that was mistakenly set as advance.
     const labelOf = (i?: number) => (i == null ? "" : input.fields.find((f) => f.index === i)?.label || "");
@@ -1030,17 +990,7 @@ Return ONLY JSON:
   }
 
   async verifyPortalFill(input: PortalFillVerifyInput): Promise<PortalFillVerification> {
-    const system = `You verify that a solar permit portal form was filled CORRECTLY before the recorded recipe is trusted for reuse. Compare each review-screen field/value against the project's authoritative DATA.
-
-A value is OK if any of the following hold:
-- It matches the corresponding project datum (allowing differences in case, punctuation, or whitespace).
-- It is a fixed portal literal (a dropdown choice, a label, units, a static string) — mark expected as "(literal)".
-- It represents the same numeric quantity expressed differently: "7.2 kW", "7.20 kW", "7,200 W", and "7200 W" are all equivalent; trailing zeros and kW/W conversions are not mismatches.
-- It is a street address where standard abbreviations differ: "St" vs "Street", "Ave" vs "Avenue", "Dr" vs "Drive", "N" vs "North", etc. are not mismatches.
-- It is a name with the same words in a different case: "JOHN SMITH" and "John Smith" are equivalent.
-
-Flag ONLY values that contradict the project data in substance (a different person's name, a different address, a different system size that cannot be a unit conversion, a different AHJ/utility name).
-
+    const system = `You verify that a solar permit portal form was filled CORRECTLY before the recorded recipe is trusted for reuse. Compare each review-screen field/value against the project's authoritative DATA. A value is OK if it matches the corresponding project datum (allowing formatting differences) or is a fixed portal literal (a dropdown choice, label, units). Flag any value that contradicts the project data.
 Return ONLY JSON:
 {"matches":[{"label":"<field>","expected":"<project value or '(literal)'>","found":"<review value>","ok":<bool>}],
  "overallConfidence":"low|medium|high",
@@ -1053,53 +1003,6 @@ Return ONLY JSON:
       ? parsed.matches.map((m) => ({ label: String(m.label || ""), expected: String(m.expected || ""), found: String(m.found || ""), ok: Boolean(m.ok) }))
       : [];
     // Defense in depth: never report "accurate" if any match is not ok.
-    const accurate = Boolean(parsed.accurate) && matches.every((m) => m.ok) && matches.length > 0;
-    return {
-      matches,
-      overallConfidence: (["low", "medium", "high"].includes(String(parsed.overallConfidence)) ? parsed.overallConfidence : "low") as "low" | "medium" | "high",
-      accurate,
-      issues: Array.isArray(parsed.issues) ? parsed.issues.map((i) => String(i)) : [],
-      notes: String(parsed.notes || ""),
-    };
-  }
-
-  // Vision verification — the model SEES the rendered review screen, so it works even when
-  // the DOM scrape came back thin (the read-only-review failure mode that produced the
-  // "almost blank application"). The scraped fields + project data are passed alongside the
-  // image as hints; the screenshot is authoritative. Same JSON contract + accurate-gating as
-  // the text verifier so callers can use the two interchangeably.
-  async verifyPortalFillVision(input: PortalFillVisionVerifyInput): Promise<PortalFillVerification> {
-    const system = `You verify a solar permit portal application BEFORE a human submits it, by LOOKING AT A SCREENSHOT of the portal's review/confirm screen. You can SEE the actual rendered page (on Accela the "Step N: Review" page lists the entire application). Compare every value visible on the screen against the project's authoritative DATA provided. Rules:
-- A value is OK if it matches the corresponding project datum (allowing formatting differences — "7.5 kW" vs "7.50", masked account digits) or is a fixed portal literal (a dropdown choice, label, units).
-- Flag any visible value that CONTRADICTS the project data.
-- Flag any REQUIRED field that appears BLANK/empty on the screen (this is the main thing we are guarding against).
-- Do not invent fields that aren't on the screen.
-Return ONLY JSON:
-{"matches":[{"label":"<field>","expected":"<project value or '(literal)'>","found":"<what the screen shows>","ok":<bool>}],
- "overallConfidence":"low|medium|high",
- "accurate": <true ONLY if every data-bearing field shown matches the project AND no required field is blank — this gates trusting the recipe>,
- "issues":["<short issue>"], "notes":"<short>"}`;
-    const hints = JSON.stringify({
-      projectData: input.projectFields,
-      domScrapedFields: input.reviewFields,
-      pageText: (input.bodyText || "").slice(0, 1500),
-    });
-    const content: Anthropic.Messages.ContentBlockParam[] = [
-      { type: "image", source: { type: "base64", media_type: input.mimeType ?? "image/png", data: input.screenshotBase64 } },
-      { type: "text", text: `Verify this review screen against the project data and DOM hints:\n${hints}` },
-    ];
-    let parsed: Partial<PortalFillVerification> = {};
-    try {
-      const msg = await this.client.messages.create({ model: MODEL, max_tokens: 2048, system, messages: [{ role: "user", content }] });
-      let raw = "";
-      for (const block of msg.content) if (block.type === "text") raw += block.text;
-      parsed = this.parseJson<Partial<PortalFillVerification>>(raw, {});
-    } catch { parsed = {}; }
-    const matches = Array.isArray(parsed.matches)
-      ? parsed.matches.map((m) => ({ label: String(m.label || ""), expected: String(m.expected || ""), found: String(m.found || ""), ok: Boolean(m.ok) }))
-      : [];
-    // Same guardrail as the text verifier: never report accurate unless every match is ok
-    // and there is at least one data-bearing match to stand on.
     const accurate = Boolean(parsed.accurate) && matches.every((m) => m.ok) && matches.length > 0;
     return {
       matches,

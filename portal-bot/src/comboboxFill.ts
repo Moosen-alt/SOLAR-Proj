@@ -34,21 +34,18 @@ const SEARCH_BOX_SELECTORS = [
 
 const OPTION_SELECTORS = [
   '[role="option"]',
+  '[role="listbox"] li',
   "li.select2-results__option",
   ".chosen-results li",
   ".dropdown-item",
-  ".ui-select-choices-row",
-  ".x-combo-list-item",
-  // Broader generic patterns so an UNKNOWN portal's styled-div dropdown still resolves:
-  // any open listbox/menu list item, or an element whose class names it an option/item.
-  '[role="listbox"] li',
   ".dropdown-menu li",
   ".dropdown-menu a",
+  ".ui-select-choices-row",
+  ".x-combo-list-item",
   'ul[class*="menu"] li',
   'ul[class*="option"] li',
-  '[class*="-option"]',
-  '[class*="option-"]',
-  '[class*="-item"]:not(li):not(button)',
+  '[class*="-option"]:not(input):not(button)',
+  '[class*="option-"]:not(input):not(button)',
 ].join(", ");
 
 function escapeRegExp(s: string): string {
@@ -63,63 +60,67 @@ export async function fillCustomCombobox(page: any, loc: any, value: string): Pr
   const v = (value ?? "").trim();
   if (!v) return false;
 
-  // 1. Open the widget. Give the dropdown a beat longer to render its list — PowerClerk's
-  //    Vue dropdowns and ExtJS combos populate options asynchronously after the click.
+  // 1. Open the widget.
   await loc.click({ timeout: 5000 }).catch(() => {});
   await page.waitForTimeout?.(300).catch(() => {});
 
   // 2. Type into the search box if one appeared.
-  let typed = false;
   try {
     const search = page.locator(SEARCH_BOX_SELECTORS).first();
     if (await search.count().catch(() => 0)) {
       await search.fill(v).catch(() => {});
-      typed = true;
-      await page.waitForTimeout?.(350).catch(() => {});
+      await page.waitForTimeout?.(250).catch(() => {});
     }
   } catch { /* no search box — some widgets filter inline */ }
 
-  // Build candidate match patterns, most-specific first: the exact value, then a looser
-  // match on a trailing identifier (e.g. value "Schedule 7" also matches an option rendered
-  // as "7 - Residential Net Metering"). This makes label/option-text mismatches resolve.
-  const patterns: RegExp[] = [new RegExp(escapeRegExp(v), "i")];
-  const trailingToken = v.match(/(\d+[A-Za-z]?)\s*$/)?.[1];
-  if (trailingToken) patterns.push(new RegExp(`\\b${escapeRegExp(trailingToken)}\\b`, "i"));
-
-  for (const pat of patterns) {
-    // 3a. Prefer an ARIA option matching the pattern.
-    try {
-      const opt = page.getByRole("option", { name: pat }).first();
-      if (await opt.count().catch(() => 0)) {
-        await opt.click({ timeout: 5000 });
-        return true;
-      }
-    } catch { /* fall through */ }
-
-    // 3b. Otherwise click the first visible list row (known + generic selectors) matching it.
-    try {
-      const row = page.locator(OPTION_SELECTORS).filter({ hasText: pat }).first();
-      if (await row.count().catch(() => 0) && await row.isVisible().catch(() => false)) {
-        await row.click({ timeout: 5000 });
-        return true;
-      }
-    } catch { /* fall through */ }
-  }
-
-  // 3c. Generic visible-text fallback for unknown widgets that use none of the known classes:
-  //     click the smallest visible clickable element whose text contains the value, scoped to
-  //     an open popup/menu container so we never click body copy that merely repeats the text.
+  // 3a. Prefer an ARIA option matching the value (substring, case-insensitive).
   try {
-    const menuScope = page.locator('[role="listbox"], [class*="menu"]:visible, [class*="dropdown"]:visible, [class*="open"]').first();
-    const scope = (await menuScope.count().catch(() => 0)) ? menuScope : page;
-    const hit = scope.locator(`:is(li, a, div, span)`).filter({ hasText: new RegExp(`^\\s*${escapeRegExp(v)}\\s*$`, "i") }).first();
-    if (await hit.count().catch(() => 0) && await hit.isVisible().catch(() => false)) {
-      await hit.click({ timeout: 5000 });
+    const opt = page.getByRole("option", { name: new RegExp(escapeRegExp(v), "i") }).first();
+    if (await opt.count().catch(() => 0)) {
+      await opt.click({ timeout: 5000 });
       return true;
     }
   } catch { /* fall through */ }
 
+  // 3b. Otherwise click the first visible list row containing the value text.
+  try {
+    const row = page.locator(OPTION_SELECTORS).filter({ hasText: new RegExp(escapeRegExp(v), "i") }).first();
+    if (await row.count().catch(() => 0)) {
+      await row.click({ timeout: 5000 });
+      return true;
+    }
+  } catch { /* fall through */ }
+
+  // 3c. Trailing-token looser match: "Schedule 7" → look for an option containing just "7"
+  //     as a word boundary (catches "7 - Residential Net Metering" style labels).
+  try {
+    const lastToken = v.split(/\s+/).pop() ?? v;
+    if (lastToken !== v && lastToken.length >= 1) {
+      const row = page.locator(OPTION_SELECTORS).filter({ hasText: new RegExp(`\\b${escapeRegExp(lastToken)}\\b`, "i") }).first();
+      if (await row.count().catch(() => 0)) {
+        await row.click({ timeout: 5000 });
+        return true;
+      }
+    }
+  } catch { /* fall through */ }
+
+  // 3d. Visible-text fallback: scan all visible elements for one whose trimmed text matches.
+  try {
+    const allVisible = page.locator("li, [role='option'], .dropdown-item, [class*='-option']").filter({ hasText: new RegExp(escapeRegExp(v), "i") });
+    const cnt = await allVisible.count().catch(() => 0);
+    for (let i = 0; i < Math.min(cnt, 8); i++) {
+      const el = allVisible.nth(i);
+      if (await el.isVisible().catch(() => false)) {
+        await el.click({ timeout: 5000 });
+        return true;
+      }
+    }
+  } catch { /* fall through */ }
+
   // 4. Last resort: accept the typed value with Enter (covers free-text comboboxes).
+  // Only press Enter when we actually typed something — otherwise we'd accept whatever
+  // the widget already had selected.
+  const typed = await page.locator(SEARCH_BOX_SELECTORS).first().inputValue().catch(() => "");
   if (typed) await page.keyboard?.press("Enter").catch(() => {});
   return false;
 }

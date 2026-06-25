@@ -1,11 +1,9 @@
-import fs from "fs";
-import path from "path";
 import type { Page } from "playwright";
 import type { ProjectRecord, RecipeSelector, RecipeStep } from "../../../shared/src/types";
 import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, type PortalContext, type PortalStepResult } from "../adapter";
 import { openPortal } from "../browser";
-import { selectWithFallback } from "../comboboxFill";
-import { detectChallengeFrame, hasNumericValidationError, readbackMatches, redactStatusText, safeAction, sleep, smartWait, toBareNumber, waitForElement, waitForInteractiveControls } from "../safeAction";
+import { fillCustomCombobox } from "../comboboxFill";
+import { detectChallengeFrame, redactStatusText, safeAction, sleep, smartWait, waitForElement } from "../safeAction";
 import { scrapeReviewScreen as scrapeReviewScreenShared } from "../reviewScreenScraper";
 import { performLogin } from "./loginFlow";
 
@@ -39,23 +37,12 @@ export interface ExtractedField {
   fieldType: "text" | "select" | "checkbox" | "radio" | "file" | "button" | "other";
   /** For <select>, the option labels. */
   options?: string[];
-  /** True when the portal marks this field required (attribute or "*" in the label). */
-  required?: boolean;
   /** For <a> nav links: the href, so a hidden/menu-nested link that can't be clicked can
    *  still be reached by navigating to it directly. */
   href?: string;
-}
-
-// A fill we applied on the current page, retained so we can read it back and confirm it
-// actually held its value before advancing to the next page.
-interface AppliedFill {
-  selector: RecipeSelector;
-  label: string;
-  fieldType: ExtractedField["fieldType"];
-  /** Value typed (empty for sensitive fields, which are only checked for non-emptiness). */
-  expected: string;
-  sensitive: boolean;
-  required: boolean;
+  /** True when the field has the HTML required attribute — used by gap-fill to report
+   *  fields the planner had no data for. */
+  required?: boolean;
 }
 
 export interface LearnPlanRequest {
@@ -105,13 +92,6 @@ export interface LearnResult {
   /** "mfa_captcha" if a challenge stopped us, else null. */
   pauseReason: string | null;
   message: string;
-  /** True only when the learner actually reached the portal's review/confirm screen. `ok` alone
-   *  conflates this with "filled something" — callers must use reachedReview to tell a real
-   *  stage-to-review from a run that got lost mid-wizard (which must NOT report a staged draft). */
-  reachedReview?: boolean;
-  /** True when at least one data field (fill/select/check) was entered. A reachedReview that filled
-   *  nothing is a landing/disclaimer page misread as review — callers require BOTH for a clean stage. */
-  filledSomething?: boolean;
   /** Base64 PNG screenshot taken when the review/confirm page is reached. */
   reviewScreenshotBase64?: string;
 }
@@ -126,11 +106,6 @@ export interface LearnProgress {
   classification?: "form" | "dashboard" | "review" | "empty";
   fillsPlanned?: number;
   message: string;
-  // Milliseconds spent on the CURRENT step (time since the last real progress event).
-  // A heartbeat re-emits the last progress with a growing elapsedMs so the UI can tell a
-  // slow step (number climbing) from a hung one (climbing without ever advancing).
-  elapsedMs?: number;
-  heartbeat?: boolean;
 }
 
 export type LearnProgressFn = (p: LearnProgress) => void;
@@ -153,15 +128,6 @@ const SUBMIT_INTENT = /\b(continue application|submit application|file applicati
 const REVIEW_MARKERS = /\bstep\s*\d+\s*:?\s*review\b|review all information|continue application button below|please review (all )?information|\(read-only\)/i;
 function looksLikeReviewUrl(url: string): boolean {
   return /capconfirm|confirm\.aspx|\/review/i.test(url || "");
-}
-
-// T&C / billing / disclaimer pages have no inputs but DO have a "Continue Application"
-// button — the same surface as a review page. Without this guard they get misclassified
-// as review screens (no inputs + no dashboard → isReviewPage). Detect by body text and
-// treat as pass-through dashboards: the planner navigates by clicking the continue button.
-const TERMS_MARKERS = /\b(terms\s*(and\s*)?conditions|disclaimer|billing\s*(agreement|information|policy)|you\s+(agree|must\s+agree)\s+to|i\s+agree|accept\s+the\s+terms|privacy\s+policy|legal\s+notice|refund\s+policy)\b/i;
-function looksLikeTermsUrl(url: string): boolean {
-  return /disclaimer|\/terms|\/billing|\/agreement|\/privacy|CapApplyDisclaimer/i.test(url || "");
 }
 
 // Sensitive field labels whose literal value must NEVER be stored in a recorded step.
@@ -196,17 +162,9 @@ export function isSensitiveLabel(label: string): boolean {
   return SENSITIVE_LABEL.test(label);
 }
 
-// Map a sensitive portal-field LABEL to the project key that holds its value, so the learner can
-// fill account/meter DETERMINISTICALLY (never via the LLM, which never receives these values) and
-// bind the recorded step to the key for replay. Password/CVV/SSN have no project-data binding (a
-// password is a login credential; SSN isn't on the project record), so they return null and are
-// left for the human. The literal value is still never written into the recipe (step.value stays "").
-export function sensitiveFieldKey(label: string): "accountNumber" | "meterNumber" | null {
-  const l = (label || "").toLowerCase();
-  if (/\bmeter\b/.test(l)) return "meterNumber";
-  if (/\bacct\b|\baccount\b/.test(l)) return "accountNumber";
-  return null;
-}
+// CSS selector used in $$eval() to extract all interactive elements from the page.
+// Exported so llmGapFill.ts can reuse the same selector for consistency.
+export const EXTRACT_SEL = "input, select, textarea, button, [role=button], a[href]:not([href='#']):not([href=''])";
 
 // ---------------------------------------------------------------------------
 // The DOM extraction script — runs in the page via $$eval. Pure (no closures over
@@ -217,9 +175,6 @@ export interface RawField {
   label: string;
   fieldType: ExtractedField["fieldType"];
   options?: string[];
-  // True when the portal marks the field required (required/aria-required attribute or a
-  // "*" in its label). Used by the gap-fill to report required fields it had no data for.
-  required?: boolean;
   // Selector hints captured from the element.
   role?: string;
   name?: string;
@@ -228,13 +183,8 @@ export interface RawField {
   css?: string;
   text?: string;
   href?: string;
+  required?: boolean;
 }
-
-// The CSS selector that enumerates every interactive control on a page (inputs, selects,
-// textareas, buttons, role=button, and real <a href> links). Shared with llmGapFill so both
-// the learn loop and the gap-fill pass scrape the exact same element set. NOTE: a test mock
-// dispatches on selector.includes("button") — keep this literal string byte-identical.
-export const EXTRACT_SEL = "input, select, textarea, button, [role=button], a[href]:not([href='#']):not([href=''])";
 
 // Serializable extractor — derives a label and selector hints for each interactive
 // element. Defined as a string-compatible function so it runs inside the page.
@@ -260,28 +210,6 @@ export function extractFieldsInPage(els: Element[]): RawField[] {
     const text = (el.textContent || "").trim();
     if (text) return text;
     return "";
-  }
-
-  // Is the element actually rendered (not display:none / visibility:hidden, and not collapsed
-  // to zero size by a hidden ancestor)? PowerClerk keeps hidden modal TEMPLATES in the DOM —
-  // e.g. an "I understand…" confirmation checkbox and a row of OK/Cancel buttons — and not-yet-
-  // revealed cascade fields are display:none until a parent dropdown is selected. Extracting
-  // those phantom fields makes a content-less wizard page (the "Welcome" step) look like a
-  // fillable form, which misclassifies it and sends the loop into stuck/recovery churn.
-  // STRICT test only: display/visibility + offsetParent+zero-rect. Deliberately NOT filtering
-  // on opacity / off-screen position / aria-hidden, since some portals fade-in or position
-  // revealed fields and a looser test could drop a genuinely interactable control.
-  function isRendered(el: Element): boolean {
-    const he = el as HTMLElement;
-    const style = typeof getComputedStyle === "function" ? getComputedStyle(he) : null;
-    if (style && (style.display === "none" || style.visibility === "hidden")) return false;
-    // offsetParent is null when an ancestor is display:none (also for position:fixed, which we
-    // exclude). Pair with a zero-size rect so a fixed-position visible control isn't dropped.
-    if (he.offsetParent === null && (!style || style.position !== "fixed")) {
-      const rect = he.getBoundingClientRect();
-      if (rect.width === 0 && rect.height === 0) return false;
-    }
-    return true;
   }
 
   const out: RawField[] = [];
@@ -337,14 +265,6 @@ export function extractFieldsInPage(els: Element[]): RawField[] {
     // Skip hidden inputs entirely.
     if (tag === "input" && typeAttr === "hidden") continue;
 
-    // Skip elements that aren't rendered (display:none modal templates, not-yet-revealed
-    // cascade fields, etc.). EXCEPTION: a non-visible <a> with a REAL href is kept — clickResilient's
-    // fast path navigates straight to that href for menu-nested/hidden nav links (e.g. Accela's
-    // "Building Dept Application"), so dropping it here would break dashboard navigation.
-    const hrefAttr = tag === "a" ? (el.getAttribute("href") || "") : "";
-    const anchorWithRealHref = !!hrefAttr && hrefAttr !== "#" && !/^javascript:/i.test(hrefAttr);
-    if (!anchorWithRealHref && !isRendered(el)) continue;
-
     const label = labelFor(el);
     const name = el.getAttribute("name") || undefined;
     const placeholder = el.getAttribute("placeholder") || undefined;
@@ -357,17 +277,9 @@ export function extractFieldsInPage(els: Element[]): RawField[] {
     // Capture href for anchors so a hidden/menu-nested nav link can be reached by direct
     // navigation when it can't be clicked.
     const href = tag === "a" ? (el.getAttribute("href") || undefined) : undefined;
-    // Required signal: the native/ARIA attribute, or a "*"/"required" marker in the label
-    // (PowerClerk & Accela both flag required fields with a red asterisk in the label text).
-    const required =
-      (el as HTMLInputElement).required === true ||
-      el.getAttribute("aria-required") === "true" ||
-      el.hasAttribute("required") ||
-      /[*]/.test(label) ||
-      /\brequired\b/i.test(label) ||
-      undefined;
+    const required = (el as HTMLInputElement).required || el.getAttribute("aria-required") === "true" || undefined;
 
-    out.push({ label, fieldType, options, required, role, name, placeholder, id, text, href });
+    out.push({ label, fieldType, options, role, name, placeholder, id, text, href, required: required || undefined });
   }
   return out;
 }
@@ -426,7 +338,6 @@ export function toExtractedField(raw: RawField): ExtractedField {
     fieldType: raw.fieldType,
   };
   if (raw.options && raw.options.length) field.options = raw.options;
-  if (raw.required) field.required = true;
   if (raw.href) field.href = raw.href;
   return field;
 }
@@ -467,12 +378,6 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   // Optional progress sink — called at each page/phase so callers can drive a UI bar.
   // Wrapped so a throwing callback can never break the learn loop.
   private onProgress?: LearnProgressFn;
-
-  // Heartbeat state: re-emits the last progress with a growing elapsedMs so the UI can
-  // distinguish a slow step from a hung one. Reset on every REAL progress event.
-  private hbTimer: ReturnType<typeof setInterval> | null = null;
-  private lastProgress: LearnProgress | null = null;
-  private lastProgressAtMs = 0;
 
   constructor(
     portalName: string,
@@ -569,69 +474,16 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   // Emit a progress signal, swallowing any callback error so UI plumbing can never
   // interfere with the learn run itself.
   private emitProgress(p: LearnProgress): void {
-    // Record this as the last REAL progress and reset the per-step clock so the heartbeat
-    // measures elapsed-on-this-step from here.
-    this.lastProgress = p;
-    this.lastProgressAtMs = Date.now();
     if (!this.onProgress) return;
-    try { this.onProgress({ ...p, elapsedMs: 0 }); } catch { /* progress sink must never break the run */ }
+    try { this.onProgress(p); } catch { /* progress sink must never break the run */ }
   }
 
-  // Start a 5s heartbeat that re-emits the last real progress with a climbing elapsedMs and a
-  // "(still working — Ns)" suffix. The number climbing without the step advancing is the signal
-  // that a step is genuinely hung vs. merely slow. Safe to call once per run.
-  private startHeartbeat(): void {
-    if (this.hbTimer || !this.onProgress) return;
-    this.hbTimer = setInterval(() => {
-      if (!this.lastProgress || !this.onProgress) return;
-      const elapsedMs = Date.now() - this.lastProgressAtMs;
-      if (elapsedMs < 5000) return; // only chime once a step has been quiet a while
-      const secs = Math.round(elapsedMs / 1000);
-      const base = this.lastProgress.message.replace(/\s*\(still working[^)]*\)\s*$/, "");
-      try {
-        this.onProgress({ ...this.lastProgress, elapsedMs, heartbeat: true, message: `${base} (still working — ${secs}s)` });
-      } catch { /* progress sink must never break the run */ }
-    }, 5000);
-    if (typeof (this.hbTimer as { unref?: () => void }).unref === "function") (this.hbTimer as { unref?: () => void }).unref!();
-  }
-
-  private stopHeartbeat(): void {
-    if (this.hbTimer) { clearInterval(this.hbTimer); this.hbTimer = null; }
-  }
-
-  async learn(context: PortalContext, project: ProjectRecord): Promise<LearnResult> {
-    this.startHeartbeat();
-    try {
-      return await this.learnImpl(context, project);
-    } finally {
-      this.stopHeartbeat();
-    }
-  }
-
-  private async learnImpl(context: PortalContext, project: ProjectRecord): Promise<LearnResult> {
+  async learn(context: PortalContext, _project: ProjectRecord): Promise<LearnResult> {
     const steps: RecipeStep[] = [];
-    // Secrets (account/meter) are stripped before the LLM, so the planner can neither fill nor bind
-    // them — yet they're exactly the fields a NEM/utility portal keys the customer on. Fill + bind
-    // them deterministically below from the project's own values. Never sent to the model; the
-    // recorded step keeps value:"" and binds by `field`, so the literal never lands in steps_json.
-    const sensitiveValues: Record<string, string> = {
-      accountNumber: project.accountNumber || "",
-      meterNumber: project.meterNumber || "",
-    };
+    const alreadyFilledLabels: string[] = [];
     let pageCount = 0;
     let finalSubmitRecorded = false;
     let reachedReview = false;
-    // Fields we filled that did NOT hold their value when we read them back before advancing
-    // (a portal silently dropped the fill). Accumulated across pages and surfaced so the
-    // operator knows exactly which fields to fix — instead of finding them blank at review.
-    const fillVerifyMisses: string[] = [];
-    // Inline validation errors that BLOCKED an advance (a required field empty, or a value the
-    // portal rejected). Accumulated across pages and surfaced so the operator knows exactly why
-    // the form wouldn't move forward — instead of the run silently looping or recording a broken
-    // page. `lastValidationErrors` carries the most recent page's blockers into the recovery hint
-    // so the planner is told precisely which fields the portal flagged.
-    const validationBlocks: string[] = [];
-    let lastValidationErrors: string[] = [];
     // Stuck-page detection: if the page fingerprint doesn't change across consecutive
     // iterations (an advance silently failed — e.g. blocked by a validation error), stop
     // instead of burning every remaining page re-planning the same screen.
@@ -645,6 +497,11 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     const recentFingerprints: string[] = [];
     let recoveryAttempts = 0;
     const MAX_RECOVERY = 3;
+    // Validation blockers: collected when an advance click fails to move the page forward
+    // (portal blocked the step due to required-field errors). Injected into the recovery hint
+    // and surfaced in the final message so the operator can see WHICH fields the portal rejected.
+    const validationBlocks: string[] = [];
+    let lastValidationErrors: string[] = [];
     // Diagnostics: a compact, redacted breadcrumb per page (title + host/path + field
     // counts + classification + the planner's decision). Surfaced in the result message
     // and logs so a "nothing fillable" run is debuggable WITHOUT re-running blind.
@@ -669,41 +526,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       // url() can fail on a fake/odd page — non-fatal.
     }
 
-    // Debug screenshot dir — created once if AUTOLEARN_DEBUG_SCREENSHOTS=1.
-    // Saves a "before fills" and "after fills" screenshot for every page so the
-    // operator can see exactly what the bot saw and what it changed.
-    let debugScreenshotDir: string | null = null;
-    if (process.env.AUTOLEARN_DEBUG_SCREENSHOTS === "1") {
-      const ts = Date.now();
-      debugScreenshotDir = path.resolve(
-        process.cwd(),
-        "data",
-        "screenshots",
-        `learn-${ts}`,
-      );
-      try { fs.mkdirSync(debugScreenshotDir, { recursive: true }); } catch { debugScreenshotDir = null; }
-    }
-
-    const saveDebugShot = async (label: string) => {
-      if (!debugScreenshotDir || !this.page) return;
-      const safe = label.replace(/[^a-z0-9_-]/gi, "_").slice(0, 80);
-      const dest = path.join(debugScreenshotDir, `${safe}.png`);
-      try {
-        const buf = await (this.page as Page).screenshot({ type: "png", fullPage: true });
-        fs.writeFileSync(dest, buf);
-      } catch { /* non-fatal */ }
-    };
-
     for (let pageIdx = 0; pageIdx < this.maxPages; pageIdx++) {
       pageCount++;
-
-      // Labels filled on THIS page, used to dedup the initial fill pass against the
-      // post-selection re-scrape (d3) so a revealed field isn't filled twice. PER-PAGE on
-      // purpose: PowerClerk's wizard reuses identical labels ("Name", "Address", "Email",
-      // "Phone") across successive contact steps (Installer page, then Applicant page). A
-      // run-wide accumulator would tell the planner those labels were "already done" and it
-      // would skip the entire next contact page — leaving it blank.
-      const alreadyFilledLabels: string[] = [];
 
       // a2) Dismiss any modals/popups/banners and clear lingering loading scrims before
       //     extracting fields, so overlays can't intercept the actions we take this page.
@@ -718,25 +542,11 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       let url = "";
       let bodyText = "";
       try {
+        const extractSel = "input, select, textarea, button, [role=button], a[href]:not([href='#']):not([href=''])";
         let raws: RawField[] = [];
-        // PowerClerk (and Bootstrap/jQuery/ExtJS SPAs generally) render each wizard step's
-        // INPUTS asynchronously behind a loader while the page chrome (sidebar nav, Next
-        // button) is already present. Breaking the retry the instant raws is non-empty would
-        // capture the chrome but ZERO form fields, so the page looks empty and the bot
-        // advances past it WITHOUT filling — the "customer info page skipped" failure. So:
-        // wait for loaders to clear each attempt, and keep retrying until REAL input fields
-        // appear (not just buttons/links), only giving up after the loaders are gone.
-        const isInput = (r: RawField) => r.fieldType === "text" || r.fieldType === "select" || r.fieldType === "checkbox" || r.fieldType === "radio" || r.fieldType === "file";
-        for (let tryN = 0; tryN < 6; tryN++) {
-          await this.waitForContentLoaders();
-          // After the loaders clear, give the SPA a short window to MOUNT an interactive control
-          // before scraping, so a recording made on a Vue mount race captures the real fields (not
-          // chrome-only). Short (4s) budget so a genuinely input-less page (terms/dashboard) does
-          // not pay the full section-ready timeout before the settled-empty break below fires.
-          await waitForInteractiveControls(this.page, 4000);
-          raws = await this.page.$$eval(EXTRACT_SEL, extractFieldsInPage).catch(() => [] as RawField[]);
-          if (raws.some(isInput)) break;            // real fields rendered — proceed
-          if (raws.length > 0 && tryN >= 2 && !(await this.hasVisibleLoader())) break; // settled, genuinely no inputs
+        for (let tryN = 0; tryN < 4; tryN++) {
+          raws = await this.page.$$eval(extractSel, extractFieldsInPage).catch(() => [] as RawField[]);
+          if (raws.length > 0) break;
           await smartWait(this.page, 1500);
           await this.dismissModals();
           await this.clearOverlays();
@@ -750,26 +560,17 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         return fail(steps, this.portalName, `Failed to scrape page ${pageCount}: ${err instanceof Error ? err.message : String(err)}`);
       }
 
-      // Debug: capture the page as-seen BEFORE any fills.
-      await saveDebugShot(`p${pageCount.toString().padStart(3, "0")}-before-${(pageTitle || "page").replace(/\s+/g, "_").slice(0, 40)}`);
-
       // PAGE CLASSIFICATION. A page with NO fillable inputs is EITHER a dashboard/home
       // (just navigation links — the portal entry screen after login) OR a read-only
       // REVIEW/confirm page (a data summary + a submit-intent button). They look identical
       // by "no inputs" alone, so discriminate by submit-intent button + review markers:
-      //   - REVIEW  → positive review signals (URL or body) + (no inputs OR submit-intent btn).
-      //   - TERMS   → T&C/billing/disclaimer page — pass-through, treated as dashboard so the
-      //               planner clicks the Continue/I-Agree button without recording it as submit.
-      //   - DASHBOARD → no inputs, no submit-intent button, no review signals → only links.
+      //   - REVIEW  → has a submit-intent button (Continue Application/Submit/Finish) or
+      //               review markers ("Step N: Review", "review all information", /review URL).
+      //   - DASHBOARD → no inputs, no submit-intent button, no review markers → only links.
       const hasFillable = fields.some((f) => f.fieldType !== "button");
       const hasSubmitIntentBtn = fields.some((f) => f.fieldType === "button" && SUBMIT_INTENT.test(f.label));
       const reviewSignals = REVIEW_MARKERS.test(bodyText) || looksLikeReviewUrl(url);
-      // T&C pages look like review pages (no inputs + Continue Application) but are not —
-      // detect before the isDashboard/isReviewPage split so they're treated as pass-throughs.
-      const isTermsPage = !hasFillable && !reviewSignals && (TERMS_MARKERS.test(bodyText) || looksLikeTermsUrl(url));
-      // isDashboard: no inputs, no submit intent, no review signals — ALSO treats T&C as
-      // dashboard so the planner navigates by clicking the Continue/Agree button.
-      const isDashboard = (!hasFillable && !hasSubmitIntentBtn && !reviewSignals) || isTermsPage;
+      const isDashboard = !hasFillable && !hasSubmitIntentBtn && !reviewSignals;
       if (hasFillable) everFoundFillable = true;
 
       // a0) STUCK / CYCLE GUARD with SELF-RECOVERY. Two failure shapes:
@@ -797,8 +598,6 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         const problem = cycling
           ? "You are CYCLING: this page was already visited earlier in this run, so a previous action looped you back to the start."
           : "You are STUCK: the last action did not change the page.";
-        // If the last advance was blocked by inline validation, tell the planner EXACTLY which
-        // fields the portal flagged so it fixes those instead of guessing (or re-clicking Next).
         const validationLine = lastValidationErrors.length > 0
           ? ` The portal BLOCKED the advance with these validation errors — fix these specific fields before advancing again: ${lastValidationErrors.slice(0, 10).join(" | ")}.`
           : "";
@@ -849,8 +648,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       // On a review page its primary button (e.g. "Continue Application") SUBMITS, so we
       // NEVER advance-click — we force the review stop and record that button as the final
       // submit, overriding a planner that mistook the submit button for an "advance/next".
-      // T&C pages are implicitly excluded: isTermsPage → isDashboard=true → !isDashboard=false,
-      // so the first clause never fires for them. No need for an explicit isTermsPage check.
+      // A no-input page that is NOT a dashboard is, by definition, a review page.
       const isReviewPage = (!hasFillable && !isDashboard) || (reviewSignals && hasSubmitIntentBtn);
       if (isReviewPage && !plan.atReview) {
         // Promote a planner "advance" that is actually a submit-intent button to finalSubmit.
@@ -905,46 +703,6 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           fillsPlanned: plannedFills,
           message: progressMsg,
         });
-
-        // Debug: write a JSON sidecar next to this page's screenshots showing what the bot
-        // SAW (field labels) and DECIDED (each fill's field/value, sensitive masked). This is
-        // the "real vs guessing" record — pair it with the p{n}-before/after PNGs.
-        if (debugScreenshotDir) {
-          const sidecar = {
-            page: pageCount,
-            title: pageTitle,
-            url: hostPath,
-            classification: cls,
-            atReview: plan.atReview,
-            navigateIndex: plan.navigateSelectorIndex ?? null,
-            advanceIndex: plan.advanceSelectorIndex ?? null,
-            finalSubmitIndex: plan.finalSubmitSelectorIndex ?? null,
-            recoveryHint: recoveryHint || null,
-            fieldsSeen: fields.map((f, i) => ({
-              i,
-              type: f.fieldType,
-              label: (f.label || "").slice(0, 80),
-            })),
-            decisions: (plan.fills ?? []).map((fl) => {
-              const f = fields[fl.selectorIndex];
-              const sensitive = f ? isSensitiveLabel(f.label) : false;
-              return {
-                index: fl.selectorIndex,
-                label: (f?.label || "?").slice(0, 80),
-                boundField: fl.field || null,
-                value: sensitive ? "***sensitive (bound at replay)***" : (fl.value ?? ""),
-                source: fl.field ? "data-bound" : "literal",
-              };
-            }),
-          };
-          try {
-            const dest = path.join(
-              debugScreenshotDir,
-              `p${pageCount.toString().padStart(3, "0")}-plan.json`,
-            );
-            fs.writeFileSync(dest, JSON.stringify(sidecar, null, 2));
-          } catch { /* non-fatal */ }
-        }
       }
 
       // c3) DASHBOARD NAVIGATION — click a link/button to get from the portal home to the
@@ -1043,72 +801,50 @@ export class AutoLearnAdapter extends BasePortalAdapter {
 
       // d) Apply the fills and record each as a RecipeStep.
       let pageFillCount = 0;
-      const appliedThisPage: AppliedFill[] = [];
       for (const fillReq of plan.fills ?? []) {
         const field = fields[fillReq.selectorIndex];
         if (!field) continue; // out-of-range index from the planner — skip safely.
         if (field.fieldType === "file") continue; // handled by the upload pass above.
-        // Sensitive fields (account/meter) are filled + bound DETERMINISTICALLY below from the
-        // project, not from the planner — which never receives their values, so its fill here would
-        // be blank or a guess. Skip them in the planner pass so nothing wrong lands in the control
-        // or the recipe.
-        if (isSensitiveLabel(field.label)) continue;
-        const step = await this.applyFill(field, fillReq, false);
+        const sensitive = isSensitiveLabel(field.label);
+        const step = await this.applyFill(field, fillReq, sensitive);
         if (step) {
           steps.push(step);
           pageFillCount++;
           if (field.label) alreadyFilledLabels.push(field.label);
-          appliedThisPage.push({
-            selector: field.selector,
-            label: field.label || field.fieldType,
-            fieldType: field.fieldType,
-            // The value typed into the control (literal, data-bound, or numeric-sanitized),
-            // used to re-apply if the fill didn't hold.
-            expected: step.value ?? fillReq.value ?? "",
-            sensitive: false,
-            required: Boolean(field.required),
-          });
         }
       }
 
-      // d′) DETERMINISTIC SENSITIVE BINDING. The planner never sees account/meter values, so it can
-      //     neither fill nor bind them — and those are precisely the fields a NEM/utility portal
-      //     keys the customer on. Fill them here from the project (typed into the page so the review
-      //     screen verifies) and record a data-BOUND step (field=key, value:"") so replay re-types
-      //     them from the project. The literal secret is never sent to the LLM nor written to
-      //     steps_json; it's typed into the browser only. A field with no project value is left for
-      //     the human (gap-fill / the review verifier flags it).
-      for (const field of fields) {
-        if (field.fieldType === "file") continue;
-        if (!isSensitiveLabel(field.label)) continue;
-        if (field.label && alreadyFilledLabels.includes(field.label)) continue;
-        const sensKey = sensitiveFieldKey(field.label);
-        if (!sensKey) continue; // password/cvv/ssn → no project binding; left for the human.
-        const sensVal = sensitiveValues[sensKey];
-        if (!sensVal) continue; // no value on the project — gap-fill/verify will surface it.
-        const step = await this.applyFill(field, { value: sensVal, field: sensKey }, true);
-        if (step) {
-          steps.push(step);
-          pageFillCount++;
-          if (field.label) alreadyFilledLabels.push(field.label);
-          appliedThisPage.push({
-            selector: field.selector,
-            label: field.label || field.fieldType,
-            fieldType: field.fieldType,
-            expected: "", // sensitive — never logged or retyped; only confirmed non-empty.
-            sensitive: true,
-            required: Boolean(field.required),
-          });
-        }
-        // After a dropdown/checkbox change, wait for any Vue/React re-renders triggered
-        // by the change event to complete before filling the next field. Portals like
-        // PowerClerk reset sibling fields when a contact-type dropdown is changed; fills
-        // that land during the re-render are cleared when Vue finishes diffing.
-        if ((field.fieldType === "select" || field.fieldType === "checkbox") && this.page) {
-          await this.page.waitForLoadState("networkidle", { timeout: 4000 }).catch(() => null);
-          const selectSettleMs = Number(process.env.AUTOLEARN_SELECT_SETTLE_MS) || 1000;
-          if (selectSettleMs > 0) await sleep(selectSettleMs);
-        }
+      // d3) POST-SELECTION RESCAN — some portals (PGE PowerClerk) conditionally reveal
+      //     additional fields only AFTER a dropdown is selected (e.g. account/meter number
+      //     fields appear only after "Residential" + "Schedule 7" are chosen). After any
+      //     select fills, wait briefly for AJAX re-renders then re-scrape the page for new
+      //     sensitive inputs (account/meter) and fill them deterministically from project data.
+      //     This runs only when a select was filled this page and never re-fills already-filled labels.
+      const hadSelectFill = (plan.fills ?? []).some((f) => {
+        const fld = fields[f.selectorIndex];
+        return fld && (fld.fieldType === "select" || fld.fieldType === "other");
+      });
+      if (hadSelectFill && this.page) {
+        await sleep(1200);
+        try {
+          const raws2 = await this.page.$$eval(
+            "input, select, textarea, button, [role=button], a[href]:not([href='#']):not([href=''])",
+            extractFieldsInPage,
+          ).catch(() => [] as RawField[]);
+          const newFields = raws2.map(toExtractedField);
+          for (const nf of newFields) {
+            if (!isSensitiveLabel(nf.label)) continue;
+            if (alreadyFilledLabels.includes(nf.label)) continue;
+            // Sensitive revealed fields are recorded as sensitive steps with no literal value.
+            const syntheticFill = { value: "", field: /account/i.test(nf.label) ? "accountNumber" : /meter/i.test(nf.label) ? "meterNumber" : undefined };
+            const step = await this.applyFill(nf, syntheticFill, true);
+            if (step) {
+              steps.push(step);
+              pageFillCount++;
+              if (nf.label) alreadyFilledLabels.push(nf.label);
+            }
+          }
+        } catch { /* non-fatal rescan failure */ }
       }
 
       // d1) PERSIST SETTLE. Portals like PowerClerk autosave each page's fields via an AJAX
@@ -1126,143 +862,6 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         const settleMs = Number(process.env.AUTOLEARN_SAVE_SETTLE_MS) || 3000;
         await sleep(settleMs);
         await settleNetwork(4000);
-
-        // Debug: capture the page AFTER fills have settled so we can compare with "before".
-        await saveDebugShot(`p${pageCount.toString().padStart(3, "0")}-after-${(pageTitle || "page").replace(/\s+/g, "_").slice(0, 40)}`);
-      }
-
-      // d2) VERIFY THE FILLS LANDED before advancing. A portal can silently drop a fill — a
-      //     Vue/React model rejects it, an overlay eats the keystrokes, inline validation
-      //     clears it, or an autosave round-trip blanks it. If we advance blindly the field
-      //     is gone and only resurfaces (if at all) as a blank at the review screen. Read each
-      //     filled control back; re-apply once if it didn't hold; record any required field
-      //     that STILL won't hold its value so the operator sees exactly what to fix.
-      if (appliedThisPage.length > 0) {
-        const misses = await this.verifyFillsLanded(appliedThisPage);
-        for (const m of misses) if (!fillVerifyMisses.includes(m)) fillVerifyMisses.push(m);
-      }
-
-      // d3) POST-SELECTION RE-SCRAPE: conditional fields revealed by dropdown selections.
-      //     On portals like PowerClerk, selecting "Residential" as Account Type reveals a
-      //     Schedule dropdown; selecting a Schedule reveals Account# and Meter# fields.
-      //     After applying this page's fills, re-scrape and fill any NEW fields that appeared.
-      //     This is a best-effort, single-pass catch-up — never throws or breaks the loop.
-      if (pageFillCount > 0 && !plan.atReview) {
-        try {
-          await this.waitForContentLoaders();
-          await this.clearOverlays();
-          const postRaws = await this.page.$$eval(EXTRACT_SEL, extractFieldsInPage).catch(() => [] as RawField[]);
-          const postFields = postRaws.map(toExtractedField);
-          const newFillable = postFields.filter(
-            (f) => f.fieldType !== "button" && f.label && !alreadyFilledLabels.includes(f.label),
-          );
-          // Debug: record what the re-scrape revealed and what it decided to fill.
-          const rescanDecisions: Array<{ label: string; boundField: string | null; value: string; source: string }> = [];
-          if (newFillable.length > 0) {
-            // Ask the planner to fill the newly-visible fields. Use the full postFields list
-            // so index math is correct; supply alreadyFilledLabels so it skips already-done fields.
-            let postPlan: LearnPlanResponse = { fills: [], atReview: false };
-            try {
-              postPlan = await this.planner({
-                url, pageTitle, fields: postFields, bodyText,
-                alreadyFilledLabels, isDashboard: false,
-              });
-            } catch { /* planner failure is non-fatal for the re-scrape pass */ }
-
-            let postFillCount = 0;
-            for (const fillReq of postPlan.fills ?? []) {
-              const field = postFields[fillReq.selectorIndex];
-              if (!field || field.fieldType === "file") continue;
-              if (isSensitiveLabel(field.label)) continue;
-              if (field.label && alreadyFilledLabels.includes(field.label)) continue;
-              const step = await this.applyFill(field, fillReq, false);
-              if (step) {
-                steps.push(step);
-                postFillCount++;
-                pageFillCount++;
-                if (field.label) alreadyFilledLabels.push(field.label);
-                rescanDecisions.push({
-                  label: (field.label || "?").slice(0, 80),
-                  boundField: fillReq.field || null,
-                  value: fillReq.field ? "" : (fillReq.value ?? ""),
-                  source: fillReq.field ? "data-bound" : "literal",
-                });
-              }
-            }
-            // Deterministic sensitive binding for newly-visible account/meter fields.
-            for (const field of postFields) {
-              if (field.fieldType === "file") continue;
-              if (!isSensitiveLabel(field.label)) continue;
-              if (field.label && alreadyFilledLabels.includes(field.label)) continue;
-              const sensKey = sensitiveFieldKey(field.label);
-              if (!sensKey) continue;
-              const sensVal = sensitiveValues[sensKey];
-              if (!sensVal) continue;
-              const step = await this.applyFill(field, { value: sensVal, field: sensKey }, true);
-              if (step) {
-                steps.push(step);
-                postFillCount++;
-                pageFillCount++;
-                if (field.label) alreadyFilledLabels.push(field.label);
-                rescanDecisions.push({
-                  label: (field.label || "?").slice(0, 80),
-                  boundField: sensKey,
-                  value: "***sensitive (bound at replay)***",
-                  source: "sensitive-deterministic",
-                });
-              }
-            }
-            // Let the portal autosave the conditional-field fills before advancing.
-            if (postFillCount > 0) {
-              if (typeof this.page?.waitForLoadState === "function") {
-                await this.page.waitForLoadState("networkidle", { timeout: 6000 }).catch(() => null);
-              }
-              await sleep(2000);
-            }
-          }
-          // Debug: dump the re-scrape result (revealed fields + decisions) and an after-shot
-          // so the operator can see what conditional fields appeared post-dropdown.
-          if (debugScreenshotDir && newFillable.length > 0) {
-            try {
-              const dest = path.join(
-                debugScreenshotDir,
-                `p${pageCount.toString().padStart(3, "0")}-rescan.json`,
-              );
-              fs.writeFileSync(dest, JSON.stringify({
-                page: pageCount,
-                title: pageTitle,
-                revealedFields: newFillable.map((f) => (f.label || "?").slice(0, 80)),
-                decisions: rescanDecisions,
-              }, null, 2));
-            } catch { /* non-fatal */ }
-            await saveDebugShot(`p${pageCount.toString().padStart(3, "0")}-rescan-${(pageTitle || "page").replace(/\s+/g, "_").slice(0, 40)}`);
-          }
-        } catch { /* post-selection re-scrape is best-effort — never break the loop */ }
-      }
-
-      // d4) COMPUTE-TOTAL CLICK (portal-agnostic). Some forms render a derived value (system
-      //     size kW, total cost) only after the user clicks a "Calculate"/"Recalculate"/"Update
-      //     total" button — otherwise the field stays 0.00 and reads blank/wrong at review. Click
-      //     any such button by its LABEL (never a portal-specific selector) after fills so the
-      //     computed value populates before we advance. Guarded by isOffLimitsButton so a
-      //     pay/fee/submit control can never be clicked here; the regex is intentionally narrow.
-      if (pageFillCount > 0 && !plan.atReview) {
-        const COMPUTE_BTN = /\b(re-?calculate|calculate|compute|recompute|update total)\b/i;
-        const computeField = fields.find(
-          (f) => f.fieldType === "button" && COMPUTE_BTN.test(f.label) && !this.isOffLimitsButton(f),
-        );
-        if (computeField) {
-          try {
-            const loc = await this.locator(computeField.selector);
-            if (loc) {
-              await this.clickResilient(loc);
-              if (typeof this.page?.waitForLoadState === "function") {
-                await this.page.waitForLoadState("networkidle", { timeout: 6000 }).catch(() => null);
-              }
-              await sleep(1000);
-            }
-          } catch { /* compute-button click is best-effort — never break the loop */ }
-        }
       }
 
       // e) Record the final submit (if any) — NEVER click it. Reject pay/fee buttons.
@@ -1326,32 +925,27 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           return fail(steps, this.portalName, `Failed to click the advance button on page ${pageCount}: ${res.message ?? "unknown"}`);
         }
 
-        // d5) POST-ADVANCE VALIDATION GUARD. The click succeeded, but did the form actually
-        //     MOVE? If the URL and page fingerprint are BOTH unchanged, the portal blocked the
-        //     advance — almost always inline validation (a required field empty, or a value it
-        //     rejected). Rather than silently recording a broken page and letting the loop churn,
-        //     scrape the visible validation errors + required-empty fields and flag them. We pop
-        //     the advance step that didn't advance, stash the blockers for the recovery hint, and
-        //     fall through to the loop — the stuck-guard re-plans WITH the specific errors so the
-        //     planner can fix them; after the recovery budget is spent the run stops and the final
-        //     message lists exactly what blocked it.
-        const advAfterUrl = typeof this.page.url === "function" ? String(this.page.url() ?? "") : "";
-        const advAfterFp = await this.pageFingerprint();
-        const movedForward = (advAfterUrl && advAfterUrl !== advBeforeUrl) || (!!advAfterFp && advAfterFp !== advBeforeFp);
-        if (!movedForward) {
-          const blockers = await this.collectValidationErrors();
-          if (blockers.length > 0) {
-            lastValidationErrors = blockers;
-            for (const b of blockers) if (!validationBlocks.includes(b)) validationBlocks.push(b);
-            // Drop the advance step we optimistically recorded — it advanced nothing, so a
-            // replay must not re-issue it as-is.
-            if (steps.length && steps[steps.length - 1].note?.startsWith("advance:")) steps.pop();
-            if (process.env.AUTOLEARN_DEBUG === "1") console.error(`[learn] advance BLOCKED by validation on page ${pageCount}: ${blockers.join(" | ")}`);
+        // d5) POST-ADVANCE VALIDATION GUARD — did the page actually move forward?
+        // When a portal blocks submission because required fields are missing or invalid,
+        // the "Next" click silently stays on the same page (the URL/fingerprint doesn't change).
+        // Detect this and scrape any inline error messages so the recovery hint is specific.
+        {
+          const advAfterUrl = typeof this.page.url === "function" ? String(this.page.url() ?? "") : "";
+          const advAfterFp = await this.pageFingerprint();
+          const movedForward = (advAfterUrl && advAfterUrl !== advBeforeUrl) || (!!advAfterFp && advAfterFp !== advBeforeFp);
+          if (!movedForward) {
+            const blockers = await this.collectValidationErrors();
+            if (blockers.length > 0) {
+              lastValidationErrors = blockers;
+              for (const b of blockers) if (!validationBlocks.includes(b)) validationBlocks.push(b);
+              // Remove the advance step we just recorded — it didn't actually work.
+              if (steps.length && steps[steps.length - 1].note?.startsWith("advance:")) steps.pop();
+            }
+          } else {
+            lastValidationErrors = [];
           }
-        } else {
-          // Moved forward cleanly — clear any stale blockers from a prior page.
-          lastValidationErrors = [];
         }
+
         continue;
       }
 
@@ -1388,31 +982,19 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       ? ` It followed ${navCount} navigation link(s) from the portal home but never reached a form with editable fields — the start URL may point at the wrong page, the "start application" action may open a new tab or a program/record-type picker the bot couldn't follow, or a program must be selected first. Verify the start URL is the program's application/home page.`
       : "";
 
-    // Surface any field that didn't hold its value after we filled it (caught by the
-    // pre-advance readback) so the operator knows what to fix instead of finding it blank.
-    const verifyWarning = fillVerifyMisses.length > 0
-      ? ` ⚠ ${fillVerifyMisses.length} required field(s) did not hold their value after filling and may be blank in the portal: ${fillVerifyMisses.slice(0, 12).join(", ")}${fillVerifyMisses.length > 12 ? ", …" : ""}. Re-check these before submit.`
-      : "";
-
-    // Surface inline-validation errors that BLOCKED an advance, so the operator sees exactly which
-    // required/invalid fields stopped the form instead of a vague "got stuck". This is the signal
-    // that a page was NOT silently recorded as complete when the portal refused to advance it.
     const validationWarning = validationBlocks.length > 0
-      ? ` ⛔ The portal blocked an advance with ${validationBlocks.length} validation error(s) — fix before submit: ${validationBlocks.slice(0, 12).join("; ")}${validationBlocks.length > 12 ? "; …" : ""}.`
+      ? ` ⛔ The portal blocked an advance with ${validationBlocks.length} validation error(s) — fix before submit: ${validationBlocks.slice(0, 8).join("; ")}.`
       : "";
-
-    const message = (reachedReview
-      ? `${HUMAN_REVIEW_MESSAGE} Auto-learn reached the review screen after ${pageCount} page(s). Verify every field/value below before a human submits.`
+    const message = reachedReview
+      ? `${HUMAN_REVIEW_MESSAGE} Auto-learn reached the review screen after ${pageCount} page(s). Verify every field/value below before a human submits.${validationWarning}`
       : filledSomething
-        ? `Auto-learn filled ${pageCount} page(s) and recorded the steps, but did not reach a review screen. Page trace: ${traceLine}`
-        : `Auto-learn found nothing fillable on ${pageCount} page(s); no steps recorded.${nothingFillableHint} Page trace: ${traceLine}`) + verifyWarning + validationWarning;
+        ? `Auto-learn filled ${pageCount} page(s) and recorded the steps, but did not reach a review screen. Page trace: ${traceLine}${validationWarning}`
+        : `Auto-learn found nothing fillable on ${pageCount} page(s); no steps recorded.${nothingFillableHint} Page trace: ${traceLine}${validationWarning}`;
 
-    // Capture the review page screenshot when we've reached the review screen. fullPage:true
-    // so the vision verifier sees the WHOLE review — a viewport-only shot would let an
-    // off-screen blank/wrong required field pass unseen.
+    // Capture review page screenshot when we've reached the review screen
     let reviewScreenshotBase64: string | undefined;
     try {
-      const buf = await this.page.screenshot({ type: "png", fullPage: true });
+      const buf = await this.page.screenshot({ type: "png", fullPage: false });
       reviewScreenshotBase64 = buf.toString("base64");
     } catch { /* non-fatal */ }
 
@@ -1425,8 +1007,6 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       pageCount,
       pauseReason: null,
       message,
-      reachedReview,
-      filledSomething,
       reviewScreenshotBase64,
     };
   }
@@ -1440,24 +1020,16 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     sensitive: boolean,
   ): Promise<RecipeStep | null> {
     const value = fillReq.value ?? "";
-    // Radios are CHECKABLE like checkboxes — selecting one is a check(), NOT a fill().
-    // The previous code routed radio to the text-fill branch (loc.fill), which throws on a
-    // radio input, so radio choices (PGE "Description of Service", "Service Type: Single")
-    // silently never got selected. Treat checkbox AND radio as the "check" action.
     const isCheckable = field.fieldType === "checkbox" || field.fieldType === "radio";
     const action: RecipeStep["action"] =
       field.fieldType === "select" ? "select" : isCheckable ? "check" : "fill";
 
-    // Whether the planner wants this checkable control OFF. A planner that returns a
-    // checkbox/radio with value "false"/"no"/"off"/"0" means "do NOT select it" — without
-    // this, loc.check() would force-enable it (e.g. wrongly ticking "meter mounted on a pole").
+    // A "false/no/off/0" value on a checkbox means UN-check it; on a radio it means "don't
+    // select this option" (the LLM returned false for an option it wants left unselected) —
+    // skip it entirely rather than calling check() which would select it.
     const negated = isCheckable && /^(false|no|off|0|unchecked|none)$/i.test(value.trim());
-    // A negated RADIO is simply not selected — there's nothing to record, so skip it entirely.
     if (field.fieldType === "radio" && negated) return null;
 
-    // The value actually committed (may be sanitized below if the portal rejects it as a
-    // non-number); recorded so a literal step replays the value the portal accepted.
-    let filledValue = value;
     const res = await safeAction(
       // The label is non-PII enough for a log line, but keep it short.
       (field.label || field.fieldType).slice(0, 40),
@@ -1468,10 +1040,12 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           // Native <select> first; fall back to the custom-combobox interaction for
           // styled-div dropdowns (PowerClerk "Please select...", select2, ExtJS, etc.)
           // that selectOption() can't drive.
-          await selectWithFallback(this.page, loc, value);
+          await loc.selectOption(value)
+            .catch(async () => loc.selectOption({ label: value }))
+            .catch(async () => { await fillCustomCombobox(this.page, loc, value); });
         } else if (action === "check") {
-          // Respect negation for checkboxes: uncheck rather than force-enable.
           if (negated) {
+            // Explicit false/no → uncheck the box (leave it unchecked).
             if (typeof loc.uncheck === "function") await loc.uncheck({ timeout: 5000 }).catch(() => {});
           } else {
             await loc.check({ timeout: 5000 });
@@ -1483,18 +1057,6 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           // saved model on blur — and PowerClerk autosaves per field. Without the blur the
           // value shows on screen but is never persisted, so the saved draft comes back blank.
           if (typeof loc.blur === "function") await loc.blur().catch(() => {});
-          // Decimal fields (e.g. PowerClerk's "Main Service Entrance Rating (Amps)") reject
-          // unit-suffixed values like "225A" with "Please enter a valid decimal number." When
-          // the portal flags the value as a non-number, retry once with a bare decimal so the
-          // run doesn't carry an invalid required field forward to the submit page.
-          if (await hasNumericValidationError(loc)) {
-            const bare = toBareNumber(value);
-            if (bare && bare !== value) {
-              await loc.fill(bare);
-              if (typeof loc.blur === "function") await loc.blur().catch(() => {});
-              filledValue = bare;
-            }
-          }
         }
       },
       { required: false },
@@ -1519,145 +1081,10 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       // Data-bound to a project/client field — resolved at replay time.
       step.field = fillReq.field;
     } else if (action !== "check") {
-      // A portal-literal value (dropdown option / fixed text) — the value the portal accepted.
-      step.value = filledValue;
+      // A portal-literal value (dropdown option / fixed text).
+      step.value = value;
     }
     return step;
-  }
-
-  // Scrape VISIBLE inline-validation errors and required-but-empty fields from the current page.
-  // Called after a blocked advance to explain WHY the form wouldn't move forward — portal-agnostic
-  // (no per-portal selectors): it reads the common validation-message patterns (ASP.NET MVC
-  // field-validation, Bootstrap invalid-feedback, aria-invalid, role=alert, "* This field is
-  // required" text) plus any [required]/[aria-required] control whose value is empty. Returns a
-  // de-duplicated list of short, human-readable blocker descriptions ("Schedule: This field is
-  // required"). Best-effort: returns [] on any failure so it can never break the run.
-  private async collectValidationErrors(): Promise<string[]> {
-    if (!this.page || typeof this.page.evaluate !== "function") return [];
-    try {
-      const raw: string[] = await this.page.evaluate(() => {
-        const out: string[] = [];
-        const seen = new Set<string>();
-        const push = (s: string) => {
-          const t = (s || "").replace(/\s+/g, " ").trim().slice(0, 120);
-          if (t && !seen.has(t.toLowerCase())) { seen.add(t.toLowerCase()); out.push(t); }
-        };
-        const isVisible = (el: Element): boolean => {
-          const he = el as HTMLElement;
-          const s = getComputedStyle(he);
-          if (s.display === "none" || s.visibility === "hidden" || Number(s.opacity) === 0) return false;
-          const r = he.getBoundingClientRect();
-          return r.width > 0 && r.height > 0;
-        };
-        // Nearest field label for a validation message / control, so the blocker is identifiable.
-        const labelNear = (el: Element): string => {
-          // A labelled ancestor group (PowerClerk wraps each field in a .form-group with a <label>).
-          const group = el.closest(".form-group, .field, .form-field, .mb-3, fieldset, [class*='field']");
-          const lbl = group?.querySelector("label");
-          if (lbl?.textContent) return lbl.textContent.replace(/\s+/g, " ").trim().slice(0, 60);
-          const id = (el as HTMLElement).id;
-          if (id) {
-            const forLbl = document.querySelector(`label[for="${CSS.escape(id)}"]`);
-            if (forLbl?.textContent) return forLbl.textContent.replace(/\s+/g, " ").trim().slice(0, 60);
-          }
-          return "";
-        };
-        // 1) Explicit validation-message elements.
-        const MSG_SEL = [
-          ".field-validation-error", ".validation-summary-errors li", ".invalid-feedback",
-          ".text-danger", ".error-message", ".help-block.error", "[role='alert']",
-          "[class*='error']:not(input):not(select)", "[class*='invalid']:not(input):not(select)",
-        ].join(", ");
-        document.querySelectorAll(MSG_SEL).forEach((el) => {
-          const txt = (el.textContent || "").trim();
-          if (!txt || txt.length > 200 || !isVisible(el)) return;
-          // Ignore decorative containers that hold no actual message text.
-          if (!/[a-z]/i.test(txt)) return;
-          const lab = labelNear(el);
-          push(lab ? `${lab}: ${txt}` : txt);
-        });
-        // 2) aria-invalid / required-but-empty controls (catches a blank required field even when
-        //    the portal hasn't rendered a message yet).
-        document.querySelectorAll("input, select, textarea").forEach((el) => {
-          const he = el as HTMLInputElement;
-          const type = (he.getAttribute("type") || "").toLowerCase();
-          if (type === "hidden" || !isVisible(el)) return;
-          const ariaInvalid = he.getAttribute("aria-invalid") === "true";
-          const required = he.hasAttribute("required") || he.getAttribute("aria-required") === "true";
-          const empty = type === "checkbox" || type === "radio"
-            ? false // checkable required state is handled by the message scan above
-            : !String(he.value || "").trim();
-          if (ariaInvalid || (required && empty)) {
-            const lab = labelNear(el) || he.getAttribute("name") || he.getAttribute("placeholder") || "field";
-            push(`${lab}: ${ariaInvalid ? "invalid value" : "required field is empty"}`);
-          }
-        });
-        return out.slice(0, 20);
-      });
-      return Array.isArray(raw) ? raw : [];
-    } catch {
-      return [];
-    }
-  }
-
-  // Read each just-filled control back and confirm it still HOLDS a value before we advance.
-  // The goal is catching the "silently blanked" failure mode (Vue/React rejected the fill, an
-  // overlay ate it, autosave wiped it), not exact-value correctness — so the check is "is it
-  // still non-empty / in the expected checked state". A control that came back empty gets one
-  // re-apply attempt; a REQUIRED field that still won't hold is returned so the caller can
-  // surface it. Best-effort: an unreadable control is treated as fine (never block on it).
-  private async verifyFillsLanded(applied: AppliedFill[]): Promise<string[]> {
-    const misses: string[] = [];
-    for (const a of applied) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const loc = (await this.locator(a.selector)) as any;
-      if (!loc) continue;
-      if (await this.fieldHoldsValue(loc, a)) continue;
-
-      // One re-apply attempt. Sensitive fields are never retyped here (we don't keep the
-      // literal); select fields go back through the combobox fallback.
-      try {
-        if (a.sensitive || !a.expected) {
-          // nothing to retype — fall through to the re-check
-        } else if (a.fieldType === "select") {
-          await selectWithFallback(this.page!, loc, a.expected);
-        } else if (a.fieldType === "checkbox" || a.fieldType === "radio") {
-          if (/^(true|yes|on|1)$/i.test(a.expected) && typeof loc.check === "function") await loc.check({ timeout: 5000 });
-        } else if (typeof loc.fill === "function") {
-          await loc.fill(a.expected, { timeout: 5000 });
-          if (typeof loc.blur === "function") await loc.blur().catch(() => {});
-        }
-      } catch { /* re-apply is best-effort */ }
-
-      if (!(await this.fieldHoldsValue(loc, a)) && a.required) misses.push(a.label);
-    }
-    return misses;
-  }
-
-  // True when the control still holds a value consistent with what we filled. For text/select
-  // that means non-empty (and not a "please select" placeholder); for checkbox/radio it means
-  // the checked state matches the intended boolean. Unreadable → treated as held (don't block).
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private async fieldHoldsValue(loc: any, a: AppliedFill): Promise<boolean> {
-    try {
-      if (a.fieldType === "checkbox" || a.fieldType === "radio") {
-        if (typeof loc.isChecked !== "function") return true;
-        const want = /^(true|yes|on|1)$/i.test(a.expected);
-        const isChecked = await loc.isChecked().catch(() => false);
-        return Boolean(isChecked) === want;
-      }
-      if (typeof loc.inputValue !== "function") return true;
-      const v = String((await loc.inputValue().catch(() => "")) ?? "").trim();
-      if (!v) return false;
-      if (/^(please select|select\.\.\.|-- ?select|choose)/i.test(v)) return false;
-      // When we have the literal we filled, a non-empty value that matches is best; but a
-      // non-empty value that DIFFERS is still "filled" (the portal may reformat dates/numbers),
-      // so we only treat truly-empty as a miss. readbackMatches is used opportunistically.
-      if (a.expected) return v.length > 0 || readbackMatches(v, a.expected);
-      return v.length > 0;
-    } catch {
-      return true;
-    }
   }
 
   // A button is off-limits if its label/selector text matches a pay/fee/checkout keyword.
@@ -2005,37 +1432,6 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   // (ExtJS .x-mask / #divGlobalCover page-wide loading masks), and generic jQuery UI / BlockUI
   // overlays. Scoped to backdrop/scrim selectors only — never removes form fields or modal
   // content, just the transparent layer on top. Best-effort; never throws.
-  // Loader/spinner selectors that indicate the SPA is still fetching this step's content.
-  // Covers PowerClerk's `.loader`, generic Bootstrap/jQuery spinners, ExtJS load masks, and
-  // blockUI. We WAIT for these to clear (not remove them — removing a loader doesn't make the
-  // data arrive) before trusting a "no fillable fields" read of the page.
-  private static readonly LOADER_SEL = ".loader, .loading, [class*='loading-'], [class*='spinner'], .spinner-border, .x-mask-loading, [id*='loadingMask'], [id*='LoadingMask'], .blockUI.blockOverlay, [aria-busy='true']";
-
-  // True if any known loader/spinner is currently visible on the page. Best-effort.
-  private async hasVisibleLoader(): Promise<boolean> {
-    if (!this.page || typeof this.page.locator !== "function") return false;
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const loc = this.page.locator(AutoLearnAdapter.LOADER_SEL) as any;
-      if (!loc || typeof loc.count !== "function" || typeof loc.nth !== "function") return false;
-      const n = await loc.count().catch(() => 0);
-      for (let i = 0; i < Math.min(n, 8); i++) {
-        if (await loc.nth(i).isVisible?.().catch(() => false)) return true;
-      }
-    } catch { /* mock/no DOM — treat as not loading */ }
-    return false;
-  }
-
-  // Poll until no loader/spinner is visible (the async form has rendered) or we time out.
-  // Returns fast when nothing is loading; bounded so a perpetually-"busy" SPA can't hang us.
-  private async waitForContentLoaders(timeoutMs = 12000): Promise<void> {
-    const start = Date.now();
-    while (Date.now() - start < timeoutMs) {
-      if (!(await this.hasVisibleLoader())) return;
-      await sleep(400);
-    }
-  }
-
   private async clearOverlays(): Promise<void> {
     if (!this.page || typeof this.page.evaluate !== "function") return;
     try {
@@ -2100,6 +1496,53 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     else if (sel.role) loc = scope.getByRole(sel.role);
     else throw new Error("AutoLearn selector has no usable strategy.");
     return typeof sel.nth === "number" ? loc.nth(sel.nth) : loc.first();
+  }
+
+  // Scrape visible inline validation errors from the page — works on ASP.NET field-validation
+  // spans, Bootstrap invalid-feedback divs, aria-invalid controls, role=alert banners, and
+  // required-but-empty inputs. Returns labelled, de-duplicated strings like:
+  //   "Schedule: This field is required."  or  "Energy Source: Please select an option."
+  // Best-effort; never throws. Returns [] when nothing is found.
+  private async collectValidationErrors(): Promise<string[]> {
+    if (!this.page || typeof this.page.evaluate !== "function") return [];
+    try {
+      return await this.page.evaluate((): string[] => {
+        const seen = new Set<string>();
+        const out: string[] = [];
+        const add = (msg: string) => { const t = msg.trim(); if (t && !seen.has(t)) { seen.add(t); out.push(t); } };
+
+        // 1. Visible text inside validation/error elements.
+        const errSels = [
+          '[class*="validation-message"]:not([style*="display:none"]):not([style*="display: none"])',
+          '[class*="field-validation-error"]',
+          '.invalid-feedback:not([style*="display:none"])',
+          '[class*="error-message"]:not([style*="display:none"])',
+          '[role="alert"]:not([style*="display:none"])',
+          '[aria-live="assertive"]:not([style*="display:none"])',
+          '.alert-danger:not([style*="display:none"])',
+        ];
+        for (const sel of errSels) {
+          document.querySelectorAll<HTMLElement>(sel).forEach((el) => {
+            const t = el.innerText?.trim();
+            if (t && t.length > 3 && el.offsetParent !== null) add(t);
+          });
+        }
+
+        // 2. aria-invalid inputs that are also required — append a synthetic label+message.
+        document.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(
+          "input[aria-invalid='true'][required], select[aria-invalid='true'][required], " +
+          "textarea[aria-invalid='true'][required]"
+        ).forEach((el) => {
+          const label = (document.querySelector(`label[for="${el.id}"]`) as HTMLLabelElement)?.innerText?.trim()
+            || (el as HTMLInputElement).placeholder || el.name || "Field";
+          add(`${label}: This field is required.`);
+        });
+
+        return out.slice(0, 20);
+      });
+    } catch {
+      return [];
+    }
   }
 
   // Resolve a selector descriptor to the first locator that has ≥1 matching element on
