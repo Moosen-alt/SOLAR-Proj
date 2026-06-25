@@ -965,6 +965,73 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         for (const m of misses) if (!fillVerifyMisses.includes(m)) fillVerifyMisses.push(m);
       }
 
+      // d3) POST-SELECTION RE-SCRAPE: conditional fields revealed by dropdown selections.
+      //     On portals like PowerClerk, selecting "Residential" as Account Type reveals a
+      //     Schedule dropdown; selecting a Schedule reveals Account# and Meter# fields.
+      //     After applying this page's fills, re-scrape and fill any NEW fields that appeared.
+      //     This is a best-effort, single-pass catch-up — never throws or breaks the loop.
+      if (pageFillCount > 0 && !plan.atReview) {
+        try {
+          await this.waitForContentLoaders();
+          await this.clearOverlays();
+          const postRaws = await this.page.$$eval(EXTRACT_SEL, extractFieldsInPage).catch(() => [] as RawField[]);
+          const postFields = postRaws.map(toExtractedField);
+          const newFillable = postFields.filter(
+            (f) => f.fieldType !== "button" && f.label && !alreadyFilledLabels.includes(f.label),
+          );
+          if (newFillable.length > 0) {
+            // Ask the planner to fill the newly-visible fields. Use the full postFields list
+            // so index math is correct; supply alreadyFilledLabels so it skips already-done fields.
+            let postPlan: LearnPlanResponse = { fills: [], atReview: false };
+            try {
+              postPlan = await this.planner({
+                url, pageTitle, fields: postFields, bodyText,
+                alreadyFilledLabels, isDashboard: false,
+              });
+            } catch { /* planner failure is non-fatal for the re-scrape pass */ }
+
+            let postFillCount = 0;
+            for (const fillReq of postPlan.fills ?? []) {
+              const field = postFields[fillReq.selectorIndex];
+              if (!field || field.fieldType === "file") continue;
+              if (isSensitiveLabel(field.label)) continue;
+              if (field.label && alreadyFilledLabels.includes(field.label)) continue;
+              const step = await this.applyFill(field, fillReq, false);
+              if (step) {
+                steps.push(step);
+                postFillCount++;
+                pageFillCount++;
+                if (field.label) alreadyFilledLabels.push(field.label);
+              }
+            }
+            // Deterministic sensitive binding for newly-visible account/meter fields.
+            for (const field of postFields) {
+              if (field.fieldType === "file") continue;
+              if (!isSensitiveLabel(field.label)) continue;
+              if (field.label && alreadyFilledLabels.includes(field.label)) continue;
+              const sensKey = sensitiveFieldKey(field.label);
+              if (!sensKey) continue;
+              const sensVal = sensitiveValues[sensKey];
+              if (!sensVal) continue;
+              const step = await this.applyFill(field, { value: sensVal, field: sensKey }, true);
+              if (step) {
+                steps.push(step);
+                postFillCount++;
+                pageFillCount++;
+                if (field.label) alreadyFilledLabels.push(field.label);
+              }
+            }
+            // Let the portal autosave the conditional-field fills before advancing.
+            if (postFillCount > 0) {
+              if (typeof this.page?.waitForLoadState === "function") {
+                await this.page.waitForLoadState("networkidle", { timeout: 6000 }).catch(() => null);
+              }
+              await sleep(2000);
+            }
+          }
+        } catch { /* post-selection re-scrape is best-effort — never break the loop */ }
+      }
+
       // e) Record the final submit (if any) — NEVER click it. Reject pay/fee buttons.
       if (typeof plan.finalSubmitSelectorIndex === "number") {
         const submitField = fields[plan.finalSubmitSelectorIndex];

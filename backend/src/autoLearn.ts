@@ -331,11 +331,14 @@ export async function autoLearnPortal(
   verification.issues = mergedIssues;
 
   // TRUST GATE (promotes the recipe to "complete" for deterministic replay + the trusted-
-  // submit allowlist): require the authoritative verdict to be accurate AND no concrete
-  // deterministic mismatch AND the text verifier didn't actively contradict. A single
-  // optimistic signal can never override a concrete contradiction to RAISE trust.
+  // submit allowlist). The LLM verifier(s) are the authoritative signal. Deterministic
+  // mismatches are surfaced as warnings but do NOT block promotion — the deterministic
+  // scraper too often false-positives on read-only portals, masked sensitive fields, and
+  // conditional widgets the scraper can't reach. A text contradiction (LLM explicitly says
+  // values are WRONG, not just absent) still blocks — that's a concrete data error.
+  // NOTE: Final submit always requires human action regardless of this gate.
   const textContradicts = textVerification.matches.length > 0 && !textVerification.accurate;
-  const trusted = verification.accurate && deterministicMismatches.length === 0 && !textContradicts;
+  const trusted = verification.accurate && !textContradicts;
   savePortalRecipeSteps(db, stub.id, learn.steps, {
     status: trusted ? "complete" : "recording",
     notes: trusted
