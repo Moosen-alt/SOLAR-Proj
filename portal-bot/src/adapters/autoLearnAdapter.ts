@@ -1,3 +1,5 @@
+import fs from "fs";
+import path from "path";
 import type { Page } from "playwright";
 import type { ProjectRecord, RecipeSelector, RecipeStep } from "../../../shared/src/types";
 import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, type PortalContext, type PortalStepResult } from "../adapter";
@@ -585,6 +587,31 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       // url() can fail on a fake/odd page — non-fatal.
     }
 
+    // Debug screenshot dir — created once if AUTOLEARN_DEBUG_SCREENSHOTS=1.
+    // Saves a "before fills" and "after fills" screenshot for every page so the
+    // operator can see exactly what the bot saw and what it changed.
+    let debugScreenshotDir: string | null = null;
+    if (process.env.AUTOLEARN_DEBUG_SCREENSHOTS === "1") {
+      const ts = Date.now();
+      debugScreenshotDir = path.resolve(
+        process.cwd(),
+        "data",
+        "screenshots",
+        `learn-${ts}`,
+      );
+      try { fs.mkdirSync(debugScreenshotDir, { recursive: true }); } catch { debugScreenshotDir = null; }
+    }
+
+    const saveDebugShot = async (label: string) => {
+      if (!debugScreenshotDir || !this.page) return;
+      const safe = label.replace(/[^a-z0-9_-]/gi, "_").slice(0, 80);
+      const dest = path.join(debugScreenshotDir, `${safe}.png`);
+      try {
+        const buf = await (this.page as Page).screenshot({ type: "png", fullPage: true });
+        fs.writeFileSync(dest, buf);
+      } catch { /* non-fatal */ }
+    };
+
     for (let pageIdx = 0; pageIdx < this.maxPages; pageIdx++) {
       pageCount++;
 
@@ -632,6 +659,9 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       } catch (err) {
         return fail(steps, this.portalName, `Failed to scrape page ${pageCount}: ${err instanceof Error ? err.message : String(err)}`);
       }
+
+      // Debug: capture the page as-seen BEFORE any fills.
+      await saveDebugShot(`p${pageCount.toString().padStart(3, "0")}-before-${(pageTitle || "page").replace(/\s+/g, "_").slice(0, 40)}`);
 
       // PAGE CLASSIFICATION. A page with NO fillable inputs is EITHER a dashboard/home
       // (just navigation links — the portal entry screen after login) OR a read-only
@@ -952,6 +982,9 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         const settleMs = Number(process.env.AUTOLEARN_SAVE_SETTLE_MS) || 3000;
         await sleep(settleMs);
         await settleNetwork(4000);
+
+        // Debug: capture the page AFTER fills have settled so we can compare with "before".
+        await saveDebugShot(`p${pageCount.toString().padStart(3, "0")}-after-${(pageTitle || "page").replace(/\s+/g, "_").slice(0, 40)}`);
       }
 
       // d2) VERIFY THE FILLS LANDED before advancing. A portal can silently drop a fill — a
