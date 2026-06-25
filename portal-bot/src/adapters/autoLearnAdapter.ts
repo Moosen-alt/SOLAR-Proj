@@ -1652,11 +1652,14 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     const action: RecipeStep["action"] =
       field.fieldType === "select" ? "select" : isCheckable ? "check" : "fill";
 
-    // A "false/no/off/0" value on a radio means "don't select this option" — skip entirely.
-    // A "false" on a checkbox means "leave unchecked" — the default portal state needs no
-    // recorded step (and we never recorded a spurious "uncheck" of an already-unchecked box).
-    const negated = isCheckable && /^(false|no|off|0|unchecked|none)$/i.test(value.trim());
-    if (negated) return null; // both radio AND checkbox: false = no action needed
+    // A "false/no/off/0" value on a CHECKBOX means "leave unchecked" — the default portal
+    // state needs no recorded step (and we never recorded a spurious "uncheck" of an
+    // already-unchecked box). This does NOT apply to radios: a radio option literally labeled
+    // "No" (e.g. "Do you propose to limit the export capacity? → No") must be actively
+    // clicked, otherwise the portal's default (often "Yes") stays selected. Conflating the two
+    // left every No-answer radio unset. So only negate-and-skip for checkboxes.
+    const negated = field.fieldType === "checkbox" && /^(false|no|off|0|unchecked|none)$/i.test(value.trim());
+    if (negated) return null; // checkbox false = no action needed
 
     const res = await safeAction(
       // The label is non-PII enough for a log line, but keep it short.

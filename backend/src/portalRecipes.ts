@@ -296,7 +296,21 @@ export function resolveRecipeFieldValues(db: AppDb, project: ProjectRecord, port
   }
 
   const overlay = project.clientId ? clientStagingOverlay(db, project.clientId, portalType) : {};
+
+  // Derive split installer first/last from the full installer contact name (mirrors the
+  // homeowner split above). The overlay only provides a full `installerContactName`, so a
+  // portal with separate first/last installer inputs (e.g. PGE PowerClerk Preparer/Installer
+  // pages) had no binding to hit — the planner then guessed, and the company name bled into
+  // the Name field. Only emit when non-empty so we never blank a real value via the merge.
+  const installerSplit: Record<string, string> = {};
+  const instFullName = String(overlay.installerContactName || "").trim();
+  if (instFullName) {
+    const parts = instFullName.split(/\s+/);
+    installerSplit.installerFirstName = parts[0] || "";
+    installerSplit.installerLastName = parts.slice(1).join(" ") || "";
+  }
+
   // Precedence: snapshot scalars → derived equipment aliases → explicit project fields →
-  // client licensing overlay (each later layer wins).
-  return { ...snapshotFlat, ...equipment, ...projectFields, ...overlay };
+  // client licensing overlay → derived installer name split (each later layer wins).
+  return { ...snapshotFlat, ...equipment, ...projectFields, ...overlay, ...installerSplit };
 }
