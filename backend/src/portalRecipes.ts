@@ -142,7 +142,12 @@ export function deletePortalRecipe(db: AppDb, recipeId: string): { deleted: bool
 // classifier to understand what each key means when matching portal form values.
 export const RECIPE_FIELD_DESCRIPTIONS: Record<string, string> = {
   homeownerName: "Property owner full name",
-  projectAddress: "Installation site street address",
+  homeownerFirstName: "Property owner first (given) name only",
+  homeownerLastName: "Property owner last (family) name only",
+  homeownerEmail: "Property owner / homeowner email address",
+  homeownerPhone: "Property owner / homeowner phone number",
+  street: "Installation site street address (no city/state/zip)",
+  projectAddress: "Installation site full street address",
   city: "Installation site city",
   state: "Installation site state (2-letter abbreviation, e.g. OR)",
   zip: "Installation site zip/postal code",
@@ -181,8 +186,24 @@ export function resolveRecipeFieldValues(db: AppDb, project: ProjectRecord, port
   for (const [k, v] of Object.entries(snapshot)) {
     if (v != null && typeof v !== "object") snapshotFlat[k] = String(v);
   }
+
+  // Derive split first/last from full homeowner name so portals with separate
+  // first/last inputs get proper field bindings instead of LLM-guessed literals.
+  const hoFullName = (project.homeownerName || "").trim();
+  const hoNameParts = hoFullName.split(/\s+/);
+  const homeownerFirstName = hoNameParts[0] || "";
+  const homeownerLastName = hoNameParts.slice(1).join(" ") || "";
+
+  // Street-only address (no city/state/zip) for portals that split the address.
+  const streetOnly = (project.projectAddress || "").split(",")[0].trim();
+
   const projectFields: Record<string, string> = {
     homeownerName: project.homeownerName,
+    homeownerFirstName,
+    homeownerLastName,
+    homeownerEmail: String(snapshotFlat.homeownerEmail || snapshotFlat.ownerEmail || ""),
+    homeownerPhone: String(snapshotFlat.homeownerPhone || snapshotFlat.ownerPhone || ""),
+    street: streetOnly || project.projectAddress,
     projectAddress: project.projectAddress,
     city: project.city,
     state: project.state,

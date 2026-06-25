@@ -1099,6 +1099,47 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         }
       }
 
+      // d2) POST-FILL RESCAN — catch conditional fields revealed by dropdown/select fills.
+      //     On portals like PGE PowerClerk, selecting "Type=Residential" and "Schedule=Schedule 7"
+      //     dynamically reveals additional inputs (account number, meter number, etc.) that were
+      //     not present when the page was first scraped. After any select/dropdown fill, re-scrape
+      //     the page and ask the planner to fill any newly revealed inputs before advancing.
+      const hadSelectFill = (plan.fills ?? []).some((f) => {
+        const field = fields[f.selectorIndex];
+        return field && field.fieldType === "select";
+      });
+      if (hadSelectFill && this.page) {
+        await smartWait(this.page, 1500); // let the DOM reveal conditional fields
+        try {
+          const extractSel = "input, select, textarea, button, [role=button], a[href]:not([href='#']):not([href=''])";
+          const rescanRaws = await this.page.$$eval(extractSel, extractFieldsInPage).catch(() => [] as RawField[]);
+          const rescanFields = rescanRaws.map(toExtractedField);
+          const alreadyFilled = new Set(alreadyFilledLabels);
+          const newFillable = rescanFields.filter((f) => f.fieldType !== "button" && f.label && !alreadyFilled.has(f.label));
+          if (newFillable.length > 0) {
+            // Re-plan only the newly revealed fields.
+            const rescanPageTitle = typeof this.page.title === "function" ? String((await this.page.title().catch(() => "")) ?? "") : "";
+            const rescanUrl = typeof this.page.url === "function" ? String(this.page.url() ?? "") : "";
+            const rescanBody = (await this.page.locator("body").innerText().catch(() => "")).slice(0, 2000);
+            let rescanPlan: LearnPlanResponse;
+            try {
+              rescanPlan = await this.planner({ url: rescanUrl, pageTitle: rescanPageTitle, fields: rescanFields, bodyText: rescanBody, alreadyFilledLabels });
+            } catch { rescanPlan = { fills: [], atReview: false }; }
+            for (const fillReq of rescanPlan.fills ?? []) {
+              const rf = rescanFields[fillReq.selectorIndex];
+              if (!rf || rf.fieldType === "file" || (rf.label && alreadyFilled.has(rf.label))) continue;
+              const sensitive = isSensitiveLabel(rf.label);
+              const step = await this.applyFill(rf, fillReq, sensitive);
+              if (step) {
+                steps.push(step);
+                pageFillCount++;
+                if (rf.label) alreadyFilledLabels.push(rf.label);
+              }
+            }
+          }
+        } catch { /* rescan is best-effort — never abort the run */ }
+      }
+
       // d1) PERSIST SETTLE. Portals like PowerClerk autosave each page's fields via an AJAX
       //     round-trip (~3s/page). If we advance before that completes, the entered values are
       //     LOST — the visibly-filled form saves a BLANK draft. After filling a page, wait for

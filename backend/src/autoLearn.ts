@@ -67,6 +67,9 @@ export function buildPortalPlanner(
     if (/password|accountNumber|meterNumber|ssn/i.test(k)) continue;
     if (v) projectFields[k] = v;
   }
+  // Provide today's date so the planner can compute time-relative values
+  // (e.g. estimated commissioning date = today + 28 days).
+  projectFields["todayDate"] = new Date().toISOString().slice(0, 10);
 
   let kbContext = "";
   try {

@@ -927,6 +927,35 @@ ELECTRICAL SERVICES PAGE (Accela "Residential - Electrical Comprehensive" and si
   - "Project includes any of the following" → "Not Applicable" (e.g. "01-Not Applicable").
 - "Plan Review Required" radio: leave its default (typically "No") unless the page clearly requires Yes; never flip it on speculatively.
 
+PGE POWERCLERK NET METERING FORM RULES (applies when URL contains "pgenm.powerclerk.com"):
+- INSTALLER CONTACT PAGE (page showing "Name / Last / Company / Address / Email / Phone" for the installer):
+  Use installerContactName for the First Name field, the installer last name for Last, installerCompanyName for Company, installerStreet for Address, installerEmail for Email, installerPhone for Phone. These are YOUR (the installer's) fields — do NOT use homeowner data here.
+- HOMEOWNER / APPLICANT PAGE (page showing a second contact block with Name / Last / Address / City / State / Zip / Email / Phone for the property owner / applicant):
+  Use homeownerFirstName for First Name, homeownerLastName for Last, street for Address, city for City, state for State, zip for Zip, homeownerEmail for Email, homeownerPhone for Phone. These are the HOMEOWNER's fields — do NOT use installer data here. If homeownerEmail or homeownerPhone are empty, leave those fields blank.
+- SERVICE LOCATION PAGE (page with "Street / City / State / Zip / Type / Schedule" for the PGE service address):
+  - Fill Street with "street", City with "city", State with "state", Zip with "zip" from project.
+  - Select "Type" dropdown → "Residential" (for residential solar, almost always Residential).
+  - Select "Schedule" dropdown → use "utilitySchedule" project field if present, otherwise "Schedule 7" for residential.
+  - After setting Type and Schedule, ACCOUNT NUMBER and METER NUMBER fields will appear. Include them in fills:
+    - Any field labeled "Account Number", "Account #", "PGE Account", or similar → field: "accountNumber" (no literal value — it is sensitive and resolved at replay).
+    - Any field labeled "Meter Number", "Meter #", "Service/Meter" or similar → field: "meterNumber" (sensitive, no literal value).
+  - "Click here if your existing meter is mounted on a pole" checkbox → do NOT check this (leave unchecked / false) for a standard residential install unless project data explicitly says the meter is on a pole. Most residential solar sites do NOT have a pole-mounted meter.
+  - "Click here if this is a Primary Service Account" → do NOT check unless project data says so.
+  - "Click here if this is a Customer-Owned Transformer" → do NOT check unless project data says so.
+  - Service voltage / Phase: select "Single" radio for single-phase (residential). For the service voltage description (if a dropdown appears), select the value matching the project's service voltage — typically "120/240V" or "240V" for residential. If the project has a "serviceType" field use it; otherwise default to the 240V option.
+  - "Estimated Commissioning Date": fill with a date approximately 4 weeks (28 days) from today. Today's date is provided in projectFields as "todayDate" (YYYY-MM-DD format); add 28 days and format as MM/DD/YYYY. If todayDate is not available, leave blank.
+- AGGREGATION PAGE (page asking "I want to aggregate my meters" / "No aggregation"):
+  Select "No aggregation" as a literal value — this is a FIXED CHOICE (a standard single-site install never aggregates meters). Do NOT bind it to hasBattery or any project field.
+- BATTERY / STORAGE PAGE (page asking "Yes" / "No" whether the system includes storage):
+  If the project has hasBattery="Yes" select "Yes", otherwise select "No". Bind to field: "hasBattery".
+- EQUIPMENT PAGE (inverter / module selection tables):
+  Use the "Show Details" buttons to reveal and fill equipment specs from project data where possible.
+
+HOMEOWNER vs. INSTALLER FIELD DISAMBIGUATION (for ANY portal):
+- Pages that ask for the APPLICANT / PROPERTY OWNER contact: use homeownerFirstName, homeownerLastName, homeownerEmail, homeownerPhone, street, city, state, zip.
+- Pages that ask for the INSTALLER / CONTRACTOR / APPLICANT'S REPRESENTATIVE contact: use installerContactName (first), the installer last name (literal from data), installerCompanyName, installerEmail, installerPhone, installerStreet.
+- Never cross-fill: installer email must NEVER go into a homeowner email field, and vice versa.
+
 DASHBOARD / HOME PAGES:
 - If isDashboard=true (no fillable inputs — only buttons and navigation links), the bot just logged in and landed on the portal home/dashboard. Your ONLY job is to return "navigateIndex": the index of the link or button that starts a new application / interconnection request / permit application. Look for labels like "New Application", "Start Application", "New Pacific Power Customer Generation Application", "Start New Project", "Apply Now", "Create Application", or a tab/link for the relevant program. Set fills=[], advanceIndex=omit, atReview=false, and ONLY navigateIndex. Do NOT treat any dashboard navigation link as advanceIndex.
 
