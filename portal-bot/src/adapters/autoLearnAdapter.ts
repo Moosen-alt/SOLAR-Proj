@@ -182,6 +182,18 @@ export function isSensitiveLabel(label: string): boolean {
   return SENSITIVE_LABEL.test(label);
 }
 
+// Map a sensitive portal-field LABEL to the project key that holds its value, so the learner can
+// fill account/meter DETERMINISTICALLY (never via the LLM, which never receives these values) and
+// bind the recorded step to the key for replay. Password/CVV/SSN have no project-data binding (a
+// password is a login credential; SSN isn't on the project record), so they return null and are
+// left for the human. The literal value is still never written into the recipe (step.value stays "").
+export function sensitiveFieldKey(label: string): "accountNumber" | "meterNumber" | null {
+  const l = (label || "").toLowerCase();
+  if (/\bmeter\b/.test(l)) return "meterNumber";
+  if (/\bacct\b|\baccount\b/.test(l)) return "accountNumber";
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // The DOM extraction script — runs in the page via $$eval. Pure (no closures over
 // adapter state) so it can be serialized into the browser. Returns plain JSON.
@@ -511,9 +523,17 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     try { this.onProgress(p); } catch { /* progress sink must never break the run */ }
   }
 
-  async learn(context: PortalContext, _project: ProjectRecord): Promise<LearnResult> {
+  async learn(context: PortalContext, project: ProjectRecord): Promise<LearnResult> {
     const steps: RecipeStep[] = [];
     const alreadyFilledLabels: string[] = [];
+    // Secrets (account/meter) are stripped before the LLM, so the planner can neither fill nor bind
+    // them — yet they're exactly the fields a NEM/utility portal keys the customer on. Fill + bind
+    // them deterministically below from the project's own values. Never sent to the model; the
+    // recorded step keeps value:"" and binds by `field`, so the literal never lands in steps_json.
+    const sensitiveValues: Record<string, string> = {
+      accountNumber: project.accountNumber || "",
+      meterNumber: project.meterNumber || "",
+    };
     let pageCount = 0;
     let finalSubmitRecorded = false;
     let reachedReview = false;
@@ -856,8 +876,12 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         const field = fields[fillReq.selectorIndex];
         if (!field) continue; // out-of-range index from the planner — skip safely.
         if (field.fieldType === "file") continue; // handled by the upload pass above.
-        const sensitive = isSensitiveLabel(field.label);
-        const step = await this.applyFill(field, fillReq, sensitive);
+        // Sensitive fields (account/meter) are filled + bound DETERMINISTICALLY below from the
+        // project, not from the planner — which never receives their values, so its fill here would
+        // be blank or a guess. Skip them in the planner pass so nothing wrong lands in the control
+        // or the recipe.
+        if (isSensitiveLabel(field.label)) continue;
+        const step = await this.applyFill(field, fillReq, false);
         if (step) {
           steps.push(step);
           pageFillCount++;
@@ -867,10 +891,40 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             label: field.label || field.fieldType,
             fieldType: field.fieldType,
             // The value typed into the control (literal, data-bound, or numeric-sanitized),
-            // used to re-apply if the fill didn't hold. Empty for sensitive fields — those
-            // are never logged or retyped here; we only confirm the control is non-empty.
-            expected: sensitive ? "" : (step.value ?? fillReq.value ?? ""),
-            sensitive,
+            // used to re-apply if the fill didn't hold.
+            expected: step.value ?? fillReq.value ?? "",
+            sensitive: false,
+            required: Boolean(field.required),
+          });
+        }
+      }
+
+      // d′) DETERMINISTIC SENSITIVE BINDING. The planner never sees account/meter values, so it can
+      //     neither fill nor bind them — and those are precisely the fields a NEM/utility portal
+      //     keys the customer on. Fill them here from the project (typed into the page so the review
+      //     screen verifies) and record a data-BOUND step (field=key, value:"") so replay re-types
+      //     them from the project. The literal secret is never sent to the LLM nor written to
+      //     steps_json; it's typed into the browser only. A field with no project value is left for
+      //     the human (gap-fill / the review verifier flags it).
+      for (const field of fields) {
+        if (field.fieldType === "file") continue;
+        if (!isSensitiveLabel(field.label)) continue;
+        if (field.label && alreadyFilledLabels.includes(field.label)) continue;
+        const sensKey = sensitiveFieldKey(field.label);
+        if (!sensKey) continue; // password/cvv/ssn → no project binding; left for the human.
+        const sensVal = sensitiveValues[sensKey];
+        if (!sensVal) continue; // no value on the project — gap-fill/verify will surface it.
+        const step = await this.applyFill(field, { value: sensVal, field: sensKey }, true);
+        if (step) {
+          steps.push(step);
+          pageFillCount++;
+          if (field.label) alreadyFilledLabels.push(field.label);
+          appliedThisPage.push({
+            selector: field.selector,
+            label: field.label || field.fieldType,
+            fieldType: field.fieldType,
+            expected: "", // sensitive — never logged or retyped; only confirmed non-empty.
+            sensitive: true,
             required: Boolean(field.required),
           });
         }

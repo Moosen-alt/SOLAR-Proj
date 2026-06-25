@@ -447,7 +447,7 @@ async function testSensitiveFieldsRedacted() {
     fills: [
       { selectorIndex: 0, value: "supersecret-pw", field: "password" },
       { selectorIndex: 1, value: "4036870000", field: "accountNumber" },
-      { selectorIndex: 2, value: "Normal Value", field: "homeownerName" },
+      { selectorIndex: 3, value: "Normal Value", field: "homeownerName" },
     ],
     atReview: true,
   });
@@ -464,6 +464,7 @@ async function testSensitiveFieldsRedacted() {
             rawFields: [
               { label: "Password", fieldType: "text", id: "pw" },
               { label: "Account Number", fieldType: "text", id: "acct" },
+              { label: "Meter Number", fieldType: "text", id: "mtr" },
               { label: "Homeowner Name", fieldType: "text", id: "hn" },
             ],
           },
@@ -473,30 +474,44 @@ async function testSensitiveFieldsRedacted() {
     ),
   );
 
-  const result = await adapter.learn(fakeContext, fakeProject);
+  // Account/meter are filled + bound DETERMINISTICALLY from the project (never the planner), so the
+  // learn must receive a project carrying them. The literal values must never be recorded.
+  const result = await adapter.learn(fakeContext, { ...fakeProject, accountNumber: "ACCT-9001", meterNumber: "MTR-5002" } as ProjectRecord);
   assert.equal(result.ok, true);
   const fillSteps = result.steps.filter((s) => s.action === "fill");
 
+  // A password is a login credential, not a replayable form field — the planner's value is ignored
+  // and no password fill step is recorded (it has no project-data binding).
   const pwStep = fillSteps.find((s) => s.note === "Password");
-  assert.ok(pwStep, "password step recorded");
-  assert.equal(pwStep?.sensitive, true, "password must be flagged sensitive");
-  assert.equal(pwStep?.value, "", "password literal value must NOT be stored");
-  assert.equal(pwStep?.field, "password", "password bound by field instead");
+  assert.ok(!pwStep, "password is NOT recorded as a replayable fill step");
 
+  // Account number is filled + bound deterministically from the project (not the planner's value),
+  // recorded sensitive with NO literal value, bound by `field` for replay.
   const acctStep = fillSteps.find((s) => s.note === "Account Number");
   assert.ok(acctStep, "account step recorded");
   assert.equal(acctStep?.sensitive, true, "account number must be flagged sensitive");
   assert.equal(acctStep?.value, "", "account number literal value must NOT be stored");
+  assert.equal(acctStep?.field, "accountNumber", "account number bound by field for replay");
+
+  // Meter number binds the same way, so the recipe actually fills it on replay.
+  const meterStep = fillSteps.find((s) => s.note === "Meter Number");
+  assert.ok(meterStep, "meter step recorded");
+  assert.equal(meterStep?.sensitive, true, "meter number must be flagged sensitive");
+  assert.equal(meterStep?.value, "", "meter number literal value must NOT be stored");
+  assert.equal(meterStep?.field, "meterNumber", "meter number bound by field for replay");
 
   // A non-sensitive field keeps its binding/value normally.
   const nameStep = fillSteps.find((s) => s.note === "Homeowner Name");
   assert.equal(nameStep?.sensitive, undefined, "ordinary field is not flagged sensitive");
   assert.equal(nameStep?.field, "homeownerName");
 
-  // Assert the secret literal never appears anywhere in the recorded steps payload.
+  // No secret literal may appear anywhere in the recorded steps — not the planner's password/account
+  // guess, and not the real project account/meter value that was typed into the browser.
   const serialized = JSON.stringify(result.steps);
   assert.ok(!serialized.includes("supersecret-pw"), "the password literal must never be in the recorded steps");
-  assert.ok(!serialized.includes("4036870000"), "the account number literal must never be in the recorded steps");
+  assert.ok(!serialized.includes("4036870000"), "the planner account value must never be in the recorded steps");
+  assert.ok(!serialized.includes("ACCT-9001"), "the project account number must never be in the recorded steps");
+  assert.ok(!serialized.includes("MTR-5002"), "the project meter number must never be in the recorded steps");
 }
 
 // 7) THE ACCELA TRAP: on a read-only Review page, "Continue Application" SUBMITS.
