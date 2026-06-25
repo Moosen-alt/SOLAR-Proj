@@ -341,7 +341,22 @@ export async function autoLearnPortal(
   // values are WRONG, not just absent) still blocks — that's a concrete data error.
   // NOTE: Final submit always requires human action regardless of this gate.
   const textContradicts = textVerification.matches.length > 0 && !textVerification.accurate;
-  const trusted = verification.accurate && !textContradicts;
+  // HARD BLOCKERS the adapter detected structurally (not via the LLM verifier): REQUIRED fields
+  // left blank/unselected, required document uploads with no file, or portal validation errors on
+  // an advance. The vision/text verifier looks at the rendered review summary and can MISS a
+  // dropped Schedule or an unanswered Yes/No group (the summary just omits the row), so without
+  // this the recipe gets promoted to "trusted" with a known-blank required field — exactly the
+  // false-confidence the operator hit. Any blocker forces "draft" for human completion.
+  const requiredMisses = learn.requiredFieldMisses ?? [];
+  const docMisses = learn.missingRequiredDocs ?? [];
+  const validationBlocks = learn.validationBlocks ?? [];
+  const hasHardBlockers = requiredMisses.length > 0 || docMisses.length > 0 || validationBlocks.length > 0;
+  const trusted = verification.accurate && !textContradicts && !hasHardBlockers;
+  if (hasHardBlockers) {
+    if (requiredMisses.length) verification.issues.push(`Required field(s) left blank/unselected — fill before trusting: ${requiredMisses.slice(0, 12).join(", ")}${requiredMisses.length > 12 ? ", …" : ""}.`);
+    if (docMisses.length) verification.issues.push(`Required document(s) not attached: ${docMisses.slice(0, 8).join(", ")}.`);
+    if (validationBlocks.length) verification.issues.push(`Portal validation blocked an advance: ${validationBlocks.slice(0, 8).join("; ")}.`);
+  }
   savePortalRecipeSteps(db, stub.id, learn.steps, {
     status: trusted ? "complete" : "recording",
     notes: trusted

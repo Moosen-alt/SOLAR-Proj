@@ -100,6 +100,14 @@ export interface LearnResult {
   reachedReview?: boolean;
   /** True when at least one fill/select/check step was recorded. */
   filledSomething?: boolean;
+  /** Labels of REQUIRED, non-sensitive fields left blank/unselected (dropped fills + untouched
+   *  required fields). Surfaced structurally (not just in `message`) so the backend trust gate
+   *  can refuse to promote a recipe with a known blank required field. Empty = clean. */
+  requiredFieldMisses?: string[];
+  /** Labels of REQUIRED document-upload slots with no matching project file (left empty). */
+  missingRequiredDocs?: string[];
+  /** Inline validation errors the portal raised when an advance was blocked. */
+  validationBlocks?: string[];
 }
 
 // Live progress signal emitted while learning a portal, so the UI can show a real
@@ -296,7 +304,29 @@ export function extractFieldsInPage(els: Element[]): RawField[] {
     // Capture href for anchors so a hidden/menu-nested nav link can be reached by direct
     // navigation when it can't be clicked.
     const href = tag === "a" ? (el.getAttribute("href") || undefined) : undefined;
-    const required = (el as HTMLInputElement).required || el.getAttribute("aria-required") === "true" || undefined;
+    // Required detection. The HTML `required`/`aria-required` attributes are the cheap path,
+    // but PowerClerk (and most Bootstrap forms) mark required fields ONLY with a red asterisk
+    // in the visible label — no attribute at all. Without catching the asterisk, Schedule,
+    // Account/Meter, and the Yes/No option groups all looked OPTIONAL, so a silently-dropped
+    // value never surfaced and the recipe was wrongly promoted to "trusted". Detect the
+    // asterisk too: from the field's OWN label for normal inputs, and from the enclosing
+    // group/fieldset label for radios/checkboxes (whose asterisk sits on the group prompt,
+    // e.g. "Service Type *", not the individual option).
+    function labelHasAsterisk(text: string | null | undefined): boolean {
+      return !!text && /\*/.test(text);
+    }
+    let requiredByAsterisk = false;
+    if (fieldType === "radio" || fieldType === "checkbox") {
+      const group = el.closest("fieldset, .form-group, [class*='form-group'], [class*='field'], .row, [class*='row']");
+      const groupLbl = group?.querySelector("legend, label, .control-label, .field-label, strong, b");
+      requiredByAsterisk = labelHasAsterisk(groupLbl?.textContent);
+    } else {
+      const ownId = el.getAttribute("id");
+      const forLbl = ownId ? document.querySelector(`label[for="${CSS.escape(ownId)}"]`) : null;
+      const wrapLbl = el.closest("label");
+      requiredByAsterisk = labelHasAsterisk(forLbl?.textContent) || labelHasAsterisk(wrapLbl?.textContent);
+    }
+    const required = (el as HTMLInputElement).required || el.getAttribute("aria-required") === "true" || requiredByAsterisk || undefined;
 
     out.push({ label, fieldType, options, role, name, placeholder, id, text, href, required: required || undefined });
   }
@@ -1342,6 +1372,17 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         for (const m of misses) if (!fillVerifyMisses.includes(m)) fillVerifyMisses.push(m);
       }
 
+      // d4b) REQUIRED-FIELD SWEEP — before advancing, scan the live page for REQUIRED fields
+      //      still blank/unselected that the planner never touched (an unanswered Yes/No group,
+      //      an unselected equipment-model dropdown, a dropped Schedule). verifyFillsLanded only
+      //      re-checks fields we DID fill, so these would otherwise sail through to a wrongly-
+      //      "trusted" recipe. Only on real form pages (skip dashboards/review). Sensitive +
+      //      acknowledgment fields are excluded inside the sweep.
+      if (!plan.atReview && !isDashboard && hasFillable) {
+        const unfilled = await this.collectUnfilledRequired();
+        for (const m of unfilled) if (!fillVerifyMisses.includes(m)) fillVerifyMisses.push(m);
+      }
+
       // e) Record the final submit (if any) — NEVER click it. Reject pay/fee buttons.
       if (typeof plan.finalSubmitSelectorIndex === "number") {
         const submitField = fields[plan.finalSubmitSelectorIndex];
@@ -1510,6 +1551,9 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       reviewScreenshotBase64,
       reachedReview,
       filledSomething,
+      requiredFieldMisses: fillVerifyMisses,
+      missingRequiredDocs,
+      validationBlocks,
     };
   }
 
@@ -1611,6 +1655,30 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           // that selectOption() can't drive.
           await loc.selectOption(value)
             .catch(async () => loc.selectOption({ label: value }))
+            // NATIVE PARTIAL MATCH: selectOption(value)/{label} require an EXACT option
+            // text/value. PowerClerk's "Account Schedule" lists options like
+            // "Schedule 7 - Residential Net Metering" while the bound value is just
+            // "Schedule 7", so both exact attempts miss and the value is silently dropped.
+            // Before giving up to the combobox path, look through the real <select> options
+            // for a case-insensitive contains-match (either direction) and select it by its
+            // option value. Returns the chosen value or "" so the next catch only runs on a
+            // genuine miss. No-op for non-<select> (custom) widgets.
+            .catch(async () => {
+              const matchedValue = await loc.evaluate((el: Element, want: string) => {
+                if ((el.tagName || "").toLowerCase() !== "select") return "";
+                const norm = (s: string) => (s || "").trim().toLowerCase();
+                const w = norm(want);
+                if (!w) return "";
+                for (const o of Array.from((el as HTMLSelectElement).options)) {
+                  const t = norm(o.textContent || "");
+                  if (!t || /^(please\s+)?select\.{0,3}$/i.test(t)) continue;
+                  if (t === w || t.includes(w) || w.includes(t)) return o.value;
+                }
+                return "";
+              }, value).catch(() => "");
+              if (matchedValue) return loc.selectOption(matchedValue);
+              throw new Error("no native option match");
+            })
             .catch(async () => { await fillCustomCombobox(this.page, loc, value); });
         } else if (action === "check") {
           if (negated) {
@@ -1669,6 +1737,80 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       step.value = value;
     }
     return step;
+  }
+
+  // Sweep the LIVE page for REQUIRED fields that are still empty/unselected after this page's
+  // fills + cascade. This catches what verifyFillsLanded cannot: required fields the planner
+  // NEVER touched (so they're not in appliedThisPage) — an unanswered Yes/No option group
+  // ("limit export capacity?", "smart inverter settings?"), an unselected equipment-model
+  // dropdown, a dropped Schedule. Sensitive fields (account/meter/password) are EXCLUDED:
+  // they're intentionally blank during learn and bound at replay from the credential store, so
+  // flagging them would block every PowerClerk recipe from ever being trusted. The standard
+  // "I understand my form will not be submitted…" acknowledgment is excluded too — it's the
+  // review-gate checkbox, ticked at the review screen, not a data field. Returns visible labels.
+  private async collectUnfilledRequired(): Promise<string[]> {
+    if (!this.page || typeof this.page.evaluate !== "function") return [];
+    const labels = await this.page.evaluate(() => {
+      const SENSITIVE = /\b(password|passcode|account\s*(number|no|#)?|acct|meter\s*(number|no|#)?|ssn|social security|tax\s*id|ein|routing|card\s*number|cvv|security code)\b/i;
+      const ACK = /will not be submitted until|i understand\b|i acknowledge|i certify|i attest|accept (the )?terms|terms (and|&) conditions/i;
+      const norm = (s: string | null | undefined) => (s || "").trim().replace(/\s+/g, " ");
+      const labelOf = (el: Element): string => {
+        const id = el.getAttribute("id");
+        if (id) { const l = document.querySelector(`label[for="${CSS.escape(id)}"]`); if (l?.textContent?.trim()) return norm(l.textContent); }
+        const w = el.closest("label"); if (w?.textContent?.trim()) return norm(w.textContent);
+        const grp = el.closest("fieldset, .form-group, [class*='form-group'], [class*='field'], .row, [class*='row']");
+        const gl = grp?.querySelector("legend, label, .control-label, .field-label, strong, b");
+        if (gl?.textContent?.trim()) return norm(gl.textContent);
+        return norm(el.getAttribute("aria-label") || el.getAttribute("name") || "");
+      };
+      const hasAsterisk = (el: Element, group: boolean): boolean => {
+        if ((el as HTMLInputElement).required || el.getAttribute("aria-required") === "true") return true;
+        const id = el.getAttribute("id");
+        if (!group && id) { const l = document.querySelector(`label[for="${CSS.escape(id)}"]`); if (l && /\*/.test(l.textContent || "")) return true; }
+        if (!group) { const w = el.closest("label"); if (w && /\*/.test(w.textContent || "")) return true; }
+        if (group) {
+          const grp = el.closest("fieldset, .form-group, [class*='form-group'], [class*='field'], .row, [class*='row']");
+          const gl = grp?.querySelector("legend, label, .control-label, .field-label, strong, b");
+          if (gl && /\*/.test(gl.textContent || "")) return true;
+        }
+        return false;
+      };
+      const isVisible = (el: Element) => {
+        const r = (el as HTMLElement).getBoundingClientRect?.();
+        return !!r && (r.width > 0 || r.height > 0);
+      };
+      const out = new Set<string>();
+      const seenRadioGroups = new Set<string>();
+      // text/textarea/select
+      for (const el of Array.from(document.querySelectorAll("input, textarea, select"))) {
+        const tag = el.tagName.toLowerCase();
+        const type = (el.getAttribute("type") || "").toLowerCase();
+        if (type === "hidden") continue;
+        if (!isVisible(el)) continue;
+        const lbl = labelOf(el);
+        if (!lbl || SENSITIVE.test(lbl) || ACK.test(lbl)) continue;
+        if (tag === "select") {
+          if (!hasAsterisk(el, false)) continue;
+          const v = norm((el as HTMLSelectElement).value);
+          const txt = norm((el as HTMLSelectElement).selectedOptions?.[0]?.textContent);
+          if (!v || /^(please\s+)?select\.{0,3}$/i.test(txt)) out.add(lbl);
+        } else if (type === "radio") {
+          if (!hasAsterisk(el, true)) continue;
+          const name = el.getAttribute("name") || lbl;
+          if (seenRadioGroups.has(name)) continue;
+          seenRadioGroups.add(name);
+          const anyChecked = Array.from(document.querySelectorAll(`input[type=radio][name="${CSS.escape(name)}"]`)).some((r) => (r as HTMLInputElement).checked);
+          if (!anyChecked) out.add(lbl);
+        } else if (type === "checkbox" || type === "file" || type === "button" || type === "submit") {
+          continue; // checkboxes default-false legitimately; uploads handled separately
+        } else {
+          if (!hasAsterisk(el, false)) continue;
+          if (!norm((el as HTMLInputElement).value)) out.add(lbl);
+        }
+      }
+      return Array.from(out).slice(0, 20);
+    }).catch(() => [] as string[]);
+    return Array.isArray(labels) ? labels : [];
   }
 
   // Read each applied fill back; re-apply once if it didn't hold; return the labels of REQUIRED
