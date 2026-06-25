@@ -1088,6 +1088,15 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             required: Boolean(field.required),
           });
         }
+        // After a dropdown/checkbox change, wait for any Vue/React re-renders triggered
+        // by the change event to complete before filling the next field. Portals like
+        // PowerClerk reset sibling fields when a contact-type dropdown is changed; fills
+        // that land during the re-render are cleared when Vue finishes diffing.
+        if ((field.fieldType === "select" || field.fieldType === "checkbox") && this.page) {
+          await this.page.waitForLoadState("networkidle", { timeout: 4000 }).catch(() => null);
+          const selectSettleMs = Number(process.env.AUTOLEARN_SELECT_SETTLE_MS) || 1000;
+          if (selectSettleMs > 0) await sleep(selectSettleMs);
+        }
       }
 
       // d1) PERSIST SETTLE. Portals like PowerClerk autosave each page's fields via an AJAX
