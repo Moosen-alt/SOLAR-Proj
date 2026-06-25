@@ -261,13 +261,20 @@ export async function autoLearnPortal(
   const llm = createLLMProvider();
   const reviewBody = learn.reviewScreen.bodyTextSnippet || "";
 
+  // Sensitive fields (account#, meter#, password) are stripped from projectFields so they
+  // never reach the LLM planner. Strip them from the review-screen fields before the text
+  // verifier too — they're bound at replay from the encrypted credential store, not from the
+  // recipe, so a masked portal value must NOT gate recipe promotion.
+  const SENSITIVE_REVIEW_RE = /\b(password|passcode|account\s*(number|no|#)?|acct|meter\s*(number|no|#)?|ssn|social security|tax\s*id|ein|routing|card\s*number|cvv|security code)\b/i;
+  const nonSensitiveReviewFields = learn.reviewScreen.fields.filter((f) => !SENSITIVE_REVIEW_RE.test(f.label));
+
   // THREE independent verification signals, combined for defense in depth:
   //  1. text — the LLM compares the DOM-scraped field/value pairs to the project data;
   //  2. vision — the LLM LOOKS AT the review screenshot (works even when the DOM scrape is
   //     thin, which is exactly the read-only-review case that produced the "blank app");
   //  3. deterministic — code-level compare of scraped fields + rendered page text.
   const textVerification = await llm.verifyPortalFill({
-    reviewFields: learn.reviewScreen.fields,
+    reviewFields: nonSensitiveReviewFields,
     projectFields,
     bodyText: reviewBody,
   });
@@ -293,7 +300,11 @@ export async function autoLearnPortal(
   // masquerade as one or veto trust.
   const allDetMismatches = compareReviewFields(learn.reviewScreen.fields, project, reviewBody);
   const isUnreadableSentinel = allDetMismatches.length === 1 && allDetMismatches[0].field === "reviewScreen";
-  const deterministicMismatches = isUnreadableSentinel ? [] : allDetMismatches;
+  // Exclude sensitive fields (accountNumber, meterNumber) from trust-gating: they're bound at
+  // replay from the credential store, so a portal that masks them on the review screen must
+  // not block promotion. The mismatches are still surfaced in the UI for human awareness.
+  const SENSITIVE_DET_FIELDS = new Set(["accountNumber", "meterNumber"]);
+  const deterministicMismatches = isUnreadableSentinel ? [] : allDetMismatches.filter((m) => !SENSITIVE_DET_FIELDS.has(m.field));
 
   // "Usable" = a signal actually had something to compare. A captured-but-unverified
   // screenshot does NOT count (the vision call may have failed/returned nothing), so the

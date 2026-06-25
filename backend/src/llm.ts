@@ -1001,7 +1001,17 @@ Return ONLY JSON:
   }
 
   async verifyPortalFill(input: PortalFillVerifyInput): Promise<PortalFillVerification> {
-    const system = `You verify that a solar permit portal form was filled CORRECTLY before the recorded recipe is trusted for reuse. Compare each review-screen field/value against the project's authoritative DATA. A value is OK if it matches the corresponding project datum (allowing formatting differences) or is a fixed portal literal (a dropdown choice, label, units). Flag any value that contradicts the project data.
+    const system = `You verify that a solar permit portal form was filled CORRECTLY before the recorded recipe is trusted for reuse. Compare each review-screen field/value against the project's authoritative DATA.
+
+A value is OK if any of the following hold:
+- It matches the corresponding project datum (allowing differences in case, punctuation, or whitespace).
+- It is a fixed portal literal (a dropdown choice, a label, units, a static string) — mark expected as "(literal)".
+- It represents the same numeric quantity expressed differently: "7.2 kW", "7.20 kW", "7,200 W", and "7200 W" are all equivalent; trailing zeros and kW/W conversions are not mismatches.
+- It is a street address where standard abbreviations differ: "St" vs "Street", "Ave" vs "Avenue", "Dr" vs "Drive", "N" vs "North", etc. are not mismatches.
+- It is a name with the same words in a different case: "JOHN SMITH" and "John Smith" are equivalent.
+
+Flag ONLY values that contradict the project data in substance (a different person's name, a different address, a different system size that cannot be a unit conversion, a different AHJ/utility name).
+
 Return ONLY JSON:
 {"matches":[{"label":"<field>","expected":"<project value or '(literal)'>","found":"<review value>","ok":<bool>}],
  "overallConfidence":"low|medium|high",
