@@ -112,6 +112,11 @@ export interface LearnProgress {
   classification?: "form" | "dashboard" | "review" | "empty";
   fillsPlanned?: number;
   message: string;
+  // Milliseconds spent on the CURRENT step (time since the last real progress event).
+  // A heartbeat re-emits the last progress with a growing elapsedMs so the UI can tell a
+  // slow step (number climbing, then advances) from a hung one (climbing forever).
+  elapsedMs?: number;
+  heartbeat?: boolean;
 }
 
 export type LearnProgressFn = (p: LearnProgress) => void;
@@ -490,6 +495,12 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   // Wrapped so a throwing callback can never break the learn loop.
   private onProgress?: LearnProgressFn;
 
+  // Heartbeat state: re-emits the last progress with a growing elapsedMs so the UI can
+  // distinguish a slow step from a hung one. Reset on every REAL progress event.
+  private hbTimer: ReturnType<typeof setInterval> | null = null;
+  private lastProgress: LearnProgress | null = null;
+  private lastProgressAtMs = 0;
+
   constructor(
     portalName: string,
     private planner: LearnPlanner,
@@ -658,11 +669,49 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   // Emit a progress signal, swallowing any callback error so UI plumbing can never
   // interfere with the learn run itself.
   private emitProgress(p: LearnProgress): void {
+    // Record this as the last REAL progress and reset the per-step clock so the heartbeat
+    // measures elapsed-on-this-step from here.
+    this.lastProgress = p;
+    this.lastProgressAtMs = Date.now();
     if (!this.onProgress) return;
-    try { this.onProgress(p); } catch { /* progress sink must never break the run */ }
+    try { this.onProgress({ ...p, elapsedMs: 0 }); } catch { /* progress sink must never break the run */ }
   }
 
-  async learn(context: PortalContext, _project: ProjectRecord): Promise<LearnResult> {
+  // Start a 5s heartbeat that re-emits the last real progress with a climbing elapsedMs and a
+  // "(still working — Ns)" suffix. The number climbing without the step advancing is the signal
+  // that a step is genuinely hung vs. merely slow. Safe to call once per run.
+  private startHeartbeat(): void {
+    if (this.hbTimer || !this.onProgress) return;
+    this.hbTimer = setInterval(() => {
+      if (!this.lastProgress || !this.onProgress) return;
+      const elapsedMs = Date.now() - this.lastProgressAtMs;
+      if (elapsedMs < 5000) return; // only chime once a step has been quiet a while
+      const secs = Math.round(elapsedMs / 1000);
+      const base = this.lastProgress.message.replace(/\s*\(still working[^)]*\)\s*$/, "");
+      try {
+        this.onProgress({ ...this.lastProgress, elapsedMs, heartbeat: true, message: `${base} (still working — ${secs}s)` });
+      } catch { /* progress sink must never break the run */ }
+    }, 5000);
+    if (typeof (this.hbTimer as { unref?: () => void }).unref === "function") (this.hbTimer as { unref?: () => void }).unref!();
+  }
+
+  private stopHeartbeat(): void {
+    if (this.hbTimer) { clearInterval(this.hbTimer); this.hbTimer = null; }
+  }
+
+  async learn(context: PortalContext, project: ProjectRecord): Promise<LearnResult> {
+    // Run a 5s heartbeat for the whole learn run so the UI can tell a slow step from a hung
+    // one (elapsedMs climbs, then a real event resets it). try/finally guarantees the timer is
+    // cleared on every exit path — early `return fail(...)`, success, or a thrown error.
+    this.startHeartbeat();
+    try {
+      return await this.learnImpl(context, project);
+    } finally {
+      this.stopHeartbeat();
+    }
+  }
+
+  private async learnImpl(context: PortalContext, _project: ProjectRecord): Promise<LearnResult> {
     const steps: RecipeStep[] = [];
     const alreadyFilledLabels: string[] = [];
     let pageCount = 0;
@@ -1089,57 +1138,135 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         }
       }
 
-      // d3) POST-SELECTION RESCAN — some portals (PGE PowerClerk) conditionally reveal
-      //     additional fields only AFTER a dropdown is selected (e.g. account/meter number
-      //     fields appear only after "Residential" + "Schedule 7" are chosen). After any
-      //     select fills, wait briefly for AJAX re-renders then re-scrape the page for new
-      //     sensitive inputs (account/meter) and fill them deterministically from project data.
-      //     This runs only when a select was filled this page and never re-fills already-filled labels.
-      const hadSelectFill = (plan.fills ?? []).some((f) => {
-        const fld = fields[f.selectorIndex];
-        return fld && (fld.fieldType === "select" || fld.fieldType === "other");
-      });
-      if (hadSelectFill && this.page) {
-        await sleep(1200);
-        try {
-          const raws2 = await this.page.$$eval(
-            "input, select, textarea, button, [role=button], a[href]:not([href='#']):not([href=''])",
-            extractFieldsInPage,
-          ).catch(() => [] as RawField[]);
-          const newFields = raws2.map(toExtractedField);
-          for (const nf of newFields) {
-            if (!isSensitiveLabel(nf.label)) continue;
-            if (alreadyFilledLabels.includes(nf.label)) continue;
-            // Sensitive revealed fields are recorded as sensitive steps with no literal value.
-            const syntheticFill = { value: "", field: /account/i.test(nf.label) ? "accountNumber" : /meter/i.test(nf.label) ? "meterNumber" : undefined };
-            const step = await this.applyFill(nf, syntheticFill, true);
-            if (step) {
-              steps.push(step);
-              pageFillCount++;
-              if (nf.label) alreadyFilledLabels.push(nf.label);
-              appliedThisPage.push({
-                selector: nf.selector,
-                label: nf.label || "",
-                fieldType: nf.fieldType,
-                expected: "",
-                sensitive: true,
-                required: !!nf.required,
-              });
-            }
-          }
-          // Debug: dump the revealed conditional fields so the operator can see what appeared
-          // after the dropdown selection.
-          if (debugScreenshotDir) {
+      // d3) POST-SELECTION RE-SCRAPE — conditional fields revealed by a prior fill.
+      //     Many real portals progressively disclose fields: PowerClerk reveals a Schedule
+      //     dropdown once Account Type = "Residential", then Account#/Meter# once a Schedule
+      //     is picked; an Accela "Commercial" radio reveals Business License / Tax ID; a
+      //     "Yes — battery storage" checkbox reveals battery make/model/kWh inputs. The page
+      //     was scraped ONCE at entry, so the planner never saw these. After applying this
+      //     page's fills, re-scrape the live DOM and fill any NEW fields that appeared —
+      //     both planner-driven (text/select/checkbox/radio) and deterministic sensitive
+      //     binding (account/meter). Best-effort and single-pass-with-cascade: it loops a
+      //     few times so a reveal that triggers a further reveal is also caught. Never throws.
+      if (pageFillCount > 0 && !plan.atReview && this.page) {
+        const MAX_RESCAN_PASSES = 3;
+        for (let rescanPass = 0; rescanPass < MAX_RESCAN_PASSES; rescanPass++) {
+          let revealedThisPass = 0;
+          try {
+            // Let the AJAX/Vue re-render settle, then clear any overlay the reveal popped.
+            await sleep(1200);
+            await this.clearOverlays();
+            const raws2 = await this.page
+              .$$eval(EXTRACT_SEL, extractFieldsInPage)
+              .catch(() => [] as RawField[]);
+            const postFields = raws2.map(toExtractedField);
+            const newFillable = postFields.filter(
+              (f) =>
+                f.fieldType !== "button" &&
+                f.fieldType !== "file" &&
+                f.label &&
+                !alreadyFilledLabels.includes(f.label),
+            );
+            if (newFillable.length === 0) break; // nothing new appeared — done cascading.
+
+            // Re-derive the page text so the planner reasons over the post-reveal content.
+            let postBodyText = bodyText;
             try {
-              const dest = path.join(debugScreenshotDir, `p${pageCount.toString().padStart(3, "0")}-rescan.json`);
-              fs.writeFileSync(dest, JSON.stringify({
-                page: pageCount,
-                title: pageTitle,
-                revealedFields: newFields.map((f) => (f.label || "?").slice(0, 80)),
-              }, null, 2));
-            } catch { /* non-fatal */ }
-          }
-        } catch { /* non-fatal rescan failure */ }
+              const rawBody2 = await this.page.evaluate(() => (document.body?.innerText ?? "")).catch(() => "");
+              postBodyText = (redactStatusText(String(rawBody2)) ?? "").slice(0, 2000);
+            } catch { /* keep the original snippet */ }
+
+            // Ask the planner to fill the newly-visible NON-sensitive fields. Pass the full
+            // postFields list so selectorIndex math is correct; alreadyFilledLabels makes it
+            // skip fields already handled this page.
+            let postPlan: LearnPlanResponse = { fills: [], atReview: false };
+            try {
+              postPlan = await this.planner({
+                url,
+                pageTitle,
+                fields: postFields,
+                bodyText: postBodyText,
+                alreadyFilledLabels,
+                isDashboard: false,
+              });
+            } catch { /* planner failure is non-fatal for the re-scrape pass */ }
+
+            for (const fillReq of postPlan.fills ?? []) {
+              const field = postFields[fillReq.selectorIndex];
+              if (!field) continue;
+              if (field.fieldType === "button" || field.fieldType === "file") continue;
+              if (isSensitiveLabel(field.label)) continue; // handled by the deterministic pass below
+              if (field.label && alreadyFilledLabels.includes(field.label)) continue;
+              const step = await this.applyFill(field, fillReq, false);
+              if (step) {
+                steps.push(step);
+                pageFillCount++;
+                revealedThisPass++;
+                if (field.label) alreadyFilledLabels.push(field.label);
+                appliedThisPage.push({
+                  selector: field.selector,
+                  label: field.label || "",
+                  fieldType: field.fieldType,
+                  expected: fillReq.value ?? "",
+                  sensitive: false,
+                  required: !!field.required,
+                });
+              }
+            }
+
+            // Deterministic sensitive binding for newly-revealed account/meter fields. The
+            // planner never receives these values, so it can't fill them — bind from project
+            // data. Restricted to text/select inputs; never password/login credentials.
+            for (const nf of postFields) {
+              if (!isSensitiveLabel(nf.label)) continue;
+              if (/\bpassword\b|\bpasscode\b/i.test(nf.label)) continue;
+              if (nf.fieldType !== "text" && nf.fieldType !== "select" && nf.fieldType !== "other") continue;
+              if (alreadyFilledLabels.includes(nf.label)) continue;
+              const syntheticFill = {
+                value: "",
+                field: /account/i.test(nf.label) ? "accountNumber" : /meter/i.test(nf.label) ? "meterNumber" : undefined,
+              };
+              const step = await this.applyFill(nf, syntheticFill, true);
+              if (step) {
+                steps.push(step);
+                pageFillCount++;
+                revealedThisPass++;
+                if (nf.label) alreadyFilledLabels.push(nf.label);
+                appliedThisPage.push({
+                  selector: nf.selector,
+                  label: nf.label || "",
+                  fieldType: nf.fieldType,
+                  expected: "",
+                  sensitive: true,
+                  required: !!nf.required,
+                });
+              }
+            }
+
+            // Debug: dump what appeared after the reveal so the operator can audit it.
+            if (debugScreenshotDir) {
+              try {
+                const dest = path.join(
+                  debugScreenshotDir,
+                  `p${pageCount.toString().padStart(3, "0")}-rescan${rescanPass + 1}.json`,
+                );
+                fs.writeFileSync(dest, JSON.stringify({
+                  page: pageCount,
+                  pass: rescanPass + 1,
+                  title: pageTitle,
+                  revealedFields: newFillable.map((f) => (f.label || "?").slice(0, 80)),
+                  filledThisPass: revealedThisPass,
+                }, null, 2));
+              } catch { /* non-fatal */ }
+            }
+
+            // Let the portal autosave the conditional-field fills before re-scanning again.
+            if (revealedThisPass > 0 && typeof this.page?.waitForLoadState === "function") {
+              await this.page.waitForLoadState("networkidle", { timeout: 6000 }).catch(() => null);
+            }
+          } catch { /* post-selection re-scrape is best-effort — never break the loop */ }
+          if (revealedThisPass === 0) break; // converged — no further reveals to chase.
+        }
       }
 
       // d1) PERSIST SETTLE (ADAPTIVE). Portals like PowerClerk autosave each page's fields via
