@@ -1032,6 +1032,31 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         } catch { /* post-selection re-scrape is best-effort — never break the loop */ }
       }
 
+      // d4) COMPUTE-TOTAL CLICK (portal-agnostic). Some forms render a derived value (system
+      //     size kW, total cost) only after the user clicks a "Calculate"/"Recalculate"/"Update
+      //     total" button — otherwise the field stays 0.00 and reads blank/wrong at review. Click
+      //     any such button by its LABEL (never a portal-specific selector) after fills so the
+      //     computed value populates before we advance. Guarded by isOffLimitsButton so a
+      //     pay/fee/submit control can never be clicked here; the regex is intentionally narrow.
+      if (pageFillCount > 0 && !plan.atReview) {
+        const COMPUTE_BTN = /\b(re-?calculate|calculate|compute|recompute|update total)\b/i;
+        const computeField = fields.find(
+          (f) => f.fieldType === "button" && COMPUTE_BTN.test(f.label) && !this.isOffLimitsButton(f),
+        );
+        if (computeField) {
+          try {
+            const loc = await this.locator(computeField.selector);
+            if (loc) {
+              await this.clickResilient(loc);
+              if (typeof this.page?.waitForLoadState === "function") {
+                await this.page.waitForLoadState("networkidle", { timeout: 6000 }).catch(() => null);
+              }
+              await sleep(1000);
+            }
+          } catch { /* compute-button click is best-effort — never break the loop */ }
+        }
+      }
+
       // e) Record the final submit (if any) — NEVER click it. Reject pay/fee buttons.
       if (typeof plan.finalSubmitSelectorIndex === "number") {
         const submitField = fields[plan.finalSubmitSelectorIndex];
