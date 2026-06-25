@@ -6,9 +6,16 @@ import { MockPortalAdapter } from "./adapters/mock";
 import { OregonEPermittingAdapter } from "./adapters/oregonEPermitting";
 import { PowerClerkAdapter } from "./adapters/powerClerk";
 import { RecipeAdapter } from "./adapters/recipeAdapter";
+import pLimit from "p-limit";
 import { decryptStorageState } from "./cryptoStorage";
 import { resolveHeadless } from "./browser";
 import { HUMAN_REVIEW_MESSAGE } from "./adapter";
+
+// One shared cap across EVERY browser-launching path — recipe replay, hand-coded staging, AND the
+// auto-learn self-seed. Each Playwright instance is ~200 MB; >2-3 concurrently OOMs/crashes Chromium.
+// Previously only the auto-learn path was capped, so concurrent stages (autopilot fan-out) could
+// launch unbounded browsers. The learner imports this same limiter so the cap is global, not per-path.
+export const browserLimiter = pLimit(Number(process.env.MAX_CONCURRENT_PORTAL_RUNS ?? 2));
 
 export async function stageWithMockPortal(project: ProjectRecord, files: string[] = [], reviewerReport?: ReviewerReport): Promise<Record<string, unknown>> {
   const adapter = new MockPortalAdapter();
@@ -336,11 +343,11 @@ async function runAdapter(
 }
 
 export async function stageWithAccela(project: ProjectRecord, files: string[], options: StageOptions = {}): Promise<Record<string, unknown>> {
-  return runAdapter(new OregonEPermittingAdapter(), project, files, options);
+  return browserLimiter(() => runAdapter(new OregonEPermittingAdapter(), project, files, options));
 }
 
 export async function stageWithPowerClerk(project: ProjectRecord, files: string[], options: StageOptions = {}): Promise<Record<string, unknown>> {
-  return runAdapter(new PowerClerkAdapter(), project, files, options);
+  return browserLimiter(() => runAdapter(new PowerClerkAdapter(), project, files, options));
 }
 
 // Replay an admin-recorded recipe for an AHJ/utility portal the bot wasn't hand-coded
@@ -354,7 +361,7 @@ export async function stageWithRecipe(
   files: string[],
   options: StageOptions = {},
 ): Promise<Record<string, unknown>> {
-  return runAdapter(new RecipeAdapter(recipe, fieldValues, docsByType, { autoSubmit: options.autoSubmit }), project, files, options);
+  return browserLimiter(() => runAdapter(new RecipeAdapter(recipe, fieldValues, docsByType, { autoSubmit: options.autoSubmit }), project, files, options));
 }
 
 // AUTONOMOUS LEARN: drive an unknown portal with an LLM planner, fill the form up to
