@@ -62,7 +62,7 @@ import { touchProjectMetrics } from "./kpi";
 import fs from "node:fs";
 import path from "node:path";
 import { checkStatusWithAdapter, stageWithAccela, stageWithMockPortal, stageWithPowerClerk, stageWithRecipe } from "../../portal-bot/src/index";
-import { findCompleteRecipeForProject, resolveRecipeFieldValues } from "./portalRecipes";
+import { findCompleteRecipeForProject, findAnyRecipeForProject, resolveRecipeFieldValues } from "./portalRecipes";
 import { detectPlatform, publicPermitStatusCheck } from "./publicPermitStatus";
 import { projectDocsByType } from "./projectDocuments";
 import { documentInventory } from "./requiredDocuments";
@@ -77,7 +77,7 @@ import type { AppDb } from "./db";
 import { HttpError } from "./httpError";
 import { buildHistoricalFailureReport } from "./historicalFailures";
 import { id } from "./ids";
-import { asJson, parseJson } from "./json";
+import { asJson, bool, parseJson, text } from "./json";
 import {
   learnFromCorrection,
   learnFromPermitStatus,
@@ -93,7 +93,7 @@ import {
   classifyMboxMessages,
   type ClassifiedMboxMessage,
 } from "./knowledgeBase";
-import { fieldAliases, normalizeProject } from "./normalize";
+import { compactAlnum, fieldAliases, normalizeProject, normalizeTokens } from "./normalize";
 import { classifyPermitStatusText, nextCheckIso } from "./permitMonitor";
 import { evidenceForTopic, evidenceLines, type EvidenceTopic } from "./projectEvidence";
 import { runQcForProject } from "./qc";
@@ -130,13 +130,7 @@ interface ProjectRow extends Row {
   updated_at: string;
 }
 
-function bool(value: unknown): boolean {
-  return value === true || value === 1 || value === "1";
-}
 
-function text(value: unknown): string {
-  return typeof value === "string" ? value : value == null ? "" : String(value);
-}
 
 function mapProject(row: ProjectRow): ProjectRecord {
   return {
@@ -578,19 +572,6 @@ type LaneStatusSummary = Pick<
   | "latestNemCheckedAt"
   | "nemApproved"
 >;
-
-// DB wrapper for single-project callers: load this project's recent checks/emails, then
-// compute. The project-LIST path batch-loads once and calls computeLaneStatusSummary
-// directly (see getProjectList) to avoid an N+1 query per row.
-function getProjectLaneStatusSummary(db: AppDb, projectId: string, projectStatus: ProjectRecord["status"]): LaneStatusSummary {
-  const checks = db
-    .query<Row>("SELECT * FROM permit_status_checks WHERE project_id = ? ORDER BY created_at DESC LIMIT 50", [projectId])
-    .map(mapPermitStatusCheck);
-  const emails = db
-    .query<Row>("SELECT * FROM email_project_matches WHERE project_id = ? ORDER BY created_at DESC LIMIT 50", [projectId])
-    .map(mapEmailProjectMatch);
-  return computeLaneStatusSummary(projectStatus, checks, emails);
-}
 
 // Pure analysis over already-loaded checks/emails — no DB access, so the list path can
 // batch-load all pages' rows in two queries and call this per project.
@@ -3551,22 +3532,15 @@ export function configureEmailTrackingSource(
   return getEmailTrackerStatus(db);
 }
 
-function searchNormalize(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-}
-
-function compactIdentifier(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9]/g, "");
-}
 
 function containsLoose(haystack: string, needle: string): boolean {
-  const normalizedNeedle = searchNormalize(needle);
+  const normalizedNeedle = normalizeTokens(needle);
   return normalizedNeedle.length >= 4 && haystack.includes(normalizedNeedle);
 }
 
 function containsIdentifier(raw: string, value: string): boolean {
-  const needle = compactIdentifier(value);
-  return needle.length >= 5 && compactIdentifier(raw).includes(needle);
+  const needle = compactAlnum(value);
+  return needle.length >= 5 && compactAlnum(raw).includes(needle);
 }
 
 function trackingNumbersForProject(db: AppDb, projectId: string): string[] {
@@ -3596,7 +3570,7 @@ function extractTrackingNumber(raw: string, labels: RegExp[]): string {
 
 function matchProjectForEmail(db: AppDb, message: ClassifiedMboxMessage, clientId?: string): { project: ProjectRecord; confidence: number; reason: string } | null {
   const raw = message.rawSearchText;
-  const haystack = searchNormalize(raw);
+  const haystack = normalizeTokens(raw);
   const projects = clientId
     ? db.query<ProjectRow>("SELECT * FROM projects WHERE client_id = ? ORDER BY updated_at DESC", [clientId]).map(mapProject)
     : db.query<ProjectRow>("SELECT * FROM projects ORDER BY updated_at DESC").map(mapProject);
@@ -3629,12 +3603,12 @@ function matchProjectForEmail(db: AppDb, message: ClassifiedMboxMessage, clientI
         break;
       }
     }
-    if (project.utility && (containsLoose(haystack, project.utility) || searchNormalize(message.record.utility || "") === searchNormalize(project.utility))) {
+    if (project.utility && (containsLoose(haystack, project.utility) || normalizeTokens(message.record.utility || "") === normalizeTokens(project.utility))) {
       score += 15;
       reasons.push("utility");
     }
     const jurisdiction = message.record.jurisdiction || "";
-    if (project.ahj && (containsLoose(haystack, project.ahj) || searchNormalize(jurisdiction) === searchNormalize(project.ahj))) {
+    if (project.ahj && (containsLoose(haystack, project.ahj) || normalizeTokens(jurisdiction) === normalizeTokens(project.ahj))) {
       score += 15;
       reasons.push("AHJ");
     }
@@ -4639,6 +4613,65 @@ function extractStageFailureMessage(result: Record<string, unknown>): string {
 // Check that a project record has the portal-specific fields required to run the adapter.
 // Returns a list of human-readable missing field labels (empty = all good).
 // This runs BEFORE any Playwright browser opens so failures surface cheaply.
+// Adapter-selection precedence — single source of truth shared by the actor-name label and the
+// staging dispatch. UNIVERSAL recipe-replay is FIRST-LINE: when a trusted recorded recipe exists
+// it wins for EVERY portal; the hand-coded platform adapters (Accela/PowerClerk) are the FALLBACK
+// "in case there is a need"; mock is the last resort. The returned name maps 1:1 to the dispatched
+// stage function: RecipeAdapter→stageWithRecipe, OregonEPermittingAdapter→stageWithAccela,
+// PowerClerkAdapter→stageWithPowerClerk, MockPortalAdapter→stageWithMockPortal. Pure + exported so
+// the precedence is unit-tested without standing up a browser/DB.
+export function selectAdapterActor(hasRecipe: boolean, isAccela: boolean, isPowerClerk: boolean): string {
+  if (hasRecipe) return "RecipeAdapter";
+  if (isAccela) return "OregonEPermittingAdapter";
+  if (isPowerClerk) return "PowerClerkAdapter";
+  return "MockPortalAdapter";
+}
+
+// Which actor actually RUNS a stage under the UNIVERSAL-FIRST + SELF-SEED policy. Distinct from
+// selectAdapterActor() (which names the PLATFORM for field validation): once a portal has no
+// recorded complete recipe, the universal learner SEEDS one on this very stage (AutoLearnAdapter)
+// — it records a recipe AND stages this project to review in one pass, auto-promoting to
+// "complete" only on a clean triple-verification so the NEXT stage replays it deterministically.
+// On a learn failure we STOP AND SURFACE to the operator (no silent drop to the hand-coded path).
+// The hand-coded Accela/PowerClerk adapters are reachable ONLY as the legacy fallback when
+// auto-seed is disabled (PORTAL_AUTOSEED=0). Pure + exported so the precedence is unit-tested
+// without a browser/DB.
+export function selectStagingActor(opts: {
+  hasRecipe: boolean;
+  isRealPortal: boolean;
+  isAccela: boolean;
+  isPowerClerk: boolean;
+  autoSeedEnabled: boolean;
+}): string {
+  if (opts.hasRecipe) return "RecipeAdapter";
+  if (opts.isRealPortal && opts.autoSeedEnabled) return "AutoLearnAdapter";
+  if (opts.isRealPortal && opts.isAccela) return "OregonEPermittingAdapter";
+  if (opts.isRealPortal && opts.isPowerClerk) return "PowerClerkAdapter";
+  return "MockPortalAdapter";
+}
+
+// Map a universal self-seed (auto-learn) outcome onto the staging-result contract the
+// prepareSubmission persistence block reads ({ ok, finalSubmitClicked, pauseReason, message,
+// steps }). The learner NEVER clicks final submit, so finalSubmitClicked is ALWAYS false:
+//   trusted | draft → reached the review screen and stopped there (→ awaiting_human_submit;
+//                     trusted seeded a reusable recipe, draft will re-seed next stage);
+//   paused          → an MFA/CAPTCHA challenge halted the learn (→ paused_for_human);
+//   failed          → couldn't learn (→ failed: stop and surface; no hand-coded fallback).
+// Exported pure so the mapping is unit-tested.
+export function seedOutcomeToStageResult(seed: {
+  status: "trusted" | "draft" | "paused" | "failed";
+  pauseReason: string | null;
+  message: string;
+}): Record<string, unknown> {
+  if (seed.status === "paused") {
+    return { ok: false, finalSubmitClicked: false, pauseReason: seed.pauseReason, message: seed.message, steps: [] };
+  }
+  if (seed.status === "failed") {
+    return { ok: false, finalSubmitClicked: false, pauseReason: null, message: seed.message, steps: [{ ok: false, message: seed.message }] };
+  }
+  return { ok: true, finalSubmitClicked: false, pauseReason: null, message: seed.message, steps: [] };
+}
+
 function validatePortalFields(
   project: ProjectRecord,
   track: SubmittalTrackType | undefined,
@@ -4782,7 +4815,10 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   const portalType = portalProfile?.portal_type ?? "mock";
   const isRealPortal = portalType !== "mock";
   const portalProfileId = portalProfile?.id ?? null;
-  const portalLabel = isRealPortal
+  // Refined below to the track's portal identity when a real adapter will actually drive a portal
+  // that has no portal_profiles row (the common case — nothing populates that table), so status/
+  // audit text isn't mislabeled "Mock portal". A genuine mock run keeps the "Mock portal" label.
+  let portalLabel = isRealPortal
     ? (portalProfile?.portal_name || portalType)
     : "Mock portal";
   // Platform-driven adapter reuse: a new AHJ on a KNOWN platform (e.g. City of Lafayette
@@ -4796,23 +4832,18 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   const platform = String(learnedProfile?.portalPlatform ?? "").toLowerCase();
   const isAccela = portalType === "accela_oregon" || (isRealPortal && platform.includes("accela"));
   const isPowerClerk = portalType === "powerclerk_pge" || (isRealPortal && platform.includes("powerclerk"));
-  // Recipe replay: if no hand-coded platform adapter applies but an admin has recorded a
-  // recipe for this AHJ (or its utility), replay it — so an unknown portal still automates.
-  const recipe = isAccela || isPowerClerk
-    ? null
-    : track === "nem"
-      // NEM stages against the utility's recorded recipe.
-      ? findCompleteRecipeForProject(db, { scopeType: "utility", state: detail.project.state, utility: detail.project.utility })
-      // Permit tracks prefer the AHJ recipe, falling back to a utility one.
-      : (findCompleteRecipeForProject(db, { scopeType: "ahj", state: detail.project.state, ahj: detail.project.ahj, utility: detail.project.utility })
-         ?? findCompleteRecipeForProject(db, { scopeType: "utility", state: detail.project.state, utility: detail.project.utility }));
-  const adapterActorName = isAccela
-    ? "OregonEPermittingAdapter"
-    : isPowerClerk
-      ? "PowerClerkAdapter"
-      : recipe
-        ? "RecipeAdapter"
-        : "MockPortalAdapter";
+  // Recipe replay is the FIRST-LINE (universal) path: if an admin has recorded a complete recipe
+  // for this AHJ (or its utility), replay it — even on a known platform (PowerClerk/Accela). The
+  // hand-coded platform adapters are the FALLBACK when no recipe exists. The lookup is track-
+  // scoped so a NEM stage never picks up an AHJ permit recipe (and vice-versa).
+  const recipe = track === "nem"
+    // NEM stages against the utility's recorded recipe.
+    ? findCompleteRecipeForProject(db, { scopeType: "utility", state: detail.project.state, utility: detail.project.utility })
+    // Permit tracks replay ONLY an AHJ-scoped recipe — never a utility (NEM) recipe, which is a
+    // different portal and form. No AHJ recipe → self-seed / hand-coded fallback, not a wrong-track replay.
+    : findCompleteRecipeForProject(db, { scopeType: "ahj", state: detail.project.state, ahj: detail.project.ahj, utility: detail.project.utility });
+  // Precedence: recipe (universal, first-line) → hand-coded platform adapter → mock.
+  const adapterActorName = selectAdapterActor(Boolean(recipe), isAccela, isPowerClerk);
 
   // PORTAL FIELD GATE: before opening a browser, verify that the project has the
   // fields each portal requires. This catches "forgot to enter the meter number"
@@ -4844,17 +4875,35 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   // For the NEM track, the fallback URL is the UTILITY's portal URL from the KB
   // (e.g. Pacific Power → pacificpower.net), never the AHJ permit portal.
   let utilityPortalUrl = "";
+  let ahjPortalUrl = "";
   if (track === "nem" && detail.project.utility) {
     const utilRow = db.get<{ portal_url?: string }>(
       "SELECT portal_url FROM permit_utility_knowledge WHERE utility = ? AND portal_url IS NOT NULL AND portal_url != '' LIMIT 1",
       [detail.project.utility],
     );
     utilityPortalUrl = utilRow?.portal_url ?? "";
+  } else if (track !== "nem" && detail.project.ahj) {
+    // A human-verified AHJ in the KB may carry a portal URL even without a required-documents list,
+    // so a permit self-seed can launch from it (mirrors the NEM utility-URL lookup). This is a real
+    // portal ENTRY, unlike the applicationDocs sourceUrl (an AHJ info page), so it gates the gate.
+    const ahjRow = db.get<{ portal_url?: string }>(
+      "SELECT portal_url FROM permit_utility_knowledge WHERE ahj = ? AND portal_url IS NOT NULL AND portal_url != '' LIMIT 1",
+      [detail.project.ahj],
+    );
+    ahjPortalUrl = ahjRow?.portal_url ?? "";
   }
+  // A draft/recording recipe (not yet promoted to "complete") still carries the entry URL the
+  // operator — or a prior auto-learn pass — pointed the recorder at. Recover it so the universal
+  // self-seed can launch the right portal even before any recipe is verified. Track-scoped exactly
+  // like the complete-recipe lookup above (NEM → utility key; permit → AHJ only, never utility).
+  const draftRecipe = track === "nem"
+    ? findAnyRecipeForProject(db, { scopeType: "utility", state: detail.project.state, utility: detail.project.utility })
+    : findAnyRecipeForProject(db, { scopeType: "ahj", state: detail.project.state, ahj: detail.project.ahj, utility: detail.project.utility });
   const credentialUrl =
     (learnedProfile && (learnedProfile as { portalUrl?: string }).portalUrl) ||
     (recipe && (recipe as { portalUrl?: string }).portalUrl) ||
-    (track === "nem" ? utilityPortalUrl : findApplicationProfile(detail.project).sourceUrl) ||
+    (draftRecipe && draftRecipe.portalUrl) ||
+    (track === "nem" ? utilityPortalUrl : (ahjPortalUrl || findApplicationProfile(detail.project).sourceUrl)) ||
     "";
   const credential = clientId
     ? (getDecryptedCredential(db, clientId, portalType)
@@ -4887,15 +4936,6 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
     }
   }
 
-  const stageOptions = {
-    encryptedStorageStatePath: portalProfile?.encrypted_storage_state ?? undefined,
-    headless: false,
-    reviewerReport,
-    credential,
-    userDataDir,
-    autoSubmit: resolvedAutoSubmit,
-  };
-
   // Overlay the linked client's contractor/licensing identity onto the project
   // snapshot the adapters read, so submissions use authoritative client data
   // (CCB#, electrical license, installer company) instead of hardcoded names.
@@ -4904,14 +4944,132 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
     ? { ...detail.project, parserSnapshot: { ...detail.project.parserSnapshot, ...overlay } }
     : detail.project;
 
-  const result =
-    isAccela
-      ? await stageWithAccela(stagedProject, files, stageOptions)
-      : isPowerClerk
-        ? await stageWithPowerClerk(stagedProject, files, stageOptions)
-        : recipe
-          ? await stageWithRecipe(recipe, stagedProject, resolveRecipeFieldValues(db, stagedProject, portalType), docsByType, files, stageOptions)
-          : await stageWithMockPortal(stagedProject, files, reviewerReport);
+  // LLM-assisted gap-fill for the hand-coded adapters: build the same planner the auto-learn
+  // engine uses so PowerClerk/Accela fill any REQUIRED field their fixed selectors miss — from
+  // real project data only (secrets are stripped inside buildPortalPlanner and never reach the
+  // LLM). Best-effort: if no LLM is configured, staging proceeds with the hand-coded fills only.
+  let gapFillPlanner: import("../../portal-bot/src/adapters/autoLearnAdapter").LearnPlanner | undefined;
+  let gapFillFields: Record<string, string> | undefined;
+  // Build the planner whenever a real automation path could use it. The first-line RecipeAdapter
+  // calls runGapFill during replay, and the hand-coded fallbacks call it in their page-advance
+  // helper (PowerClerk's settleAndNext, Accela's continueAndCheck). Drive scope off the TRACK (not
+  // the adapter flags) so a NEM recipe gets a utility-scoped planner and a permit recipe an AHJ-
+  // scoped one; the `recipe ||` clause is what makes gap-fill available to RecipeAdapter, while
+  // `isPowerClerk || isAccela` keeps it available to the hand-coded fallback. Skip only pure mock.
+  if (recipe || isPowerClerk || isAccela) {
+    try {
+      const { buildPortalPlanner } = await import("./autoLearn");
+      const isNemTrack = track === "nem";
+      const built = buildPortalPlanner(db, stagedProject, {
+        portalType,
+        scopeType: isNemTrack ? "utility" : "ahj",
+        // The permit/AHJ application lists differ by discipline; default to structural (the prior
+        // hardcoded behavior) since the staging track doesn't carry the discipline.
+        permitType: isNemTrack ? undefined : "structural",
+      });
+      gapFillPlanner = built.planner;
+      gapFillFields = built.projectFields;
+    } catch { /* no planner available — stage with hand-coded/recipe fills only */ }
+  }
+
+  const stageOptions = {
+    encryptedStorageStatePath: portalProfile?.encrypted_storage_state ?? undefined,
+    headless: false,
+    reviewerReport,
+    credential,
+    userDataDir,
+    autoSubmit: resolvedAutoSubmit,
+    gapFillPlanner,
+    gapFillFields,
+  };
+
+  // UNIVERSAL-FIRST dispatch with SELF-SEED (see selectStagingActor):
+  //   1. RecipeAdapter        — a recorded complete recipe replays first-line for every portal;
+  //   2. AutoLearnAdapter     — no recipe yet → SEED one now: the universal learner records a
+  //                             recipe AND stages this project to review in one pass, then
+  //                             auto-promotes it to "complete" only on a clean triple-verification
+  //                             so the next stage replays deterministically. The learner never
+  //                             clicks final submit / pays a fee / solves a CAPTCHA and bails to a
+  //                             human on MFA/CAPTCHA. On a learn failure we STOP AND SURFACE — no
+  //                             silent fallback to the hand-coded adapter.
+  //   3. PowerClerk/Accela    — reachable ONLY when auto-seed is disabled (PORTAL_AUTOSEED=0).
+  //   4. MockPortalAdapter    — dev / no real portal.
+  const autoSeedEnabled = process.env.PORTAL_AUTOSEED !== "0" && process.env.PORTAL_AUTOSEED !== "false";
+  // A portal is "real" (worth driving live automation against — incl. self-seeding a recipe) when
+  // EITHER a configured portal_profiles row exists OR we know a genuine PORTAL ENTRY URL for it.
+  // Nothing in the app ever writes portal_profiles, so without this URL-based fallback every stage
+  // lacking a complete recipe would silently route to the no-op mock and never open a browser.
+  // The entry URL is deliberately NARROWER than credentialUrl: a recorded recipe (complete OR
+  // draft), a learned KB profile, or the utility's KB portal URL (NEM) — but NOT the permit-track
+  // findApplicationProfile().sourceUrl, which is an AHJ *info/landing* page, not a login/portal
+  // entry. Launching the learner there would burn a pass on a non-portal AND would turn every
+  // mock/dev/smoke permit stage into a live browser run. To self-seed a permit portal, the operator
+  // points the recorder at the real portal URL first (which yields a draftRecipe entry URL here).
+  const portalEntryUrl =
+    (learnedProfile && (learnedProfile as { portalUrl?: string }).portalUrl) ||
+    (recipe && (recipe as { portalUrl?: string }).portalUrl) ||
+    (draftRecipe && draftRecipe.portalUrl) ||
+    (track === "nem" ? utilityPortalUrl : ahjPortalUrl) ||
+    "";
+  const hasLaunchablePortal = isRealPortal || Boolean(portalEntryUrl);
+  const runActorLabel = selectStagingActor({ hasRecipe: Boolean(recipe), isRealPortal: hasLaunchablePortal, isAccela, isPowerClerk, autoSeedEnabled });
+  // Now that the actor is known, name a real-but-profile-less portal by its track identity so the
+  // status/audit text below doesn't read "Mock portal" for a run that actually drives a browser.
+  if (!isRealPortal && runActorLabel !== "MockPortalAdapter") {
+    portalLabel = track === "nem"
+      ? (detail.project.utility ? `${detail.project.utility} (NEM portal)` : "Utility NEM portal")
+      : (detail.project.ahj ? `${detail.project.ahj} (permit portal)` : "AHJ permit portal");
+  }
+  let result: Record<string, unknown>;
+  if (recipe && runActorLabel === "RecipeAdapter") {
+    result = await stageWithRecipe(recipe, stagedProject, resolveRecipeFieldValues(db, stagedProject, portalType), docsByType, files, stageOptions);
+  } else if (runActorLabel === "AutoLearnAdapter") {
+    // Self-seed: learn + stage in one pass. Reuse the entry URL already resolved for the
+    // credential match; pass the client-overlaid stagedProject so the learner fills authoritative
+    // contractor identity (not the raw parse).
+    if (!credentialUrl) {
+      // No entry URL to launch the learner — stop and surface rather than guess a portal.
+      const msg = `No portal URL is known for ${portalLabel}, so the universal learner can't seed a recipe yet. Record the portal once (or add its URL to the knowledge base) and re-stage.`;
+      result = { ok: false, finalSubmitClicked: false, pauseReason: null, message: msg, steps: [{ ok: false, message: msg }] };
+    } else {
+      try {
+        const { autoLearnPortal } = await import("./autoLearn");
+        const seed = await autoLearnPortal(db, projectId, {
+          scope: track === "nem" ? "utility" : "ahj",
+          portalUrl: credentialUrl,
+          createdBy: "auto-seed (staging)",
+          permitType: track === "nem" ? undefined : (detail.project.permitType === "electrical" ? "electrical" : "structural"),
+          project: stagedProject,
+          // Match the hand-coded/replay adapters' headed setting so the self-seed opens a visible
+          // browser locally and leaves it open at review for the human (headless on a server).
+          headless: stageOptions.headless,
+        });
+        result = seedOutcomeToStageResult(seed);
+      } catch (err) {
+        // Learner couldn't even start (network/login/validation) — stop and surface.
+        const msg = `Universal learn failed before staging: ${err instanceof Error ? err.message : String(err)}. Resolve the blocker and re-stage, or record the portal manually.`;
+        result = { ok: false, finalSubmitClicked: false, pauseReason: null, message: msg, steps: [{ ok: false, message: msg }] };
+      }
+    }
+  } else if (runActorLabel === "OregonEPermittingAdapter") {
+    result = await stageWithAccela(stagedProject, files, stageOptions);
+  } else if (runActorLabel === "PowerClerkAdapter") {
+    result = await stageWithPowerClerk(stagedProject, files, stageOptions);
+  } else if (autoSeedEnabled) {
+    // REAL MODE (auto-seed on) with nothing real to drive: no recorded recipe, no portal_profiles
+    // row, and no known portal-ENTRY URL for this AHJ/utility. Do NOT silently run the mock — that
+    // fabricates a "staged to review" for a run that never touched a portal (the exact silent-mock
+    // confusion this whole change removes). Stop and surface a clear, actionable blocker so the
+    // operator knows to register the portal. The mock no-op is reachable only with PORTAL_AUTOSEED=0
+    // (offline dev / smoke / simulated rehearsal).
+    const where = track === "nem" ? (detail.project.utility || "this utility") : (detail.project.ahj || "this AHJ");
+    const msg = `No portal is registered for ${where} yet, so there's nothing to stage against. Record the portal once (paste its login/landing URL under "Record this portal") or add its URL to the knowledge base, then re-stage.`;
+    result = { ok: false, finalSubmitClicked: false, pauseReason: null, message: msg, steps: [{ ok: false, message: msg }] };
+  } else {
+    // Offline / simulated fallback (PORTAL_AUTOSEED=0): the mock no-op stands in for a real portal
+    // in dev, smoke, and the CI rehearsal. Never reached in normal (auto-seed on) operation.
+    result = await stageWithMockPortal(stagedProject, files, reviewerReport);
+  }
 
   // Determine status: if the adapter paused for MFA/CAPTCHA, record it distinctly
   // so the UI can show a specific banner and the operator knows to resume manually.
@@ -4938,7 +5096,7 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   const capturedRecordLink = autoSubmitted ? String((result as Record<string, unknown>).capturedRecordLink || "").trim() : "";
   const runStatus = pauseReason ? "paused_for_human" : autoSubmitted ? "submitted" : adapterFailed ? "failed" : "awaiting_human_submit";
   if (autoSubmitted) {
-    addAuditLog(db, projectId, "portal_bot", adapterActorName, "portal.auto_submitted", {
+    addAuditLog(db, projectId, "portal_bot", runActorLabel, "portal.auto_submitted", {
       track: track ?? "permit", finalSubmitClickedByAutomation: true, feePaymentAutomated: false,
     });
   }
@@ -4949,13 +5107,25 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   const submissionType = track === "nem" ? "interconnection" : "permit";
   const trackLabelText = track ? `${permitTypeTag.toUpperCase()} ` : "";
 
+  // The self-seed/learn can run for minutes (a live browser pass); the project — or a stored portal
+  // profile — may be deleted or reset during that window. Persisting a portal_run/submission whose
+  // project_id (or portal_profile_id) no longer exists violates a FOREIGN KEY and 500s the whole
+  // request, discarding the run record. Re-validate both right before committing: fail cleanly if the
+  // project vanished, and drop an orphaned portal_profile_id to null (a valid, FK-satisfying value).
+  if (!db.get<{ id?: string }>("SELECT id FROM projects WHERE id = ?", [projectId])) {
+    throw new HttpError(409, "The project was deleted or reset while the portal run was in progress, so the run could not be recorded. Re-create the project and re-stage. (Any browser the bot opened may still be at the portal.)");
+  }
+  const safePortalProfileId = portalProfileId && db.get<{ id?: string }>("SELECT id FROM portal_profiles WHERE id = ?", [portalProfileId])
+    ? portalProfileId
+    : null;
+
   db.transaction(() => {
     db.run(
       `INSERT INTO portal_runs
         (id, project_id, portal_profile_id, run_type, status, started_at, finished_at, error_message,
          human_action_required, screenshots_path, logs_path, result_json, pause_reason, permit_type)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [runId, projectId, portalProfileId, "prepare_submit", runStatus, ts, nowIso(), failureMessage, 1, "", "", asJson(result), pauseReason, permitTypeTag],
+      [runId, projectId, safePortalProfileId, "prepare_submit", runStatus, ts, nowIso(), failureMessage, 1, "", "", asJson(result), pauseReason, permitTypeTag],
     );
 
     db.run(
@@ -4966,10 +5136,10 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
       [
         submissionId,
         projectId,
-        portalProfileId,
+        safePortalProfileId,
         submissionType,
         permitTypeTag,
-        autoSubmitted ? "submitted" : adapterFailed ? "failed" : "awaiting_human_submit",
+        autoSubmitted ? "submitted" : pauseReason ? "paused_for_human" : adapterFailed ? "failed" : "awaiting_human_submit",
         "",
         capturedPermitNumber,
         capturedConfirmation,
@@ -4978,22 +5148,27 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
         "",
         autoSubmitted
           ? `${trackLabelText}${portalLabel} submitted via approved auto-submit (application submit only; no fee payment).`
-          : adapterFailed
-            ? `${trackLabelText}${portalLabel} run FAILED before review — nothing was staged on the portal. ${failureMessage}`
-            : `${trackLabelText}${portalLabel} staged to final review only. Automation did not click final submit.`,
+          : pauseReason
+            ? `${trackLabelText}${portalLabel} run PAUSED for a human at a ${pauseReason} challenge — nothing was staged. Complete the challenge in the open browser, then re-stage.`
+            : adapterFailed
+              ? `${trackLabelText}${portalLabel} run FAILED before review — nothing was staged on the portal. ${failureMessage}`
+              : `${trackLabelText}${portalLabel} staged to final review only. Automation did not click final submit.`,
         ts,
       ],
     );
 
     db.run("UPDATE projects SET status = ?, current_stage = ?, updated_at = ? WHERE id = ?", [
-      // On failure, leave the project in its prior (pre-run) status — never advance a
-      // project to "awaiting_human_submit" for a run that staged nothing.
-      autoSubmitted ? "submitted" : adapterFailed ? detail.project.status : "awaiting_human_submit",
+      // On failure OR an MFA/CAPTCHA pause, leave the project in its prior (pre-run) status — never
+      // advance a project to "awaiting_human_submit" for a run that staged nothing (a pause means the
+      // learner was walled at the challenge and never reached review).
+      autoSubmitted ? "submitted" : (pauseReason || adapterFailed) ? detail.project.status : "awaiting_human_submit",
       autoSubmitted
         ? `${trackLabelText}${portalLabel} auto-submitted (operator-approved)${capturedPermitNumber ? ` — record ${capturedPermitNumber}` : ""}. Tracking status.`
-        : adapterFailed
-          ? `${trackLabelText}${portalLabel} run failed — not staged. ${failureMessage}`
-          : `${trackLabelText}${portalLabel} staged. Human must verify and submit manually.`,
+        : pauseReason
+          ? `${trackLabelText}${portalLabel} run paused at a ${pauseReason} challenge — not staged. Complete it in the open browser, then re-stage.`
+          : adapterFailed
+            ? `${trackLabelText}${portalLabel} run failed — not staged. ${failureMessage}`
+            : `${trackLabelText}${portalLabel} staged. Human must verify and submit manually.`,
       nowIso(),
       projectId,
     ]);
@@ -5014,7 +5189,7 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
       db.run("UPDATE portal_runs SET tracking_url = COALESCE(NULLIF(?, ''), tracking_url) WHERE id = ?", [capturedRecordLink, runId]);
     }
 
-    addAuditLog(db, projectId, "portal_bot", adapterActorName, adapterFailed ? "portal.run_failed" : "portal.staged_to_review", {
+    addAuditLog(db, projectId, "portal_bot", runActorLabel, pauseReason ? "portal.paused_for_human" : adapterFailed ? "portal.run_failed" : "portal.staged_to_review", {
       runId,
       portalProfileId,
       portalType,

@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
-import type { AhjFieldMapResult, AhjFormUrlResult, AhjOverlayMapResult, AhjResearchResult, CorrectionBucket, InverterSpecLookup, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, PortalFieldPlan, PortalFieldPlanInput, PortalFillVerification, PortalFillVerifyInput, ProjectRecord, UtilityResearchResult } from "../../shared/src/types";
+import type { AhjFieldMapResult, AhjFormUrlResult, AhjOverlayMapResult, AhjResearchResult, CorrectionBucket, InverterSpecLookup, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, PortalFieldPlan, PortalFieldPlanInput, PortalFillVerification, PortalFillVerifyInput, PortalFillVisionVerifyInput, ProjectRecord, UtilityResearchResult } from "../../shared/src/types";
 import { RECIPE_FIELD_DESCRIPTIONS } from "./portalRecipes";
+import { compactAlnum } from "./normalize";
 
 const MODEL = "claude-opus-4-8";
 
@@ -9,10 +10,6 @@ const MODEL = "claude-opus-4-8";
 // ---------------------------------------------------------------------------
 
 export class StubLLMProvider implements LLMProvider {
-  async extractFields(): Promise<Record<string, unknown>> {
-    return { provider: "stub", confidence: 0, notes: "No ANTHROPIC_API_KEY configured. Human review required." };
-  }
-
   async extractProjectFields(): Promise<ParserLlmExtraction> {
     return {
       provider: "stub",
@@ -101,6 +98,12 @@ export class StubLLMProvider implements LLMProvider {
     return heuristicVerifyFill(input);
   }
 
+  async verifyPortalFillVision(_input: PortalFillVisionVerifyInput): Promise<PortalFillVerification> {
+    // No vision without an API key — return empty matches so this stub is never
+    // authoritative and the caller falls back to text/deterministic signals.
+    return { accurate: false, matches: [], issues: ["vision unavailable: no API key"], overallConfidence: "low", notes: "No ANTHROPIC_API_KEY configured — vision verification is off." };
+  }
+
   async lookupInverterSpec(input: { inverterModel: string; inverterQty?: number; acNameplateKw?: number; serviceVoltageV?: number }): Promise<InverterSpecLookup> {
     // Even without an API key, resolve from the built-in equipment table or by deriving
     // from the AC nameplate, so the human-review "inverter output" box can still be filled.
@@ -174,10 +177,6 @@ const KNOWN_INVERTERS: KnownInverter[] = [
   { label: "SMA Sunny Boy 7.7", matches: ["sb77", "sunnyboy77", "sb7-7"], outputCurrentA: 32, outputVa: 7700 },
 ];
 
-function normModel(s: string): string {
-  return String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
-}
-
 // ---------------------------------------------------------------------------
 // Autonomous portal-learning helpers (heuristic fallbacks + safety filter).
 // ---------------------------------------------------------------------------
@@ -229,24 +228,39 @@ function heuristicPortalPlan(input: PortalFieldPlanInput): PortalFieldPlan {
   // actual form. Without this, the offline (no-API-key) planner can't get past the portal
   // home screen — it would mistake the dashboard for a review page and stop.
   if (input.isDashboard) {
-    const navField = input.fields.find(
+    // Primary: find a "new application" link (portal home page).
+    const newAppField = input.fields.find(
       (f) => f.fieldType === "button" && PORTAL_NEW_APP_RE.test(f.label || "") && !PORTAL_PAY_RE.test(f.label || ""),
     );
-    if (navField) {
+    if (newAppField) {
       return {
         fills: [],
-        navigateIndex: navField.index,
+        navigateIndex: newAppField.index,
         atReview: false,
         confidence: "low",
-        notes: `Heuristic dashboard navigation (no LLM): clicking "${navField.label}" to start a new application. Human verification required.`,
+        notes: `Heuristic dashboard navigation (no LLM): clicking "${newAppField.label}" to start a new application. Human verification required.`,
       };
     }
-    // No recognizable "new application" link — don't guess at a random nav link; stop cleanly.
+    // Fallback: T&C/disclaimer/billing pass-through — click the advance/continue button to
+    // proceed past the terms screen to the actual application form. Never recorded as submit.
+    const continueField = input.fields.find(
+      (f) => f.fieldType === "button" && PORTAL_ADVANCE_RE.test(f.label || "") && !PORTAL_PAY_RE.test(f.label || ""),
+    );
+    if (continueField) {
+      return {
+        fills: [],
+        navigateIndex: continueField.index,
+        atReview: false,
+        confidence: "low",
+        notes: `Heuristic pass-through (no LLM): clicking "${continueField.label}" to proceed past a T&C/disclaimer screen. Human verification required.`,
+      };
+    }
+    // No recognizable navigation link — don't guess at a random button; stop cleanly.
     return {
       fills: [],
       atReview: false,
       confidence: "low",
-      notes: "Heuristic fallback: a page with no fillable inputs and no recognizable 'new application' link. A human must navigate to the application form (or set ANTHROPIC_API_KEY so the LLM planner can find it).",
+      notes: "Heuristic fallback: a page with no fillable inputs and no recognizable navigation button. A human must navigate to the application form (or set ANTHROPIC_API_KEY so the LLM planner can find it).",
     };
   }
 
@@ -287,10 +301,9 @@ function heuristicPortalPlan(input: PortalFieldPlanInput): PortalFieldPlan {
 }
 
 function heuristicVerifyFill(input: PortalFillVerifyInput): PortalFillVerification {
-  const norm = (v: string) => String(v || "").toLowerCase().replace(/[^a-z0-9]/g, "");
-  const projVals = Object.values(input.projectFields).map(norm).filter((v) => v.length >= 3);
+  const projVals = Object.values(input.projectFields).map(compactAlnum).filter((v) => v.length >= 3);
   const matches = input.reviewFields.map((rf) => {
-    const fv = norm(rf.value);
+    const fv = compactAlnum(rf.value);
     // A review value is "ok" if it matches some project value (or is a non-data literal).
     const ok = fv.length < 3 || projVals.some((pv) => pv === fv || pv.includes(fv) || fv.includes(pv));
     return { label: rf.label, expected: "(project data)", found: rf.value, ok };
@@ -307,7 +320,7 @@ function heuristicVerifyFill(input: PortalFillVerifyInput): PortalFillVerificati
 }
 
 function lookupKnownInverter(model: string): KnownInverter | null {
-  const n = normModel(model);
+  const n = compactAlnum(model);
   if (!n) return null;
   for (const k of KNOWN_INVERTERS) {
     if (k.matches.some((m) => n.includes(m) || m.includes(n))) return k;
@@ -387,19 +400,9 @@ export class ClaudeLLMProvider implements LLMProvider {
     this.client = new Anthropic({ apiKey });
   }
 
+  // Thin wrapper over askLong with a smaller token budget for short prompts.
   private async ask(systemPrompt: string, userMessage: string): Promise<string> {
-    const stream = await this.client.messages.stream({
-      model: MODEL,
-      max_tokens: 2048,
-      thinking: { type: "adaptive" },
-      system: systemPrompt,
-      messages: [{ role: "user", content: userMessage }],
-    });
-    const msg = await stream.finalMessage();
-    for (const block of msg.content) {
-      if (block.type === "text") return block.text;
-    }
-    return "";
+    return this.askLong(systemPrompt, userMessage, 2048);
   }
 
   private parseJson<T>(text: string, fallback: T): T {
@@ -411,29 +414,35 @@ export class ClaudeLLMProvider implements LLMProvider {
     }
   }
 
-  async extractFields(input: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const system = `You are a solar permit document parser. Extract structured data from solar permit application text.
-Return a JSON object with any of these fields you can find: customerName, address, city, state, zip, systemKw, panelCount, panelModel, inverterModel, inverterCount, batteryModel, batteryCount, utilityAccount, meterNumber, ahj, utility, roofType, mountType, azimuth, tilt.
-IMPORTANT: Do NOT include utility account numbers — omit that field entirely for privacy.
-Set confidence (0-1) for each field. Return only valid JSON.`;
-    const raw = await this.ask(system, JSON.stringify(input));
-    return this.parseJson<Record<string, unknown>>(raw, { provider: "claude", confidence: 0 });
-  }
-
   // Larger budget than ask() — plan sets are dense and we want every field.
   private async askLong(systemPrompt: string, userMessage: string, maxTokens = 4096): Promise<string> {
     const stream = await this.client.messages.stream({
       model: MODEL,
       max_tokens: maxTokens,
       thinking: { type: "adaptive" },
-      system: systemPrompt,
+      // Cache the (static, reused) system prompt: repeat calls in a run/session read it at
+      // ~0.1x input cost instead of reprocessing it. The per-request user message stays after
+      // the breakpoint so it never invalidates the cache. Silent no-op below Opus 4.8's
+      // ~4096-token minimum cacheable prefix — set LLM_CACHE_DEBUG=1 to confirm hits.
+      system: [{ type: "text", text: systemPrompt, cache_control: { type: "ephemeral" } }],
       messages: [{ role: "user", content: userMessage }],
     });
     const msg = await stream.finalMessage();
+    this.logCacheUsage("askLong", msg.usage);
     for (const block of msg.content) {
       if (block.type === "text") return block.text;
     }
     return "";
+  }
+
+  // Emit cache hit/miss telemetry so we can VERIFY prompt caching is actually engaging
+  // (it silently won't on a prefix below the model's minimum cacheable size). Off unless
+  // LLM_CACHE_DEBUG=1 so normal runs stay quiet.
+  private logCacheUsage(label: string, usage: { input_tokens?: number; cache_read_input_tokens?: number | null; cache_creation_input_tokens?: number | null } | undefined): void {
+    if (process.env.LLM_CACHE_DEBUG !== "1" || !usage) return;
+    const read = usage.cache_read_input_tokens ?? 0;
+    const write = usage.cache_creation_input_tokens ?? 0;
+    console.error(`[llm-cache] ${label}: input=${usage.input_tokens ?? 0} cache_read=${read} cache_write=${write}`);
   }
 
   async extractProjectFields(input: {
@@ -921,6 +930,15 @@ ELECTRICAL SERVICES PAGE (Accela "Residential - Electrical Comprehensive" and si
 DASHBOARD / HOME PAGES:
 - If isDashboard=true (no fillable inputs — only buttons and navigation links), the bot just logged in and landed on the portal home/dashboard. Your ONLY job is to return "navigateIndex": the index of the link or button that starts a new application / interconnection request / permit application. Look for labels like "New Application", "Start Application", "New Pacific Power Customer Generation Application", "Start New Project", "Apply Now", "Create Application", or a tab/link for the relevant program. Set fills=[], advanceIndex=omit, atReview=false, and ONLY navigateIndex. Do NOT treat any dashboard navigation link as advanceIndex.
 
+DROPDOWN / SELECT FIELDS:
+- A field with fieldType "select" carries an "options" array of the EXACT choice labels the control offers. This covers BOTH native <select> menus AND custom "Please select…" / select2 / chosen / ui-select / ExtJS combobox widgets — the bot drives either kind, so treat any field marked "select" the same way.
+- When you fill a select, the "value" you return MUST be ONE of that field's listed options, copied VERBATIM (same spelling, casing, and punctuation). A dropdown can only accept a value it actually lists; a near-miss string silently fails to select and the field stays blank. Choose the option that best matches the project datum (e.g. "200A main service" → the "200"/"200 Amps" option that exists in the list; "battery: none" → "No"; a phase/voltage/schedule choice → the listed option closest to the project value).
+- If "options" is present but NONE of them reasonably matches the project data, leave the field OUT rather than inventing a value the control cannot accept.
+- If a "select" field has NO options array (its menu had not rendered when the page was read), fall back to the plain project value as the label, but prefer an exact listed option whenever one is available.
+
+VALUE FORMATTING:
+- Numeric / decimal fields (amperage "Amps"/"(A)", kVA, kW, voltage, counts, ratings, quantities) take a BARE number with NO unit letters, symbols, or thousands separators — e.g. "225" not "225A", "8.6" not "8.6 kW". These are validated as plain decimals and reject unit suffixes.
+
 HARD SAFETY RULES:
 - NEVER choose a pay / payment / fee / checkout / invoice button as "advance", "navigate", or anything to click. Omit it entirely.
 - The final submit button is RECORDED ONLY (finalSubmitIndex) and is NEVER clicked — do not put it in advanceIndex.
@@ -935,19 +953,30 @@ Return ONLY JSON:
  "navigateIndex": <index of dashboard nav link, or omit>,
  "advanceIndex": <index or omit>, "finalSubmitIndex": <index or omit>,
  "atReview": <true if this is the review/confirm screen>, "confidence":"low|medium|high", "notes":"<short>"}`;
+    // The project data + KB/jurisdiction context are STABLE across every page of one run,
+    // so they live in the (cached) system prefix — not re-billed per page — while only the
+    // volatile page data goes in the user message after the cache breakpoint. projectFields
+    // keys are sorted so the serialized prefix is byte-identical across pages; any drift
+    // would silently break the prompt cache.
+    const stableProjectData = JSON.stringify(input.projectFields, Object.keys(input.projectFields).sort());
+    const systemWithData = [
+      system,
+      input.kbContext ? `\n\n${input.kbContext}` : "",
+      input.jurisdictionContext ? `\n\nJURISDICTION CONTEXT:\n${input.jurisdictionContext}` : "",
+      `\n\nPROJECT DATA — the ONLY values you may use to fill fields (secrets are excluded; prefer binding a field to one of these keys):\n${stableProjectData}`,
+    ].join("");
+
     const user = JSON.stringify({
       url: input.url, pageTitle: input.pageTitle, fields: input.fields,
-      bodyText: input.bodyText.slice(0, 2000), projectFields: input.projectFields,
+      bodyText: input.bodyText.slice(0, 2000),
       alreadyFilledLabels: input.alreadyFilledLabels,
       // isDashboard must be in the user message so the LLM actually sees it.
       ...(input.isDashboard ? { isDashboard: true } : {}),
-      ...(input.kbContext ? { kbContext: input.kbContext } : {}),
-      ...(input.jurisdictionContext ? { jurisdictionContext: input.jurisdictionContext } : {}),
       ...(input.recoveryHint ? { RECOVERY: input.recoveryHint } : {}),
     });
     let parsed: Partial<PortalFieldPlan> = {};
     // Use askLong: planning responses can be large (many fills + notes).
-    try { parsed = this.parseJson<Partial<PortalFieldPlan>>(await this.askLong(system, user, 3000), {}); } catch { parsed = {}; }
+    try { parsed = this.parseJson<Partial<PortalFieldPlan>>(await this.askLong(systemWithData, user, 3000), {}); } catch { parsed = {}; }
     // Safety post-filter: never let a pay/fee button through as advance/submit, and drop
     // a finalSubmit that was mistakenly set as advance.
     const labelOf = (i?: number) => (i == null ? "" : input.fields.find((f) => f.index === i)?.label || "");
@@ -972,7 +1001,17 @@ Return ONLY JSON:
   }
 
   async verifyPortalFill(input: PortalFillVerifyInput): Promise<PortalFillVerification> {
-    const system = `You verify that a solar permit portal form was filled CORRECTLY before the recorded recipe is trusted for reuse. Compare each review-screen field/value against the project's authoritative DATA. A value is OK if it matches the corresponding project datum (allowing formatting differences) or is a fixed portal literal (a dropdown choice, label, units). Flag any value that contradicts the project data.
+    const system = `You verify that a solar permit portal form was filled CORRECTLY before the recorded recipe is trusted for reuse. Compare each review-screen field/value against the project's authoritative DATA.
+
+A value is OK if any of the following hold:
+- It matches the corresponding project datum (allowing differences in case, punctuation, or whitespace).
+- It is a fixed portal literal (a dropdown choice, a label, units, a static string) — mark expected as "(literal)".
+- It represents the same numeric quantity expressed differently: "7.2 kW", "7.20 kW", "7,200 W", and "7200 W" are all equivalent; trailing zeros and kW/W conversions are not mismatches.
+- It is a street address where standard abbreviations differ: "St" vs "Street", "Ave" vs "Avenue", "Dr" vs "Drive", "N" vs "North", etc. are not mismatches.
+- It is a name with the same words in a different case: "JOHN SMITH" and "John Smith" are equivalent.
+
+Flag ONLY values that contradict the project data in substance (a different person's name, a different address, a different system size that cannot be a unit conversion, a different AHJ/utility name).
+
 Return ONLY JSON:
 {"matches":[{"label":"<field>","expected":"<project value or '(literal)'>","found":"<review value>","ok":<bool>}],
  "overallConfidence":"low|medium|high",
@@ -985,6 +1024,53 @@ Return ONLY JSON:
       ? parsed.matches.map((m) => ({ label: String(m.label || ""), expected: String(m.expected || ""), found: String(m.found || ""), ok: Boolean(m.ok) }))
       : [];
     // Defense in depth: never report "accurate" if any match is not ok.
+    const accurate = Boolean(parsed.accurate) && matches.every((m) => m.ok) && matches.length > 0;
+    return {
+      matches,
+      overallConfidence: (["low", "medium", "high"].includes(String(parsed.overallConfidence)) ? parsed.overallConfidence : "low") as "low" | "medium" | "high",
+      accurate,
+      issues: Array.isArray(parsed.issues) ? parsed.issues.map((i) => String(i)) : [],
+      notes: String(parsed.notes || ""),
+    };
+  }
+
+  // Vision verification — the model SEES the rendered review screen, so it works even when
+  // the DOM scrape came back thin (the read-only-review failure mode that produced the
+  // "almost blank application"). The scraped fields + project data are passed alongside the
+  // image as hints; the screenshot is authoritative. Same JSON contract + accurate-gating as
+  // the text verifier so callers can use the two interchangeably.
+  async verifyPortalFillVision(input: PortalFillVisionVerifyInput): Promise<PortalFillVerification> {
+    const system = `You verify a solar permit portal application BEFORE a human submits it, by LOOKING AT A SCREENSHOT of the portal's review/confirm screen. You can SEE the actual rendered page (on Accela the "Step N: Review" page lists the entire application). Compare every value visible on the screen against the project's authoritative DATA provided. Rules:
+- A value is OK if it matches the corresponding project datum (allowing formatting differences — "7.5 kW" vs "7.50", masked account digits) or is a fixed portal literal (a dropdown choice, label, units).
+- Flag any visible value that CONTRADICTS the project data.
+- Flag any REQUIRED field that appears BLANK/empty on the screen (this is the main thing we are guarding against).
+- Do not invent fields that aren't on the screen.
+Return ONLY JSON:
+{"matches":[{"label":"<field>","expected":"<project value or '(literal)'>","found":"<what the screen shows>","ok":<bool>}],
+ "overallConfidence":"low|medium|high",
+ "accurate": <true ONLY if every data-bearing field shown matches the project AND no required field is blank — this gates trusting the recipe>,
+ "issues":["<short issue>"], "notes":"<short>"}`;
+    const hints = JSON.stringify({
+      projectData: input.projectFields,
+      domScrapedFields: input.reviewFields,
+      pageText: (input.bodyText || "").slice(0, 1500),
+    });
+    const content: Anthropic.Messages.ContentBlockParam[] = [
+      { type: "image", source: { type: "base64", media_type: input.mimeType ?? "image/png", data: input.screenshotBase64 } },
+      { type: "text", text: `Verify this review screen against the project data and DOM hints:\n${hints}` },
+    ];
+    let parsed: Partial<PortalFillVerification> = {};
+    try {
+      const msg = await this.client.messages.create({ model: MODEL, max_tokens: 2048, system, messages: [{ role: "user", content }] });
+      let raw = "";
+      for (const block of msg.content) if (block.type === "text") raw += block.text;
+      parsed = this.parseJson<Partial<PortalFillVerification>>(raw, {});
+    } catch { parsed = {}; }
+    const matches = Array.isArray(parsed.matches)
+      ? parsed.matches.map((m) => ({ label: String(m.label || ""), expected: String(m.expected || ""), found: String(m.found || ""), ok: Boolean(m.ok) }))
+      : [];
+    // Same guardrail as the text verifier: never report accurate unless every match is ok
+    // and there is at least one data-bearing match to stand on.
     const accurate = Boolean(parsed.accurate) && matches.every((m) => m.ok) && matches.length > 0;
     return {
       matches,

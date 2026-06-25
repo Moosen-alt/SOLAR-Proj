@@ -3,12 +3,10 @@ import type { AppDb } from "./db";
 import { HttpError } from "./httpError";
 import { id } from "./ids";
 import { nowIso } from "./time";
+import { text as s } from "./json";
 
 type Row = Record<string, unknown>;
 
-function s(value: unknown): string {
-  return typeof value === "string" ? value : value == null ? "" : String(value);
-}
 
 // What the API returns — NEVER includes the password or the encrypted blob.
 export interface PortalCredentialView {

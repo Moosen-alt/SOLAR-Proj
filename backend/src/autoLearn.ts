@@ -21,10 +21,10 @@
 
 import path from "node:path";
 import fs from "node:fs";
-import pLimit from "p-limit";
 import type { AppDb } from "./db";
 import type { PortalRecipe, ProjectRecord } from "../../shared/src/types";
-import { learnPortal } from "../../portal-bot/src/index";
+import { learnPortal, browserLimiter } from "../../portal-bot/src/index";
+import { compareReviewFields } from "../../portal-bot/src/reviewScreenScraper";
 import type { LearnPlanRequest, LearnPlanResponse } from "../../portal-bot/src/adapters/autoLearnAdapter";
 import { createLLMProvider } from "./llm";
 import { getDecryptedCredential, getDecryptedCredentialByUrl, getDecryptedCredentialAny } from "./portalCredentials";
@@ -33,10 +33,6 @@ import { projectDocsByType } from "./projectDocuments";
 import { buildUtilityPackage } from "./docSplitter";
 import { addAuditLog } from "./audit";
 import { HttpError } from "./httpError";
-
-// At most 2 Playwright browser instances open simultaneously. Each consumes ~200 MB;
-// more than 2-3 on a typical dev/server machine causes OOM and Chrome sandbox failures.
-const portalLimiter = pLimit(Number(process.env.MAX_CONCURRENT_PORTAL_RUNS ?? 2));
 
 export interface AutoLearnResult {
   recipe: PortalRecipe;
@@ -56,64 +52,36 @@ export interface AutoLearnResult {
   message: string;
 }
 
-/**
- * Learn an AHJ or utility portal autonomously for a project, record a recipe, verify
- * the fill, and promote the recipe to "complete" only when the verification passes.
- */
-export async function autoLearnPortal(
+// Build the LLM planner the portal fill loop calls when it has the live fields on a page,
+// plus the project's secret-free field values. Shared by autonomous learning AND the hybrid
+// staging gap-fill so both use identical data + safety handling. Secrets (account/meter/SSN/
+// password) are stripped here and NEVER reach the LLM — the adapter binds those deterministically.
+export function buildPortalPlanner(
   db: AppDb,
-  projectId: string,
-  input: {
-    scope: "ahj" | "utility";
-    portalUrl: string;
-    createdBy?: string;
-    permitType?: "structural" | "electrical";
-    // Optional live-progress sink (drives the UI progress bar). Non-PII signals only.
-    onProgress?: import("../../portal-bot/src/adapters/autoLearnAdapter").LearnProgressFn;
-  },
-): Promise<AutoLearnResult> {
-  const projectRow = db.get<Record<string, unknown>>("SELECT * FROM projects WHERE id = ?", [projectId]);
-  if (!projectRow) throw new HttpError(404, "Project not found.");
-  // getProjectDetail is the canonical mapper; import lazily to avoid a cycle.
-  const { getProjectDetail } = await import("./repository");
-  const project: ProjectRecord = getProjectDetail(db, projectId).project;
-
-  const scopeType = input.scope === "utility" ? "utility" : "ahj";
-  const portalUrl = (input.portalUrl || "").trim();
-  if (!portalUrl) throw new HttpError(400, "portalUrl is required to learn a portal.");
-  if (scopeType === "ahj" && !(project.ahj || "").trim()) throw new HttpError(400, "Project has no AHJ to key the recipe on.");
-  if (scopeType === "utility" && !(project.utility || "").trim()) throw new HttpError(400, "Project has no utility to key the recipe on.");
-
-  const portalType = scopeType === "utility" ? "utility" : "AHJ";
-  const fieldValues = resolveRecipeFieldValues(db, project, portalType);
-  // Secrets must never reach the LLM planner — strip account/meter (the adapter binds
-  // them from the encrypted credential store, not from planner output).
+  project: ProjectRecord,
+  opts: { portalType: string; scopeType?: "ahj" | "utility"; permitType?: "structural" | "electrical" },
+): { planner: (req: LearnPlanRequest) => Promise<LearnPlanResponse>; projectFields: Record<string, string> } {
+  const fieldValues = resolveRecipeFieldValues(db, project, opts.portalType);
   const projectFields: Record<string, string> = {};
   for (const [k, v] of Object.entries(fieldValues)) {
     if (/password|accountNumber|meterNumber|ssn/i.test(k)) continue;
     if (v) projectFields[k] = v;
   }
 
-  // Fetch KB context for this AHJ/utility to guide the planner
   let kbContext = "";
   try {
     const kbEntry = db.get<{ portal_name: string; portal_url: string; notes: string }>(
       `SELECT portal_name, portal_url, notes FROM permit_utility_knowledge WHERE (ahj = ? OR utility = ?) LIMIT 1`,
       [project.ahj, project.utility],
-    ) as any;
+    ) as { portal_name?: string; portal_url?: string; notes?: string } | undefined;
     if (kbEntry) {
       kbContext = `KB CONTEXT for this AHJ/utility:\nPortal: ${kbEntry.portal_name || ""}\nURL: ${kbEntry.portal_url || ""}\nNotes: ${kbEntry.notes || ""}`.trim();
     }
   } catch { /* KB table may not exist yet */ }
 
-  // Jurisdiction + permit-discipline context for portals (Accela / Oregon ePermitting)
-  // where the same street address resolves to both a CITY and a COUNTY authority, each with
-  // its own application-type list. Tells the planner which results row to Select and which
-  // application type (structural vs electrical) to check. Defaults to structural — the prior
-  // hardcoded behavior — so single-discipline runs are unchanged.
   let jurisdictionContext = "";
-  if (scopeType === "ahj") {
-    const discipline = input.permitType === "electrical" ? "electrical" : "structural";
+  if (opts.scopeType === "ahj") {
+    const discipline = opts.permitType === "electrical" ? "electrical" : "structural";
     jurisdictionContext = [
       `permitDiscipline: ${discipline}`,
       project.ahj ? `targetJurisdiction (AHJ): ${project.ahj}` : "",
@@ -123,9 +91,6 @@ export async function autoLearnPortal(
   }
 
   const llm = createLLMProvider();
-  // The planner the adapter calls when it has the live fields on a page. The adapter
-  // passes fields positionally (ExtractedField[]); we index them for the LLM and map the
-  // response indices back to selector positions.
   const planner = async (req: LearnPlanRequest): Promise<LearnPlanResponse> => {
     const indexedFields = req.fields.map((f, i) => ({ index: i, label: f.label, fieldType: f.fieldType, options: f.options }));
     const plan = await llm.planPortalFields({
@@ -149,6 +114,55 @@ export async function autoLearnPortal(
       notes: plan.notes,
     };
   };
+  return { planner, projectFields };
+}
+
+/**
+ * Learn an AHJ or utility portal autonomously for a project, record a recipe, verify
+ * the fill, and promote the recipe to "complete" only when the verification passes.
+ */
+export async function autoLearnPortal(
+  db: AppDb,
+  projectId: string,
+  input: {
+    scope: "ahj" | "utility";
+    portalUrl: string;
+    createdBy?: string;
+    permitType?: "structural" | "electrical";
+    // Optional pre-resolved project record. The staging self-seed path passes its
+    // client-contractor *overlaid* stagedProject (authoritative CCB#/installer identity) so the
+    // learner fills the same data the hand-coded adapters would. When omitted (the manual
+    // /auto-learn endpoint), the raw project is loaded from the DB.
+    project?: ProjectRecord;
+    // Headed/headless for the learn browser. The staging self-seed passes the operator-intended
+    // setting (headed locally) so it matches the hand-coded/replay adapters and leaves the browser
+    // open at review; when omitted, resolveHeadless falls back to PORTAL_HEADLESS / server default.
+    headless?: boolean;
+    // Optional live-progress sink (drives the UI progress bar). Non-PII signals only.
+    onProgress?: import("../../portal-bot/src/adapters/autoLearnAdapter").LearnProgressFn;
+  },
+): Promise<AutoLearnResult> {
+  const projectRow = db.get<Record<string, unknown>>("SELECT * FROM projects WHERE id = ?", [projectId]);
+  if (!projectRow) throw new HttpError(404, "Project not found.");
+  // getProjectDetail is the canonical mapper; import lazily to avoid a cycle. A caller may pass
+  // a pre-overlaid project (staging self-seed); otherwise load the canonical record.
+  const { getProjectDetail } = await import("./repository");
+  const project: ProjectRecord = input.project ?? getProjectDetail(db, projectId).project;
+
+  const scopeType = input.scope === "utility" ? "utility" : "ahj";
+  const portalUrl = (input.portalUrl || "").trim();
+  if (!portalUrl) throw new HttpError(400, "portalUrl is required to learn a portal.");
+  if (scopeType === "ahj" && !(project.ahj || "").trim()) throw new HttpError(400, "Project has no AHJ to key the recipe on.");
+  if (scopeType === "utility" && !(project.utility || "").trim()) throw new HttpError(400, "Project has no utility to key the recipe on.");
+
+  const portalType = scopeType === "utility" ? "utility" : "AHJ";
+  // Secrets are stripped inside buildPortalPlanner — they never reach the LLM; the adapter
+  // binds account/meter deterministically from the encrypted credential store.
+  const { planner, projectFields } = buildPortalPlanner(db, project, {
+    portalType,
+    scopeType,
+    permitType: input.permitType,
+  });
 
   // Credential lookup: try exact portalType match first, then URL hostname match, then
   // most-recent credential for this client (handles mismatched portal_type strings).
@@ -179,7 +193,7 @@ export async function autoLearnPortal(
 
   let learn;
   try {
-    learn = await portalLimiter(() => learnPortal({
+    learn = await browserLimiter(() => learnPortal({
       portalName: scopeType === "utility" ? project.utility : project.ahj,
       portalUrl,
       project,
@@ -187,6 +201,7 @@ export async function autoLearnPortal(
       credential,
       userDataDir,
       docsByType,
+      headless: input.headless,
       // AHJ portals (Accela / Oregon ePermitting) require one combined plan-set PDF per
       // upload control; utility portals (PowerClerk) want the split sheets per slot.
       uploadMode: scopeType === "ahj" ? "combined" : "split",
@@ -219,6 +234,23 @@ export async function autoLearnPortal(
     return { recipe: getPortalRecipe(db, stub.id), status: "failed", pauseReason: null, pageCount: learn.pageCount, finalSubmitRecorded: learn.finalSubmitRecorded, verification: { accurate: false, confidence: "low", matches: [], issues: [learn.message] }, message: `Could not learn the portal automatically: ${learn.message}. Record it manually instead.` };
   }
 
+  // A CLEAN stage requires BOTH reaching the portal's review screen AND having filled at least one
+  // field. `learn.ok` is true if EITHER held, so without this gate two fake-success modes slip
+  // through to verification and get reported as a draft "staged to review": (a) filled pages but
+  // never reached review (got lost mid-wizard), and (b) a premature atReview on a landing/disclaimer
+  // page that filled nothing. Both stage nothing for a human to verify/submit — mark failed and say
+  // which so the operator can fix the start URL or record manually.
+  const reachedReview = learn.reachedReview === true;
+  const filledSomething = learn.filledSomething === true;
+  if (!reachedReview || !filledSomething) {
+    const why = !reachedReview
+      ? "filled fields but never reached the portal's review screen"
+      : "reached a screen treated as review but filled no fields (likely a landing/disclaimer page misread as the review screen)";
+    savePortalRecipeSteps(db, stub.id, learn.steps, { status: "needs_rerecord", notes: `Auto-learn did not stage cleanly: ${why}. ${learn.message}` });
+    addAuditLog(db, projectId, "system", "auto-learn", "portal.auto_learn_failed", { scope: scopeType, reason: !reachedReview ? "no_review" : "premature_review" });
+    return { recipe: getPortalRecipe(db, stub.id), status: "failed", pauseReason: null, pageCount: learn.pageCount, finalSubmitRecorded: learn.finalSubmitRecorded, verification: { accurate: false, confidence: "low", matches: [], issues: [learn.message] }, message: `Nothing was staged — ${why}. ${learn.message}` };
+  }
+
   // VERIFY the fill against the project data before trusting the recipe.
   input.onProgress?.({
     phase: "verify",
@@ -226,15 +258,87 @@ export async function autoLearnPortal(
     maxPages: learn.pageCount,
     message: "Verifying the filled values against the project record…",
   });
-  const verification = await llm.verifyPortalFill({
-    reviewFields: learn.reviewScreen.fields,
-    projectFields,
-    bodyText: learn.reviewScreen.bodyTextSnippet,
-  });
+  const llm = createLLMProvider();
+  const reviewBody = learn.reviewScreen.bodyTextSnippet || "";
 
-  // Promote to "complete" (trusted for deterministic replay) ONLY when the fill verified
-  // accurate. Otherwise keep it a draft pending human verification.
-  const trusted = verification.accurate;
+  // Sensitive fields (account#, meter#, password) are stripped from projectFields so they
+  // never reach the LLM planner. Strip them from the review-screen fields before the text
+  // verifier too — they're bound at replay from the encrypted credential store, not from the
+  // recipe, so a masked portal value must NOT gate recipe promotion.
+  const SENSITIVE_REVIEW_RE = /\b(password|passcode|account\s*(number|no|#)?|acct|meter\s*(number|no|#)?|ssn|social security|tax\s*id|ein|routing|card\s*number|cvv|security code)\b/i;
+  const nonSensitiveReviewFields = learn.reviewScreen.fields.filter((f) => !SENSITIVE_REVIEW_RE.test(f.label));
+
+  // THREE independent verification signals, combined for defense in depth:
+  //  1. text — the LLM compares the DOM-scraped field/value pairs to the project data;
+  //  2. vision — the LLM LOOKS AT the review screenshot (works even when the DOM scrape is
+  //     thin, which is exactly the read-only-review case that produced the "blank app");
+  //  3. deterministic — code-level compare of scraped fields + rendered page text.
+  const textVerification = await llm.verifyPortalFill({
+    reviewFields: nonSensitiveReviewFields,
+    projectFields,
+    bodyText: reviewBody,
+  });
+  // Vision verification can be disabled (PORTAL_VISION_VERIFY=0). NOTE: the review screenshot
+  // is a RAW render and may contain portal-rendered PII (account/meter numbers shown as text)
+  // that the DOM/text path masks — it is sent to the model and written to data/screenshots, so
+  // treat it as sensitive.
+  let visionVerification: typeof textVerification | null = null;
+  if (learn.reviewScreenshotBase64 && process.env.PORTAL_VISION_VERIFY !== "0") {
+    try {
+      visionVerification = await llm.verifyPortalFillVision({
+        screenshotBase64: learn.reviewScreenshotBase64,
+        mimeType: "image/png",
+        reviewFields: learn.reviewScreen.fields,
+        projectFields,
+        bodyText: reviewBody,
+      });
+    } catch { visionVerification = null; }
+  }
+
+  // The deterministic check returns a single "reviewScreen" SENTINEL when it could read
+  // nothing — that is an honest "couldn't read", NOT a per-field mismatch, so don't let it
+  // masquerade as one or veto trust.
+  const allDetMismatches = compareReviewFields(learn.reviewScreen.fields, project, reviewBody);
+  const isUnreadableSentinel = allDetMismatches.length === 1 && allDetMismatches[0].field === "reviewScreen";
+  // Exclude sensitive fields (accountNumber, meterNumber) from trust-gating: they're bound at
+  // replay from the credential store, so a portal that masks them on the review screen must
+  // not block promotion. The mismatches are still surfaced in the UI for human awareness.
+  const SENSITIVE_DET_FIELDS = new Set(["accountNumber", "meterNumber"]);
+  const deterministicMismatches = isUnreadableSentinel ? [] : allDetMismatches.filter((m) => !SENSITIVE_DET_FIELDS.has(m.field));
+
+  // "Usable" = a signal actually had something to compare. A captured-but-unverified
+  // screenshot does NOT count (the vision call may have failed/returned nothing), so the
+  // honest "could not be read" message isn't suppressed.
+  const visionUsable = !!(visionVerification && visionVerification.matches.length > 0);
+  const reviewReadable = learn.reviewScreen.fields.length > 0 || reviewBody.trim().length > 0 || visionUsable;
+
+  // Vision is authoritative for DISPLAY when it actually read the page (it sees read-only
+  // review screens the DOM scrape can't). But TRUST is granted only when the signals AGREE —
+  // defense in depth may only ever LOWER trust, never raise it past a concrete mismatch.
+  const verification = visionUsable ? { ...visionVerification! } : { ...textVerification };
+  const mergedIssues = [...verification.issues];
+  // Always surface the OTHER signals' NEGATIVE findings so a contradiction is never hidden.
+  if (visionUsable && textVerification.issues.length) mergedIssues.push(`text-check: ${textVerification.issues.join("; ")}`);
+  if (deterministicMismatches.length) mergedIssues.push(`deterministic-check flagged: ${deterministicMismatches.map((m) => m.field).join(", ")}.`);
+
+  if (!reviewReadable) {
+    mergedIssues.push("Review screen could not be read (no fields, text, or readable screenshot) — the fill could not be verified; a human must confirm before this recipe is trusted.");
+  } else if (verification.matches.length === 0 && deterministicMismatches.length > 0) {
+    // Neither LLM produced matches but the deterministic check found concrete issues — show
+    // them as the matches so the dashboard isn't blank.
+    verification.matches = deterministicMismatches.map((m) => ({ label: m.field, expected: m.expected, found: m.found, ok: false }));
+  }
+  verification.issues = mergedIssues;
+
+  // TRUST GATE (promotes the recipe to "complete" for deterministic replay + the trusted-
+  // submit allowlist). The LLM verifier(s) are the authoritative signal. Deterministic
+  // mismatches are surfaced as warnings but do NOT block promotion — the deterministic
+  // scraper too often false-positives on read-only portals, masked sensitive fields, and
+  // conditional widgets the scraper can't reach. A text contradiction (LLM explicitly says
+  // values are WRONG, not just absent) still blocks — that's a concrete data error.
+  // NOTE: Final submit always requires human action regardless of this gate.
+  const textContradicts = textVerification.matches.length > 0 && !textVerification.accurate;
+  const trusted = verification.accurate && !textContradicts;
   savePortalRecipeSteps(db, stub.id, learn.steps, {
     status: trusted ? "complete" : "recording",
     notes: trusted
@@ -242,8 +346,59 @@ export async function autoLearnPortal(
       : `Auto-learned but NOT verified — review the captured fill and confirm before trusting. Issues: ${verification.issues.join("; ") || "low confidence"}.`,
   });
 
-  // Write review screenshot to disk if captured.
-  if (learn.reviewScreenshotBase64) {
+  // Debug: dump the three verification signals + the trust-gate decision to disk so the
+  // operator can see WHY a recipe was (or wasn't) trusted — text vs vision vs deterministic,
+  // and which signal disagreed. Gated on AUTOLEARN_DEBUG_SCREENSHOTS=1 (same flag as the
+  // per-page screenshots). Sensitive review fields are masked out of the match lists.
+  if (process.env.AUTOLEARN_DEBUG_SCREENSHOTS === "1") {
+    try {
+      const maskMatches = (ms: Array<{ label: string; expected: string; found: string; ok: boolean }>) =>
+        ms.map((m) => SENSITIVE_REVIEW_RE.test(m.label)
+          ? { label: m.label, expected: "***sensitive***", found: "***sensitive***", ok: m.ok }
+          : m);
+      const screenshotDir = path.join(process.cwd(), "data", "screenshots");
+      fs.mkdirSync(screenshotDir, { recursive: true });
+      const dest = path.join(screenshotDir, `verdict-${stub.id}-${Date.now()}.json`);
+      fs.writeFileSync(dest, JSON.stringify({
+        recipeId: stub.id,
+        trusted,
+        trustGate: {
+          verificationAccurate: verification.accurate,
+          textContradicts,
+          reviewReadable,
+          note: "trusted = verificationAccurate && !textContradicts. Deterministic mismatches are warnings only.",
+        },
+        textSignal: {
+          accurate: textVerification.accurate,
+          confidence: textVerification.overallConfidence,
+          matches: maskMatches(textVerification.matches),
+          issues: textVerification.issues,
+        },
+        visionSignal: visionVerification ? {
+          usable: visionUsable,
+          accurate: visionVerification.accurate,
+          confidence: visionVerification.overallConfidence,
+          matches: maskMatches(visionVerification.matches),
+          issues: visionVerification.issues,
+        } : { usable: false, note: "vision verify disabled or returned nothing" },
+        deterministicSignal: {
+          unreadableSentinel: isUnreadableSentinel,
+          mismatchesGating: deterministicMismatches.map((m) => m.field),
+          allMismatches: allDetMismatches
+            .filter((m) => !SENSITIVE_DET_FIELDS.has(m.field))
+            .map((m) => ({ field: m.field, expected: m.expected, found: m.found })),
+        },
+        finalIssues: verification.issues,
+      }, null, 2));
+    } catch { /* non-fatal */ }
+  }
+
+  // Write the review screenshot to disk if captured (the dashboard shows it as the captured review).
+  // NOTE: a portal-rendered review page can show account/meter numbers as plain text, so this PNG may
+  // contain customer PII AT REST under data/screenshots. Operators who don't want PII on disk can set
+  // PORTAL_SAVE_REVIEW_SCREENSHOT=0 to skip the write (the in-memory vision check is separately gated
+  // by PORTAL_VISION_VERIFY). Default on.
+  if (learn.reviewScreenshotBase64 && process.env.PORTAL_SAVE_REVIEW_SCREENSHOT !== "0") {
     try {
       const screenshotDir = path.join(process.cwd(), "data", "screenshots");
       fs.mkdirSync(screenshotDir, { recursive: true });

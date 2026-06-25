@@ -42,7 +42,7 @@ function verifyPassword(password: string, stored: string): boolean {
   return hash.length === expected.length && crypto.timingSafeEqual(hash, expected);
 }
 
-export function setUserPassword(db: AppDb, userId: string, password: string): void {
+function setUserPassword(db: AppDb, userId: string, password: string): void {
   db.run("UPDATE users SET password_hash = ? WHERE id = ?", [hashPassword(password), userId]);
 }
 

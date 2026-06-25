@@ -1,8 +1,8 @@
 import crypto from "node:crypto";
 import type { AppDb, SqlParam } from "./db";
+import { nowIso } from "./time";
 
 type Row = Record<string, SqlParam>;
-const nowIso = () => new Date().toISOString();
 
 // ---------------------------------------------------------------------------
 // Customers / leads

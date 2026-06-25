@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import type { AppDb } from "./db";
 import type { EvidenceTopic } from "./projectEvidence";
 import { extractPdfPages } from "./batchImport";
+import { text as s } from "./json";
 
 // ---------------------------------------------------------------------------
 // Source-page image rendering for the AHJ Reviewer Gate "screenshot crop slot".
@@ -46,9 +47,6 @@ async function getPdfjs(): Promise<PdfjsRenderModule> {
   return _pdfjs;
 }
 
-function s(value: unknown): string {
-  return typeof value === "string" ? value : value == null ? "" : String(value);
-}
 
 // Find the best plan-set PDF for a project: prefer the SLD, then the permit
 // application, then any stored PDF. Returns the on-disk path or null.
@@ -149,7 +147,7 @@ export function selectTopPagesForTopic(pages: string[], topic: EvidenceTopic, hi
 }
 
 // Convenience wrapper — returns only the best page (or null).
-export function selectPageForTopic(pages: string[], topic: EvidenceTopic, hint: string, excerpt: string): number | null {
+function selectPageForTopic(pages: string[], topic: EvidenceTopic, hint: string, excerpt: string): number | null {
   const top = selectTopPagesForTopic(pages, topic, hint, excerpt, 1);
   return top.length > 0 ? top[0] : null;
 }

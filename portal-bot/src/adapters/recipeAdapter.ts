@@ -1,8 +1,8 @@
 import type { PortalRecipe, ProjectRecord, RecipeSelector, RecipeStep } from "../../../shared/src/types";
-import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, type PortalContext, type PortalStepResult } from "../adapter";
+import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, ok, fail, type PortalContext, type PortalStepResult } from "../adapter";
 import { openPortal } from "../browser";
-import { fillCustomCombobox } from "../comboboxFill";
-import { detectChallengeFrame, redactStatusText, RETRY_BACKOFF_MS, sleep, smartWait, waitForElement } from "../safeAction";
+import { selectWithFallback } from "../comboboxFill";
+import { detectChallengeFrame, hasNumericValidationError, scanStatusFromBody, RETRY_BACKOFF_MS, sleep, smartWait, toBareNumber, waitForElement, waitForInteractiveControls } from "../safeAction";
 import { performLogin } from "./loginFlow";
 
 // RecipeAdapter — replays a recorded portal recipe (see portal_recipes / the recorder).
@@ -37,13 +37,6 @@ function isFinalSubmitStep(step: RecipeStep): boolean {
   return (step as { isFinalSubmit?: unknown }).isFinalSubmit === true;
 }
 
-function ok(message: string, data: Record<string, unknown> = {}): PortalStepResult {
-  return { ok: true, message, data };
-}
-function fail(message: string, data: Record<string, unknown> = {}): PortalStepResult {
-  return { ok: false, message, data };
-}
-
 export class RecipeAdapter extends BasePortalAdapter {
   portalName: string;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -51,8 +44,6 @@ export class RecipeAdapter extends BasePortalAdapter {
   // Set true ONLY when the automation actually clicked an explicit isFinalSubmit step
   // in autoSubmit mode and the portal accepted it (no challenge / no error).
   finalSubmitClicked = false;
-  // Set true once the replay reaches the review marker (or clicks the final submit).
-  reachedReview = false;
 
   constructor(
     private recipe: PortalRecipe,
@@ -167,16 +158,7 @@ export class RecipeAdapter extends BasePortalAdapter {
     try {
       await this.page.goto(this.recipe.portalUrl);
       await this.page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
-      const bodyText = await this.page.locator("body").innerText().catch(() => "");
-      for (const num of applicationNumbers) {
-        if (!num) continue;
-        const idx = bodyText.indexOf(num);
-        if (idx === -1) continue;
-        const snippet = bodyText.slice(Math.max(0, idx - 80), idx + 320);
-        const redacted = redactStatusText(snippet);
-        if (redacted) return redacted;
-      }
-      return redactStatusText(bodyText.slice(0, 600));
+      return scanStatusFromBody(this.page, applicationNumbers);
     } catch {
       return null;
     }
@@ -200,8 +182,13 @@ export class RecipeAdapter extends BasePortalAdapter {
       // Guided-manual: stop at review. autoSubmit (trusted, approved): proceed past
       // the review marker to replay ONLY allowlisted final-submit steps.
       if (step.action === "stopForReview") {
-        this.reachedReview = true;
-        if (!this.options.autoSubmit) break;
+        if (!this.options.autoSubmit) {
+          // Gap-fill the LAST data section once more before review: it is not followed by an
+          // advancing click, so any required field the recipe missed (selector drift / a newly
+          // added field) would otherwise reach review blank. No-op when gap-fill is not enabled.
+          await this.runGapFill(this.page);
+          break;
+        }
         pastReview = true;
         continue;
       }
@@ -214,6 +201,11 @@ export class RecipeAdapter extends BasePortalAdapter {
           await this.page.waitForLoadState("networkidle", { timeout: 8000 }).catch(() => null);
         }
         await sleep(Number(process.env.AUTOLEARN_SAVE_SETTLE_MS) || 3000);
+        // Now that the recipe's fills have committed (blurred + autosaved), let the LLM gap-fill
+        // any REQUIRED field the recipe didn't cover — from real project data only. Run it AFTER
+        // the persist-settle so the LLM reads a stable page; the advancing click that follows is
+        // the commit window for the gap-filled values. No-op when gap-fill is not enabled.
+        await this.runGapFill(this.page);
         prevWasInput = false;
       }
 
@@ -257,9 +249,12 @@ export class RecipeAdapter extends BasePortalAdapter {
         permitNumber: capture.data?.permitNumber || "",
         confirmationNumber: capture.data?.confirmationNumber || "",
         recordLink: capture.data?.recordLink || "",
+        // What the LLM gap-fill added (and what it left blank for lack of real data) — same key
+        // the hand-coded adapters surface, so the operator/UI sees a uniform report.
+        gapFill: this.gapFillReport,
       });
     }
-    return ok(`Replayed ${executed} recorded step(s); stopped at review.`, { executed, skipped, finalSubmitClicked: false });
+    return ok(`Replayed ${executed} recorded step(s); stopped at review.`, { executed, skipped, finalSubmitClicked: false, gapFill: this.gapFillReport });
   }
 
   private resolveValue(step: RecipeStep): string {
@@ -275,6 +270,10 @@ export class RecipeAdapter extends BasePortalAdapter {
       case "goto":
         await this.page.goto(this.resolveValue(step));
         await smartWait(this.page);
+        // A recorded goto lands on a fresh section that a Vue/SPA portal may still be mounting.
+        // Wait until an interactive control is up so the next step's fill targets a bound input
+        // (best-effort; never skips — the retry/reload loop still recovers a genuine miss).
+        await waitForInteractiveControls(this.page);
         return true;
       case "click":
         return this.executeClick(step, scoped, pastReview);
@@ -286,6 +285,16 @@ export class RecipeAdapter extends BasePortalAdapter {
         // Blur to COMMIT the value into the portal's JS model (PowerClerk's Vue saves on
         // blur). Without it the field shows filled but never persists → blank draft.
         if (typeof scoped!.blur === "function") await scoped!.blur().catch(() => {});
+        // A data-bound value can carry a unit suffix ("225A") that a decimal field (e.g.
+        // PowerClerk "Amps") rejects with "Please enter a valid decimal number." Retry once
+        // with a bare number so replayed recipes don't re-introduce the invalid value.
+        if (await hasNumericValidationError(scoped)) {
+          const bare = toBareNumber(v);
+          if (bare && bare !== v) {
+            await scoped!.fill(bare);
+            if (typeof scoped!.blur === "function") await scoped!.blur().catch(() => {});
+          }
+        }
         return true;
       }
       case "select": {
@@ -294,9 +303,7 @@ export class RecipeAdapter extends BasePortalAdapter {
         await waitForElement(scoped);
         // Native <select> first; fall back to the custom-combobox interaction for styled
         // div dropdowns (PowerClerk "Please select...", select2, ExtJS) selectOption can't drive.
-        await scoped!.selectOption(v)
-          .catch(async () => scoped!.selectOption({ label: v }))
-          .catch(async () => { await fillCustomCombobox(this.page, scoped, v); });
+        await selectWithFallback(this.page, scoped, v);
         return true;
       }
       case "check":
@@ -364,13 +371,16 @@ export class RecipeAdapter extends BasePortalAdapter {
         throw new Error(`Final submit triggered a challenge after the click (${postChallenge}); pausing for human verification.`);
       }
       this.finalSubmitClicked = true;
-      this.reachedReview = true;
       return true;
     }
 
     // 5) Ordinary navigation/UI click (pre-review). Safe to perform.
     await waitForElement(scoped);
     await scoped!.click();
+    // A recorded Next/Continue advances a Vue wizard to a not-yet-bound section. Wait for an
+    // interactive control to mount before the next fill so we never type onto an unmounted page
+    // (best-effort; never skips — the retry/reload loop still recovers a genuine miss).
+    await waitForInteractiveControls(this.page);
     return true;
   }
 

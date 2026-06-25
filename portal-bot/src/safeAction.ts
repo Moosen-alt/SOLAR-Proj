@@ -49,6 +49,52 @@ export function redactStatusText(text: string | null | undefined): string | null
   return masked.slice(0, MAX_STATUS_SNIPPET);
 }
 
+// Read-only status scrape tail shared by the live adapters' checkStatus(): reads the page
+// body text, finds the first known application/permit number, and returns a REDACTED,
+// capped snippet around it (account/meter-like digit runs masked) — never a multi-thousand-
+// char raw portal body dump. Falls back to a short redacted slice of the page head when no
+// number matches. Callers own their own navigation + null-guards before calling this.
+export async function scanStatusFromBody(page: Page, applicationNumbers: string[]): Promise<string | null> {
+  const bodyText = await page.locator("body").innerText().catch(() => "");
+  for (const num of applicationNumbers) {
+    if (!num) continue;
+    const idx = bodyText.indexOf(num);
+    if (idx === -1) continue;
+    const snippet = redactStatusText(bodyText.slice(Math.max(0, idx - 80), idx + 320));
+    if (snippet) return snippet;
+  }
+  return redactStatusText(bodyText.slice(0, 600));
+}
+
+// Strip a value to a bare decimal number (digits, optional single decimal, optional leading
+// minus), dropping unit suffixes/symbols and thousands separators: "225A" -> "225",
+// "8.6 kW" -> "8.6", "1,200" -> "1200". Returns "" when there is no number to extract, so
+// callers can skip rather than blank a field.
+export function toBareNumber(value: string): string {
+  const match = String(value ?? "").match(/-?\d[\d,]*(?:\.\d+)?/);
+  return match ? match[0].replace(/,/g, "") : "";
+}
+
+// True when a visible inline validation message near this field complains the value is not a
+// valid number/decimal (e.g. PowerClerk's "Please enter a valid decimal number."). Walks a
+// few ancestors so it catches the message whether it sits beside or below the input.
+// Read-only; swallows its own errors.
+export async function hasNumericValidationError(loc: Locator): Promise<boolean> {
+  // Guard for test doubles / locators without a real evaluate(): treat as "no error".
+  if (!loc || typeof (loc as { evaluate?: unknown }).evaluate !== "function") return false;
+  return loc.evaluate((el: Element) => {
+    let node: Element | null = el;
+    for (let i = 0; i < 5 && node; i++) {
+      const parent: Element | null = node.parentElement;
+      if (!parent) break;
+      const txt = (parent.textContent || "").toLowerCase();
+      if (/valid (decimal|number)|enter a valid (decimal|number)|must be a (number|decimal)|not a valid number|numbers? only/.test(txt)) return true;
+      node = parent;
+    }
+    return false;
+  }).catch(() => false);
+}
+
 function isTimeout(err: unknown): boolean {
   return err instanceof Error && /timeout|TimeoutError/i.test(err.message);
 }
@@ -71,6 +117,47 @@ export async function smartWait(page: Page, extraMs = 2000): Promise<void> {
 export async function waitForElement(loc: Locator | null | undefined, timeout = 10000): Promise<void> {
   if (!loc) return;
   await loc.waitFor({ state: "visible", timeout }).catch(() => null);
+}
+
+// Section-level render-readiness: poll until the SPA has MOUNTED at least one visible,
+// interactive, fillable control — proof the section actually rendered. `networkidle` (or a
+// plain visibility wait) is not enough on a Vue/React/ExtJS wizard: the page chrome and even
+// the inputs can be present-but-unbound for a beat, so a fill fired too early sets the DOM
+// value but it never commits to the JS model → a blank draft at review. Shared by the
+// PowerClerk hand-coded adapter (waitForSectionReady) and the universal RecipeAdapter replay.
+//
+// Best-effort + NON-THROWING: a `false` return (no control mounted in time) must NEVER make a
+// caller SKIP a section — callers fill regardless and the surrounding retry/reload recovers a
+// genuine miss. On a page object without waitForFunction (the browser-free unit-test fakes)
+// there is nothing to poll, so treat it as ready.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function waitForInteractiveControls(page: any, timeoutMs?: number): Promise<boolean> {
+  if (!page || typeof page.waitForFunction !== "function") return true;
+  const budget = timeoutMs
+    || Number(process.env.PORTAL_SECTION_READY_MS)
+    || Number(process.env.POWERCLERK_SECTION_READY_MS)
+    || 12000;
+  try {
+    await page.waitForFunction(
+      () => {
+        const vis = (el: Element): boolean => {
+          const r = (el as HTMLElement).getBoundingClientRect();
+          const st = window.getComputedStyle(el as HTMLElement);
+          return r.width > 0 && r.height > 0 && st.visibility !== "hidden" && st.display !== "none";
+        };
+        const controls = Array.from(document.querySelectorAll(
+          "input:not([type=hidden]):not([disabled]):not([readonly]), select:not([disabled]), textarea:not([disabled]), [role=radio], [role=checkbox]",
+        ));
+        return controls.some(vis);
+      },
+      undefined,
+      { timeout: budget, polling: 250 },
+    );
+    return true;
+  } catch {
+    // No interactive control mounted within the budget — best-effort, never throw.
+    return false;
+  }
 }
 
 // Run `action` up to RETRY_BACKOFF_MS.length + 1 times. Only timeouts are retried;
@@ -112,7 +199,7 @@ export interface SafeActionResult {
 // Compare a portal read-back against the value we tried to fill. Normalizes both
 // (lowercase, strip non-alphanumerics) so formatting differences ("$1,000" vs "1000",
 // "7.5 kW" vs "7.5") don't register as mismatches. Empty expected = nothing to judge.
-function readbackMatches(actual: string, expected: string): boolean {
+export function readbackMatches(actual: string, expected: string): boolean {
   const n = (v: string) => v.toLowerCase().replace(/[^a-z0-9]/g, "");
   const a = n(actual);
   const e = n(expected);

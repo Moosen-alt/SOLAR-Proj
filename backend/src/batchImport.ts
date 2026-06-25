@@ -34,34 +34,10 @@ async function getPdfjs(): Promise<PdfjsModule> {
 // only affects IMAGE decoding, not the TEXT extraction we do here, so it's safe to drop.
 const PDFJS_WARN_RE = /^Warning: (TT: undefined function:|Font "[^"]+" is not available|getHexString|Indexing all PDF objects|#instantiateWasm|#getJsModule|Unable to decode image|Dependent image isn't ready|.*[Jj]Big2|.*JBIG2|.*wasmUrl|.*nulljbig2|.*OpenJPEG|.*JpxError)/;
 
-export async function extractPdfText(filePath: string, maxPages = 30): Promise<string> {
-  const pdfjs = await getPdfjs();
-  const data = new Uint8Array(fs.readFileSync(filePath));
-
-  const origWarn = console.warn;
-  console.warn = (...args: unknown[]) => {
-    if (typeof args[0] === "string" && PDFJS_WARN_RE.test(args[0])) return;
-    origWarn.apply(console, args);
-  };
-
-  try {
-    const doc = await pdfjs.getDocument({ data, useSystemFonts: true, disableWorker: true }).promise;
-    const pages = Math.min(doc.numPages, maxPages);
-    const parts: string[] = [];
-    for (let i = 1; i <= pages; i++) {
-      const page = await doc.getPage(i);
-      const content = await page.getTextContent();
-      parts.push(content.items.map((item) => item.str).join(" "));
-    }
-    return parts.join("\n").replace(/\s{3,}/g, "  ").trim();
-  } finally {
-    console.warn = origWarn;
-  }
-}
-
-// Per-page text (1-based index → text). Used by the plan-set splitter to map sheets
-// to page ranges. maxPages caps the work for very large sets.
-export async function extractPdfPages(filePath: string, maxPages = 60): Promise<string[]> {
+// Shared pdfjs driver: open the PDF, suppress the harmless image-decode warnings, and
+// run `perPage` over each page's RAW concatenated text (items joined by a space), up to
+// maxPages. The two public extractors below differ only in how they post-process pages.
+async function withPdfPages<T>(filePath: string, maxPages: number, perPage: (rawPageText: string) => T): Promise<T[]> {
   const pdfjs = await getPdfjs();
   const data = new Uint8Array(fs.readFileSync(filePath));
   const origWarn = console.warn;
@@ -72,16 +48,27 @@ export async function extractPdfPages(filePath: string, maxPages = 60): Promise<
   try {
     const doc = await pdfjs.getDocument({ data, useSystemFonts: true, disableWorker: true }).promise;
     const pages = Math.min(doc.numPages, maxPages);
-    const out: string[] = [];
+    const out: T[] = [];
     for (let i = 1; i <= pages; i++) {
       const page = await doc.getPage(i);
       const content = await page.getTextContent();
-      out.push(content.items.map((item) => item.str).join(" ").replace(/\s{3,}/g, "  ").trim());
+      out.push(perPage(content.items.map((item) => item.str).join(" ")));
     }
     return out;
   } finally {
     console.warn = origWarn;
   }
+}
+
+export async function extractPdfText(filePath: string, maxPages = 30): Promise<string> {
+  // Whole-document cleanup: join raw pages with newlines, THEN collapse whitespace once.
+  return (await withPdfPages(filePath, maxPages, (s) => s)).join("\n").replace(/\s{3,}/g, "  ").trim();
+}
+
+// Per-page text (1-based index → text). Used by the plan-set splitter to map sheets
+// to page ranges. maxPages caps the work for very large sets.
+export async function extractPdfPages(filePath: string, maxPages = 60): Promise<string[]> {
+  return withPdfPages(filePath, maxPages, (s) => s.replace(/\s{3,}/g, "  ").trim());
 }
 
 // ---------------------------------------------------------------------------

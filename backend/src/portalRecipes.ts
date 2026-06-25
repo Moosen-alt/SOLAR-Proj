@@ -3,15 +3,12 @@ import { clientStagingOverlay } from "./clients";
 import type { AppDb } from "./db";
 import { HttpError } from "./httpError";
 import { id } from "./ids";
-import { asJson, parseJson } from "./json";
+import { asJson, parseJson, text as s } from "./json";
 import { knowledgeProfileKey } from "./knowledgeBase";
 import { nowIso } from "./time";
 
 type Row = Record<string, unknown>;
 
-function s(value: unknown): string {
-  return typeof value === "string" ? value : value == null ? "" : String(value);
-}
 
 function mapRecipe(row: Row): PortalRecipe {
   return {
@@ -59,6 +56,20 @@ export function findCompleteRecipeForProject(
 ): PortalRecipe | null {
   const key = recipeProfileKey(input);
   const row = db.get<Row>("SELECT * FROM portal_recipes WHERE profile_key = ? AND status = 'complete'", [key]);
+  return row ? mapRecipe(row) : null;
+}
+
+// Like findCompleteRecipeForProject, but matches a recipe of ANY status (recording / needs_rerecord
+// / complete), newest first. Used by staging to recover a launchable portal URL even before a recipe
+// is verified-complete: a draft/recording recipe still carries the entry URL the operator (or a prior
+// auto-learn pass) pointed the recorder at. Without it, a real portal whose only recipe is still a
+// draft has no URL to launch and the self-seed can't fire — staging silently falls to the no-op mock.
+export function findAnyRecipeForProject(
+  db: AppDb,
+  input: { scopeType: "ahj" | "utility"; state?: string; ahj?: string; utility?: string },
+): PortalRecipe | null {
+  const key = recipeProfileKey(input);
+  const row = db.get<Row>("SELECT * FROM portal_recipes WHERE profile_key = ? ORDER BY updated_at DESC LIMIT 1", [key]);
   return row ? mapRecipe(row) : null;
 }
 

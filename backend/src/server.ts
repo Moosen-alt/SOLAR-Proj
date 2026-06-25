@@ -8,6 +8,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { openDatabase } from "./db";
 import { HttpError } from "./httpError";
+import { parseJson } from "./json";
 import { collectDiagnostics, logErrorBlock, logger, requestLogger, startupBanner } from "./logger";
 import { findLearnedProfileForProject, saveVerifiedAhjProfile, saveVerifiedUtilityProfile } from "./knowledgeBase";
 import {
@@ -41,7 +42,7 @@ import { listBackups, runBackup, startBackupScheduler } from "./backup";
 import { startMonitorScheduler } from "./scheduler";
 import { startAhjFormRefreshScheduler } from "./ahjFormRefresh";
 import { extractZipToWorkdir } from "./batchZip";
-import { AUTH_ENABLED, currentUser, login, logout, me, requireAuth, seedAdminUser } from "./auth";
+import { currentUser, login, logout, me, requireAuth, seedAdminUser } from "./auth";
 import { getAutopilotState, runAutopilotApproval } from "./autopilot";
 import {
   addCommunication,
@@ -52,8 +53,7 @@ import {
   listCustomers,
   updateCustomer,
 } from "./crm";
-import { getKpiReport, touchProjectMetrics } from "./kpi";
-import { classifyDoc, extractPdfText } from "./batchImport";
+import { getKpiReport } from "./kpi";
 import {
   ahjFormRegistry,
   buildFilledFormsForProject,
@@ -67,9 +67,8 @@ import { createSignature, deleteSignature, getSignatureImage, listSignatures, se
 import { addAuditLog } from "./audit";
 import { buildAuthUrl, exchangeCodeForTokens, gmailStatus, pollGmail } from "./gmail";
 import { imapStatus, pollImap, upsertImapSource } from "./emailPoller";
-import { createIntakeRequest, getIntakeRequestPublic, missingIntakeFields, submitIntakeRequest } from "./intakeRequests";
+import { createIntakeRequest, getIntakeRequestPublic, submitIntakeRequest } from "./intakeRequests";
 import { ensureHeartbeat, sseBroadcast, sseSubscribe } from "./events";
-import { detectPlatform, publicPermitStatusCheck } from "./publicPermitStatus";
 import {
   addManualCorrection,
   draftLatestCorrectionResponse,
@@ -92,7 +91,6 @@ import {
   getKnowledgeBase,
   getLiveProjectReadinessReport,
   getOperationsActionQueue,
-  getOperationsBoard,
   getOperationsBrief,
   getOperationsDailyReport,
   getProjectCommunicationDrafts,
@@ -470,11 +468,6 @@ app.delete("/api/imap/sources/:id", (req, res) => {
 
 // --- Client intake links (collect valuation + homeowner contact from the installer) ---
 
-// Operator: which submittal fields are still missing for a project.
-app.get("/api/projects/:id/intake-missing", (req, res) => {
-  res.json({ missing: missingIntakeFields(db, String(req.params.id)) });
-});
-
 // Operator: create (or reuse) a shareable intake link for a project.
 app.post("/api/projects/:id/intake-request", asyncHandler(async (req, res) => {
   const b = (req.body ?? {}) as Record<string, unknown>;
@@ -506,10 +499,6 @@ app.post("/api/intake/:token", asyncHandler(async (req, res) => {
 app.get("/api/events", (req, res) => {
   sseSubscribe(res);
   ensureHeartbeat();
-});
-
-app.get("/api/ops-board", (_req, res) => {
-  res.json(getOperationsBoard(db));
 });
 
 app.get("/api/ops-actions", (_req, res) => {
@@ -1049,22 +1038,6 @@ app.post("/api/nem-monitor/run", asyncHandler(async (_req, res) => {
   res.json(await runDuePermitChecks(db, "nem"));
 }));
 
-// Detect portal platform from a URL (called as the operator pastes a portal URL
-// into the permit target form — shows them what strategy will be used).
-app.get("/api/permit-status/detect-platform", (req, res) => {
-  const url = String(req.query.url || "");
-  if (!url) { res.status(400).json({ error: "url query param required" }); return; }
-  res.json({ platform: detectPlatform(url), url });
-});
-
-// Ad-hoc public status check for a single target: useful for "check now" button.
-app.post("/api/permit-status/public-check", asyncHandler(async (req, res) => {
-  const { portalUrl, applicationNumbers } = req.body || {};
-  if (!portalUrl) throw new HttpError(400, "portalUrl is required.");
-  const result = await publicPermitStatusCheck(String(portalUrl), Array.isArray(applicationNumbers) ? applicationNumbers : []);
-  res.json({ platform: detectPlatform(String(portalUrl)), rawStatusText: result });
-}));
-
 // Users
 app.get("/api/users", (_req, res) => { res.json(listUsers(db)); });
 app.post("/api/users", (req, res) => {
@@ -1163,11 +1136,6 @@ app.get("/api/kpi", (req, res) => {
   const endDate = typeof req.query.endDate === "string" ? req.query.endDate : undefined;
   res.json(getKpiReport(db, { startDate, endDate }));
 });
-app.post("/api/projects/:id/metrics/refresh", (req, res) => {
-  touchProjectMetrics(db, req.params.id);
-  res.json({ ok: true });
-});
-
 // Job queue
 app.get("/api/jobs", (req, res) => {
   res.json(listJobs(db, {
@@ -1186,19 +1154,6 @@ app.post("/api/jobs", (req, res) => {
   if (!jobType) throw new HttpError(400, "jobType is required.");
   res.status(201).json(enqueueJob(db, jobType, payload || {}, { priority, assignedToUser, projectId, scheduledAt }));
 });
-app.post("/api/jobs/process-next", asyncHandler(async (_req, res) => {
-  const processed = await processNextJob(db);
-  res.json({ processed });
-}));
-
-// MBOX streaming import via job queue (for large files)
-app.post("/api/mbox/enqueue", (req, res) => {
-  const { filePath, sourceLabel, defaultState, defaultAhj, defaultUtility } = req.body || {};
-  if (!filePath) throw new HttpError(400, "filePath is required.");
-  const job = enqueueJob(db, "mbox_import", { filePath, sourceLabel, defaultState, defaultAhj, defaultUtility }, { priority: 3, maxRetries: 1 });
-  res.status(201).json(job);
-});
-
 // Batch folder scan — enqueues a background job to classify + import all PDFs in a folder
 // ---------------------------------------------------------------------------
 // AHJ form templates — store blank PDFs, extract field map, wipe raw bytes
@@ -1301,8 +1256,7 @@ app.post("/api/ahj-templates/:id/remap", asyncHandler(async (req, res) => {
   );
   if (!row) throw new HttpError(404, "Template not found.");
   if (!row.pdf_blob) throw new HttpError(410, "PDF blob has been wiped — re-upload the blank to re-map.");
-  let map: { formName?: string; sourceUrl?: string } = {};
-  try { map = JSON.parse(row.field_map || "{}"); } catch { /* ignore */ }
+  const map = parseJson<{ formName?: string; sourceUrl?: string }>(row.field_map, {});
   const formName = map.formName || `${row.ahj_name} ${row.form_type.replace(/_/g, " ")}`;
   const { createLLMProvider } = await import("./llm");
   let result;
@@ -1322,8 +1276,7 @@ app.post("/api/ahj-templates/:id/remap", asyncHandler(async (req, res) => {
 app.patch("/api/ahj-templates/:id/verify", (req, res) => {
   const row = db.get<{ field_map: string }>("SELECT field_map FROM ahj_form_templates WHERE id = ?", [String(req.params.id)]);
   if (!row) throw new HttpError(404, "Template not found.");
-  let map: Record<string, unknown> = {};
-  try { map = JSON.parse(row.field_map || "{}"); } catch { map = {}; }
+  const map = parseJson<Record<string, unknown>>(row.field_map, {});
   const verified = req.body?.verified !== false; // default true
   map.verified = verified;
   map.verifiedAt = verified ? new Date().toISOString() : undefined;
@@ -1357,49 +1310,6 @@ app.get("/api/ahj-templates/:id/pdf", (req, res) => {
   res.setHeader("Content-Disposition", `attachment; filename="${row.original_filename}"`);
   res.send(row.pdf_blob);
 });
-
-// Synthesize AHJ knowledge from past project history using Claude
-app.post("/api/knowledge-base/synthesize-ahj", asyncHandler(async (req, res) => {
-  const { ahjName, state, utility } = req.body || {};
-  if (!ahjName) throw new HttpError(400, "ahjName required.");
-
-  // Pull correction patterns and application texts for this AHJ
-  const corrRows = db.query<{ correction_text: string }>(
-    `SELECT DISTINCT c.correction_text FROM corrections c
-     JOIN projects p ON p.id = c.project_id
-     WHERE p.ahj LIKE ? AND (? = '' OR p.state = ?)
-     ORDER BY c.created_at DESC LIMIT 50`,
-    [`%${ahjName}%`, state || "", state || ""],
-  );
-  const noteRows = db.query<{ body: string }>(
-    `SELECT pn.body FROM project_notes pn
-     JOIN projects p ON p.id = pn.project_id
-     WHERE p.ahj LIKE ? AND pn.body LIKE '%application%'
-     ORDER BY pn.created_at DESC LIMIT 20`,
-    [`%${ahjName}%`],
-  );
-
-  const { createLLMProvider } = await import("./llm");
-  const llm = createLLMProvider();
-  const result = await llm.synthesizeKnowledge({
-    ahjName,
-    state: state || "",
-    utility: utility || "",
-    pastApplicationTexts: noteRows.map((r) => r.body),
-    correctionPatterns: corrRows.map((r) => r.correction_text),
-  });
-
-  // Persist synthesized knowledge into ahj_library
-  const existing = db.get<{ id: string }>("SELECT id FROM ahj_library WHERE ahj_name LIKE ? AND state = ?", [`%${ahjName}%`, state || ""]);
-  if (existing) {
-    db.run(
-      "UPDATE ahj_library SET required_documents = ?, known_rejection_patterns = ?, notes = ? WHERE id = ?",
-      [result.requiredDocuments.join("; "), result.commonRejectionReasons.join("; "), result.tips.join("; "), existing.id],
-    );
-  }
-
-  res.json(result);
-}));
 
 app.post("/api/batch-import/scan", (req, res) => {
   const { folderPath, defaultState, defaultAhj, defaultUtility, useLlm } = req.body || {};
@@ -1665,16 +1575,6 @@ app.put("/api/portal-runs/:id/tracking-url", (req, res) => {
   db.run(
     "UPDATE portal_runs SET tracking_url = ? WHERE id = ?",
     [url, String(req.params.id)],
-  );
-  res.json({ ok: true, trackingUrl: url });
-});
-
-app.put("/api/permit-check-targets/:id/tracking-url", (req, res) => {
-  const url = String(req.body?.url || "").trim();
-  if (!url) throw new HttpError(400, "url is required.");
-  db.run(
-    "UPDATE permit_check_targets SET tracking_url = ?, updated_at = ? WHERE id = ?",
-    [url, new Date().toISOString(), String(req.params.id)],
   );
   res.json({ ok: true, trackingUrl: url });
 });

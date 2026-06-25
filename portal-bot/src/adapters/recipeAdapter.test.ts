@@ -7,6 +7,10 @@ import { RecipeAdapter } from "./recipeAdapter";
 // review halt, field substitution, selector fallbacks, credential never logged)
 // without launching Chromium. Run with: npm run portal:test:unit
 
+// Keep the persist-settle sleep negligible so the gap-fill-ordering tests run fast and
+// deterministically (the production default is 3s). "1" → Number("1") || 3000 === 1.
+process.env.AUTOLEARN_SAVE_SETTLE_MS = "1";
+
 // --- Fake Playwright page/locator ------------------------------------------------
 
 interface FakeMatch {
@@ -75,6 +79,12 @@ function makeFakePage(opts: {
     },
     locator: (css: string) => locatorFor(`css:${css}`),
     frameLocator: () => page,
+    // Render-readiness spy: waitForInteractiveControls() calls page.waitForFunction. Count the
+    // calls so tests can assert readiness ran after a goto / advancing click (and NOT on the
+    // final-submit branch). Resolving here mirrors "a control mounted" → returns ready=true,
+    // so the no-throw/never-skip contract the existing safety tests rely on is preserved.
+    readyCheckCount: 0,
+    waitForFunction: async () => { page.readyCheckCount += 1; return true; },
   };
   return page;
 }
@@ -307,6 +317,146 @@ async function testCredentialNeverLogged() {
   }
 }
 
+// --- Gap A: render-readiness call sites ------------------------------------------
+
+// A recorded goto lands on a fresh SPA section; readiness must poll after the navigation
+// so the next fill targets a mounted/bound input (not a visible-but-unbound Vue field).
+async function testRenderReadinessAfterGoto() {
+  const log: ActionLog = { clicks: [], fills: [], gotos: [], checks: 0 };
+  const recipe = baseRecipe([
+    { action: "goto", value: "https://portal.test/section-1" },
+  ]);
+  const adapter = new RecipeAdapter(recipe, {}, {});
+  const page = makeFakePage({ log });
+  withFakePage(adapter, page);
+  const result = await adapter.fillApplication(fakeProject);
+  assert.equal(result.ok, true);
+  assert.deepEqual(log.gotos, ["https://portal.test/section-1"], "the goto ran");
+  assert.ok(page.readyCheckCount >= 1, "render-readiness must run after a goto navigation");
+}
+
+// An advancing Next/Continue click moves a wizard to a not-yet-bound section; readiness must
+// poll after that click too, before the next fill.
+async function testRenderReadinessAfterAdvancingClick() {
+  const log: ActionLog = { clicks: [], fills: [], gotos: [], checks: 0 };
+  const recipe = baseRecipe([
+    { action: "click", selector: { role: "button", name: "Next" } },
+  ]);
+  const adapter = new RecipeAdapter(recipe, {}, {});
+  const page = makeFakePage({ log });
+  withFakePage(adapter, page);
+  const result = await adapter.fillApplication(fakeProject);
+  assert.equal(result.ok, true);
+  assert.deepEqual(log.clicks, ["role:button:Next"], "the advancing click ran");
+  assert.ok(page.readyCheckCount >= 1, "render-readiness must run after an ordinary advancing click");
+}
+
+// The final-submit branch must NOT poll readiness — we click the operator-approved submit and
+// capture the confirmation; there is no "next section" to wait for, and an extra poll there
+// would only delay the submit. (Verifies the call site was added to navigation, not submit.)
+async function testRenderReadinessNotOnFinalSubmit() {
+  const log: ActionLog = { clicks: [], fills: [], gotos: [], checks: 0 };
+  const recipe = baseRecipe([
+    { action: "stopForReview" },
+    { action: "click", selector: { css: "#ctl00_btnSubmit" }, isFinalSubmit: true } as RecipeStep,
+  ]);
+  const adapter = new RecipeAdapter(recipe, {}, {}, { autoSubmit: true });
+  const page = makeFakePage({ log });
+  withFakePage(adapter, page);
+  const result = await adapter.fillApplication(fakeProject);
+  assert.equal(result.ok, true);
+  assert.deepEqual(log.clicks, ["css:#ctl00_btnSubmit"], "the flagged final submit ran");
+  assert.equal(page.readyCheckCount, 0, "render-readiness must NOT run on the final-submit branch");
+}
+
+// --- Gap B: gap-fill call sites + surfaced report --------------------------------
+
+// Helper: replace the inherited runGapFill with a counter so tests can assert WHEN it fires
+// without enabling a real LLM planner. Returns a getter for the call count.
+function spyGapFill(adapter: RecipeAdapter): () => number {
+  let calls = 0;
+  (adapter as unknown as { runGapFill: (p: unknown) => Promise<void> }).runGapFill = async () => { calls += 1; };
+  return () => calls;
+}
+
+// Gap-fill must run in the persist-settle window — after a data section's autosave commits and
+// before the advancing click that follows it. A `[fill, click]` recipe (no stopForReview) fires
+// gap-fill exactly once: in the persist-settle branch.
+async function testGapFillRunsInPersistSettleBranch() {
+  const log: ActionLog = { clicks: [], fills: [], gotos: [], checks: 0 };
+  const recipe = baseRecipe([
+    { action: "fill", selector: { label: "Account" }, field: "accountNumber" },
+    { action: "click", selector: { role: "button", name: "Next" } },
+  ]);
+  const adapter = new RecipeAdapter(recipe, { accountNumber: "12345" }, {});
+  const gapFillCalls = spyGapFill(adapter);
+  withFakePage(adapter, makeFakePage({ log }));
+  const result = await adapter.fillApplication(fakeProject);
+  assert.equal(result.ok, true);
+  assert.equal(log.fills.length, 1, "the data section was filled");
+  assert.deepEqual(log.clicks, ["role:button:Next"], "the advancing click ran");
+  assert.equal(gapFillCalls(), 1, "gap-fill must run once, in the persist-settle branch before the advancing click");
+}
+
+// The LAST data section before review is not followed by an advancing click, so gap-fill must
+// also run in the guided-manual stopForReview branch before the halt. A `[fill, stopForReview]`
+// recipe (no intervening advancing click) fires gap-fill exactly once: before the review break.
+async function testGapFillRunsBeforeGuidedManualReview() {
+  const log: ActionLog = { clicks: [], fills: [], gotos: [], checks: 0 };
+  const recipe = baseRecipe([
+    { action: "fill", selector: { label: "Account" }, field: "accountNumber" },
+    { action: "stopForReview" },
+  ]);
+  const adapter = new RecipeAdapter(recipe, { accountNumber: "12345" }, {});
+  const gapFillCalls = spyGapFill(adapter);
+  withFakePage(adapter, makeFakePage({ log }));
+  const result = await adapter.fillApplication(fakeProject);
+  assert.equal(result.ok, true);
+  assert.equal(log.clicks.length, 0, "guided-manual must not click anything");
+  assert.equal(gapFillCalls(), 1, "gap-fill must run once, before the guided-manual review halt");
+}
+
+function assertGapFillReport(value: unknown, where: string) {
+  const gf = value as { filled?: unknown; skippedUngrounded?: unknown; reportedMissing?: unknown } | undefined;
+  assert.ok(gf, `${where}: result must surface a gapFill report`);
+  assert.ok(
+    Array.isArray(gf.filled) && Array.isArray(gf.skippedUngrounded) && Array.isArray(gf.reportedMissing),
+    `${where}: gapFill must carry the filled / skippedUngrounded / reportedMissing arrays`,
+  );
+}
+
+// The stop-at-review return must surface the gap-fill report under the `gapFill` key (same key
+// the hand-coded adapters use), so the operator/UI sees a uniform report. Uses the real no-op
+// runGapFill (no planner) so the report is the default empty-but-present shape.
+async function testGapFillReportInStopAtReviewResult() {
+  const log: ActionLog = { clicks: [], fills: [], gotos: [], checks: 0 };
+  const recipe = baseRecipe([
+    { action: "fill", selector: { label: "Account" }, field: "accountNumber" },
+    { action: "stopForReview" },
+  ]);
+  const adapter = new RecipeAdapter(recipe, { accountNumber: "12345" }, {});
+  withFakePage(adapter, makeFakePage({ log }));
+  const result = await adapter.fillApplication(fakeProject);
+  assert.equal(result.ok, true);
+  assert.equal(result.data?.finalSubmitClicked, false);
+  assertGapFillReport(result.data?.gapFill, "stop-at-review");
+}
+
+// The final-submit return must ALSO surface the gap-fill report under `gapFill`.
+async function testGapFillReportInFinalSubmitResult() {
+  const log: ActionLog = { clicks: [], fills: [], gotos: [], checks: 0 };
+  const recipe = baseRecipe([
+    { action: "stopForReview" },
+    { action: "click", selector: { css: "#ctl00_btnSubmit" }, isFinalSubmit: true } as RecipeStep,
+  ]);
+  const adapter = new RecipeAdapter(recipe, {}, {}, { autoSubmit: true });
+  withFakePage(adapter, makeFakePage({ log }));
+  const result = await adapter.fillApplication(fakeProject);
+  assert.equal(result.ok, true);
+  assert.equal(result.data?.finalSubmitClicked, true);
+  assertGapFillReport(result.data?.gapFill, "final-submit");
+}
+
 const tests: Array<[string, () => Promise<void>]> = [
   ["stopForReview halts replay and blocks later clicks", testStopForReviewHalts],
   ["pay/submit keyword clicks are blocked; safe clicks run", testFinalSubmitDenylist],
@@ -319,6 +469,13 @@ const tests: Array<[string, () => Promise<void>]> = [
   ["field values are substituted; empty fields are skipped", testFieldSubstitution],
   ["selector fallbacks are used when the primary is absent", testSelectorFallback],
   ["credentials are never written to stdout/stderr", testCredentialNeverLogged],
+  ["Gap A: render-readiness runs after a goto navigation", testRenderReadinessAfterGoto],
+  ["Gap A: render-readiness runs after an advancing click", testRenderReadinessAfterAdvancingClick],
+  ["Gap A: render-readiness does NOT run on the final-submit branch", testRenderReadinessNotOnFinalSubmit],
+  ["Gap B: gap-fill runs in the persist-settle branch before an advancing click", testGapFillRunsInPersistSettleBranch],
+  ["Gap B: gap-fill runs before the guided-manual review halt", testGapFillRunsBeforeGuidedManualReview],
+  ["Gap B: gapFill report is surfaced in the stop-at-review result", testGapFillReportInStopAtReviewResult],
+  ["Gap B: gapFill report is surfaced in the final-submit result", testGapFillReportInFinalSubmitResult],
 ];
 
 let failures = 0;

@@ -447,7 +447,7 @@ async function testSensitiveFieldsRedacted() {
     fills: [
       { selectorIndex: 0, value: "supersecret-pw", field: "password" },
       { selectorIndex: 1, value: "4036870000", field: "accountNumber" },
-      { selectorIndex: 2, value: "Normal Value", field: "homeownerName" },
+      { selectorIndex: 3, value: "Normal Value", field: "homeownerName" },
     ],
     atReview: true,
   });
@@ -464,6 +464,7 @@ async function testSensitiveFieldsRedacted() {
             rawFields: [
               { label: "Password", fieldType: "text", id: "pw" },
               { label: "Account Number", fieldType: "text", id: "acct" },
+              { label: "Meter Number", fieldType: "text", id: "mtr" },
               { label: "Homeowner Name", fieldType: "text", id: "hn" },
             ],
           },
@@ -473,30 +474,44 @@ async function testSensitiveFieldsRedacted() {
     ),
   );
 
-  const result = await adapter.learn(fakeContext, fakeProject);
+  // Account/meter are filled + bound DETERMINISTICALLY from the project (never the planner), so the
+  // learn must receive a project carrying them. The literal values must never be recorded.
+  const result = await adapter.learn(fakeContext, { ...fakeProject, accountNumber: "ACCT-9001", meterNumber: "MTR-5002" } as ProjectRecord);
   assert.equal(result.ok, true);
   const fillSteps = result.steps.filter((s) => s.action === "fill");
 
+  // A password is a login credential, not a replayable form field — the planner's value is ignored
+  // and no password fill step is recorded (it has no project-data binding).
   const pwStep = fillSteps.find((s) => s.note === "Password");
-  assert.ok(pwStep, "password step recorded");
-  assert.equal(pwStep?.sensitive, true, "password must be flagged sensitive");
-  assert.equal(pwStep?.value, "", "password literal value must NOT be stored");
-  assert.equal(pwStep?.field, "password", "password bound by field instead");
+  assert.ok(!pwStep, "password is NOT recorded as a replayable fill step");
 
+  // Account number is filled + bound deterministically from the project (not the planner's value),
+  // recorded sensitive with NO literal value, bound by `field` for replay.
   const acctStep = fillSteps.find((s) => s.note === "Account Number");
   assert.ok(acctStep, "account step recorded");
   assert.equal(acctStep?.sensitive, true, "account number must be flagged sensitive");
   assert.equal(acctStep?.value, "", "account number literal value must NOT be stored");
+  assert.equal(acctStep?.field, "accountNumber", "account number bound by field for replay");
+
+  // Meter number binds the same way, so the recipe actually fills it on replay.
+  const meterStep = fillSteps.find((s) => s.note === "Meter Number");
+  assert.ok(meterStep, "meter step recorded");
+  assert.equal(meterStep?.sensitive, true, "meter number must be flagged sensitive");
+  assert.equal(meterStep?.value, "", "meter number literal value must NOT be stored");
+  assert.equal(meterStep?.field, "meterNumber", "meter number bound by field for replay");
 
   // A non-sensitive field keeps its binding/value normally.
   const nameStep = fillSteps.find((s) => s.note === "Homeowner Name");
   assert.equal(nameStep?.sensitive, undefined, "ordinary field is not flagged sensitive");
   assert.equal(nameStep?.field, "homeownerName");
 
-  // Assert the secret literal never appears anywhere in the recorded steps payload.
+  // No secret literal may appear anywhere in the recorded steps — not the planner's password/account
+  // guess, and not the real project account/meter value that was typed into the browser.
   const serialized = JSON.stringify(result.steps);
   assert.ok(!serialized.includes("supersecret-pw"), "the password literal must never be in the recorded steps");
-  assert.ok(!serialized.includes("4036870000"), "the account number literal must never be in the recorded steps");
+  assert.ok(!serialized.includes("4036870000"), "the planner account value must never be in the recorded steps");
+  assert.ok(!serialized.includes("ACCT-9001"), "the project account number must never be in the recorded steps");
+  assert.ok(!serialized.includes("MTR-5002"), "the project meter number must never be in the recorded steps");
 }
 
 // 7) THE ACCELA TRAP: on a read-only Review page, "Continue Application" SUBMITS.
@@ -629,6 +644,75 @@ async function testNewTabPopupAdopted() {
   assert.ok(log.clicks.includes("role:link:Start Application"), "the dashboard nav link was clicked");
 }
 
+// 9) T&C PASS-THROUGH: a Terms & Conditions/billing page (no inputs + "Continue Application"
+// but NO review markers) must NOT be treated as the review screen. The loop should click
+// through it and continue to the real application form.
+async function testTermsPagePassThrough() {
+  const log: ActionLog = { clicks: [], fills: [], selects: [], checks: [] };
+  let call = 0;
+  const planner: LearnPlanner = async (): Promise<LearnPlanResponse> => {
+    call++;
+    if (call === 1) {
+      // T&C page: planner correctly says navigate past it.
+      return { fills: [], navigateSelectorIndex: 0, atReview: false };
+    }
+    // Real form page with a fill field and an advance button.
+    if (call === 2) return { fills: [{ selectorIndex: 0, value: "John", field: "homeownerName" }], advanceSelectorIndex: 1, atReview: false };
+    // Review screen — return finalSubmitSelectorIndex so the Continue Application is recorded.
+    return { fills: [], atReview: true, finalSubmitSelectorIndex: 0 };
+  };
+  const adapter = new AutoLearnAdapter("Oregon ePermitting", planner);
+  withFakePage(
+    adapter,
+    makeFakePage(
+      {
+        pages: [
+          {
+            // T&C/billing page: no inputs, "Continue Application" button, NO review markers.
+            url: "https://aca-oregon.accela.com/oregon/Cap/CapApplyDisclaimer.aspx",
+            title: "Disclaimer",
+            body: "By clicking Continue Application you agree to the Terms and Conditions of this portal.",
+            rawFields: [
+              { label: "Continue Application", fieldType: "button", role: "button", text: "Continue Application" },
+            ],
+          },
+          {
+            url: "https://aca-oregon.accela.com/oregon/Cap/CapApplyStep1.aspx",
+            title: "Step 1",
+            body: "Application form step 1",
+            rawFields: [
+              { label: "Homeowner Name", fieldType: "text", id: "hn" },
+              { label: "Next", fieldType: "button", role: "button", text: "Next" },
+            ],
+          },
+          {
+            url: "https://aca-oregon.accela.com/oregon/Cap/CapConfirm.aspx",
+            title: "Review",
+            body: "Step 3: Review. Please review all information. Click Continue Application button below.",
+            rawFields: [
+              { label: "Continue Application", fieldType: "button", role: "button", text: "Continue Application" },
+            ],
+            reviewPairs: [{ label: "Homeowner Name", value: "John" }],
+          },
+        ],
+      },
+      log,
+    ),
+  );
+
+  const result = await adapter.learn(fakeContext, fakeProject);
+  assert.equal(result.ok, true, "should succeed: clicked through T&C and reached real review");
+  assert.equal(result.pageCount, 3, "visited all 3 pages (T&C, form, review)");
+  // The T&C continue click must NOT be recorded as finalSubmit.
+  const finalSteps = result.steps.filter((s) => s.isFinalSubmit === true);
+  // The only finalSubmit must be the REVIEW page's Continue Application, not the T&C one.
+  assert.equal(finalSteps.length, 1, "exactly one finalSubmit recorded (the review page one)");
+  assert.ok(result.finalSubmitRecorded, "finalSubmit on the review page is recorded");
+  // The homeowner name fill was on the actual form page, not on the T&C page.
+  assert.ok(result.steps.some((s) => s.action === "fill" && s.field === "homeownerName"), "form fill recorded");
+  assert.equal(result.reviewScreen.fields.length, 1, "review screen fields scraped");
+}
+
 const tests: Array<[string, () => Promise<void>]> = [
   ["fields are extracted, filled, and recorded as steps", testFieldsExtractedFilledRecorded],
   ["a click that opens the form in a NEW TAB is adopted (PowerClerk)", testNewTabPopupAdopted],
@@ -639,6 +723,7 @@ const tests: Array<[string, () => Promise<void>]> = [
   ["progress callback fires per page and at review", testProgressEmitted],
   ["sensitive fields don't store literal values", testSensitiveFieldsRedacted],
   ["ACCELA TRAP: Continue Application on review page recorded, never clicked", testAccelaContinueApplicationNeverClicked],
+  ["T&C PASS-THROUGH: disclaimer page is not treated as review screen", testTermsPagePassThrough],
 ];
 
 let failures = 0;

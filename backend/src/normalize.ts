@@ -138,6 +138,19 @@ export function parserField(payload: ParserPayload, fieldName: string): string {
   return first(payload, fieldAliases[fieldName] ?? [fieldName]);
 }
 
+// Lower-case and collapse every run of non-alphanumerics to a single space, then trim.
+// The canonical token-normalizer for fuzzy matching (search, historical failures,
+// process profiles) — previously re-implemented locally in several modules.
+export function normalizeTokens(value: string): string {
+  return String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+// Lower-case and strip every non-alphanumeric character (no separators). Used to
+// compare identifiers/model numbers ignoring punctuation and spacing.
+export function compactAlnum(value: string): string {
+  return String(value || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
 export const fieldAliases: Record<string, string[]> = {
   homeownerName: ["owner", "homeownerName", "ubAccountHolder"],
   projectAddress: ["street"],

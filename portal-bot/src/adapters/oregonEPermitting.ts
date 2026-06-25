@@ -1,8 +1,9 @@
 import path from "node:path";
 import type { ProjectRecord, ReviewerReport } from "../../../shared/src/types";
-import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, type PortalContext, type PortalStepResult } from "../adapter";
+import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, ok, fail, type PortalContext, type PortalStepResult } from "../adapter";
 import { openPortal } from "../browser";
-import { redactStatusText, safeAction } from "../safeAction";
+import { scanStatusFromBody, safeAction } from "../safeAction";
+import { snap, str, num } from "../snapshot";
 import { scrapeReviewScreen, compareReviewFields } from "../reviewScreenScraper";
 
 // Oregon ePermitting (Accela ACA) adapter
@@ -11,28 +12,6 @@ import { scrapeReviewScreen, compareReviewFields } from "../reviewScreenScraper"
 // The human must perform those actions after reviewing the staged package.
 
 const BASE_URL = "https://aca-oregon.accela.com/oregon";
-
-function ok(message: string, data: Record<string, unknown> = {}): PortalStepResult {
-  return { ok: true, message, data };
-}
-
-function fail(message: string, data: Record<string, unknown> = {}): PortalStepResult {
-  return { ok: false, message, data };
-}
-
-// Fields like moduleQuantity, inverterModel etc. live in parserSnapshot, not the top-level record
-function snap(project: ProjectRecord): Record<string, unknown> {
-  return (project.parserSnapshot ?? {}) as Record<string, unknown>;
-}
-
-function str(v: unknown): string {
-  return typeof v === "string" ? v : v == null ? "" : String(v);
-}
-
-function num(v: unknown): number | null {
-  const n = Number(v);
-  return isNaN(n) ? null : n;
-}
 
 function buildDescriptionOfWork(project: ProjectRecord): string {
   const s = snap(project);
@@ -282,6 +261,10 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
     // Click Continue, wait for navigation, and check for blocking message bars.
     // Returns null on success, or a short error string if the page shows a validation error.
     const continueAndCheck = async (label: string): Promise<string | null> => {
+      // LLM-assisted gap-fill: after the fixed-selector fills, let the planner fill any
+      // REQUIRED field still empty on THIS page — from real project data only. No-op unless
+      // the staging runner enabled it; best-effort, never throws.
+      await this.runGapFill(this.page);
       const preUrl = String(this.page.url());
       const cont = this.page.getByRole("link", { name: /Continue Application/i }).first();
       if ((await cont.count()) === 0) return `${label}: Continue link not found on page`;
@@ -683,9 +666,12 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
 
       // Compare what the Accela review page shows against the project record.
       // Mismatches are surfaced to the dashboard so the operator can catch a silently
-      // wrong field before clicking Approve & Submit.
+      // wrong field before clicking Approve & Submit. Accela's "Step N: Review" is a
+      // read-only summary (no inputs), so pass the rendered page text as the fallback
+      // haystack — otherwise the structured scrape is empty and every field looks missing.
       const reviewFields = await scrapeReviewScreen(this.page).catch(() => []);
-      const reviewMismatches = compareReviewFields(reviewFields, project);
+      const reviewBody = (await this.page.locator("body").innerText().catch(() => "")).slice(0, 20000);
+      const reviewMismatches = compareReviewFields(reviewFields, project, reviewBody);
 
       return ok(HUMAN_REVIEW_MESSAGE, {
         projectId: project.id,
@@ -698,6 +684,8 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
         finalReviewPacketUrl: `/api/projects/${project.id}/reviewer-report?format=html`,
         reviewMismatches,
         reviewAccurate: reviewMismatches.length === 0,
+        // What the LLM gap-fill added (and what it left blank for lack of real data).
+        gapFill: this.gapFillReport,
         nextHumanAction:
           "The browser is staged at the final review screen. Verify all fields and uploaded files, handle any MFA or fee payment, then click submit manually. AUTOMATION HAS STOPPED.",
       });
@@ -818,20 +806,10 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
     try {
       await this.page.goto(`${BASE_URL}/Cap/CapHome.aspx?module=Building&TabName=Building`);
       await this.page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
-
-      const bodyText = await this.page.locator("body").innerText().catch(() => "");
-      // Scan the page text for a row that contains one of the known application numbers.
-      // Return a REDACTED, capped snippet (account/meter-like digit runs masked) — never
-      // a multi-thousand-char raw portal body dump.
-      for (const num of applicationNumbers) {
-        if (!num) continue;
-        const idx = bodyText.indexOf(num);
-        if (idx === -1) continue;
-        const snippet = redactStatusText(bodyText.slice(Math.max(0, idx - 80), idx + 320));
-        if (snippet) return snippet;
-      }
-      // Fall back: a short, redacted slice of the My Records page body.
-      return redactStatusText(bodyText.slice(0, 600));
+      // Scan the page text for a row that contains one of the known application numbers and
+      // return a REDACTED, capped snippet (account/meter-like digit runs masked) — never a
+      // multi-thousand-char raw portal body dump.
+      return scanStatusFromBody(this.page, applicationNumbers);
     } catch {
       return null;
     }

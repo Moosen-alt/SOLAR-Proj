@@ -7,6 +7,7 @@ import { clientStagingOverlay } from "./clients";
 import { HttpError } from "./httpError";
 import { loadDefaultSignaturesByRole } from "./signatures";
 import { nowIso } from "./time";
+import { parseJson } from "./json";
 import { resolvePermitPath } from "./permitPath";
 
 // Classify an AHJ form by which mutually-exclusive solar application it is, from its
@@ -724,7 +725,7 @@ export function loadStoredTemplates(db: AppDb, ahj: string, state: string): Arra
     const stateOk = !row.state || !state || String(row.state).toLowerCase() === String(state).toLowerCase();
     if (!nameMatches || !stateOk || !row.pdf_blob) continue;
     let map: { formName?: string; sourceUrl?: string; fillMode?: string; textFields?: Record<string, string>; checkboxes?: Record<string, { source: string; equals?: string }>; overlayFields?: OverlayField[]; signatureFields?: SignaturePlacement[]; verified?: boolean } = {};
-    try { map = JSON.parse(row.field_map || "{}"); } catch { map = {}; }
+    map = parseJson(row.field_map, {});
     const textFields = map.textFields || {};
     const overlayFields = map.overlayFields || [];
     const signatureFields = map.signatureFields || [];

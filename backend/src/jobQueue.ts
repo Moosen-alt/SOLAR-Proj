@@ -4,14 +4,13 @@ import type { AppDb, SqlParam } from "./db";
 import { importMboxKnowledge } from "./knowledgeBase";
 import { runDuePermitChecks } from "./repository";
 import { scanFolder } from "./batchImport";
+import { nowIso } from "./time";
 
 export type JobType =
   | "permit_checks"
   | "nem_checks"
   | "mbox_import"
   | "folder_scan"
-  | "email_scan"
-  | "portal_run"
   | "autopilot";
 
 export type JobStatus = "pending" | "running" | "done" | "failed";
@@ -60,14 +59,6 @@ function mapJob(row: Row): JobRecord {
   };
 }
 
-function nowIso(): string {
-  return new Date().toISOString();
-}
-
-function uuid(): string {
-  return crypto.randomUUID();
-}
-
 export function enqueueJob(
   db: AppDb,
   jobType: JobType,
@@ -80,7 +71,7 @@ export function enqueueJob(
     maxRetries?: number;
   } = {},
 ): JobRecord {
-  const id = uuid();
+  const id = crypto.randomUUID();
   const ts = nowIso();
   db.run(
     `INSERT INTO job_queue

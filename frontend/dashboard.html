@@ -77,17 +77,6 @@
           <p class="muted">Loading daily operations report...</p>
         </div>
       </div>
-      <!-- Ops Board hidden for solo operation (team portfolio view); kept in DOM
-           with its IDs so loaders/renders never error. Restore by removing `hidden`. -->
-      <div id="opsBoardWrap" hidden>
-        <div class="section-head">
-          <h2>Ops Board</h2>
-          <span id="opsBoardStatus" class="badge">syncing</span>
-        </div>
-        <div id="opsBoard" class="ops-board">
-          <p class="muted">Loading portfolio action board...</p>
-        </div>
-      </div>
       <!-- Action Queue hidden for solo operation: it restated each project's
            blockers as role-based PM actions (Data QA / Permit Ops / NEM Ops /
            Submission Specialist), which is noise for a one-person operator — the
@@ -234,6 +223,10 @@
           <div id="reviewMismatchBanner" style="display:none;margin:6px 0 2px;padding:8px 12px;background:#fff3cd;border:1px solid #ffc107;border-radius:6px;font-size:12px;color:#664d03">
             <strong><i data-lucide="alert-triangle" style="width:13px;height:13px;vertical-align:-2px"></i> Portal review mismatch</strong> — the staged portal form may not match the project record. Review before approving.<br>
             <span id="reviewMismatchList" style="font-family:monospace;font-size:11px"></span>
+          </div>
+          <div id="gapFillBanner" style="display:none;margin:6px 0 2px;padding:8px 12px;background:#fde2e1;border:1px solid #f1948a;border-radius:6px;font-size:12px;color:#7b241c">
+            <strong><i data-lucide="alert-circle" style="width:13px;height:13px;vertical-align:-2px"></i> Required fields left blank</strong> — these portal fields had no project data, so the automation left them blank instead of guessing. Add the data to the project, then re-stage before submitting.<br>
+            <span id="gapFillList" style="font-family:monospace;font-size:11px"></span>
           </div>
           <div class="actions step-actions">
             <span class="actions-label">Advanced / override:</span>
