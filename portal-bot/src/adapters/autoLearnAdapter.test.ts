@@ -338,8 +338,10 @@ async function testMultiPageAdvance() {
         atReview: false,
       };
     }
-    // Page 2: the prior page's label should be in context, then we reach review.
-    assert.ok(req.alreadyFilledLabels.includes("Homeowner Name"), "page 2 sees prior labels");
+    // Page 2: alreadyFilledLabels resets per page. Carrying page 1's labels forward made the
+    // planner skip a later page that REUSED the same labels (PowerClerk reuses "Name"/"Address"/
+    // "Email" on each contact step), blanking it — so each page starts with an empty list.
+    assert.deepEqual(req.alreadyFilledLabels, [], "page 2 does not inherit page 1's filled labels");
     return {
       fills: [{ selectorIndex: 0, value: "240", field: "systemSize" }],
       atReview: true,

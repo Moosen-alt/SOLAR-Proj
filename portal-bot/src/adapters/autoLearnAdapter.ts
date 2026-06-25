@@ -610,7 +610,6 @@ export class AutoLearnAdapter extends BasePortalAdapter {
 
   private async learnImpl(context: PortalContext, project: ProjectRecord): Promise<LearnResult> {
     const steps: RecipeStep[] = [];
-    const alreadyFilledLabels: string[] = [];
     // Secrets (account/meter) are stripped before the LLM, so the planner can neither fill nor bind
     // them — yet they're exactly the fields a NEM/utility portal keys the customer on. Fill + bind
     // them deterministically below from the project's own values. Never sent to the model; the
@@ -690,6 +689,14 @@ export class AutoLearnAdapter extends BasePortalAdapter {
 
     for (let pageIdx = 0; pageIdx < this.maxPages; pageIdx++) {
       pageCount++;
+
+      // Labels filled on THIS page, used to dedup the initial fill pass against the
+      // post-selection re-scrape (d3) so a revealed field isn't filled twice. PER-PAGE on
+      // purpose: PowerClerk's wizard reuses identical labels ("Name", "Address", "Email",
+      // "Phone") across successive contact steps (Installer page, then Applicant page). A
+      // run-wide accumulator would tell the planner those labels were "already done" and it
+      // would skip the entire next contact page — leaving it blank.
+      const alreadyFilledLabels: string[] = [];
 
       // a2) Dismiss any modals/popups/banners and clear lingering loading scrims before
       //     extracting fields, so overlays can't intercept the actions we take this page.
