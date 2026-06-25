@@ -126,6 +126,11 @@ export interface LearnProgress {
   classification?: "form" | "dashboard" | "review" | "empty";
   fillsPlanned?: number;
   message: string;
+  // Milliseconds spent on the CURRENT step (time since the last real progress event).
+  // A heartbeat re-emits the last progress with a growing elapsedMs so the UI can tell a
+  // slow step (number climbing) from a hung one (climbing without ever advancing).
+  elapsedMs?: number;
+  heartbeat?: boolean;
 }
 
 export type LearnProgressFn = (p: LearnProgress) => void;
@@ -433,6 +438,12 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   // Wrapped so a throwing callback can never break the learn loop.
   private onProgress?: LearnProgressFn;
 
+  // Heartbeat state: re-emits the last progress with a growing elapsedMs so the UI can
+  // distinguish a slow step from a hung one. Reset on every REAL progress event.
+  private hbTimer: ReturnType<typeof setInterval> | null = null;
+  private lastProgress: LearnProgress | null = null;
+  private lastProgressAtMs = 0;
+
   constructor(
     portalName: string,
     private planner: LearnPlanner,
@@ -528,11 +539,46 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   // Emit a progress signal, swallowing any callback error so UI plumbing can never
   // interfere with the learn run itself.
   private emitProgress(p: LearnProgress): void {
+    // Record this as the last REAL progress and reset the per-step clock so the heartbeat
+    // measures elapsed-on-this-step from here.
+    this.lastProgress = p;
+    this.lastProgressAtMs = Date.now();
     if (!this.onProgress) return;
-    try { this.onProgress(p); } catch { /* progress sink must never break the run */ }
+    try { this.onProgress({ ...p, elapsedMs: 0 }); } catch { /* progress sink must never break the run */ }
+  }
+
+  // Start a 5s heartbeat that re-emits the last real progress with a climbing elapsedMs and a
+  // "(still working — Ns)" suffix. The number climbing without the step advancing is the signal
+  // that a step is genuinely hung vs. merely slow. Safe to call once per run.
+  private startHeartbeat(): void {
+    if (this.hbTimer || !this.onProgress) return;
+    this.hbTimer = setInterval(() => {
+      if (!this.lastProgress || !this.onProgress) return;
+      const elapsedMs = Date.now() - this.lastProgressAtMs;
+      if (elapsedMs < 5000) return; // only chime once a step has been quiet a while
+      const secs = Math.round(elapsedMs / 1000);
+      const base = this.lastProgress.message.replace(/\s*\(still working[^)]*\)\s*$/, "");
+      try {
+        this.onProgress({ ...this.lastProgress, elapsedMs, heartbeat: true, message: `${base} (still working — ${secs}s)` });
+      } catch { /* progress sink must never break the run */ }
+    }, 5000);
+    if (typeof (this.hbTimer as { unref?: () => void }).unref === "function") (this.hbTimer as { unref?: () => void }).unref!();
+  }
+
+  private stopHeartbeat(): void {
+    if (this.hbTimer) { clearInterval(this.hbTimer); this.hbTimer = null; }
   }
 
   async learn(context: PortalContext, project: ProjectRecord): Promise<LearnResult> {
+    this.startHeartbeat();
+    try {
+      return await this.learnImpl(context, project);
+    } finally {
+      this.stopHeartbeat();
+    }
+  }
+
+  private async learnImpl(context: PortalContext, project: ProjectRecord): Promise<LearnResult> {
     const steps: RecipeStep[] = [];
     const alreadyFilledLabels: string[] = [];
     // Secrets (account/meter) are stripped before the LLM, so the planner can neither fill nor bind
