@@ -142,10 +142,12 @@ const PAY_FEE = /\b(pay fee|pay now|submit & pay|submit and pay|make payment|con
 // final submit (recorded, never clicked) whenever the page has no fillable inputs.
 const SUBMIT_INTENT = /\b(continue application|submit application|file application|submit|finish|finalize|confirm submission|place order|complete submission)\b/i;
 
-// Markers that a page is the review/confirm step (Accela: "Step 3: Review", read-only
-// summary, "click the Continue Application button below", CapConfirm URL; PowerClerk and
-// similar: an accept-terms gate / "will not be submitted until" acknowledgment).
-const REVIEW_MARKERS = /\bstep\s*\d+\s*:?\s*review\b|review all information|continue application button below|please review (all )?information|\(read-only\)|accept terms and conditions|will not be submitted until/i;
+// Markers that a page is the review/confirm step — portal-AGNOSTIC phrasing only (a generic
+// "Step N: Review", a read-only summary, a "please review" instruction, or a terms-acceptance /
+// "will not be submitted until" acknowledgment gate). Portal-specific review behaviour (e.g. a
+// submit-intent button on a no-input page) is detected STRUCTURALLY, not by one portal's wording,
+// so this stays generic across never-seen portals.
+const REVIEW_MARKERS = /\bstep\s*\d+\s*:?\s*review\b|review (all )?(your |the )?(information|application|details|entries)\b|please review|\(read-only\)|review and submit|review & submit|accept (the )?terms and conditions|will not be submitted until/i;
 
 // Terms-acceptance / certification / acknowledgment checkboxes that gate a final submit.
 // Portal-agnostic: PowerClerk "Click to Accept Terms and Conditions" + "I understand that

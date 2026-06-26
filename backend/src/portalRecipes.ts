@@ -314,3 +314,67 @@ export function resolveRecipeFieldValues(db: AppDb, project: ProjectRecord, port
   // client licensing overlay → derived installer name split (each later layer wins).
   return { ...snapshotFlat, ...equipment, ...projectFields, ...overlay, ...installerSplit };
 }
+
+// ---------------------------------------------------------------------------
+// Post-learn binding pass.
+//
+// The auto-learned recipe is the ONLY home for a portal's specifics, so any fill the
+// learner recorded as a frozen LITERAL `value` (instead of a reusable `field` binding)
+// replays verbatim on every future project. When that literal happens to be THIS project's
+// own data (homeowner name, site address, system size, …), replaying it onto a DIFFERENT
+// project produces wrong-but-plausible data that per-project verification — which only checks
+// against the learn-project's data — can never catch.
+//
+// This deterministic pass converts a recorded literal into a `field` binding when the literal
+// equals exactly one project field value. A literal matching MULTIPLE field values is AMBIGUOUS
+// (we can't know which key the portal expects) — left literal and reported, so the caller can
+// refuse to promote the recipe. Truly portal-specific literals (dropdown options, "Yes"/"No",
+// "Solar") match no project value and are kept as-is.
+// ---------------------------------------------------------------------------
+export interface LiteralBindingResult {
+  steps: RecipeStep[];
+  /** Literals uniquely matched and converted to field bindings. */
+  bound: Array<{ value: string; field: string; note?: string }>;
+  /** Literals that equal project data but map to >1 field — cannot be safely auto-bound. */
+  ambiguous: Array<{ value: string; candidates: string[]; note?: string }>;
+}
+
+export function convertLiteralsToBoundFields(
+  steps: RecipeStep[],
+  projectFields: Record<string, string>,
+): LiteralBindingResult {
+  const norm = (v: string): string => String(v || "").toLowerCase().replace(/\s+/g, " ").trim();
+
+  // value -> the project field key(s) holding exactly that value. Skip very short values
+  // (<2 chars) and the volatile todayDate helper — not stable identifying data.
+  const valueToFields = new Map<string, string[]>();
+  for (const [key, raw] of Object.entries(projectFields)) {
+    if (key === "todayDate") continue;
+    const nv = norm(raw);
+    if (nv.length < 2) continue;
+    const arr = valueToFields.get(nv) ?? [];
+    if (!arr.includes(key)) arr.push(key);
+    valueToFields.set(nv, arr);
+  }
+
+  const bound: LiteralBindingResult["bound"] = [];
+  const ambiguous: LiteralBindingResult["ambiguous"] = [];
+  const out = steps.map((step) => {
+    const bindable = (step.action === "fill" || step.action === "select") && !!step.value && !step.field && !step.sensitive;
+    if (!bindable) return step;
+    const matches = valueToFields.get(norm(step.value as string));
+    if (!matches || matches.length === 0) return step; // portal-specific literal — keep as-is
+    if (matches.length === 1) {
+      bound.push({ value: step.value as string, field: matches[0], note: step.note });
+      // Replace the frozen literal with a reusable binding (resolveValue() at replay reads
+      // fieldValues[field]); drop the literal so it can never be replayed verbatim.
+      const next: RecipeStep = { ...step, field: matches[0] };
+      delete next.value;
+      return next;
+    }
+    ambiguous.push({ value: step.value as string, candidates: matches, note: step.note });
+    return step; // leave literal; caller forces a draft
+  });
+
+  return { steps: out, bound, ambiguous };
+}

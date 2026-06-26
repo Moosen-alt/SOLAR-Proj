@@ -28,7 +28,7 @@ import { compareReviewFields } from "../../portal-bot/src/reviewScreenScraper";
 import type { LearnPlanRequest, LearnPlanResponse } from "../../portal-bot/src/adapters/autoLearnAdapter";
 import { createLLMProvider } from "./llm";
 import { getDecryptedCredential, getDecryptedCredentialByUrl, getDecryptedCredentialAny } from "./portalCredentials";
-import { resolveRecipeFieldValues, startPortalRecording, savePortalRecipeSteps, getPortalRecipe } from "./portalRecipes";
+import { resolveRecipeFieldValues, startPortalRecording, savePortalRecipeSteps, getPortalRecipe, convertLiteralsToBoundFields } from "./portalRecipes";
 import { projectDocsByType } from "./projectDocuments";
 import { buildUtilityPackage } from "./docSplitter";
 import { addAuditLog } from "./audit";
@@ -351,17 +351,32 @@ export async function autoLearnPortal(
   const docMisses = learn.missingRequiredDocs ?? [];
   const validationBlocks = learn.validationBlocks ?? [];
   const hasHardBlockers = requiredMisses.length > 0 || docMisses.length > 0 || validationBlocks.length > 0;
-  const trusted = verification.accurate && !textContradicts && !hasHardBlockers;
+
+  // POST-LEARN BINDING PASS. The auto-learned recipe is the ONLY home for portal specifics, so a
+  // fill recorded as a frozen LITERAL that equals THIS project's data would replay verbatim onto
+  // every future project. Convert such literals into reusable field bindings; a literal that
+  // matches project data AMBIGUOUSLY (>1 field) can't be safely auto-bound, so treat it as a hard
+  // blocker — never promote a contaminated recipe to trusted.
+  const { steps: boundSteps, bound: boundLiterals, ambiguous: ambiguousLiterals } =
+    convertLiteralsToBoundFields(learn.steps, projectFields);
+  if (ambiguousLiterals.length) {
+    verification.issues.push(
+      `Recorded literal value(s) match this project's data but could not be uniquely bound to a field (${ambiguousLiterals.slice(0, 6).map((a) => `"${a.value}"→${a.candidates.join("/")}`).join(", ")}). These would replay verbatim onto other projects — review before trusting.`,
+    );
+  }
+  const bindingNote = boundLiterals.length ? ` Bound ${boundLiterals.length} literal value(s) to project fields for safe replay.` : "";
+
+  const trusted = verification.accurate && !textContradicts && !hasHardBlockers && ambiguousLiterals.length === 0;
   if (hasHardBlockers) {
     if (requiredMisses.length) verification.issues.push(`Required field(s) left blank/unselected — fill before trusting: ${requiredMisses.slice(0, 12).join(", ")}${requiredMisses.length > 12 ? ", …" : ""}.`);
     if (docMisses.length) verification.issues.push(`Required document(s) not attached: ${docMisses.slice(0, 8).join(", ")}.`);
     if (validationBlocks.length) verification.issues.push(`Portal validation blocked an advance: ${validationBlocks.slice(0, 8).join("; ")}.`);
   }
-  savePortalRecipeSteps(db, stub.id, learn.steps, {
+  savePortalRecipeSteps(db, stub.id, boundSteps, {
     status: trusted ? "complete" : "recording",
     notes: trusted
-      ? `Auto-learned and verified (${verification.overallConfidence} confidence) on ${learn.pageCount} page(s). Final submit recorded for the trusted-submit allowlist; never auto-clicked unless the operator opts in.`
-      : `Auto-learned but NOT verified — review the captured fill and confirm before trusting. Issues: ${verification.issues.join("; ") || "low confidence"}.`,
+      ? `Auto-learned and verified (${verification.overallConfidence} confidence) on ${learn.pageCount} page(s).${bindingNote} Final submit recorded for the trusted-submit allowlist; never auto-clicked unless the operator opts in.`
+      : `Auto-learned but NOT verified — review the captured fill and confirm before trusting.${bindingNote} Issues: ${verification.issues.join("; ") || "low confidence"}.`,
   });
 
   // Debug: dump the three verification signals + the trust-gate decision to disk so the

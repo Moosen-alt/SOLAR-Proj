@@ -894,76 +894,25 @@ ${JSON.stringify(input.unbound, null, 2)}`;
 
 RECOVERY MODE: if the user message contains a "RECOVERY" field, the automation is STUCK or CYCLING — a prior action looped it back. Treat that directive as top priority: pick a DIFFERENT action than the one implied last time. Never return a navigateIndex that restarts an already-started application (no "New/Start/Building Dept Application" when mid-flow); instead make forward progress on THIS page — fill remaining required fields, Select the correct results row, check the required application-type option, or advance with this page's Continue/Next.
 
-WORK-SITE ADDRESS SEARCH (Accela / Oregon ePermitting WorkLocation step):
-- Fill the project's work-site address into the location fields: street NUMBER (a small numeric field, id often "StreetNo"/"StreetNumber"), street NAME (id often "StreetName"), and street direction only if the project address has one. Leave Unit/City blank unless required. Use the project's address data.
-- Click the address form's OWN "Search" button (the one beside the address fields). Do NOT click a global/header search box or a "Search >>" / "Search my records" control — those run a records search and bounce you to the permit-records LIST/home page, not the address results.
-- If after searching you land on a page showing a LIST of EXISTING permits / "my records" (a grid of prior applications) or back on the home page, the address search did NOT take. Do NOT start a new application. Re-enter the street number + name and click the address form's Search again.
-- When the address results grid appears, proceed to JURISDICTION SELECTION below.
+GENERIC FORM-FILLING (works on ANY portal — reason from the LIVE page, not from memorized portal rules):
+- Multi-step wizards: on each page fill EVERY field you can confidently map from the project DATA, then return advanceIndex = the form's own "Next"/"Continue"/"Save and continue" button to the next INPUT page. Do not skip an input page, and do NOT set atReview on a page that still has empty required fields.
+- SEARCH / LOOKUP boxes (address, parcel, account): enter the most-searchable CORE token, not the full string. For an ADDRESS search, put the street NAME WITHOUT the house number or street-type suffix into the street-name field (e.g. for "925 N Grant St" search "Grant"); put the house number and any leading direction into their own number/direction fields when those exist. Click the Search button ADJACENT to those fields — never a global/header search or a "search my records" control. If a search returns no results, or bounces you to a records LIST / home page, the search did NOT take: re-enter a broader token and search again; do NOT start a new application.
+- RESULTS GRID / multiple matches: when a list of results or jurisdictions appears, pick the row matching the project's jurisdictionContext (target AHJ / city / county) and discipline, and put that row's Select link in navigateIndex. The SAME address may appear under several jurisdictions (e.g. a city vs its county) exposing different application-type lists — choose the one matching jurisdictionContext. After selecting, check EXACTLY ONE application type matching the permitDiscipline (a checkbox fill with value "true"); never check multiple. One jurisdiction + one discipline per run.
+- COMPUTE buttons ("Calculate", "Recalculate", "Update Totals") only derive values — they are NOT the wizard advance and NOT submit. Do not return them as advanceIndex/finalSubmitIndex; still return the real Next/Continue as advanceIndex.
+- DECOY navigation: prefer the form's OWN Next/Continue/Save button. NEVER choose a document/page pager ("Next page", "Previous page", "Page N") or a link that RESTARTS the flow ("New/Start Application") when an application is already begun.
 
-ADDRESS SEARCH & JURISDICTION SELECTION (Accela / Oregon ePermitting and similar):
-- The SAME street address can appear MULTIPLE times in a results grid under different jurisdictions — e.g. "CITY APPLICATIONS" (the city) vs "COUNTY APPLICATIONS" (the county). These are DIFFERENT permitting authorities and expose DIFFERENT application-type lists. Picking the wrong row gets the wrong permit.
-- When jurisdictionContext is provided, use it to choose the correct "Select" link: pick the row whose city/county matches the target jurisdiction for THIS permit discipline, and put that row's Select link in navigateIndex.
-- After a row is selected, an application-type checklist appears. The "permitDiscipline" in jurisdictionContext tells you which ONE to check:
-  - "structural" → check the Building/Structural type (e.g. "Residential - Structural"); this is usually under the CITY's list.
-  - "electrical" → check the Electrical type (e.g. "Residential - Electrical"). If the city's list has NO electrical option, select the COUNTY APPLICATIONS row for the SAME address instead, then check "Residential - Electrical".
-  - Check EXACTLY ONE application type matching the discipline — put that checkbox in "fills" with value "true". Never check multiple application types.
-- One jurisdiction + one discipline per run. Do not try to file both structural and electrical in the same pass.
+SOLAR DOMAIN DEFAULTS (apply when a REQUIRED field asks and the project DATA / kbContext doesn't specify — these are technology facts, NOT portal-specific rules):
+- Equipment: map inverter make/model/qty, module make/model/qty/wattage, and DC/AC system size from project DATA. For an equipment REPEATER (an inverter row + one or more PV-array rows, each with its own model + Qty), map each array's Qty/model to THAT array (arrayNModuleQuantity / arrayNModuleModel); never put a module count into the inverter Qty. If there is one combined module field instead of a repeater, use the totals (moduleQty, moduleModel, moduleMake). A page asking for system technical details is a required INPUT page — fill it, never treat it as review.
+- Energy source → Solar; prime mover → Photovoltaic; type → Static Inverter; energy storage → No unless the project has a battery.
+- "Recommended / utility smart inverter settings?" Yes/No → Yes for standard UL 1741 SB residential inverters (IQ8, IQ7, SolarEdge HD-Wave, Tesla, etc.); No only if the plans show a non-UL-1741-SB inverter. This is a Yes/No answer, not a plan-set drawing.
+- Meter aggregation → No; pole-mounted meter → No; limit export capacity → No — unless the project DATA says otherwise.
+- NEVER check an "equipment not listed / not in the list" option; use the searchable manufacturer/model pickers instead.
+- For an electrical-services / fee page that lists many capacity tiers, fill ONLY the renewable-energy / PV tier matching the system's DC nameplate (systemSizeDcKw) and leave the other count fields EMPTY (not 0). If a tier takes a count, it is normally "1"; only a single "total kVA" field takes the kVA number. A "Category of Construction"/"Type of Work" select with no project value → use the most generic option ("Other" → reveals a text field, fill "Solar"; type of work → "New").
+- A required DATE field with no project value (e.g. an estimated commissioning date) → use todayDate plus a few weeks, formatted MM/DD/YYYY.
+- Any REQUIRED (asterisk) Yes/No or dropdown MUST be answered — use these defaults or kbContext rather than leaving it blank.
 
-SMART INVERTER SETTINGS (PGE PowerClerk and similar utility NEM portals):
-- "Will you be using PGE recommended smart inverter settings?" (or similar "utility recommended smart inverter settings" question) → answer "Yes" for standard grid-tied residential solar systems. UL 1741 SB listed inverters (IQ8, IQ7, SolarEdge HD-Wave, Tesla Inverter, etc.) all support the utility's default smart-inverter profile. Only answer "No" if the plans explicitly show a non-UL-1741-SB inverter.
-- This is a Yes/No radio or dropdown — not a file upload or a drawing requirement on the plan set.
-- "Will meter aggregation be used?" or "Meter aggregation?" → answer "No" for a standard single-home residential project unless the project data says otherwise.
-- "Is meter mounted on a pole?" or "Pole-mounted meter?" → answer "No" for the vast majority of residential rooftop solar; only answer "Yes" when the project address explicitly calls out a pole mount or the site plan shows a pole-mounted service.
-- "Do you propose to limit the export capacity?" (or "Will you limit export?") → answer "No" for a standard residential net-metering project (the full system output is exported); only answer "Yes" if the project data explicitly specifies an export-capacity limit/cap.
-- REQUIRED CHOICE GROUPS: any required (asterisk-marked) Yes/No radio or dropdown MUST be answered — do not leave a required choice group blank. If the kbContext notes give the utility's policy answer (smart inverter, aggregation, export limit), follow it; otherwise use the residential defaults above.
-
-GENERATION EQUIPMENT PAGE (PowerClerk step "Generation Equipment", "Proposed Generating System", or similar):
-- "Energy Source" dropdown → "a. Solar"
-- "Prime Mover" dropdown → "Photovoltaic"
-- "Type" dropdown → "Static Inverter" (always for a solar PV system with an inverter)
-- "Energy Storage" dropdown → "No" unless the project explicitly has a battery (hasBattery/energyStorage = true/yes → "Yes")
-- "The proposed PV equipment is not listed" checkbox → NEVER check this. Always leave it UNCHECKED. The searchable manufacturer/model dropdowns below it are the correct path; checking "not listed" bypasses them and degrades to plain text inputs that the portal scores as unlisted equipment.
-- "Are all inverters lab certified (UL 1741 SB)?" → "Yes" for standard grid-tied residential solar (IQ8, IQ7, Tesla, SolarEdge HD-Wave, etc. are all UL 1741 SB listed); only "No" when the plans explicitly show a non-certified inverter.
-- Fill inverter quantity from inverterQty; inverter manufacturer/model via the searchable dropdown (type the manufacturer name to find it).
-- Fill module manufacturer from moduleMake and module model from moduleModel via the searchable dropdown.
-- After filling equipment fields, identify the correct "Next" or "Continue" wizard button and return it as advanceIndex.
-
-SYSTEM INFORMATION / TECHNICAL DETAILS PAGE (PowerClerk step "System Information", "Technical Information", "PV System Details"):
-- This page MUST be filled — do NOT skip it or set atReview=true on it. It is a required input page, not a review screen.
-- Fill ALL available fields using project data: DC system size (systemSizeDcKw), AC system size (systemSizeAcKw), inverter model (inverterModel), module make/model (moduleMake, moduleModel), module count (moduleQty), panel wattage (moduleWattage), battery info if present.
-- "Number of inverters" → inverterQty. "Inverter manufacturer" → inverterMake. "Module manufacturer" → moduleMake.
-- EQUIPMENT REPEATER (PV System Specification with an Inverter row + one or more PV Array rows, each its own model dropdown + Qty): the inverter "Qty" is inverterQty; each PV Array's "Qty" is that array's module count. Per-array values are in projectFields as array1ModuleQuantity / array1ModuleModel / array1ModuleManufacturer (array2…, etc.). Map each array's Qty to arrayNModuleQuantity and its model dropdown to arrayNModuleModel — do NOT put the module count into the inverter Qty. If there is one combined module field instead of a repeater, use the totals (moduleQty, moduleModel, moduleMake).
-- CALCULATE / UPDATE TOTALS button (e.g. "Calculate", "Recalculate", "Update Totals"): this is NOT the wizard advance button and NOT a submit — it only computes derived values (system rating, export capacity) from the equipment you entered. Do NOT return it as advanceIndex/finalSubmitIndex; the bot clicks it automatically after the equipment is filled. Still return the real "Next"/"Continue" button as advanceIndex.
-- After filling system fields, identify the correct "Next" or "Continue" wizard button and return it as advanceIndex so the form proceeds to the next step.
-
-ELECTRICAL SERVICES PAGE (Accela "Residential - Electrical Comprehensive" and similar):
-- This page lists MANY count fields — services/feeders by amperage tier, temp services, branch circuits, residential wiring sq ft, renewable energy by kVA tier, etc. For a SOLAR project, fill ONLY the renewable-energy field whose kVA tier matches the system, and leave EVERY other count field blank (do not put 0 — leave empty).
-- Pick the kVA tier from the DC NAMEPLATE size (systemSizeDcKw — the larger value; the jurisdiction keys the fee to the DC nameplate, NOT the AC inverter output):
-  - ≤ 5 kVA → "Renewable energy for electrical systems - 5kva or less"
-  - 5.01–15 kVA → the "5.01kva through 15kva" field
-  - 15.01–25 kVA → the "15.01kva through 25kva" field
-  - > 25 kVA → "Renewable Energy - solar generation over 25 kva" (enter the TOTAL kVA here, not a count)
-  For the ≤25 kVA tiers, the value is the COUNT of systems — normally "1". Only the >25 field takes the total kVA. (Example: 5.280 kW DC → the 5.01–15 kVA field = "1".)
-- Required selects, with the values a residential solar install uses:
-  - "Category of Construction" → "Other" (this reveals a required "Other Category of Construction" text field → enter "Solar").
-  - "Type of Work" → "New".
-  - "Project includes any of the following" → "Not Applicable" (e.g. "01-Not Applicable").
-- "Plan Review Required" radio: leave its default (typically "No") unless the page clearly requires Yes; never flip it on speculatively.
-
-PGE POWERCLERK NET METERING FORM RULES (applies when URL contains "powerclerk.com"):
-- Several wizard steps show a NEAR-IDENTICAL contact block ("Name / Last / Company / Address / City / State / Zip / Email / Phone"). Do NOT decide whose data to fill from the FIELD LABELS — they are the same on every contact step. Decide ONLY from the page/section HEADING and the wizard step name (in pageTitle/bodyText, e.g. the highlighted stepper item "Preparer Information" / "PGE Customer Information" / "Installer Information", or the section heading like "Applicant (PGE Customer) Information").
-- PREPARER INFORMATION step / heading ("Preparer Information") → the person preparing/submitting the application = the INSTALLER. Fill: installerContactName (First), installer last name (Last), installerCompanyName (Company), installerStreet (Address), installerCity/installerState/installerZip, installerEmail (Email), installerPhone (Phone).
-- APPLICANT / PGE CUSTOMER step / heading ("PGE Customer Information", "Applicant (PGE Customer) Information", "Customer Information", "Property Owner") → the HOMEOWNER. Fill: homeownerFirstName (First), homeownerLastName (Last), homeownerCompany if present else leave Company blank, street (Address), city (City), state (State), zip (Zip), homeownerEmail (Email), homeownerPhone (Phone). NEVER put installer name/company/email/phone here. If homeownerEmail or homeownerPhone are empty, leave those fields blank rather than substituting installer values.
-- INSTALLER INFORMATION step / heading ("Installer Information") → the INSTALLER company contact, same installer fields as the Preparer step.
-- "Existing contact to use for this contact" dropdown → leave on its default ("New Contact") unless project data names an existing contact to reuse.
-- "Co-applicant" name fields → leave blank unless project data provides a co-applicant.
-- SERVICE LOCATION step ("Street / City / State / Zip / Type / Schedule" for the PGE service address):
-  - Fill Street with "street", City with "city", State with "state", Zip with "zip" from project.
-  - "Type" dropdown → "Residential" for residential solar. "Schedule" dropdown → "utilitySchedule" if present, otherwise "Schedule 7" for residential.
-  - After Type + Schedule are set, ACCOUNT NUMBER and METER NUMBER fields appear: label "Account Number"/"Account #"/"PGE Account" → field: "accountNumber" (sensitive, no literal value); label "Meter Number"/"Meter #" → field: "meterNumber" (sensitive, no literal value).
-  - "meter is mounted on a pole" / "Primary Service Account" / "Customer-Owned Transformer" checkboxes → do NOT check unless project data explicitly says so.
-  - "Estimated Commissioning Date" → today + 28 days (todayDate is in projectFields as YYYY-MM-DD; format MM/DD/YYYY); leave blank if todayDate absent.
-- AGGREGATION step ("aggregate my meters" / "No aggregation") → select "No aggregation" as a literal FIXED choice; never bind to a project field.
+SENSITIVE FIELDS — never store a literal value; bind the field KEY only (the adapter fills these from the encrypted credential store, not from the recipe):
+- Account number ("Account Number"/"Account #") → field: "accountNumber". Meter number ("Meter Number"/"Meter #") → field: "meterNumber". Password / SSN → never fill.
 
 HOMEOWNER vs. INSTALLER FIELD DISAMBIGUATION (for ANY portal):
 - When field labels are GENERIC ("Name", "Email", "Phone", "Address", "Company") and don't themselves say customer-vs-installer, use the SECTION HEADING / wizard-step name / surrounding bodyText to decide whose contact the block is for. The heading is authoritative over the field shape.
@@ -984,8 +933,8 @@ HARD SAFETY RULES:
 - NEVER choose a pay / payment / fee / checkout / invoice button as "advance", "navigate", or anything to click. Omit it entirely.
 - The final submit button is RECORDED ONLY (finalSubmitIndex) and is NEVER clicked — do not put it in advanceIndex.
 - "advanceIndex" is ONLY a Next/Continue/Save-and-continue button that goes to the next INPUT page (not the final submit).
-- BEWARE DECOY PAGER BUTTONS: some portals (PowerClerk) render BOTH a form-advance button labeled exactly "Next" (or "Continue", "Save & Continue") AND a header document/page pager labeled "Next page" / "Previous page". The pager does NOT advance the wizard — choosing it leaves the form stuck on the same step. Always prefer the exact "Next"/"Continue" wizard button; NEVER pick "Next page"/"Previous page"/"Page N" as advanceIndex.
-- CRITICAL (Accela "Continue Application" trap): if this page is a READ-ONLY REVIEW/CONFIRM page (no fillable inputs — only a summary of previously entered data + Edit links, or body text like "Step N: Review" / "review all information" / "click the Continue Application button below" / "(Read-only)"), then set atReview=true and treat the primary button (even if labeled "Continue Application" or "Continue") as the finalSubmitIndex — NEVER as advanceIndex. On Oregon ePermitting/Accela, "Continue Application" advances on input pages but SUBMITS on the Review step. When in doubt and there are no fields to fill, STOP (atReview=true) and record the button as final submit.
+- BEWARE DECOY PAGER BUTTONS: some portals render BOTH a form-advance button labeled exactly "Next" (or "Continue", "Save & Continue") AND a header document/page pager labeled "Next page" / "Previous page". The pager does NOT advance the wizard — choosing it leaves the form stuck on the same step. Always prefer the exact "Next"/"Continue" wizard button; NEVER pick "Next page"/"Previous page"/"Page N" as advanceIndex.
+- CRITICAL (submit-on-review trap): if this page is a READ-ONLY REVIEW/CONFIRM page (no fillable inputs — only a summary of previously entered data + Edit links, or body text like "Step N: Review" / "review all information" / "(read-only)"), OR it pairs a terms/certification acknowledgment with a submit-intent button, then set atReview=true and treat the primary submit-intent button (even if labeled "Continue Application"/"Continue"/"Submit"/"Finish") as the finalSubmitIndex — NEVER as advanceIndex. On many portals the same button advances on input pages but SUBMITS on the review page. When in doubt and there are no fields to fill, STOP (atReview=true) and record the button as final submit.
 - Prefer binding a field to a reusable project-field KEY (the "field" property, e.g. "homeownerName") over a literal value, so the recipe generalizes. Only use a literal "value" for fixed dropdown selections/portal-specific choices.
 - Do NOT fill a field you can't confidently map. Leave it out.
 - FILE UPLOADS: ignore file-input fields (fieldType "file") entirely — do NOT put them in "fills". The bot attaches the correct split document (SLD, site plan, inverter spec, meter photo, etc.) to each upload control automatically. Still return "advanceIndex" for the Next/Continue button on an upload page so the form proceeds.
