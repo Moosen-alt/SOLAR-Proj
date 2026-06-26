@@ -95,7 +95,7 @@ export function buildPortalPlanner(
 
   const llm = createLLMProvider();
   const planner = async (req: LearnPlanRequest): Promise<LearnPlanResponse> => {
-    const indexedFields = req.fields.map((f, i) => ({ index: i, label: f.label, fieldType: f.fieldType, options: f.options }));
+    const indexedFields = req.fields.map((f, i) => ({ index: i, label: f.label, fieldType: f.fieldType, options: f.options, section: f.section }));
     const plan = await llm.planPortalFields({
       url: req.url,
       pageTitle: req.pageTitle,

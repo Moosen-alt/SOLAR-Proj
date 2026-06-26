@@ -1340,8 +1340,10 @@ export interface AhjFieldMapResult {
 export interface PortalFieldPlanInput {
   url: string;
   pageTitle: string;
-  /** Fillable fields + candidate buttons on the current page (index is stable for this call). */
-  fields: Array<{ index: number; label: string; fieldType: string; options?: string[] }>;
+  /** Fillable fields + candidate buttons on the current page (index is stable for this call).
+   *  `section` is the field's enclosing heading / wizard-step (e.g. "Customer Information" vs
+   *  "Installer Information") — used to disambiguate otherwise-identical contact blocks. */
+  fields: Array<{ index: number; label: string; fieldType: string; options?: string[]; section?: string }>;
   /** Short, redacted page text snippet. */
   bodyText: string;
   /** The project/client field values available to fill (secrets already redacted). */

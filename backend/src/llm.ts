@@ -914,20 +914,28 @@ SOLAR DOMAIN DEFAULTS (apply when a REQUIRED field asks and the project DATA / k
 SENSITIVE FIELDS — never store a literal value; bind the field KEY only (the adapter fills these from the encrypted credential store, not from the recipe):
 - Account number ("Account Number"/"Account #") → field: "accountNumber". Meter number ("Meter Number"/"Meter #") → field: "meterNumber". Password / SSN → never fill.
 
-HOMEOWNER vs. INSTALLER FIELD DISAMBIGUATION (for ANY portal):
-- When field labels are GENERIC ("Name", "Email", "Phone", "Address", "Company") and don't themselves say customer-vs-installer, use the SECTION HEADING / wizard-step name / surrounding bodyText to decide whose contact the block is for. The heading is authoritative over the field shape.
-- Pages/sections for the APPLICANT / PROPERTY OWNER / CUSTOMER → homeownerFirstName, homeownerLastName, homeownerEmail, homeownerPhone, street, city, state, zip.
-- Pages/sections for the INSTALLER / CONTRACTOR / PREPARER / APPLICANT'S REPRESENTATIVE → installerContactName (first), installer last name, installerCompanyName, installerEmail, installerPhone, installerStreet.
-- Never cross-fill: installer email must NEVER go into a homeowner email field, and vice versa.
+HOMEOWNER vs INSTALLER — the #1 cause of a bad fill. Decide WHOSE contact a block is from each field's
+"section" (its enclosing heading / wizard-step), NEVER from the field labels — portals reuse IDENTICAL
+"Name / Last / Company / Address / Email / Phone" blocks on every step, so the labels can't tell them
+apart and ONLY the section can.
+- section names a CUSTOMER / PROPERTY OWNER / ACCOUNT HOLDER / SITE OWNER / "Applicant (Customer)" → the
+  HOMEOWNER: homeownerFirstName (First/Name), homeownerLastName (Last), homeownerEmail, homeownerPhone,
+  street, city, state, zip. Its "Company" field is the HOMEOWNER's company — for a residential project
+  this is almost always EMPTY, so LEAVE IT BLANK. NEVER put the installer/contractor company name in a
+  customer/owner section.
+- section names the INSTALLER / CONTRACTOR / SOLAR COMPANY / PREPARER / SUBMITTER / APPLICANT'S
+  REPRESENTATIVE → the INSTALLER: installerContactName (First/Name), installer last name (Last),
+  installerCompanyName (Company), installerEmail, installerPhone, installerStreet, ccbLicenseNumber. The
+  person preparing/submitting the application is the INSTALLER, not the homeowner.
+- "Applicant" alone is AMBIGUOUS: when the section pairs it with Customer / Account Holder / Property
+  Owner (e.g. "Applicant (Customer) Information"), Applicant = the HOMEOWNER. Treat "Applicant" as the
+  installer ONLY when the section clearly means the submitting contractor/company.
+- If a field has no "section", fall back to the page heading / step name in pageTitle/bodyText.
+- NEVER cross-fill: installer name/company/email/phone must NEVER land in a homeowner field, or vice
+  versa. If a homeowner email/phone is empty, LEAVE IT BLANK — do not substitute installer values.
 
 DASHBOARD / HOME PAGES:
 - If isDashboard=true (no fillable inputs — only buttons and navigation links), the bot just logged in and landed on the portal home/dashboard. Your ONLY job is to return "navigateIndex": the index of the link or button that starts a new application / interconnection request / permit application. Look for labels like "New Application", "Start Application", "New Pacific Power Customer Generation Application", "Start New Project", "Apply Now", "Create Application", or a tab/link for the relevant program. Set fills=[], advanceIndex=omit, atReview=false, and ONLY navigateIndex. Do NOT treat any dashboard navigation link as advanceIndex.
-
-CUSTOMER vs INSTALLER FIELDS — CRITICAL DISTINCTION:
-- Fields labeled "Customer", "Homeowner", "Property Owner", "Account Holder", "Site Owner", "Applicant" (when referring to the property owner), "Primary Contact" → use homeowner data: homeownerName, homeownerEmail, homeownerPhone.
-- Fields labeled "Contractor", "Installer", "Solar Company", "Company", "Business", "Vendor", "Licensed Contractor", "Applicant" (when referring to the submitting company) → use installer data: installerCompanyName, installerEmail, installerPhone, ccbLicenseNumber.
-- NEVER put the installer's email in a homeowner/customer email field. NEVER put the homeowner's name in the contractor/company name field.
-- When a page has both "Customer Email" and "Contractor Email" (or similar pair), fill both correctly with the appropriate person's email.
 
 HARD SAFETY RULES:
 - NEVER choose a pay / payment / fee / checkout / invoice button as "advance", "navigate", or anything to click. Omit it entirely.

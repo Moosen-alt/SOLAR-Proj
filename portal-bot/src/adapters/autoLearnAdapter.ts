@@ -45,6 +45,9 @@ export interface ExtractedField {
   /** True when the field has the HTML required attribute — used by gap-fill to report
    *  fields the planner had no data for. */
   required?: boolean;
+  /** The section/heading/wizard-step this field lives under — the planner uses it to tell
+   *  identical contact blocks apart (Customer vs Installer) without portal-specific rules. */
+  section?: string;
 }
 
 export interface LearnPlanRequest {
@@ -219,6 +222,9 @@ export interface RawField {
    *  Undefined for the main document. Stamped by extractAllFrames so the fill/replay locator
    *  can scope into the right frame (e.g. Accela's ACADialogFrame contact/upload dialogs). */
   frame?: string;
+  /** The section/heading/wizard-step this field lives under (e.g. "PGE Customer Information"
+   *  vs "Installer Information"). Lets the planner disambiguate identical contact blocks. */
+  section?: string;
 }
 
 // Serializable extractor — derives a label and selector hints for each interactive
@@ -244,6 +250,42 @@ export function extractFieldsInPage(els: Element[]): RawField[] {
     if (name) return name.trim();
     const text = (el.textContent || "").trim();
     if (text) return text;
+    return "";
+  }
+
+  // Derive the SECTION a field lives under — its fieldset legend / enclosing card-or-panel
+  // heading / nearest preceding heading / active wizard-step. Portals reuse IDENTICAL contact
+  // blocks ("Name / Company / Email / Phone") across steps, and the ONLY thing distinguishing a
+  // Customer block from an Installer/Preparer block is the SECTION HEADING — which is rendered as
+  // an <h*>/legend/stepper element the field selector never captures. Attaching it per field lets
+  // the planner route homeowner-vs-installer data correctly WITHOUT any portal-specific rules.
+  function sectionFor(el: Element): string {
+    const clean = (s: string | null | undefined): string => (s || "").replace(/\s+/g, " ").trim().slice(0, 80);
+    // 1) Enclosing fieldset legend — the strongest grouping signal.
+    const fs = el.closest("fieldset");
+    const legend = fs ? fs.querySelector("legend") : null;
+    if (legend && clean(legend.textContent)) return clean(legend.textContent);
+    // 2) Nearest card / panel / section container's leading heading.
+    const container = el.closest('section, [class*="panel"], [class*="card"], [class*="section"], [class*="form-section"], [class*="block"], [role="group"], [role="region"]');
+    if (container) {
+      const h = container.querySelector('legend, h1, h2, h3, h4, h5, h6, .panel-title, .card-title, .card-header, .section-title, .panel-heading');
+      if (h && clean(h.textContent)) return clean(h.textContent);
+    }
+    // 2b) Nearest heading appearing BEFORE this field (heading-then-fields sibling layouts).
+    let node: Element | null = el;
+    for (let hops = 0; node && hops < 6; hops++) {
+      let sib: Element | null = node.previousElementSibling;
+      while (sib) {
+        if (/^(H[1-6]|LEGEND)$/.test(sib.tagName) && clean(sib.textContent)) return clean(sib.textContent);
+        const inner = sib.querySelector ? sib.querySelector("h1, h2, h3, h4, h5, h6, legend") : null;
+        if (inner && clean(inner.textContent)) return clean(inner.textContent);
+        sib = sib.previousElementSibling;
+      }
+      node = node.parentElement;
+    }
+    // 3) The active wizard-step / stepper label (page-level "which step are we on").
+    const active = document.querySelector('.wizard-step.active, .step.active, [aria-current="step"], [class*="stepper"] [class*="active"], [class*="wizard"] [class*="active"]');
+    if (active && clean(active.textContent)) return clean(active.textContent);
     return "";
   }
 
@@ -336,7 +378,7 @@ export function extractFieldsInPage(els: Element[]): RawField[] {
     }
     const required = (el as HTMLInputElement).required || el.getAttribute("aria-required") === "true" || requiredByAsterisk || undefined;
 
-    out.push({ label, fieldType, options, role, name, placeholder, id, text, href, required: required || undefined });
+    out.push({ label, fieldType, options, role, name, placeholder, id, text, href, required: required || undefined, section: sectionFor(el) || undefined });
   }
   return out;
 }
@@ -403,6 +445,7 @@ export function toExtractedField(raw: RawField): ExtractedField {
   if (raw.options && raw.options.length) field.options = raw.options;
   if (raw.href) field.href = raw.href;
   if (raw.required) field.required = true;
+  if (raw.section) field.section = raw.section;
   return field;
 }
 
