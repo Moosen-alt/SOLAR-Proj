@@ -5,7 +5,7 @@ import type { ProjectRecord, RecipeSelector, RecipeStep } from "../../../shared/
 import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, type PortalContext, type PortalStepResult } from "../adapter";
 import { openPortal } from "../browser";
 import { selectWithFallback } from "../comboboxFill";
-import { detectChallengeFrame, readbackMatches, redactStatusText, safeAction, sleep, smartWait, waitForElement } from "../safeAction";
+import { detectChallengeFrame, readbackMatches, redactStatusText, safeAction, sleep, smartWait, waitForElement, waitForInteractiveControls } from "../safeAction";
 import { scrapeReviewScreen as scrapeReviewScreenShared } from "../reviewScreenScraper";
 import { performLogin } from "./loginFlow";
 
@@ -849,6 +849,16 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       //     extracting fields, so overlays can't intercept the actions we take this page.
       await this.dismissModals();
       await this.clearOverlays();
+
+      // a3) Section render-readiness: wait until the SPA has MOUNTED an interactive control
+      //     before scraping/filling. PGE PowerClerk (and other Vue/React wizards) render the
+      //     page chrome and inputs present-but-unbound for a beat; a fill fired then sets the
+      //     DOM value but it never commits to the JS model → a blank draft at review. This is
+      //     the same gate the hand-coded PowerClerk adapter and the RecipeAdapter replay use;
+      //     wiring it here makes the universal auto-learn path robust on PGE's multi-section
+      //     ("blocks") form. Non-throwing/best-effort — never skips the page (the empty-scrape
+      //     retry below still recovers a genuine miss).
+      await waitForInteractiveControls(this.page);
 
       // b) Extract fields + candidate buttons + nav links on the current page. Retry while
       //    EMPTY — right after a login redirect / SPA navigation the page can be mid-render

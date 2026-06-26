@@ -588,7 +588,11 @@ function portalFromProject(project: ProjectRecord): { portalName: string; portal
   let portalUrl = appProfile.sourceUrl || "";
   if (/PGE|PORTLAND GENERAL/i.test(project.utility)) {
     portalName = portalName || "PowerClerk";
-    portalUrl = "https://portlandgeneral.com/resources-for-solar-installers/interconnection-resource-library";
+    // The interconnection application lives behind the PowerClerk login, NOT on the public
+    // resource-library landing page. Seed the real portal-ENTRY URL so the universal self-seed
+    // (auto-learn) launches against the actual form instead of an info page it can never fill.
+    // Same value the hand-coded PowerClerk adapter targets (powerClerk.ts PGE_LOGIN_URL).
+    portalUrl = "https://pgenm.powerclerk.com/MvcAccount/Login";
   }
   if (/PACIFIC|PACIFICORP/i.test(project.utility)) {
     portalName = "Pacific Power Customer Generation Portal";
