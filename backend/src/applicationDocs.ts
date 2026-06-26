@@ -247,7 +247,7 @@ export const applicationProfiles: ApplicationRequirementProfile[] = [
       "NON-PRESCRIPTIVE PATH: requires PE-stamped plans, structural calcs, and sealed engineering letter. Full plan review fee.",
       "Oregon prescriptive PV checklist (BCD 440-5952) required on prescriptive path.",
       "A separate electrical permit from the City of Junction City's Building Division is required.",
-      "Utility interconnection (NEM): Pacific Power / PacifiCorp — applications submitted at pacificpower.net, NOT through PowerClerk (PGE).",
+      "Utility interconnection (NEM): Pacific Power / PacifiCorp customer generation is filed on a PowerClerk tenant (pacificorpnetmetering.powerclerk.com); pacificpower.net is the marketing/resource site, not the application portal.",
     ],
   },
   {

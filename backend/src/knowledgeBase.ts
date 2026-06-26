@@ -596,7 +596,11 @@ function portalFromProject(project: ProjectRecord): { portalName: string; portal
   }
   if (/PACIFIC|PACIFICORP/i.test(project.utility)) {
     portalName = "Pacific Power Customer Generation Portal";
-    portalUrl = "https://www.pacificpower.net/savings-energy-choices/customer-generation.html";
+    // PacifiCorp (Pacific Power / Rocky Mountain Power) customer generation runs on a PowerClerk
+    // tenant — the application form is behind this login, NOT the pacificpower.net marketing page.
+    // Seed the real portal-ENTRY URL (mirrors the PGE block above) so the universal self-seed
+    // (auto-learn) launches the actual form. portalCredentials.ts aliases the marketing hosts to this.
+    portalUrl = "https://pacificorpnetmetering.powerclerk.com/MvcAccount/Login";
   }
   return { portalName, portalUrl };
 }
@@ -1662,7 +1666,10 @@ function seedOfficialKnowledge(db: AppDb): void {
       ahj: "",
       utility: "Pacific Power",
       portalName: "Pacific Power Customer Generation Portal",
-      portalUrl: "https://www.pacificpower.net/savings-energy-choices/customer-generation.html",
+      // Real portal ENTRY url: PacifiCorp customer generation runs on a PowerClerk tenant
+      // (pacificorpnetmetering.powerclerk.com); pacificpower.net is the marketing/resource site,
+      // kept as a source citation below. Mirrors the PGE seed fix.
+      portalUrl: "https://pacificorpnetmetering.powerclerk.com/MvcAccount/Login",
       requiredDocuments: [
         "Pacific Power customer generation online application",
         "Meter picture",
