@@ -1649,8 +1649,12 @@ function renderSubmitGate() {
     $("submitGateStatus").textContent = "not synced";
     $("submitGate").innerHTML = `<p class="muted">Open a project to generate the PermitFlow + NEMflow submit gate.</p>`;
     $("copySubmitGateBtn").disabled = true;
-    $("prepareBtn").disabled = false;
-    $("prepareBtn").title = "";
+    // FAIL CLOSED: an un-loaded gate (e.g. the submit-gate fetch rejected and was swallowed by the
+    // Promise.allSettled in selectProject) must NOT enable staging. Leaving the button enabled here
+    // let a project be staged with none of the gate's blockers evaluated. Default to disabled until
+    // the gate is known; the operator can refresh the project to re-run it.
+    $("prepareBtn").disabled = true;
+    $("prepareBtn").title = "Submit gate not loaded yet — refresh the project to evaluate it before staging.";
     return;
   }
   $("copySubmitGateBtn").disabled = !gate.reportText;
@@ -1747,7 +1751,7 @@ function renderSubmitGate() {
               <p><strong>Owner:</strong> ${esc(check.ownerRole)}<br><strong>Next:</strong> ${esc(check.nextAction)}</p>
               <p class="muted">${esc(check.requirement)}</p>
               ${(check.evidence || []).length ? `<ul class="evidence-list">${check.evidence.slice(0, 4).map((line) => `<li>${esc(line)}</li>`).join("")}</ul>` : ""}
-              ${check.id === "ahj-form-mapping-verified" && check.status === "blocker" ? `<button type="button" class="secondary" style="font-size:12px;margin-top:4px" onclick="document.querySelector('.stage-accordion[data-stage-index=\\'2\\']')?.setAttribute('open','');document.getElementById('applicationDocs')?.scrollIntoView({behavior:'smooth'})">Go to App Docs → verify forms</button>` : ""}
+              ${check.id === "ahj-form-mapping-verified" && (check.status === "blocker" || check.status === "warning") ? `<button type="button" class="secondary" style="font-size:12px;margin-top:4px" onclick="document.querySelector('.stage-accordion[data-stage-index=\\'2\\']')?.setAttribute('open','');document.getElementById('applicationDocs')?.scrollIntoView({behavior:'smooth'})">Go to App Docs → verify forms</button>` : ""}
               <p class="muted">${esc(check.source)}</p>
             </article>
           `).join("") : `<p class="muted">No submit gate checks generated yet.</p>`}

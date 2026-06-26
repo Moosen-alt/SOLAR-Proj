@@ -2966,9 +2966,15 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
       id: "ahj-form-mapping-verified",
       title: "AHJ form mapping verified",
       lane: "permit",
-      status: unverifiedForms.length ? "blocker" : "pass",
+      // WARNING, not a staging blocker: staging only FILLS the portal to its review screen and
+      // stops — it never submits — and prepareSubmission() does not enforce form-mapping
+      // verification, so making this a hard blocker greyed out "Prepare Submittal" (and blocked
+      // unrelated NEM stages on an AHJ-permit check). Form-mapping verification belongs at the
+      // human FINAL-SUBMIT gate (manualSubmitChecklist), which is unchanged. Surfaced here so the
+      // operator still sees + clears it before they submit.
+      status: unverifiedForms.length ? "warning" : "pass",
       ownerRole: "Permit Coordinator",
-      requirement: "Auto-acquired/uploaded AHJ permit forms are filled by AI-derived field and signature placement. A human must preview each filled form and mark its mapping verified before a real submittal.",
+      requirement: "Auto-acquired/uploaded AHJ permit forms are filled by AI-derived field and signature placement. A human must preview each filled form and mark its mapping verified before the final submit.",
       evidence: unverifiedForms.length
         ? unverifiedForms.map((t) => `Unverified mapping: ${t.def.formName}`)
         : ["All matched AHJ forms are built-in or operator-verified."],
@@ -2976,6 +2982,23 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
         ? `Open Build → App Docs, download each filled form, confirm the fields/signature are correct, then click "Mark verified": ${unverifiedForms.map((t) => t.def.formName).join(", ")}.`
         : "AHJ form mappings are verified.",
       source: "ahj_form_templates.verified",
+    }),
+    // PERMIT-PATH gate — mirrors the actual prepareSubmission() 409 guard (the prescriptive and
+    // engineered applications are mutually exclusive; the AHJ takes exactly one). This is a REAL
+    // staging blocker: prepareSubmission throws 409 when the path is unknown, so surfacing it here
+    // keeps the Prepare Submittal button honest (it was previously a hidden surprise-409 on click).
+    submitGateCheck({
+      id: "permit-path",
+      title: "Permit path confirmed (prescriptive vs engineered)",
+      lane: "permit",
+      status: gatePermitPath === "unknown" ? "blocker" : "pass",
+      ownerRole: "Permit Coordinator",
+      requirement: "The prescriptive and engineered (PE-stamped) permit applications are mutually exclusive and the AHJ accepts exactly one. The permit path must be confirmed before the AHJ permit can be staged.",
+      evidence: [gatePermitPath === "unknown" ? "Permit path not yet confirmed for this project." : `Permit path: ${gatePermitPath}.`],
+      nextAction: gatePermitPath === "unknown"
+        ? "Set the permit path on Manual entry → Permit path (prescriptive vs engineered) before staging the AHJ permit."
+        : "Permit path is confirmed.",
+      source: "permit.path",
     }),
     submitGateCheck({
       id: "qc-human-review",
@@ -3021,7 +3044,11 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
       id: "ahj-nem-docs",
       title: "AHJ and NEM document packet",
       lane: applicationDocs.missingFields.some((field) => /utility|account|meter|interconnection|nem/i.test(field)) ? "nem" : "permit",
-      status: applicationDocs.missingFields.length ? "blocker" : applicationDocs.docs.length ? "pass" : "warning",
+      // WARNING, not a staging blocker: these are DATA fields needed to GENERATE the forms, which
+      // prepareSubmission() does not enforce (it enforces the document-inventory FILE-presence gate
+      // and the adapter-specific portal-field gate separately). Keeping it a hard blocker over-blocked
+      // the shared Prepare Submittal button. Surfaced as a warning so gaps are visible pre-submit.
+      status: applicationDocs.missingFields.length ? "warning" : applicationDocs.docs.length ? "pass" : "warning",
       ownerRole: "Permit Ops",
       requirement: "Required AHJ and utility/NEM forms, worksheets, and attachment lists must be generated with no missing source fields.",
       evidence: [
@@ -3062,7 +3089,12 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
       id: "nem-preflight",
       title: "NEMflow preflight",
       lane: "nem",
-      status: nemEvidenceMissing.length || blockedNemSteps.length || openNemCorrections.length ? "blocker" : !utilityEvidenceOk || accountEvidence.confidence === "medium" || meterEvidence.confidence === "medium" || waitingNemSteps.length ? "warning" : "pass",
+      // WARNING, not a staging blocker: prepareSubmission() does not enforce NEM evidence topics
+      // (account/meter/SLD/inverter proof) — for a real NEM stage it enforces the account/meter
+      // PORTAL FIELDS via validatePortalFields, which is the actual guard. Hard-blocking here greyed
+      // out the shared Prepare Submittal button (and blocked unrelated AHJ-permit stages). Surfaced
+      // as a warning so the operator verifies NEM evidence before the human final submit.
+      status: nemEvidenceMissing.length || blockedNemSteps.length || openNemCorrections.length ? "warning" : !utilityEvidenceOk || accountEvidence.confidence === "medium" || meterEvidence.confidence === "medium" || waitingNemSteps.length ? "warning" : "pass",
       ownerRole: "NEM Ops",
       requirement: "NEMflow must have utility, account holder/address proof, meter proof, one-line/SLD, inverter settings/specs, and no open utility correction before utility staging.",
       evidence: [
