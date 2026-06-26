@@ -367,12 +367,42 @@ export async function autoLearnPortal(
   }
   const bindingNote = boundLiterals.length ? ` Bound ${boundLiterals.length} literal value(s) to project fields for safe replay.` : "";
 
-  const trusted = verification.accurate && !textContradicts && !hasHardBlockers && ambiguousLiterals.length === 0;
+  let trusted = verification.accurate && !textContradicts && !hasHardBlockers && ambiguousLiterals.length === 0;
   if (hasHardBlockers) {
     if (requiredMisses.length) verification.issues.push(`Required field(s) left blank/unselected — fill before trusting: ${requiredMisses.slice(0, 12).join(", ")}${requiredMisses.length > 12 ? ", …" : ""}.`);
     if (docMisses.length) verification.issues.push(`Required document(s) not attached: ${docMisses.slice(0, 8).join(", ")}.`);
     if (validationBlocks.length) verification.issues.push(`Portal validation blocked an advance: ${validationBlocks.slice(0, 8).join("; ")}.`);
   }
+
+  // F4: REPLAY SELF-TEST (opt-in via PORTAL_REPLAY_SELFTEST=1). A recipe is only worth TRUSTING if
+  // it REPRODUCES the review deterministically in a fresh session — a learn-pass fill working does
+  // NOT prove the recorded selectors will resolve next time (dynamic ids, frames, timing). So before
+  // promoting, replay the just-bound recipe via the RecipeAdapter and require it to reach review.
+  // OFF BY DEFAULT: this re-runs the LIVE portal, which can create a SECOND draft application — enable
+  // it deliberately when validating a freshly-learned recipe. Best-effort: a self-test error or a
+  // non-reproduction downgrades the recipe to a draft rather than hard-failing the learn.
+  const selfTestEnabled = process.env.PORTAL_REPLAY_SELFTEST === "1" || process.env.PORTAL_REPLAY_SELFTEST === "true";
+  if (trusted && selfTestEnabled) {
+    input.onProgress?.({ phase: "verify", pageCount: learn.pageCount, maxPages: learn.pageCount, message: "Replay self-test: re-running the learned recipe in a fresh session…" });
+    try {
+      const { stageWithRecipe } = await import("../../portal-bot/src/index");
+      const recipeForReplay: PortalRecipe = { ...getPortalRecipe(db, stub.id), steps: boundSteps };
+      const replayFieldValues = resolveRecipeFieldValues(db, project, portalType);
+      const replay = await stageWithRecipe(recipeForReplay, project, replayFieldValues, docsByType, [], { headless: input.headless }) as Record<string, unknown>;
+      const reproduced = replay.ok === true && !replay.pauseReason;
+      if (!reproduced) {
+        trusted = false;
+        verification.issues.push(`Replay self-test did NOT reproduce the review in a fresh session (${String(replay.message || replay.pauseReason || "recipe did not reach review on replay")}). Kept as a draft for human verification.`);
+        addAuditLog(db, projectId, "system", "auto-learn", "portal.replay_selftest_failed", { scope: scopeType });
+      } else {
+        addAuditLog(db, projectId, "system", "auto-learn", "portal.replay_selftest_passed", { scope: scopeType });
+      }
+    } catch (err) {
+      trusted = false;
+      verification.issues.push(`Replay self-test errored (${err instanceof Error ? err.message : String(err)}). Kept as a draft.`);
+    }
+  }
+
   savePortalRecipeSteps(db, stub.id, boundSteps, {
     status: trusted ? "complete" : "recording",
     notes: trusted
