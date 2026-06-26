@@ -1666,14 +1666,26 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     const action: RecipeStep["action"] =
       field.fieldType === "select" ? "select" : isCheckable ? "check" : "fill";
 
-    // A "false/no/off/0" value on a CHECKBOX means "leave unchecked" — the default portal
-    // state needs no recorded step (and we never recorded a spurious "uncheck" of an
-    // already-unchecked box). This does NOT apply to radios: a radio option literally labeled
-    // "No" (e.g. "Do you propose to limit the export capacity? → No") must be actively
-    // clicked, otherwise the portal's default (often "Yes") stays selected. Conflating the two
-    // left every No-answer radio unset. So only negate-and-skip for checkboxes.
-    const negated = field.fieldType === "checkbox" && /^(false|no|off|0|unchecked|none)$/i.test(value.trim());
-    if (negated) return null; // checkbox false = no action needed
+    // A "false/no/off/0" value means "leave this control unselected":
+    //   • checkbox → leave it unchecked (its default); record no step.
+    //   • radio    → skip THIS option — UNLESS the value echoes the radio's OWN label. A radio
+    //     literally labeled "No" (e.g. "Do you propose to limit the export capacity? → No") is
+    //     the chosen answer and MUST be clicked, otherwise the portal's default (often "Yes")
+    //     stays selected — that's why we can't just skip every false-ish radio. But a radio the
+    //     planner marked "false" that ISN'T a No/Off option (e.g. "3-Phase" in a Single/3-Phase
+    //     group) means "don't pick this one" and must be left unselected. The planner selects a
+    //     radio with value "true" or by echoing the option label, so a bare negation token that
+    //     does NOT name this radio is an explicit "skip this option".
+    const NEGATION = /^(false|no|off|0|unchecked|none)$/i;
+    const v = value.trim();
+    const labelLc = (field.label || "").trim().toLowerCase();
+    const vLc = v.toLowerCase();
+    const echoesOwnLabel = vLc.length > 0 && (labelLc === vLc || labelLc.includes(vLc) || vLc.includes(labelLc));
+    const negated =
+      field.fieldType === "checkbox" ? NEGATION.test(v)
+      : field.fieldType === "radio" ? (NEGATION.test(v) && !echoesOwnLabel)
+      : false;
+    if (negated) return null; // leave unselected — no action and no recorded step
 
     const res = await safeAction(
       // The label is non-PII enough for a log line, but keep it short.
