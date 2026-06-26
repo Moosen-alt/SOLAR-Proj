@@ -38,8 +38,12 @@ COPY portal-bot ./portal-bot
 
 # Playwright Chromium binary — stored at a fixed path outside node_modules
 # so it survives volume mounts and is not duplicated per node_modules copy.
+# `playwright` is a runtime dependency (portal-bot does `import("playwright")`), so it
+# survives `npm ci --omit=dev`. Do NOT swallow install failures: a missing Chromium means
+# every portal run (auto-learn + replay) fails silently at runtime, so fail the build instead.
 ENV PLAYWRIGHT_BROWSERS_PATH=/app/.playwright-cache
-RUN npx playwright install chromium 2>/dev/null || true
+RUN node -e "require('playwright')" \
+ && npx playwright install chromium
 
 # Data dir for SQLite DB, backups, uploaded docs, portal profiles.
 # Mount a persistent volume at /app/backend/data in production.

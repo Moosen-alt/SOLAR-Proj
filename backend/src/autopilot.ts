@@ -29,6 +29,7 @@ import { HttpError } from "./httpError";
 import { addAuditLog } from "./audit";
 import { nowIso } from "./time";
 import { getProjectDetail, rerunQc, captureConfirmation } from "./repository";
+import { parseJson } from "./json";
 import { buildReviewerReport } from "./reviewerEngine";
 import type { ProjectRecord, SubmittalTrackType } from "../../shared/src/types";
 
@@ -217,7 +218,8 @@ export function getAutopilotState(db: AppDb, projectId: string): AutopilotState 
     if (status === "pending" || status === "running") {
       return { projectId, phase: "running", stage: "Autopilot running", message: "Running QC → build → reviewer gate → stage.", blockers: [], canApprove: false, pauseReason: null, portalRunId: null, updatedAt: ts, ...noReview };
     }
-    const result = job.result ? (JSON.parse(String(job.result)) as { blocked?: boolean; blockers?: AutopilotBlocker[]; message?: string }) : null;
+    // Guard the parse: a corrupt/truncated job_queue.result must not 500 the autopilot panel.
+    const result = parseJson<{ blocked?: boolean; blockers?: AutopilotBlocker[]; message?: string } | null>(job.result == null ? null : String(job.result), null);
     if (result?.blocked) {
       return { projectId, phase: "blocked", stage: "Blocked", message: result.message ?? "Autopilot stopped on a gate.", blockers: result.blockers ?? [], canApprove: false, pauseReason: null, portalRunId: null, updatedAt: ts, ...noReview };
     }

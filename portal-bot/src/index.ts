@@ -153,9 +153,13 @@ function registerTmpStateCleanup(): void {
       process.exit(130);
     });
   }
-  process.once("uncaughtException", (err) => {
+  // Shred plaintext session files if the process is dying on an uncaught exception, but do
+  // NOT re-throw: re-throwing inside an uncaughtException listener is a fatal error that
+  // terminates the process, which would override the backend's deliberate log-and-stay-alive
+  // handler (server.ts process.on("uncaughtException", …)). Cleanup only; let the single
+  // owner of crash policy (the backend) decide whether to exit.
+  process.once("uncaughtException", () => {
     cleanupAll();
-    throw err;
   });
 }
 

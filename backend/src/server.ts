@@ -1256,7 +1256,7 @@ app.get("/api/ahj-templates", (req, res) => {
   const rows = state
     ? db.query("SELECT id, ahj_name, state, form_type, original_filename, field_map, created_at FROM ahj_form_templates WHERE state = ? ORDER BY ahj_name", [state])
     : db.query("SELECT id, ahj_name, state, form_type, original_filename, field_map, created_at FROM ahj_form_templates ORDER BY state, ahj_name");
-  res.json(rows.map((r) => ({ ...r, fieldMap: JSON.parse(String(r.field_map || "{}")) })));
+  res.json(rows.map((r) => ({ ...r, fieldMap: parseJson<Record<string, unknown>>(String(r.field_map ?? ""), {}) })));
 });
 
 // Re-map a stored template's fields from its stored blob (AcroForm first, then

@@ -41,6 +41,7 @@
     "p-limit": "^7.3.0",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^6.0.227",
+    "playwright": "^1.61.0",
     "tsx": "^4.19.2",
     "zod": "^4.4.3"
   },
@@ -50,7 +51,6 @@
     "@types/cors": "^2.8.17",
     "@types/express": "^5.0.0",
     "@types/node": "^22.10.7",
-    "playwright": "^1.61.0",
     "typescript": "^5.7.3"
   }
 }
