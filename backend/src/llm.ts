@@ -431,6 +431,8 @@ Set confidence (0-1) for each field. Return only valid JSON.`;
       model: MODEL,
       max_tokens: maxTokens,
       thinking: { type: "adaptive" },
+      // Plan sets are dense, multi-section reasoning — give the model room to reason.
+      output_config: { effort: "high" },
       system: systemPrompt,
       messages: [{ role: "user", content: userMessage }],
     });
@@ -449,6 +451,9 @@ Set confidence (0-1) for each field. Return only valid JSON.`;
       model: MODEL,
       max_tokens: maxTokens,
       thinking: { type: "adaptive" },
+      // The vision-assisted planner is the hardest "see and reason" step (read the live
+      // layout, reconcile it with the field list, decide each fill) — run it at xhigh.
+      output_config: { effort: "xhigh" },
       system: systemPrompt,
       messages: [{
         role: "user",
@@ -649,7 +654,10 @@ CRITICAL accuracy rules:
 
     const msg = await this.client.messages.create({
       model: MODEL,
-      max_tokens: 1500,
+      // Headroom: adaptive thinking shares the output budget, so leave room for the JSON answer.
+      max_tokens: 3500,
+      thinking: { type: "adaptive" },
+      output_config: { effort: "high" },
       system,
       messages: [{ role: "user", content }],
     });
@@ -697,7 +705,10 @@ Return JSON: {"draft": "<response text>", "confidence": 0.0-1.0}`;
   async visionExtract(input: { imageBase64: string; mimeType: "image/png" | "image/jpeg" | "image/webp"; prompt: string }): Promise<Record<string, unknown>> {
     const msg = await this.client.messages.create({
       model: MODEL,
-      max_tokens: 2048,
+      // Headroom: adaptive thinking shares the output budget.
+      max_tokens: 4096,
+      thinking: { type: "adaptive" },
+      output_config: { effort: "high" },
       messages: [{
         role: "user",
         content: [
@@ -1065,7 +1076,7 @@ Return ONLY JSON:
     ];
     let parsed: Partial<PortalFillVerification> = {};
     try {
-      const msg = await this.client.messages.create({ model: MODEL, max_tokens: 1024, system, messages: [{ role: "user", content: user }] });
+      const msg = await this.client.messages.create({ model: MODEL, max_tokens: 3072, thinking: { type: "adaptive" }, output_config: { effort: "high" }, system, messages: [{ role: "user", content: user }] });
       const text = msg.content.filter((b) => b.type === "text").map((b) => (b as { text: string }).text).join("");
       parsed = this.parseJson<Partial<PortalFillVerification>>(text, {});
     } catch { parsed = {}; }
@@ -1358,6 +1369,8 @@ Rules:
       const msg = await this.client.messages.create({
         model: MODEL,
         max_tokens: 4096,
+        thinking: { type: "adaptive" },
+        output_config: { effort: "high" },
         system,
         messages: [{ role: "user", content }],
       });
