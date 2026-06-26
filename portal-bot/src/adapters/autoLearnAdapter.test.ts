@@ -770,6 +770,50 @@ async function testRadioSelectedViaCheck() {
   assert.equal(checkSteps.length, 1, "exactly one check step recorded (the selected radio)");
 }
 
+// 11b) NOT-LISTED GUARD: the planner WRONGLY asks to check "The proposed PV equipment is not
+//      listed." — checking it hides the equipment dropdowns and degrades to unlisted plain-text.
+//      The deterministic guard must refuse the check while still selecting the real dropdown.
+async function testNotListedCheckboxRefused() {
+  const log: ActionLog = { clicks: [], fills: [], selects: [], checks: [] };
+  const planner: LearnPlanner = async (): Promise<LearnPlanResponse> => ({
+    fills: [
+      { selectorIndex: 0, value: "Photovoltaic" },              // Prime Mover dropdown — keep
+      { selectorIndex: 1, value: "true" },                       // "not listed" checkbox — refuse
+    ],
+    atReview: true,
+  });
+  const adapter = new AutoLearnAdapter("Test Utility", planner);
+  withFakePage(
+    adapter,
+    makeFakePage(
+      {
+        pages: [
+          {
+            url: "https://pgenm.powerclerk.com/MvcProjects/EditProject",
+            title: "Edit Project",
+            body: "System Information",
+            rawFields: [
+              { label: "Prime Mover", fieldType: "select", options: ["Photovoltaic"], id: "pm" },
+              { label: "The proposed PV equipment is not listed.", fieldType: "checkbox", id: "notlisted" },
+            ],
+            reviewPairs: [{ label: "Prime Mover", value: "Photovoltaic" }],
+          },
+        ],
+      },
+      log,
+    ),
+  );
+
+  const result = await adapter.learn(fakeContext, fakeProject);
+  assert.equal(result.ok, true, "run should succeed");
+  assert.ok(log.selects.some((s) => /Photovoltaic/.test(s.value)), "the real dropdown is still selected");
+  assert.ok(!log.checks.some((k) => /notlisted/i.test(k)), "the 'not listed' checkbox is NEVER checked");
+  assert.ok(
+    !result.steps.some((s) => s.action === "check" && /not listed/i.test(s.note ?? "")),
+    "no recipe step records checking the 'not listed' box",
+  );
+}
+
 // 12) VALIDATION GUARD: a blocked advance (page didn't move) is detected, the dead advance step
 //     is dropped, and the portal's validation errors are surfaced in the result message — instead
 //     of silently recording a broken page or looping with no explanation.
@@ -946,6 +990,7 @@ async function testDateFieldFilledAndRecorded() {
 const tests: Array<[string, () => Promise<void>]> = [
   ["fields are extracted, filled, and recorded as steps", testFieldsExtractedFilledRecorded],
   ["RADIO REGRESSION: radio selected via check(), false radio/checkbox skipped", testRadioSelectedViaCheck],
+  ["NOT-LISTED GUARD: 'equipment not listed' checkbox refused, dropdown still selected", testNotListedCheckboxRefused],
   ["VALIDATION GUARD: blocked advance is detected and surfaced", testValidationGuardBlockedAdvance],
   ["a click that opens the form in a NEW TAB is adopted (PowerClerk)", testNewTabPopupAdopted],
   ["final submit is recorded isFinalSubmit:true and NEVER clicked", testFinalSubmitRecordedNeverClicked],

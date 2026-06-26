@@ -167,6 +167,21 @@ function looksLikeReviewUrl(url: string): boolean {
   return /capconfirm|confirm\.aspx|\/review/i.test(url || "");
 }
 
+// "Equipment is not listed" / "enter manually" escape-hatch checkbox. Checking it HIDES the
+// searchable manufacturer/model dropdowns and degrades to plain-text inputs the portal scores
+// as UNLISTED equipment (PGE/PowerClerk "The proposed PV equipment is not listed."). The LLM
+// planner is instructed to leave it unchecked, but it has been observed checking it anyway, so
+// this is a deterministic safety net: a checkbox whose label matches this is NEVER checked.
+const NOT_LISTED_CHECKBOX =
+  /\b(proposed\s+\w+\s+equipment\s+is\s+not\s+listed|equipment\s+is\s+not\s+listed|not\s+in\s+the\s+list|enter\s+(equipment\s+)?manually|manual\s+entry)\b/i;
+
+// PGE/PowerClerk Yes/No POLICY questions whose answer is fixed for standard residential NEM.
+// Mirrors the knowledge-base seed (export limit → No). If the planner leaves the group
+// unanswered, a deterministic pass selects the policy answer so the portal default can't stand.
+const POLICY_RADIO_DEFAULTS: Array<{ question: RegExp; answer: "Yes" | "No" }> = [
+  { question: /do you propose to limit the export capacity/i, answer: "No" },
+];
+
 // Sensitive field labels whose literal value must NEVER be stored in a recorded step.
 const SENSITIVE_LABEL = /\b(password|passcode|account\s*(number|no|#)?|acct|meter\s*(number|no|#)?|ssn|social security|tax\s*id|ein|routing|card\s*number|cvv|security code)\b/i;
 
@@ -1547,6 +1562,19 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         }
       }
 
+      // d3b) POLICY-DEFAULT PASS — answer fixed Yes/No policy questions the planner left blank
+      //      (e.g. "Do you propose to limit the export capacity?" → No). Deterministic so the
+      //      portal's default selection can't stand. Only touches an UNANSWERED group; records a
+      //      replayable step. Runs on real form pages only.
+      if (!plan.atReview && !isDashboard && this.page) {
+        const policySteps = await this.applyPolicyDefaults(alreadyFilledLabels);
+        for (const ps of policySteps) {
+          steps.push(ps.step);
+          pageFillCount++;
+          appliedThisPage.push(ps.applied);
+        }
+      }
+
       // d1) PERSIST SETTLE (ADAPTIVE). Portals like PowerClerk autosave each page's fields via
       //     an AJAX round-trip. If we advance before that completes, the entered values are LOST
       //     (a blank draft saves). The OLD approach slept a flat 3s every page; instead we now
@@ -1830,6 +1858,90 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     }
   }
 
+  // Select the policy answer for any POLICY_RADIO_DEFAULTS question whose group is present and
+  // UNANSWERED on the live page. Locates the radio by walking the DOM for the question text,
+  // confirms nothing in the group is already checked, clicks the matching option, and returns a
+  // replayable `check` step (css-targeted by id) plus an AppliedFill record. Best-effort; never
+  // throws. Skips any group whose question label is already in `alreadyFilledLabels`.
+  private async applyPolicyDefaults(
+    alreadyFilledLabels: string[],
+  ): Promise<Array<{ step: RecipeStep; applied: AppliedFill }>> {
+    const out: Array<{ step: RecipeStep; applied: AppliedFill }> = [];
+    if (!this.page || typeof this.page.evaluate !== "function") return out;
+    for (const policy of POLICY_RADIO_DEFAULTS) {
+      try {
+        const target = await this.page.evaluate(
+          (args: { qSource: string; answer: string }) => {
+            const norm = (s: string | null | undefined) => (s || "").trim().replace(/\s+/g, " ");
+            const question = new RegExp(args.qSource, "i");
+            const answerLc = args.answer.trim().toLowerCase();
+            const labelOf = (el: Element): string => {
+              const id = el.getAttribute("id");
+              if (id) { const l = document.querySelector(`label[for="${CSS.escape(id)}"]`); if (l?.textContent?.trim()) return norm(l.textContent); }
+              const w = el.closest("label"); if (w?.textContent?.trim()) return norm(w.textContent);
+              return norm(el.getAttribute("aria-label") || el.getAttribute("value") || "");
+            };
+            const radios = Array.from(document.querySelectorAll('input[type="radio"]')) as HTMLInputElement[];
+            for (const r of radios) {
+              const grp = r.closest("fieldset, .form-group, [class*='form-group'], [class*='field'], .row, [class*='row']");
+              const groupText = norm(grp?.textContent || "");
+              if (!question.test(groupText)) continue;
+              const peers = grp
+                ? (Array.from(grp.querySelectorAll('input[type="radio"]')) as HTMLInputElement[])
+                : [r];
+              if (peers.some((p) => p.checked)) return { answered: true as const };
+              const want = peers.find((p) => labelOf(p).toLowerCase() === answerLc);
+              if (!want) continue;
+              const id = want.getAttribute("id");
+              const rect = (want as HTMLElement).getBoundingClientRect?.();
+              if (!rect || (rect.width === 0 && rect.height === 0)) continue;
+              return {
+                answered: false as const,
+                css: id ? `#${CSS.escape(id)}` : null,
+                groupLabel: norm(grp?.querySelector("legend, label, .control-label, strong, b")?.textContent || ""),
+              };
+            }
+            return null;
+          },
+          { qSource: policy.question.source, answer: policy.answer },
+        ).catch(() => null);
+
+        if (!target || (target as { answered?: boolean }).answered) continue;
+        const css = (target as { css?: string | null }).css;
+        if (!css) continue;
+        const groupLabel = ((target as { groupLabel?: string }).groupLabel || "").slice(0, 80) || `policy:${policy.answer}`;
+        if (alreadyFilledLabels.includes(groupLabel)) continue;
+        const selector: RecipeSelector = { css };
+        const loc = await this.locator(selector);
+        if (!loc) continue;
+        const res = await safeAction(
+          groupLabel.slice(0, 40),
+          async () => { await loc.check({ timeout: 5000 }); },
+          { required: false },
+        );
+        if (!res.ok || res.message) continue;
+        alreadyFilledLabels.push(groupLabel);
+        out.push({
+          step: {
+            action: "check",
+            phase: "fill",
+            selector,
+            note: `policy default: ${groupLabel} → ${policy.answer}`,
+          },
+          applied: {
+            selector,
+            label: groupLabel,
+            fieldType: "radio",
+            expected: policy.answer,
+            sensitive: false,
+            required: true,
+          },
+        });
+      } catch { /* policy pass is best-effort */ }
+    }
+    return out;
+  }
+
   private async applyFill(
     field: ExtractedField,
     fillReq: { value: string; field?: string },
@@ -1839,6 +1951,12 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     const isCheckable = field.fieldType === "checkbox" || field.fieldType === "radio";
     const action: RecipeStep["action"] =
       field.fieldType === "select" ? "select" : isCheckable ? "check" : "fill";
+
+    // DETERMINISTIC GUARD: never check an "equipment is not listed / enter manually" checkbox.
+    // Checking it hides the searchable manufacturer/model dropdowns and degrades the entry to
+    // unlisted plain-text. The planner is told to skip it but has been seen checking it anyway,
+    // so refuse here regardless of the requested value — record no step, leave it unchecked.
+    if (field.fieldType === "checkbox" && NOT_LISTED_CHECKBOX.test(field.label || "")) return null;
 
     // A "false/no/off/0" value means "leave this control unselected":
     //   • checkbox → leave it unchecked (its default); record no step.
