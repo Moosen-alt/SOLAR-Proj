@@ -176,10 +176,16 @@ const NOT_LISTED_CHECKBOX =
   /\b(proposed\s+\w+\s+equipment\s+is\s+not\s+listed|equipment\s+is\s+not\s+listed|not\s+in\s+the\s+list|enter\s+(equipment\s+)?manually|manual\s+entry)\b/i;
 
 // PGE/PowerClerk Yes/No POLICY questions whose answer is fixed for standard residential NEM.
-// Mirrors the knowledge-base seed (export limit → No). If the planner leaves the group
-// unanswered, a deterministic pass selects the policy answer so the portal default can't stand.
-const POLICY_RADIO_DEFAULTS: Array<{ question: RegExp; answer: "Yes" | "No" }> = [
+// Mirrors the knowledge-base seed. A deterministic pass applies the policy answer so the portal
+// default — or a wrong planner pick — can't stand.
+//   • enforce=false (default): only acts when the group is UNANSWERED. Used where project DATA
+//     could legitimately differ (export limit is "No" unless the project chooses to limit it).
+//   • enforce=true: selects the policy answer even if another option is already checked, so a
+//     planner that picked the wrong option is corrected. Used for answers fixed by equipment
+//     listing (UL 1741-SB lab certification is "Yes" for standard listed residential inverters).
+const POLICY_RADIO_DEFAULTS: Array<{ question: RegExp; answer: "Yes" | "No"; enforce?: boolean }> = [
   { question: /do you propose to limit the export capacity/i, answer: "No" },
+  { question: /are all inverters lab certified|inverters?\s+lab\s+certified|UL\s*1741/i, answer: "Yes", enforce: true },
 ];
 
 // Sensitive field labels whose literal value must NEVER be stored in a recorded step.
@@ -1871,7 +1877,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     for (const policy of POLICY_RADIO_DEFAULTS) {
       try {
         const target = await this.page.evaluate(
-          (args: { qSource: string; answer: string }) => {
+          (args: { qSource: string; answer: string; enforce: boolean }) => {
             const norm = (s: string | null | undefined) => (s || "").trim().replace(/\s+/g, " ");
             const question = new RegExp(args.qSource, "i");
             const answerLc = args.answer.trim().toLowerCase();
@@ -1889,8 +1895,12 @@ export class AutoLearnAdapter extends BasePortalAdapter {
               const peers = grp
                 ? (Array.from(grp.querySelectorAll('input[type="radio"]')) as HTMLInputElement[])
                 : [r];
-              if (peers.some((p) => p.checked)) return { answered: true as const };
               const want = peers.find((p) => labelOf(p).toLowerCase() === answerLc);
+              // Already correct → nothing to do. For enforce=false, ANY checked peer counts as
+              // answered (don't override a legitimate choice). For enforce=true, only the policy
+              // answer counts — a different checked peer is a wrong pick we must correct.
+              if (want?.checked) return { answered: true as const };
+              if (!args.enforce && peers.some((p) => p.checked)) return { answered: true as const };
               if (!want) continue;
               const id = want.getAttribute("id");
               const rect = (want as HTMLElement).getBoundingClientRect?.();
@@ -1903,7 +1913,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             }
             return null;
           },
-          { qSource: policy.question.source, answer: policy.answer },
+          { qSource: policy.question.source, answer: policy.answer, enforce: !!policy.enforce },
         ).catch(() => null);
 
         if (!target || (target as { answered?: boolean }).answered) continue;
