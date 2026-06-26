@@ -1134,6 +1134,23 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         };
       }
 
+      // c2a) INVERSE REVIEW GUARD — the structural check above only forces atReview ON for real
+      // review pages; nothing stops a planner that wrongly claims atReview=true on a mid-wizard
+      // FORM page. Left unchecked that STOPS the loop early and can be promoted to trusted with
+      // required fields still blank. Reject a premature atReview ONLY when the harm is concrete:
+      // the page is not a structural review page / dashboard / review-signalled screen, yet it
+      // still has UNFILLED REQUIRED fields. Gating on actual unfilled-required (not merely "has a
+      // fillable input") avoids rejecting a legitimate review/terminal page that carries a stray
+      // control like a terms checkbox. The misses are also recorded so the trust gate sees them.
+      if (plan.atReview && !isReviewPage && !isDashboard && hasFillable && !reviewSignals && !hasSubmitIntentBtn) {
+        const prematureUnfilled = await this.collectUnfilledRequired();
+        if (prematureUnfilled.length > 0) {
+          plan = { ...plan, atReview: false };
+          for (const m of prematureUnfilled) if (!fillVerifyMisses.includes(m)) fillVerifyMisses.push(m);
+          if (process.env.AUTOLEARN_DEBUG === "1") console.error(`[learn] rejected premature atReview on a form page (p${pageCount}) — ${prematureUnfilled.length} required field(s) still unfilled.`);
+        }
+      }
+
       // c2b) DIAGNOSTIC BREADCRUMB — record what we saw + what the planner decided on this
       //      page. host+pathname only (NO query string — avoids leaking any ids), title
       //      capped, no field values. This is the trace surfaced when a run finds nothing.

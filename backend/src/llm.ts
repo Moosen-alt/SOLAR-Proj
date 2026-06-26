@@ -1009,6 +1009,13 @@ Return ONLY JSON:
     const fills = Array.isArray(parsed.fills)
       ? parsed.fills.filter((f) => typeof f.index === "number" && typeof f.value === "string").map((f) => ({ index: f.index, value: String(f.value), field: f.field ? String(f.field) : undefined }))
       : [];
+    // Diagnose a silent stall: a truncated/unparseable response degrades to an EMPTY plan (no
+    // fills, no advance/navigate/submit, not atReview), which looks identical to "the planner
+    // chose to do nothing" and leaves the learn loop spinning. Log a distinct marker so the
+    // operator can tell a parse failure from a genuine no-op.
+    if (!fills.length && advanceIndex == null && navigateIndex == null && finalSubmitIndex == null && !parsed.atReview) {
+      console.warn(`[llm] plan_parse_failed_or_empty: no actionable plan for ${input.url || "page"} (${input.fields.length} fields seen) — response may have been truncated or unparseable.`);
+    }
     return {
       fills,
       advanceIndex,
