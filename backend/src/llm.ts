@@ -917,6 +917,17 @@ SMART INVERTER SETTINGS (PGE PowerClerk and similar utility NEM portals):
 - "Do you propose to limit the export capacity?" (or "Will you limit export?") → answer "No" for a standard residential net-metering project (the full system output is exported); only answer "Yes" if the project data explicitly specifies an export-capacity limit/cap.
 - REQUIRED CHOICE GROUPS: any required (asterisk-marked) Yes/No radio or dropdown MUST be answered — do not leave a required choice group blank. If the kbContext notes give the utility's policy answer (smart inverter, aggregation, export limit), follow it; otherwise use the residential defaults above.
 
+GENERATION EQUIPMENT PAGE (PowerClerk step "Generation Equipment", "Proposed Generating System", or similar):
+- "Energy Source" dropdown → "a. Solar"
+- "Prime Mover" dropdown → "Photovoltaic"
+- "Type" dropdown → "Static Inverter" (always for a solar PV system with an inverter)
+- "Energy Storage" dropdown → "No" unless the project explicitly has a battery (hasBattery/energyStorage = true/yes → "Yes")
+- "The proposed PV equipment is not listed" checkbox → NEVER check this. Always leave it UNCHECKED. The searchable manufacturer/model dropdowns below it are the correct path; checking "not listed" bypasses them and degrades to plain text inputs that the portal scores as unlisted equipment.
+- "Are all inverters lab certified (UL 1741 SB)?" → "Yes" for standard grid-tied residential solar (IQ8, IQ7, Tesla, SolarEdge HD-Wave, etc. are all UL 1741 SB listed); only "No" when the plans explicitly show a non-certified inverter.
+- Fill inverter quantity from inverterQty; inverter manufacturer/model via the searchable dropdown (type the manufacturer name to find it).
+- Fill module manufacturer from moduleMake and module model from moduleModel via the searchable dropdown.
+- After filling equipment fields, identify the correct "Next" or "Continue" wizard button and return it as advanceIndex.
+
 SYSTEM INFORMATION / TECHNICAL DETAILS PAGE (PowerClerk step "System Information", "Technical Information", "PV System Details"):
 - This page MUST be filled — do NOT skip it or set atReview=true on it. It is a required input page, not a review screen.
 - Fill ALL available fields using project data: DC system size (systemSizeDcKw), AC system size (systemSizeAcKw), inverter model (inverterModel), module make/model (moduleMake, moduleModel), module count (moduleQty), panel wattage (moduleWattage), battery info if present.

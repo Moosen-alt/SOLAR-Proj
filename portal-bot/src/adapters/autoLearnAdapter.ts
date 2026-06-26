@@ -177,9 +177,11 @@ const UPLOAD_LABEL_PATTERNS: Array<{ re: RegExp; docType: string }> = [
 ];
 
 // When an upload control's label doesn't name a specific document (a generic "Upload
-// documents" / "Attach files" control), attach the full package/plan set instead — most
-// portals with a single upload slot want the complete set. Tried in order.
-const UPLOAD_FALLBACK_DOCTYPES = ["utility_package_zip", "plan_set", "sld", "site_plan"];
+// documents" / "Attach files" control), attach the full plan-set PDF instead — most
+// portals with a single upload slot want the complete set. Tried in order. ZIP is last
+// because portal file inputs typically only accept PDFs; attaching a ZIP to an
+// "Electrical Diagram" slot silently fails or shows up in the wrong section.
+const UPLOAD_FALLBACK_DOCTYPES = ["plan_set", "sld", "site_plan", "utility_package_zip"];
 
 export function isPayFee(text: string | undefined): boolean {
   return !!text && PAY_FEE.test(text);
@@ -578,8 +580,20 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       return firstKey ? { docType: firstKey, file: this.docsByType[firstKey] } : null;
     }
     // 1) Label names a specific document → attach that docType if we have the split file.
+    //    If the label matches but the split file isn't available yet, fall through to plan_set
+    //    (the full plan PDF) rather than jumping straight to a ZIP or wrong document.
+    let labelMatchedDocType: string | null = null;
     for (const { re, docType } of UPLOAD_LABEL_PATTERNS) {
-      if (re.test(label) && this.docsByType[docType]) return { docType, file: this.docsByType[docType] };
+      if (re.test(label)) {
+        if (this.docsByType[docType]) return { docType, file: this.docsByType[docType] };
+        labelMatchedDocType = docType; // label matched but split file missing
+        break;
+      }
+    }
+    // 1b) Specific label matched but split doc is missing → use plan_set as the best
+    //     available substitute (a PDF the portal can actually accept), not a ZIP.
+    if (labelMatchedDocType && this.docsByType["plan_set"]) {
+      return { docType: "plan_set", file: this.docsByType["plan_set"] };
     }
     // 2) Generic/unlabeled upload control → fall back to the full package/plan set.
     for (const docType of UPLOAD_FALLBACK_DOCTYPES) {
