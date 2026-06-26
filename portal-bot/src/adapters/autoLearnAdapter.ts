@@ -1204,6 +1204,10 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             advanceIndex: plan.advanceSelectorIndex ?? null,
             finalSubmitIndex: plan.finalSubmitSelectorIndex ?? null,
             recoveryHint: recoveryHint || null,
+            // Observability: was a page SCREENSHOT actually sent to the planner this page (vision
+            // planning active)? Lets the operator confirm vision is on vs silently text-only.
+            visionUsed: typeof planShot === "string" && planShot.length > 0,
+            visionKb: typeof planShot === "string" ? Math.round((planShot.length * 0.75) / 1024) : 0,
             fieldsSeen: fields.map((f, i) => ({ i, type: f.fieldType, label: (f.label || "").slice(0, 80) })),
             decisions: (plan.fills ?? []).map((fl) => {
               const f = fields[fl.selectorIndex];
