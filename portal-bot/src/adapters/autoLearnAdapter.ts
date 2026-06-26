@@ -230,6 +230,9 @@ export interface RawField {
   /** The section/heading/wizard-step this field lives under (e.g. "PGE Customer Information"
    *  vs "Installer Information"). Lets the planner disambiguate identical contact blocks. */
   section?: string;
+  /** CSS selector built from a data-test* attribute (e.g. [data-test-role="inverter-model-select"]).
+   *  Stable across sessions — captured as a high-priority replay selector for custom widgets. */
+  testCss?: string;
 }
 
 // Serializable extractor — derives a label and selector hints for each interactive
@@ -347,7 +350,22 @@ export function extractFieldsInPage(els: Element[]): RawField[] {
     // Skip hidden inputs entirely.
     if (tag === "input" && typeAttr === "hidden") continue;
 
-    const label = labelFor(el);
+    // data-test* hooks (data-testid / data-test-role / data-test / data-cy / data-qa) — a
+    // widespread convention that gives both a STABLE selector and a semantic identity for custom
+    // widgets that have no real label (e.g. a Vue "filtered select" carrying
+    // data-test-role="inverter-manufacturer-select"). Universal: any app using test attributes.
+    let testCss: string | undefined;
+    let testHint: string | undefined;
+    for (const attr of ["data-testid", "data-test-role", "data-test", "data-cy", "data-qa"]) {
+      const tv = el.getAttribute(attr);
+      if (tv) { testCss = `[${attr}="${tv}"]`; testHint = tv.replace(/[-_]+/g, " ").trim(); break; }
+    }
+    const rawLabel = labelFor(el);
+    // A generic prompt ("Please select…", "Qty") on a widget that carries a data-test identity is
+    // less useful to the planner than the identity itself (which disambiguates e.g. the inverter
+    // Qty from a PV-array Qty) — prefer the test hint in that case; otherwise keep the real label.
+    const genericLabel = /^(please\s+)?select\.{0,3}$|^select$|^qty$|^\s*$/i.test(rawLabel);
+    const label = (genericLabel && testHint) ? testHint : (rawLabel || testHint || "");
     const name = el.getAttribute("name") || undefined;
     const placeholder = el.getAttribute("placeholder") || undefined;
     const id = el.getAttribute("id") || undefined;
@@ -383,7 +401,7 @@ export function extractFieldsInPage(els: Element[]): RawField[] {
     }
     const required = (el as HTMLInputElement).required || el.getAttribute("aria-required") === "true" || requiredByAsterisk || undefined;
 
-    out.push({ label, fieldType, options, role, name, placeholder, id, text, href, required: required || undefined, section: sectionFor(el) || undefined });
+    out.push({ label, fieldType, options, role, name, placeholder, id, text, href, required: required || undefined, section: sectionFor(el) || undefined, testCss });
   }
   return out;
 }
@@ -436,6 +454,17 @@ export function toExtractedField(raw: RawField): ExtractedField {
     if (raw.id) selector.css = `#${raw.id}`;
     else if (raw.label) selector.text = raw.label;
   }
+  // A data-test* attribute is the most stable hook for a custom widget — use it as the primary
+  // selector when nothing better was derived, else keep it as a fallback so replay can still find
+  // the control if the label/role/id selector drifts.
+  if (raw.testCss) {
+    if (!selector.label && !selector.role && !selector.name && !selector.placeholder && !selector.css) {
+      selector.css = raw.testCss;
+    } else {
+      selector.fallbacks = [...(selector.fallbacks ?? []), { css: raw.testCss }];
+    }
+  }
+
   // Scope the selector (and its fallbacks) into the child frame this field came from, so the
   // fill/replay locator resolves inside the iframe rather than the main document.
   if (raw.frame) {
