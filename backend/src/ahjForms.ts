@@ -1,5 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
+import dns from "node:dns/promises";
+import net from "node:net";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import type { ProjectRecord } from "../../shared/src/types";
 import type { AppDb } from "./db";
@@ -450,6 +452,66 @@ export function matchingForms(ahj: string): AhjFormDefinition[] {
   return ahjFormRegistry.filter((def) => def.matchJurisdictions.some((m) => needle.includes(m)));
 }
 
+// SSRF guard: an AHJ form URL comes from operator input (/api/ahj-forms/inspect), so a
+// server-side fetch of it must never reach internal/cloud-metadata hosts. Reject anything
+// that isn't a public http(s) address. Returns the validated URL; throws HttpError(400) on
+// a private/loopback/link-local/metadata/multicast target or a non-http scheme.
+function ipIsPrivate(ip: string): boolean {
+  const kind = net.isIP(ip);
+  if (kind === 4) {
+    const o = ip.split(".").map(Number);
+    if (o[0] === 10 || o[0] === 127 || o[0] === 0) return true;
+    if (o[0] === 169 && o[1] === 254) return true;            // link-local + cloud metadata
+    if (o[0] === 172 && o[1] >= 16 && o[1] <= 31) return true;
+    if (o[0] === 192 && o[1] === 168) return true;
+    if (o[0] === 100 && o[1] >= 64 && o[1] <= 127) return true; // CGNAT
+    if (o[0] === 192 && o[1] === 0 && o[2] === 0) return true;
+    if (o[0] >= 224) return true;                              // multicast / reserved
+    return false;
+  }
+  if (kind === 6) {
+    const lower = ip.toLowerCase();
+    if (lower === "::1" || lower === "::") return true;
+    if (lower.startsWith("fe8") || lower.startsWith("fe9") || lower.startsWith("fea") || lower.startsWith("feb")) return true; // fe80::/10
+    if (lower.startsWith("fc") || lower.startsWith("fd")) return true; // unique-local fc00::/7
+    const mapped = lower.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);        // IPv4-mapped
+    if (mapped) return ipIsPrivate(mapped[1]);
+    return false;
+  }
+  return true; // not a valid IP literal → treat as unsafe
+}
+
+async function assertPublicHttpUrl(raw: string): Promise<void> {
+  let u: URL;
+  try { u = new URL(raw); } catch { throw new HttpError(400, `Invalid URL: ${raw}`); }
+  if (u.protocol !== "http:" && u.protocol !== "https:") {
+    throw new HttpError(400, `Only http(s) URLs may be fetched (got ${u.protocol}).`);
+  }
+  const host = u.hostname;
+  const addrs = net.isIP(host) ? [host] : (await dns.lookup(host, { all: true })).map((a) => a.address);
+  if (!addrs.length || addrs.some((a) => ipIsPrivate(a))) {
+    throw new HttpError(400, `Refusing to fetch an internal/private address (${host}).`);
+  }
+}
+
+// Fetch following redirects MANUALLY, re-validating each hop against the SSRF guard so a
+// public URL can't 30x-redirect into an internal host.
+async function safeFetchTemplate(rawUrl: string): Promise<Response> {
+  let url = rawUrl;
+  for (let hop = 0; hop < 5; hop++) {
+    await assertPublicHttpUrl(url);
+    const res = await fetch(url, { redirect: "manual" });
+    if (res.status >= 300 && res.status < 400) {
+      const loc = res.headers.get("location");
+      if (!loc) return res;
+      url = new URL(loc, url).toString();
+      continue;
+    }
+    return res;
+  }
+  throw new HttpError(502, "Too many redirects fetching the form template.");
+}
+
 // Downloads and caches a form template; falls back to the cached copy when the
 // network fetch fails (link rot is common on AHJ sites).
 export async function fetchFormTemplate(def: AhjFormDefinition): Promise<Uint8Array> {
@@ -457,7 +519,7 @@ export async function fetchFormTemplate(def: AhjFormDefinition): Promise<Uint8Ar
   const cachePath = path.join(TEMPLATE_DIR, `${def.id}.pdf`);
 
   try {
-    const res = await fetch(def.sourceUrl, { redirect: "follow" });
+    const res = await safeFetchTemplate(def.sourceUrl);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const type = res.headers.get("content-type") || "";
     const buf = new Uint8Array(await res.arrayBuffer());

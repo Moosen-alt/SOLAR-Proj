@@ -42,7 +42,7 @@ import { listBackups, runBackup, startBackupScheduler } from "./backup";
 import { startMonitorScheduler } from "./scheduler";
 import { startAhjFormRefreshScheduler } from "./ahjFormRefresh";
 import { extractZipToWorkdir } from "./batchZip";
-import { currentUser, login, logout, me, requireAuth, seedAdminUser } from "./auth";
+import { AUTH_ENABLED, currentUser, login, logout, me, requireAuth, seedAdminUser } from "./auth";
 import { getAutopilotState, runAutopilotApproval } from "./autopilot";
 import {
   addCommunication,
@@ -601,6 +601,18 @@ app.post("/api/knowledge-base/import-mbox-path", asyncHandler(async (req, res) =
   const filePath = String(req.body?.filePath || "").trim().replace(/^"(.*)"$/, "$1");
   if (!filePath) throw new HttpError(400, "Paste the full local MBOX file path before importing.");
   const resolved = path.resolve(filePath);
+  // LFI guard: this endpoint reads an operator-supplied absolute path. Constrain it to mailbox
+  // file types so it can't be used to read the app's .env, the SQLite DB, SSH keys, /etc/passwd,
+  // etc. (none of which carry these extensions). Optionally confine it to MBOX_IMPORT_BASE_DIR.
+  const ext = path.extname(resolved).toLowerCase();
+  const ALLOWED_MBOX_EXT = new Set([".mbox", ".eml", ".txt", ".gz"]);
+  if (!ALLOWED_MBOX_EXT.has(ext)) {
+    throw new HttpError(400, "MBOX import only accepts .mbox, .eml, .txt, or .gz files.");
+  }
+  const baseDir = process.env.MBOX_IMPORT_BASE_DIR ? path.resolve(process.env.MBOX_IMPORT_BASE_DIR) : null;
+  if (baseDir && resolved !== baseDir && !resolved.startsWith(baseDir + path.sep)) {
+    throw new HttpError(400, `MBOX path must be inside ${baseDir}.`);
+  }
   if (!fs.existsSync(resolved)) throw new HttpError(404, `MBOX file path was not found: ${resolved}`);
   const stat = fs.statSync(resolved);
   if (!stat.isFile()) throw new HttpError(400, "MBOX path must point to a file.");
@@ -1468,7 +1480,13 @@ app.post("/api/projects/:id/autopilot/approve", asyncHandler(async (req, res) =>
   const rawTrack = String(req.body?.track || "").trim();
   const track = SUBMITTAL_TRACK_TYPES.includes(rawTrack as SubmittalTrackType) ? (rawTrack as SubmittalTrackType) : undefined;
   const user = currentUser(db, req);
-  const approverName = user?.name || String(req.body?.approverName || "").trim() || "dashboard";
+  // When auth is ON, the audit trail's approver MUST be the authenticated session identity —
+  // never a body-supplied name (which would let the caller forge who authorized a real filing).
+  // When auth is OFF there is no identity, so fall back to the body/"dashboard" label.
+  if (AUTH_ENABLED && !user) throw new HttpError(401, "Sign in to approve a submission.");
+  const approverName = AUTH_ENABLED
+    ? (user?.name || "authenticated user")
+    : (String(req.body?.approverName || "").trim() || "dashboard");
   const state = await runAutopilotApproval(db, projectId, { approverUserId: user?.id ?? null, approverName, track });
   if (state.phase === "submitted") {
     sseBroadcast({ type: "run_complete", projectId, message: "Approved & submitted — confirmation captured." });
@@ -1653,6 +1671,13 @@ process.on("uncaughtException", (err) => logErrorBlock("uncaughtException", err)
 const server = app.listen(port, () => {
   const diag = collectDiagnostics(db, { version: APP_VERSION, port, dbPath });
   startupBanner(diag, { base: `http://localhost:${port}` });
+  // Exposure warning: app.listen(port) binds all interfaces. With auth OFF that serves all
+  // customer PII + the credential/approve endpoints to anyone who can reach the port. Loud
+  // warning so an operator doesn't unknowingly expose it; the fix is AUTH_ENABLED=true (and a
+  // reverse proxy / firewall), or binding to loopback only.
+  if (!AUTH_ENABLED) {
+    logger.warn("security", "AUTH_ENABLED is off and the server listens on all interfaces — anyone who can reach this port has full access to customer data and the approve/credential endpoints. Set AUTH_ENABLED=true (with ADMIN_EMAIL/ADMIN_PASSWORD) before exposing it beyond localhost.");
+  }
   startJobWorker(db);
   startBackupScheduler(db);
   startMonitorScheduler(db);
