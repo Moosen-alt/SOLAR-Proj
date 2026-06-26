@@ -441,6 +441,30 @@ Set confidence (0-1) for each field. Return only valid JSON.`;
     return "";
   }
 
+  // Like askLong, but with a page SCREENSHOT prepended (vision-assisted planning). The model
+  // reads the visible layout/section headings as the authoritative signal and the JSON field
+  // list corroborates it. Used by planPortalFields when a screenshot is available.
+  private async askLongWithImage(systemPrompt: string, userMessage: string, imageBase64: string, mimeType: "image/png" | "image/jpeg" | "image/webp", maxTokens = 4096): Promise<string> {
+    const stream = await this.client.messages.stream({
+      model: MODEL,
+      max_tokens: maxTokens,
+      thinking: { type: "adaptive" },
+      system: systemPrompt,
+      messages: [{
+        role: "user",
+        content: [
+          { type: "image", source: { type: "base64", media_type: mimeType, data: imageBase64 } },
+          { type: "text", text: userMessage },
+        ],
+      }],
+    });
+    const msg = await stream.finalMessage();
+    for (const block of msg.content) {
+      if (block.type === "text") return block.text;
+    }
+    return "";
+  }
+
   async extractProjectFields(input: {
     planText?: string;
     utilityBillText?: string;
@@ -892,6 +916,8 @@ ${JSON.stringify(input.unbound, null, 2)}`;
   async planPortalFields(input: PortalFieldPlanInput): Promise<PortalFieldPlan> {
     const system = `You are filling a government/utility permit portal form for a solar project. Given the FIELDS (fillable inputs, buttons, and navigation links) on the current page and the project's available DATA, decide what to fill, which button navigates to the form (if on a dashboard), which button advances to the next page, and which button is the FINAL SUBMIT.
 
+A SCREENSHOT of the current page may be attached. When it is, the VISIBLE layout is AUTHORITATIVE: read the section headings / wizard-step labels / how controls are grouped directly from the image to decide which block is which (especially homeowner vs installer) and what each control is. The text field list + each field's "section" corroborate the image; if they ever conflict, trust what the screenshot plainly shows.
+
 RECOVERY MODE: if the user message contains a "RECOVERY" field, the automation is STUCK or CYCLING — a prior action looped it back. Treat that directive as top priority: pick a DIFFERENT action than the one implied last time. Never return a navigateIndex that restarts an already-started application (no "New/Start/Building Dept Application" when mid-flow); instead make forward progress on THIS page — fill remaining required fields, Select the correct results row, check the required application-type option, or advance with this page's Continue/Next.
 
 GENERIC FORM-FILLING (works on ANY portal — reason from the LIVE page, not from memorized portal rules):
@@ -963,7 +989,14 @@ Return ONLY JSON:
     });
     let parsed: Partial<PortalFieldPlan> = {};
     // Use askLong: planning responses can be large (many fills + notes).
-    try { parsed = this.parseJson<Partial<PortalFieldPlan>>(await this.askLong(system, user, 3000), {}); } catch { parsed = {}; }
+    try {
+      // Vision-assisted planning when a page screenshot is supplied: the model SEES the section
+      // headings/layout (authoritative for who-owns-which-block) instead of guessing from labels.
+      const raw = input.screenshotBase64
+        ? await this.askLongWithImage(system, user, input.screenshotBase64, "image/png", 3000)
+        : await this.askLong(system, user, 3000);
+      parsed = this.parseJson<Partial<PortalFieldPlan>>(raw, {});
+    } catch { parsed = {}; }
     // Safety post-filter: never let a pay/fee button through as advance/submit, and drop
     // a finalSubmit that was mistakenly set as advance.
     const labelOf = (i?: number) => (i == null ? "" : input.fields.find((f) => f.index === i)?.label || "");

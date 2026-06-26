@@ -107,6 +107,7 @@ export function buildPortalPlanner(
       jurisdictionContext: jurisdictionContext || undefined,
       isDashboard: req.isDashboard,
       recoveryHint: req.recoveryHint,
+      screenshotBase64: req.screenshotBase64,
     });
     return {
       fills: plan.fills.map((f) => ({ selectorIndex: f.index, value: f.value, field: f.field })),

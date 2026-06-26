@@ -65,6 +65,11 @@ export interface LearnPlanRequest {
    *  step trace so the planner can pick a DIFFERENT, forward-progress action instead of
    *  repeating the one that looped. Empty/undefined on normal iterations. */
   recoveryHint?: string;
+  /** Base64 PNG screenshot of the CURRENT page (vision-assisted planning). Lets the planner SEE
+   *  the layout + section headings — the authoritative signal for which contact block is which
+   *  and what each control is — instead of reasoning from labels + text alone. Learn-time only;
+   *  undefined when capture is unavailable or disabled (PORTAL_VISION_PLAN=0). */
+  screenshotBase64?: string;
 }
 
 export interface LearnPlanResponse {
@@ -664,6 +669,22 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     return this.resolveUpload({ selector: {}, label, fieldType: "file" });
   }
 
+  // Capture a full-page PNG of the current page as base64 for VISION-ASSISTED PLANNING, so the
+  // planner can read the visible section headings + layout (the authoritative homeowner-vs-installer
+  // signal) instead of guessing from labels. Learn-time only and best-effort: returns undefined when
+  // disabled (PORTAL_VISION_PLAN=0), unavailable (test fakes), or on any capture error, in which case
+  // the planner falls back to text-only. fullPage so headings above/below the fold are included.
+  private async capturePlanScreenshot(): Promise<string | undefined> {
+    if (process.env.PORTAL_VISION_PLAN === "0" || process.env.PORTAL_VISION_PLAN === "false") return undefined;
+    if (!this.page || typeof this.page.screenshot !== "function") return undefined;
+    try {
+      const buf = await this.page.screenshot({ type: "png", fullPage: true });
+      return Buffer.from(buf as Buffer).toString("base64");
+    } catch {
+      return undefined;
+    }
+  }
+
   // Extract interactive fields from the main document AND every same-origin child frame,
   // stamping each child frame's stable identifier (name or id) onto its fields so the fill/
   // replay locator can target the right frame. Portals like Accela render their contact and
@@ -1059,10 +1080,13 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         // else: text keyword on a field-rich form — false positive, continue learning.
       }
 
-      // c) Ask the planner what to do on this page.
+      // c) Ask the planner what to do on this page. Attach a screenshot so it can SEE the
+      //    section headings/layout (vision-assisted planning) — the reliable signal for which
+      //    contact block is the customer vs the installer.
       let plan: LearnPlanResponse;
+      const planShot = await this.capturePlanScreenshot();
       try {
-        plan = await this.planner({ url, pageTitle, fields, bodyText, alreadyFilledLabels, isDashboard, recoveryHint: recoveryHint || undefined });
+        plan = await this.planner({ url, pageTitle, fields, bodyText, alreadyFilledLabels, isDashboard, recoveryHint: recoveryHint || undefined, screenshotBase64: planShot });
       } catch (err) {
         return fail(steps, this.portalName, `Planner failed on page ${pageCount}: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -1382,6 +1406,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
                 bodyText: postBodyText,
                 alreadyFilledLabels,
                 isDashboard: false,
+                // Re-capture after the reveal so the planner sees the newly-shown fields/sections.
+                screenshotBase64: await this.capturePlanScreenshot(),
               });
             } catch { /* planner failure is non-fatal for the re-scrape pass */ }
 

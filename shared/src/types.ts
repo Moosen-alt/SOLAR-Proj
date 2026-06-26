@@ -1363,6 +1363,10 @@ export interface PortalFieldPlanInput {
   /** Set when the learn loop detected it is stuck or cycling. Carries a directive + recent
    *  step trace so the planner picks a different, forward-progress action instead of looping. */
   recoveryHint?: string;
+  /** Base64 PNG screenshot of the current page for VISION-ASSISTED planning — lets the planner
+   *  read the visible section headings/layout (the authoritative who-owns-this-block signal)
+   *  rather than reasoning from labels + text alone. Learn-time only; omitted when unavailable. */
+  screenshotBase64?: string;
 }
 export interface PortalFieldPlan {
   /** Which field index to fill with what. Prefer `field` (a reusable project-field key,
