@@ -1638,7 +1638,10 @@ function seedOfficialKnowledge(db: AppDb): void {
       ahj: "",
       utility: "PGE",
       portalName: "PowerClerk",
-      portalUrl: "https://portlandgeneral.com/resources-for-solar-installers/interconnection-resource-library",
+      // Real portal-ENTRY URL (the PowerClerk login) so the universal self-seed launches the
+      // actual interconnection form, not the public resource-library landing page. The
+      // resource library remains cited under `sources` below for reference.
+      portalUrl: "https://pgenm.powerclerk.com/MvcAccount/Login",
       requiredDocuments: [
         "PowerClerk interconnection application",
         "Electrical one-line / SLD / 3-line",
