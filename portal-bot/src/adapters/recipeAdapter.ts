@@ -435,7 +435,7 @@ export class RecipeAdapter extends BasePortalAdapter {
   private locator(sel?: RecipeSelector) {
     if (!sel) return null;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const scope: any = sel.frame ? this.page.frameLocator(`iframe[name="${sel.frame}"]`) : this.page;
+    const scope: any = sel.frame ? this.page.frameLocator(`iframe[name="${sel.frame}"], iframe[id="${sel.frame}"]`) : this.page;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let loc: any;
     if (sel.role && sel.name) loc = scope.getByRole(sel.role, { name: sel.name, exact: sel.exact });

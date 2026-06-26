@@ -1,6 +1,6 @@
 import fs from "fs";
 import path from "path";
-import type { Page } from "playwright";
+import type { Page, Frame } from "playwright";
 import type { ProjectRecord, RecipeSelector, RecipeStep } from "../../../shared/src/types";
 import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, type PortalContext, type PortalStepResult } from "../adapter";
 import { openPortal } from "../browser";
@@ -215,6 +215,10 @@ export interface RawField {
   text?: string;
   href?: string;
   required?: boolean;
+  /** Stable identifier (name or id) of the child <iframe> this field lives in, if any.
+   *  Undefined for the main document. Stamped by extractAllFrames so the fill/replay locator
+   *  can scope into the right frame (e.g. Accela's ACADialogFrame contact/upload dialogs). */
+  frame?: string;
 }
 
 // Serializable extractor — derives a label and selector hints for each interactive
@@ -384,6 +388,12 @@ export function toExtractedField(raw: RawField): ExtractedField {
   if (!selector.label && !selector.role && !selector.name && !selector.placeholder && !selector.css) {
     if (raw.id) selector.css = `#${raw.id}`;
     else if (raw.label) selector.text = raw.label;
+  }
+  // Scope the selector (and its fallbacks) into the child frame this field came from, so the
+  // fill/replay locator resolves inside the iframe rather than the main document.
+  if (raw.frame) {
+    selector.frame = raw.frame;
+    if (selector.fallbacks) selector.fallbacks = selector.fallbacks.map((fb) => ({ ...fb, frame: raw.frame }));
   }
   const field: ExtractedField = {
     selector,
@@ -609,6 +619,41 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   // Resolve a docType for an upload control by its label only (no ExtractedField wrapper).
   private resolveUploadByLabel(label: string): { docType: string; file: string } | null {
     return this.resolveUpload({ selector: {}, label, fieldType: "file" });
+  }
+
+  // Extract interactive fields from the main document AND every same-origin child frame,
+  // stamping each child frame's stable identifier (name or id) onto its fields so the fill/
+  // replay locator can target the right frame. Portals like Accela render their contact and
+  // document-upload dialogs inside an <iframe> (e.g. ACADialogFrame); without this the planner
+  // never sees those fields and the learner can't fill them. Cross-origin or unidentifiable
+  // frames are skipped (we can't reliably target them, so we never plan an unreachable fill).
+  // Never throws — falls back to a direct main-document scrape if frame enumeration is unavailable.
+  private async extractAllFrames(extractSel: string): Promise<RawField[]> {
+    if (!this.page) return [];
+    const out: RawField[] = [];
+    let frames: Frame[] = [];
+    try { frames = typeof this.page.frames === "function" ? this.page.frames() : []; } catch { frames = []; }
+    const main = typeof this.page.mainFrame === "function" ? this.page.mainFrame() : null;
+    for (const frame of frames) {
+      let frameKey: string | undefined;
+      if (main && frame !== main) {
+        try {
+          const el = await frame.frameElement();
+          frameKey = (await el.getAttribute("name")) || (await el.getAttribute("id")) || undefined;
+        } catch { frameKey = undefined; }
+        if (!frameKey) continue; // unidentifiable frame — skip so we never plan an unreachable fill
+      }
+      try {
+        const raws = await frame.$$eval(extractSel, extractFieldsInPage);
+        for (const r of raws) { if (frameKey) r.frame = frameKey; out.push(r); }
+      } catch { /* cross-origin or detached frame — skip */ }
+    }
+    // Safety net: if frame enumeration yielded nothing (e.g. a fake/stub page in tests, or an
+    // older runtime), fall back to a direct main-document scrape so the loop still sees fields.
+    if (!out.length) {
+      try { out.push(...(await this.page.$$eval(extractSel, extractFieldsInPage))); } catch { /* ignore */ }
+    }
+    return out;
   }
 
   // Universal upload pass. Detects every document-upload control on the current page —
@@ -873,7 +918,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         const extractSel = "input, select, textarea, button, [role=button], a[href]:not([href='#']):not([href=''])";
         let raws: RawField[] = [];
         for (let tryN = 0; tryN < 4; tryN++) {
-          raws = await this.page.$$eval(extractSel, extractFieldsInPage).catch(() => [] as RawField[]);
+          raws = await this.extractAllFrames(extractSel);
           if (raws.length > 0) break;
           await smartWait(this.page, 1500);
           await this.dismissModals();
@@ -1255,9 +1300,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             // empty/disabled and the planner had no options to choose. Then clear any overlay.
             await this.waitForDynamicFieldsSettle();
             await this.clearOverlays();
-            const raws2 = await this.page
-              .$$eval(EXTRACT_SEL, extractFieldsInPage)
-              .catch(() => [] as RawField[]);
+            const raws2 = await this.extractAllFrames(EXTRACT_SEL);
             const postFields = raws2.map(toExtractedField);
             const newFillable = postFields.filter(
               (f) =>
@@ -2357,7 +2400,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private _buildLocator(page: Page, sel: RecipeSelector): any {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const scope: any = sel.frame ? page.frameLocator(`iframe[name="${sel.frame}"]`) : page;
+    const scope: any = sel.frame ? page.frameLocator(`iframe[name="${sel.frame}"], iframe[id="${sel.frame}"]`) : page;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let loc: any;
     if (sel.role && sel.name) loc = scope.getByRole(sel.role, { name: sel.name, exact: sel.exact ?? false });
