@@ -2,7 +2,7 @@ import path from "node:path";
 import type { ProjectRecord, ReviewerReport } from "../../../shared/src/types";
 import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, ok, fail, type PortalContext, type PortalStepResult } from "../adapter";
 import { openPortal } from "../browser";
-import { scanStatusFromBody, safeAction } from "../safeAction";
+import { detectChallengeFrame, scanStatusFromBody, safeAction } from "../safeAction";
 import { snap, str, num } from "../snapshot";
 import { scrapeReviewScreen, compareReviewFields } from "../reviewScreenScraper";
 
@@ -733,7 +733,15 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
       // 4. Post-click: if URL didn't change, a challenge or validation may be blocking.
       const postUrl = String(this.page.url());
       if (/review|confirm/i.test(postUrl) && postUrl === url) {
-        // Check for MFA/CAPTCHA text on the page.
+        // Challenge detection (converged): use the shared structural detector FIRST — it
+        // catches iframe-based CAPTCHA/MFA (reCAPTCHA, hCaptcha, Cloudflare) that a body-text
+        // regex can't see — then keep the visible-text regex as an additional fallback. This
+        // matches how the recipe + PowerClerk adapters detect challenges (one shared codepath
+        // to harden); purely additive, so it can only catch more, never fewer.
+        const challenge = await detectChallengeFrame(this.page);
+        if (challenge) {
+          return { ok: false, message: `submitFromReview: ${challenge} after submit click — pausing for human.`, pauseReason: "mfa_captcha" };
+        }
         const bodyText = await this.page.locator("body").innerText().catch(() => "");
         if (/captcha|recaptcha|two.?factor|mfa|authenticat/i.test(bodyText)) {
           return { ok: false, message: "submitFromReview: MFA/CAPTCHA appeared after submit click — pausing for human.", pauseReason: "mfa_captcha" };
