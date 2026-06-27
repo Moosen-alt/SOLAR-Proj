@@ -899,9 +899,56 @@ function migrate(db: AppDb): void {
     CREATE INDEX IF NOT EXISTS idx_project_documents_project ON project_documents(project_id);
   `);
 
+  runVersionedMigrations(db);
+
   seedBaselineRuleRows(db);
   seedInitialKnowledgeBase(db);
   seedTestInstaller(db);
+}
+
+// Ordered, recorded schema migrations.
+//
+// The legacy idiom above (CREATE TABLE IF NOT EXISTS + addColumnIfMissing) is
+// idempotent but leaves no record of *what* changed *when*, and no ordering
+// guarantee between dependent steps. This runner adds that: each entry runs once,
+// in order, and is stamped into `schema_meta`. Use it for any new schema change
+// from here on — append an entry with the next version number; never edit or
+// reorder an already-shipped entry (a deployed DB has already recorded it).
+interface VersionedMigration {
+  version: number;
+  name: string;
+  up: (db: AppDb) => void;
+}
+
+const VERSIONED_MIGRATIONS: VersionedMigration[] = [
+  // v1 establishes the baseline marker for databases that predate this runner;
+  // the schema itself is already materialised by the block above, so this is a
+  // no-op that simply records "we are at or past the versioned-migration era".
+  { version: 1, name: "baseline", up: () => {} },
+];
+
+function runVersionedMigrations(db: AppDb): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS schema_meta (
+      version INTEGER PRIMARY KEY,
+      name TEXT NOT NULL DEFAULT '',
+      applied_at TEXT NOT NULL
+    );
+  `);
+  const appliedRow = db.get<{ max: number | null }>("SELECT MAX(version) AS max FROM schema_meta");
+  const current = appliedRow?.max ?? 0;
+  for (const migration of [...VERSIONED_MIGRATIONS].sort((a, b) => a.version - b.version)) {
+    if (migration.version <= current) continue;
+    db.transaction(() => {
+      migration.up(db);
+      db.run("INSERT INTO schema_meta (version, name, applied_at) VALUES (?, ?, ?)", [
+        migration.version,
+        migration.name,
+        new Date().toISOString(),
+      ]);
+    });
+    console.log(`[db] applied migration v${migration.version} (${migration.name})`);
+  }
 }
 
 // Seeds the primary test installer (TML INTERNATIONAL LLC) so project flows can

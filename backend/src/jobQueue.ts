@@ -237,11 +237,60 @@ async function runFolderScanJob(db: AppDb, job: JobRecord): Promise<Record<strin
   };
 }
 
+// How long a job may stay `running` before it is presumed dead (the process was
+// killed mid-run, leaving an orphan that the optimistic-lock claim will never pick
+// up again). Defaults to 30 minutes — comfortably longer than the slowest portal run.
+const JOB_MAX_RUNTIME_MS = Number(process.env.JOB_MAX_RUNTIME_MS ?? 30 * 60_000);
+
+// Reclaim jobs stranded in `running`. The worker is single-process, so any job still
+// `running` either (a) was interrupted by a restart, or (b) has outlived the max
+// runtime watchdog. Either way it is dead: re-queue it for another attempt (counting
+// the lost run against its retry budget so a poison job eventually fails instead of
+// looping forever), or fail it outright once retries are exhausted.
+export function recoverOrphanedJobs(db: AppDb, opts: { startup?: boolean } = {}): number {
+  const cutoff = new Date(Date.now() - JOB_MAX_RUNTIME_MS).toISOString();
+  // On startup every `running` row is orphaned; mid-run only those past the watchdog.
+  const stale = db.query<Row>(
+    opts.startup
+      ? "SELECT * FROM job_queue WHERE status = 'running'"
+      : "SELECT * FROM job_queue WHERE status = 'running' AND started_at IS NOT NULL AND started_at <= ?",
+    opts.startup ? [] : [cutoff],
+  );
+  if (!stale.length) return 0;
+  const now = nowIso();
+  for (const row of stale) {
+    const job = mapJob(row);
+    const retryCount = job.retryCount + 1;
+    if (retryCount < job.maxRetries) {
+      db.run(
+        "UPDATE job_queue SET status = 'pending', retry_count = ?, started_at = NULL, scheduled_at = NULL, error = ? WHERE id = ? AND status = 'running'",
+        [retryCount, `recovered orphaned job (was running since ${job.startedAt ?? "?"})`, job.id],
+      );
+    } else {
+      db.run(
+        "UPDATE job_queue SET status = 'failed', finished_at = ?, error = ? WHERE id = ? AND status = 'running'",
+        [now, "orphaned job exceeded retry budget after interruption", job.id],
+      );
+    }
+  }
+  console.log(`[job-worker] recovered ${stale.length} orphaned job(s)${opts.startup ? " on startup" : ""}`);
+  return stale.length;
+}
+
 // Background worker — call once at server startup. Polls the job queue on a fixed interval.
 // Interval defaults to JOB_WORKER_INTERVAL_MS env var, or 30 seconds.
 export function startJobWorker(db: AppDb): ReturnType<typeof setInterval> {
   const intervalMs = Number(process.env.JOB_WORKER_INTERVAL_MS ?? 30_000);
+  // Clear out jobs left `running` by a previous process before we start polling.
+  recoverOrphanedJobs(db, { startup: true });
   const timer = setInterval(() => {
+    // Each tick, first reclaim any job that has blown past the runtime watchdog,
+    // then process the next pending job.
+    try {
+      recoverOrphanedJobs(db);
+    } catch (err) {
+      console.error("[job-worker] orphan recovery error:", err instanceof Error ? err.message : String(err));
+    }
     processNextJob(db).catch((err) => {
       console.error("[job-worker] uncaught error:", err instanceof Error ? err.message : String(err));
     });
