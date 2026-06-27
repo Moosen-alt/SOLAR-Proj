@@ -20,6 +20,7 @@ import {
   deletePortalRecipe,
   resolveRecipeFieldValues,
 } from "./portalRecipes";
+import { listPortalPauses, pausePortal, resumePortal } from "./portalPause";
 import {
   listPortalCredentials,
   createPortalCredential,
@@ -891,6 +892,39 @@ app.put("/api/portal-recipes/:id/auto-submit", (req, res) => {
   addAuditLog(db, null, "human", "operator", "portal_recipe.auto_submit_toggled", { recipeId: String(req.params.id), enabled });
   res.json({ ok: true, autoSubmitEnabled: enabled });
 });
+
+// ── Per-portal legal kill-switch ───────────────────────────────────────────────────────────
+// Pause a jurisdiction (or a whole platform) so staging routes it to a manual handoff instead
+// of driving automation — the lawful response to a cease-and-desist or bot-block.
+app.get("/api/portal-pauses", (_req, res) => {
+  res.json({ pauses: listPortalPauses(db) });
+});
+app.post("/api/portal-pauses", (req, res) => {
+  const body = req.body ?? {};
+  const kind = String(body.kind) === "platform" ? "platform" : "profile";
+  const pause = pausePortal(db, {
+    kind,
+    platform: body.platform,
+    identity: kind === "profile"
+      ? {
+          scopeType: String(body.scopeType) === "utility" ? "utility" : "ahj",
+          state: body.state,
+          ahj: body.ahj,
+          utility: body.utility,
+        }
+      : undefined,
+    reason: body.reason,
+    pausedBy: body.pausedBy,
+  });
+  addAuditLog(db, null, "human", "operator", "portal.paused", { kind: pause.kind, pauseKey: pause.pauseKey, reason: pause.reason });
+  res.status(201).json(pause);
+});
+app.delete("/api/portal-pauses/:id", (req, res) => {
+  const result = resumePortal(db, String(req.params.id));
+  if (result.resumed) addAuditLog(db, null, "human", "operator", "portal.resumed", { pauseId: String(req.params.id) });
+  res.json(result);
+});
+
 // Resolved project+client field values — the recorder uses these to auto-bind a typed
 // value to its field key (so the recipe replays each future project's own data).
 app.get("/api/projects/:id/staging-field-values", (req, res) => {

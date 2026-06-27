@@ -71,6 +71,7 @@ import { addAuditLog } from "./audit";
 import { clientStagingOverlay, getClient } from "./clients";
 import { getDecryptedCredential, getDecryptedCredentialByUrl, getDecryptedCredentialAny } from "./portalCredentials";
 import { selectAdapterActor, selectStagingActor, resolvePortalChannel, seedOutcomeToStageResult } from "./portalChannel";
+import { isPortalPaused } from "./portalPause";
 import { buildApplicationDocumentPackage, findApplicationProfile } from "./applicationDocs";
 import { buildUtilityPackage } from "./docSplitter";
 import { classifyCorrection, humanizeBucket, humanizeEnum } from "./corrections";
@@ -5003,12 +5004,22 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   // API tier reserved (apiAvailable=false, no adapter) and no kill-switch wired yet
   // (portalPaused=false), this returns exactly the actor selectStagingActor produced —
   // a behaviour-preserving indirection that gives the dispatch a single seam to extend.
+  // Legal kill-switch: if this jurisdiction (or its whole platform) is paused, the
+  // registry resolves to a manual handoff and no automation is driven at all.
+  const portalPaused = isPortalPaused(db, {
+    scopeType: track === "nem" ? "utility" : "ahj",
+    state: detail.project.state,
+    ahj: detail.project.ahj,
+    utility: detail.project.utility,
+    platform,
+  });
   const channelDecision = resolvePortalChannel({
     hasRecipe: Boolean(recipe),
     isRealPortal: hasLaunchablePortal,
     isAccela,
     isPowerClerk,
     autoSeedEnabled,
+    portalPaused,
   });
   const runActorLabel = channelDecision.adapterLabel;
   // Now that the actor is known, name a real-but-profile-less portal by its track identity so the
@@ -5019,7 +5030,11 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
       : (detail.project.ahj ? `${detail.project.ahj} (permit portal)` : "AHJ permit portal");
   }
   let result: Record<string, unknown>;
-  if (recipe && runActorLabel === "RecipeAdapter") {
+  if (channelDecision.blocked) {
+    // Kill-switch tripped: surface a manual handoff and drive NO automation.
+    const msg = `${portalLabel} is paused (legal kill-switch). ${channelDecision.reason} Submit this application by hand and resume the portal once it's cleared.`;
+    result = { ok: false, finalSubmitClicked: false, pauseReason: "portal_paused", message: msg, steps: [{ ok: false, message: msg }] };
+  } else if (recipe && runActorLabel === "RecipeAdapter") {
     result = await stageWithRecipe(recipe, stagedProject, resolveRecipeFieldValues(db, stagedProject, portalType), docsByType, files, stageOptions);
   } else if (runActorLabel === "AutoLearnAdapter") {
     // Self-seed: learn + stage in one pass. Reuse the entry URL already resolved for the

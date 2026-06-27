@@ -925,6 +925,25 @@ const VERSIONED_MIGRATIONS: VersionedMigration[] = [
   // the schema itself is already materialised by the block above, so this is a
   // no-op that simply records "we are at or past the versioned-migration era".
   { version: 1, name: "baseline", up: () => {} },
+  // v2: per-portal legal kill-switch. A paused (jurisdiction or platform) portal
+  // routes every staging run to a manual handoff instead of driving automation.
+  {
+    version: 2,
+    name: "portal_pauses",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS portal_pauses (
+          id TEXT PRIMARY KEY,
+          kind TEXT NOT NULL DEFAULT 'profile',
+          pause_key TEXT NOT NULL,
+          reason TEXT NOT NULL DEFAULT '',
+          paused_by TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_portal_pauses_key ON portal_pauses(kind, pause_key);
+      `);
+    },
+  },
 ];
 
 function runVersionedMigrations(db: AppDb): void {
