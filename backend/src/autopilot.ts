@@ -24,9 +24,11 @@
 //     human completes in portal" — nothing is ever filed without explicit support.
 // ---------------------------------------------------------------------------
 
+import { performance } from "node:perf_hooks";
 import type { AppDb, SqlParam } from "./db";
 import { HttpError } from "./httpError";
 import { addAuditLog } from "./audit";
+import { logger } from "./logger";
 import { nowIso } from "./time";
 import { getProjectDetail, rerunQc, captureConfirmation } from "./repository";
 import { parseJson } from "./json";
@@ -239,6 +241,8 @@ export async function runAutopilotSegmentA(
   projectId: string,
   track?: SubmittalTrackType,
 ): Promise<{ blocked: boolean; blockers: AutopilotBlocker[]; message: string; state: AutopilotState }> {
+  const t0 = performance.now();
+  logger.info("autopilot", "Segment A started — QC → build → reviewer gate → stage", { project: projectId, track: track ?? "all" });
   // Re-run QC so the project's gate state is fresh before staging.
   rerunQc(db, projectId);
   addAuditLog(db, projectId, "system", "autopilot", "autopilot.segment_a_started", { track: track ?? "all" });
@@ -252,10 +256,13 @@ export async function runAutopilotSegmentA(
     if (err instanceof HttpError && err.status === 409) {
       const blockers = blockersFromHttpError(err);
       addAuditLog(db, projectId, "system", "autopilot", "autopilot.blocked", { blockers });
+      logger.warn("autopilot", "Segment A blocked at a gate", { project: projectId, ms: `${Math.round(performance.now() - t0)}ms`, blockers: blockers.length, reasons: blockers.map((b) => b.code).slice(0, 5) });
       return { blocked: true, blockers, message: err.message, state: getAutopilotState(db, projectId) };
     }
+    logger.error("autopilot", "Segment A failed", { project: projectId, ms: `${Math.round(performance.now() - t0)}ms`, err: err instanceof Error ? err.message : String(err) });
     throw err;
   }
+  logger.info("autopilot", "Segment A complete — staged to portal review, awaiting human approval", { project: projectId, ms: `${Math.round(performance.now() - t0)}ms` });
   return { blocked: false, blockers: [], message: "Staged to portal review; awaiting human approval.", state: getAutopilotState(db, projectId) };
 }
 
@@ -289,6 +296,7 @@ export async function runAutopilotApproval(
   addAuditLog(db, projectId, "human", options.approverName, "autopilot.approved", {
     portalRunId: runId, approverUserId: options.approverUserId ?? null, track: options.track ?? "permit",
   });
+  logger.info("autopilot", "Segment B — human approval authorized, attempting final submit", { project: projectId, portalRun: runId, approver: options.approverName, track: options.track ?? "permit" });
 
   // Mock runs (no real portal profile) submit autonomously so the full approval loop
   // is exercisable in tests/rehearsals. Real hand-coded portals do not yet implement
@@ -309,6 +317,9 @@ export async function runAutopilotApproval(
       addAuditLog(db, projectId, "portal_bot", "MockPortalAdapter", "autopilot.submitted", {
         portalRunId: runId, finalSubmitClickedByAutomation: true, feePaymentAutomated: false,
       });
+      logger.info("autopilot", "Segment B — autonomous final submit captured confirmation (mock portal)", { project: projectId, portalRun: runId });
+    } else {
+      logger.warn("autopilot", "Segment B — mock submit did not complete", { project: projectId, portalRun: runId, ok: result.ok, finalSubmitClicked: result.finalSubmitClicked });
     }
     return getAutopilotState(db, projectId);
   }
@@ -319,5 +330,6 @@ export async function runAutopilotApproval(
     portalRunId: runId,
     note: "Approval authorized. Adapter has no audited autonomous submit; human completes the final submit in the portal.",
   });
+  logger.info("autopilot", "Segment B — approval recorded; real portal has no autonomous submit, human completes final click", { project: projectId, portalRun: runId });
   return getAutopilotState(db, projectId);
 }

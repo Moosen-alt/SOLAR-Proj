@@ -1,8 +1,14 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { performance } from "node:perf_hooks";
 import type { AhjFieldMapResult, AhjFormUrlResult, AhjOverlayMapResult, AhjResearchResult, CorrectionBucket, InverterSpecLookup, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, PortalFieldPlan, PortalFieldPlanInput, PortalFillVerification, PortalFillVerifyInput, PortalFillVisionVerifyInput, ProjectRecord, UtilityResearchResult } from "../../shared/src/types";
 import { RECIPE_FIELD_DESCRIPTIONS } from "./portalRecipes";
+import { logger } from "./logger";
 
 const MODEL = "claude-opus-4-8";
+
+function errMsg(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
 
 // ---------------------------------------------------------------------------
 // Stub (no API key configured)
@@ -392,19 +398,76 @@ export class ClaudeLLMProvider implements LLMProvider {
     this.client = new Anthropic({ apiKey });
   }
 
-  private async ask(systemPrompt: string, userMessage: string): Promise<string> {
-    const stream = await this.client.messages.stream({
-      model: MODEL,
-      max_tokens: 2048,
-      thinking: { type: "adaptive" },
-      system: systemPrompt,
-      messages: [{ role: "user", content: userMessage }],
-    });
-    const msg = await stream.finalMessage();
-    for (const block of msg.content) {
-      if (block.type === "text") return block.text;
+  // ---------------------------------------------------------------------------
+  // Instrumentation — every Claude call routes through here so the terminal/logs
+  // show what's happening: which operation, how long it took, token usage
+  // (incl. prompt-cache hits), and the stop_reason. Refusals (safety classifier)
+  // and max_tokens truncation are surfaced as WARN because both silently degrade
+  // a JSON response to garbage downstream — these are the first things to check
+  // when a parse "fails for no reason". `label` is the operation name so a log
+  // line reads e.g. `[llm] ✓ extractProjectFields ms=8421ms inTok=6210 outTok=1840 stop=end_turn`.
+  // ---------------------------------------------------------------------------
+  private async instrument(
+    label: string,
+    meta: Record<string, unknown>,
+    exec: () => Promise<Anthropic.Message>,
+  ): Promise<Anthropic.Message> {
+    const t0 = performance.now();
+    logger.debug("llm", `→ ${label}`, { model: MODEL, ...meta });
+    let msg: Anthropic.Message;
+    try {
+      msg = await exec();
+    } catch (err) {
+      logger.error("llm", `✗ ${label} failed`, { ms: `${Math.round(performance.now() - t0)}ms`, ...meta, err: errMsg(err) });
+      throw err;
     }
-    return "";
+    const ms = Math.round(performance.now() - t0);
+    const u = msg.usage as
+      | { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number }
+      | undefined;
+    const extra: Record<string, unknown> = {
+      ms: `${ms}ms`,
+      inTok: u?.input_tokens,
+      outTok: u?.output_tokens,
+      // Only show cache counters when non-zero so quiet lines stay readable; a
+      // persistent cacheRead=0 across repeated calls is the tell that a large
+      // static system prompt isn't being cached (see prompt-caching notes).
+      cacheRead: u?.cache_read_input_tokens || undefined,
+      cacheWrite: u?.cache_creation_input_tokens || undefined,
+      stop: msg.stop_reason,
+    };
+    if (msg.stop_reason === "refusal") {
+      const cat = (msg as { stop_details?: { category?: string } }).stop_details?.category;
+      logger.warn("llm", `⚠ ${label} refused by safety classifier — content unusable`, { ...extra, category: cat });
+    } else if (msg.stop_reason === "max_tokens") {
+      logger.warn("llm", `⚠ ${label} hit max_tokens — output truncated, JSON likely unparseable (raise maxTokens)`, extra);
+    } else {
+      logger.info("llm", `✓ ${label}`, extra);
+    }
+    return msg;
+  }
+
+  // Concatenate every text block (more robust than first-block-only: web search
+  // and summarized thinking can interleave multiple text blocks).
+  private textOf(msg: Anthropic.Message): string {
+    let out = "";
+    for (const block of msg.content) if (block.type === "text") out += block.text;
+    return out;
+  }
+
+  private async ask(label: string, systemPrompt: string, userMessage: string): Promise<string> {
+    const msg = await this.instrument(label, { chars: userMessage.length }, () =>
+      this.client.messages
+        .stream({
+          model: MODEL,
+          max_tokens: 2048,
+          thinking: { type: "adaptive" },
+          system: systemPrompt,
+          messages: [{ role: "user", content: userMessage }],
+        })
+        .finalMessage(),
+    );
+    return this.textOf(msg);
   }
 
   private parseJson<T>(text: string, fallback: T): T {
@@ -421,53 +484,53 @@ export class ClaudeLLMProvider implements LLMProvider {
 Return a JSON object with any of these fields you can find: customerName, address, city, state, zip, systemKw, panelCount, panelModel, inverterModel, inverterCount, batteryModel, batteryCount, utilityAccount, meterNumber, ahj, utility, roofType, mountType, azimuth, tilt.
 IMPORTANT: Do NOT include utility account numbers — omit that field entirely for privacy.
 Set confidence (0-1) for each field. Return only valid JSON.`;
-    const raw = await this.ask(system, JSON.stringify(input));
+    const raw = await this.ask("extractFields", system, JSON.stringify(input));
     return this.parseJson<Record<string, unknown>>(raw, { provider: "claude", confidence: 0 });
   }
 
   // Larger budget than ask() — plan sets are dense and we want every field.
-  private async askLong(systemPrompt: string, userMessage: string, maxTokens = 4096): Promise<string> {
-    const stream = await this.client.messages.stream({
-      model: MODEL,
-      max_tokens: maxTokens,
-      thinking: { type: "adaptive" },
-      // Plan sets are dense, multi-section reasoning — give the model room to reason.
-      output_config: { effort: "high" },
-      system: systemPrompt,
-      messages: [{ role: "user", content: userMessage }],
-    });
-    const msg = await stream.finalMessage();
-    for (const block of msg.content) {
-      if (block.type === "text") return block.text;
-    }
-    return "";
+  private async askLong(label: string, systemPrompt: string, userMessage: string, maxTokens = 4096): Promise<string> {
+    const msg = await this.instrument(label, { chars: userMessage.length, maxTokens, effort: "high" }, () =>
+      this.client.messages
+        .stream({
+          model: MODEL,
+          max_tokens: maxTokens,
+          thinking: { type: "adaptive" },
+          // Plan sets are dense, multi-section reasoning — give the model room to reason.
+          output_config: { effort: "high" },
+          system: systemPrompt,
+          messages: [{ role: "user", content: userMessage }],
+        })
+        .finalMessage(),
+    );
+    return this.textOf(msg);
   }
 
   // Like askLong, but with a page SCREENSHOT prepended (vision-assisted planning). The model
   // reads the visible layout/section headings as the authoritative signal and the JSON field
   // list corroborates it. Used by planPortalFields when a screenshot is available.
-  private async askLongWithImage(systemPrompt: string, userMessage: string, imageBase64: string, mimeType: "image/png" | "image/jpeg" | "image/webp", maxTokens = 4096): Promise<string> {
-    const stream = await this.client.messages.stream({
-      model: MODEL,
-      max_tokens: maxTokens,
-      thinking: { type: "adaptive" },
-      // The vision-assisted planner is the hardest "see and reason" step (read the live
-      // layout, reconcile it with the field list, decide each fill) — run it at xhigh.
-      output_config: { effort: "xhigh" },
-      system: systemPrompt,
-      messages: [{
-        role: "user",
-        content: [
-          { type: "image", source: { type: "base64", media_type: mimeType, data: imageBase64 } },
-          { type: "text", text: userMessage },
-        ],
-      }],
-    });
-    const msg = await stream.finalMessage();
-    for (const block of msg.content) {
-      if (block.type === "text") return block.text;
-    }
-    return "";
+  private async askLongWithImage(label: string, systemPrompt: string, userMessage: string, imageBase64: string, mimeType: "image/png" | "image/jpeg" | "image/webp", maxTokens = 4096): Promise<string> {
+    const msg = await this.instrument(label, { chars: userMessage.length, maxTokens, effort: "xhigh", image: true }, () =>
+      this.client.messages
+        .stream({
+          model: MODEL,
+          max_tokens: maxTokens,
+          thinking: { type: "adaptive" },
+          // The vision-assisted planner is the hardest "see and reason" step (read the live
+          // layout, reconcile it with the field list, decide each fill) — run it at xhigh.
+          output_config: { effort: "xhigh" },
+          system: systemPrompt,
+          messages: [{
+            role: "user",
+            content: [
+              { type: "image", source: { type: "base64", media_type: mimeType, data: imageBase64 } },
+              { type: "text", text: userMessage },
+            ],
+          }],
+        })
+        .finalMessage(),
+    );
+    return this.textOf(msg);
   }
 
   async extractProjectFields(input: {
@@ -576,7 +639,7 @@ Rules:
 
     // Generous budget: every field now carries evidence + several narrative
     // blobs, so the JSON is large. Too small a budget truncates it (unparseable).
-    const raw = await this.askLong(system, parts.join("\n\n"), 16000);
+    const raw = await this.askLong("extractProjectFields", system, parts.join("\n\n"), 16000);
     return this.normalizeExtraction(raw, "Could not parse LLM response.");
   }
 
@@ -652,18 +715,18 @@ CRITICAL accuracy rules:
     }
     content.push({ type: "text", text: `${input.defaultState ? `(Default state if ambiguous: ${input.defaultState})\n` : ""}Extract the fields now as specified.` });
 
-    const msg = await this.client.messages.create({
-      model: MODEL,
-      // Headroom: adaptive thinking shares the output budget, so leave room for the JSON answer.
-      max_tokens: 3500,
-      thinking: { type: "adaptive" },
-      output_config: { effort: "high" },
-      system,
-      messages: [{ role: "user", content }],
-    });
-    let raw = "";
-    for (const block of msg.content) if (block.type === "text") raw += block.text;
-    return this.normalizeExtraction(raw, "Could not parse vision response.");
+    const msg = await this.instrument("extractProjectFieldsFromImages", { images: input.images.length, effort: "high" }, () =>
+      this.client.messages.create({
+        model: MODEL,
+        // Headroom: adaptive thinking shares the output budget, so leave room for the JSON answer.
+        max_tokens: 3500,
+        thinking: { type: "adaptive" },
+        output_config: { effort: "high" },
+        system,
+        messages: [{ role: "user", content }],
+      }),
+    );
+    return this.normalizeExtraction(this.textOf(msg), "Could not parse vision response.");
   }
 
   async classifyCorrection(input: { correctionText: string; project?: ProjectRecord }): Promise<{ bucket: CorrectionBucket; confidence: number; notes: string }> {
@@ -681,7 +744,7 @@ Classify the correction request into exactly one bucket:
 
 Return JSON: {"bucket": "<bucket>", "confidence": 0.0-1.0, "notes": "<brief reason>"}`;
     const ctx = input.project ? `Project: ${input.project.homeownerName}, AHJ: ${input.project.ahj}\n\n` : "";
-    const raw = await this.ask(system, `${ctx}Correction text:\n${input.correctionText}`);
+    const raw = await this.ask("classifyCorrection", system, `${ctx}Correction text:\n${input.correctionText}`);
     const parsed = this.parseJson<{ bucket: CorrectionBucket; confidence: number; notes: string }>(raw, {
       bucket: "C_reviewer_clarification" as CorrectionBucket,
       confidence: 0.3,
@@ -698,33 +761,32 @@ Return JSON: {"draft": "<response text>", "confidence": 0.0-1.0}`;
     const ctx = input.project
       ? `Project details:\n- Homeowner: ${input.project.homeownerName}\n- Address: ${input.project.projectAddress}, ${input.project.city}, ${input.project.state}\n- System: ${input.project.systemSizeDcKw}kW DC\n- AHJ: ${input.project.ahj}\n- Utility: ${input.project.utility}\n\n`
       : "";
-    const raw = await this.ask(system, `${ctx}Correction request:\n${input.correctionText}`);
+    const raw = await this.ask("draftResponse", system, `${ctx}Correction request:\n${input.correctionText}`);
     return this.parseJson<{ draft: string; confidence: number }>(raw, { draft: "", confidence: 0 });
   }
 
   async visionExtract(input: { imageBase64: string; mimeType: "image/png" | "image/jpeg" | "image/webp"; prompt: string }): Promise<Record<string, unknown>> {
-    const msg = await this.client.messages.create({
-      model: MODEL,
-      // Headroom: adaptive thinking shares the output budget.
-      max_tokens: 4096,
-      thinking: { type: "adaptive" },
-      output_config: { effort: "high" },
-      messages: [{
-        role: "user",
-        content: [
-          {
-            type: "image",
-            source: { type: "base64", media_type: input.mimeType, data: input.imageBase64 },
-          },
-          { type: "text", text: input.prompt },
-        ],
-      }],
-    });
-    for (const block of msg.content) {
-      if (block.type === "text") {
-        return this.parseJson<Record<string, unknown>>(block.text, { provider: "claude-vision", raw: block.text });
-      }
-    }
+    const msg = await this.instrument("visionExtract", { effort: "high", image: true }, () =>
+      this.client.messages.create({
+        model: MODEL,
+        // Headroom: adaptive thinking shares the output budget.
+        max_tokens: 4096,
+        thinking: { type: "adaptive" },
+        output_config: { effort: "high" },
+        messages: [{
+          role: "user",
+          content: [
+            {
+              type: "image",
+              source: { type: "base64", media_type: input.mimeType, data: input.imageBase64 },
+            },
+            { type: "text", text: input.prompt },
+          ],
+        }],
+      }),
+    );
+    const text = this.textOf(msg);
+    if (text) return this.parseJson<Record<string, unknown>>(text, { provider: "claude-vision", raw: text });
     return { provider: "claude-vision", confidence: 0 };
   }
 
@@ -756,7 +818,7 @@ ${input.pastApplicationTexts.slice(0, 10).map((t, i) => `--- Sample ${i + 1} ---
 
 Correction patterns observed:
 ${input.correctionPatterns.slice(0, 20).join("\n")}`;
-    const raw = await this.ask(system, userMsg);
+    const raw = await this.ask("synthesizeKnowledge", system, userMsg);
     return this.parseJson(raw, { requiredDocuments: [], commonRejectionReasons: [], tips: [], confidence: "low" as const });
   }
 
@@ -789,17 +851,17 @@ Rules:
     let parsed: Partial<AhjResearchResult> = {};
     let webGrounded = false;
     try {
-      const raw = await this.askWithWebSearch(system, userMsg, 3000, 5);
+      const raw = await this.askWithWebSearch("researchAhjRequirements", system, userMsg, 3000, 5);
       const p = this.parseJson<Partial<AhjResearchResult>>(raw, {});
       if (p && (p.portalName || (Array.isArray(p.requiredDocuments) && p.requiredDocuments.length))) {
         parsed = p;
         webGrounded = true;
       }
     } catch (err) {
-      console.warn("[llm] researchAhjRequirements web search failed:", err instanceof Error ? err.message : String(err));
+      logger.warn("llm", "researchAhjRequirements web search failed — falling back to model knowledge", { err: errMsg(err) });
     }
     if (!webGrounded) {
-      const raw = await this.askLong(system, userMsg, 3000);
+      const raw = await this.askLong("researchAhjRequirements.fallback", system, userMsg, 3000);
       parsed = this.parseJson<Partial<AhjResearchResult>>(raw, {});
     }
     const arr = (v: unknown): string[] => (Array.isArray(v) ? v.map((x) => String(x)).filter(Boolean) : []);
@@ -853,17 +915,17 @@ Rules:
     let parsed: Partial<UtilityResearchResult> = {};
     let webGrounded = false;
     try {
-      const raw = await this.askWithWebSearch(system, userMsg, 3000, 5);
+      const raw = await this.askWithWebSearch("researchUtilityRequirements", system, userMsg, 3000, 5);
       const p = this.parseJson<Partial<UtilityResearchResult>>(raw, {});
       if (p && (p.portalName || (Array.isArray(p.requiredDocuments) && p.requiredDocuments.length))) {
         parsed = p;
         webGrounded = true;
       }
     } catch (err) {
-      console.warn("[llm] researchUtilityRequirements web search failed:", err instanceof Error ? err.message : String(err));
+      logger.warn("llm", "researchUtilityRequirements web search failed — falling back to model knowledge", { err: errMsg(err) });
     }
     if (!webGrounded) {
-      const raw = await this.askLong(system, userMsg, 3000);
+      const raw = await this.askLong("researchUtilityRequirements.fallback", system, userMsg, 3000);
       parsed = this.parseJson<Partial<UtilityResearchResult>>(raw, {});
     }
     const arr = (v: unknown): string[] => (Array.isArray(v) ? v.map((x) => String(x)).filter(Boolean) : []);
@@ -916,7 +978,7 @@ ${JSON.stringify(fieldRef, null, 2)}
 Unbound portal form interactions to classify:
 ${JSON.stringify(input.unbound, null, 2)}`;
 
-    const raw = await this.ask(system, user);
+    const raw = await this.ask("suggestRecipeFieldBindings", system, user);
     const suggestions = this.parseJson<Array<{ index: number; field: string | null }>>(raw, []);
     const validKeys = new Set(Object.keys(input.fieldValues));
     return suggestions
@@ -1005,8 +1067,8 @@ Return ONLY JSON:
       // Vision-assisted planning when a page screenshot is supplied: the model SEES the section
       // headings/layout (authoritative for who-owns-which-block) instead of guessing from labels.
       const raw = input.screenshotBase64
-        ? await this.askLongWithImage(system, user, input.screenshotBase64, "image/png", 3000)
-        : await this.askLong(system, user, 3000);
+        ? await this.askLongWithImage("planPortalFields.vision", system, user, input.screenshotBase64, "image/png", 3000)
+        : await this.askLong("planPortalFields", system, user, 3000);
       parsed = this.parseJson<Partial<PortalFieldPlan>>(raw, {});
     } catch { parsed = {}; }
     // Safety post-filter: never let a pay/fee button through as advance/submit, and drop
@@ -1026,7 +1088,7 @@ Return ONLY JSON:
     // chose to do nothing" and leaves the learn loop spinning. Log a distinct marker so the
     // operator can tell a parse failure from a genuine no-op.
     if (!fills.length && advanceIndex == null && navigateIndex == null && finalSubmitIndex == null && !parsed.atReview) {
-      console.warn(`[llm] plan_parse_failed_or_empty: no actionable plan for ${input.url || "page"} (${input.fields.length} fields seen) — response may have been truncated or unparseable.`);
+      logger.warn("llm", "planPortalFields produced no actionable plan — response may have been truncated or unparseable", { url: input.url || "page", fieldsSeen: input.fields.length, hadScreenshot: Boolean(input.screenshotBase64) });
     }
     return {
       fills,
@@ -1048,7 +1110,7 @@ Return ONLY JSON:
  "issues":["<short issue>"], "notes":"<short>"}`;
     const user = JSON.stringify({ reviewFields: input.reviewFields, projectFields: input.projectFields, bodyText: input.bodyText.slice(0, 1500) });
     let parsed: Partial<PortalFillVerification> = {};
-    try { parsed = this.parseJson<Partial<PortalFillVerification>>(await this.ask(system, user), {}); } catch { parsed = {}; }
+    try { parsed = this.parseJson<Partial<PortalFillVerification>>(await this.ask("verifyPortalFill", system, user), {}); } catch { parsed = {}; }
     const matches = Array.isArray(parsed.matches)
       ? parsed.matches.map((m) => ({ label: String(m.label || ""), expected: String(m.expected || ""), found: String(m.found || ""), ok: Boolean(m.ok) }))
       : [];
@@ -1077,9 +1139,10 @@ Return ONLY JSON:
     ];
     let parsed: Partial<PortalFillVerification> = {};
     try {
-      const msg = await this.client.messages.create({ model: MODEL, max_tokens: 3072, thinking: { type: "adaptive" }, output_config: { effort: "high" }, system, messages: [{ role: "user", content: user }] });
-      const text = msg.content.filter((b) => b.type === "text").map((b) => (b as { text: string }).text).join("");
-      parsed = this.parseJson<Partial<PortalFillVerification>>(text, {});
+      const msg = await this.instrument("verifyPortalFillVision", { effort: "high", image: true }, () =>
+        this.client.messages.create({ model: MODEL, max_tokens: 3072, thinking: { type: "adaptive" }, output_config: { effort: "high" }, system, messages: [{ role: "user", content: user }] }),
+      );
+      parsed = this.parseJson<Partial<PortalFillVerification>>(this.textOf(msg), {});
     } catch { parsed = {}; }
     const matches = Array.isArray(parsed.matches)
       ? parsed.matches.map((m) => ({ label: String(m.label || ""), expected: String(m.expected || ""), found: String(m.found || ""), ok: Boolean(m.ok) }))
@@ -1095,32 +1158,37 @@ Return ONLY JSON:
   }
 
   // Ask with the server-side web search tool enabled (used as the spec-lookup fallback).
-  private async askWithWebSearch(systemPrompt: string, userMessage: string, maxTokens = 1024, maxUses = 3, timeoutMs = 45000): Promise<string> {
+  private async askWithWebSearch(label: string, systemPrompt: string, userMessage: string, maxTokens = 1024, maxUses = 3, timeoutMs = 45000): Promise<string> {
     // Hard timeout so a stalled web search can never hang the HTTP request (the
     // "Find official form" button would otherwise spin forever). On timeout we
     // abort the stream; callers catch and fall back (no URLs / model knowledge).
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const stream = await this.client.messages.stream(
-        {
-          model: MODEL,
-          max_tokens: maxTokens,
-          thinking: { type: "adaptive" },
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          tools: [{ type: "web_search_20260209", name: "web_search", max_uses: maxUses }] as any,
-          system: systemPrompt,
-          messages: [{ role: "user", content: userMessage }],
-        },
-        { signal: controller.signal },
+      const msg = await this.instrument(label, { chars: userMessage.length, maxTokens, webSearch: maxUses, timeoutMs }, () =>
+        this.client.messages
+          .stream(
+            {
+              model: MODEL,
+              max_tokens: maxTokens,
+              thinking: { type: "adaptive" },
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              tools: [{ type: "web_search_20260209", name: "web_search", max_uses: maxUses }] as any,
+              system: systemPrompt,
+              messages: [{ role: "user", content: userMessage }],
+            },
+            { signal: controller.signal },
+          )
+          .finalMessage(),
       );
-      const msg = await stream.finalMessage();
-      let out = "";
-      for (const block of msg.content) {
+      // Surface how much searching actually happened — server_tool_use blocks of
+      // type web_search are the real round-trips, useful when results look thin.
+      const searches = msg.content.filter(
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        if ((block as any).type === "text") out += (block as any).text;
-      }
-      return out;
+        (b) => (b as any).type === "server_tool_use" && (b as any).name === "web_search",
+      ).length;
+      if (searches) logger.debug("llm", `  ${label} web_search ran`, { queries: searches });
+      return this.textOf(msg);
     } finally {
       clearTimeout(timer);
     }
@@ -1164,7 +1232,7 @@ Notes:
     let source = "model knowledge";
     if (model) {
       try {
-        parsed = this.parseJson(await this.ask(system, `Model / part number: ${model}`), {});
+        parsed = this.parseJson(await this.ask("lookupInverterSpec", system, `Model / part number: ${model}`), {});
       } catch { parsed = {}; }
 
       // Web fallback when knowledge is unsure/unknown — search the manufacturer datasheet
@@ -1172,6 +1240,7 @@ Notes:
       if (parsed.outputCurrentA == null || parsed.confidence === "low") {
         try {
           const webRaw = await this.askWithWebSearch(
+            "lookupInverterSpec.web",
             `${system}\nSearch the web thoroughly for the official manufacturer datasheet for this EXACT model OR part number, then return the JSON. Try the manufacturer's site, distributor spec pages, and the part number itself. Put the datasheet URL in "notes".`,
             `Find the rated continuous AC output current (amps) for inverter model/part number: ${model}`,
             1500,
@@ -1180,7 +1249,7 @@ Notes:
           const webParsed = this.parseJson<typeof parsed>(webRaw, {});
           if (webParsed.outputCurrentA != null) { parsed = webParsed; source = "web search"; }
         } catch (err) {
-          console.warn("[llm] inverter spec web fallback failed:", err instanceof Error ? err.message : String(err));
+          logger.warn("llm", "lookupInverterSpec web fallback failed", { model, err: errMsg(err) });
         }
       }
     }
@@ -1236,9 +1305,9 @@ Rules:
     const userMsg = `AHJ: ${input.ahj}\nState: ${input.state}\nForm needed: residential solar ${formType.replace(/_/g, " ")} (building + electrical permit applications).\nFind the AHJ's forms/applications page and the direct blank PDF links.`;
     let parsed: Partial<AhjFormUrlResult> = {};
     try {
-      parsed = this.parseJson(await this.askWithWebSearch(system, userMsg), {});
+      parsed = this.parseJson(await this.askWithWebSearch("findAhjFormUrl", system, userMsg), {});
     } catch (err) {
-      console.warn("[llm] findAhjFormUrl web search failed:", err instanceof Error ? err.message : String(err));
+      logger.warn("llm", "findAhjFormUrl web search failed", { ahj: input.ahj, state: input.state, err: errMsg(err) });
     }
     const urls = Array.isArray(parsed.candidateUrls)
       ? parsed.candidateUrls.map((u) => String(u)).filter((u) => /^https?:\/\//i.test(u))
@@ -1298,9 +1367,9 @@ AVAILABLE DATA SOURCES:
 ${input.availableSources.join("\n")}`;
     let parsed: Partial<AhjFieldMapResult> = {};
     try {
-      parsed = this.parseJson(await this.askLong(system, userMsg, 4096), {});
+      parsed = this.parseJson(await this.askLong("mapAcroFormFields", system, userMsg, 4096), {});
     } catch (err) {
-      console.warn("[llm] mapAcroFormFields failed:", err instanceof Error ? err.message : String(err));
+      logger.warn("llm", "mapAcroFormFields failed", { err: errMsg(err) });
     }
     const textFields: Record<string, string> = {};
     if (parsed.textFields && typeof parsed.textFields === "object") {
@@ -1367,17 +1436,19 @@ Rules:
 
     let raw = "";
     try {
-      const msg = await this.client.messages.create({
-        model: MODEL,
-        max_tokens: 4096,
-        thinking: { type: "adaptive" },
-        output_config: { effort: "high" },
-        system,
-        messages: [{ role: "user", content }],
-      });
-      for (const block of msg.content) if (block.type === "text") raw += block.text;
+      const msg = await this.instrument("mapFlatFormOverlay", { pages: input.pages.length, effort: "high" }, () =>
+        this.client.messages.create({
+          model: MODEL,
+          max_tokens: 4096,
+          thinking: { type: "adaptive" },
+          output_config: { effort: "high" },
+          system,
+          messages: [{ role: "user", content }],
+        }),
+      );
+      raw = this.textOf(msg);
     } catch (err) {
-      console.warn("[llm] mapFlatFormOverlay failed:", err instanceof Error ? err.message : String(err));
+      logger.warn("llm", "mapFlatFormOverlay failed", { err: errMsg(err) });
     }
     const parsed = this.parseJson<{ fields?: unknown[]; signatures?: unknown[]; notes?: string }>(raw, {});
     const fields: AhjOverlayMapResult["fields"] = [];
@@ -1444,12 +1515,13 @@ export function sanitizeApiKey(raw: string | undefined): string {
 export function createLLMProvider(): LLMProvider {
   const apiKey = sanitizeApiKey(process.env["ANTHROPIC_API_KEY"]);
   if (!apiKey) {
-    console.warn("[llm] No ANTHROPIC_API_KEY — running in stub mode (advisory only).");
+    logger.warn("llm", "No ANTHROPIC_API_KEY — running in stub mode (advisory only)");
     return new StubLLMProvider();
   }
   if (!/^sk-ant-/.test(apiKey)) {
-    console.warn(`[llm] ANTHROPIC_API_KEY does not start with "sk-ant-" — it may be malformed (got ${apiKey.length} chars). Claude calls will likely 401.`);
+    logger.warn("llm", `ANTHROPIC_API_KEY does not start with "sk-ant-" — it may be malformed (Claude calls will likely 401)`, { chars: apiKey.length });
   }
+  logger.info("llm", "Claude provider ready", { model: MODEL });
   return new ClaudeLLMProvider(apiKey);
 }
 
@@ -1474,7 +1546,7 @@ export async function enrichMboxLearningWithLlm(input: {
       confidence: classification.confidence,
     };
   } catch (err) {
-    console.error("[llm] MBOX enrichment failed:", err instanceof Error ? err.message : String(err));
+    logger.error("llm", "MBOX enrichment failed", { err: errMsg(err) });
     return null;
   }
 }
