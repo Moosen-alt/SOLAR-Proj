@@ -62,7 +62,7 @@ import { touchProjectMetrics } from "./kpi";
 import fs from "node:fs";
 import path from "node:path";
 import { checkStatusWithAdapter, stageWithAccela, stageWithMockPortal, stageWithPowerClerk, stageWithRecipe } from "../../portal-bot/src/index";
-import { findCompleteRecipeForProject, findAnyRecipeForProject, resolveRecipeFieldValues } from "./portalRecipes";
+import { findCompleteRecipeForProject, findAnyRecipeForProject, resolveRecipeFieldValues, markPortalRecipeForRerecord } from "./portalRecipes";
 import { detectPlatform, publicPermitStatusCheck } from "./publicPermitStatus";
 import { projectDocsByType } from "./projectDocuments";
 import { documentInventory } from "./requiredDocuments";
@@ -5036,6 +5036,22 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
     result = { ok: false, finalSubmitClicked: false, pauseReason: "portal_paused", message: msg, steps: [{ ok: false, message: msg }] };
   } else if (recipe && runActorLabel === "RecipeAdapter") {
     result = await stageWithRecipe(recipe, stagedProject, resolveRecipeFieldValues(db, stagedProject, portalType), docsByType, files, stageOptions);
+    // PROACTIVE STALENESS: a replay that dies on a recorded step is almost always selector
+    // drift — the portal changed under a recipe that used to work. Mark it needs_rerecord so
+    // it stops silently failing every future stage and surfaces for re-recording, and tell
+    // the operator plainly instead of leaving a raw "Recipe step failed" message.
+    if (result && result.ok === false && typeof result.message === "string" && /recipe step failed/i.test(result.message)) {
+      try {
+        markPortalRecipeForRerecord(db, recipe.id);
+      } catch {
+        /* best-effort: surfacing the staleness still happens below */
+      }
+      result = {
+        ...result,
+        recipeStale: true,
+        message: `${result.message} — this recipe looks stale (the portal likely changed) and has been flagged for re-recording. Re-record it, then re-stage.`,
+      };
+    }
   } else if (runActorLabel === "AutoLearnAdapter") {
     // Self-seed: learn + stage in one pass. Reuse the entry URL already resolved for the
     // credential match; pass the client-overlaid stagedProject so the learner fills authoritative

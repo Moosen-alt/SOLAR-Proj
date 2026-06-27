@@ -944,6 +944,16 @@ const VERSIONED_MIGRATIONS: VersionedMigration[] = [
       `);
     },
   },
+  // v3: structural-signature baseline for recipes, for future drift detection. The
+  // active staleness behaviour (auto-mark needs_rerecord on a failed replay step) needs
+  // no schema; this column just records the recorded structure's fingerprint at save.
+  {
+    version: 3,
+    name: "recipe_structure_sig",
+    up: (db) => {
+      addColumnIfMissing(db, "portal_recipes", "structure_sig", "TEXT NOT NULL DEFAULT ''");
+    },
+  },
 ];
 
 function runVersionedMigrations(db: AppDb): void {

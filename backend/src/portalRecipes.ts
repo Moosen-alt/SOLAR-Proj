@@ -109,6 +109,28 @@ export function startPortalRecording(
   return getPortalRecipe(db, recipeId);
 }
 
+// A stable fingerprint of a recipe's STRUCTURE — the ordered shape of its steps
+// (action + selector identity), deliberately excluding any filled values. Two
+// recordings of the same portal flow hash the same; a portal that adds/removes/renames
+// a field changes the hash. Stored at save time as the baseline a future pre-flight
+// drift check (or a re-record) can compare a freshly-observed structure against.
+export function recipeStructureSignature(steps: RecipeStep[]): string {
+  const shape = (Array.isArray(steps) ? steps : []).map((step) => {
+    const sel = step.selector || {};
+    // Identity = action + the most stable selector handle available (name/text/css),
+    // never the value, so the signature tracks structure, not a project's data.
+    return [step.action, sel.name || sel.text || sel.css || "", step.field || ""].join("|");
+  });
+  const joined = shape.join("\n");
+  // Cheap deterministic 32-bit hash (FNV-1a) — no crypto import needed for a fingerprint.
+  let h = 0x811c9dc5;
+  for (let i = 0; i < joined.length; i++) {
+    h ^= joined.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16).padStart(8, "0");
+}
+
 // Save the recorded steps (called by the recorder when the admin finishes). Marks the
 // recipe 'complete' so the bot will replay it. A short/empty recording stays 'recording'.
 export function savePortalRecipeSteps(
@@ -120,8 +142,8 @@ export function savePortalRecipeSteps(
   getPortalRecipe(db, recipeId); // 404 if missing
   const status = options.status ?? (Array.isArray(steps) && steps.length > 0 ? "complete" : "recording");
   db.run(
-    "UPDATE portal_recipes SET steps_json = ?, status = ?, notes = COALESCE(NULLIF(?, ''), notes), updated_at = ? WHERE id = ?",
-    [asJson(steps ?? []), status, s(options.notes), nowIso(), recipeId],
+    "UPDATE portal_recipes SET steps_json = ?, status = ?, structure_sig = ?, notes = COALESCE(NULLIF(?, ''), notes), updated_at = ? WHERE id = ?",
+    [asJson(steps ?? []), status, recipeStructureSignature(steps ?? []), s(options.notes), nowIso(), recipeId],
   );
   return getPortalRecipe(db, recipeId);
 }
