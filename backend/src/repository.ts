@@ -70,6 +70,7 @@ import { STAGE_COUNT, stageForStatus, isBlockedStatus } from "./projectStage";
 import { addAuditLog } from "./audit";
 import { clientStagingOverlay, getClient } from "./clients";
 import { getDecryptedCredential, getDecryptedCredentialByUrl, getDecryptedCredentialAny } from "./portalCredentials";
+import { selectAdapterActor, selectStagingActor, resolvePortalChannel, seedOutcomeToStageResult } from "./portalChannel";
 import { buildApplicationDocumentPackage, findApplicationProfile } from "./applicationDocs";
 import { buildUtilityPackage } from "./docSplitter";
 import { classifyCorrection, humanizeBucket, humanizeEnum } from "./corrections";
@@ -4652,57 +4653,11 @@ function extractStageFailureMessage(result: Record<string, unknown>): string {
 // stage function: RecipeAdapter→stageWithRecipe, OregonEPermittingAdapter→stageWithAccela,
 // PowerClerkAdapter→stageWithPowerClerk, MockPortalAdapter→stageWithMockPortal. Pure + exported so
 // the precedence is unit-tested without standing up a browser/DB.
-export function selectAdapterActor(hasRecipe: boolean, isAccela: boolean, isPowerClerk: boolean): string {
-  if (hasRecipe) return "RecipeAdapter";
-  if (isAccela) return "OregonEPermittingAdapter";
-  if (isPowerClerk) return "PowerClerkAdapter";
-  return "MockPortalAdapter";
-}
-
-// Which actor actually RUNS a stage under the UNIVERSAL-FIRST + SELF-SEED policy. Distinct from
-// selectAdapterActor() (which names the PLATFORM for field validation): once a portal has no
-// recorded complete recipe, the universal learner SEEDS one on this very stage (AutoLearnAdapter)
-// — it records a recipe AND stages this project to review in one pass, auto-promoting to
-// "complete" only on a clean triple-verification so the NEXT stage replays it deterministically.
-// On a learn failure we STOP AND SURFACE to the operator (no silent drop to the hand-coded path).
-// The hand-coded Accela/PowerClerk adapters are reachable ONLY as the legacy fallback when
-// auto-seed is disabled (PORTAL_AUTOSEED=0). Pure + exported so the precedence is unit-tested
-// without a browser/DB.
-export function selectStagingActor(opts: {
-  hasRecipe: boolean;
-  isRealPortal: boolean;
-  isAccela: boolean;
-  isPowerClerk: boolean;
-  autoSeedEnabled: boolean;
-}): string {
-  if (opts.hasRecipe) return "RecipeAdapter";
-  if (opts.isRealPortal && opts.autoSeedEnabled) return "AutoLearnAdapter";
-  if (opts.isRealPortal && opts.isAccela) return "OregonEPermittingAdapter";
-  if (opts.isRealPortal && opts.isPowerClerk) return "PowerClerkAdapter";
-  return "MockPortalAdapter";
-}
-
-// Map a universal self-seed (auto-learn) outcome onto the staging-result contract the
-// prepareSubmission persistence block reads ({ ok, finalSubmitClicked, pauseReason, message,
-// steps }). The learner NEVER clicks final submit, so finalSubmitClicked is ALWAYS false:
-//   trusted | draft → reached the review screen and stopped there (→ awaiting_human_submit;
-//                     trusted seeded a reusable recipe, draft will re-seed next stage);
-//   paused          → an MFA/CAPTCHA challenge halted the learn (→ paused_for_human);
-//   failed          → couldn't learn (→ failed: stop and surface; no hand-coded fallback).
-// Exported pure so the mapping is unit-tested.
-export function seedOutcomeToStageResult(seed: {
-  status: "trusted" | "draft" | "paused" | "failed";
-  pauseReason: string | null;
-  message: string;
-}): Record<string, unknown> {
-  if (seed.status === "paused") {
-    return { ok: false, finalSubmitClicked: false, pauseReason: seed.pauseReason, message: seed.message, steps: [] };
-  }
-  if (seed.status === "failed") {
-    return { ok: false, finalSubmitClicked: false, pauseReason: null, message: seed.message, steps: [{ ok: false, message: seed.message }] };
-  }
-  return { ok: true, finalSubmitClicked: false, pauseReason: null, message: seed.message, steps: [] };
-}
+// Portal channel resolution + the pure precedence helpers now live in ./portalChannel
+// (the capability registry). Re-exported here so existing import sites — including
+// backend/test/adapterPrecedence.test.ts which imports from "../src/repository" — keep
+// working unchanged.
+export { selectAdapterActor, selectStagingActor, seedOutcomeToStageResult, resolvePortalChannel };
 
 function validatePortalFields(
   project: ProjectRecord,
@@ -5044,7 +4999,18 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
     (track === "nem" ? utilityPortalUrl : ahjPortalUrl) ||
     "";
   const hasLaunchablePortal = isRealPortal || Boolean(portalEntryUrl);
-  const runActorLabel = selectStagingActor({ hasRecipe: Boolean(recipe), isRealPortal: hasLaunchablePortal, isAccela, isPowerClerk, autoSeedEnabled });
+  // Capability registry: resolve the staging channel in one explicit decision. With the
+  // API tier reserved (apiAvailable=false, no adapter) and no kill-switch wired yet
+  // (portalPaused=false), this returns exactly the actor selectStagingActor produced —
+  // a behaviour-preserving indirection that gives the dispatch a single seam to extend.
+  const channelDecision = resolvePortalChannel({
+    hasRecipe: Boolean(recipe),
+    isRealPortal: hasLaunchablePortal,
+    isAccela,
+    isPowerClerk,
+    autoSeedEnabled,
+  });
+  const runActorLabel = channelDecision.adapterLabel;
   // Now that the actor is known, name a real-but-profile-less portal by its track identity so the
   // status/audit text below doesn't read "Mock portal" for a run that actually drives a browser.
   if (!isRealPortal && runActorLabel !== "MockPortalAdapter") {

@@ -8,7 +8,7 @@
 //   3. seedOutcomeToStageResult() — maps an auto-learn outcome onto the staging-result contract.
 // Browser-free. Run: tsx backend/test/adapterPrecedence.test.ts
 import assert from "node:assert/strict";
-import { selectAdapterActor, selectStagingActor, seedOutcomeToStageResult } from "../src/repository";
+import { selectAdapterActor, selectStagingActor, seedOutcomeToStageResult, resolvePortalChannel } from "../src/repository";
 
 let failures = 0;
 const ok = (label: string) => console.log(`  ok   - ${label}`);
@@ -94,7 +94,47 @@ run("seedOutcomeToStageResult: failed → not-ok + no pause + failing step (stop
   assert.ok(Array.isArray(r.steps) && (r.steps as unknown[]).length === 1, "surfaces a failing step for the operator");
 });
 
-const total = platformCases.length + dispatchCases.length + 4;
+// ── resolvePortalChannel: the capability registry over the scrape channels ─────────────────────
+// No-regression: with the API tier reserved (apiAvailable=false) and no kill-switch
+// (portalPaused=false), the resolver's adapterLabel must equal selectStagingActor for
+// EVERY dispatch case above — the indirection is behaviour-preserving.
+let registryChecks = 0;
+for (const [opts, expected, label] of dispatchCases) {
+  run(`resolvePortalChannel: matches selectStagingActor — ${label}`, () => {
+    const decision = resolvePortalChannel(opts);
+    assert.equal(decision.adapterLabel, expected);
+    assert.equal(decision.blocked, false);
+  });
+  registryChecks++;
+}
+// Channel labels map correctly off the adapter name.
+run("resolvePortalChannel: recipe → channel 'recipe'", () => {
+  const d = resolvePortalChannel({ hasRecipe: true, isRealPortal: true, isAccela: false, isPowerClerk: false, autoSeedEnabled: true });
+  assert.equal(d.channel, "recipe");
+});
+run("resolvePortalChannel: self-seed → channel 'autolearn'", () => {
+  const d = resolvePortalChannel({ hasRecipe: false, isRealPortal: true, isAccela: false, isPowerClerk: false, autoSeedEnabled: true });
+  assert.equal(d.channel, "autolearn");
+});
+run("resolvePortalChannel: seed-off real portal → channel 'handcoded'", () => {
+  const d = resolvePortalChannel({ hasRecipe: false, isRealPortal: true, isAccela: true, isPowerClerk: false, autoSeedEnabled: false });
+  assert.equal(d.channel, "handcoded");
+});
+// Kill-switch wins over everything: a paused portal is a manual handoff, blocked.
+run("resolvePortalChannel: portalPaused → channel 'manual' + blocked (overrides recipe)", () => {
+  const d = resolvePortalChannel({ hasRecipe: true, isRealPortal: true, isAccela: false, isPowerClerk: false, autoSeedEnabled: true, portalPaused: true });
+  assert.equal(d.channel, "manual");
+  assert.equal(d.adapterLabel, "ManualHandoff");
+  assert.equal(d.blocked, true);
+});
+// Reserved API tier: selectable only when apiAvailable is set (no caller does this yet).
+run("resolvePortalChannel: apiAvailable → reserved 'api' tier", () => {
+  const d = resolvePortalChannel({ hasRecipe: false, isRealPortal: true, isAccela: false, isPowerClerk: false, autoSeedEnabled: true, apiAvailable: true });
+  assert.equal(d.channel, "api");
+});
+const registryExtra = 5;
+
+const total = platformCases.length + dispatchCases.length + 4 + registryChecks + registryExtra;
 if (failures) {
   console.error(`\n${failures} of ${total} precedence test(s) failed.`);
   process.exit(1);
