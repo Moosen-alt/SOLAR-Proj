@@ -20,6 +20,7 @@ export type SseEventType =
   | "run_failed"
   | "run_complete"
   | "autopilot_started"
+  | "staging_started"
   | "autolearn_progress"
   | "email_matched"
   | "imap_poll_done"

@@ -11,7 +11,8 @@ export type JobType =
   | "nem_checks"
   | "mbox_import"
   | "folder_scan"
-  | "autopilot";
+  | "autopilot"
+  | "prepare_submission";
 
 export type JobStatus = "pending" | "running" | "done" | "failed";
 
@@ -336,6 +337,15 @@ export async function processNextJob(db: AppDb): Promise<boolean> {
       const track = (job.payload.track as string | undefined) || undefined;
       const seg = await runAutopilotSegmentA(db, String(job.projectId), track as never);
       result = { blocked: seg.blocked, blockers: seg.blockers, message: seg.message, phase: seg.state.phase };
+    } else if (job.jobType === "prepare_submission") {
+      // Operator-initiated staging run, off the HTTP request path so a multi-second
+      // (sometimes multi-minute) live portal pass never hangs or times out the request.
+      const { prepareSubmission } = await import("./repository");
+      const track = (job.payload.track as string | undefined) || undefined;
+      const autoSubmit = job.payload.autoSubmit === true;
+      const detail = await prepareSubmission(db, String(job.projectId), track as never, autoSubmit);
+      const run = detail.portalRuns?.[0];
+      result = { status: run?.status ?? null, pauseReason: run?.pauseReason ?? null };
     } else {
       result = { skipped: true, reason: "job type handled externally" };
     }

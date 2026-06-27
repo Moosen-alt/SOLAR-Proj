@@ -1934,9 +1934,16 @@ async function stageSubmittalTrack(type, btn, autoSubmit = false) {
     ? `Approving ${humanize(type)} — replaying the portal; it will submit only if this portal is trusted, and never pays fees…`
     : `Staging ${humanize(type)} in its portal — automation stops at the final review screen for your manual submit…`, "info");
   try {
-    const detail = await api(`/api/projects/${state.selectedProjectId}/prepare-submission`, {
+    // Staging runs as a background job (202 + jobId); poll to completion, then refetch detail.
+    const { jobId } = await api(`/api/projects/${state.selectedProjectId}/prepare-submission`, {
       method: "POST", body: JSON.stringify({ track: type, autoSubmit }),
     });
+    const job = await waitForStagingJob(jobId);
+    if (job.status === "failed") {
+      showMessage(job.error || `Could not stage ${type}.`, "error");
+      return;
+    }
+    const detail = await api(`/api/projects/${state.selectedProjectId}`);
     if (detail && detail.project) state.detail = detail;
     await loadSubmittalTracks();
     renderDetail();
@@ -3614,9 +3621,38 @@ async function runHistoricalCheck() {
   if (window.lucide) window.lucide.createIcons();
 }
 
+// Staging now runs as a background job (POST returns 202 + jobId). Poll the job until it
+// finishes, then resolve with the terminal job record (status "done" | "failed"). The
+// project detail is refetched by the caller on success; on failure job.error carries the
+// reason (e.g. the missing-portal-field message).
+function waitForStagingJob(jobId) {
+  return new Promise((resolve, reject) => {
+    const tick = async () => {
+      try {
+        const job = await api(`/api/jobs/${jobId}`);
+        if (job.status === "running" || job.status === "pending") {
+          setTimeout(tick, 1500);
+        } else {
+          resolve(job); // done | failed
+        }
+      } catch (err) {
+        reject(err);
+      }
+    };
+    setTimeout(tick, 800);
+  });
+}
+
 async function prepareSubmission() {
   try {
-    state.detail = await api(`/api/projects/${state.selectedProjectId}/prepare-submission`, { method: "POST", body: "{}" });
+    showMessage("Staging in the portal — this runs in the background and may take a moment…", "info");
+    const { jobId } = await api(`/api/projects/${state.selectedProjectId}/prepare-submission`, { method: "POST", body: "{}" });
+    const job = await waitForStagingJob(jobId);
+    if (job.status === "failed") {
+      showMessage(job.error || "Staging failed — see the run log for details.", "warning");
+      return;
+    }
+    state.detail = await api(`/api/projects/${state.selectedProjectId}`);
     await loadOpsPlan();
     await loadPmPackets();
     await loadLiveReadiness();

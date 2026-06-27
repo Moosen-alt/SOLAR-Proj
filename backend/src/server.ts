@@ -1468,27 +1468,40 @@ app.post("/api/parser/vision-extract", asyncHandler(async (req, res) => {
   }
 }));
 
-app.post("/api/projects/:id/prepare-submission", asyncHandler(async (req, res) => {
+app.post("/api/projects/:id/prepare-submission", (req, res) => {
   // Optional track scopes staging to one filing (nem | building | electrical | combo);
   // omitted = the legacy combined stage.
+  const projectId = String(req.params.id);
   const rawTrack = String(req.body?.track || "").trim();
   const track = SUBMITTAL_TRACK_TYPES.includes(rawTrack as SubmittalTrackType) ? (rawTrack as SubmittalTrackType) : undefined;
   // Hybrid: operator-approved auto-submit. Only honored backend-side when the resolved
   // recipe is trusted (auto_submit_enabled); otherwise it falls back to guided-manual.
   const autoSubmit = req.body?.autoSubmit === true || String(req.body?.autoSubmit) === "true";
-  const result = await prepareSubmission(db, String(req.params.id), track, autoSubmit);
-  const run = result.portalRuns?.[0];
-  if (run) {
-    if (run.pauseReason === "mfa_captcha") {
-      sseBroadcast({ type: "run_paused", projectId: String(req.params.id), message: "Portal requires attention — MFA or CAPTCHA detected. Complete it in the browser, then resume.", data: { pauseReason: run.pauseReason } });
-    } else if (run.status === "failed") {
-      sseBroadcast({ type: "run_failed", projectId: String(req.params.id), message: "Portal run failed — see run log for details." });
-    } else if (run.status === "awaiting_human_submit" || run.status === "paused_for_human") {
-      sseBroadcast({ type: "run_complete", projectId: String(req.params.id), message: "Portal staged — verify and submit manually." });
-    }
-  }
-  res.json(result);
-}));
+  // Staging runs OFF the request path as a background job: a live portal pass can take
+  // many seconds (sometimes minutes), which would otherwise hang or time out the HTTP
+  // request. Enqueue + kick the worker, return 202 with the jobId; the client polls
+  // /api/jobs/:id and refetches the project once it's done. SSE still fires on completion.
+  const job = enqueueJob(db, "prepare_submission", { track, autoSubmit }, { projectId, priority: 7, maxRetries: 0 });
+  processNextJob(db)
+    .then(() => {
+      const detail = getProjectDetail(db, projectId);
+      const run = detail.portalRuns?.[0];
+      if (!run) return;
+      if (run.pauseReason === "mfa_captcha") {
+        sseBroadcast({ type: "run_paused", projectId, message: "Portal requires attention — MFA or CAPTCHA detected. Complete it in the browser, then resume.", data: { pauseReason: run.pauseReason } });
+      } else if (run.status === "failed") {
+        sseBroadcast({ type: "run_failed", projectId, message: "Portal run failed — see run log for details." });
+      } else if (run.status === "awaiting_human_submit" || run.status === "paused_for_human") {
+        sseBroadcast({ type: "run_complete", projectId, message: "Portal staged — verify and submit manually." });
+      }
+    })
+    .catch((err) => {
+      sseBroadcast({ type: "run_failed", projectId, message: "Portal run failed — see run log for details." });
+      logger.warn("prepare-submission", `staging error: ${err instanceof Error ? err.message : String(err)}`);
+    });
+  sseBroadcast({ type: "staging_started", projectId, message: "Staging started — preparing the portal application." });
+  res.status(202).json({ jobId: job.id, state: getAutopilotState(db, projectId) });
+});
 
 // AUTOPILOT — autonomous run to the approval gate. Start enqueues Segment A (QC →
 // build → reviewer-gate → stage) as a background job so it survives HTTP timeouts.
