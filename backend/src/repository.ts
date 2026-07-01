@@ -4731,7 +4731,10 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
     const existingDocs = projectDocsByType(db, detail.project.id);
     const hasSheets = ["sld", "site_plan", "structural", "module_spec", "inverter_spec"].every((t) => existingDocs[t]);
     if (!hasSheets) {
-      const target = track === "nem" ? "nem" : track === "building" ? "permit" : "all";
+      // nem → NEM docs; ANY permit-side track (building/electrical/combo/permit/mpu) → permit
+      // docs only; no track (stage everything) → all. Previously only 'building' mapped to
+      // 'permit', so electrical/combo/mpu stages did needless NEM-package work.
+      const target = track === "nem" ? "nem" : track ? "permit" : "all";
       await buildUtilityPackage(db, detail.project.id, target);
     }
   } catch { /* non-fatal — document gate will surface what's still missing */ }
@@ -4916,7 +4919,8 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
       "SELECT auto_submit_enabled FROM portal_recipes WHERE id = ?",
       [recipe.id],
     );
-    resolvedAutoSubmit = Boolean(trustRow?.auto_submit_enabled);
+    // bool() (not Boolean()) — a string "0" cell must read as false: this flag ARMS auto-submit.
+    resolvedAutoSubmit = bool(trustRow?.auto_submit_enabled);
     if (autoSubmit && !resolvedAutoSubmit) {
       addAuditLog(db, projectId, "system", "submit gate", "portal.auto_submit_declined", {
         reason: recipe ? "recipe_not_trusted" : "no_recipe", track: track ?? "permit",

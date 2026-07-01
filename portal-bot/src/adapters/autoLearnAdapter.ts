@@ -1211,8 +1211,10 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         const btnCount = fields.filter((f) => f.fieldType === "button").length;
         const linkCount = fields.filter((f) => f.fieldType === "button" && f.selector?.role === "link").length;
         const cls = isReviewPage ? "review" : isDashboard ? "dashboard" : hasFillable ? "form" : "empty";
+        // Titles go through redactStatusText — portal record pages often title themselves
+        // with the record number/applicant address, and the trace is logged + persisted.
         pageTrace.push(
-          `p${pageCount} "${(pageTitle || "").slice(0, 40)}" [${hostPath}] ${cls} ` +
+          `p${pageCount} "${(redactStatusText(pageTitle) || "").slice(0, 40)}" [${hostPath}] ${cls} ` +
           `fields=${fields.length}(fill=${fillCount},btn=${btnCount},link=${linkCount}) ` +
           `plan:nav=${plan.navigateSelectorIndex ?? "-"} adv=${plan.advanceSelectorIndex ?? "-"} ` +
           `fills=${(plan.fills ?? []).length} review=${plan.atReview}`,

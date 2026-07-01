@@ -134,7 +134,12 @@ export class RecipeAdapter extends BasePortalAdapter {
       const permitNumber = (accela?.[0] || generic?.[1] || "").trim();
       // Accela record suffix encodes the discipline: -STR (structural), -ELE (electrical), etc.
       const discipline = permitNumber.match(/-([A-Z]{2,4})$/)?.[1] ?? null;
-      const recordLink = typeof this.page.url === "function" ? String(this.page.url() ?? "") : "";
+      // Keep origin+path only — completion-page URLs can embed session-scoped query tokens
+      // (capId/agency/auth tickets) that would persist session material in the stored run
+      // result and won't work when clicked later anyway.
+      const rawUrl = typeof this.page.url === "function" ? String(this.page.url() ?? "") : "";
+      let recordLink = rawUrl;
+      try { const u = new URL(rawUrl); recordLink = u.origin + u.pathname; } catch { /* keep raw */ }
       const submitted = /successfully submitted|application has been submitted|record (number|#)/i.test(bodyText);
       if (permitNumber || submitted) {
         return ok(`Captured submission confirmation${permitNumber ? `: ${permitNumber}` : ""}.`, {
@@ -201,7 +206,9 @@ export class RecipeAdapter extends BasePortalAdapter {
         if (typeof this.page.waitForLoadState === "function") {
           await this.page.waitForLoadState("networkidle", { timeout: 8000 }).catch(() => null);
         }
-        await sleep(Number(process.env.AUTOLEARN_SAVE_SETTLE_MS) || 3000);
+        // Number.isFinite (not ||) so an explicit AUTOLEARN_SAVE_SETTLE_MS=0 disables the wait.
+        const settleMs = Number(process.env.AUTOLEARN_SAVE_SETTLE_MS);
+        await sleep(Number.isFinite(settleMs) ? settleMs : 3000);
         // Now that the recipe's fills have committed (blurred + autosaved), let the LLM gap-fill
         // any REQUIRED field the recipe didn't cover — from real project data only. Run it AFTER
         // the persist-settle so the LLM reads a stable page; the advancing click that follows is

@@ -28,7 +28,7 @@ import { compareReviewFields } from "../../portal-bot/src/reviewScreenScraper";
 import type { LearnPlanRequest, LearnPlanResponse } from "../../portal-bot/src/adapters/autoLearnAdapter";
 import { createLLMProvider } from "./llm";
 import { getDecryptedCredential, getDecryptedCredentialByUrl, getDecryptedCredentialAny } from "./portalCredentials";
-import { resolveRecipeFieldValues, startPortalRecording, savePortalRecipeSteps, getPortalRecipe, convertLiteralsToBoundFields } from "./portalRecipes";
+import { resolveRecipeFieldValues, startPortalRecording, savePortalRecipeSteps, getPortalRecipe, convertLiteralsToBoundFields, findAnyRecipeForProject } from "./portalRecipes";
 import { projectDocsByType } from "./projectDocuments";
 import { buildUtilityPackage } from "./docSplitter";
 import { addAuditLog } from "./audit";
@@ -215,8 +215,38 @@ export async function autoLearnPortal(
     throw new HttpError(502, `Portal learn failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  // Record the learned steps as a recipe (starts in "recording").
-  const stub = startPortalRecording(db, {
+  // PROTECT A TRUSTED RECIPE: startPortalRecording resets the existing recipe for this
+  // profile key (bumps version, clears steps, status -> 'recording') before the outcome is
+  // known. Routing normally only auto-learns when no complete recipe exists, but the manual
+  // /auto-learn endpoint can target a portal that already has a verified-complete recipe —
+  // and a paused/failed/unverified pass must NOT destroy it. A complete recipe is only ever
+  // replaced by a NEW learn that itself verified trusted (or by an explicit delete/re-record).
+  const existingRecipe = findAnyRecipeForProject(db, {
+    scopeType,
+    state: project.state,
+    ahj: project.ahj,
+    utility: project.utility,
+  });
+  const protectComplete = existingRecipe?.status === "complete";
+  // Terminal progress signal — the LearnProgress contract includes phase "done" so the UI
+  // progress bar can complete; emit it on EVERY terminal path, success or not.
+  const emitDone = (message: string) => input.onProgress?.({ phase: "done", pageCount: learn.pageCount, maxPages: learn.pageCount, message });
+  const preserved = (status: "draft" | "paused" | "failed", pauseReason: string | null, verification: AutoLearnResult["verification"], why: string): AutoLearnResult => {
+    addAuditLog(db, projectId, "system", "auto-learn", "portal.auto_learn_kept_existing_recipe", { scope: scopeType, outcome: status, reason: why });
+    emitDone(`Learning finished (${status}) — existing verified recipe kept.`);
+    return {
+      recipe: existingRecipe!,
+      status, pauseReason,
+      pageCount: learn.pageCount,
+      finalSubmitRecorded: learn.finalSubmitRecorded,
+      verification,
+      message: `${why} The existing verified recipe for this portal was left untouched — delete it first if you want to force a re-learn.`,
+    };
+  };
+
+  // Record the learned steps as a recipe (starts in "recording"). Deferred behind the
+  // protectComplete guards — creating the stub is what RESETS an existing recipe row.
+  const mkStub = () => startPortalRecording(db, {
     scopeType,
     state: project.state,
     ahj: project.ahj,
@@ -227,14 +257,24 @@ export async function autoLearnPortal(
   });
 
   if (learn.pauseReason) {
+    if (protectComplete) {
+      return preserved("paused", learn.pauseReason, { accurate: false, confidence: "low", matches: [], issues: [] }, `Learning paused on a ${learn.pauseReason} challenge — a human must complete it.`);
+    }
+    const stub = mkStub();
     savePortalRecipeSteps(db, stub.id, learn.steps, { status: "recording", notes: `Auto-learn paused: ${learn.pauseReason}. Resume manually.` });
     addAuditLog(db, projectId, "system", "auto-learn", "portal.auto_learn_paused", { scope: scopeType, pauseReason: learn.pauseReason });
+    emitDone(`Learning paused on a ${learn.pauseReason} challenge.`);
     return { recipe: getPortalRecipe(db, stub.id), status: "paused", pauseReason: learn.pauseReason, pageCount: learn.pageCount, finalSubmitRecorded: learn.finalSubmitRecorded, verification: { accurate: false, confidence: "low", matches: [], issues: [] }, message: `Learning paused on a ${learn.pauseReason} challenge — a human must complete it. The partial recipe was saved as a draft.` };
   }
 
   if (!learn.ok || !learn.steps.length) {
+    if (protectComplete) {
+      return preserved("failed", null, { accurate: false, confidence: "low", matches: [], issues: [learn.message] }, `Could not learn the portal automatically: ${learn.message}.`);
+    }
+    const stub = mkStub();
     savePortalRecipeSteps(db, stub.id, learn.steps, { status: "needs_rerecord", notes: `Auto-learn could not complete: ${learn.message}` });
     addAuditLog(db, projectId, "system", "auto-learn", "portal.auto_learn_failed", { scope: scopeType });
+    emitDone("Learning failed — the portal could not be learned automatically.");
     return { recipe: getPortalRecipe(db, stub.id), status: "failed", pauseReason: null, pageCount: learn.pageCount, finalSubmitRecorded: learn.finalSubmitRecorded, verification: { accurate: false, confidence: "low", matches: [], issues: [learn.message] }, message: `Could not learn the portal automatically: ${learn.message}. Record it manually instead.` };
   }
 
@@ -250,6 +290,11 @@ export async function autoLearnPortal(
     const why = !reachedReview
       ? "filled fields but never reached the portal's review screen"
       : "reached a screen treated as review but filled no fields (likely a landing/disclaimer page misread as the review screen)";
+    if (protectComplete) {
+      return preserved("failed", null, { accurate: false, confidence: "low", matches: [], issues: [learn.message] }, `Nothing was staged — ${why}.`);
+    }
+    const stub = mkStub();
+    emitDone(`Learning failed — ${why}.`);
     savePortalRecipeSteps(db, stub.id, learn.steps, { status: "needs_rerecord", notes: `Auto-learn did not stage cleanly: ${why}. ${learn.message}` });
     addAuditLog(db, projectId, "system", "auto-learn", "portal.auto_learn_failed", { scope: scopeType, reason: !reachedReview ? "no_review" : "premature_review" });
     return { recipe: getPortalRecipe(db, stub.id), status: "failed", pauseReason: null, pageCount: learn.pageCount, finalSubmitRecorded: learn.finalSubmitRecorded, verification: { accurate: false, confidence: "low", matches: [], issues: [learn.message] }, message: `Nothing was staged — ${why}. ${learn.message}` };
@@ -374,6 +419,11 @@ export async function autoLearnPortal(
     if (validationBlocks.length) verification.issues.push(`Portal validation blocked an advance: ${validationBlocks.slice(0, 8).join("; ")}.`);
   }
 
+  // While a verified-complete recipe is being protected, the stub (which RESETS that row) is
+  // created only after the FINAL trust decision — the replay self-test below can still downgrade
+  // trusted → draft, and a draft must never have already clobbered the trusted steps.
+  let stub = protectComplete ? null : mkStub();
+
   // F4: REPLAY SELF-TEST (opt-in via PORTAL_REPLAY_SELFTEST=1). A recipe is only worth TRUSTING if
   // it REPRODUCES the review deterministically in a fresh session — a learn-pass fill working does
   // NOT prove the recorded selectors will resolve next time (dynamic ids, frames, timing). So before
@@ -386,7 +436,10 @@ export async function autoLearnPortal(
     input.onProgress?.({ phase: "verify", pageCount: learn.pageCount, maxPages: learn.pageCount, message: "Replay self-test: re-running the learned recipe in a fresh session…" });
     try {
       const { stageWithRecipe } = await import("../../portal-bot/src/index");
-      const recipeForReplay: PortalRecipe = { ...getPortalRecipe(db, stub.id), steps: boundSteps };
+      // When the existing complete recipe is protected there's no stub row yet — synthesize the
+      // replay recipe in memory (same steps/url) without touching the DB.
+      const baseRecipe: PortalRecipe = stub ? getPortalRecipe(db, stub.id) : { ...existingRecipe!, portalUrl: portalUrl || existingRecipe!.portalUrl };
+      const recipeForReplay: PortalRecipe = { ...baseRecipe, steps: boundSteps };
       const replayFieldValues = resolveRecipeFieldValues(db, project, portalType);
       const replay = await stageWithRecipe(recipeForReplay, project, replayFieldValues, docsByType, [], { headless: input.headless }) as Record<string, unknown>;
       const reproduced = replay.ok === true && !replay.pauseReason;
@@ -403,6 +456,17 @@ export async function autoLearnPortal(
     }
   }
 
+  // An UNVERIFIED pass never replaces a verified-complete recipe — the fill was staged to the
+  // portal (nothing is lost for THIS project) but the reusable recipe keeps its trusted steps.
+  if (!trusted && protectComplete) {
+    return preserved("draft", null, {
+      accurate: verification.accurate,
+      confidence: verification.overallConfidence,
+      matches: verification.matches,
+      issues: verification.issues,
+    }, `Portal was filled and staged, but this pass did not verify cleanly (${verification.issues.slice(0, 2).join("; ") || "low confidence"}).`);
+  }
+  stub = stub ?? mkStub();
   savePortalRecipeSteps(db, stub.id, boundSteps, {
     status: trusted ? "complete" : "recording",
     notes: trusted
@@ -486,6 +550,7 @@ export async function autoLearnPortal(
     scope: scopeType, pageCount: learn.pageCount, confidence: verification.overallConfidence, finalSubmitRecorded: learn.finalSubmitRecorded,
   });
 
+  emitDone(trusted ? "Learning complete — recipe verified and trusted." : "Learning complete — recipe saved as a draft pending your verification.");
   return {
     recipe: getPortalRecipe(db, stub.id),
     status: trusted ? "trusted" : "draft",

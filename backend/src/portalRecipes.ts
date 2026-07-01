@@ -3,7 +3,7 @@ import { clientStagingOverlay } from "./clients";
 import type { AppDb } from "./db";
 import { HttpError } from "./httpError";
 import { id } from "./ids";
-import { asJson, parseJson, text as s } from "./json";
+import { asJson, bool, parseJson, text as s } from "./json";
 import { knowledgeProfileKey } from "./knowledgeBase";
 import { nowIso } from "./time";
 
@@ -28,7 +28,8 @@ function mapRecipe(row: Row): PortalRecipe {
     createdAt: s(row.created_at),
     updatedAt: s(row.updated_at),
     notes: s(row.notes),
-    autoSubmitEnabled: Boolean(row.auto_submit_enabled),
+    // bool() (not Boolean()) — a string "0" cell must read as false, never as trusted.
+    autoSubmitEnabled: bool(row.auto_submit_enabled),
   };
 }
 
@@ -234,7 +235,14 @@ export function resolveRecipeFieldValues(db: AppDb, project: ProjectRecord, port
   const homeownerLastName = hoNameParts.slice(1).join(" ") || "";
 
   // Street-only address (no city/state/zip) for portals that split the address.
-  const streetOnly = (project.projectAddress || "").split(",")[0].trim();
+  // Comma-delimited addresses split cleanly; a comma-LESS parsed address ("7307 SW Arranmore
+  // Way Portland OR 97223" — common from OCR) would leak city/state/zip into the street
+  // field, so also strip a trailing "<city> [ST [zip]]" tail when it matches the project.
+  let streetOnly = (project.projectAddress || "").split(",")[0].trim();
+  if (streetOnly && project.city) {
+    const esc = project.city.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    streetOnly = streetOnly.replace(new RegExp(`\\s+${esc}(\\s+[A-Za-z]{2})?(\\s+\\d{5}(-\\d{4})?)?\\s*$`, "i"), "").trim() || streetOnly;
+  }
 
   const projectFields: Record<string, string> = {
     homeownerName: project.homeownerName,
