@@ -343,3 +343,19 @@ export async function detectChallengeFrame(page: Page | null | undefined): Promi
     return null;
   }
 }
+
+// ---------------------------------------------------------------------------
+// Frame targeting — turn a recorded frame KEY into the frameLocator CSS both the
+// learner and the recipe replay use to scope into a child <iframe>.
+// Two key forms:
+//   "<name-or-id>"        — the frame element's name or id attribute (stable, preferred).
+//   "src:<path-fragment>" — the frame's src URL pathname, for frames with NO name/id
+//                           (incl. cross-origin embeds). frameLocator matches by CSS on
+//                           the PARENT document's <iframe src>, which Playwright can then
+//                           drive regardless of the frame's origin.
+// ---------------------------------------------------------------------------
+export function frameSelectorFor(frameKey: string): string {
+  const esc = (s: string) => s.replace(/["\\]/g, "\\$&");
+  if (frameKey.startsWith("src:")) return `iframe[src*="${esc(frameKey.slice(4))}"]`;
+  return `iframe[name="${esc(frameKey)}"], iframe[id="${esc(frameKey)}"]`;
+}

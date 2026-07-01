@@ -119,7 +119,6 @@ import {
   runDuePermitChecks,
 } from "./repository";
 import { getSubmittalTracks, markTrackSubmitted } from "./submittalTracks";
-import { autoLearnPortal } from "./autoLearn";
 import type { SubmittalTrackType } from "../../shared/src/types";
 
 const app = express();
@@ -995,37 +994,34 @@ app.post("/api/projects/:id/launch-record", (req, res) => {
 // Called ONCE at save-time (not per keystroke). Returns the steps array with `field` filled in.
 // Autonomous portal learning — drive an unknown AHJ/utility portal with the LLM,
 // fill it to the review screen, record a recipe, and verify the fill. Never submits.
-// Long-running (a live browser pass), so allow a generous timeout client-side.
-app.post("/api/projects/:id/auto-learn", asyncHandler(async (req, res) => {
+// Runs OFF the request path as a background job (like prepare-submission): a live
+// LLM-driven browser pass routinely takes minutes, which hung — or got proxy-killed —
+// as a synchronous request. Returns 202 + jobId; the client polls /api/jobs/:id and
+// reads the learn verdict from job.result. Progress still streams over SSE
+// (autolearn_progress, emitted by the job handler).
+app.post("/api/projects/:id/auto-learn", (req, res) => {
   const b = validate(autoLearnSchema, req.body);
   const scope = b.scope === "utility" || b.scope === "nem" ? "utility" : "ahj";
   const portalUrl = (b.portalUrl || "").trim();
   if (!portalUrl) throw new HttpError(400, "portalUrl is required to auto-learn a portal.");
   const projectId = String(req.params.id);
-  // Stream learning progress to the dashboard so it can show a real progress bar
-  // instead of a static spinner. Coarse phase→percent so the bar advances monotonically
-  // without needing to know the total page count up front.
-  const onProgress: import("../../portal-bot/src/adapters/autoLearnAdapter").LearnProgressFn = (p) => {
-    const percent =
-      p.phase === "login" ? 8
-        : p.phase === "page" ? Math.min(82, 12 + p.pageCount * 12)
-          : p.phase === "review" ? 90
-            : p.phase === "verify" ? 96
-              : 100;
-    sseBroadcast({
-      type: "autolearn_progress",
-      projectId,
-      message: p.message,
-      data: { phase: p.phase, percent, pageCount: p.pageCount, maxPages: p.maxPages, classification: p.classification ?? null },
-    });
-  };
-  try {
-    const result = await autoLearnPortal(db, projectId, { scope, portalUrl, createdBy: b.createdBy ?? "operator", permitType: b.permitType, onProgress });
-    res.json(result);
-  } catch (err) {
-    throw normalizeLlmError(err);
+  // Fail fast on a bad project id — a 404 at enqueue time beats a failed job later.
+  if (!db.get<{ id?: string }>("SELECT id FROM projects WHERE id = ?", [projectId])) {
+    throw new HttpError(404, "Project not found.");
   }
-}));
+  // maxRetries 0: a failed learn must NOT auto-relaunch browsers on a timer — the
+  // operator reads the verdict/bundle and decides.
+  const job = enqueueJob(db, "auto_learn", {
+    scope,
+    portalUrl,
+    createdBy: b.createdBy ?? "operator",
+    permitType: b.permitType,
+  }, { projectId, priority: 7, maxRetries: 0 });
+  processNextJob(db).catch((err) => {
+    logger.warn("auto-learn", `learn job error: ${err instanceof Error ? err.message : String(err)}`);
+  });
+  res.status(202).json({ jobId: job.id });
+});
 
 app.post("/api/portal-recipes/:id/suggest-bindings", asyncHandler(async (req, res) => {
   const steps = Array.isArray(req.body?.steps) ? req.body.steps : [];

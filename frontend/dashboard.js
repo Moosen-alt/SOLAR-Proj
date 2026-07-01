@@ -1490,7 +1490,15 @@ async function autoLearnPortalUI() {
   if (btn) btn.disabled = true;
   if (statusEl) renderAutoLearnProgress(statusEl, "Starting — opening a browser and logging in…");
   try {
-    const res = await api(`/api/projects/${p.id}/auto-learn`, { method: "POST", body: JSON.stringify({ scope, portalUrl: url }) });
+    // Learning runs as a background job (202 + jobId) so a minutes-long browser pass can't
+    // hit an HTTP/proxy timeout. SSE autolearn_progress events keep driving the bar;
+    // poll the job for the terminal verdict (job.result carries the learn outcome).
+    const { jobId } = await api(`/api/projects/${p.id}/auto-learn`, { method: "POST", body: JSON.stringify({ scope, portalUrl: url }) });
+    const learnJob = await waitForStagingJob(jobId);
+    if (learnJob.status === "failed") {
+      throw new Error(learnJob.error || "Auto-learn failed — download the debug bundle for details.");
+    }
+    const res = learnJob.result || {};
     const v = res.verification || {};
     const verdict = res.status === "trusted"
       ? `✓ Learned & verified (${v.confidence} confidence) over ${res.pageCount} page(s). The recipe is now trusted and will replay on future ${scope === "utility" ? "utility" : "AHJ"} projects. Final submit stays your one-click approval.`

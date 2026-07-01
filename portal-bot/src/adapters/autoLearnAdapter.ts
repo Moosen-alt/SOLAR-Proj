@@ -5,7 +5,7 @@ import type { ProjectRecord, RecipeSelector, RecipeStep } from "../../../shared/
 import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, type PortalContext, type PortalStepResult } from "../adapter";
 import { openPortal } from "../browser";
 import { selectWithFallback } from "../comboboxFill";
-import { detectChallengeFrame, readbackMatches, redactStatusText, safeAction, sleep, smartWait, waitForElement, waitForInteractiveControls } from "../safeAction";
+import { detectChallengeFrame, frameSelectorFor, readbackMatches, redactStatusText, safeAction, sleep, smartWait, waitForElement, waitForInteractiveControls } from "../safeAction";
 import { scrapeReviewScreen as scrapeReviewScreenShared } from "../reviewScreenScraper";
 import { performLogin } from "./loginFlow";
 import { LearnRunDebug } from "../learnDebug";
@@ -271,7 +271,12 @@ export function extractFieldsInPage(els: Element[]): RawField[] {
   function labelFor(el: Element): string {
     const id = el.getAttribute("id");
     if (id) {
-      const lbl = document.querySelector(`label[for="${CSS.escape(id)}"]`);
+      // Look the label up in the element's OWN root — for a field inside an open shadow
+      // root the <label for=…> lives in the same shadow root, where document.querySelector
+      // can't see it. getRootNode() returns the document for light-DOM fields, so this is
+      // a strict superset of the old behavior.
+      const root = el.getRootNode() as Document | ShadowRoot;
+      const lbl = root.querySelector(`label[for="${CSS.escape(id)}"]`);
       if (lbl && lbl.textContent) return lbl.textContent.trim();
     }
     // Wrapping <label>
@@ -321,6 +326,12 @@ export function extractFieldsInPage(els: Element[]): RawField[] {
       }
       node = node.parentElement;
     }
+    // 2c) SHADOW BOUNDARY HOP — a web-component field's heading often lives OUTSIDE its
+    // shadow root (the component renders bare inputs; the page around it carries the
+    // section heading). closest()/sibling walks stop at the root, so continue the search
+    // from the shadow host in the outer tree. Recursion depth == nesting depth (small).
+    const rootNode = el.getRootNode();
+    if (rootNode instanceof ShadowRoot && rootNode.host) return sectionFor(rootNode.host);
     // 3) The active wizard-step / stepper label (page-level "which step are we on").
     const active = document.querySelector('.wizard-step.active, .step.active, [aria-current="step"], [class*="stepper"] [class*="active"], [class*="wizard"] [class*="active"]');
     if (active && clean(active.textContent)) return clean(active.textContent);
@@ -365,9 +376,15 @@ export function extractFieldsInPage(els: Element[]): RawField[] {
       const promptText = /^(please\s+)?select\.{0,3}$/i.test(ownText);
       if (aria === "combobox" || aria === "listbox" || haspopup === "listbox" || haspopup === "true" || widgetClass || promptText) {
         fieldType = "select";
-        // Capture any options already rendered in an associated open listbox.
+        // Capture any options already rendered in an associated open listbox. Resolve the
+        // aria-controls id in the element's own root first (shadow-DOM widgets keep their
+        // listbox in the same root), then the document (portals that teleport listboxes
+        // to <body>).
         const listId = el.getAttribute("aria-controls") || el.getAttribute("aria-owns");
-        const list = listId ? document.getElementById(listId) : el.querySelector('[role="listbox"]');
+        const ownRoot = el.getRootNode() as Document | ShadowRoot;
+        const list = listId
+          ? ((typeof ownRoot.getElementById === "function" ? ownRoot.getElementById(listId) : null) || document.getElementById(listId))
+          : el.querySelector('[role="listbox"]');
         if (list) {
           const opts = Array.from(list.querySelectorAll('[role="option"], li, .dropdown-item'))
             .map((o) => (o.textContent || "").trim())
@@ -550,6 +567,17 @@ export interface UploadSlot {
 // Returns one slot per control with its derived label + required flag. Never throws.
 export function tagUploadControls(): UploadSlot[] {
   const slots: UploadSlot[] = [];
+
+  // querySelectorAll that also walks OPEN shadow roots (web-component upload widgets).
+  // document.querySelectorAll alone can't see into a shadow root, so a portal built on
+  // custom elements would silently expose zero upload slots. Depth-first, never throws.
+  function deepQueryAll(root: ParentNode, sel: string): Element[] {
+    const out: Element[] = Array.from(root.querySelectorAll(sel));
+    for (const host of Array.from(root.querySelectorAll("*"))) {
+      if ((host as Element).shadowRoot) out.push(...deepQueryAll((host as Element).shadowRoot as ShadowRoot, sel));
+    }
+    return out;
+  }
   let n = 0;
 
   // Derive the field label for an upload control: nearest <label>, else the closest
@@ -557,7 +585,9 @@ export function tagUploadControls(): UploadSlot[] {
   function deriveLabel(el: Element): string {
     const id = el.getAttribute("id");
     if (id) {
-      const forLbl = document.querySelector(`label[for="${(window.CSS && CSS.escape) ? CSS.escape(id) : id}"]`);
+      // Element's own root, so a label inside the same shadow root is found too.
+      const root = el.getRootNode() as Document | ShadowRoot;
+      const forLbl = root.querySelector(`label[for="${(window.CSS && CSS.escape) ? CSS.escape(id) : id}"]`);
       if (forLbl && forLbl.textContent && forLbl.textContent.trim()) return forLbl.textContent.trim();
     }
     const wrapLbl = el.closest("label");
@@ -586,7 +616,7 @@ export function tagUploadControls(): UploadSlot[] {
   }
 
   // 1) Native file inputs (even when visually hidden behind a styled Browse button).
-  const fileInputs = Array.from(document.querySelectorAll('input[type="file"]'));
+  const fileInputs = deepQueryAll(document, 'input[type="file"]');
   for (const el of fileInputs) {
     const key = `f${n++}`;
     el.setAttribute("data-al-upl", key);
@@ -596,7 +626,7 @@ export function tagUploadControls(): UploadSlot[] {
   // 2) Browse/Upload/Choose-File triggers whose real input is created dynamically — these
   //    have NO file input anywhere in their container, so the scrape above missed them.
   const TRIGGER = /^(browse|upload|choose(\s+file)?|attach|add\s+file|select\s+file|choose\s+files?|upload\s+file)\.{0,3}$/i;
-  const clickables = Array.from(document.querySelectorAll('button, a, [role="button"], input[type="button"], .btn, span[class*="upload"], span[class*="browse"]'));
+  const clickables = deepQueryAll(document, 'button, a, [role="button"], input[type="button"], .btn, span[class*="upload"], span[class*="browse"]');
   for (const el of clickables) {
     const txt = ((el as HTMLInputElement).value || el.textContent || "").trim();
     if (!TRIGGER.test(txt)) continue;
@@ -666,6 +696,9 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   // (login failure / thrown error) and callers can surface the bundle path.
   readonly debug: LearnRunDebug | null;
 
+  // See constructor options.policyProfile.
+  private policyProfile: "residential_nem" | "none";
+
   constructor(
     portalName: string,
     private planner: LearnPlanner,
@@ -675,11 +708,21 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       docsByType?: Record<string, string>;
       uploadMode?: "split" | "combined";
       onProgress?: LearnProgressFn;
+      // Which deterministic policy-answer set applyPolicyDefaults may use.
+      //   "residential_nem" — the standard-residential-NEM Yes/No answers (export
+      //     capacity → No, UL 1741 lab certified → Yes). Correct for utility
+      //     interconnection portals on standard residential projects.
+      //   "none" — never force-answer a policy question; the planner + project data
+      //     decide. Right for AHJ/permit portals and non-standard projects.
+      // Default "residential_nem" preserves prior behavior for direct constructor users;
+      // the backend passes the scope-appropriate profile explicitly.
+      policyProfile?: "residential_nem" | "none";
     } = {},
   ) {
     super();
     this.portalName = portalName;
     this.onProgress = options.onProgress;
+    this.policyProfile = options.policyProfile ?? "residential_nem";
     // Default page budget. Multi-step utility/permit wizards (PowerClerk NEM, Accela)
     // routinely run 10-15 input steps before the review screen, so 8 was too low — it
     // capped out mid-form. The stuck-page guard + review detection bound the loop, so a
@@ -751,12 +794,15 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     }
   }
 
-  // Extract interactive fields from the main document AND every same-origin child frame,
-  // stamping each child frame's stable identifier (name or id) onto its fields so the fill/
-  // replay locator can target the right frame. Portals like Accela render their contact and
-  // document-upload dialogs inside an <iframe> (e.g. ACADialogFrame); without this the planner
-  // never sees those fields and the learner can't fill them. Cross-origin or unidentifiable
-  // frames are skipped (we can't reliably target them, so we never plan an unreachable fill).
+  // Extract interactive fields from the main document AND every child frame — including
+  // CROSS-ORIGIN frames (Playwright reads them regardless of origin) — stamping each child
+  // frame's stable key onto its fields so the fill/replay locator can target the right frame.
+  // Portals like Accela render their contact and document-upload dialogs inside an <iframe>
+  // (e.g. ACADialogFrame); some embed a third-party form widget in a cross-origin iframe.
+  // Frame keys: name/id when the element has one, else "src:<pathname>" (frameSelectorFor
+  // turns either into the frameLocator CSS). Only a frame with NO name/id AND no usable src
+  // (about:blank, doc.write) is skipped — it can't be re-targeted at replay, so planning a
+  // fill inside it would record an unreplayable step.
   // Never throws — falls back to a direct main-document scrape if frame enumeration is unavailable.
   private async extractAllFrames(extractSel: string): Promise<RawField[]> {
     if (!this.page) return [];
@@ -770,13 +816,24 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         try {
           const el = await frame.frameElement();
           frameKey = (await el.getAttribute("name")) || (await el.getAttribute("id")) || undefined;
+          if (!frameKey) {
+            // No name/id — key by the src URL's pathname (query strings carry per-session
+            // tokens, so they'd break replay; the pathname is the stable part).
+            const src = (await el.getAttribute("src")) || "";
+            if (src && !/^about:|^javascript:/i.test(src)) {
+              try {
+                const u = new URL(src, this.page.url());
+                if (u.pathname && u.pathname !== "/") frameKey = `src:${u.pathname}`;
+              } catch { /* unparseable src — leave undefined */ }
+            }
+          }
         } catch { frameKey = undefined; }
-        if (!frameKey) continue; // unidentifiable frame — skip so we never plan an unreachable fill
+        if (!frameKey) continue; // untargetable frame — skip so we never plan an unreplayable fill
       }
       try {
         const raws = await frame.$$eval(extractSel, extractFieldsInPage);
         for (const r of raws) { if (frameKey) r.frame = frameKey; out.push(r); }
-      } catch { /* cross-origin or detached frame — skip */ }
+      } catch { /* detached frame — skip */ }
     }
     // Safety net: if frame enumeration yielded nothing (e.g. a fake/stub page in tests, or an
     // older runtime), fall back to a direct main-document scrape so the loop still sees fields.
@@ -1906,6 +1963,10 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     alreadyFilledLabels: string[],
   ): Promise<Array<{ step: RecipeStep; applied: AppliedFill }>> {
     const out: Array<{ step: RecipeStep; applied: AppliedFill }> = [];
+    // Policy answers are DOMAIN policy (standard residential NEM), not universal truths —
+    // never force them on a portal the caller didn't opt into (AHJ/permit portals,
+    // non-standard projects). The planner + project data answer instead.
+    if (this.policyProfile !== "residential_nem") return out;
     if (!this.page || typeof this.page.evaluate !== "function") return out;
     for (const policy of POLICY_RADIO_DEFAULTS) {
       try {
@@ -2144,9 +2205,19 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       const SENSITIVE = /\b(password|passcode|account\s*(number|no|#)?|acct|meter\s*(number|no|#)?|ssn|social security|tax\s*id|ein|routing|card\s*number|cvv|security code)\b/i;
       const ACK = /will not be submitted until|i understand\b|i acknowledge|i certify|i attest|accept (the )?terms|terms (and|&) conditions/i;
       const norm = (s: string | null | undefined) => (s || "").trim().replace(/\s+/g, " ");
+      // Walk OPEN shadow roots too — a required field inside a web component must gate
+      // trust exactly like a light-DOM one (the fill loop can see and fill it, so this
+      // sweep must see it as well or the two disagree).
+      const deepQueryAll = (root: ParentNode, sel: string): Element[] => {
+        const found: Element[] = Array.from(root.querySelectorAll(sel));
+        for (const host of Array.from(root.querySelectorAll("*"))) {
+          if ((host as Element).shadowRoot) found.push(...deepQueryAll((host as Element).shadowRoot as ShadowRoot, sel));
+        }
+        return found;
+      };
       const labelOf = (el: Element): string => {
         const id = el.getAttribute("id");
-        if (id) { const l = document.querySelector(`label[for="${CSS.escape(id)}"]`); if (l?.textContent?.trim()) return norm(l.textContent); }
+        if (id) { const l = (el.getRootNode() as Document | ShadowRoot).querySelector(`label[for="${CSS.escape(id)}"]`); if (l?.textContent?.trim()) return norm(l.textContent); }
         const w = el.closest("label"); if (w?.textContent?.trim()) return norm(w.textContent);
         const grp = el.closest("fieldset, .form-group, [class*='form-group'], [class*='field'], .row, [class*='row']");
         const gl = grp?.querySelector("legend, label, .control-label, .field-label, strong, b");
@@ -2156,7 +2227,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       const hasAsterisk = (el: Element, group: boolean): boolean => {
         if ((el as HTMLInputElement).required || el.getAttribute("aria-required") === "true") return true;
         const id = el.getAttribute("id");
-        if (!group && id) { const l = document.querySelector(`label[for="${CSS.escape(id)}"]`); if (l && /\*/.test(l.textContent || "")) return true; }
+        if (!group && id) { const l = (el.getRootNode() as Document | ShadowRoot).querySelector(`label[for="${CSS.escape(id)}"]`); if (l && /\*/.test(l.textContent || "")) return true; }
         if (!group) { const w = el.closest("label"); if (w && /\*/.test(w.textContent || "")) return true; }
         if (group) {
           const grp = el.closest("fieldset, .form-group, [class*='form-group'], [class*='field'], .row, [class*='row']");
@@ -2172,7 +2243,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       const out = new Set<string>();
       const seenRadioGroups = new Set<string>();
       // text/textarea/select
-      for (const el of Array.from(document.querySelectorAll("input, textarea, select"))) {
+      for (const el of deepQueryAll(document, "input, textarea, select")) {
         const tag = el.tagName.toLowerCase();
         const type = (el.getAttribute("type") || "").toLowerCase();
         if (type === "hidden") continue;
@@ -2189,7 +2260,9 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           const name = el.getAttribute("name") || lbl;
           if (seenRadioGroups.has(name)) continue;
           seenRadioGroups.add(name);
-          const anyChecked = Array.from(document.querySelectorAll(`input[type=radio][name="${CSS.escape(name)}"]`)).some((r) => (r as HTMLInputElement).checked);
+          // Radio groups scope to the element's own root (a shadow component's radios share
+          // a name only within that root).
+          const anyChecked = Array.from((el.getRootNode() as Document | ShadowRoot).querySelectorAll(`input[type=radio][name="${CSS.escape(name)}"]`)).some((r) => (r as HTMLInputElement).checked);
           if (!anyChecked) out.add(lbl);
         } else if (type === "checkbox" || type === "file" || type === "button" || type === "submit") {
           continue; // checkboxes default-false legitimately; uploads handled separately
@@ -2680,7 +2753,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private _buildLocator(page: Page, sel: RecipeSelector): any {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const scope: any = sel.frame ? page.frameLocator(`iframe[name="${sel.frame}"], iframe[id="${sel.frame}"]`) : page;
+    const scope: any = sel.frame ? page.frameLocator(frameSelectorFor(sel.frame)) : page;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let loc: any;
     if (sel.role && sel.name) loc = scope.getByRole(sel.role, { name: sel.name, exact: sel.exact ?? false });
@@ -2745,6 +2818,15 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         const seen = new Set<string>();
         const out: string[] = [];
         const add = (msg: string) => { const t = msg.trim(); if (t && !seen.has(t)) { seen.add(t); out.push(t); } };
+        // Include OPEN shadow roots — a web component's inline validation must be able to
+        // block an advance exactly like light-DOM validation.
+        const deepQueryAll = (root: ParentNode, sel: string): Element[] => {
+          const found: Element[] = Array.from(root.querySelectorAll(sel));
+          for (const host of Array.from(root.querySelectorAll("*"))) {
+            if ((host as Element).shadowRoot) found.push(...deepQueryAll((host as Element).shadowRoot as ShadowRoot, sel));
+          }
+          return found;
+        };
 
         // 1. Visible text inside validation/error elements.
         const errSels = [
@@ -2757,21 +2839,22 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           '.alert-danger:not([style*="display:none"])',
         ];
         for (const sel of errSels) {
-          document.querySelectorAll<HTMLElement>(sel).forEach((el) => {
+          for (const el of deepQueryAll(document, sel) as HTMLElement[]) {
             const t = el.innerText?.trim();
             if (t && t.length > 3 && el.offsetParent !== null) add(t);
-          });
+          }
         }
 
         // 2. aria-invalid inputs that are also required — append a synthetic label+message.
-        document.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(
+        for (const el of deepQueryAll(
+          document,
           "input[aria-invalid='true'][required], select[aria-invalid='true'][required], " +
           "textarea[aria-invalid='true'][required]"
-        ).forEach((el) => {
-          const label = (document.querySelector(`label[for="${el.id}"]`) as HTMLLabelElement)?.innerText?.trim()
+        ) as Array<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) {
+          const label = ((el.getRootNode() as Document | ShadowRoot).querySelector(`label[for="${el.id}"]`) as HTMLLabelElement)?.innerText?.trim()
             || (el as HTMLInputElement).placeholder || el.name || "Field";
           add(`${label}: This field is required.`);
-        });
+        }
 
         return out.slice(0, 20);
       });

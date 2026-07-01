@@ -12,7 +12,8 @@ export type JobType =
   | "mbox_import"
   | "folder_scan"
   | "autopilot"
-  | "prepare_submission";
+  | "prepare_submission"
+  | "auto_learn";
 
 export type JobStatus = "pending" | "running" | "done" | "failed";
 
@@ -346,6 +347,48 @@ export async function processNextJob(db: AppDb): Promise<boolean> {
       const detail = await prepareSubmission(db, String(job.projectId), track as never, autoSubmit);
       const run = detail.portalRuns?.[0];
       result = { status: run?.status ?? null, pauseReason: run?.pauseReason ?? null };
+    } else if (job.jobType === "auto_learn") {
+      // Manual "Learn this portal" run, off the HTTP request path — a live LLM-driven
+      // browser pass routinely takes minutes, which hung or proxy-timed-out the old
+      // synchronous endpoint. Progress still streams over SSE (autolearn_progress) with
+      // the same coarse phase→percent mapping the dashboard's progress bar expects.
+      const { autoLearnPortal } = await import("./autoLearn");
+      const { sseBroadcast } = await import("./events");
+      const p = job.payload as { scope?: string; portalUrl?: string; createdBy?: string; permitType?: string };
+      const projectId = String(job.projectId);
+      const learnResult = await autoLearnPortal(db, projectId, {
+        scope: p.scope === "utility" ? "utility" : "ahj",
+        portalUrl: String(p.portalUrl || ""),
+        createdBy: p.createdBy || "operator",
+        permitType: p.permitType === "electrical" ? "electrical" : p.permitType === "structural" ? "structural" : undefined,
+        onProgress: (prog) => {
+          const percent =
+            prog.phase === "login" ? 8
+              : prog.phase === "page" ? Math.min(82, 12 + prog.pageCount * 12)
+                : prog.phase === "review" ? 90
+                  : prog.phase === "verify" ? 96
+                    : 100;
+          sseBroadcast({
+            type: "autolearn_progress",
+            projectId,
+            message: prog.message,
+            data: { phase: prog.phase, percent, pageCount: prog.pageCount, maxPages: prog.maxPages, classification: prog.classification ?? null },
+          });
+        },
+      });
+      // The job result is what the dashboard renders as the verdict — keep it complete but
+      // slim: the full recipe steps live in portal_recipes, not in the job row.
+      result = {
+        status: learnResult.status,
+        pauseReason: learnResult.pauseReason,
+        pageCount: learnResult.pageCount,
+        finalSubmitRecorded: learnResult.finalSubmitRecorded,
+        verification: learnResult.verification,
+        message: learnResult.message,
+        debugDir: learnResult.debugDir,
+        recipeId: learnResult.recipe?.id ?? null,
+        recipeStatus: learnResult.recipe?.status ?? null,
+      };
     } else {
       result = { skipped: true, reason: "job type handled externally" };
     }

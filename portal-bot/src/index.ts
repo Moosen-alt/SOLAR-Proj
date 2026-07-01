@@ -389,11 +389,14 @@ export async function learnPortal(input: {
   // "combined" (AHJ/Accela) attaches the full plan-set PDF to every upload control;
   // "split" (utility/PowerClerk) attaches the matching split sheet per control. Default split.
   uploadMode?: "split" | "combined";
+  // Which deterministic policy-answer set the learner may apply ("residential_nem" for
+  // utility NEM portals, "none" for AHJ/permit portals). See AutoLearnAdapter options.
+  policyProfile?: "residential_nem" | "none";
   // Optional live-progress sink so callers can drive a UI progress bar. Non-PII signals only.
   onProgress?: import("./adapters/autoLearnAdapter").LearnProgressFn;
 }): Promise<import("./adapters/autoLearnAdapter").LearnResult> {
   const { AutoLearnAdapter } = await import("./adapters/autoLearnAdapter");
-  const adapter = new AutoLearnAdapter(input.portalName, input.planner, { maxPages: input.maxPages, docsByType: input.docsByType, uploadMode: input.uploadMode, onProgress: input.onProgress });
+  const adapter = new AutoLearnAdapter(input.portalName, input.planner, { maxPages: input.maxPages, docsByType: input.docsByType, uploadMode: input.uploadMode, policyProfile: input.policyProfile, onProgress: input.onProgress });
   let tmpStatePath: string | undefined;
   let leaveOpen = false;
   // A browser left open by a prior guided-manual stage holds this profile's lock — close it

@@ -2,7 +2,7 @@ import type { PortalRecipe, ProjectRecord, RecipeSelector, RecipeStep } from "..
 import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, ok, fail, type PortalContext, type PortalStepResult } from "../adapter";
 import { openPortal } from "../browser";
 import { selectWithFallback } from "../comboboxFill";
-import { detectChallengeFrame, hasNumericValidationError, scanStatusFromBody, RETRY_BACKOFF_MS, sleep, smartWait, toBareNumber, waitForElement, waitForInteractiveControls } from "../safeAction";
+import { detectChallengeFrame, frameSelectorFor, hasNumericValidationError, scanStatusFromBody, RETRY_BACKOFF_MS, sleep, smartWait, toBareNumber, waitForElement, waitForInteractiveControls } from "../safeAction";
 import { performLogin } from "./loginFlow";
 import { tagUploadControls } from "./autoLearnAdapter";
 
@@ -442,7 +442,9 @@ export class RecipeAdapter extends BasePortalAdapter {
   private locator(sel?: RecipeSelector) {
     if (!sel) return null;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const scope: any = sel.frame ? this.page.frameLocator(`iframe[name="${sel.frame}"], iframe[id="${sel.frame}"]`) : this.page;
+    // frameSelectorFor understands both name/id keys and the "src:<pathname>" keys the
+    // learner records for frames with no name/id (incl. cross-origin embeds).
+    const scope: any = sel.frame ? this.page.frameLocator(frameSelectorFor(sel.frame)) : this.page;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let loc: any;
     if (sel.role && sel.name) loc = scope.getByRole(sel.role, { name: sel.name, exact: sel.exact });

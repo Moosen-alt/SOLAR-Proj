@@ -215,6 +215,14 @@ export async function autoLearnPortal(
       // AHJ portals (Accela / Oregon ePermitting) require one combined plan-set PDF per
       // upload control; utility portals (PowerClerk) want the split sheets per slot.
       uploadMode: scopeType === "ahj" ? "combined" : "split",
+      // Deterministic policy answers (export capacity → No, UL 1741 → Yes) are standard-
+      // residential-NEM domain policy: apply them only on UTILITY interconnection learns,
+      // never on AHJ/permit portals. PORTAL_POLICY_DEFAULTS=off disables them everywhere
+      // (non-standard projects); the planner + project data then decide.
+      policyProfile:
+        process.env.PORTAL_POLICY_DEFAULTS === "off" || process.env.PORTAL_POLICY_DEFAULTS === "0"
+          ? "none"
+          : scopeType === "utility" ? "residential_nem" : "none",
       onProgress: input.onProgress,
     }));
   } catch (err) {

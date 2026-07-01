@@ -1522,7 +1522,9 @@ export interface RecipeSelector {
   text?: string;
   testId?: string;
   css?: string;
-  /** Optional iframe name to scope the locator into (portals like Accela use dialogs). */
+  /** Optional child-iframe key to scope the locator into (portals like Accela use dialogs).
+   *  Either the frame element's name/id, or "src:<pathname>" for frames with no name/id
+   *  (incl. cross-origin embeds) — see frameSelectorFor in portal-bot/src/safeAction.ts. */
   frame?: string;
   /** 0-based index when multiple match; omitted means .first(). */
   nth?: number;
