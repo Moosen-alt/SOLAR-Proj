@@ -1646,6 +1646,57 @@ app.get("/api/projects/:id/portal-runs/:runId/review-screenshot", (req, res) => 
   res.status(404).json({ error: "No review screenshot available." });
 });
 
+// ---------------------------------------------------------------------------
+// Learn-run debug bundles — one folder per auto-learn run under data/learn-runs/<runId>:
+// run.json manifest, events.jsonl timeline, per-page plan sidecars + screenshots,
+// Playwright trace.zip, llm-calls.json, verdict.json, result.json, review.png.
+// These two endpoints are the troubleshooting handoff: list the runs, download one
+// zipped, and paste/send the zip when asking for help with a failed learn.
+// ---------------------------------------------------------------------------
+const learnRunsBase = (): string =>
+  process.env.AUTOLEARN_RUN_DIR ? path.resolve(process.env.AUTOLEARN_RUN_DIR) : path.resolve(process.cwd(), "data", "learn-runs");
+const SAFE_RUN_ID = /^[A-Za-z0-9._-]+$/;
+
+app.get("/api/learn-runs", (_req, res) => {
+  const base = learnRunsBase();
+  let names: string[] = [];
+  try {
+    names = fs.readdirSync(base, { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name)
+      .sort()
+      .reverse(); // newest first — runIds start with the timestamp
+  } catch { names = []; }
+  const runs = names.map((name) => {
+    let manifest: Record<string, unknown> = {};
+    try { manifest = JSON.parse(fs.readFileSync(path.join(base, name, "run.json"), "utf8")) as Record<string, unknown>; } catch { /* partial/legacy run */ }
+    return { runId: name, ...manifest };
+  });
+  res.json({ runs, note: "Download a bundle at /api/learn-runs/<runId>/bundle.zip ('latest' works too) and send it when reporting a learn problem." });
+});
+
+app.get("/api/learn-runs/:runId/bundle.zip", asyncHandler(async (req, res) => {
+  const base = learnRunsBase();
+  let runId = String(req.params.runId);
+  if (runId === "latest") {
+    try {
+      const names = fs.readdirSync(base, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name).sort();
+      runId = names[names.length - 1] || "";
+    } catch { runId = ""; }
+  }
+  // Strict id charset + existence check — never resolves outside data/learn-runs.
+  if (!runId || !SAFE_RUN_ID.test(runId)) throw new HttpError(404, "Unknown learn run.");
+  const dir = path.join(base, runId);
+  if (!fs.existsSync(path.join(dir, "run.json"))) throw new HttpError(404, "Unknown learn run.");
+  const { default: AdmZip } = await import("adm-zip");
+  const zip = new AdmZip();
+  zip.addLocalFolder(dir, runId);
+  const buf = zip.toBuffer();
+  res.setHeader("Content-Type", "application/zip");
+  res.setHeader("Content-Disposition", `attachment; filename="learn-run-${runId}.zip"`);
+  res.send(buf);
+}));
+
 app.put("/api/portal-runs/:id/tracking-url", (req, res) => {
   const url = String(req.body?.url || "").trim();
   if (!url) throw new HttpError(400, "url is required.");

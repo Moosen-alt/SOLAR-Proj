@@ -185,7 +185,45 @@ checkbox, and file upload is captured. When done, return to the terminal and typ
 
 ---
 
-## 8. Updating
+## 8. Troubleshooting a learn run — the debug bundle
+
+Every auto-learn run (manual **Learn this portal** or the staging self-seed)
+writes a complete forensic bundle to `data/learn-runs/<runId>/` — on by default,
+pruned to the newest 20 runs. When a learn fails, gets stuck, or fills something
+wrong, **you never need to re-run it blind**; the bundle already has:
+
+| Artifact | What it answers |
+| --- | --- |
+| `run.json` | What portal/settings the run used, how it ended, how long it took |
+| `events.jsonl` | The timeline: login, each page visited, recovery attempts, validation blocks, errors + stacks |
+| `pNNN-plan.json` | Per page: every field the bot saw + what the planner decided to fill (sensitive values masked) |
+| `pNNN-before/after-*.png` | What each page actually looked like before/after fills |
+| `trace.zip` | Playwright trace — open at <https://trace.playwright.dev> to replay the whole session (DOM, actions, network). Started after login, so no credentials |
+| `llm-calls.json` | Every Claude call: latency, tokens, cache hits, stop reason (refusals/truncations show here) |
+| `verdict.json` | Why the recipe was / wasn't trusted (text vs vision vs deterministic signals) |
+| `result.json` / `review.png` | Final outcome + the captured review screen |
+
+To hand a run over for troubleshooting:
+
+```bash
+# list runs (newest first)
+curl -s localhost:4173/api/learn-runs | jq '.runs[] | {runId, outcome, message}'
+# download one as a single zip (or use "latest")
+curl -o learn-run.zip localhost:4173/api/learn-runs/latest/bundle.zip
+```
+
+Send that zip (plus the terminal output if you have it) — it contains everything
+needed to diagnose the run. Also useful: `GET /api/diagnostics` for the overall
+service picture. PII note: the PNGs/trace are raw portal renders (same data class
+as the review screenshot); bundles live only on local disk (`data/` is gitignored).
+
+Knobs (all default on): `AUTOLEARN_RUN_DEBUG=0` disables bundles,
+`AUTOLEARN_DEBUG_SCREENSHOTS=0` skips PNGs, `AUTOLEARN_TRACE=0` skips the trace,
+`AUTOLEARN_RUN_KEEP` sets retention. See `.env.example`.
+
+---
+
+## 9. Updating
 
 ```bash
 git pull

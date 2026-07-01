@@ -14,7 +14,7 @@
     "backend:test:unit": "tsx backend/test/adapterPrecedence.test.ts && tsx backend/test/portalPause.test.ts && tsx backend/test/recipeStaleness.test.ts",
     "portal:login": "tsx portal-bot/src/testRun.ts login",
     "portal:test": "tsx portal-bot/src/testRun.ts",
-    "portal:test:unit": "tsx portal-bot/src/adapters/recipeAdapter.test.ts && tsx portal-bot/src/adapters/autoLearnAdapter.test.ts && tsx portal-bot/src/networkRecorder.test.ts && tsx portal-bot/src/reviewScreenScraper.test.ts && tsx portal-bot/src/llmGapFill.test.ts",
+    "portal:test:unit": "tsx portal-bot/src/adapters/recipeAdapter.test.ts && tsx portal-bot/src/adapters/autoLearnAdapter.test.ts && tsx portal-bot/src/networkRecorder.test.ts && tsx portal-bot/src/reviewScreenScraper.test.ts && tsx portal-bot/src/llmGapFill.test.ts && tsx portal-bot/src/learnDebug.test.ts",
     "portal:test:net": "tsx portal-bot/src/networkRecorder.test.ts",
     "portal:test:learn": "tsx portal-bot/src/adapters/autoLearnAdapter.test.ts",
     "portal:test:live": "tsx portal-bot/src/adapters/autoLearnLive.smoke.ts",

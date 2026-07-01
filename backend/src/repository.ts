@@ -5158,7 +5158,11 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
         (id, project_id, portal_profile_id, run_type, status, started_at, finished_at, error_message,
          human_action_required, screenshots_path, logs_path, result_json, pause_reason, permit_type)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [runId, projectId, safePortalProfileId, "prepare_submit", runStatus, ts, nowIso(), failureMessage, 1, "", "", asJson(result), pauseReason, permitTypeTag],
+      [runId, projectId, safePortalProfileId, "prepare_submit", runStatus, ts, nowIso(), failureMessage, 1, "",
+        // logs_path: the learn-run debug bundle folder (set by the self-seed path) — links a
+        // failed/paused run straight to its forensic artifacts under data/learn-runs/.
+        String((result as Record<string, unknown>).debugDir ?? ""),
+        asJson(result), pauseReason, permitTypeTag],
     );
 
     db.run(

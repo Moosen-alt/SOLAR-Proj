@@ -1460,6 +1460,21 @@ function stopAutoLearnProgress() {
   if (autoLearnTimer) { clearInterval(autoLearnTimer); autoLearnTimer = null; }
 }
 
+// Every learn run writes a debug bundle (per-page screenshots, planner decisions,
+// Playwright trace, LLM call log) under data/learn-runs/. Link it under the verdict so
+// a bad run can be downloaded as ONE zip and sent for troubleshooting without a re-run.
+// Pass the result's debugDir, or "latest" when the run failed before returning one.
+function appendDebugBundleLink(el, debugDirOrLatest) {
+  if (!el || !debugDirOrLatest) return;
+  const runId = String(debugDirOrLatest).split(/[\\/]/).pop();
+  if (!runId) return;
+  const a = document.createElement("a");
+  a.href = `/api/learn-runs/${encodeURIComponent(runId)}/bundle.zip`;
+  a.textContent = "⬇ Download this run's debug bundle (send it when reporting a problem)";
+  a.style.cssText = "display:block;margin-top:4px;font-size:11px";
+  el.appendChild(a);
+}
+
 // Auto-learn: the bot fills the portal to the review screen, records a recipe, and
 // verifies the fill — no human recording needed. Never submits (operator approves that).
 async function autoLearnPortalUI() {
@@ -1486,13 +1501,22 @@ async function autoLearnPortalUI() {
           : `Could not learn it automatically: ${res.message || ""} — record it manually instead.`;
     stopAutoLearnProgress();
     setAutoLearnBar(100);
-    if (statusEl) { statusEl.textContent = verdict; statusEl.className = res.status === "trusted" ? "" : "muted"; }
+    if (statusEl) {
+      statusEl.textContent = verdict;
+      statusEl.className = res.status === "trusted" ? "" : "muted";
+      appendDebugBundleLink(statusEl, res.debugDir);
+    }
     showMessage(res.message || verdict, res.status === "trusted" ? "info" : "warning");
     await loadKnowledgeBase();
     await selectProject(p.id);
   } catch (err) {
     stopAutoLearnProgress();
-    if (statusEl) { statusEl.textContent = `Auto-learn failed: ${err.message || err}. You can still record it manually.`; statusEl.className = "muted"; }
+    if (statusEl) {
+      statusEl.textContent = `Auto-learn failed: ${err.message || err}. You can still record it manually.`;
+      statusEl.className = "muted";
+      // The run still wrote a bundle before it threw — link the newest one.
+      appendDebugBundleLink(statusEl, "latest");
+    }
     showMessage(err.message || "Auto-learn failed.", "error");
   } finally {
     stopAutoLearnProgress();

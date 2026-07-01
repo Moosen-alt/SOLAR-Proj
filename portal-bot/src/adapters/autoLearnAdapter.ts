@@ -8,6 +8,7 @@ import { selectWithFallback } from "../comboboxFill";
 import { detectChallengeFrame, readbackMatches, redactStatusText, safeAction, sleep, smartWait, waitForElement, waitForInteractiveControls } from "../safeAction";
 import { scrapeReviewScreen as scrapeReviewScreenShared } from "../reviewScreenScraper";
 import { performLogin } from "./loginFlow";
+import { LearnRunDebug } from "../learnDebug";
 
 // AutoLearnAdapter — AUTONOMOUSLY learns an unknown AHJ/utility portal form instead of
 // having a human record it. Each page is scraped into a structured snapshot
@@ -116,6 +117,9 @@ export interface LearnResult {
   missingRequiredDocs?: string[];
   /** Inline validation errors the portal raised when an advance was blocked. */
   validationBlocks?: string[];
+  /** Absolute path of this run's debug bundle (data/learn-runs/<runId>) — the folder the
+   *  operator zips up for troubleshooting. Undefined when AUTOLEARN_RUN_DEBUG=0. */
+  debugDir?: string;
 }
 
 // Live progress signal emitted while learning a portal, so the UI can show a real
@@ -165,6 +169,11 @@ const REVIEW_MARKERS = /\bstep\s*\d+\s*:?\s*review\b|review (all )?(your |the )?
 const ACCEPT_TERMS = /\b(accept (the )?terms|terms (and|&) conditions|i agree\b|i understand\b|i acknowledge|acknowledge that|i certify|i attest|i confirm that|agree to the)\b/i;
 function looksLikeReviewUrl(url: string): boolean {
   return /capconfirm|confirm\.aspx|\/review/i.test(url || "");
+}
+
+// host+pathname only (no query string) for debug artifacts — avoids leaking ids/tokens.
+function safeHostPath(url: string): string {
+  try { const u = new URL(url); return u.host + u.pathname; } catch { return (url || "").slice(0, 60); }
 }
 
 // "Equipment is not listed" / "enter manually" escape-hatch checkbox. Checking it HIDES the
@@ -651,6 +660,12 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   private lastProgress: LearnProgress | null = null;
   private lastProgressAtMs = 0;
 
+  // Per-run debug bundle (data/learn-runs/<runId>): manifest + event timeline + per-page
+  // plan sidecars + screenshots + Playwright trace. On by default; null when disabled
+  // (AUTOLEARN_RUN_DEBUG=0). Public so learnPortal() can finalize it on early exits
+  // (login failure / thrown error) and callers can surface the bundle path.
+  readonly debug: LearnRunDebug | null;
+
   constructor(
     portalName: string,
     private planner: LearnPlanner,
@@ -672,6 +687,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     this.maxPages = options.maxPages ?? 18;
     this.docsByType = options.docsByType ?? {};
     this.uploadMode = options.uploadMode ?? "split";
+    this.debug = LearnRunDebug.start(portalName, { maxPages: this.maxPages, uploadMode: this.uploadMode });
   }
 
   // Resolve the document file to attach to a given file-input field. Matches the field's
@@ -862,6 +878,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       // form, fills it (known + unknown portals), verifies success, and stops on MFA.
       // Never logs credentials.
       const result = await performLogin(this.page, context.credential);
+      // Status + redacted message only — performLogin never returns credentials.
+      this.debug?.event({ type: "login", status: result.status, startUrl: context.startUrl ? safeHostPath(context.startUrl) : null });
       if (result.status === "logged_in" || result.status === "already_authenticated") {
         return { ok: true, message: `Opened ${this.portalName} for autonomous learning. ${result.message}` };
       }
@@ -874,6 +892,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       // still_on_login / no_username_field / no_submit_control / error
       return { ok: false, message: `${this.portalName}: ${result.message}` };
     } catch (err) {
+      this.debug?.event({ type: "login_error", message: err instanceof Error ? err.message : String(err) });
       return { ok: false, message: `Auto-learn login failed: ${err instanceof Error ? err.message : String(err)}` };
     }
   }
@@ -917,10 +936,37 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     // one (elapsedMs climbs, then a real event resets it). try/finally guarantees the timer is
     // cleared on every exit path — early `return fail(...)`, success, or a thrown error.
     this.startHeartbeat();
+    // Playwright trace of the learn loop (DOM snapshots + actions + network). Started HERE —
+    // after login — so credentials never enter the trace; saved into the run's debug bundle.
+    await this.debug?.startTrace(this.page);
+    let result: LearnResult | null = null;
     try {
-      return await this.learnImpl(context, project);
+      result = await this.learnImpl(context, project);
+      return result;
+    } catch (err) {
+      // The thrown error is about to leave the adapter as a bare message — persist the stack
+      // into the bundle so the failure is diagnosable from the artifacts alone.
+      this.debug?.event({
+        type: "error",
+        message: err instanceof Error ? err.message : String(err),
+        stack: err instanceof Error ? (err.stack || "").split("\n").slice(0, 12).join("\n") : undefined,
+      });
+      throw err;
     } finally {
       this.stopHeartbeat();
+      await this.debug?.stopTrace(this.page);
+      this.debug?.finalize({
+        outcome: result ? (result.pauseReason ? "paused" : result.ok ? "ok" : "failed") : "error",
+        ok: result?.ok ?? false,
+        pauseReason: result?.pauseReason ?? null,
+        reachedReview: result?.reachedReview ?? false,
+        pageCount: result?.pageCount ?? 0,
+        stepsRecorded: result?.steps.length ?? 0,
+        message: result?.message ?? "learn threw before producing a result — see events.jsonl for the error/stack.",
+      });
+      // Stamp the bundle path onto the result (the object was already returned by reference,
+      // so this reaches the caller) — it's how the backend + UI surface "where to look".
+      if (result && this.debug) result.debugDir = this.debug.dir;
     }
   }
 
@@ -975,24 +1021,13 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       // url() can fail on a fake/odd page — non-fatal.
     }
 
-    // Debug forensic trail — created once if AUTOLEARN_DEBUG_SCREENSHOTS=1. Writes a full-page
-    // PNG before and after fills for every wizard step into data/screenshots/learn-<timestamp>/,
-    // plus pNNN-plan.json / pNNN-rescan.json sidecars (see .env.example). Lets the operator see
-    // exactly what the bot saw and what it changed without re-running blind. Best-effort only.
-    let debugScreenshotDir: string | null = null;
-    if (process.env.AUTOLEARN_DEBUG_SCREENSHOTS === "1") {
-      const ts = Date.now();
-      debugScreenshotDir = path.resolve(process.cwd(), "data", "screenshots", `learn-${ts}`);
-      try { fs.mkdirSync(debugScreenshotDir, { recursive: true }); } catch { debugScreenshotDir = null; }
-    }
+    // Debug forensic trail — part of the per-run bundle (data/learn-runs/<runId>/, on by
+    // default). A full-page PNG before and after fills for every wizard step, plus
+    // pNNN-plan.json / pNNN-rescan.json sidecars (see .env.example). Lets the operator see
+    // exactly what the bot saw and what it changed without re-running blind. Best-effort only;
+    // PNGs alone can be disabled with AUTOLEARN_DEBUG_SCREENSHOTS=0 (sidecars still written).
     const saveDebugShot = async (label: string) => {
-      if (!debugScreenshotDir || !this.page) return;
-      const safe = label.replace(/[^a-z0-9_-]/gi, "_").slice(0, 80);
-      const dest = path.join(debugScreenshotDir, `${safe}.png`);
-      try {
-        const buf = await (this.page as Page).screenshot({ type: "png", fullPage: true });
-        fs.writeFileSync(dest, buf);
-      } catch { /* non-fatal */ }
+      await this.debug?.screenshot(this.page, label);
     };
 
     // Required fields that did NOT hold their value after filling (portal silently dropped them).
@@ -1085,10 +1120,12 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       lastLoopFp = loopFp;
       if ((consecutiveStuck && stuckStreak >= 2) || cycling) {
         if (recoveryAttempts >= MAX_RECOVERY) {
+          this.debug?.event({ type: "recovery_exhausted", mode: cycling ? "cycle" : "stuck", page: pageCount });
           if (process.env.AUTOLEARN_DEBUG === "1") console.error(`[learn] ${cycling ? "cycling" : "stuck"} and recovery budget exhausted — stopping.`);
           break;
         }
         recoveryAttempts++;
+        this.debug?.event({ type: "recovery_attempt", n: recoveryAttempts, max: MAX_RECOVERY, mode: cycling ? "cycle" : "stuck", page: pageCount });
         const problem = cycling
           ? "You are CYCLING: this page was already visited earlier in this run, so a previous action looped you back to the start."
           : "You are STUCK: the last action did not change the page.";
@@ -1116,6 +1153,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         const textOnly = /challenge text detected/i.test(challenge);
         const fillableCount = fields.filter((f) => f.fieldType !== "button").length;
         if (!textOnly || fillableCount <= 2) {
+          this.debug?.event({ type: "challenge_stop", page: pageCount, detail: challenge });
           return {
             ok: false,
             portalName: this.portalName,
@@ -1138,6 +1176,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       try {
         plan = await this.planner({ url, pageTitle, fields, bodyText, alreadyFilledLabels, isDashboard, recoveryHint: recoveryHint || undefined, screenshotBase64: planShot });
       } catch (err) {
+        this.debug?.event({ type: "planner_error", page: pageCount, message: err instanceof Error ? err.message : String(err) });
         return fail(steps, this.portalName, `Planner failed on page ${pageCount}: ${err instanceof Error ? err.message : String(err)}`);
       }
 
@@ -1219,6 +1258,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           `plan:nav=${plan.navigateSelectorIndex ?? "-"} adv=${plan.advanceSelectorIndex ?? "-"} ` +
           `fills=${(plan.fills ?? []).length} review=${plan.atReview}`,
         );
+        // Same breadcrumb into the run bundle's timeline (redacted, host+path only).
+        this.debug?.event({ type: "page", trace: pageTrace[pageTrace.length - 1], recovery: recoveryHint ? true : undefined });
 
         // Live progress for the UI — a short, non-PII description of this page. The
         // review phase is driven by the planner's atReview (or a structural review page),
@@ -1245,7 +1286,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         // Debug: write a JSON sidecar next to this page's screenshots showing what the bot SAW
         // (field labels) and DECIDED (each fill's bound-field/value, sensitive masked). Pair it
         // with the pNNN-before/after PNGs for the "real vs guessing" record.
-        if (debugScreenshotDir) {
+        if (this.debug) {
           const sidecar = {
             page: pageCount,
             title: pageTitle,
@@ -1273,10 +1314,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
               };
             }),
           };
-          try {
-            const dest = path.join(debugScreenshotDir, `p${pageCount.toString().padStart(3, "0")}-plan.json`);
-            fs.writeFileSync(dest, JSON.stringify(sidecar, null, 2));
-          } catch { /* non-fatal */ }
+          this.debug.writeJson(`p${pageCount.toString().padStart(3, "0")}-plan.json`, sidecar);
         }
       }
 
@@ -1537,21 +1575,13 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             }
 
             // Debug: dump what appeared after the reveal so the operator can audit it.
-            if (debugScreenshotDir) {
-              try {
-                const dest = path.join(
-                  debugScreenshotDir,
-                  `p${pageCount.toString().padStart(3, "0")}-rescan${rescanPass + 1}.json`,
-                );
-                fs.writeFileSync(dest, JSON.stringify({
-                  page: pageCount,
-                  pass: rescanPass + 1,
-                  title: pageTitle,
-                  revealedFields: newFillable.map((f) => (f.label || "?").slice(0, 80)),
-                  filledThisPass: revealedThisPass,
-                }, null, 2));
-              } catch { /* non-fatal */ }
-            }
+            this.debug?.writeJson(`p${pageCount.toString().padStart(3, "0")}-rescan${rescanPass + 1}.json`, {
+              page: pageCount,
+              pass: rescanPass + 1,
+              title: pageTitle,
+              revealedFields: newFillable.map((f) => (f.label || "?").slice(0, 80)),
+              filledThisPass: revealedThisPass,
+            });
 
             // Let the portal autosave the conditional-field fills before re-scanning again.
             if (revealedThisPass > 0 && typeof this.page?.waitForLoadState === "function") {
@@ -1699,6 +1729,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           if (!movedForward) {
             const blockers = await this.collectValidationErrors();
             if (blockers.length > 0) {
+              this.debug?.event({ type: "validation_blocked", page: pageCount, errors: blockers.slice(0, 10) });
               lastValidationErrors = blockers;
               for (const b of blockers) if (!validationBlocks.includes(b)) validationBlocks.push(b);
               // Remove the advance step we just recorded — it didn't actually work.

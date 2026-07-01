@@ -142,12 +142,16 @@ export function seedOutcomeToStageResult(seed: {
   status: "trusted" | "draft" | "paused" | "failed";
   pauseReason: string | null;
   message: string;
+  // Path of the learn run's debug bundle — threaded into portal_runs.logs_path so a failed
+  // stage links straight to its forensic artifacts (screenshots, trace, LLM call log).
+  debugDir?: string | null;
 }): Record<string, unknown> {
+  const debugDir = seed.debugDir ?? null;
   if (seed.status === "paused") {
-    return { ok: false, finalSubmitClicked: false, pauseReason: seed.pauseReason, message: seed.message, steps: [] };
+    return { ok: false, finalSubmitClicked: false, pauseReason: seed.pauseReason, message: seed.message, steps: [], debugDir };
   }
   if (seed.status === "failed") {
-    return { ok: false, finalSubmitClicked: false, pauseReason: null, message: seed.message, steps: [{ ok: false, message: seed.message }] };
+    return { ok: false, finalSubmitClicked: false, pauseReason: null, message: seed.message, steps: [{ ok: false, message: seed.message }], debugDir };
   }
-  return { ok: true, finalSubmitClicked: false, pauseReason: null, message: seed.message, steps: [] };
+  return { ok: true, finalSubmitClicked: false, pauseReason: null, message: seed.message, steps: [], debugDir };
 }

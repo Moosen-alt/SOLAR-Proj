@@ -26,7 +26,7 @@ import type { PortalRecipe, ProjectRecord } from "../../shared/src/types";
 import { learnPortal, browserLimiter } from "../../portal-bot/src/index";
 import { compareReviewFields } from "../../portal-bot/src/reviewScreenScraper";
 import type { LearnPlanRequest, LearnPlanResponse } from "../../portal-bot/src/adapters/autoLearnAdapter";
-import { createLLMProvider } from "./llm";
+import { createLLMProvider, getRecentLlmCalls } from "./llm";
 import { getDecryptedCredential, getDecryptedCredentialByUrl, getDecryptedCredentialAny } from "./portalCredentials";
 import { resolveRecipeFieldValues, startPortalRecording, savePortalRecipeSteps, getPortalRecipe, convertLiteralsToBoundFields, findAnyRecipeForProject } from "./portalRecipes";
 import { projectDocsByType } from "./projectDocuments";
@@ -50,6 +50,9 @@ export interface AutoLearnResult {
     issues: string[];
   };
   message: string;
+  /** Path of this run's debug bundle (data/learn-runs/<runId>) — everything needed to
+   *  troubleshoot the run. Download it zipped via GET /api/learn-runs/<runId>/bundle.zip. */
+  debugDir: string | null;
 }
 
 // Build the LLM planner the portal fill loop calls when it has the live fields on a page,
@@ -195,6 +198,9 @@ export async function autoLearnPortal(
     docsByType = {};
   }
 
+  // Marks the start of this run's LLM window — every Claude call from here on (planner,
+  // verifiers) lands in the run bundle's llm-calls.json.
+  const learnStartedAtMs = Date.now();
   let learn;
   try {
     learn = await browserLimiter(() => learnPortal({
@@ -215,6 +221,36 @@ export async function autoLearnPortal(
     throw new HttpError(502, `Portal learn failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 
+  // Per-run debug bundle (data/learn-runs/<runId>) created by the adapter. `finalize` is the
+  // single chokepoint every terminal path returns through: it stamps the bundle path onto the
+  // result and drops the backend-side artifacts into the bundle — llm-calls.json (metadata for
+  // every planner/verifier Claude call this run: latency, tokens, cache hits, stop_reason) and
+  // result.json (the outcome + verification signals). Diagnostics only — never fails the learn.
+  const debugDir = learn.debugDir ?? null;
+  const finalize = (r: Omit<AutoLearnResult, "debugDir">): AutoLearnResult => {
+    const result: AutoLearnResult = { ...r, debugDir };
+    if (debugDir) {
+      try {
+        fs.writeFileSync(path.join(debugDir, "llm-calls.json"), JSON.stringify({
+          llmMode: process.env.ANTHROPIC_API_KEY ? "claude" : "stub (heuristic planner — set ANTHROPIC_API_KEY for real learning)",
+          note: "Every Claude call in this run (planner + verifiers): latency, token usage, cache hits, stop_reason. Prompts and responses are never stored. In stub mode this list is empty.",
+          calls: getRecentLlmCalls(learnStartedAtMs),
+        }, null, 2));
+        fs.writeFileSync(path.join(debugDir, "result.json"), JSON.stringify({
+          status: result.status,
+          pauseReason: result.pauseReason,
+          pageCount: result.pageCount,
+          finalSubmitRecorded: result.finalSubmitRecorded,
+          verification: result.verification,
+          message: result.message,
+          recipeId: result.recipe?.id ?? null,
+          recipeStatus: result.recipe?.status ?? null,
+        }, null, 2));
+      } catch { /* non-fatal */ }
+    }
+    return result;
+  };
+
   // PROTECT A TRUSTED RECIPE: startPortalRecording resets the existing recipe for this
   // profile key (bumps version, clears steps, status -> 'recording') before the outcome is
   // known. Routing normally only auto-learns when no complete recipe exists, but the manual
@@ -234,14 +270,14 @@ export async function autoLearnPortal(
   const preserved = (status: "draft" | "paused" | "failed", pauseReason: string | null, verification: AutoLearnResult["verification"], why: string): AutoLearnResult => {
     addAuditLog(db, projectId, "system", "auto-learn", "portal.auto_learn_kept_existing_recipe", { scope: scopeType, outcome: status, reason: why });
     emitDone(`Learning finished (${status}) — existing verified recipe kept.`);
-    return {
+    return finalize({
       recipe: existingRecipe!,
       status, pauseReason,
       pageCount: learn.pageCount,
       finalSubmitRecorded: learn.finalSubmitRecorded,
       verification,
       message: `${why} The existing verified recipe for this portal was left untouched — delete it first if you want to force a re-learn.`,
-    };
+    });
   };
 
   // Record the learned steps as a recipe (starts in "recording"). Deferred behind the
@@ -264,7 +300,7 @@ export async function autoLearnPortal(
     savePortalRecipeSteps(db, stub.id, learn.steps, { status: "recording", notes: `Auto-learn paused: ${learn.pauseReason}. Resume manually.` });
     addAuditLog(db, projectId, "system", "auto-learn", "portal.auto_learn_paused", { scope: scopeType, pauseReason: learn.pauseReason });
     emitDone(`Learning paused on a ${learn.pauseReason} challenge.`);
-    return { recipe: getPortalRecipe(db, stub.id), status: "paused", pauseReason: learn.pauseReason, pageCount: learn.pageCount, finalSubmitRecorded: learn.finalSubmitRecorded, verification: { accurate: false, confidence: "low", matches: [], issues: [] }, message: `Learning paused on a ${learn.pauseReason} challenge — a human must complete it. The partial recipe was saved as a draft.` };
+    return finalize({ recipe: getPortalRecipe(db, stub.id), status: "paused", pauseReason: learn.pauseReason, pageCount: learn.pageCount, finalSubmitRecorded: learn.finalSubmitRecorded, verification: { accurate: false, confidence: "low", matches: [], issues: [] }, message: `Learning paused on a ${learn.pauseReason} challenge — a human must complete it. The partial recipe was saved as a draft.` });
   }
 
   if (!learn.ok || !learn.steps.length) {
@@ -275,7 +311,7 @@ export async function autoLearnPortal(
     savePortalRecipeSteps(db, stub.id, learn.steps, { status: "needs_rerecord", notes: `Auto-learn could not complete: ${learn.message}` });
     addAuditLog(db, projectId, "system", "auto-learn", "portal.auto_learn_failed", { scope: scopeType });
     emitDone("Learning failed — the portal could not be learned automatically.");
-    return { recipe: getPortalRecipe(db, stub.id), status: "failed", pauseReason: null, pageCount: learn.pageCount, finalSubmitRecorded: learn.finalSubmitRecorded, verification: { accurate: false, confidence: "low", matches: [], issues: [learn.message] }, message: `Could not learn the portal automatically: ${learn.message}. Record it manually instead.` };
+    return finalize({ recipe: getPortalRecipe(db, stub.id), status: "failed", pauseReason: null, pageCount: learn.pageCount, finalSubmitRecorded: learn.finalSubmitRecorded, verification: { accurate: false, confidence: "low", matches: [], issues: [learn.message] }, message: `Could not learn the portal automatically: ${learn.message}. Record it manually instead.` });
   }
 
   // A CLEAN stage requires BOTH reaching the portal's review screen AND having filled at least one
@@ -297,7 +333,7 @@ export async function autoLearnPortal(
     emitDone(`Learning failed — ${why}.`);
     savePortalRecipeSteps(db, stub.id, learn.steps, { status: "needs_rerecord", notes: `Auto-learn did not stage cleanly: ${why}. ${learn.message}` });
     addAuditLog(db, projectId, "system", "auto-learn", "portal.auto_learn_failed", { scope: scopeType, reason: !reachedReview ? "no_review" : "premature_review" });
-    return { recipe: getPortalRecipe(db, stub.id), status: "failed", pauseReason: null, pageCount: learn.pageCount, finalSubmitRecorded: learn.finalSubmitRecorded, verification: { accurate: false, confidence: "low", matches: [], issues: [learn.message] }, message: `Nothing was staged — ${why}. ${learn.message}` };
+    return finalize({ recipe: getPortalRecipe(db, stub.id), status: "failed", pauseReason: null, pageCount: learn.pageCount, finalSubmitRecorded: learn.finalSubmitRecorded, verification: { accurate: false, confidence: "low", matches: [], issues: [learn.message] }, message: `Nothing was staged — ${why}. ${learn.message}` });
   }
 
   // VERIFY the fill against the project data before trusting the recipe.
@@ -474,19 +510,24 @@ export async function autoLearnPortal(
       : `Auto-learned but NOT verified — review the captured fill and confirm before trusting.${bindingNote} Issues: ${verification.issues.join("; ") || "low confidence"}.`,
   });
 
-  // Debug: dump the three verification signals + the trust-gate decision to disk so the
-  // operator can see WHY a recipe was (or wasn't) trusted — text vs vision vs deterministic,
-  // and which signal disagreed. Gated on AUTOLEARN_DEBUG_SCREENSHOTS=1 (same flag as the
-  // per-page screenshots). Sensitive review fields are masked out of the match lists.
-  if (process.env.AUTOLEARN_DEBUG_SCREENSHOTS === "1") {
+  // Debug: dump the three verification signals + the trust-gate decision into the run bundle
+  // so the operator can see WHY a recipe was (or wasn't) trusted — text vs vision vs
+  // deterministic, and which signal disagreed. Always written when the bundle is enabled
+  // (falls back to data/screenshots when it isn't). Sensitive review fields are masked.
+  {
     try {
       const maskMatches = (ms: Array<{ label: string; expected: string; found: string; ok: boolean }>) =>
         ms.map((m) => SENSITIVE_REVIEW_RE.test(m.label)
           ? { label: m.label, expected: "***sensitive***", found: "***sensitive***", ok: m.ok }
           : m);
-      const screenshotDir = path.join(process.cwd(), "data", "screenshots");
-      fs.mkdirSync(screenshotDir, { recursive: true });
-      const dest = path.join(screenshotDir, `verdict-${stub.id}-${Date.now()}.json`);
+      let dest: string;
+      if (debugDir) {
+        dest = path.join(debugDir, "verdict.json");
+      } else {
+        const screenshotDir = path.join(process.cwd(), "data", "screenshots");
+        fs.mkdirSync(screenshotDir, { recursive: true });
+        dest = path.join(screenshotDir, `verdict-${stub.id}-${Date.now()}.json`);
+      }
       fs.writeFileSync(dest, JSON.stringify({
         recipeId: stub.id,
         trusted,
@@ -531,8 +572,11 @@ export async function autoLearnPortal(
       const screenshotDir = path.join(process.cwd(), "data", "screenshots");
       fs.mkdirSync(screenshotDir, { recursive: true });
       const screenshotPath = path.join(screenshotDir, `review-${stub.id}-${Date.now()}.png`);
-      fs.writeFileSync(screenshotPath, Buffer.from(learn.reviewScreenshotBase64, "base64"));
+      const pngBuf = Buffer.from(learn.reviewScreenshotBase64, "base64");
+      fs.writeFileSync(screenshotPath, pngBuf);
       db.run("UPDATE portal_recipes SET notes = notes || ? WHERE id = ?", [` [screenshot:${screenshotPath}]`, stub.id]);
+      // Copy into the run bundle so the handed-over folder is self-contained.
+      if (debugDir) fs.writeFileSync(path.join(debugDir, "review.png"), pngBuf);
     } catch { /* non-fatal */ }
   }
 
@@ -551,7 +595,7 @@ export async function autoLearnPortal(
   });
 
   emitDone(trusted ? "Learning complete — recipe verified and trusted." : "Learning complete — recipe saved as a draft pending your verification.");
-  return {
+  return finalize({
     recipe: getPortalRecipe(db, stub.id),
     status: trusted ? "trusted" : "draft",
     pauseReason: null,
@@ -566,5 +610,5 @@ export async function autoLearnPortal(
     message: trusted
       ? `Portal learned and verified (${verification.overallConfidence} confidence). The recipe is trusted and will replay on future ${scopeType === "utility" ? "utility" : "AHJ"} projects. Final submit stays manual unless you opt this portal into trusted auto-submit.`
       : `Portal learned but needs your verification — open the captured fill and confirm it's correct before it's trusted. ${verification.issues.length ? "Flags: " + verification.issues.slice(0, 3).join("; ") : ""}`,
-  };
+  });
 }

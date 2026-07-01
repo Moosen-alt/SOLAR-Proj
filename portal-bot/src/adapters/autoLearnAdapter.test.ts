@@ -1,4 +1,14 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+// Point the per-run debug bundle at a temp dir so these tests exercise the recorder
+// (sidecars, events, manifest) without ever writing into the repo's data/.
+const debugTmpBase = fs.mkdtempSync(path.join(os.tmpdir(), "autolearn-test-runs-"));
+process.env.AUTOLEARN_RUN_DIR = debugTmpBase;
+process.on("exit", () => { try { fs.rmSync(debugTmpBase, { recursive: true, force: true }); } catch { /* best effort */ } });
+
 import type { ProjectRecord } from "../../../shared/src/types";
 import {
   AutoLearnAdapter,

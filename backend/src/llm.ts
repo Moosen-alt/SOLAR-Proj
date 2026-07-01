@@ -11,6 +11,41 @@ function errMsg(err: unknown): string {
 }
 
 // ---------------------------------------------------------------------------
+// LLM call log — an in-memory ring buffer of every Claude call's outcome
+// (operation, latency, token usage, stop_reason, error). The auto-learn
+// pipeline dumps the calls made during a learn run into that run's debug
+// bundle (llm-calls.json) so a pasted bundle shows exactly what the model
+// was asked to do and how each call ended — refusals and max_tokens
+// truncations included, which are the usual silent killers. Metadata only:
+// prompts and responses are never stored here.
+// ---------------------------------------------------------------------------
+
+export interface LlmCallRecord {
+  at: number; // epoch ms
+  label: string;
+  ms: number;
+  inTok?: number;
+  outTok?: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+  stop?: string | null;
+  error?: string;
+}
+
+const LLM_CALL_LOG_MAX = 400;
+const llmCallLog: LlmCallRecord[] = [];
+
+function recordLlmCall(rec: LlmCallRecord): void {
+  llmCallLog.push(rec);
+  if (llmCallLog.length > LLM_CALL_LOG_MAX) llmCallLog.splice(0, llmCallLog.length - LLM_CALL_LOG_MAX);
+}
+
+/** Calls made at or after `sinceEpochMs`, oldest first. */
+export function getRecentLlmCalls(sinceEpochMs: number): LlmCallRecord[] {
+  return llmCallLog.filter((c) => c.at >= sinceEpochMs);
+}
+
+// ---------------------------------------------------------------------------
 // Stub (no API key configured)
 // ---------------------------------------------------------------------------
 
@@ -413,12 +448,14 @@ export class ClaudeLLMProvider implements LLMProvider {
     exec: () => Promise<Anthropic.Message>,
   ): Promise<Anthropic.Message> {
     const t0 = performance.now();
+    const at = Date.now();
     logger.debug("llm", `→ ${label}`, { model: MODEL, ...meta });
     let msg: Anthropic.Message;
     try {
       msg = await exec();
     } catch (err) {
       logger.error("llm", `✗ ${label} failed`, { ms: `${Math.round(performance.now() - t0)}ms`, ...meta, err: errMsg(err) });
+      recordLlmCall({ at, label, ms: Math.round(performance.now() - t0), error: errMsg(err) });
       throw err;
     }
     const ms = Math.round(performance.now() - t0);
@@ -444,6 +481,13 @@ export class ClaudeLLMProvider implements LLMProvider {
     } else {
       logger.info("llm", `✓ ${label}`, extra);
     }
+    recordLlmCall({
+      at, label, ms,
+      inTok: u?.input_tokens, outTok: u?.output_tokens,
+      cacheRead: u?.cache_read_input_tokens || undefined,
+      cacheWrite: u?.cache_creation_input_tokens || undefined,
+      stop: msg.stop_reason,
+    });
     return msg;
   }
 
@@ -455,6 +499,16 @@ export class ClaudeLLMProvider implements LLMProvider {
     return out;
   }
 
+  // Wrap a static system prompt as a cacheable content block. The portal planner re-sends
+  // the SAME multi-KB system prompt on every page of a learn run (18-80 calls) — with
+  // cache_control the prefix is cached across calls (5-min TTL, refreshed on each hit), so
+  // repeat pages pay ~10% of the input cost and start faster. Prompts under the model's
+  // cacheable minimum are simply not cached — never an error. Watch cacheRead in the llm
+  // log lines / llm-calls.json to confirm hits.
+  private cachedSystem(systemPrompt: string): Anthropic.TextBlockParam[] {
+    return [{ type: "text", text: systemPrompt, cache_control: { type: "ephemeral" } }];
+  }
+
   private async ask(label: string, systemPrompt: string, userMessage: string): Promise<string> {
     const msg = await this.instrument(label, { chars: userMessage.length }, () =>
       this.client.messages
@@ -462,7 +516,7 @@ export class ClaudeLLMProvider implements LLMProvider {
           model: MODEL,
           max_tokens: 2048,
           thinking: { type: "adaptive" },
-          system: systemPrompt,
+          system: this.cachedSystem(systemPrompt),
           messages: [{ role: "user", content: userMessage }],
         })
         .finalMessage(),
@@ -498,7 +552,7 @@ Set confidence (0-1) for each field. Return only valid JSON.`;
           thinking: { type: "adaptive" },
           // Plan sets are dense, multi-section reasoning — give the model room to reason.
           output_config: { effort: "high" },
-          system: systemPrompt,
+          system: this.cachedSystem(systemPrompt),
           messages: [{ role: "user", content: userMessage }],
         })
         .finalMessage(),
@@ -519,7 +573,7 @@ Set confidence (0-1) for each field. Return only valid JSON.`;
           // The vision-assisted planner is the hardest "see and reason" step (read the live
           // layout, reconcile it with the field list, decide each fill) — run it at xhigh.
           output_config: { effort: "xhigh" },
-          system: systemPrompt,
+          system: this.cachedSystem(systemPrompt),
           messages: [{
             role: "user",
             content: [
@@ -1066,9 +1120,11 @@ Return ONLY JSON:
     try {
       // Vision-assisted planning when a page screenshot is supplied: the model SEES the section
       // headings/layout (authoritative for who-owns-which-block) instead of guessing from labels.
+      // 4096 output budget: a field-heavy page (equipment repeaters, 40+ fills) at 3000 risked
+      // max_tokens truncation → an unparseable plan → a silent stall. Accuracy over speed.
       const raw = input.screenshotBase64
-        ? await this.askLongWithImage("planPortalFields.vision", system, user, input.screenshotBase64, "image/png", 3000)
-        : await this.askLong("planPortalFields", system, user, 3000);
+        ? await this.askLongWithImage("planPortalFields.vision", system, user, input.screenshotBase64, "image/png", 4096)
+        : await this.askLong("planPortalFields", system, user, 4096);
       parsed = this.parseJson<Partial<PortalFieldPlan>>(raw, {});
     } catch { parsed = {}; }
     // Safety post-filter: never let a pay/fee button through as advance/submit, and drop

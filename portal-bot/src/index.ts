@@ -409,6 +409,7 @@ export async function learnPortal(input: {
       startUrl: input.portalUrl,
     });
     if (!loginResult.ok) {
+      adapter.debug?.finalize({ outcome: "login_failed", ok: false, pauseReason: loginResult.pauseReason ?? null, message: loginResult.message });
       return {
         ok: false,
         portalName: input.portalName,
@@ -418,6 +419,7 @@ export async function learnPortal(input: {
         pageCount: 0,
         pauseReason: loginResult.pauseReason ?? null,
         message: loginResult.message,
+        debugDir: adapter.debug?.dir,
       };
     }
     input.onProgress?.({
@@ -437,6 +439,9 @@ export async function learnPortal(input: {
     leaveOpen = learnResult.reachedReview === true && !resolveHeadless(input.headless) && !!input.userDataDir;
     return learnResult;
   } catch (err) {
+    // learn() already recorded the error + stack into the bundle and finalized it; make sure
+    // the bundle path still reaches the backend so a thrown run is diagnosable.
+    adapter.debug?.finalize({ outcome: "error", ok: false, message: err instanceof Error ? err.message : String(err) });
     return {
       ok: false,
       portalName: input.portalName,
@@ -446,6 +451,7 @@ export async function learnPortal(input: {
       pageCount: 0,
       pauseReason: null,
       message: `Auto-learn errored: ${err instanceof Error ? err.message : String(err)}`,
+      debugDir: adapter.debug?.dir,
     };
   } finally {
     // Keep a reached-review headed browser open for the human (tracked for cleanup); every other

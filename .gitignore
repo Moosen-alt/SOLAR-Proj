@@ -5,6 +5,11 @@ backend/data/storage-state/
 .env
 dist/
 
+# Runtime captures — review screenshots + per-run learn debug bundles
+# (data/screenshots, data/learn-runs). Raw portal renders can contain
+# customer PII, so these must never be committed.
+data/
+
 # Portal login sessions — NEVER commit these (they contain auth cookies)
 *-session.json
 *.session.json
