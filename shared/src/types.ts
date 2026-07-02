@@ -408,6 +408,78 @@ export interface CodeReference {
   note: string;
 }
 
+// ---------------------------------------------------------------------------
+// Jurisdiction code profiles — the per-AHJ adopted-codes data layer that makes the
+// review gate sellable to ANY jurisdiction (state/county/city), not just Oregon.
+// Discipline-agnostic: covers building/electrical/fire/plumbing/mechanical codes,
+// local amendments, and site design criteria. confidence "seeded" = LLM-researched
+// or bulk-imported, findings must say "verify locally"; "verified" = a human
+// confirmed the values against the jurisdiction's official sources.
+// ---------------------------------------------------------------------------
+
+export interface CodeEdition {
+  /** Model/state code family: NEC | IRC | IBC | IFC | IPC | IMC | IECC | a state
+   *  specialty code (e.g. OESC, ORSC) — free string so states' own codes fit. */
+  code: string;
+  /** Edition/cycle year, e.g. "2023". */
+  edition: string;
+  title?: string;
+  sourceUrl?: string;
+  notes?: string;
+}
+
+export interface JurisdictionDesignCriteria {
+  groundSnowLoadPsf?: number;
+  windSpeedMph?: number;
+  windExposure?: string;
+  seismicDesignCategory?: string;
+  frostDepthIn?: number;
+  sourceUrl?: string;
+}
+
+/** Solar-pack prescriptive-path limits; future rule packs add their own blocks. */
+export interface PrescriptiveLimits {
+  maxGroundSnowPsf?: number;
+  maxPvDeadLoadPsf?: number;
+  maxRafterSpacingIn?: number;
+  allowedWindExposures?: string[];
+  maxExportKwWithoutStudy?: number;
+  engineerStampOverKwDc?: number;
+}
+
+export interface FireSetbackRule {
+  id: string;
+  description: string;
+  codeReference?: CodeReference;
+}
+
+export interface JurisdictionCodeAmendment {
+  code: string;
+  section?: string;
+  summary: string;
+  sourceUrl?: string;
+}
+
+export interface JurisdictionCodeProfile {
+  /** knowledgeProfileKey({state, ahj, utility: ""}). */
+  key: string;
+  state: string;
+  /** "" = the state-level default profile every AHJ in the state falls back to. */
+  ahj: string;
+  confidence: "seeded" | "verified";
+  adoptedCodes: CodeEdition[];
+  amendments: JurisdictionCodeAmendment[];
+  designCriteria: JurisdictionDesignCriteria;
+  prescriptive: PrescriptiveLimits;
+  fireSetbacks: FireSetbackRule[];
+  /** Official sources backing this profile (the human-verification checklist). */
+  citations: Array<{ label: string; sourceUrl: string }>;
+  researchedAt?: string;
+  verifiedAt?: string;
+  verifiedBy?: string;
+  updatedAt: string;
+}
+
 export type ReviewerEvidenceStatus = "verified" | "weak" | "missing" | "profile" | "not_applicable";
 
 export interface ReviewerFindingEvidence {

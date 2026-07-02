@@ -904,6 +904,9 @@ function migrate(db: AppDb): void {
   seedBaselineRuleRows(db);
   seedInitialKnowledgeBase(db);
   seedTestInstaller(db);
+  // Jurisdiction code profiles (review gate): idempotent, never overwrites verified rows.
+  // Lazy import avoids a static db.ts <-> codeProfiles.ts cycle.
+  void import("./codeProfiles").then((m) => m.seedReferenceCodeProfiles(db)).catch(() => null);
 }
 
 // Ordered, recorded schema migrations.
@@ -961,6 +964,29 @@ const VERSIONED_MIGRATIONS: VersionedMigration[] = [
     name: "status_share_token",
     up: (db) => {
       addColumnIfMissing(db, "projects", "status_share_token", "TEXT NOT NULL DEFAULT ''");
+    },
+  },
+  // v5: per-jurisdiction adopted-codes profiles (the review gate's data layer).
+  // payload_json holds the JurisdictionCodeProfile; keyed like the knowledge base
+  // (knowledgeProfileKey with utility "") so state+ahj resolution matches everywhere.
+  {
+    version: 5,
+    name: "jurisdiction_code_profiles",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS jurisdiction_code_profiles (
+          profile_key TEXT PRIMARY KEY,
+          state TEXT NOT NULL DEFAULT '',
+          ahj TEXT NOT NULL DEFAULT '',
+          confidence TEXT NOT NULL DEFAULT 'seeded',
+          payload_json TEXT NOT NULL DEFAULT '{}',
+          researched_at TEXT,
+          verified_at TEXT,
+          verified_by TEXT,
+          updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_code_profiles_state_ahj ON jurisdiction_code_profiles(state, ahj);
+      `);
     },
   },
 ];
