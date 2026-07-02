@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { performance } from "node:perf_hooks";
-import type { AhjFieldMapResult, AhjFormUrlResult, AhjOverlayMapResult, AhjResearchResult, CorrectionBucket, InverterSpecLookup, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, PortalFieldPlan, PortalFieldPlanInput, PortalFillVerification, PortalFillVerifyInput, PortalFillVisionVerifyInput, ProjectRecord, UtilityResearchResult } from "../../shared/src/types";
+import type { AhjFieldMapResult, AhjFormUrlResult, AhjOverlayMapResult, AhjResearchResult, CorrectionBucket, InverterSpecLookup, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, PortalFieldPlan, PortalFieldPlanInput, PortalFillVerification, PortalFillVerifyInput, PortalFillVisionVerifyInput, ProjectRecord, UtilityResearchResult, AiPlanReviewResult, ReviewWorkType } from "../../shared/src/types";
 import { RECIPE_FIELD_DESCRIPTIONS } from "./portalRecipes";
 import { logger } from "./logger";
 
@@ -82,6 +82,18 @@ export class StubLLMProvider implements LLMProvider {
 
   async visionExtract(): Promise<Record<string, unknown>> {
     return { provider: "stub", confidence: 0, notes: "No ANTHROPIC_API_KEY configured." };
+  }
+
+  async reviewPlanSetGeneral(): Promise<AiPlanReviewResult> {
+    // Honest degradation: without an API key there is no AI review — the report
+    // shows a single advisory saying so instead of silently omitting the pass.
+    return {
+      provider: "stub",
+      findings: [],
+      summary: "",
+      confidence: "low",
+      notes: "AI plan review unavailable — no ANTHROPIC_API_KEY configured. Deterministic checks (if any apply to this work type) still ran.",
+    };
   }
 
   async synthesizeKnowledge(): Promise<{ requiredDocuments: string[]; commonRejectionReasons: string[]; tips: string[]; confidence: "low" | "medium" | "high" }> {
@@ -842,6 +854,81 @@ Return JSON: {"draft": "<response text>", "confidence": 0.0-1.0}`;
     const text = this.textOf(msg);
     if (text) return this.parseJson<Record<string, unknown>>(text, { provider: "claude-vision", raw: text });
     return { provider: "claude-vision", confidence: 0 };
+  }
+
+  // LLM GENERAL PLAN REVIEW — the hybrid review gate's coverage for work types
+  // without a deterministic rule pack (reroof, ADU, water heater, general…), and an
+  // optional second opinion beside the solar pack. Vision over rendered plan pages,
+  // grounded in the jurisdiction's adopted-codes summary. ALWAYS advisory: the
+  // caller maps results to category "ai_review" with severity capped at warning —
+  // an AI observation can never block anything.
+  async reviewPlanSetGeneral(input: {
+    workType: ReviewWorkType;
+    jurisdictionLabel: string;
+    codeSummary: string;
+    verifiedProfile: boolean;
+    pageImagesBase64: string[];
+    extractedText?: string;
+    applicantFacts?: Record<string, string>;
+  }): Promise<AiPlanReviewResult> {
+    const system = `You are an experienced municipal plans examiner performing a PRE-REVIEW of a permit application plan set. You are ASSISTING a human reviewer, never replacing them: your findings are advisory observations the human confirms against the adopted codes.
+
+WORK TYPE: ${input.workType.replace(/_/g, " ")}.
+JURISDICTION: ${input.jurisdictionLabel}.
+ADOPTED CODES / DESIGN CRITERIA (${input.verifiedProfile ? "verified by the jurisdiction's staff" : "UNVERIFIED — phrase every citation as 'verify locally'"}):
+${input.codeSummary || "No adopted-code data available — cite current model codes and say 'verify the locally adopted edition'."}
+
+Review the attached plan-sheet images (and extracted text, when provided) the way a plans examiner triages an intake packet:
+- COMPLETENESS: are the sheets a reviewer needs present and legible (site plan, structural details, sections, schedules appropriate to this work type)?
+- CODE CONFORMANCE SIGNALS: obvious conflicts with the adopted codes/design criteria above (spans, load paths, egress, clearances, setbacks, fire access — whatever this work type implicates). Cite the code FAMILY and SECTION you are relying on.
+- MISSING INFORMATION a correction letter would ask for.
+Ground every finding in what is actually visible; never invent sheet contents. If the images are unreadable or insufficient, say so in notes rather than guessing.
+
+Return ONLY JSON:
+{"findings":[{"title":"<short>","message":"<what a correction letter would say>","severity":"warning|callout","codeFamily":"IRC|IBC|NEC|IFC|IPC|IMC|<state code>","codeSection":"<section>","sheetRef":"<sheet/page if identifiable>"}],
+ "summary":"<2-3 sentence overall assessment>",
+ "confidence":"low|medium|high",
+ "notes":"<caveats: unreadable pages, missing context>"}`;
+    const userParts: Anthropic.ContentBlockParam[] = [];
+    // Cap pages sent — intake triage reads the key sheets, not a 60-page set.
+    for (const b64 of input.pageImagesBase64.slice(0, 8)) {
+      userParts.push({ type: "image", source: { type: "base64", media_type: "image/png", data: b64 } });
+    }
+    const factLines = Object.entries(input.applicantFacts ?? {}).filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`).join("\n");
+    userParts.push({
+      type: "text",
+      text: `Applicant facts:\n${factLines || "(none provided)"}\n\nExtracted plan text (may be partial):\n${(input.extractedText || "").slice(0, 6000) || "(none)"}\n\nPerform the pre-review now.`,
+    });
+    const msg = await this.instrument("reviewPlanSetGeneral", { effort: "high", image: input.pageImagesBase64.length > 0, pages: input.pageImagesBase64.length }, () =>
+      this.client.messages.create({
+        model: MODEL,
+        max_tokens: 4096,
+        thinking: { type: "adaptive" },
+        output_config: { effort: "high" },
+        system: this.cachedSystem(system),
+        messages: [{ role: "user", content: userParts }],
+      }),
+    );
+    const parsed = this.parseJson<Partial<AiPlanReviewResult>>(this.textOf(msg), {});
+    const findings = (Array.isArray(parsed.findings) ? parsed.findings : [])
+      .filter((f) => f && typeof f.title === "string" && typeof f.message === "string")
+      .slice(0, 20)
+      .map((f) => ({
+        title: String(f.title).slice(0, 140),
+        message: String(f.message).slice(0, 1200),
+        // HARD CAP: an AI observation is never a blocker.
+        severity: (f.severity === "callout" ? "callout" : "warning") as "warning" | "callout",
+        codeFamily: f.codeFamily ? String(f.codeFamily).slice(0, 24) : undefined,
+        codeSection: f.codeSection ? String(f.codeSection).slice(0, 40) : undefined,
+        sheetRef: f.sheetRef ? String(f.sheetRef).slice(0, 60) : undefined,
+      }));
+    return {
+      provider: "claude",
+      findings,
+      summary: String(parsed.summary || "").slice(0, 1500),
+      confidence: (["low", "medium", "high"].includes(String(parsed.confidence)) ? parsed.confidence : "low") as "low" | "medium" | "high",
+      notes: String(parsed.notes || ""),
+    };
   }
 
   async synthesizeKnowledge(input: {

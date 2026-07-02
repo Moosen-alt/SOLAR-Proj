@@ -480,6 +480,31 @@ export interface JurisdictionCodeProfile {
   updatedAt: string;
 }
 
+// Review work types (rule packs). "solar_pv_residential" is the deterministic pack;
+// the others are served by the LLM general plan-review mode until dedicated packs exist.
+export type ReviewWorkType = "solar_pv_residential" | "reroof" | "water_heater" | "adu" | "deck" | "general";
+
+/** One AI-generated pre-review observation (LLM general mode). Always advisory:
+ *  mapped to category "ai_review" with severity capped at "warning". */
+export interface AiReviewFinding {
+  title: string;
+  message: string;
+  severity: "warning" | "callout";
+  /** Code family + section the model cites (rendered against the jurisdiction's
+   *  adopted editions; "verify locally" when the profile isn't verified). */
+  codeFamily?: string;
+  codeSection?: string;
+  sheetRef?: string;
+}
+
+export interface AiPlanReviewResult {
+  provider: "claude" | "stub";
+  findings: AiReviewFinding[];
+  summary: string;
+  confidence: "low" | "medium" | "high";
+  notes: string;
+}
+
 export type ReviewerEvidenceStatus = "verified" | "weak" | "missing" | "profile" | "not_applicable";
 
 export interface ReviewerFindingEvidence {
@@ -508,7 +533,7 @@ export interface ReviewerVisionVerdict {
 export interface ReviewerFinding {
   id: string;
   severity: "blocker" | "warning" | "callout" | "pass";
-  category: "project_data" | "ahj_profile" | "plan_set" | "utility_nem" | "structural" | "electrical" | "portal" | "installer";
+  category: "project_data" | "ahj_profile" | "plan_set" | "utility_nem" | "structural" | "electrical" | "portal" | "installer" | "ai_review";
   title: string;
   message: string;
   cityFeedback: string;
@@ -1229,6 +1254,19 @@ export interface LLMProvider {
     correctionText: string;
     project?: ProjectRecord;
   }): Promise<{ draft: string; confidence: number }>;
+  /** LLM GENERAL PLAN REVIEW (hybrid review gate): Claude vision over rendered plan
+   *  pages for ANY permit work type, grounded in the jurisdiction's adopted codes.
+   *  Always advisory — the caller maps findings to category "ai_review", severity
+   *  capped at warning, and they never gate anything. */
+  reviewPlanSetGeneral(input: {
+    workType: ReviewWorkType;
+    jurisdictionLabel: string;
+    codeSummary: string;
+    verifiedProfile: boolean;
+    pageImagesBase64: string[];
+    extractedText?: string;
+    applicantFacts?: Record<string, string>;
+  }): Promise<AiPlanReviewResult>;
   /** Extract structured data from an image (base64 PNG/JPEG) — used for image-only SLDs */
   visionExtract(input: {
     imageBase64: string;
