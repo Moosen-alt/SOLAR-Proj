@@ -4409,7 +4409,16 @@ export async function recordPermitStatusCheck(
 async function resolveStatusText(target: Row | null, rawStatusText: string, source: PermitCheckSource): Promise<string> {
   const trimmed = rawStatusText.trim();
   if (trimmed) return trimmed;
-  if (source === "mock") return "Application is under review. Plans assigned to reviewer.";
+  // "mock" source = no portal URL and no recipe to check against. NEVER fabricate a
+  // status here — a made-up "under review" classifies as a real outcome and can email
+  // the client a fake update. Honest answer only, except in explicit offline/dev mode
+  // (PORTAL_AUTOSEED=0, the same switch that enables the mock staging adapter).
+  if (source === "mock") {
+    const offlineDev = process.env.PORTAL_AUTOSEED === "0" || process.env.PORTAL_AUTOSEED === "false";
+    return offlineDev
+      ? "Application is under review. Plans assigned to reviewer."
+      : "No status text available. Manual AHJ/utility portal check required.";
+  }
 
   if ((source === "public_url" || source === "portal") && target?.portal_url) {
     // Try the platform-aware public fetcher (Accela capID URL, EnerGov CSS API,
@@ -5239,7 +5248,9 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
         // logs_path: the learn-run debug bundle folder (set by the self-seed path) — links a
         // failed/paused run straight to its forensic artifacts under data/learn-runs/.
         String((result as Record<string, unknown>).debugDir ?? ""),
-        asJson(result), pauseReason, permitTypeTag],
+        // Persist WHICH adapter actually drove this run — the autopilot approve path
+        // must never mock-submit a run that a real adapter staged (see autopilot.ts).
+        asJson({ ...result, actor: runActorLabel }), pauseReason, permitTypeTag],
     );
 
     db.run(

@@ -298,11 +298,20 @@ export async function runAutopilotApproval(
   });
   logger.info("autopilot", "Segment B — human approval authorized, attempting final submit", { project: projectId, portalRun: runId, approver: options.approverName, track: options.track ?? "permit" });
 
-  // Mock runs (no real portal profile) submit autonomously so the full approval loop
-  // is exercisable in tests/rehearsals. Real hand-coded portals do not yet implement
-  // an audited autonomous submitFromReview — for those the approval is recorded and a
-  // human completes the click in the portal (the safe default).
-  const isMockRun = portalProfileId == null;
+  // Mock runs submit autonomously so the full approval loop is exercisable in
+  // tests/rehearsals. STRICT gate: "no portal profile" is NOT enough — universal-path
+  // (recipe/auto-learn) runs also have no portal_profiles row, and mock-submitting one
+  // of those would record a fabricated MOCK-/CONF- number for an application that was
+  // never filed. A run is mock ONLY when the recorded actor says MockPortalAdapter, or
+  // (legacy runs without an actor) when the app is in explicit offline/dev mock mode
+  // (PORTAL_AUTOSEED=0 — the only mode that can stage with the mock adapter at all).
+  const runResult = ((): Record<string, unknown> => {
+    try { return JSON.parse(String(run.result_json || "{}")) as Record<string, unknown>; } catch { return {}; }
+  })();
+  const recordedActor = String(runResult.actor ?? "");
+  const offlineMockMode = process.env.PORTAL_AUTOSEED === "0" || process.env.PORTAL_AUTOSEED === "false";
+  const isMockRun = portalProfileId == null
+    && (recordedActor === "MockPortalAdapter" || (recordedActor === "" && offlineMockMode));
   if (isMockRun) {
     const { submitStagedRun } = await import("../../portal-bot/src/index");
     const { MockPortalAdapter } = await import("../../portal-bot/src/adapters/mock");

@@ -997,6 +997,48 @@ async function testDateFieldFilledAndRecorded() {
   );
 }
 
+// UPLOAD SIZE CAP (split mode): a candidate file over the portal limit is never offered —
+// the resolver falls through to a smaller doc that fits, and when NOTHING fits it returns
+// null (skip + debug event) instead of handing the portal a file it will reject.
+async function testUploadSizeCap() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "upload-cap-test-"));
+  const bigPlanSet = path.join(dir, "plan_set.pdf");
+  const smallSld = path.join(dir, "sld.pdf");
+  fs.writeFileSync(bigPlanSet, Buffer.alloc(6 * 1024 * 1024, 1)); // 6 MB — over the 5 MB split cap
+  fs.writeFileSync(smallSld, Buffer.alloc(200 * 1024, 1)); // 200 KB — fits
+
+  const noPlan: LearnPlanner = async () => ({ fills: [], atReview: false });
+  try {
+    // Labeled SLD slot → the small split sheet wins (normal path, unchanged).
+    const withBoth = new AutoLearnAdapter("Cap Test", noPlan, { uploadMode: "split", docsByType: { plan_set: bigPlanSet, sld: smallSld } });
+    const sldPick = (withBoth as any).resolveUpload({ selector: {}, label: "One-Line Electrical Diagram", fieldType: "file" });
+    assert.equal(sldPick?.docType, "sld", "labeled slot picks the fitting split sheet");
+
+    // Generic slot with both available: the 6 MB plan_set no longer wins the fallback —
+    // the fitting sld does.
+    const genericPick = (withBoth as any).resolveUpload({ selector: {}, label: "Attachment", fieldType: "file" });
+    assert.equal(genericPick?.docType, "sld", `generic slot skips the oversize plan_set (got ${genericPick?.docType})`);
+
+    // Only the oversize file exists → nothing fits → null (skip, not a doomed upload).
+    const onlyBig = new AutoLearnAdapter("Cap Test", noPlan, { uploadMode: "split", docsByType: { plan_set: bigPlanSet } });
+    const noPick = (onlyBig as any).resolveUpload({ selector: {}, label: "Attachment", fieldType: "file" });
+    assert.equal(noPick, null, "nothing fits → control skipped");
+
+    // Combined (AHJ) mode is uncapped by default — the full plan set still uploads.
+    const combined = new AutoLearnAdapter("Cap Test", noPlan, { uploadMode: "combined", docsByType: { plan_set: bigPlanSet } });
+    const combinedPick = (combined as any).resolveUpload({ selector: {}, label: "Plans", fieldType: "file" });
+    assert.equal(combinedPick?.docType, "plan_set", "combined mode keeps the full plan set");
+
+    // Env override tightens/loosens the cap.
+    process.env.PORTAL_UPLOAD_MAX_MB = "10";
+    const loosened = (onlyBig as any).resolveUpload({ selector: {}, label: "Attachment", fieldType: "file" });
+    assert.equal(loosened?.docType, "plan_set", "PORTAL_UPLOAD_MAX_MB=10 lets the 6 MB file through");
+  } finally {
+    delete process.env.PORTAL_UPLOAD_MAX_MB;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 const tests: Array<[string, () => Promise<void>]> = [
   ["fields are extracted, filled, and recorded as steps", testFieldsExtractedFilledRecorded],
   ["RADIO REGRESSION: radio selected via check(), false radio/checkbox skipped", testRadioSelectedViaCheck],
@@ -1013,6 +1055,7 @@ const tests: Array<[string, () => Promise<void>]> = [
   ["T&C PASS-THROUGH: disclaimer page is not treated as review screen", testTermsPagePassThrough],
   ["POWERCLERK REVIEW GATE: terms-checkbox submit page is review, box auto-checked, submit recorded", testPowerClerkTermsGateReview],
   ["DATE FIELD: commissioning date filled and recorded, picker dismissal does not drop it", testDateFieldFilledAndRecorded],
+  ["UPLOAD SIZE CAP: oversize file skipped in split mode, fitting doc preferred, combined uncapped", testUploadSizeCap],
 ];
 
 let failures = 0;

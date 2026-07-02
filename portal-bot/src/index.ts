@@ -251,6 +251,23 @@ export async function closeStagingBrowserFor(userDataDir: string | undefined): P
   return true;
 }
 
+// Close every left-open browser whose profile dir sits UNDER the given prefix — used with
+// a client's profile ROOT (<profileBase>/<clientId>) so "the operator is done reviewing"
+// closes that client's review window regardless of which adapter opened it. The self-seed
+// learner tracks under <clientId>/utility|AHJ while replay/hand-coded staging tracks under
+// <clientId>/<portal_profiles type> ("mock" fallback) — an exact-dir close misses one side.
+export async function closeStagingBrowsersUnder(dirPrefix: string | undefined): Promise<number> {
+  if (!dirPrefix) return 0;
+  let closed = 0;
+  for (const [dir, adapter] of [...openStagingAdapters]) {
+    if (dir !== dirPrefix && !dir.startsWith(dirPrefix + path.sep)) continue;
+    openStagingAdapters.delete(dir);
+    try { await adapter.close(); } catch { /* best effort — the human may have closed it already */ }
+    closed++;
+  }
+  return closed;
+}
+
 // Close every browser left open for human submit (call on server shutdown).
 export async function closeAllStagingBrowsers(): Promise<void> {
   for (const [dir, adapter] of [...openStagingAdapters]) {

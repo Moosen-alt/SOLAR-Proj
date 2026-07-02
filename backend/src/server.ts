@@ -1147,10 +1147,11 @@ app.post("/api/portal-recipes/:id/finish", asyncHandler(async (req, res) => {
   const clientId = req.body?.clientId ? String(req.body.clientId) : "";
   if (clientId) {
     try {
-      const { closeStagingBrowserFor } = await import("../../portal-bot/src/index");
+      // Prefix close: the client's review browser may be tracked under utility/AHJ (self-seed
+      // learn) OR the portal_profiles-derived dir (replay staging) — close the whole client root.
+      const { closeStagingBrowsersUnder } = await import("../../portal-bot/src/index");
       const profileBase = process.env.PORTAL_PROFILES_DIR || path.join(process.cwd(), "portal-profiles");
-      const portalType = recipe.scopeType === "utility" ? "utility" : "AHJ";
-      await closeStagingBrowserFor(path.join(profileBase, clientId, portalType));
+      await closeStagingBrowsersUnder(path.join(profileBase, clientId));
     } catch { /* browser close is best-effort — it may already be closed */ }
   }
   addAuditLog(db, null, "human", "operator", "portal_recipe.finished", { recipeId: recipe.id, profileKey: recipe.profileKey });
@@ -2019,10 +2020,11 @@ app.post("/api/projects/:id/submittal-tracks/:type/mark-submitted", asyncHandler
       addAuditLog(db, detail.project.id, "human", "operator", "portal_recipe.finished", { recipeId: draft.id, via: "mark_submitted", track: type });
     }
     if (detail.project.clientId) {
-      const { closeStagingBrowserFor } = await import("../../portal-bot/src/index");
+      // Prefix close (see the finish endpoint): covers both the self-seed learn dir
+      // (utility/AHJ) and the replay-staging dir for this client in one sweep.
+      const { closeStagingBrowsersUnder } = await import("../../portal-bot/src/index");
       const profileBase = process.env.PORTAL_PROFILES_DIR || path.join(process.cwd(), "portal-profiles");
-      const portalType = type === "nem" ? "utility" : "AHJ";
-      await closeStagingBrowserFor(path.join(profileBase, detail.project.clientId, portalType));
+      await closeStagingBrowsersUnder(path.join(profileBase, detail.project.clientId));
     }
   } catch { /* promotion/close are best-effort — marking submitted must never fail on them */ }
   res.status(201).json({ ok: true, tracks: getSubmittalTracks(db, getProjectDetail(db, String(req.params.id)).project) });

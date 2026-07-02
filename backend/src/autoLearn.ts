@@ -629,11 +629,30 @@ export async function autoLearnPortal(
           [portalUrl, new Date().toISOString(), project.ahj],
         );
       } else if (scopeType === "utility" && (project.utility || "").trim()) {
+        const nowTs = new Date().toISOString();
         db.run(
           `UPDATE permit_utility_knowledge SET portal_url = ?, updated_at = ?
              WHERE utility = ? AND (ahj IS NULL OR ahj = '')`,
-          [portalUrl, new Date().toISOString(), project.utility],
+          [portalUrl, nowTs, project.utility],
         );
+        // No utility-keyed row yet (the KB may only carry AHJ-keyed rows for this
+        // territory) → create a minimal one so the learned NEM entry URL is not lost.
+        const utilRow = db.get<{ id: string }>(
+          "SELECT id FROM permit_utility_knowledge WHERE utility = ? AND (ahj IS NULL OR ahj = '') LIMIT 1",
+          [project.utility],
+        );
+        if (!utilRow) {
+          const { knowledgeProfileKey } = await import("./knowledgeBase");
+          const { id: newId } = await import("./ids");
+          db.run(
+            `INSERT OR IGNORE INTO permit_utility_knowledge
+               (id, profile_key, state, ahj, utility, portal_url, notes, first_seen_at, last_learned_at, updated_at)
+             VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, ?)`,
+            [newId(), knowledgeProfileKey({ state: project.state, ahj: "", utility: project.utility }),
+              project.state || "", project.utility, portalUrl,
+              "Auto-learned utility NEM portal entry URL (trusted learn).", nowTs, nowTs, nowTs],
+          );
+        }
       }
     } catch { /* KB upsert is best-effort */ }
   }

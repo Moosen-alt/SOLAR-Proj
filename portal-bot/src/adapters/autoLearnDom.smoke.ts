@@ -117,6 +117,8 @@ await patchPage.setContent(`<!doctype html><html><body>
   <button type="button">Save Draft</button>
   <button type="button">Submit Application</button>
   <button type="button">Pay Now</button>
+  <button type="button">Submit</button>
+  <button type="button">Continue</button>
 </body></html>`);
 const captured: Array<{ action: string; note?: string; value?: string; sensitive?: boolean }> = [];
 const armed = await armHumanCaptureOnPage(patchPage, (step) => captured.push(step as never));
@@ -128,6 +130,11 @@ await patchPage.locator("#acct").dispatchEvent("change");
 await patchPage.getByRole("button", { name: "Save Draft" }).click();
 await patchPage.getByRole("button", { name: "Submit Application" }).click();
 await patchPage.getByRole("button", { name: "Pay Now" }).click();
+// A BARE "Submit" click (PGE PowerClerk's real final button) must not be captured AND must
+// DISARM capture — the application is being filed, so nothing after it belongs in the recipe.
+await patchPage.getByRole("button", { name: "Submit", exact: true }).click();
+await patchPage.getByRole("button", { name: "Continue" }).click();
+await patchPage.selectOption("#sched", ""); // post-submit change — must also be ignored
 await patchPage.waitForTimeout(300);
 
 check("human select captured with its label + value", () => {
@@ -145,6 +152,11 @@ check("navigation click captured; submit/pay clicks NEVER captured", () => {
   const clicks = captured.filter((c) => c.action === "click");
   assert.equal(clicks.length, 1, `clicks: ${JSON.stringify(clicks)}`);
   assert.ok((clicks[0].note || "").includes("Save Draft"));
+});
+check("bare Submit click DISARMS capture — post-submit Continue click and change ignored", () => {
+  assert.ok(!captured.some((c) => (c.note || "").includes("Continue")), `Continue leaked: ${JSON.stringify(captured)}`);
+  const selects = captured.filter((c) => c.action === "select");
+  assert.equal(selects.length, 1, `post-submit select change leaked: ${JSON.stringify(selects)}`);
 });
 
 await browser.close();

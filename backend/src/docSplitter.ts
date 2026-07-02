@@ -151,12 +151,14 @@ export async function buildUtilityPackage(db: AppDb, projectId: string, target =
     const copied = await out.copyPages(source, pages);
     copied.forEach((p) => out.addPage(p));
     let bytes = Buffer.from(await out.save());
-    // SIZE CAP: portals reject oversized uploads (PowerClerk: 5 MB). A multi-page split
-    // that blew the cap gets trimmed to its LEAD page only — the dedicated sheet is always
-    // first-matched and a single sheet is far below the cap in practice; a heavy raster
-    // tail page (a vendor manual scan) is what pushes it over. Better one on-point sheet
-    // the portal accepts than a "complete" file it bounces.
-    const CAP = 5 * 1024 * 1024;
+    // SIZE CAP: portals reject oversized uploads (PowerClerk: 5 MB; override with
+    // PORTAL_UPLOAD_MAX_MB, the same knob the portal-bot's upload resolver honors). A
+    // multi-page split that blew the cap gets trimmed to its LEAD page only — the
+    // dedicated sheet is always first-matched and a single sheet is far below the cap in
+    // practice; a heavy raster tail page (a vendor manual scan) is what pushes it over.
+    // Better one on-point sheet the portal accepts than a "complete" file it bounces.
+    const capMb = Number(process.env.PORTAL_UPLOAD_MAX_MB || "");
+    const CAP = Number.isFinite(capMb) && capMb > 0 ? capMb * 1024 * 1024 : 5 * 1024 * 1024;
     if (bytes.length > CAP && pages.length > 1) {
       const lead = await PDFDocument.create();
       const [first] = await lead.copyPages(source, [pages[0]]);
