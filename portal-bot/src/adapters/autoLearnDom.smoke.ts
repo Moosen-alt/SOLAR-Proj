@@ -148,12 +148,14 @@ check("sensitive field captured WITHOUT its typed value", () => {
   assert.equal(fill!.sensitive, true, "flagged sensitive");
   assert.ok(!JSON.stringify(captured).includes("ACCT-12345"), "typed account number never stored");
 });
-check("navigation click captured; submit/pay clicks NEVER captured", () => {
-  const clicks = captured.filter((c) => c.action === "click");
+check("navigation click captured; submit/pay clicks NEVER captured as replayable steps", () => {
+  const clicks = captured.filter((c) => c.action === "click" && (c.note || "") !== "__human_submit_observed__");
   assert.equal(clicks.length, 1, `clicks: ${JSON.stringify(clicks)}`);
   assert.ok((clicks[0].note || "").includes("Save Draft"));
 });
-check("bare Submit click DISARMS capture — post-submit Continue click and change ignored", () => {
+check("bare Submit click emits the submit-observed signal, then DISARMS capture", () => {
+  const markers = captured.filter((c) => (c.note || "") === "__human_submit_observed__");
+  assert.equal(markers.length, 1, `expected one submit-observed marker: ${JSON.stringify(captured)}`);
   assert.ok(!captured.some((c) => (c.note || "").includes("Continue")), `Continue leaked: ${JSON.stringify(captured)}`);
   const selects = captured.filter((c) => c.action === "select");
   assert.equal(selects.length, 1, `post-submit select change leaked: ${JSON.stringify(selects)}`);

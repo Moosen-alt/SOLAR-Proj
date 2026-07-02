@@ -29,7 +29,7 @@ import { compareReviewFields } from "../../portal-bot/src/reviewScreenScraper";
 import type { LearnPlanRequest, LearnPlanResponse } from "../../portal-bot/src/adapters/autoLearnAdapter";
 import { createLLMProvider, getRecentLlmCalls } from "./llm";
 import { getDecryptedCredential, getDecryptedCredentialByUrl, getDecryptedCredentialAny } from "./portalCredentials";
-import { resolveRecipeFieldValues, startPortalRecording, savePortalRecipeSteps, getPortalRecipe, convertLiteralsToBoundFields, findAnyRecipeForProject, appendHumanPatchSteps } from "./portalRecipes";
+import { resolveRecipeFieldValues, startPortalRecording, savePortalRecipeSteps, getPortalRecipe, convertLiteralsToBoundFields, findAnyRecipeForProject, appendHumanPatchSteps, finishPortalRecipe } from "./portalRecipes";
 import { projectDocsByType } from "./projectDocuments";
 import { buildUtilityPackage } from "./docSplitter";
 import { addAuditLog } from "./audit";
@@ -210,9 +210,28 @@ export async function autoLearnPortal(
   // until the stub id is known, then flush. When an existing verified-complete recipe
   // is being protected, no stub is created and the buffer is deliberately discarded —
   // human fixes on an unverified pass must not mutate the trusted recipe.
-  const humanPatch: { recipeId: string | null; buffer: RecipeStep[]; count: number } = { recipeId: null, buffer: [], count: 0 };
+  const humanPatch: { recipeId: string | null; buffer: RecipeStep[]; count: number; submitObserved: boolean } = { recipeId: null, buffer: [], count: 0, submitObserved: false };
+  // Promote the recording once the HUMAN clicks the portal's final Submit in the left-open
+  // browser: their manual submit of the (corrected) fill is the strongest end-to-end
+  // demonstration the recipe works, so the draft graduates to a replayable "complete" and
+  // the "recording in progress" banner clears — no extra dashboard click needed.
+  const promoteOnHumanSubmit = (recipeId: string): void => {
+    try {
+      const recipe = getPortalRecipe(db, recipeId);
+      if (recipe.status === "recording" && recipe.steps.length > 0) {
+        finishPortalRecipe(db, recipeId, "operator (submitted in review browser)");
+        addAuditLog(db, projectId, "human", "operator", "portal_recipe.finished", { recipeId, via: "human_submit_observed", scope: scopeType });
+      }
+    } catch { /* promotion is best-effort */ }
+  };
   const onHumanStep = (step: RecipeStep): void => {
     try {
+      // Submit-observed is a SIGNAL, never a merged step (see humanCapture.ts).
+      if ((step.note || "") === "__human_submit_observed__") {
+        humanPatch.submitObserved = true;
+        if (humanPatch.recipeId) promoteOnHumanSubmit(humanPatch.recipeId);
+        return;
+      }
       humanPatch.count++;
       if (humanPatch.count === 1) {
         addAuditLog(db, projectId, "human", "operator", "portal.recipe_human_patch_started", { scope: scopeType });
@@ -546,6 +565,9 @@ export async function autoLearnPortal(
   if (humanPatch.buffer.length) {
     try { appendHumanPatchSteps(db, stub.id, humanPatch.buffer.splice(0), projectFields); } catch { /* best-effort */ }
   }
+  // Submit observed in the pre-flush window (human corrected + submitted before the
+  // recipe row landed) — apply the promotion now that the row exists.
+  if (humanPatch.submitObserved) promoteOnHumanSubmit(stub.id);
 
   // Debug: dump the three verification signals + the trust-gate decision into the run bundle
   // so the operator can see WHY a recipe was (or wasn't) trusted — text vs vision vs

@@ -24,12 +24,19 @@ import type { Page } from "playwright";
 import type { RecipeSelector, RecipeStep } from "../../shared/src/types";
 
 export interface HumanCapturePayload {
-  kind: "click" | "fill" | "select" | "check" | "upload";
+  kind: "click" | "fill" | "select" | "check" | "upload" | "submitObserved";
   selector: RecipeSelector;
   value?: string;
   sensitive?: boolean;
   label?: string;
 }
+
+// Marker note carried by the pseudo-step emitted when the HUMAN clicks the portal's final
+// Submit in the left-open review browser. It is never merged into the recipe (the merge
+// filter drops submit clicks); the backend uses it as the signal that the operator just
+// DEMONSTRATED the corrected fill end-to-end — the recording is promoted to a complete,
+// replayable recipe and the "recording in progress" banner clears.
+export const HUMAN_SUBMIT_OBSERVED_NOTE = "__human_submit_observed__";
 
 export type HumanStepFn = (step: RecipeStep) => void;
 
@@ -38,6 +45,8 @@ export type HumanStepFn = (step: RecipeStep) => void;
 // merge converts literals that match project data into reusable field bindings.
 export function payloadToStep(p: HumanCapturePayload): RecipeStep | null {
   const note = p.label ? `human-patch: ${p.label}` : "human-patch";
+  // Submit observation is a SIGNAL, not a replayable step — see HUMAN_SUBMIT_OBSERVED_NOTE.
+  if (p.kind === "submitObserved") return { action: "click", selector: {}, optional: true, note: HUMAN_SUBMIT_OBSERVED_NOTE };
   if (p.kind === "click") return { action: "click", selector: p.selector, note };
   if (p.kind === "fill" && p.sensitive) {
     return { action: "fill", selector: p.selector, sensitive: true, optional: true, note: `${note} — SENSITIVE, bound at replay (no value stored)` };
@@ -108,7 +117,14 @@ function patchCaptureScript(): void {
       // The human is filing/paying the application — DISARM capture entirely. Nothing
       // after a submit/pay click (confirmation pages, "Continue" buttons) belongs in
       // the recipe; recording it would make replay act past the review stop.
+      // A SUBMIT-intent click (not a bare pay/fee) also emits the submit-observed
+      // signal before disarming: the operator just demonstrated the corrected fill
+      // end-to-end, so the backend promotes the recording to a complete recipe.
+      const alreadyDisarmed = w.__alPatchDisarmed === true;
       w.__alPatchDisarmed = true;
+      if (!alreadyDisarmed && /\b(submit|confirm submission|complete submission|file application)\b/i.test(d.label) && typeof w.__alPatchStep === "function") {
+        w.__alPatchStep({ kind: "submitObserved", selector: {}, label: d.label });
+      }
       return;
     }
     if (w.__alPatchDisarmed) return;
