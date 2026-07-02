@@ -191,6 +191,8 @@ app.get("/login", (_req, res) => res.sendFile(path.join(frontendDir, "login.html
 app.get("/intake", (_req, res) => res.sendFile(path.join(frontendDir, "intake.html")));
 // Public read-only client status page (tokenized link, no login).
 app.get("/status", (_req, res) => res.sendFile(path.join(frontendDir, "status.html")));
+// AHJ-facing review gate (login-gated when auth is enabled; review_gate tenants land here).
+app.get("/review", (_req, res) => res.sendFile(path.join(frontendDir, "review.html")));
 app.use(requireAuth(db));
 // Licensing: 'review_gate' orgs reach only the review surface (deny-gate w/ allowlist).
 app.use(editionGate(db));
@@ -557,13 +559,32 @@ app.put("/api/code-profiles/verify", (req, res) => {
 // ---------------------------------------------------------------------------
 const reviewOrgId = (req: Request): string => requestOrg(db, req).id;
 
+// Per-org daily review quota (in-memory; resets at UTC midnight). LLM vision
+// reviews cost real money — a runaway integration must not burn the month's
+// budget in an afternoon. REVIEW_DAILY_LIMIT=0 disables.
+const reviewQuota = new Map<string, { day: string; count: number }>();
+function checkReviewQuota(orgId: string): void {
+  const limit = Number(process.env.REVIEW_DAILY_LIMIT ?? 200);
+  if (!Number.isFinite(limit) || limit <= 0) return;
+  const day = new Date().toISOString().slice(0, 10);
+  const rec = reviewQuota.get(orgId);
+  if (!rec || rec.day !== day) {
+    reviewQuota.set(orgId, { day, count: 1 });
+    return;
+  }
+  rec.count++;
+  if (rec.count > limit) throw new HttpError(429, `Daily review limit reached (${limit}). Try again tomorrow or contact support to raise it.`);
+}
+
 app.get("/api/review/work-types", (_req, res) => {
   res.json({ workTypes: REVIEW_PACKS });
 });
 
 app.post("/api/review", asyncHandler(async (req, res) => {
   const subject = validate(reviewSubjectSchema, req.body);
-  const { submission, report, ai } = await runStandaloneReview(db, reviewOrgId(req), subject);
+  const orgId = reviewOrgId(req);
+  checkReviewQuota(orgId);
+  const { submission, report, ai } = await runStandaloneReview(db, orgId, subject);
   res.status(201).json({ submissionId: submission.id, report, aiSummary: ai?.summary || "", aiNotes: ai?.notes || "" });
 }));
 
@@ -577,7 +598,9 @@ app.post(
     try { rawSubject = JSON.parse(String(req.headers["x-review-subject"] || "{}")); } catch { throw new HttpError(400, "x-review-subject header must be JSON."); }
     const subject = validate(reviewSubjectSchema, rawSubject);
     const filename = String(req.query.filename || "planset.pdf").trim();
-    const { submission, report, ai } = await runStandaloneReview(db, reviewOrgId(req), subject, { buffer: req.body, filename });
+    const orgId = reviewOrgId(req);
+    checkReviewQuota(orgId);
+    const { submission, report, ai } = await runStandaloneReview(db, orgId, subject, { buffer: req.body, filename });
     res.status(201).json({ submissionId: submission.id, report, aiSummary: ai?.summary || "", aiNotes: ai?.notes || "" });
   }),
 );

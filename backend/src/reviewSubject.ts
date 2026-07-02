@@ -15,7 +15,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { AppDb } from "./db";
 import type { AiPlanReviewResult, ProjectRecord, ReviewerReport, ReviewSubject, ReviewWorkType } from "../../shared/src/types";
-import { resolveEffectiveCodeContext } from "./codeProfiles";
+import { resolveEffectiveCodeContext, ensureCodeProfilesResearched } from "./codeProfiles";
 import { runReviewPack, reviewPackFor } from "./reviewPacks";
 import { createLLMProvider } from "./llm";
 import { extractPdfPages } from "./batchImport";
@@ -116,6 +116,10 @@ export async function runStandaloneReview(
   const submissionId = id();
   const ts = nowIso();
   const ctx = resolveEffectiveCodeContext(db, subject.state, subject.ahj);
+  // AUTONOMY: first contact with an un-profiled jurisdiction auto-queues web
+  // research for its missing layers (state default + this county/city) so the
+  // next review runs against seeded adopted-code data without anyone asking.
+  if (!ctx.verified) ensureCodeProfilesResearched(db, subject.state, subject.ahj);
   const project = reviewSubjectToProject(subject, submissionId);
 
   // Persist the plan set (if provided) so the report's evidence can be revisited.

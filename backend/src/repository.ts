@@ -103,7 +103,7 @@ import { runQcForProject } from "./qc";
 import { loadStoredTemplates, formAllowedForPath } from "./ahjForms";
 import { resolvePermitPath } from "./permitPath";
 import { buildReviewerReport, renderReviewerReportHtml } from "./reviewerEngine";
-import { resolveEffectiveCodeContext } from "./codeProfiles";
+import { resolveEffectiveCodeContext, ensureCodeProfilesResearched } from "./codeProfiles";
 import { applyCachedVisionVerdicts } from "./reviewerVision";
 import { nowIso } from "./time";
 
@@ -113,7 +113,11 @@ import { nowIso } from "./time";
 // constants; other jurisdictions get their recorded limits/citations or model-code
 // defaults with "verify locally" phrasing).
 export function buildReviewerReportFor(db: AppDb, project: ProjectRecord): ReviewerReport {
-  return buildReviewerReport(project, { codeContext: resolveEffectiveCodeContext(db, project.state, project.ahj) });
+  const codeContext = resolveEffectiveCodeContext(db, project.state, project.ahj);
+  // AUTONOMY: the internal gate self-onboards too — reviewing a project in an
+  // un-profiled jurisdiction queues background code research for its layers.
+  if (!codeContext.verified) ensureCodeProfilesResearched(db, project.state, project.ahj);
+  return buildReviewerReport(project, { codeContext });
 }
 
 

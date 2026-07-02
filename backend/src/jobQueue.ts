@@ -13,7 +13,8 @@ export type JobType =
   | "folder_scan"
   | "autopilot"
   | "prepare_submission"
-  | "auto_learn";
+  | "auto_learn"
+  | "code_research";
 
 export type JobStatus = "pending" | "running" | "done" | "failed";
 
@@ -389,6 +390,25 @@ export async function processNextJob(db: AppDb): Promise<boolean> {
         recipeId: learnResult.recipe?.id ?? null,
         recipeStatus: learnResult.recipe?.status ?? null,
       };
+    } else if (job.jobType === "code_research") {
+      // Autonomous adopted-codes onboarding: web-search the jurisdiction's codes
+      // (state or county/city layer) and store them as a SEEDED profile. Enqueued
+      // automatically the first time any review touches an un-profiled jurisdiction
+      // (codeProfiles.ensureCodeProfilesResearched). A human verifies later; until
+      // then findings phrase "verify locally" and seeded thresholds never hard-block.
+      const { createLLMProvider } = await import("./llm");
+      const { saveResearchedCodeProfile } = await import("./codeProfiles");
+      const state = String(job.payload.state || "");
+      const ahj = String(job.payload.ahj || "");
+      const research = await createLLMProvider().researchJurisdictionCodes({ state, ahj });
+      if (research.provider === "stub" || research.profile.adoptedCodes.length === 0) {
+        // Don't store an empty row — it would block future auto-research for this
+        // layer. Leave the jurisdiction un-profiled and report why.
+        result = { saved: false, reason: research.provider === "stub" ? "stub LLM (no API key)" : "research found no adopted codes", notes: research.notes };
+      } else {
+        const saved = saveResearchedCodeProfile(db, research.profile);
+        result = { saved: true, key: saved.key, confidence: saved.confidence, webGrounded: research.webGrounded, adoptedCodes: saved.adoptedCodes.length };
+      }
     } else {
       result = { skipped: true, reason: "job type handled externally" };
     }

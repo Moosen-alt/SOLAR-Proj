@@ -249,3 +249,46 @@ export function seedReferenceCodeProfiles(db: AppDb): void {
     logger.warn("code-profiles", `reference seed failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
+
+// --- Autonomous onboarding ----------------------------------------------------
+// "Search all the codes needed — city/county AND state — and store them." The
+// moment any review (internal gate or standalone API) touches a jurisdiction
+// whose code profile isn't verified, background research jobs are enqueued for
+// every missing LAYER: the state default (which counties/cities inherit) and the
+// specific AHJ (the city or county itself — its row records local amendments +
+// design criteria over the state layer). Fire-and-forget: the current review
+// proceeds on defaults/"verify locally"; the next one picks up the seeded data,
+// and a human verifies when convenient. Dedupe: never enqueue when the layer's
+// row already exists or a research job for it is already pending/running.
+export function ensureCodeProfilesResearched(db: AppDb, state: string, ahj: string): number {
+  const st = (state || "").trim();
+  if (!st) return 0;
+  const layers: Array<{ state: string; ahj: string }> = [{ state: st, ahj: "" }];
+  if ((ahj || "").trim()) layers.push({ state: st, ahj: ahj.trim() });
+  let enqueued = 0;
+  for (const layer of layers) {
+    try {
+      const key = codeProfileKey(layer);
+      const existing = db.get<Row>("SELECT profile_key FROM jurisdiction_code_profiles WHERE profile_key = ?", [key]);
+      if (existing) continue;
+      // Dedupe: a pending/running job for this layer, OR any attempt in the last
+      // 6 hours (a stub/failed research stores no row — without the time window,
+      // every review of the jurisdiction would re-queue no-op research forever).
+      const recent = db.get<Row>(
+        `SELECT id FROM job_queue
+          WHERE job_type = 'code_research' AND payload LIKE ?
+            AND (status IN ('pending','running') OR created_at > ?)`,
+        [`%${key}%`, new Date(Date.now() - 6 * 3600_000).toISOString()],
+      );
+      if (recent) continue;
+      // Lazy import avoids a static cycle (jobQueue -> ... -> codeProfiles).
+      void import("./jobQueue").then(({ enqueueJob, processNextJob }) => {
+        enqueueJob(db, "code_research", { state: layer.state, ahj: layer.ahj, profileKey: key }, { priority: 3, maxRetries: 1 });
+        void processNextJob(db).catch(() => null);
+      }).catch(() => null);
+      enqueued++;
+      logger.info("code-profiles", `auto-research queued for ${layer.state}/${layer.ahj || "(state default)"}`);
+    } catch { /* autonomy is best-effort — never break a review */ }
+  }
+  return enqueued;
+}

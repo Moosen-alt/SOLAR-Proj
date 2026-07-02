@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Plan Review Gate</title>
+  <link rel="stylesheet" href="/styles.css">
+  <style>
+    .rv-wrap { max-width: 980px; margin: 0 auto; padding: 20px 16px 60px; }
+    .rv-card { background: var(--panel, #fff); border: 1px solid var(--border, #e5e7eb); border-radius: 10px; padding: 18px; margin-bottom: 16px; }
+    .rv-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
+    .rv-grid label { display: block; font-size: 12px; color: var(--muted, #6b7280); margin-bottom: 3px; }
+    .rv-grid input, .rv-grid select, .rv-card textarea { width: 100%; box-sizing: border-box; padding: 7px 9px; border: 1px solid var(--border, #d1d5db); border-radius: 7px; font-size: 14px; }
+    .rv-banner { padding: 9px 12px; border-radius: 8px; font-size: 13px; margin: 10px 0; }
+    .rv-banner.verified { background: #ecfdf5; color: #065f46; }
+    .rv-banner.seeded { background: #fffbeb; color: #92400e; }
+    .rv-banner.defaults { background: #eef2ff; color: #3730a3; }
+    .rv-finding { border-left: 4px solid #d1d5db; padding: 10px 12px; margin: 8px 0; background: #fafafa; border-radius: 0 8px 8px 0; }
+    .rv-finding.blocker { border-left-color: #dc2626; }
+    .rv-finding.warning { border-left-color: #d97706; }
+    .rv-finding.callout { border-left-color: #2563eb; }
+    .rv-finding h4 { margin: 0 0 4px; font-size: 14px; }
+    .rv-finding p { margin: 3px 0; font-size: 13px; }
+    .rv-cite { font-size: 12px; color: #374151; }
+    .rv-ai-badge { display: inline-block; font-size: 11px; background: #ede9fe; color: #5b21b6; border-radius: 999px; padding: 2px 8px; margin-left: 6px; vertical-align: middle; }
+    .rv-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+    .rv-actions button, .rv-run { padding: 8px 14px; border-radius: 8px; border: 1px solid var(--border, #d1d5db); background: #fff; cursor: pointer; font-size: 14px; }
+    .rv-run { background: #1d4ed8; color: #fff; border-color: #1d4ed8; }
+    .rv-sub { display: flex; justify-content: space-between; gap: 10px; padding: 8px 0; border-top: 1px solid #f3f4f6; font-size: 13px; align-items: center; cursor: pointer; }
+    .rv-muted { color: var(--muted, #6b7280); font-size: 12px; }
+    .rv-profile-row { display: flex; justify-content: space-between; gap: 10px; padding: 7px 0; border-top: 1px solid #f3f4f6; font-size: 13px; align-items: center; }
+    .badge-seeded { background: #fffbeb; color: #92400e; border-radius: 999px; padding: 2px 9px; font-size: 11px; }
+    .badge-verified { background: #ecfdf5; color: #065f46; border-radius: 999px; padding: 2px 9px; font-size: 11px; }
+    #verifyEditor { font-family: ui-monospace, monospace; font-size: 12px; min-height: 220px; }
+    h1 { font-size: 20px; } h2 { font-size: 15px; margin-top: 0; }
+  </style>
+</head>
+<body>
+  <div class="rv-wrap">
+    <h1>Plan Review Gate</h1>
+    <p class="rv-muted">AI-assisted intake pre-review against your jurisdiction's adopted codes. Deterministic checks where built (solar PV); advisory AI observations everywhere — a human plans examiner always completes the review.</p>
+
+    <div class="rv-card">
+      <h2>New review</h2>
+      <div class="rv-grid">
+        <div><label>Work type</label><select id="workType"></select></div>
+        <div><label>State</label><input id="state" placeholder="ID" maxlength="20"></div>
+        <div><label>Jurisdiction (AHJ)</label><input id="ahj" placeholder="Elmore County"></div>
+        <div><label>Utility (optional)</label><input id="utility" placeholder="Idaho Power"></div>
+      </div>
+      <div id="profileBanner" class="rv-banner defaults" style="display:none"></div>
+      <div class="rv-grid" style="margin-top:8px">
+        <div><label>Site address</label><input id="address"></div>
+        <div><label>City</label><input id="city"></div>
+        <div><label>Applicant name</label><input id="applicant"></div>
+      </div>
+      <div id="solarFields" class="rv-grid" style="margin-top:8px; display:none">
+        <div><label>DC size (kW)</label><input id="dcKw" type="number" step="0.01"></div>
+        <div><label>AC size (kW)</label><input id="acKw" type="number" step="0.01"></div>
+        <div><label>Interconnection</label><input id="interco" placeholder="Load-side breaker"></div>
+        <div><label>Ground snow (psf)</label><input id="snow" type="number"></div>
+        <div><label>PV dead load (psf)</label><input id="deadLoad" type="number" step="0.1"></div>
+        <div><label>Rafter spacing (in)</label><input id="rafter" type="number"></div>
+        <div><label>Wind exposure</label><input id="wind" placeholder="B / C / D"></div>
+        <div><label>Bus rating (A)</label><input id="bus" type="number"></div>
+        <div><label>Main breaker (A)</label><input id="mainBreaker" type="number"></div>
+        <div><label>PV breaker (A)</label><input id="pvBreaker" type="number"></div>
+      </div>
+      <div style="margin-top:8px">
+        <label class="rv-muted">Project description / notes</label>
+        <textarea id="description" rows="2"></textarea>
+      </div>
+      <div style="margin-top:8px">
+        <label class="rv-muted">Plan set PDF (optional — enables the AI page review)</label>
+        <input id="planset" type="file" accept="application/pdf">
+      </div>
+      <div class="rv-actions">
+        <button id="runBtn" class="rv-run">Run pre-review</button>
+        <span id="runStatus" class="rv-muted"></span>
+      </div>
+    </div>
+
+    <div class="rv-card" id="resultCard" style="display:none">
+      <h2>Findings <span id="resultSummary" class="rv-muted"></span></h2>
+      <div id="findings"></div>
+      <div class="rv-actions">
+        <button id="printBtn">Print / PDF</button>
+        <button id="shareBtn">Copy share link</button>
+      </div>
+    </div>
+
+    <div class="rv-card">
+      <h2>Past reviews</h2>
+      <div id="subs" class="rv-muted">Loading…</div>
+    </div>
+
+    <div class="rv-card">
+      <h2>Jurisdiction code profiles</h2>
+      <p class="rv-muted">What each jurisdiction has adopted (code editions, amendments, design criteria). <b>Seeded</b> = AI-researched, findings say "verify locally" until a human verifies against the cited official sources.</p>
+      <div class="rv-grid">
+        <div><label>State</label><input id="cpState" placeholder="ID" maxlength="20"></div>
+        <div><label>AHJ (blank = state default)</label><input id="cpAhj" placeholder="Elmore County"></div>
+        <div><label>&nbsp;</label><button id="researchBtn" class="rv-run" style="width:100%">Research adopted codes</button></div>
+      </div>
+      <div id="cpStatus" class="rv-muted" style="margin-top:6px"></div>
+      <div id="profiles" style="margin-top:8px"></div>
+      <div id="verifyPanel" style="display:none; margin-top:10px">
+        <label class="rv-muted">Review each value against its cited source, edit as needed, then verify:</label>
+        <textarea id="verifyEditor"></textarea>
+        <div class="rv-actions"><button id="verifyBtn" class="rv-run">Mark verified</button><span id="verifyStatus" class="rv-muted"></span></div>
+      </div>
+    </div>
+  </div>
+  <script src="/review.js"></script>
+</body>
+</html>

@@ -95,6 +95,42 @@ await run("buildCodeContext is pure and honors a null profile", () => {
   assert.equal(ctx.profile, null);
 });
 
+await run("autonomous research: first contact queues state + county layers, deduped", async () => {
+  const { ensureCodeProfilesResearched } = await import("../src/codeProfiles");
+  const n = ensureCodeProfilesResearched(db, "MT", "Gallatin County");
+  assert.equal(n, 2, "state default + county layers queued");
+  await new Promise((r) => setTimeout(r, 400)); // lazy-import enqueue settles
+  const jobs = db.query<{ payload: string; status: string }>("SELECT payload, status FROM job_queue WHERE job_type = 'code_research'");
+  assert.ok(jobs.length >= 2, `jobs enqueued (${jobs.length})`);
+  // Re-ensure: nothing new — pending/running jobs AND recent attempts dedupe
+  // (in stub mode jobs finish instantly without storing a row; the 6h window
+  // stops every review from re-queuing no-op research).
+  const again = ensureCodeProfilesResearched(db, "MT", "Gallatin County");
+  assert.equal(again, 0, "recent research attempts dedupe re-enqueue");
+  // Existing profile layer also dedupes (Idaho state row exists from the seed).
+  const idAgain = ensureCodeProfilesResearched(db, "ID", "");
+  assert.equal(idAgain, 0, "existing profile layer never re-queued");
+});
+
+await run("code_research job in stub mode saves NOTHING (never blocks future research)", async () => {
+  const { processNextJob } = await import("../src/jobQueue");
+  delete process.env.ANTHROPIC_API_KEY; // stub LLM
+  // Drain the queued research jobs.
+  for (let i = 0; i < 4; i++) await processNextJob(db);
+  // Wait out any in-flight kick from the enqueue helper before asserting.
+  for (let i = 0; i < 20; i++) {
+    const busy = db.get("SELECT id FROM job_queue WHERE job_type = 'code_research' AND status IN ('pending','running')");
+    if (!busy) break;
+    await new Promise((r) => setTimeout(r, 250));
+    await processNextJob(db);
+  }
+  const done = db.query<{ status: string; result: string }>("SELECT status, result FROM job_queue WHERE job_type = 'code_research'");
+  assert.ok(done.every((j) => j.status === "done"), `jobs terminal (${done.map((j) => j.status).join(",")})`);
+  assert.ok(done.every((j) => /"saved":\s*false/.test(String(j.result))), "stub research reports saved:false");
+  const mt = db.get("SELECT profile_key FROM jurisdiction_code_profiles WHERE state = 'MT'");
+  assert.ok(!mt, "no empty MT profile row stored");
+});
+
 fs.rmSync(tmpDir, { recursive: true, force: true });
 if (failures > 0) {
   console.error(`\n${failures} code-profile test(s) FAILED.`);

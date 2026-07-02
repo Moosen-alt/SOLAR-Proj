@@ -204,7 +204,42 @@ recipe.
 
 ---
 
-## 8. Troubleshooting a learn run — the debug bundle
+## 8. The Review Gate — a sellable standalone tool
+
+The reviewer that gates staging internally is also a standalone product for
+AHJs (counties/cities) at **`/review`**: upload a plan set + key facts, get an
+intake pre-review against the jurisdiction's **adopted codes** — deterministic
+checks for residential solar PV, AI-assisted advisory review (clearly badged,
+never blocking) for general building plans (re-roof, ADU, deck, water heater,
+anything).
+
+**Onboarding a jurisdiction (e.g. Elmore County, ID):**
+1. On `/review` (or `POST /api/code-profiles/research`), research the
+   jurisdiction — Claude web-searches the county/state building-department
+   pages for adopted code editions, amendments, and design criteria, saved as
+   **seeded** with a citation per claim.
+2. A human reviews each value against its cited source and clicks
+   **Mark verified**. Until then, every finding says "verify locally" and
+   seeded thresholds never hard-block.
+
+**Selling it (multi-tenant licensing):** as a full-edition admin, create a
+tenant org + login + API key:
+```bash
+POST /api/orgs               {"name":"Elmore County Building Dept","edition":"review_gate"}
+POST /api/orgs/:id/users     {"email":"reviewer@county.gov","password":"…"}
+POST /api/orgs/:id/api-keys  {"name":"intake"}   # key shown once
+```
+`review_gate` tenants reach only the review surface (page + APIs + code-profile
+reads); the full autopilot returns a licensing 403. Submissions are org-scoped;
+reports can be shared via tokenized public links. `REVIEW_DAILY_LIMIT` caps
+per-org daily reviews (LLM cost guard). The same org/edition mechanism is the
+seam for licensing other tools later (portal automation, status monitor).
+
+Run the review-gate test suite: `npm run review:test`.
+
+---
+
+## 9. Troubleshooting a learn run — the debug bundle
 
 Every auto-learn run (manual **Learn this portal** or the staging self-seed)
 writes a complete forensic bundle to `data/learn-runs/<runId>/` — on by default,
@@ -242,7 +277,7 @@ Knobs (all default on): `AUTOLEARN_RUN_DEBUG=0` disables bundles,
 
 ---
 
-## 9. Updating
+## 10. Updating
 
 ```bash
 git pull
