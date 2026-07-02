@@ -191,11 +191,12 @@ app.get("/login", (_req, res) => res.sendFile(path.join(frontendDir, "login.html
 app.get("/intake", (_req, res) => res.sendFile(path.join(frontendDir, "intake.html")));
 // Public read-only client status page (tokenized link, no login).
 app.get("/status", (_req, res) => res.sendFile(path.join(frontendDir, "status.html")));
-// AHJ-facing review gate (login-gated when auth is enabled; review_gate tenants land here).
-app.get("/review", (_req, res) => res.sendFile(path.join(frontendDir, "review.html")));
 app.use(requireAuth(db));
 // Licensing: 'review_gate' orgs reach only the review surface (deny-gate w/ allowlist).
 app.use(editionGate(db));
+// AHJ-facing review gate — AFTER the auth gate so anonymous visitors are sent to
+// /login (the page's data calls are auth-gated regardless).
+app.get("/review", (_req, res) => res.sendFile(path.join(frontendDir, "review.html")));
 
 app.use(express.static(frontendDir));
 

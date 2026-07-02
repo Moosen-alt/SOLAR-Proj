@@ -16,9 +16,7 @@ const {
   resolveEffectiveCodeContext, buildCodeContext, MODEL_CODE_DEFAULTS,
 } = await import("../src/codeProfiles");
 
-const db = await openDatabase();
-// The boot seeder runs via a lazy import — give it a beat, then assert on it.
-await new Promise((r) => setTimeout(r, 300));
+const db = await openDatabase(); // reference seed is awaited inside openDatabase
 
 let failures = 0;
 const run = async (label: string, fn: () => void | Promise<void>) => {

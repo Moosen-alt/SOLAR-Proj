@@ -7,8 +7,12 @@ dist/
 
 # Runtime captures — review screenshots + per-run learn debug bundles
 # (data/screenshots, data/learn-runs). Raw portal renders can contain
-# customer PII, so these must never be committed.
-data/
+# customer PII, so these must never be committed. ANCHORED to the repo root:
+# an unanchored "data/" also matched backend/data/ and silently dropped the
+# committed reference seed files from git.
+/data/
+# Runtime review-gate uploads (plan-set PDFs from tenants).
+backend/data/review-submissions/
 
 # Portal login sessions — NEVER commit these (they contain auth cookies)
 *-session.json

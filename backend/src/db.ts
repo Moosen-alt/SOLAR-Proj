@@ -101,6 +101,14 @@ export async function openDatabase(): Promise<AppDb> {
   const appDb = new AppDb(db);
   migrate(appDb);
 
+  // Jurisdiction code profiles (review gate): idempotent reference seed, never
+  // overwrites verified rows. AWAITED (dynamic import only breaks the static
+  // db.ts <-> codeProfiles.ts cycle) so boot order is deterministic — a
+  // fire-and-forget seed raced the first request/test on cold module loads.
+  try {
+    (await import("./codeProfiles")).seedReferenceCodeProfiles(appDb);
+  } catch { /* reference data is best-effort */ }
+
   // Periodically fold the WAL back into the main .db file so the primary file
   // stays current (a stray copy of just the .db is then near-complete) and the
   // WAL doesn't grow unbounded. TRUNCATE resets the WAL after checkpointing.
@@ -904,9 +912,6 @@ function migrate(db: AppDb): void {
   seedBaselineRuleRows(db);
   seedInitialKnowledgeBase(db);
   seedTestInstaller(db);
-  // Jurisdiction code profiles (review gate): idempotent, never overwrites verified rows.
-  // Lazy import avoids a static db.ts <-> codeProfiles.ts cycle.
-  void import("./codeProfiles").then((m) => m.seedReferenceCodeProfiles(db)).catch(() => null);
 }
 
 // Ordered, recorded schema migrations.

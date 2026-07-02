@@ -1,0 +1,141 @@
+{
+  "comment": "Jurisdiction code profiles seeded at boot (codeProfiles.seedReferenceCodeProfiles). NEVER overwrites rows that already exist in the DB — operator edits and verifications always win. 'verified' here is reserved for values lifted verbatim from the previously hardcoded, production-proven rule constants (Oregon). Everything else ships 'seeded' and MUST be verified against official sources (research flow + human verify) before its citations are treated as authoritative.",
+  "profiles": [
+    {
+      "key": "",
+      "state": "OR",
+      "ahj": "",
+      "confidence": "verified",
+      "adoptedCodes": [
+        {
+          "code": "OESC",
+          "edition": "2023",
+          "title": "Oregon Electrical Specialty Code (based on the 2023 NEC)",
+          "sourceUrl": "https://www.oregon.gov/bcd/codes-stand/pages/electrical.aspx",
+          "notes": "Oregon BCD lists the 2023 OESC effective Oct. 1, 2023, based on the 2023 NEC."
+        },
+        {
+          "code": "NEC",
+          "edition": "2023",
+          "title": "National Electrical Code as adopted via the 2023 OESC",
+          "sourceUrl": "https://www.oregon.gov/bcd/codes-stand/pages/electrical.aspx"
+        },
+        {
+          "code": "ORSC",
+          "edition": "2021",
+          "title": "Oregon Residential Specialty Code (IRC-based)",
+          "sourceUrl": "https://www.oregon.gov/bcd/codes-stand/pages/residential.aspx",
+          "notes": "IRC R324 rooftop PV provisions apply as adopted; see prescriptive solar checklist."
+        },
+        {
+          "code": "IRC",
+          "edition": "2021",
+          "title": "International Residential Code (basis of the ORSC)",
+          "sourceUrl": "https://codes.iccsafe.org/content/IRC2021P1/chapter-3-building-planning"
+        },
+        {
+          "code": "IFC",
+          "edition": "2021",
+          "title": "International Fire Code / Oregon Fire Code (PV access & pathways, IFC 1205)",
+          "sourceUrl": "https://www.oregon.gov/osp/programs/sfm/pages/fire-code.aspx"
+        }
+      ],
+      "amendments": [],
+      "designCriteria": {},
+      "prescriptive": {
+        "maxGroundSnowPsf": 70,
+        "maxPvDeadLoadPsf": 4.5,
+        "maxRafterSpacingIn": 24,
+        "allowedWindExposures": ["B", "C"],
+        "maxExportKwWithoutStudy": 25,
+        "engineerStampOverKwDc": 50
+      },
+      "fireSetbacks": [],
+      "citations": [
+        { "label": "Oregon BCD — electrical code program (OESC)", "sourceUrl": "https://www.oregon.gov/bcd/codes-stand/pages/electrical.aspx" },
+        { "label": "Oregon prescriptive rooftop solar PV checklist (Washington County copy)", "sourceUrl": "https://www.washingtoncountyor.gov/lut/building-services/documents/solar-checklist/download?inline=" }
+      ],
+      "updatedAt": ""
+    },
+    {
+      "key": "",
+      "state": "OR",
+      "ahj": "Portland",
+      "confidence": "verified",
+      "adoptedCodes": [],
+      "amendments": [
+        {
+          "code": "OSSC",
+          "section": "Table 2308.7.2(1)",
+          "summary": "Portland solar worksheet applies OSSC rafter-span tables to prescriptive rooftop PV review; rafter size/spacing/span evidence expected on the plan set.",
+          "sourceUrl": "https://www.portland.gov/ppd/documents/solar-worksheet/download"
+        }
+      ],
+      "designCriteria": {},
+      "prescriptive": {},
+      "fireSetbacks": [],
+      "citations": [
+        { "label": "Portland solar worksheet", "sourceUrl": "https://www.portland.gov/ppd/documents/solar-worksheet/download" }
+      ],
+      "updatedAt": ""
+    },
+    {
+      "key": "",
+      "state": "ID",
+      "ahj": "",
+      "confidence": "seeded",
+      "adoptedCodes": [
+        {
+          "code": "IRC",
+          "edition": "2018",
+          "title": "International Residential Code with Idaho amendments",
+          "sourceUrl": "https://dopl.idaho.gov/building/",
+          "notes": "SEEDED — confirm the current Idaho-adopted IRC cycle and amendments with Idaho DOPL Division of Building Safety before citing."
+        },
+        {
+          "code": "IBC",
+          "edition": "2018",
+          "title": "International Building Code with Idaho amendments",
+          "sourceUrl": "https://dopl.idaho.gov/building/",
+          "notes": "SEEDED — confirm the current Idaho-adopted IBC cycle with Idaho DOPL before citing."
+        },
+        {
+          "code": "NEC",
+          "edition": "2023",
+          "title": "National Electrical Code as adopted by the Idaho Electrical Board",
+          "sourceUrl": "https://dopl.idaho.gov/electrical/",
+          "notes": "SEEDED — confirm the current Idaho-adopted NEC cycle and any state amendments before citing."
+        }
+      ],
+      "amendments": [],
+      "designCriteria": {},
+      "prescriptive": {},
+      "fireSetbacks": [],
+      "citations": [
+        { "label": "Idaho DOPL — Division of Building Safety (adopted codes)", "sourceUrl": "https://dopl.idaho.gov/building/" },
+        { "label": "Idaho DOPL — electrical program", "sourceUrl": "https://dopl.idaho.gov/electrical/" }
+      ],
+      "updatedAt": ""
+    },
+    {
+      "key": "",
+      "state": "ID",
+      "ahj": "Elmore County",
+      "confidence": "seeded",
+      "adoptedCodes": [],
+      "amendments": [],
+      "designCriteria": {
+        "sourceUrl": "https://elmorecounty.org/departments/building/",
+        "windExposure": "",
+        "seismicDesignCategory": ""
+      },
+      "prescriptive": {},
+      "fireSetbacks": [],
+      "citations": [
+        { "label": "Elmore County building department — local design criteria (ground snow, wind, frost depth) and any county amendments", "sourceUrl": "https://elmorecounty.org/departments/building/" },
+        { "label": "Idaho DOPL — state-adopted codes Elmore County builds on", "sourceUrl": "https://dopl.idaho.gov/building/" }
+      ],
+      "updatedAt": ""
+    }
+  ]
+}
