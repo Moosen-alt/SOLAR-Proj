@@ -19,6 +19,8 @@ import {
   markPortalRecipeForRerecord,
   deletePortalRecipe,
   resolveRecipeFieldValues,
+  finishPortalRecipe,
+  findAnyRecipeForProject,
 } from "./portalRecipes";
 import { listPortalPauses, pausePortal, resumePortal } from "./portalPause";
 import {
@@ -1138,6 +1140,22 @@ app.put("/api/portal-recipes/:id/steps", (req, res) => {
     notes: req.body?.notes ? String(req.body.notes) : undefined,
   }));
 });
+// Human verified/fixed the captured fill in the review browser → promote the recording to a
+// replayable "complete" recipe and close the left-open review browser for that client profile.
+app.post("/api/portal-recipes/:id/finish", asyncHandler(async (req, res) => {
+  const recipe = finishPortalRecipe(db, String(req.params.id), req.body?.finishedBy ? String(req.body.finishedBy) : undefined);
+  const clientId = req.body?.clientId ? String(req.body.clientId) : "";
+  if (clientId) {
+    try {
+      const { closeStagingBrowserFor } = await import("../../portal-bot/src/index");
+      const profileBase = process.env.PORTAL_PROFILES_DIR || path.join(process.cwd(), "portal-profiles");
+      const portalType = recipe.scopeType === "utility" ? "utility" : "AHJ";
+      await closeStagingBrowserFor(path.join(profileBase, clientId, portalType));
+    } catch { /* browser close is best-effort — it may already be closed */ }
+  }
+  addAuditLog(db, null, "human", "operator", "portal_recipe.finished", { recipeId: recipe.id, profileKey: recipe.profileKey });
+  res.json(recipe);
+}));
 app.post("/api/portal-recipes/:id/rerecord", (req, res) => {
   res.json(markPortalRecipeForRerecord(db, String(req.params.id)));
 });
@@ -1974,7 +1992,7 @@ app.get("/api/projects/:id/submittal-tracks", (req, res) => {
 });
 
 const SUBMITTAL_TRACK_TYPES: SubmittalTrackType[] = ["nem", "building", "electrical", "combo", "permit", "mpu"];
-app.post("/api/projects/:id/submittal-tracks/:type/mark-submitted", (req, res) => {
+app.post("/api/projects/:id/submittal-tracks/:type/mark-submitted", asyncHandler(async (req, res) => {
   const type = String(req.params.type) as SubmittalTrackType;
   if (!SUBMITTAL_TRACK_TYPES.includes(type)) throw new HttpError(400, "Unknown submittal track type.");
   const detail = getProjectDetail(db, String(req.params.id));
@@ -1987,8 +2005,28 @@ app.post("/api/projects/:id/submittal-tracks/:type/mark-submitted", (req, res) =
     submittedBy: b.submittedBy ? String(b.submittedBy) : undefined,
     notes: b.notes ? String(b.notes) : undefined,
   });
+  // The operator just SUBMITTED this track by hand from the staged review browser — that
+  // manual submit is the strongest verification the captured fill works. If the track's
+  // recipe is still a draft "recording" (auto-learn left it pending human verification),
+  // promote it to a replayable "complete" and close the left-open review browser.
+  try {
+    const scoped = type === "nem"
+      ? { scopeType: "utility" as const, state: detail.project.state, utility: detail.project.utility }
+      : { scopeType: "ahj" as const, state: detail.project.state, ahj: detail.project.ahj, utility: detail.project.utility };
+    const draft = findAnyRecipeForProject(db, scoped);
+    if (draft && draft.status === "recording" && draft.steps.length > 0) {
+      finishPortalRecipe(db, draft.id, b.submittedBy ? String(b.submittedBy) : "operator (marked track submitted)");
+      addAuditLog(db, detail.project.id, "human", "operator", "portal_recipe.finished", { recipeId: draft.id, via: "mark_submitted", track: type });
+    }
+    if (detail.project.clientId) {
+      const { closeStagingBrowserFor } = await import("../../portal-bot/src/index");
+      const profileBase = process.env.PORTAL_PROFILES_DIR || path.join(process.cwd(), "portal-profiles");
+      const portalType = type === "nem" ? "utility" : "AHJ";
+      await closeStagingBrowserFor(path.join(profileBase, detail.project.clientId, portalType));
+    }
+  } catch { /* promotion/close are best-effort — marking submitted must never fail on them */ }
   res.status(201).json({ ok: true, tracks: getSubmittalTracks(db, getProjectDetail(db, String(req.params.id)).project) });
-});
+}));
 
 app.get("/parser", (_req, res) => {
   res.sendFile(path.join(frontendDir, "parser.html"));

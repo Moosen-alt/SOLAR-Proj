@@ -150,7 +150,20 @@ export async function buildUtilityPackage(db: AppDb, projectId: string, target =
     const out = await PDFDocument.create();
     const copied = await out.copyPages(source, pages);
     copied.forEach((p) => out.addPage(p));
-    const bytes = Buffer.from(await out.save());
+    let bytes = Buffer.from(await out.save());
+    // SIZE CAP: portals reject oversized uploads (PowerClerk: 5 MB). A multi-page split
+    // that blew the cap gets trimmed to its LEAD page only — the dedicated sheet is always
+    // first-matched and a single sheet is far below the cap in practice; a heavy raster
+    // tail page (a vendor manual scan) is what pushes it over. Better one on-point sheet
+    // the portal accepts than a "complete" file it bounces.
+    const CAP = 5 * 1024 * 1024;
+    if (bytes.length > CAP && pages.length > 1) {
+      const lead = await PDFDocument.create();
+      const [first] = await lead.copyPages(source, [pages[0]]);
+      lead.addPage(first);
+      const leadBytes = Buffer.from(await lead.save());
+      if (leadBytes.length <= CAP) bytes = leadBytes;
+    }
     const saved = saveProjectDocument(db, projectId, {
       docType: cat.docType,
       filename: `${baseName} - ${cat.label}.pdf`,

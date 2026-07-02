@@ -58,8 +58,10 @@ function patchCaptureScript(): void {
   if (w.__alPatchArmed) return;
   w.__alPatchArmed = true;
 
-  // Final-submit / payment intent — NEVER captured (see module SAFETY note).
-  const OFF_LIMITS = /\b(pay fee|pay now|submit & pay|submit and pay|make payment|continue to payment|pay \$|add to cart|proceed to (payment|checkout)|checkout|submit application|file application|confirm submission|complete submission|finalize|place order)\b/i;
+  // Final-submit / payment intent — NEVER captured (see module SAFETY note). A BARE
+  // "Submit"/"Pay" button counts: PGE PowerClerk's final button is literally "Submit",
+  // and a real run recorded that click into the recipe before this was broadened.
+  const OFF_LIMITS = /\b(submit|pay|pay fee|pay now|make payment|continue to payment|add to cart|proceed to (payment|checkout)|checkout|file application|confirm submission|complete submission|finalize|place order)\b/i;
 
   function target(e: Event): Element | null {
     const path = typeof e.composedPath === "function" ? e.composedPath() : [];
@@ -102,7 +104,14 @@ function patchCaptureScript(): void {
     if (!actionable) return; // plain page click — not a replayable action
     if ((actionable as HTMLInputElement).type === "file") return; // handled by change
     const d = describe(actionable);
-    if (OFF_LIMITS.test(d.label)) return; // never record submit/pay
+    if (OFF_LIMITS.test(d.label)) {
+      // The human is filing/paying the application — DISARM capture entirely. Nothing
+      // after a submit/pay click (confirmation pages, "Continue" buttons) belongs in
+      // the recipe; recording it would make replay act past the review stop.
+      w.__alPatchDisarmed = true;
+      return;
+    }
+    if (w.__alPatchDisarmed) return;
     if (typeof w.__alPatchStep === "function") w.__alPatchStep({ kind: "click", ...d });
   }, true);
 
@@ -110,6 +119,7 @@ function patchCaptureScript(): void {
     const el = target(e) as HTMLInputElement | null;
     if (!el || !(el instanceof Element)) return;
     const d = describe(el);
+    if (w.__alPatchDisarmed) return;
     if (typeof w.__alPatchStep !== "function") return;
     if (el.type === "file") w.__alPatchStep({ kind: "upload", ...d });
     else if (el.tagName === "SELECT") w.__alPatchStep({ kind: "select", value: el.value, ...d });

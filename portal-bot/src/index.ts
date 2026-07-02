@@ -214,12 +214,41 @@ interface StageOptions {
 // adapter by its per-client userDataDir so the NEXT stage for the same client+portal closes
 // the prior window first, releasing the profile lock and preventing orphan browsers.
 const openStagingAdapters = new Map<string, import("./adapter").PortalAdapter>();
+
+// Track a left-open adapter AND watch for the human closing its window by hand — without
+// the close listener the Map keeps a dead adapter forever (and the UI can't tell the
+// review browser is gone). Best-effort: adapters expose their live Playwright page.
+function trackOpenAdapter(userDataDir: string, adapter: import("./adapter").PortalAdapter): void {
+  openStagingAdapters.set(userDataDir, adapter);
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const page = (adapter as any).page;
+    const ctx = page && typeof page.context === "function" ? page.context() : null;
+    if (ctx && typeof ctx.on === "function") {
+      ctx.on("close", () => {
+        if (openStagingAdapters.get(userDataDir) === adapter) openStagingAdapters.delete(userDataDir);
+      });
+    }
+  } catch { /* tracking only — never fail the run */ }
+}
 async function closePriorStagingBrowser(userDataDir: string | undefined): Promise<void> {
   if (!userDataDir) return;
   const prior = openStagingAdapters.get(userDataDir);
   if (!prior) return;
   openStagingAdapters.delete(userDataDir);
   try { await prior.close(); } catch { /* best effort — the human may have closed it already */ }
+}
+
+// Close the browser left open for one client profile on demand — used when the operator
+// finishes reviewing/patching a recording (recipe "finish" endpoint, mark-submitted) so the
+// review window doesn't linger after its job is done. Safe if it was already closed by hand.
+export async function closeStagingBrowserFor(userDataDir: string | undefined): Promise<boolean> {
+  if (!userDataDir) return false;
+  const prior = openStagingAdapters.get(userDataDir);
+  if (!prior) return false;
+  openStagingAdapters.delete(userDataDir);
+  try { await prior.close(); } catch { /* best effort — the human may have closed it already */ }
+  return true;
 }
 
 // Close every browser left open for human submit (call on server shutdown).
@@ -336,7 +365,7 @@ async function runAdapter(
     // Every other path (autosubmit, headless, failed, errored) closes so the profile lock
     // is released and the next run can launch.
     if (leaveBrowserOpen && options.userDataDir) {
-      openStagingAdapters.set(options.userDataDir, adapter);
+      trackOpenAdapter(options.userDataDir, adapter);
     } else {
       await adapter.close();
     }
@@ -470,7 +499,7 @@ export async function learnPortal(input: {
     // Keep a reached-review headed browser open for the human (tracked for cleanup); every other
     // path (login fail, headless/server, error, never-reached-review) closes to release the lock.
     if (leaveOpen && input.userDataDir) {
-      openStagingAdapters.set(input.userDataDir, adapter);
+      trackOpenAdapter(input.userDataDir, adapter);
     } else {
       await adapter.close();
     }

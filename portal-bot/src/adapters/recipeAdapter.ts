@@ -365,7 +365,10 @@ export class RecipeAdapter extends BasePortalAdapter {
   // Click safety gate (P0-3 allowlist + P0-4 structural challenge detection).
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private async executeClick(step: RecipeStep, scoped: any, pastReview: boolean): Promise<boolean> {
-    const name = step.selector?.name || step.selector?.text || "";
+    // Include the step NOTE in the safety haystack: a human-patch click step may carry a
+    // css-only selector (no name/text) while its note names the button ("human-patch:
+    // Submit") — the regex gates below must see that label too.
+    const name = `${step.selector?.name || step.selector?.text || ""} ${step.note || ""}`.trim();
     const flaggedFinal = isFinalSubmitStep(step);
 
     // 1) Fee payment is NEVER automated — always blocked, even if (wrongly) flagged.

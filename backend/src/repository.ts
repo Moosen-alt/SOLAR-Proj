@@ -5127,9 +5127,19 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
     // Self-seed: learn + stage in one pass. Reuse the entry URL already resolved for the
     // credential match; pass the client-overlaid stagedProject so the learner fills authoritative
     // contractor identity (not the raw parse).
+    // TRACK/HOST SANITY GATE: a permit (AHJ) track must never launch a known utility-
+    // platform host — a PowerClerk URL reaching this point means the resolution chain
+    // picked up the NEM portal (e.g. a poisoned KB row), and learning the wrong portal
+    // both wastes the pass AND mis-keys the recorded recipe to the AHJ scope.
+    const utilityPlatformHost = /\bpowerclerk\.com\b/i;
+    const trackHostConflict = track !== "nem" && utilityPlatformHost.test(credentialUrl);
     if (!credentialUrl) {
       // No entry URL to launch the learner — stop and surface rather than guess a portal.
       const msg = `No portal URL is known for ${portalLabel}, so the universal learner can't seed a recipe yet. Record the portal once (or add its URL to the knowledge base) and re-stage.`;
+      result = { ok: false, finalSubmitClicked: false, pauseReason: null, message: msg, steps: [{ ok: false, message: msg }] };
+    } else if (trackHostConflict) {
+      const msg = `The only portal URL known for ${portalLabel} is a utility interconnection portal (${credentialUrl}) — that's the NEM portal, not the ${detail.project.ahj || "AHJ"} permit portal. Staging stopped so the permit isn't filed in the wrong system. Record the AHJ's permit portal once (or add its URL to the knowledge base) and re-stage.`;
+      addAuditLog(db, projectId, "system", "submit gate", "portal.track_host_conflict", { track: track ?? "permit", url: credentialUrl });
       result = { ok: false, finalSubmitClicked: false, pauseReason: null, message: msg, steps: [{ ok: false, message: msg }] };
     } else {
       try {

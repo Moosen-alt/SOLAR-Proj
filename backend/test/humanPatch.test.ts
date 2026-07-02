@@ -14,7 +14,7 @@ process.env.AUTOPILOT_DB_PATH = path.join(tmpDir, "test.sqlite");
 process.env.SEED_TEST_INSTALLER = "false";
 
 const { openDatabase } = await import("../src/db");
-const { startPortalRecording, savePortalRecipeSteps, appendHumanPatchSteps, getPortalRecipe } = await import("../src/portalRecipes");
+const { startPortalRecording, savePortalRecipeSteps, appendHumanPatchSteps, getPortalRecipe, finishPortalRecipe } = await import("../src/portalRecipes");
 
 const db = await openDatabase();
 
@@ -88,6 +88,31 @@ run("empty patch list is a no-op", () => {
   const before = getPortalRecipe(db, recipe.id).steps.length;
   appendHumanPatchSteps(db, recipe.id, [], {});
   assert.equal(getPortalRecipe(db, recipe.id).steps.length, before);
+});
+
+run("submit/pay CLICKS are dropped at merge (defense in depth)", () => {
+  const recipe = mkRecipe(baseSteps);
+  const before = getPortalRecipe(db, recipe.id).steps.length;
+  appendHumanPatchSteps(db, recipe.id, [
+    { action: "click", selector: { css: "#btn-final" }, note: "human-patch: Submit" },
+    { action: "click", selector: { role: "button", name: "Pay Now" }, note: "human-patch: Pay Now" },
+    { action: "fill", selector: { label: "Meter location" }, value: "left side", note: "human-patch: Meter location" },
+  ], {});
+  const updated = getPortalRecipe(db, recipe.id);
+  assert.equal(updated.steps.length, before + 1, "only the fill survives");
+  assert.ok(
+    !updated.steps.some((st) => st.action === "click" && (st.note || "").startsWith("human-patch") && /submit|pay now/i.test(`${st.note} ${JSON.stringify(st.selector || {})}`)),
+    "no human-patch submit/pay click merged",
+  );
+});
+
+run("finishPortalRecipe promotes recording → complete; empty recording refuses", () => {
+  const recipe = mkRecipe(baseSteps);
+  const done = finishPortalRecipe(db, recipe.id, "test");
+  assert.equal(done.status, "complete");
+  assert.equal(finishPortalRecipe(db, recipe.id).status, "complete", "idempotent");
+  const empty = mkRecipe([]);
+  assert.throws(() => finishPortalRecipe(db, empty.id), /no captured steps/i);
 });
 
 fs.rmSync(tmpDir, { recursive: true, force: true });

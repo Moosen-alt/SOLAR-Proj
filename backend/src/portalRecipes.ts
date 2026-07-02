@@ -149,6 +149,20 @@ export function savePortalRecipeSteps(
   return getPortalRecipe(db, recipeId);
 }
 
+// Promote a "recording" recipe to "complete" once a human has verified/fixed the captured
+// fill (the "Recording looks right — save recipe" action, or automatically when the operator
+// marks the track submitted — their manual submit just demonstrated the flow works). A recipe
+// with no steps can't be promoted; already-complete is a no-op.
+export function finishPortalRecipe(db: AppDb, recipeId: string, finishedBy?: string): PortalRecipe {
+  const recipe = getPortalRecipe(db, recipeId);
+  if (recipe.status === "complete") return recipe;
+  if (!recipe.steps.length) throw new HttpError(409, "This recording has no captured steps yet — nothing to save as a replayable recipe.");
+  db.run("UPDATE portal_recipes SET status = 'complete', notes = notes || ?, updated_at = ? WHERE id = ?", [
+    ` [verified by ${finishedBy || "operator"} — promoted from recording]`, nowIso(), recipeId,
+  ]);
+  return getPortalRecipe(db, recipeId);
+}
+
 export function markPortalRecipeForRerecord(db: AppDb, recipeId: string): PortalRecipe {
   getPortalRecipe(db, recipeId);
   db.run("UPDATE portal_recipes SET status = 'needs_rerecord', updated_at = ? WHERE id = ?", [nowIso(), recipeId]);
@@ -426,6 +440,13 @@ export function appendHumanPatchSteps(
   projectFields: Record<string, string>,
 ): PortalRecipe {
   const recipe = getPortalRecipe(db, recipeId);
+  // DEFENSE IN DEPTH: the capture script already refuses submit/pay clicks, but a
+  // mislabeled button can slip through (a real run recorded a bare "Submit" click).
+  // Patches merge BEFORE the terminal stop markers — replayable position — so a
+  // submit/pay click here would make replay file the application. Drop them at the
+  // merge chokepoint too; fills/selects/uploads are always safe to keep.
+  const SUBMIT_PAY = /\b(submit|pay|checkout|finalize|place order|confirm submission|complete submission|file application)\b/i;
+  newSteps = newSteps.filter((st) => !(st.action === "click" && SUBMIT_PAY.test(`${st.note || ""} ${JSON.stringify(st.selector || {})}`)));
   if (!newSteps.length) return recipe;
   const steps = [...(recipe.steps || [])];
   // Split off the trailing terminal markers (stopForReview and/or the recorded

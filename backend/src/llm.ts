@@ -570,19 +570,26 @@ Set confidence (0-1) for each field. Return only valid JSON.`;
 
   // Larger budget than ask() — plan sets are dense and we want every field.
   private async askLong(label: string, systemPrompt: string, userMessage: string, maxTokens = 4096): Promise<string> {
-    const msg = await this.instrument(label, { chars: userMessage.length, maxTokens, effort: "high" }, () =>
-      this.client.messages
-        .stream({
-          model: MODEL,
-          max_tokens: maxTokens,
-          thinking: { type: "adaptive" },
-          // Plan sets are dense, multi-section reasoning — give the model room to reason.
-          output_config: { effort: "high" },
-          system: this.cachedSystem(systemPrompt),
-          messages: [{ role: "user", content: userMessage }],
-        })
-        .finalMessage(),
-    );
+    const run = (budget: number) =>
+      this.instrument(label, { chars: userMessage.length, maxTokens: budget, effort: "high" }, () =>
+        this.client.messages
+          .stream({
+            model: MODEL,
+            max_tokens: budget,
+            thinking: { type: "adaptive" },
+            // Plan sets are dense, multi-section reasoning — give the model room to reason.
+            output_config: { effort: "high" },
+            system: this.cachedSystem(systemPrompt),
+            messages: [{ role: "user", content: userMessage }],
+          })
+          .finalMessage(),
+      );
+    let msg = await run(maxTokens);
+    // Truncated output is unparseable JSON → a silently empty result. Retry once at 2× —
+    // accuracy over speed (a dense equipment page can legitimately need >4k output tokens).
+    if (msg.stop_reason === "max_tokens") {
+      msg = await run(maxTokens * 2);
+    }
     return this.textOf(msg);
   }
 
@@ -590,26 +597,32 @@ Set confidence (0-1) for each field. Return only valid JSON.`;
   // reads the visible layout/section headings as the authoritative signal and the JSON field
   // list corroborates it. Used by planPortalFields when a screenshot is available.
   private async askLongWithImage(label: string, systemPrompt: string, userMessage: string, imageBase64: string, mimeType: "image/png" | "image/jpeg" | "image/webp", maxTokens = 4096): Promise<string> {
-    const msg = await this.instrument(label, { chars: userMessage.length, maxTokens, effort: "xhigh", image: true }, () =>
-      this.client.messages
-        .stream({
-          model: MODEL,
-          max_tokens: maxTokens,
-          thinking: { type: "adaptive" },
-          // The vision-assisted planner is the hardest "see and reason" step (read the live
-          // layout, reconcile it with the field list, decide each fill) — run it at xhigh.
-          output_config: { effort: "xhigh" },
-          system: this.cachedSystem(systemPrompt),
-          messages: [{
-            role: "user",
-            content: [
-              { type: "image", source: { type: "base64", media_type: mimeType, data: imageBase64 } },
-              { type: "text", text: userMessage },
-            ],
-          }],
-        })
-        .finalMessage(),
-    );
+    const run = (budget: number) =>
+      this.instrument(label, { chars: userMessage.length, maxTokens: budget, effort: "xhigh", image: true }, () =>
+        this.client.messages
+          .stream({
+            model: MODEL,
+            max_tokens: budget,
+            thinking: { type: "adaptive" },
+            // The vision-assisted planner is the hardest "see and reason" step (read the live
+            // layout, reconcile it with the field list, decide each fill) — run it at xhigh.
+            output_config: { effort: "xhigh" },
+            system: this.cachedSystem(systemPrompt),
+            messages: [{
+              role: "user",
+              content: [
+                { type: "image", source: { type: "base64", media_type: mimeType, data: imageBase64 } },
+                { type: "text", text: userMessage },
+              ],
+            }],
+          })
+          .finalMessage(),
+      );
+    let msg = await run(maxTokens);
+    // Same truncation retry as askLong — a truncated plan silently becomes "no fills".
+    if (msg.stop_reason === "max_tokens") {
+      msg = await run(maxTokens * 2);
+    }
     return this.textOf(msg);
   }
 
@@ -1250,6 +1263,7 @@ SOLAR DOMAIN DEFAULTS (apply when a REQUIRED field asks and the project DATA / k
 - "Are all inverters lab certified (UL 1741 SB)?" Yes/No → Yes for standard UL 1741 SB listed residential inverters (IQ8, IQ7, SolarEdge HD-Wave, Tesla, etc.); No only if the plans show a non-UL-1741-SB inverter.
 - Meter aggregation → No; pole-mounted meter → No; limit export capacity → No — unless the project DATA says otherwise.
 - EQUIPMENT ENTRY — always use the searchable pickers, NEVER the "not listed" path. When the page has searchable manufacturer/model dropdowns ("Please select…" comboboxes) for the inverter and PV modules, use them: type the manufacturer/model and pick the matching option. NEVER check a "the proposed PV equipment is not listed" / "equipment is not listed" / "not in the list" / "enter manually" checkbox — checking it HIDES the dropdowns and degrades to plain-text inputs the portal scores as UNLISTED equipment. Leave that checkbox UNCHECKED even if the dropdowns are momentarily empty; the real options load after you type. If you already see a "PV System Specification" repeater with Qty + a model dropdown, that IS the listed path — fill it and do not touch the "not listed" checkbox.
+- PV SYSTEM SPECIFICATION REPEATERS (Inverter row + one or more PV Array rows): fill EVERY row from the project data — inverter Qty + manufacturer dropdown + model dropdown, then each array's module Qty + manufacturer + model, plus Tilt (degrees), Azimuth (degrees) and Tracking ("Fixed" unless the data says otherwise). When the project has more arrays/orientations than rows on screen, click "Add Array" (or "Clone"/"Add Inverter"/"Clone System" as appropriate) to add a row, and delete unused blank rows if a Delete link exists. Dropdown values MUST be one of the listed options — pick the option that matches the project's manufacturer/model (e.g. data "APSystems DS3" → option "Altenergy Power System" + the DS3 model option); never type a value a dropdown doesn't offer.
 - For an electrical-services / fee page that lists many capacity tiers, fill ONLY the renewable-energy / PV tier matching the system's DC nameplate (systemSizeDcKw) and leave the other count fields EMPTY (not 0). If a tier takes a count, it is normally "1"; only a single "total kVA" field takes the kVA number. A "Category of Construction"/"Type of Work" select with no project value → use the most generic option ("Other" → reveals a text field, fill "Solar"; type of work → "New").
 - A required DATE field with no project value (e.g. an estimated commissioning date) → use todayDate plus a few weeks, formatted MM/DD/YYYY.
 - Any REQUIRED (asterisk) Yes/No or dropdown MUST be answered — use these defaults or kbContext rather than leaving it blank.
@@ -1309,11 +1323,12 @@ Return ONLY JSON:
     try {
       // Vision-assisted planning when a page screenshot is supplied: the model SEES the section
       // headings/layout (authoritative for who-owns-which-block) instead of guessing from labels.
-      // 4096 output budget: a field-heavy page (equipment repeaters, 40+ fills) at 3000 risked
-      // max_tokens truncation → an unparseable plan → a silent stall. Accuracy over speed.
+      // 8192 output budget: a field-heavy page (equipment repeaters, 40+ fills) truncated at
+      // 4096 in a real PGE run → an unparseable plan → a silent stall. askLong also retries
+      // once at 2× on max_tokens. Accuracy over speed.
       const raw = input.screenshotBase64
-        ? await this.askLongWithImage("planPortalFields.vision", system, user, input.screenshotBase64, "image/png", 4096)
-        : await this.askLong("planPortalFields", system, user, 4096);
+        ? await this.askLongWithImage("planPortalFields.vision", system, user, input.screenshotBase64, "image/png", 8192)
+        : await this.askLong("planPortalFields", system, user, 8192);
       parsed = this.parseJson<Partial<PortalFieldPlan>>(raw, {});
     } catch { parsed = {}; }
     // Safety post-filter: never let a pay/fee button through as advance/submit, and drop

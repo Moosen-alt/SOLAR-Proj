@@ -738,8 +738,24 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   // label to a docType, then to an available split file in docsByType. Falls back to the
   // full package/plan set for a generic upload control. Returns null when nothing is
   // available (the upload is then left for the human, never faked).
+  // Portal per-file size cap. Split-mode portals (PowerClerk NEM) reject big files —
+  // PGE's limit is 5.00 MB — so never offer a file the portal will bounce. Combined-mode
+  // AHJ portals (Accela) take the full plan set and typically allow much larger uploads.
+  private uploadMaxBytes(): number {
+    const env = Number(process.env.PORTAL_UPLOAD_MAX_MB || "");
+    if (Number.isFinite(env) && env > 0) return env * 1024 * 1024;
+    return this.uploadMode === "combined" ? Number.POSITIVE_INFINITY : 5 * 1024 * 1024;
+  }
+
+  private fileFits(file: string, cap: number): boolean {
+    if (!Number.isFinite(cap)) return true;
+    try { return fs.statSync(file).size <= cap; } catch { return true; } // unreadable → let the upload attempt surface the real error
+  }
+
   private resolveUpload(field: ExtractedField): { docType: string; file: string } | null {
     const label = field.label || "";
+    const cap = this.uploadMaxBytes();
+    const fits = (docType: string) => this.docsByType[docType] && this.fileFits(this.docsByType[docType], cap);
     // Combined mode (Accela / Oregon ePermitting): attach the SINGLE full plan-set PDF to
     // every upload control regardless of label — the AHJ wants all plan pages as one PDF.
     if (this.uploadMode === "combined") {
@@ -755,23 +771,35 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     let labelMatchedDocType: string | null = null;
     for (const { re, docType } of UPLOAD_LABEL_PATTERNS) {
       if (re.test(label)) {
-        if (this.docsByType[docType]) return { docType, file: this.docsByType[docType] };
-        labelMatchedDocType = docType; // label matched but split file missing
+        if (fits(docType)) return { docType, file: this.docsByType[docType] };
+        labelMatchedDocType = docType; // label matched but split file missing/too large
         break;
       }
     }
     // 1b) Specific label matched but split doc is missing → use plan_set as the best
     //     available substitute (a PDF the portal can actually accept), not a ZIP.
-    if (labelMatchedDocType && this.docsByType["plan_set"]) {
+    if (labelMatchedDocType && fits("plan_set")) {
       return { docType: "plan_set", file: this.docsByType["plan_set"] };
     }
     // 2) Generic/unlabeled upload control → fall back to the full package/plan set.
     for (const docType of UPLOAD_FALLBACK_DOCTYPES) {
-      if (this.docsByType[docType]) return { docType, file: this.docsByType[docType] };
+      if (fits(docType)) return { docType, file: this.docsByType[docType] };
     }
-    // 3) Last resort: any available document, so a required upload isn't silently skipped.
+    // 3) Last resort: ANY available document that fits the portal's size cap, so a
+    //    required upload isn't silently skipped.
+    for (const key of Object.keys(this.docsByType)) {
+      if (fits(key)) return { docType: key, file: this.docsByType[key] };
+    }
+    // Nothing fits — record why so the operator sees "too large", not a mystery skip.
     const firstKey = Object.keys(this.docsByType)[0];
-    return firstKey ? { docType: firstKey, file: this.docsByType[firstKey] } : null;
+    if (firstKey) {
+      this.debug?.event({
+        type: "upload_skipped_too_large",
+        label: label.slice(0, 80),
+        capMb: Math.round((cap / 1024 / 1024) * 100) / 100,
+      });
+    }
+    return null;
   }
 
   // Resolve a docType for an upload control by its label only (no ExtractedField wrapper).
@@ -891,7 +919,17 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         },
         { required: false },
       );
+      // setInputFiles resolving does NOT mean the portal accepted the file — PowerClerk
+      // validates async and shows "Could not upload file. File size exceeds the 5.00 MB
+      // limit." while the step would otherwise be recorded as a success. Scrape for a
+      // rejection banner after the upload settles; on rejection, drop the step and flag
+      // the slot so the human (and the result message) see the real failure.
+      let rejected: string | null = null;
       if (res.ok && !res.message) {
+        await sleep(1200);
+        rejected = await this.detectUploadRejection();
+      }
+      if (res.ok && !res.message && !rejected) {
         steps.push({
           action: "upload",
           phase: "fill",
@@ -904,12 +942,32 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           filled.push(slot.label);
           alreadyFilledLabels.push(slot.label);
         }
+      } else if (rejected) {
+        this.debug?.event({ type: "upload_rejected", label: (slot.label || "").slice(0, 80), docType: resolved.docType, message: rejected.slice(0, 160) });
+        missingRequired.push(`${slot.label || "Document"} (portal rejected the upload: ${rejected.slice(0, 120)})`);
       } else if (slot.required) {
         // Detected + required + we had a file, but the attach failed — still flag for the human.
         missingRequired.push(slot.label || "Required document");
       }
     }
     return { filled, missingRequired };
+  }
+
+  // Scan the page for an upload-rejection banner (size/type limits). Portal-agnostic:
+  // matches the common phrasings inside alert/error containers only, so ordinary page
+  // text can't false-positive. Returns the banner text or null.
+  private async detectUploadRejection(): Promise<string | null> {
+    try {
+      const texts: string[] = await this.page!.evaluate(() => {
+        const sel = "[role=alert], .alert-danger, .alert-error, .validation-summary-errors, .error, .field-validation-error, .text-danger";
+        return Array.from(document.querySelectorAll(sel))
+          .map((el) => (el.textContent || "").trim())
+          .filter((t) => t.length > 0 && t.length < 500);
+      });
+      const re = /(could not upload|upload failed|file size exceeds|exceeds the .{0,20}limit|too large|file type (is )?not (allowed|supported)|invalid file type)/i;
+      for (const t of texts) if (re.test(t)) return t;
+      return null;
+    } catch { return null; }
   }
 
   // --- credential injection (mirrors recipeAdapter.login) -------------------
@@ -2120,6 +2178,21 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             // Explicit false/no → uncheck the box (leave it unchecked).
             if (typeof loc.uncheck === "function") await loc.uncheck({ timeout: 5000 }).catch(() => {});
           } else {
+            // Second-chance "not listed" guard AT THE ELEMENT: extraction can mis-associate a
+            // checkbox's label (seen on PowerClerk — the "proposed PV equipment is not listed"
+            // box surfaced with an unrelated label), which defeats the label-based guard above.
+            // Read the element's OWN accessible text (label[for], wrapping label, aria-label)
+            // in-page and refuse to check it if that text is the not-listed escape hatch.
+            const ownText: string = typeof loc.evaluate !== "function" ? "" : await loc.evaluate((el: Element) => {
+              const id = el.getAttribute("id");
+              const root = el.getRootNode() as Document | ShadowRoot;
+              const forLabel = id && typeof (root as Document).querySelector === "function"
+                ? (root as Document).querySelector(`label[for="${id}"]`)?.textContent
+                : null;
+              const wrapLabel = (el.closest && el.closest("label"))?.textContent;
+              return (forLabel || wrapLabel || el.getAttribute("aria-label") || "").trim();
+            }).catch(() => "");
+            if (NOT_LISTED_CHECKBOX.test(ownText)) throw new Error(`refusing to check "not listed" escape hatch (${ownText.slice(0, 60)})`);
             await loc.check({ timeout: 5000 });
           }
         } else {

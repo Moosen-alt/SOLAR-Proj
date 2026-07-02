@@ -1871,6 +1871,7 @@ function trackCardHtml(t) {
           Bot recipe: ${esc(recipeStatusLabel)}
         </span>
         <button type="button" class="ghost" data-track-review-recipe="${esc(t.type)}" title="Open the recipe detail to review or revise the recorded steps"><i data-lucide="eye"></i><span>Review recording</span></button>
+        ${t.recipeStatus === "recording" && t.recipeId ? `<button type="button" class="secondary" data-track-finish-recipe="${esc(t.recipeId)}" title="You've verified (and fixed) the captured fill in the review browser — save it as the replayable recipe and close the review browser"><i data-lucide="check-circle-2"></i><span>Recording looks right — save recipe</span></button>` : ""}
       </div>`
     : `<div class="track-recipe track-recipe--none" data-track-type="${esc(t.type)}">
         <span class="track-recipe-badge badge-none"><i data-lucide="circle-dashed"></i> No bot recipe yet</span>
@@ -1944,6 +1945,23 @@ function renderSubmittalTracks() {
   });
   wrap.querySelectorAll("button[data-track-open-recorder]").forEach((btn) => {
     btn.addEventListener("click", () => launchTrackRecorder(btn.dataset.trackOpenRecorder, btn.dataset.scope, btn));
+  });
+  wrap.querySelectorAll("button[data-track-finish-recipe]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      try {
+        await api(`/api/portal-recipes/${btn.dataset.trackFinishRecipe}/finish`, {
+          method: "POST",
+          body: JSON.stringify({ clientId: state.detail?.project?.clientId || "" }),
+        });
+        showMessage("Recipe saved — the bot will replay this portal automatically for future projects. Review browser closed.", "info");
+        await loadSubmittalTracks();
+        renderDetail();
+      } catch (err) {
+        showMessage(err.message || "Could not save the recipe.", "error");
+        btn.disabled = false;
+      }
+    });
   });
   wrap.querySelectorAll("button[data-track-review-recipe]").forEach((btn) => {
     btn.addEventListener("click", () => {

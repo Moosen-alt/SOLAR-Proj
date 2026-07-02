@@ -1053,6 +1053,21 @@ const VERSIONED_MIGRATIONS: VersionedMigration[] = [
       );
     },
   },
+  // v8: repair AHJ knowledge rows whose portal_url was poisoned with a UTILITY portal
+  // URL. Before the scope gate in autoLearn, a trusted NEM (utility) learn stamped its
+  // PowerClerk URL onto the project's AHJ-keyed row, so a later PERMIT stage for that
+  // AHJ launched the utility's portal. Null those out — the permit self-seed then asks
+  // the operator for the real permit portal instead of silently opening the wrong one.
+  {
+    version: 8,
+    name: "clear_utility_urls_on_ahj_rows",
+    up: (db) => {
+      db.run(
+        `UPDATE permit_utility_knowledge SET portal_url = ''
+           WHERE ahj IS NOT NULL AND ahj != '' AND portal_url LIKE '%powerclerk.com%'`,
+      );
+    },
+  },
 ];
 
 function runVersionedMigrations(db: AppDb): void {

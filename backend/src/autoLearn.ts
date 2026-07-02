@@ -617,13 +617,24 @@ export async function autoLearnPortal(
     } catch { /* non-fatal */ }
   }
 
-  // After a successful auto-learn, upsert learned portal URL back to KB (best-effort).
+  // After a successful auto-learn, upsert the learned portal URL back to KB (best-effort).
+  // SCOPE-GATED: a utility (NEM) learn must write the utility-keyed row ONLY — stamping the
+  // utility URL onto the AHJ-keyed row poisons the permit track's launch URL (a permit stage
+  // would then open the NEM portal, e.g. PowerClerk for a City of Willamina building permit).
   if (trusted) {
     try {
-      db.run(
-        `UPDATE permit_utility_knowledge SET portal_url = ?, updated_at = ? WHERE ahj = ?`,
-        [portalUrl, new Date().toISOString(), project.ahj],
-      );
+      if (scopeType === "ahj" && (project.ahj || "").trim()) {
+        db.run(
+          `UPDATE permit_utility_knowledge SET portal_url = ?, updated_at = ? WHERE ahj = ?`,
+          [portalUrl, new Date().toISOString(), project.ahj],
+        );
+      } else if (scopeType === "utility" && (project.utility || "").trim()) {
+        db.run(
+          `UPDATE permit_utility_knowledge SET portal_url = ?, updated_at = ?
+             WHERE utility = ? AND (ahj IS NULL OR ahj = '')`,
+          [portalUrl, new Date().toISOString(), project.utility],
+        );
+      }
     } catch { /* KB upsert is best-effort */ }
   }
 
