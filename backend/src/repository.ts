@@ -4563,20 +4563,58 @@ export async function runDuePermitChecks(
   const projects: ProjectDetail[] = [];
   for (const target of targets) {
     const projectId = text(target.project_id);
-    // Try a live authenticated portal scrape when a portal profile is available
-    // for the target type. Falls back to public_url fetch or mock if unavailable.
+    // Try a live authenticated portal scrape, falling back to the public tracking URL
+    // and finally mock. Authenticated strategies, in order:
+    //   1. RECIPE-FIRST (universal): the recorded/auto-learned recipe for this project's
+    //      AHJ/utility carries the portal URL + a generic checkStatus — the primary
+    //      submission path (recipe-first) gets a matching status path, so approvals on
+    //      ANY learned portal are auto-scanned, not just the two hardcoded platforms.
+    //   2. Legacy hardcoded platform profiles (Accela / PowerClerk storage-state blobs).
     let rawStatusText: string | undefined;
     let source: "portal" | "public_url" | "mock" = text(target.portal_url) ? "public_url" : "mock";
     const targetType = text(target.target_type); // "permit" | "nem"
+    const applicationNumbers = [text(target.application_number), text(target.permit_number)].filter(Boolean);
+    const projectDetail = getProjectDetail(db, projectId);
+    const clientId = projectDetail.project.clientId ?? "";
+    const profileBase = process.env.PORTAL_PROFILES_DIR || path.join(process.cwd(), "portal-profiles");
+
+    if (applicationNumbers.length > 0) {
+      const scopeType: "ahj" | "utility" = targetType === "nem" ? "utility" : "ahj";
+      const recipe =
+        findCompleteRecipeForProject(db, { scopeType, state: projectDetail.project.state, ahj: projectDetail.project.ahj, utility: projectDetail.project.utility })
+        ?? findAnyRecipeForProject(db, { scopeType, state: projectDetail.project.state, ahj: projectDetail.project.ahj, utility: projectDetail.project.utility });
+      if (recipe?.portalUrl) {
+        // Same credential/profile conventions as the learner/replay: portalType key is
+        // "utility" | "AHJ", persistent per-client browser profile carries the session.
+        const recipePortalType = scopeType === "utility" ? "utility" : "AHJ";
+        const userDataDir = clientId ? path.join(profileBase, clientId, recipePortalType) : path.join(profileBase, recipePortalType);
+        const credential = clientId
+          ? (getDecryptedCredential(db, clientId, recipePortalType)
+              ?? getDecryptedCredentialByUrl(db, clientId, recipe.portalUrl)
+              ?? getDecryptedCredentialAny(db, clientId))
+            ?? undefined
+          : undefined;
+        const scraped = await checkStatusWithAdapter("recipe", applicationNumbers, {
+          recipe,
+          fieldValues: {},
+          docsByType: {},
+          headless: true,
+          credential,
+          userDataDir,
+        }).catch(() => null);
+        if (scraped) {
+          rawStatusText = scraped;
+          source = "portal";
+        }
+      }
+    }
+
     const portalType = targetType === "nem" ? "powerclerk_pge" : "accela_oregon";
-    const portalProfile = db.get<{ id: string; portal_type: string; encrypted_storage_state?: string }>(
+    const portalProfile = rawStatusText ? null : db.get<{ id: string; portal_type: string; encrypted_storage_state?: string }>(
       "SELECT * FROM portal_profiles WHERE portal_type = ? ORDER BY created_at DESC LIMIT 1",
       [portalType],
     );
     if (portalProfile?.encrypted_storage_state) {
-      const projectDetail = getProjectDetail(db, projectId);
-      const clientId = projectDetail.project.clientId ?? "";
-      const profileBase = process.env.PORTAL_PROFILES_DIR || path.join(process.cwd(), "portal-profiles");
       const userDataDir = clientId
         ? path.join(profileBase, clientId, portalType)
         : path.join(profileBase, portalType);
@@ -4586,7 +4624,6 @@ export async function runDuePermitChecks(
             ?? getDecryptedCredentialAny(db, clientId))
           ?? undefined
         : undefined;
-      const applicationNumbers = [text(target.application_number), text(target.permit_number)].filter(Boolean);
       const adapterType = portalType === "powerclerk_pge" ? "powerclerk" : "accela";
       const scraped = await checkStatusWithAdapter(adapterType, applicationNumbers, {
         encryptedStorageStatePath: portalProfile.encrypted_storage_state,

@@ -23,6 +23,7 @@ export type SseEventType =
   | "staging_started"
   | "autolearn_progress"
   | "email_matched"
+  | "intake_submitted"
   | "imap_poll_done"
   | "ping";
 

@@ -501,7 +501,7 @@ app.get("/api/intake/:token", asyncHandler(async (req, res) => {
 // Public (no auth): submit answers for an intake request.
 app.post("/api/intake/:token", asyncHandler(async (req, res) => {
   const result = submitIntakeRequest(db, String(req.params.token), (req.body ?? {}) as Record<string, unknown>);
-  sseBroadcast({ type: "email_matched", projectId: result.projectId, message: "Client submitted intake details — valuation/contact updated." });
+  sseBroadcast({ type: "intake_submitted", projectId: result.projectId, message: "Client submitted intake details — valuation/contact updated." });
   res.json(result);
 }));
 

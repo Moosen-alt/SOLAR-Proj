@@ -5371,7 +5371,12 @@ const SSE_EVENT_KINDS = {
   run_paused: "warning",
   run_failed: "error",
   run_complete: "info",
+  // Kickoff signals — previously emitted by the backend but never subscribed, so the
+  // "staging started / autopilot started" toasts silently never appeared.
+  staging_started: "info",
+  autopilot_started: "info",
   email_matched: "info",
+  intake_submitted: "info",
   imap_poll_done: "info",
 };
 
