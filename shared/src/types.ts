@@ -505,6 +505,40 @@ export interface AiPlanReviewResult {
   notes: string;
 }
 
+/** LLM web-search research result for a jurisdiction's ADOPTED CODES (the code-profile
+ *  onboarding path). Always confidence "seeded" until a human verifies. */
+export interface JurisdictionCodeResearchResult {
+  provider: "claude" | "stub";
+  profile: JurisdictionCodeProfile;
+  webGrounded: boolean;
+  needsHumanVerification: true;
+  notes: string;
+}
+
+/** Standalone review-gate submission DTO — the small, ProjectRecord-free contract
+ *  the sellable POST /api/review accepts. `fields` uses parserSnapshot-compatible
+ *  keys for the solar pack (snow, deadLoad, wind, roofRafterSpacing, busRating,
+ *  mainBreaker, pvBreaker, module.. / inverter.., permitPath, splitPagesText, …) and
+ *  free-form facts for AI-served work types. */
+export interface ReviewSubject {
+  workType: ReviewWorkType;
+  state: string;
+  ahj: string;
+  utility?: string;
+  applicant?: {
+    name?: string;
+    address?: string;
+    city?: string;
+    zip?: string;
+  };
+  system?: {
+    sizeDcKw?: number;
+    sizeAcKw?: number;
+    interconnectionMethod?: string;
+  };
+  fields?: Record<string, string | number | null>;
+}
+
 export type ReviewerEvidenceStatus = "verified" | "weak" | "missing" | "profile" | "not_applicable";
 
 export interface ReviewerFindingEvidence {
@@ -1254,6 +1288,10 @@ export interface LLMProvider {
     correctionText: string;
     project?: ProjectRecord;
   }): Promise<{ draft: string; confidence: number }>;
+  /** Web-search research of a jurisdiction's ADOPTED CODES (editions, amendments,
+   *  design criteria) for the code-profile onboarding flow. Saved as confidence
+   *  "seeded"; a human verifies before citations become authoritative. */
+  researchJurisdictionCodes(input: { ahj: string; state: string }): Promise<JurisdictionCodeResearchResult>;
   /** LLM GENERAL PLAN REVIEW (hybrid review gate): Claude vision over rendered plan
    *  pages for ANY permit work type, grounded in the jurisdiction's adopted codes.
    *  Always advisory — the caller maps findings to category "ai_review", severity

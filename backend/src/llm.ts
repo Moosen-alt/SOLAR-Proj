@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { performance } from "node:perf_hooks";
-import type { AhjFieldMapResult, AhjFormUrlResult, AhjOverlayMapResult, AhjResearchResult, CorrectionBucket, InverterSpecLookup, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, PortalFieldPlan, PortalFieldPlanInput, PortalFillVerification, PortalFillVerifyInput, PortalFillVisionVerifyInput, ProjectRecord, UtilityResearchResult, AiPlanReviewResult, ReviewWorkType } from "../../shared/src/types";
+import type { AhjFieldMapResult, AhjFormUrlResult, AhjOverlayMapResult, AhjResearchResult, CorrectionBucket, InverterSpecLookup, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, PortalFieldPlan, PortalFieldPlanInput, PortalFillVerification, PortalFillVerifyInput, PortalFillVisionVerifyInput, ProjectRecord, UtilityResearchResult, AiPlanReviewResult, ReviewWorkType, JurisdictionCodeProfile, JurisdictionCodeResearchResult } from "../../shared/src/types";
 import { RECIPE_FIELD_DESCRIPTIONS } from "./portalRecipes";
 import { logger } from "./logger";
 
@@ -82,6 +82,20 @@ export class StubLLMProvider implements LLMProvider {
 
   async visionExtract(): Promise<Record<string, unknown>> {
     return { provider: "stub", confidence: 0, notes: "No ANTHROPIC_API_KEY configured." };
+  }
+
+  async researchJurisdictionCodes(input: { ahj: string; state: string }): Promise<JurisdictionCodeResearchResult> {
+    return {
+      provider: "stub",
+      profile: {
+        key: "", state: input.state, ahj: input.ahj, confidence: "seeded",
+        adoptedCodes: [], amendments: [], designCriteria: {}, prescriptive: {},
+        fireSetbacks: [], citations: [], updatedAt: "",
+      },
+      webGrounded: false,
+      needsHumanVerification: true,
+      notes: "No ANTHROPIC_API_KEY configured — enter the jurisdiction's adopted codes manually and verify against official sources.",
+    };
   }
 
   async reviewPlanSetGeneral(): Promise<AiPlanReviewResult> {
@@ -1021,6 +1035,94 @@ Rules:
       notes: webGrounded
         ? "Researched from the AHJ's official site via web search. Human-verify before relying on it; the first real submittal will confirm/correct these requirements."
         : "Web search was unavailable — researched from model knowledge only. Verify against the AHJ's official site before relying on it.",
+    };
+  }
+
+  // ADOPTED-CODES onboarding research (review gate). Same web-grounded pattern as
+  // researchAhjRequirements, but targets the jurisdiction's ADOPTED CODE EDITIONS,
+  // state/local amendments, and site design criteria. Output is saved as confidence
+  // "seeded" and a human verifies each claim against its citation before the review
+  // gate cites it authoritatively.
+  async researchJurisdictionCodes(input: { ahj: string; state: string }): Promise<JurisdictionCodeResearchResult> {
+    const system = `You are a building-department code analyst onboarding a jurisdiction into a plan-review tool. Determine what building codes the jurisdiction has ADOPTED and its local design criteria.
+
+FIRST search the web — prefer, in order: (1) the jurisdiction's own building-department page (.gov/.us/.org), (2) the STATE building-codes agency (state building codes division / DOPL / BCD — many states adopt codes statewide and counties/cities inherit them), (3) the state electrical board for the NEC cycle. Ground every value in a page you actually found and cite it. If a value cannot be confirmed, OMIT it rather than guessing.
+
+Return ONLY JSON:
+{
+  "adoptedCodes": [{"code": "<IRC|IBC|NEC|IFC|IPC|IMC|IECC|state specialty code abbreviation>", "edition": "<year>", "title": "<full name incl. state amendments note>", "sourceUrl": "<the page confirming this>", "notes": "<effective date / amendment note>"}],
+  "amendments": [{"code": "<family>", "section": "<section if known>", "summary": "<what the state/local amendment changes>", "sourceUrl": "<source>"}],
+  "designCriteria": {"groundSnowLoadPsf": <number or omit>, "windSpeedMph": <number or omit>, "windExposure": "<B|C|D or omit>", "seismicDesignCategory": "<or omit>", "frostDepthIn": <number or omit>, "sourceUrl": "<the county/city design-criteria page>"},
+  "citations": [{"label": "<what this source establishes>", "sourceUrl": "<url>"}],
+  "confidenceNotes": "<what you could and could not confirm>"
+}
+
+Rules:
+- STATE-adopted codes apply to the county/city unless it has its own amendments — say which level each value came from in titles/notes.
+- Design criteria (ground snow load, wind, frost depth, seismic) are usually published by the COUNTY/CITY building department; only include numbers you found on such a page.
+- This is ADVISORY and will be human-verified — never invent a sourceUrl.
+- Return valid JSON only.`;
+    const userMsg = `Jurisdiction (AHJ): ${input.ahj || "(state-level default)"}\nState: ${input.state}\n\nResearch the adopted building/electrical/fire codes and local design criteria for this jurisdiction.`;
+    interface Raw {
+      adoptedCodes?: unknown; amendments?: unknown; designCriteria?: Record<string, unknown>;
+      citations?: unknown; confidenceNotes?: unknown;
+    }
+    let parsed: Raw = {};
+    let webGrounded = false;
+    try {
+      const raw = await this.askWithWebSearch("researchJurisdictionCodes", system, userMsg, 3000, 6);
+      const p = this.parseJson<Raw>(raw, {});
+      if (p && Array.isArray(p.adoptedCodes) && p.adoptedCodes.length) {
+        parsed = p;
+        webGrounded = true;
+      }
+    } catch (err) {
+      logger.warn("llm", "researchJurisdictionCodes web search failed — falling back to model knowledge", { err: errMsg(err) });
+    }
+    if (!webGrounded) {
+      const raw = await this.askLong("researchJurisdictionCodes.fallback", system, userMsg, 3000);
+      parsed = this.parseJson<Raw>(raw, {});
+    }
+    const num = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+    const strv = (v: unknown): string | undefined => (typeof v === "string" && v.trim() ? v.trim() : undefined);
+    const d = parsed.designCriteria ?? {};
+    const profile: JurisdictionCodeProfile = {
+      key: "", state: input.state, ahj: input.ahj, confidence: "seeded",
+      adoptedCodes: (Array.isArray(parsed.adoptedCodes) ? parsed.adoptedCodes : [])
+        .filter((c): c is Record<string, unknown> => !!c && typeof c === "object")
+        .map((c) => ({ code: String(c.code || "").slice(0, 24), edition: String(c.edition || "").slice(0, 12), title: strv(c.title), sourceUrl: strv(c.sourceUrl), notes: strv(c.notes) }))
+        .filter((c) => c.code && c.edition)
+        .slice(0, 12),
+      amendments: (Array.isArray(parsed.amendments) ? parsed.amendments : [])
+        .filter((a): a is Record<string, unknown> => !!a && typeof a === "object")
+        .map((a) => ({ code: String(a.code || "").slice(0, 24), section: strv(a.section), summary: String(a.summary || "").slice(0, 400), sourceUrl: strv(a.sourceUrl) }))
+        .filter((a) => a.code && a.summary)
+        .slice(0, 20),
+      designCriteria: {
+        groundSnowLoadPsf: num(d.groundSnowLoadPsf),
+        windSpeedMph: num(d.windSpeedMph),
+        windExposure: strv(d.windExposure),
+        seismicDesignCategory: strv(d.seismicDesignCategory),
+        frostDepthIn: num(d.frostDepthIn),
+        sourceUrl: strv(d.sourceUrl),
+      },
+      prescriptive: {},
+      fireSetbacks: [],
+      citations: (Array.isArray(parsed.citations) ? parsed.citations : [])
+        .filter((c): c is Record<string, unknown> => !!c && typeof c === "object")
+        .map((c) => ({ label: String(c.label || "").slice(0, 200), sourceUrl: String(c.sourceUrl || "").slice(0, 500) }))
+        .filter((c) => c.sourceUrl)
+        .slice(0, 20),
+      updatedAt: "",
+    };
+    return {
+      provider: "claude",
+      profile,
+      webGrounded,
+      needsHumanVerification: true,
+      notes: `${webGrounded
+        ? "Researched from official sources via web search."
+        : "Web search unavailable — model knowledge only."} ${String(parsed.confidenceNotes || "")}`.trim(),
     };
   }
 

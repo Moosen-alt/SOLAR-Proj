@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { validate, portalCredentialCreateSchema, portalCredentialUpdateSchema, autoLearnSchema } from "./validation";
+import { validate, portalCredentialCreateSchema, portalCredentialUpdateSchema, autoLearnSchema, codeProfileResearchSchema, codeProfileVerifySchema, reviewSubjectSchema } from "./validation";
 import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import express, { type NextFunction, type Request, type Response } from "express";
@@ -45,6 +45,10 @@ import { startAhjFormRefreshScheduler } from "./ahjFormRefresh";
 import { extractZipToWorkdir } from "./batchZip";
 import { AUTH_ENABLED, currentUser, login, logout, me, requireAuth, seedAdminUser } from "./auth";
 import { ensureStatusShareToken, formatProjectAddress, statusShareUrl } from "./clientNotifier";
+import { listCodeProfiles, getCodeProfile, saveResearchedCodeProfile, saveVerifiedCodeProfile, codeProfileKey } from "./codeProfiles";
+import { runStandaloneReview, getReviewSubmission, listReviewSubmissions, reviewSubjectToProject } from "./reviewSubject";
+import { renderReviewerReportHtml } from "./reviewerEngine";
+import { REVIEW_PACKS } from "./reviewPacks";
 import { getAutopilotState, runAutopilotApproval } from "./autopilot";
 import {
   addCommunication,
@@ -500,6 +504,102 @@ app.post("/api/projects/:id/intake-request", asyncHandler(async (req, res) => {
 app.get("/api/intake/:token", asyncHandler(async (req, res) => {
   res.json(getIntakeRequestPublic(db, String(req.params.token)));
 }));
+
+// ---------------------------------------------------------------------------
+// Jurisdiction code profiles (review gate) — onboarding + verification.
+// Research is LLM web-search grounded and lands as confidence "seeded"; a human
+// verifies the values against the cited official sources before the review gate
+// treats them as authoritative ("verify locally" phrasing until then).
+// ---------------------------------------------------------------------------
+app.get("/api/code-profiles", (_req, res) => {
+  res.json({ profiles: listCodeProfiles(db) });
+});
+
+app.get("/api/code-profiles/resolve", (req, res) => {
+  const state = String(req.query.state || "").trim();
+  const ahj = String(req.query.ahj || "").trim();
+  if (!state) throw new HttpError(400, "state is required.");
+  res.json({ profile: getCodeProfile(db, { state, ahj }) });
+});
+
+app.post("/api/code-profiles/research", asyncHandler(async (req, res) => {
+  const b = validate(codeProfileResearchSchema, req.body);
+  const { createLLMProvider } = await import("./llm");
+  const llm = createLLMProvider();
+  const research = await llm.researchJurisdictionCodes({ ahj: b.ahj, state: b.state });
+  const saved = saveResearchedCodeProfile(db, research.profile);
+  addAuditLog(db, null, "llm", "code-profile research", "code_profile.researched", {
+    key: codeProfileKey(b), state: b.state, ahj: b.ahj, webGrounded: research.webGrounded,
+  });
+  res.json({ profile: saved, webGrounded: research.webGrounded, notes: research.notes, needsHumanVerification: true });
+}));
+
+app.put("/api/code-profiles/verify", (req, res) => {
+  const b = validate(codeProfileVerifySchema, req.body);
+  const saved = saveVerifiedCodeProfile(db, {
+    key: "", confidence: "verified", updatedAt: "",
+    state: b.state, ahj: b.ahj,
+    adoptedCodes: b.adoptedCodes, amendments: b.amendments,
+    designCriteria: b.designCriteria, prescriptive: b.prescriptive,
+    fireSetbacks: b.fireSetbacks.map((f) => ({ ...f })), citations: b.citations,
+  }, currentUser(db, req)?.email || "operator");
+  res.json({ profile: saved });
+});
+
+// ---------------------------------------------------------------------------
+// Standalone review gate — the sellable POST /api/review surface. Same engine
+// as the internal reviewer, packaged for AHJ tenants: a small ReviewSubject DTO
+// (+ optional plan-set PDF) in, a ReviewerReport with jurisdiction-adopted code
+// citations out. Until the multi-tenant phase lands, submissions are scoped to
+// the default org.
+// ---------------------------------------------------------------------------
+const reviewOrgId = (_req: Request): string => "org-default";
+
+app.get("/api/review/work-types", (_req, res) => {
+  res.json({ workTypes: REVIEW_PACKS });
+});
+
+app.post("/api/review", asyncHandler(async (req, res) => {
+  const subject = validate(reviewSubjectSchema, req.body);
+  const { submission, report, ai } = await runStandaloneReview(db, reviewOrgId(req), subject);
+  res.status(201).json({ submissionId: submission.id, report, aiSummary: ai?.summary || "", aiNotes: ai?.notes || "" });
+}));
+
+// Plan-set upload variant: raw PDF body + the subject JSON in x-review-subject.
+app.post(
+  "/api/review/upload",
+  express.raw({ type: ["application/pdf", "application/octet-stream"], limit: process.env.DOC_UPLOAD_LIMIT || "100mb" }),
+  asyncHandler(async (req, res) => {
+    if (!Buffer.isBuffer(req.body) || req.body.length === 0) throw new HttpError(400, "Plan-set PDF body required.");
+    let rawSubject: unknown = {};
+    try { rawSubject = JSON.parse(String(req.headers["x-review-subject"] || "{}")); } catch { throw new HttpError(400, "x-review-subject header must be JSON."); }
+    const subject = validate(reviewSubjectSchema, rawSubject);
+    const filename = String(req.query.filename || "planset.pdf").trim();
+    const { submission, report, ai } = await runStandaloneReview(db, reviewOrgId(req), subject, { buffer: req.body, filename });
+    res.status(201).json({ submissionId: submission.id, report, aiSummary: ai?.summary || "", aiNotes: ai?.notes || "" });
+  }),
+);
+
+app.get("/api/review/submissions", (req, res) => {
+  res.json({ submissions: listReviewSubmissions(db, reviewOrgId(req)).map((sub) => ({
+    id: sub.id, workType: sub.workType, state: sub.state, ahj: sub.ahj, status: sub.status, createdAt: sub.createdAt,
+    blockers: sub.report ? sub.report.findings.filter((f) => f.severity === "blocker").length : 0,
+    findings: sub.report ? sub.report.findings.length : 0,
+  })) });
+});
+
+app.get("/api/review/submissions/:id", (req, res) => {
+  const sub = getReviewSubmission(db, reviewOrgId(req), String(req.params.id));
+  if (!sub) throw new HttpError(404, "Review submission not found.");
+  if (String(req.query.format) === "html" && sub.report) {
+    const subjectRow = db.get<{ subject_json?: string }>("SELECT subject_json FROM review_submissions WHERE id = ?", [sub.id]);
+    const subject = validate(reviewSubjectSchema, JSON.parse(String(subjectRow?.subject_json || "{}")));
+    res.setHeader("Content-Type", "text/html");
+    res.send(renderReviewerReportHtml(reviewSubjectToProject(subject, sub.id), sub.report));
+    return;
+  }
+  res.json(sub);
+});
 
 // ---------------------------------------------------------------------------
 // Client status sharing — a tokenized, read-only page the client (installer)

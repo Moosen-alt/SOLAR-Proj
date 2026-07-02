@@ -989,6 +989,32 @@ const VERSIONED_MIGRATIONS: VersionedMigration[] = [
       `);
     },
   },
+  // v6: standalone review-gate submissions. org_id ships now (default 'org-default')
+  // so the multi-tenant phase scopes rows without another migration.
+  {
+    version: 6,
+    name: "review_submissions",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS review_submissions (
+          id TEXT PRIMARY KEY,
+          org_id TEXT NOT NULL DEFAULT 'org-default',
+          work_type TEXT NOT NULL DEFAULT 'general',
+          state TEXT NOT NULL DEFAULT '',
+          ahj TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'complete',
+          subject_json TEXT NOT NULL DEFAULT '{}',
+          report_json TEXT NOT NULL DEFAULT '{}',
+          ai_summary TEXT NOT NULL DEFAULT '',
+          planset_path TEXT NOT NULL DEFAULT '',
+          share_token TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_review_submissions_org ON review_submissions(org_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_review_submissions_share ON review_submissions(share_token);
+      `);
+    },
+  },
 ];
 
 function runVersionedMigrations(db: AppDb): void {
