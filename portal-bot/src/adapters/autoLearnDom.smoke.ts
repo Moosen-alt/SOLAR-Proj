@@ -107,6 +107,46 @@ check("frameSelectorFor(name) unchanged for named frames", () => {
   assert.equal(frameSelectorFor("ACADialogFrame"), 'iframe[name="ACADialogFrame"], iframe[id="ACADialogFrame"]');
 });
 
+// 6) PATCH-BY-DEMONSTRATION capture: arm the page, act like a human, assert what lands.
+const { armHumanCaptureOnPage } = await import("../humanCapture");
+const patchPage = await browser.newPage();
+await patchPage.setContent(`<!doctype html><html><body>
+  <label for="sched">Schedule</label>
+  <select id="sched"><option value="">Select…</option><option value="s7">Schedule 7</option></select>
+  <label for="acct">Account Number</label><input id="acct" name="accountNumber">
+  <button type="button">Save Draft</button>
+  <button type="button">Submit Application</button>
+  <button type="button">Pay Now</button>
+</body></html>`);
+const captured: Array<{ action: string; note?: string; value?: string; sensitive?: boolean }> = [];
+const armed = await armHumanCaptureOnPage(patchPage, (step) => captured.push(step as never));
+check("capture arms on a live page", () => assert.equal(armed, true));
+
+await patchPage.selectOption("#sched", "s7");
+await patchPage.fill("#acct", "ACCT-12345");
+await patchPage.locator("#acct").dispatchEvent("change");
+await patchPage.getByRole("button", { name: "Save Draft" }).click();
+await patchPage.getByRole("button", { name: "Submit Application" }).click();
+await patchPage.getByRole("button", { name: "Pay Now" }).click();
+await patchPage.waitForTimeout(300);
+
+check("human select captured with its label + value", () => {
+  const sel = captured.find((c) => c.action === "select");
+  assert.ok(sel, `captured: ${JSON.stringify(captured)}`);
+  assert.equal(sel!.value, "s7");
+});
+check("sensitive field captured WITHOUT its typed value", () => {
+  const fill = captured.find((c) => c.action === "fill");
+  assert.ok(fill, "fill captured");
+  assert.equal(fill!.sensitive, true, "flagged sensitive");
+  assert.ok(!JSON.stringify(captured).includes("ACCT-12345"), "typed account number never stored");
+});
+check("navigation click captured; submit/pay clicks NEVER captured", () => {
+  const clicks = captured.filter((c) => c.action === "click");
+  assert.equal(clicks.length, 1, `clicks: ${JSON.stringify(clicks)}`);
+  assert.ok((clicks[0].note || "").includes("Save Draft"));
+});
+
 await browser.close();
 child.close();
 parent.close();

@@ -22,13 +22,14 @@
 import path from "node:path";
 import fs from "node:fs";
 import type { AppDb } from "./db";
-import type { PortalRecipe, ProjectRecord } from "../../shared/src/types";
+import type { PortalRecipe, ProjectRecord, RecipeStep } from "../../shared/src/types";
 import { learnPortal, browserLimiter } from "../../portal-bot/src/index";
+import { resolveHeadless } from "../../portal-bot/src/browser";
 import { compareReviewFields } from "../../portal-bot/src/reviewScreenScraper";
 import type { LearnPlanRequest, LearnPlanResponse } from "../../portal-bot/src/adapters/autoLearnAdapter";
 import { createLLMProvider, getRecentLlmCalls } from "./llm";
 import { getDecryptedCredential, getDecryptedCredentialByUrl, getDecryptedCredentialAny } from "./portalCredentials";
-import { resolveRecipeFieldValues, startPortalRecording, savePortalRecipeSteps, getPortalRecipe, convertLiteralsToBoundFields, findAnyRecipeForProject } from "./portalRecipes";
+import { resolveRecipeFieldValues, startPortalRecording, savePortalRecipeSteps, getPortalRecipe, convertLiteralsToBoundFields, findAnyRecipeForProject, appendHumanPatchSteps } from "./portalRecipes";
 import { projectDocsByType } from "./projectDocuments";
 import { buildUtilityPackage } from "./docSplitter";
 import { addAuditLog } from "./audit";
@@ -201,6 +202,26 @@ export async function autoLearnPortal(
   // Marks the start of this run's LLM window — every Claude call from here on (planner,
   // verifiers) lands in the run bundle's llm-calls.json.
   const learnStartedAtMs = Date.now();
+
+  // PATCH-BY-DEMONSTRATION sink. When the headed browser is left open at review, every
+  // fix the operator makes by hand is captured and merged into the learned recipe (in
+  // replayable position, literals bound to project fields). Steps can start arriving
+  // before the recipe row exists (it is created after the learn returns), so buffer
+  // until the stub id is known, then flush. When an existing verified-complete recipe
+  // is being protected, no stub is created and the buffer is deliberately discarded —
+  // human fixes on an unverified pass must not mutate the trusted recipe.
+  const humanPatch: { recipeId: string | null; buffer: RecipeStep[]; count: number } = { recipeId: null, buffer: [], count: 0 };
+  const onHumanStep = (step: RecipeStep): void => {
+    try {
+      humanPatch.count++;
+      if (humanPatch.count === 1) {
+        addAuditLog(db, projectId, "human", "operator", "portal.recipe_human_patch_started", { scope: scopeType });
+      }
+      if (humanPatch.recipeId) appendHumanPatchSteps(db, humanPatch.recipeId, [step], projectFields);
+      else humanPatch.buffer.push(step);
+    } catch { /* capture merge is best-effort — never disturb the operator's session */ }
+  };
+
   let learn;
   try {
     learn = await browserLimiter(() => learnPortal({
@@ -224,6 +245,7 @@ export async function autoLearnPortal(
           ? "none"
           : scopeType === "utility" ? "residential_nem" : "none",
       onProgress: input.onProgress,
+      onHumanStep,
     }));
   } catch (err) {
     throw new HttpError(502, `Portal learn failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -517,6 +539,13 @@ export async function autoLearnPortal(
       ? `Auto-learned and verified (${verification.overallConfidence} confidence) on ${learn.pageCount} page(s).${bindingNote} Final submit recorded for the trusted-submit allowlist; never auto-clicked unless the operator opts in.`
       : `Auto-learned but NOT verified — review the captured fill and confirm before trusting.${bindingNote} Issues: ${verification.issues.join("; ") || "low confidence"}.`,
   });
+  // The recipe row + steps now exist — route captured human fixes into it, and flush any
+  // fixes made in the window before the row was saved (flushed AFTER the save above so the
+  // baseline steps can't overwrite them).
+  humanPatch.recipeId = stub.id;
+  if (humanPatch.buffer.length) {
+    try { appendHumanPatchSteps(db, stub.id, humanPatch.buffer.splice(0), projectFields); } catch { /* best-effort */ }
+  }
 
   // Debug: dump the three verification signals + the trust-gate decision into the run bundle
   // so the operator can see WHY a recipe was (or wasn't) trusted — text vs vision vs
@@ -615,8 +644,11 @@ export async function autoLearnPortal(
       matches: verification.matches,
       issues: verification.issues,
     },
-    message: trusted
+    message: (trusted
       ? `Portal learned and verified (${verification.overallConfidence} confidence). The recipe is trusted and will replay on future ${scopeType === "utility" ? "utility" : "AHJ"} projects. Final submit stays manual unless you opt this portal into trusted auto-submit.`
-      : `Portal learned but needs your verification — open the captured fill and confirm it's correct before it's trusted. ${verification.issues.length ? "Flags: " + verification.issues.slice(0, 3).join("; ") : ""}`,
+      : `Portal learned but needs your verification — open the captured fill and confirm it's correct before it's trusted. ${verification.issues.length ? "Flags: " + verification.issues.slice(0, 3).join("; ") : ""}`)
+      + (learn.reachedReview && !resolveHeadless(input.headless)
+        ? " The browser is open at the review screen — any field you fill or fix by hand there is recorded into the recipe automatically (patch-by-demonstration)."
+        : ""),
   });
 }

@@ -408,3 +408,42 @@ export function convertLiteralsToBoundFields(
 
   return { steps: out, bound, ambiguous };
 }
+
+// ---------------------------------------------------------------------------
+// PATCH-BY-DEMONSTRATION merge. After an auto-learn leaves the browser open at
+// the review screen, the operator's hand-made fixes (the fields the learner
+// missed) arrive as captured RecipeSteps. Merge them into the learned recipe
+// BEFORE its terminal steps — replay executes steps in order and stops at the
+// stopForReview / isFinalSubmit marker, so a step appended after the terminal
+// tail would never replay. Literal values that match the patching project's
+// data are converted to reusable field bindings (same pass the learner uses)
+// so the patch replays every future project's own data, not this project's.
+// ---------------------------------------------------------------------------
+export function appendHumanPatchSteps(
+  db: AppDb,
+  recipeId: string,
+  newSteps: RecipeStep[],
+  projectFields: Record<string, string>,
+): PortalRecipe {
+  const recipe = getPortalRecipe(db, recipeId);
+  if (!newSteps.length) return recipe;
+  const steps = [...(recipe.steps || [])];
+  // Split off the trailing terminal markers (stopForReview and/or the recorded
+  // final-submit) so patches land before them, in replayable position.
+  let cut = steps.length;
+  while (cut > 0) {
+    const tailStep = steps[cut - 1] as RecipeStep & { isFinalSubmit?: boolean };
+    if (tailStep.action === "stopForReview" || tailStep.isFinalSubmit === true) cut--;
+    else break;
+  }
+  const { steps: bound } = convertLiteralsToBoundFields(newSteps, projectFields);
+  const merged = [...steps.slice(0, cut), ...bound, ...steps.slice(cut)];
+  // One idempotent notes marker with the TOTAL patched count — steps stream in one at a
+  // time as the human works, so a per-call append would spam the notes field.
+  const totalPatched = merged.filter((st) => (st.note || "").startsWith("human-patch")).length;
+  const baseNotes = (recipe.notes || "").replace(/\s*\[human-patch:[^\]]*\]/g, "").trim();
+  return savePortalRecipeSteps(db, recipeId, merged, {
+    status: recipe.status as PortalRecipeStatus,
+    notes: `${baseNotes} [human-patch: ${totalPatched} step(s) demonstrated at review]`.trim(),
+  });
+}

@@ -394,6 +394,11 @@ export async function learnPortal(input: {
   policyProfile?: "residential_nem" | "none";
   // Optional live-progress sink so callers can drive a UI progress bar. Non-PII signals only.
   onProgress?: import("./adapters/autoLearnAdapter").LearnProgressFn;
+  // PATCH-BY-DEMONSTRATION sink: when the headed browser is left open at review, every
+  // hand-made fix (fill/select/check/upload/click) is captured and streamed here as a
+  // RecipeStep so the backend can merge it into the learned recipe. Sensitive values are
+  // never included; final-submit/pay clicks are never captured.
+  onHumanStep?: (step: import("../../shared/src/types").RecipeStep) => void;
 }): Promise<import("./adapters/autoLearnAdapter").LearnResult> {
   const { AutoLearnAdapter } = await import("./adapters/autoLearnAdapter");
   const adapter = new AutoLearnAdapter(input.portalName, input.planner, { maxPages: input.maxPages, docsByType: input.docsByType, uploadMode: input.uploadMode, policyProfile: input.policyProfile, onProgress: input.onProgress });
@@ -440,6 +445,11 @@ export async function learnPortal(input: {
     // guided-manual replay. Only when the learn actually REACHED review AND we're headed (the human
     // is watching); a headless/server run or a learn that never reached review still closes.
     leaveOpen = learnResult.reachedReview === true && !resolveHeadless(input.headless) && !!input.userDataDir;
+    // Arm patch-by-demonstration on the browser being left open: the human finishing the
+    // missed fields at review teaches the recipe those fields for every future project.
+    if (leaveOpen && input.onHumanStep) {
+      try { await adapter.armHumanCapture(input.onHumanStep); } catch { /* capture is best-effort */ }
+    }
     return learnResult;
   } catch (err) {
     // learn() already recorded the error + stack into the bundle and finalized it; make sure

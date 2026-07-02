@@ -9,6 +9,7 @@ import { detectChallengeFrame, frameSelectorFor, readbackMatches, redactStatusTe
 import { scrapeReviewScreen as scrapeReviewScreenShared } from "../reviewScreenScraper";
 import { performLogin } from "./loginFlow";
 import { LearnRunDebug } from "../learnDebug";
+import { armHumanCaptureOnPage } from "../humanCapture";
 
 // AutoLearnAdapter — AUTONOMOUSLY learns an unknown AHJ/utility portal form instead of
 // having a human record it. Each page is scraped into a structured snapshot
@@ -986,6 +987,20 @@ export class AutoLearnAdapter extends BasePortalAdapter {
 
   private stopHeartbeat(): void {
     if (this.hbTimer) { clearInterval(this.hbTimer); this.hbTimer = null; }
+  }
+
+  // PATCH-BY-DEMONSTRATION: arm the (still-open, headed) page so anything the human
+  // fixes by hand at the review handoff — a missed dropdown, an unmapped field — is
+  // captured as RecipeSteps and streamed to the caller for merging into the learned
+  // recipe. Called by learnPortal() only when the browser is left open at review.
+  async armHumanCapture(onStep: (step: RecipeStep) => void): Promise<boolean> {
+    if (!this.page) return false;
+    const armed = await armHumanCaptureOnPage(this.page as Page, (step) => {
+      this.debug?.event({ type: "human_patch_step", action: step.action, note: (step.note || "").slice(0, 80) });
+      onStep(step);
+    });
+    if (armed) this.debug?.event({ type: "human_capture_armed" });
+    return armed;
   }
 
   async learn(context: PortalContext, project: ProjectRecord): Promise<LearnResult> {

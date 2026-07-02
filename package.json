@@ -11,7 +11,7 @@
     "smoke": "tsx backend/src/smoke.ts",
     "rehearse:sim": "tsx backend/test/rehearsal.simulated.test.ts",
     "rehearse:live": "tsx backend/test/rehearsal.live.smoke.ts",
-    "backend:test:unit": "tsx backend/test/adapterPrecedence.test.ts && tsx backend/test/portalPause.test.ts && tsx backend/test/recipeStaleness.test.ts",
+    "backend:test:unit": "tsx backend/test/adapterPrecedence.test.ts && tsx backend/test/portalPause.test.ts && tsx backend/test/recipeStaleness.test.ts && tsx backend/test/humanPatch.test.ts",
     "portal:login": "tsx portal-bot/src/testRun.ts login",
     "portal:test": "tsx portal-bot/src/testRun.ts",
     "portal:test:unit": "tsx portal-bot/src/adapters/recipeAdapter.test.ts && tsx portal-bot/src/adapters/autoLearnAdapter.test.ts && tsx portal-bot/src/networkRecorder.test.ts && tsx portal-bot/src/reviewScreenScraper.test.ts && tsx portal-bot/src/llmGapFill.test.ts && tsx portal-bot/src/learnDebug.test.ts",

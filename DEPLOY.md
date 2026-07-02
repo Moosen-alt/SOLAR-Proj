@@ -183,6 +183,15 @@ checkbox, and file upload is captured. When done, return to the terminal and typ
   final-submit denylist guard — replay stops at review, exactly like the hand-coded
   adapters. A human always submits.
 
+**Patch-by-demonstration (auto-learn).** You usually don't need a full recording:
+when an auto-learn reaches the review screen and leaves the headed browser open,
+anything you fix by hand right there — a missed dropdown, an unmapped field, an
+attachment — is captured and merged into the learned recipe automatically (in
+replayable position, values bound to project fields, sensitive values never
+stored, submit/pay clicks never captured). First pass learns most of the form;
+you demonstrate the remainder once; every future project replays the complete
+recipe.
+
 ---
 
 ## 8. Troubleshooting a learn run — the debug bundle
