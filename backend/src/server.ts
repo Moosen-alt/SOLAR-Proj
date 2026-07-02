@@ -43,7 +43,7 @@ import { listBackups, runBackup, startBackupScheduler } from "./backup";
 import { startMonitorScheduler } from "./scheduler";
 import { startAhjFormRefreshScheduler } from "./ahjFormRefresh";
 import { extractZipToWorkdir } from "./batchZip";
-import { AUTH_ENABLED, currentUser, login, logout, me, requireAuth, seedAdminUser } from "./auth";
+import { AUTH_ENABLED, currentUser, login, logout, me, requireAuth, seedAdminUser, editionGate, requestOrg, getOrg, createApiKey } from "./auth";
 import { ensureStatusShareToken, formatProjectAddress, statusShareUrl } from "./clientNotifier";
 import { listCodeProfiles, getCodeProfile, saveResearchedCodeProfile, saveVerifiedCodeProfile, codeProfileKey } from "./codeProfiles";
 import { runStandaloneReview, getReviewSubmission, listReviewSubmissions, reviewSubjectToProject } from "./reviewSubject";
@@ -192,6 +192,8 @@ app.get("/intake", (_req, res) => res.sendFile(path.join(frontendDir, "intake.ht
 // Public read-only client status page (tokenized link, no login).
 app.get("/status", (_req, res) => res.sendFile(path.join(frontendDir, "status.html")));
 app.use(requireAuth(db));
+// Licensing: 'review_gate' orgs reach only the review surface (deny-gate w/ allowlist).
+app.use(editionGate(db));
 
 app.use(express.static(frontendDir));
 
@@ -553,7 +555,7 @@ app.put("/api/code-profiles/verify", (req, res) => {
 // citations out. Until the multi-tenant phase lands, submissions are scoped to
 // the default org.
 // ---------------------------------------------------------------------------
-const reviewOrgId = (_req: Request): string => "org-default";
+const reviewOrgId = (req: Request): string => requestOrg(db, req).id;
 
 app.get("/api/review/work-types", (_req, res) => {
   res.json({ workTypes: REVIEW_PACKS });
@@ -599,6 +601,88 @@ app.get("/api/review/submissions/:id", (req, res) => {
     return;
   }
   res.json(sub);
+});
+
+// ---------------------------------------------------------------------------
+// Org / licensing administration (full-edition admins only): create review-gate
+// tenant orgs, their users, and API keys (key plaintext returned exactly once).
+// ---------------------------------------------------------------------------
+function requireAdmin(req: Request): void {
+  if (!AUTH_ENABLED) return; // local single-operator use
+  const user = currentUser(db, req);
+  if (!user || user.role !== "admin" || getOrg(db, user.orgId).edition !== "full") {
+    throw new HttpError(403, "Admin access required.");
+  }
+}
+
+app.get("/api/orgs", (req, res) => {
+  requireAdmin(req);
+  res.json({ orgs: db.query<Record<string, unknown>>("SELECT id, name, edition, created_at FROM orgs ORDER BY created_at") });
+});
+
+app.post("/api/orgs", (req, res) => {
+  requireAdmin(req);
+  const name = String(req.body?.name || "").trim();
+  const edition = String(req.body?.edition || "review_gate") === "full" ? "full" : "review_gate";
+  if (!name) throw new HttpError(400, "name is required.");
+  const orgId = `org-${crypto.randomUUID().slice(0, 8)}`;
+  db.run("INSERT INTO orgs (id, name, edition, created_at) VALUES (?, ?, ?, ?)", [orgId, name, edition, new Date().toISOString()]);
+  addAuditLog(db, null, "human", currentUser(db, req)?.email || "operator", "org.created", { orgId, name, edition });
+  res.status(201).json({ org: { id: orgId, name, edition } });
+});
+
+app.post("/api/orgs/:id/users", (req, res) => {
+  requireAdmin(req);
+  const orgId = String(req.params.id);
+  if (!db.get("SELECT id FROM orgs WHERE id = ?", [orgId])) throw new HttpError(404, "Org not found.");
+  const name = String(req.body?.name || "").trim() || "Reviewer";
+  const email = String(req.body?.email || "").trim().toLowerCase();
+  const password = String(req.body?.password || "");
+  if (!email || !password) throw new HttpError(400, "email and password are required.");
+  if (db.get("SELECT id FROM users WHERE email = ?", [email])) throw new HttpError(409, "A user with that email already exists.");
+  const userId = crypto.randomUUID();
+  const salt = crypto.randomBytes(16);
+  const hash = crypto.scryptSync(password, salt, 64);
+  db.run(
+    "INSERT INTO users (id, name, email, role, color, active, created_at, password_hash, org_id) VALUES (?, ?, ?, 'operator', '#0ea5e9', 1, ?, ?, ?)",
+    [userId, name, email, new Date().toISOString(), `${salt.toString("hex")}:${hash.toString("hex")}`, orgId],
+  );
+  addAuditLog(db, null, "human", currentUser(db, req)?.email || "operator", "org.user_created", { orgId, email });
+  res.status(201).json({ user: { id: userId, name, email, orgId } });
+});
+
+app.post("/api/orgs/:id/api-keys", (req, res) => {
+  requireAdmin(req);
+  const orgId = String(req.params.id);
+  if (!db.get("SELECT id FROM orgs WHERE id = ?", [orgId])) throw new HttpError(404, "Org not found.");
+  const created = createApiKey(db, orgId, String(req.body?.name || "api key"));
+  addAuditLog(db, null, "human", currentUser(db, req)?.email || "operator", "org.api_key_created", { orgId, keyId: created.id });
+  res.status(201).json({ id: created.id, key: created.key, note: "Store this key now — it is shown only once." });
+});
+
+// Shareable read-only report link (e.g. the AHJ forwards a pre-review to an applicant).
+app.post("/api/review/submissions/:id/share", (req, res) => {
+  const sub = getReviewSubmission(db, reviewOrgId(req), String(req.params.id));
+  if (!sub) throw new HttpError(404, "Review submission not found.");
+  let token = String(db.get<{ share_token?: string }>("SELECT share_token FROM review_submissions WHERE id = ?", [sub.id])?.share_token || "");
+  if (!token) {
+    token = crypto.randomBytes(18).toString("base64url");
+    db.run("UPDATE review_submissions SET share_token = ? WHERE id = ?", [token, sub.id]);
+  }
+  const base = (process.env.PUBLIC_BASE_URL || `http://localhost:${process.env.PORT || 4173}`).replace(/\/+$/, "");
+  res.json({ url: `${base}/api/public/review/${token}` });
+});
+
+app.get("/api/public/review/:token", (req, res) => {
+  const token = String(req.params.token || "").trim();
+  if (!token) throw new HttpError(404, "Unknown report link.");
+  const row = db.get<Record<string, unknown>>("SELECT id, org_id, subject_json, report_json FROM review_submissions WHERE share_token = ? AND share_token != ''", [token]);
+  if (!row) throw new HttpError(404, "Unknown report link.");
+  const subject = validate(reviewSubjectSchema, JSON.parse(String(row.subject_json || "{}")));
+  const report = JSON.parse(String(row.report_json || "null"));
+  if (!report) throw new HttpError(404, "Report unavailable.");
+  res.setHeader("Content-Type", "text/html");
+  res.send(renderReviewerReportHtml(reviewSubjectToProject(subject, String(row.id)), report));
 });
 
 // ---------------------------------------------------------------------------

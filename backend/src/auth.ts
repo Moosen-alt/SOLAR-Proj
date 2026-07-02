@@ -108,6 +108,17 @@ export interface SessionUser {
   name: string;
   email: string;
   role: string;
+  /** The user's org (tenant). Existing rows default to 'org-default' (full edition),
+   *  read from the users table on every request — the cookie format is unchanged, so
+   *  deploys never log anyone out. */
+  orgId: string;
+}
+
+export interface OrgInfo {
+  id: string;
+  name: string;
+  /** Licensing edition: 'full' (all-in-one autopilot) | 'review_gate' (AHJ review-gate-only). */
+  edition: string;
 }
 
 export function currentUser(db: AppDb, req: Request): SessionUser | null {
@@ -115,8 +126,49 @@ export function currentUser(db: AppDb, req: Request): SessionUser | null {
   if (!token) return null;
   const parsed = readToken(token);
   if (!parsed) return null;
-  const row = db.get<Row>("SELECT id, name, email, role FROM users WHERE id = ? AND active = 1", [parsed.userId]);
-  return row ? { id: String(row.id), name: String(row.name), email: String(row.email), role: String(row.role) } : null;
+  const row = db.get<Row>("SELECT id, name, email, role, org_id FROM users WHERE id = ? AND active = 1", [parsed.userId]);
+  return row
+    ? { id: String(row.id), name: String(row.name), email: String(row.email), role: String(row.role), orgId: String(row.org_id || "org-default") }
+    : null;
+}
+
+export function getOrg(db: AppDb, orgId: string): OrgInfo {
+  const row = db.get<Row>("SELECT id, name, edition FROM orgs WHERE id = ?", [orgId]);
+  if (!row) return { id: "org-default", name: "Default (all-in-one)", edition: "full" };
+  return { id: String(row.id), name: String(row.name), edition: String(row.edition || "full") };
+}
+
+// --- API keys (programmatic access for review-gate tenants) -------------------
+// Keys are shown ONCE at creation and stored as sha256(key). x-api-key header.
+
+export function createApiKey(db: AppDb, orgId: string, name: string): { id: string; key: string } {
+  const id = crypto.randomUUID();
+  const key = `rg_${crypto.randomBytes(24).toString("base64url")}`;
+  db.run(
+    "INSERT INTO api_keys (id, org_id, name, key_hash, active, created_at) VALUES (?, ?, ?, ?, 1, ?)",
+    [id, orgId, name || "api key", crypto.createHash("sha256").update(key).digest("hex"), new Date().toISOString()],
+  );
+  return { id, key };
+}
+
+export function orgFromApiKey(db: AppDb, req: Request): OrgInfo | null {
+  const key = String(req.headers["x-api-key"] || "").trim();
+  if (!key) return null;
+  const hash = crypto.createHash("sha256").update(key).digest("hex");
+  const row = db.get<Row>("SELECT org_id FROM api_keys WHERE key_hash = ? AND active = 1", [hash]);
+  if (!row) return null;
+  db.run("UPDATE api_keys SET last_used_at = ? WHERE key_hash = ?", [new Date().toISOString(), hash]);
+  return getOrg(db, String(row.org_id));
+}
+
+/** The requesting org: API key first (programmatic), else the session user's org,
+ *  else the default org (auth disabled / local single-operator use). */
+export function requestOrg(db: AppDb, req: Request): OrgInfo {
+  const viaKey = orgFromApiKey(db, req);
+  if (viaKey) return viaKey;
+  const user = currentUser(db, req);
+  if (user) return getOrg(db, user.orgId);
+  return getOrg(db, "org-default");
 }
 
 // Simple in-memory per-IP login throttle to blunt brute force on the internet-facing
@@ -138,7 +190,7 @@ export function login(db: AppDb, req: Request, res: Response): void {
 
   const email = String(req.body?.email || "").trim().toLowerCase();
   const password = String(req.body?.password || "");
-  const row = db.get<Row>("SELECT id, name, email, role, password_hash FROM users WHERE email = ? AND active = 1", [email]);
+  const row = db.get<Row>("SELECT id, name, email, role, org_id, password_hash FROM users WHERE email = ? AND active = 1", [email]);
   if (!row || !row.password_hash || !verifyPassword(password, String(row.password_hash))) {
     const rec = loginAttempts.get(ip) ?? { fails: 0, lockedUntil: 0 };
     rec.fails += 1;
@@ -155,7 +207,7 @@ export function login(db: AppDb, req: Request, res: Response): void {
     secure: String(process.env.AUTH_COOKIE_SECURE || "").toLowerCase() === "true",
     maxAge: SESSION_HOURS * 3600_000,
   });
-  res.json({ user: { id: String(row.id), name: String(row.name), email: String(row.email), role: String(row.role) } });
+  res.json({ user: { id: String(row.id), name: String(row.name), email: String(row.email), role: String(row.role), orgId: String(row.org_id || "org-default") } });
 }
 
 export function logout(_req: Request, res: Response): void {
@@ -178,11 +230,45 @@ export function requireAuth(db: AppDb) {
     if (req.path === "/intake" || req.path.startsWith("/api/intake/")) return next();
     // Public read-only client status page (tokenized, no login) — the page and its API.
     if (req.path === "/status" || req.path.startsWith("/api/public/status/")) return next();
+    // Public shared review report (tokenized, no login).
+    if (req.path.startsWith("/api/public/review/")) return next();
+    // Programmatic review-gate access: an org API key authenticates /api/review* and
+    // read-only code-profile lookups (never the full-edition project APIs).
+    if ((req.path.startsWith("/api/review") || req.path === "/api/code-profiles" || req.path === "/api/code-profiles/resolve") && orgFromApiKey(db, req)) {
+      return next();
+    }
     if (currentUser(db, req)) return next();
     if (req.path.startsWith("/api/")) {
       res.status(401).json({ error: "Not authenticated." });
       return;
     }
     res.redirect("/login");
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Edition gating (licensing). A 'review_gate' org buys ONLY the review gate:
+// its users/keys reach the review surface (review page/APIs, code-profile
+// reads) but never the all-in-one product (projects, portal automation, CRM…).
+// The 'full' edition (default org) is unaffected. Enforced as a deny-gate over
+// /api/* with an explicit allowlist, so a newly added full-product route is
+// closed to review_gate tenants BY DEFAULT.
+// ---------------------------------------------------------------------------
+const REVIEW_EDITION_API_ALLOW = [
+  "/api/auth/",
+  "/api/review",
+  "/api/code-profiles",
+  "/api/public/",
+  "/health",
+];
+
+export function editionGate(db: AppDb) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    if (!req.path.startsWith("/api/")) return next(); // pages handle their own redirects
+    const org = requestOrg(db, req);
+    (req as Request & { org?: OrgInfo }).org = org;
+    if (org.edition !== "review_gate") return next();
+    if (REVIEW_EDITION_API_ALLOW.some((p) => req.path.startsWith(p))) return next();
+    res.status(403).json({ error: "Your plan includes the review gate only. This feature is part of the full permitting autopilot." });
   };
 }

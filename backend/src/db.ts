@@ -1015,6 +1015,39 @@ const VERSIONED_MIGRATIONS: VersionedMigration[] = [
       `);
     },
   },
+  // v7: minimal multi-tenancy + licensing (editions). The default org keeps the
+  // existing single-operator all-in-one flow working with zero config; AHJ
+  // review-gate tenants get edition 'review_gate' orgs with their own users and
+  // API keys. Editions are the licensing seam for future sellable tools too.
+  {
+    version: 7,
+    name: "orgs_and_api_keys",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS orgs (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL DEFAULT '',
+          edition TEXT NOT NULL DEFAULT 'full',
+          created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS api_keys (
+          id TEXT PRIMARY KEY,
+          org_id TEXT NOT NULL,
+          name TEXT NOT NULL DEFAULT '',
+          key_hash TEXT NOT NULL,
+          active INTEGER NOT NULL DEFAULT 1,
+          created_at TEXT NOT NULL,
+          last_used_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash, active);
+      `);
+      addColumnIfMissing(db, "users", "org_id", "TEXT NOT NULL DEFAULT 'org-default'");
+      db.run(
+        "INSERT OR IGNORE INTO orgs (id, name, edition, created_at) VALUES ('org-default', 'Default (all-in-one)', 'full', ?)",
+        [new Date().toISOString()],
+      );
+    },
+  },
 ];
 
 function runVersionedMigrations(db: AppDb): void {
