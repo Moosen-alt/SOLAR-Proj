@@ -32,7 +32,7 @@ import { logger } from "./logger";
 import { nowIso } from "./time";
 import { getProjectDetail, rerunQc, captureConfirmation } from "./repository";
 import { parseJson } from "./json";
-import { buildReviewerReport } from "./reviewerEngine";
+import { buildReviewerReportFor } from "./repository";
 import type { ProjectRecord, SubmittalTrackType } from "../../shared/src/types";
 
 type Row = Record<string, SqlParam>;
@@ -86,8 +86,8 @@ const PRE_STAGE_STATUSES = new Set([
 
 // Reviewer-gate blockers for a project, in the same shape the dashboard already
 // renders. Mirrors the check inside prepareSubmission so the gate is consistent.
-function reviewerBlockerList(project: ProjectRecord): AutopilotBlocker[] {
-  const report = buildReviewerReport(project);
+function reviewerBlockerList(db: AppDb, project: ProjectRecord): AutopilotBlocker[] {
+  const report = buildReviewerReportFor(db, project);
   return report.findings
     .filter((finding) => finding.severity === "blocker")
     .map((finding) => ({ code: finding.id, detail: finding.title }));
@@ -192,7 +192,7 @@ export function getAutopilotState(db: AppDb, projectId: string): AutopilotState 
   }
 
   if (project.status === "awaiting_human_submit") {
-    const blockers = reviewerBlockerList(project);
+    const blockers = reviewerBlockerList(db, project);
     const reviewInfo = reviewInfoFromRun(run);
     // If the gap-fill left required portal fields blank (no project data to fill them from),
     // advise the operator to add the data and re-stage rather than submit an incomplete app.
@@ -280,7 +280,7 @@ export async function runAutopilotApproval(
   if (project.status !== "awaiting_human_submit") {
     throw new HttpError(409, `Project is not awaiting approval (status: ${project.status}). Only a staged project can be approved.`);
   }
-  const blockers = reviewerBlockerList(project);
+  const blockers = reviewerBlockerList(db, project);
   if (blockers.length > 0) {
     throw new HttpError(409, "Cannot approve: reviewer gate still has blockers.", { blockers });
   }

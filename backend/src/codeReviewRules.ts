@@ -1,4 +1,5 @@
 import type { AhjProcessProfile, CodeReference, ProjectRecord, ReviewerFinding } from "../../shared/src/types";
+import type { EffectiveCodeContext } from "./codeProfiles";
 
 const oregonElectrical2023: CodeReference = {
   code: "2023 OESC / 2023 NEC",
@@ -171,12 +172,42 @@ function finding(input: {
   };
 }
 
-export function evaluateDesignCodeFindings(project: ProjectRecord, profile: AhjProcessProfile | null): ReviewerFinding[] {
+export function evaluateDesignCodeFindings(project: ProjectRecord, profile: AhjProcessProfile | null, ctx?: EffectiveCodeContext): ReviewerFinding[] {
   const out: ReviewerFinding[] = [];
   const all = designText(project);
   const roofMounted = !isGroundMount(project, all);
   const oregon = isOregon(project, profile);
   const prescriptive = /prescriptive/i.test(str(project, "permitPath"));
+
+  // JURISDICTION CONTEXT (data-driven rules). With a context, prescriptive structural
+  // screening applies wherever the jurisdiction records prescriptive limits — not just
+  // Oregon — and citations render the jurisdiction's ADOPTED code editions. Without a
+  // context the legacy behavior is preserved exactly (Oregon regex + the hardcoded
+  // constants), which is what the Oregon golden test pins.
+  const prescriptiveScreening = ctx
+    ? Object.values(ctx.prescriptive).some((v) => v != null && (!Array.isArray(v) || v.length > 0))
+    : oregon;
+  // Threshold-style findings from a SEEDED (unverified) profile must not hard-block —
+  // the data hasn't been human-confirmed against official sources yet.
+  const screeningSeverity: ReviewerFinding["severity"] = prescriptive && (ctx ? ctx.verified : true) ? "blocker" : "warning";
+  // Citation resolver: jurisdiction-adopted edition when a context is present, the
+  // legacy constant otherwise (or when the family isn't in the adopted list).
+  const cite = (code: string, fallback: CodeReference): CodeReference =>
+    ctx ? ctx.citationFor(code, fallback.section, fallback.title, fallback) : fallback;
+  const electricalRef = cite("NEC", oregonElectrical2023);
+  const rapidShutdownRef = cite("NEC", rapidShutdown);
+  const powerSourceDirectoryRef = cite("NEC", powerSourceDirectory);
+  const loadSideRef = cite("NEC", loadSideInterconnection);
+  const supplySideRef = cite("NEC", supplySideInterconnection);
+  const roofLoadsRef = cite("IRC", roofLoads);
+  const roofAccessRef = cite("IRC", roofAccess);
+  const fireAccessRef = cite("IFC", fireAccess);
+  const essRef = cite("NEC", essReference);
+  // Oregon-specific prescriptive worksheet refs only make sense where the ORSC/OSSC
+  // (or legacy Oregon detection) applies — never cite them at an Idaho county.
+  const oregonWorksheetRefs: CodeReference[] = (ctx ? ctx.adoptedCodes.some((c) => /^(ORSC|OSSC|OESC)$/i.test(c.code)) : oregon)
+    ? [oregonPrescriptive, portlandRafterSpan]
+    : [];
 
   if (!hasAny(all, [/\bSLD\b/i, /single.line/i, /\b3.line\b/i, /three.line/i])) {
     out.push(finding({
@@ -188,7 +219,7 @@ export function evaluateDesignCodeFindings(project: ProjectRecord, profile: AhjP
       cityFeedback: "Provide a complete electrical one-line diagram showing modules, inverter(s), rapid shutdown equipment, disconnects, point of interconnection, service equipment ratings, grounding/bonding path, and utility meter/service relationship.",
       designTeamAction: "Add or remap the SLD sheet and verify it matches the equipment schedule and interconnection method.",
       evidenceNeeded: ["SLD/one-line sheet number", "Point of interconnection detail", "Disconnect/OCPD schedule", "Grounding/bonding callouts"],
-      codeReferences: [oregonElectrical2023, loadSideInterconnection, supplySideInterconnection],
+      codeReferences: [electricalRef, loadSideRef, supplySideRef],
     }));
   }
 
@@ -202,7 +233,7 @@ export function evaluateDesignCodeFindings(project: ProjectRecord, profile: AhjP
       cityFeedback: "Provide a site/roof plan showing array location, roof planes, ridge/eave/valley/hip locations, roof obstructions, access pathway dimensions, service equipment location, and equipment layout.",
       designTeamAction: "Add a roof/site plan sheet or correct the split-page mapping so the reviewer can verify layout and fire access.",
       evidenceNeeded: ["Roof/site plan sheet number", "Array dimensions and roof plane labels", "Service equipment and disconnect locations", "Obstructions and access path dimensions"],
-      codeReferences: [roofAccess, fireAccess],
+      codeReferences: [roofAccessRef, fireAccessRef],
     }));
   }
 
@@ -216,7 +247,7 @@ export function evaluateDesignCodeFindings(project: ProjectRecord, profile: AhjP
       cityFeedback: "Revise the roof plan to show firefighter access pathways, ridge/eave setbacks, smoke ventilation areas where required, and any applicable exception basis. Dimensions must be shown on the plan, not only stated in notes.",
       designTeamAction: "Add pathway dimensions and exception notes to the roof plan; confirm local fire-code amendments for the AHJ.",
       evidenceNeeded: ["Dimensioned pathway/setback callouts", "Ridge/eave/valley/hip labels", "Applicable fire-code exception, if used"],
-      codeReferences: [roofAccess, fireAccess],
+      codeReferences: [roofAccessRef, fireAccessRef],
     }));
   }
 
@@ -230,23 +261,25 @@ export function evaluateDesignCodeFindings(project: ProjectRecord, profile: AhjP
       cityFeedback: "Provide roof framing type and member information: rafter/truss type, member size, spacing, span, species/grade when applicable, roof slope, sheathing, array attachment locations, and whether the design uses a prescriptive or engineered path.",
       designTeamAction: "Add structural/framing notes or a stamped structural letter/calculation package.",
       evidenceNeeded: ["Rafter/truss size and spacing", "Clear span/support condition", "Roof slope", "Prescriptive worksheet or stamped structural calculation"],
-      codeReferences: oregon ? [roofLoads, oregonPrescriptive, portlandRafterSpan] : [roofLoads],
+      codeReferences: prescriptiveScreening ? [roofLoadsRef, ...oregonWorksheetRefs] : [roofLoadsRef],
     }));
   }
 
   const rafterSpacing = num(project, ["roofRafterSpacing", "rafterSpacing"]);
   const rafterSpan = num(project, ["roofRafterSpan", "rafterSpan"]);
-  if (roofMounted && oregon && !hasAny(all, [/engineer/i, /stamped structural/i, /structural letter/i]) && (rafterSpacing == null || rafterSpan == null)) {
+  if (roofMounted && prescriptiveScreening && !hasAny(all, [/engineer/i, /stamped structural/i, /structural letter/i]) && (rafterSpacing == null || rafterSpan == null)) {
     out.push(finding({
       id: "city.struct.span-table-incomplete",
-      severity: prescriptive ? "blocker" : "warning",
+      severity: screeningSeverity,
       category: "structural",
       title: "Prescriptive rafter span evidence incomplete",
-      message: "Oregon-style prescriptive review needs rafter/truss spacing and span evidence or an engineered alternate path.",
+      message: ctx && !oregon
+        ? `${ctx.ahj || ctx.state} prescriptive review needs rafter/truss spacing and span evidence or an engineered alternate path.`
+        : "Oregon-style prescriptive review needs rafter/truss spacing and span evidence or an engineered alternate path.",
       cityFeedback: "Provide the prescriptive rooftop PV checklist/worksheet information, including framing member size, spacing, span, species/grade, roof slope, dead load, snow load, and wind exposure. If this cannot be documented, provide stamped engineering.",
       designTeamAction: "Complete the structural worksheet inputs or route the design to engineered review.",
       evidenceNeeded: ["Framing spacing", "Framing clear span", "Species/grade or engineered truss evidence", "Dead load, snow load, wind exposure"],
-      codeReferences: [oregonPrescriptive, portlandRafterSpan, roofLoads],
+      codeReferences: [...oregonWorksheetRefs, roofLoadsRef],
     }));
   }
 
@@ -260,24 +293,24 @@ export function evaluateDesignCodeFindings(project: ProjectRecord, profile: AhjP
       cityFeedback: "Provide racking manufacturer, attachment type, attachment spacing, fastener embedment, flashing/waterproofing method, uplift/downforce basis, and roof attachment detail tied to the framing members.",
       designTeamAction: "Add the racking attachment detail and manufacturer spec sheet or engineering table used for spacing.",
       evidenceNeeded: ["Racking/attachment detail", "Attachment spacing table", "Fastener/embedment callout", "Flashing/waterproofing note"],
-      codeReferences: [roofLoads],
+      codeReferences: [roofLoadsRef],
     }));
   }
 
   const snow = num(project, ["snow", "groundSnowLoad"]);
   const deadLoad = num(project, ["deadLoad", "pvDeadLoad"]);
   const wind = str(project, "wind") || str(project, "windExposure");
-  if (roofMounted && oregon && (snow == null || deadLoad == null || !wind)) {
+  if (roofMounted && prescriptiveScreening && (snow == null || deadLoad == null || !wind)) {
     out.push(finding({
       id: "city.struct.loads-missing",
-      severity: prescriptive ? "blocker" : "warning",
+      severity: screeningSeverity,
       category: "structural",
       title: "Structural load criteria missing",
       message: "Ground snow load, PV dead load, and/or wind exposure were not captured for prescriptive structural screening.",
       cityFeedback: "Provide design load criteria on the plans: ground snow load, roof/PV dead load, wind exposure, roof slope, and whether the project remains within the prescriptive checklist limits.",
       designTeamAction: "Add load criteria to the structural notes or provide stamped engineering.",
       evidenceNeeded: ["Ground snow load", "PV dead load psf", "Wind exposure", "Roof slope"],
-      codeReferences: [oregonPrescriptive, roofLoads],
+      codeReferences: [...oregonWorksheetRefs, roofLoadsRef],
     }));
   }
 
@@ -291,7 +324,7 @@ export function evaluateDesignCodeFindings(project: ProjectRecord, profile: AhjP
       cityFeedback: "Revise the electrical plans to identify rapid shutdown equipment, initiation/control location, controlled conductors or array boundary basis, and required field marking for the adopted NEC cycle.",
       designTeamAction: "Add RSD equipment and label callouts to the SLD/site/equipment schedule.",
       evidenceNeeded: ["RSD device or inverter listing basis", "RSD initiation/control location", "RSD label/placard callout", "Code-cycle note"],
-      codeReferences: [rapidShutdown, oregonElectrical2023],
+      codeReferences: [rapidShutdownRef, electricalRef],
     }));
   }
 
@@ -305,7 +338,7 @@ export function evaluateDesignCodeFindings(project: ProjectRecord, profile: AhjP
       cityFeedback: "Provide a PV label schedule showing service equipment directory, rapid shutdown label, disconnect labels, backfed breaker warning where applicable, and any AHJ/utility-specific placards.",
       designTeamAction: "Add label sheet or label callouts to the electrical plan.",
       evidenceNeeded: ["Label schedule", "Placard locations", "Backfed breaker warning where applicable", "Power source directory"],
-      codeReferences: [rapidShutdown, powerSourceDirectory],
+      codeReferences: [rapidShutdownRef, powerSourceDirectoryRef],
     }));
   }
 
@@ -324,7 +357,7 @@ export function evaluateDesignCodeFindings(project: ProjectRecord, profile: AhjP
         cityFeedback: "Revise the interconnection design. The load-side calculation shown by the captured data does not satisfy the common 120 percent busbar screen. Provide a compliant alternate calculation, breaker relocation, de-rated main, supply-side connection, service upgrade, or engineered basis as applicable.",
         designTeamAction: "Correct the interconnection method and update the one-line/load calculation.",
         evidenceNeeded: ["MSP bus rating", "Main breaker rating", "PV breaker/OCPD rating", "705.12 calculation or alternate basis"],
-        codeReferences: [loadSideInterconnection],
+        codeReferences: [loadSideRef],
       }));
     } else if (!hasAny(all, [/705\.12/i, /120%|120 percent/i, /busbar/i, /bus bar/i]) || bus == null || mainBreaker == null || pvBreaker == null) {
       out.push(finding({
@@ -336,7 +369,7 @@ export function evaluateDesignCodeFindings(project: ProjectRecord, profile: AhjP
         cityFeedback: "Provide the NEC load-side interconnection calculation on the SLD, including bus rating, main breaker rating, PV breaker/OCPD rating, inverter output current basis, breaker location, and any required warning label.",
         designTeamAction: "Add the 705.12 calculation and verify it matches the MSP schedule.",
         evidenceNeeded: ["MSP bus rating", "Main breaker rating", "PV breaker/OCPD rating", "Breaker location/opposite-end note", "Inverter output current basis"],
-        codeReferences: [loadSideInterconnection, powerSourceDirectory],
+        codeReferences: [loadSideRef, powerSourceDirectoryRef],
       }));
     }
   }
@@ -351,7 +384,7 @@ export function evaluateDesignCodeFindings(project: ProjectRecord, profile: AhjP
       cityFeedback: "Provide a supply-side connection detail showing exact tap location, service conductor sizes, disconnect/OCPD, conductor lengths/routing, service equipment listing implications, grounding/bonding, and utility approval requirements.",
       designTeamAction: "Add a supply-side connection detail and utility coordination note.",
       evidenceNeeded: ["Tap point detail", "Service conductor/OCPD sizing", "PV disconnect location", "Utility approval note"],
-      codeReferences: [supplySideInterconnection, oregonElectrical2023],
+      codeReferences: [supplySideRef, electricalRef],
     }));
   }
 
@@ -380,7 +413,7 @@ export function evaluateDesignCodeFindings(project: ProjectRecord, profile: AhjP
         ? "Confirm module/inverter/racking/RSD spec sheets are included and model numbers match the schedule."
         : "Add missing equipment fields/spec sheets and reconcile model numbers across the plan set.",
       evidenceNeeded: ["Module make/model/wattage/quantity", "Inverter or microinverter make/model/quantity/output", "Module and inverter spec sheets", "Racking and RSD spec sheets"],
-      codeReferences: [oregonElectrical2023, rapidShutdown],
+      codeReferences: [electricalRef, rapidShutdownRef],
     }));
   }
 
@@ -399,7 +432,7 @@ export function evaluateDesignCodeFindings(project: ProjectRecord, profile: AhjP
         cityFeedback: "Revise the equipment schedule/application so module quantity, module wattage, and DC system size match across all sheets and portal fields.",
         designTeamAction: "Correct either module quantity, module wattage, or DC kW and regenerate affected application fields.",
         evidenceNeeded: ["Corrected equipment schedule", "Corrected application DC size", "Matching SLD/module sheet"],
-        codeReferences: [oregonElectrical2023],
+        codeReferences: [electricalRef],
       }));
     }
   }
@@ -415,7 +448,7 @@ export function evaluateDesignCodeFindings(project: ProjectRecord, profile: AhjP
       cityFeedback: "Provide ESS equipment schedule, location plan, working clearance, ventilation/listing basis, disconnect/emergency shutdown details, labels, and local fire-code notes.",
       designTeamAction: "Add ESS detail sheets and verify local fire/AHJ requirements.",
       evidenceNeeded: ["ESS model/quantity", "ESS location plan", "Clearance and working space notes", "Disconnect/shutdown/label callouts"],
-      codeReferences: [essReference],
+      codeReferences: [essRef],
     }));
   }
 

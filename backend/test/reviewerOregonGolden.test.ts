@@ -104,5 +104,53 @@ try {
   console.error("  FAIL - Oregon baseline-QC golden drifted. If the change is INTENDED, regenerate with UPDATE_GOLDEN=1.");
   console.error(err instanceof Error ? err.message.slice(0, 4000) : String(err));
 }
+// --- Data-driven jurisdiction checks (non-golden) ---------------------------
+// The same fixture reviewed under an IDAHO seeded profile with prescriptive limits:
+// screens fire with state-prefixed ids and SOFTENED severity (seeded ≠ verified).
+import { buildCodeContext } from "../src/codeProfiles";
+import { evaluateDesignCodeFindings } from "../src/codeReviewRules";
+
+try {
+  const idahoSeeded = buildCodeContext("ID", "Elmore County", {
+    key: "id|elmore county|unknown", state: "ID", ahj: "Elmore County", confidence: "seeded",
+    adoptedCodes: [{ code: "NEC", edition: "2023" }, { code: "IRC", edition: "2018" }],
+    amendments: [], designCriteria: {}, fireSetbacks: [], citations: [], updatedAt: "",
+    prescriptive: { maxGroundSnowPsf: 40, maxRafterSpacingIn: 24 },
+  });
+  const idahoPayload = { ...(fixture as unknown as { parserSnapshot: Record<string, string> }).parserSnapshot, state: "ID", ahj: "Elmore County", utility: "Idaho Power" };
+  const results = evaluateBaselineRules(idahoPayload as never, idahoSeeded);
+  assert.ok(results.some((r) => r.ruleId === "id-prescriptive-snow"), `Idaho snow screen fires with state-prefixed id (${results.map((r) => r.ruleId).join(",")})`);
+  assert.ok(!results.some((r) => r.ruleId.startsWith("or-")), "no Oregon ids under an Idaho context");
+  assert.ok(results.some((r) => /Elmore County prescriptive 40 psf/.test(r.message)), "threshold + jurisdiction from the profile");
+
+  const idProject = { ...(fixture as Record<string, unknown>), state: "ID", ahj: "Elmore County", parserSnapshot: idahoPayload } as never;
+  const findings = evaluateDesignCodeFindings(idProject, null, idahoSeeded);
+  const span = findings.find((f) => f.id === "city.struct.span-table-incomplete");
+  assert.ok(span, "prescriptive span screening applies to Idaho with recorded limits");
+  assert.equal(span!.severity, "warning", "SEEDED profile softens the blocker to a warning");
+  assert.ok(span!.message.includes("Elmore County"), "message names the jurisdiction");
+  const sld = findings.find((f) => f.id === "city.plan.sld-missing");
+  assert.ok(sld && sld.codeReferences.some((c) => c.code.includes("2023 NEC") && /verify locally/i.test(c.adoptionScope)), "citations render the adopted edition with verify-locally phrasing");
+  assert.ok(!findings.some((f) => f.codeReferences.some((c) => /oregon/i.test(c.adoptionScope) && !/verify/i.test(c.adoptionScope))), "no bare Oregon-scoped citations at an Idaho county");
+  console.log(`  ok   - Idaho seeded context: data-driven screens, softened severity, adopted-edition citations`);
+} catch (err) {
+  failures++;
+  console.error("  FAIL - Idaho data-driven context checks");
+  console.error(err instanceof Error ? err.message.slice(0, 2000) : String(err));
+}
+
+// Unknown jurisdiction, no profile: model-code defaults, NO prescriptive screens.
+try {
+  const unknownCtx = buildCodeContext("WY", "Cheyenne", null);
+  const wyPayload = { ...(fixture as unknown as { parserSnapshot: Record<string, string> }).parserSnapshot, state: "WY", ahj: "Cheyenne", utility: "Rocky Mountain Power" };
+  const results = evaluateBaselineRules(wyPayload as never, unknownCtx);
+  assert.ok(!results.some((r) => /prescriptive/.test(r.ruleId)), "no prescriptive screens without recorded limits");
+  console.log(`  ok   - unknown jurisdiction: defaults context, no phantom prescriptive screens`);
+} catch (err) {
+  failures++;
+  console.error("  FAIL - unknown-jurisdiction checks");
+  console.error(err instanceof Error ? err.message.slice(0, 2000) : String(err));
+}
+
 if (failures > 0) process.exit(1);
 console.log("\nAll reviewer-golden tests passed.");

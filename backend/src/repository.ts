@@ -103,8 +103,19 @@ import { runQcForProject } from "./qc";
 import { loadStoredTemplates, formAllowedForPath } from "./ahjForms";
 import { resolvePermitPath } from "./permitPath";
 import { buildReviewerReport, renderReviewerReportHtml } from "./reviewerEngine";
+import { resolveEffectiveCodeContext } from "./codeProfiles";
 import { applyCachedVisionVerdicts } from "./reviewerVision";
 import { nowIso } from "./time";
+
+// Reviewer report with the jurisdiction's adopted-codes context resolved from the DB.
+// Single chokepoint so every internal caller reviews against the same per-AHJ data
+// (Oregon resolves to the verified seed profile — identical behavior to the legacy
+// constants; other jurisdictions get their recorded limits/citations or model-code
+// defaults with "verify locally" phrasing).
+export function buildReviewerReportFor(db: AppDb, project: ProjectRecord): ReviewerReport {
+  return buildReviewerReport(project, { codeContext: resolveEffectiveCodeContext(db, project.state, project.ahj) });
+}
+
 
 type Row = Record<string, unknown>;
 
@@ -907,7 +918,7 @@ function isStagedOrSubmitted(status: ProjectRecord["status"]): boolean {
 function operationDrafts(db: AppDb, detail: ProjectDetail): OperationStepDraft[] {
   const project = detail.project;
   const historicalReport = buildHistoricalFailureReport(db, project.id);
-  const reviewerReport = applyCachedVisionVerdicts(db, buildReviewerReport(project));
+  const reviewerReport = applyCachedVisionVerdicts(db, buildReviewerReportFor(db, project));
   const applicationDocs = buildApplicationDocumentPackage(project);
   const pendingCritical = detail.humanReviewItems.filter((item) => item.status === "pending" && item.fieldName !== "correction").length;
   const pendingCorrections = detail.humanReviewItems.filter((item) => item.status === "pending" && item.fieldName === "correction").length;
@@ -1394,7 +1405,7 @@ export function getOperationsBrief(db: AppDb, projectId: string): OperationsBrie
   const detail = getProjectDetail(db, projectId);
   const plan = syncOperationsPlan(db, projectId);
   const project = detail.project;
-  const reviewerReport = applyCachedVisionVerdicts(db, buildReviewerReport(project));
+  const reviewerReport = applyCachedVisionVerdicts(db, buildReviewerReportFor(db, project));
   const applicationDocs = buildApplicationDocumentPackage(project);
   const historicalReport = buildHistoricalFailureReport(db, projectId);
   const blockers: OperationsBriefSignal[] = [];
@@ -2018,7 +2029,7 @@ export function getLiveProjectReadinessReport(db: AppDb, projectId: string): Liv
   const detail = getProjectDetail(db, projectId);
   const project = detail.project;
   const historicalReport = buildHistoricalFailureReport(db, projectId);
-  const reviewerReport = applyCachedVisionVerdicts(db, buildReviewerReport(project));
+  const reviewerReport = applyCachedVisionVerdicts(db, buildReviewerReportFor(db, project));
   const applicationDocs = buildApplicationDocumentPackage(project);
   const activeEmailSources = db.query<Row>("SELECT id, label, last_checked_at, last_matched_count, last_error FROM email_tracking_sources WHERE active = 1 ORDER BY updated_at DESC");
 
@@ -2279,7 +2290,7 @@ export function getProjectProcessMap(db: AppDb, projectId: string): ProjectProce
   const detail = getProjectDetail(db, projectId);
   const project = detail.project;
   const historicalReport = buildHistoricalFailureReport(db, projectId);
-  const reviewerReport = applyCachedVisionVerdicts(db, buildReviewerReport(project));
+  const reviewerReport = applyCachedVisionVerdicts(db, buildReviewerReportFor(db, project));
   const applicationDocs = buildApplicationDocumentPackage(project);
 
   const accountEvidence = evidenceForTopic(project, "accountVerification");
@@ -2637,7 +2648,7 @@ function renderInstallerActionText(packet: Omit<InstallerActionPacket, "reportTe
 export function getInstallerActionPacket(db: AppDb, projectId: string): InstallerActionPacket {
   const detail = getProjectDetail(db, projectId);
   const project = detail.project;
-  const reviewerReport = applyCachedVisionVerdicts(db, buildReviewerReport(project));
+  const reviewerReport = applyCachedVisionVerdicts(db, buildReviewerReportFor(db, project));
   const historicalReport = buildHistoricalFailureReport(db, projectId);
   const applicationDocs = buildApplicationDocumentPackage(project);
   const processMap = getProjectProcessMap(db, projectId);
@@ -2862,7 +2873,7 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
   const detail = getProjectDetail(db, projectId);
   const project = detail.project;
   const historicalReport = buildHistoricalFailureReport(db, projectId);
-  const reviewerReport = applyCachedVisionVerdicts(db, buildReviewerReport(project));
+  const reviewerReport = applyCachedVisionVerdicts(db, buildReviewerReportFor(db, project));
   const applicationDocs = buildApplicationDocumentPackage(project);
   const docInventory = documentInventory(db, project);
   const processMap = getProjectProcessMap(db, projectId);
@@ -3846,7 +3857,7 @@ export function runProjectWorkflow(db: AppDb, projectId: string): ProjectWorkflo
   runQcForProject(db, projectId);
   const detail = getProjectDetail(db, projectId);
   const historicalReport = buildHistoricalFailureReport(db, projectId);
-  const reviewerReport = buildReviewerReport(detail.project);
+  const reviewerReport = buildReviewerReportFor(db, detail.project);
   const applicationDocs = buildApplicationDocumentPackage(detail.project);
 
   const qcFails = detail.qcResults.filter((item) => item.qcStatus === "fail").length;
@@ -4027,7 +4038,7 @@ export function getApplicationDocumentPackage(db: AppDb, projectId: string): App
 
 export function getReviewerReport(db: AppDb, projectId: string): ReviewerReport {
   const detail = getProjectDetail(db, projectId);
-  const report = buildReviewerReport(detail.project);
+  const report = buildReviewerReportFor(db, detail.project);
   addAuditLog(db, projectId, "system", "ahj reviewer gate", "reviewer_report.generated", {
     blockerCount: report.findings.filter((item) => item.severity === "blocker").length,
     warningCount: report.findings.filter((item) => item.severity === "warning").length,
@@ -4057,7 +4068,7 @@ export async function getReviewerReportWithVision(db: AppDb, projectId: string):
 
 export async function getReviewerReportHtml(db: AppDb, projectId: string): Promise<string> {
   const detail = getProjectDetail(db, projectId);
-  let report = buildReviewerReport(detail.project);
+  let report = buildReviewerReportFor(db, detail.project);
   // Fold in any cached vision verdicts (no new LLM cost) so the printable packet
   // matches what the operator saw after running the gate with vision.
   try {
@@ -4754,7 +4765,7 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   const detail = getProjectDetail(db, projectId);
   const failCount = detail.qcResults.filter((result) => result.qcStatus === "fail").length;
   const pendingCount = detail.humanReviewItems.filter((item) => item.status === "pending" && item.fieldName !== "correction").length;
-  const reviewerReport = buildReviewerReport(detail.project);
+  const reviewerReport = buildReviewerReportFor(db, detail.project);
   const reviewerBlockers = reviewerReport.findings.filter((finding) => finding.severity === "blocker");
   const historicalReport = buildHistoricalFailureReport(db, projectId);
   const learnedHistoricalMissing = historicalReport.checklist.filter((item) => {

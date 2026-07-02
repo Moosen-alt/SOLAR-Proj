@@ -5,6 +5,7 @@ import { parseJson } from "./json";
 import { fieldAliases, parserField } from "./normalize";
 import { nowIso } from "./time";
 import type { ParserPayload, QcStatus, Severity } from "../../shared/src/types";
+import { resolveEffectiveCodeContext } from "./codeProfiles";
 
 // Look up whether the AHJ for this project uses a portal platform that requires
 // individual sheets to be split and uploaded separately (e.g. ProjectDox, EnerGov).
@@ -164,7 +165,10 @@ export function runQcForProject(db: AppDb, projectId: string): QcRunResult {
       );
     }
 
-    for (const baseline of evaluateBaselineRules(payload)) {
+    // Jurisdiction-adopted code context: any state/county with recorded prescriptive
+    // limits gets the baseline screens (data-driven); Oregon behavior unchanged.
+    const codeCtx = resolveEffectiveCodeContext(db, clean(payload.state), clean(payload.ahj));
+    for (const baseline of evaluateBaselineRules(payload, codeCtx)) {
       if (baseline.qcStatus === "fail") failCount += 1;
       if (baseline.qcStatus === "warning") warningCount += 1;
       db.run(

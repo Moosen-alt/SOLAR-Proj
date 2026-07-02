@@ -5,6 +5,7 @@ import { evidenceForTopic, evidenceLines, fieldValue, requirementsForTopic, type
 import { nowIso } from "./time";
 import { resolveValuation } from "./valuation";
 import { resolvePermitPath, hasStampedStructuralEvidence } from "./permitPath";
+import type { EffectiveCodeContext } from "./codeProfiles";
 
 function payload(project: ProjectRecord, key: string): string {
   return fieldValue(project, key);
@@ -61,13 +62,16 @@ function confidenceVerb(check: ProjectEvidence): string {
   return "Missing";
 }
 
-export function buildReviewerReport(project: ProjectRecord): ReviewerReport {
+// opts.codeContext: the jurisdiction's adopted-codes context (resolveEffectiveCodeContext).
+// When omitted the engine behaves exactly as before the data-driven refactor — legacy
+// Oregon detection + hardcoded constants (pinned by backend/test/reviewerOregonGolden).
+export function buildReviewerReport(project: ProjectRecord, opts: { codeContext?: EffectiveCodeContext } = {}): ReviewerReport {
   const profile = findAhjProcessProfile(project);
   const findings: ReviewerFinding[] = [];
 
   addCoreProjectFindings(project, findings);
   addSubmittalDataFindings(project, findings);
-  findings.push(...evaluateDesignCodeFindings(project, profile));
+  findings.push(...evaluateDesignCodeFindings(project, profile, opts.codeContext));
   addPlanSetFindings(project, findings);
   addUtilityFindings(project, findings);
   addProfileFindings(project, profile, findings);

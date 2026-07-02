@@ -1,4 +1,5 @@
 import type { ParserPayload, QcStatus, Severity } from "../../shared/src/types";
+import type { EffectiveCodeContext } from "./codeProfiles";
 
 export interface BaselineRuleDefinition {
   id: string;
@@ -183,7 +184,7 @@ function result(
   return { ruleId, ruleName, qcStatus, severity, message, fieldName };
 }
 
-export function evaluateBaselineRules(payload: ParserPayload): BaselineQcResult[] {
+export function evaluateBaselineRules(payload: ParserPayload, ctx?: EffectiveCodeContext): BaselineQcResult[] {
   const out: BaselineQcResult[] = [];
   const state = str(payload, "state").toUpperCase();
   const ahj = str(payload, "ahj");
@@ -202,6 +203,25 @@ export function evaluateBaselineRules(payload: ParserPayload): BaselineQcResult[
   const isPacific = /pacific|pacificorp/i.test(utility);
   const isPge = /\bPGE\b|portland general/i.test(utility);
 
+  // PRESCRIPTIVE-PATH SCREENS — data-driven when a jurisdiction code context is
+  // provided (the per-AHJ adopted-codes profile), so any state/county with limits
+  // recorded gets the same screening Oregon always had. Without a context, the
+  // legacy behavior is preserved exactly: Oregon regex + the historical constants.
+  // The Oregon NEM PROGRAM rules below (25 kW residential cap, manual disconnect)
+  // stay Oregon-gated — they are OAR 860-039 utility-program policy, not adopted
+  // building-code data. Rule IDs keep their legacy "or-…" form for Oregon (blocker
+  // gating, QC history, and the goldens key off them) and use "<state>-…" elsewhere.
+  const limits = ctx
+    ? ctx.prescriptive
+    : isOregon
+      ? { maxGroundSnowPsf: 70, maxPvDeadLoadPsf: 4.5, maxRafterSpacingIn: 24, allowedWindExposures: ["B", "C"], maxExportKwWithoutStudy: 25 }
+      : {};
+  const jurisLabel = ctx && !(state === "OR" || /oregon/i.test(ahj)) ? (ctx.ahj || ctx.state || "the jurisdiction") : "Oregon";
+  const idPrefix = (ctx ? (ctx.state || "jurisdiction") : "OR").toLowerCase() === "or" ? "or" : (ctx?.state || "jurisdiction").toLowerCase();
+  const prescriptiveIds = idPrefix === "or"
+    ? { snow: "or-prescriptive-snow-70", dead: "or-prescriptive-deadload-4_5", framing: "or-prescriptive-roof-framing", wind: "or-prescriptive-wind-exposure", fire: "or-fire-pathways", export: "or-nem-tier1-export-25kw" }
+    : { snow: `${idPrefix}-prescriptive-snow`, dead: `${idPrefix}-prescriptive-deadload`, framing: `${idPrefix}-prescriptive-roof-framing`, wind: `${idPrefix}-prescriptive-wind-exposure`, fire: `${idPrefix}-fire-pathways`, export: `${idPrefix}-export-study-screen` };
+
   if (isOregon && dcKw != null && dcKw > 25) {
     out.push(result(
       "or-nem-residential-25kw",
@@ -213,13 +233,18 @@ export function evaluateBaselineRules(payload: ParserPayload): BaselineQcResult[
     ));
   }
 
-  if (isOregon && ((dcKw != null && dcKw > 50) || (exportKw != null && exportKw > 25))) {
+  // Export-study screen: threshold from the jurisdiction profile (Oregon Tier 1 = 25 kW
+  // export / 50 kW DC). The DC arm stays at 2x the export limit, matching the legacy 25/50 pair.
+  const exportLimit = limits.maxExportKwWithoutStudy;
+  if (exportLimit != null && ((dcKw != null && dcKw > exportLimit * 2) || (exportKw != null && exportKw > exportLimit))) {
     out.push(result(
-      "or-nem-tier1-export-25kw",
-      "Oregon Tier 1 export screen",
+      prescriptiveIds.export,
+      idPrefix === "or" ? "Oregon Tier 1 export screen" : `${jurisLabel} export/interconnection study screen`,
       "warning",
       "warning",
-      `Generation/export may exceed Tier 1 screens (${dcKw ?? "?"} kW DC / ${exportKw ?? "?"} kW export). Confirm Tier 2/3 utility path.`,
+      idPrefix === "or"
+        ? `Generation/export may exceed Tier 1 screens (${dcKw ?? "?"} kW DC / ${exportKw ?? "?"} kW export). Confirm Tier 2/3 utility path.`
+        : `Generation/export may exceed the ${exportLimit} kW screen (${dcKw ?? "?"} kW DC / ${exportKw ?? "?"} kW export). Confirm the utility study path.`,
       "exportKw",
     ));
   }
@@ -235,54 +260,58 @@ export function evaluateBaselineRules(payload: ParserPayload): BaselineQcResult[
     ));
   }
 
-  if (isOregon && (snow == null || snow > 70)) {
+  if (limits.maxGroundSnowPsf != null && (snow == null || snow > limits.maxGroundSnowPsf)) {
     out.push(result(
-      "or-prescriptive-snow-70",
-      "Oregon prescriptive snow limit",
+      prescriptiveIds.snow,
+      `${jurisLabel} prescriptive snow limit`,
       "warning",
       "warning",
-      snow == null ? "Ground snow load is missing for prescriptive-path screening." : `Ground snow load ${snow} psf exceeds Oregon prescriptive 70 psf screen.`,
+      snow == null ? "Ground snow load is missing for prescriptive-path screening." : `Ground snow load ${snow} psf exceeds ${jurisLabel} prescriptive ${limits.maxGroundSnowPsf} psf screen.`,
       "snow",
     ));
   }
 
-  if (isOregon && (deadLoad == null || deadLoad > 4.5)) {
+  if (limits.maxPvDeadLoadPsf != null && (deadLoad == null || deadLoad > limits.maxPvDeadLoadPsf)) {
     out.push(result(
-      "or-prescriptive-deadload-4_5",
-      "Oregon prescriptive dead load limit",
+      prescriptiveIds.dead,
+      `${jurisLabel} prescriptive dead load limit`,
       "warning",
       "warning",
-      deadLoad == null ? "PV dead load is missing for prescriptive-path screening." : `PV dead load ${deadLoad} psf exceeds Oregon prescriptive 4.5 psf screen.`,
+      deadLoad == null ? "PV dead load is missing for prescriptive-path screening." : `PV dead load ${deadLoad} psf exceeds ${jurisLabel} prescriptive ${limits.maxPvDeadLoadPsf} psf screen.`,
       "deadLoad",
     ));
   }
 
-  if (isOregon && (rafterSpacing == null || rafterSpacing > 24)) {
+  if (limits.maxRafterSpacingIn != null && (rafterSpacing == null || rafterSpacing > limits.maxRafterSpacingIn)) {
     out.push(result(
-      "or-prescriptive-roof-framing",
-      "Oregon prescriptive roof framing",
+      prescriptiveIds.framing,
+      `${jurisLabel} prescriptive roof framing`,
       "warning",
       "warning",
-      rafterSpacing == null ? "Roof framing spacing is missing." : `Roof framing spacing ${rafterSpacing} inches exceeds Oregon prescriptive 24 inch screen.`,
+      rafterSpacing == null ? "Roof framing spacing is missing." : `Roof framing spacing ${rafterSpacing} inches exceeds ${jurisLabel} prescriptive ${limits.maxRafterSpacingIn} inch screen.`,
       "roofRafterSpacing",
     ));
   }
 
-  if (isOregon && wind && !/\b(B|C)\b/i.test(wind)) {
+  const allowedWind = limits.allowedWindExposures;
+  if (allowedWind && allowedWind.length && wind && !allowedWind.some((w) => new RegExp(`\\b${w}\\b`, "i").test(wind))) {
     out.push(result(
-      "or-prescriptive-wind-exposure",
-      "Oregon prescriptive wind exposure",
+      prescriptiveIds.wind,
+      `${jurisLabel} prescriptive wind exposure`,
       "warning",
       "warning",
-      `Wind exposure "${wind}" should be B or C for the prescriptive path.`,
+      `Wind exposure "${wind}" should be ${allowedWind.join(" or ")} for the prescriptive path.`,
       "wind",
     ));
   }
 
-  if (isOregon && !hasAny(`${split}\n${notes}`, [/fire/i, /pathway/i, /access path/i, /escape path/i, /site.*plan/i])) {
+  // Fire pathway screen follows the prescriptive screens: any jurisdiction with
+  // prescriptive limits recorded (or legacy Oregon) expects pathway evidence.
+  const firePathwayScreen = Object.values(limits).some((v) => v != null && (!Array.isArray(v) || v.length > 0));
+  if (firePathwayScreen && !hasAny(`${split}\n${notes}`, [/fire/i, /pathway/i, /access path/i, /escape path/i, /site.*plan/i])) {
     out.push(result(
-      "or-fire-pathways",
-      "Oregon PV firefighter pathways",
+      prescriptiveIds.fire,
+      `${jurisLabel} PV firefighter pathways`,
       "warning",
       "warning",
       "No site/fire pathway evidence found. Confirm required firefighter access and escape pathways are shown.",
