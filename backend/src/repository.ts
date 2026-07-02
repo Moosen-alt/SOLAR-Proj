@@ -63,6 +63,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { checkStatusWithAdapter, stageWithAccela, stageWithMockPortal, stageWithPowerClerk, stageWithRecipe } from "../../portal-bot/src/index";
 import { findCompleteRecipeForProject, findAnyRecipeForProject, resolveRecipeFieldValues, markPortalRecipeForRerecord } from "./portalRecipes";
+import { notifyClientOfStatusChange, shouldNotifyClient } from "./clientNotifier";
 import { detectPlatform, publicPermitStatusCheck } from "./publicPermitStatus";
 import { projectDocsByType } from "./projectDocuments";
 import { documentInventory } from "./requiredDocuments";
@@ -4267,6 +4268,9 @@ export async function recordPermitStatusCheck(
   const source = input.source || "manual";
   const rawStatusText = await resolveStatusText(target, input.rawStatusText || "", source);
   const classification = classifyPermitStatusText(rawStatusText);
+  // Previous outcome BEFORE this check updates the target — the client is notified only
+  // when the outcome actually CHANGES (never re-sent on every poll of a settled status).
+  const previousOutcome = target ? text(target.latest_outcome) : "";
   const ts = nowIso();
   const checkId = id();
   let correctionId: string | null = null;
@@ -4372,6 +4376,17 @@ export async function recordPermitStatusCheck(
         : null,
     );
   });
+
+  // CLIENT UPDATE — after the transaction committed. Fire-and-forget: sends (or drafts,
+  // when SMTP is unconfigured) a plain-language email to the submitting client with the
+  // new status + their read-only status link, and records it in the CRM timeline.
+  if (shouldNotifyClient(classification.outcome, previousOutcome)) {
+    void notifyClientOfStatusChange(db, detail.project, {
+      outcome: classification.outcome,
+      statusLabel: classification.statusLabel,
+      targetType: text(target?.target_type) || "permit",
+    });
+  }
 
   return getProjectDetail(db, projectId);
 }

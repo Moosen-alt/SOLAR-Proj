@@ -142,7 +142,17 @@ up to the portal review screen is automated:
    MFA/CAPTCHA.**
 
 The permit/NEM status monitors and email tracker then run on their own
-(`MONITOR_INTERVAL_MINUTES`) — no manual polling.
+(`MONITOR_INTERVAL_MINUTES`) — no manual polling. Status checks are
+**recipe-first**: any portal the bot has learned gets an authenticated status
+scrape with the client's stored login, falling back to the public tracking URL.
+
+7. **Clients stay informed automatically.** When a monitored status CHANGES
+   (permit issued, ready for issue, NEM approved, correction), the submitting
+   client gets an email (configure `SMTP_*` in `.env`; without SMTP the update
+   is recorded as a draft communication instead) including their **read-only
+   status link** — a tokenized `/status` page showing address + application
+   statuses, nothing sensitive. You can also copy that link any time with
+   **Copy client status link** in the project detail.
 
 ---
 

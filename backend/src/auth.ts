@@ -176,6 +176,8 @@ export function requireAuth(db: AppDb) {
     if (openPaths.has(req.path) || req.path.startsWith("/api/auth/")) return next();
     // Public client intake link (tokenized, no login) — the page and its API.
     if (req.path === "/intake" || req.path.startsWith("/api/intake/")) return next();
+    // Public read-only client status page (tokenized, no login) — the page and its API.
+    if (req.path === "/status" || req.path.startsWith("/api/public/status/")) return next();
     if (currentUser(db, req)) return next();
     if (req.path.startsWith("/api/")) {
       res.status(401).json({ error: "Not authenticated." });

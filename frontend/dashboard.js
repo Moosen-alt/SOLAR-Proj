@@ -4098,6 +4098,18 @@ $("copyHandoffBtn").addEventListener("click", copyHandoff);
 $("copyRunbookBtn").addEventListener("click", copyRunbook);
 $("copyHandoffPacketBtn").addEventListener("click", copyHandoffPacket);
 $("copyCommunicationDraftsBtn").addEventListener("click", copyCommunicationDrafts);
+// Tokenized read-only status page for the client — created on demand, then copied.
+// The same link is auto-included in automated client update emails.
+$("shareStatusLinkBtn")?.addEventListener("click", async () => {
+  const p = state.detail?.project;
+  if (!p) { showMessage("Open a project first.", "warning"); return; }
+  try {
+    const res = await api(`/api/projects/${p.id}/share-status`, { method: "POST", body: "{}" });
+    await writeClipboardText(res.url, "Client status link copied — anyone with it sees address + status only (no login).");
+  } catch (err) {
+    showMessage(err.message || "Could not create the status link.", "error");
+  }
+});
 $("copySubmitGateBtn").addEventListener("click", copySubmitGate);
 $("copyOpsReportBtn").addEventListener("click", copyOpsReport);
 $("copyLiveReadinessBtn").addEventListener("click", copyLiveReadiness);

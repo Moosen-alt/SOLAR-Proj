@@ -954,6 +954,15 @@ const VERSIONED_MIGRATIONS: VersionedMigration[] = [
       addColumnIfMissing(db, "portal_recipes", "structure_sig", "TEXT NOT NULL DEFAULT ''");
     },
   },
+  // v4: tokenized read-only client status link. Generated lazily (first client
+  // notification or the dashboard "share status" action); blank = never shared.
+  {
+    version: 4,
+    name: "status_share_token",
+    up: (db) => {
+      addColumnIfMissing(db, "projects", "status_share_token", "TEXT NOT NULL DEFAULT ''");
+    },
+  },
 ];
 
 function runVersionedMigrations(db: AppDb): void {

@@ -44,6 +44,7 @@ import { startMonitorScheduler } from "./scheduler";
 import { startAhjFormRefreshScheduler } from "./ahjFormRefresh";
 import { extractZipToWorkdir } from "./batchZip";
 import { AUTH_ENABLED, currentUser, login, logout, me, requireAuth, seedAdminUser } from "./auth";
+import { ensureStatusShareToken, formatProjectAddress, statusShareUrl } from "./clientNotifier";
 import { getAutopilotState, runAutopilotApproval } from "./autopilot";
 import {
   addCommunication,
@@ -184,6 +185,8 @@ app.get("/api/auth/me", (req, res) => me(db, req, res));
 app.get("/login", (_req, res) => res.sendFile(path.join(frontendDir, "login.html")));
 // Public client intake page (tokenized, no login) — served before the auth gate.
 app.get("/intake", (_req, res) => res.sendFile(path.join(frontendDir, "intake.html")));
+// Public read-only client status page (tokenized link, no login).
+app.get("/status", (_req, res) => res.sendFile(path.join(frontendDir, "status.html")));
 app.use(requireAuth(db));
 
 app.use(express.static(frontendDir));
@@ -497,6 +500,58 @@ app.post("/api/projects/:id/intake-request", asyncHandler(async (req, res) => {
 app.get("/api/intake/:token", asyncHandler(async (req, res) => {
   res.json(getIntakeRequestPublic(db, String(req.params.token)));
 }));
+
+// ---------------------------------------------------------------------------
+// Client status sharing — a tokenized, read-only page the client (installer)
+// can check any time, and the link included in automated client update emails.
+// The payload is deliberately sanitized: address + status labels + track
+// history only. Never account/meter numbers, credentials, documents, or raw
+// scraped portal text.
+// ---------------------------------------------------------------------------
+app.post("/api/projects/:id/share-status", (req, res) => {
+  const projectId = String(req.params.id);
+  getProjectDetail(db, projectId); // 404 if missing
+  const token = ensureStatusShareToken(db, projectId);
+  addAuditLog(db, projectId, "human", currentUser(db, req)?.email || "operator", "client.status_link_shared", {});
+  res.json({ token, url: statusShareUrl(token) });
+});
+
+app.get("/api/public/status/:token", (req, res) => {
+  const token = String(req.params.token || "").trim();
+  if (!token) throw new HttpError(404, "Unknown status link.");
+  const row = db.get<{ id?: string }>("SELECT id FROM projects WHERE status_share_token = ? AND status_share_token != ''", [token]);
+  if (!row?.id) throw new HttpError(404, "Unknown status link.");
+  const detail = getProjectDetail(db, String(row.id));
+  const p = detail.project;
+  res.json({
+    project: {
+      address: formatProjectAddress(p),
+      ahj: p.ahj,
+      utility: p.utility,
+      status: p.status,
+      updatedAt: p.updatedAt,
+    },
+    tracks: (detail.permitCheckTargets || []).map((t) => ({
+      type: t.targetType,
+      label: t.targetType === "nem" ? "Utility interconnection (NEM)" : "Building/electrical permit",
+      statusLabel: t.latestStatusLabel || "",
+      outcome: t.latestOutcome || "",
+      lastCheckedAt: t.lastCheckedAt || null,
+      applicationNumber: t.applicationNumber || "",
+      permitNumber: t.permitNumber || "",
+    })),
+    history: (detail.permitStatusChecks || []).slice(0, 12).map((c) => ({
+      at: c.createdAt,
+      statusLabel: c.statusLabel,
+      outcome: c.outcome,
+    })),
+    submissions: (detail.submissions || []).slice(0, 6).map((sub) => ({
+      type: sub.submissionType,
+      status: sub.status,
+      submittedAt: sub.submittedAt || null,
+    })),
+  });
+});
 
 // Public (no auth): submit answers for an intake request.
 app.post("/api/intake/:token", asyncHandler(async (req, res) => {
