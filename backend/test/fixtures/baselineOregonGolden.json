@@ -1,0 +1,74 @@
+[
+  {
+    "ruleId": "or-nem-residential-25kw",
+    "ruleName": "Oregon residential NEM size screen",
+    "qcStatus": "warning",
+    "severity": "warning",
+    "message": "DC size is 60 kW. Confirm this is not a residential OAR 860-039 net metering project capped at 25 kW.",
+    "fieldName": "dcKw"
+  },
+  {
+    "ruleId": "or-nem-tier1-export-25kw",
+    "ruleName": "Oregon Tier 1 export screen",
+    "qcStatus": "warning",
+    "severity": "warning",
+    "message": "Generation/export may exceed Tier 1 screens (60 kW DC / 30 kW export). Confirm Tier 2/3 utility path.",
+    "fieldName": "exportKw"
+  },
+  {
+    "ruleId": "or-nem-manual-disconnect",
+    "ruleName": "Oregon NEM manual disconnect",
+    "qcStatus": "warning",
+    "severity": "warning",
+    "message": "AC/manual disconnect requirement was not clearly identified. Confirm lockable load-break disconnect or documented utility exception.",
+    "fieldName": "acDiscReq"
+  },
+  {
+    "ruleId": "or-prescriptive-snow-70",
+    "ruleName": "Oregon prescriptive snow limit",
+    "qcStatus": "warning",
+    "severity": "warning",
+    "message": "Ground snow load 85 psf exceeds Oregon prescriptive 70 psf screen.",
+    "fieldName": "snow"
+  },
+  {
+    "ruleId": "or-prescriptive-deadload-4_5",
+    "ruleName": "Oregon prescriptive dead load limit",
+    "qcStatus": "warning",
+    "severity": "warning",
+    "message": "PV dead load 5 psf exceeds Oregon prescriptive 4.5 psf screen.",
+    "fieldName": "deadLoad"
+  },
+  {
+    "ruleId": "or-prescriptive-roof-framing",
+    "ruleName": "Oregon prescriptive roof framing",
+    "qcStatus": "warning",
+    "severity": "warning",
+    "message": "Roof framing spacing 32 inches exceeds Oregon prescriptive 24 inch screen.",
+    "fieldName": "roofRafterSpacing"
+  },
+  {
+    "ruleId": "or-prescriptive-wind-exposure",
+    "ruleName": "Oregon prescriptive wind exposure",
+    "qcStatus": "warning",
+    "severity": "warning",
+    "message": "Wind exposure \"D\" should be B or C for the prescriptive path.",
+    "fieldName": "wind"
+  },
+  {
+    "ruleId": "portland-submittal-docs",
+    "ruleName": "Portland solar submittal documents",
+    "qcStatus": "warning",
+    "severity": "warning",
+    "message": "Portland package may be missing: fire access path, roof cross-section, racking attachment.",
+    "fieldName": "splitPagesText"
+  },
+  {
+    "ruleId": "pge-powerclerk-docs",
+    "ruleName": "PGE interconnection package",
+    "qcStatus": "warning",
+    "severity": "warning",
+    "message": "PGE package may be missing: SLD/3-line, module spec, inverter spec, utility account.",
+    "fieldName": "utilityDownloadChecklistText"
+  }
+]

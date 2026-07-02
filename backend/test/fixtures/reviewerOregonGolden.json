@@ -1,0 +1,1310 @@
+{
+  "projectId": "golden-or-1",
+  "generatedAt": "<normalized>",
+  "matchedProcessProfile": null,
+  "findings": [
+    {
+      "id": "reviewer.submit.valuation-estimate",
+      "severity": "callout",
+      "category": "project_data",
+      "title": "Project valuation is an estimate",
+      "message": "No contract value on file; using a per-watt estimate of $180,000. Estimated at $3.00/W × 60 kW DC. Confirm against the actual contract value before final submit.",
+      "cityFeedback": "No contract value on file; using a per-watt estimate of $180,000. Estimated at $3.00/W × 60 kW DC. Confirm against the actual contract value before final submit.",
+      "designTeamAction": "Request the actual contract / installed cost from the client via the intake link, or confirm the estimate is acceptable for this AHJ's fee schedule.",
+      "evidenceNeeded": [],
+      "codeReferences": [],
+      "installerCallout": true,
+      "evidenceStatus": "weak",
+      "evidenceFound": [
+        {
+          "kind": "absence_check",
+          "label": "General source check",
+          "source": "Parsed project package",
+          "excerpt": "No contract value on file; using a per-watt estimate of $180,000. Estimated at $3.00/W × 60 kW DC. Confirm against the actual contract value before final submit.",
+          "confidence": "medium",
+          "pageHint": "",
+          "screenshotPath": "",
+          "verifier": "rule_engine",
+          "note": "Rule-generated callout. Human should verify the source package before forwarding."
+        }
+      ]
+    },
+    {
+      "id": "city.plan.sld-missing",
+      "severity": "blocker",
+      "category": "electrical",
+      "title": "Electrical one-line not reviewable",
+      "message": "The package does not clearly map an SLD/one-line/three-line diagram.",
+      "cityFeedback": "Provide a complete electrical one-line diagram showing modules, inverter(s), rapid shutdown equipment, disconnects, point of interconnection, service equipment ratings, grounding/bonding path, and utility meter/service relationship.",
+      "designTeamAction": "Add or remap the SLD sheet and verify it matches the equipment schedule and interconnection method.",
+      "evidenceNeeded": [
+        "SLD/one-line sheet number",
+        "Point of interconnection detail",
+        "Disconnect/OCPD schedule",
+        "Grounding/bonding callouts"
+      ],
+      "codeReferences": [
+        {
+          "code": "2023 OESC / 2023 NEC",
+          "section": "NEC Articles 690 and 705",
+          "title": "Solar PV and interconnected power production sources",
+          "adoptionScope": "Oregon electrical submittals; verify local adopted NEC cycle outside Oregon.",
+          "sourceUrl": "https://www.oregon.gov/bcd/codes-stand/pages/electrical.aspx",
+          "note": "Oregon BCD lists the 2023 Oregon Electrical Specialty Code as effective Oct. 1, 2023 and based on the 2023 NEC."
+        },
+        {
+          "code": "NEC",
+          "section": "705.12",
+          "title": "Load-side source connections",
+          "adoptionScope": "PV connected on the load side of service equipment.",
+          "sourceUrl": "https://codes.iccsafe.org/s/ISEP2021P1/national-electrical-code-nec-solar-provisions/ISEP2021P1-NEC-Sec705.12",
+          "note": "Verify against the adopted NEC edition; plan reviewers commonly expect bus/main/PV breaker math to be explicit."
+        },
+        {
+          "code": "NEC",
+          "section": "705.11",
+          "title": "Supply-side source connections",
+          "adoptionScope": "PV connected ahead of the service disconnect or by line-side tap.",
+          "sourceUrl": "https://www.oregon.gov/bcd/codes-stand/pages/electrical.aspx",
+          "note": "Show the tap point, disconnect/OCPD, conductor routing, utility coordination, and service equipment details."
+        }
+      ],
+      "installerCallout": true,
+      "evidenceFound": [
+        {
+          "kind": "source_excerpt",
+          "label": "sld evidence",
+          "source": "Split page mapping",
+          "excerpt": "one-line diagram rapid shutdown site plan roof plan",
+          "confidence": "high",
+          "pageHint": "Split page mapping",
+          "screenshotPath": "",
+          "verifier": "parser",
+          "note": "Parser found strong supporting source text."
+        },
+        {
+          "kind": "screenshot_placeholder",
+          "label": "Screenshot crop slot",
+          "source": "Split page mapping",
+          "excerpt": "",
+          "confidence": "high",
+          "pageHint": "Split page mapping",
+          "screenshotPath": "/api/projects/golden-or-1/evidence-image?topic=sld&hint=Split%20page%20mapping&excerpt=one-line%20diagram%20rapid%20shutdown%20site%20plan%20roof%20plan",
+          "verifier": "parser",
+          "note": "Source page will render here. If no plan-set PDF is stored, upload it to Project Documents — then this slot shows the sheet. Use the source/page hint above meanwhile."
+        }
+      ],
+      "evidenceStatus": "verified"
+    },
+    {
+      "id": "city.fire.pathways-missing",
+      "severity": "blocker",
+      "category": "plan_set",
+      "title": "Fire access pathway evidence missing",
+      "message": "No fire access pathway/setback evidence was detected in the mapped plan package.",
+      "cityFeedback": "Revise the roof plan to show firefighter access pathways, ridge/eave setbacks, smoke ventilation areas where required, and any applicable exception basis. Dimensions must be shown on the plan, not only stated in notes.",
+      "designTeamAction": "Add pathway dimensions and exception notes to the roof plan; confirm local fire-code amendments for the AHJ.",
+      "evidenceNeeded": [
+        "Dimensioned pathway/setback callouts",
+        "Ridge/eave/valley/hip labels",
+        "Applicable fire-code exception, if used"
+      ],
+      "codeReferences": [
+        {
+          "code": "IRC",
+          "section": "R324.6",
+          "title": "Roof access and pathways for PV systems",
+          "adoptionScope": "Residential rooftop PV where adopted by the AHJ.",
+          "sourceUrl": "https://codes.iccsafe.org/s/IRC2021P2/chapter-3-building-planning/IRC2021P2-Pt03-Ch03-SecR324.6.1",
+          "note": "Use the local code cycle and fire official amendments for pathway/setback dimensions and exceptions."
+        },
+        {
+          "code": "IFC",
+          "section": "1205.2",
+          "title": "Access and pathways for PV systems",
+          "adoptionScope": "Fire-code review for rooftop PV.",
+          "sourceUrl": "https://codes.iccsafe.org/s/IFC2021P1/chapter-12-energy-systems/IFC2021P1-Pt03-Ch12-Sec1205.2",
+          "note": "Pathways should be placed over structurally capable roof areas with minimal obstructions."
+        }
+      ],
+      "installerCallout": true,
+      "evidenceFound": [
+        {
+          "kind": "absence_check",
+          "label": "firePathway absence check",
+          "source": "Parsed project package",
+          "excerpt": "No matching evidence found. Checked for: Dimensioned roof pathway, Ridge/eave/setback notes, AHJ/fire exception basis if used.",
+          "confidence": "low",
+          "pageHint": "",
+          "screenshotPath": "",
+          "verifier": "rule_engine",
+          "note": "This is a missing-proof callout, not proof of a design defect. Verify the source package before sending to client."
+        }
+      ],
+      "evidenceStatus": "missing"
+    },
+    {
+      "id": "city.struct.framing-missing",
+      "severity": "blocker",
+      "category": "structural",
+      "title": "Roof framing information missing",
+      "message": "The plan package does not show enough roof framing information for structural review.",
+      "cityFeedback": "Provide roof framing type and member information: rafter/truss type, member size, spacing, span, species/grade when applicable, roof slope, sheathing, array attachment locations, and whether the design uses a prescriptive or engineered path.",
+      "designTeamAction": "Add structural/framing notes or a stamped structural letter/calculation package.",
+      "evidenceNeeded": [
+        "Rafter/truss size and spacing",
+        "Clear span/support condition",
+        "Roof slope",
+        "Prescriptive worksheet or stamped structural calculation"
+      ],
+      "codeReferences": [
+        {
+          "code": "IRC / ORSC",
+          "section": "R324.4.1",
+          "title": "Rooftop-mounted photovoltaic systems and roof loads",
+          "adoptionScope": "One- and two-family residential rooftop PV, subject to local amendments.",
+          "sourceUrl": "https://codes.iccsafe.org/content/IRC2021P1/chapter-3-building-planning",
+          "note": "Roof structure, dead load, live load, and attachment assumptions must be shown clearly enough for review."
+        },
+        {
+          "code": "ORSC / OSSC",
+          "section": "Oregon Prescriptive Rooftop-Mounted Solar PV Checklist",
+          "title": "Oregon prescriptive rooftop PV installation screening",
+          "adoptionScope": "Oregon residential and commercial prescriptive rooftop PV path.",
+          "sourceUrl": "https://www.washingtoncountyor.gov/lut/building-services/documents/solar-checklist/download?inline=",
+          "note": "Common screens include PV dead load, ground snow load, wind exposure, roof slope, and framing spacing/span evidence."
+        },
+        {
+          "code": "OSSC",
+          "section": "Table 2308.7.2(1)",
+          "title": "Rafter span tables used by Portland solar worksheet",
+          "adoptionScope": "Portland-style prescriptive rafter span review; useful baseline for Oregon AHJ review.",
+          "sourceUrl": "https://www.portland.gov/ppd/documents/solar-worksheet/download",
+          "note": "Show rafter size, spacing, species/grade, span, roof slope, and support conditions when using a prescriptive path."
+        }
+      ],
+      "installerCallout": true,
+      "evidenceFound": [
+        {
+          "kind": "absence_check",
+          "label": "roofFraming absence check",
+          "source": "Parsed project package",
+          "excerpt": "No matching evidence found. Checked for: Rafter/truss type, Member size/spacing/span, Prescriptive worksheet or stamped engineering.",
+          "confidence": "low",
+          "pageHint": "",
+          "screenshotPath": "",
+          "verifier": "rule_engine",
+          "note": "This is a missing-proof callout, not proof of a design defect. Verify the source package before sending to client."
+        }
+      ],
+      "evidenceStatus": "missing"
+    },
+    {
+      "id": "city.struct.span-table-incomplete",
+      "severity": "blocker",
+      "category": "structural",
+      "title": "Prescriptive rafter span evidence incomplete",
+      "message": "Oregon-style prescriptive review needs rafter/truss spacing and span evidence or an engineered alternate path.",
+      "cityFeedback": "Provide the prescriptive rooftop PV checklist/worksheet information, including framing member size, spacing, span, species/grade, roof slope, dead load, snow load, and wind exposure. If this cannot be documented, provide stamped engineering.",
+      "designTeamAction": "Complete the structural worksheet inputs or route the design to engineered review.",
+      "evidenceNeeded": [
+        "Framing spacing",
+        "Framing clear span",
+        "Species/grade or engineered truss evidence",
+        "Dead load, snow load, wind exposure"
+      ],
+      "codeReferences": [
+        {
+          "code": "ORSC / OSSC",
+          "section": "Oregon Prescriptive Rooftop-Mounted Solar PV Checklist",
+          "title": "Oregon prescriptive rooftop PV installation screening",
+          "adoptionScope": "Oregon residential and commercial prescriptive rooftop PV path.",
+          "sourceUrl": "https://www.washingtoncountyor.gov/lut/building-services/documents/solar-checklist/download?inline=",
+          "note": "Common screens include PV dead load, ground snow load, wind exposure, roof slope, and framing spacing/span evidence."
+        },
+        {
+          "code": "OSSC",
+          "section": "Table 2308.7.2(1)",
+          "title": "Rafter span tables used by Portland solar worksheet",
+          "adoptionScope": "Portland-style prescriptive rafter span review; useful baseline for Oregon AHJ review.",
+          "sourceUrl": "https://www.portland.gov/ppd/documents/solar-worksheet/download",
+          "note": "Show rafter size, spacing, species/grade, span, roof slope, and support conditions when using a prescriptive path."
+        },
+        {
+          "code": "IRC / ORSC",
+          "section": "R324.4.1",
+          "title": "Rooftop-mounted photovoltaic systems and roof loads",
+          "adoptionScope": "One- and two-family residential rooftop PV, subject to local amendments.",
+          "sourceUrl": "https://codes.iccsafe.org/content/IRC2021P1/chapter-3-building-planning",
+          "note": "Roof structure, dead load, live load, and attachment assumptions must be shown clearly enough for review."
+        }
+      ],
+      "installerCallout": true,
+      "evidenceFound": [
+        {
+          "kind": "absence_check",
+          "label": "roofFraming absence check",
+          "source": "Parsed project package",
+          "excerpt": "No matching evidence found. Checked for: Rafter/truss type, Member size/spacing/span, Prescriptive worksheet or stamped engineering.",
+          "confidence": "low",
+          "pageHint": "",
+          "screenshotPath": "",
+          "verifier": "rule_engine",
+          "note": "This is a missing-proof callout, not proof of a design defect. Verify the source package before sending to client."
+        }
+      ],
+      "evidenceStatus": "missing"
+    },
+    {
+      "id": "city.elec.labels-missing",
+      "severity": "warning",
+      "category": "electrical",
+      "title": "PV label schedule not obvious",
+      "message": "The package does not clearly show required PV placards/labels.",
+      "cityFeedback": "Provide a PV label schedule showing service equipment directory, rapid shutdown label, disconnect labels, backfed breaker warning where applicable, and any AHJ/utility-specific placards.",
+      "designTeamAction": "Add label sheet or label callouts to the electrical plan.",
+      "evidenceNeeded": [
+        "Label schedule",
+        "Placard locations",
+        "Backfed breaker warning where applicable",
+        "Power source directory"
+      ],
+      "codeReferences": [
+        {
+          "code": "NEC",
+          "section": "690.12",
+          "title": "Rapid shutdown of PV systems on buildings",
+          "adoptionScope": "Rooftop/building-mounted PV where the AHJ has adopted NEC rapid shutdown provisions.",
+          "sourceUrl": "https://www.oregon.gov/bcd/codes-stand/pages/electrical.aspx",
+          "note": "Use the locally adopted NEC edition and amendments for exact label/control wording."
+        },
+        {
+          "code": "NEC",
+          "section": "705.10",
+          "title": "Identification of power sources",
+          "adoptionScope": "Interconnected PV systems.",
+          "sourceUrl": "https://www.oregon.gov/bcd/codes-stand/pages/electrical.aspx",
+          "note": "Plan sets should include a permanent directory/placard concept where required by the adopted NEC."
+        }
+      ],
+      "installerCallout": true,
+      "evidenceFound": [
+        {
+          "kind": "absence_check",
+          "label": "labels absence check",
+          "source": "Parsed project package",
+          "excerpt": "No matching evidence found. Checked for: PV label schedule, Placard locations, Power source directory.",
+          "confidence": "low",
+          "pageHint": "",
+          "screenshotPath": "",
+          "verifier": "rule_engine",
+          "note": "This is a missing-proof callout, not proof of a design defect. Verify the source package before sending to client."
+        }
+      ],
+      "evidenceStatus": "missing"
+    },
+    {
+      "id": "city.elec.load-side-over-120",
+      "severity": "blocker",
+      "category": "electrical",
+      "title": "Load-side interconnection exceeds 120 percent bus screen",
+      "message": "Captured ratings produce 200A main + 70A PV on a 200A bus, which exceeds 120 percent of bus rating.",
+      "cityFeedback": "Revise the interconnection design. The load-side calculation shown by the captured data does not satisfy the common 120 percent busbar screen. Provide a compliant alternate calculation, breaker relocation, de-rated main, supply-side connection, service upgrade, or engineered basis as applicable.",
+      "designTeamAction": "Correct the interconnection method and update the one-line/load calculation.",
+      "evidenceNeeded": [
+        "MSP bus rating",
+        "Main breaker rating",
+        "PV breaker/OCPD rating",
+        "705.12 calculation or alternate basis"
+      ],
+      "codeReferences": [
+        {
+          "code": "NEC",
+          "section": "705.12",
+          "title": "Load-side source connections",
+          "adoptionScope": "PV connected on the load side of service equipment.",
+          "sourceUrl": "https://codes.iccsafe.org/s/ISEP2021P1/national-electrical-code-nec-solar-provisions/ISEP2021P1-NEC-Sec705.12",
+          "note": "Verify against the adopted NEC edition; plan reviewers commonly expect bus/main/PV breaker math to be explicit."
+        }
+      ],
+      "installerCallout": true,
+      "evidenceFound": [
+        {
+          "kind": "source_excerpt",
+          "label": "sld evidence",
+          "source": "Split page mapping",
+          "excerpt": "one-line diagram rapid shutdown site plan roof plan",
+          "confidence": "high",
+          "pageHint": "Split page mapping",
+          "screenshotPath": "",
+          "verifier": "parser",
+          "note": "Parser found strong supporting source text."
+        },
+        {
+          "kind": "screenshot_placeholder",
+          "label": "Screenshot crop slot",
+          "source": "Split page mapping",
+          "excerpt": "",
+          "confidence": "high",
+          "pageHint": "Split page mapping",
+          "screenshotPath": "/api/projects/golden-or-1/evidence-image?topic=sld&hint=Split%20page%20mapping&excerpt=one-line%20diagram%20rapid%20shutdown%20site%20plan%20roof%20plan",
+          "verifier": "parser",
+          "note": "Source page will render here. If no plan-set PDF is stored, upload it to Project Documents — then this slot shows the sheet. Use the source/page hint above meanwhile."
+        }
+      ],
+      "evidenceStatus": "verified"
+    },
+    {
+      "id": "city.elec.equipment-specs-incomplete",
+      "severity": "blocker",
+      "category": "electrical",
+      "title": "Equipment schedule/spec package incomplete",
+      "message": "Module/inverter schedule or spec-sheet evidence is incomplete.",
+      "cityFeedback": "Provide a complete equipment schedule and matching specification sheets for modules, inverter(s)/microinverters, racking, rapid shutdown devices, ESS equipment if applicable, and disconnect/OCPD equipment. Equipment names on specs must match the SLD and application.",
+      "designTeamAction": "Add missing equipment fields/spec sheets and reconcile model numbers across the plan set.",
+      "evidenceNeeded": [
+        "Module make/model/wattage/quantity",
+        "Inverter or microinverter make/model/quantity/output",
+        "Module and inverter spec sheets",
+        "Racking and RSD spec sheets"
+      ],
+      "codeReferences": [
+        {
+          "code": "2023 OESC / 2023 NEC",
+          "section": "NEC Articles 690 and 705",
+          "title": "Solar PV and interconnected power production sources",
+          "adoptionScope": "Oregon electrical submittals; verify local adopted NEC cycle outside Oregon.",
+          "sourceUrl": "https://www.oregon.gov/bcd/codes-stand/pages/electrical.aspx",
+          "note": "Oregon BCD lists the 2023 Oregon Electrical Specialty Code as effective Oct. 1, 2023 and based on the 2023 NEC."
+        },
+        {
+          "code": "NEC",
+          "section": "690.12",
+          "title": "Rapid shutdown of PV systems on buildings",
+          "adoptionScope": "Rooftop/building-mounted PV where the AHJ has adopted NEC rapid shutdown provisions.",
+          "sourceUrl": "https://www.oregon.gov/bcd/codes-stand/pages/electrical.aspx",
+          "note": "Use the locally adopted NEC edition and amendments for exact label/control wording."
+        }
+      ],
+      "installerCallout": true,
+      "evidenceFound": [
+        {
+          "kind": "source_excerpt",
+          "label": "sld evidence",
+          "source": "Split page mapping",
+          "excerpt": "one-line diagram rapid shutdown site plan roof plan",
+          "confidence": "high",
+          "pageHint": "Split page mapping",
+          "screenshotPath": "",
+          "verifier": "parser",
+          "note": "Parser found strong supporting source text."
+        },
+        {
+          "kind": "screenshot_placeholder",
+          "label": "Screenshot crop slot",
+          "source": "Split page mapping",
+          "excerpt": "",
+          "confidence": "high",
+          "pageHint": "Split page mapping",
+          "screenshotPath": "/api/projects/golden-or-1/evidence-image?topic=sld&hint=Split%20page%20mapping&excerpt=one-line%20diagram%20rapid%20shutdown%20site%20plan%20roof%20plan",
+          "verifier": "parser",
+          "note": "Source page will render here. If no plan-set PDF is stored, upload it to Project Documents — then this slot shows the sheet. Use the source/page hint above meanwhile."
+        }
+      ],
+      "evidenceStatus": "verified"
+    },
+    {
+      "id": "city.elec.dc-size-mismatch",
+      "severity": "blocker",
+      "category": "electrical",
+      "title": "DC size mismatch",
+      "message": "Captured module count/wattage calculates 60.20 kW DC but project DC size is 60.00 kW.",
+      "cityFeedback": "Revise the equipment schedule/application so module quantity, module wattage, and DC system size match across all sheets and portal fields.",
+      "designTeamAction": "Correct either module quantity, module wattage, or DC kW and regenerate affected application fields.",
+      "evidenceNeeded": [
+        "Corrected equipment schedule",
+        "Corrected application DC size",
+        "Matching SLD/module sheet"
+      ],
+      "codeReferences": [
+        {
+          "code": "2023 OESC / 2023 NEC",
+          "section": "NEC Articles 690 and 705",
+          "title": "Solar PV and interconnected power production sources",
+          "adoptionScope": "Oregon electrical submittals; verify local adopted NEC cycle outside Oregon.",
+          "sourceUrl": "https://www.oregon.gov/bcd/codes-stand/pages/electrical.aspx",
+          "note": "Oregon BCD lists the 2023 Oregon Electrical Specialty Code as effective Oct. 1, 2023 and based on the 2023 NEC."
+        }
+      ],
+      "installerCallout": true,
+      "evidenceFound": [
+        {
+          "kind": "source_excerpt",
+          "label": "sld evidence",
+          "source": "Split page mapping",
+          "excerpt": "one-line diagram rapid shutdown site plan roof plan",
+          "confidence": "high",
+          "pageHint": "Split page mapping",
+          "screenshotPath": "",
+          "verifier": "parser",
+          "note": "Parser found strong supporting source text."
+        },
+        {
+          "kind": "screenshot_placeholder",
+          "label": "Screenshot crop slot",
+          "source": "Split page mapping",
+          "excerpt": "",
+          "confidence": "high",
+          "pageHint": "Split page mapping",
+          "screenshotPath": "/api/projects/golden-or-1/evidence-image?topic=sld&hint=Split%20page%20mapping&excerpt=one-line%20diagram%20rapid%20shutdown%20site%20plan%20roof%20plan",
+          "verifier": "parser",
+          "note": "Source page will render here. If no plan-set PDF is stored, upload it to Project Documents — then this slot shows the sheet. Use the source/page hint above meanwhile."
+        }
+      ],
+      "evidenceStatus": "verified"
+    },
+    {
+      "id": "reviewer.plan.rapid-shutdown",
+      "severity": "warning",
+      "category": "plan_set",
+      "title": "Verify rapid shutdown evidence not clear",
+      "message": "Rapid shutdown evidence not clear. Found medium-confidence evidence: one-line diagram rapid shutdown site plan roof plan",
+      "cityFeedback": "Rapid shutdown evidence not clear. The parser found only medium-confidence evidence. Found medium-confidence evidence: one-line diagram rapid shutdown site plan roof plan",
+      "designTeamAction": "Confirm the parsed evidence is on the current plan set. Show rapid shutdown equipment, initiation/control location, and required labels.",
+      "evidenceNeeded": [
+        "Rapid shutdown equipment",
+        "RSD initiation/control location",
+        "RSD label/placard callout",
+        "Parsed evidence: one-line diagram rapid shutdown site plan roof plan"
+      ],
+      "codeReferences": [],
+      "installerCallout": true,
+      "evidenceStatus": "weak",
+      "evidenceFound": [
+        {
+          "kind": "source_excerpt",
+          "label": "rapidShutdown evidence",
+          "source": "Split page mapping",
+          "excerpt": "one-line diagram rapid shutdown site plan roof plan",
+          "confidence": "medium",
+          "pageHint": "Split page mapping",
+          "screenshotPath": "",
+          "verifier": "parser",
+          "note": "Parser found possible source text; human should verify on the source sheet."
+        },
+        {
+          "kind": "screenshot_placeholder",
+          "label": "Screenshot crop slot",
+          "source": "Split page mapping",
+          "excerpt": "",
+          "confidence": "medium",
+          "pageHint": "Split page mapping",
+          "screenshotPath": "/api/projects/golden-or-1/evidence-image?topic=rapidShutdown&hint=Split%20page%20mapping&excerpt=one-line%20diagram%20rapid%20shutdown%20site%20plan%20roof%20plan",
+          "verifier": "parser",
+          "note": "Source page will render here. If no plan-set PDF is stored, upload it to Project Documents — then this slot shows the sheet. Use the source/page hint above meanwhile."
+        }
+      ]
+    },
+    {
+      "id": "reviewer.utility.pge-account",
+      "severity": "warning",
+      "category": "utility_nem",
+      "title": "Verify PGE account evidence",
+      "message": "PGE/NEM submission has an account value, but parsed utility bill/account match evidence is not strong enough. Found medium-confidence evidence: Project account number ****ured: ******7890",
+      "cityFeedback": "Utility account evidence is incomplete: account number alone is not enough for a clean intake pass.",
+      "designTeamAction": "Verify utility bill/account holder/service address match before staging the NEM application.",
+      "evidenceNeeded": [
+        "Utility bill/account holder match",
+        "Utility account number",
+        "Service address match",
+        "Parsed evidence: Project account number ****ured: ******7890"
+      ],
+      "codeReferences": [],
+      "installerCallout": true,
+      "evidenceStatus": "weak",
+      "evidenceFound": [
+        {
+          "kind": "source_excerpt",
+          "label": "accountVerification evidence",
+          "source": "Normalized project field",
+          "excerpt": "Project account number ****ured: ******7890",
+          "confidence": "medium",
+          "pageHint": "Project field",
+          "screenshotPath": "",
+          "verifier": "parser",
+          "note": "Parser found possible source text; human should verify on the source sheet."
+        },
+        {
+          "kind": "screenshot_placeholder",
+          "label": "Screenshot crop slot",
+          "source": "Normalized project field",
+          "excerpt": "",
+          "confidence": "medium",
+          "pageHint": "Project field",
+          "screenshotPath": "/api/projects/golden-or-1/evidence-image?topic=accountVerification&hint=Project%20field&excerpt=Project%20account%20number%20****ured%3A%20******7890",
+          "verifier": "parser",
+          "note": "Source page will render here. If no plan-set PDF is stored, upload it to Project Documents — then this slot shows the sheet. Use the source/page hint above meanwhile."
+        }
+      ]
+    },
+    {
+      "id": "reviewer.permit-path.engineered",
+      "severity": "warning",
+      "category": "structural",
+      "title": "Engineered path — collect stamped structural docs",
+      "message": "Non-prescriptive (engineered) path: this submittal needs a PE-stamped plan set + structural engineering letter/calcs, which are NOT yet in the uploaded files. Collect them from the installer/engineer of record before submitting. Upload ONLY the structural application (not the prescriptive one).",
+      "cityFeedback": "Non-prescriptive solar requires a stamped structural plan set and engineer's letter/calcs, plus the structural (not prescriptive) application; it triggers plan review and full structural fees.",
+      "designTeamAction": "Request the PE-stamped structural plans + structural engineering letter from the installer/engineer of record and attach them before staging.",
+      "evidenceNeeded": [
+        "PE-stamped structural plan set (wet/digital stamp on the structural sheets)",
+        "Structural engineering letter or stamped calculations (PE-sealed)"
+      ],
+      "codeReferences": [],
+      "installerCallout": true,
+      "evidenceStatus": "weak",
+      "evidenceFound": [
+        {
+          "kind": "absence_check",
+          "label": "General source check",
+          "source": "Parsed project package",
+          "excerpt": "Non-prescriptive (engineered) path: this submittal needs a PE-stamped plan set + structural engineering letter/calcs, which are NOT yet in the uploaded files. Collect them from the installer/engineer of record before submitting. Upload ONLY the structural application (not the prescriptive one).",
+          "confidence": "low",
+          "pageHint": "",
+          "screenshotPath": "",
+          "verifier": "rule_engine",
+          "note": "Rule-generated callout. Human should verify the source package before forwarding."
+        }
+      ]
+    },
+    {
+      "id": "installer.scope-confirm",
+      "severity": "callout",
+      "category": "installer",
+      "title": "Installer pre-submittal scope confirmation",
+      "message": "Confirm with installer: roof planes, array layout, interconnection method (Load-side breaker), MSP/main/PV breaker, battery backup mode, and any MPU/LST/locate-triggering work.",
+      "cityFeedback": "Confirm with installer: roof planes, array layout, interconnection method (Load-side breaker), MSP/main/PV breaker, battery backup mode, and any MPU/LST/locate-triggering work.",
+      "designTeamAction": "Verify and correct this item before staging the submittal.",
+      "evidenceNeeded": [],
+      "codeReferences": [],
+      "installerCallout": true,
+      "evidenceStatus": "weak",
+      "evidenceFound": [
+        {
+          "kind": "absence_check",
+          "label": "General source check",
+          "source": "Parsed project package",
+          "excerpt": "Confirm with installer: roof planes, array layout, interconnection method (Load-side breaker), MSP/main/PV breaker, battery backup mode, and any MPU/LST/locate-triggering work.",
+          "confidence": "medium",
+          "pageHint": "",
+          "screenshotPath": "",
+          "verifier": "rule_engine",
+          "note": "Rule-generated callout. Human should verify the source package before forwarding."
+        }
+      ]
+    },
+    {
+      "id": "reviewer.profile.missing",
+      "severity": "warning",
+      "category": "ahj_profile",
+      "title": "No seeded AHJ process profile matched",
+      "message": "Use generic AHJ docs and verify local application/stamp/signature requirements manually before submittal.",
+      "cityFeedback": "The project jurisdiction/process requirements could not be matched to the seeded AHJ profile table. Provide confirmation of the AHJ, portal path, required applications, signature/stamp requirements, and utility sequencing before submission.",
+      "designTeamAction": "Confirm the AHJ/process profile and add any required local forms or stamped documents.",
+      "evidenceNeeded": [
+        "Verified AHJ/jurisdiction",
+        "Portal/process path",
+        "Required local forms",
+        "Stamp/signature requirements"
+      ],
+      "codeReferences": [],
+      "installerCallout": true,
+      "evidenceStatus": "missing",
+      "evidenceFound": [
+        {
+          "kind": "absence_check",
+          "label": "batteryMode absence check",
+          "source": "Parsed project package",
+          "excerpt": "No matching evidence found. Checked for: Battery model/quantity, Backup/non-backup mode, Export setting, Backup panel scope.",
+          "confidence": "low",
+          "pageHint": "",
+          "screenshotPath": "",
+          "verifier": "rule_engine",
+          "note": "This is a missing-proof callout, not proof of a design defect. Verify the source package before sending to client."
+        }
+      ]
+    },
+    {
+      "id": "reviewer.submit.preview-required",
+      "severity": "callout",
+      "category": "portal",
+      "title": "Final AHJ preview is required",
+      "message": "Do not rely on seeing only a submit button. The operator must see the actual AHJ/utility final-review page or generated final review packet, compare all fields/uploads, then manually click submit.",
+      "cityFeedback": "Automation may stage the package but may not complete legal submission. Final review requires visible AHJ/utility preview, uploaded file list, application fields, fees/acknowledgements, and manual human submit.",
+      "designTeamAction": "Use the final review packet and portal preview to reconcile every field and upload before manual submit.",
+      "evidenceNeeded": [
+        "Visible portal final-review screen or internal final review packet",
+        "Uploaded file list",
+        "Application field summary",
+        "Human submit confirmation"
+      ],
+      "codeReferences": [],
+      "installerCallout": false,
+      "evidenceStatus": "profile",
+      "evidenceFound": [
+        {
+          "kind": "process_profile",
+          "label": "Submission safeguard",
+          "source": "Portal automation policy",
+          "excerpt": "Automation must stop at final review. Human must verify fields/uploads/fees and manually submit.",
+          "confidence": "high",
+          "pageHint": "Final submit gate",
+          "screenshotPath": "",
+          "verifier": "rule_engine",
+          "note": "This is a required safety control, not a design deficiency."
+        }
+      ]
+    }
+  ],
+  "installerCallouts": [
+    {
+      "id": "reviewer.submit.valuation-estimate",
+      "severity": "callout",
+      "category": "project_data",
+      "title": "Project valuation is an estimate",
+      "message": "No contract value on file; using a per-watt estimate of $180,000. Estimated at $3.00/W × 60 kW DC. Confirm against the actual contract value before final submit.",
+      "cityFeedback": "No contract value on file; using a per-watt estimate of $180,000. Estimated at $3.00/W × 60 kW DC. Confirm against the actual contract value before final submit.",
+      "designTeamAction": "Request the actual contract / installed cost from the client via the intake link, or confirm the estimate is acceptable for this AHJ's fee schedule.",
+      "evidenceNeeded": [],
+      "codeReferences": [],
+      "installerCallout": true,
+      "evidenceStatus": "weak",
+      "evidenceFound": [
+        {
+          "kind": "absence_check",
+          "label": "General source check",
+          "source": "Parsed project package",
+          "excerpt": "No contract value on file; using a per-watt estimate of $180,000. Estimated at $3.00/W × 60 kW DC. Confirm against the actual contract value before final submit.",
+          "confidence": "medium",
+          "pageHint": "",
+          "screenshotPath": "",
+          "verifier": "rule_engine",
+          "note": "Rule-generated callout. Human should verify the source package before forwarding."
+        }
+      ]
+    },
+    {
+      "id": "city.plan.sld-missing",
+      "severity": "blocker",
+      "category": "electrical",
+      "title": "Electrical one-line not reviewable",
+      "message": "The package does not clearly map an SLD/one-line/three-line diagram.",
+      "cityFeedback": "Provide a complete electrical one-line diagram showing modules, inverter(s), rapid shutdown equipment, disconnects, point of interconnection, service equipment ratings, grounding/bonding path, and utility meter/service relationship.",
+      "designTeamAction": "Add or remap the SLD sheet and verify it matches the equipment schedule and interconnection method.",
+      "evidenceNeeded": [
+        "SLD/one-line sheet number",
+        "Point of interconnection detail",
+        "Disconnect/OCPD schedule",
+        "Grounding/bonding callouts"
+      ],
+      "codeReferences": [
+        {
+          "code": "2023 OESC / 2023 NEC",
+          "section": "NEC Articles 690 and 705",
+          "title": "Solar PV and interconnected power production sources",
+          "adoptionScope": "Oregon electrical submittals; verify local adopted NEC cycle outside Oregon.",
+          "sourceUrl": "https://www.oregon.gov/bcd/codes-stand/pages/electrical.aspx",
+          "note": "Oregon BCD lists the 2023 Oregon Electrical Specialty Code as effective Oct. 1, 2023 and based on the 2023 NEC."
+        },
+        {
+          "code": "NEC",
+          "section": "705.12",
+          "title": "Load-side source connections",
+          "adoptionScope": "PV connected on the load side of service equipment.",
+          "sourceUrl": "https://codes.iccsafe.org/s/ISEP2021P1/national-electrical-code-nec-solar-provisions/ISEP2021P1-NEC-Sec705.12",
+          "note": "Verify against the adopted NEC edition; plan reviewers commonly expect bus/main/PV breaker math to be explicit."
+        },
+        {
+          "code": "NEC",
+          "section": "705.11",
+          "title": "Supply-side source connections",
+          "adoptionScope": "PV connected ahead of the service disconnect or by line-side tap.",
+          "sourceUrl": "https://www.oregon.gov/bcd/codes-stand/pages/electrical.aspx",
+          "note": "Show the tap point, disconnect/OCPD, conductor routing, utility coordination, and service equipment details."
+        }
+      ],
+      "installerCallout": true,
+      "evidenceFound": [
+        {
+          "kind": "source_excerpt",
+          "label": "sld evidence",
+          "source": "Split page mapping",
+          "excerpt": "one-line diagram rapid shutdown site plan roof plan",
+          "confidence": "high",
+          "pageHint": "Split page mapping",
+          "screenshotPath": "",
+          "verifier": "parser",
+          "note": "Parser found strong supporting source text."
+        },
+        {
+          "kind": "screenshot_placeholder",
+          "label": "Screenshot crop slot",
+          "source": "Split page mapping",
+          "excerpt": "",
+          "confidence": "high",
+          "pageHint": "Split page mapping",
+          "screenshotPath": "/api/projects/golden-or-1/evidence-image?topic=sld&hint=Split%20page%20mapping&excerpt=one-line%20diagram%20rapid%20shutdown%20site%20plan%20roof%20plan",
+          "verifier": "parser",
+          "note": "Source page will render here. If no plan-set PDF is stored, upload it to Project Documents — then this slot shows the sheet. Use the source/page hint above meanwhile."
+        }
+      ],
+      "evidenceStatus": "verified"
+    },
+    {
+      "id": "city.fire.pathways-missing",
+      "severity": "blocker",
+      "category": "plan_set",
+      "title": "Fire access pathway evidence missing",
+      "message": "No fire access pathway/setback evidence was detected in the mapped plan package.",
+      "cityFeedback": "Revise the roof plan to show firefighter access pathways, ridge/eave setbacks, smoke ventilation areas where required, and any applicable exception basis. Dimensions must be shown on the plan, not only stated in notes.",
+      "designTeamAction": "Add pathway dimensions and exception notes to the roof plan; confirm local fire-code amendments for the AHJ.",
+      "evidenceNeeded": [
+        "Dimensioned pathway/setback callouts",
+        "Ridge/eave/valley/hip labels",
+        "Applicable fire-code exception, if used"
+      ],
+      "codeReferences": [
+        {
+          "code": "IRC",
+          "section": "R324.6",
+          "title": "Roof access and pathways for PV systems",
+          "adoptionScope": "Residential rooftop PV where adopted by the AHJ.",
+          "sourceUrl": "https://codes.iccsafe.org/s/IRC2021P2/chapter-3-building-planning/IRC2021P2-Pt03-Ch03-SecR324.6.1",
+          "note": "Use the local code cycle and fire official amendments for pathway/setback dimensions and exceptions."
+        },
+        {
+          "code": "IFC",
+          "section": "1205.2",
+          "title": "Access and pathways for PV systems",
+          "adoptionScope": "Fire-code review for rooftop PV.",
+          "sourceUrl": "https://codes.iccsafe.org/s/IFC2021P1/chapter-12-energy-systems/IFC2021P1-Pt03-Ch12-Sec1205.2",
+          "note": "Pathways should be placed over structurally capable roof areas with minimal obstructions."
+        }
+      ],
+      "installerCallout": true,
+      "evidenceFound": [
+        {
+          "kind": "absence_check",
+          "label": "firePathway absence check",
+          "source": "Parsed project package",
+          "excerpt": "No matching evidence found. Checked for: Dimensioned roof pathway, Ridge/eave/setback notes, AHJ/fire exception basis if used.",
+          "confidence": "low",
+          "pageHint": "",
+          "screenshotPath": "",
+          "verifier": "rule_engine",
+          "note": "This is a missing-proof callout, not proof of a design defect. Verify the source package before sending to client."
+        }
+      ],
+      "evidenceStatus": "missing"
+    },
+    {
+      "id": "city.struct.framing-missing",
+      "severity": "blocker",
+      "category": "structural",
+      "title": "Roof framing information missing",
+      "message": "The plan package does not show enough roof framing information for structural review.",
+      "cityFeedback": "Provide roof framing type and member information: rafter/truss type, member size, spacing, span, species/grade when applicable, roof slope, sheathing, array attachment locations, and whether the design uses a prescriptive or engineered path.",
+      "designTeamAction": "Add structural/framing notes or a stamped structural letter/calculation package.",
+      "evidenceNeeded": [
+        "Rafter/truss size and spacing",
+        "Clear span/support condition",
+        "Roof slope",
+        "Prescriptive worksheet or stamped structural calculation"
+      ],
+      "codeReferences": [
+        {
+          "code": "IRC / ORSC",
+          "section": "R324.4.1",
+          "title": "Rooftop-mounted photovoltaic systems and roof loads",
+          "adoptionScope": "One- and two-family residential rooftop PV, subject to local amendments.",
+          "sourceUrl": "https://codes.iccsafe.org/content/IRC2021P1/chapter-3-building-planning",
+          "note": "Roof structure, dead load, live load, and attachment assumptions must be shown clearly enough for review."
+        },
+        {
+          "code": "ORSC / OSSC",
+          "section": "Oregon Prescriptive Rooftop-Mounted Solar PV Checklist",
+          "title": "Oregon prescriptive rooftop PV installation screening",
+          "adoptionScope": "Oregon residential and commercial prescriptive rooftop PV path.",
+          "sourceUrl": "https://www.washingtoncountyor.gov/lut/building-services/documents/solar-checklist/download?inline=",
+          "note": "Common screens include PV dead load, ground snow load, wind exposure, roof slope, and framing spacing/span evidence."
+        },
+        {
+          "code": "OSSC",
+          "section": "Table 2308.7.2(1)",
+          "title": "Rafter span tables used by Portland solar worksheet",
+          "adoptionScope": "Portland-style prescriptive rafter span review; useful baseline for Oregon AHJ review.",
+          "sourceUrl": "https://www.portland.gov/ppd/documents/solar-worksheet/download",
+          "note": "Show rafter size, spacing, species/grade, span, roof slope, and support conditions when using a prescriptive path."
+        }
+      ],
+      "installerCallout": true,
+      "evidenceFound": [
+        {
+          "kind": "absence_check",
+          "label": "roofFraming absence check",
+          "source": "Parsed project package",
+          "excerpt": "No matching evidence found. Checked for: Rafter/truss type, Member size/spacing/span, Prescriptive worksheet or stamped engineering.",
+          "confidence": "low",
+          "pageHint": "",
+          "screenshotPath": "",
+          "verifier": "rule_engine",
+          "note": "This is a missing-proof callout, not proof of a design defect. Verify the source package before sending to client."
+        }
+      ],
+      "evidenceStatus": "missing"
+    },
+    {
+      "id": "city.struct.span-table-incomplete",
+      "severity": "blocker",
+      "category": "structural",
+      "title": "Prescriptive rafter span evidence incomplete",
+      "message": "Oregon-style prescriptive review needs rafter/truss spacing and span evidence or an engineered alternate path.",
+      "cityFeedback": "Provide the prescriptive rooftop PV checklist/worksheet information, including framing member size, spacing, span, species/grade, roof slope, dead load, snow load, and wind exposure. If this cannot be documented, provide stamped engineering.",
+      "designTeamAction": "Complete the structural worksheet inputs or route the design to engineered review.",
+      "evidenceNeeded": [
+        "Framing spacing",
+        "Framing clear span",
+        "Species/grade or engineered truss evidence",
+        "Dead load, snow load, wind exposure"
+      ],
+      "codeReferences": [
+        {
+          "code": "ORSC / OSSC",
+          "section": "Oregon Prescriptive Rooftop-Mounted Solar PV Checklist",
+          "title": "Oregon prescriptive rooftop PV installation screening",
+          "adoptionScope": "Oregon residential and commercial prescriptive rooftop PV path.",
+          "sourceUrl": "https://www.washingtoncountyor.gov/lut/building-services/documents/solar-checklist/download?inline=",
+          "note": "Common screens include PV dead load, ground snow load, wind exposure, roof slope, and framing spacing/span evidence."
+        },
+        {
+          "code": "OSSC",
+          "section": "Table 2308.7.2(1)",
+          "title": "Rafter span tables used by Portland solar worksheet",
+          "adoptionScope": "Portland-style prescriptive rafter span review; useful baseline for Oregon AHJ review.",
+          "sourceUrl": "https://www.portland.gov/ppd/documents/solar-worksheet/download",
+          "note": "Show rafter size, spacing, species/grade, span, roof slope, and support conditions when using a prescriptive path."
+        },
+        {
+          "code": "IRC / ORSC",
+          "section": "R324.4.1",
+          "title": "Rooftop-mounted photovoltaic systems and roof loads",
+          "adoptionScope": "One- and two-family residential rooftop PV, subject to local amendments.",
+          "sourceUrl": "https://codes.iccsafe.org/content/IRC2021P1/chapter-3-building-planning",
+          "note": "Roof structure, dead load, live load, and attachment assumptions must be shown clearly enough for review."
+        }
+      ],
+      "installerCallout": true,
+      "evidenceFound": [
+        {
+          "kind": "absence_check",
+          "label": "roofFraming absence check",
+          "source": "Parsed project package",
+          "excerpt": "No matching evidence found. Checked for: Rafter/truss type, Member size/spacing/span, Prescriptive worksheet or stamped engineering.",
+          "confidence": "low",
+          "pageHint": "",
+          "screenshotPath": "",
+          "verifier": "rule_engine",
+          "note": "This is a missing-proof callout, not proof of a design defect. Verify the source package before sending to client."
+        }
+      ],
+      "evidenceStatus": "missing"
+    },
+    {
+      "id": "city.elec.labels-missing",
+      "severity": "warning",
+      "category": "electrical",
+      "title": "PV label schedule not obvious",
+      "message": "The package does not clearly show required PV placards/labels.",
+      "cityFeedback": "Provide a PV label schedule showing service equipment directory, rapid shutdown label, disconnect labels, backfed breaker warning where applicable, and any AHJ/utility-specific placards.",
+      "designTeamAction": "Add label sheet or label callouts to the electrical plan.",
+      "evidenceNeeded": [
+        "Label schedule",
+        "Placard locations",
+        "Backfed breaker warning where applicable",
+        "Power source directory"
+      ],
+      "codeReferences": [
+        {
+          "code": "NEC",
+          "section": "690.12",
+          "title": "Rapid shutdown of PV systems on buildings",
+          "adoptionScope": "Rooftop/building-mounted PV where the AHJ has adopted NEC rapid shutdown provisions.",
+          "sourceUrl": "https://www.oregon.gov/bcd/codes-stand/pages/electrical.aspx",
+          "note": "Use the locally adopted NEC edition and amendments for exact label/control wording."
+        },
+        {
+          "code": "NEC",
+          "section": "705.10",
+          "title": "Identification of power sources",
+          "adoptionScope": "Interconnected PV systems.",
+          "sourceUrl": "https://www.oregon.gov/bcd/codes-stand/pages/electrical.aspx",
+          "note": "Plan sets should include a permanent directory/placard concept where required by the adopted NEC."
+        }
+      ],
+      "installerCallout": true,
+      "evidenceFound": [
+        {
+          "kind": "absence_check",
+          "label": "labels absence check",
+          "source": "Parsed project package",
+          "excerpt": "No matching evidence found. Checked for: PV label schedule, Placard locations, Power source directory.",
+          "confidence": "low",
+          "pageHint": "",
+          "screenshotPath": "",
+          "verifier": "rule_engine",
+          "note": "This is a missing-proof callout, not proof of a design defect. Verify the source package before sending to client."
+        }
+      ],
+      "evidenceStatus": "missing"
+    },
+    {
+      "id": "city.elec.load-side-over-120",
+      "severity": "blocker",
+      "category": "electrical",
+      "title": "Load-side interconnection exceeds 120 percent bus screen",
+      "message": "Captured ratings produce 200A main + 70A PV on a 200A bus, which exceeds 120 percent of bus rating.",
+      "cityFeedback": "Revise the interconnection design. The load-side calculation shown by the captured data does not satisfy the common 120 percent busbar screen. Provide a compliant alternate calculation, breaker relocation, de-rated main, supply-side connection, service upgrade, or engineered basis as applicable.",
+      "designTeamAction": "Correct the interconnection method and update the one-line/load calculation.",
+      "evidenceNeeded": [
+        "MSP bus rating",
+        "Main breaker rating",
+        "PV breaker/OCPD rating",
+        "705.12 calculation or alternate basis"
+      ],
+      "codeReferences": [
+        {
+          "code": "NEC",
+          "section": "705.12",
+          "title": "Load-side source connections",
+          "adoptionScope": "PV connected on the load side of service equipment.",
+          "sourceUrl": "https://codes.iccsafe.org/s/ISEP2021P1/national-electrical-code-nec-solar-provisions/ISEP2021P1-NEC-Sec705.12",
+          "note": "Verify against the adopted NEC edition; plan reviewers commonly expect bus/main/PV breaker math to be explicit."
+        }
+      ],
+      "installerCallout": true,
+      "evidenceFound": [
+        {
+          "kind": "source_excerpt",
+          "label": "sld evidence",
+          "source": "Split page mapping",
+          "excerpt": "one-line diagram rapid shutdown site plan roof plan",
+          "confidence": "high",
+          "pageHint": "Split page mapping",
+          "screenshotPath": "",
+          "verifier": "parser",
+          "note": "Parser found strong supporting source text."
+        },
+        {
+          "kind": "screenshot_placeholder",
+          "label": "Screenshot crop slot",
+          "source": "Split page mapping",
+          "excerpt": "",
+          "confidence": "high",
+          "pageHint": "Split page mapping",
+          "screenshotPath": "/api/projects/golden-or-1/evidence-image?topic=sld&hint=Split%20page%20mapping&excerpt=one-line%20diagram%20rapid%20shutdown%20site%20plan%20roof%20plan",
+          "verifier": "parser",
+          "note": "Source page will render here. If no plan-set PDF is stored, upload it to Project Documents — then this slot shows the sheet. Use the source/page hint above meanwhile."
+        }
+      ],
+      "evidenceStatus": "verified"
+    },
+    {
+      "id": "city.elec.equipment-specs-incomplete",
+      "severity": "blocker",
+      "category": "electrical",
+      "title": "Equipment schedule/spec package incomplete",
+      "message": "Module/inverter schedule or spec-sheet evidence is incomplete.",
+      "cityFeedback": "Provide a complete equipment schedule and matching specification sheets for modules, inverter(s)/microinverters, racking, rapid shutdown devices, ESS equipment if applicable, and disconnect/OCPD equipment. Equipment names on specs must match the SLD and application.",
+      "designTeamAction": "Add missing equipment fields/spec sheets and reconcile model numbers across the plan set.",
+      "evidenceNeeded": [
+        "Module make/model/wattage/quantity",
+        "Inverter or microinverter make/model/quantity/output",
+        "Module and inverter spec sheets",
+        "Racking and RSD spec sheets"
+      ],
+      "codeReferences": [
+        {
+          "code": "2023 OESC / 2023 NEC",
+          "section": "NEC Articles 690 and 705",
+          "title": "Solar PV and interconnected power production sources",
+          "adoptionScope": "Oregon electrical submittals; verify local adopted NEC cycle outside Oregon.",
+          "sourceUrl": "https://www.oregon.gov/bcd/codes-stand/pages/electrical.aspx",
+          "note": "Oregon BCD lists the 2023 Oregon Electrical Specialty Code as effective Oct. 1, 2023 and based on the 2023 NEC."
+        },
+        {
+          "code": "NEC",
+          "section": "690.12",
+          "title": "Rapid shutdown of PV systems on buildings",
+          "adoptionScope": "Rooftop/building-mounted PV where the AHJ has adopted NEC rapid shutdown provisions.",
+          "sourceUrl": "https://www.oregon.gov/bcd/codes-stand/pages/electrical.aspx",
+          "note": "Use the locally adopted NEC edition and amendments for exact label/control wording."
+        }
+      ],
+      "installerCallout": true,
+      "evidenceFound": [
+        {
+          "kind": "source_excerpt",
+          "label": "sld evidence",
+          "source": "Split page mapping",
+          "excerpt": "one-line diagram rapid shutdown site plan roof plan",
+          "confidence": "high",
+          "pageHint": "Split page mapping",
+          "screenshotPath": "",
+          "verifier": "parser",
+          "note": "Parser found strong supporting source text."
+        },
+        {
+          "kind": "screenshot_placeholder",
+          "label": "Screenshot crop slot",
+          "source": "Split page mapping",
+          "excerpt": "",
+          "confidence": "high",
+          "pageHint": "Split page mapping",
+          "screenshotPath": "/api/projects/golden-or-1/evidence-image?topic=sld&hint=Split%20page%20mapping&excerpt=one-line%20diagram%20rapid%20shutdown%20site%20plan%20roof%20plan",
+          "verifier": "parser",
+          "note": "Source page will render here. If no plan-set PDF is stored, upload it to Project Documents — then this slot shows the sheet. Use the source/page hint above meanwhile."
+        }
+      ],
+      "evidenceStatus": "verified"
+    },
+    {
+      "id": "city.elec.dc-size-mismatch",
+      "severity": "blocker",
+      "category": "electrical",
+      "title": "DC size mismatch",
+      "message": "Captured module count/wattage calculates 60.20 kW DC but project DC size is 60.00 kW.",
+      "cityFeedback": "Revise the equipment schedule/application so module quantity, module wattage, and DC system size match across all sheets and portal fields.",
+      "designTeamAction": "Correct either module quantity, module wattage, or DC kW and regenerate affected application fields.",
+      "evidenceNeeded": [
+        "Corrected equipment schedule",
+        "Corrected application DC size",
+        "Matching SLD/module sheet"
+      ],
+      "codeReferences": [
+        {
+          "code": "2023 OESC / 2023 NEC",
+          "section": "NEC Articles 690 and 705",
+          "title": "Solar PV and interconnected power production sources",
+          "adoptionScope": "Oregon electrical submittals; verify local adopted NEC cycle outside Oregon.",
+          "sourceUrl": "https://www.oregon.gov/bcd/codes-stand/pages/electrical.aspx",
+          "note": "Oregon BCD lists the 2023 Oregon Electrical Specialty Code as effective Oct. 1, 2023 and based on the 2023 NEC."
+        }
+      ],
+      "installerCallout": true,
+      "evidenceFound": [
+        {
+          "kind": "source_excerpt",
+          "label": "sld evidence",
+          "source": "Split page mapping",
+          "excerpt": "one-line diagram rapid shutdown site plan roof plan",
+          "confidence": "high",
+          "pageHint": "Split page mapping",
+          "screenshotPath": "",
+          "verifier": "parser",
+          "note": "Parser found strong supporting source text."
+        },
+        {
+          "kind": "screenshot_placeholder",
+          "label": "Screenshot crop slot",
+          "source": "Split page mapping",
+          "excerpt": "",
+          "confidence": "high",
+          "pageHint": "Split page mapping",
+          "screenshotPath": "/api/projects/golden-or-1/evidence-image?topic=sld&hint=Split%20page%20mapping&excerpt=one-line%20diagram%20rapid%20shutdown%20site%20plan%20roof%20plan",
+          "verifier": "parser",
+          "note": "Source page will render here. If no plan-set PDF is stored, upload it to Project Documents — then this slot shows the sheet. Use the source/page hint above meanwhile."
+        }
+      ],
+      "evidenceStatus": "verified"
+    },
+    {
+      "id": "reviewer.plan.rapid-shutdown",
+      "severity": "warning",
+      "category": "plan_set",
+      "title": "Verify rapid shutdown evidence not clear",
+      "message": "Rapid shutdown evidence not clear. Found medium-confidence evidence: one-line diagram rapid shutdown site plan roof plan",
+      "cityFeedback": "Rapid shutdown evidence not clear. The parser found only medium-confidence evidence. Found medium-confidence evidence: one-line diagram rapid shutdown site plan roof plan",
+      "designTeamAction": "Confirm the parsed evidence is on the current plan set. Show rapid shutdown equipment, initiation/control location, and required labels.",
+      "evidenceNeeded": [
+        "Rapid shutdown equipment",
+        "RSD initiation/control location",
+        "RSD label/placard callout",
+        "Parsed evidence: one-line diagram rapid shutdown site plan roof plan"
+      ],
+      "codeReferences": [],
+      "installerCallout": true,
+      "evidenceStatus": "weak",
+      "evidenceFound": [
+        {
+          "kind": "source_excerpt",
+          "label": "rapidShutdown evidence",
+          "source": "Split page mapping",
+          "excerpt": "one-line diagram rapid shutdown site plan roof plan",
+          "confidence": "medium",
+          "pageHint": "Split page mapping",
+          "screenshotPath": "",
+          "verifier": "parser",
+          "note": "Parser found possible source text; human should verify on the source sheet."
+        },
+        {
+          "kind": "screenshot_placeholder",
+          "label": "Screenshot crop slot",
+          "source": "Split page mapping",
+          "excerpt": "",
+          "confidence": "medium",
+          "pageHint": "Split page mapping",
+          "screenshotPath": "/api/projects/golden-or-1/evidence-image?topic=rapidShutdown&hint=Split%20page%20mapping&excerpt=one-line%20diagram%20rapid%20shutdown%20site%20plan%20roof%20plan",
+          "verifier": "parser",
+          "note": "Source page will render here. If no plan-set PDF is stored, upload it to Project Documents — then this slot shows the sheet. Use the source/page hint above meanwhile."
+        }
+      ]
+    },
+    {
+      "id": "reviewer.utility.pge-account",
+      "severity": "warning",
+      "category": "utility_nem",
+      "title": "Verify PGE account evidence",
+      "message": "PGE/NEM submission has an account value, but parsed utility bill/account match evidence is not strong enough. Found medium-confidence evidence: Project account number ****ured: ******7890",
+      "cityFeedback": "Utility account evidence is incomplete: account number alone is not enough for a clean intake pass.",
+      "designTeamAction": "Verify utility bill/account holder/service address match before staging the NEM application.",
+      "evidenceNeeded": [
+        "Utility bill/account holder match",
+        "Utility account number",
+        "Service address match",
+        "Parsed evidence: Project account number ****ured: ******7890"
+      ],
+      "codeReferences": [],
+      "installerCallout": true,
+      "evidenceStatus": "weak",
+      "evidenceFound": [
+        {
+          "kind": "source_excerpt",
+          "label": "accountVerification evidence",
+          "source": "Normalized project field",
+          "excerpt": "Project account number ****ured: ******7890",
+          "confidence": "medium",
+          "pageHint": "Project field",
+          "screenshotPath": "",
+          "verifier": "parser",
+          "note": "Parser found possible source text; human should verify on the source sheet."
+        },
+        {
+          "kind": "screenshot_placeholder",
+          "label": "Screenshot crop slot",
+          "source": "Normalized project field",
+          "excerpt": "",
+          "confidence": "medium",
+          "pageHint": "Project field",
+          "screenshotPath": "/api/projects/golden-or-1/evidence-image?topic=accountVerification&hint=Project%20field&excerpt=Project%20account%20number%20****ured%3A%20******7890",
+          "verifier": "parser",
+          "note": "Source page will render here. If no plan-set PDF is stored, upload it to Project Documents — then this slot shows the sheet. Use the source/page hint above meanwhile."
+        }
+      ]
+    },
+    {
+      "id": "reviewer.permit-path.engineered",
+      "severity": "warning",
+      "category": "structural",
+      "title": "Engineered path — collect stamped structural docs",
+      "message": "Non-prescriptive (engineered) path: this submittal needs a PE-stamped plan set + structural engineering letter/calcs, which are NOT yet in the uploaded files. Collect them from the installer/engineer of record before submitting. Upload ONLY the structural application (not the prescriptive one).",
+      "cityFeedback": "Non-prescriptive solar requires a stamped structural plan set and engineer's letter/calcs, plus the structural (not prescriptive) application; it triggers plan review and full structural fees.",
+      "designTeamAction": "Request the PE-stamped structural plans + structural engineering letter from the installer/engineer of record and attach them before staging.",
+      "evidenceNeeded": [
+        "PE-stamped structural plan set (wet/digital stamp on the structural sheets)",
+        "Structural engineering letter or stamped calculations (PE-sealed)"
+      ],
+      "codeReferences": [],
+      "installerCallout": true,
+      "evidenceStatus": "weak",
+      "evidenceFound": [
+        {
+          "kind": "absence_check",
+          "label": "General source check",
+          "source": "Parsed project package",
+          "excerpt": "Non-prescriptive (engineered) path: this submittal needs a PE-stamped plan set + structural engineering letter/calcs, which are NOT yet in the uploaded files. Collect them from the installer/engineer of record before submitting. Upload ONLY the structural application (not the prescriptive one).",
+          "confidence": "low",
+          "pageHint": "",
+          "screenshotPath": "",
+          "verifier": "rule_engine",
+          "note": "Rule-generated callout. Human should verify the source package before forwarding."
+        }
+      ]
+    },
+    {
+      "id": "installer.scope-confirm",
+      "severity": "callout",
+      "category": "installer",
+      "title": "Installer pre-submittal scope confirmation",
+      "message": "Confirm with installer: roof planes, array layout, interconnection method (Load-side breaker), MSP/main/PV breaker, battery backup mode, and any MPU/LST/locate-triggering work.",
+      "cityFeedback": "Confirm with installer: roof planes, array layout, interconnection method (Load-side breaker), MSP/main/PV breaker, battery backup mode, and any MPU/LST/locate-triggering work.",
+      "designTeamAction": "Verify and correct this item before staging the submittal.",
+      "evidenceNeeded": [],
+      "codeReferences": [],
+      "installerCallout": true,
+      "evidenceStatus": "weak",
+      "evidenceFound": [
+        {
+          "kind": "absence_check",
+          "label": "General source check",
+          "source": "Parsed project package",
+          "excerpt": "Confirm with installer: roof planes, array layout, interconnection method (Load-side breaker), MSP/main/PV breaker, battery backup mode, and any MPU/LST/locate-triggering work.",
+          "confidence": "medium",
+          "pageHint": "",
+          "screenshotPath": "",
+          "verifier": "rule_engine",
+          "note": "Rule-generated callout. Human should verify the source package before forwarding."
+        }
+      ]
+    },
+    {
+      "id": "reviewer.profile.missing",
+      "severity": "warning",
+      "category": "ahj_profile",
+      "title": "No seeded AHJ process profile matched",
+      "message": "Use generic AHJ docs and verify local application/stamp/signature requirements manually before submittal.",
+      "cityFeedback": "The project jurisdiction/process requirements could not be matched to the seeded AHJ profile table. Provide confirmation of the AHJ, portal path, required applications, signature/stamp requirements, and utility sequencing before submission.",
+      "designTeamAction": "Confirm the AHJ/process profile and add any required local forms or stamped documents.",
+      "evidenceNeeded": [
+        "Verified AHJ/jurisdiction",
+        "Portal/process path",
+        "Required local forms",
+        "Stamp/signature requirements"
+      ],
+      "codeReferences": [],
+      "installerCallout": true,
+      "evidenceStatus": "missing",
+      "evidenceFound": [
+        {
+          "kind": "absence_check",
+          "label": "batteryMode absence check",
+          "source": "Parsed project package",
+          "excerpt": "No matching evidence found. Checked for: Battery model/quantity, Backup/non-backup mode, Export setting, Backup panel scope.",
+          "confidence": "low",
+          "pageHint": "",
+          "screenshotPath": "",
+          "verifier": "rule_engine",
+          "note": "This is a missing-proof callout, not proof of a design defect. Verify the source package before sending to client."
+        }
+      ]
+    }
+  ],
+  "finalSubmitGate": {
+    "mustShowAhjPreviewWindow": true,
+    "finalSubmitButtonAloneIsEnough": false,
+    "requirements": [
+      "Show actual AHJ/utility portal final-review screen when a real adapter is running.",
+      "Show internal final review packet when using mock/manual staging.",
+      "Block final submit staging if blocker findings remain.",
+      "Human must compare final portal fields, uploaded files, fees, and acknowledgements before clicking submit."
+    ]
+  }
+}
