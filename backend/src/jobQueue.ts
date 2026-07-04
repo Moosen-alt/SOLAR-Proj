@@ -5,6 +5,7 @@ import { importMboxKnowledge } from "./knowledgeBase";
 import { runDuePermitChecks } from "./repository";
 import { scanFolder } from "./batchImport";
 import { nowIso } from "./time";
+import { logger } from "./logger";
 
 export type JobType =
   | "permit_checks"
@@ -347,7 +348,8 @@ export async function processNextJob(db: AppDb): Promise<boolean> {
       const autoSubmit = job.payload.autoSubmit === true;
       const detail = await prepareSubmission(db, String(job.projectId), track as never, autoSubmit);
       const run = detail.portalRuns?.[0];
-      result = { status: run?.status ?? null, pauseReason: run?.pauseReason ?? null };
+      // Carry the run's failure text so the dashboard toast can say WHY, not just "failed".
+      result = { status: run?.status ?? null, pauseReason: run?.pauseReason ?? null, message: run?.errorMessage || null };
     } else if (job.jobType === "auto_learn") {
       // Manual "Learn this portal" run, off the HTTP request path — a live LLM-driven
       // browser pass routinely takes minutes, which hung or proxy-timed-out the old
@@ -418,18 +420,23 @@ export async function processNextJob(db: AppDb): Promise<boolean> {
       [nowIso(), JSON.stringify(result), job.id],
     );
   } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
     const retryCount = job.retryCount + 1;
     if (retryCount < job.maxRetries) {
       const retryDelay = Math.pow(2, retryCount) * 60_000;
       const retryAt = new Date(Date.now() + retryDelay).toISOString();
+      // A silent retry hid staging-gate failures from the server log entirely — the
+      // operator saw only a generic toast. Every failure is loggable, always.
+      logger.warn("job-worker", `${job.jobType} failed (retry ${retryCount}/${job.maxRetries} at ${retryAt}): ${msg}`, { projectId: job.projectId ?? undefined });
       db.run(
         "UPDATE job_queue SET status = 'pending', retry_count = ?, scheduled_at = ?, error = ? WHERE id = ?",
-        [retryCount, retryAt, String(err), job.id],
+        [retryCount, retryAt, msg, job.id],
       );
     } else {
+      logger.warn("job-worker", `${job.jobType} FAILED: ${msg}`, { projectId: job.projectId ?? undefined });
       db.run(
         "UPDATE job_queue SET status = 'failed', finished_at = ?, error = ? WHERE id = ?",
-        [nowIso(), String(err), job.id],
+        [nowIso(), msg, job.id],
       );
     }
   }

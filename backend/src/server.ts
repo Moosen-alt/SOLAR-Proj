@@ -1762,20 +1762,33 @@ app.post("/api/projects/:id/prepare-submission", (req, res) => {
   const job = enqueueJob(db, "prepare_submission", { track, autoSubmit }, { projectId, priority: 7, maxRetries: 0 });
   processNextJob(db)
     .then(() => {
+      // Check the JOB first: a staging-gate 409 (QC/docs/CCB/permit-path/host conflict)
+      // throws BEFORE any portal_run is recorded, so detail.portalRuns[0] is a STALE run
+      // from an earlier stage — reading it here used to broadcast a generic (or even a
+      // false-success) message while the real reason sat unseen in the job row.
+      const finishedJob = getJob(db, job.id);
+      if (finishedJob?.status === "failed") {
+        const reason = (finishedJob.error || "Staging failed — see server log.").replace(/^(Http)?Error:\s*/i, "");
+        logger.warn("prepare-submission", `staging blocked/failed: ${reason}`, { projectId });
+        sseBroadcast({ type: "run_failed", projectId, message: `Staging failed: ${reason}` });
+        return;
+      }
       const detail = getProjectDetail(db, projectId);
       const run = detail.portalRuns?.[0];
       if (!run) return;
       if (run.pauseReason === "mfa_captcha") {
         sseBroadcast({ type: "run_paused", projectId, message: "Portal requires attention — MFA or CAPTCHA detected. Complete it in the browser, then resume.", data: { pauseReason: run.pauseReason } });
       } else if (run.status === "failed") {
-        sseBroadcast({ type: "run_failed", projectId, message: "Portal run failed — see run log for details." });
+        const why = run.errorMessage || "see the run log on the project for details";
+        sseBroadcast({ type: "run_failed", projectId, message: `Portal run failed: ${why}` });
       } else if (run.status === "awaiting_human_submit" || run.status === "paused_for_human") {
         sseBroadcast({ type: "run_complete", projectId, message: "Portal staged — verify and submit manually." });
       }
     })
     .catch((err) => {
-      sseBroadcast({ type: "run_failed", projectId, message: "Portal run failed — see run log for details." });
-      logger.warn("prepare-submission", `staging error: ${err instanceof Error ? err.message : String(err)}`);
+      const reason = err instanceof Error ? err.message : String(err);
+      sseBroadcast({ type: "run_failed", projectId, message: `Staging failed: ${reason}` });
+      logger.warn("prepare-submission", `staging error: ${reason}`, { projectId });
     });
   sseBroadcast({ type: "staging_started", projectId, message: "Staging started — preparing the portal application." });
   res.status(202).json({ jobId: job.id, state: getAutopilotState(db, projectId) });

@@ -1993,6 +1993,15 @@ async function stageSubmittalTrack(type, btn, autoSubmit = false) {
       showMessage(job.error || `Could not stage ${type}.`, "error");
       return;
     }
+    // The job can COMPLETE while the recorded portal run itself failed (login error,
+    // wrong-portal gate, learn failure) — surface the run's reason instead of a
+    // false "staged to final review" success message.
+    if (job.result && job.result.status === "failed") {
+      showMessage(`Could not stage ${humanize(type)}: ${job.result.message || "see the run log on the project for details."}`, "error");
+      await loadSubmittalTracks();
+      renderDetail();
+      return;
+    }
     const detail = await api(`/api/projects/${state.selectedProjectId}`);
     if (detail && detail.project) state.detail = detail;
     await loadSubmittalTracks();
@@ -3702,6 +3711,10 @@ async function prepareSubmission() {
       showMessage(job.error || "Staging failed — see the run log for details.", "warning");
       return;
     }
+    if (job.result && job.result.status === "failed") {
+      showMessage(`Staging failed: ${job.result.message || "see the run log on the project for details."}`, "error");
+      return;
+    }
     state.detail = await api(`/api/projects/${state.selectedProjectId}`);
     await loadOpsPlan();
     await loadPmPackets();
@@ -5362,6 +5375,10 @@ if (window.lucide) window.lucide.createIcons();
 // Reconnects automatically if the connection drops (e.g. server restart).
 
 let notifCount = 0;
+// Recent notifications (newest first, capped). The bell OPENS this list — it must never
+// just vanish on click (toasts are ephemeral; this is where the operator re-reads what
+// they missed, e.g. "Portal run failed" details).
+const notifItems = [];
 
 function showToast(message, kind = "info", durationMs = 6000) {
   const container = $("toastContainer");
@@ -5375,22 +5392,57 @@ function showToast(message, kind = "info", durationMs = 6000) {
   setTimeout(() => { toast.style.opacity = "0"; setTimeout(() => toast.remove(), 350); }, durationMs);
 }
 
-function bumpNotifBadge() {
+function bumpNotifBadge(message, kind = "info") {
   notifCount++;
+  notifItems.unshift({ message: String(message || "Notification"), kind, at: new Date() });
+  if (notifItems.length > 50) notifItems.length = 50;
   const btn = $("notifBadgeBtn");
   const badge = $("notifBadge");
   if (!btn || !badge) return;
   btn.style.display = "";
+  badge.style.display = "";
   badge.textContent = String(notifCount);
 }
 
+// Bell click = OPEN the notification history panel (and mark them read). The button
+// stays visible; only the unread-count bubble clears. It used to hide the whole button,
+// which read as "my notifications disappeared".
+function toggleNotifPanel() {
+  const existing = document.getElementById("notifPanel");
+  if (existing) { existing.remove(); return; }
+  notifCount = 0;
+  const badge = $("notifBadge");
+  if (badge) { badge.textContent = "0"; badge.style.display = "none"; }
+  const btn = $("notifBadgeBtn");
+  const panel = document.createElement("div");
+  panel.id = "notifPanel";
+  panel.style.cssText = "position:fixed;top:56px;right:16px;z-index:9998;width:360px;max-height:60vh;overflow:auto;background:var(--panel,#fff);border:1px solid var(--border,#ddd);border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,.18);padding:8px";
+  const fmt = (d) => d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  panel.innerHTML = notifItems.length
+    ? notifItems.map((n) =>
+        `<div style="padding:8px 10px;border-bottom:1px solid var(--border,#eee);font-size:12.5px;display:flex;gap:8px;align-items:baseline">
+           <span style="flex:0 0 auto;font-size:11px;color:var(--muted,#777)">${esc(fmt(n.at))}</span>
+           <span style="${n.kind === "error" ? "color:var(--danger,#c00);font-weight:600" : n.kind === "warning" ? "color:var(--warning,#a60)" : ""}">${esc(n.message)}</span>
+         </div>`).join("")
+    : `<div style="padding:14px;font-size:13px;color:var(--muted,#777)">No notifications yet this session.</div>`;
+  const clear = document.createElement("button");
+  clear.className = "ghost";
+  clear.textContent = "Clear history";
+  clear.style.cssText = "margin:8px 10px";
+  clear.addEventListener("click", () => { notifItems.length = 0; panel.remove(); });
+  panel.appendChild(clear);
+  document.body.appendChild(panel);
+  // Close when clicking anywhere outside the panel/bell.
+  const dismiss = (e) => {
+    if (panel.contains(e.target) || (btn && btn.contains(e.target))) return;
+    panel.remove();
+    document.removeEventListener("click", dismiss, true);
+  };
+  setTimeout(() => document.addEventListener("click", dismiss, true), 0);
+}
+
 if ($("notifBadgeBtn")) {
-  $("notifBadgeBtn").addEventListener("click", () => {
-    notifCount = 0;
-    const badge = $("notifBadge");
-    if (badge) badge.textContent = "0";
-    $("notifBadgeBtn").style.display = "none";
-  });
+  $("notifBadgeBtn").addEventListener("click", toggleNotifPanel);
 }
 
 const SSE_EVENT_KINDS = {
@@ -5418,7 +5470,7 @@ function connectSse() {
       try {
         const data = JSON.parse(ev.data);
         showToast(data.message || type, kind);
-        bumpNotifBadge();
+        bumpNotifBadge(data.message || type, kind);
         // Refresh the affected project row if it's currently open.
         if (data.projectId && state.selectedProjectId === data.projectId) {
           selectProject(data.projectId).catch(() => null);
