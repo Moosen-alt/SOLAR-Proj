@@ -8,6 +8,7 @@ import { selectWithFallback } from "../comboboxFill";
 import { detectChallengeFrame, frameSelectorFor, readbackMatches, redactStatusText, safeAction, sleep, smartWait, waitForElement, waitForInteractiveControls } from "../safeAction";
 import { scrapeReviewScreen as scrapeReviewScreenShared } from "../reviewScreenScraper";
 import { performLogin } from "./loginFlow";
+import { portalUploadCapBytes } from "../uploadCap";
 import { LearnRunDebug } from "../learnDebug";
 import { armHumanCaptureOnPage } from "../humanCapture";
 
@@ -196,6 +197,10 @@ const NOT_LISTED_CHECKBOX =
 const POLICY_RADIO_DEFAULTS: Array<{ question: RegExp; answer: "Yes" | "No"; enforce?: boolean }> = [
   { question: /do you propose to limit the export capacity/i, answer: "No" },
   { question: /are all inverters lab certified|inverters?\s+lab\s+certified|UL\s*1741/i, answer: "Yes", enforce: true },
+  // Standard residential detail places the lockable AC disconnect adjacent to the meter;
+  // the prompt default alone was observed missed (required radio left blank → portal
+  // blocked the submit), so the deterministic pass backs it like the other two.
+  { question: /disconnect within 10\s*(feet|ft|')\s*of the .{0,20}meter/i, answer: "Yes" },
 ];
 
 // Sensitive field labels whose literal value must NEVER be stored in a recorded step.
@@ -742,14 +747,26 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   // PGE's limit is 5.00 MB — so never offer a file the portal will bounce. Combined-mode
   // AHJ portals (Accela) take the full plan set and typically allow much larger uploads.
   private uploadMaxBytes(): number {
-    const env = Number(process.env.PORTAL_UPLOAD_MAX_MB || "");
-    if (Number.isFinite(env) && env > 0) return env * 1024 * 1024;
-    return this.uploadMode === "combined" ? Number.POSITIVE_INFINITY : 5 * 1024 * 1024;
+    return portalUploadCapBytes(this.uploadMode);
+  }
+
+  // Size cache: docsByType is fixed at construction and the files don't change mid-run,
+  // but one resolveUpload pass can stat the same file several times across its fallback
+  // tiers, once per upload slot per page pass.
+  private readonly fileSizeCache = new Map<string, number>();
+  private fileSize(file: string): number {
+    let size = this.fileSizeCache.get(file);
+    if (size === undefined) {
+      try { size = fs.statSync(file).size; } catch { size = -1; } // unreadable → treat as fitting; the upload attempt surfaces the real error
+      this.fileSizeCache.set(file, size);
+    }
+    return size;
   }
 
   private fileFits(file: string, cap: number): boolean {
     if (!Number.isFinite(cap)) return true;
-    try { return fs.statSync(file).size <= cap; } catch { return true; } // unreadable → let the upload attempt surface the real error
+    const size = this.fileSize(file);
+    return size < 0 || size <= cap;
   }
 
   private resolveUpload(field: ExtractedField): { docType: string; file: string } | null {
@@ -758,11 +775,13 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     const fits = (docType: string) => this.docsByType[docType] && this.fileFits(this.docsByType[docType], cap);
     // Combined mode (Accela / Oregon ePermitting): attach the SINGLE full plan-set PDF to
     // every upload control regardless of label — the AHJ wants all plan pages as one PDF.
+    // fits() applies here too so an explicit PORTAL_UPLOAD_MAX_MB override is honored
+    // (the default combined cap is Infinity, so this normally passes everything through).
     if (this.uploadMode === "combined") {
       for (const docType of ["plan_set", "combined_plan_set", "full_plan_set"]) {
-        if (this.docsByType[docType]) return { docType, file: this.docsByType[docType] };
+        if (fits(docType)) return { docType, file: this.docsByType[docType] };
       }
-      const firstKey = Object.keys(this.docsByType)[0];
+      const firstKey = Object.keys(this.docsByType).find((k) => fits(k)) ?? Object.keys(this.docsByType)[0];
       return firstKey ? { docType: firstKey, file: this.docsByType[firstKey] } : null;
     }
     // 1) Label names a specific document → attach that docType if we have the split file.
@@ -790,14 +809,23 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     for (const key of Object.keys(this.docsByType)) {
       if (fits(key)) return { docType: key, file: this.docsByType[key] };
     }
-    // Nothing fits — record why so the operator sees "too large", not a mystery skip.
-    const firstKey = Object.keys(this.docsByType)[0];
-    if (firstKey) {
+    // 4) NOTHING fits the default cap. Never silently skip: many split-mode portals allow
+    //    more than our 5 MB default, so attach the SMALLEST available doc and let the
+    //    post-upload rejection scan catch a genuine bounce (visible + attributable),
+    //    instead of leaving the slot empty on a portal that would have accepted the file.
+    const smallest = Object.keys(this.docsByType)
+      .map((docType) => ({ docType, file: this.docsByType[docType], size: this.fileSize(this.docsByType[docType]) }))
+      .filter((c) => c.size >= 0)
+      .sort((a, b) => a.size - b.size)[0];
+    if (smallest) {
       this.debug?.event({
-        type: "upload_skipped_too_large",
+        type: "upload_over_cap_attempted",
         label: label.slice(0, 80),
+        docType: smallest.docType,
+        sizeMb: Math.round((smallest.size / 1024 / 1024) * 100) / 100,
         capMb: Math.round((cap / 1024 / 1024) * 100) / 100,
       });
+      return { docType: smallest.docType, file: smallest.file };
     }
     return null;
   }
@@ -899,6 +927,10 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         continue;
       }
       const selector: RecipeSelector = { css: `[data-al-upl="${slot.key}"]` };
+      // Baseline of visible error banners BEFORE this attach — only a NEW banner after the
+      // settle counts as THIS slot's rejection (a persistent banner from an earlier slot
+      // must not fail every subsequent upload on the page).
+      const bannersBefore = await this.collectUploadBannerTexts();
       const res = await safeAction(
         `upload ${resolved.docType}`,
         async () => {
@@ -927,7 +959,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       let rejected: string | null = null;
       if (res.ok && !res.message) {
         await sleep(1200);
-        rejected = await this.detectUploadRejection();
+        rejected = this.detectNewUploadRejection(bannersBefore, await this.collectUploadBannerTexts());
       }
       if (res.ok && !res.message && !rejected) {
         steps.push({
@@ -944,7 +976,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         }
       } else if (rejected) {
         this.debug?.event({ type: "upload_rejected", label: (slot.label || "").slice(0, 80), docType: resolved.docType, message: rejected.slice(0, 160) });
-        missingRequired.push(`${slot.label || "Document"} (portal rejected the upload: ${rejected.slice(0, 120)})`);
+        // Only a REQUIRED slot's rejection blocks; an optional slot's is informational.
+        if (slot.required) missingRequired.push(`${slot.label || "Document"} (portal rejected the upload: ${rejected.slice(0, 120)})`);
       } else if (slot.required) {
         // Detected + required + we had a file, but the attach failed — still flag for the human.
         missingRequired.push(slot.label || "Required document");
@@ -953,21 +986,36 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     return { filled, missingRequired };
   }
 
-  // Scan the page for an upload-rejection banner (size/type limits). Portal-agnostic:
-  // matches the common phrasings inside alert/error containers only, so ordinary page
-  // text can't false-positive. Returns the banner text or null.
-  private async detectUploadRejection(): Promise<string | null> {
+  // Snapshot the VISIBLE error-banner texts currently on the page. Two uses per upload:
+  // BEFORE the attach (baseline) and AFTER the settle — only a banner that is NEW since
+  // the baseline counts as this slot's rejection. Without the delta, slot 1's persistent
+  // "file size exceeds the 5.00 MB limit" banner (PowerClerk keeps it until dismissed)
+  // would falsely reject every later slot on the page; and without the visibility check,
+  // a hidden .error template node containing limit text would reject every upload.
+  private async collectUploadBannerTexts(): Promise<string[]> {
     try {
-      const texts: string[] = await this.page!.evaluate(() => {
+      return await this.page!.evaluate(() => {
         const sel = "[role=alert], .alert-danger, .alert-error, .validation-summary-errors, .error, .field-validation-error, .text-danger";
         return Array.from(document.querySelectorAll(sel))
+          .filter((el) => {
+            const he = el as HTMLElement;
+            return typeof he.getClientRects !== "function" || he.getClientRects().length > 0;
+          })
           .map((el) => (el.textContent || "").trim())
           .filter((t) => t.length > 0 && t.length < 500);
       });
-      const re = /(could not upload|upload failed|file size exceeds|exceeds the .{0,20}limit|too large|file type (is )?not (allowed|supported)|invalid file type)/i;
-      for (const t of texts) if (re.test(t)) return t;
-      return null;
-    } catch { return null; }
+    } catch { return []; }
+  }
+
+  private static readonly UPLOAD_REJECTION_RE =
+    /(could not upload|upload failed|file size exceeds|exceeds the .{0,20}limit|too large|file type (is )?not (allowed|supported)|invalid file type)/i;
+
+  private detectNewUploadRejection(before: string[], after: string[]): string | null {
+    const baseline = new Set(before);
+    for (const t of after) {
+      if (!baseline.has(t) && AutoLearnAdapter.UPLOAD_REJECTION_RE.test(t)) return t;
+    }
+    return null;
   }
 
   // --- credential injection (mirrors recipeAdapter.login) -------------------
@@ -2186,8 +2234,12 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             const ownText: string = typeof loc.evaluate !== "function" ? "" : await loc.evaluate((el: Element) => {
               const id = el.getAttribute("id");
               const root = el.getRootNode() as Document | ShadowRoot;
-              const forLabel = id && typeof (root as Document).querySelector === "function"
-                ? (root as Document).querySelector(`label[for="${id}"]`)?.textContent
+              // CSS.escape: an id with a quote/backslash would otherwise throw inside
+              // querySelector, the catch would swallow it, and this guard would no-op on
+              // exactly the mislabeled checkbox it exists to stop.
+              const safeId = id && typeof CSS !== "undefined" && typeof CSS.escape === "function" ? CSS.escape(id) : id;
+              const forLabel = safeId && typeof (root as Document).querySelector === "function"
+                ? (root as Document).querySelector(`label[for="${safeId}"]`)?.textContent
                 : null;
               const wrapLabel = (el.closest && el.closest("label"))?.textContent;
               return (forLabel || wrapLabel || el.getAttribute("aria-label") || "").trim();

@@ -6,6 +6,17 @@ import { logger } from "./logger";
 
 const MODEL = "claude-opus-4-8";
 
+// Does the (possibly truncated) response text contain a complete, parseable JSON object?
+// Used by the max_tokens retry: when the JSON block finished before the cap and only
+// trailing prose was clipped, the response is fully usable and re-running the call would
+// double the cost of the hottest planner step for nothing.
+function hasCompleteJsonBlock(text: string): boolean {
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start < 0 || end <= start) return false;
+  try { JSON.parse(text.slice(start, end + 1)); return true; } catch { return false; }
+}
+
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -585,9 +596,11 @@ Set confidence (0-1) for each field. Return only valid JSON.`;
           .finalMessage(),
       );
     let msg = await run(maxTokens);
-    // Truncated output is unparseable JSON → a silently empty result. Retry once at 2× —
-    // accuracy over speed (a dense equipment page can legitimately need >4k output tokens).
-    if (msg.stop_reason === "max_tokens") {
+    // Truncated output is usually unparseable JSON → a silently empty result. Retry once
+    // at 2× — but only when the clipped text really is unusable: a response whose JSON
+    // block completed before the cap (only trailing prose was cut) parses fine, and
+    // re-running it would double the cost of the hottest call for nothing.
+    if (msg.stop_reason === "max_tokens" && !hasCompleteJsonBlock(this.textOf(msg))) {
       msg = await run(maxTokens * 2);
     }
     return this.textOf(msg);
@@ -619,8 +632,8 @@ Set confidence (0-1) for each field. Return only valid JSON.`;
           .finalMessage(),
       );
     let msg = await run(maxTokens);
-    // Same truncation retry as askLong — a truncated plan silently becomes "no fills".
-    if (msg.stop_reason === "max_tokens") {
+    // Same truncation retry as askLong — only when the clipped text is truly unusable.
+    if (msg.stop_reason === "max_tokens" && !hasCompleteJsonBlock(this.textOf(msg))) {
       msg = await run(maxTokens * 2);
     }
     return this.textOf(msg);

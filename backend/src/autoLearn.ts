@@ -29,11 +29,14 @@ import { compareReviewFields } from "../../portal-bot/src/reviewScreenScraper";
 import type { LearnPlanRequest, LearnPlanResponse } from "../../portal-bot/src/adapters/autoLearnAdapter";
 import { createLLMProvider, getRecentLlmCalls } from "./llm";
 import { getDecryptedCredential, getDecryptedCredentialByUrl, getDecryptedCredentialAny } from "./portalCredentials";
-import { resolveRecipeFieldValues, startPortalRecording, savePortalRecipeSteps, getPortalRecipe, convertLiteralsToBoundFields, findAnyRecipeForProject, appendHumanPatchSteps, finishPortalRecipe } from "./portalRecipes";
+import { resolveRecipeFieldValues, startPortalRecording, savePortalRecipeSteps, getPortalRecipe, convertLiteralsToBoundFields, findAnyRecipeForProject, appendHumanPatchSteps, promoteRecordingIfEligible } from "./portalRecipes";
+import { HUMAN_SUBMIT_OBSERVED_NOTE } from "../../portal-bot/src/humanCapture";
 import { projectDocsByType } from "./projectDocuments";
 import { buildUtilityPackage } from "./docSplitter";
 import { addAuditLog } from "./audit";
 import { HttpError } from "./httpError";
+import { id } from "./ids";
+import { knowledgeProfileKey } from "./knowledgeBase";
 
 export interface AutoLearnResult {
   recipe: PortalRecipe;
@@ -217,21 +220,27 @@ export async function autoLearnPortal(
   // the "recording in progress" banner clears — no extra dashboard click needed.
   const promoteOnHumanSubmit = (recipeId: string): void => {
     try {
-      const recipe = getPortalRecipe(db, recipeId);
-      if (recipe.status === "recording" && recipe.steps.length > 0) {
-        finishPortalRecipe(db, recipeId, "operator (submitted in review browser)");
-        addAuditLog(db, projectId, "human", "operator", "portal_recipe.finished", { recipeId, via: "human_submit_observed", scope: scopeType });
-      }
+      promoteRecordingIfEligible(db, recipeId, {
+        finishedBy: "operator (submitted in review browser)",
+        via: "human_submit_observed",
+        projectId,
+      });
     } catch { /* promotion is best-effort */ }
   };
   const onHumanStep = (step: RecipeStep): void => {
     try {
       // Submit-observed is a SIGNAL, never a merged step (see humanCapture.ts).
-      if ((step.note || "") === "__human_submit_observed__") {
+      if ((step.note || "") === HUMAN_SUBMIT_OBSERVED_NOTE) {
         humanPatch.submitObserved = true;
         if (humanPatch.recipeId) promoteOnHumanSubmit(humanPatch.recipeId);
         return;
       }
+      // LATCH: once the human filed the application, nothing that happens afterward
+      // belongs in the recipe. The page-side disarm flag does not survive a full-page
+      // navigation (addInitScript re-arms the fresh document), so a confirmation page's
+      // "Continue"/"Download receipt" clicks would otherwise stream in here and merge
+      // into replayable position. The sink-side latch is navigation-proof.
+      if (humanPatch.submitObserved) return;
       humanPatch.count++;
       if (humanPatch.count === 1) {
         addAuditLog(db, projectId, "human", "operator", "portal.recipe_human_patch_started", { scope: scopeType });
@@ -651,30 +660,21 @@ export async function autoLearnPortal(
           [portalUrl, new Date().toISOString(), project.ahj],
         );
       } else if (scopeType === "utility" && (project.utility || "").trim()) {
+        // Single canonical upsert keyed on profile_key (UNIQUE): creates the minimal
+        // utility-keyed row when the KB only carries AHJ-keyed rows for this territory,
+        // updates it otherwise. One key discipline — a separate UPDATE-by-utility-string
+        // then INSERT-by-profile-key pair could disagree on which row is "the" row and
+        // silently drop the learned URL.
         const nowTs = new Date().toISOString();
         db.run(
-          `UPDATE permit_utility_knowledge SET portal_url = ?, updated_at = ?
-             WHERE utility = ? AND (ahj IS NULL OR ahj = '')`,
-          [portalUrl, nowTs, project.utility],
+          `INSERT INTO permit_utility_knowledge
+             (id, profile_key, state, ahj, utility, portal_url, notes, first_seen_at, last_learned_at, updated_at)
+           VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(profile_key) DO UPDATE SET portal_url = excluded.portal_url, updated_at = excluded.updated_at`,
+          [id(), knowledgeProfileKey({ state: project.state, ahj: "", utility: project.utility }),
+            project.state || "", project.utility, portalUrl,
+            "Auto-learned utility NEM portal entry URL (trusted learn).", nowTs, nowTs, nowTs],
         );
-        // No utility-keyed row yet (the KB may only carry AHJ-keyed rows for this
-        // territory) → create a minimal one so the learned NEM entry URL is not lost.
-        const utilRow = db.get<{ id: string }>(
-          "SELECT id FROM permit_utility_knowledge WHERE utility = ? AND (ahj IS NULL OR ahj = '') LIMIT 1",
-          [project.utility],
-        );
-        if (!utilRow) {
-          const { knowledgeProfileKey } = await import("./knowledgeBase");
-          const { id: newId } = await import("./ids");
-          db.run(
-            `INSERT OR IGNORE INTO permit_utility_knowledge
-               (id, profile_key, state, ahj, utility, portal_url, notes, first_seen_at, last_learned_at, updated_at)
-             VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, ?)`,
-            [newId(), knowledgeProfileKey({ state: project.state, ahj: "", utility: project.utility }),
-              project.state || "", project.utility, portalUrl,
-              "Auto-learned utility NEM portal entry URL (trusted learn).", nowTs, nowTs, nowTs],
-          );
-        }
       }
     } catch { /* KB upsert is best-effort */ }
   }

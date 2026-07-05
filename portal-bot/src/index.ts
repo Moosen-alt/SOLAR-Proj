@@ -239,16 +239,31 @@ async function closePriorStagingBrowser(userDataDir: string | undefined): Promis
   try { await prior.close(); } catch { /* best effort — the human may have closed it already */ }
 }
 
-// Close the browser left open for one client profile on demand — used when the operator
-// finishes reviewing/patching a recording (recipe "finish" endpoint, mark-submitted) so the
-// review window doesn't linger after its job is done. Safe if it was already closed by hand.
-export async function closeStagingBrowserFor(userDataDir: string | undefined): Promise<boolean> {
-  if (!userDataDir) return false;
-  const prior = openStagingAdapters.get(userDataDir);
-  if (!prior) return false;
-  openStagingAdapters.delete(userDataDir);
-  try { await prior.close(); } catch { /* best effort — the human may have closed it already */ }
-  return true;
+// Close the left-open review browsers belonging to ONE track of a client's profile root —
+// used when the operator finishes reviewing/patching a recording (recipe "finish"
+// endpoint, mark-submitted). Scoped to the track's possible profile subdirs because the
+// self-seed learner tracks under <clientId>/utility|AHJ while replay/hand-coded staging
+// tracks under <clientId>/<portal_profiles type> — and a client can have BOTH tracks'
+// review browsers open at once: marking the NEM track submitted must not destroy the
+// permit track's in-progress review session (or vice versa). Safe if already closed.
+export async function closeStagingBrowsersForTrack(
+  clientRoot: string | undefined,
+  scope: "utility" | "ahj",
+): Promise<number> {
+  if (!clientRoot) return 0;
+  // "mock" appears in both lists: it's the portal_profiles fallback dir used only in
+  // offline dev, where collateral closing is harmless.
+  const subdirs = scope === "utility"
+    ? ["utility", "powerclerk_pge", "mock"]
+    : ["AHJ", "accela_oregon", "mock"];
+  let closed = 0;
+  for (const [dir, adapter] of [...openStagingAdapters]) {
+    if (!subdirs.some((sub) => dir === path.join(clientRoot, sub) || dir.startsWith(path.join(clientRoot, sub) + path.sep))) continue;
+    openStagingAdapters.delete(dir);
+    try { await adapter.close(); } catch { /* best effort — the human may have closed it already */ }
+    closed++;
+  }
+  return closed;
 }
 
 // Close every left-open browser whose profile dir sits UNDER the given prefix — used with

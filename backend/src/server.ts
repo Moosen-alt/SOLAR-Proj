@@ -20,6 +20,7 @@ import {
   deletePortalRecipe,
   resolveRecipeFieldValues,
   finishPortalRecipe,
+  promoteRecordingIfEligible,
   findAnyRecipeForProject,
 } from "./portalRecipes";
 import { listPortalPauses, pausePortal, resumePortal } from "./portalPause";
@@ -365,6 +366,14 @@ app.post("/api/projects/:id/filled-forms", asyncHandler(async (req, res) => {
 app.get("/api/projects/:id/filled-forms/:formId", (req, res) => {
   const file = filledFormPath(String(req.params.id), String(req.params.formId));
   if (!fs.existsSync(file)) throw new HttpError(404, "Filled form not found. Build it first.");
+  // Name the download — without Content-Disposition the browser saves the raw form-id hash
+  // with no extension, which the operator can't open ("are these downloads even real?").
+  const formRow = db.get<{ ahj_name?: string; original_filename?: string }>(
+    "SELECT ahj_name, original_filename FROM ahj_forms WHERE id = ?", [String(req.params.formId)],
+  );
+  const base = (formRow?.original_filename || `${formRow?.ahj_name || "permit"}-application.pdf`).replace(/\.pdf$/i, "");
+  const safeName = `${base} - filled.pdf`.replace(/[^A-Za-z0-9 ()._-]+/g, "_");
+  res.setHeader("Content-Disposition", `attachment; filename="${safeName}"`);
   res.type("application/pdf").sendFile(file);
 });
 
@@ -1140,20 +1149,25 @@ app.put("/api/portal-recipes/:id/steps", (req, res) => {
     notes: req.body?.notes ? String(req.body.notes) : undefined,
   }));
 });
+// Close the review browsers for one client + track. Fire-and-forget (a wedged Chromium
+// shutdown must never hang the operator's HTTP response), sanitized clientId (a raw
+// "../.." from the request body would otherwise prefix-match EVERY tracked browser and
+// close all clients' in-progress review sessions), verified against the clients table.
+function closeReviewBrowsers(clientId: string, scope: "utility" | "ahj"): void {
+  const safeClientId = clientId.replace(/[^A-Za-z0-9_-]/g, "");
+  if (!safeClientId || !db.get("SELECT id FROM clients WHERE id = ?", [safeClientId])) return;
+  const profileBase = process.env.PORTAL_PROFILES_DIR || path.join(process.cwd(), "portal-profiles");
+  void import("../../portal-bot/src/index")
+    .then(({ closeStagingBrowsersForTrack }) => closeStagingBrowsersForTrack(path.join(profileBase, safeClientId), scope))
+    .catch(() => { /* browser close is best-effort — it may already be closed */ });
+}
+
 // Human verified/fixed the captured fill in the review browser → promote the recording to a
 // replayable "complete" recipe and close the left-open review browser for that client profile.
 app.post("/api/portal-recipes/:id/finish", asyncHandler(async (req, res) => {
   const recipe = finishPortalRecipe(db, String(req.params.id), req.body?.finishedBy ? String(req.body.finishedBy) : undefined);
   const clientId = req.body?.clientId ? String(req.body.clientId) : "";
-  if (clientId) {
-    try {
-      // Prefix close: the client's review browser may be tracked under utility/AHJ (self-seed
-      // learn) OR the portal_profiles-derived dir (replay staging) — close the whole client root.
-      const { closeStagingBrowsersUnder } = await import("../../portal-bot/src/index");
-      const profileBase = process.env.PORTAL_PROFILES_DIR || path.join(process.cwd(), "portal-profiles");
-      await closeStagingBrowsersUnder(path.join(profileBase, clientId));
-    } catch { /* browser close is best-effort — it may already be closed */ }
-  }
+  if (clientId) closeReviewBrowsers(clientId, recipe.scopeType === "utility" ? "utility" : "ahj");
   addAuditLog(db, null, "human", "operator", "portal_recipe.finished", { recipeId: recipe.id, profileKey: recipe.profileKey });
   res.json(recipe);
 }));
@@ -1773,6 +1787,12 @@ app.post("/api/projects/:id/prepare-submission", (req, res) => {
         sseBroadcast({ type: "run_failed", projectId, message: `Staging failed: ${reason}` });
         return;
       }
+      // processNextJob claims the single highest-priority pending job — under concurrent
+      // load that may have been a DIFFERENT job (or the background worker already claimed
+      // THIS one). If our job isn't done yet, do NOT read the project's newest portal run:
+      // it belongs to an EARLIER stage and would broadcast a false success/failure. The
+      // dashboard's /api/jobs poller reports this job when it actually finishes.
+      if (finishedJob?.status !== "done") return;
       const detail = getProjectDetail(db, projectId);
       const run = detail.portalRuns?.[0];
       if (!run) return;
@@ -2028,16 +2048,19 @@ app.post("/api/projects/:id/submittal-tracks/:type/mark-submitted", asyncHandler
       ? { scopeType: "utility" as const, state: detail.project.state, utility: detail.project.utility }
       : { scopeType: "ahj" as const, state: detail.project.state, ahj: detail.project.ahj, utility: detail.project.utility };
     const draft = findAnyRecipeForProject(db, scoped);
-    if (draft && draft.status === "recording" && draft.steps.length > 0) {
-      finishPortalRecipe(db, draft.id, b.submittedBy ? String(b.submittedBy) : "operator (marked track submitted)");
-      addAuditLog(db, detail.project.id, "human", "operator", "portal_recipe.finished", { recipeId: draft.id, via: "mark_submitted", track: type });
+    if (draft) {
+      // Eligibility-guarded (reached-review) promotion — a paused/partial or stale
+      // abandoned recording must NOT be silently promoted by an unrelated manual submit.
+      promoteRecordingIfEligible(db, draft.id, {
+        finishedBy: b.submittedBy ? String(b.submittedBy) : "operator (marked track submitted)",
+        via: "mark_submitted",
+        projectId: detail.project.id,
+      });
     }
     if (detail.project.clientId) {
-      // Prefix close (see the finish endpoint): covers both the self-seed learn dir
-      // (utility/AHJ) and the replay-staging dir for this client in one sweep.
-      const { closeStagingBrowsersUnder } = await import("../../portal-bot/src/index");
-      const profileBase = process.env.PORTAL_PROFILES_DIR || path.join(process.cwd(), "portal-profiles");
-      await closeStagingBrowsersUnder(path.join(profileBase, detail.project.clientId));
+      // Track-scoped close: marking the NEM track submitted must not destroy the permit
+      // track's still-open review browser (or vice versa). Fire-and-forget.
+      closeReviewBrowsers(detail.project.clientId, type === "nem" ? "utility" : "ahj");
     }
   } catch { /* promotion/close are best-effort — marking submitted must never fail on them */ }
   res.status(201).json({ ok: true, tracks: getSubmittalTracks(db, getProjectDetail(db, String(req.params.id)).project) });

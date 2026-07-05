@@ -3,6 +3,7 @@ import path from "node:path";
 import AdmZip from "adm-zip";
 import { PDFDocument } from "pdf-lib";
 import { extractPdfPages } from "./batchImport";
+import { portalUploadCapBytes } from "../../portal-bot/src/uploadCap";
 import type { AppDb } from "./db";
 import { HttpError } from "./httpError";
 import { saveProjectDocument, listProjectDocuments, projectDocsByType } from "./projectDocuments";
@@ -151,14 +152,15 @@ export async function buildUtilityPackage(db: AppDb, projectId: string, target =
     const copied = await out.copyPages(source, pages);
     copied.forEach((p) => out.addPage(p));
     let bytes = Buffer.from(await out.save());
-    // SIZE CAP: portals reject oversized uploads (PowerClerk: 5 MB; override with
-    // PORTAL_UPLOAD_MAX_MB, the same knob the portal-bot's upload resolver honors). A
-    // multi-page split that blew the cap gets trimmed to its LEAD page only — the
-    // dedicated sheet is always first-matched and a single sheet is far below the cap in
-    // practice; a heavy raster tail page (a vendor manual scan) is what pushes it over.
-    // Better one on-point sheet the portal accepts than a "complete" file it bounces.
-    const capMb = Number(process.env.PORTAL_UPLOAD_MAX_MB || "");
-    const CAP = Number.isFinite(capMb) && capMb > 0 ? capMb * 1024 * 1024 : 5 * 1024 * 1024;
+    // SIZE CAP (utility "nem" packages ONLY — split-mode portals like PowerClerk enforce
+    // a 5 MB per-file limit; override with PORTAL_UPLOAD_MAX_MB, the shared knob in
+    // portalUploadCapBytes). A multi-page split that blew the cap gets trimmed to its
+    // LEAD page — the dedicated sheet is always first-matched; a heavy raster tail page
+    // (a vendor manual scan) is what pushes it over. Better one on-point sheet the portal
+    // accepts than a "complete" file it bounces. The permit/all targets are NOT trimmed:
+    // AHJ portals accept large files, and silently dropping structural-calc pages from a
+    // permit package would ship an incomplete filing with no error anywhere.
+    const CAP = target === "nem" ? portalUploadCapBytes("split") : Number.POSITIVE_INFINITY;
     if (bytes.length > CAP && pages.length > 1) {
       const lead = await PDFDocument.create();
       const [first] = await lead.copyPages(source, [pages[0]]);

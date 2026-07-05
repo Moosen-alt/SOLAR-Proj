@@ -155,3 +155,24 @@ export function seedOutcomeToStageResult(seed: {
   }
   return { ok: true, finalSubmitClicked: false, pauseReason: null, message: seed.message, steps: [], debugDir };
 }
+
+
+// ── Utility-platform host knowledge ─────────────────────────────────────────────────────
+// The ONE place that knows which URL hosts are utility interconnection platforms — used by
+// the staging track/host gates so a permit (AHJ) track never launches or replays against a
+// utility NEM portal (the wrong-system filing bug). Add hosts here as new utility platforms
+// enter the knowledge base; the runtime gates pick them up automatically. (Migration v8's
+// SQL predicate is deliberately NOT derived from this: a shipped data-repair migration
+// stays frozen.)
+const UTILITY_PLATFORM_HOSTS = ["powerclerk.com"];
+export function isUtilityPlatformUrl(url: string | null | undefined): boolean {
+  const u = (url || "").toLowerCase();
+  return UTILITY_PLATFORM_HOSTS.some((host) => u.includes(host));
+}
+
+// Single parse of the PORTAL_AUTOSEED mode switch — hand-rolled copies of this predicate
+// had already started to drift across the staging dispatch, the autopilot mock gate, and
+// the monitor's fabricated-status gate.
+export function isAutoSeedDisabled(): boolean {
+  return process.env.PORTAL_AUTOSEED === "0" || process.env.PORTAL_AUTOSEED === "false";
+}

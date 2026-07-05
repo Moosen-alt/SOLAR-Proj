@@ -1,4 +1,5 @@
 import type { PortalRecipe, PortalRecipeStatus, ProjectRecord, RecipeStep } from "../../shared/src/types";
+import { addAuditLog } from "./audit";
 import { clientStagingOverlay } from "./clients";
 import type { AppDb } from "./db";
 import { HttpError } from "./httpError";
@@ -161,6 +162,34 @@ export function finishPortalRecipe(db: AppDb, recipeId: string, finishedBy?: str
     ` [verified by ${finishedBy || "operator"} — promoted from recording]`, nowIso(), recipeId,
   ]);
   return getPortalRecipe(db, recipeId);
+}
+
+// AUTOMATIC promotion chokepoint (submit-observed signal, mark-submitted): promote a
+// recording only when the learn actually REACHED REVIEW — its steps carry a terminal
+// marker (stopForReview / isFinalSubmit). Without this guard, a learn that paused on a
+// CAPTCHA at page 2 (or a stale abandoned draft) would be silently promoted to a
+// replayable "complete" recipe by the operator's unrelated manual submit, and the bot
+// would then deterministically replay a mid-form fragment for every future project.
+// The explicit "Recording looks right — save recipe" button keeps using
+// finishPortalRecipe directly: a deliberate operator override needs no marker.
+export function promoteRecordingIfEligible(
+  db: AppDb,
+  recipeId: string,
+  opts: { finishedBy: string; via: string; projectId?: string | null },
+): PortalRecipe | null {
+  const recipe = getPortalRecipe(db, recipeId);
+  if (recipe.status !== "recording" || recipe.steps.length === 0) return null;
+  const reachedReview = recipe.steps.some(
+    (st) => st.action === "stopForReview" || (st as { isFinalSubmit?: boolean }).isFinalSubmit === true,
+  );
+  if (!reachedReview) return null;
+  const finished = finishPortalRecipe(db, recipeId, opts.finishedBy);
+  try {
+    addAuditLog(db, opts.projectId ?? null, "human", "operator", "portal_recipe.finished", {
+      recipeId, via: opts.via, profileKey: recipe.profileKey,
+    });
+  } catch { /* audit is best-effort */ }
+  return finished;
 }
 
 export function markPortalRecipeForRerecord(db: AppDb, recipeId: string): PortalRecipe {
@@ -445,8 +474,19 @@ export function appendHumanPatchSteps(
   // Patches merge BEFORE the terminal stop markers — replayable position — so a
   // submit/pay click here would make replay file the application. Drop them at the
   // merge chokepoint too; fills/selects/uploads are always safe to keep.
-  const SUBMIT_PAY = /\b(submit|pay|checkout|finalize|place order|confirm submission|complete submission|file application)\b/i;
-  newSteps = newSteps.filter((st) => !(st.action === "click" && SUBMIT_PAY.test(`${st.note || ""} ${JSON.stringify(st.selector || {})}`)));
+  // The captured LABEL (note) is matched broadly — incl. the payment phrasings the
+  // capture-side OFF_LIMITS blocks, so the two lists can't drift apart on pay intents.
+  const SUBMIT_PAY = /\b(submit|pay|payment|pay now|checkout|finalize|place order|confirm submission|complete submission|file application)\b/i;
+  newSteps = newSteps.filter((st) => {
+    if (st.action !== "click") return true;
+    const label = (st.note || "").replace(/^human-patch:?\s*/i, "");
+    if (SUBMIT_PAY.test(label)) return false;
+    // Selector content is only trusted as a signal when the button had NO accessible
+    // label (icon-only <button id="btnSubmitFinal">): a labeled "Next" button inside a
+    // '#submit-wizard-step' container is legitimate navigation and must merge.
+    if (!label && SUBMIT_PAY.test(JSON.stringify(st.selector || {}))) return false;
+    return true;
+  });
   if (!newSteps.length) return recipe;
   const steps = [...(recipe.steps || [])];
   // Split off the trailing terminal markers (stopForReview and/or the recorded

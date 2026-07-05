@@ -190,6 +190,12 @@ export async function gapFillCurrentPage(
       if (await isFieldEmpty(loc, field.fieldType)) empties.push({ field, loc });
     }
     if (empties.length === 0) return out;
+    // Only spend an LLM call when a REQUIRED field is still empty. Portal pages always
+    // carry empty optionals (address line 2, alt-billing email, ...), so gating on "any
+    // empty field" invoked the full planner on EVERY page of a recipe replay - making
+    // replay nearly as slow (and as expensive) as the original learn. When a required
+    // gap does exist, the optionals ride along in the same request.
+    if (!empties.some((e) => e.field.required)) return out;
 
     const url = typeof page.url === "function" ? String(page.url() ?? "") : "";
     const pageTitle = typeof page.title === "function" ? String((await page.title().catch(() => "")) ?? "") : "";

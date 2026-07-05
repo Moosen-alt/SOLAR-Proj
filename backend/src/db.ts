@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import Database, { type Database as DB, type Statement } from "better-sqlite3";
 import { baselineRuleDefinitions } from "./baselineRules";
-import { seedInitialKnowledgeBase } from "./knowledgeBase";
+import { knowledgeProfileKey, seedInitialKnowledgeBase } from "./knowledgeBase";
 
 export type SqlParam = string | number | null | Uint8Array;
 export type SqlParams = SqlParam[];
@@ -1062,6 +1062,32 @@ const VERSIONED_MIGRATIONS: VersionedMigration[] = [
     version: 8,
     name: "clear_utility_urls_on_ahj_rows",
     up: (db) => {
+      // PRESERVE before blanking: the poisoned AHJ row may be the ONLY place the
+      // utility's legitimate NEM entry URL is stored (the NEM-track lookup reads any row
+      // matching the utility). Copy it onto a utility-keyed row first so the repair
+      // doesn't strand the NEM track with "No portal URL is known".
+      const poisoned = db.query<{ state: string; utility: string; portal_url: string }>(
+        `SELECT state, utility, portal_url FROM permit_utility_knowledge
+           WHERE ahj IS NOT NULL AND ahj != '' AND portal_url LIKE '%powerclerk.com%' AND utility IS NOT NULL AND utility != ''`,
+      );
+      const now = new Date().toISOString();
+      for (const row of poisoned) {
+        const utilRow = db.get<{ id: string; portal_url: string }>(
+          `SELECT id, portal_url FROM permit_utility_knowledge WHERE utility = ? AND (ahj IS NULL OR ahj = '') LIMIT 1`,
+          [row.utility],
+        );
+        if (utilRow && !utilRow.portal_url) {
+          db.run(`UPDATE permit_utility_knowledge SET portal_url = ?, updated_at = ? WHERE id = ?`, [row.portal_url, now, utilRow.id]);
+        } else if (!utilRow) {
+          const key = knowledgeProfileKey({ state: row.state, ahj: "", utility: row.utility });
+          db.run(
+            `INSERT OR IGNORE INTO permit_utility_knowledge
+               (id, profile_key, state, ahj, utility, portal_url, notes, first_seen_at, last_learned_at, updated_at)
+             VALUES (?, ?, ?, '', ?, ?, 'Utility NEM entry URL recovered from a mis-keyed AHJ row (migration v8).', ?, ?, ?)`,
+            [`v8-${Math.random().toString(36).slice(2, 10)}`, key, row.state || "", row.utility, row.portal_url, now, now, now],
+          );
+        }
+      }
       db.run(
         `UPDATE permit_utility_knowledge SET portal_url = ''
            WHERE ahj IS NOT NULL AND ahj != '' AND portal_url LIKE '%powerclerk.com%'`,

@@ -71,7 +71,8 @@ import { STAGE_COUNT, stageForStatus, isBlockedStatus } from "./projectStage";
 import { addAuditLog } from "./audit";
 import { clientStagingOverlay, getClient } from "./clients";
 import { getDecryptedCredential, getDecryptedCredentialByUrl, getDecryptedCredentialAny } from "./portalCredentials";
-import { selectAdapterActor, selectStagingActor, resolvePortalChannel, seedOutcomeToStageResult } from "./portalChannel";
+import { logger } from "./logger";
+import { selectAdapterActor, selectStagingActor, resolvePortalChannel, seedOutcomeToStageResult, isUtilityPlatformUrl, isAutoSeedDisabled } from "./portalChannel";
 import { isPortalPaused } from "./portalPause";
 import { buildApplicationDocumentPackage, findApplicationProfile } from "./applicationDocs";
 import { buildUtilityPackage } from "./docSplitter";
@@ -4414,7 +4415,7 @@ async function resolveStatusText(target: Row | null, rawStatusText: string, sour
   // the client a fake update. Honest answer only, except in explicit offline/dev mode
   // (PORTAL_AUTOSEED=0, the same switch that enables the mock staging adapter).
   if (source === "mock") {
-    const offlineDev = process.env.PORTAL_AUTOSEED === "0" || process.env.PORTAL_AUTOSEED === "false";
+    const offlineDev = isAutoSeedDisabled();
     return offlineDev
       ? "Application is under review. Plans assigned to reviewer."
       : "No status text available. Manual AHJ/utility portal check required.";
@@ -4689,6 +4690,14 @@ export async function runDuePermitChecks(
           source = "public_url";
         }
       }
+    }
+    // Nothing checkable (no recipe, no profile, no URL → source stays "mock") in LIVE
+    // mode: SKIP rather than record. Recording would classify the honest "no status
+    // available" text as needs_human_review and stomp the project's current_stage on
+    // every poll, burying real review items in noise. Offline dev keeps the mock flow.
+    if (source === "mock" && !rawStatusText && !isAutoSeedDisabled()) {
+      logger.info("monitor", `skipping status check — no portal URL/recipe to check for target ${text(target.id)}`, { projectId });
+      continue;
     }
     const detail = await recordPermitStatusCheck(db, projectId, {
       targetId: text(target.id),
@@ -5114,6 +5123,16 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
     // Kill-switch tripped: surface a manual handoff and drive NO automation.
     const msg = `${portalLabel} is paused (legal kill-switch). ${channelDecision.reason} Submit this application by hand and resume the portal once it's cleared.`;
     result = { ok: false, finalSubmitClicked: false, pauseReason: "portal_paused", message: msg, steps: [{ ok: false, message: msg }] };
+  } else if (recipe && runActorLabel === "RecipeAdapter" && track !== "nem" && isUtilityPlatformUrl(recipe.portalUrl)) {
+    // TRACK/HOST GATE for the REPLAY path: a pre-fix learn mis-keyed by the KB poisoning
+    // bug can leave an AHJ-scoped COMPLETE recipe whose steps drive the utility NEM
+    // portal. Migration v8 repairs the KB rows but can't rewrite recipes — without this
+    // check the recipe's existence bypasses the self-seed gate below and stages the
+    // permit in the wrong system. Flag it for re-recording and stop.
+    try { markPortalRecipeForRerecord(db, recipe.id); } catch { /* best-effort */ }
+    const msg = `The recorded recipe for ${portalLabel} points at a utility interconnection portal (${recipe.portalUrl}) — that's the NEM portal, not the ${detail.project.ahj || "AHJ"} permit portal. It was mis-recorded and has been flagged for re-recording. Record the AHJ's permit portal, then re-stage.`;
+    addAuditLog(db, projectId, "system", "submit gate", "portal.track_host_conflict", { track: track ?? "permit", url: recipe.portalUrl, recipeId: recipe.id });
+    result = { ok: false, finalSubmitClicked: false, pauseReason: null, message: msg, steps: [{ ok: false, message: msg }] };
   } else if (recipe && runActorLabel === "RecipeAdapter") {
     result = await stageWithRecipe(recipe, stagedProject, resolveRecipeFieldValues(db, stagedProject, portalType), docsByType, files, stageOptions);
     // PROACTIVE STALENESS: a replay that dies on a recorded step is almost always selector
@@ -5140,8 +5159,7 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
     // platform host — a PowerClerk URL reaching this point means the resolution chain
     // picked up the NEM portal (e.g. a poisoned KB row), and learning the wrong portal
     // both wastes the pass AND mis-keys the recorded recipe to the AHJ scope.
-    const utilityPlatformHost = /\bpowerclerk\.com\b/i;
-    const trackHostConflict = track !== "nem" && utilityPlatformHost.test(credentialUrl);
+    const trackHostConflict = track !== "nem" && isUtilityPlatformUrl(credentialUrl);
     if (!credentialUrl) {
       // No entry URL to launch the learner — stop and surface rather than guess a portal.
       const msg = `No portal URL is known for ${portalLabel}, so the universal learner can't seed a recipe yet. Record the portal once (or add its URL to the knowledge base) and re-stage.`;

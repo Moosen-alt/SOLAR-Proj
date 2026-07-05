@@ -114,16 +114,22 @@ function patchCaptureScript(): void {
     if ((actionable as HTMLInputElement).type === "file") return; // handled by change
     const d = describe(actionable);
     if (OFF_LIMITS.test(d.label)) {
-      // The human is filing/paying the application — DISARM capture entirely. Nothing
-      // after a submit/pay click (confirmation pages, "Continue" buttons) belongs in
-      // the recipe; recording it would make replay act past the review stop.
-      // A SUBMIT-intent click (not a bare pay/fee) also emits the submit-observed
-      // signal before disarming: the operator just demonstrated the corrected fill
-      // end-to-end, so the backend promotes the recording to a complete recipe.
-      const alreadyDisarmed = w.__alPatchDisarmed === true;
-      w.__alPatchDisarmed = true;
-      if (!alreadyDisarmed && /\b(submit|confirm submission|complete submission|file application)\b/i.test(d.label) && typeof w.__alPatchStep === "function") {
-        w.__alPatchStep({ kind: "submitObserved", selector: {}, label: d.label });
+      // A submit/pay-worded click is NEVER captured as a replayable step (broad match —
+      // losing a mid-flow "Submit Documents" nav click from a patch is safer than
+      // replaying one). But only the FINAL application submit disarms capture and emits
+      // the submit-observed promotion signal: a mid-flow "Submit Documents" / "Submit
+      // for Review" / "Save and Submit Later" must not promote a half-corrected
+      // recording or stop capturing the operator's remaining fixes. Final = a bare
+      // "Submit"/"Submit Application" style label, or explicit filing phrases.
+      const label = (d.label || "").trim();
+      const isFinalSubmit = /^(submit|submit application|submit & pay|submit and pay)$/i.test(label)
+        || /\b(confirm submission|complete submission|file application)\b/i.test(label);
+      if (isFinalSubmit) {
+        const alreadyDisarmed = w.__alPatchDisarmed === true;
+        w.__alPatchDisarmed = true;
+        if (!alreadyDisarmed && typeof w.__alPatchStep === "function") {
+          w.__alPatchStep({ kind: "submitObserved", selector: {}, label });
+        }
       }
       return;
     }

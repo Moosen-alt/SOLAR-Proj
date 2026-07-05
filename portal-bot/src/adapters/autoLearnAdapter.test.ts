@@ -1019,19 +1019,22 @@ async function testUploadSizeCap() {
     const genericPick = (withBoth as any).resolveUpload({ selector: {}, label: "Attachment", fieldType: "file" });
     assert.equal(genericPick?.docType, "sld", `generic slot skips the oversize plan_set (got ${genericPick?.docType})`);
 
-    // Only the oversize file exists → nothing fits → null (skip, not a doomed upload).
+    // Only the oversize file exists → nothing fits the default cap → the SMALLEST doc is
+    // still attached (the post-upload rejection scan catches a genuine bounce); an empty
+    // slot on a portal whose real limit is higher would be worse.
     const onlyBig = new AutoLearnAdapter("Cap Test", noPlan, { uploadMode: "split", docsByType: { plan_set: bigPlanSet } });
-    const noPick = (onlyBig as any).resolveUpload({ selector: {}, label: "Attachment", fieldType: "file" });
-    assert.equal(noPick, null, "nothing fits → control skipped");
+    const overCapPick = (onlyBig as any).resolveUpload({ selector: {}, label: "Attachment", fieldType: "file" });
+    assert.equal(overCapPick?.docType, "plan_set", "nothing fits → smallest doc attempted anyway");
 
     // Combined (AHJ) mode is uncapped by default — the full plan set still uploads.
     const combined = new AutoLearnAdapter("Cap Test", noPlan, { uploadMode: "combined", docsByType: { plan_set: bigPlanSet } });
     const combinedPick = (combined as any).resolveUpload({ selector: {}, label: "Plans", fieldType: "file" });
     assert.equal(combinedPick?.docType, "plan_set", "combined mode keeps the full plan set");
 
-    // Env override tightens/loosens the cap.
+    // Env override tightens/loosens the cap (fresh adapter — file sizes are cached per run).
     process.env.PORTAL_UPLOAD_MAX_MB = "10";
-    const loosened = (onlyBig as any).resolveUpload({ selector: {}, label: "Attachment", fieldType: "file" });
+    const loosenedAdapter = new AutoLearnAdapter("Cap Test", noPlan, { uploadMode: "split", docsByType: { plan_set: bigPlanSet } });
+    const loosened = (loosenedAdapter as any).resolveUpload({ selector: {}, label: "Attachment", fieldType: "file" });
     assert.equal(loosened?.docType, "plan_set", "PORTAL_UPLOAD_MAX_MB=10 lets the 6 MB file through");
   } finally {
     delete process.env.PORTAL_UPLOAD_MAX_MB;
