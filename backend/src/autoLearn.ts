@@ -29,6 +29,7 @@ import { compareReviewFields } from "../../portal-bot/src/reviewScreenScraper";
 import type { LearnPlanRequest, LearnPlanResponse } from "../../portal-bot/src/adapters/autoLearnAdapter";
 import { createLLMProvider, getRecentLlmCalls } from "./llm";
 import { getDecryptedCredential, getDecryptedCredentialByUrl, getDecryptedCredentialAny } from "./portalCredentials";
+import { learnNoteTopicsFromMisses, activeLearnedNoteTerms } from "./noteTopics";
 import { resolveRecipeFieldValues, startPortalRecording, savePortalRecipeSteps, getPortalRecipe, convertLiteralsToBoundFields, findAnyRecipeForProject, appendHumanPatchSteps, promoteRecordingIfEligible } from "./portalRecipes";
 import { HUMAN_SUBMIT_OBSERVED_NOTE } from "../../portal-bot/src/humanCapture";
 import { projectDocsByType } from "./projectDocuments";
@@ -67,7 +68,16 @@ const DESIGN_NOTE_TOPICS = /\bdisconnect\b|within 10|meter.{0,20}pole|pole.{0,20
 
 // Extract only decision-relevant lines from the parser snapshot's long text fields.
 // Deterministic and cheap (no LLM); capped so it can never re-inflate the prompt.
-export function designNotesDigest(project: ProjectRecord, maxChars = 1200): string {
+// extraTerms are SELF-TAUGHT topics (see noteTopics.ts): words from required portal
+// questions that past runs couldn't answer — lines mentioning them are included too.
+export function designNotesDigest(project: ProjectRecord, maxChars = 1200, extraTerms: string[] = []): string {
+  const learned = extraTerms.length
+    ? new RegExp(extraTerms.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "i")
+    : null;
+  return digestLines(project, maxChars, (line) => DESIGN_NOTE_TOPICS.test(line) || (learned ? learned.test(line) : false));
+}
+
+function digestLines(project: ProjectRecord, maxChars: number, matches: (line: string) => boolean): string {
   const snap = (project.parserSnapshot || {}) as Record<string, unknown>;
   const sources = [
     "sitePlanNotesText", "roofPlanNotesText", "projectDescriptionText", "electricalCalcText",
@@ -82,7 +92,7 @@ export function designNotesDigest(project: ProjectRecord, maxChars = 1200): stri
     for (const rawLine of text.split(/[\n.;]+/)) {
       const line = rawLine.replace(/\s+/g, " ").trim();
       if (line.length < 8 || line.length > 220) continue;
-      if (!DESIGN_NOTE_TOPICS.test(line)) continue;
+      if (!matches(line)) continue;
       const norm = line.toLowerCase();
       if (seen.has(norm)) continue;
       seen.add(norm);
@@ -117,8 +127,9 @@ export function buildPortalPlanner(
   // JUDGMENT questions (disconnect-within-10ft, meter on pole, battery/backup mode,
   // export limiting, attic run) are answered from design NOTES, not structured fields.
   // Extract only the decision-relevant lines into a small digest so the planner keeps
-  // that signal at ~200 tokens instead of the full text.
-  const digest = designNotesDigest(project);
+  // that signal at ~200 tokens instead of the full text. Self-taught topics (terms from
+  // required questions past runs couldn't answer) extend the built-in topic list.
+  const digest = designNotesDigest(project, 1200, activeLearnedNoteTerms(db));
   if (digest) projectFields["designNotes"] = digest;
 
   let kbContext = "";
@@ -531,6 +542,10 @@ export async function autoLearnPortal(
   // this the recipe gets promoted to "trusted" with a known-blank required field — exactly the
   // false-confidence the operator hit. Any blocker forces "draft" for human completion.
   const requiredMisses = learn.requiredFieldMisses ?? [];
+  // SELF-TEACHING: record the words of every required question this run couldn't answer.
+  // Terms that recur across runs become active digest topics, so future runs surface the
+  // matching plan-set/notes lines to the planner and can answer the question.
+  try { learnNoteTopicsFromMisses(db, requiredMisses); } catch { /* best-effort */ }
   const docMisses = learn.missingRequiredDocs ?? [];
   const validationBlocks = learn.validationBlocks ?? [];
   const hasHardBlockers = requiredMisses.length > 0 || docMisses.length > 0 || validationBlocks.length > 0;

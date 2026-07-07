@@ -906,6 +906,17 @@ function migrate(db: AppDb): void {
     );
     CREATE INDEX IF NOT EXISTS idx_project_documents_project ON project_documents(project_id);
   `);
+
+  // Self-taught digest topics: words from REQUIRED portal questions that runs left
+  // unanswered. Recurring terms steer the design-notes digest (see noteTopics.ts).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS learned_note_topics (
+      term TEXT PRIMARY KEY,
+      miss_count INTEGER NOT NULL DEFAULT 1,
+      sample_label TEXT NOT NULL DEFAULT '',
+      updated_at TEXT NOT NULL
+    );
+  `);
   // Extracted PDF text for uploaded project documents (plan set, SLD, ...). Feeds the
   // reviewer gate's evidence engine so callouts check the ACTUAL plan sheets, not only
   // the parser snapshot. (Added after the CREATE above so fresh DBs migrate cleanly.)
