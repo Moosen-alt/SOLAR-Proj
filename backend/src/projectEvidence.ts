@@ -93,6 +93,7 @@ function sourcesFor(project: ProjectRecord): EvidenceSource[] {
   ];
 
   const keys: Array<[string, string]> = [
+    ["planSetExtractedText", "Uploaded plan set text"],
     ["splitPagesText", "Split page mapping"],
     ["packetReadinessText", "Packet readiness"],
     ["utilityDownloadChecklistText", "Utility download checklist"],

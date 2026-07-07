@@ -65,7 +65,7 @@ import { checkStatusWithAdapter, stageWithAccela, stageWithMockPortal, stageWith
 import { findCompleteRecipeForProject, findAnyRecipeForProject, resolveRecipeFieldValues, markPortalRecipeForRerecord } from "./portalRecipes";
 import { notifyClientOfStatusChange, shouldNotifyClient } from "./clientNotifier";
 import { detectPlatform, publicPermitStatusCheck } from "./publicPermitStatus";
-import { projectDocsByType } from "./projectDocuments";
+import { planSetTextForProject, projectDocsByType } from "./projectDocuments";
 import { documentInventory } from "./requiredDocuments";
 import { STAGE_COUNT, stageForStatus, isBlockedStatus } from "./projectStage";
 import { addAuditLog } from "./audit";
@@ -497,7 +497,10 @@ export async function researchAndSaveUtility(
 // keys) without losing prior data — then re-runs QC.
 export function updateProject(db: AppDb, projectId: string, payload: ParserPayload): ProjectDetail {
   const existing = getProjectDetail(db, projectId).project;
-  const mergedSnapshot: ParserPayload = { ...(existing.parserSnapshot || {}), ...payload };
+  // Drop the non-persistent plan-set text overlay (re-derived from project_documents
+  // on every load) so document text never bloats the stored parser_json.
+  const { planSetExtractedText: _planSetText, ...existingSnapshot } = existing.parserSnapshot || {};
+  const mergedSnapshot: ParserPayload = { ...existingSnapshot, ...payload };
   const project = normalizeProject(projectId, mergedSnapshot, existing.status, existing.createdAt);
   // Preserve the client link unless the payload explicitly changes it.
   const clientId = (payload.clientId ?? payload.client_id ?? existing.clientId) as string | null;
@@ -741,6 +744,13 @@ export function getProjectDetail(db: AppDb, projectId: string): ProjectDetail {
   if (!projectRow) throw new HttpError(404, "Project not found.");
 
   const project = mapProject(projectRow);
+  // Overlay the uploaded plan-set-family document text (non-persistent) so the
+  // reviewer gate and evidence checks see the ACTUAL sheets, not only what the
+  // parser snapshot happened to capture. Fixes false "not shown on plans" blockers.
+  const planSetText = planSetTextForProject(db, projectId);
+  if (planSetText && !project.parserSnapshot.planSetExtractedText) {
+    project.parserSnapshot = { ...project.parserSnapshot, planSetExtractedText: planSetText };
+  }
   const stage = stageForStatus(project.status);
   return {
     project,

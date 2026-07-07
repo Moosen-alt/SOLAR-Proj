@@ -117,6 +117,9 @@ function num(project: ProjectRecord, keys: string[]): number | null {
 
 function designText(project: ProjectRecord): string {
   const keys = [
+    // Text extracted from the uploaded plan-set-family PDFs (overlaid on the snapshot
+    // by getProjectDetail) — so rules check the ACTUAL sheets, not only parser output.
+    "planSetExtractedText",
     "splitPagesText",
     "packetReadinessText",
     "utilityDownloadChecklistText",
@@ -144,6 +147,28 @@ function isOregon(project: ProjectRecord, profile: AhjProcessProfile | null): bo
 
 function isGroundMount(project: ProjectRecord, allText: string): boolean {
   return /ground.mount|ground mounted|ground array/i.test(`${project.interconnectionMethod}\n${allText}`);
+}
+
+// Module-level power electronics (microinverters / RSD-integrated optimizers) provide
+// inherent module-level rapid shutdown under NEC 690.12. When the design is MLPE-based,
+// a missing RSD plan callout is a labeling/documentation gap — not a missing-equipment
+// blocker that should stop staging.
+function isMlpeDesign(project: ProjectRecord, allText: string): boolean {
+  const inverterText = [
+    str(project, "pvMicroModel"),
+    str(project, "pvMicroQty") ? "microinverter" : "",
+    str(project, "invModel"),
+    str(project, "inverterModel"),
+  ].join("\n");
+  return hasAny(`${inverterText}\n${allText}`, [
+    /micro.?inverter/i,
+    /\bmlpe\b/i,
+    /enphase|\biq\s?[678]\b/i,
+    /ap\s?systems|apsystems|\bds3\b|\bqs1\b|\byc600\b/i,
+    /hoymiles/i,
+    /module.level (power electronics|shutdown|rapid shutdown)/i,
+    /tigo\s?(ts4|rsd)/i,
+  ]);
 }
 
 function finding(input: {
@@ -315,15 +340,27 @@ export function evaluateDesignCodeFindings(project: ProjectRecord, profile: AhjP
   }
 
   if (roofMounted && !hasAny(all, [/rapid shutdown/i, /\bRSD\b/i, /690\.12/i])) {
+    const mlpe = isMlpeDesign(project, all);
     out.push(finding({
       id: "city.elec.rapid-shutdown-missing",
-      severity: "blocker",
+      // MLPE designs (microinverters / RSD optimizers) satisfy module-level rapid
+      // shutdown inherently — the remaining gap is the plan callout/label, which is
+      // a warning, not a staging blocker.
+      severity: mlpe ? "warning" : "blocker",
       category: "electrical",
-      title: "Rapid shutdown not shown",
-      message: "No rapid shutdown callout or equipment evidence was detected.",
-      cityFeedback: "Revise the electrical plans to identify rapid shutdown equipment, initiation/control location, controlled conductors or array boundary basis, and required field marking for the adopted NEC cycle.",
-      designTeamAction: "Add RSD equipment and label callouts to the SLD/site/equipment schedule.",
-      evidenceNeeded: ["RSD device or inverter listing basis", "RSD initiation/control location", "RSD label/placard callout", "Code-cycle note"],
+      title: mlpe ? "Rapid shutdown callout missing (MLPE design)" : "Rapid shutdown not shown",
+      message: mlpe
+        ? "The design uses microinverters/module-level power electronics, which provide inherent module-level rapid shutdown, but the plans do not call out NEC 690.12 compliance or the RSD label."
+        : "No rapid shutdown callout or equipment evidence was detected.",
+      cityFeedback: mlpe
+        ? "Add a rapid shutdown note to the electrical plans stating the module-level shutdown basis (microinverter/MLPE listing) and show the required rapid shutdown label/placard for the adopted NEC cycle."
+        : "Revise the electrical plans to identify rapid shutdown equipment, initiation/control location, controlled conductors or array boundary basis, and required field marking for the adopted NEC cycle.",
+      designTeamAction: mlpe
+        ? "Add a 690.12 module-level shutdown note and RSD label callout to the SLD/label schedule (equipment already complies)."
+        : "Add RSD equipment and label callouts to the SLD/site/equipment schedule.",
+      evidenceNeeded: mlpe
+        ? ["690.12 module-level shutdown note", "RSD label/placard callout", "Microinverter/MLPE listing reference"]
+        : ["RSD device or inverter listing basis", "RSD initiation/control location", "RSD label/placard callout", "Code-cycle note"],
       codeReferences: [rapidShutdownRef, electricalRef],
     }));
   }

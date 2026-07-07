@@ -5,8 +5,55 @@ import { HttpError } from "./httpError";
 import { id } from "./ids";
 import { nowIso } from "./time";
 import { text as s } from "./json";
+import { extractPdfText } from "./batchImport";
 
 type Row = Record<string, unknown>;
+
+// Doc types whose text is design/plan evidence for the reviewer gate.
+const PLAN_TEXT_DOC_TYPES = new Set(["plan_set", "sld", "site_plan", "structural", "electrical", "inverter_spec", "module_spec", "labels"]);
+const MAX_PLAN_TEXT_CHARS = 150_000;
+
+function isPdfDoc(row: Row): boolean {
+  return /pdf/i.test(s(row.content_type)) || /\.pdf$/i.test(s(row.stored_path)) || /\.pdf$/i.test(s(row.original_filename));
+}
+
+// Extract + store PDF text for one document row. Fire-and-forget from upload and
+// from the lazy backfill — a failed extraction stores a marker so we don't retry
+// the same broken file on every project view.
+async function extractDocumentText(db: AppDb, docId: string, storedPath: string): Promise<void> {
+  let extracted = "";
+  try {
+    extracted = (await extractPdfText(storedPath, 40)).slice(0, MAX_PLAN_TEXT_CHARS);
+  } catch { /* fall through to marker */ }
+  db.run("UPDATE project_documents SET extracted_text = ? WHERE id = ?", [extracted || "[no text layer]", docId]);
+}
+
+/**
+ * Concatenated extracted text of the project's plan-set-family documents (latest per
+ * doc_type). Used by the reviewer gate so evidence checks see the actual plan sheets.
+ * Kicks off a background extraction for any PDF that hasn't been extracted yet, so
+ * the text is available on the next report build.
+ */
+export function planSetTextForProject(db: AppDb, projectId: string): string {
+  const rows = db.query<Row>(
+    "SELECT id, doc_type, stored_path, content_type, original_filename, extracted_text FROM project_documents WHERE project_id = ? ORDER BY uploaded_at DESC",
+    [projectId],
+  );
+  const parts: string[] = [];
+  const seenTypes = new Set<string>();
+  for (const row of rows) {
+    const docType = s(row.doc_type);
+    if (!PLAN_TEXT_DOC_TYPES.has(docType) || seenTypes.has(docType)) continue;
+    seenTypes.add(docType);
+    const extracted = s(row.extracted_text);
+    if (extracted && extracted !== "[no text layer]") {
+      parts.push(extracted);
+    } else if (!extracted && isPdfDoc(row) && fs.existsSync(s(row.stored_path))) {
+      void extractDocumentText(db, s(row.id), s(row.stored_path));
+    }
+  }
+  return parts.join("\n").slice(0, MAX_PLAN_TEXT_CHARS);
+}
 
 const DOCS_DIR = path.resolve(process.cwd(), process.env.PROJECT_DOCS_DIR || "backend/data/project-documents");
 
@@ -66,6 +113,10 @@ export function saveProjectDocument(
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [docId, projectId, s(input.docType), s(input.filename), stored, s(input.contentType), input.buffer.length, input.source || "upload", s(input.uploadedBy), nowIso()],
   );
+  // Extract PDF text in the background so the reviewer gate can check the actual sheets.
+  if (/pdf/i.test(s(input.contentType)) || /\.pdf$/i.test(input.filename)) {
+    void extractDocumentText(db, docId, stored);
+  }
   return mapDoc(db.get<Row>("SELECT * FROM project_documents WHERE id = ?", [docId])!);
 }
 

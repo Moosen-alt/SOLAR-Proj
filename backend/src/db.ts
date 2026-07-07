@@ -906,6 +906,10 @@ function migrate(db: AppDb): void {
     );
     CREATE INDEX IF NOT EXISTS idx_project_documents_project ON project_documents(project_id);
   `);
+  // Extracted PDF text for uploaded project documents (plan set, SLD, ...). Feeds the
+  // reviewer gate's evidence engine so callouts check the ACTUAL plan sheets, not only
+  // the parser snapshot. (Added after the CREATE above so fresh DBs migrate cleanly.)
+  addColumnIfMissing(db, "project_documents", "extracted_text", "TEXT NOT NULL DEFAULT ''");
 
   runVersionedMigrations(db);
 
