@@ -267,7 +267,15 @@ export function resolveRecipeFieldValues(db: AppDb, project: ProjectRecord, port
   const snapshot = project.parserSnapshot || {};
   const snapshotFlat: Record<string, string> = {};
   for (const [k, v] of Object.entries(snapshot)) {
-    if (v != null && typeof v !== "object") snapshotFlat[k] = String(v);
+    if (v == null || typeof v === "object") continue;
+    const s = String(v);
+    // Fill values are short scalars. Long free-text blobs (plan-set extracted text,
+    // split-page mappings, checklists, notes) are evidence for the reviewer gate, not
+    // portal field values — and because projectFields is serialized into EVERY LLM
+    // planning call, letting them through multiplies token spend per call (a 150KB
+    // plan-set text is ~40k tokens on every planPortalFields call).
+    if (k === "planSetExtractedText" || s.length > 400) continue;
+    snapshotFlat[k] = s;
   }
 
   // Derive split first/last from full homeowner name so portals with separate
