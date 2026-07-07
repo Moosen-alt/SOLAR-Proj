@@ -4642,7 +4642,7 @@ export async function runDuePermitChecks(
         const credential = clientId
           ? (getDecryptedCredential(db, clientId, recipePortalType)
               ?? getDecryptedCredentialByUrl(db, clientId, recipe.portalUrl)
-              ?? getDecryptedCredentialAny(db, clientId))
+              ?? getDecryptedCredentialAny(db, clientId, recipe.portalUrl))
             ?? undefined
           : undefined;
         const scraped = await checkStatusWithAdapter("recipe", applicationNumbers, {
@@ -4672,7 +4672,7 @@ export async function runDuePermitChecks(
       const credential = clientId
         ? (getDecryptedCredential(db, clientId, portalType)
             ?? (text(target.portal_url) ? getDecryptedCredentialByUrl(db, clientId, text(target.portal_url)) : null)
-            ?? getDecryptedCredentialAny(db, clientId))
+            ?? getDecryptedCredentialAny(db, clientId, text(target.portal_url)))
           ?? undefined
         : undefined;
       const adapterType = portalType === "powerclerk_pge" ? "powerclerk" : "accela";
@@ -5017,7 +5017,7 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   const credential = clientId
     ? (getDecryptedCredential(db, clientId, portalType)
         ?? (credentialUrl ? getDecryptedCredentialByUrl(db, clientId, credentialUrl) : null)
-        ?? getDecryptedCredentialAny(db, clientId))
+        ?? getDecryptedCredentialAny(db, clientId, credentialUrl))
       ?? undefined
     : undefined;
 

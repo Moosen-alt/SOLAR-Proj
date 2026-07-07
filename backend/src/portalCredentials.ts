@@ -186,15 +186,28 @@ export function getDecryptedCredentialByUrl(
 // unambiguous which login to use. When a client has credentials for multiple portals
 // (e.g. a utility NEM portal AND an AHJ permit portal), guessing could fill one portal's
 // login with the other's secret — so refuse and require a portalType/URL match instead.
+// When the caller KNOWS the target portal URL, a single credential stored for a
+// DIFFERENT host is also refused — the client's only login being the PGE PowerClerk
+// one must not be typed into the Oregon ePermitting form (a guaranteed rejection, and
+// it sprays one portal's secret at another).
 export function getDecryptedCredentialAny(
   db: AppDb,
   clientId: string,
+  targetUrl?: string,
 ): { username: string; password: string } | null {
   const rows = db.query<Row>(
-    "SELECT encrypted_secret FROM portal_credentials WHERE client_id = ?",
+    "SELECT encrypted_secret, portal_url FROM portal_credentials WHERE client_id = ?",
     [clientId],
   );
   if (rows.length !== 1 || !s(rows[0].encrypted_secret)) return null;
+  const stored = s(rows[0].portal_url);
+  if (targetUrl && stored) {
+    try {
+      const targetHost = new URL(targetUrl).hostname.toLowerCase();
+      const storedHost = new URL(stored).hostname.toLowerCase();
+      if (!hostsMatch(targetHost, storedHost)) return null; // known mismatch — never cross portals
+    } catch { /* unparseable URL — fall through to the single-credential behavior */ }
+  }
   try {
     const dec = decryptStorageState(s(rows[0].encrypted_secret)) as { username?: string; password?: string };
     return { username: s(dec.username), password: s(dec.password) };

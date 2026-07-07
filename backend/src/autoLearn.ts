@@ -180,7 +180,7 @@ export async function autoLearnPortal(
   const credential = project.clientId
     ? (getDecryptedCredential(db, project.clientId, portalType)
         ?? getDecryptedCredentialByUrl(db, project.clientId, portalUrl)
-        ?? getDecryptedCredentialAny(db, project.clientId))
+        ?? getDecryptedCredentialAny(db, project.clientId, portalUrl))
       ?? undefined
     : undefined;
   const profileBase = process.env.PORTAL_PROFILES_DIR || path.join(process.cwd(), "portal-profiles");
