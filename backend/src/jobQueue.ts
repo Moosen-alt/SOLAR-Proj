@@ -281,6 +281,31 @@ export function recoverOrphanedJobs(db: AppDb, opts: { startup?: boolean } = {})
   return stale.length;
 }
 
+// Recipes stranded in 'recording'. A learn/record run that is interrupted (server
+// restart, crashed browser, operator abandons the CLI recorder) leaves its stub at
+// status='recording' forever — the UI then shows "recording in progress" with nothing
+// actually running. Sweep rows whose updated_at is stale to 'needs_rerecord' so they
+// surface as re-recordable instead of stuck. The threshold is generous (2h) so an
+// operator mid-recording is never swept; steps recorded so far are preserved.
+const RECIPE_RECORDING_STALE_MS = Number(process.env.RECIPE_RECORDING_STALE_MS ?? 2 * 60 * 60_000);
+
+export function recoverStalePortalRecordings(db: AppDb): number {
+  const cutoff = new Date(Date.now() - RECIPE_RECORDING_STALE_MS).toISOString();
+  const stale = db.query<Row>(
+    "SELECT id, updated_at FROM portal_recipes WHERE status = 'recording' AND updated_at <= ?",
+    [cutoff],
+  );
+  if (!stale.length) return 0;
+  for (const row of stale) {
+    db.run(
+      "UPDATE portal_recipes SET status = 'needs_rerecord', notes = ?, updated_at = ? WHERE id = ? AND status = 'recording'",
+      [`Recording was interrupted (no activity since ${String(row.updated_at)}); marked for re-record.`, nowIso(), String(row.id)],
+    );
+  }
+  console.log(`[job-worker] marked ${stale.length} stale portal recording(s) as needs_rerecord`);
+  return stale.length;
+}
+
 // Background worker — call once at server startup. Polls the job queue on a fixed interval.
 // Interval defaults to JOB_WORKER_INTERVAL_MS env var, or 30 seconds.
 export function startJobWorker(db: AppDb): ReturnType<typeof setInterval> {
@@ -292,6 +317,7 @@ export function startJobWorker(db: AppDb): ReturnType<typeof setInterval> {
     // then process the next pending job.
     try {
       recoverOrphanedJobs(db);
+      recoverStalePortalRecordings(db);
     } catch (err) {
       console.error("[job-worker] orphan recovery error:", err instanceof Error ? err.message : String(err));
     }
