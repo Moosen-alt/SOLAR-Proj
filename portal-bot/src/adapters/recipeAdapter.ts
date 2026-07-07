@@ -1,3 +1,5 @@
+import fs from "fs";
+import path from "path";
 import type { PortalRecipe, ProjectRecord, RecipeSelector, RecipeStep } from "../../../shared/src/types";
 import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, ok, fail, type PortalContext, type PortalStepResult } from "../adapter";
 import { openPortal } from "../browser";
@@ -337,8 +339,25 @@ export class RecipeAdapter extends BasePortalAdapter {
         else await smartWait(this.page);
         return true;
       case "upload": {
-        const file = step.docType ? this.docsByType[step.docType] : undefined;
-        if (!file) return false;
+        const filePath = step.docType ? this.docsByType[step.docType] : undefined;
+        if (!filePath) return false;
+        // Attach under a CLEAN filename: stored files carry a UUID prefix for on-disk
+        // uniqueness that must not leak into what the portal reviewer sees.
+        const file = (() => {
+          const base = path.basename(filePath);
+          const clean = base.replace(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-/i, "");
+          try {
+            const ext = path.extname(clean).toLowerCase();
+            const mimeType = ext === ".pdf" ? "application/pdf"
+              : ext === ".png" ? "image/png"
+              : ext === ".jpg" || ext === ".jpeg" ? "image/jpeg"
+              : ext === ".zip" ? "application/zip"
+              : "application/octet-stream";
+            return { name: clean || base, mimeType, buffer: fs.readFileSync(filePath) };
+          } catch {
+            return filePath; // unreadable — let Playwright read the path itself
+          }
+        })();
         // Custom Browse/Upload widgets tag their controls with data-al-upl at record time;
         // that attribute is gone on a fresh page, so deterministically re-tag (same DOM →
         // same keys) before resolving the selector.

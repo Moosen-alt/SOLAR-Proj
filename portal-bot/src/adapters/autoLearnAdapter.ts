@@ -51,6 +51,11 @@ export interface ExtractedField {
   /** The section/heading/wizard-step this field lives under — the planner uses it to tell
    *  identical contact blocks apart (Customer vs Installer) without portal-specific rules. */
   section?: string;
+  /** Radio-group identity (the input's name attribute). Radios in one group have DISTINCT
+   *  labels, so after one option is filled its siblings look like "new" fields to the
+   *  post-reveal re-scan — this key lets it recognize (and never re-answer) a group that
+   *  already has a recorded answer, which would silently flip the selection. */
+  group?: string;
 }
 
 export interface LearnPlanRequest {
@@ -215,7 +220,7 @@ const UPLOAD_LABEL_PATTERNS: Array<{ re: RegExp; docType: string }> = [
   { re: /site\s*plan|plot\s*plan/i, docType: "site_plan" },
   { re: /structural|roof\s*framing|mounting|attachment\s*detail/i, docType: "structural" },
   { re: /inverter|micro[-\s]?inverter/i, docType: "inverter_spec" },
-  { re: /module|panel\s*(spec|data\s*sheet)/i, docType: "module_spec" },
+  { re: /module|panel\s*(spec|data\s*sheet)|cut\s*sheets?/i, docType: "module_spec" },
   { re: /meter\s*(photo|picture|image|spec|reading|tag)/i, docType: "meter_photo" },
   { re: /label|placard/i, docType: "labels" },
   { re: /utility\s*bill|electric(ity)?\s*bill/i, docType: "utility_bill" },
@@ -533,6 +538,7 @@ export function toExtractedField(raw: RawField): ExtractedField {
   if (raw.href) field.href = raw.href;
   if (raw.required) field.required = true;
   if (raw.section) field.section = raw.section;
+  if (raw.fieldType === "radio" && raw.name) field.group = raw.name;
   return field;
 }
 
@@ -551,6 +557,8 @@ interface AppliedFill {
   expected: string;
   sensitive: boolean;
   required: boolean;
+  /** Radio-group identity of the filled field (see ExtractedField.group). */
+  group?: string;
 }
 
 export interface UploadSlot {
@@ -769,7 +777,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     return size < 0 || size <= cap;
   }
 
-  private resolveUpload(field: ExtractedField): { docType: string; file: string } | null {
+  private resolveUpload(field: ExtractedField, required = true): { docType: string; file: string } | null {
     const label = field.label || "";
     const cap = this.uploadMaxBytes();
     const fits = (docType: string) => this.docsByType[docType] && this.fileFits(this.docsByType[docType], cap);
@@ -795,6 +803,11 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         break;
       }
     }
+    // OPTIONAL slot with no exact document: leave it EMPTY. The fallback tiers below
+    // exist so a REQUIRED upload is never silently skipped — but stuffing a substitute
+    // (e.g. the SLD) into an optional "Cut Sheets" / "Other" slot files the WRONG
+    // document with the utility. The human can attach extras at review if wanted.
+    if (!required) return null;
     // 1b) Specific label matched but split doc is missing → use plan_set as the best
     //     available substitute (a PDF the portal can actually accept), not a ZIP.
     if (labelMatchedDocType && fits("plan_set")) {
@@ -831,8 +844,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   }
 
   // Resolve a docType for an upload control by its label only (no ExtractedField wrapper).
-  private resolveUploadByLabel(label: string): { docType: string; file: string } | null {
-    return this.resolveUpload({ selector: {}, label, fieldType: "file" });
+  private resolveUploadByLabel(label: string, required = true): { docType: string; file: string } | null {
+    return this.resolveUpload({ selector: {}, label, fieldType: "file" }, required);
   }
 
   // Capture a full-page PNG of the current page as base64 for VISION-ASSISTED PLANNING, so the
@@ -920,7 +933,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     if (!Array.isArray(slots) || slots.length === 0) return { filled, missingRequired };
 
     for (const slot of slots) {
-      const resolved = this.resolveUploadByLabel(slot.label);
+      const resolved = this.resolveUploadByLabel(slot.label, !!slot.required);
       if (!resolved) {
         // No document for this control — never fake it. Report it if the portal requires it.
         if (slot.required) missingRequired.push(slot.label || "Required document");
@@ -931,13 +944,33 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       // settle counts as THIS slot's rejection (a persistent banner from an earlier slot
       // must not fail every subsequent upload on the page).
       const bannersBefore = await this.collectUploadBannerTexts();
+      // Upload under a CLEAN filename: stored files are prefixed with the document row's
+      // UUID for on-disk uniqueness (e.g. "7fd69186-…-Javier_…_SLD_one-line.pdf"), but that
+      // prefix must not leak into what the utility/AHJ reviewer sees. Read the bytes and
+      // attach as a payload named without the UUID prefix.
+      const uploadPayload = (() => {
+        const base = path.basename(resolved.file);
+        const clean = base.replace(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-/i, "");
+        try {
+          const buffer = fs.readFileSync(resolved.file);
+          const ext = path.extname(clean).toLowerCase();
+          const mimeType = ext === ".pdf" ? "application/pdf"
+            : ext === ".png" ? "image/png"
+            : ext === ".jpg" || ext === ".jpeg" ? "image/jpeg"
+            : ext === ".zip" ? "application/zip"
+            : "application/octet-stream";
+          return { name: clean || base, mimeType, buffer };
+        } catch {
+          return null; // unreadable — fall back to the path (Playwright reads it itself)
+        }
+      })();
       const res = await safeAction(
         `upload ${resolved.docType}`,
         async () => {
           if (slot.kind === "input") {
             // Native input — set files directly even when visually hidden behind a button.
             const loc = this.page!.locator(selector.css!);
-            await loc.setInputFiles(resolved.file);
+            await loc.setInputFiles(uploadPayload ?? resolved.file);
           } else {
             // Custom widget — the real <input> is created on click, so intercept the
             // browser's file-chooser dialog (works for ANY uploader, no DOM coupling).
@@ -945,7 +978,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
               this.page!.waitForEvent("filechooser", { timeout: 8000 }),
               this.page!.locator(selector.css!).click({ timeout: 6000 }),
             ]);
-            await chooser.setFiles(resolved.file);
+            await chooser.setFiles(uploadPayload ?? resolved.file);
           }
           await smartWait(this.page!, 500);
         },
@@ -1590,6 +1623,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             expected: sensitive ? "" : (fillReq.value ?? ""),
             sensitive,
             required: !!field.required,
+            group: field.group,
           });
         }
       }
@@ -1658,12 +1692,22 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             await this.clearOverlays();
             const raws2 = await this.extractAllFrames(EXTRACT_SEL);
             const postFields = raws2.map(toExtractedField);
+            // Radio groups already answered this page: each option has a DIFFERENT label, so
+            // after filling one option its siblings pass the label filter below and look
+            // "newly revealed" — planning a fill on a sibling silently FLIPS the recorded
+            // answer (seen live: "currently served by PGE" → "NOT YET served by PGE").
+            const filledRadioGroups = new Set(
+              appliedThisPage.filter((a) => a.fieldType === "radio" && a.group).map((a) => a.group as string),
+            );
+            const inFilledGroup = (f: ExtractedField): boolean =>
+              f.fieldType === "radio" && !!f.group && filledRadioGroups.has(f.group);
             const newFillable = postFields.filter(
               (f) =>
                 f.fieldType !== "button" &&
                 f.fieldType !== "file" &&
                 f.label &&
-                !alreadyFilledLabels.includes(f.label),
+                !alreadyFilledLabels.includes(f.label) &&
+                !inFilledGroup(f),
             );
             if (newFillable.length === 0) {
               // No more cascade reveals. Before giving up, click any Calculate/Update-Totals
@@ -1706,6 +1750,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
               if (field.fieldType === "button" || field.fieldType === "file") continue;
               if (isSensitiveLabel(field.label)) continue; // handled by the deterministic pass below
               if (field.label && alreadyFilledLabels.includes(field.label)) continue;
+              if (inFilledGroup(field)) continue; // never re-answer a radio group filled this page
               const step = await this.applyFill(field, fillReq, false);
               if (step) {
                 steps.push(step);
