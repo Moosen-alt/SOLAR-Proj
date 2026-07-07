@@ -59,6 +59,41 @@ export interface AutoLearnResult {
   debugDir: string | null;
 }
 
+// Lines in the long design/plan-set texts that answer the portal's JUDGMENT questions.
+// Keyed on the topics the planner prompt's solar defaults reference: disconnect location,
+// meter mounting, battery/ESS + backup mode, export limiting, smart-inverter settings,
+// attic runs, panel/service upgrades, and tilt/azimuth/tracking for array rows.
+const DESIGN_NOTE_TOPICS = /\bdisconnect\b|within 10|meter.{0,20}pole|pole.{0,20}(mount|meter)|\bbattery\b|\bess\b|powerwall|encharge|backup|export (limit|capacit)|limit(ed|ing)? export|ul\s*1741|smart inverter|attic (run|fan)|shutdown -|rapid shutdown|main panel|service upgrade|\bmpu\b|derat|tilt|azimuth|tracking|ground.?mount/i;
+
+// Extract only decision-relevant lines from the parser snapshot's long text fields.
+// Deterministic and cheap (no LLM); capped so it can never re-inflate the prompt.
+export function designNotesDigest(project: ProjectRecord, maxChars = 1200): string {
+  const snap = (project.parserSnapshot || {}) as Record<string, unknown>;
+  const sources = [
+    "sitePlanNotesText", "roofPlanNotesText", "projectDescriptionText", "electricalCalcText",
+    "structuralCalcText", "labelsText", "reviewFlags", "utilityUploadNotesText", "planSetExtractedText",
+  ];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  let total = 0;
+  for (const key of sources) {
+    const text = typeof snap[key] === "string" ? (snap[key] as string) : "";
+    if (!text) continue;
+    for (const rawLine of text.split(/[\n.;]+/)) {
+      const line = rawLine.replace(/\s+/g, " ").trim();
+      if (line.length < 8 || line.length > 220) continue;
+      if (!DESIGN_NOTE_TOPICS.test(line)) continue;
+      const norm = line.toLowerCase();
+      if (seen.has(norm)) continue;
+      seen.add(norm);
+      out.push(line);
+      total += line.length + 3;
+      if (total >= maxChars) return out.join(" | ").slice(0, maxChars);
+    }
+  }
+  return out.join(" | ").slice(0, maxChars);
+}
+
 // Build the LLM planner the portal fill loop calls when it has the live fields on a page,
 // plus the project's secret-free field values. Shared by autonomous learning AND the hybrid
 // staging gap-fill so both use identical data + safety handling. Secrets (account/meter/SSN/
@@ -77,6 +112,14 @@ export function buildPortalPlanner(
   // Provide today's date so the planner can compute time-relative values
   // (e.g. estimated commissioning date = today + 28 days).
   projectFields["todayDate"] = new Date().toISOString().slice(0, 10);
+  // COMPACT DESIGN DIGEST. The long parser/plan-set text blobs are excluded from
+  // fieldValues (they cost ~40k tokens per LLM call), but a handful of the portal's
+  // JUDGMENT questions (disconnect-within-10ft, meter on pole, battery/backup mode,
+  // export limiting, attic run) are answered from design NOTES, not structured fields.
+  // Extract only the decision-relevant lines into a small digest so the planner keeps
+  // that signal at ~200 tokens instead of the full text.
+  const digest = designNotesDigest(project);
+  if (digest) projectFields["designNotes"] = digest;
 
   let kbContext = "";
   try {
