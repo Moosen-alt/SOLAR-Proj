@@ -66,6 +66,7 @@ import { findCompleteRecipeForProject, findAnyRecipeForProject, resolveRecipeFie
 import { notifyClientOfStatusChange, shouldNotifyClient } from "./clientNotifier";
 import { detectPlatform, publicPermitStatusCheck } from "./publicPermitStatus";
 import { planSetTextForProject, projectDocsByType } from "./projectDocuments";
+import { findAhjProcessProfile } from "./processProfiles";
 import { documentInventory } from "./requiredDocuments";
 import { STAGE_COUNT, stageForStatus, isBlockedStatus } from "./projectStage";
 import { addAuditLog } from "./audit";
@@ -4985,11 +4986,33 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   const draftRecipe = track === "nem"
     ? findAnyRecipeForProject(db, { scopeType: "utility", state: detail.project.state, utility: detail.project.utility })
     : findAnyRecipeForProject(db, { scopeType: "ahj", state: detail.project.state, ahj: detail.project.ahj, utility: detail.project.utility });
+  // A PERMIT track must never launch a utility platform (PowerClerk etc.). A learned
+  // profile / recipe / KB row matched via the project's UTILITY can carry the NEM portal
+  // URL — filter those candidates out here so resolution falls through to a real AHJ
+  // portal source instead of stopping at the track/host-conflict guard below.
+  const permitSafeUrl = (url: string | null | undefined): string => {
+    const value = String(url ?? "");
+    return track !== "nem" && isUtilityPlatformUrl(value) ? "" : value;
+  };
+  // Statewide-portal fallback: an Oregon AHJ with no portal URL of its own whose process
+  // profile files through e-permitting/Accela uses the shared Oregon ePermitting portal
+  // (one Accela instance for all subscribed jurisdictions — only the jurisdiction field
+  // differs), instead of failing with "no portal URL known".
+  let statewidePortalUrl = "";
+  if (track !== "nem" && !permitSafeUrl(ahjPortalUrl) && (detail.project.state || "").trim().toUpperCase() === "OR") {
+    const process = findAhjProcessProfile(detail.project);
+    if (process && /e.?permitting|accela/i.test(process.submissionMethod)) {
+      const genericRow = db.get<{ portal_url?: string }>(
+        "SELECT portal_url FROM permit_utility_knowledge WHERE ahj = 'Generic Oregon ePermitting AHJ' AND portal_url IS NOT NULL AND portal_url != '' LIMIT 1",
+      );
+      statewidePortalUrl = genericRow?.portal_url || "https://aca-oregon.accela.com/oregon/";
+    }
+  }
   const credentialUrl =
-    (learnedProfile && (learnedProfile as { portalUrl?: string }).portalUrl) ||
-    (recipe && (recipe as { portalUrl?: string }).portalUrl) ||
-    (draftRecipe && draftRecipe.portalUrl) ||
-    (track === "nem" ? utilityPortalUrl : (ahjPortalUrl || findApplicationProfile(detail.project).sourceUrl)) ||
+    permitSafeUrl(learnedProfile && (learnedProfile as { portalUrl?: string }).portalUrl) ||
+    permitSafeUrl(recipe && (recipe as { portalUrl?: string }).portalUrl) ||
+    permitSafeUrl(draftRecipe && draftRecipe.portalUrl) ||
+    (track === "nem" ? utilityPortalUrl : (permitSafeUrl(ahjPortalUrl) || statewidePortalUrl || findApplicationProfile(detail.project).sourceUrl)) ||
     "";
   const credential = clientId
     ? (getDecryptedCredential(db, clientId, portalType)
