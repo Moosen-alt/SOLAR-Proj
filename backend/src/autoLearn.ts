@@ -314,6 +314,14 @@ export async function autoLearnPortal(
       credential,
       userDataDir,
       docsByType,
+      // Equipment identity for the deterministic PV-spec combobox pass (matched with
+      // certified-name aliases + distinctive-token fallback inside the adapter).
+      equipment: {
+        inverterMake: projectFields.inverterMake || projectFields.inverterManufacturer || "",
+        inverterModel: projectFields.inverterModel || projectFields.invModel || projectFields.pvMicroModel || "",
+        moduleMake: projectFields.moduleMake || projectFields.moduleManufacturer || "",
+        moduleModel: projectFields.moduleModel || "",
+      },
       headless: input.headless,
       // AHJ portals (Accela / Oregon ePermitting) require one combined plan-set PDF per
       // upload control; utility portals (PowerClerk) want the split sheets per slot.

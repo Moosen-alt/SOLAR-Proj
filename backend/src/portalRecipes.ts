@@ -331,6 +331,9 @@ export function resolveRecipeFieldValues(db: AppDb, project: ProjectRecord, port
   // Inverter aliases (snapshot uses *Manufacturer/*Quantity; the prompt/portals also say make/qty).
   put("inverterMake", snapshotFlat.inverterManufacturer || snapshotFlat.inverterMake);
   put("inverterQty", snapshotFlat.inverterQuantity || snapshotFlat.inverterQty);
+  // Canonical inverter model (the parser stores it as invModel or pvMicroModel) so the
+  // planner, the deterministic equipment pass, and recipe replay all bind one key.
+  put("inverterModel", snapshotFlat.inverterModel || snapshotFlat.invModel || snapshotFlat.pvMicroModel);
   const arraysRaw = (snapshot as Record<string, unknown>).pvArrays;
   if (Array.isArray(arraysRaw) && arraysRaw.length) {
     let totalModules = 0;

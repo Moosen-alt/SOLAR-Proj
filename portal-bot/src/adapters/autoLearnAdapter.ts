@@ -215,6 +215,20 @@ const SENSITIVE_LABEL = /\b(password|passcode|account\s*(number|no|#)?|acct|mete
 // docType produced by the existing doc-splitting tools (docSplitter.ts / projectDocsByType),
 // so the learner attaches the RIGHT split document to each upload control. Ordered most-
 // specific first (a combined "module/inverter" label resolves to inverter_spec first).
+// Certified-name aliases: what the plan set calls a manufacturer vs how equipment
+// databases (CEC listings, PowerClerk) list it. Keyed by the plan-set name with all
+// non-alphanumerics stripped, lowercase. Extend as new mismatches surface.
+const EQUIPMENT_MAKE_ALIASES: Record<string, string[]> = {
+  apsystems: ["Altenergy Power System", "APsystems"],
+  altenergypowersystem: ["AP Systems", "APsystems"],
+  znshine: ["Znshine PV-Tech"],
+  znshinesolar: ["Znshine PV-Tech", "Znshine"],
+  qcells: ["Hanwha Q CELLS", "Q CELLS"],
+  hanwhaqcells: ["Q CELLS", "Qcells"],
+  rec: ["REC Solar", "REC Group"],
+  tesla: ["Tesla Energy", "Tesla Motors"],
+};
+
 const UPLOAD_LABEL_PATTERNS: Array<{ re: RegExp; docType: string }> = [
   { re: /one[-\s]?line|single[-\s]?line|\bsld\b|electrical\s*(diagram|schematic|one)/i, docType: "sld" },
   { re: /site\s*plan|plot\s*plan/i, docType: "site_plan" },
@@ -712,6 +726,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
 
   // See constructor options.policyProfile.
   private policyProfile: "residential_nem" | "none";
+  private equipment: Record<string, string>;
 
   constructor(
     portalName: string,
@@ -731,12 +746,18 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       // Default "residential_nem" preserves prior behavior for direct constructor users;
       // the backend passes the scope-appropriate profile explicitly.
       policyProfile?: "residential_nem" | "none";
+      // Equipment identity for the deterministic PV-spec pass: inverterMake,
+      // inverterModel, moduleMake, moduleModel. Portals list equipment under
+      // certified names ("AP Systems" → "Altenergy Power System"), so these are
+      // matched with aliases + distinctive-token fallback, never left to the planner.
+      equipment?: Record<string, string>;
     } = {},
   ) {
     super();
     this.portalName = portalName;
     this.onProgress = options.onProgress;
     this.policyProfile = options.policyProfile ?? "residential_nem";
+    this.equipment = options.equipment ?? {};
     // Default page budget. Multi-step utility/permit wizards (PowerClerk NEM, Accela)
     // routinely run 10-15 input steps before the review screen, so 8 was too low — it
     // capped out mid-form. The stuck-page guard + review detection bound the loop, so a
@@ -745,6 +766,71 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     this.docsByType = options.docsByType ?? {};
     this.uploadMode = options.uploadMode ?? "split";
     this.debug = LearnRunDebug.start(portalName, { maxPages: this.maxPages, uploadMode: this.uploadMode });
+  }
+
+  // ---------------------------------------------------------------------------
+  // DETERMINISTIC EQUIPMENT-SPEC PASS. PowerClerk-style PV System Specification
+  // repeaters expose manufacturer/model comboboxes whose options load via AJAX
+  // (extracted with empty option lists + generic labels), and whose certified
+  // names differ from the plan set's ("AP Systems" is listed as "Altenergy Power
+  // System"; the model option is "0.8 kW (Model DS3-L {240V} [SI1])"). The LLM
+  // planner reliably fails here — but the ANSWER is pure project data, so fill
+  // these deterministically: match fields by their test-hint labels, then try
+  // the value, its known aliases, and its most distinctive token in order.
+  // ---------------------------------------------------------------------------
+  private equipmentValueFor(label: string): { key: string; candidates: string[] } | null {
+    const l = (label || "").toLowerCase();
+    const isModel = /\bmodel\b/.test(l);
+    const isMake = /manufacturer|\bmake\b|\bbrand\b/.test(l);
+    if (!isModel && !isMake) return null;
+    const inverterSide = /inverter|micro/.test(l);
+    const moduleSide = /module|pv ?array|panel/.test(l);
+    if (!inverterSide && !moduleSide) return null;
+    const key = inverterSide ? (isModel ? "inverterModel" : "inverterMake") : (isModel ? "moduleModel" : "moduleMake");
+    const value = (this.equipment[key] || "").trim();
+    if (!value) return null;
+    const candidates = [value];
+    if (isMake) {
+      const aliases = EQUIPMENT_MAKE_ALIASES[value.toLowerCase().replace(/[^a-z0-9]/g, "")] ?? [];
+      candidates.push(...aliases);
+      // First word as a last resort ("Znshine" finds "Znshine PV-Tech").
+      const first = value.split(/\s+/)[0];
+      if (first.length >= 5 && first.toLowerCase() !== value.toLowerCase()) candidates.push(first);
+    } else {
+      // Most distinctive model token: the longest run containing a digit
+      // ("DS3-L" from "AP SYSTEMS DS3-L [240V]"; "ZXM7-UHLDD108-440/N" whole).
+      const tokens = value.split(/[\s,()[\]{}]+/).filter((t) => /\d/.test(t) && t.length >= 3);
+      const core = tokens.sort((a, b) => b.length - a.length)[0];
+      if (core && core.toLowerCase() !== value.toLowerCase()) candidates.push(core);
+    }
+    return { key, candidates: [...new Set(candidates)] };
+  }
+
+  /** Fill unresolved equipment manufacturer/model selects from project data.
+   *  Returns how many were filled; appends recipe steps + labels like other passes. */
+  private async fillEquipmentSelects(
+    fields: ExtractedField[],
+    alreadyFilledLabels: string[],
+    steps: RecipeStep[],
+  ): Promise<number> {
+    let filled = 0;
+    for (const field of fields) {
+      if (field.fieldType === "button" || field.fieldType === "file" || field.fieldType === "checkbox" || field.fieldType === "radio") continue;
+      if (!field.label || alreadyFilledLabels.includes(field.label)) continue;
+      const resolved = this.equipmentValueFor(field.label);
+      if (!resolved) continue;
+      for (const candidate of resolved.candidates) {
+        const step = await this.applyFill(field, { value: candidate, field: resolved.key }, false);
+        if (step) {
+          steps.push(step);
+          alreadyFilledLabels.push(field.label);
+          filled++;
+          this.debug?.event({ type: "equipment_fill", label: field.label.slice(0, 60), key: resolved.key, candidate: candidate.slice(0, 60) });
+          break;
+        }
+      }
+    }
+    return filled;
   }
 
   // Resolve the document file to attach to a given file-input field. Matches the field's
@@ -1663,6 +1749,13 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         }
       }
 
+      // d2b) DETERMINISTIC EQUIPMENT PASS on the initial fields — manufacturer/model
+      //      comboboxes the planner didn't (or couldn't) fill, matched by test-hint
+      //      labels and filled from project equipment data with alias/token fallback.
+      try {
+        pageFillCount += await this.fillEquipmentSelects(fields, alreadyFilledLabels, steps);
+      } catch { /* best-effort */ }
+
       // d3) POST-SELECTION RE-SCRAPE — conditional fields revealed by a prior fill.
       //     Many real portals progressively disclose fields: PowerClerk reveals a Schedule
       //     dropdown once Account Type = "Residential", then Account#/Meter# once a Schedule
@@ -1796,6 +1889,15 @@ export class AutoLearnAdapter extends BasePortalAdapter {
                 });
               }
             }
+
+            // Deterministic equipment pass on the POST-REVEAL fields — the PV-spec
+            // repeater's manufacturer/model comboboxes appear only after the Energy
+            // Source cascade, so this is where they usually become fillable.
+            try {
+              const equipFilled = await this.fillEquipmentSelects(postFields, alreadyFilledLabels, steps);
+              pageFillCount += equipFilled;
+              revealedThisPass += equipFilled;
+            } catch { /* best-effort */ }
 
             // Debug: dump what appeared after the reveal so the operator can audit it.
             this.debug?.writeJson(`p${pageCount.toString().padStart(3, "0")}-rescan${rescanPass + 1}.json`, {
