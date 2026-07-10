@@ -1410,6 +1410,49 @@ export interface LLMProvider {
     pages: { base64: string; mimeType: "image/png" | "image/jpeg" | "image/webp" }[];
     availableSources: string[];
   }): Promise<AhjOverlayMapResult>;
+
+  /** Bounded tool-use loop for the edge agents (run triage, correction handling).
+   *  The caller supplies read-only / propose-only tools; the loop runs until the
+   *  model stops calling tools or maxIterations is hit. Every tool is a narrow
+   *  local handler — the agent never gets a shell or network. Stub mode returns
+   *  immediately without invoking any tool. */
+  runToolAgent(input: AgentRunInput): Promise<AgentRunResult>;
+}
+
+/** A tool the agent may call. `handler` runs locally; its return value is JSON-
+ *  serialized back to the model as the tool_result. Return an image block array
+ *  to let the model SEE a screenshot (used by read_bundle_file). */
+export interface AgentToolDef {
+  name: string;
+  description: string;
+  input_schema: Record<string, unknown>;
+  handler: (input: Record<string, unknown>) => Promise<AgentToolResult> | AgentToolResult;
+}
+
+/** Either plain text/JSON (serialized) or image content blocks for vision tools. */
+export type AgentToolResult =
+  | { kind: "json"; value: unknown }
+  | { kind: "text"; text: string }
+  | { kind: "image"; base64: string; mimeType: "image/png" | "image/jpeg" | "image/webp"; caption?: string };
+
+export interface AgentRunInput {
+  label: string;
+  system: string;
+  user: string;
+  tools: AgentToolDef[];
+  maxIterations?: number;
+  effort?: "low" | "medium" | "high";
+}
+
+export interface AgentRunResult {
+  provider: "claude" | "stub";
+  /** The model's final text (after its last tool call), if any. */
+  finalText: string;
+  /** How many model turns ran. */
+  iterations: number;
+  /** True when the loop hit maxIterations without the model stopping on its own. */
+  hitIterationCap: boolean;
+  stopReason: string | null;
 }
 
 export interface AhjOverlayMapResult {

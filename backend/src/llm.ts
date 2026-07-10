@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { performance } from "node:perf_hooks";
-import type { AhjFieldMapResult, AhjFormUrlResult, AhjOverlayMapResult, AhjResearchResult, CorrectionBucket, InverterSpecLookup, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, PortalFieldPlan, PortalFieldPlanInput, PortalFillVerification, PortalFillVerifyInput, PortalFillVisionVerifyInput, ProjectRecord, UtilityResearchResult, AiPlanReviewResult, ReviewWorkType, JurisdictionCodeProfile, JurisdictionCodeResearchResult } from "../../shared/src/types";
+import type { AgentRunInput, AgentRunResult, AgentToolResult, AhjFieldMapResult, AhjFormUrlResult, AhjOverlayMapResult, AhjResearchResult, CorrectionBucket, InverterSpecLookup, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, PortalFieldPlan, PortalFieldPlanInput, PortalFillVerification, PortalFillVerifyInput, PortalFillVisionVerifyInput, ProjectRecord, UtilityResearchResult, AiPlanReviewResult, ReviewWorkType, JurisdictionCodeProfile, JurisdictionCodeResearchResult } from "../../shared/src/types";
 import { RECIPE_FIELD_DESCRIPTIONS } from "./portalRecipes";
 import { logger } from "./logger";
 
@@ -221,6 +221,12 @@ export class StubLLMProvider implements LLMProvider {
 
   async mapFlatFormOverlay(): Promise<AhjOverlayMapResult> {
     return { provider: "stub", fields: [], signatures: [], notes: "No ANTHROPIC_API_KEY configured — flat-form vision mapping is off." };
+  }
+
+  async runToolAgent(): Promise<AgentRunResult> {
+    // No key → no agent. Callers fall back to their deterministic path (e.g. the
+    // regex correction classifier) and never auto-act on a stub result.
+    return { provider: "stub", finalText: "", iterations: 0, hitIterationCap: false, stopReason: null };
   }
 }
 
@@ -1773,6 +1779,85 @@ Rules:
     }
     return { provider: "claude", fields, signatures, notes: String(parsed.notes || "") };
   }
+
+  // ---------------------------------------------------------------------------
+  // Bounded tool-use agent. A manual loop: call the model with the supplied
+  // tools, run each requested tool's local handler, feed the results back, and
+  // repeat until the model stops calling tools (end_turn) or maxIterations is
+  // reached. Every model turn routes through instrument() so the whole agent
+  // shows up in the llm-calls.json log like any other call. Tools are narrow
+  // local handlers (read a bundle file, read project fields, record a finding) —
+  // there is no shell, no network, no filesystem access beyond what a handler
+  // itself does. Used by the run-triage and correction agents.
+  // ---------------------------------------------------------------------------
+  async runToolAgent(input: AgentRunInput): Promise<AgentRunResult> {
+    const maxIterations = Math.max(1, Math.min(input.maxIterations ?? 12, 20));
+    const effort = input.effort ?? "medium";
+    const toolByName = new Map(input.tools.map((t) => [t.name, t]));
+    const apiTools = input.tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.input_schema as Anthropic.Tool.InputSchema }));
+    const messages: Anthropic.MessageParam[] = [{ role: "user", content: input.user }];
+    let finalText = "";
+    let iterations = 0;
+    let stopReason: string | null = null;
+
+    for (; iterations < maxIterations; iterations++) {
+      const msg = await this.instrument(`${input.label}#${iterations + 1}`, { tools: apiTools.length, effort }, () =>
+        this.client.messages
+          .stream({
+            model: MODEL,
+            max_tokens: 4096,
+            thinking: { type: "adaptive" },
+            output_config: { effort },
+            system: this.cachedSystem(input.system),
+            tools: apiTools,
+            messages,
+          })
+          .finalMessage(),
+      );
+      stopReason = msg.stop_reason;
+      finalText = this.textOf(msg) || finalText;
+
+      const toolUses = msg.content.filter((b): b is Anthropic.ToolUseBlock => b.type === "tool_use");
+      if (msg.stop_reason !== "tool_use" || toolUses.length === 0) {
+        // Model is done (end_turn) or refused/truncated — stop cleanly.
+        return { provider: "claude", finalText, iterations: iterations + 1, hitIterationCap: false, stopReason };
+      }
+
+      // Append the assistant turn, then run each tool and return all results in ONE user turn.
+      messages.push({ role: "assistant", content: msg.content });
+      const results: Anthropic.ToolResultBlockParam[] = [];
+      for (const use of toolUses) {
+        const tool = toolByName.get(use.name);
+        let content: Anthropic.ToolResultBlockParam["content"];
+        let isError = false;
+        try {
+          if (!tool) throw new Error(`unknown tool ${use.name}`);
+          const out = await tool.handler((use.input ?? {}) as Record<string, unknown>);
+          content = toolResultContent(out);
+        } catch (err) {
+          isError = true;
+          content = errMsg(err);
+        }
+        results.push({ type: "tool_result", tool_use_id: use.id, content, is_error: isError });
+      }
+      messages.push({ role: "user", content: results });
+    }
+    // Ran out of iterations while the model still wanted to call tools.
+    return { provider: "claude", finalText, iterations, hitIterationCap: true, stopReason };
+  }
+}
+
+// Serialize a tool handler's return value into Anthropic tool_result content.
+// JSON/text → a text block; an image → an image block so the model can SEE it.
+function toolResultContent(out: AgentToolResult): Anthropic.ToolResultBlockParam["content"] {
+  if (out.kind === "image") {
+    const blocks: Array<Anthropic.TextBlockParam | Anthropic.ImageBlockParam> = [];
+    if (out.caption) blocks.push({ type: "text", text: out.caption });
+    blocks.push({ type: "image", source: { type: "base64", media_type: out.mimeType, data: out.base64 } });
+    return blocks;
+  }
+  if (out.kind === "text") return out.text;
+  return JSON.stringify(out.value);
 }
 
 // ---------------------------------------------------------------------------

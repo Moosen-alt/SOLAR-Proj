@@ -1,0 +1,96 @@
+{
+  "recipeId": "20a2e7f8-4e0c-40e3-8c4f-0232c5304d74",
+  "trusted": false,
+  "trustGate": {
+    "verificationAccurate": true,
+    "textContradicts": false,
+    "reviewReadable": true,
+    "note": "trusted = verificationAccurate && !textContradicts. Deterministic mismatches are warnings only."
+  },
+  "textSignal": {
+    "accurate": true,
+    "confidence": "medium",
+    "matches": [
+      {
+        "label": "Program homepage",
+        "expected": "(literal)",
+        "found": "on",
+        "ok": true
+      },
+      {
+        "label": "Checkbox - Alternative Billing Contact",
+        "expected": "(literal)",
+        "found": "on",
+        "ok": true
+      },
+      {
+        "label": "Click to Accept Terms and Conditions",
+        "expected": "(literal)",
+        "found": "on",
+        "ok": true
+      },
+      {
+        "label": "I understand that my form will not be submitted until I return to this page and verify screen results.",
+        "expected": "(literal)",
+        "found": "on",
+        "ok": true
+      }
+    ],
+    "issues": []
+  },
+  "visionSignal": {
+    "usable": true,
+    "accurate": true,
+    "confidence": "medium",
+    "matches": [
+      {
+        "label": "Application Fee",
+        "expected": "$0.00 (Tier 1)",
+        "found": "$0.00",
+        "ok": true
+      },
+      {
+        "label": "Click to Accept Terms and Conditions",
+        "expected": "checked",
+        "found": "checked",
+        "ok": true
+      },
+      {
+        "label": "Checkbox - Alternative Billing Contact",
+        "expected": "unchecked (no alt billing)",
+        "found": "unchecked",
+        "ok": true
+      }
+    ],
+    "issues": []
+  },
+  "deterministicSignal": {
+    "unreadableSentinel": false,
+    "mismatchesGating": [
+      "homeownerName",
+      "projectAddress",
+      "systemSizeDcKw"
+    ],
+    "allMismatches": [
+      {
+        "field": "homeownerName",
+        "expected": "Javier Hernandez-Ramirez",
+        "found": "on"
+      },
+      {
+        "field": "projectAddress",
+        "expected": "398 Bridlewood Ln",
+        "found": "on; on; on; on"
+      },
+      {
+        "field": "systemSizeDcKw",
+        "expected": "10.12",
+        "found": "on; on; on; on"
+      }
+    ]
+  },
+  "finalIssues": [
+    "deterministic-check flagged: homeownerName, projectAddress, systemSizeDcKw.",
+    "Required field(s) left blank/unselected — fill before trusting: Do you propose to limit the export capacity?."
+  ]
+}

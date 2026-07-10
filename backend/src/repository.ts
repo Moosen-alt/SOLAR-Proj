@@ -78,6 +78,7 @@ import { isPortalPaused } from "./portalPause";
 import { buildApplicationDocumentPackage, findApplicationProfile } from "./applicationDocs";
 import { buildUtilityPackage } from "./docSplitter";
 import { classifyCorrection, humanizeBucket, humanizeEnum } from "./corrections";
+import { parseCorrectionProposals } from "./correctionAgent";
 import type { AppDb } from "./db";
 import { HttpError } from "./httpError";
 import { buildHistoricalFailureReport } from "./historicalFailures";
@@ -4168,8 +4169,22 @@ export function addManualCorrection(db: AppDb, projectId: string, correctionText
     learnFromCorrection(db, detail.project, classification, correctionText, source);
   });
 
+  // Hand the correction to the agent for a richer classification + data-update
+  // proposals + draft (advisory; regex classification above is the committed baseline).
+  enqueueCorrectionTriage(db, projectId, correctionId, correctionText);
+
   touchProjectMetrics(db, projectId);
   return getProjectDetail(db, projectId);
+}
+
+// Enqueue the correction-handling agent (lazy import — jobQueue statically imports
+// this module, so a static import here would be a cycle). No-op in stub mode: the
+// job runs, the agent returns provider:"stub", and nothing is written.
+function enqueueCorrectionTriage(db: AppDb, projectId: string, correctionId: string, correctionText: string): void {
+  if (!process.env.ANTHROPIC_API_KEY || process.env.CORRECTION_AGENT === "off") return;
+  void import("./jobQueue")
+    .then(({ enqueueJob }) => { enqueueJob(db, "correction_triage", { correctionId, correctionText }, { projectId, priority: 4 }); })
+    .catch(() => { /* best-effort */ });
 }
 
 // Generate an ADVISORY draft reply for the newest correction using the LLM, so
@@ -4194,6 +4209,91 @@ export async function draftLatestCorrectionResponse(db: AppDb, projectId: string
     console.warn("[corrections] LLM draft failed:", (err as Error).message);
   }
   return detail;
+}
+
+// Map an agent proposal `field` name onto the ParserPayload key normalizeProject
+// reads for the corresponding top-level column. Unmapped fields pass through and
+// merge into the snapshot (visible, harmless).
+const CORRECTION_FIELD_TO_PAYLOAD: Record<string, string> = {
+  homeownerName: "owner", owner: "owner",
+  accountNumber: "account", account: "account",
+  meterNumber: "meter", meter: "meter",
+  projectAddress: "address", address: "address",
+  city: "city", state: "state", zip: "zip",
+  ahj: "ahj", utility: "utility",
+  systemSizeDcKw: "dcKw", dcKw: "dcKw",
+  systemSizeAcKw: "acKw", acKw: "acKw",
+  interconnectionMethod: "interco", interco: "interco",
+};
+
+// Apply the agent's approved data-update proposals for a correction. Operator-gated:
+// only call after a human approves. Reuses updateProject (merges snapshot + reruns
+// QC), marks the correction human_approved, and closes the linked review item.
+export function applyCorrectionProposals(
+  db: AppDb,
+  correctionId: string,
+  approvedFields?: string[],
+): ProjectDetail {
+  const correction = db.get<Row>("SELECT * FROM corrections WHERE id = ?", [correctionId]);
+  if (!correction) throw new HttpError(404, "Correction not found.");
+  const projectId = text(correction.project_id);
+  const item = db.get<Row>(
+    "SELECT * FROM human_review_items WHERE project_id = ? AND field_name = 'correction' ORDER BY created_at DESC LIMIT 1",
+    [projectId],
+  );
+  const parsed = item ? parseCorrectionProposals(text(item.notes)) : null;
+  const proposals = (parsed?.proposals ?? []).filter((p) => !approvedFields || approvedFields.includes(p.field));
+
+  const payload: ParserPayload = {};
+  for (const p of proposals) {
+    if (!p.proposedValue) continue;
+    const key = CORRECTION_FIELD_TO_PAYLOAD[p.field] || p.field;
+    payload[key] = p.proposedValue;
+  }
+  if (Object.keys(payload).length) updateProject(db, projectId, payload);
+
+  const ts = nowIso();
+  db.run("UPDATE corrections SET human_approved = 1 WHERE id = ?", [correctionId]);
+  if (item) db.run("UPDATE human_review_items SET status = 'approved', updated_at = ? WHERE id = ?", [ts, text(item.id)]);
+  addAuditLog(db, projectId, "human", "correction", "correction.proposals_applied", { correctionId, applied: proposals.length });
+  touchProjectMetrics(db, projectId);
+  return getProjectDetail(db, projectId);
+}
+
+// Close a correction — the FIRST writer of closed_at / resubmitted. Called when the
+// operator marks it resolved, and automatically from prepareSubmission on a
+// resubmission (see the open-corrections check there).
+export function resolveCorrection(
+  db: AppDb,
+  correctionId: string,
+  opts: { resubmitted?: boolean } = {},
+): CorrectionRecord {
+  const correction = db.get<Row>("SELECT * FROM corrections WHERE id = ?", [correctionId]);
+  if (!correction) throw new HttpError(404, "Correction not found.");
+  const ts = nowIso();
+  db.run(
+    "UPDATE corrections SET closed_at = ?, resubmitted = ? WHERE id = ?",
+    [ts, opts.resubmitted ? 1 : Number(correction.resubmitted ?? 0), correctionId],
+  );
+  const projectId = text(correction.project_id);
+  db.run(
+    "UPDATE human_review_items SET status = 'resolved', updated_at = ? WHERE project_id = ? AND field_name = 'correction' AND status != 'resolved'",
+    [ts, projectId],
+  );
+  addAuditLog(db, projectId, "human", "correction", "correction.resolved", { correctionId, resubmitted: !!opts.resubmitted });
+  touchProjectMetrics(db, projectId);
+  return mapCorrection(db.get<Row>("SELECT * FROM corrections WHERE id = ?", [correctionId])!);
+}
+
+// Close any open corrections for a project on a resubmission (called from
+// prepareSubmission). Sets resubmitted=1 + closed_at so cycle-time KPIs complete.
+export function resolveOpenCorrectionsOnResubmit(db: AppDb, projectId: string): number {
+  const open = db.query<Row>(
+    "SELECT id FROM corrections WHERE project_id = ? AND closed_at IS NULL AND resubmitted = 0",
+    [projectId],
+  );
+  for (const row of open) resolveCorrection(db, text(row.id), { resubmitted: true });
+  return open.length;
 }
 
 export function listOverdueCorrections(db: AppDb): CorrectionRecord[] {
@@ -4489,6 +4589,7 @@ function insertMonitorCorrection(db: AppDb, project: ProjectRecord, correctionTe
     ],
   );
   learnFromCorrection(db, project, classification, correctionText, source);
+  enqueueCorrectionTriage(db, project.id, correctionId, correctionText);
   return correctionId;
 }
 

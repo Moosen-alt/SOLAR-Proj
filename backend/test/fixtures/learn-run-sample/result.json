@@ -1,0 +1,37 @@
+{
+  "status": "draft",
+  "pauseReason": null,
+  "pageCount": 11,
+  "finalSubmitRecorded": true,
+  "verification": {
+    "accurate": true,
+    "confidence": "medium",
+    "matches": [
+      {
+        "label": "Application Fee",
+        "expected": "$0.00 (Tier 1)",
+        "found": "$0.00",
+        "ok": true
+      },
+      {
+        "label": "Click to Accept Terms and Conditions",
+        "expected": "checked",
+        "found": "checked",
+        "ok": true
+      },
+      {
+        "label": "Checkbox - Alternative Billing Contact",
+        "expected": "unchecked (no alt billing)",
+        "found": "unchecked",
+        "ok": true
+      }
+    ],
+    "issues": [
+      "deterministic-check flagged: homeownerName, projectAddress, systemSizeDcKw.",
+      "Required field(s) left blank/unselected — fill before trusting: Do you propose to limit the export capacity?."
+    ]
+  },
+  "message": "Portal learned but needs your verification — open the captured fill and confirm it's correct before it's trusted. Flags: deterministic-check flagged: homeownerName, projectAddress, systemSizeDcKw.; Required field(s) left blank/unselected — fill before trusting: Do you propose to limit the export capacity?. The browser is open at the review screen — any field you fill or fix by hand there is recorded into the recipe automatically (patch-by-demonstration).",
+  "recipeId": "20a2e7f8-4e0c-40e3-8c4f-0232c5304d74",
+  "recipeStatus": "recording"
+}

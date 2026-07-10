@@ -15,7 +15,9 @@ export type JobType =
   | "autopilot"
   | "prepare_submission"
   | "auto_learn"
-  | "code_research";
+  | "code_research"
+  | "run_triage"
+  | "correction_triage";
 
 export type JobStatus = "pending" | "running" | "done" | "failed";
 
@@ -418,6 +420,30 @@ export async function processNextJob(db: AppDb): Promise<boolean> {
         recipeId: learnResult.recipe?.id ?? null,
         recipeStatus: learnResult.recipe?.status ?? null,
       };
+      // Auto-triage a run that wasn't trusted: enqueue a run_triage job pointing at
+      // this run's bundle so the agent explains what it missed (opt out: RUN_TRIAGE=off).
+      if (learnResult.status !== "trusted" && learnResult.debugDir && process.env.RUN_TRIAGE !== "off") {
+        const runId = String(learnResult.debugDir).split(/[\\/]/).filter(Boolean).pop() || "";
+        if (runId) {
+          try { enqueueJob(db, "run_triage", { runId }, { projectId, priority: 3 }); } catch { /* best-effort */ }
+        }
+      }
+    } else if (job.jobType === "run_triage") {
+      // Post-run triage agent: read the finished learn/stage bundle and file findings.
+      const { triageLearnRun } = await import("./runTriage");
+      const runId = String(job.payload.runId || "");
+      const triage = await triageLearnRun(db, runId, String(job.projectId));
+      result = { provider: triage.provider, findings: triage.findings, appliedCount: triage.appliedCount, message: triage.message };
+    } else if (job.jobType === "correction_triage") {
+      // Correction-handling agent: classify + propose fixes for one correction row.
+      const { triageCorrection } = await import("./correctionAgent");
+      const p = job.payload as { correctionId?: string; correctionText?: string };
+      const triage = await triageCorrection(db, {
+        correctionId: String(p.correctionId || ""),
+        projectId: String(job.projectId),
+        correctionText: String(p.correctionText || ""),
+      });
+      result = { provider: triage.provider, bucket: triage.bucket, proposals: triage.proposals.length, message: triage.message };
     } else if (job.jobType === "code_research") {
       // Autonomous adopted-codes onboarding: web-search the jurisdiction's codes
       // (state or county/city layer) and store them as a SEEDED profile. Enqueued

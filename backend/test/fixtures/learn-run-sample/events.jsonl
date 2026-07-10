@@ -1,0 +1,15 @@
+{"t":"2026-07-07T05:03:27.320Z","ms":3272,"type":"login","status":"logged_in","startUrl":"pgenm.powerclerk.com/MvcAccount/Login"}
+{"t":"2026-07-07T05:03:27.342Z","ms":3294,"type":"trace_started"}
+{"t":"2026-07-07T05:03:45.790Z","ms":21742,"type":"page","trace":"p1 \"Program Home\" [pgenm.powerclerk.com/Homepage/ProgramHome] form fields=54(fill=1,btn=53,link=30) plan:nav=22 adv=- fills=0 review=false"}
+{"t":"2026-07-07T05:04:10.844Z","ms":46796,"type":"page","trace":"p2 \"Edit Project\" [pgenm.powerclerk.com/MvcProjects/EditProject] form fields=34(fill=2,btn=32,link=10) plan:nav=- adv=24 fills=0 review=false"}
+{"t":"2026-07-07T05:04:23.829Z","ms":59781,"type":"page","trace":"p3 \"Edit Project\" [pgenm.powerclerk.com/MvcProjects/EditProject] form fields=44(fill=12,btn=32,link=9) plan:nav=- adv=34 fills=9 review=false"}
+{"t":"2026-07-07T05:04:43.725Z","ms":79677,"type":"page","trace":"p4 \"Edit Project\" [pgenm.powerclerk.com/MvcProjects/EditProject] form fields=51(fill=17,btn=34,link=10) plan:nav=- adv=41 fills=8 review=false"}
+{"t":"2026-07-07T05:05:03.831Z","ms":99783,"type":"page","trace":"p5 \"Edit Project\" [pgenm.powerclerk.com/MvcProjects/EditProject] form fields=37(fill=5,btn=32,link=9) plan:nav=- adv=27 fills=1 review=false"}
+{"t":"2026-07-07T05:05:41.281Z","ms":137233,"type":"page","trace":"p6 \"Edit Project\" [pgenm.powerclerk.com/MvcProjects/EditProject] form fields=59(fill=22,btn=37,link=10) plan:nav=- adv=49 fills=11 review=false"}
+{"t":"2026-07-07T05:07:34.530Z","ms":250482,"type":"page","trace":"p7 \"Edit Project\" [pgenm.powerclerk.com/MvcProjects/EditProject] form fields=52(fill=9,btn=43,link=9) plan:nav=- adv=42 fills=5 review=false"}
+{"t":"2026-07-07T05:10:51.003Z","ms":446955,"type":"page","trace":"p8 \"Edit Project\" [pgenm.powerclerk.com/MvcProjects/EditProject] form fields=39(fill=6,btn=33,link=9) plan:nav=- adv=29 fills=2 review=false"}
+{"t":"2026-07-07T05:11:21.282Z","ms":477234,"type":"page","trace":"p9 \"Edit Project\" [pgenm.powerclerk.com/MvcProjects/EditProject] form fields=35(fill=2,btn=33,link=9) plan:nav=- adv=25 fills=0 review=false"}
+{"t":"2026-07-07T05:11:31.233Z","ms":487185,"type":"page","trace":"p10 \"Edit Project\" [pgenm.powerclerk.com/MvcProjects/EditProject] form fields=45(fill=8,btn=37,link=9) plan:nav=- adv=35 fills=1 review=false"}
+{"t":"2026-07-07T05:12:01.671Z","ms":517623,"type":"page","trace":"p11 \"Edit Project\" [pgenm.powerclerk.com/MvcProjects/EditProject] review fields=37(fill=4,btn=33,link=9) plan:nav=- adv=- fills=1 review=true"}
+{"t":"2026-07-07T05:12:08.086Z","ms":524038,"type":"trace_saved"}
+{"t":"2026-07-07T05:12:08.094Z","ms":524046,"type":"human_capture_armed"}

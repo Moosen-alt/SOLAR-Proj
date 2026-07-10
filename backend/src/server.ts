@@ -81,6 +81,8 @@ import { ensureHeartbeat, sseBroadcast, sseSubscribe } from "./events";
 import {
   addManualCorrection,
   draftLatestCorrectionResponse,
+  applyCorrectionProposals,
+  resolveCorrection,
   listOverdueCorrections,
   setCorrectionsSlaDays,
   addProjectNote,
@@ -1035,9 +1037,25 @@ app.post("/api/projects/:id/corrections", asyncHandler(async (req, res) => {
   const correctionText = String(req.body?.correctionText || "").trim();
   if (!correctionText) throw new HttpError(400, "correctionText is required.");
   addManualCorrection(db, String(req.params.id), correctionText, req.body?.source || "manual");
-  // Generate the advisory AI draft reply (human reviews before sending).
+  // Generate the advisory AI draft reply (human reviews before sending). The
+  // correction-handling agent (data-update proposals + richer bucket) runs
+  // asynchronously as a correction_triage job enqueued by addManualCorrection.
   res.status(201).json(await draftLatestCorrectionResponse(db, String(req.params.id), correctionText));
 }));
+
+// Operator approves the correction agent's proposed data updates: apply them
+// through updateProject and mark the correction human_approved. Optional
+// `fields` limits which proposals to apply.
+app.post("/api/corrections/:id/apply", (req, res) => {
+  const fields = Array.isArray(req.body?.fields) ? (req.body.fields as unknown[]).map(String) : undefined;
+  res.json(applyCorrectionProposals(db, String(req.params.id), fields));
+});
+
+// Close a correction (first writer of closed_at/resubmitted). `resubmitted: true`
+// records that the corrected package was resubmitted, completing cycle-time KPIs.
+app.post("/api/corrections/:id/resolve", (req, res) => {
+  res.json(resolveCorrection(db, String(req.params.id), { resubmitted: Boolean(req.body?.resubmitted) }));
+});
 
 app.post("/api/projects/:id/permit-targets", (req, res) => {
   res.status(201).json(createPermitCheckTarget(db, req.params.id, req.body || {}));

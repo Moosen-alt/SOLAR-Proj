@@ -1,0 +1,312 @@
+{
+  "page": 7,
+  "title": "Edit Project",
+  "url": "pgenm.powerclerk.com/MvcProjects/EditProject",
+  "classification": "form",
+  "atReview": false,
+  "navigateIndex": null,
+  "advanceIndex": 42,
+  "finalSubmitIndex": null,
+  "recoveryHint": null,
+  "visionUsed": true,
+  "visionKb": 78,
+  "fieldsSeen": [
+    {
+      "i": 0,
+      "type": "button",
+      "label": "Net Metering"
+    },
+    {
+      "i": 1,
+      "type": "button",
+      "label": "Portland General Electric - Net Metering"
+    },
+    {
+      "i": 2,
+      "type": "button",
+      "label": "Portland General Electric - Net Metering"
+    },
+    {
+      "i": 3,
+      "type": "button",
+      "label": "PacifiCorp - Customer Generation"
+    },
+    {
+      "i": 4,
+      "type": "button",
+      "label": "PacifiCorp - Customer Generation"
+    },
+    {
+      "i": 5,
+      "type": "button",
+      "label": "Register for programs"
+    },
+    {
+      "i": 6,
+      "type": "button",
+      "label": "Customer Generation"
+    },
+    {
+      "i": 7,
+      "type": "button",
+      "label": "Customer Generation"
+    },
+    {
+      "i": 8,
+      "type": "button",
+      "label": "Net Metering"
+    },
+    {
+      "i": 9,
+      "type": "button",
+      "label": "Net Metering"
+    },
+    {
+      "i": 10,
+      "type": "button",
+      "label": "Support"
+    },
+    {
+      "i": 11,
+      "type": "button",
+      "label": "Account"
+    },
+    {
+      "i": 12,
+      "type": "button",
+      "label": "My Account"
+    },
+    {
+      "i": 13,
+      "type": "button",
+      "label": "Log Out"
+    },
+    {
+      "i": 14,
+      "type": "button",
+      "label": "Privacy"
+    },
+    {
+      "i": 15,
+      "type": "button",
+      "label": "Terms of Use"
+    },
+    {
+      "i": 16,
+      "type": "checkbox",
+      "label": "Program homepage"
+    },
+    {
+      "i": 17,
+      "type": "button",
+      "label": "Navigation Side Bar"
+    },
+    {
+      "i": 18,
+      "type": "button",
+      "label": "Home"
+    },
+    {
+      "i": 19,
+      "type": "button",
+      "label": "Projects"
+    },
+    {
+      "i": 20,
+      "type": "button",
+      "label": "Tools"
+    },
+    {
+      "i": 21,
+      "type": "button",
+      "label": "Previous page"
+    },
+    {
+      "i": 22,
+      "type": "button",
+      "label": "Next page"
+    },
+    {
+      "i": 23,
+      "type": "button",
+      "label": "help"
+    },
+    {
+      "i": 24,
+      "type": "select",
+      "label": "Energy Source"
+    },
+    {
+      "i": 25,
+      "type": "select",
+      "label": "Prime Mover"
+    },
+    {
+      "i": 26,
+      "type": "select",
+      "label": "Type"
+    },
+    {
+      "i": 27,
+      "type": "select",
+      "label": "Energy Storage"
+    },
+    {
+      "i": 28,
+      "type": "checkbox",
+      "label": "Check this box after the unlisted equipment has been reviewed and approved or ch"
+    },
+    {
+      "i": 29,
+      "type": "button",
+      "label": "help"
+    },
+    {
+      "i": 30,
+      "type": "button",
+      "label": "Show Details"
+    },
+    {
+      "i": 31,
+      "type": "button",
+      "label": "help"
+    },
+    {
+      "i": 32,
+      "type": "button",
+      "label": "Show Details"
+    },
+    {
+      "i": 33,
+      "type": "button",
+      "label": "help"
+    },
+    {
+      "i": 34,
+      "type": "button",
+      "label": "Show Details"
+    },
+    {
+      "i": 35,
+      "type": "button",
+      "label": "help"
+    },
+    {
+      "i": 36,
+      "type": "button",
+      "label": "Show Details"
+    },
+    {
+      "i": 37,
+      "type": "button",
+      "label": "help"
+    },
+    {
+      "i": 38,
+      "type": "button",
+      "label": "Show Details"
+    },
+    {
+      "i": 39,
+      "type": "radio",
+      "label": "Yes"
+    },
+    {
+      "i": 40,
+      "type": "radio",
+      "label": "No"
+    },
+    {
+      "i": 41,
+      "type": "button",
+      "label": "Back"
+    },
+    {
+      "i": 42,
+      "type": "button",
+      "label": "Next"
+    },
+    {
+      "i": 43,
+      "type": "checkbox",
+      "label": "I understand that my form will not be submitted until I return to this page and "
+    },
+    {
+      "i": 44,
+      "type": "button",
+      "label": "Cancel"
+    },
+    {
+      "i": 45,
+      "type": "button",
+      "label": "OK"
+    },
+    {
+      "i": 46,
+      "type": "button",
+      "label": "Cancel"
+    },
+    {
+      "i": 47,
+      "type": "button",
+      "label": "OK"
+    },
+    {
+      "i": 48,
+      "type": "button",
+      "label": "OK"
+    },
+    {
+      "i": 49,
+      "type": "button",
+      "label": "Cancel"
+    },
+    {
+      "i": 50,
+      "type": "button",
+      "label": "Go to My Account"
+    },
+    {
+      "i": 51,
+      "type": "button",
+      "label": "OK"
+    }
+  ],
+  "decisions": [
+    {
+      "index": 24,
+      "label": "Energy Source",
+      "boundField": null,
+      "value": "a. Solar",
+      "source": "literal"
+    },
+    {
+      "index": 25,
+      "label": "Prime Mover",
+      "boundField": null,
+      "value": "Photovoltaic",
+      "source": "literal"
+    },
+    {
+      "index": 26,
+      "label": "Type",
+      "boundField": null,
+      "value": "Static Inverter",
+      "source": "literal"
+    },
+    {
+      "index": 27,
+      "label": "Energy Storage",
+      "boundField": null,
+      "value": "No",
+      "source": "literal"
+    },
+    {
+      "index": 40,
+      "label": "No",
+      "boundField": null,
+      "value": "true",
+      "source": "literal"
+    }
+  ]
+}
