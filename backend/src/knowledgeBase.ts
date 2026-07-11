@@ -1656,6 +1656,11 @@ export function findLearnedProfileForProject(
       if (!requireDocs || profile.requiredDocuments.length) return profile;
     }
   }
+  // Fuzzy fallback so imported reference rows ("Woodburn" from a spreadsheet)
+  // still serve a project entered as "City of Woodburn". Exact keys above stay
+  // authoritative; this only fires when every exact candidate missed.
+  const fuzzy = findKnowledgeByName(db, "ahj", input.ahj, input.state);
+  if (fuzzy && (!requireDocs || fuzzy.requiredDocuments.length)) return fuzzy;
   return null;
 }
 

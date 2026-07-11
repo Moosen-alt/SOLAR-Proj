@@ -25,7 +25,7 @@ import type {
   PrescriptiveLimits,
   FireSetbackRule,
 } from "../../shared/src/types";
-import { knowledgeProfileKey } from "./knowledgeBase";
+import { knowledgeProfileKey, knowledgeNameMatchScore } from "./knowledgeBase";
 import { addAuditLog } from "./audit";
 import { logger } from "./logger";
 import { nowIso } from "./time";
@@ -92,9 +92,28 @@ export function codeProfileKey(input: { state?: string; ahj?: string }): string 
  *  (Elmore County ID builds on the Idaho DOPL state codes). Confidence of the
  *  merged result is the WEAKEST layer used, so a seeded county over a verified
  *  state still phrases as "verify locally". Null when neither row exists. */
+// Fuzzy AHJ fallback: imported reference rows are keyed by spreadsheet names
+// ("Woodburn", "Elmore County") while projects say "City of Woodburn" /
+// "Elmore County, ID". Same scorer as the KB resolver; STATE MATCH IS REQUIRED
+// (a fuzzy "Springfield" must never cross state lines into the wrong code cycle).
+function fuzzyCodeRow(db: AppDb, input: { state?: string; ahj?: string }): Row | null {
+  const state = text(input.state).trim().toUpperCase();
+  const wanted = text(input.ahj).trim();
+  if (!state || !wanted) return null;
+  let best: { row: Row; score: number } | null = null;
+  for (const row of db.query<Row>("SELECT * FROM jurisdiction_code_profiles WHERE ahj != '' AND UPPER(state) = ?", [state])) {
+    let score = knowledgeNameMatchScore(wanted, text(row.ahj));
+    if (!score) continue;
+    if (text(row.confidence) === "verified") score += 4;
+    if (!best || score > best.score) best = { row, score };
+  }
+  return best && best.score >= 60 ? best.row : null;
+}
+
 export function getCodeProfile(db: AppDb, input: { state?: string; ahj?: string }): JurisdictionCodeProfile | null {
   const exactRow = input.ahj
-    ? db.get<Row>("SELECT * FROM jurisdiction_code_profiles WHERE profile_key = ?", [codeProfileKey({ state: input.state, ahj: input.ahj })])
+    ? db.get<Row>("SELECT * FROM jurisdiction_code_profiles WHERE profile_key = ?", [codeProfileKey({ state: input.state, ahj: input.ahj })]) ??
+      fuzzyCodeRow(db, input)
     : null;
   const stateRow = db.get<Row>("SELECT * FROM jurisdiction_code_profiles WHERE profile_key = ?", [codeProfileKey({ state: input.state, ahj: "" })]);
   const exact = exactRow ? mapRow(exactRow) : null;

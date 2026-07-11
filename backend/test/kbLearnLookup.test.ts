@@ -62,6 +62,26 @@ async function main(): Promise<void> {
   check("ahj context includes code profile", /Adopted codes|code profile/i.test(ahjCtx), ahjCtx.slice(0, 300));
   check("context capped", utilCtx.length <= 2400 && ahjCtx.length <= 2400);
 
+  // Reviewer-gate path: fuzzy code-profile resolution for imported rows.
+  const { saveResearchedCodeProfile, getCodeProfile, resolveEffectiveCodeContext } = await import("../src/codeProfiles");
+  saveResearchedCodeProfile(db, {
+    key: "", state: "ID", ahj: "Elmore County", confidence: "seeded",
+    adoptedCodes: [{ code: "NEC", edition: "2017", title: "National Electrical Code" }],
+    amendments: [], designCriteria: { groundSnowLoadPsf: 30, windSpeedMph: 105 },
+    prescriptive: {}, fireSetbacks: [], citations: [], updatedAt: "",
+  });
+  const elmore = getCodeProfile(db, { state: "ID", ahj: "Elmore County, ID" });
+  check("code profile fuzzy: 'Elmore County, ID' hits 'Elmore County'", elmore?.designCriteria.windSpeedMph === 105);
+  const elmoreCtx = resolveEffectiveCodeContext(db, "ID", "Elmore County Idaho");
+  check("reviewer context cites imported NEC edition", elmoreCtx.adoptedCodes.some((c) => c.code === "NEC" && c.edition === "2017"));
+  const wrongState = getCodeProfile(db, { state: "OR", ahj: "Elmore County" });
+  check("code profile fuzzy never crosses state", wrongState?.designCriteria.windSpeedMph !== 105);
+
+  // Application-docs path: findLearnedProfileForProject fuzzy fallback.
+  const { findLearnedProfileForProject } = await import("../src/knowledgeBase");
+  const learned = findLearnedProfileForProject(db, { state: "OR", ahj: "City of Woodburn" }, { requireDocs: false });
+  check("learned profile fuzzy: 'City of Woodburn' hits imported 'Woodburn'", learned?.ahj === "Woodburn", JSON.stringify(learned?.ahj));
+
   const none = buildLearnKbContext(db, { id: "p2", state: "TX", ahj: "Nowhereville", utility: "Mystery Electric Co" } as never, { scopeType: "utility" });
   check("unknown names yield empty or state-only context", !/Mystery|Nowhereville/.test(none));
 
