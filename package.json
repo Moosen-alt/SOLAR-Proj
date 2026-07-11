@@ -23,6 +23,7 @@
     "portal:record": "tsx portal-bot/src/recordRecipe.ts",
     "portal:install": "playwright install chromium",
     "recipe:clear": "tsx backend/src/clearRecipe.ts",
+    "import:reference": "tsx backend/src/importReference.ts",
     "review:test": "tsx backend/test/codeProfiles.test.ts && tsx backend/test/reviewerOregonGolden.test.ts && tsx backend/test/reviewPacks.test.ts && tsx backend/test/reviewApi.test.ts"
   },
   "engines": {

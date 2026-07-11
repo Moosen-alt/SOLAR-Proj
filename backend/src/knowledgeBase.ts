@@ -1498,6 +1498,80 @@ export function saveResearchedUtilityProfile(
   });
 }
 
+// ---------------------------------------------------------------------------
+// Bulk reference-spreadsheet import (see referenceImport.ts). Imports write a
+// SEEDED profile but must never clobber a human-verified one. In this table
+// human verification is recorded as confidence "mixed" (+ an official source),
+// so a row already at "mixed" is skipped. confidenceFrom() would preserve the
+// "mixed" label but the UPDATE still overwrites portal/notes — hence the
+// explicit skip here rather than relying on the confidence merge.
+// ---------------------------------------------------------------------------
+
+function isHumanVerifiedProfile(db: AppDb, key: string): boolean {
+  const row = db.get<Row>("SELECT confidence FROM permit_utility_knowledge WHERE profile_key = ?", [key]);
+  return !!row && text(row.confidence) === "mixed";
+}
+
+export interface ReferenceUtilityInput {
+  state: string;
+  utility: string;
+  portalName?: string;
+  portalUrl?: string;
+  requiredDocuments?: string[];
+  notes?: string;
+  sourceLabel: string;
+}
+
+/** Import one utility NEM profile from a reference spreadsheet (seeded, skip verified). */
+export function importSeededUtilityKnowledge(db: AppDb, input: ReferenceUtilityInput): "imported" | "skipped_verified" | "skipped_empty" {
+  const utility = input.utility.trim();
+  if (!utility) return "skipped_empty";
+  const key = knowledgeProfileKey({ state: input.state, ahj: "", utility });
+  if (isHumanVerifiedProfile(db, key)) return "skipped_verified";
+  upsertKnowledge(db, {
+    state: input.state,
+    ahj: "",
+    utility,
+    portalName: input.portalName,
+    portalUrl: input.portalUrl,
+    requiredDocuments: input.requiredDocuments,
+    sources: [learnedSource("sanitized_reference", input.sourceLabel)],
+    confidence: "seeded",
+    notes: input.notes,
+  }, { eventType: "utility.reference_imported", details: { utility, state: input.state } });
+  return "imported";
+}
+
+export interface ReferenceAhjInput {
+  state: string;
+  ahj: string;
+  portalName?: string;
+  portalUrl?: string;
+  requiredDocuments?: string[];
+  notes?: string;
+  sourceLabel: string;
+}
+
+/** Import one AHJ process profile from a reference spreadsheet (seeded, skip verified). */
+export function importSeededAhjKnowledge(db: AppDb, input: ReferenceAhjInput): "imported" | "skipped_verified" | "skipped_empty" {
+  const ahj = input.ahj.trim();
+  if (!ahj) return "skipped_empty";
+  const key = knowledgeProfileKey({ state: input.state, ahj, utility: "" });
+  if (isHumanVerifiedProfile(db, key)) return "skipped_verified";
+  upsertKnowledge(db, {
+    state: input.state,
+    ahj,
+    utility: "",
+    portalName: input.portalName,
+    portalUrl: input.portalUrl,
+    requiredDocuments: input.requiredDocuments,
+    sources: [learnedSource("sanitized_reference", input.sourceLabel)],
+    confidence: "seeded",
+    notes: input.notes,
+  }, { eventType: "ahj.reference_imported", details: { ahj, state: input.state } });
+  return "imported";
+}
+
 // Human-verified utility NEM profile upsert — a coordinator confirming/correcting what
 // the AI researched (or teaching a utility from scratch). Marks it mixed-confidence +
 // a human-verified source so it outranks AI guesses.
