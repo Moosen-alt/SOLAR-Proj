@@ -37,7 +37,8 @@ import { buildUtilityPackage } from "./docSplitter";
 import { addAuditLog } from "./audit";
 import { HttpError } from "./httpError";
 import { id } from "./ids";
-import { knowledgeProfileKey } from "./knowledgeBase";
+import { knowledgeProfileKey, findKnowledgeForLearn } from "./knowledgeBase";
+import { getCodeProfile } from "./codeProfiles";
 
 export interface AutoLearnResult {
   recipe: PortalRecipe;
@@ -104,6 +105,68 @@ function digestLines(project: ProjectRecord, maxChars: number, matches: (line: s
   return out.join(" | ").slice(0, maxChars);
 }
 
+function clip(value: string | undefined, max: number): string {
+  const v = (value || "").replace(/\s+/g, " ").trim();
+  return v.length > max ? `${v.slice(0, max - 1)}…` : v;
+}
+
+// Compose the planner's KB context from the fuzzy-matched utility + AHJ knowledge
+// rows and (for AHJ-scope learns) the jurisdiction's adopted-code profile. Kept
+// compact: notes are the imported submit instructions / disconnect / meter /
+// stamp rules — exactly what the portal's judgment questions ask about.
+export function buildLearnKbContext(
+  db: AppDb,
+  project: ProjectRecord,
+  opts: { scopeType?: "ahj" | "utility"; permitType?: "structural" | "electrical" },
+): string {
+  const sections: string[] = [];
+  try {
+    const match = findKnowledgeForLearn(db, { state: project.state, ahj: project.ahj, utility: project.utility });
+    const primary = opts.scopeType === "ahj" ? match.ahj : match.utility;
+    const secondary = opts.scopeType === "ahj" ? match.utility : match.ahj;
+    for (const [label, profile] of [
+      [opts.scopeType === "ahj" ? "AHJ" : "Utility", primary],
+      [opts.scopeType === "ahj" ? "Utility" : "AHJ", secondary],
+    ] as const) {
+      if (!profile) continue;
+      const name = label === "Utility" ? profile.utility : profile.ahj;
+      const lines = [
+        `${label}: ${name}${profile.state ? ` (${profile.state})` : ""} [KB confidence: ${profile.confidence}]`,
+        profile.portalName || profile.portalUrl ? `Portal: ${clip(profile.portalName, 80)} ${clip(profile.portalUrl, 120)}`.trim() : "",
+        profile.requiredDocuments.length ? `Required docs: ${clip(profile.requiredDocuments.join("; "), 300)}` : "",
+        // The primary scope's notes carry the judgment answers — give them the bigger cap.
+        profile.notes ? `Notes: ${clip(profile.notes, label === (opts.scopeType === "ahj" ? "AHJ" : "Utility") ? 900 : 400)}` : "",
+      ].filter(Boolean);
+      if (lines.length > 1) sections.push(lines.join("\n"));
+    }
+  } catch { /* KB table may not exist yet */ }
+  if (opts.scopeType === "ahj") {
+    try {
+      const code = getCodeProfile(db, { state: project.state, ahj: project.ahj });
+      if (code) {
+        const dc = code.designCriteria;
+        const dcParts = [
+          dc.windSpeedMph ? `wind ${dc.windSpeedMph}mph` : "",
+          dc.windExposure ? `exposure ${dc.windExposure}` : "",
+          dc.groundSnowLoadPsf ? `ground snow ${dc.groundSnowLoadPsf}psf` : "",
+          dc.seismicDesignCategory ? `seismic ${dc.seismicDesignCategory}` : "",
+          dc.frostDepthIn ? `frost ${dc.frostDepthIn}in` : "",
+        ].filter(Boolean);
+        const lines = [
+          code.adoptedCodes.length ? `Adopted codes: ${clip(code.adoptedCodes.map((c) => `${c.code} ${c.edition}`).join(", "), 200)} [${code.confidence}]` : "",
+          dcParts.length ? `Design criteria: ${dcParts.join(", ")}` : "",
+          code.amendments.length ? `Local amendments: ${clip(code.amendments.map((a) => `${a.code}${a.section ? ` ${a.section}` : ""}: ${a.summary}`).join("; "), 400)}` : "",
+          code.fireSetbacks.length ? `Fire setbacks: ${clip(code.fireSetbacks.map((f) => f.description).join("; "), 250)}` : "",
+        ].filter(Boolean);
+        if (lines.length) sections.push(`Jurisdiction code profile:\n${lines.join("\n")}`);
+      }
+    } catch { /* code profile table may not exist yet */ }
+  }
+  if (!sections.length) return "";
+  const full = `KB CONTEXT for this ${opts.scopeType === "ahj" ? "AHJ" : "utility"} (learned/imported knowledge — trust the live page over this if they conflict):\n\n${sections.join("\n\n")}`;
+  return full.length > 2400 ? `${full.slice(0, 2399)}…` : full;
+}
+
 // Build the LLM planner the portal fill loop calls when it has the live fields on a page,
 // plus the project's secret-free field values. Shared by autonomous learning AND the hybrid
 // staging gap-fill so both use identical data + safety handling. Secrets (account/meter/SSN/
@@ -132,16 +195,13 @@ export function buildPortalPlanner(
   const digest = designNotesDigest(project, 1200, activeLearnedNoteTerms(db));
   if (digest) projectFields["designNotes"] = digest;
 
-  let kbContext = "";
-  try {
-    const kbEntry = db.get<{ portal_name: string; portal_url: string; notes: string }>(
-      `SELECT portal_name, portal_url, notes FROM permit_utility_knowledge WHERE (ahj = ? OR utility = ?) LIMIT 1`,
-      [project.ahj, project.utility],
-    ) as { portal_name?: string; portal_url?: string; notes?: string } | undefined;
-    if (kbEntry) {
-      kbContext = `KB CONTEXT for this AHJ/utility:\nPortal: ${kbEntry.portal_name || ""}\nURL: ${kbEntry.portal_url || ""}\nNotes: ${kbEntry.notes || ""}`.trim();
-    }
-  } catch { /* KB table may not exist yet */ }
+  // KB CONTEXT. Fuzzy, state-aware lookup so imported reference knowledge
+  // ("Portland General Electric" / "Arizona Public Service Company") still hits
+  // when the project says "PGE" / "APS" — critical when learning an UNKNOWN
+  // portal, where the imported submit instructions / disconnect / meter rules
+  // are the only prior signal. Utility and AHJ rows are pulled separately and
+  // capped so this stays a few hundred tokens.
+  const kbContext = buildLearnKbContext(db, project, opts);
 
   let jurisdictionContext = "";
   if (opts.scopeType === "ahj") {

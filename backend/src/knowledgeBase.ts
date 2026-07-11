@@ -1659,6 +1659,115 @@ export function findLearnedProfileForProject(
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// Fuzzy KB resolution for the auto-learn planner. Exact profile_key lookups miss
+// most imported reference rows because operators type short names ("PGE", "APS")
+// while the spreadsheets carry legal names ("Portland General Electric",
+// "Arizona Public Service Company"). Normalized-token + acronym matching bridges
+// that so an unknown AHJ/utility still gets its imported notes at learn time.
+// ---------------------------------------------------------------------------
+
+const KB_MATCH_STOPWORDS = new Set([
+  "city", "of", "county", "town", "township", "village", "borough", "parish",
+  "company", "co", "inc", "corp", "corporation", "llc", "the", "and",
+  "electric", "power", "energy", "utility", "utilities", "light", "gas",
+  "dept", "department", "district", "cooperative", "coop", "authority", "services",
+]);
+
+function kbTokens(value: string): string[] {
+  return normalize(value).split(" ").filter((t) => t && t !== "unknown");
+}
+
+function kbCompact(value: string): string {
+  return normalize(value).replace(/\s+/g, "");
+}
+
+// Initials of the multi-word name: "Arizona Public Service Company" -> "apsc".
+function kbAcronym(value: string): string {
+  const toks = kbTokens(value);
+  return toks.length >= 2 ? toks.map((t) => t[0]).join("") : "";
+}
+
+/** Score how well a project-entered name matches a KB row name (0-100). */
+export function knowledgeNameMatchScore(projectValue: string, kbValue: string): number {
+  const a = kbCompact(projectValue);
+  const b = kbCompact(kbValue);
+  if (!a || !b || a === "unknown" || b === "unknown") return 0;
+  if (a === b) return 100;
+  // Acronym: short entered value vs long KB legal name (and vice versa).
+  const acrB = kbAcronym(kbValue);
+  if (acrB && a.length >= 2 && (acrB === a || (a.length >= 3 && acrB.startsWith(a)))) return 78;
+  const acrA = kbAcronym(projectValue);
+  if (acrA && b.length >= 2 && (acrA === b || (b.length >= 3 && acrA.startsWith(b)))) return 78;
+  // Containment after compaction ("woodburn" vs "city of woodburn").
+  if (a.length >= 5 && b.includes(a)) return 82;
+  if (b.length >= 5 && a.includes(b)) return 82;
+  // Meaningful-token overlap.
+  const ta = kbTokens(projectValue).filter((t) => !KB_MATCH_STOPWORDS.has(t));
+  const tb = kbTokens(kbValue).filter((t) => !KB_MATCH_STOPWORDS.has(t));
+  if (!ta.length || !tb.length) return 0;
+  const setB = new Set(tb);
+  const shared = ta.filter((t) => setB.has(t));
+  const ratio = shared.length / Math.max(ta.length, tb.length);
+  if (shared.length >= 2 && ratio >= 0.6) return 60 + Math.round(ratio * 15);
+  if (shared.length === 1 && ta.length === 1 && tb.length === 1) return 65; // single distinctive token each
+  return 0;
+}
+
+function findKnowledgeByName(
+  db: AppDb,
+  kind: "ahj" | "utility",
+  value: string | undefined,
+  state: string | undefined,
+): PermitUtilityKnowledgeProfile | null {
+  const wanted = clean(value);
+  if (!wanted) return null;
+  const stateNorm = normalize(state || "");
+  // 1) Exact profile_key candidates (cheap, precise).
+  const exactKeys =
+    kind === "utility"
+      ? [profileKey({ state, utility: wanted }), profileKey({ utility: wanted })]
+      : [profileKey({ state, ahj: wanted }), profileKey({ ahj: wanted })];
+  for (const key of exactKeys) {
+    const row = db.get<Row>("SELECT * FROM permit_utility_knowledge WHERE profile_key = ?", [key]);
+    if (row) return mapKnowledge(row);
+  }
+  // 2) Fuzzy scan over rows of the same kind (thousands of rows is fine for SQLite+JS).
+  const col = kind === "utility" ? "utility" : "ahj";
+  const rows = db.query<Row>(`SELECT * FROM permit_utility_knowledge WHERE ${col} != ''`);
+  let best: { profile: PermitUtilityKnowledgeProfile; score: number } | null = null;
+  for (const row of rows) {
+    const profile = mapKnowledge(row);
+    const rowState = normalize(profile.state || "");
+    // A row pinned to a different state never matches; empty-state rows match anywhere.
+    if (stateNorm !== "unknown" && rowState !== "unknown" && rowState !== stateNorm) continue;
+    let score = knowledgeNameMatchScore(wanted, kind === "utility" ? profile.utility : profile.ahj);
+    if (!score) continue;
+    if (rowState !== "unknown" && rowState === stateNorm) score += 6; // prefer state-pinned rows
+    if (profile.confidence === "mixed") score += 4; // human-verified beats seeded on ties
+    if (profile.notes) score += 2;
+    if (!best || score > best.score) best = { profile, score };
+  }
+  return best && best.score >= 60 ? best.profile : null;
+}
+
+export interface LearnKnowledgeMatch {
+  utility: PermitUtilityKnowledgeProfile | null;
+  ahj: PermitUtilityKnowledgeProfile | null;
+}
+
+/** Resolve the best KB rows for a learn run: the utility's row AND the AHJ's row,
+ *  via exact keys first then fuzzy name matching, state-filtered. Either may be null. */
+export function findKnowledgeForLearn(
+  db: AppDb,
+  input: { state?: string; ahj?: string; utility?: string },
+): LearnKnowledgeMatch {
+  return {
+    utility: findKnowledgeByName(db, "utility", input.utility, input.state),
+    ahj: findKnowledgeByName(db, "ahj", input.ahj, input.state),
+  };
+}
+
 export function seedInitialKnowledgeBase(db: AppDb): void {
   seedOfficialKnowledge(db);
   seedSanitizedAhjProfiles(db);

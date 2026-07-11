@@ -91,6 +91,7 @@ import {
   learnFromProject,
   learnFromSubmissionConfirmation,
   findLearnedProfileForProject,
+  findKnowledgeForLearn,
   saveResearchedAhjProfile,
   saveResearchedUtilityProfile,
   listKnowledgeProfiles,
@@ -5079,6 +5080,18 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
       [detail.project.ahj],
     );
     ahjPortalUrl = ahjRow?.portal_url ?? "";
+  }
+  // Fuzzy fallback: the exact-name lookups above miss imported KB rows keyed by
+  // legal names ("Portland General Electric") when the project says "PGE". Same
+  // resolver the auto-learn planner uses — state-filtered token/acronym matching.
+  if (track === "nem" ? !utilityPortalUrl : !ahjPortalUrl) {
+    const fuzzy = findKnowledgeForLearn(db, {
+      state: detail.project.state,
+      ahj: track !== "nem" ? detail.project.ahj : undefined,
+      utility: track === "nem" ? detail.project.utility : undefined,
+    });
+    if (track === "nem") utilityPortalUrl = fuzzy.utility?.portalUrl || "";
+    else ahjPortalUrl = fuzzy.ahj?.portalUrl || "";
   }
   // A draft/recording recipe (not yet promoted to "complete") still carries the entry URL the
   // operator — or a prior auto-learn pass — pointed the recorder at. Recover it so the universal
