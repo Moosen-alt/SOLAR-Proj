@@ -1331,6 +1331,8 @@ export interface LLMProvider {
     ahj: string;
     state: string;
     utility?: string;
+    /** What the KB already knows (imported reference data) — a verified-first starting point. */
+    knownContext?: string;
   }): Promise<AhjResearchResult>;
   /** Research an UNKNOWN utility's residential NEM / interconnection process from the
    *  model's knowledge, so a new utility can be onboarded the same way as an AHJ.
@@ -1339,6 +1341,8 @@ export interface LLMProvider {
     utility: string;
     state: string;
     ahj?: string;
+    /** What the KB already knows (imported reference data) — a verified-first starting point. */
+    knownContext?: string;
   }): Promise<UtilityResearchResult>;
   /** Given a list of portal form fill/select interactions that weren't auto-bound to a
    *  field during recording (exact-match missed), ask the model to suggest which project
@@ -1385,6 +1389,8 @@ export interface LLMProvider {
     ahj: string;
     state: string;
     formType?: string;
+    /** What the KB already knows (imported reference data) — a verified-first starting point. */
+    knownContext?: string;
   }): Promise<AhjFormUrlResult>;
 
   /** Map a blank form's AcroForm field names onto project data sources so the

@@ -4,7 +4,7 @@ import type { AppDb } from "./db";
 import type { AhjFormUrlResult, LLMProvider, ProjectRecord } from "../../shared/src/types";
 import { inspectFormFields, loadStoredTemplates, type OverlayField, type SignaturePlacement } from "./ahjForms";
 import { describePermitType, findApplicationProfile } from "./applicationDocs";
-import { saveResearchedAhjProfile } from "./knowledgeBase";
+import { saveResearchedAhjProfile, knowledgeResearchHint } from "./knowledgeBase";
 import { renderPdfPageToPng } from "./pageImages";
 import { nowIso } from "./time";
 
@@ -302,7 +302,13 @@ export async function ensureAhjFormTemplate(
     };
   }
 
-  const research = await llm.findAhjFormUrl({ ahj: project.ahj, state: project.state, formType });
+  // Seed the form search with whatever the KB already knows about this AHJ
+  // (imported reference rows: portal, submission notes, any direct .pdf links).
+  // The hint steers the web search; KB .pdf URLs become free download candidates.
+  let kbHint: ReturnType<typeof knowledgeResearchHint> = null;
+  try { kbHint = knowledgeResearchHint(db, { state: project.state, ahj: project.ahj }, "ahj"); } catch { /* non-fatal */ }
+
+  const research = await llm.findAhjFormUrl({ ahj: project.ahj, state: project.state, formType, knownContext: kbHint?.text });
 
   // Learn the submittal portal/platform/requirements so the record-portal training
   // step pre-fills the portal URL for this new AHJ, and future projects skip the
@@ -314,7 +320,12 @@ export async function ensureAhjFormTemplate(
   // is found the operator is told what kind of permitting this AHJ uses.
   const permitType = describePermitType(ahjProfile, { submissionMethod: research.submissionMethod, portalPlatform: research.portalPlatform, permitStructure: research.permitStructure });
 
-  if (!research.candidateUrls.length) {
+  // Research candidates first (freshest), then any direct .pdf links carried by
+  // the imported KB row — a spreadsheet-provided application link can rescue an
+  // AHJ whose site the search couldn't crack (link may also just be stale).
+  const candidateUrls = [...new Set([...research.candidateUrls, ...(kbHint?.pdfUrls || [])])];
+
+  if (!candidateUrls.length) {
     const portalNote = research.submittalPortalUrl
       ? ` Submittal portal: ${research.submittalPortalUrl}${research.portalPlatform ? ` (${research.portalPlatform})` : ""} — it's pre-filled on the record/training step.`
       : "";
@@ -328,7 +339,7 @@ export async function ensureAhjFormTemplate(
 
   let bytes: Uint8Array | null = null;
   let usedUrl = "";
-  for (const url of research.candidateUrls) {
+  for (const url of candidateUrls) {
     bytes = await fetchPdf(url);
     if (bytes) { usedUrl = url; break; }
   }
@@ -336,7 +347,7 @@ export async function ensureAhjFormTemplate(
     return {
       status: "not_found",
       permitType: permitType.callout,
-      message: `Permitting type: ${permitType.callout} Found candidate links for ${project.ahj} but none returned a valid PDF (link rot or login-gated). Upload the blank PDF to proceed. Tried: ${research.candidateUrls.join(", ")}`,
+      message: `Permitting type: ${permitType.callout} Found candidate links for ${project.ahj} but none returned a valid PDF (link rot or login-gated). Upload the blank PDF to proceed. Tried: ${candidateUrls.join(", ")}`,
     };
   }
 

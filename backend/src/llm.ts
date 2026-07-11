@@ -1010,7 +1010,7 @@ ${input.correctionPatterns.slice(0, 20).join("\n")}`;
     return this.parseJson(raw, { requiredDocuments: [], commonRejectionReasons: [], tips: [], confidence: "low" as const });
   }
 
-  async researchAhjRequirements(input: { ahj: string; state: string; utility?: string }): Promise<AhjResearchResult> {
+  async researchAhjRequirements(input: { ahj: string; state: string; utility?: string; knownContext?: string }): Promise<AhjResearchResult> {
     const system = `You are a solar permitting onboarding specialist. Given an Authority Having Jurisdiction (AHJ) that the system has never processed, lay out what's needed to permit a residential rooftop solar PV system there.
 
 FIRST search the web — prefer the AHJ's own .gov/.us site and the state's ePermitting/building-department pages — to confirm the real portal, submission method, and document checklist for THIS jurisdiction. Many small/mid Oregon and Washington cities (e.g. City of Hillsboro) do NOT run their own portal — they file building+electrical permits through a shared state system (Oregon ePermitting, which runs on Accela). Identify that correctly rather than inventing a city-specific portal. Ground every field in what you actually find; only fall back to regional norms when the search is inconclusive, and say so in tips.
@@ -1033,7 +1033,7 @@ Rules:
 - This is ADVISORY and must be human-verified — do NOT invent a precise portal URL you are unsure of (use '' instead).
 - Reflect the named utility's interconnection/NEM document needs in requiredDocuments where relevant.
 - Return valid JSON only.`;
-    const userMsg = `AHJ: ${input.ahj}\nState: ${input.state}${input.utility ? `\nUtility: ${input.utility}` : ""}\n\nResearch the residential solar permitting + interconnection requirements for this jurisdiction.`;
+    const userMsg = `AHJ: ${input.ahj}\nState: ${input.state}${input.utility ? `\nUtility: ${input.utility}` : ""}${input.knownContext ? `\n\n${input.knownContext}` : ""}\n\nResearch the residential solar permitting + interconnection requirements for this jurisdiction.`;
     // Web-grounded first (accurate for never-seen AHJs); fall back to model
     // knowledge if the search is unreachable so the call never hard-fails.
     let parsed: Partial<AhjResearchResult> = {};
@@ -1159,7 +1159,7 @@ Rules:
     };
   }
 
-  async researchUtilityRequirements(input: { utility: string; state: string; ahj?: string }): Promise<UtilityResearchResult> {
+  async researchUtilityRequirements(input: { utility: string; state: string; ahj?: string; knownContext?: string }): Promise<UtilityResearchResult> {
     const system = `You are a solar interconnection onboarding specialist. Given an electric UTILITY the system has never processed, lay out what's needed to file a RESIDENTIAL rooftop solar net-metering (NEM) / interconnection application with that utility.
 
 FIRST search the web — prefer the utility's own customer-generation / interconnection page — to confirm the real application portal (many utilities run PowerClerk), submission method, and document checklist for THIS utility. Ground every field in what you actually find; only fall back to regional norms when the search is inconclusive, and say so in tips.
@@ -1186,7 +1186,7 @@ Rules:
 - This is ADVISORY and must be human-verified — do NOT invent a precise portal URL you are unsure of (use '' instead).
 - For smartInverterSettings, reflect the REAL portal behavior: it is a Yes/No election to use the utility's recommended smart-inverter settings (answer Yes for UL 1741-SB listed inverters) plus an inverter spec/cut-sheet upload — never describe it as a required grid-profile drawing on the plan set.
 - Return valid JSON only.`;
-    const userMsg = `Utility: ${input.utility}\nState: ${input.state}${input.ahj ? `\nAHJ context: ${input.ahj}` : ""}\n\nResearch the residential solar net-metering / interconnection requirements for this utility.`;
+    const userMsg = `Utility: ${input.utility}\nState: ${input.state}${input.ahj ? `\nAHJ context: ${input.ahj}` : ""}${input.knownContext ? `\n\n${input.knownContext}` : ""}\n\nResearch the residential solar net-metering / interconnection requirements for this utility.`;
     // Web-grounded first; fall back to model knowledge if search is unreachable.
     let parsed: Partial<UtilityResearchResult> = {};
     let webGrounded = false;
@@ -1554,7 +1554,7 @@ Notes:
     });
   }
 
-  async findAhjFormUrl(input: { ahj: string; state: string; formType?: string }): Promise<AhjFormUrlResult> {
+  async findAhjFormUrl(input: { ahj: string; state: string; formType?: string; knownContext?: string }): Promise<AhjFormUrlResult> {
     const formType = input.formType || "permit_application";
     const system = `You are a solar permitting research assistant. Find the OFFICIAL blank ${formType.replace(/_/g, " ")} PDF form that the named Authority Having Jurisdiction (AHJ) uses for residential rooftop solar PV permits.
 
@@ -1585,7 +1585,7 @@ Rules:
 - ONLY return URLs you actually located via search — never fabricate a URL.
 - If the AHJ truly submits exclusively through an online portal with NO downloadable PDF, return an empty candidateUrls array and say so in notes (but still fill submittalPortalUrl/portalPlatform).
 - Prefer the most current year's form. Return valid JSON only.`;
-    const userMsg = `AHJ: ${input.ahj}\nState: ${input.state}\nForm needed: residential solar ${formType.replace(/_/g, " ")} (building + electrical permit applications).\nFind the AHJ's forms/applications page and the direct blank PDF links.`;
+    const userMsg = `AHJ: ${input.ahj}\nState: ${input.state}\nForm needed: residential solar ${formType.replace(/_/g, " ")} (building + electrical permit applications).${input.knownContext ? `\n\n${input.knownContext}\nStart from the known portal/URLs above when searching.` : ""}\nFind the AHJ's forms/applications page and the direct blank PDF links.`;
     let parsed: Partial<AhjFormUrlResult> = {};
     try {
       parsed = this.parseJson(await this.askWithWebSearch("findAhjFormUrl", system, userMsg), {});

@@ -92,6 +92,7 @@ import {
   learnFromSubmissionConfirmation,
   findLearnedProfileForProject,
   findKnowledgeForLearn,
+  knowledgeResearchHint,
   saveResearchedAhjProfile,
   saveResearchedUtilityProfile,
   listKnowledgeProfiles,
@@ -467,7 +468,11 @@ export async function researchAndSaveAhj(
   if (!input.ahj?.trim()) throw new HttpError(400, "ahj is required.");
   const { createLLMProvider } = await import("./llm");
   const llm = createLLMProvider();
-  const research = await llm.researchAhjRequirements({ ahj: input.ahj.trim(), state: (input.state || "").trim(), utility: input.utility?.trim() });
+  // Seed the research with what the KB already knows (imported reference rows) —
+  // fuzzy-matched, so "Elmore County, ID" benefits from an imported "Elmore County".
+  let hint: string | undefined;
+  try { hint = knowledgeResearchHint(db, { state: input.state, ahj: input.ahj }, "ahj")?.text; } catch { /* non-fatal */ }
+  const research = await llm.researchAhjRequirements({ ahj: input.ahj.trim(), state: (input.state || "").trim(), utility: input.utility?.trim(), knownContext: hint });
   if (research.provider === "stub" || !research.requiredDocuments.length) {
     return { research, profileKey: null, saved: false };
   }
@@ -486,7 +491,11 @@ export async function researchAndSaveUtility(
   if (!input.utility?.trim()) throw new HttpError(400, "utility is required.");
   const { createLLMProvider } = await import("./llm");
   const llm = createLLMProvider();
-  const research = await llm.researchUtilityRequirements({ utility: input.utility.trim(), state: (input.state || "").trim(), ahj: input.ahj?.trim() });
+  // Same KB seeding as the AHJ path — the imported utility NEM notes (submit
+  // instructions, disconnect/meter rules) anchor the web research.
+  let hint: string | undefined;
+  try { hint = knowledgeResearchHint(db, { state: input.state, utility: input.utility }, "utility")?.text; } catch { /* non-fatal */ }
+  const research = await llm.researchUtilityRequirements({ utility: input.utility.trim(), state: (input.state || "").trim(), ahj: input.ahj?.trim(), knownContext: hint });
   if (research.provider === "stub" || !research.requiredDocuments.length) {
     return { research, profileKey: null, saved: false };
   }

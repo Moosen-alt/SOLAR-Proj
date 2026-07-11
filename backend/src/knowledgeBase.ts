@@ -1773,6 +1773,48 @@ export function findKnowledgeForLearn(
   };
 }
 
+export interface KnowledgeResearchHint {
+  /** Compact prompt block for the research LLM: what we already know, marked verify-first. */
+  text: string;
+  /** Direct .pdf URLs found in the KB row (imported forms/application links) — free
+   *  download candidates for the form-acquisition pipeline before/alongside web search. */
+  pdfUrls: string[];
+}
+
+/** What the KB already knows about this AHJ/utility, packaged as a research hint so
+ *  the onboarding web-search starts from the imported portal/notes instead of blind.
+ *  Uses the same fuzzy resolver as the learn planner. Null when nothing matches. */
+export function knowledgeResearchHint(
+  db: AppDb,
+  input: { state?: string; ahj?: string; utility?: string },
+  scope: "ahj" | "utility",
+): KnowledgeResearchHint | null {
+  let profile: PermitUtilityKnowledgeProfile | null = null;
+  try {
+    const match = findKnowledgeForLearn(db, input);
+    profile = scope === "ahj" ? match.ahj : match.utility;
+  } catch { return null; }
+  if (!profile) return null;
+  const name = scope === "ahj" ? profile.ahj : profile.utility;
+  const pdfUrls = [
+    ...new Set(
+      (`${profile.notes} ${profile.portalUrl}`.match(/https?:\/\/[^\s"'<>)\]]+\.pdf\b[^\s"'<>)\]]*/gi) || []).map((u) => u.trim()),
+    ),
+  ].slice(0, 5);
+  const notes = clean(profile.notes).slice(0, 700);
+  const text = [
+    `Our internal knowledge base already has a ${scope === "ahj" ? "jurisdiction" : "utility"} record for "${name}"${profile.state ? ` (${profile.state})` : ""} [confidence: ${profile.confidence}]:`,
+    profile.portalName ? `- Known portal: ${profile.portalName}` : "",
+    profile.portalUrl ? `- Known portal URL: ${profile.portalUrl}` : "",
+    profile.requiredDocuments.length ? `- Known required documents: ${profile.requiredDocuments.slice(0, 12).join("; ")}` : "",
+    notes ? `- Notes: ${notes}` : "",
+    "Treat this as a STARTING POINT for your search — confirm against the official site (it may be stale) and fill the gaps.",
+  ].filter(Boolean).join("\n").slice(0, 1400);
+  // A record with only a name adds nothing worth prompting with.
+  if (!profile.portalName && !profile.portalUrl && !profile.requiredDocuments.length && !notes) return null;
+  return { text, pdfUrls };
+}
+
 export function seedInitialKnowledgeBase(db: AppDb): void {
   seedOfficialKnowledge(db);
   seedSanitizedAhjProfiles(db);

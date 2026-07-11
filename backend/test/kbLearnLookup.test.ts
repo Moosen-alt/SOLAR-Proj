@@ -77,6 +77,19 @@ async function main(): Promise<void> {
   const wrongState = getCodeProfile(db, { state: "OR", ahj: "Elmore County" });
   check("code profile fuzzy never crosses state", wrongState?.designCriteria.windSpeedMph !== 105);
 
+  // Research-hint path: onboarding/form-acquisition seeds from imported KB rows.
+  const { knowledgeResearchHint } = await import("../src/knowledgeBase");
+  importSeededAhjKnowledge(db, {
+    state: "ID", ahj: "Elmore County",
+    notes: "Building + electrical permit required. Application: https://elmorecounty.example.gov/forms/building-permit.pdf — email to permits@elmore.example.gov.",
+  });
+  const hint = knowledgeResearchHint(db, { state: "ID", ahj: "Elmore County, ID" }, "ahj");
+  check("research hint found for fuzzy AHJ", !!hint && /Elmore County/.test(hint.text));
+  check("research hint extracts .pdf URL for form acquisition", hint?.pdfUrls[0] === "https://elmorecounty.example.gov/forms/building-permit.pdf", JSON.stringify(hint?.pdfUrls));
+  check("research hint says verify-first", !!hint && /STARTING POINT/.test(hint.text));
+  const noHint = knowledgeResearchHint(db, { state: "TX", ahj: "Nowhereville" }, "ahj");
+  check("no hint for unknown AHJ", noHint === null);
+
   // Application-docs path: findLearnedProfileForProject fuzzy fallback.
   const { findLearnedProfileForProject } = await import("../src/knowledgeBase");
   const learned = findLearnedProfileForProject(db, { state: "OR", ahj: "City of Woodburn" }, { requireDocs: false });
