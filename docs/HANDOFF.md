@@ -66,6 +66,21 @@ Every "unknown" the learner can hit now has a look-it-up-or-figure-it-out path:
 | Failed runs | run-triage agent reads the debug bundle, applies safe fixes, files the rest for review. |
 | MFA/CAPTCHA/final submit/fees | Always paused for a human — hard rule, never regress. |
 
+## Next automations worth building (ranked, for future sessions)
+
+1. **Auto-verify assist**: when the operator opens a seeded KB/code row, fetch
+   the cited source URL and show it side-by-side with a one-click verify —
+   turns fact verification from research into confirmation.
+2. **Stripe checkout webhook** (specced in SERVER_SETUP.md) — removes the
+   manual Mark-paid step.
+3. **Correction → auto-redline**: when a correction names a document, attach
+   the run-triage finding + the exact sheet to the designer notification.
+4. **Nightly self-test cron**: `SMOKE_*` lifecycle for the operator's active
+   territories + link sweep + form refresh, results to the dashboard — the
+   tool proves ITSELF healthy every morning.
+5. **Alias self-learning**: when an equipment fill succeeds via a non-first
+   candidate, record plan-name→certified-name into the KB automatically.
+
 ## What to verify after each `git pull` on the operator's machine
 
 1. `npm run smoke` green; server starts (migrations v9+ run; KB notes repair
