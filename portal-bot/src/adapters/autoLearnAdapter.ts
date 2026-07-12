@@ -218,6 +218,12 @@ const SENSITIVE_LABEL = /\b(password|passcode|account\s*(number|no|#)?|acct|mete
 // Certified-name aliases: what the plan set calls a manufacturer vs how equipment
 // databases (CEC listings, PowerClerk) list it. Keyed by the plan-set name with all
 // non-alphanumerics stripped, lowercase. Extend as new mismatches surface.
+// Equipment with its OWN make/model that must never receive PV module/inverter
+// data: service gear, storage, EV, generators, racking, optimizers, monitoring.
+// Shared by the positive matcher (side exclusion) and the proximity reset.
+const EQUIPMENT_NEGATIVE_GUARD =
+  /main (service )?panel|service panel|sub ?panel|panelboard|electrical panel|load center|breaker|disconnect|meter\b|battery|storage|charger|vehicle|\bev\b|generator|genset|hvac|heat ?pump|racking|rail\b|optimi[sz]er|monitor/;
+
 const EQUIPMENT_MAKE_ALIASES: Record<string, string[]> = {
   apsystems: ["Altenergy Power System", "APsystems"],
   altenergypowersystem: ["AP Systems", "APsystems"],
@@ -727,6 +733,9 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   // See constructor options.policyProfile.
   private policyProfile: "residential_nem" | "none";
   private equipment: Record<string, string>;
+  // Equipment fields whose select verification failed for EVERY candidate this
+  // run — retrying them each rescan pass just burns waitForOptionReady caps.
+  private equipmentFillFailed = new Set<string>();
 
   constructor(
     portalName: string,
@@ -791,15 +800,18 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     const isModel = /\bmodel\b/.test(l);
     const isMake = /manufacturer|\bmake\b|\bbrand\b/.test(l);
     const isQty = /\bquantity\b|\bqty\b|number of (modules|panels|inverters|micro)/.test(l);
-    const isTilt = /\btilt\b|\bpitch\b/.test(l);
+    const isTilt = /\btilt\b/.test(l); // NOT "pitch": AHJ "Roof Pitch" fields want rise/run (4:12), not degrees
     const isAzimuth = /\bazimuth\b/.test(l);
     const isTracking = /\btracking\b/.test(l);
     if (!isModel && !isMake && !isQty && !isTilt && !isAzimuth && !isTracking) return null;
-    // NEGATIVE GUARD: "Main Panel Model", "Meter model", battery gear — the wider
-    // section+label context makes accidental keyword hits likelier, so anything
-    // service-equipment-flavored is out unless the PV side is explicitly named.
-    const explicitlyPv = /inverter|micro|module|pv ?array|solar panel|photovoltaic/.test(l);
-    if (/main (service )?panel|service panel|load center|breaker|meter\b|battery|storage|charger|vehicle|\bev\b/.test(l) && !explicitlyPv) return null;
+    // NEGATIVE GUARD: service equipment, storage, EV gear, generators, racking,
+    // optimizers, monitoring — anything with its own make/model that is NOT the
+    // PV modules/inverters. The wider section+label context makes accidental
+    // keyword hits likelier, so these are out unless PV is EXPLICITLY named —
+    // and "explicitly" means module/PV wording, not "inverter": a "Battery
+    // Inverter Model" is storage gear, not the PV inverter.
+    const explicitlyPv = /module|pv ?array|solar|photovoltaic/.test(l);
+    if (EQUIPMENT_NEGATIVE_GUARD.test(l) && !explicitlyPv) return null;
 
     // Array-geometry fields are side-agnostic — fill straight from project data.
     if (isTilt || isAzimuth || isTracking) {
@@ -809,7 +821,9 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     }
 
     const inverterSide = /inverter|micro/.test(l);
-    const moduleSide = /module|pv ?array|solar panel|\bpanel\b/.test(l);
+    // "panel" alone must NOT claim the module side — "Electrical Panel", "Sub
+    // Panel" etc. are service equipment; only solar-flavored wording counts.
+    const moduleSide = /module|pv ?array|solar panel|photovoltaic/.test(l);
     const side: "inverter" | "module" | null = inverterSide ? "inverter" : moduleSide ? "module" : fallbackSide ?? null;
     if (!side) return null;
     const key = side === "inverter"
@@ -834,8 +848,10 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     return { key, candidates: [...new Set(candidates)], side };
   }
 
-  /** The control's CURRENT value: selected option text (or value) for selects,
-   *  the input value otherwise. Best-effort — "" when unreadable. */
+  /** The control's CURRENT value(s): for selects, the selected option's TEXT and
+   *  VALUE (\u0007-joined — selectOption can legitimately land via the value
+   *  attr while the display text shares no substring with our candidate); the
+   *  input value otherwise. null = unreadable (e.g. unit-test fake page). */
   private async currentControlValue(field: ExtractedField): Promise<string | null> {
     try {
       const loc = await this.locator(field.selector);
@@ -848,13 +864,32 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           const opt = s.selectedIndex >= 0 ? s.options[s.selectedIndex] : null;
           const text = (opt?.textContent || "").trim();
           if (/^(please\s+)?select\.{0,3}$/i.test(text)) return "";
-          return text || s.value || "";
+          return [text, (opt?.value || "").trim()].filter(Boolean).join("\u0007");
         }
         return (el as HTMLInputElement).value || "";
       }).catch(() => null);
     } catch {
       return null;
     }
+  }
+
+  /** Does the control's current content match a candidate? Exact for numbers
+   *  (candidate "12" must never "match" a stale "1" or "23"); substring both
+   *  ways for names, but only with >= 4 chars on the contained side so a short
+   *  fragment ("AP") can't satisfy "AP Systems". */
+  private static equipmentValueMatches(currentRaw: string, candidate: string): boolean {
+    const cand = candidate.trim().toLowerCase();
+    if (!cand) return false;
+    const candNumeric = /^[\d.,\s]+$/.test(cand);
+    for (const part of currentRaw.split("\u0007")) {
+      const cur = part.trim().toLowerCase();
+      if (!cur) continue;
+      if (cur === cand) return true;
+      if (candNumeric || /^[\d.,\s]+$/.test(cur)) continue; // numbers: exact only
+      if (cand.length >= 4 && cur.includes(cand)) return true;
+      if (cur.length >= 4 && cand.includes(cur)) return true;
+    }
+    return false;
   }
 
   /** Fill unresolved equipment manufacturer/model/quantity + array-geometry fields
@@ -869,9 +904,13 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   ): Promise<number> {
     let filled = 0;
     // Proximity side-tracking for portals with NO usable section headers: once a
-    // side is established (e.g. "Inverter Manufacturer"), following bare fields
-    // ("Model", "Quantity") inherit it until the side changes.
+    // side is established (e.g. "Inverter Manufacturer"), the next few bare
+    // fields ("Model", "Quantity") inherit it. STRICTLY BOUNDED: inheritance
+    // dies after 3 fields, on any section change, and on any negative-guard hit
+    // — on a sectionless page it must never leak PV data into a later racking/
+    // generator/battery block's bare "Model".
     let lastSide: "inverter" | "module" | undefined;
+    let lastSideAt = -1;
     let lastSection = "";
     // Bare labels REPEAT on spec pages ("Manufacturer"/"Model" under both the
     // module and inverter sections). alreadyFilledLabels dedupes by label alone,
@@ -881,44 +920,53 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     for (const f of fields) {
       if (f.label) labelCounts.set(f.label, (labelCounts.get(f.label) || 0) + 1);
     }
-    for (const field of fields) {
-      if (field.fieldType === "button" || field.fieldType === "file" || field.fieldType === "checkbox" || field.fieldType === "radio") continue;
+    const labelSeen = new Map<string, number>();
+    for (let i = 0; i < fields.length; i++) {
+      const field = fields[i];
       if (!field.label) continue;
+      const occurrence = labelSeen.get(field.label) ?? 0;
+      labelSeen.set(field.label, occurrence + 1);
+      if (field.fieldType === "button" || field.fieldType === "file" || field.fieldType === "checkbox" || field.fieldType === "radio") continue;
       const dupLabel = (labelCounts.get(field.label) || 0) > 1;
       if (!dupLabel && alreadyFilledLabels.includes(field.label)) continue;
-      // Proximity only carries WITHIN one section: crossing into a new section
-      // (e.g. from "Inverter Information" to "EV Charger") drops the inherited
-      // side so a bare "Model" there is never filled with inverter data.
+      // Proximity only carries WITHIN one section and only a few fields deep.
       if ((field.section || "") !== lastSection) {
         lastSide = undefined;
         lastSection = field.section || "";
       }
+      if (lastSide && i - lastSideAt > 3) lastSide = undefined;
       const context = `${field.section || ""} ${field.label}`.trim();
+      // A negative-guard hit (battery/EV/generator/racking wording) ends any
+      // inherited side immediately — the page has moved on to other equipment.
+      if (EQUIPMENT_NEGATIVE_GUARD.test(context.toLowerCase())) lastSide = undefined;
       const resolved = this.equipmentValueFor(context, lastSide);
       if (!resolved) continue;
-      if (resolved.side) lastSide = resolved.side;
+      if (resolved.side) { lastSide = resolved.side; lastSideAt = i; }
+      const failKey = `${resolved.key}::${context}`;
+      if (this.equipmentFillFailed.has(failKey)) continue;
       // DUPLICATE LABELS make a label selector ambiguous — getByLabel("Quantity")
       // resolves to the FIRST match, so the inverter quantity would overwrite the
-      // module quantity. Prefer the element's unique #id fallback for both the
-      // fill and the recorded step (unambiguous on replay too).
+      // module quantity. Prefer the element's unique #id fallback (kept as the
+      // step's primary with the label retained as a replay fallback); when there
+      // is no id, pin the label selector to THIS occurrence via nth.
       let target = field;
       if (dupLabel && field.selector.label) {
+        const frame = field.selector.frame ? { frame: field.selector.frame } : {};
         const cssFb = field.selector.fallbacks?.find((fb) => fb.css);
-        if (cssFb?.css) {
-          target = { ...field, selector: { css: cssFb.css, ...(field.selector.frame ? { frame: field.selector.frame } : {}) } };
-        }
+        target = cssFb?.css
+          ? { ...field, selector: { css: cssFb.css, ...frame, fallbacks: [{ label: field.label, nth: occurrence, ...frame }] } }
+          : { ...field, selector: { ...field.selector, nth: occurrence } };
       }
       // Already holding one of our values (e.g. a rescan pass)? Leave it alone —
       // re-selecting a manufacturer re-fires the portal's cascade and WIPES the
       // dependent model select that was just filled.
-      const current = ((await this.currentControlValue(target)) || "").trim().toLowerCase();
-      if (current && resolved.candidates.some((c) => {
-        const cc = c.trim().toLowerCase();
-        return current === cc || current.includes(cc) || cc.includes(current);
-      })) {
+      const currentRaw = await this.currentControlValue(target);
+      if (currentRaw && resolved.candidates.some((c) => AutoLearnAdapter.equipmentValueMatches(currentRaw, c))) {
         alreadyFilledLabels.push(field.label);
         continue;
       }
+      let sawNotHeld = false;
+      let success = false;
       for (const candidate of resolved.candidates) {
         const step = await this.applyFill(target, { value: candidate, field: resolved.key }, false);
         if (!step) continue;
@@ -928,10 +976,9 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         // "Altenergy Power System"). A fill that didn't land tries the next candidate.
         if (target.fieldType === "select") {
           const raw = await this.currentControlValue(target);
-          const now = raw === null ? null : raw.trim().toLowerCase();
-          const cc = candidate.trim().toLowerCase();
           // null = unreadable (trust applyFill); a READ value must actually match.
-          if (now !== null && !(now && (now === cc || now.includes(cc) || cc.includes(now)))) {
+          if (raw !== null && !AutoLearnAdapter.equipmentValueMatches(raw, candidate)) {
+            sawNotHeld = true;
             this.debug?.event({ type: "equipment_fill_not_held", label: context.slice(0, 80), key: resolved.key, candidate: candidate.slice(0, 60) });
             continue;
           }
@@ -939,9 +986,13 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         steps.push(step);
         alreadyFilledLabels.push(field.label);
         filled++;
+        success = true;
         this.debug?.event({ type: "equipment_fill", label: context.slice(0, 80), key: resolved.key, candidate: candidate.slice(0, 60) });
         break;
       }
+      // Every candidate applied but none held: remember and stop retrying this
+      // field for the rest of the run (each retry burns option-wait caps).
+      if (!success && sawNotHeld) this.equipmentFillFailed.add(failKey);
     }
     return filled;
   }
@@ -1888,6 +1939,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         // whatever the computation then reveals (e.g. an export-capacity question).
         const MAX_RESCAN_PASSES = 7;
         let computedThisPage = false;
+        let lateEquipTried = false;
         for (let rescanPass = 0; rescanPass < MAX_RESCAN_PASSES; rescanPass++) {
           let revealedThisPass = 0;
           try {
@@ -1916,6 +1968,17 @@ export class AutoLearnAdapter extends BasePortalAdapter {
                 !inFilledGroup(f),
             );
             if (newFillable.length === 0) {
+              // A cascade can reveal a SECOND section reusing bare labels the first
+              // section already "filled" ("Manufacturer"/"Model") — those are invisible
+              // to the label-based newFillable filter, so give the equipment pass ONE
+              // look before giving up (once per page: it self-guards via value-held
+              // skip + fail memory, but pages whose values can't be read back must
+              // not loop here).
+              if (!lateEquipTried) {
+                lateEquipTried = true;
+                const lateEquip = await this.fillEquipmentSelects(postFields, alreadyFilledLabels, steps);
+                if (lateEquip > 0) { pageFillCount += lateEquip; continue; }
+              }
               // No more cascade reveals. Before giving up, click any Calculate/Update-Totals
               // button once and loop again so the values it computes (and any field it then
               // reveals) are captured. Universal — no portal coupling.

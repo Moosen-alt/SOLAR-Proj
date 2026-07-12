@@ -1111,9 +1111,12 @@ async function testEquipmentSpecsSectionContext() {
   // tracking) and 4 text fills (qty ×2, tilt, azimuth) — anything more means a
   // trap field (EV charger / meter model) was touched.
   // (The pre-existing sensitive-field pass no-op-selects "" on "Meter model" —
-  //  label contains "meter" — which is harmless on a real portal; ignore empties.)
-  const selectValues = log.selects.map((s) => s.value).filter(Boolean).sort();
-  const fillValues = log.fills.map((f) => f.value).filter(Boolean).sort();
+  //  label contains "meter" — which is harmless on a real portal; ignore empties.
+  //  The fake page's values can't be read back, so the once-per-page late
+  //  equipment pass legitimately re-applies dup-label fills — assert UNIQUE
+  //  values: everything expected landed, and the traps saw nothing.)
+  const selectValues = [...new Set(log.selects.map((s) => s.value).filter(Boolean))].sort();
+  const fillValues = [...new Set(log.fills.map((f) => f.value).filter(Boolean))].sort();
   assert.deepEqual(selectValues, ["AP Systems", "DS3-L", "Fixed", "ZXM7-UHLDD108-440/N", "Znshine"].sort(), `selects: ${JSON.stringify(selectValues)}`);
   assert.deepEqual(fillValues, ["12", "180", "22.5", "23"].sort(), `fills: ${JSON.stringify(fillValues)}`);
 
@@ -1144,6 +1147,14 @@ async function testEquipmentProximityFallback() {
             { label: "Model", fieldType: "select", id: "invModel" }, // inherits inverter side
             { label: "Module Manufacturer", fieldType: "select", id: "modMfr" },
             { label: "Model", fieldType: "select", id: "modModel" }, // inherits module side
+            // LEAK GUARDS (sectionless page): a racking block ends the inherited
+            // side, so its bare Model must NOT receive PV data; and a far-away
+            // bare Manufacturer (beyond the 3-field proximity bound) stays empty.
+            { label: "Racking Manufacturer", fieldType: "select", id: "rackMfr" },
+            { label: "Model", fieldType: "select", id: "rackModel" },
+            { label: "Notes", fieldType: "text", id: "n1" },
+            { label: "Contact", fieldType: "text", id: "n2" },
+            { label: "Manufacturer", fieldType: "select", id: "farMfr" },
           ],
         }],
       },
@@ -1153,8 +1164,9 @@ async function testEquipmentProximityFallback() {
   const result = await adapter.learn(fakeContext, fakeProject);
   assert.equal(result.ok, true);
   // DOM order: inverter make → bare Model (inherits inverter) → module make →
-  // bare Model (inherits module). Values prove the inheritance directions.
-  const values = log.selects.map((s) => s.value);
+  // bare Model (inherits module). The racking block and the far bare
+  // Manufacturer receive NOTHING (guard reset + proximity bound).
+  const values = log.selects.map((s) => s.value).filter(Boolean);
   assert.deepEqual(values, ["AP Systems", "DS3-L", "Znshine", "ZXM7-UHLDD108-440/N"], JSON.stringify(values));
 }
 

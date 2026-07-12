@@ -388,8 +388,15 @@ export async function autoLearnPortal(
         moduleQty: projectFields.moduleQty || projectFields.modQty || "",
         tilt: projectFields.tilt || projectFields.arrayTilt || projectFields.roofPitch || "",
         azimuth: projectFields.azimuth || projectFields.arrayAzimuth || "",
-        // Residential rooftop is fixed-mount unless the design says otherwise.
-        tracking: projectFields.tracking || "Fixed",
+        // Residential rooftop is fixed-mount — but ONLY default "Fixed" when
+        // nothing in the design suggests a tracker/ground-mount system; a wrong
+        // deterministic answer on an interconnection app is worse than leaving
+        // the field to the planner/human.
+        tracking:
+          projectFields.tracking ||
+          (/track/i.test(`${projectFields.mountType || ""} ${projectFields.arrayType || ""} ${projectFields.racking || ""} ${projectFields.mountingSystem || ""}`)
+            ? ""
+            : "Fixed"),
       },
       headless: input.headless,
       // AHJ portals (Accela / Oregon ePermitting) require one combined plan-set PDF per

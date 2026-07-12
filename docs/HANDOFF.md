@@ -21,6 +21,14 @@ for the hard rules; this file is the running state.
 
 ## Open issues / next work (priority order)
 
+0. **Known low-severity residuals from the specs-fix review** (accepted, documented):
+   (a) after the equipment pass fills a dup-labeled PV "Model", a same-labeled
+   non-PV field revealed LATER is hidden from the planner's rescan filter
+   (alreadyFilledLabels is bare-label keyed at ~line 1965) — fix by keying that
+   filter on section+label if it ever bites; (b) on a fully sectionless page, a
+   bare unlabeled Manufacturer/Model within 3 fields of PV fields (and not
+   matching the negative guard) can still inherit the PV side — the proximity
+   bound + guard-reset make this narrow.
 1. **Verify the specs-page fix live** on the PGE stage run (Javier project).
    The root cause found: bare labels ("Manufacturer"/"Model") carry no side —
    fixed via `field.section` context; ALSO duplicate labels were permanently
