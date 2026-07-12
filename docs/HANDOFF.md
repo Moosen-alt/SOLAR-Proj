@@ -48,6 +48,24 @@ for the hard rules; this file is the running state.
 5. **Learn-run triage agent + correction agent**: shipped but lightly used —
    confirm findings quality on the next few real bundles.
 
+## Cold-start readiness (deploying on a NEW utility/AHJ)
+
+Every "unknown" the learner can hit now has a look-it-up-or-figure-it-out path:
+
+| Encounter | What happens |
+|---|---|
+| No portal URL anywhere | Auto-researched (web-grounded, KB-hinted), saved as a seeded KB profile, run continues. `PORTAL_URL_RESEARCH=off` disables. Audit: `portal.url_researched`. |
+| No credential | Human-only by design (portals need real accounts) — error guides to Manage Logins. |
+| Unknown page questions | LLM planner (vision) + fuzzy KB context (imported notes) + design digest + self-taught topics (activate after 2 missed-required runs). |
+| Certified equipment names | Expanded `EQUIPMENT_MAKE_ALIASES` (CEC naming for ~30 mainstream makes) + distinctive-token fallback + verified fills. Unmatched make on a run → add its certified name to the table. |
+| Cascading/custom dropdowns | option-wait with contains matching, native→combobox fallback, post-fill verification, cascade-safe rescans. |
+| Required docs/forms | Full form-set research + download + auto-map (PDF filler); checklists included; everything stored per AHJ. |
+| Permit fees | Valuation estimate → learned per-AHJ real-fee history → operator true-up from the portal's fee screen. |
+| Adopted codes | Fuzzy jurisdiction profiles + model-code defaults phrased "verify locally". |
+| Link rot | Form-source + KB portal link sweeps with auto re-research. |
+| Failed runs | run-triage agent reads the debug bundle, applies safe fixes, files the rest for review. |
+| MFA/CAPTCHA/final submit/fees | Always paused for a human — hard rule, never regress. |
+
 ## What to verify after each `git pull` on the operator's machine
 
 1. `npm run smoke` green; server starts (migrations v9+ run; KB notes repair

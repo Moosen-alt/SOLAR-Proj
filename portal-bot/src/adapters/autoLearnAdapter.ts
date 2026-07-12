@@ -224,15 +224,55 @@ const SENSITIVE_LABEL = /\b(password|passcode|account\s*(number|no|#)?|acct|mete
 const EQUIPMENT_NEGATIVE_GUARD =
   /main (service )?panel|service panel|sub ?panel|panelboard|electrical panel|load center|breaker|disconnect|meter\b|battery|storage|charger|vehicle|\bev\b|generator|genset|hvac|heat ?pump|racking|rail\b|optimi[sz]er|monitor/;
 
+// Keyed by the compact-lowercase plan-set name; values are the CEC/certified
+// names portals actually list (PowerClerk and friends load their equipment
+// dropdowns from the CEC listing, whose legal names rarely match plan sets).
+// Covers the mainstream residential makes so a NEW utility's certified list
+// still resolves on first contact; the distinctive-token fallback catches the
+// long tail. When a run shows an unmatched make, add its certified name here.
 const EQUIPMENT_MAKE_ALIASES: Record<string, string[]> = {
+  // Microinverters / inverters
   apsystems: ["Altenergy Power System", "APsystems"],
   altenergypowersystem: ["AP Systems", "APsystems"],
+  enphase: ["Enphase Energy"],
+  solaredge: ["SolarEdge Technologies"],
+  hoymiles: ["Hoymiles Power Electronics"],
+  sma: ["SMA America", "SMA Solar Technology"],
+  fronius: ["Fronius USA", "Fronius International"],
+  goodwe: ["GoodWe Technologies"],
+  growatt: ["Growatt New Energy"],
+  solark: ["Sol-Ark", "Portable Solar (Sol-Ark)"],
+  generac: ["Generac Power Systems"],
+  tesla: ["Tesla Energy", "Tesla Motors", "Tesla Inc"],
+  tigo: ["Tigo Energy"],
+  nep: ["Northern Electric Power", "NEP"],
+  chilicon: ["Chilicon Power"],
+  // Modules
   znshine: ["Znshine PV-Tech"],
   znshinesolar: ["Znshine PV-Tech", "Znshine"],
   qcells: ["Hanwha Q CELLS", "Q CELLS"],
   hanwhaqcells: ["Q CELLS", "Qcells"],
   rec: ["REC Solar", "REC Group"],
-  tesla: ["Tesla Energy", "Tesla Motors"],
+  canadiansolar: ["Canadian Solar Inc"],
+  jinko: ["Jinko Solar", "JinkoSolar"],
+  jinkosolar: ["Jinko Solar"],
+  trina: ["Trina Solar"],
+  trinasolar: ["Trina Solar Energy"],
+  longi: ["LONGi Green Energy", "LONGi Solar"],
+  longisolar: ["LONGi Green Energy Technology"],
+  jasolar: ["JA Solar Technology"],
+  silfab: ["Silfab Solar"],
+  missionsolar: ["Mission Solar Energy"],
+  hyundai: ["Hyundai Energy Solutions"],
+  panasonic: ["Panasonic Corporation", "Panasonic Eco Solutions"],
+  aptos: ["Aptos Solar Technology"],
+  boviet: ["Boviet Solar Technology"],
+  seg: ["SEG Solar"],
+  segsolar: ["SEG Solar"],
+  maxeon: ["Maxeon Solar Technologies", "SunPower"],
+  sunpower: ["SunPower Corporation", "Maxeon Solar Technologies"],
+  phonosolar: ["Phono Solar Technology"],
+  vsun: ["VSUN Solar", "Vietnam Sunergy"],
 };
 
 const UPLOAD_LABEL_PATTERNS: Array<{ re: RegExp; docType: string }> = [

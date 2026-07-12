@@ -1535,6 +1535,7 @@ export interface ReferenceUtilityInput {
 
 /** Import one utility NEM profile from a reference spreadsheet (seeded, skip verified). */
 export function importSeededUtilityKnowledge(db: AppDb, input: ReferenceUtilityInput): "imported" | "skipped_verified" | "skipped_empty" {
+  if (isJunkEntityName(input.utility)) return "skipped_empty"; // spreadsheet section header / artifact row
   const utility = input.utility.trim();
   if (!utility) return "skipped_empty";
   const key = knowledgeProfileKey({ state: input.state, ahj: "", utility });
@@ -1565,6 +1566,7 @@ export interface ReferenceAhjInput {
 
 /** Import one AHJ process profile from a reference spreadsheet (seeded, skip verified). */
 export function importSeededAhjKnowledge(db: AppDb, input: ReferenceAhjInput): "imported" | "skipped_verified" | "skipped_empty" {
+  if (isJunkEntityName(input.ahj)) return "skipped_empty"; // spreadsheet section header / artifact row
   const ahj = input.ahj.trim();
   if (!ahj) return "skipped_empty";
   const key = knowledgeProfileKey({ state: input.state, ahj, utility: "" });
@@ -1683,6 +1685,26 @@ export function findLearnedProfileForProject(
 // that so an unknown AHJ/utility still gets its imported notes at learn time.
 // ---------------------------------------------------------------------------
 
+// Bare US state/territory names and pure-digit strings are section headers /
+// artifacts from reference spreadsheets, not real entities — never import them
+// as utilities/AHJs and never fuzzy-match against them ("Idaho Power" must not
+// resolve to a junk row named "Idaho").
+const US_STATE_NAMES = new Set([
+  "alabama","alaska","arizona","arkansas","california","colorado","connecticut","delaware","florida","georgia",
+  "hawaii","idaho","illinois","indiana","iowa","kansas","kentucky","louisiana","maine","maryland",
+  "massachusetts","michigan","minnesota","mississippi","missouri","montana","nebraska","nevada","new hampshire","new jersey",
+  "new mexico","new york","north carolina","north dakota","ohio","oklahoma","oregon","pennsylvania","rhode island","south carolina",
+  "south dakota","tennessee","texas","utah","vermont","virginia","washington","west virginia","wisconsin","wyoming",
+  "district of columbia","puerto rico",
+]);
+
+export function isJunkEntityName(name: unknown): boolean {
+  const n = normalize(name);
+  if (!n || n === "unknown") return true;
+  if (/^[\d ]+$/.test(n)) return true;
+  return US_STATE_NAMES.has(n);
+}
+
 const KB_MATCH_STOPWORDS = new Set([
   "city", "of", "county", "town", "township", "village", "borough", "parish",
   "company", "co", "inc", "corp", "corporation", "llc", "the", "and",
@@ -1754,6 +1776,7 @@ function findKnowledgeByName(
   let best: { profile: PermitUtilityKnowledgeProfile; score: number } | null = null;
   for (const row of rows) {
     const profile = mapKnowledge(row);
+    if (isJunkEntityName(kind === "utility" ? profile.utility : profile.ahj)) continue;
     const rowState = normalize(profile.state || "");
     // A row pinned to a different state never matches; empty-state rows match anywhere.
     if (stateNorm !== "unknown" && rowState !== "unknown" && rowState !== stateNorm) continue;

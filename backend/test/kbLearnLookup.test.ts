@@ -137,6 +137,17 @@ async function main(): Promise<void> {
     JSON.stringify(srp2?.notes.slice(-120)),
   );
 
+  // Junk spreadsheet rows (state-name section headers, numeric artifacts) are
+  // neither importable nor fuzzy-matchable — "Idaho Power" must never resolve
+  // to a row literally named "Idaho".
+  const { isJunkEntityName } = await import("../src/knowledgeBase");
+  check("junk names detected", isJunkEntityName("Idaho") && isJunkEntityName("563") && isJunkEntityName(""), "");
+  check("real names pass", !isJunkEntityName("Idaho Power Company") && !isJunkEntityName("City of Boise"));
+  check("junk utility import skipped", importSeededUtilityKnowledge(db, { state: "ID", utility: "Idaho", notes: "x" }) === "skipped_empty");
+  db.run("INSERT INTO permit_utility_knowledge (id, profile_key, state, ahj, utility, notes, first_seen_at, last_learned_at, updated_at) VALUES ('junk1','id||idaho','ID','','Idaho','junk', '2026-01-01','2026-01-01','2026-01-01')");
+  const junkMatch = findKnowledgeForLearn(db, { state: "ID", utility: "Idaho Power" });
+  check("fuzzy never matches a junk state-name row", junkMatch.utility === null, JSON.stringify(junkMatch.utility?.utility));
+
   fs.rmSync(dir, { recursive: true, force: true });
   if (failures) { console.error(`\n${failures} failure(s)`); process.exit(1); }
   console.log("\nkbLearnLookup: all checks passed");

@@ -5140,12 +5140,43 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
       statewidePortalUrl = genericRow?.portal_url || "https://aca-oregon.accela.com/oregon/";
     }
   }
-  const credentialUrl =
+  let credentialUrl =
     permitSafeUrl(learnedProfile && (learnedProfile as { portalUrl?: string }).portalUrl) ||
     permitSafeUrl(recipe && (recipe as { portalUrl?: string }).portalUrl) ||
     permitSafeUrl(draftRecipe && draftRecipe.portalUrl) ||
     (track === "nem" ? utilityPortalUrl : (permitSafeUrl(ahjPortalUrl) || statewidePortalUrl || findApplicationProfile(detail.project).sourceUrl)) ||
     "";
+  // COLD-START RESEARCH: a brand-new AHJ/utility with nothing in the KB, no
+  // recipe, and no statewide fallback used to dead-end with "record the portal
+  // once". With an API key, research the portal URL instead (web-grounded,
+  // KB-hinted), SAVE it as a seeded profile so the next project skips this,
+  // and continue the run. Track-scoped: NEM researches the utility, permit
+  // researches the AHJ (result still filtered through permitSafeUrl so a
+  // utility platform can never leak into a permit track). PORTAL_URL_RESEARCH=off
+  // disables; stub LLM (no key) returns nothing and the original guidance stands.
+  if (!credentialUrl && process.env.ANTHROPIC_API_KEY && process.env.PORTAL_URL_RESEARCH !== "off") {
+    try {
+      if (track === "nem" && detail.project.utility) {
+        const { research } = await researchAndSaveUtility(db, {
+          utility: detail.project.utility, state: detail.project.state || "", ahj: detail.project.ahj,
+        });
+        credentialUrl = String(research.portalUrl || "");
+      } else if (track !== "nem" && detail.project.ahj) {
+        const { research } = await researchAndSaveAhj(db, {
+          ahj: detail.project.ahj, state: detail.project.state || "", utility: detail.project.utility,
+        });
+        credentialUrl = permitSafeUrl(research.portalUrl);
+      }
+      if (credentialUrl) {
+        addAuditLog(db, projectId, "system", "submit gate", "portal.url_researched", {
+          track: track ?? "permit", url: credentialUrl, note: "Cold-start: portal URL researched and saved as a seeded KB profile — verify on first use.",
+        });
+        logger.info("prepare-submission", `cold-start research resolved a portal URL for ${detail.project.ahj || detail.project.utility}: ${credentialUrl}`);
+      }
+    } catch (err) {
+      logger.warn("prepare-submission", `cold-start portal research failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
   const credential = clientId
     ? (getDecryptedCredential(db, clientId, portalType)
         ?? (credentialUrl ? getDecryptedCredentialByUrl(db, clientId, credentialUrl) : null)
@@ -5327,7 +5358,9 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
     const trackHostConflict = track !== "nem" && isUtilityPlatformUrl(credentialUrl);
     if (!credentialUrl) {
       // No entry URL to launch the learner — stop and surface rather than guess a portal.
-      const msg = `No portal URL is known for ${portalLabel}, so the universal learner can't seed a recipe yet. Record the portal once (or add its URL to the knowledge base) and re-stage.`;
+      const msg = process.env.ANTHROPIC_API_KEY
+        ? `No portal URL is known for ${portalLabel}, and automatic research couldn't confirm one either. Record the portal once (or add its URL to the knowledge base) and re-stage.`
+        : `No portal URL is known for ${portalLabel}, so the universal learner can't seed a recipe yet. Record the portal once (or add its URL to the knowledge base) and re-stage — with an ANTHROPIC_API_KEY configured this would have been researched automatically.`;
       result = { ok: false, finalSubmitClicked: false, pauseReason: null, message: msg, steps: [{ ok: false, message: msg }] };
     } else if (trackHostConflict) {
       const msg = `The only portal URL known for ${portalLabel} is a utility interconnection portal (${credentialUrl}) — that's the NEM portal, not the ${detail.project.ahj || "AHJ"} permit portal. Staging stopped so the permit isn't filed in the wrong system. Record the AHJ's permit portal once (or add its URL to the knowledge base) and re-stage.`;
