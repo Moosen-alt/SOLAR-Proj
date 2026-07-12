@@ -388,6 +388,10 @@ export async function autoLearnPortal(
         moduleQty: projectFields.moduleQty || projectFields.modQty || "",
         tilt: projectFields.tilt || projectFields.arrayTilt || projectFields.roofPitch || "",
         azimuth: projectFields.azimuth || projectFields.arrayAzimuth || "",
+        // Battery/ESS repeaters on NEM apps (storage sections ask make/model/qty).
+        batteryMake: projectFields.batteryMake || projectFields.battMake || "",
+        batteryModel: projectFields.batteryModel || projectFields.battModel || "",
+        batteryQty: projectFields.batteryQty || projectFields.battQty || "",
         // Residential rooftop is fixed-mount — but ONLY default "Fixed" when
         // nothing in the design suggests a tracker/ground-mount system; a wrong
         // deterministic answer on an interconnection app is worse than leaving

@@ -1069,6 +1069,9 @@ async function testEquipmentSpecsSectionContext() {
       tilt: "22.5",
       azimuth: "180",
       tracking: "Fixed",
+      batteryMake: "Tesla",
+      batteryModel: "Powerwall 3",
+      batteryQty: "2",
     },
   });
   withFakePage(
@@ -1091,6 +1094,10 @@ async function testEquipmentSpecsSectionContext() {
               { label: "Manufacturer", fieldType: "select", id: "invMfr", section: "Inverter Information" },
               { label: "Model", fieldType: "select", id: "invModel", section: "Inverter Information" },
               { label: "Quantity", fieldType: "text", id: "invQty", section: "Inverter Information" },
+              // BATTERY/ESS section: filled from battery data, never PV data.
+              { label: "Manufacturer", fieldType: "select", id: "battMfr", section: "Energy Storage Information" },
+              { label: "Model", fieldType: "select", id: "battModel", section: "Energy Storage Information" },
+              { label: "Quantity", fieldType: "text", id: "battQty", section: "Energy Storage Information" },
               // TRAPS: same bare labels under non-PV sections — must stay untouched.
               { label: "Model", fieldType: "select", id: "evModel", section: "EV Charger Information" },
               { label: "Meter model", fieldType: "select", id: "meterModel", section: "Service Information" },
@@ -1117,8 +1124,8 @@ async function testEquipmentSpecsSectionContext() {
   //  values: everything expected landed, and the traps saw nothing.)
   const selectValues = [...new Set(log.selects.map((s) => s.value).filter(Boolean))].sort();
   const fillValues = [...new Set(log.fills.map((f) => f.value).filter(Boolean))].sort();
-  assert.deepEqual(selectValues, ["AP Systems", "DS3-L", "Fixed", "ZXM7-UHLDD108-440/N", "Znshine"].sort(), `selects: ${JSON.stringify(selectValues)}`);
-  assert.deepEqual(fillValues, ["12", "180", "22.5", "23"].sort(), `fills: ${JSON.stringify(fillValues)}`);
+  assert.deepEqual(selectValues, ["AP Systems", "DS3-L", "Fixed", "Powerwall 3", "Tesla", "ZXM7-UHLDD108-440/N", "Znshine"].sort(), `selects: ${JSON.stringify(selectValues)}`);
+  assert.deepEqual(fillValues, ["12", "180", "2", "22.5", "23"].sort(), `fills: ${JSON.stringify(fillValues)}`);
 
   // Steps recorded with data bindings (replayable, no literals for bound fields).
   const eqSteps = result.steps.filter((s) => ["inverterMake", "inverterModel", "moduleMake", "moduleModel", "moduleQty", "inverterQty", "tilt", "azimuth", "tracking"].includes(s.field || ""));

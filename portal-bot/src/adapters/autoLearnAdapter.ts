@@ -850,6 +850,25 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     // keyword hits likelier, so these are out unless PV is EXPLICITLY named —
     // and "explicitly" means module/PV wording, not "inverter": a "Battery
     // Inverter Model" is storage gear, not the PV inverter.
+    // BATTERY/ESS is its own side: storage sections ask Manufacturer/Model/
+    // Quantity too, answered from battery project data (never PV data, and a
+    // battery side never seeds proximity inheritance for later bare fields).
+    const batterySide = /battery|energy storage|\bess\b|storage system|powerwall/.test(l);
+    if (batterySide && (isMake || isModel || isQty)) {
+      const key = isQty ? "batteryQty" : isModel ? "batteryModel" : "batteryMake";
+      const value = (this.equipment[key] || "").trim();
+      if (!value) return null;
+      const candidates = [value];
+      if (isModel) {
+        const tokens = value.split(/[\s,()[\]{}]+/).filter((t) => /\d/.test(t) && t.length >= 3);
+        const core = tokens.sort((a, b) => b.length - a.length)[0];
+        if (core && core.toLowerCase() !== value.toLowerCase()) candidates.push(core);
+      } else if (isMake) {
+        const aliases = EQUIPMENT_MAKE_ALIASES[value.toLowerCase().replace(/[^a-z0-9]/g, "")] ?? [];
+        candidates.push(...aliases);
+      }
+      return { key, candidates: [...new Set(candidates)], side: null };
+    }
     const explicitlyPv = /module|pv ?array|solar|photovoltaic/.test(l);
     if (EQUIPMENT_NEGATIVE_GUARD.test(l) && !explicitlyPv) return null;
 
