@@ -858,9 +858,23 @@ function renderKnowledgeProfile(profile) {
       ${profile.portalName ? `<p style="margin:2px 0;font-size:12px"><strong>Portal:</strong> ${esc(profile.portalName)}${profile.portalUrl ? ` — <a href="${esc(profile.portalUrl)}" target="_blank" rel="noopener">${esc(profile.portalUrl)}</a>` : ""}</p>` : ""}
       ${docs.length ? `<p style="margin:4px 0;font-size:12px"><strong>Required docs (${docs.length}):</strong> ${esc(docs.join(" · "))}</p>` : `<p style="margin:4px 0;font-size:12px;color:var(--muted)">No required documents learned yet.</p>`}
       ${corrections.length ? `<div style="margin-top:4px;font-size:12px"><strong>Common corrections:</strong> <ul style="margin:2px 0 0 16px;padding:0">${corrections.map((c) => `<li>${esc(c.rootCause)}${c.count > 1 ? ` (×${c.count})` : ""}</li>`).join("")}</ul></div>` : ""}
-      ${profile.notes ? `<p style="margin:4px 0;font-size:12px;color:var(--muted)">${esc(profile.notes)}</p>` : ""}
+      ${profile.notes ? kbNotesHtml(profile.notes) : ""}
     </article>
   `;
+}
+
+// Notes are " | "-joined segments. Dedupe (older DBs may still carry repeats)
+// and render one bullet per segment instead of a wall of text.
+function kbNotesHtml(notes) {
+  const seen = new Set();
+  const segs = String(notes).split(" | ").map((s) => s.trim()).filter((s) => {
+    if (!s || seen.has(s.toLowerCase())) return false;
+    seen.add(s.toLowerCase());
+    return true;
+  });
+  if (!segs.length) return "";
+  if (segs.length === 1) return `<p style="margin:4px 0;font-size:12px;color:var(--muted)">${esc(segs[0])}</p>`;
+  return `<div style="margin-top:4px;font-size:12px;color:var(--muted)"><strong>Notes:</strong><ul style="margin:2px 0 0 16px;padding:0">${segs.map((s) => `<li>${esc(s)}</li>`).join("")}</ul></div>`;
 }
 
 const KB_PAGE_SIZE = 20;

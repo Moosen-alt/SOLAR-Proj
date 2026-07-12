@@ -98,6 +98,45 @@ async function main(): Promise<void> {
   const none = buildLearnKbContext(db, { id: "p2", state: "TX", ahj: "Nowhereville", utility: "Mystery Electric Co" } as never, { scopeType: "utility" });
   check("unknown names yield empty or state-only context", !/Mystery|Nowhereville/.test(none));
 
+  // Runaway-notes bug: re-importing the same notes must not re-append them.
+  for (let i = 0; i < 3; i++) {
+    importSeededUtilityKnowledge(db, {
+      state: "OR", utility: "Portland General Electric",
+      notes: "Submit interconnection via PowerClerk. Visible-blade AC disconnect required within 10 ft of the meter. Production meter installed by PGE.",
+    });
+  }
+  const pgeRow = db.get<{ notes: string }>(
+    "SELECT notes FROM permit_utility_knowledge WHERE utility = 'Portland General Electric'",
+  );
+  const occurrences = (pgeRow?.notes.match(/Submit interconnection via PowerClerk/g) || []).length;
+  check("repeated import keeps one note segment", occurrences === 1, `found ${occurrences} copies`);
+
+  // Repair sweep: a row poisoned by the old merge collapses to unique segments.
+  const { dedupeKnowledgeNotes } = await import("../src/db");
+  const dupNote = Array(6).fill("Official seed for customer generation/NEM path.").join(" | ") + " | A distinct second note.";
+  db.run("UPDATE permit_utility_knowledge SET notes = ? WHERE utility = 'Portland General Electric'", [dupNote]);
+  const repaired = dedupeKnowledgeNotes(db);
+  const cleaned = db.get<{ notes: string }>(
+    "SELECT notes FROM permit_utility_knowledge WHERE utility = 'Portland General Electric'",
+  );
+  check("dedupeKnowledgeNotes repairs poisoned rows", repaired >= 1 && cleaned?.notes === "Official seed for customer generation/NEM path. | A distinct second note.", JSON.stringify(cleaned?.notes));
+
+  // A HEALTHY many-segment row (the utility reference importer writes up to 16
+  // labeled " | "-joined fields) must survive the repair byte-identical and must
+  // still accept NEW notes afterwards (a tight segment cap silently dropped both).
+  const sixteenFields = Array.from({ length: 16 }, (_, i) => `Field ${i + 1}: value ${i + 1}`).join(" | ");
+  importSeededUtilityKnowledge(db, { state: "AZ", utility: "Salt River Project", notes: sixteenFields });
+  dedupeKnowledgeNotes(db);
+  const srp1 = db.get<{ notes: string }>("SELECT notes FROM permit_utility_knowledge WHERE utility = 'Salt River Project'");
+  check("repair leaves healthy 16-segment row byte-identical", srp1?.notes === sixteenFields, JSON.stringify(srp1?.notes));
+  importSeededUtilityKnowledge(db, { state: "AZ", utility: "Salt River Project", notes: "Human-verified: witness test required." });
+  const srp2 = db.get<{ notes: string }>("SELECT notes FROM permit_utility_knowledge WHERE utility = 'Salt River Project'");
+  check(
+    "new note appends after 16 existing segments (no silent drop)",
+    !!srp2 && srp2.notes.includes("Field 16: value 16") && srp2.notes.includes("Human-verified: witness test required."),
+    JSON.stringify(srp2?.notes.slice(-120)),
+  );
+
   fs.rmSync(dir, { recursive: true, force: true });
   if (failures) { console.error(`\n${failures} failure(s)`); process.exit(1); }
   console.log("\nkbLearnLookup: all checks passed");

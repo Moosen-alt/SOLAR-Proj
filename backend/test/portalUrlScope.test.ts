@@ -36,8 +36,9 @@ db.run(
 );
 
 // Force migration v8 to re-run against the poisoned data (fresh DBs apply it before any
-// rows exist, so replay it the way an existing production DB would receive it).
-db.run("DELETE FROM schema_meta WHERE version = 8");
+// rows exist, so replay it the way an existing production DB would receive it). The runner
+// resumes from MAX(version), so later migrations must be cleared too or v8 stays skipped.
+db.run("DELETE FROM schema_meta WHERE version >= 8");
 const db2 = await openDatabase();
 
 const ahjRow = db2.get<{ portal_url: string }>("SELECT portal_url FROM permit_utility_knowledge WHERE id = 't-ahj'");

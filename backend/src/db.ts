@@ -1109,7 +1109,43 @@ const VERSIONED_MIGRATIONS: VersionedMigration[] = [
       );
     },
   },
+  {
+    version: 9,
+    name: "dedupe_knowledge_notes",
+    up: (db) => { dedupeKnowledgeNotes(db); },
+  },
 ];
+
+// One-time repair for the runaway-notes bug: upsertKnowledge used to merge the
+// whole existing notes blob as a single item, so the same seed sentence was
+// re-appended on every startup/learn event. Collapse each row's notes back to
+// its unique " | " segments. DEDUPE ONLY — no segment cap: healthy rows
+// legitimately carry many segments (the utility reference importer writes up
+// to 16 labeled fields joined with " | "), and the runaway rows are exact
+// repeats, so dedupe alone fully repairs them while leaving healthy rows
+// byte-identical. Exported for tests; idempotent.
+export function dedupeKnowledgeNotes(db: AppDb): number {
+  let repaired = 0;
+  const rows = db.query<{ id: string; notes: string }>(
+    "SELECT id, notes FROM permit_utility_knowledge WHERE notes LIKE '% | %'",
+  );
+  for (const row of rows) {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const seg of String(row.notes).split(" | ").map((s) => s.trim()).filter(Boolean)) {
+      const key = seg.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(seg);
+    }
+    const deduped = out.join(" | ");
+    if (deduped !== row.notes) {
+      db.run("UPDATE permit_utility_knowledge SET notes = ? WHERE id = ?", [deduped, row.id]);
+      repaired++;
+    }
+  }
+  return repaired;
+}
 
 function runVersionedMigrations(db: AppDb): void {
   db.exec(`

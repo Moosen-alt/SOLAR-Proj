@@ -76,6 +76,13 @@ export function knowledgeProfileKey(input: { state?: string; ahj?: string; utili
   return profileKey(input);
 }
 
+// Notes are stored as " | "-joined segments. Split before merging so dedupe
+// compares SEGMENTS — merging the whole blob as one item re-appends the same
+// seed sentence on every startup/learn event (the runaway-notes bug).
+function noteSegments(value: unknown): string[] {
+  return clean(value).split(" | ").map((s) => s.trim()).filter(Boolean);
+}
+
 function mergeUnique(existing: string[], incoming: string[], limit = 80): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
@@ -332,7 +339,11 @@ function upsertKnowledge(db: AppDb, facts: KnowledgeFacts, event?: KnowledgeEven
         correctionCount,
         confidenceFrom(current.confidence, facts.confidence),
         asJson(sources),
-        mergeUnique([current.notes], facts.notes ? [facts.notes] : [], 8).join(" | "),
+        // Cap counts SEGMENTS (reference imports alone carry up to 16 labeled
+        // fields), so it must be generous — a tight cap here silently drops the
+        // newest note (e.g. a human-verified profile) once existing segments
+        // fill it. 40 bounds growth without ever truncating legitimate content.
+        mergeUnique(noteSegments(current.notes), noteSegments(facts.notes), 40).join(" | "),
         event ? ts : current.lastLearnedAt,
         ts,
         key,
