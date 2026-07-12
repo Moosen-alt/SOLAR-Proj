@@ -778,15 +778,43 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   // these deterministically: match fields by their test-hint labels, then try
   // the value, its known aliases, and its most distinctive token in order.
   // ---------------------------------------------------------------------------
-  private equipmentValueFor(label: string): { key: string; candidates: string[] } | null {
-    const l = (label || "").toLowerCase();
+  // CONTEXT, not just label: PowerClerk's PV System Specification page labels its
+  // controls bare — "Manufacturer", "Model", "Quantity" — and puts the side in the
+  // SECTION header ("PV Module Information" / "Inverter Information"). Match against
+  // section+label together, with a proximity fallback (a bare "Model" right after
+  // the inverter "Manufacturer" belongs to the inverter) supplied by the caller.
+  private equipmentValueFor(
+    context: string,
+    fallbackSide?: "inverter" | "module",
+  ): { key: string; candidates: string[]; side: "inverter" | "module" | null } | null {
+    const l = (context || "").toLowerCase();
     const isModel = /\bmodel\b/.test(l);
     const isMake = /manufacturer|\bmake\b|\bbrand\b/.test(l);
-    if (!isModel && !isMake) return null;
+    const isQty = /\bquantity\b|\bqty\b|number of (modules|panels|inverters|micro)/.test(l);
+    const isTilt = /\btilt\b|\bpitch\b/.test(l);
+    const isAzimuth = /\bazimuth\b/.test(l);
+    const isTracking = /\btracking\b/.test(l);
+    if (!isModel && !isMake && !isQty && !isTilt && !isAzimuth && !isTracking) return null;
+    // NEGATIVE GUARD: "Main Panel Model", "Meter model", battery gear — the wider
+    // section+label context makes accidental keyword hits likelier, so anything
+    // service-equipment-flavored is out unless the PV side is explicitly named.
+    const explicitlyPv = /inverter|micro|module|pv ?array|solar panel|photovoltaic/.test(l);
+    if (/main (service )?panel|service panel|load center|breaker|meter\b|battery|storage|charger|vehicle|\bev\b/.test(l) && !explicitlyPv) return null;
+
+    // Array-geometry fields are side-agnostic — fill straight from project data.
+    if (isTilt || isAzimuth || isTracking) {
+      const key = isTilt ? "tilt" : isAzimuth ? "azimuth" : "tracking";
+      const value = (this.equipment[key] || "").trim();
+      return value ? { key, candidates: [value], side: null } : null;
+    }
+
     const inverterSide = /inverter|micro/.test(l);
-    const moduleSide = /module|pv ?array|panel/.test(l);
-    if (!inverterSide && !moduleSide) return null;
-    const key = inverterSide ? (isModel ? "inverterModel" : "inverterMake") : (isModel ? "moduleModel" : "moduleMake");
+    const moduleSide = /module|pv ?array|solar panel|\bpanel\b/.test(l);
+    const side: "inverter" | "module" | null = inverterSide ? "inverter" : moduleSide ? "module" : fallbackSide ?? null;
+    if (!side) return null;
+    const key = side === "inverter"
+      ? (isQty ? "inverterQty" : isModel ? "inverterModel" : "inverterMake")
+      : (isQty ? "moduleQty" : isModel ? "moduleModel" : "moduleMake");
     const value = (this.equipment[key] || "").trim();
     if (!value) return null;
     const candidates = [value];
@@ -796,38 +824,123 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       // First word as a last resort ("Znshine" finds "Znshine PV-Tech").
       const first = value.split(/\s+/)[0];
       if (first.length >= 5 && first.toLowerCase() !== value.toLowerCase()) candidates.push(first);
-    } else {
+    } else if (isModel) {
       // Most distinctive model token: the longest run containing a digit
       // ("DS3-L" from "AP SYSTEMS DS3-L [240V]"; "ZXM7-UHLDD108-440/N" whole).
       const tokens = value.split(/[\s,()[\]{}]+/).filter((t) => /\d/.test(t) && t.length >= 3);
       const core = tokens.sort((a, b) => b.length - a.length)[0];
       if (core && core.toLowerCase() !== value.toLowerCase()) candidates.push(core);
     }
-    return { key, candidates: [...new Set(candidates)] };
+    return { key, candidates: [...new Set(candidates)], side };
   }
 
-  /** Fill unresolved equipment manufacturer/model selects from project data.
-   *  Returns how many were filled; appends recipe steps + labels like other passes. */
+  /** The control's CURRENT value: selected option text (or value) for selects,
+   *  the input value otherwise. Best-effort — "" when unreadable. */
+  private async currentControlValue(field: ExtractedField): Promise<string | null> {
+    try {
+      const loc = await this.locator(field.selector);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      if (!loc || typeof (loc as any).evaluate !== "function") return null; // can't read (e.g. unit-test fake page)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return await (loc as any).evaluate((el: Element) => {
+        if ((el.tagName || "").toLowerCase() === "select") {
+          const s = el as HTMLSelectElement;
+          const opt = s.selectedIndex >= 0 ? s.options[s.selectedIndex] : null;
+          const text = (opt?.textContent || "").trim();
+          if (/^(please\s+)?select\.{0,3}$/i.test(text)) return "";
+          return text || s.value || "";
+        }
+        return (el as HTMLInputElement).value || "";
+      }).catch(() => null);
+    } catch {
+      return null;
+    }
+  }
+
+  /** Fill unresolved equipment manufacturer/model/quantity + array-geometry fields
+   *  from project data. Returns how many were filled; appends recipe steps + labels
+   *  like other passes. Fills in DOM order so a manufacturer select's AJAX postback
+   *  lands before its dependent model select is attempted (applyFill then waits for
+   *  the model option to exist via waitForOptionReady). */
   private async fillEquipmentSelects(
     fields: ExtractedField[],
     alreadyFilledLabels: string[],
     steps: RecipeStep[],
   ): Promise<number> {
     let filled = 0;
+    // Proximity side-tracking for portals with NO usable section headers: once a
+    // side is established (e.g. "Inverter Manufacturer"), following bare fields
+    // ("Model", "Quantity") inherit it until the side changes.
+    let lastSide: "inverter" | "module" | undefined;
+    let lastSection = "";
+    // Bare labels REPEAT on spec pages ("Manufacturer"/"Model" under both the
+    // module and inverter sections). alreadyFilledLabels dedupes by label alone,
+    // which used to permanently skip the second section's fields after the first
+    // filled — so only apply the label skip to labels that are UNIQUE on this page.
+    const labelCounts = new Map<string, number>();
+    for (const f of fields) {
+      if (f.label) labelCounts.set(f.label, (labelCounts.get(f.label) || 0) + 1);
+    }
     for (const field of fields) {
       if (field.fieldType === "button" || field.fieldType === "file" || field.fieldType === "checkbox" || field.fieldType === "radio") continue;
-      if (!field.label || alreadyFilledLabels.includes(field.label)) continue;
-      const resolved = this.equipmentValueFor(field.label);
+      if (!field.label) continue;
+      const dupLabel = (labelCounts.get(field.label) || 0) > 1;
+      if (!dupLabel && alreadyFilledLabels.includes(field.label)) continue;
+      // Proximity only carries WITHIN one section: crossing into a new section
+      // (e.g. from "Inverter Information" to "EV Charger") drops the inherited
+      // side so a bare "Model" there is never filled with inverter data.
+      if ((field.section || "") !== lastSection) {
+        lastSide = undefined;
+        lastSection = field.section || "";
+      }
+      const context = `${field.section || ""} ${field.label}`.trim();
+      const resolved = this.equipmentValueFor(context, lastSide);
       if (!resolved) continue;
-      for (const candidate of resolved.candidates) {
-        const step = await this.applyFill(field, { value: candidate, field: resolved.key }, false);
-        if (step) {
-          steps.push(step);
-          alreadyFilledLabels.push(field.label);
-          filled++;
-          this.debug?.event({ type: "equipment_fill", label: field.label.slice(0, 60), key: resolved.key, candidate: candidate.slice(0, 60) });
-          break;
+      if (resolved.side) lastSide = resolved.side;
+      // DUPLICATE LABELS make a label selector ambiguous — getByLabel("Quantity")
+      // resolves to the FIRST match, so the inverter quantity would overwrite the
+      // module quantity. Prefer the element's unique #id fallback for both the
+      // fill and the recorded step (unambiguous on replay too).
+      let target = field;
+      if (dupLabel && field.selector.label) {
+        const cssFb = field.selector.fallbacks?.find((fb) => fb.css);
+        if (cssFb?.css) {
+          target = { ...field, selector: { css: cssFb.css, ...(field.selector.frame ? { frame: field.selector.frame } : {}) } };
         }
+      }
+      // Already holding one of our values (e.g. a rescan pass)? Leave it alone —
+      // re-selecting a manufacturer re-fires the portal's cascade and WIPES the
+      // dependent model select that was just filled.
+      const current = ((await this.currentControlValue(target)) || "").trim().toLowerCase();
+      if (current && resolved.candidates.some((c) => {
+        const cc = c.trim().toLowerCase();
+        return current === cc || current.includes(cc) || cc.includes(current);
+      })) {
+        alreadyFilledLabels.push(field.label);
+        continue;
+      }
+      for (const candidate of resolved.candidates) {
+        const step = await this.applyFill(target, { value: candidate, field: resolved.key }, false);
+        if (!step) continue;
+        // VERIFY the select actually took the value: the custom-combobox fallback
+        // can report success without changing a native select (seen with alias
+        // candidate ordering — "AP Systems" no-ops, then the loop never reached
+        // "Altenergy Power System"). A fill that didn't land tries the next candidate.
+        if (target.fieldType === "select") {
+          const raw = await this.currentControlValue(target);
+          const now = raw === null ? null : raw.trim().toLowerCase();
+          const cc = candidate.trim().toLowerCase();
+          // null = unreadable (trust applyFill); a READ value must actually match.
+          if (now !== null && !(now && (now === cc || now.includes(cc) || cc.includes(now)))) {
+            this.debug?.event({ type: "equipment_fill_not_held", label: context.slice(0, 80), key: resolved.key, candidate: candidate.slice(0, 60) });
+            continue;
+          }
+        }
+        steps.push(step);
+        alreadyFilledLabels.push(field.label);
+        filled++;
+        this.debug?.event({ type: "equipment_fill", label: context.slice(0, 80), key: resolved.key, candidate: candidate.slice(0, 60) });
+        break;
       }
     }
     return filled;
@@ -2212,9 +2325,16 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           if ((el.tagName || "").toLowerCase() !== "select") return true; // custom combobox — don't block
           if ((el as HTMLSelectElement).disabled) return false;
           const norm = (s: string) => (s || "").trim().toLowerCase();
-          return Array.from((el as HTMLSelectElement).options).some(
-            (o) => norm(o.textContent || "") === norm(want) || norm(o.value) === norm(want),
-          );
+          const w = norm(want);
+          // Same CONTAINS semantics as selectWithFallback's native partial match —
+          // an equality-only wait burns the full cap on certified-name options
+          // ("Altenergy Power System Inc. (APsystems)" vs "Altenergy Power System")
+          // even though the select will succeed immediately.
+          return Array.from((el as HTMLSelectElement).options).some((o) => {
+            const t = norm(o.textContent || "");
+            if (!t || /^(please\s+)?select\.{0,3}$/i.test(t)) return norm(o.value) === w && w !== "";
+            return t === w || norm(o.value) === w || t.includes(w) || w.includes(t);
+          });
         }, value)
         .catch(() => true);
       if (ready) return;

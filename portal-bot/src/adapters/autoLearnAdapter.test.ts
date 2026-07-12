@@ -44,6 +44,7 @@ interface RawFieldRow {
   placeholder?: string;
   id?: string;
   text?: string;
+  section?: string;
 }
 
 interface FakePageSpec {
@@ -1042,7 +1043,124 @@ async function testUploadSizeCap() {
   }
 }
 
+// POWERCLERK SPECS PAGE: the PV System Specification repeater labels its controls
+// BARE ("Manufacturer", "Model", "Quantity") — the side lives in the SECTION header.
+// The planner reliably produces nothing here, so the deterministic equipment pass
+// must fill from section+label context, inherit side by proximity within a section,
+// fill tilt/azimuth/tracking, and NEVER touch look-alike fields in other sections
+// (EV charger "Model", "Meter model", main-panel gear).
+async function testEquipmentSpecsSectionContext() {
+  const log: ActionLog = { clicks: [], fills: [], selects: [], checks: [] };
+  // Planner thrash simulation: no fills, page is the review-less specs page; second
+  // call reports review so the run completes.
+  let calls = 0;
+  const planner: LearnPlanner = async (): Promise<LearnPlanResponse> => {
+    calls++;
+    return { fills: [], atReview: calls > 1 };
+  };
+  const adapter = new AutoLearnAdapter("PGE PowerClerk", planner, {
+    equipment: {
+      inverterMake: "AP Systems",
+      inverterModel: "DS3-L",
+      moduleMake: "Znshine",
+      moduleModel: "ZXM7-UHLDD108-440/N",
+      inverterQty: "12",
+      moduleQty: "23",
+      tilt: "22.5",
+      azimuth: "180",
+      tracking: "Fixed",
+    },
+  });
+  withFakePage(
+    adapter,
+    makeFakePage(
+      {
+        pages: [
+          {
+            url: "https://pgenm.powerclerk.com/specs",
+            title: "PV System Specification",
+            body: "PV System Specification",
+            rawFields: [
+              // Bare labels; side comes ONLY from section.
+              { label: "Manufacturer", fieldType: "select", id: "modMfr", section: "PV Module Information" },
+              { label: "Model", fieldType: "select", id: "modModel", section: "PV Module Information" },
+              { label: "Quantity", fieldType: "text", id: "modQty", section: "PV Module Information" },
+              { label: "Tilt", fieldType: "text", id: "tilt", section: "PV Module Information" },
+              { label: "Azimuth", fieldType: "text", id: "azimuth", section: "PV Module Information" },
+              { label: "Tracking", fieldType: "select", id: "tracking", section: "PV Module Information" },
+              { label: "Manufacturer", fieldType: "select", id: "invMfr", section: "Inverter Information" },
+              { label: "Model", fieldType: "select", id: "invModel", section: "Inverter Information" },
+              { label: "Quantity", fieldType: "text", id: "invQty", section: "Inverter Information" },
+              // TRAPS: same bare labels under non-PV sections — must stay untouched.
+              { label: "Model", fieldType: "select", id: "evModel", section: "EV Charger Information" },
+              { label: "Meter model", fieldType: "select", id: "meterModel", section: "Service Information" },
+            ],
+          },
+          { url: "https://pgenm.powerclerk.com/review", title: "Review", body: "Review your application", rawFields: [] },
+        ],
+      },
+      log,
+    ),
+  );
+
+  const result = await adapter.learn(fakeContext, fakeProject);
+  assert.equal(result.ok, true, `run should complete (${result.message || ""})`);
+
+  // The page's bare labels collide ("Manufacturer" ×2, "Model" ×3), so assert by
+  // the VALUES that landed. Exactly 5 selects (mod mfr/model, inv mfr/model,
+  // tracking) and 4 text fills (qty ×2, tilt, azimuth) — anything more means a
+  // trap field (EV charger / meter model) was touched.
+  // (The pre-existing sensitive-field pass no-op-selects "" on "Meter model" —
+  //  label contains "meter" — which is harmless on a real portal; ignore empties.)
+  const selectValues = log.selects.map((s) => s.value).filter(Boolean).sort();
+  const fillValues = log.fills.map((f) => f.value).filter(Boolean).sort();
+  assert.deepEqual(selectValues, ["AP Systems", "DS3-L", "Fixed", "ZXM7-UHLDD108-440/N", "Znshine"].sort(), `selects: ${JSON.stringify(selectValues)}`);
+  assert.deepEqual(fillValues, ["12", "180", "22.5", "23"].sort(), `fills: ${JSON.stringify(fillValues)}`);
+
+  // Steps recorded with data bindings (replayable, no literals for bound fields).
+  const eqSteps = result.steps.filter((s) => ["inverterMake", "inverterModel", "moduleMake", "moduleModel", "moduleQty", "inverterQty", "tilt", "azimuth", "tracking"].includes(s.field || ""));
+  assert.ok(eqSteps.length >= 9, `all equipment steps recorded (got ${eqSteps.length})`);
+}
+
+// Proximity fallback: NO sections at all (sectionless portal) — a bare "Model"
+// directly after "Inverter Manufacturer" inherits the inverter side; a bare
+// "Model" after a section-less unrelated block does not get PV data.
+async function testEquipmentProximityFallback() {
+  const log: ActionLog = { clicks: [], fills: [], selects: [], checks: [] };
+  const planner: LearnPlanner = async (): Promise<LearnPlanResponse> => ({ fills: [], atReview: true });
+  const adapter = new AutoLearnAdapter("Generic Portal", planner, {
+    equipment: { inverterMake: "AP Systems", inverterModel: "DS3-L", moduleMake: "Znshine", moduleModel: "ZXM7-UHLDD108-440/N" },
+  });
+  withFakePage(
+    adapter,
+    makeFakePage(
+      {
+        pages: [{
+          url: "https://portal.example/specs",
+          title: "Equipment",
+          body: "Equipment",
+          rawFields: [
+            { label: "Inverter Manufacturer", fieldType: "select", id: "invMfr" },
+            { label: "Model", fieldType: "select", id: "invModel" }, // inherits inverter side
+            { label: "Module Manufacturer", fieldType: "select", id: "modMfr" },
+            { label: "Model", fieldType: "select", id: "modModel" }, // inherits module side
+          ],
+        }],
+      },
+      log,
+    ),
+  );
+  const result = await adapter.learn(fakeContext, fakeProject);
+  assert.equal(result.ok, true);
+  // DOM order: inverter make → bare Model (inherits inverter) → module make →
+  // bare Model (inherits module). Values prove the inheritance directions.
+  const values = log.selects.map((s) => s.value);
+  assert.deepEqual(values, ["AP Systems", "DS3-L", "Znshine", "ZXM7-UHLDD108-440/N"], JSON.stringify(values));
+}
+
 const tests: Array<[string, () => Promise<void>]> = [
+  ["POWERCLERK SPECS: bare labels filled via section context; EV/meter traps untouched", testEquipmentSpecsSectionContext],
+  ["EQUIPMENT PROXIMITY: sectionless bare Model inherits side from preceding make", testEquipmentProximityFallback],
   ["fields are extracted, filled, and recorded as steps", testFieldsExtractedFilledRecorded],
   ["RADIO REGRESSION: radio selected via check(), false radio/checkbox skipped", testRadioSelectedViaCheck],
   ["NOT-LISTED GUARD: 'equipment not listed' checkbox refused, dropdown still selected", testNotListedCheckboxRefused],

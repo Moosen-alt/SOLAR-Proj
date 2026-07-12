@@ -381,6 +381,15 @@ export async function autoLearnPortal(
         inverterModel: projectFields.inverterModel || projectFields.invModel || projectFields.pvMicroModel || "",
         moduleMake: projectFields.moduleMake || projectFields.moduleManufacturer || "",
         moduleModel: projectFields.moduleModel || "",
+        // Repeater companions on the same PV-spec page: quantities and array
+        // geometry are pure project data too — the planner kept leaving them
+        // on "Please select…", so the deterministic pass owns them as well.
+        inverterQty: projectFields.inverterQty || projectFields.invQty || projectFields.pvMicroQty || "",
+        moduleQty: projectFields.moduleQty || projectFields.modQty || "",
+        tilt: projectFields.tilt || projectFields.arrayTilt || projectFields.roofPitch || "",
+        azimuth: projectFields.azimuth || projectFields.arrayAzimuth || "",
+        // Residential rooftop is fixed-mount unless the design says otherwise.
+        tracking: projectFields.tracking || "Fixed",
       },
       headless: input.headless,
       // AHJ portals (Accela / Oregon ePermitting) require one combined plan-set PDF per
