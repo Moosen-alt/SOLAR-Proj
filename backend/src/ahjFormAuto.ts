@@ -4,7 +4,8 @@ import type { AppDb } from "./db";
 import type { AhjFormUrlResult, LLMProvider, ProjectRecord } from "../../shared/src/types";
 import { inspectFormFields, loadStoredTemplates, type OverlayField, type SignaturePlacement } from "./ahjForms";
 import { describePermitType, findApplicationProfile } from "./applicationDocs";
-import { saveResearchedAhjProfile, knowledgeResearchHint } from "./knowledgeBase";
+import { saveResearchedAhjProfile, knowledgeResearchHint, findKnowledgeForLearn } from "./knowledgeBase";
+import { findAhjProcessProfile } from "./processProfiles";
 import { renderPdfPageToPng } from "./pageImages";
 import { nowIso } from "./time";
 
@@ -277,6 +278,59 @@ function learnAhjPortalFromResearch(db: AppDb, project: ProjectRecord, research:
   } catch { /* non-fatal */ }
 }
 
+// Classify a downloaded PDF into a form_type from its name/URL, so one research
+// pass that surfaces the building app + electrical app + checklist stores each
+// under its own slot instead of overwriting a single "permit_application" row.
+export function classifyFormType(nameOrUrl: string, fallback: string): string {
+  const t = (nameOrUrl || "").toLowerCase();
+  if (/checklist|worksheet|eligibilit/.test(t)) return "solar_checklist";
+  if (/electrical|ele[-_ ]?permit/.test(t)) return "electrical_application";
+  if (/building|structural|bld[-_ ]?permit/.test(t)) return "building_application";
+  return fallback;
+}
+
+// Does this AHJ already have a stored template of THIS form type? (Same fuzzy
+// name containment as loadStoredTemplates, narrowed by form_type.)
+export function hasStoredTemplateOfType(db: AppDb, ahj: string, state: string, formType: string): boolean {
+  const needle = (ahj || "").trim().toLowerCase();
+  if (!needle) return false;
+  const rows = db.query<{ ahj_name: string; state: string }>(
+    "SELECT ahj_name, state FROM ahj_form_templates WHERE pdf_blob IS NOT NULL AND form_type = ?",
+    [formType],
+  );
+  return rows.some((row) => {
+    const rowAhj = String(row.ahj_name || "").trim().toLowerCase();
+    const stateOk = !row.state || !state || String(row.state).toLowerCase() === String(state).toLowerCase();
+    return Boolean(rowAhj) && stateOk && (rowAhj === needle || needle.includes(rowAhj) || rowAhj.includes(needle));
+  });
+}
+
+/** The full set of forms this AHJ needs for a residential solar submission —
+ *  the main application(s) plus any required checklist — acquired in one pass.
+ *  Sources for "what's needed": the AHJ process profile flags and the KB's
+ *  imported required-documents list. Each acquisition stores + learns, so the
+ *  next project under this AHJ skips the research entirely. */
+export async function ensureAhjFormsForProject(
+  db: AppDb,
+  llm: LLMProvider,
+  project: ProjectRecord,
+): Promise<{ neededTypes: string[]; results: Array<EnsureFormResult & { formType: string }> }> {
+  const needed = new Set<string>(["permit_application"]);
+  try {
+    const proc = findAhjProcessProfile(project);
+    if (proc?.requiresSolarChecklist) needed.add("solar_checklist");
+  } catch { /* profile data optional */ }
+  try {
+    const kb = findKnowledgeForLearn(db, { state: project.state, ahj: project.ahj, utility: project.utility });
+    if ((kb.ahj?.requiredDocuments || []).some((d) => /checklist|worksheet/i.test(d))) needed.add("solar_checklist");
+  } catch { /* KB optional */ }
+  const results: Array<EnsureFormResult & { formType: string }> = [];
+  for (const formType of needed) {
+    results.push({ formType, ...(await ensureAhjFormTemplate(db, llm, project, formType)) });
+  }
+  return { neededTypes: [...needed], results };
+}
+
 // Ensure the AHJ has a usable stored form. Research → download → map → store.
 export async function ensureAhjFormTemplate(
   db: AppDb,
@@ -284,9 +338,11 @@ export async function ensureAhjFormTemplate(
   project: ProjectRecord,
   formType = "permit_application",
 ): Promise<EnsureFormResult> {
-  // Already have a fillable stored template for this AHJ? Nothing to do.
-  if (loadStoredTemplates(db, project.ahj, project.state).length > 0) {
-    return { status: "exists", message: "A stored form template already exists for this AHJ." };
+  // Already have a fillable stored template of THIS form type for this AHJ?
+  // (Per-type, so acquiring the checklist isn't skipped just because the
+  // permit application is already stored.)
+  if (hasStoredTemplateOfType(db, project.ahj, project.state, formType)) {
+    return { status: "exists", message: `A stored ${formType.replace(/_/g, " ")} template already exists for this AHJ.` };
   }
 
   // Check if the AHJ is known to be online-only (e-permitting portal). These
@@ -337,13 +393,25 @@ export async function ensureAhjFormTemplate(
     };
   }
 
-  let bytes: Uint8Array | null = null;
-  let usedUrl = "";
+  // Download EVERY distinct blank the research surfaced (building app +
+  // electrical app + checklist often live as separate PDFs on one forms page),
+  // classify each by name/URL, and store each under its own form_type slot.
+  // Everything acquired is stored + learned, so the next project under this
+  // AHJ skips the search entirely.
+  const downloads: Array<{ url: string; bytes: Uint8Array; type: string }> = [];
+  const seenHashes = new Set<string>();
+  const storedTypes = new Set<string>();
   for (const url of candidateUrls) {
-    bytes = await fetchPdf(url);
-    if (bytes) { usedUrl = url; break; }
+    if (downloads.length >= 4) break;
+    const bytes = await fetchPdf(url);
+    if (!bytes) continue;
+    const hash = sha256(bytes);
+    if (seenHashes.has(hash)) continue;
+    seenHashes.add(hash);
+    const type = downloads.length === 0 ? formType : classifyFormType(`${url} ${research.formName || ""}`, formType);
+    downloads.push({ url, bytes, type });
   }
-  if (!bytes) {
+  if (!downloads.length) {
     return {
       status: "not_found",
       permitType: permitType.callout,
@@ -351,9 +419,29 @@ export async function ensureAhjFormTemplate(
     };
   }
 
-  const formName = research.formName || `${project.ahj} ${formType.replace(/_/g, " ")}`;
-  const acquired = await acquireFromBytes(db, llm, { ahj: project.ahj, state: project.state, formType, formName, bytes, sourceUrl: usedUrl });
-  return { ...acquired, permitType: permitType.callout };
+  let primary: EnsureFormResult | null = null;
+  const extraMessages: string[] = [];
+  for (const dl of downloads) {
+    // One template per (ahj, form_type): don't overwrite a slot this pass
+    // already filled, and don't re-store a type that already exists.
+    const type = storedTypes.has(dl.type) || (dl.type !== formType && hasStoredTemplateOfType(db, project.ahj, project.state, dl.type)) ? "" : dl.type;
+    if (!type) continue;
+    storedTypes.add(type);
+    const formName = type === formType && research.formName
+      ? research.formName
+      : `${project.ahj} ${type.replace(/_/g, " ")}`;
+    const acquired = await acquireFromBytes(db, llm, { ahj: project.ahj, state: project.state, formType: type, formName, bytes: dl.bytes, sourceUrl: dl.url });
+    if (!primary) primary = acquired;
+    else extraMessages.push(`Also stored ${type.replace(/_/g, " ")}: ${acquired.message}`);
+  }
+  if (!primary) {
+    return { status: "exists", permitType: permitType.callout, message: "All downloadable forms for this AHJ are already stored." };
+  }
+  return {
+    ...primary,
+    permitType: permitType.callout,
+    message: extraMessages.length ? `${primary.message} ${extraMessages.join(" ")}` : primary.message,
+  };
 }
 
 // Shared acquisition: map a downloaded/uploaded blank PDF (AcroForm first, then

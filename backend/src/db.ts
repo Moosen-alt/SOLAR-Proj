@@ -804,6 +804,11 @@ function migrate(db: AppDb): void {
   // portal-automation reuse (one Playwright driver per platform across AHJs).
   addColumnIfMissing(db, "permit_utility_knowledge", "portal_platform", "TEXT NOT NULL DEFAULT ''");
   addColumnIfMissing(db, "permit_utility_knowledge", "submission_method", "TEXT NOT NULL DEFAULT ''");
+  // Link-freshness sweep (checkKnowledgeLinks): when/what the last portal_url
+  // health check found — '' (never), 'ok', 'unknown' (auth/bot-blocked), 'dead',
+  // or 'replaced' (re-researched and updated).
+  addColumnIfMissing(db, "permit_utility_knowledge", "link_checked_at", "TEXT");
+  addColumnIfMissing(db, "permit_utility_knowledge", "portal_link_status", "TEXT NOT NULL DEFAULT ''");
 
   // Portal run enhancements: pause tracking (MFA/CAPTCHA) and confirmation capture.
   addColumnIfMissing(db, "portal_runs", "pause_reason", "TEXT");

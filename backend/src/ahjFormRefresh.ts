@@ -4,6 +4,7 @@ import { logger } from "./logger";
 import { nowIso } from "./time";
 import { parseJson } from "./json";
 import { buildFieldMapForPdf, fetchPdf, sha256, storeAhjFormTemplate, type StoredFieldMap } from "./ahjFormAuto";
+import { knowledgeResearchHint } from "./knowledgeBase";
 
 // ---------------------------------------------------------------------------
 // Keep auto-acquired AHJ form templates current. AHJs revise their PDF forms
@@ -25,6 +26,8 @@ export interface RefreshSummary {
   checked: number;
   updated: number;
   brokenLinks: number;
+  /** Broken links where re-research found the form's NEW home and re-stored it. */
+  recovered: number;
   unchanged: number;
 }
 
@@ -32,24 +35,51 @@ export async function refreshAhjFormTemplates(db: AppDb, llm: LLMProvider): Prom
   const rows = db.query<TemplateRow>(
     "SELECT id, ahj_name, state, form_type, field_map FROM ahj_form_templates WHERE pdf_blob IS NOT NULL",
   );
-  const summary: RefreshSummary = { checked: 0, updated: 0, brokenLinks: 0, unchanged: 0 };
+  const summary: RefreshSummary = { checked: 0, updated: 0, brokenLinks: 0, recovered: 0, unchanged: 0 };
+  const recoverCapRaw = Number(process.env.AHJ_FORM_RECOVER_MAX ?? 5);
+  const recoverCap = Number.isFinite(recoverCapRaw) && recoverCapRaw >= 0 ? recoverCapRaw : 5;
+  let recoverAttempts = 0;
 
   for (const row of rows) {
     const map = parseJson<StoredFieldMap>(row.field_map, {} as StoredFieldMap);
     if (!map.sourceUrl) continue; // operator-uploaded with no source link — nothing to re-check
     summary.checked += 1;
 
-    const bytes = await fetchPdf(map.sourceUrl);
+    let bytes = await fetchPdf(map.sourceUrl);
     if (!bytes) {
       summary.brokenLinks += 1;
-      const note = `Source link last failed ${nowIso()} — kept the prior stored copy. ${map.notes || ""}`.trim();
-      db.run("UPDATE ahj_form_templates SET field_map = ?, updated_at = ? WHERE id = ?", [
-        JSON.stringify({ ...map, notes: note, lastCheckedAt: nowIso() }),
-        nowIso(),
-        row.id,
-      ]);
       logger.warn("ahj-forms", `Form source link broken for ${row.ahj_name} (${row.state}): ${map.sourceUrl}`);
-      continue;
+      // The AHJ likely MOVED the form (site redesign, new year's forms page) —
+      // re-research its new home instead of only flagging. Capped per run so a
+      // mass link-rot event can't burn unbounded web-search cost.
+      let recoveredUrl = "";
+      if (recoverAttempts < recoverCap) {
+        recoverAttempts += 1;
+        try {
+          let hint: ReturnType<typeof knowledgeResearchHint> = null;
+          try { hint = knowledgeResearchHint(db, { state: row.state, ahj: row.ahj_name }, "ahj"); } catch { /* optional */ }
+          const research = await llm.findAhjFormUrl({ ahj: row.ahj_name, state: row.state, formType: row.form_type, knownContext: hint?.text });
+          for (const url of [...research.candidateUrls, ...(hint?.pdfUrls || [])]) {
+            if (url === map.sourceUrl) continue;
+            const fresh = await fetchPdf(url);
+            if (fresh) { bytes = fresh; recoveredUrl = url; break; }
+          }
+        } catch (err) {
+          logger.warn("ahj-forms", `Re-research failed for ${row.ahj_name}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+      if (!bytes || !recoveredUrl) {
+        const note = `Source link last failed ${nowIso()} — kept the prior stored copy. ${map.notes || ""}`.trim();
+        db.run("UPDATE ahj_form_templates SET field_map = ?, updated_at = ? WHERE id = ?", [
+          JSON.stringify({ ...map, notes: note, lastCheckedAt: nowIso() }),
+          nowIso(),
+          row.id,
+        ]);
+        continue;
+      }
+      summary.recovered += 1;
+      map.sourceUrl = recoveredUrl; // fall through: re-map + re-store under the new URL
+      logger.info("ahj-forms", `Recovered moved form for ${row.ahj_name} (${row.state}) at ${recoveredUrl}.`);
     }
 
     if (map.sourceHash && sha256(bytes) === map.sourceHash) {
@@ -90,6 +120,161 @@ export async function refreshAhjFormTemplates(db: AppDb, llm: LLMProvider): Prom
   }
 
   return summary;
+}
+
+// ---------------------------------------------------------------------------
+// KB link freshness: the imported reference rows carry portal URLs (and the
+// learners keep adding more). AHJs and utilities move/rebrand portals, so a
+// rotating sweep GETs each stored portal_url: alive → 'ok'; auth/bot-blocked →
+// 'unknown' (NOT stale — many portals 403 non-browser agents); 404/network →
+// 'dead', and for a capped number of dead links a re-research finds the new
+// URL and stores it for next time (never overwriting a human-verified row).
+// ---------------------------------------------------------------------------
+
+export interface KbLinkCheckSummary {
+  checked: number;
+  ok: number;
+  unknown: number;
+  dead: number;
+  /** Dead links replaced with a freshly researched URL. */
+  replaced: number;
+}
+
+type LinkState = "ok" | "unknown" | "dead";
+
+// Replace (not stack) any previous link-check note segment, so a fortnightly
+// sweep doesn't grow the notes field forever.
+function withLinkNote(notes: string, addition: string): string {
+  const kept = (notes || "").split(" | ").map((s) => s.trim()).filter((s) => s && !/^Portal (link check|URL auto-updated)/.test(s));
+  return [...kept, addition].join(" | ");
+}
+
+async function probeUrl(url: string): Promise<LinkState> {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15000);
+    try {
+      const res = await fetch(url, { redirect: "follow", signal: controller.signal });
+      if (res.ok) return "ok";
+      // Login walls / bot blocks / rate limits are NOT evidence the link is stale.
+      if ([401, 403, 405, 429, 503].includes(res.status)) return "unknown";
+      return res.status === 404 || res.status === 410 ? "dead" : "unknown";
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch {
+    return "dead";
+  }
+}
+
+export async function checkKnowledgeLinks(
+  db: AppDb,
+  llm: LLMProvider,
+  opts: { limit?: number; researchCap?: number } = {},
+): Promise<KbLinkCheckSummary> {
+  const limitRaw = Number(opts.limit ?? process.env.KB_LINK_CHECK_MAX ?? 40);
+  const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 200) : 40;
+  const researchCapRaw = Number(opts.researchCap ?? process.env.KB_LINK_RESEARCH_MAX ?? 5);
+  const researchCap = Number.isFinite(researchCapRaw) && researchCapRaw >= 0 ? researchCapRaw : 5;
+
+  // Rotate: never-checked first, then oldest. Rows actually used by projects
+  // come first within each group so live jurisdictions stay freshest.
+  const rows = db.query<{ id: string; state: string; ahj: string; utility: string; portal_url: string; confidence: string; notes: string }>(
+    `SELECT id, state, ahj, utility, portal_url, confidence, notes FROM permit_utility_knowledge
+      WHERE portal_url IS NOT NULL AND portal_url != ''
+      ORDER BY link_checked_at IS NOT NULL, link_checked_at ASC, project_count DESC
+      LIMIT ?`,
+    [limit],
+  );
+  const summary: KbLinkCheckSummary = { checked: 0, ok: 0, unknown: 0, dead: 0, replaced: 0 };
+  let researched = 0;
+
+  for (const row of rows) {
+    summary.checked += 1;
+    const state = await probeUrl(row.portal_url);
+    const ts = nowIso();
+    if (state === "ok") {
+      summary.ok += 1;
+      db.run("UPDATE permit_utility_knowledge SET portal_link_status = 'ok', link_checked_at = ? WHERE id = ?", [ts, row.id]);
+      continue;
+    }
+    if (state === "unknown") {
+      summary.unknown += 1;
+      db.run("UPDATE permit_utility_knowledge SET portal_link_status = 'unknown', link_checked_at = ? WHERE id = ?", [ts, row.id]);
+      continue;
+    }
+    summary.dead += 1;
+    let newUrl = "";
+    if (researched < researchCap) {
+      researched += 1;
+      try {
+        if (row.ahj) {
+          const research = await llm.findAhjFormUrl({ ahj: row.ahj, state: row.state, knownContext: `The previously known portal URL is DEAD: ${row.portal_url} — find the AHJ's CURRENT submittal portal.` });
+          newUrl = research.submittalPortalUrl || research.formsPageUrl || "";
+        } else if (row.utility) {
+          const research = await llm.researchUtilityRequirements({ utility: row.utility, state: row.state, knownContext: `The previously known portal URL is DEAD: ${row.portal_url} — find the utility's CURRENT interconnection/NEM portal.` });
+          newUrl = research.portalUrl || "";
+        }
+      } catch (err) {
+        logger.warn("kb-links", `re-research failed for ${row.ahj || row.utility}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      if (newUrl && newUrl !== row.portal_url && (await probeUrl(newUrl)) !== "dead") {
+        // Human-verified ('mixed') rows keep their URL — flag for the operator instead.
+        if (row.confidence === "mixed") {
+          const note = withLinkNote(row.notes, `Portal link check ${ts}: stored URL is dead (${row.portal_url}); research suggests ${newUrl} — VERIFY and update.`);
+          db.run("UPDATE permit_utility_knowledge SET portal_link_status = 'dead', link_checked_at = ?, notes = ?, updated_at = ? WHERE id = ?", [ts, note, ts, row.id]);
+        } else {
+          summary.replaced += 1;
+          const note = withLinkNote(row.notes, `Portal URL auto-updated ${ts}: ${row.portal_url} was dead; replaced with ${newUrl} from re-research (verify on first use).`);
+          db.run(
+            "UPDATE permit_utility_knowledge SET portal_url = ?, portal_link_status = 'replaced', link_checked_at = ?, notes = ?, updated_at = ? WHERE id = ?",
+            [newUrl, ts, note, ts, row.id],
+          );
+          logger.info("kb-links", `Replaced dead portal URL for ${row.ahj || row.utility} (${row.state}) with ${newUrl}.`);
+        }
+        continue;
+      }
+    }
+    const note = withLinkNote(row.notes, `Portal link check ${ts}: ${row.portal_url} appears DEAD — needs a new URL.`);
+    db.run("UPDATE permit_utility_knowledge SET portal_link_status = 'dead', link_checked_at = ?, notes = ?, updated_at = ? WHERE id = ?", [ts, note, ts, row.id]);
+  }
+  return summary;
+}
+
+// KB link sweep scheduler. KB_LINK_CHECK_DAYS (default 14); 0 disables.
+export function startKbLinkCheckScheduler(db: AppDb): void {
+  const days = Number(process.env.KB_LINK_CHECK_DAYS ?? 14);
+  if (!Number.isFinite(days) || days <= 0) {
+    logger.info("kb-links", "KB link check scheduler disabled (KB_LINK_CHECK_DAYS <= 0).");
+    return;
+  }
+  let running = false;
+  const tick = async (): Promise<void> => {
+    if (running) return;
+    running = true;
+    try {
+      const { createLLMProvider } = await import("./llm");
+      const summary = await checkKnowledgeLinks(db, createLLMProvider());
+      if (summary.checked > 0) {
+        logger.info("kb-links", `KB link check: ${summary.checked} checked — ${summary.ok} ok, ${summary.unknown} unknown, ${summary.dead} dead, ${summary.replaced} replaced.`);
+      }
+    } catch (err) {
+      logger.warn("kb-links", `link check tick failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      running = false;
+    }
+  };
+  logger.info("kb-links", `KB link check scheduler started — sweeping stored portal links every ${days} day(s).`);
+  const intervalMs = days * 24 * 60 * 60 * 1000;
+  const stepMs = Math.min(intervalMs, 24 * 60 * 60 * 1000);
+  let elapsedMs = 0;
+  setInterval(() => {
+    elapsedMs += stepMs;
+    if (elapsedMs >= intervalMs) {
+      elapsedMs = 0;
+      void tick();
+    }
+  }, stepMs).unref();
 }
 
 // Long-interval scheduler. AHJ_FORM_REFRESH_DAYS (default 60); 0 disables.

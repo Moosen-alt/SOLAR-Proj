@@ -44,7 +44,7 @@ import { enqueueJob, getJob, listJobs, processNextJob, startJobWorker } from "./
 import { createUser, getUserWorkload, listUsers, updateUser, assignProjectToUser } from "./users";
 import { listBackups, runBackup, startBackupScheduler } from "./backup";
 import { startMonitorScheduler } from "./scheduler";
-import { startAhjFormRefreshScheduler } from "./ahjFormRefresh";
+import { startAhjFormRefreshScheduler, startKbLinkCheckScheduler } from "./ahjFormRefresh";
 import { extractZipToWorkdir } from "./batchZip";
 import { AUTH_ENABLED, currentUser, login, logout, me, requireAuth, seedAdminUser, editionGate, requestOrg, getOrg, createApiKey } from "./auth";
 import { ensureStatusShareToken, formatProjectAddress, statusShareUrl } from "./clientNotifier";
@@ -400,18 +400,41 @@ app.get("/api/projects/:id/filled-forms/:formId", (req, res) => {
 // (AI)" button so the web search cost is only paid on demand.
 app.post("/api/projects/:id/find-ahj-form", asyncHandler(async (req, res) => {
   const detail = getProjectDetail(db, String(req.params.id));
-  const formType = String(req.body?.formType || "permit_application").trim() || "permit_application";
+  const explicitType = String(req.body?.formType || "").trim();
   const { createLLMProvider } = await import("./llm");
   const llm = createLLMProvider();
   let ensure;
+  let additional: Array<{ formType: string; status: string; message: string }> = [];
   try {
-    ensure = await ensureAhjFormTemplate(db, llm, detail.project, formType);
+    if (explicitType) {
+      // Operator asked for one specific form type — honor it exactly.
+      ensure = await ensureAhjFormTemplate(db, llm, detail.project, explicitType);
+    } else {
+      // Default: acquire the AHJ's FULL needed set (application(s) + any
+      // required checklist, per process profile + KB required docs).
+      const { ensureAhjFormsForProject } = await import("./ahjFormAuto");
+      const all = await ensureAhjFormsForProject(db, llm, detail.project);
+      ensure = all.results[0] ?? { status: "not_found" as const, message: "No forms needed/found." };
+      additional = all.results.slice(1).map((r) => ({ formType: r.formType, status: r.status, message: r.message }));
+    }
   } catch (err) {
     throw normalizeLlmError(err);
   }
-  addAuditLog(db, String(req.params.id), "system", "ahj form acquisition", "ahj_form.find", { status: ensure.status, formName: ensure.formName || "", ahj: detail.project.ahj, permitType: ensure.permitType || "" });
+  addAuditLog(db, String(req.params.id), "system", "ahj form acquisition", "ahj_form.find", { status: ensure.status, formName: ensure.formName || "", ahj: detail.project.ahj, permitType: ensure.permitType || "", additional: additional.map((a) => `${a.formType}:${a.status}`) });
   const filled = await buildFilledFormsForProject(db, detail.project);
-  res.json({ ensure, filled });
+  res.json({ ensure, additional, filled });
+}));
+
+// Manual KB link-freshness sweep: probe stored portal URLs (rotating batch),
+// mark ok/unknown/dead, and re-research a capped number of dead ones so the
+// KB heals itself when an AHJ/utility moves its portal.
+app.post("/api/kb/check-links", asyncHandler(async (req, res) => {
+  const { checkKnowledgeLinks } = await import("./ahjFormRefresh");
+  const { createLLMProvider } = await import("./llm");
+  const limit = req.body?.limit != null ? Number(req.body.limit) : undefined;
+  const summary = await checkKnowledgeLinks(db, createLLMProvider(), { limit: Number.isFinite(limit) ? limit : undefined });
+  addAuditLog(db, null, "human", "operator", "kb.link_check", { ...summary });
+  res.json({ summary });
 }));
 
 // Draft a permit submittal email for email-submittal AHJs (e.g. City of Hillsboro).
@@ -2193,6 +2216,7 @@ const server = app.listen(port, () => {
   startBackupScheduler(db);
   startMonitorScheduler(db);
   startAhjFormRefreshScheduler(db);
+  startKbLinkCheckScheduler(db);
 });
 
 // Graceful shutdown so the DB/WAL flushes cleanly on deploy restarts.
