@@ -1,5 +1,31 @@
 # Server Setup — cloud access for your workers
 
+## Local machine setup (Windows / Mac dev or operator workstation)
+
+1. Install Node 20+ (nodejs.org LTS) and Git.
+2. ```
+   git clone <repo> SOLAR-Proj && cd SOLAR-Proj
+   npm install
+   npx playwright install chromium
+   ```
+3. Create `.env` in the repo root (gitignored):
+   ```
+   ANTHROPIC_API_KEY=sk-ant-...
+   SESSION_ENCRYPTION_KEY=<any long random string — keep it; it locks stored portal logins>
+   ```
+   (Local dev can skip AUTH_ENABLED; NEVER skip it on anything reachable
+   from outside the machine.)
+4. `npm run dev` → dashboard at http://localhost:4000. `npm run smoke` to
+   verify the install.
+5. Updating: `git pull && npm install && npm run smoke` — DB migrations
+   apply themselves on next start. Your DB lives at backend/data/ (or
+   AUTOPILOT_DB_PATH); back it up before big pulls.
+6. Windows notes: run commands in PowerShell; if `npx tsx` complains about
+   execution policy, `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
+   Portal RECORDING (visible browser) always runs on a local machine like
+   this — use the "Record this portal" button's generated command/.bat.
+
+
 ## Deploy (one VM, ~$20–40/mo: Hetzner / DigitalOcean / Lightsail; 4GB+ RAM)
 
 ```bash
