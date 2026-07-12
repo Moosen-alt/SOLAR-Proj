@@ -737,6 +737,45 @@ function migrate(db: AppDb): void {
     );
     CREATE INDEX IF NOT EXISTS idx_comms_customer ON communications(customer_id, occurred_at);
     CREATE INDEX IF NOT EXISTS idx_comms_project ON communications(project_id, occurred_at);
+
+    -- Per-submission payment gate: one row per (project, track). The quote is
+    -- permit fee (portal-calculated actual when known, else learned/estimated)
+    -- plus the operator's service fee ("top fee"). This bills the CLIENT for the
+    -- submission — the AHJ/utility portal's own fee payment remains human-only.
+    CREATE TABLE IF NOT EXISTS submission_payments (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      track TEXT NOT NULL DEFAULT 'permit',
+      status TEXT NOT NULL DEFAULT 'quoted',
+      permit_fee_estimate_usd REAL,
+      permit_fee_actual_usd REAL,
+      service_fee_usd REAL NOT NULL DEFAULT 0,
+      total_usd REAL NOT NULL DEFAULT 0,
+      fee_basis TEXT NOT NULL DEFAULT '',
+      payment_reference TEXT NOT NULL DEFAULT '',
+      quoted_at TEXT NOT NULL,
+      paid_at TEXT,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (project_id) REFERENCES projects(id)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_submission_payments_project_track
+      ON submission_payments(project_id, track);
+
+    -- Real permit fees observed per AHJ/utility (operator-entered from the
+    -- portal's fee/review screen, or captured at issue). Future quotes for the
+    -- same jurisdiction use these instead of the valuation estimate.
+    CREATE TABLE IF NOT EXISTS permit_fee_history (
+      id TEXT PRIMARY KEY,
+      state TEXT NOT NULL DEFAULT '',
+      ahj TEXT NOT NULL DEFAULT '',
+      utility TEXT NOT NULL DEFAULT '',
+      track TEXT NOT NULL DEFAULT 'permit',
+      fee_usd REAL NOT NULL,
+      source TEXT NOT NULL DEFAULT 'operator',
+      project_id TEXT,
+      recorded_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_permit_fee_history_ahj ON permit_fee_history(state, ahj, track);
   `);
 
   // Additive licensing/contractor columns on the existing clients table.
@@ -1240,6 +1279,12 @@ const CLIENT_LICENSING_COLUMNS: [string, string][] = [
   // Null means no logo uploaded; empty string also treated as no logo.
   ["logo_base64", "TEXT"],
   ["logo_mime", "TEXT NOT NULL DEFAULT 'image/png'"],
+  // Billing: how this client is charged. billing_mode "per_submission" gates
+  // staging behind a paid/waived submission_payments row; "" / "monthly" = no gate.
+  ["billing_mode", "TEXT NOT NULL DEFAULT ''"],
+  // The operator's per-submission service fee ("top fee") for this client, in USD.
+  // Null falls back to the SUBMISSION_SERVICE_FEE_USD env default.
+  ["service_fee_usd", "REAL"],
 ];
 
 const CORRECTION_SLA_COLUMNS: [string, string][] = [

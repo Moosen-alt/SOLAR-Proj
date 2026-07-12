@@ -967,6 +967,7 @@ async function selectProject(projectId) {
   state.installerPacket = null;
   state.submitGate = null;
   state.submittalTracks = null;
+  state.paymentQuotes = null;
   $("emptyState").hidden = true;
   $("detailView").hidden = false;
   clearMessage();
@@ -985,7 +986,7 @@ async function selectProject(projectId) {
     loadOpsPlan(), loadSubmitGate(), loadRunbook(), loadHandoffPacket(),
     loadCommunicationDrafts(), loadLiveReadiness(), loadProjectTimeline(),
     loadProcessMap(), loadInstallerPacket(), loadProjectDocuments(),
-    loadSubmittalTracks(),
+    loadSubmittalTracks(), loadPaymentQuotes(),
   ]);
   renderDetail();
 }
@@ -1003,6 +1004,108 @@ function renderHandoffBanner() {
     </div>
     ${handoffNote ? `<pre class="handoff-checklist">${esc(handoffNote.body)}</pre>` : ""}
   `;
+}
+
+// --- Per-submission payment screen (start of the flow) ----------------------
+// Quote = real permit fees (portal-calculated actual > learned per-AHJ history >
+// valuation estimate) + the client's service fee. Staging is blocked for
+// per-submission clients until each track's payment is marked paid or waived.
+async function loadPaymentQuotes() {
+  const id = state.selectedProjectId;
+  const [permit, nem] = await Promise.all([
+    api(`/api/projects/${id}/payment-quote?track=permit`),
+    api(`/api/projects/${id}/payment-quote?track=nem`),
+  ]);
+  state.paymentQuotes = { permit: permit.quote, nem: nem.quote };
+}
+
+function money(v) {
+  return v == null ? "—" : `$${Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+const FEE_SOURCE_LABELS = {
+  actual: "portal-calculated (real fee)",
+  learned_history: "learned from past submissions here",
+  valuation_estimate: "estimate from valuation",
+  unknown: "unknown — enter the portal fee",
+};
+
+function renderPaymentQuoteCard(quote) {
+  const p = quote.payment;
+  const status = p?.status === "paid" ? "paid" : p?.status === "waived" ? "waived" : "unpaid";
+  const tone = status === "paid" ? "pass" : status === "waived" ? "info" : "warning";
+  const trackLabel = quote.track === "nem" ? "NEM / interconnection" : "Permit (AHJ)";
+  return `
+    <article class="item ${tone}" style="margin-bottom:8px">
+      <div class="item-title"><span>${esc(trackLabel)} submission</span>${statusBadge(status)}</div>
+      <table style="font-size:12px;margin:4px 0;border-collapse:collapse">
+        <tr><td style="padding:1px 14px 1px 0">Permit fees</td><td style="text-align:right"><strong>${money(quote.permitFeeUsd)}</strong></td>
+            <td style="padding-left:10px" class="muted">${esc(FEE_SOURCE_LABELS[quote.permitFeeSource] || "")}</td></tr>
+        <tr><td style="padding:1px 14px 1px 0">Our service fee</td><td style="text-align:right"><strong>${money(quote.serviceFeeUsd)}</strong></td><td></td></tr>
+        <tr style="border-top:1px solid var(--border,#d1d5db)"><td style="padding:3px 14px 1px 0"><strong>Client total</strong></td><td style="text-align:right"><strong>${money(quote.totalUsd)}</strong></td><td></td></tr>
+      </table>
+      <p class="muted" style="margin:2px 0;font-size:11px">${esc(quote.permitFeeBasis || "")}</p>
+      ${status === "paid" ? `<p style="margin:2px 0;font-size:12px">Paid ${p.paidAt ? new Date(p.paidAt).toLocaleString() : ""}${p.paymentReference ? ` — ref: ${esc(p.paymentReference)}` : ""}</p>` : ""}
+      ${status !== "paid" ? `
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:6px">
+          <input id="payFee-${quote.track}" type="number" min="0" step="0.01" placeholder="Actual portal fee $" style="width:150px;font-size:12px;padding:4px 8px" title="The real fee the portal calculated on its fee/review screen — replaces the estimate and teaches future quotes for this AHJ.">
+          <button class="secondary" style="font-size:12px" data-pay-action="record-fee" data-pay-track="${quote.track}">Record real fee</button>
+          <input id="payRef-${quote.track}" placeholder="Payment reference (invoice #, Stripe id…)" style="width:220px;font-size:12px;padding:4px 8px">
+          <button style="font-size:12px" data-pay-action="mark-paid" data-pay-track="${quote.track}">✓ Mark paid</button>
+          <button class="secondary" style="font-size:12px" data-pay-action="waive" data-pay-track="${quote.track}" title="Skip the gate for this submission (comped / billed elsewhere).">Waive</button>
+        </div>` : ""}
+    </article>`;
+}
+
+function renderPaymentPanel() {
+  const panel = $("paymentPanel");
+  if (!panel) return;
+  const quotes = state.paymentQuotes;
+  const list = quotes ? [quotes.permit, quotes.nem].filter(Boolean) : [];
+  // Only per-submission clients see the payment screen (plus anyone with an
+  // existing paid/waived row, so history stays visible if the mode changes).
+  const visible = list.filter((q) => q.required || (q.payment && q.payment.status !== "quoted"));
+  if (!visible.length) { panel.hidden = true; panel.innerHTML = ""; return; }
+  const unpaid = visible.filter((q) => q.required && q.payment?.status !== "paid" && q.payment?.status !== "waived");
+  panel.hidden = false;
+  panel.innerHTML = `
+    <section class="panel" style="margin:10px 0;padding:12px 14px;border:1px solid ${unpaid.length ? "#f59e0b" : "var(--border,#d1d5db)"};border-radius:8px">
+      <div class="item-title" style="margin-bottom:6px">
+        <span>💳 Payment — per-submission billing</span>
+        ${statusBadge(unpaid.length ? "payment required before staging" : "cleared")}
+      </div>
+      ${unpaid.length ? `<p style="margin:0 0 8px;font-size:12px">This client pays per submission: collect the total below, then <strong>Mark paid</strong> to unlock <em>5 · Prepare Submittal</em>. Enter the portal's real fee when you see it on the fee/review screen — it replaces the estimate and is remembered for this AHJ. <span class="muted">The portal's own fee checkout is always completed by a human, never automated.</span></p>` : ""}
+      ${visible.map(renderPaymentQuoteCard).join("")}
+    </section>`;
+  panel.querySelectorAll("[data-pay-action]").forEach((btn) => {
+    btn.addEventListener("click", () => handlePaymentAction(btn.dataset.payAction, btn.dataset.payTrack, btn));
+  });
+}
+
+async function handlePaymentAction(action, track, btn) {
+  const id = state.selectedProjectId;
+  if (!id) return;
+  const body = { track };
+  if (action === "record-fee" || action === "mark-paid") {
+    const feeEl = $(`payFee-${track}`);
+    if (feeEl && feeEl.value) body.actualPermitFeeUsd = feeEl.value;
+    if (action === "record-fee" && (!feeEl || !feeEl.value)) { showMessage("Enter the portal-calculated fee first.", "warning"); return; }
+  }
+  if (action === "mark-paid") {
+    const refEl = $(`payRef-${track}`);
+    if (refEl) body.paymentReference = refEl.value;
+  }
+  btn.disabled = true;
+  try {
+    const path = action === "record-fee" ? "record-fee" : action === "waive" ? "waive" : "mark-paid";
+    const res = await api(`/api/projects/${id}/payment/${path}`, { method: "POST", body: JSON.stringify(body) });
+    state.paymentQuotes = { ...(state.paymentQuotes || {}), [res.quote.track]: res.quote };
+    renderPaymentPanel();
+    if (action === "mark-paid") showMessage(`Payment recorded — ${res.quote.track} staging unlocked.`);
+  } catch (err) {
+    showMessage(`Payment update failed: ${err.message}`, "error");
+    btn.disabled = false;
+  }
 }
 
 // Friendly display labels for every canonical ProjectStatus (shared/src/types.ts).
@@ -1614,6 +1717,7 @@ function renderDetail() {
   safeRender("permitForm", syncPermitForm);
   safeRender("workflow", renderWorkflow);
   safeRender("submitGate", renderSubmitGate);
+  safeRender("paymentPanel", renderPaymentPanel);
   safeRender("submittalTracks", renderSubmittalTracks);
   safeRender("processMap", renderProcessMap);
   safeRender("liveReadiness", renderLiveTestReadiness);
@@ -4288,7 +4392,7 @@ async function handleBatchDrop(file) {
 
 // ----- Clients & contractor licensing -----
 const CLIENT_TEXT_FIELDS = [
-  "companyName", "legalBusinessName", "dba", "contactName", "contactEmail", "phone", "billingStatus",
+  "companyName", "legalBusinessName", "dba", "contactName", "contactEmail", "phone", "billingStatus", "billingMode", "serviceFeeUsd",
   "ccbLicenseNumber", "ccbExpiration", "electricalLicenseNumber", "metroCityLicenseNumber",
   "electricalSupervisorName", "electricianLicenseNumber",
   "ein", "bondCarrier", "insuranceCarrier", "businessAddress", "businessCity", "businessState",

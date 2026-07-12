@@ -243,6 +243,7 @@
           </div>
         </div>
 
+        <div id="paymentPanel" hidden></div>
         <div id="submitBlockerNote" class="submit-blocker-note" hidden></div>
         <div id="nextStepBanner" class="next-step-banner" hidden></div>
         <div id="message" class="message" hidden></div>
@@ -954,6 +955,16 @@
           <div class="form-row">
             <label>Phone<input id="c_phone" /></label>
             <label>Billing status<input id="c_billingStatus" /></label>
+          </div>
+          <div class="form-row">
+            <label>Billing mode
+              <select id="c_billingMode">
+                <option value="">Not set (no payment gate)</option>
+                <option value="per_submission">Per submission — pay before staging</option>
+                <option value="monthly">Monthly invoice (no gate)</option>
+              </select>
+            </label>
+            <label>Service fee per submission ($)<input id="c_serviceFeeUsd" type="number" min="0" step="0.01" placeholder="blank = env default" /></label>
           </div>
 
           <h3>Licensing</h3>

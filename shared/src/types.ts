@@ -90,8 +90,44 @@ export interface ClientRecord {
   authorizedSignerTitle: string;
   logoBase64: string; // base64-encoded PNG/JPEG; empty string = no logo
   logoMime: string;   // "image/png" | "image/jpeg"
+  /** "per_submission" gates staging behind a paid/waived payment; "" / "monthly" = no gate. */
+  billingMode: string;
+  /** Operator's per-submission service fee ("top fee") in USD; null = env default. */
+  serviceFeeUsd: number | null;
   portalIdentities: ClientPortalIdentity[];
   createdAt: string;
+}
+
+// --- Per-submission payment gate ------------------------------------------
+
+export interface SubmissionPaymentRecord {
+  id: string;
+  projectId: string;
+  track: string;
+  status: "quoted" | "paid" | "waived";
+  permitFeeEstimateUsd: number | null;
+  /** The portal-calculated real fee, once known (operator enters it from the fee/review screen). */
+  permitFeeActualUsd: number | null;
+  serviceFeeUsd: number;
+  totalUsd: number;
+  feeBasis: string;
+  paymentReference: string;
+  quotedAt: string;
+  paidAt: string | null;
+  updatedAt: string;
+}
+
+export interface SubmissionPaymentQuote {
+  track: string;
+  /** True when the project's client bills per submission (staging is gated). */
+  required: boolean;
+  billingMode: string;
+  permitFeeUsd: number | null;
+  permitFeeSource: "actual" | "learned_history" | "valuation_estimate" | "unknown";
+  permitFeeBasis: string;
+  serviceFeeUsd: number;
+  totalUsd: number | null;
+  payment: SubmissionPaymentRecord | null;
 }
 
 export interface ProjectRecord {

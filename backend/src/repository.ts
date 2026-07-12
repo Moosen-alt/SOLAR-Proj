@@ -71,6 +71,7 @@ import { documentInventory } from "./requiredDocuments";
 import { STAGE_COUNT, stageForStatus, isBlockedStatus } from "./projectStage";
 import { addAuditLog } from "./audit";
 import { clientStagingOverlay, getClient } from "./clients";
+import { assertSubmissionPaid } from "./submissionFees";
 import { getDecryptedCredential, getDecryptedCredentialByUrl, getDecryptedCredentialAny } from "./portalCredentials";
 import { logger } from "./logger";
 import { selectAdapterActor, selectStagingActor, resolvePortalChannel, seedOutcomeToStageResult, isUtilityPlatformUrl, isAutoSeedDisabled } from "./portalChannel";
@@ -878,6 +879,9 @@ export function deleteProject(db: AppDb, projectId: string): { deleted: true; pr
     db.run("DELETE FROM project_metrics WHERE project_id = ?", [projectId]);
     db.run("DELETE FROM project_documents WHERE project_id = ?", [projectId]);
     db.run("DELETE FROM project_intake_requests WHERE project_id = ?", [projectId]);
+    db.run("DELETE FROM submission_payments WHERE project_id = ?", [projectId]);
+    // Keep permit_fee_history (learned real fees) but unlink the deleted project.
+    db.run("UPDATE permit_fee_history SET project_id = NULL WHERE project_id = ?", [projectId]);
     // Communications may belong to a customer too — unlink rather than destroy correspondence.
     db.run("UPDATE communications SET project_id = NULL WHERE project_id = ?", [projectId]);
     db.run("DELETE FROM projects WHERE id = ?", [projectId]);
@@ -4907,6 +4911,11 @@ function validatePortalFields(
 
 export async function prepareSubmission(db: AppDb, projectId: string, track?: SubmittalTrackType, autoSubmit?: boolean): Promise<ProjectDetail> {
   const detail = getProjectDetail(db, projectId);
+  // PAYMENT GATE (first — the payment screen sits at the beginning of the flow):
+  // a per-submission client must have this track's quote (real permit fees + the
+  // operator's service fee) paid or waived before anything is staged. This bills
+  // the CLIENT; the portal's own fee checkout stays human-only regardless.
+  assertSubmissionPaid(db, detail.project, track);
   const failCount = detail.qcResults.filter((result) => result.qcStatus === "fail").length;
   const pendingCount = detail.humanReviewItems.filter((item) => item.status === "pending" && item.fieldName !== "correction").length;
   const reviewerReport = buildReviewerReportFor(db, detail.project);

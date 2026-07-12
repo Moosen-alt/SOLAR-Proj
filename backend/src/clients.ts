@@ -50,9 +50,18 @@ function mapClient(row: Row, identities: ClientPortalIdentity[]): ClientRecord {
     authorizedSignerTitle: s(row.authorized_signer_title),
     logoBase64: s(row.logo_base64),
     logoMime: s(row.logo_mime) || "image/png",
+    billingMode: s(row.billing_mode),
+    serviceFeeUsd: row.service_fee_usd == null || row.service_fee_usd === "" ? null : Number(row.service_fee_usd),
     portalIdentities: identities,
     createdAt: s(row.created_at),
   };
+}
+
+// Money-ish → number|null (0 is a valid service fee; blank clears to env default).
+function moneyOrNull(v: unknown): number | null {
+  if (v == null || v === "") return null;
+  const n = typeof v === "number" ? v : Number(String(v).replace(/[$,\s]/g, ""));
+  return Number.isFinite(n) && n >= 0 ? Math.round(n * 100) / 100 : null;
 }
 
 // Maps incoming camelCase payload keys to DB columns. Only these fields are
@@ -83,7 +92,14 @@ const FIELD_COLUMNS: [keyof ClientRecord, string][] = [
   ["insuranceCarrier", "insurance_carrier"],
   ["authorizedSignerName", "authorized_signer_name"],
   ["authorizedSignerTitle", "authorized_signer_title"],
+  ["billingMode", "billing_mode"],
+  ["serviceFeeUsd", "service_fee_usd"],
 ];
+
+// serviceFeeUsd is REAL; everything else is coerced to string.
+function fieldValue(key: keyof ClientRecord, raw: unknown): string | number | null {
+  return key === "serviceFeeUsd" ? moneyOrNull(raw) : s(raw);
+}
 
 function identitiesFor(db: AppDb, clientId: string): ClientPortalIdentity[] {
   return db
@@ -138,7 +154,7 @@ export function createClient(db: AppDb, payload: Record<string, unknown>): Clien
 
   const clientId = id();
   const columns = ["id", "created_at", ...FIELD_COLUMNS.map(([, col]) => col)];
-  const values: (string | null)[] = [clientId, nowIso(), ...FIELD_COLUMNS.map(([key]) => s(payload[key]))];
+  const values: (string | number | null)[] = [clientId, nowIso(), ...FIELD_COLUMNS.map(([key]) => fieldValue(key, payload[key]))];
   const placeholders = columns.map(() => "?").join(", ");
 
   return db.transaction(() => {
@@ -157,7 +173,7 @@ export function updateClient(db: AppDb, clientId: string, payload: Record<string
   return db.transaction(() => {
     if (updates.length > 0) {
       const setClause = updates.map(([, col]) => `${col} = ?`).join(", ");
-      const values: (string | null)[] = [...updates.map(([key]) => s(payload[key])), clientId];
+      const values: (string | number | null)[] = [...updates.map(([key]) => fieldValue(key, payload[key])), clientId];
       db.run(`UPDATE clients SET ${setClause} WHERE id = ?`, values);
     }
     if ("portalIdentities" in payload) {

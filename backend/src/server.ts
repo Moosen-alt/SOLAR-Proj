@@ -1778,6 +1778,51 @@ app.post("/api/parser/vision-extract", asyncHandler(async (req, res) => {
   }
 }));
 
+// --- Per-submission payment gate (the Payment screen at the start of the flow) ---
+// Quote = real permit fees (portal-calculated actual > learned history > valuation
+// estimate) + the client's service fee. Staging is blocked for per-submission
+// clients until the track's payment is marked paid or waived. This bills the
+// CLIENT — the AHJ/utility portal's own fee checkout is never automated.
+app.get("/api/projects/:id/payment-quote", asyncHandler(async (req, res) => {
+  const { buildPaymentQuote } = await import("./submissionFees");
+  const detail = getProjectDetail(db, String(req.params.id));
+  res.json({ quote: buildPaymentQuote(db, detail.project, String(req.query.track || "")) });
+}));
+
+app.post("/api/projects/:id/payment/mark-paid", asyncHandler(async (req, res) => {
+  const { markSubmissionPaid } = await import("./submissionFees");
+  const detail = getProjectDetail(db, String(req.params.id));
+  const quote = markSubmissionPaid(db, detail.project, String(req.body?.track || ""), {
+    paymentReference: typeof req.body?.paymentReference === "string" ? req.body.paymentReference : "",
+    actualPermitFeeUsd: req.body?.actualPermitFeeUsd,
+  });
+  addAuditLog(db, detail.project.id, "human", "operator", "payment.marked_paid", {
+    track: quote.track, totalUsd: quote.totalUsd, reference: quote.payment?.paymentReference || "",
+  });
+  res.json({ quote });
+}));
+
+app.post("/api/projects/:id/payment/waive", asyncHandler(async (req, res) => {
+  const { waiveSubmissionPayment } = await import("./submissionFees");
+  const detail = getProjectDetail(db, String(req.params.id));
+  const quote = waiveSubmissionPayment(db, detail.project, String(req.body?.track || ""));
+  addAuditLog(db, detail.project.id, "human", "operator", "payment.waived", { track: quote.track });
+  res.json({ quote });
+}));
+
+// True-up: record the REAL portal-calculated fee (from the portal's fee/review
+// screen) without marking paid — the quote total updates and the fee feeds the
+// per-AHJ fee history for future quotes.
+app.post("/api/projects/:id/payment/record-fee", asyncHandler(async (req, res) => {
+  const { recordActualPermitFee } = await import("./submissionFees");
+  const detail = getProjectDetail(db, String(req.params.id));
+  const quote = recordActualPermitFee(db, detail.project, String(req.body?.track || ""), req.body?.actualPermitFeeUsd, "operator");
+  addAuditLog(db, detail.project.id, "human", "operator", "payment.fee_recorded", {
+    track: quote.track, permitFeeUsd: quote.permitFeeUsd,
+  });
+  res.json({ quote });
+}));
+
 app.post("/api/projects/:id/prepare-submission", (req, res) => {
   // Optional track scopes staging to one filing (nem | building | electrical | combo);
   // omitted = the legacy combined stage.
