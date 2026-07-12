@@ -66,3 +66,24 @@ The human "record this portal" capture runs on an operator's LOCAL machine
 (needs a visible browser) and talks to the server API — set the server URL in
 the record command the dashboard generates. Learning/staging runs headless on
 the server itself.
+
+## Stripe — collecting client payments (per-submission billing)
+
+Today (no code needed):
+1. Create a Stripe account → Payment Links (or Invoices) for your common
+   totals, or create one ad-hoc per quote (the Payment screen shows the
+   client total = real permit fees + your service fee).
+2. Send the client the link; when Stripe shows it paid, click **Mark paid**
+   on the project's Payment panel and paste the Stripe payment/invoice id
+   into the reference field — it lands in `submission_payments.payment_reference`
+   and the staging gate unlocks. Waive covers comped jobs.
+
+When you want it automatic (small build, ~a day):
+- `npm i stripe`; env `STRIPE_SECRET_KEY` + `STRIPE_WEBHOOK_SECRET`.
+- On quote: create a Checkout Session/Payment Link for `totalUsd`, store its
+  id on the payment row, show the URL on the Payment panel.
+- Webhook `POST /api/public/stripe/webhook` (public prefix, signature-verified
+  with the webhook secret): on `checkout.session.completed`, call
+  `markSubmissionPaid` with the session id as the reference. Never trust the
+  client side — only the signed webhook marks paid.
+- SaaS metering later: Stripe usage records wired into `checkReviewQuota`.
