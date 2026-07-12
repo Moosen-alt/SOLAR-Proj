@@ -66,5 +66,6 @@ AHJ documents → stage the portal application → human verifies + submits.
 
 ## Current handoff notes
 
-See `docs/HANDOFF.md` for the running state, open issues, and what to verify
+Deploying/hosting: `docs/SERVER_SETUP.md`. Dev onboarding: `docs/DEVELOPER_ONBOARDING.md`.
+Product packets: `docs/products/`. See `docs/HANDOFF.md` for the running state, open issues, and what to verify
 live after each pull.
