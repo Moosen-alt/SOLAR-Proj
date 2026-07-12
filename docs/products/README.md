@@ -11,6 +11,8 @@ others share its org/API-key plumbing and are "expose + meter" away from sale.
 | `form-fill.md` | Official AHJ form auto-fill service | Internal endpoints; thin wrapper to expose |
 | `fee-quotes.md` | Real-fee permit quoting API | Internal endpoints; thin wrapper to expose |
 | `kb-research.md` | AHJ/utility requirements + portal knowledge API | Internal endpoints; thin wrapper to expose |
+| `permit-tracking.md` | Permit/PTO status tracking + correction alerts | Monitor built; wrapper + webhooks to expose |
+| `plan-parsing.md` | Plan-set PDF → structured fields + split sheets | Parser built; wrapper to expose |
 
 ## Provisioning a customer (operator runbook — same for every product)
 
