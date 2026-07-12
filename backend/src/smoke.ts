@@ -62,15 +62,21 @@ const smokeClient = createClient(db, {
   businessPhone: "(503) 555-0100",
 });
 
+// Multi-jurisdiction lifecycle runs: SMOKE_STATE/SMOKE_AHJ/SMOKE_UTILITY drive
+// the whole flow (KB learning, docs, gates, email matching) for ANY place.
+const SMOKE_STATE = process.env.SMOKE_STATE || "OR";
+const SMOKE_AHJ = process.env.SMOKE_AHJ || "Portland";
+const SMOKE_UTILITY = process.env.SMOKE_UTILITY || "PGE";
+
 const detail = createProject(db, {
   clientId: smokeClient.id,
   owner: "Smoke Test",
   street: "123 Solar Way",
-  city: "Portland",
-  state: "OR",
+  city: SMOKE_AHJ.replace(/^(City of|County of)\s+/i, ""),
+  state: SMOKE_STATE,
   zip: "97201",
-  ahj: "Portland",
-  utility: "PGE",
+  ahj: SMOKE_AHJ,
+  utility: SMOKE_UTILITY,
   account: "1234567890",
   meter: "987654321",
   dcKw: "8.6",
@@ -108,9 +114,9 @@ if (detail.project.status !== "qc_passed") {
   throw new Error(`Expected qc_passed, got ${detail.project.status}`);
 }
 
-const learnedAfterProject = getKnowledgeBase(db).profiles.find((profile) => profile.ahj === "Portland" && profile.utility === "PGE");
+const learnedAfterProject = getKnowledgeBase(db).profiles.find((profile) => profile.ahj === SMOKE_AHJ && profile.utility === SMOKE_UTILITY);
 if (!learnedAfterProject || learnedAfterProject.projectCount < 1) {
-  throw new Error("Expected knowledge base to learn the Portland/PGE project profile.");
+  throw new Error(`Expected knowledge base to learn the ${SMOKE_AHJ}/${SMOKE_UTILITY} project profile.`);
 }
 if (!learnedAfterProject.requiredDocuments.some((doc) => /SLD|one-line|3-line/i.test(doc))) {
   throw new Error("Expected knowledge base to learn required electrical one-line/SLD document evidence.");
@@ -299,11 +305,12 @@ if (!earlyTimeline.events.every((event) => event.title && event.occurredAt && ev
 }
 
 const appDocs = getApplicationDocumentPackage(db, detail.project.id);
-if (appDocs.profile.id !== "portland-devhub-solar") {
+// Portland has a hand-built profile; other jurisdictions resolve a generic/learned one.
+if (SMOKE_AHJ === "Portland" && appDocs.profile.id !== "portland-devhub-solar") {
   throw new Error(`Expected Portland application profile, got ${appDocs.profile.id}`);
 }
 if (!appDocs.docs.some((doc) => doc.id === "prescriptive-application")) {
-  throw new Error("Expected Portland docs to include the prescriptive solar application/checklist.");
+  if (SMOKE_AHJ === "Portland") throw new Error("Expected Portland docs to include the prescriptive solar application/checklist.");
 }
 // A prescriptive-path project must NOT also generate the structural application — the
 // two are mutually exclusive and the AHJ takes exactly one.
@@ -315,7 +322,7 @@ if (!appDocs.html.includes("AHJ Application Document Package")) {
 }
 
 const withTarget = createPermitCheckTarget(db, detail.project.id, {
-  jurisdiction: "Portland",
+  jurisdiction: SMOKE_AHJ,
   portalName: "DevHub",
   applicationNumber: "APP-123",
   checkFrequencyDays: 3,
@@ -323,7 +330,7 @@ const withTarget = createPermitCheckTarget(db, detail.project.id, {
 if (!withTarget.permitCheckTargets.length) {
   throw new Error("Expected a permit check target.");
 }
-const learnedTarget = getKnowledgeBase(db).profiles.find((profile) => profile.ahj === "Portland" && profile.utility === "PGE");
+const learnedTarget = getKnowledgeBase(db).profiles.find((profile) => profile.ahj === SMOKE_AHJ && profile.utility === SMOKE_UTILITY);
 if (!learnedTarget?.portalName.includes("DevHub")) {
   throw new Error(`Expected knowledge base to learn DevHub portal, got ${learnedTarget?.portalName || "none"}.`);
 }
@@ -336,7 +343,7 @@ const ready = await recordPermitStatusCheck(db, detail.project.id, {
 if (ready.project.status !== "ready_for_issue" || !ready.permitStatusChecks[0]?.readyForIssue) {
   throw new Error(`Expected ready_for_issue, got ${ready.project.status}`);
 }
-const learnedTimeline = getKnowledgeBase(db).profiles.find((profile) => profile.ahj === "Portland" && profile.utility === "PGE");
+const learnedTimeline = getKnowledgeBase(db).profiles.find((profile) => profile.ahj === SMOKE_AHJ && profile.utility === SMOKE_UTILITY);
 if (!learnedTimeline || learnedTimeline.timelineSampleCount < 1 || learnedTimeline.averageTimelineDays == null) {
   throw new Error("Expected knowledge base to learn an average timeline sample from permit status.");
 }
@@ -349,7 +356,7 @@ const correction = await recordPermitStatusCheck(db, detail.project.id, {
 if (correction.project.status !== "correction_received" || !correction.corrections.length) {
   throw new Error("Expected monitor correction to create a bucketed correction.");
 }
-const learnedCorrection = getKnowledgeBase(db).profiles.find((profile) => profile.ahj === "Portland" && profile.utility === "PGE");
+const learnedCorrection = getKnowledgeBase(db).profiles.find((profile) => profile.ahj === SMOKE_AHJ && profile.utility === SMOKE_UTILITY);
 if (!learnedCorrection || !learnedCorrection.commonCorrections.length) {
   throw new Error("Expected knowledge base to learn a common correction pattern.");
 }
@@ -367,7 +374,7 @@ Date: Mon, 15 Jun 2026 10:00:00 -0700
 Correction required. Pacific Power PowerClerk application is missing meter photo and UL 1741 SB inverter settings. Please revise and resubmit.
 
 From permit@example.com Tue Jun 16 10:00:00 2026
-Subject: City of Portland permit approved
+Subject: ${SMOKE_AHJ} permit approved
 Date: Tue, 16 Jun 2026 10:00:00 -0700
 
 Solar permit has been approved and is ready to issue. Permit fees are due before issuance.
@@ -387,10 +394,10 @@ const liveMboxPath = path.resolve(process.cwd(), "backend/data/smoke-live-email.
 fs.writeFileSync(
   liveMboxPath,
   `From utility@example.com Wed Jun 17 10:00:00 2026
-Subject: PGE NEM approved APP-123
+Subject: ${SMOKE_UTILITY} NEM approved APP-123
 Date: Wed, 17 Jun 2026 10:00:00 -0700
 
-Permission to operate granted. PGE interconnection approved for Smoke Test at 123 Solar Way. Application APP-123 is approved.
+Permission to operate granted. ${SMOKE_UTILITY} interconnection approved for Smoke Test at 123 Solar Way. Application APP-123 is approved.
 `,
 );
 configureEmailTrackingSource(db, {
