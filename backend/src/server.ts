@@ -366,15 +366,27 @@ app.post("/api/projects/:id/filled-forms", asyncHandler(async (req, res) => {
 }));
 
 app.get("/api/projects/:id/filled-forms/:formId", (req, res) => {
-  const file = filledFormPath(String(req.params.id), String(req.params.formId));
+  const formId = String(req.params.formId);
+  const file = filledFormPath(String(req.params.id), formId);
   if (!fs.existsSync(file)) throw new HttpError(404, "Filled form not found. Build it first.");
   // Name the download — without Content-Disposition the browser saves the raw form-id hash
   // with no extension, which the operator can't open ("are these downloads even real?").
-  const formRow = db.get<{ ahj_name?: string; original_filename?: string }>(
-    "SELECT ahj_name, original_filename FROM ahj_forms WHERE id = ?", [String(req.params.formId)],
-  );
-  const base = (formRow?.original_filename || `${formRow?.ahj_name || "permit"}-application.pdf`).replace(/\.pdf$/i, "");
-  const safeName = `${base} - filled.pdf`.replace(/[^A-Za-z0-9 ()._-]+/g, "_");
+  // Built-in registry forms are named from the registry; stored templates carry a
+  // "tmpl-<row id>" formId that points at ahj_form_templates. Naming is cosmetic —
+  // a lookup miss must never block the download itself.
+  let base = "";
+  const registryDef = ahjFormRegistry.find((d) => d.id === formId);
+  if (registryDef) {
+    base = registryDef.formName;
+  } else {
+    try {
+      const formRow = db.get<{ ahj_name?: string; original_filename?: string }>(
+        "SELECT ahj_name, original_filename FROM ahj_form_templates WHERE id = ?", [formId.replace(/^tmpl-/, "")],
+      );
+      base = formRow?.original_filename || (formRow?.ahj_name ? `${formRow.ahj_name}-application` : "");
+    } catch { /* row/table unavailable — fall through to the generic name */ }
+  }
+  const safeName = `${(base || "permit-application").replace(/\.pdf$/i, "")} - filled.pdf`.replace(/[^A-Za-z0-9 ()._-]+/g, "_");
   res.setHeader("Content-Disposition", `attachment; filename="${safeName}"`);
   res.type("application/pdf").sendFile(file);
 });
