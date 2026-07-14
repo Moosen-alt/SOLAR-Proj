@@ -271,6 +271,41 @@ async function loadPortalRecipes() {
   }
 }
 
+// Human-readable target of a recorded step: the richest selector handle available.
+function recipeStepTarget(sel) {
+  if (!sel) return "";
+  return sel.name || sel.label || sel.placeholder || sel.text || sel.css || sel.testId || (sel.role ? `role=${sel.role}` : "");
+}
+
+// Read-back of one recorded step: what it does, where, and with which data — the
+// verification surface an operator needs before trusting a recipe for replay.
+function recipeStepRowHtml(r, step, i) {
+  const isFinal = step.isFinalSubmit === true;
+  const marker = step.action === "stopForReview"
+    ? '<span style="font-size:11px;padding:1px 6px;border-radius:4px;background:var(--info);color:#fff">STOP — human reviews &amp; submits</span>'
+    : isFinal
+      ? '<span style="font-size:11px;padding:1px 6px;border-radius:4px;background:var(--danger);color:#fff">FINAL SUBMIT — human-executed / trusted auto-submit only</span>'
+      : "";
+  const data = step.sensitive
+    ? `<em class="muted">sensitive — ${step.field ? `bound to project field <code>${esc(step.field)}</code>` : "no value stored"}</em>`
+    : step.field
+      ? `→ project field <code>${esc(step.field)}</code>`
+      : step.value != null && step.value !== ""
+        ? `= “${esc(String(step.value))}”`
+        : "";
+  const upload = step.action === "upload"
+    ? `<label style="font-size:11px;display:inline-flex;gap:4px;align-items:center">doc type:
+        <input data-recipe-doctype data-recipe-id="${esc(r.id)}" data-step-index="${i}" value="${esc(step.docType || "")}" placeholder="e.g. sld, site_plan" style="width:110px;padding:2px 5px;font-size:11px" />
+      </label>${step.docType ? "" : ' <span style="color:var(--danger);font-size:11px">required — upload is skipped at replay until set</span>'}`
+    : "";
+  return `<li style="margin:2px 0;font-size:12px">
+    <code>${esc(step.action)}</code>
+    ${recipeStepTarget(step.selector) ? `<span class="muted">on</span> ${esc(recipeStepTarget(step.selector))}` : ""}
+    ${data} ${upload} ${marker}
+    ${step.note ? `<div class="muted" style="font-size:11px;margin-left:12px">${esc(step.note)}</div>` : ""}
+  </li>`;
+}
+
 function renderPortalRecipes() {
   const el = $("portalRecipes");
   if (!el) return;
@@ -282,8 +317,18 @@ function renderPortalRecipes() {
     const map = { complete: "var(--success)", recording: "var(--warning)", needs_rerecord: "var(--danger)" };
     return `<span style="font-size:11px;padding:1px 6px;border-radius:4px;background:${map[status] || "var(--info)"};color:#fff">${esc(humanize(status))}</span>`;
   };
+  state.expandedRecipeSteps = state.expandedRecipeSteps || {};
+  const stepsBlock = (r) => {
+    if (!state.expandedRecipeSteps[r.id]) return "";
+    if (!r.steps.length) return '<p class="muted" style="font-size:12px;margin:6px 0 0">No steps captured yet.</p>';
+    const hasUploads = r.steps.some((s) => s.action === "upload");
+    return `<div data-recipe-steps="${esc(r.id)}" style="margin-top:6px;border-top:1px solid var(--line);padding-top:6px">
+      <ol style="margin:0;padding-left:18px">${r.steps.map((s, i) => recipeStepRowHtml(r, s, i)).join("")}</ol>
+      ${hasUploads ? `<button class="secondary" data-recipe-save-doctypes="${esc(r.id)}" style="font-size:11px;margin-top:6px">Save doc types</button>` : ""}
+    </div>`;
+  };
   el.innerHTML = recipes.map((r) => `
-    <div class="card" style="padding:8px 10px;margin-bottom:6px">
+    <div class="card" id="recipeCard-${esc(r.id)}" style="padding:8px 10px;margin-bottom:6px">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
         <div>
           <strong>${esc(r.scopeType === "utility" ? (r.utility || r.ahj || r.profileKey) : (r.ahj || r.utility || r.profileKey))}</strong>
@@ -291,6 +336,7 @@ function renderPortalRecipes() {
         </div>
         <div style="display:flex;gap:6px;align-items:center">
           ${badge(r.status)}
+          <button class="secondary" data-recipe-toggle-steps="${esc(r.id)}" style="font-size:11px">${state.expandedRecipeSteps[r.id] ? "Hide steps" : "View steps"}</button>
           <button class="secondary" data-recipe-rerecord="${esc(r.id)}" style="font-size:11px">Flag re-record</button>
           <button class="danger" data-recipe-delete="${esc(r.id)}" style="font-size:11px">Delete</button>
         </div>
@@ -300,7 +346,32 @@ function renderPortalRecipes() {
           <input type="checkbox" data-recipe-trust="${esc(r.id)}" ${r.autoSubmitEnabled ? "checked" : ""} />
           Trust for one-click approve-submit (hybrid)
         </label>` : '<div class="muted" style="font-size:11px;margin-top:4px">Not replayable until a complete recording is saved.</div>'}
+      ${stepsBlock(r)}
     </div>`).join("");
+  el.querySelectorAll("[data-recipe-toggle-steps]").forEach((b) => b.addEventListener("click", () => {
+    const id = b.getAttribute("data-recipe-toggle-steps");
+    state.expandedRecipeSteps[id] = !state.expandedRecipeSteps[id];
+    renderPortalRecipes();
+  }));
+  el.querySelectorAll("[data-recipe-save-doctypes]").forEach((b) => b.addEventListener("click", async () => {
+    const id = b.getAttribute("data-recipe-save-doctypes");
+    b.disabled = true;
+    try {
+      // Fetch fresh, patch ONLY upload docTypes by index, save with status unchanged —
+      // never promote/demote a recording from this editor.
+      const fresh = await api(`/api/portal-recipes/${id}`);
+      el.querySelectorAll(`[data-recipe-doctype][data-recipe-id="${id}"]`).forEach((input) => {
+        const idx = Number(input.getAttribute("data-step-index"));
+        if (fresh.steps[idx] && fresh.steps[idx].action === "upload") fresh.steps[idx].docType = input.value.trim();
+      });
+      await api(`/api/portal-recipes/${id}/steps`, { method: "PUT", body: JSON.stringify({ steps: fresh.steps, status: fresh.status }) });
+      showMessage("Doc types saved — uploads will replay with the matching project documents.", "info");
+      await loadPortalRecipes();
+    } catch (err) {
+      showMessage(err.message || "Could not save doc types.", "error");
+      b.disabled = false;
+    }
+  }));
   el.querySelectorAll("[data-recipe-trust]").forEach((c) => c.addEventListener("change", async () => {
     const id = c.getAttribute("data-recipe-trust");
     if (c.checked && !confirm("Enable one-click auto-submit for this portal?\n\nOnly do this if the recipe was recorded through the final application submit. The bot will click the application submit on Approve — it never pays fees and still stops for CAPTCHA/MFA.")) {
@@ -2006,7 +2077,7 @@ function trackCardHtml(t) {
   <article class="item ${cls} track-card">
     <div class="item-title">
       <span>${esc(t.label)}</span>
-      ${statusBadge(esc(t.statusLabel))}
+      ${statusBadge(t.statusLabel)}
     </div>
     <p class="muted" style="margin:0 0 4px">Channel: ${esc(t.channel)}${t.lastCheckedAt ? ` · last checked ${esc(fmtDate(t.lastCheckedAt))}` : ""}</p>
     <p style="margin:0 0 6px;font-size:12px">→ ${esc(t.nextAction)}</p>
@@ -2120,11 +2191,21 @@ async function stageSubmittalTrack(type, btn, autoSubmit = false) {
       renderDetail();
       return;
     }
+    // An MFA/CAPTCHA pause staged NOTHING — the "staged to final review" success toast
+    // would send the operator hunting for an application that doesn't exist.
+    if (job.result && job.result.status === "paused_for_human") {
+      showMessage(`${humanize(type)} run paused at a ${job.result.pauseReason || "verification"} challenge — nothing was staged. Complete the challenge in the open browser, then re-stage.`, "warning");
+      await loadSubmittalTracks();
+      renderDetail();
+      return;
+    }
     const detail = await api(`/api/projects/${state.selectedProjectId}`);
     if (detail && detail.project) state.detail = detail;
     await loadSubmittalTracks();
     renderDetail();
-    showMessage(`${humanize(type)} staged to final review. Verify every field, then submit manually in the portal and capture the number here.`, "info");
+    showMessage(job.result && job.result.status === "submitted"
+      ? `${humanize(type)} submitted via the trusted auto-submit (application submit only — no fees paid). Capture/verify the record number below.`
+      : `${humanize(type)} staged to final review. Verify every field, then submit manually in the portal and capture the number here.`, "info");
   } catch (err) {
     showMessage(err.message || `Could not stage ${type}.`, "error");
   } finally {
@@ -3831,6 +3912,10 @@ async function prepareSubmission() {
     }
     if (job.result && job.result.status === "failed") {
       showMessage(`Staging failed: ${job.result.message || "see the run log on the project for details."}`, "error");
+      return;
+    }
+    if (job.result && job.result.status === "paused_for_human") {
+      showMessage(`Portal run paused at a ${job.result.pauseReason || "verification"} challenge — nothing was staged. Complete the challenge in the open browser, then re-stage.`, "warning");
       return;
     }
     state.detail = await api(`/api/projects/${state.selectedProjectId}`);

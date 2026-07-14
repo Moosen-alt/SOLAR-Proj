@@ -5698,14 +5698,17 @@ export function captureConfirmation(
     );
     // Only advance the whole-project status to "submitted" when there are no OTHER
     // tracks still awaiting a human submit — otherwise a single-track confirmation would
-    // mark the entire project submitted while the other filing is still pending.
+    // mark the entire project submitted while the other filing is still pending. While
+    // tracks remain, the project STAYS awaiting_human_submit (not a pre-stage status):
+    // the autopilot approval gate keys on that status, so a pre-stage value would hide
+    // the remaining filings' Approve & Submit gate from the panel.
     const stillAwaiting = db.get<{ n: number }>(
       "SELECT COUNT(*) AS n FROM submissions WHERE project_id = ? AND status = 'awaiting_human_submit'",
       [projectId],
     );
     const remaining = Number(stillAwaiting?.n ?? 0);
     db.run("UPDATE projects SET status = ?, current_stage = ?, updated_at = ? WHERE id = ?", [
-      remaining > 0 ? "submit_staging" : "submitted",
+      remaining > 0 ? "awaiting_human_submit" : "submitted",
       remaining > 0 ? `One filing submitted; ${remaining} track(s) still awaiting human submit.` : "Human submitted. Confirmation captured.",
       ts,
       projectId,

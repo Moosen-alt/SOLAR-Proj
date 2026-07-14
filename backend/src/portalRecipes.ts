@@ -96,7 +96,9 @@ export function startPortalRecording(
     const nextVersion = Number(existing.version ?? 1) + 1;
     db.run(
       `UPDATE portal_recipes SET status = 'recording', version = ?, steps_json = '[]',
-         portal_platform = ?, portal_url = ?, updated_at = ? WHERE profile_key = ?`,
+         portal_platform = COALESCE(NULLIF(?, ''), portal_platform),
+         portal_url = COALESCE(NULLIF(?, ''), portal_url),
+         updated_at = ? WHERE profile_key = ?`,
       [nextVersion, s(input.portalPlatform), s(input.portalUrl), now, key],
     );
     return getPortalRecipe(db, s(existing.id));
@@ -489,6 +491,11 @@ export function appendHumanPatchSteps(
   // capture-side OFF_LIMITS blocks, so the two lists can't drift apart on pay intents.
   const SUBMIT_PAY = /\b(submit|pay|payment|pay now|checkout|finalize|place order|confirm submission|complete submission|file application)\b/i;
   newSteps = newSteps.filter((st) => {
+    // The submit-observed pseudo-step is a SIGNAL, never a replayable step. Its marker
+    // note (__human_submit_observed__) defeats \b-based matching (underscores are word
+    // chars), so drop it explicitly — it carries an empty selector and would throw
+    // "no usable selector" at replay if it ever merged.
+    if ((st.note || "").includes("human_submit_observed")) return false;
     if (st.action !== "click") return true;
     const label = (st.note || "").replace(/^human-patch:?\s*/i, "");
     if (SUBMIT_PAY.test(label)) return false;
@@ -499,6 +506,17 @@ export function appendHumanPatchSteps(
     return true;
   });
   if (!newSteps.length) return recipe;
+  // SENSITIVE steps: the capture ships the typed value in-memory ONLY so it can be bound
+  // to a project field key here (account/meter numbers live in project data). Bind on a
+  // unique match, then ALWAYS strip the literal before anything is persisted — a secret
+  // must never land in steps_json, matched or not.
+  newSteps = newSteps.map((st) => {
+    if (!st.sensitive || !st.value) return st;
+    const { steps: [bound] } = convertLiteralsToBoundFields([{ ...st, sensitive: undefined }], projectFields);
+    const next: RecipeStep = { ...st, field: bound.field || st.field };
+    delete next.value;
+    return next;
+  });
   const steps = [...(recipe.steps || [])];
   // Split off the trailing terminal markers (stopForReview and/or the recorded
   // final-submit) so patches land before them, in replayable position.

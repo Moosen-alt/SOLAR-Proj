@@ -16,15 +16,15 @@
 //    human clicking Submit files THIS application; it must not append a
 //    submit step that replay could act on.
 //  - Sensitive fields (password/account/meter/SSN/card) record the STEP but
-//    never the typed value (sensitive:true) — bound at replay from the
-//    encrypted store, exactly like the recorder.
+//    never persist the typed value (sensitive:true) — the merge binds it to a
+//    project field key by NAME and strips the literal before anything is stored.
 //  - Best-effort everywhere: capture can never break the open session.
 // ---------------------------------------------------------------------------
 import type { Page } from "playwright";
 import type { RecipeSelector, RecipeStep } from "../../shared/src/types";
 
 export interface HumanCapturePayload {
-  kind: "click" | "fill" | "select" | "check" | "upload" | "submitObserved";
+  kind: "click" | "fill" | "select" | "check" | "uncheck" | "upload" | "submitObserved";
   selector: RecipeSelector;
   value?: string;
   sensitive?: boolean;
@@ -49,11 +49,15 @@ export function payloadToStep(p: HumanCapturePayload): RecipeStep | null {
   if (p.kind === "submitObserved") return { action: "click", selector: {}, optional: true, note: HUMAN_SUBMIT_OBSERVED_NOTE };
   if (p.kind === "click") return { action: "click", selector: p.selector, note };
   if (p.kind === "fill" && p.sensitive) {
-    return { action: "fill", selector: p.selector, sensitive: true, optional: true, note: `${note} — SENSITIVE, bound at replay (no value stored)` };
+    // The typed value rides along IN MEMORY ONLY so the backend merge can bind it to a
+    // project field key (account/meter numbers are project data); appendHumanPatchSteps
+    // strips the literal unconditionally before anything is persisted.
+    return { action: "fill", selector: p.selector, value: p.value, sensitive: true, optional: true, note: `${note} — SENSITIVE, bound at replay (no value stored)` };
   }
   if (p.kind === "fill") return { action: "fill", selector: p.selector, value: p.value ?? "", note };
   if (p.kind === "select") return { action: "select", selector: p.selector, value: p.value ?? "", note };
   if (p.kind === "check") return { action: "check", selector: p.selector, note };
+  if (p.kind === "uncheck") return { action: "uncheck", selector: p.selector, note };
   if (p.kind === "upload") return { action: "upload", selector: p.selector, docType: "", note: `${note} — UPLOAD, set docType in the dashboard` };
   return null;
 }
@@ -145,8 +149,13 @@ function patchCaptureScript(): void {
     if (typeof w.__alPatchStep !== "function") return;
     if (el.type === "file") w.__alPatchStep({ kind: "upload", ...d });
     else if (el.tagName === "SELECT") w.__alPatchStep({ kind: "select", value: el.value, ...d });
-    else if (el.type === "checkbox" || el.type === "radio") { if (el.checked) w.__alPatchStep({ kind: "check", ...d }); }
-    else if (isSensitiveField(el)) w.__alPatchStep({ kind: "fill", sensitive: true, ...d });
+    else if (el.type === "checkbox" || el.type === "radio") {
+      // Unchecking a pre-checked checkbox is a real fix — record it (radios only ever
+      // fire change when they become checked).
+      if (el.checked) w.__alPatchStep({ kind: "check", ...d });
+      else if (el.type === "checkbox") w.__alPatchStep({ kind: "uncheck", ...d });
+    }
+    else if (isSensitiveField(el)) w.__alPatchStep({ kind: "fill", sensitive: true, value: el.value, ...d });
     else w.__alPatchStep({ kind: "fill", value: el.value, ...d });
   }, true);
 }

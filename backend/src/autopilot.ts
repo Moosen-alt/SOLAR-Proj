@@ -144,24 +144,28 @@ function reviewInfoFromRun(run: Row | null): { reviewMismatches: ReviewMismatch[
     const result = JSON.parse(String(run.result_json)) as Record<string, unknown>;
     // result_json shape: { steps: [{ok, data: {reviewMismatches, reviewAccurate, gapFill}}] }
     const steps = Array.isArray(result.steps) ? result.steps as Array<Record<string, unknown>> : [];
+    // gapFill and reviewMismatches live on DIFFERENT steps for different adapters:
+    // PowerClerk puts both on the review step, the RecipeAdapter reports gapFill on the
+    // fill step and never emits reviewMismatches. Collect each wherever it appears so
+    // the "required fields left blank" advisory fires for every adapter.
+    let reviewMismatches: ReviewMismatch[] = [];
+    let reviewAccurate: boolean | null = null;
+    const gapMissing = new Set<string>(gapMissingFrom(result));
     for (const step of steps) {
       const data = step.data as Record<string, unknown> | undefined;
-      if (data && Array.isArray(data.reviewMismatches)) {
-        return {
-          reviewMismatches: data.reviewMismatches as ReviewMismatch[],
-          reviewAccurate: typeof data.reviewAccurate === "boolean" ? data.reviewAccurate : null,
-          gapFillMissing: gapMissingFrom(data),
-        };
+      if (!data) continue;
+      if (!reviewMismatches.length && Array.isArray(data.reviewMismatches)) {
+        reviewMismatches = data.reviewMismatches as ReviewMismatch[];
+        reviewAccurate = typeof data.reviewAccurate === "boolean" ? data.reviewAccurate : null;
       }
+      for (const f of gapMissingFrom(data)) gapMissing.add(f);
     }
-    // Also check top-level (some portal results flatten the step data).
-    if (Array.isArray(result.reviewMismatches)) {
-      return {
-        reviewMismatches: result.reviewMismatches as ReviewMismatch[],
-        reviewAccurate: typeof result.reviewAccurate === "boolean" ? result.reviewAccurate : null,
-        gapFillMissing: gapMissingFrom(result),
-      };
+    // Top-level mismatches (some portal results flatten the step data).
+    if (!reviewMismatches.length && Array.isArray(result.reviewMismatches)) {
+      reviewMismatches = result.reviewMismatches as ReviewMismatch[];
+      reviewAccurate = typeof result.reviewAccurate === "boolean" ? result.reviewAccurate : null;
     }
+    return { reviewMismatches, reviewAccurate, gapFillMissing: Array.from(gapMissing).slice(0, 20) };
   } catch { /* ignore parse errors */ }
   return empty;
 }

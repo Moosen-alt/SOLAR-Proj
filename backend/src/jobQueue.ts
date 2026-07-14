@@ -468,7 +468,9 @@ export async function processNextJob(db: AppDb): Promise<boolean> {
     }
 
     db.run(
-      "UPDATE job_queue SET status = 'done', finished_at = ?, result = ?, progress = progress_total WHERE id = ?",
+      // Guard on status='running': the watchdog may have reclaimed (re-queued or failed)
+      // this job mid-run; the loser of that race must not clobber the new state.
+      "UPDATE job_queue SET status = 'done', finished_at = ?, result = ?, progress = progress_total WHERE id = ? AND status = 'running'",
       [nowIso(), JSON.stringify(result), job.id],
     );
   } catch (err) {
@@ -481,13 +483,13 @@ export async function processNextJob(db: AppDb): Promise<boolean> {
       // operator saw only a generic toast. Every failure is loggable, always.
       logger.warn("job-worker", `${job.jobType} failed (retry ${retryCount}/${job.maxRetries} at ${retryAt}): ${msg}`, { projectId: job.projectId ?? undefined });
       db.run(
-        "UPDATE job_queue SET status = 'pending', retry_count = ?, scheduled_at = ?, error = ? WHERE id = ?",
+        "UPDATE job_queue SET status = 'pending', retry_count = ?, scheduled_at = ?, error = ? WHERE id = ? AND status = 'running'",
         [retryCount, retryAt, msg, job.id],
       );
     } else {
       logger.warn("job-worker", `${job.jobType} FAILED: ${msg}`, { projectId: job.projectId ?? undefined });
       db.run(
-        "UPDATE job_queue SET status = 'failed', finished_at = ?, error = ? WHERE id = ?",
+        "UPDATE job_queue SET status = 'failed', finished_at = ?, error = ? WHERE id = ? AND status = 'running'",
         [nowIso(), msg, job.id],
       );
     }

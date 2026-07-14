@@ -76,10 +76,13 @@ async function main(): Promise<void> {
       if (payload.kind === "click") {
         steps.push({ action: "click", selector: sel, note: payload.label });
       } else if (payload.kind === "fill" && payload.sensitive) {
-        // Credential/secret field — never persist the typed value. Record the
-        // step (so replay knows to type here) and flag it for binding to the
-        // encrypted credential store / redacted project data.
-        steps.push({ action: "fill", selector: sel, sensitive: true, optional: true, note: `SENSITIVE — bind to credential/redacted field (no value stored). ${payload.label ?? ""}`.trim() });
+        // Credential/secret field — never persist the typed value. The value crosses
+        // ONLY this in-memory binding so it can be matched to a project field key
+        // (account/meter numbers live in project data); on a match the step binds by
+        // NAME and replay substitutes each project's own value. No match → the step
+        // is recorded valueless (optional) and skipped at replay.
+        const field = bindField(payload.value || "");
+        steps.push({ action: "fill", selector: sel, field, sensitive: true, optional: true, note: `SENSITIVE — ${field ? `bound to project field "${field}"` : "bind to credential/redacted field"} (no value stored). ${payload.label ?? ""}`.trim() });
       } else if (payload.kind === "fill") {
         const field = bindField(payload.value || "");
         steps.push(field ? { action: "fill", selector: sel, field, note: payload.label } : { action: "fill", selector: sel, value: payload.value, note: payload.label });
@@ -88,6 +91,8 @@ async function main(): Promise<void> {
         steps.push(field ? { action: "select", selector: sel, field, note: payload.label } : { action: "select", selector: sel, value: payload.value, note: payload.label });
       } else if (payload.kind === "check") {
         steps.push({ action: "check", selector: sel, note: payload.label });
+      } else if (payload.kind === "uncheck") {
+        steps.push({ action: "uncheck", selector: sel, note: payload.label });
       } else if (payload.kind === "upload") {
         steps.push({ action: "upload", selector: sel, docType: "", note: `UPLOAD — set docType (e.g. sld, site_plan) in the dashboard. ${payload.label ?? ""}` });
       }
@@ -175,12 +180,18 @@ function captureScript(): void {
     else if (name) sel.text = name;
     return { selector: sel, label: name };
   }
+  // Final-submit / payment intent — NEVER captured (same guard as humanCapture.ts).
+  // Replay additionally hard-blocks submit-keyword clicks, but the step must not be
+  // persisted in the first place: a recorded bare "Submit" click sits in replayable
+  // position forever. Losing a mid-flow "Submit Documents" nav click is the safer trade.
+  const OFF_LIMITS = /\b(submit|pay|pay fee|pay now|make payment|continue to payment|add to cart|proceed to (payment|checkout)|checkout|file application|confirm submission|complete submission|finalize|place order)\b/i;
   document.addEventListener("click", (e) => {
     const el = e.target as Element;
     if (!el || !(el instanceof Element)) return;
     const tag = el.tagName;
     if (tag === "INPUT" && (el as HTMLInputElement).type === "file") return; // handled by change
     const d = describe(el.closest("button,a,[role]") || el);
+    if (OFF_LIMITS.test(String((d as { label?: unknown }).label || ""))) return;
     w.__recordStep({ kind: "click", ...d });
   }, true);
   // A field whose value must never be persisted as a plaintext recipe value:
@@ -205,7 +216,13 @@ function captureScript(): void {
     const d = describe(el);
     if (el.type === "file") w.__recordStep({ kind: "upload", ...d });
     else if (el.tagName === "SELECT") w.__recordStep({ kind: "select", value: el.value, ...d });
-    else if (el.type === "checkbox" || el.type === "radio") { if (el.checked) w.__recordStep({ kind: "check", ...d }); }
+    else if (el.type === "checkbox" || el.type === "radio") {
+      // A radio only ever fires change when it becomes checked; a checkbox the operator
+      // UNCHECKS (portals pre-check "same as mailing" etc.) must record an uncheck step,
+      // or replay silently leaves the default on every future project.
+      if (el.checked) w.__recordStep({ kind: "check", ...d });
+      else if (el.type === "checkbox") w.__recordStep({ kind: "uncheck", ...d });
+    }
     else if (isSensitiveField(el)) w.__recordStep({ kind: "fill", sensitive: true, ...d });
     else w.__recordStep({ kind: "fill", value: el.value, ...d });
   }, true);

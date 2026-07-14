@@ -2068,7 +2068,11 @@ export class AutoLearnAdapter extends BasePortalAdapter {
                 alreadyFilledLabels,
                 isDashboard: false,
                 // Re-capture after the reveal so the planner sees the newly-shown fields/sections.
-                screenshotBase64: await this.capturePlanScreenshot(),
+                // COST: rescan passes reuse the page the planner already SAW —
+                // a fresh full-page screenshot per rescan (×7/page) is vision
+                // spend with little new signal. Off by default; PORTAL_VISION_RESCAN=1
+                // re-enables for portals whose reveals are visual-only.
+                screenshotBase64: process.env.PORTAL_VISION_RESCAN === "1" ? await this.capturePlanScreenshot() : undefined,
               });
             } catch { /* planner failure is non-fatal for the re-scrape pass */ }
 

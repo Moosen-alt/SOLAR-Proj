@@ -192,6 +192,8 @@ function deriveStatus(state: TrackState): SubmittalTrackStatus {
   if (state.submissionStatus === "awaiting_human_submit" || state.submissionStatus === "staged") {
     return "staged";
   }
+  // paused_for_human / failed runs staged NOTHING on the portal — the track genuinely
+  // has not started; the portal-runs panel carries the pause/failure banner.
   if (fromOutcome) return fromOutcome; // a target exists even without a submission row
   return "not_started";
 }
@@ -354,27 +356,82 @@ export function markTrackSubmitted(
   const trackingUrl = (input.trackingUrl || "").trim();
 
   db.transaction(() => {
-    db.run(
-      `INSERT INTO submissions
-        (id, project_id, portal_profile_id, submission_type, permit_type, status,
-         application_number, permit_number, confirmation_number, submitted_at, submitted_by,
-         screenshots_path, notes, created_at)
-       VALUES (?, ?, ?, ?, ?, 'submitted', ?, ?, ?, ?, ?, '', ?, ?)`,
-      [
-        randomUUID(),
-        project.id,
-        null,
-        type === "nem" ? "interconnection" : "permit",
-        type,
-        applicationNumber,
-        permitNumber,
-        confirmationNumber,
-        ts,
-        (input.submittedBy || "").trim(),
-        (input.notes || `${TRACK_LABELS[type]} submitted manually by operator.`),
-        ts,
-      ],
+    // If a staged run left an awaiting_human_submit submission for this track, the
+    // operator's manual submit RESOLVES it — update that row in place rather than
+    // inserting a second one, so the track never counts as both staged and submitted.
+    const awaiting = db.get<Row>(
+      `SELECT id FROM submissions
+        WHERE project_id = ? AND permit_type = ? AND status = 'awaiting_human_submit'
+        ORDER BY created_at DESC LIMIT 1`,
+      [project.id, type],
     );
+    if (awaiting) {
+      db.run(
+        `UPDATE submissions
+           SET status = 'submitted', application_number = ?, permit_number = ?,
+               confirmation_number = ?, submitted_at = ?, submitted_by = ?, notes = ?
+         WHERE id = ?`,
+        [
+          applicationNumber,
+          permitNumber,
+          confirmationNumber,
+          ts,
+          (input.submittedBy || "").trim(),
+          (input.notes || `${TRACK_LABELS[type]} submitted manually by operator.`),
+          s(awaiting.id),
+        ],
+      );
+    } else {
+      db.run(
+        `INSERT INTO submissions
+          (id, project_id, portal_profile_id, submission_type, permit_type, status,
+           application_number, permit_number, confirmation_number, submitted_at, submitted_by,
+           screenshots_path, notes, created_at)
+         VALUES (?, ?, ?, ?, ?, 'submitted', ?, ?, ?, ?, ?, '', ?, ?)`,
+        [
+          randomUUID(),
+          project.id,
+          null,
+          type === "nem" ? "interconnection" : "permit",
+          type,
+          applicationNumber,
+          permitNumber,
+          confirmationNumber,
+          ts,
+          (input.submittedBy || "").trim(),
+          (input.notes || `${TRACK_LABELS[type]} submitted manually by operator.`),
+          ts,
+        ],
+      );
+    }
+
+    // Close out the staged portal run for this track too, so the autopilot approve
+    // gate (which keys on an awaiting_human_submit run) can't re-submit a filing the
+    // human already completed in the portal.
+    db.run(
+      `UPDATE portal_runs SET status = 'submitted', finished_at = ?
+        WHERE project_id = ? AND permit_type = ? AND status = 'awaiting_human_submit'`,
+      [ts, project.id, type],
+    );
+
+    // Advance the project once every staged track is resolved — mirrors
+    // captureConfirmation. Only post-staging statuses advance: a manual submit recorded
+    // on a project that never staged must not skip the pre-stage pipeline.
+    if (project.status === "awaiting_human_submit" || project.status === "submit_staging") {
+      const stillAwaiting = db.get<{ n: number }>(
+        "SELECT COUNT(*) AS n FROM submissions WHERE project_id = ? AND status = 'awaiting_human_submit'",
+        [project.id],
+      );
+      const remaining = Number(stillAwaiting?.n ?? 0);
+      db.run("UPDATE projects SET status = ?, current_stage = ?, updated_at = ? WHERE id = ?", [
+        remaining > 0 ? "awaiting_human_submit" : "submitted",
+        remaining > 0
+          ? `${TRACK_LABELS[type]} submitted; ${remaining} track(s) still awaiting human submit.`
+          : `${TRACK_LABELS[type]} submitted manually. Tracking approval.`,
+        ts,
+        project.id,
+      ]);
+    }
 
     // Ensure a tracking target so the poller follows this track. Reuse an existing
     // active target of the same permit_type; otherwise create one.

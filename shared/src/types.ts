@@ -257,7 +257,7 @@ export interface SubmissionRecord {
   projectId: string;
   portalProfileId: string | null;
   submissionType: "permit" | "interconnection" | "correction" | "revision";
-  status: "staged" | "awaiting_human_submit" | "submitted" | "failed" | "approved";
+  status: "staged" | "awaiting_human_submit" | "paused_for_human" | "submitted" | "failed" | "approved";
   applicationNumber: string;
   permitNumber: string;
   confirmationNumber: string;
