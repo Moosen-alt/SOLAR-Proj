@@ -799,7 +799,7 @@ Rules:
     const system = `You read photos/scans of a residential solar customer's electric documents and extract intake fields with MAXIMUM accuracy. These are phone photos, so read carefully — digits matter.
 
 You are shown one or more labeled images:
-- UTILITY_BILL: the electric bill. Read the homeowner name, full service address, utility company, the ACCOUNT NUMBER exactly as printed, and the meter number from the account-activity table. Account numbers are often shown in spaced segments (e.g. "65564191-001 4") — that is ONE account number "65564191-0014"; join the segments and never drop a trailing check digit.
+- UTILITY_BILL: the electric bill. Read the homeowner name, full service address, utility company, the ACCOUNT NUMBER exactly as printed, and the meter number from the account-activity table. Account numbers are often shown in spaced segments and formats VARY BY UTILITY (e.g. "65564191-001 4" is ONE account number "65564191-0014"; Pacific Power prints a "002"-style sub-account segment plus a separate check digit, like "12345678 002 X" → "12345678-002X"). Join ALL printed segments in order and never drop a trailing check digit or sub-account segment — a missing segment makes the utility reject the NEM application.
 - METER_PHOTO: a photo of the electric meter. Read the meter serial number printed on the face/label (e.g. "78 118 886" -> "78118886"), and the utility (e.g. PacifiCorp = Pacific Power).
 
 Return ONLY JSON: {"fields":{"<id>":{"value":<string|number>,"confidence":<0..1>,"evidence":{"source":"utility_bill|meter_photo","sheet":"<region/label>","excerpt":"<verbatim text read>"}}}, "lowConfidenceFields":[...], "notes":"..."}
