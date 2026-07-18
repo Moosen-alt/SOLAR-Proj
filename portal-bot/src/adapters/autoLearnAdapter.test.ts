@@ -1177,7 +1177,68 @@ async function testEquipmentProximityFallback() {
   assert.deepEqual(values, ["AP Systems", "DS3-L", "Znshine", "ZXM7-UHLDD108-440/N"], JSON.stringify(values));
 }
 
+// COMBINED-SELECT SPECS TEMPLATE (the other PowerClerk shape): each repeater row
+// is a bare "Qty" input plus ONE UNLABELED "Please select..." dropdown whose
+// options are certified make+model strings. No "Manufacturer"/"Model" wording
+// exists anywhere — side comes from row order (Inverter row first, then PV
+// Array rows) within the spec section. The pass must fill both selects
+// model-first, leave the bare Qty inputs to the planner, and never touch an
+// unlabeled select outside the spec section.
+async function testEquipmentCombinedSelectRepeater() {
+  const log: ActionLog = { clicks: [], fills: [], selects: [], checks: [] };
+  const planner: LearnPlanner = async (): Promise<LearnPlanResponse> => ({ fills: [], atReview: true });
+  const adapter = new AutoLearnAdapter("SCE PowerClerk", planner, {
+    equipment: {
+      inverterMake: "Enphase",
+      inverterModel: "IQ8PLUS-72-2-US",
+      moduleMake: "Znshine",
+      moduleModel: "ZXM7-UHLDD108-440/N",
+      inverterQty: "16",
+      moduleQty: "31",
+    },
+  });
+  withFakePage(
+    adapter,
+    makeFakePage(
+      {
+        pages: [{
+          url: "https://scenm.powerclerk.com/specs",
+          title: "PV System Specification",
+          body: "PV System Specification",
+          rawFields: [
+            // Inverter row: bare Qty + unlabeled combined select.
+            { label: "Qty", fieldType: "text", id: "invQty", section: "PV System Specification" },
+            { label: "", fieldType: "select", id: "invSel", section: "PV System Specification" },
+            // PV Array row: same shape.
+            { label: "Qty", fieldType: "text", id: "arrQty", section: "PV System Specification" },
+            { label: "", fieldType: "select", id: "arrSel", section: "PV System Specification" },
+            // Row-header-labeled variant must also resolve (explicit side wording).
+            { label: "PV Array", fieldType: "select", id: "arr2Sel", section: "PV System Specification" },
+            // TRAP: unlabeled select OUTSIDE the spec section — must stay empty.
+            { label: "", fieldType: "select", id: "utilSel", section: "Utility Information" },
+          ],
+        }],
+      },
+      log,
+    ),
+  );
+  const result = await adapter.learn(fakeContext, fakeProject);
+  assert.equal(result.ok, true, `run should complete (${result.message || ""})`);
+  // Model-first candidates: the full model string is applied (the fake page
+  // can't be read back, so the first candidate is trusted). The trap select and
+  // the bare Qty inputs (planner's job, filled by index from the screenshot)
+  // receive nothing from this pass.
+  const selectValues = [...new Set(log.selects.map((s) => s.value).filter(Boolean))].sort();
+  assert.deepEqual(selectValues, ["IQ8PLUS-72-2-US", "ZXM7-UHLDD108-440/N"].sort(), `selects: ${JSON.stringify(log.selects)}`);
+  assert.ok(!log.selects.some((s) => s.key.includes("utilSel") && s.value), "trap select untouched");
+  const qtyFills = log.fills.filter((f) => /invQty|arrQty/.test(f.key) && f.value);
+  assert.equal(qtyFills.length, 0, `bare Qty left to the planner: ${JSON.stringify(qtyFills)}`);
+  const boundKeys = result.steps.map((s) => s.field).filter(Boolean);
+  assert.ok(boundKeys.includes("inverterModel") && boundKeys.includes("moduleModel"), `data-bound steps recorded: ${JSON.stringify(boundKeys)}`);
+}
+
 const tests: Array<[string, () => Promise<void>]> = [
+  ["POWERCLERK COMBINED SELECTS: unlabeled repeater dropdowns filled by row order, traps untouched", testEquipmentCombinedSelectRepeater],
   ["POWERCLERK SPECS: bare labels filled via section context; EV/meter traps untouched", testEquipmentSpecsSectionContext],
   ["EQUIPMENT PROXIMITY: sectionless bare Model inherits side from preceding make", testEquipmentProximityFallback],
   ["fields are extracted, filled, and recorded as steps", testFieldsExtractedFilledRecorded],

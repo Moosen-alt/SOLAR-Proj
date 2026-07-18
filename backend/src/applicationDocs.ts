@@ -334,12 +334,19 @@ function applicationProfileFromProcess(project: ProjectRecord): ApplicationRequi
     matchJurisdictions: [],
     portalName: submissionMethod,
     sourceUrl: "",
-    requiresAhjApplication: wantsBuildingApp && !portalOnly,
+    requiresAhjApplication: wantsBuildingApp,
     requiresStructuralApplication: wantsStructuralApp,
     requiresElectricalApplication: wantsElectricalApp,
     requiresPrescriptiveChecklist: wantsChecklist,
     requiresBidSheet: false,
-    requiresPortalEntryOnly: portalOnly,
+    // A portal in the process data means completed docs are SUBMITTED online —
+    // not that no PDF forms exist. ProjectDox/Avolve and most Accela AHJs still
+    // take filled PDF applications as uploads, and this flag short-circuits AHJ
+    // form acquisition before any research runs (the Clark Co WA "no documents
+    // pulled" bug). Only hand-written registry profiles may claim
+    // portal-entry-only; the acquisition research itself reports genuinely
+    // PDF-less portals.
+    requiresPortalEntryOnly: false,
     permitStructure: wantsBuildingApp && wantsElectricalApp ? "separate" : "unknown",
     submissionMethod,
     requiredDocuments,
@@ -349,9 +356,18 @@ function applicationProfileFromProcess(project: ProjectRecord): ApplicationRequi
 
 export function findApplicationProfile(project: ProjectRecord): ApplicationRequirementProfile {
   const haystack = `${project.ahj} ${project.city} ${project.state}`.toLowerCase();
-  const specific = applicationProfiles.find((profile) =>
-    profile.id !== "oregon-generic-epermitting" && profile.matchJurisdictions.some((term) => haystack.includes(term)),
-  );
+  // The hand-written registry is OREGON-specific, but its match terms are bare
+  // jurisdiction names that collide across states ("Washington County", "Salem",
+  // "Marion County", "Portland" all exist elsewhere). Without this state gate an
+  // out-of-state project silently inherited an Oregon profile — including
+  // requiresPortalEntryOnly:true flags that SKIP AHJ form acquisition entirely
+  // (seen as "no documents pulled" on a WA county).
+  const oregonProject = project.state.trim().toUpperCase() === "OR" || /\boregon\b/.test(haystack) || !project.state.trim();
+  const specific = oregonProject
+    ? applicationProfiles.find((profile) =>
+        profile.id !== "oregon-generic-epermitting" && profile.matchJurisdictions.some((term) => haystack.includes(term)),
+      )
+    : undefined;
   if (specific) return specific;
   // No hand-written profile — synthesize from the AHJ's seeded process knowledge so
   // we still pull the right forms for jurisdictions we have real data on.

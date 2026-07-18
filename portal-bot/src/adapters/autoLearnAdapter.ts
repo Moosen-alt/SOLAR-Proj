@@ -835,6 +835,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   private equipmentValueFor(
     context: string,
     fallbackSide?: "inverter" | "module",
+    bareSelect = false,
   ): { key: string; candidates: string[]; side: "inverter" | "module" | null } | null {
     const l = (context || "").toLowerCase();
     const isModel = /\bmodel\b/.test(l);
@@ -843,7 +844,41 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     const isTilt = /\btilt\b/.test(l); // NOT "pitch": AHJ "Roof Pitch" fields want rise/run (4:12), not degrees
     const isAzimuth = /\bazimuth\b/.test(l);
     const isTracking = /\btracking\b/.test(l);
-    if (!isModel && !isMake && !isQty && !isTilt && !isAzimuth && !isTracking) return null;
+    if (!isModel && !isMake && !isQty && !isTilt && !isAzimuth && !isTracking) {
+      // COMBINED EQUIPMENT SELECT. PowerClerk's other spec template renders each
+      // repeater row as a Qty box plus ONE unlabeled "Please select..." dropdown
+      // whose options are certified make+model strings ("Enphase Energy Inc.:
+      // IQ8PLUS-72-2-US [240V]") — no "Manufacturer"/"Model" wording anywhere.
+      // Candidates run model-first (full, then distinctive token) so a combined
+      // list matches on the model; make/aliases last so a manufacturer-only
+      // select still resolves. Every fill is verified against the option list,
+      // so a candidate that isn't in this select simply doesn't hold.
+      if (!bareSelect) return null;
+      const bareBattery = /battery|energy storage|\bess\b|storage system|powerwall/.test(l);
+      const bareSide = /inverter|micro/.test(l) ? "inverter" as const
+        : /module|pv ?array|solar panel|photovoltaic/.test(l) ? "module" as const
+        : fallbackSide ?? null;
+      if (!bareBattery) {
+        if (!bareSide) return null;
+        if (EQUIPMENT_NEGATIVE_GUARD.test(l) && !/module|pv ?array|solar|photovoltaic|inverter|micro/.test(l)) return null;
+      }
+      const prefix = bareBattery ? "battery" : bareSide!;
+      const model = (this.equipment[`${prefix}Model`] || "").trim();
+      const make = (this.equipment[`${prefix}Make`] || "").trim();
+      if (!model && !make) return null;
+      const candidates: string[] = [];
+      if (model) {
+        candidates.push(model);
+        const tokens = model.split(/[\s,()[\]{}]+/).filter((t) => /\d/.test(t) && t.length >= 3);
+        const core = tokens.sort((a, b) => b.length - a.length)[0];
+        if (core) candidates.push(core);
+      }
+      if (make) {
+        candidates.push(make);
+        candidates.push(...(EQUIPMENT_MAKE_ALIASES[make.toLowerCase().replace(/[^a-z0-9]/g, "")] ?? []));
+      }
+      return { key: `${prefix}Model`, candidates: [...new Set(candidates)], side: bareBattery ? null : bareSide };
+    }
     // NEGATIVE GUARD: service equipment, storage, EV gear, generators, racking,
     // optimizers, monitoring — anything with its own make/model that is NOT the
     // PV modules/inverters. The wider section+label context makes accidental
@@ -980,14 +1015,27 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       if (f.label) labelCounts.set(f.label, (labelCounts.get(f.label) || 0) + 1);
     }
     const labelSeen = new Map<string, number>();
+    // Ordinal of bare combined selects seen within a spec-flavored section — see
+    // the side heuristic below.
+    let specBareSelectSeen = 0;
     for (let i = 0; i < fields.length; i++) {
       const field = fields[i];
-      if (!field.label) continue;
-      const occurrence = labelSeen.get(field.label) ?? 0;
-      labelSeen.set(field.label, occurrence + 1);
+      // Unlabeled / generic-labeled SELECTS stay in the pass: the PowerClerk
+      // repeater template renders one bare "Please select..." combined equipment
+      // dropdown per row with NO label at all — skipping label-less fields here
+      // skipped exactly the controls this pass exists for.
+      const bareSelect = field.fieldType === "select" &&
+        (!field.label ||
+          /^(please\s+)?select\.{0,3}$|^choose\b/i.test(field.label) ||
+          // Row header as the label ("Inverter", "PV Array 2", "Battery"): pure
+          // side wording with no field-kind keyword is the combined select too.
+          /^(inverter|micro-?inverter|pv ?array|module|battery|energy storage)s?\s*#?\d*$/i.test(field.label.trim()));
+      if (!field.label && !bareSelect) continue;
+      const occurrence = labelSeen.get(field.label || "") ?? 0;
+      labelSeen.set(field.label || "", occurrence + 1);
       if (field.fieldType === "button" || field.fieldType === "file" || field.fieldType === "checkbox" || field.fieldType === "radio") continue;
-      const dupLabel = (labelCounts.get(field.label) || 0) > 1;
-      if (!dupLabel && alreadyFilledLabels.includes(field.label)) continue;
+      const dupLabel = (labelCounts.get(field.label || "") || 0) > 1;
+      if (field.label && !dupLabel && alreadyFilledLabels.includes(field.label)) continue;
       // Proximity only carries WITHIN one section and only a few fields deep.
       if ((field.section || "") !== lastSection) {
         lastSide = undefined;
@@ -998,9 +1046,24 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       // A negative-guard hit (battery/EV/generator/racking wording) ends any
       // inherited side immediately — the page has moved on to other equipment.
       if (EQUIPMENT_NEGATIVE_GUARD.test(context.toLowerCase())) lastSide = undefined;
-      const resolved = this.equipmentValueFor(context, lastSide);
+      // SIDE for a bare combined select with no side wording anywhere (section is
+      // just "PV System Specification", rows carry no labels): PowerClerk always
+      // renders the Inverter row first, then its PV Array rows — so within a
+      // spec-flavored section the FIRST bare select is the inverter, the rest are
+      // arrays. A wrong guess is harmless: the fill is verified against the
+      // option list and a wrong-side model/make never holds.
+      const specSection = /pv system|system specification|generating (facility|system)/i.test(context);
+      let fallbackSide = lastSide;
+      if (bareSelect && !fallbackSide && specSection) {
+        fallbackSide = specBareSelectSeen === 0 ? "inverter" : "module";
+      }
+      const resolved = this.equipmentValueFor(context, fallbackSide, bareSelect);
+      if (bareSelect && specSection) specBareSelectSeen++;
       if (!resolved) continue;
-      if (resolved.side) { lastSide = resolved.side; lastSideAt = i; }
+      // A combined bare select never seeds proximity inheritance — its side may
+      // be an ordinal guess, and leaking it onto a later bare "Qty" would let
+      // inverter data overwrite an array quantity the planner already filled.
+      if (resolved.side && !bareSelect) { lastSide = resolved.side; lastSideAt = i; }
       const failKey = `${resolved.key}::${context}`;
       if (this.equipmentFillFailed.has(failKey)) continue;
       // DUPLICATE LABELS make a label selector ambiguous — getByLabel("Quantity")
@@ -1021,7 +1084,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       // dependent model select that was just filled.
       const currentRaw = await this.currentControlValue(target);
       if (currentRaw && resolved.candidates.some((c) => AutoLearnAdapter.equipmentValueMatches(currentRaw, c))) {
-        alreadyFilledLabels.push(field.label);
+        if (field.label) alreadyFilledLabels.push(field.label);
         continue;
       }
       let sawNotHeld = false;
@@ -1043,7 +1106,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           }
         }
         steps.push(step);
-        alreadyFilledLabels.push(field.label);
+        if (field.label) alreadyFilledLabels.push(field.label);
         filled++;
         success = true;
         this.debug?.event({ type: "equipment_fill", label: context.slice(0, 80), key: resolved.key, candidate: candidate.slice(0, 60) });
