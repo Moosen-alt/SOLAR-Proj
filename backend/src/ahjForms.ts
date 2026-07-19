@@ -837,6 +837,35 @@ export function saveRegistrySignatureOverride(db: AppDb, formId: string, signatu
   );
 }
 
+/** Already-BUILT filled forms for a project, keyed by application docType
+ *  (building_application / electrical_application / solar_checklist /
+ *  permit_application) so portal upload slots asking for the completed
+ *  application can attach the real filled PDF. Disk-only — never triggers a
+ *  build (step 3 builds; staging just uses what exists). First form wins per type. */
+export function filledFormsByDocType(db: AppDb, projectId: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  const dir = path.join(FILLED_DIR, projectId);
+  let files: string[] = [];
+  try { files = fs.readdirSync(dir).filter((f) => f.endsWith(".pdf")); } catch { return out; }
+  for (const f of files) {
+    const formId = f.replace(/\.pdf$/, "");
+    let docType = "permit_application";
+    const tmpl = formId.startsWith("tmpl-")
+      ? db.get<{ form_type?: string }>("SELECT form_type FROM ahj_form_templates WHERE id = ?", [formId.slice(5)])
+      : null;
+    if (tmpl?.form_type) docType = String(tmpl.form_type);
+    else {
+      const def = ahjFormRegistry.find((d) => d.id === formId);
+      const name = (def?.formName || "").toLowerCase();
+      if (/electrical/.test(name)) docType = "electrical_application";
+      else if (/checklist|worksheet|eligibilit/.test(name)) docType = "solar_checklist";
+      else if (/building|structural/.test(name)) docType = "building_application";
+    }
+    if (!out[docType]) out[docType] = path.join(dir, f);
+  }
+  return out;
+}
+
 export function filledFormPath(projectId: string, formId: string): string {
   // Guard against path traversal in the formId path segment.
   const safe = formId.replace(/[^a-zA-Z0-9_-]/g, "");

@@ -312,6 +312,14 @@ export async function autoLearnPortal(
       await buildUtilityPackage(db, projectId, scopeType === "utility" ? "nem" : "permit").catch(() => null);
     }
     docsByType = projectDocsByType(db, projectId);
+    // Portal upload slots often ask for the COMPLETED application/checklist
+    // (yes, even portal-entry AHJs like some Accela configs). Overlay the
+    // already-built filled AHJ forms so those slots attach the real filled
+    // PDF instead of falling back to the plan set or staying empty.
+    try {
+      const { filledFormsByDocType } = await import("./ahjForms");
+      docsByType = { ...docsByType, ...filledFormsByDocType(db, projectId) };
+    } catch { /* filled forms optional */ }
   } catch {
     docsByType = {};
   }

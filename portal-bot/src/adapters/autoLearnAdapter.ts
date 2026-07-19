@@ -276,6 +276,14 @@ const EQUIPMENT_MAKE_ALIASES: Record<string, string[]> = {
 };
 
 const UPLOAD_LABEL_PATTERNS: Array<{ re: RegExp; docType: string }> = [
+  // Completed-application slots FIRST (before the generic doc patterns): even
+  // portal-entry AHJs (some Accela configs) ask for the filled application/
+  // checklist PDF as an attachment. The filled forms are overlaid into
+  // docsByType by the backend (filledFormsByDocType).
+  { re: /electrical\s*(permit\s*)?application/i, docType: "electrical_application" },
+  { re: /(building|structural)\s*(permit\s*)?application/i, docType: "building_application" },
+  { re: /checklist|worksheet|eligibilit/i, docType: "solar_checklist" },
+  { re: /(completed|signed|permit|solar)\s*application|application\s*(form|packet)/i, docType: "permit_application" },
   { re: /one[-\s]?line|single[-\s]?line|\bsld\b|electrical\s*(diagram|schematic|one)/i, docType: "sld" },
   { re: /site\s*plan|plot\s*plan/i, docType: "site_plan" },
   { re: /structural|roof\s*framing|mounting|attachment\s*detail/i, docType: "structural" },
@@ -1158,6 +1166,12 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     // fits() applies here too so an explicit PORTAL_UPLOAD_MAX_MB override is honored
     // (the default combined cap is Infinity, so this normally passes everything through).
     if (this.uploadMode === "combined") {
+      // Application/checklist slots keep their SPECIFIC filled PDF even in
+      // combined mode — "Completed Building Permit Application" must never
+      // receive the whole plan set when the filled form exists.
+      for (const { re, docType } of UPLOAD_LABEL_PATTERNS.slice(0, 4)) {
+        if (re.test(label) && fits(docType)) return { docType, file: this.docsByType[docType] };
+      }
       for (const docType of ["plan_set", "combined_plan_set", "full_plan_set"]) {
         if (fits(docType)) return { docType, file: this.docsByType[docType] };
       }
