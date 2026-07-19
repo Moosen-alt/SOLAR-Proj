@@ -1637,6 +1637,7 @@ Return ONLY JSON:
 Rules:
 - Use the EXACT field names provided (case/spacing matters).
 - Put checkbox-type fields in "checkboxes", text fields in "textFields".
+- COMPLIANCE-CHECKLIST forms (rows of Yes/Complies checkboxes): map source "lit:X" for every row a code-standard residential rooftop PV install satisfies by definition; skip rows needing project-specific measurements and name them in "notes". The mapping is human-verified before real use — a mostly-complete checklist beats an empty one.
 - NEVER map signature, date-signed, or fee-payment fields — leave them for the human.
 - NEVER map utility account number or meter number onto a public form field unless the field name explicitly asks for it.
 - Return valid JSON only.`;
@@ -1706,6 +1707,7 @@ Rules:
 - Place a value ONLY where you can clearly see the matching labeled blank. Do not guess positions.
 - Do NOT put text in "fields" for signature or date-signed lines — signature lines go in "signatures"; leave date-signed for the human.
 - For checkboxes (e.g. "Type of work: Other"), use source "lit:X" placed at the box.
+- COMPLIANCE CHECKLISTS (e.g. a prescriptive solar checklist where each row has a Yes/Complies/Meets box): place "lit:X" in the Yes/Complies box of EVERY row that a code-standard residential rooftop PV install satisfies by definition (flush roof mount, listed equipment, engineered racking per manufacturer letter, rapid shutdown, permitted conductor sizing). SKIP rows requiring project-specific data you cannot know (spans, site distances) — list those skipped rows in "notes" so the operator finishes them. The map is human-verified before real use, so favor covering the standard rows over leaving the checklist blank.
 - ROLE/SECTION checkboxes: if the form has checkboxes that select WHO a section describes — e.g. "Property owner" vs "Tenant", "Contractor" vs "Subcontractor", "Applicant" vs "Contact Person", "Owner" vs "Agent" — check the boxes that match THIS filing: this project is submitted by the licensed CONTRACTOR who is also the APPLICANT, and the property-owner block holds the homeowner. So place "lit:X" in the "Property owner", "Contractor", and "Applicant" boxes (and any equivalent owner/contractor/applicant selector), and DO NOT check "Tenant", "Subcontractor", or "Contact Person". Place the X precisely inside the small box, not on the label.
 - Coordinates must be precise — they will be used verbatim. Return valid JSON only.`;
 

@@ -99,6 +99,8 @@ Every "unknown" the learner can hit now has a look-it-up-or-figure-it-out path:
 - `NEM_FEE_ESTIMATE_USD` — NEM-track fee estimate (default 0).
 - `AHJ_FORM_RECOVER_MAX` — broken-form re-research cap per refresh run (5).
 - `KB_LINK_CHECK_DAYS` / `KB_LINK_CHECK_MAX` / `KB_LINK_RESEARCH_MAX` — link sweep.
+- `OVERLAY_NUDGE_X` / `OVERLAY_NUDGE_Y` — global PDF-points shift for overlay form fills ("prints a smidgen low" → +2).
+- `PORTAL_VISION_RESCAN=1` — re-enable screenshots on rescan planner calls.
 - `RUN_TRIAGE=off`, `CORRECTION_AGENT=off` — agent kill-switches.
 - Existing: `AHJ_FORM_REFRESH_DAYS`, `PERMIT_VALUATION_PER_WATT`,
   `PORTAL_POLICY_DEFAULTS`, `PORTAL_UPLOAD_MAX_MB`, `AUTOPILOT_DB_PATH`.

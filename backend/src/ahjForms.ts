@@ -617,7 +617,13 @@ export async function fillLoadedForm(
           text = text.slice(0, -1);
         }
       }
-      page.drawText(text, { x: field.x, y: field.y, size, font, color: rgb(0, 0, 0) });
+      // Calibration: vision-derived baselines drift a few points consistently per
+      // machine/model. OVERLAY_NUDGE_X/OVERLAY_NUDGE_Y (PDF points; +y = up) shift
+      // EVERY overlay placement so the operator can true-up alignment with one env
+      // knob instead of re-mapping ("prints a smidgen low/left" → set +2/+2).
+      const nx = field.x + (Number(process.env.OVERLAY_NUDGE_X) || 0);
+      const ny = field.y + (Number(process.env.OVERLAY_NUDGE_Y) || 0);
+      page.drawText(text, { x: nx, y: ny, size, font, color: rgb(0, 0, 0) });
       drawn += 1;
     }
     await drawSignatures(doc, def, ctx);
