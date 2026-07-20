@@ -5352,6 +5352,8 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
     // drift — the portal changed under a recipe that used to work. Mark it needs_rerecord so
     // it stops silently failing every future stage and surfaces for re-recording, and tell
     // the operator plainly instead of leaving a raw "Recipe step failed" message.
+    // NOTE: the "(page drift)" fail-fast in recipeAdapter.precheckPageDrift relies
+    // on this same /recipe step failed/i match to land in needs_rerecord.
     if (result && result.ok === false && typeof result.message === "string" && /recipe step failed/i.test(result.message)) {
       try {
         markPortalRecipeForRerecord(db, recipe.id);

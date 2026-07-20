@@ -552,7 +552,86 @@ async function testFingerprintBoostUnit() {
   assert.equal(max, 58, "max boost stays below the 70 label gate");
 }
 
+// DRIFT PRECHECK -----------------------------------------------------------
+const threeFills: RecipeStep[] = [
+  { action: "fill", selector: { label: "Homeowner Name" }, note: "Homeowner Name", value: "X" },
+  { action: "fill", selector: { label: "Project Address" }, note: "Project Address", value: "Y" },
+  { action: "select", selector: { label: "Utility Company" }, note: "Utility Company", value: "Z" },
+  { action: "stopForReview" },
+];
+
+async function testDriftZeroOverlapFailsFast() {
+  const log: ActionLog = { clicks: [], fills: [], gotos: [], checks: 0 };
+  const adapter = new RecipeAdapter(baseRecipe(threeFills), {}, {});
+  withFakePage(adapter, makeFakePage({
+    log,
+    rawFields: [
+      { label: "Totally New Field A", fieldType: "text", id: "a" },
+      { label: "Totally New Field B", fieldType: "text", id: "b" },
+    ],
+  }));
+  const result = await adapter.fillApplication(fakeProject);
+  assert.equal(result.ok, false);
+  assert.match(String(result.message), /Recipe step failed \(page drift\)/);
+  assert.equal(log.fills.length, 0, "fails fast — no per-step timeout death");
+  const warnings = (result.data as { driftWarnings?: string[] }).driftWarnings ?? [];
+  assert.equal(warnings.length, 0, "hard fail carries the message, not a warning");
+}
+
+async function testDriftPartialOverlapWarnsAndContinues() {
+  const log: ActionLog = { clicks: [], fills: [], gotos: [], checks: 0 };
+  const adapter = new RecipeAdapter(baseRecipe(threeFills), {}, {});
+  withFakePage(adapter, makeFakePage({
+    log,
+    rawFields: [
+      { label: "Homeowner Name", fieldType: "text", id: "hn" }, // 1 of 3 → 0.33 < 0.34
+      { label: "Totally New Field", fieldType: "text", id: "x" },
+    ],
+  }));
+  const result = await adapter.fillApplication(fakeProject);
+  assert.equal(result.ok, true, `partial overlap must continue (${result.message})`);
+  const warnings = (result.data as { driftWarnings?: string[] }).driftWarnings ?? [];
+  assert.equal(warnings.length, 1, "drift annotated");
+  assert.match(warnings[0], /1\/3 recorded fields/);
+}
+
+async function testDriftSparseSegmentSkipped() {
+  const log: ActionLog = { clicks: [], fills: [], gotos: [], checks: 0 };
+  const adapter = new RecipeAdapter(baseRecipe([
+    { action: "fill", selector: { label: "Search" }, note: "Search", value: "X" },
+    { action: "stopForReview" },
+  ]), {}, {});
+  withFakePage(adapter, makeFakePage({ log, rawFields: [{ label: "Unrelated", fieldType: "text", id: "u" }] }));
+  const result = await adapter.fillApplication(fakeProject);
+  assert.equal(result.ok, true, "sparse segment (<3 labels) never prechecked");
+  assert.equal(((result.data as { driftWarnings?: string[] }).driftWarnings ?? []).length, 0);
+}
+
+async function testDriftFrameScopedExcluded() {
+  const log: ActionLog = { clicks: [], fills: [], gotos: [], checks: 0 };
+  const framed: RecipeStep[] = threeFills.map((st) =>
+    st.action === "stopForReview" ? st : { ...st, selector: { ...st.selector, frame: "ACADialogFrame" } });
+  const adapter = new RecipeAdapter(baseRecipe(framed), {}, {});
+  withFakePage(adapter, makeFakePage({ log, rawFields: [{ label: "Whatever", fieldType: "text", id: "w" }] }));
+  const result = await adapter.fillApplication(fakeProject);
+  assert.equal(result.ok, true, "frame-scoped steps never counted → precheck no-ops");
+}
+
+async function testDriftNoEvalSilent() {
+  const log: ActionLog = { clicks: [], fills: [], gotos: [], checks: 0 };
+  const adapter = new RecipeAdapter(baseRecipe(threeFills), {}, {});
+  withFakePage(adapter, makeFakePage({ log })); // no rawFields → no $$eval on the fake
+  const result = await adapter.fillApplication(fakeProject);
+  assert.equal(result.ok, true, "no $$eval → precheck silently passes (legacy fakes)");
+  assert.equal(log.fills.length, 2, "fills ran normally");
+}
+
 const tests: Array<[string, () => Promise<void>]> = [
+  ["DRIFT: zero overlap on data segment fails fast as needs_rerecord message", testDriftZeroOverlapFailsFast],
+  ["DRIFT: partial overlap annotates driftWarnings and continues", testDriftPartialOverlapWarnsAndContinues],
+  ["DRIFT: sparse segment (<3 labels) is never prechecked", testDriftSparseSegmentSkipped],
+  ["DRIFT: frame-scoped steps excluded from the expected set", testDriftFrameScopedExcluded],
+  ["DRIFT: page without \$\$eval passes silently (legacy)", testDriftNoEvalSilent],
   ["HEAL FINGERPRINT: ambiguous label healed onto the fingerprint-matching field", testHealPrefersFingerprintMatch],
   ["HEAL FINGERPRINT: legacy recipes (no fingerprint) behave as before", testHealWithoutFingerprintLegacy],
   ["HEAL FINGERPRINT: attributes alone never invent a match", testFingerprintNeverInventsMatch],

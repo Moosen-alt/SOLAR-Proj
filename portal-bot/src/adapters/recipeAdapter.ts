@@ -48,6 +48,10 @@ export class RecipeAdapter extends BasePortalAdapter {
   /** Steps repaired mid-replay by label re-anchoring (reported to the backend,
    *  which patches the recipe and requires human re-verification). */
   private healedSteps: Array<{ note: string; action: string; selector: RecipeSelector }> = [];
+  /** Drift-precheck annotations ("this page barely matches the recipe") — surfaced
+   *  in every result payload so a run that squeaked through via heals still tells
+   *  the operator the portal likely changed. */
+  private driftWarnings: string[] = [];
   // Set true ONLY when the automation actually clicked an explicit isFinalSubmit step
   // in autoSubmit mode and the portal accepted it (no challenge / no error).
   finalSubmitClicked = false;
@@ -190,7 +194,13 @@ export class RecipeAdapter extends BasePortalAdapter {
     // autosave commit before an advancing click (mirrors the auto-learn persist-settle).
     let prevWasInput = false;
 
-    for (const step of this.recipe.steps) {
+    // PAGE-DRIFT PRECHECK before the first segment (see precheckPageDrift).
+    {
+      const driftFail = await this.precheckPageDrift(0);
+      if (driftFail) return fail(driftFail, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings });
+    }
+    for (let stepIdx = 0; stepIdx < this.recipe.steps.length; stepIdx++) {
+      const step = this.recipe.steps[stepIdx];
       // Guided-manual: stop at review. autoSubmit (trusted, approved): proceed past
       // the review marker to replay ONLY allowlisted final-submit steps.
       if (step.action === "stopForReview") {
@@ -266,12 +276,18 @@ export class RecipeAdapter extends BasePortalAdapter {
           skipped.push(`${step.note || step.action} (optional, skipped: ${lastErr instanceof Error ? lastErr.message : String(lastErr)})`);
           continue;
         }
-        return fail(`Recipe step failed (${step.action}${step.note ? ` — ${step.note}` : ""}): ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`, { executed, skipped, healedSteps: this.healedSteps });
+        return fail(`Recipe step failed (${step.action}${step.note ? ` — ${step.note}` : ""}): ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings });
       }
       // Remember whether this step entered data, so the next advancing click waits for the
       // portal's autosave to commit (prevents blank-draft saves on PowerClerk).
       if (["fill", "select", "check", "uncheck", "press"].includes(step.action)) prevWasInput = true;
-      else if (step.action === "click" || step.action === "goto") prevWasInput = false;
+      else if (step.action === "click" || step.action === "goto") {
+        prevWasInput = false;
+        // New page segment begins after an advance — precheck it before burning
+        // per-step timeouts on a page the portal may have rebuilt.
+        const driftFail = await this.precheckPageDrift(stepIdx + 1);
+        if (driftFail) return fail(driftFail, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings });
+      }
     }
 
     if (this.finalSubmitClicked) {
@@ -288,7 +304,7 @@ export class RecipeAdapter extends BasePortalAdapter {
         gapFill: this.gapFillReport, healedSteps: this.healedSteps,
       });
     }
-    return ok(`Replayed ${executed} recorded step(s); stopped at review.`, { executed, skipped, finalSubmitClicked: false, gapFill: this.gapFillReport, healedSteps: this.healedSteps });
+    return ok(`Replayed ${executed} recorded step(s); stopped at review.`, { executed, skipped, finalSubmitClicked: false, gapFill: this.gapFillReport, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings });
   }
 
   private resolveValue(step: RecipeStep): string {
@@ -502,6 +518,61 @@ export class RecipeAdapter extends BasePortalAdapter {
     else if (sel.role) loc = scope.getByRole(sel.role);
     else throw new Error("Recipe step has no usable selector.");
     return typeof sel.nth === "number" ? loc.nth(sel.nth) : loc.first();
+  }
+
+  /** Labels the recipe expects on the page segment starting at fromIndex (steps
+   *  until the next advancing click/goto/stopForReview). Fill/select steps only;
+   *  frame-scoped and optional steps are excluded (main-frame extraction can't
+   *  see into iframes; optional fields legitimately vanish). */
+  private expectedLabelsForSegment(fromIndex: number): string[] {
+    const labels: string[] = [];
+    for (let i = fromIndex; i < this.recipe.steps.length; i++) {
+      const st = this.recipe.steps[i];
+      if (st.action === "click" || st.action === "goto" || st.action === "stopForReview") break;
+      if (st.action !== "fill" && st.action !== "select") continue;
+      if (st.optional || st.selector?.frame) continue;
+      const label = (st.note || st.selector?.label || st.selector?.name || st.selector?.placeholder || "")
+        .replace(/^human-patch:\s*/i, "")
+        .replace(/\s*—\s*SENSITIVE.*$/i, "")
+        .trim();
+      if (label.length >= 3) labels.push(label);
+    }
+    return labels;
+  }
+
+  /** PAGE-DRIFT PRECHECK. Compares the segment's recorded labels against the live
+   *  page: zero overlap on a data-heavy segment (>=3 labels) → fail fast with a
+   *  "Recipe step failed (page drift)" message — the literal "Recipe step failed"
+   *  prefix is load-bearing: repository.ts's staleness handler matches
+   *  /recipe step failed/i to mark the recipe needs_rerecord (comment there too).
+   *  Partial overlap → annotate driftWarnings and continue (self-heal may still
+   *  save the run). Sparse segments (dashboards, logins, upload-only pages) and
+   *  any precheck error → silent pass. Never runs past stopForReview (segment
+   *  walk stops there). */
+  private async precheckPageDrift(fromIndex: number): Promise<string | null> {
+    try {
+      if (!this.page || typeof this.page.$$eval !== "function") return null;
+      const expected = this.expectedLabelsForSegment(fromIndex);
+      if (expected.length < 3) return null;
+      const raws = (await this.page.$$eval(EXTRACT_SEL, extractFieldsInPage)) as Array<{ label?: string }>;
+      const live = raws.map((r) => (r.label || "").trim().toLowerCase()).filter(Boolean);
+      const matches = (want: string): boolean => {
+        const w = want.toLowerCase();
+        return live.some((l) => l === w || (Math.min(l.length, w.length) >= 5 && (l.includes(w) || w.includes(l))));
+      };
+      const hit = expected.filter(matches).length;
+      const overlap = hit / expected.length;
+      if (overlap >= 0.34) return null;
+      if (hit > 0) {
+        this.driftWarnings.push(
+          `Page drift: only ${hit}/${expected.length} recorded fields found for this section (${expected.slice(0, 4).join(", ")}…) — the portal may have changed; verify the review screen closely.`,
+        );
+        return null;
+      }
+      return `Recipe step failed (page drift): none of the ${expected.length} recorded fields for this section ("${expected.slice(0, 3).join('", "')}"…) are on the current page — the portal has likely changed. Re-record the recipe.`;
+    } catch {
+      return null; // precheck must never break a replay
+    }
   }
 
   /** Find the CURRENT page element matching a failed step's recorded label/name.
