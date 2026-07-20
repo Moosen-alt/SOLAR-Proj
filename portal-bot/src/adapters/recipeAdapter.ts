@@ -526,10 +526,39 @@ export class RecipeAdapter extends BasePortalAdapter {
       const label = (f.label || "").trim().toLowerCase();
       if (!label) continue;
       const contains = label.includes(wanted) || wanted.includes(label);
-      const score = label === wanted ? 100 : contains && Math.min(label.length, wanted.length) >= 5 ? 70 : 0;
-      if (score >= 70 && (!best || score > best.score)) best = { sel: f.selector, score };
+      const base = label === wanted ? 100 : contains && Math.min(label.length, wanted.length) >= 5 ? 70 : 0;
+      // Fingerprint is a TIE-BREAK bonus only (max 58 < the 70 label gate):
+      // two bare "Manufacturer" fields both score 70/100 on label — the one whose
+      // recorded attributes (name/placeholder/id/aria/section) match wins. A
+      // fingerprint can never substitute for the label anchor (never invented).
+      if (base < 70) continue;
+      const score = base + fingerprintBoost(f.fingerprint, step.fingerprint);
+      if (!best || score > best.score) best = { sel: f.selector, score };
     }
     if (best && JSON.stringify(best.sel) === JSON.stringify(step.selector)) return null;
     return best?.sel ?? null;
   }
+}
+
+
+/** Tie-break bonus for replay self-heal: how well a live element's recorded-style
+ *  attributes match the step's captured fingerprint. Pure + exported for tests.
+ *  Max 58 — deliberately below the 70-point label gate so attributes alone can
+ *  never manufacture a heal target. */
+export function fingerprintBoost(
+  live: { id?: string; name?: string; placeholder?: string; ariaLabel?: string; section?: string } | undefined,
+  recorded: { id?: string; name?: string; placeholder?: string; ariaLabel?: string; section?: string } | undefined,
+): number {
+  if (!live || !recorded) return 0;
+  const eq = (a?: string, b?: string): boolean => !!a && !!b && a.trim().toLowerCase() === b.trim().toLowerCase();
+  let boost = 0;
+  if (eq(live.name, recorded.name)) boost += 15;
+  if (eq(live.placeholder, recorded.placeholder)) boost += 15;
+  if (eq(live.id, recorded.id)) boost += 10;
+  if (eq(live.ariaLabel, recorded.ariaLabel)) boost += 10;
+  // Sections are headings that get reworded — substring both ways, min 4 chars.
+  const ls = (live.section || "").trim().toLowerCase();
+  const rs = (recorded.section || "").trim().toLowerCase();
+  if (ls && rs && Math.min(ls.length, rs.length) >= 4 && (ls.includes(rs) || rs.includes(ls))) boost += 8;
+  return boost;
 }

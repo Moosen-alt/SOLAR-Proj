@@ -1770,6 +1770,20 @@ export interface RecipeSelector {
   fallbacks?: RecipeSelector[];
 }
 
+/** Attributes of the recorded element captured at record time. NEVER used to
+ *  build a locator; consumed only by replay self-heal to rank candidates when
+ *  the label anchor is ambiguous (two bare "Manufacturer" fields). Attribute
+ *  names/labels only — never values, never secrets. Old recipes lack the bag. */
+export interface StepFingerprint {
+  id?: string;
+  name?: string;
+  placeholder?: string;
+  ariaLabel?: string;
+  section?: string;
+  /** Reserved for short preceding text; not populated in v1. */
+  nearText?: string;
+}
+
 export interface RecipeStep {
   action: RecipeAction;
   phase?: RecipePhase;
@@ -1798,6 +1812,8 @@ export interface RecipeStep {
    *  safely stops at the review screen and never clicks final submit. */
   isFinalSubmit?: boolean;
   note?: string;
+  /** See StepFingerprint — heal tie-break metadata captured at record time. */
+  fingerprint?: StepFingerprint;
 }
 
 export type PortalRecipeStatus = "recording" | "complete" | "needs_rerecord";

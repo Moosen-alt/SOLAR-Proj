@@ -19,7 +19,7 @@
  * Delete / re-record from the dashboard (Portal Recipes admin) if one wasn't completed.
  */
 import readline from "node:readline";
-import type { RecipeSelector, RecipeStep } from "../../shared/src/types";
+import type { RecipeSelector, RecipeStep, StepFingerprint } from "../../shared/src/types";
 import { openPortal } from "./browser";
 
 function arg(name: string, fallback = ""): string {
@@ -71,8 +71,10 @@ async function main(): Promise<void> {
   // The page calls this binding for every captured interaction.
   await page.exposeBinding(
     "__recordStep",
-    (_src: unknown, payload: { kind: string; selector: RecipeSelector; value?: string; sensitive?: boolean; isFile?: boolean; label?: string }) => {
+    (_src: unknown, payload: { kind: string; selector: RecipeSelector; value?: string; sensitive?: boolean; isFile?: boolean; label?: string; fingerprint?: StepFingerprint }) => {
       const sel = payload.selector;
+      // Heal tie-break metadata (attribute names only) — attached to form-control steps.
+      const fp = payload.fingerprint ? { fingerprint: payload.fingerprint } : {};
       if (payload.kind === "click") {
         steps.push({ action: "click", selector: sel, note: payload.label });
       } else if (payload.kind === "fill" && payload.sensitive) {
@@ -82,17 +84,17 @@ async function main(): Promise<void> {
         // NAME and replay substitutes each project's own value. No match → the step
         // is recorded valueless (optional) and skipped at replay.
         const field = bindField(payload.value || "");
-        steps.push({ action: "fill", selector: sel, field, sensitive: true, optional: true, note: `SENSITIVE — ${field ? `bound to project field "${field}"` : "bind to credential/redacted field"} (no value stored). ${payload.label ?? ""}`.trim() });
+        steps.push({ action: "fill", selector: sel, ...fp, field, sensitive: true, optional: true, note: `SENSITIVE — ${field ? `bound to project field "${field}"` : "bind to credential/redacted field"} (no value stored). ${payload.label ?? ""}`.trim() });
       } else if (payload.kind === "fill") {
         const field = bindField(payload.value || "");
-        steps.push(field ? { action: "fill", selector: sel, field, note: payload.label } : { action: "fill", selector: sel, value: payload.value, note: payload.label });
+        steps.push(field ? { action: "fill", selector: sel, ...fp, field, note: payload.label } : { action: "fill", selector: sel, ...fp, value: payload.value, note: payload.label });
       } else if (payload.kind === "select") {
         const field = bindField(payload.value || "");
-        steps.push(field ? { action: "select", selector: sel, field, note: payload.label } : { action: "select", selector: sel, value: payload.value, note: payload.label });
+        steps.push(field ? { action: "select", selector: sel, ...fp, field, note: payload.label } : { action: "select", selector: sel, ...fp, value: payload.value, note: payload.label });
       } else if (payload.kind === "check") {
-        steps.push({ action: "check", selector: sel, note: payload.label });
+        steps.push({ action: "check", selector: sel, ...fp, note: payload.label });
       } else if (payload.kind === "uncheck") {
-        steps.push({ action: "uncheck", selector: sel, note: payload.label });
+        steps.push({ action: "uncheck", selector: sel, ...fp, note: payload.label });
       } else if (payload.kind === "upload") {
         steps.push({ action: "upload", selector: sel, docType: "", note: `UPLOAD — set docType (e.g. sld, site_plan) in the dashboard. ${payload.label ?? ""}` });
       }
@@ -178,7 +180,15 @@ function captureScript(): void {
     else if (el.getAttribute("id")) sel.css = `#${CSS.escape(el.getAttribute("id") as string)}`;
     else if (el.getAttribute("name")) sel.css = `${el.tagName.toLowerCase()}[name="${el.getAttribute("name")}"]`;
     else if (name) sel.text = name;
-    return { selector: sel, label: name };
+    // Fingerprint: attribute NAMES only for replay-heal tie-breaking — never values.
+    const fp: Record<string, string> = {};
+    if (el.getAttribute("id")) fp.id = el.getAttribute("id") as string;
+    if (el.getAttribute("name")) fp.name = el.getAttribute("name") as string;
+    if ((el as HTMLInputElement).placeholder) fp.placeholder = (el as HTMLInputElement).placeholder;
+    if (el.getAttribute("aria-label")) fp.ariaLabel = el.getAttribute("aria-label") as string;
+    const legend = el.closest("fieldset")?.querySelector("legend")?.textContent?.trim();
+    if (legend) fp.section = legend;
+    return { selector: sel, label: name, ...(Object.keys(fp).length ? { fingerprint: fp } : {}) };
   }
   // Final-submit / payment intent — NEVER captured (same guard as humanCapture.ts).
   // Replay additionally hard-blocks submit-keyword clicks, but the step must not be

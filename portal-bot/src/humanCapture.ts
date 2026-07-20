@@ -21,7 +21,7 @@
 //  - Best-effort everywhere: capture can never break the open session.
 // ---------------------------------------------------------------------------
 import type { Page } from "playwright";
-import type { RecipeSelector, RecipeStep } from "../../shared/src/types";
+import type { RecipeSelector, RecipeStep, StepFingerprint } from "../../shared/src/types";
 
 export interface HumanCapturePayload {
   kind: "click" | "fill" | "select" | "check" | "uncheck" | "upload" | "submitObserved";
@@ -29,6 +29,8 @@ export interface HumanCapturePayload {
   value?: string;
   sensitive?: boolean;
   label?: string;
+  /** Element attribute names for replay-heal tie-breaking (never values). */
+  fingerprint?: StepFingerprint;
 }
 
 // Marker note carried by the pseudo-step emitted when the HUMAN clicks the portal's final
@@ -52,12 +54,12 @@ export function payloadToStep(p: HumanCapturePayload): RecipeStep | null {
     // The typed value rides along IN MEMORY ONLY so the backend merge can bind it to a
     // project field key (account/meter numbers are project data); appendHumanPatchSteps
     // strips the literal unconditionally before anything is persisted.
-    return { action: "fill", selector: p.selector, value: p.value, sensitive: true, optional: true, note: `${note} — SENSITIVE, bound at replay (no value stored)` };
+    return { action: "fill", selector: p.selector, ...(p.fingerprint ? { fingerprint: p.fingerprint } : {}), value: p.value, sensitive: true, optional: true, note: `${note} — SENSITIVE, bound at replay (no value stored)` };
   }
-  if (p.kind === "fill") return { action: "fill", selector: p.selector, value: p.value ?? "", note };
-  if (p.kind === "select") return { action: "select", selector: p.selector, value: p.value ?? "", note };
-  if (p.kind === "check") return { action: "check", selector: p.selector, note };
-  if (p.kind === "uncheck") return { action: "uncheck", selector: p.selector, note };
+  if (p.kind === "fill") return { action: "fill", selector: p.selector, ...(p.fingerprint ? { fingerprint: p.fingerprint } : {}), value: p.value ?? "", note };
+  if (p.kind === "select") return { action: "select", selector: p.selector, ...(p.fingerprint ? { fingerprint: p.fingerprint } : {}), value: p.value ?? "", note };
+  if (p.kind === "check") return { action: "check", selector: p.selector, ...(p.fingerprint ? { fingerprint: p.fingerprint } : {}), note };
+  if (p.kind === "uncheck") return { action: "uncheck", selector: p.selector, ...(p.fingerprint ? { fingerprint: p.fingerprint } : {}), note };
   if (p.kind === "upload") return { action: "upload", selector: p.selector, docType: "", note: `${note} — UPLOAD, set docType in the dashboard` };
   return null;
 }
@@ -82,7 +84,7 @@ function patchCaptureScript(): void {
     return t instanceof Element ? t : null;
   }
 
-  function describe(el: Element): { selector: Record<string, unknown>; label: string } {
+  function describe(el: Element): { selector: Record<string, unknown>; label: string; fingerprint?: Record<string, string> } {
     const role = el.getAttribute("role") || ({ INPUT: "textbox", BUTTON: "button", SELECT: "combobox", A: "link", TEXTAREA: "textbox" } as Record<string, string>)[el.tagName] || "";
     const root = el.getRootNode() as Document | ShadowRoot;
     const id = el.getAttribute("id");
@@ -100,7 +102,19 @@ function patchCaptureScript(): void {
     else if (id) sel.css = `#${CSS.escape(id)}`;
     else if (el.getAttribute("name")) sel.css = `${el.tagName.toLowerCase()}[name="${el.getAttribute("name")}"]`;
     else if (name) sel.text = name;
-    return { selector: sel, label: name };
+    // Fingerprint: attribute NAMES only (id/name/placeholder/aria-label/section)
+    // for replay-heal tie-breaking — never element values.
+    const fp: Record<string, string> = {};
+    if (id) fp.id = id;
+    const nameAttr = el.getAttribute("name");
+    if (nameAttr) fp.name = nameAttr;
+    const ph = (el as HTMLInputElement).placeholder;
+    if (ph) fp.placeholder = ph;
+    const ariaAttr = el.getAttribute("aria-label");
+    if (ariaAttr) fp.ariaLabel = ariaAttr;
+    const legend = el.closest("fieldset")?.querySelector("legend")?.textContent?.trim();
+    if (legend) fp.section = legend;
+    return { selector: sel, label: name, fingerprint: Object.keys(fp).length ? fp : undefined };
   }
 
   function isSensitiveField(el: HTMLInputElement): boolean {

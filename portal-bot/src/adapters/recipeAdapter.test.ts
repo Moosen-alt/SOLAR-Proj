@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import type { PortalRecipe, ProjectRecord, RecipeStep } from "../../../shared/src/types";
-import { RecipeAdapter } from "./recipeAdapter";
+import { RecipeAdapter, fingerprintBoost } from "./recipeAdapter";
 
 // Browser-free tests for the recipe replay loop. We inject a fake Playwright page
 // so we can assert the safety-critical behaviours (final-submit denylist, stop-at-
@@ -36,23 +36,31 @@ function makeFakePage(opts: {
   iframeSrcs?: string[];
   // When true, getByText(<challenge regex>).count() returns 1 (visible challenge text).
   challengeText?: boolean;
+  // When set, the page exposes $$eval returning these pre-built RawField rows —
+  // enables the self-heal + drift-precheck paths (absent on legacy fakes → both
+  // features silently no-op, which the backward-compat tests rely on).
+  rawFields?: Array<Record<string, unknown>>;
 }) {
   const present = opts.present ?? {};
   const log = opts.log;
 
   function locatorFor(key: string): any {
     const isPresent = present[key] ?? true;
+    // Absent locators behave like Playwright: waitFor/actions throw a
+    // TimeoutError instead of silently succeeding — required for the
+    // self-heal tests (heal only runs when a step actually fails).
+    const gone = async () => { throw new Error(`TimeoutError: locator ${key} not found`); };
     const loc: any = {
       first: () => loc,
       nth: () => loc,
       count: async () => (isPresent ? 1 : 0),
-      click: async () => { log.clicks.push(key); },
-      fill: async (v: string) => { log.fills.push({ key, value: v }); },
-      selectOption: async () => undefined,
-      check: async () => { log.checks++; },
-      uncheck: async () => undefined,
+      click: async () => { if (!isPresent) await gone(); log.clicks.push(key); },
+      fill: async (v: string) => { if (!isPresent) await gone(); log.fills.push({ key, value: v }); },
+      selectOption: async () => { if (!isPresent) await gone(); },
+      check: async () => { if (!isPresent) await gone(); log.checks++; },
+      uncheck: async () => { if (!isPresent) await gone(); },
       press: async () => undefined,
-      waitFor: async () => undefined,
+      waitFor: async () => { if (!isPresent) await gone(); },
       setInputFiles: async () => undefined,
       // Used by detectChallengeFrame to read iframe src attributes.
       evaluateAll: async () => opts.iframeSrcs ?? [],
@@ -86,6 +94,7 @@ function makeFakePage(opts: {
     readyCheckCount: 0,
     waitForFunction: async () => { page.readyCheckCount += 1; return true; },
   };
+  if (opts.rawFields) page.$$eval = async () => opts.rawFields;
   return page;
 }
 
@@ -457,7 +466,97 @@ async function testGapFillReportInFinalSubmitResult() {
   assertGapFillReport(result.data?.gapFill, "final-submit");
 }
 
+// SELF-HEAL FINGERPRINTS: two live fields share the bare label "Manufacturer";
+// the step's recorded fingerprint (name/section) must pick the RIGHT one.
+async function testHealPrefersFingerprintMatch() {
+  const log: ActionLog = { clicks: [], fills: [], gotos: [], checks: 0 };
+  const recipe = baseRecipe([
+    { action: "fill", selector: { css: "#old-gone-id" }, note: "Manufacturer", value: "AP Systems",
+      fingerprint: { name: "inv_mfr", section: "Inverter Information" } },
+    { action: "stopForReview" },
+  ]);
+  const adapter = new RecipeAdapter(recipe, {}, {});
+  withFakePage(adapter, makeFakePage({
+    log,
+    present: { "css:#old-gone-id": false, "label:Manufacturer": false }, // primary dead; label ambiguous → heal path
+    rawFields: [
+      { label: "Manufacturer", fieldType: "text", id: "m1", name: "mod_mfr", section: "PV Module Information" },
+      { label: "Manufacturer", fieldType: "text", id: "i2", name: "inv_mfr", section: "Inverter Information" },
+    ],
+  }));
+  const result = await adapter.fillApplication(fakeProject);
+  assert.equal(result.ok, true, `heal should save the run (${result.message})`);
+  assert.equal(log.fills.length, 1, "healed fill executed");
+  // Both candidates yield label-selectors ("Manufacturer") — identical keys — so
+  // assert via the healed selector's #id fallback identity instead.
+  const healed = (result.data as { healedSteps?: Array<{ selector: { label?: string; fallbacks?: Array<{ css?: string }> } }> }).healedSteps ?? [];
+  assert.equal(healed.length, 1, "one healed step reported");
+  const healedCss = JSON.stringify(healed[0].selector);
+  assert.ok(healedCss.includes("#i2") && !healedCss.includes("#m1"), `fingerprint picked the inverter-section field (got ${healedCss})`);
+}
+
+// Backward compat: same scenario minus the fingerprint — legacy first-candidate wins.
+async function testHealWithoutFingerprintLegacy() {
+  const log: ActionLog = { clicks: [], fills: [], gotos: [], checks: 0 };
+  const recipe = baseRecipe([
+    { action: "fill", selector: { css: "#old-gone-id" }, note: "Manufacturer", value: "AP Systems" },
+    { action: "stopForReview" },
+  ]);
+  const adapter = new RecipeAdapter(recipe, {}, {});
+  withFakePage(adapter, makeFakePage({
+    log,
+    present: { "css:#old-gone-id": false },
+    rawFields: [
+      { label: "Manufacturer", fieldType: "text", id: "m1", name: "mod_mfr", section: "PV Module Information" },
+      { label: "Manufacturer", fieldType: "text", id: "i2", name: "inv_mfr", section: "Inverter Information" },
+    ],
+  }));
+  const result = await adapter.fillApplication(fakeProject);
+  assert.equal(result.ok, true);
+  const healed = (result.data as { healedSteps?: Array<{ selector: unknown }> }).healedSteps ?? [];
+  assert.equal(healed.length, 1);
+  assert.ok(JSON.stringify(healed[0].selector).includes("#m1"), "no fingerprint → first ≥70 candidate (legacy)");
+}
+
+// A matching fingerprint must NEVER manufacture a heal when no label matches.
+async function testFingerprintNeverInventsMatch() {
+  const log: ActionLog = { clicks: [], fills: [], gotos: [], checks: 0 };
+  const recipe = baseRecipe([
+    { action: "fill", selector: { css: "#old-gone-id" }, note: "Manufacturer", value: "X",
+      fingerprint: { name: "inv_mfr" } },
+  ]);
+  const adapter = new RecipeAdapter(recipe, {}, {});
+  withFakePage(adapter, makeFakePage({
+    log,
+    present: { "css:#old-gone-id": false },
+    rawFields: [{ label: "Completely Different Field", fieldType: "text", id: "z9", name: "inv_mfr" }],
+  }));
+  const result = await adapter.fillApplication(fakeProject);
+  assert.equal(result.ok, false, "no label anchor → heal refuses; step fails as before");
+  assert.match(String(result.message), /Recipe step failed/);
+}
+
+async function testFingerprintBoostUnit() {
+  assert.equal(fingerprintBoost(undefined, { name: "a" }), 0);
+  assert.equal(fingerprintBoost({ name: "a" }, undefined), 0);
+  assert.equal(fingerprintBoost({ name: "inv_mfr" }, { name: "INV_MFR" }), 15, "name match, case-insensitive");
+  assert.equal(fingerprintBoost({ placeholder: "p" }, { placeholder: "p" }), 15);
+  assert.equal(fingerprintBoost({ id: "x" }, { id: "x" }), 10);
+  assert.equal(fingerprintBoost({ ariaLabel: "l" }, { ariaLabel: "l" }), 10);
+  assert.equal(fingerprintBoost({ section: "Inverter Information" }, { section: "Inverter Info" }), 8, "section substring both-ways");
+  assert.equal(fingerprintBoost({ section: "abc" }, { section: "abc" }), 0, "section <4 chars ignored");
+  const max = fingerprintBoost(
+    { id: "x", name: "n", placeholder: "p", ariaLabel: "l", section: "Section One" },
+    { id: "x", name: "n", placeholder: "p", ariaLabel: "l", section: "Section One" },
+  );
+  assert.equal(max, 58, "max boost stays below the 70 label gate");
+}
+
 const tests: Array<[string, () => Promise<void>]> = [
+  ["HEAL FINGERPRINT: ambiguous label healed onto the fingerprint-matching field", testHealPrefersFingerprintMatch],
+  ["HEAL FINGERPRINT: legacy recipes (no fingerprint) behave as before", testHealWithoutFingerprintLegacy],
+  ["HEAL FINGERPRINT: attributes alone never invent a match", testFingerprintNeverInventsMatch],
+  ["fingerprintBoost unit scoring (max 58 < 70 gate)", testFingerprintBoostUnit],
   ["stopForReview halts replay and blocks later clicks", testStopForReviewHalts],
   ["pay/submit keyword clicks are blocked; safe clicks run", testFinalSubmitDenylist],
   ["P0-3: id/css-only final submit NOT clicked in autoSubmit without isFinalSubmit", testIdOnlyFinalSubmitNotClickedWithoutFlag],

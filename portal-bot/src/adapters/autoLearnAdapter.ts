@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 import type { Page, Frame } from "playwright";
-import type { ProjectRecord, RecipeSelector, RecipeStep } from "../../../shared/src/types";
+import type { ProjectRecord, RecipeSelector, RecipeStep, StepFingerprint } from "../../../shared/src/types";
 import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, type PortalContext, type PortalStepResult } from "../adapter";
 import { openPortal } from "../browser";
 import { selectWithFallback } from "../comboboxFill";
@@ -51,6 +51,8 @@ export interface ExtractedField {
   /** The section/heading/wizard-step this field lives under — the planner uses it to tell
    *  identical contact blocks apart (Customer vs Installer) without portal-specific rules. */
   section?: string;
+  /** Recorded-element attributes for replay-heal tie-breaking (see StepFingerprint). */
+  fingerprint?: StepFingerprint;
   /** Radio-group identity (the input's name attribute). Radios in one group have DISTINCT
    *  labels, so after one option is filled its siblings look like "new" fields to the
    *  post-reveal re-scan — this key lets it recognize (and never re-answer) a group that
@@ -332,6 +334,8 @@ export interface RawField {
   text?: string;
   href?: string;
   required?: boolean;
+  /** aria-label attribute, captured for the step fingerprint (heal tie-break). */
+  ariaLabel?: string;
   /** Stable identifier (name or id) of the child <iframe> this field lives in, if any.
    *  Undefined for the main document. Stamped by extractAllFrames so the fill/replay locator
    *  can scope into the right frame (e.g. Accela's ACADialogFrame contact/upload dialogs). */
@@ -527,7 +531,7 @@ export function extractFieldsInPage(els: Element[]): RawField[] {
     }
     const required = (el as HTMLInputElement).required || el.getAttribute("aria-required") === "true" || requiredByAsterisk || undefined;
 
-    out.push({ label, fieldType, options, role, name, placeholder, id, text, href, required: required || undefined, section: sectionFor(el) || undefined, testCss });
+    out.push({ label, fieldType, options, role, name, placeholder, id, text, href, required: required || undefined, section: sectionFor(el) || undefined, testCss, ariaLabel: el.getAttribute("aria-label")?.trim() || undefined });
   }
   return out;
 }
@@ -606,6 +610,17 @@ export function toExtractedField(raw: RawField): ExtractedField {
   if (raw.href) field.href = raw.href;
   if (raw.required) field.required = true;
   if (raw.section) field.section = raw.section;
+  // Fingerprint: raw element attributes for replay-heal tie-breaking. Attribute
+  // NAMES/labels only — never values, so nothing sensitive can land in a recipe.
+  if (raw.id || raw.name || raw.placeholder || raw.ariaLabel || raw.section) {
+    field.fingerprint = {
+      ...(raw.id ? { id: raw.id } : {}),
+      ...(raw.name ? { name: raw.name } : {}),
+      ...(raw.placeholder ? { placeholder: raw.placeholder } : {}),
+      ...(raw.ariaLabel ? { ariaLabel: raw.ariaLabel } : {}),
+      ...(raw.section ? { section: raw.section } : {}),
+    };
+  }
   if (raw.fieldType === "radio" && raw.name) field.group = raw.name;
   return field;
 }
@@ -2749,6 +2764,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       phase: "fill",
       selector: field.selector,
       note: field.label || undefined,
+      // Heal tie-break metadata (attribute names only — never values).
+      ...(field.fingerprint ? { fingerprint: field.fingerprint } : {}),
     };
     if (sensitive) {
       // Password fields are login credentials handled by the login step — never record as
