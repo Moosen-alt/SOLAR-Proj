@@ -6,6 +6,7 @@ import { openPortal } from "../browser";
 import { selectWithFallback } from "../comboboxFill";
 import { detectChallengeFrame, frameSelectorFor, hasNumericValidationError, scanStatusFromBody, RETRY_BACKOFF_MS, sleep, smartWait, toBareNumber, waitForElement, waitForInteractiveControls } from "../safeAction";
 import { performLogin } from "./loginFlow";
+import { EXTRACT_SEL, extractFieldsInPage, toExtractedField } from "./autoLearnAdapter";
 import { tagUploadControls } from "./autoLearnAdapter";
 
 // RecipeAdapter — replays a recorded portal recipe (see portal_recipes / the recorder).
@@ -44,6 +45,9 @@ export class RecipeAdapter extends BasePortalAdapter {
   portalName: string;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private page: any = null;
+  /** Steps repaired mid-replay by label re-anchoring (reported to the backend,
+   *  which patches the recipe and requires human re-verification). */
+  private healedSteps: Array<{ note: string; action: string; selector: RecipeSelector }> = [];
   // Set true ONLY when the automation actually clicked an explicit isFinalSubmit step
   // in autoSubmit mode and the portal accepted it (no challenge / no error).
   finalSubmitClicked = false;
@@ -237,12 +241,32 @@ export class RecipeAdapter extends BasePortalAdapter {
           await this.page.reload({ waitUntil: "networkidle", timeout: 15000 }).catch(() => null);
         }
       }
+      if (!succeeded && !step.isFinalSubmit && process.env.RECIPE_SELF_HEAL !== "off") {
+        // PER-STEP SELF-HEAL (research-validated: targeted repair beats full
+        // re-record). Re-extract the live page and re-anchor this step by its
+        // recorded LABEL (semantic anchor) — portals churn ids/markup far more
+        // often than wording. One healed retry; never for final-submit steps
+        // (safety rule) and never invented: no confident label match → fail as
+        // before. Heals are reported so the backend patches the recipe AND
+        // drops auto-submit trust until a human re-verifies the next review.
+        const healedSelector = await this.healSelectorForStep(step).catch(() => null);
+        if (healedSelector) {
+          try {
+            const healedStep: RecipeStep = { ...step, selector: { ...healedSelector, fallbacks: [...(step.selector ? [step.selector] : []), ...(healedSelector.fallbacks ?? [])] } };
+            const done = await this.executeStep(healedStep, pastReview);
+            if (done) executed++;
+            else skipped.push(step.note || step.action);
+            this.healedSteps.push({ note: step.note || step.action, action: step.action, selector: healedSelector });
+            succeeded = true;
+          } catch { /* healed selector didn't take either — fail below as before */ }
+        }
+      }
       if (!succeeded) {
         if (step.optional) {
           skipped.push(`${step.note || step.action} (optional, skipped: ${lastErr instanceof Error ? lastErr.message : String(lastErr)})`);
           continue;
         }
-        return fail(`Recipe step failed (${step.action}${step.note ? ` — ${step.note}` : ""}): ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`, { executed, skipped });
+        return fail(`Recipe step failed (${step.action}${step.note ? ` — ${step.note}` : ""}): ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`, { executed, skipped, healedSteps: this.healedSteps });
       }
       // Remember whether this step entered data, so the next advancing click waits for the
       // portal's autosave to commit (prevents blank-draft saves on PowerClerk).
@@ -261,10 +285,10 @@ export class RecipeAdapter extends BasePortalAdapter {
         recordLink: capture.data?.recordLink || "",
         // What the LLM gap-fill added (and what it left blank for lack of real data) — same key
         // the hand-coded adapters surface, so the operator/UI sees a uniform report.
-        gapFill: this.gapFillReport,
+        gapFill: this.gapFillReport, healedSteps: this.healedSteps,
       });
     }
-    return ok(`Replayed ${executed} recorded step(s); stopped at review.`, { executed, skipped, finalSubmitClicked: false, gapFill: this.gapFillReport });
+    return ok(`Replayed ${executed} recorded step(s); stopped at review.`, { executed, skipped, finalSubmitClicked: false, gapFill: this.gapFillReport, healedSteps: this.healedSteps });
   }
 
   private resolveValue(step: RecipeStep): string {
@@ -478,5 +502,34 @@ export class RecipeAdapter extends BasePortalAdapter {
     else if (sel.role) loc = scope.getByRole(sel.role);
     else throw new Error("Recipe step has no usable selector.");
     return typeof sel.nth === "number" ? loc.nth(sel.nth) : loc.first();
+  }
+
+  /** Find the CURRENT page element matching a failed step's recorded label/name.
+   *  Deterministic semantic anchor — no LLM cost; returns null without a
+   *  confident, action-compatible match, and never "heals" onto the selector
+   *  that just failed. */
+  private async healSelectorForStep(step: RecipeStep): Promise<RecipeSelector | null> {
+    if (!this.page || typeof this.page.$$eval !== "function") return null;
+    const wanted = (step.note || step.selector?.label || step.selector?.name || "").trim().toLowerCase();
+    if (wanted.length < 3) return null;
+    let raws: unknown[] = [];
+    try { raws = await this.page.$$eval(EXTRACT_SEL, extractFieldsInPage); } catch { return null; }
+    const compat = (t: string): boolean =>
+      step.action === "select" ? t === "select"
+      : step.action === "check" || step.action === "uncheck" ? t === "checkbox" || t === "radio"
+      : step.action === "click" ? t === "button"
+      : t === "text" || t === "other" || t === "select";
+    let best: { sel: RecipeSelector; score: number } | null = null;
+    for (const raw of raws as Parameters<typeof toExtractedField>[0][]) {
+      const f = toExtractedField(raw);
+      if (!compat(f.fieldType)) continue;
+      const label = (f.label || "").trim().toLowerCase();
+      if (!label) continue;
+      const contains = label.includes(wanted) || wanted.includes(label);
+      const score = label === wanted ? 100 : contains && Math.min(label.length, wanted.length) >= 5 ? 70 : 0;
+      if (score >= 70 && (!best || score > best.score)) best = { sel: f.selector, score };
+    }
+    if (best && JSON.stringify(best.sel) === JSON.stringify(step.selector)) return null;
+    return best?.sel ?? null;
   }
 }

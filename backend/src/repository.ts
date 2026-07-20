@@ -62,7 +62,7 @@ import { touchProjectMetrics } from "./kpi";
 import fs from "node:fs";
 import path from "node:path";
 import { checkStatusWithAdapter, stageWithAccela, stageWithMockPortal, stageWithPowerClerk, stageWithRecipe } from "../../portal-bot/src/index";
-import { findCompleteRecipeForProject, findAnyRecipeForProject, resolveRecipeFieldValues, markPortalRecipeForRerecord } from "./portalRecipes";
+import { findCompleteRecipeForProject, findAnyRecipeForProject, resolveRecipeFieldValues, markPortalRecipeForRerecord, getPortalRecipe, savePortalRecipeSteps } from "./portalRecipes";
 import { notifyClientOfStatusChange, shouldNotifyClient } from "./clientNotifier";
 import { detectPlatform, publicPermitStatusCheck } from "./publicPermitStatus";
 import { planSetTextForProject, projectDocsByType } from "./projectDocuments";
@@ -5331,6 +5331,23 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
     result = { ok: false, finalSubmitClicked: false, pauseReason: null, message: msg, steps: [{ ok: false, message: msg }] };
   } else if (recipe && runActorLabel === "RecipeAdapter") {
     result = await stageWithRecipe(recipe, stagedProject, resolveRecipeFieldValues(db, stagedProject, portalType), docsByType, files, stageOptions);
+    // SELF-HEALED STEPS: replay repaired drifted selectors by label re-anchoring.
+    // Persist the healed selectors into the recipe (healed primary, old selector
+    // kept as fallback) so next replay doesn't re-heal — and DROP auto-submit
+    // trust: a healed recipe is unverified until a human confirms the next
+    // review screen looks right (silent false-repair is the known failure mode).
+    const healed = (result as { healedSteps?: Array<{ note: string; action: string; selector: unknown }> }).healedSteps ?? [];
+    if (healed.length) {
+      try {
+        const steps = (getPortalRecipe(db, recipe.id).steps ?? []).map((st: import("../../shared/src/types").RecipeStep) => {
+          const h = healed.find((x) => x.action === st.action && (st.note || st.action) === x.note);
+          return h ? { ...st, selector: { ...(h.selector as object), fallbacks: [...(st.selector ? [st.selector] : [])] } as typeof st.selector } : st;
+        });
+        savePortalRecipeSteps(db, recipe.id, steps, { notes: `Self-healed ${healed.length} drifted step(s) on ${nowIso()} — verify the next review screen before trusting auto-submit again.` });
+        db.run("UPDATE portal_recipes SET auto_submit_enabled = 0, updated_at = ? WHERE id = ?", [nowIso(), recipe.id]);
+        addAuditLog(db, projectId, "system", "recipe replay", "recipe.self_healed", { recipeId: recipe.id, steps: healed.map((h) => h.note).slice(0, 10) });
+      } catch { /* healing persistence is best-effort; the run result stands */ }
+    }
     // PROACTIVE STALENESS: a replay that dies on a recorded step is almost always selector
     // drift — the portal changed under a recipe that used to work. Mark it needs_rerecord so
     // it stops silently failing every future stage and surfaces for re-recording, and tell
