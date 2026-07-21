@@ -98,18 +98,20 @@ multi-team scale, SOC 2 at first AHJ/utility RFP.
 
 OPERATIONS & OFFICIAL APIs (third run, see
 docs/research/OPERATIONS_INTEGRATIONS_2026-07.md): PowerClerk has a full
-public applicant API (V2, apidocs.powerclerk.com — project create/edit/submit
-+ attachments; keys issued manually by CPR per program with utility approval;
-legacy API dies in 2026) and Accela has a self-serve Citizen Access API with a
-DELEGATE model (installer grants us record/document/payment permissions) —
-the official-integration routing tier is buildable for our two key platforms.
-EnerGov/ProjectDox: no public API path; keep browser automation. No ToS
-blocker found anywhere; UiPath's official guidance endorses our exact
-human-attended login/MFA pattern. Gates: per-utility/per-agency enablement,
-unpublished pricing, and an Accela developer agreement required before
-selling an Accela integration commercially. Unverified (unknown, not safe):
-WAF posture of live portals, credential-custody frameworks, agency-specific
-portal terms — check per AHJ at onboarding.
+public applicant API (V2) and Accela a Citizen Access API + delegate model —
+BUT both gate access behind per-utility/per-agency application + approval.
+STRATEGIC DECISION (operator, July 2026): official APIs are NOT the go-live
+path — the whole value is being universal and zero-onboarding, and making an
+installer apply and wait for API access defeats that. Browser-automation
+universality IS the moat. Treat official APIs as an opportunistic per-portal
+optimization only where already enabled, never a prerequisite. What matters
+for go-live is that UNIVERSAL browser automation can run legitimately: no ToS
+blocker found anywhere, and UiPath's official guidance endorses our exact
+human-attended login/MFA pattern. Fourth research run (in progress) targets
+the real go-live unknowns: WAF/bot-detection posture of live portals +
+legitimate mitigations, credential-custody design (installer-supplied
+portal logins), and CFAA/legal precedent on credentialed human-authorized
+submission vs unauthorized scraping.
 
 ## Next automations worth building (ranked, for future sessions)
 
