@@ -102,10 +102,15 @@ export function readXlsx(buffer: Buffer): SheetData[] {
     for (const r of nonEmpty.slice(1)) {
       if (!r.some((c) => c !== "")) continue;
       const obj: Record<string, string> = {};
-      headers.forEach((h, i) => {
+      // Rows can be wider than the header row (e.g. a one-cell title row above
+      // the real headers) — keep overflow columns keyed by index so downstream
+      // header-detection (findHeaderedRows) can still see the full row.
+      const width = Math.max(headers.length, r.length);
+      for (let i = 0; i < width; i++) {
+        const h = headers[i] ?? `col${i}`;
         const key = obj[h] !== undefined ? `${h}__${i}` : h; // keep duplicate headers distinct
         obj[key] = r[i] ?? "";
-      });
+      }
       rows.push(obj);
     }
     out.push({ name, headers, rows });

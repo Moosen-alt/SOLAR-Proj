@@ -463,9 +463,10 @@ export async function learnPortal(input: {
   // Equipment identity (inverterMake/inverterModel/moduleMake/moduleModel) for the
   // adapter's deterministic PV-spec combobox pass.
   equipment?: Record<string, string>;
+  certifiedAliases?: Record<string, string[]>;
 }): Promise<import("./adapters/autoLearnAdapter").LearnResult> {
   const { AutoLearnAdapter } = await import("./adapters/autoLearnAdapter");
-  const adapter = new AutoLearnAdapter(input.portalName, input.planner, { maxPages: input.maxPages, docsByType: input.docsByType, uploadMode: input.uploadMode, policyProfile: input.policyProfile, onProgress: input.onProgress, equipment: input.equipment });
+  const adapter = new AutoLearnAdapter(input.portalName, input.planner, { maxPages: input.maxPages, docsByType: input.docsByType, uploadMode: input.uploadMode, policyProfile: input.policyProfile, onProgress: input.onProgress, equipment: input.equipment, certifiedAliases: input.certifiedAliases });
   let tmpStatePath: string | undefined;
   let leaveOpen = false;
   // A browser left open by a prior guided-manual stage holds this profile's lock — close it

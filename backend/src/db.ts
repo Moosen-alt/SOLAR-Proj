@@ -1158,6 +1158,30 @@ const VERSIONED_MIGRATIONS: VersionedMigration[] = [
     name: "dedupe_knowledge_notes",
     up: (db) => { dedupeKnowledgeNotes(db); },
   },
+  {
+    version: 10,
+    name: "cec_equipment",
+    up: (db) => {
+      // CEC solar equipment listings (weekly sync — see cecEquipment.ts). Feeds
+      // certified-name resolution at learn time, inverter-spec fallback, and an
+      // advisory QC listing check. Purely additive; never touches verified data.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS cec_equipment (
+          id TEXT PRIMARY KEY,
+          kind TEXT NOT NULL,
+          manufacturer TEXT NOT NULL,
+          model TEXT NOT NULL,
+          power_w REAL,
+          output_current_a REAL,
+          listed_at TEXT NOT NULL DEFAULT '',
+          raw_json TEXT NOT NULL DEFAULT '{}',
+          synced_at TEXT NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_cec_equipment_identity ON cec_equipment(kind, manufacturer, model);
+        CREATE INDEX IF NOT EXISTS idx_cec_equipment_kind_mfr ON cec_equipment(kind, manufacturer);
+      `);
+    },
+  },
 ];
 
 // One-time repair for the runaway-notes bug: upsertKnowledge used to merge the

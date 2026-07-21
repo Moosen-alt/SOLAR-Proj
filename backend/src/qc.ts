@@ -1,4 +1,5 @@
 import type { AppDb } from "./db";
+import { cecTableCount, isCecListed } from "./cecEquipment";
 import { evaluateBaselineRules } from "./baselineRules";
 import { id } from "./ids";
 import { parseJson } from "./json";
@@ -198,6 +199,28 @@ export function runQcForProject(db: AppDb, projectId: string): QcRunResult {
         );
       }
     }
+
+    // CEC LISTING CHECK (ADVISORY — warning rows only, never a blocker, never
+    // changes qc_failed/qc_passed). Silent when the table has never been synced.
+    try {
+      if (cecTableCount(db) > 0) {
+        const checks: Array<["module" | "inverter", string, string]> = [
+          ["module", "cec.module_listed", clean(payload.moduleModel)],
+          ["inverter", "cec.inverter_listed", clean(payload.invModel) || clean(payload.pvMicroModel)],
+        ];
+        for (const [kind, ruleId, model] of checks) {
+          if (!model || isCecListed(db, kind, model)) continue;
+          warningCount += 1;
+          db.run(
+            `INSERT INTO qc_results (id, project_id, qc_status, rule_id, rule_name, message, severity, created_at)
+             VALUES (?, ?, 'warning', ?, ?, ?, 'warning', ?)`,
+            [id(), projectId, ruleId, `CEC listing: ${kind}`,
+             `${kind === "module" ? "Module" : "Inverter"} model "${model}" was not found on the CEC solar equipment list. Verify the spec sheet / spelling — portals that load equipment from the CEC listing may reject it. Advisory only, not a blocker.`,
+             createdAt],
+          );
+        }
+      }
+    } catch { /* CEC table optional — advisory check must never break QC */ }
 
     const nextStatus = failCount > 0 ? "qc_failed" : "qc_passed";
     const currentStage = failCount > 0 ? "QC failed: human review required" : "QC passed: ready to stage";

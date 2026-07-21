@@ -39,6 +39,7 @@ import { HttpError } from "./httpError";
 import { id } from "./ids";
 import { knowledgeProfileKey, findKnowledgeForLearn } from "./knowledgeBase";
 import { getCodeProfile } from "./codeProfiles";
+import { certifiedNamesForMake } from "./cecEquipment";
 
 export interface AutoLearnResult {
   recipe: PortalRecipe;
@@ -384,6 +385,24 @@ export async function autoLearnPortal(
       docsByType,
       // Equipment identity for the deterministic PV-spec combobox pass (matched with
       // certified-name aliases + distinctive-token fallback inside the adapter).
+      // CEC-certified manufacturer names (weekly cec_equipment sync) — appended
+      // after the curated static aliases inside the adapter. Empty table → {}.
+      certifiedAliases: (() => {
+        const out: Record<string, string[]> = {};
+        try {
+          const pairs: Array<["module" | "inverter" | "battery", string]> = [
+            ["inverter", projectFields.inverterMake || projectFields.inverterManufacturer || ""],
+            ["module", projectFields.moduleMake || projectFields.moduleManufacturer || ""],
+            ["battery", projectFields.batteryMake || projectFields.battMake || ""],
+          ];
+          for (const [kind, make] of pairs) {
+            if (!make) continue;
+            const names = certifiedNamesForMake(db, kind, make);
+            if (names.length) out[make.toLowerCase().replace(/[^a-z0-9]/g, "")] = names;
+          }
+        } catch { /* CEC table optional */ }
+        return out;
+      })(),
       equipment: {
         inverterMake: projectFields.inverterMake || projectFields.inverterManufacturer || "",
         inverterModel: projectFields.inverterModel || projectFields.invModel || projectFields.pvMicroModel || "",

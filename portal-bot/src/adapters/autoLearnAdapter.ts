@@ -796,6 +796,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   // See constructor options.policyProfile.
   private policyProfile: "residential_nem" | "none";
   private equipment: Record<string, string>;
+  private certifiedAliases: Record<string, string[]>;
   // Equipment fields whose select verification failed for EVERY candidate this
   // run — retrying them each rescan pass just burns waitForOptionReady caps.
   private equipmentFillFailed = new Set<string>();
@@ -823,6 +824,10 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       // certified names ("AP Systems" → "Altenergy Power System"), so these are
       // matched with aliases + distinctive-token fallback, never left to the planner.
       equipment?: Record<string, string>;
+      /** CEC-certified manufacturer names per compact plan-set make (weekly
+       *  cec_equipment sync) — appended AFTER the curated static alias table;
+       *  empty map = byte-identical behavior. */
+      certifiedAliases?: Record<string, string[]>;
     } = {},
   ) {
     super();
@@ -830,6 +835,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     this.onProgress = options.onProgress;
     this.policyProfile = options.policyProfile ?? "residential_nem";
     this.equipment = options.equipment ?? {};
+    this.certifiedAliases = options.certifiedAliases ?? {};
     // Default page budget. Multi-step utility/permit wizards (PowerClerk NEM, Accela)
     // routinely run 10-15 input steps before the review screen, so 8 was too low — it
     // capped out mid-form. The stuck-page guard + review detection bound the loop, so a
@@ -898,7 +904,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       }
       if (make) {
         candidates.push(make);
-        candidates.push(...(EQUIPMENT_MAKE_ALIASES[make.toLowerCase().replace(/[^a-z0-9]/g, "")] ?? []));
+        const compactMake0 = make.toLowerCase().replace(/[^a-z0-9]/g, "");
+        candidates.push(...(EQUIPMENT_MAKE_ALIASES[compactMake0] ?? []), ...(this.certifiedAliases[compactMake0] ?? []));
       }
       return { key: `${prefix}Model`, candidates: [...new Set(candidates)], side: bareBattery ? null : bareSide };
     }
@@ -922,8 +929,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         const core = tokens.sort((a, b) => b.length - a.length)[0];
         if (core && core.toLowerCase() !== value.toLowerCase()) candidates.push(core);
       } else if (isMake) {
-        const aliases = EQUIPMENT_MAKE_ALIASES[value.toLowerCase().replace(/[^a-z0-9]/g, "")] ?? [];
-        candidates.push(...aliases);
+        const compactMake1 = value.toLowerCase().replace(/[^a-z0-9]/g, "");
+        candidates.push(...(EQUIPMENT_MAKE_ALIASES[compactMake1] ?? []), ...(this.certifiedAliases[compactMake1] ?? []));
       }
       return { key, candidates: [...new Set(candidates)], side: null };
     }
@@ -950,8 +957,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     if (!value) return null;
     const candidates = [value];
     if (isMake) {
-      const aliases = EQUIPMENT_MAKE_ALIASES[value.toLowerCase().replace(/[^a-z0-9]/g, "")] ?? [];
-      candidates.push(...aliases);
+      const compactMake2 = value.toLowerCase().replace(/[^a-z0-9]/g, "");
+      candidates.push(...(EQUIPMENT_MAKE_ALIASES[compactMake2] ?? []), ...(this.certifiedAliases[compactMake2] ?? []));
       // First word as a last resort ("Znshine" finds "Znshine PV-Tech").
       const first = value.split(/\s+/)[0];
       if (first.length >= 5 && first.toLowerCase() !== value.toLowerCase()) candidates.push(first);

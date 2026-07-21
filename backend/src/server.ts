@@ -45,6 +45,7 @@ import { createUser, getUserWorkload, listUsers, updateUser, assignProjectToUser
 import { listBackups, runBackup, startBackupScheduler } from "./backup";
 import { startMonitorScheduler } from "./scheduler";
 import { startAhjFormRefreshScheduler, startKbLinkCheckScheduler } from "./ahjFormRefresh";
+import { startCecSyncScheduler, primeCecCache, syncCecEquipment } from "./cecEquipment";
 import { extractZipToWorkdir } from "./batchZip";
 import { AUTH_ENABLED, currentUser, login, logout, me, requireAuth, seedAdminUser, editionGate, requestOrg, getOrg, createApiKey } from "./auth";
 import { ensureStatusShareToken, formatProjectAddress, statusShareUrl } from "./clientNotifier";
@@ -1529,6 +1530,11 @@ app.post("/api/projects/:id/build-utility-package", asyncHandler(async (req, res
 }));
 
 // Backups (manual trigger + list; a scheduled snapshot also runs automatically)
+// Manual CEC equipment-list sync (weekly scheduler does this automatically).
+app.post("/api/admin/cec-sync", asyncHandler(async (_req, res) => {
+  res.json(await syncCecEquipment(db));
+}));
+
 app.post("/api/admin/backup", (_req, res) => {
   res.json(runBackup(db));
 });
@@ -2217,6 +2223,8 @@ const server = app.listen(port, () => {
   startMonitorScheduler(db);
   startAhjFormRefreshScheduler(db);
   startKbLinkCheckScheduler(db);
+  startCecSyncScheduler(db);
+  primeCecCache(db);
 });
 
 // Graceful shutdown so the DB/WAL flushes cleanly on deploy restarts.

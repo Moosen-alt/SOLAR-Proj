@@ -3,6 +3,7 @@ import { performance } from "node:perf_hooks";
 import type { AgentRunInput, AgentRunResult, AgentToolResult, AhjFieldMapResult, AhjFormUrlResult, AhjOverlayMapResult, AhjResearchResult, CorrectionBucket, InverterSpecLookup, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, PortalFieldPlan, PortalFieldPlanInput, PortalFillVerification, PortalFillVerifyInput, PortalFillVisionVerifyInput, ProjectRecord, UtilityResearchResult, AiPlanReviewResult, ReviewWorkType, JurisdictionCodeProfile, JurisdictionCodeResearchResult } from "../../shared/src/types";
 import { RECIPE_FIELD_DESCRIPTIONS } from "./portalRecipes";
 import { logger } from "./logger";
+import { lookupCecInverter } from "./cecEquipment";
 
 const MODEL = "claude-opus-4-8";
 
@@ -440,6 +441,23 @@ function resolveInverterOffline(input: { inverterModel: string; inverterQty?: nu
       confidence: "high", source: "built-in equipment table",
       notes: `${known.label}. ${known.note || ""}`.trim(),
     });
+  }
+
+  // CEC solar equipment list (weekly-synced cec_equipment table, primed cache):
+  // certified output specs for the long tail the curated table doesn't cover.
+  // Medium confidence — CEC data is authoritative but model matching is fuzzy,
+  // and buildInverterResult keeps needsHumanVerification on regardless.
+  const cec = model ? lookupCecInverter(model) : null;
+  if (cec && (cec.outputCurrentA || cec.powerW)) {
+    const voltage = Number(input.serviceVoltageV) > 0 ? Number(input.serviceVoltageV) : 240;
+    const perUnitA = cec.outputCurrentA ?? (cec.powerW ? Math.round(((cec.powerW / voltage) + Number.EPSILON) * 100) / 100 : null);
+    if (perUnitA) {
+      return buildInverterResult({
+        model, qty, perUnitA, perUnitVa: cec.powerW ?? null,
+        confidence: "medium", source: "CEC solar equipment list",
+        notes: `CEC listing: ${cec.manufacturer} ${cec.model}.`,
+      });
+    }
   }
 
   // Nameplate derivation — total system continuous current from AC kW. This is a SYSTEM
