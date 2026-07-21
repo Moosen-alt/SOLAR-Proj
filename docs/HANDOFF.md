@@ -67,31 +67,34 @@ Every "unknown" the learner can hit now has a look-it-up-or-figure-it-out path:
 | Failed runs | run-triage agent reads the debug bundle, applies safe fixes, files the rest for review. |
 | MFA/CAPTCHA/final submit/fees | Always paused for a human — hard rule, never regress. |
 
-## Research takeaways (deep-research, July 2026 — sources in session; verification panels were rate-limited, treat as single-source-cited)
+## Research takeaways (deep-research, July 2026 — VERIFIED: both runs completed adversarial 3-judge verification; full cited reports in docs/research/)
 
-ARCHITECTURE VERDICT: KEEP learn-once/replay. Agent-per-run browser AI peaks at
-~86-89% on WebVoyager and COLLAPSES under realistic network errors (42%→2%);
-97%+ of agents click malicious popups; prompting doesn't fix robustness. Cached
-replay ≈ 0 tokens and ~52ms/step overhead vs $0.02-0.30 per 10-step agent run.
-Stagehand/Browserbase, Momentic, and Healenium all independently ship OUR
-pattern (cache → replay → LLM only on failure). #1 upgrade: PER-STEP SELF-HEAL —
-on a failed recipe step, LLM re-resolves THAT selector (mark recipe unverified,
-d2/review must re-confirm; silent false-repair is the known risk) instead of
-flagging needs_rerecord. #2: richer multi-attribute element fingerprints per
-step (RPA object-repository pattern). #3: DOM-hash drift check before replay.
+ARCHITECTURE VERDICT (see docs/research/ARCHITECTURE_REVIEW_2026-07.md): KEEP
+learn-once/replay — CONFIRMED 3-0 across Stagehand/Healenium/UiPath primary
+sources plus the WAREX fault-injection study. Agent-per-run collapses 70-95%
+under realistic network faults and 86-98% of tested agents click injected
+malicious popups. Per-step repair-on-failure (not full re-record) is the
+industry-standard drift answer — SHIPPED: self-heal `20efa7e`, fingerprints
+`f38f733`, drift precheck `b46ae1d`. ⚠️ REFUTED in verification (do not quote):
+fault-free agent baseline rates (12.4/17/42%) and the "~50% cost/97% accuracy"
+plan-caching figures (use the 76.42% GAIA cost-cut figure instead). Next-up
+upgrades: centralized per-portal selector repository for shared widgets,
+anchor-label targeting, official-integration routing tier per AHJ.
 
-BUSINESS: Symbium charges $50/plan-check (CONFIRMED 3-0 — pricing anchor).
-SolarAPP+ is free to AHJs (installer fees fund it), syncs CEC equipment weekly,
-but adoption is a slow pilot pipeline across ~20,000 jurisdictions + 3,000
-utilities — and it CANNOT approve non-CEC-listed equipment. White space:
-(a) utility interconnection/NEM automation (GreenLancer et al. only produce
-documents, nobody automates portal submission), (b) the long tail of AHJs
-SolarAPP+ hasn't reached, (c) battery/MPU-complex jobs SolarAPP+ rejects.
-Market: 2026 residential contraction ~21% forecast, growth returns 2027 (+6%/yr);
-installer base is fragmented (top player ~12.7%) — the long tail is the buyer.
-Invest NOW: weekly CEC equipment-list sync (feeds aliases+validation), Stripe
-metering, per-step self-heal. LATER: Postgres+queue (~50 jobs/day), managed
-browsers (Browserbase) at multi-team scale, SOC 2 at first AHJ/utility RFP.
+BUSINESS (see docs/research/MARKET_STRATEGY_2026-07.md): Symbium $50/plan-check
+(CONFIRMED — pricing anchor); SolarAPP+ free to AHJs, weekly CEC sync, and
+CONFIRMED to have NO utility interconnection/NEM capability with adoption still
+jurisdiction-by-jurisdiction — the NEM side + long-tail AHJs remain the
+verified white space. ⚠️ REFUTED (0-3): "GreenLancer's interconnection is
+limited to line diagrams" — do not cite GreenLancer's site as evidence of NEM
+white space; the SolarAPP+ scope gap is the solid evidence. Market: 2026
+residential contraction 19-21% (25D ITC eliminated end-2025), recovery 2027+
+at ~6%/yr, >60 GWdc 2026-2036; installer base fragmented (Sunrun 12.7%) — the
+long tail is the buyer. CEC lists update 3x/month and are freely downloadable:
+data itself is NOT a moat, integration is (weekly sync SHIPPED `a995bd5`).
+Invest LATER: Stripe metering (Stripe now steers usage billing to Metronome —
+recheck when building), Postgres+queue at ~50 jobs/day, managed browsers at
+multi-team scale, SOC 2 at first AHJ/utility RFP.
 
 ## Next automations worth building (ranked, for future sessions)
 
