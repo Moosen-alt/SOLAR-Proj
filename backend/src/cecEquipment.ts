@@ -38,9 +38,9 @@ export interface CecSyncSummary {
 // these paths occasionally — env is the operational truth, and the sanity gate
 // makes a stale default harmless (old rows kept).
 const CEC_DEFAULT_MODULES_URL =
-  "https://solarequipment.energy.ca.gov/Home/DownloadtoExcel?filename=PV_Module_List_Full_Data_ADA";
+  "https://solarequipment.energy.ca.gov/Home/DownloadtoExcel?filename=PVModuleList";
 const CEC_DEFAULT_INVERTERS_URL =
-  "https://solarequipment.energy.ca.gov/Home/DownloadtoExcel?filename=Grid_Support_Inverter_List_Full_Data_ADA";
+  "https://solarequipment.energy.ca.gov/Home/DownloadtoExcel?filename=InvertersList";
 
 function cecUrl(kind: CecKind): string {
   return kind === "module"
@@ -72,18 +72,19 @@ export async function fetchXlsx(url: string): Promise<Buffer | null> {
   }
 }
 
-// CEC workbooks carry 1-2 title rows above the real header row, so readXlsx's
-// first-non-empty-row-as-headers heuristic mis-keys them. Re-read each sheet's
-// rows treating successive rows as candidate headers until one yields a
-// manufacturer-ish column, then re-key the remaining rows against it.
+// CEC workbooks carry a deep preamble (title, contact info, footnote paragraphs
+// — ~14 rows in the real lists) above the real header row, so readXlsx's
+// first-non-empty-row-as-headers heuristic mis-keys them. The header row is the
+// one whose cell is exactly "Manufacturer"/"Manufacturer Name" — footnote
+// paragraphs merely CONTAIN the word, so an exact short-cell match is required.
 function findHeaderedRows(sheet: SheetData): Record<string, string>[] {
-  const probe = (row: Record<string, string>): boolean => Boolean(pick(row, "Manufacturer Name", "Manufacturer"));
-  if (sheet.rows.length && probe(Object.fromEntries(sheet.headers.map((h) => [h, h])))) return sheet.rows;
-  // Headers row was a title: walk the data rows looking for the real header row.
-  for (let i = 0; i < Math.min(sheet.rows.length, 6); i++) {
+  const isHeaderCell = (v: string) => /^manufacturer( name)?\s*$/i.test(v.trim());
+  if (sheet.headers.some(isHeaderCell)) return sheet.rows;
+  for (let i = 0; i < Math.min(sheet.rows.length, 30); i++) {
     const candidate = Object.values(sheet.rows[i]);
-    if (!candidate.some((v) => /manufacturer/i.test(v))) continue;
-    const headers = candidate.map((h, idx) => (h && h.trim() ? h.trim() : `col${idx}`));
+    if (!candidate.some(isHeaderCell)) continue;
+    // Real headers embed newlines ("Grid Support\nListing Date") — collapse them.
+    const headers = candidate.map((h, idx) => (h && h.trim() ? h.trim().replace(/\s+/g, " ") : `col${idx}`));
     return sheet.rows.slice(i + 1).map((r) => {
       const values = Object.values(r);
       const obj: Record<string, string> = {};
@@ -114,19 +115,35 @@ export function parseCecSheet(kind: CecKind, buf: Buffer): CecRow[] {
       const key = `${manufacturer.toLowerCase()}|${model.toLowerCase()}`;
       if (seen.has(key)) continue;
       seen.add(key);
+      let powerW: number | null;
+      if (kind === "module") {
+        powerW = num(pick(row, "Nameplate Pmax", "PTC", "Power Rating", "Nameplate"));
+      } else {
+        // The CEC grid-support list's power column ("Maximum Continuous Output
+        // Power at Unity Power Factor") is in kW; values under 1000 are kW
+        // (residential + commercial), values at/above are already watts.
+        const raw = num(pick(row, "Rated Output Power", "Maximum Continuous Output Power", "Power Rating", "Rated Power"));
+        powerW = raw === null ? null : raw < 1000 ? raw * 1000 : raw;
+      }
+      let outputCurrentA: number | null = null;
+      if (kind === "inverter") {
+        outputCurrentA = num(pick(row, "Maximum Continuous Output Current", "Output Current", "Rated Output Current"));
+        if (outputCurrentA === null && powerW !== null) {
+          // The CEC list has no current column — derive from nominal voltage.
+          const volts = num(pick(row, "Nominal Voltage", "Voltage Nominal"));
+          if (volts !== null && volts >= 100) outputCurrentA = Math.round((powerW / volts) * 100) / 100;
+        }
+      }
       out.push({
         manufacturer,
         model,
-        powerW:
-          kind === "module"
-            ? num(pick(row, "Nameplate Pmax", "PTC", "Power Rating", "Nameplate"))
-            : num(pick(row, "Rated Output Power", "Maximum Continuous Output Power", "Rated Power")),
-        outputCurrentA:
-          kind === "inverter" ? num(pick(row, "Maximum Continuous Output Current", "Output Current", "Rated Output Current")) : null,
-        listedAt: pick(row, "CEC Listing Date", "Listing Date", "Last Update"),
+        powerW,
+        outputCurrentA,
+        listedAt: pick(row, "CEC Listing Date", "Grid Support Listing Date", "Listing Date", "Last Update"),
       });
     }
-    if (out.length) break; // first sheet with real rows wins
+    // No break: the inverter workbook carries Solar_Inverters AND
+    // Battery_Inverters sheets (hybrids appear on both; dedupe handles overlap).
   }
   return out;
 }
