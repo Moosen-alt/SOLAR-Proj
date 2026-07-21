@@ -96,6 +96,21 @@ Invest LATER: Stripe metering (Stripe now steers usage billing to Metronome —
 recheck when building), Postgres+queue at ~50 jobs/day, managed browsers at
 multi-team scale, SOC 2 at first AHJ/utility RFP.
 
+OPERATIONS & OFFICIAL APIs (third run, see
+docs/research/OPERATIONS_INTEGRATIONS_2026-07.md): PowerClerk has a full
+public applicant API (V2, apidocs.powerclerk.com — project create/edit/submit
++ attachments; keys issued manually by CPR per program with utility approval;
+legacy API dies in 2026) and Accela has a self-serve Citizen Access API with a
+DELEGATE model (installer grants us record/document/payment permissions) —
+the official-integration routing tier is buildable for our two key platforms.
+EnerGov/ProjectDox: no public API path; keep browser automation. No ToS
+blocker found anywhere; UiPath's official guidance endorses our exact
+human-attended login/MFA pattern. Gates: per-utility/per-agency enablement,
+unpublished pricing, and an Accela developer agreement required before
+selling an Accela integration commercially. Unverified (unknown, not safe):
+WAF posture of live portals, credential-custody frameworks, agency-specific
+portal terms — check per AHJ at onboarding.
+
 ## Next automations worth building (ranked, for future sessions)
 
 1. **Auto-verify assist**: when the operator opens a seeded KB/code row, fetch
