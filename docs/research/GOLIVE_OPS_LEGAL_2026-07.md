@@ -2,12 +2,11 @@
 
 Fourth deep-research run (universal browser automation is the strategy;
 official APIs are opportunistic-only per the operator's PowerClerk
-confirmation). The run's search + extraction completed (117 claims from 24
-sources); the adversarial verification phase was cut short by the API credit
-wall after ~29 of ~75 votes. This report is built from **(a) the completed
-verify votes, (b) live header/DNS probes run directly on 2026-07-21, and
-(c) cited-but-not-yet-panel-verified extracted claims**, each labeled with its
-status. A full-verification resume can upgrade the CITED items later.
+confirmation). **Now FULLY VERIFIED** — the resume completed all 105 agents
+(107 claims from 23 sources, top 25 panel-verified → 21 confirmed, 4 refuted,
+0 unverified; 11 synthesized findings). Findings below are CONFIRMED by 3-0
+adversarial panels against the cited primary sources unless noted. Two WAF
+findings (PowerClerk) also rest on **my own live header probe of 2026-07-21**.
 
 ## Bottom line
 
@@ -23,10 +22,17 @@ human-does-login/MFA rule already sidesteps the highest-friction gate.
 
 | Platform | Edge / WAF | Status | Realistic risk at our scale |
 |---|---|---|---|
-| **Accela Citizen Access** (multi-tenant `aca-prod.accela.com`) | **Cloudflare** (Azure App Gateway origin) | **CONFIRMED** — verify votes 3-0 + my live probe | Low if headed + persistent session; `_cfuvid` cookie = Cloudflare visitor/bot signal present |
-| **PowerClerk** (Clean Power Research) | **Cloudflare w/ Bot Management** | **CONFIRMED** — my live probe | Low; `__cf_bm` bot-management cookie present — avoid headless/datacenter-IP fingerprints |
-| **Tyler EnerGov CSS** | Unknown (Tyler-hosted; not reachable from this env) | CITED only | Unknown — treat like Accela until probed live |
-| **Avolve ProjectDox** | Likely Azure or self-hosted; **not** a major CDN edge | CITED + weak live signal | `plancheck.avolvecloud.com` → Rackspace IP `162.209.33.151` (not Cloudflare/Akamai anycast); Avolve markets Microsoft/Azure partnership |
+| **Accela Citizen Access** (multi-tenant `aca-prod.accela.com`) | **Two layers: Cloudflare edge → Azure App Gateway/WAF → IIS** | **CONFIRMED 3-0** + live probe | Low if headed + persistent session; `_cfuvid` (Cloudflare) + `ApplicationGatewayAffinity` (Azure) cookies both present |
+| **PowerClerk** (Clean Power Research) | **Cloudflare w/ Bot Management** | **My live probe only** (panel did NOT independently confirm) | Low; `__cf_bm` bot-management cookie present — avoid headless/datacenter-IP fingerprints |
+| **Tyler EnerGov CSS** | Unknown (Tyler-hosted; unreachable from this env) | **NOT confirmed** | Unknown — probe live from production egress before go-live |
+| **Avolve ProjectDox** | Likely Azure or self-hosted; **not** a major CDN edge | **NOT confirmed** + weak live signal | `plancheck.avolvecloud.com` → Rackspace IP `162.209.33.151` (not Cloudflare/Akamai anycast); Avolve markets Microsoft/Azure partnership |
+
+> ⚠️ The verification panel confirmed WAF posture **only for Accela**. PowerClerk
+> rests on my single live header check; EnerGov and ProjectDox are unconfirmed.
+> A marketing-page claim that Accela "explicitly includes Cloudflare + Azure
+> Firewall" was **REFUTED 0-3** — the security page lists Cloudflare among
+> *monitoring* tools; it's the **live headers** that prove the edge, not the
+> marketing copy. Probe EnerGov/ProjectDox directly before relying on them.
 
 **Empirical detail (live, 2026-07-21):** `aca-prod.accela.com` →
 `Server: cloudflare`, `CF-RAY`, `_cfuvid` cookie, Cloudflare anycast
@@ -61,12 +67,17 @@ low-controversy and matches our existing design):
 ## (b) Credential-custody design + checklist
 
 We hold installer-supplied portal usernames/passwords to log into government/
-utility sites on their behalf. The following pattern is **CONFIRMED** (verify
-votes 3-0 against OWASP, AWS, and UiPath primary sources):
+utility sites on their behalf. The following pattern is **CONFIRMED 3-0**
+against OWASP, AWS, and UiPath primary sources:
 
+- **Authenticated encryption**: encrypt credentials at rest with **AES-256-GCM**
+  (or ChaCha20-Poly1305) — one AEAD algorithm for confidentiality + integrity
+  (OWASP's explicit recommendation).
 - **Envelope encryption / BYOK** (OWASP Secrets Management Cheat Sheet §4.2):
-  a data key encrypts each secret; a KMS/customer main key encrypts the data
-  key. Don't store plaintext; don't log secrets.
+  a data encryption key (DEK) encrypts each secret; a separately-held root/
+  master key (KEK) in a KMS/HSM encrypts the DEK; the wrapped DEK may sit
+  beside the ciphertext, but the KEK must **never** be stored next to the
+  secrets. Don't store plaintext; don't log secrets.
 - **Per-tenant key isolation** (AWS Architecture Blog, Aug 2025): one
   customer-managed KMS key per tenant, `alias/customer-<tenant-id>`, enforced
   via IAM/`kms:RequestAlias` conditions. UiPath Orchestrator documents the
@@ -104,29 +115,44 @@ votes 3-0 against OWASP, AWS, and UiPath primary sources):
 
 ## (c) Legal precedent — credentialed submission vs. scraping
 
-**Bottom line (CITED — secondary/primary legal sources, verification pending):
-credentialed, account-holder-authorized, low-volume form submission sits on
-the safe side of the line that CFAA case law actually draws.**
+**Bottom line (CONFIRMED 3-0 against SCOTUS + 9th Cir. primary opinions):
+credentialed, installer-authorized, low-volume submission is on the favorable
+side of CFAA case law — but the EXACT authorized-agent automated-submission
+scenario is an unsettled "gray area," not a settled safe harbor.**
 
-- **Van Buren / hiQ v. LinkedIn (9th Cir. 2022)**: CFAA authorization is a
-  **"gates-up-or-down" inquiry keyed to authentication** — "authorization as
-  an authentication process where users input credentials to proceed past a
-  'gate'." A party who authenticates with valid credentials (our operator,
-  using installer-supplied logins **with the installer's permission**) has the
-  gate "up." That is categorically different from gate-bypassing unauthorized
-  access.
-- **ToS ≠ CFAA**: violating a site's terms of service is "unlikely to
-  constitute a violation of the CFAA" — ToS bans on automation are not, by
-  themselves, federal computer-crime hooks. (Holding arose in the public-data
-  context; the authenticated-portal context is less tested.)
-- **Facebook v. Power Ventures — the key limit**: automated access performed
-  **with the account holders' consent is initially authorized**, BUT CFAA
-  liability attaches the moment the operator gets an **explicit, individualized
-  written revocation** (a cease-and-desist). Continued access after that
-  written notice is "without authorization."
-- **Non-CFAA exposure remains**: hiQ was limited to the CFAA. Portal operators
-  retain trespass-to-chattels, breach-of-contract (ToS), and misappropriation
-  theories — so our exposure is **primarily contractual/civil, not criminal**.
+- **Van Buren v. United States (SCOTUS 2021)**: the CFAA's "exceeds authorized
+  access" clause reaches only accessing areas off-limits to the user, NOT
+  misusing access one is entitled to have. Liability is a binary
+  **"gates-up-or-down"** question — not purpose or motive. A credentialed bot
+  logging into an account the installer legitimately holds, touching only what
+  that account can reach, does **not** "exceed authorized access" merely
+  because access is automated or commercial.
+- **Facebook v. Power Ventures (9th Cir.)**: automated access **with the
+  account holder's permission is lawful** — even if it breaches the site's
+  ToS. The pivotal event that creates CFAA liability is an **explicit,
+  individualized written revocation** (a cease-and-desist). Power was fine
+  until Facebook sent written notice and it kept going.
+- **hiQ v. LinkedIn (9th Cir. 2022)**: ToS/C&D violations on **public** data
+  are unlikely to be CFAA violations ("no gates to lift"). (hiQ later lost on
+  a separate breach-of-**contract** theory — which does not disturb the CFAA
+  holding, and is exactly the civil exposure that remains.)
+- **⚠️ The gray area (finding 10, medium)**: legal commentators characterize
+  our precise scenario — automated submission using the user's OWN credentials
+  with their explicit permission — as an **unsettled area awaiting future
+  cases**, distinct from both "clear violation" logged-in scraping and
+  permissible public-data scraping. Not a settled violation; not a settled
+  safe harbor.
+- **⚠️ Van Buren footnote 8** expressly left open whether a **ToS automation
+  ban can itself define a CFAA "gate."** So if any AHJ/utility portal's terms
+  *explicitly prohibit automation*, the gates-up analysis is less certain
+  there — flag such portals at onboarding.
+- **Non-CFAA exposure remains**: the CFAA holdings don't foreclose
+  trespass-to-chattels, breach-of-contract (ToS), or misappropriation — so
+  exposure is **primarily civil/contractual, not criminal**.
+- **Refuted, do not cite**: Meta v. BrandTotal as authority that "hiring an
+  authorized agent to extract" is CFAA-safe (REFUTED 1-2). The analysis is
+  also **9th-Circuit-weighted**; other circuits read CFAA authorization
+  differently.
 
 **Operational implications:**
 1. Only ever operate with the installer's explicit authorization to act on
@@ -142,15 +168,21 @@ the safe side of the line that CFAA case law actually draws.**
 
 ## Verification status & remaining gaps
 
-- **CONFIRMED (3-0 cached votes or my live probe):** Accela=Cloudflare,
-  PowerClerk=Cloudflare+BotManagement, and the entire credential-custody
-  section (OWASP/AWS/UiPath).
-- **CITED, verification pending** (extraction completed; panel died on credit
-  wall): bot-detection mechanisms + mitigations (blog-sourced), all legal
-  precedent (secondary/primary sources), EnerGov/ProjectDox edge posture.
-- **Still unknown:** live WAF posture of EnerGov and ProjectDox (unreachable
-  from this environment — probe from production egress); documented cases of
-  permit-tech firms being blocked/sanctioned (none surfaced); the
-  authenticated-portal CFAA context is less litigated than the public-data one.
-- **To upgrade:** resume run `wf_61574b62-402` after credit reset — searches
-  and fetches replay free; only the remaining verify votes + synthesis re-run.
+- **CONFIRMED 3-0** (full panel verification): Accela two-layer WAF
+  (Cloudflare + Azure App Gateway, live-confirmed); TLS/JA3-JA4 + webdriver
+  detection mechanisms; the entire credential-custody section (AES-256-GCM,
+  envelope encryption, per-tenant KMS, no-plaintext-logs + audit trail, RPA
+  vault model — OWASP/AWS/UiPath); and all core legal precedent (Van Buren,
+  Power Ventures, hiQ — primary court opinions).
+- **My live probe only** (panel did not independently confirm):
+  PowerClerk = Cloudflare + `__cf_bm` bot management.
+- **Still unknown / must probe before go-live:** live WAF posture of **EnerGov
+  and ProjectDox** (unreachable here; probe from production egress); the actual
+  challenge/block **rate** at authenticated low volume (no cited figure —
+  "low/manageable" is an engineering inference from detection mechanisms, not a
+  measurement); documented cases of permit-tech firms blocked/sanctioned (none
+  surfaced).
+- **Live legal risk to watch:** any AHJ/utility ToS that *explicitly bans
+  automation* (Van Buren footnote 8 leaves the gate question open there); the
+  authorized-agent submission scenario is an unsettled gray area; analysis is
+  9th-Circuit-weighted.

@@ -114,30 +114,38 @@ browser automation everywhere else. Browser-automation universality IS the
 moat for the long tail. What matters for go-live is that UNIVERSAL browser
 automation can run legitimately.
 
-GO-LIVE OPS / WAF / LEGAL (fourth run, see
-docs/research/GOLIVE_OPS_LEGAL_2026-07.md — verification cut short by credit
-wall; findings labeled CONFIRMED via cached votes + my own live probes vs
-CITED pending resume). WAF posture (CONFIRMED by live probe 2026-07-21):
-Accela Citizen Access (aca-prod.accela.com) AND PowerClerk (Clean Power
-Research) both sit behind CLOUDFLARE — PowerClerk with a __cf_bm bot-management
-cookie, Accela with _cfuvid. So HOW the browser runs matters: run headed real
-Chromium (not headless), persistent session cookies (not fresh login each
-run), human-solved MFA (already a rule), respectful rate limits, non-datacenter
-IP. At tens/day human-attended the block risk is LOW. ProjectDox/Avolve
-resolves to a plain Rackspace IP (not a CDN edge); EnerGov unprobed. Some
-agencies self-host Accela ACA on their own domain (outside the Cloudflare
-edge). CREDENTIAL CUSTODY (CONFIRMED 3-0, OWASP/AWS/UiPath): envelope
-encryption/BYOK, per-installer KMS key scoping, never log secrets, tamper-
-resistant audit log of every credential use, rotate portal passwords ONLY on
-suspected compromise (not scheduled). Maps to SOC 2 Confidentiality+Security
-and CCPA/CPRA. LEGAL (CITED): CFAA is "gates-up-or-down" keyed to
-authentication (Van Buren/hiQ) — credentialed, installer-authorized access has
-the gate UP, categorically unlike scraping; ToS violation alone ≠ CFAA; BUT
-(Facebook v. Power Ventures) a written cease-and-desist for a specific
-account/portal is the line where CFAA liability begins → if we ever get one,
-STOP automating that portal immediately. Exposure is otherwise civil/
-contractual, not criminal. Resume run wf_61574b62-402 after credit reset to
-upgrade CITED→CONFIRMED.
+GO-LIVE OPS / WAF / LEGAL (fourth run, FULLY VERIFIED, see
+docs/research/GOLIVE_OPS_LEGAL_2026-07.md). WAF: Accela Citizen Access
+(aca-prod.accela.com) sits behind TWO layers — Cloudflare edge + Azure App
+Gateway/WAF (CONFIRMED 3-0 + live headers). PowerClerk = Cloudflare with a
+__cf_bm bot-management cookie (my own live probe; panel didn't independently
+confirm). EnerGov + ProjectDox WAF posture NOT confirmed — probe live from
+prod egress before relying on them (ProjectDox/Avolve resolved to a plain
+Rackspace IP, likely no CDN edge). So HOW the browser runs matters: headed
+real Chromium (not headless — defeats navigator.webdriver + JA3/JA4 TLS
+fingerprint + plugin tells at once), persistent session cookies (fresh login
+each run is itself flagged), human-solved MFA (already a rule), respectful
+rate limits, non-datacenter/residential IP. At tens/day human-attended the
+block risk is LOW (engineering inference — no measured rate). Some agencies
+self-host Accela ACA on their own domain (outside the Cloudflare edge).
+CREDENTIAL CUSTODY (CONFIRMED 3-0, OWASP/AWS/UiPath): AES-256-GCM authenticated
+encryption; envelope encryption (DEK encrypts secret, separately-held KEK in
+KMS encrypts DEK — never store KEK beside ciphertext); per-installer KMS key
+scoping; never log secrets; tamper-resistant audit log of every credential
+use; rotate portal passwords ONLY on suspected compromise (not scheduled —
+NIST). Maps to SOC 2 Confidentiality+Security and CCPA/CPRA. LEGAL (CONFIRMED
+3-0, SCOTUS+9th Cir primary opinions): CFAA is "gates-up-or-down" (Van Buren)
+— credentialed, installer-authorized access has the gate UP, not "exceeding
+access" just because it's automated/commercial; ToS violation alone ≠ CFAA;
+BUT (Power Ventures) a written cease-and-desist for a specific account/portal
+is where CFAA liability begins → if we ever get one, STOP automating that
+portal immediately. TWO CAVEATS the operator must hold: (1) our exact
+authorized-agent automated-SUBMISSION scenario is an UNSETTLED "gray area,"
+not a settled safe harbor; (2) Van Buren footnote 8 left open whether a ToS
+automation BAN can itself be a CFAA "gate" — so flag any AHJ/utility whose
+terms explicitly prohibit automation. Exposure is otherwise civil/contractual
+(trespass-to-chattels, breach-of-contract), not criminal. Analysis is
+9th-Circuit-weighted.
 
 ## Next automations worth building (ranked, for future sessions)
 
