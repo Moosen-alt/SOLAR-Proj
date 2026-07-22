@@ -133,6 +133,29 @@ import { getSubmittalTracks, markTrackSubmitted } from "./submittalTracks";
 import type { SubmittalTrackType } from "../../shared/src/types";
 
 const app = express();
+
+// Startup credential-key gate. Portal logins + email creds are encrypted at rest
+// with SESSION_ENCRYPTION_KEY; booting with it unset or left at the shipped
+// placeholder means either a crash the first time a credential is touched, or
+// (worse) data encrypted under a guessable key. Fail fast on those two footguns
+// only — any real value (including CI's fake key) passes; a short key just warns.
+(function assertEncryptionKey(): void {
+  const key = process.env.SESSION_ENCRYPTION_KEY;
+  if (!key || key === "replace-with-a-long-random-secret") {
+    logger.error(
+      "security",
+      "SESSION_ENCRYPTION_KEY is unset or still the default placeholder — refusing to start. Set it to a long random secret (e.g. `openssl rand -base64 48`) before running. Credentials are encrypted at rest with this key.",
+    );
+    process.exit(1);
+  }
+  if (key.length < 24) {
+    logger.warn(
+      "security",
+      "SESSION_ENCRYPTION_KEY is short (<24 chars) — use a long random secret so the scrypt-derived credential key is not brute-forceable from a leaked DB.",
+    );
+  }
+})();
+
 const db = await openDatabase();
 const frontendDir = path.resolve(process.cwd(), "frontend");
 const port = Number(process.env.PORT || 4173);

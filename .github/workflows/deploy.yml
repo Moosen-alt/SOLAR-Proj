@@ -29,6 +29,20 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      # Unit suites (backend + portal-bot). Chained with && so the first failure
+      # fails the job; run before smoke so a logic regression blocks deploy.
+      - name: Backend unit tests
+        run: npm run backend:test:unit
+        env:
+          SESSION_ENCRYPTION_KEY: "ci-only-not-real-replace-in-production"
+          ANTHROPIC_API_KEY: ""
+
+      - name: Portal-bot unit tests
+        run: npm run portal:test:unit
+        env:
+          SESSION_ENCRYPTION_KEY: "ci-only-not-real-replace-in-production"
+          ANTHROPIC_API_KEY: ""
+
       # Smoke test runs against a tmp DB — no real credentials needed.
       - name: Smoke test
         run: npm run smoke
