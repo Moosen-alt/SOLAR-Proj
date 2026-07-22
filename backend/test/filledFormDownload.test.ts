@@ -23,6 +23,8 @@ const env = {
   MONITOR_INTERVAL_MINUTES: "0",
   LOG_LEVEL: "warn",
   ANTHROPIC_API_KEY: "", // stub LLM — deterministic, no network
+  // Startup key gate refuses to boot unset/placeholder; keep hermetic on fresh clones.
+  SESSION_ENCRYPTION_KEY: process.env.SESSION_ENCRYPTION_KEY || "unit-test-key-not-a-real-secret",
   NO_PROXY: "*",
   no_proxy: "*",
 };
