@@ -1,0 +1,29 @@
+{
+  "name": "pdf-form-filler",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Map a blank PDF form once (auto/vision/heuristic), then batch-fill it from CSV/JSON rows — split out of the SOLAR-Proj AHJ form-fill engine.",
+  "scripts": {
+    "inspect": "tsx src/cli.ts inspect",
+    "map": "tsx src/cli.ts map",
+    "fill": "tsx src/cli.ts fill",
+    "test": "tsx src/engine.test.ts",
+    "sample": "tsx sample/make-sample.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.105.0",
+    "@napi-rs/canvas": "^1.0.0",
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^6.0.227",
+    "tsx": "^4.19.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.7",
+    "typescript": "^5.7.3"
+  }
+}

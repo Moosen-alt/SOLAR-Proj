@@ -1,0 +1,4 @@
+Permit Number,Project Address,Applicant Name,Mailing Address,Phone,Email,Refund Amount Requested,Reason For Refund,Refund Type,Paid By Applicant
+BP-2025-0421,123 SE Alder St,Dana Reyes,"PO Box 991, Portland OR 97201",503-555-0142,dana@example.com,455.40,Project cancelled before plan review began,Full Refund,yes
+BP-2025-0517,88 NW Couch St,Sam Okafor,88 NW Couch St Portland OR 97209,503-555-0177,sam@example.com,120.00,Duplicate payment on the same permit,Partial Refund,yes
+ELE-2025-1103,45 N Willamette Blvd,Priya Nair,45 N Willamette Blvd Portland OR 97217,503-555-0163,priya@example.com,283.00,Permit withdrawn — scope moved to a combined application,Full Refund,no

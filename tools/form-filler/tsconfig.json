@@ -11,5 +11,5 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["backend/src/**/*.ts", "portal-bot/src/**/*.ts", "shared/src/**/*.ts", "tools/form-filler/**/*.ts"]
+  "include": ["src/**/*.ts", "sample/**/*.ts"]
 }
