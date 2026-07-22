@@ -19,7 +19,9 @@ export function parseCsv(text: string): string[][] {
       } else {
         field += c;
       }
-    } else if (c === '"') {
+    } else if (c === '"' && field === "") {
+      // A quote only opens a quoted field at the START of a field; a stray
+      // quote mid-field (e.g. 2" pipe) is a literal character, not a delimiter.
       inQuotes = true;
     } else if (c === ",") {
       row.push(field); field = "";
@@ -45,9 +47,18 @@ export interface LoadedRows {
 export function loadRows(filePath: string): LoadedRows {
   const text = fs.readFileSync(filePath, "utf8");
   if (filePath.toLowerCase().endsWith(".json")) {
-    const parsed = JSON.parse(text);
+    const clean = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text; // tolerate a UTF-8 BOM
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(clean);
+    } catch (err) {
+      throw new Error(`${filePath}: invalid JSON — ${err instanceof Error ? err.message : String(err)}`);
+    }
     if (!Array.isArray(parsed)) {
       throw new Error(`${filePath}: JSON data must be an array of objects (one object per form to fill).`);
+    }
+    if (parsed.length === 0) {
+      throw new Error(`${filePath}: JSON array is empty (no rows to fill).`);
     }
     const headers = new Set<string>();
     const rows: DataRow[] = parsed.map((item, i) => {

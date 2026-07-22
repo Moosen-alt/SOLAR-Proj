@@ -3,8 +3,11 @@
 // signature stamping, CSV parsing, heuristic auto-map, and name templating.
 // Plain tsx script, repo convention: `npx tsx tools/form-filler/src/engine.test.ts`.
 import { PDFDocument } from "pdf-lib";
-import { parseCsv, renderName, sanitizeFilename } from "./data";
-import { fillPdf, normalizeName, resolveSource, rowValue, unknownRowSources } from "./engine";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { loadRows, parseCsv, renderName, sanitizeFilename } from "./data";
+import { fillPdf, isTruthy, normalizeName, pdfSafeText, resolveSource, rowValue, unknownRowSources } from "./engine";
 import { heuristicAcroMap } from "./autoMap";
 import { inspectPdf } from "./inspect";
 import { extractPdfText } from "./render";
@@ -59,6 +62,16 @@ async function main(): Promise<void> {
   check("rowValue exact beats fuzzy", rowValue({ ab: "1", "a b": "2" }, "ab") === "1");
   check("normalizeName strips punctuation", normalizeName("Permit #_Number!") === "permitnumber");
 
+  // --- truthiness (shared by checkbox + overlay onlyIf) -----------------
+  check("isTruthy yes-ish", isTruthy("Yes") && isTruthy("1") && isTruthy("x"));
+  check("isTruthy no-ish", !isTruthy("") && !isTruthy("no") && !isTruthy("0") && !isTruthy("false") && !isTruthy(" N "));
+
+  // --- pdf-safe text normalization --------------------------------------
+  check("pdfSafeText maps smart quotes", pdfSafeText("‘a’ “b”").text === "'a' \"b\"" && pdfSafeText("‘a’").lossy === 0);
+  check("pdfSafeText maps dash/ellipsis/nbsp", pdfSafeText("a—b…c d").text === "a-b...c d");
+  check("pdfSafeText keeps Latin-1", pdfSafeText("José Peña").text === "José Peña" && pdfSafeText("José").lossy === 0);
+  check("pdfSafeText replaces out-of-range + counts", pdfSafeText("Ał\u{1F600}B").text === "A??B" && pdfSafeText("Ał\u{1F600}B").lossy === 2);
+
   // --- CSV parsing ------------------------------------------------------
   const csv = '﻿Name,Address,Note\r\n"Reyes, Dana","123 ""A"" St","line1\nline2"\r\nBo,,\r\n,,\r\n';
   const grid = parseCsv(csv);
@@ -68,6 +81,19 @@ async function main(): Promise<void> {
   check("csv escaped quotes", grid[1][1] === '123 "A" St');
   check("csv newline inside quotes", grid[1][2] === "line1\nline2");
   check("csv sparse row", grid[2][0] === "Bo" && grid[2][1] === "");
+  const midQuote = parseCsv('A,B\n12" pipe,ok\n');
+  check("csv mid-field quote is literal", midQuote[1][0] === '12" pipe' && midQuote[1][1] === "ok", JSON.stringify(midQuote[1]));
+
+  // --- loadRows JSON edge cases ----------------------------------------
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ff-data-"));
+  const emptyJson = path.join(tmp, "empty.json");
+  fs.writeFileSync(emptyJson, "[]");
+  let emptyThrew = false;
+  try { loadRows(emptyJson); } catch { emptyThrew = true; }
+  check("loadRows rejects empty JSON array", emptyThrew);
+  const bomJson = path.join(tmp, "bom.json");
+  fs.writeFileSync(bomJson, `﻿[{"Permit Number":"BP-9"}]`);
+  check("loadRows tolerates JSON BOM", loadRows(bomJson).rows[0]["Permit Number"] === "BP-9");
 
   // --- name templating --------------------------------------------------
   check("renderName column + n", renderName("{Permit Number}-{n}.pdf", row, 4) === "BP-2025-0421-005.pdf");
@@ -119,6 +145,15 @@ async function main(): Promise<void> {
   check("flatten removes fields", reloaded2.getForm().getFields().length === 0, String(reloaded2.getForm().getFields().length));
   const flatText = (await extractPdfText(filled2.bytes)).join(" ");
   check("flattened output keeps values", flatText.includes("BP-2025-0421") && flatText.includes("Dana Reyes"), flatText.slice(0, 200));
+
+  // Checkbox-only hand-written map (textFields omitted) must not crash.
+  const checkboxOnly = { formName: "cb", fillMode: "acroform", checkboxes: { "Paid By Applicant": { source: "row.Paid By Applicant" } } } as unknown as FormMap;
+  const cbFilled = await fillPdf(acroBytes, checkboxOnly, { "Paid By Applicant": "1" }, { flatten: false });
+  check("checkbox-only map does not crash", cbFilled.filledCount === 1 && cbFilled.unmapped.length === 0, JSON.stringify({ f: cbFilled.filledCount, u: cbFilled.unmapped }));
+
+  // Non-Latin data is sanitized (surfaced via sanitizedCount), not aborted.
+  const uni = await fillPdf(acroBytes, { formName: "u", fillMode: "acroform", textFields: { "Applicant Name": "row.Applicant Name" } }, { "Applicant Name": "Małgorzata \u{1F600}" }, {});
+  check("acroform sanitizes + counts", uni.sanitizedCount === 2 && uni.filledCount === 1, String(uni.sanitizedCount));
 
   // --- overlay fill -----------------------------------------------------
   const flatBytes = await buildFlatFixture();

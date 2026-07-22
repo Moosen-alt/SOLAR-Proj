@@ -19,6 +19,43 @@ export function normalizeName(name: string): string {
   return (name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
+/** Shared truthiness for checkbox rules and overlay `onlyIf` (without `equals`):
+ *  non-empty and not a negative token, so "no"/"0"/"false"/"n" read as false. */
+export function isTruthy(value: string): boolean {
+  const v = (value ?? "").trim().toLowerCase();
+  return Boolean(v) && v !== "0" && v !== "false" && v !== "no" && v !== "n";
+}
+
+// Common typographic Unicode → ASCII, so copy-pasted names/addresses (smart
+// quotes, en/em dashes, ellipsis, non-breaking space) don't blow up pdf-lib's
+// standard Helvetica, which can only encode Latin-1 (WinAnsi).
+const TYPO_MAP: Record<string, string> = {
+  "‘": "'", "’": "'", "‚": ",", "‛": "'",
+  "“": '"', "”": '"', "„": '"',
+  "‐": "-", "‑": "-", "‒": "-", "–": "-", "—": "-", "―": "-", "−": "-",
+  "…": "...", " ": " ", "•": "-", "·": "-",
+  "«": '"', "»": '"', "‹": "'", "›": "'",
+};
+
+/** Make text safe for pdf-lib's standard Helvetica: map typographic characters
+ *  to ASCII; replace anything still outside the encodable Latin-1 range (and
+ *  control chars) with "?". Returns the text plus the count of LOSSY "?"
+ *  substitutions (typographic remaps are not counted), so callers can warn.
+ *  Prevents a single out-of-range character from aborting an entire filled form. */
+export function pdfSafeText(input: string): { text: string; lossy: number } {
+  let lossy = 0;
+  let out = "";
+  for (const ch of input) {
+    const mapped = TYPO_MAP[ch];
+    if (mapped != null) { out += mapped; continue; }
+    const cp = ch.codePointAt(0) ?? 0;
+    if (cp === 0x09 || cp === 0x0a || cp === 0x0d) { out += " "; continue; }
+    if (cp < 0x20 || (cp >= 0x7f && cp <= 0x9f) || cp > 0xff) { out += "?"; lossy++; continue; }
+    out += ch;
+  }
+  return { text: out, lossy };
+}
+
 function todayString(override?: string): string {
   if (override) return override;
   const d = new Date();
@@ -54,8 +91,7 @@ export function resolveSource(source: FieldSource, row: DataRow, today?: string)
 function checkboxOn(rule: { source: FieldSource; equals?: string }, row: DataRow, today?: string): boolean {
   const value = resolveSource(rule.source, row, today);
   if (rule.equals != null) return value.trim().toLowerCase() === rule.equals.trim().toLowerCase();
-  const v = value.trim().toLowerCase();
-  return Boolean(v) && v !== "0" && v !== "false" && v !== "no" && v !== "n";
+  return isTruthy(value);
 }
 
 // Stamp the provided signature image at every placement; write today's date on
@@ -117,6 +153,7 @@ export async function fillPdf(
     const font = await doc.embedFont(StandardFonts.Helvetica);
     const pages = doc.getPages();
     let drawn = 0;
+    let sanitizedCount = 0;
     for (const field of map.overlayFields ?? []) {
       const page = pages[field.page];
       if (!page) continue;
@@ -125,11 +162,14 @@ export async function fillPdf(
         const cond = resolveSource(field.onlyIf.source, row, opts.today);
         const pass = field.onlyIf.equals != null
           ? cond.trim().toLowerCase() === field.onlyIf.equals.trim().toLowerCase()
-          : Boolean(cond.trim());
+          : isTruthy(cond);
         if (!pass) continue;
       }
-      let text = resolveSource(field.source, row, opts.today);
-      if (!text) continue;
+      const resolved = resolveSource(field.source, row, opts.today);
+      if (!resolved) continue;
+      const safe = pdfSafeText(resolved);
+      sanitizedCount += safe.lossy;
+      let text = safe.text;
       const size = field.size ?? 9;
       if (field.maxWidth) {
         while (text.length > 1 && font.widthOfTextAtSize(text, size) > field.maxWidth) {
@@ -146,7 +186,7 @@ export async function fillPdf(
       drawn += 1;
     }
     const signaturesDrawn = await drawSignatures(doc, map.signatureFields, opts.signature, opts.today);
-    return { bytes: await doc.save(), filledCount: drawn, unmapped: [], signaturesDrawn };
+    return { bytes: await doc.save(), filledCount: drawn, unmapped: [], signaturesDrawn, sanitizedCount };
   }
 
   // AcroForm mode.
@@ -154,13 +194,20 @@ export async function fillPdf(
   const fieldByName = new Map(form.getFields().map((f) => [f.getName(), f]));
   const unmapped: string[] = [];
   let filled = 0;
+  let sanitizedCount = 0;
 
-  for (const [fieldName, source] of Object.entries(map.textFields)) {
+  // A hand-written map may legitimately omit textFields (checkbox-only form).
+  for (const [fieldName, source] of Object.entries(map.textFields ?? {})) {
     const field = fieldByName.get(fieldName);
     if (!field) { unmapped.push(fieldName); continue; }
-    const value = resolveSource(source, row, opts.today);
+    const raw = resolveSource(source, row, opts.today);
     try {
       if (field instanceof PDFTextField) {
+        // Standard AcroForm fonts are WinAnsi/Latin-1; sanitize so appearance
+        // generation (at flatten/save) can encode the value.
+        const safe = pdfSafeText(raw);
+        sanitizedCount += safe.lossy;
+        const value = safe.text;
         try {
           field.setText(value);
         } catch {
@@ -171,10 +218,10 @@ export async function fillPdf(
         }
         filled += 1;
       } else if (field instanceof PDFDropdown || field instanceof PDFOptionList || field instanceof PDFRadioGroup) {
-        if (!value) continue; // leave unselected rather than erroring on ""
+        if (!raw) continue; // leave unselected rather than erroring on ""
         const options = field.getOptions();
-        const match = options.find((o) => o === value)
-          ?? options.find((o) => normalizeName(o) === normalizeName(value));
+        const match = options.find((o) => o === raw)
+          ?? options.find((o) => normalizeName(o) === normalizeName(raw));
         if (!match) { unmapped.push(fieldName); continue; }
         field.select(match);
         filled += 1;
@@ -204,7 +251,7 @@ export async function fillPdf(
   }
 
   const signaturesDrawn = await drawSignatures(doc, map.signatureFields, opts.signature, opts.today);
-  return { bytes: await doc.save(), filledCount: filled, unmapped, signaturesDrawn };
+  return { bytes: await doc.save(), filledCount: filled, unmapped, signaturesDrawn, sanitizedCount };
 }
 
 /** row.* sources in a map that don't resolve to any known column — surfaced

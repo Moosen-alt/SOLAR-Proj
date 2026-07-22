@@ -10,6 +10,7 @@
 // From the SOLAR-Proj repo root: npm run form:fill -- <command> ...
 import fs from "node:fs";
 import path from "node:path";
+import { PDFDocument } from "pdf-lib";
 import { loadRows, renderName } from "./data";
 import { fillPdf, unknownRowSources } from "./engine";
 import { inspectPdf } from "./inspect";
@@ -44,23 +45,29 @@ interface Args {
   flags: Map<string, string | true>;
 }
 
+const VALUE_FLAGS = new Set(["--data", "--out", "--form-name", "--map", "--name", "--signature", "--limit", "--nudge-x", "--nudge-y"]);
+const BOOL_FLAGS = new Set(["--no-flatten", "--help"]);
+
 function parseArgs(argv: string[]): Args {
   const positional: string[] = [];
   const flags = new Map<string, string | true>();
-  const valueFlags = new Set(["--data", "--out", "--form-name", "--map", "--name", "--signature", "--limit", "--nudge-x", "--nudge-y"]);
   for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a.startsWith("--")) {
-      if (valueFlags.has(a)) {
-        const v = argv[i + 1];
-        if (v == null || v.startsWith("--")) fail(`${a} requires a value`);
-        flags.set(a, v);
-        i++;
-      } else {
-        flags.set(a, true);
-      }
+    let a = argv[i];
+    if (!a.startsWith("--")) { positional.push(a); continue; }
+    // Support --flag=value as well as --flag value.
+    let inlineVal: string | undefined;
+    const eq = a.indexOf("=");
+    if (eq >= 0) { inlineVal = a.slice(eq + 1); a = a.slice(0, eq); }
+    if (VALUE_FLAGS.has(a)) {
+      const v = inlineVal !== undefined ? inlineVal : argv[++i];
+      if (v == null) fail(`${a} requires a value`);
+      flags.set(a, v);
+    } else if (BOOL_FLAGS.has(a)) {
+      if (inlineVal !== undefined) fail(`${a} does not take a value`);
+      flags.set(a, true);
     } else {
-      positional.push(a);
+      // Reject unknown/typo'd flags instead of silently ignoring them.
+      fail(`unknown flag: ${a}`);
     }
   }
   return { positional, flags };
@@ -75,7 +82,10 @@ function fail(message: string): never {
 function readPdf(filePath: string): Uint8Array {
   if (!fs.existsSync(filePath)) fail(`no such file: ${filePath}`);
   const bytes = new Uint8Array(fs.readFileSync(filePath));
-  if (bytes[0] !== 0x25) fail(`${filePath} does not look like a PDF (missing %PDF header)`);
+  // The %PDF header may sit a few bytes in (the spec allows leading bytes within
+  // the first 1KB), so scan rather than requiring it at offset 0.
+  const head = Buffer.from(bytes.subarray(0, 1024)).toString("latin1");
+  if (!head.includes("%PDF-")) fail(`${filePath} does not look like a PDF (no %PDF header in first 1KB)`);
   return bytes;
 }
 
@@ -159,31 +169,57 @@ async function cmdFill(args: Args): Promise<void> {
     if (!fs.existsSync(sigPath)) fail(`no such signature image: ${sigPath}`);
     const mime = /\.jpe?g$/i.test(sigPath) ? "image/jpeg" : "image/png";
     opts.signature = { bytes: new Uint8Array(fs.readFileSync(sigPath)), mime };
+    // Fail fast: a corrupt/unsupported image would otherwise be silently
+    // swallowed per-row, sending the whole batch out unsigned.
+    try {
+      const probe = await PDFDocument.create();
+      if (mime === "image/jpeg") await probe.embedJpg(opts.signature.bytes);
+      else await probe.embedPng(opts.signature.bytes);
+    } catch {
+      fail(`signature image ${sigPath} could not be read as ${mime === "image/jpeg" ? "JPEG" : "PNG"} — check the file (only PNG/JPEG are supported).`);
+    }
     if (!map.signatureFields?.length) {
       console.warn("warning: --signature given but the map has no signatureFields — nothing will be stamped.");
     }
   }
-  const nudgeX = Number(args.flags.get("--nudge-x") ?? 0);
-  const nudgeY = Number(args.flags.get("--nudge-y") ?? 0);
-  if (nudgeX) opts.nudgeX = nudgeX;
-  if (nudgeY) opts.nudgeY = nudgeY;
+  for (const flag of ["--nudge-x", "--nudge-y"] as const) {
+    const raw = args.flags.get(flag);
+    if (typeof raw !== "string") continue;
+    if (!Number.isFinite(Number(raw))) fail(`${flag} must be a number (got "${raw}")`);
+    if (flag === "--nudge-x") opts.nudgeX = Number(raw);
+    else opts.nudgeY = Number(raw);
+  }
 
   const limitRaw = args.flags.get("--limit");
-  const limit = typeof limitRaw === "string" ? Math.max(1, Math.floor(Number(limitRaw)) || 1) : rows.length;
+  let limit = rows.length;
+  if (typeof limitRaw === "string") {
+    const n = Number(limitRaw);
+    if (!Number.isInteger(n) || n < 1) fail(`--limit must be a positive integer (got "${limitRaw}")`);
+    limit = n;
+  }
   const targets = rows.slice(0, limit);
 
   const usedNames = new Set<string>();
   const allUnmapped = new Set<string>();
   let ok = 0;
+  let sanitized = 0;
   for (let i = 0; i < targets.length; i++) {
     let name = renderName(nameTemplate, targets[i], i);
-    if (usedNames.has(name)) name = name.replace(/\.pdf$/i, `-${i + 1}.pdf`);
+    // Guarantee a unique output name — re-check the deduped candidate too, so a
+    // rename never lands on another row's file and silently overwrite it.
+    if (usedNames.has(name)) {
+      const base = name.replace(/\.pdf$/i, "");
+      let suffix = 2;
+      while (usedNames.has(`${base}-${suffix}.pdf`)) suffix++;
+      name = `${base}-${suffix}.pdf`;
+    }
     usedNames.add(name);
     const outPath = path.join(outDir, name);
     try {
       const result = await fillPdf(bytes, map, targets[i], opts);
       fs.writeFileSync(outPath, result.bytes);
       result.unmapped.forEach((u) => allUnmapped.add(u));
+      sanitized += result.sanitizedCount;
       const sig = result.signaturesDrawn ? `, ${result.signaturesDrawn} signature(s)` : "";
       console.log(`ok   ${outPath} (${result.filledCount} field(s)${sig})`);
       ok += 1;
@@ -194,14 +230,21 @@ async function cmdFill(args: Args): Promise<void> {
   if (allUnmapped.size) {
     console.warn(`warning: mapped field(s) not found/settable on the form: ${[...allUnmapped].sort().join(", ")}`);
   }
+  if (sanitized) {
+    console.warn(`warning: ${sanitized} character(s) fell outside the PDF font's Latin-1 range and were replaced with "?" — check values with non-Latin characters.`);
+  }
   console.log(`${ok}/${targets.length} filled -> ${outDir}${limit < rows.length ? ` (limited to first ${limit} of ${rows.length} rows)` : ""}`);
   if (ok < targets.length) process.exitCode = 1;
 }
 
 async function main(): Promise<void> {
   const [command, ...rest] = process.argv.slice(2);
+  if (!command || command === "help" || command === "--help" || command === "-h") {
+    console.log(USAGE);
+    return;
+  }
   const args = parseArgs(rest);
-  if (!command || command === "help" || args.flags.has("--help")) {
+  if (args.flags.has("--help")) {
     console.log(USAGE);
     return;
   }

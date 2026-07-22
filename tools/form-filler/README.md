@@ -102,8 +102,18 @@ field names that don't exist on the form.
 ## Data format
 
 - **CSV** — first row is headers. Quoted fields, embedded commas/newlines and
-  `""` escapes are handled. Values are used as-is (they're strings on a form).
+  `""` escapes are handled. Surrounding whitespace is trimmed from each cell;
+  values are otherwise used as written.
 - **JSON** — an array of objects, e.g. `[{"Permit Number": "BP-1", ...}, ...]`.
+  Values are stringified, so a JSON **number** like `455.40` becomes `"455.4"`
+  (the trailing zero is already gone by the time JSON is parsed). Quote values
+  that must keep their exact formatting — currency, IDs, ZIPs — as **strings**
+  (`"455.40"`, `"07201"`).
+
+Non-Latin characters (beyond the standard PDF font's Latin-1 range) are replaced
+with `?` and the run reports how many — the standard AcroForm/Helvetica fonts
+can't render them. Common typographic characters (curly quotes, en/em dashes,
+ellipsis) are normalized to their ASCII equivalents automatically.
 
 ## Map format (hand-editing)
 

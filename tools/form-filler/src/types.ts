@@ -87,4 +87,7 @@ export interface FillResult {
   /** Mapped AcroForm field names that don't exist or couldn't be set. */
   unmapped: string[];
   signaturesDrawn: number;
+  /** Count of characters replaced with "?" because they fell outside the PDF
+   *  font's Latin-1 range (lossy). Non-zero means a value was altered. */
+  sanitizedCount: number;
 }
