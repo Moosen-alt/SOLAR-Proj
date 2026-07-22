@@ -42,7 +42,20 @@ rest. Two files aren't even in the local chain (`runTriageDigest.test.ts`,
 - `projects.account_number` / `projects.meter_number` are **plaintext** TEXT
   columns (`db.ts:166-167`) — only portal login username/password are
   encrypted. Given the CCPA/CPRA exposure from the go-live research, encrypt
-  these too.
+  these too. **⚠️ Deferred (deliberately) — this is NOT a quick column fix:**
+  the same values are also embedded in the per-project `parser_json` blob
+  (`repository.ts:420`, written via `applyVerifiedField` at `:5628` under the
+  `account`/`meter` aliases). Encrypting only the two columns would leave the
+  identifiers in plaintext inside `parser_json`, which is read on every project
+  load — i.e. security theater. Doing it right means encrypting the
+  `parser_json` blob (large, hot-path, consumed throughout the domain logic)
+  with a **process-cached data key** (derive once via scrypt, then cheap
+  AES-GCM per read — never scrypt-per-read on a list endpoint). That is a
+  scoped project, not a pre-launch patch. Interim mitigation: these are
+  lower-sensitivity identifiers than passwords (now properly protected), and
+  the DB file is access-controlled + Litestream-replicated; rely on
+  disk/volume encryption for the file at rest until the blob-encryption project
+  lands.
 - Nothing prevents booting with the placeholder key — it only warns and marks
   diagnostics `degraded` (`logger.ts:162-169`). Add a startup gate that refuses
   to serve with the default/placeholder key in production.
