@@ -112,12 +112,32 @@ the AHJ tenant + account enabled per installer). So: prefer API where the
 account is already onboarded or onboarding is cheap; fall back to universal
 browser automation everywhere else. Browser-automation universality IS the
 moat for the long tail. What matters for go-live is that UNIVERSAL browser
-automation can run legitimately: no ToS blocker found anywhere, and UiPath's
-official guidance endorses our exact human-attended login/MFA pattern. Fourth
-research run (in progress) targets the real go-live unknowns: WAF/bot-detection
-posture of live portals + legitimate mitigations, credential-custody design
-(installer-supplied portal logins), and CFAA/legal precedent on credentialed
-human-authorized submission vs unauthorized scraping.
+automation can run legitimately.
+
+GO-LIVE OPS / WAF / LEGAL (fourth run, see
+docs/research/GOLIVE_OPS_LEGAL_2026-07.md — verification cut short by credit
+wall; findings labeled CONFIRMED via cached votes + my own live probes vs
+CITED pending resume). WAF posture (CONFIRMED by live probe 2026-07-21):
+Accela Citizen Access (aca-prod.accela.com) AND PowerClerk (Clean Power
+Research) both sit behind CLOUDFLARE — PowerClerk with a __cf_bm bot-management
+cookie, Accela with _cfuvid. So HOW the browser runs matters: run headed real
+Chromium (not headless), persistent session cookies (not fresh login each
+run), human-solved MFA (already a rule), respectful rate limits, non-datacenter
+IP. At tens/day human-attended the block risk is LOW. ProjectDox/Avolve
+resolves to a plain Rackspace IP (not a CDN edge); EnerGov unprobed. Some
+agencies self-host Accela ACA on their own domain (outside the Cloudflare
+edge). CREDENTIAL CUSTODY (CONFIRMED 3-0, OWASP/AWS/UiPath): envelope
+encryption/BYOK, per-installer KMS key scoping, never log secrets, tamper-
+resistant audit log of every credential use, rotate portal passwords ONLY on
+suspected compromise (not scheduled). Maps to SOC 2 Confidentiality+Security
+and CCPA/CPRA. LEGAL (CITED): CFAA is "gates-up-or-down" keyed to
+authentication (Van Buren/hiQ) — credentialed, installer-authorized access has
+the gate UP, categorically unlike scraping; ToS violation alone ≠ CFAA; BUT
+(Facebook v. Power Ventures) a written cease-and-desist for a specific
+account/portal is the line where CFAA liability begins → if we ever get one,
+STOP automating that portal immediately. Exposure is otherwise civil/
+contractual, not criminal. Resume run wf_61574b62-402 after credit reset to
+upgrade CITED→CONFIRMED.
 
 ## Next automations worth building (ranked, for future sessions)
 
