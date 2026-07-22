@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>New project · Solar Submission Autopilot</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <style>
+    /* Operator-facing single-page intake. Field grouping mirrors the real forms
+       the data lands in: the Oregon BCD prescriptive solar PV checklist (owner /
+       address / contractor / structural) and the PGE PowerClerk net-metering
+       interconnection application (utility account, meter, equipment cut sheets). */
+    .np-wrap { max-width: 920px; margin: 0 auto; padding: 28px 20px 80px; }
+    .np-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 6px; flex-wrap: wrap; }
+    .np-head h1 { font-size: 22px; }
+    .np-head a { font-size: 13px; }
+    .np-sub { color: var(--muted, #667); font-size: 13px; margin-bottom: 22px; }
+    .np-section { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); padding: 20px 22px; margin-bottom: 18px; }
+    .np-section h2 { font-size: 15px; margin: 0 0 2px; }
+    .np-section .sec-hint { font-size: 12px; color: var(--muted, #667); margin-bottom: 14px; }
+    .np-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px 16px; }
+    .np-field { display: flex; flex-direction: column; }
+    .np-field.wide { grid-column: 1 / -1; }
+    label { font-size: 12px; font-weight: 700; margin-bottom: 4px; }
+    label .req { color: var(--danger, #c0392b); }
+    label .opt { font-weight: 400; color: var(--muted, #889); }
+    input, select { padding: 9px 11px; border: 1px solid var(--line); border-radius: 6px; font: inherit; background: var(--surface); color: inherit; }
+    input:focus, select:focus { outline: 2px solid var(--accent, #6366f1); outline-offset: -1px; }
+    .np-bar { position: sticky; bottom: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); padding: 14px 18px; display: flex; align-items: center; gap: 14px; margin-top: 6px; }
+    .np-bar button { justify-content: center; }
+    #npMsg { font-size: 13px; min-height: 18px; flex: 1; }
+    #npMsg.error { color: var(--danger); }
+    #npMsg.ok { color: var(--success, #1a7f37); }
+  </style>
+</head>
+<body>
+  <div class="np-wrap">
+    <div class="np-head">
+      <h1>New project intake</h1>
+      <a href="/dashboard">← Back to dashboard</a>
+    </div>
+    <p class="np-sub">Enter everything you have in one place. Only the homeowner name and install address are required — the parser and knowledge base fill the rest, and blanks can be completed later. Grouped to match the Oregon BCD solar checklist and the utility (PowerClerk) interconnection application.</p>
+
+    <form id="npForm">
+      <!-- Homeowner & property — Oregon checklist "Property owner information" -->
+      <section class="np-section">
+        <h2>Homeowner &amp; property</h2>
+        <div class="sec-hint">Who owns the system and where it's installed (permit applicant + site address).</div>
+        <div class="np-grid">
+          <div class="np-field wide"><label for="owner">Homeowner name <span class="req">*</span></label><input id="owner" name="owner" required autocomplete="off" /></div>
+          <div class="np-field"><label for="homeownerEmail">Email <span class="opt">(optional)</span></label><input id="homeownerEmail" name="homeownerEmail" type="email" /></div>
+          <div class="np-field"><label for="homeownerPhone">Phone <span class="opt">(optional)</span></label><input id="homeownerPhone" name="homeownerPhone" type="tel" /></div>
+          <div class="np-field wide"><label for="street">Install address <span class="req">*</span></label><input id="street" name="street" required autocomplete="off" placeholder="Street address" /></div>
+          <div class="np-field"><label for="city">City</label><input id="city" name="city" /></div>
+          <div class="np-field"><label for="state">State</label><input id="state" name="state" value="OR" maxlength="2" /></div>
+          <div class="np-field"><label for="zip">ZIP</label><input id="zip" name="zip" inputmode="numeric" /></div>
+        </div>
+      </section>
+
+      <!-- Jurisdiction & utility — AHJ (building dept) + PowerClerk interconnection -->
+      <section class="np-section">
+        <h2>Jurisdiction &amp; utility</h2>
+        <div class="sec-hint">The permitting authority (AHJ) and the utility that receives the net-metering / interconnection request.</div>
+        <div class="np-grid">
+          <div class="np-field"><label for="ahj">AHJ / building dept</label><input id="ahj" name="ahj" placeholder="e.g. Oregon ePermitting, Washington County" /></div>
+          <div class="np-field"><label for="utility">Utility</label><input id="utility" name="utility" placeholder="e.g. PGE, Pacific Power" /></div>
+          <div class="np-field"><label for="account">Utility account #</label><input id="account" name="account" autocomplete="off" /></div>
+          <div class="np-field"><label for="meter">Meter #</label><input id="meter" name="meter" autocomplete="off" /></div>
+          <div class="np-field wide"><label for="interco">Interconnection method <span class="opt">(optional)</span></label>
+            <select id="interco" name="interco">
+              <option value="">—</option>
+              <option>Net metering</option>
+              <option>Net billing</option>
+              <option>Non-export</option>
+            </select>
+          </div>
+        </div>
+      </section>
+
+      <!-- System sizing & valuation -->
+      <section class="np-section">
+        <h2>System size &amp; value</h2>
+        <div class="sec-hint">Sizing (kW) drives the interconnection tier; job value drives the permit fee.</div>
+        <div class="np-grid">
+          <div class="np-field"><label for="dcKw">System size DC (kW)</label><input id="dcKw" name="dcKw" inputmode="decimal" /></div>
+          <div class="np-field"><label for="acKw">System size AC (kW)</label><input id="acKw" name="acKw" inputmode="decimal" /></div>
+          <div class="np-field"><label for="exportKw">Total export (kW)</label><input id="exportKw" name="exportKw" inputmode="decimal" /></div>
+          <div class="np-field"><label for="jobValue">Job value ($)</label><input id="jobValue" name="jobValue" inputmode="decimal" placeholder="Installed contract price" /></div>
+        </div>
+      </section>
+
+      <!-- Equipment — cut-sheet data the interconnection application requires -->
+      <section class="np-section">
+        <h2>Equipment</h2>
+        <div class="sec-hint">Make/model as printed on the spec ("cut") sheets — the interconnection application and CEC listing check both key off these.</div>
+        <div class="np-grid">
+          <div class="np-field"><label for="moduleMake">Module manufacturer</label><input id="moduleMake" name="moduleMake" /></div>
+          <div class="np-field"><label for="moduleModel">Module model</label><input id="moduleModel" name="moduleModel" /></div>
+          <div class="np-field"><label for="moduleWatts">Module watts</label><input id="moduleWatts" name="moduleWatts" inputmode="numeric" /></div>
+          <div class="np-field"><label for="moduleQty">Module qty</label><input id="moduleQty" name="moduleQty" inputmode="numeric" /></div>
+          <div class="np-field"><label for="invMake">Inverter manufacturer</label><input id="invMake" name="invMake" /></div>
+          <div class="np-field"><label for="invModel">Inverter / microinverter model</label><input id="invModel" name="invModel" /></div>
+          <div class="np-field"><label for="invQty">Inverter qty</label><input id="invQty" name="invQty" inputmode="numeric" /></div>
+          <div class="np-field"><label for="batteryMake">Battery manufacturer <span class="opt">(if any)</span></label><input id="batteryMake" name="batteryMake" /></div>
+          <div class="np-field"><label for="batteryModel">Battery model <span class="opt">(if any)</span></label><input id="batteryModel" name="batteryModel" /></div>
+          <div class="np-field"><label for="batteryQty">Battery qty</label><input id="batteryQty" name="batteryQty" inputmode="numeric" /></div>
+          <div class="np-field"><label for="essKwh">Storage capacity (kWh)</label><input id="essKwh" name="essKwh" inputmode="decimal" /></div>
+        </div>
+      </section>
+
+      <div class="np-bar">
+        <button type="submit" class="primary" id="npSubmit">Create project</button>
+        <span id="npMsg"></span>
+      </div>
+    </form>
+  </div>
+
+  <script>
+    const form = document.getElementById("npForm");
+    const msg = document.getElementById("npMsg");
+    const submitBtn = document.getElementById("npSubmit");
+    const setMsg = (t, k) => { msg.textContent = t; msg.className = k || ""; };
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      setMsg("");
+      // Collect only non-empty fields; the normalizer maps these keys to the
+      // canonical Project columns and folds the rest into the parser payload.
+      const payload = {};
+      for (const el of form.querySelectorAll("input, select")) {
+        const v = (el.value || "").trim();
+        if (v) payload[el.name] = v;
+      }
+      if (!payload.owner || !payload.street) {
+        setMsg("Homeowner name and install address are required.", "error");
+        return;
+      }
+      submitBtn.disabled = true;
+      setMsg("Creating…");
+      try {
+        const res = await fetch("/api/projects", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          setMsg(data.error || ("Create failed (" + res.status + ")."), "error");
+          submitBtn.disabled = false;
+          return;
+        }
+        const pid = data.project && data.project.id;
+        setMsg("Project created. Opening dashboard…", "ok");
+        // Hand off to the dashboard, selecting the new project if we got its id.
+        setTimeout(() => { location.href = pid ? "/dashboard?project=" + encodeURIComponent(pid) : "/dashboard"; }, 700);
+      } catch (err) {
+        setMsg("Network error: " + err.message, "error");
+        submitBtn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

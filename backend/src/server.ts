@@ -2201,6 +2201,10 @@ app.get("/parser", (_req, res) => {
 });
 
 // Friendly aliases so a new hire can land on the dashboard at "/" or "/dashboard".
+app.get("/new-project", (_req, res) => {
+  res.sendFile(path.join(frontendDir, "new-project.html"));
+});
+
 app.get(["/", "/dashboard"], (_req, res) => {
   res.sendFile(path.join(frontendDir, "dashboard.html"));
 });
