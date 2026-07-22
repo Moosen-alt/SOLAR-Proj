@@ -248,20 +248,39 @@ async function runFolderScanJob(db: AppDb, job: JobRecord): Promise<Record<strin
 // up again). Defaults to 30 minutes — comfortably longer than the slowest portal run.
 const JOB_MAX_RUNTIME_MS = Number(process.env.JOB_MAX_RUNTIME_MS ?? 30 * 60_000);
 
+// Job IDs this process is ACTIVELY running right now. The mid-run watchdog must
+// never reclaim one of these: a portal run (prepare_submission / auto_learn) can
+// legitimately outlast the 30-min watchdog, and re-queuing it while the original
+// is still driving a live browser would stage the same application to a real AHJ/
+// utility portal TWICE (the DB completion is status-guarded, but the side effect —
+// the actual submission — is not). Populated only for the lifetime of a run in
+// THIS process, so on startup (fresh process) the set is empty and every stranded
+// `running` row is correctly reclaimed.
+const inFlightJobIds = new Set<string>();
+
 // Reclaim jobs stranded in `running`. The worker is single-process, so any job still
 // `running` either (a) was interrupted by a restart, or (b) has outlived the max
 // runtime watchdog. Either way it is dead: re-queue it for another attempt (counting
 // the lost run against its retry budget so a poison job eventually fails instead of
 // looping forever), or fail it outright once retries are exhausted.
-export function recoverOrphanedJobs(db: AppDb, opts: { startup?: boolean } = {}): number {
+export function recoverOrphanedJobs(
+  db: AppDb,
+  opts: { startup?: boolean; inFlight?: (jobId: string) => boolean } = {},
+): number {
   const cutoff = new Date(Date.now() - JOB_MAX_RUNTIME_MS).toISOString();
   // On startup every `running` row is orphaned; mid-run only those past the watchdog.
-  const stale = db.query<Row>(
+  const staleRows = db.query<Row>(
     opts.startup
       ? "SELECT * FROM job_queue WHERE status = 'running'"
       : "SELECT * FROM job_queue WHERE status = 'running' AND started_at IS NOT NULL AND started_at <= ?",
     opts.startup ? [] : [cutoff],
   );
+  // Mid-run: never reclaim a job THIS process is still actively running (a slow
+  // portal pass past the watchdog) — that would double-submit. On startup the set
+  // is empty so this filter is a no-op and all stranded rows are reclaimed.
+  // `inFlight` is injectable for tests; production uses the process's live set.
+  const isInFlight = opts.inFlight ?? ((id: string) => inFlightJobIds.has(id));
+  const stale = opts.startup ? staleRows : staleRows.filter((row) => !isInFlight(String(row.id)));
   if (!stale.length) return 0;
   const now = nowIso();
   for (const row of stale) {
@@ -352,6 +371,8 @@ export async function processNextJob(db: AppDb): Promise<boolean> {
   const claimed = db.get<Row>("SELECT status FROM job_queue WHERE id = ?", [job.id]);
   if (!claimed || String(claimed.status) !== "running") return false;
 
+  // Mark in-flight so the watchdog can't reclaim this run out from under us.
+  inFlightJobIds.add(job.id);
   try {
     let result: Record<string, unknown> = {};
 
@@ -493,6 +514,8 @@ export async function processNextJob(db: AppDb): Promise<boolean> {
         [nowIso(), msg, job.id],
       );
     }
+  } finally {
+    inFlightJobIds.delete(job.id);
   }
 
   return true;
