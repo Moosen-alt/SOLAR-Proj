@@ -37,7 +37,10 @@
 <body>
   <div class="ff2-bar">
     <h1>Form Filler</h1>
-    <label class="button primary" style="margin:0"><input type="file" id="ff2file" accept=".pdf,.docx,.doc,application/pdf" hidden />Upload form (PDF or DOCX)</label>
+    <label class="button primary" style="margin:0"><input type="file" id="ff2file" accept=".pdf,.docx,.doc,application/pdf" hidden />Upload form</label>
+    <input id="ff2url" placeholder="…or paste a form URL" style="width:180px;padding:7px 9px;border:1px solid var(--line);border-radius:6px;font:inherit" />
+    <button class="secondary" id="ff2fetch">Fetch</button>
+    <button class="secondary" id="ff2lookupBtn" title="Look up the form from the AHJ's website">Look up form ▾</button>
     <button class="secondary" id="ff2tplSave" disabled>Save field template</button>
     <label class="button secondary" style="margin:0"><input type="file" id="ff2tplLoad" accept="application/json,.json" hidden />Load template</label>
     <div class="spacer"></div>
@@ -49,6 +52,18 @@
     <span class="hint">click a page to add · drag ⠿ to move</span>
     <span id="ff2status">No form loaded</span>
     <button class="primary" id="ff2download" disabled>Download filled PDF</button>
+  </div>
+
+  <div id="ff2lookup" style="display:none;background:var(--surface);border-bottom:1px solid var(--line);padding:10px 18px;align-items:center;gap:8px">
+    <span class="hint">Look up the blank form from the AHJ site:</span>
+    <input id="lk_ahj" placeholder="AHJ (e.g. Bellingham city)" style="padding:7px 9px;border:1px solid var(--line);border-radius:6px;font:inherit" />
+    <input id="lk_state" placeholder="State" maxlength="2" style="width:60px;padding:7px 9px;border:1px solid var(--line);border-radius:6px;font:inherit" />
+    <select id="lk_type" style="padding:7px 9px;border:1px solid var(--line);border-radius:6px;font:inherit">
+      <option value="">Any form</option><option value="refund">Refund request</option>
+      <option value="permit_application">Permit application</option><option value="utility_application">Interconnection</option>
+    </select>
+    <button class="primary" id="ff2lookupGo">Find &amp; load</button>
+    <span class="hint">Uses web search (needs API key)</span>
   </div>
 
   <div class="ff2-data" id="ff2data">
@@ -94,6 +109,16 @@
       for (const b of document.querySelectorAll("#ff2mode button")) b.classList.toggle("active", b === btn);
     });
 
+    // Shared entry point for a loaded PDF from any source (upload / URL / lookup).
+    async function loadForm(bytes) {
+      pdfBytes = bytes;
+      await renderAll();
+      document.getElementById("ff2download").disabled = false;
+      document.getElementById("ff2tplSave").disabled = false;
+      document.getElementById("ff2auto").disabled = false;
+      setStatus("Loaded · auto-fill or click to add values", "ok");
+    }
+
     document.getElementById("ff2file").addEventListener("change", async (e) => {
       const file = e.target.files[0]; if (!file) return;
       try {
@@ -108,13 +133,48 @@
           if (!res.ok) { const j = await res.json().catch(() => ({})); setStatus(j.error || "Conversion failed — save as PDF and retry.", "error"); return; }
           bytes = new Uint8Array(await res.arrayBuffer());
         }
-        pdfBytes = bytes;
-        await renderAll();
-        document.getElementById("ff2download").disabled = false;
-        document.getElementById("ff2tplSave").disabled = false;
-        document.getElementById("ff2auto").disabled = false;
-        setStatus("Loaded · auto-fill or click to add values", "ok");
+        await loadForm(bytes);
       } catch (err) { setStatus("Load error: " + err.message, "error"); }
+    });
+
+    // Fetch a form from a pasted URL (server-side, dodges CORS).
+    document.getElementById("ff2fetch").addEventListener("click", async () => {
+      const url = document.getElementById("ff2url").value.trim();
+      if (!url) { setStatus("Paste a form URL first.", "error"); return; }
+      setStatus("Fetching form…");
+      try {
+        const res = await fetch("/api/tools/form-fill/fetch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url }) });
+        if (!res.ok) { const j = await res.json().catch(() => ({})); setStatus(j.error || "Fetch failed.", "error"); return; }
+        await loadForm(new Uint8Array(await res.arrayBuffer()));
+      } catch (err) { setStatus("Fetch error: " + err.message, "error"); }
+    });
+
+    // Toggle the AHJ lookup row.
+    document.getElementById("ff2lookupBtn").addEventListener("click", () => {
+      const el = document.getElementById("ff2lookup");
+      el.style.display = el.style.display === "none" ? "flex" : "none";
+    });
+    document.getElementById("ff2lookupGo").addEventListener("click", async () => {
+      const ahj = document.getElementById("lk_ahj").value.trim();
+      if (!ahj) { setStatus("Enter the AHJ to look up.", "error"); return; }
+      setStatus("Searching the AHJ site for the form…");
+      try {
+        const res = await fetch("/api/tools/form-fill/lookup", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ahj, state: document.getElementById("lk_state").value.trim(), formType: document.getElementById("lk_type").value }),
+        });
+        const out = await res.json().catch(() => ({}));
+        if (!res.ok) { setStatus(out.error || "Lookup failed.", "error"); return; }
+        if (out.found) {
+          await loadForm(new Uint8Array(atob(out.pdfBase64).split("").map((c) => c.charCodeAt(0))));
+          setStatus(`Loaded “${out.formName || "form"}” from ${out.sourceUrl}`, "ok");
+        } else {
+          // Couldn't auto-download; surface the links so the operator can grab it.
+          const links = (out.candidateUrls || []).concat(out.formsPageUrl ? [out.formsPageUrl] : []);
+          setStatus(links.length ? `Found a page but no direct PDF — open: ${links[0]}` : (out.notes || "No form found."), "error");
+          if (links[0]) document.getElementById("ff2url").value = links[0];
+        }
+      } catch (err) { setStatus("Lookup error: " + err.message, "error"); }
     });
 
     async function renderAll() {
