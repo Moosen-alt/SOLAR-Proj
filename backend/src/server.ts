@@ -2205,6 +2205,10 @@ app.get("/new-project", (_req, res) => {
   res.sendFile(path.join(frontendDir, "new-project.html"));
 });
 
+app.get("/fill-form", (_req, res) => {
+  res.sendFile(path.join(frontendDir, "fill-form.html"));
+});
+
 app.get(["/", "/dashboard"], (_req, res) => {
   res.sendFile(path.join(frontendDir, "dashboard.html"));
 });
