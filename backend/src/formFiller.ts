@@ -13,6 +13,7 @@ import os from "node:os";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
+import { FIELD_SYNONYMS, normLabel } from "./formTextLayer";
 
 /** A single text value drawn on a page. Coordinates are PDF points with the
  *  ORIGIN AT THE BOTTOM-LEFT (pdf-lib's native convention); the browser converts
@@ -56,6 +57,55 @@ export async function overlayText(bytes: Uint8Array, placements: Placement[]): P
     pages[p.page].drawText(text, { x: p.x, y: p.y, size, font, color: rgb(0.06, 0.06, 0.06) });
   }
   return doc.save();
+}
+
+/** List a PDF's AcroForm fields (name + kind). Empty for flat forms. */
+export async function listAcroFields(bytes: Uint8Array): Promise<{ name: string; kind: string }[]> {
+  try {
+    const doc = await PDFDocument.load(bytes, { ignoreEncryption: true });
+    return doc.getForm().getFields().map((f) => ({ name: f.getName(), kind: f.constructor.name }));
+  } catch { return []; }
+}
+
+export interface FieldMatch { key: string; field: string; value: string }
+
+/** Auto-fill an AcroForm by matching provided data keys (name/street/city/…) to
+ *  the form's field NAMES via synonyms, then setting each text field. Perfectly
+ *  accurate (no coordinate guessing) — the right path whenever a form is fillable.
+ *  Returns the filled bytes plus which fields matched and the full field list. */
+export async function autoFillByFieldName(
+  bytes: Uint8Array,
+  data: Record<string, string>,
+): Promise<{ filled: Uint8Array; matched: FieldMatch[]; fieldNames: string[] }> {
+  const doc = await PDFDocument.load(bytes, { ignoreEncryption: true });
+  const form = doc.getForm();
+  const fields = form.getFields().map((f) => ({ name: f.getName(), norm: normLabel(f.getName()), kind: f.constructor.name }));
+  const matched: FieldMatch[] = [];
+  const used = new Set<string>();
+  for (const [key, raw] of Object.entries(data)) {
+    const value = (raw ?? "").trim();
+    if (!value) continue;
+    const cands = FIELD_SYNONYMS[key] ?? [key];
+    let best: { name: string } | null = null;
+    let bestScore = Infinity;
+    for (const cand of cands) {
+      for (const f of fields) {
+        if (used.has(f.name) || f.kind !== "PDFTextField") continue;
+        let score = Infinity;
+        if (f.norm === cand) score = 0;
+        else if (f.norm.includes(cand) || cand.includes(f.norm)) score = Math.abs(f.norm.length - cand.length) + 1;
+        if (score < bestScore) { best = { name: f.name }; bestScore = score; }
+      }
+      if (best && bestScore === 0) break; // exact match on a higher-priority synonym wins
+    }
+    if (best) {
+      used.add(best.name);
+      try { form.getTextField(best.name).setText(value); matched.push({ key, field: best.name, value }); }
+      catch { /* not settable as text — skip */ }
+    }
+  }
+  const filled = await doc.save();
+  return { filled, matched, fieldNames: fields.map((f) => f.name) };
 }
 
 const SOFFICE_BIN = process.env.SOFFICE_BIN || "soffice";

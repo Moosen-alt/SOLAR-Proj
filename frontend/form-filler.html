@@ -26,6 +26,10 @@
     .ff2-seg button { border: 0; background: var(--surface); color: inherit; padding: 5px 10px; font: inherit; font-size: 12px; cursor: pointer; }
     .ff2-seg button.active { background: var(--accent, #6366f1); color: #fff; }
     .ff2-field input.size { width: 34px; border: 0; border-left: 1px solid rgba(99,102,241,.3); background: transparent; padding: 1px 2px; text-align: center; font-size: 11px; color: #444; outline: none; }
+    .ff2-data { background: var(--surface); border-bottom: 1px solid var(--line); padding: 14px 18px; }
+    .ff2-data-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px 12px; margin-bottom: 10px; }
+    .ff2-data-grid label { display: flex; flex-direction: column; font-size: 11px; font-weight: 700; gap: 3px; color: var(--muted, #667); }
+    .ff2-data-grid input { padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; font: inherit; font-weight: 400; background: var(--surface); color: inherit; }
     .ff2-empty { color: var(--muted, #778); font-size: 14px; padding: 60px 20px; text-align: center; max-width: 460px; }
     .ff2-empty code { background: var(--bg, #f1f2f4); padding: 1px 5px; border-radius: 4px; }
   </style>
@@ -45,6 +49,22 @@
     <span class="hint">click a page to add · drag ⠿ to move</span>
     <span id="ff2status">No form loaded</span>
     <button class="primary" id="ff2download" disabled>Download filled PDF</button>
+  </div>
+
+  <div class="ff2-data" id="ff2data">
+    <div class="ff2-data-grid">
+      <label>Name<input id="d_name" placeholder="Katie Tully" /></label>
+      <label>Permit #<input id="d_permitNumber" placeholder="ELE2026-0918" /></label>
+      <label>Address<input id="d_street" placeholder="1801 35th St" /></label>
+      <label>City<input id="d_city" /></label>
+      <label>State<input id="d_state" maxlength="2" /></label>
+      <label>ZIP<input id="d_zip" /></label>
+      <label>Phone<input id="d_phone" /></label>
+      <label>Email<input id="d_email" type="email" /></label>
+      <label>Date<input id="d_date" placeholder="05/04/2026" /></label>
+    </div>
+    <button class="primary" id="ff2auto" disabled>Auto-fill from my data →</button>
+    <span class="hint" id="ff2autoNote">Upload a form, then auto-fill. Fillable forms fill instantly; flat forms drop draggable values to review.</span>
   </div>
 
   <div class="ff2-stage" id="ff2stage">
@@ -92,7 +112,8 @@
         await renderAll();
         document.getElementById("ff2download").disabled = false;
         document.getElementById("ff2tplSave").disabled = false;
-        setStatus("Loaded · click to add values", "ok");
+        document.getElementById("ff2auto").disabled = false;
+        setStatus("Loaded · auto-fill or click to add values", "ok");
       } catch (err) { setStatus("Load error: " + err.message, "error"); }
     });
 
@@ -197,6 +218,45 @@
         for (const f of tpl) if (pageMeta[f.page]) addField(f.page, f.fx, f.fy, f.sizePt || 11, f.text || "");
         setStatus("Template applied", "ok");
       } catch (err) { setStatus("Bad template file: " + err.message, "error"); }
+    });
+
+    // Auto-fill from the data panel. Fillable (AcroForm) forms are filled by field
+    // name server-side and re-rendered instantly; flat forms return label-anchored
+    // placements that become draggable fields to review before download.
+    function collectData() {
+      const keys = ["name","permitNumber","street","city","state","zip","phone","email","date"];
+      const d = {};
+      for (const k of keys) { const el = document.getElementById("d_" + k); if (el && el.value.trim()) d[k] = el.value.trim(); }
+      return d;
+    }
+    document.getElementById("ff2auto").addEventListener("click", async () => {
+      if (!pdfBytes) return;
+      const data = collectData();
+      if (!Object.keys(data).length) { setStatus("Enter some data above first.", "error"); return; }
+      setStatus("Auto-filling…");
+      try {
+        const b64 = btoa(String.fromCharCode(...pdfBytes));
+        const res = await fetch("/api/tools/form-fill/auto", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pdfBase64: b64, data }),
+        });
+        const out = await res.json().catch(() => ({}));
+        if (!res.ok) { setStatus(out.error || "Auto-fill failed.", "error"); return; }
+        if (out.mode === "acroform") {
+          // Filled server-side by field name — swap in the filled PDF and re-render.
+          pdfBytes = new Uint8Array(atob(out.filledBase64).split("").map((c) => c.charCodeAt(0)));
+          await renderAll();
+          const names = out.matched.map((m) => m.key).join(", ");
+          setStatus(`Filled ${out.matched.length} field(s): ${names}. Click Download.`, "ok");
+        } else if (out.mode === "overlay") {
+          // Flat form: drop the anchored placements as draggable fields to review.
+          const pl = out.placements || [];
+          for (const p of pl) { const m = pageMeta[p.page]; if (!m) continue; addField(p.page, p.x / m.widthPt, 1 - (p.y + p.size) / m.heightPt, p.size, p.text); }
+          setStatus(pl.length ? `Placed ${pl.length} value(s) — drag to fine-tune, then Download.` : "No matching labels found — place values manually.", pl.length ? "ok" : "error");
+        } else {
+          setStatus(out.message || "Place values manually.", "error");
+        }
+      } catch (err) { setStatus("Error: " + err.message, "error"); }
     });
   </script>
 </body>

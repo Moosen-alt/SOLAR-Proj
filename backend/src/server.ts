@@ -1693,6 +1693,31 @@ app.post(
   }),
 );
 
+// Auto-fill from provided data: AcroForm forms are filled by field name (exact);
+// flat forms with a text layer get label-anchored overlay placements returned for
+// review; scanned forms fall back to manual placement.
+app.post("/api/tools/form-fill/auto", express.json({ limit: "60mb" }), asyncHandler(async (req, res) => {
+  const pdfBase64 = String(req.body?.pdfBase64 || "");
+  const data = (req.body?.data && typeof req.body.data === "object") ? req.body.data as Record<string, string> : {};
+  if (!pdfBase64) throw new HttpError(400, "pdfBase64 required.");
+  const bytes = new Uint8Array(Buffer.from(pdfBase64, "base64"));
+  const { isPdf, listAcroFields, autoFillByFieldName } = await import("./formFiller");
+  if (!isPdf(bytes)) throw new HttpError(400, "pdfBase64 is not a PDF.");
+  const acro = await listAcroFields(bytes);
+  if (acro.length > 0) {
+    const { filled, matched, fieldNames } = await autoFillByFieldName(bytes, data);
+    res.json({ mode: "acroform", matched, fieldNames, filledBase64: Buffer.from(filled).toString("base64") });
+    return;
+  }
+  const { extractLabels, hasTextLayer, autoPlaceFromData } = await import("./formTextLayer");
+  const items = await extractLabels(bytes);
+  if (hasTextLayer(items)) {
+    res.json({ mode: "overlay", placements: autoPlaceFromData(items, data) });
+    return;
+  }
+  res.json({ mode: "manual", placements: [], message: "This form has no fillable fields or text layer — place values manually." });
+}));
+
 app.post("/api/tools/form-fill/fill", express.json({ limit: "60mb" }), asyncHandler(async (req, res) => {
   const pdfBase64 = String(req.body?.pdfBase64 || "");
   const placements = Array.isArray(req.body?.placements) ? req.body.placements : [];
