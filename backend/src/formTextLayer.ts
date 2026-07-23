@@ -45,6 +45,34 @@ export async function extractLabels(pdfBytes: Uint8Array): Promise<LabelItem[]> 
   }
 }
 
+/** Map each checkbox field name → the descriptive text sitting just to its right
+ *  (same row). Many forms name boxes generically ("Check Box6") but print the
+ *  meaning next to them ("Applicant cancelled permit") — this recovers it so a
+ *  reason phrase can be matched to the right box. Empty on any failure. */
+export async function checkboxLabels(pdfBytes: Uint8Array): Promise<Record<string, string>> {
+  try {
+    const doc = await getDocument({ data: pdfBytes.slice(), useSystemFonts: true }).promise;
+    const out: Record<string, string> = {};
+    for (let n = 1; n <= doc.numPages; n++) {
+      const page = await doc.getPage(n);
+      const boxes = (await page.getAnnotations()).filter((a: { fieldType?: string; fieldName?: string; rect?: number[] }) => a.fieldType === "Btn" && a.fieldName && a.rect);
+      if (!boxes.length) continue;
+      const text = (await page.getTextContent()).items as Array<{ str: string; transform: number[] }>;
+      const items = text.map((t) => ({ s: t.str, x: t.transform[4], y: t.transform[5] })).filter((t) => t.s.trim());
+      for (const a of boxes) {
+        const r = a.rect as number[];
+        const cy = (r[1] + r[3]) / 2;
+        const cx = Math.max(r[0], r[2]);
+        const near = items.filter((t) => Math.abs(t.y - cy) < 8 && t.x >= cx - 4).sort((p, q) => p.x - q.x)[0];
+        if (near && !out[a.fieldName as string]) out[a.fieldName as string] = near.s.trim();
+      }
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
 /** True when the doc has enough real text to anchor against (vs a scanned form). */
 export function hasTextLayer(items: LabelItem[]): boolean {
   return items.filter((i) => i.str.trim().length > 1).length >= 8;

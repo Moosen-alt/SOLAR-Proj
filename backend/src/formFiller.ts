@@ -13,7 +13,7 @@ import os from "node:os";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
-import { FIELD_SYNONYMS, normLabel } from "./formTextLayer";
+import { FIELD_SYNONYMS, normLabel, checkboxLabels } from "./formTextLayer";
 
 /** A single text value drawn on a page. Coordinates are PDF points with the
  *  ORIGIN AT THE BOTTOM-LEFT (pdf-lib's native convention); the browser converts
@@ -68,6 +68,31 @@ export async function listAcroFields(bytes: Uint8Array): Promise<{ name: string;
 }
 
 export interface FieldMatch { key: string; field: string; value: string }
+export interface CheckMatch { phrase: string; field: string }
+
+// Words too generic to help match a reason phrase to a checkbox field name.
+const CHECKBOX_STOP = new Set(["permit","permits","the","of","in","by","no","not","explain","check","box","for","and","or","is","request","requested","requesting","refund","reason","please","was","this","application","fee","fees"]);
+const kwTokens = (s: string) => new Set(normLabel(s).split(/[^a-z0-9]+/).filter((w) => w.length > 2 && !CHECKBOX_STOP.has(w)));
+
+/** Best checkbox field for a reason/type phrase, by keyword overlap with the
+ *  field NAME (e.g. "permit canceled by applicant" → "Permit canceled by
+ *  Applicant"). Returns null when nothing shares a meaningful keyword. */
+function matchCheckbox(fields: { name: string; norm: string; kind: string; labelText?: string }[], phrase: string, used: Set<string>): string | null {
+  const pt = kwTokens(phrase);
+  if (!pt.size) return null;
+  let best: string | null = null;
+  let bestScore = 0;
+  for (const f of fields) {
+    if (f.kind !== "PDFCheckBox" || used.has(f.name)) continue;
+    // Match against the field name AND any descriptive text beside the box, so
+    // generic names ("Check Box6" / "Applicant cancelled permit") still resolve.
+    const ft = kwTokens(`${f.name} ${f.labelText ?? ""}`);
+    let overlap = 0;
+    for (const t of pt) if (ft.has(t)) overlap++;
+    if (overlap > bestScore) { best = f.name; bestScore = overlap; }
+  }
+  return bestScore >= 1 ? best : null;
+}
 
 /** Auto-fill an AcroForm by matching provided data keys (name/street/city/…) to
  *  the form's field NAMES via synonyms, then setting each text field. Perfectly
@@ -76,7 +101,7 @@ export interface FieldMatch { key: string; field: string; value: string }
 export async function autoFillByFieldName(
   bytes: Uint8Array,
   data: Record<string, string>,
-): Promise<{ filled: Uint8Array; matched: FieldMatch[]; fieldNames: string[] }> {
+): Promise<{ filled: Uint8Array; matched: FieldMatch[]; checked: CheckMatch[]; fieldNames: string[] }> {
   const doc = await PDFDocument.load(bytes, { ignoreEncryption: true });
   const form = doc.getForm();
   const fields = form.getFields().map((f) => ({ name: f.getName(), norm: normLabel(f.getName()), kind: f.constructor.name }));
@@ -104,8 +129,24 @@ export async function autoFillByFieldName(
       catch { /* not settable as text — skip */ }
     }
   }
+  // Checkboxes: a `reason` (why the refund) and/or `permitType` (residential/
+  // commercial) phrase ticks the best-matching checkbox by keyword overlap.
+  const checked: CheckMatch[] = [];
+  const wantCheck = (data.reason ?? "").trim() || (data.permitType ?? "").trim();
+  // Recover descriptive text beside generically-named boxes (only if we'll use it).
+  const cbLabels = wantCheck ? await checkboxLabels(bytes) : {};
+  const cbFields = fields.map((f) => ({ ...f, labelText: cbLabels[f.name] || "" }));
+  for (const key of ["reason", "permitType"]) {
+    const phrase = (data[key] ?? "").trim();
+    if (!phrase) continue;
+    const name = matchCheckbox(cbFields, phrase, used);
+    if (name) {
+      used.add(name);
+      try { form.getCheckBox(name).check(); checked.push({ phrase, field: name }); } catch { /* not a checkbox */ }
+    }
+  }
   const filled = await doc.save();
-  return { filled, matched, fieldNames: fields.map((f) => f.name) };
+  return { filled, matched, checked, fieldNames: fields.map((f) => f.name) };
 }
 
 const SOFFICE_BIN = process.env.SOFFICE_BIN || "soffice";

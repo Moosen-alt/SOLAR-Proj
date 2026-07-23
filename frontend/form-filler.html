@@ -75,6 +75,8 @@
       <label style="font-size:11px;font-weight:700;display:flex;flex-direction:column;gap:3px">Form URL column<select id="bx_url" class="bx-col"></select></label>
       <label style="font-size:11px;font-weight:700;display:flex;flex-direction:column;gap:3px">Project address column<select id="bx_addr" class="bx-col"></select></label>
       <label style="font-size:11px;font-weight:700;display:flex;flex-direction:column;gap:3px">Permit # column<select id="bx_permit" class="bx-col"></select></label>
+      <label style="font-size:11px;font-weight:700;display:flex;flex-direction:column;gap:3px">Reason column<select id="bx_reasonCol" class="bx-col"></select></label>
+      <label style="font-size:11px;font-weight:700;display:flex;flex-direction:column;gap:3px">…or reason for all<input id="bx_reason" placeholder="Permit canceled by applicant" style="padding:7px 9px;border:1px solid var(--line);border-radius:6px;font:inherit;font-weight:400" /></label>
       <button class="primary" id="bx_run">Fill all → download ZIP</button>
     </div>
     <div id="bx_status" style="font-size:12px;margin-top:8px;color:var(--muted,#778)"></div>
@@ -92,6 +94,7 @@
       <label>Phone<input id="d_phone" /></label>
       <label>Email<input id="d_email" type="email" /></label>
       <label>Date<input id="d_date" placeholder="05/04/2026" /></label>
+      <label>Reason (ticks a box)<input id="d_reason" placeholder="Permit canceled by applicant" /></label>
     </div>
     <button class="primary" id="ff2auto" disabled>Auto-fill from my data →</button>
     <span class="hint" id="ff2autoNote">Upload a form, then auto-fill. Fillable forms fill instantly; flat forms drop draggable values to review.</span>
@@ -191,7 +194,7 @@
         if (addrCol < 0 && cells.filter((x) => addrRe.test(x)).length >= Math.max(1, rows.length / 2)) addrCol = c;
         if (permitCol < 0 && cells.filter((x) => /^[A-Za-z]{2,4}[\d-]{4,}/.test(x.trim())).length >= 1) permitCol = c;
       }
-      for (const [id, sel] of [["bx_url", urlCol], ["bx_addr", addrCol], ["bx_permit", permitCol]]) {
+      for (const [id, sel] of [["bx_url", urlCol], ["bx_addr", addrCol], ["bx_permit", permitCol], ["bx_reasonCol", -1]]) {
         const el = document.getElementById(id);
         el.innerHTML = '<option value="-1">— none —</option>' + Array.from({ length: maxCols }, (_, i) => `<option value="${i}"${i === sel ? " selected" : ""}>Column ${i + 1}</option>`).join("");
       }
@@ -213,6 +216,8 @@
       const urlCol = +document.getElementById("bx_url").value;
       const addrCol = +document.getElementById("bx_addr").value;
       const permitCol = +document.getElementById("bx_permit").value;
+      const reasonCol = +document.getElementById("bx_reasonCol").value;
+      const reasonConst = document.getElementById("bx_reason").value.trim();
       const requester = document.getElementById("bx_requester").value.trim();
       if (urlCol < 0) { document.getElementById("bx_status").textContent = "Pick the Form URL column."; return; }
       const payload = rows.map((r) => {
@@ -222,6 +227,8 @@
         if (requester) data.name = requester;
         if (addrCol >= 0) Object.assign(data, splitAddress(r[addrCol] || ""));
         if (permitCol >= 0 && r[permitCol]) data.permitNumber = r[permitCol].trim();
+        const reason = (reasonCol >= 0 && r[reasonCol] ? r[reasonCol].trim() : reasonConst);
+        if (reason) data.reason = reason;
         return { url, data, filename: (permitCol >= 0 && r[permitCol] ? r[permitCol].trim() : "") };
       });
       document.getElementById("bx_status").textContent = `Filling ${payload.length} form(s)…`;
@@ -372,7 +379,7 @@
     // name server-side and re-rendered instantly; flat forms return label-anchored
     // placements that become draggable fields to review before download.
     function collectData() {
-      const keys = ["name","permitNumber","street","city","state","zip","phone","email","date"];
+      const keys = ["name","permitNumber","street","city","state","zip","phone","email","date","reason"];
       const d = {};
       for (const k of keys) { const el = document.getElementById("d_" + k); if (el && el.value.trim()) d[k] = el.value.trim(); }
       return d;

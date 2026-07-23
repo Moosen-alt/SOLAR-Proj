@@ -111,6 +111,27 @@ async function main(): Promise<void> {
   assert.equal((await listAcroFields(pdf)).length, 0);
   ok("listAcroFields empty for a flat PDF");
 
+  // 8) Reason → checkbox: descriptively-named boxes are matched and ticked by
+  //    keyword overlap; an unrelated reason ticks nothing (no false positive).
+  const cbDoc = await PDFDocument.create();
+  const cbPage = cbDoc.addPage([612, 792]);
+  const cbForm = cbDoc.getForm();
+  for (const [nm, y] of [["Permit canceled by Applicant", 700], ["Fee charged in error explain", 680], ["Duplicate Permit Permit No", 660]] as [string, number][]) {
+    cbForm.createCheckBox(nm).addToPage(cbPage, { x: 40, y, width: 12, height: 12 });
+  }
+  cbForm.createTextField("Person Requesting Refund").addToPage(cbPage, { x: 40, y: 620, width: 200, height: 16 });
+  const cbBytes = await cbDoc.save();
+
+  const r1 = await autoFillByFieldName(cbBytes, { name: "Infinity Solar", reason: "Permit canceled by applicant" });
+  assert.equal(r1.checked.length, 1);
+  assert.equal(r1.checked[0].field, "Permit canceled by Applicant");
+  assert.equal((await PDFDocument.load(r1.filled)).getForm().getCheckBox("Permit canceled by Applicant").isChecked(), true);
+  ok("reason ticks the matching checkbox");
+
+  const r2 = await autoFillByFieldName(cbBytes, { reason: "some unrelated narrative text" });
+  assert.equal(r2.checked.length, 0);
+  ok("an unrelated reason ticks no checkbox (no false positive)");
+
   console.log(`\nformFiller: all ${passed} checks passed`);
 }
 
