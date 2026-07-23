@@ -83,27 +83,29 @@ async function main(): Promise<void> {
   const apage = acroDoc.addPage([612, 792]);
   const form = acroDoc.getForm();
   const mk = (name: string, y: number) => { const tf = form.createTextField(name); tf.addToPage(apage, { x: 50, y, width: 200, height: 16 }); };
-  mk("Person Requesting Refund", 700); mk("Mailing Address", 670); mk("City", 640);
+  mk("Person Requesting Refund", 700); mk("Project Address", 685); mk("Mailing Address", 670); mk("City", 640);
   mk("State", 610); mk("Zip", 580); mk("Phone No", 550); mk("Permit No", 520);
   const acroBytes = await acroDoc.save();
 
   const fieldList = await listAcroFields(acroBytes);
-  assert.equal(fieldList.length, 7);
+  assert.equal(fieldList.length, 8);
   ok("listAcroFields enumerates fields");
 
   const { filled: acroFilled, matched } = await autoFillByFieldName(acroBytes, {
-    name: "Katie Tully", street: "1801 35th St", city: "Bellingham", state: "WA",
-    zip: "98229", phone: "360-555-0100", permitNumber: "ELE2026-0918",
+    name: "Seamus Ericson", street: "1801 35th St", mailingAddress: "808 SE Chkalov Dr, Vancouver, WA",
+    city: "Bellingham", state: "WA", zip: "98229", phone: "360-555-0100", permitNumber: "ELE2026-0918",
   });
   const byKey = Object.fromEntries(matched.map((m) => [m.key, m.field]));
   assert.equal(byKey.name, "Person Requesting Refund");
-  assert.equal(byKey.street, "Mailing Address");
+  assert.equal(byKey.street, "Project Address", "project address ≠ mailing address");
+  assert.equal(byKey.mailingAddress, "Mailing Address");
   assert.equal(byKey.city, "City");
   assert.equal(byKey.permitNumber, "Permit No");
-  ok("autoFillByFieldName maps data keys to the right field names");
+  ok("autoFillByFieldName separates project vs mailing address");
 
   const check = await PDFDocument.load(acroFilled);
-  assert.equal(check.getForm().getTextField("Person Requesting Refund").getText(), "Katie Tully");
+  assert.equal(check.getForm().getTextField("Person Requesting Refund").getText(), "Seamus Ericson");
+  assert.equal(check.getForm().getTextField("Mailing Address").getText(), "808 SE Chkalov Dr, Vancouver, WA");
   assert.equal(check.getForm().getTextField("State").getText(), "WA");
   ok("autoFillByFieldName sets the values in the form");
 

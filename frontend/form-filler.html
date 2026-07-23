@@ -85,16 +85,21 @@
 
   <div class="ff2-data" id="ff2data">
     <div class="ff2-data-grid">
-      <label>Name<input id="d_name" placeholder="Katie Tully" /></label>
+      <label>Name<input id="d_name" placeholder="Seamus Ericson" /></label>
       <label>Permit #<input id="d_permitNumber" placeholder="ELE2026-0918" /></label>
-      <label>Address<input id="d_street" placeholder="1801 35th St" /></label>
+      <label>Project address<input id="d_street" placeholder="1801 35th St" /></label>
       <label>City<input id="d_city" /></label>
       <label>State<input id="d_state" maxlength="2" /></label>
       <label>ZIP<input id="d_zip" /></label>
-      <label>Phone<input id="d_phone" /></label>
-      <label>Email<input id="d_email" type="email" /></label>
       <label>Date<input id="d_date" placeholder="05/04/2026" /></label>
-      <label>Reason (ticks a box)<input id="d_reason" placeholder="Permit canceled by applicant" /></label>
+    </div>
+    <div style="font-size:11px;font-weight:700;color:var(--muted,#667);margin:2px 0 6px">Company boilerplate (applied to every form — edit if needed)</div>
+    <div class="ff2-data-grid">
+      <label>Installer / company<input id="d_installer" value="TML INTERNATIONAL LLC" /></label>
+      <label>Mailing address<input id="d_mailingAddress" value="808 SE Chkalov Dr ST 3-337, Vancouver, WA 98683" /></label>
+      <label>Phone<input id="d_phone" value="(800) 818-0598" /></label>
+      <label>Email<input id="d_email" value="permit@infinitysolarusa.com" /></label>
+      <label>Reason<input id="d_reason" value="Project cancellation" /></label>
     </div>
     <button class="primary" id="ff2auto" disabled>Auto-fill from my data →</button>
     <span class="hint" id="ff2autoNote">Upload a form, then auto-fill. Fillable forms fill instantly; flat forms drop draggable values to review.</span>
@@ -232,10 +237,14 @@
       const reasonConst = document.getElementById("bx_reason").value.trim();
       const requester = document.getElementById("bx_requester").value.trim();
       if (urlCol < 0 && !pdfBytes) { document.getElementById("bx_status").textContent = "Pick the Form URL column, or load a form above to use for all rows."; return; }
+      // Company boilerplate (mailing address, phone, email, installer, reason)
+      // from the data panel — applied to every row; per-row columns override.
+      const boiler = {};
+      for (const k of ["installer","mailingAddress","phone","email","reason"]) { const el = document.getElementById("d_" + k); if (el && el.value.trim()) boiler[k] = el.value.trim(); }
       const payload = rows.map((r) => {
         const urlCell = urlCol >= 0 ? (r[urlCol] || "") : "";
         const url = (urlCell.match(urlRe) || [""])[0];
-        const data = {};
+        const data = { ...boiler };
         if (requester) data.name = requester;
         if (addrCol >= 0) Object.assign(data, splitAddress(r[addrCol] || ""));
         if (permitCol >= 0 && r[permitCol]) data.permitNumber = r[permitCol].trim();
@@ -394,7 +403,7 @@
     // name server-side and re-rendered instantly; flat forms return label-anchored
     // placements that become draggable fields to review before download.
     function collectData() {
-      const keys = ["name","permitNumber","street","city","state","zip","phone","email","date","reason"];
+      const keys = ["name","permitNumber","street","city","state","zip","date","installer","mailingAddress","phone","email","reason"];
       const d = {};
       for (const k of keys) { const el = document.getElementById("d_" + k); if (el && el.value.trim()) d[k] = el.value.trim(); }
       return d;

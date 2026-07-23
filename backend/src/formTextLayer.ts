@@ -119,8 +119,11 @@ export function anchorPlacement(items: LabelItem[], opts: AnchorOpts): { x: numb
 // Candidate label strings per data key, most-specific first. Used to auto-place
 // provided data (name, address, …) onto whatever labels a given AHJ form uses.
 export const FIELD_SYNONYMS: Record<string, string[]> = {
-  name: ["property owner name", "person requesting refund", "applicant name", "owner name", "printed name", "print name", "name of applicant", "homeowner name", "contractorowneragent", "name"],
-  street: ["installation address", "project address", "property address", "mailing address", "site address", "street address", "address"],
+  name: ["property owner name", "person requesting refund", "applicant name", "owner name", "printed name", "print name", "name of applicant", "homeowner name", "name"],
+  // Project/install address (per-row). Deliberately NOT "mailing address" —
+  // that's the requester's own address (boilerplate), a separate field/key.
+  street: ["installation address", "project address", "property address", "site address", "street address"],
+  mailingAddress: ["mailing address"],
   city: ["city"],
   state: ["state"],
   zip: ["zip code", "zip", "postal code"],
@@ -128,7 +131,10 @@ export const FIELD_SYNONYMS: Record<string, string[]> = {
   email: ["email address", "e-mail", "email"],
   permitNumber: ["permit number", "permit no", "permit #", "permit"],
   date: ["issue intake payment date", "date"],
-  reason: ["reason for refund", "reason for request", "reason"],
+  installer: ["contractorowneragent", "installer", "contractor name", "company name", "business name", "contractor"],
+  // A refund reason: fills a "reason" field, OR the long narrative field many
+  // refund forms use ("…my request meets the refund policy criteria…").
+  reason: ["reason for refund", "reason for request", "reason", "meets the refund", "criteria as explained", "explained below"],
 };
 
 export interface AutoPlacement { page: number; x: number; y: number; text: string; size: number; label: string; key: string }
