@@ -113,6 +113,18 @@
   <script>
     if (window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
     const RENDER_SCALE = 1.4;
+    // Chunked base64 — spreading a 500KB Uint8Array into String.fromCharCode(...)
+    // overflows the call stack ("Maximum call stack size exceeded").
+    function u8ToBase64(u8) {
+      let s = ""; const CH = 0x8000;
+      for (let i = 0; i < u8.length; i += CH) s += String.fromCharCode.apply(null, u8.subarray(i, i + CH));
+      return btoa(s);
+    }
+    function base64ToU8(b64) {
+      const bin = atob(b64); const u8 = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+      return u8;
+    }
     const stage = document.getElementById("ff2stage");
     const statusEl = document.getElementById("ff2status");
     const setStatus = (t, k) => { statusEl.textContent = t; statusEl.className = k || ""; };
@@ -219,9 +231,9 @@
       const reasonCol = +document.getElementById("bx_reasonCol").value;
       const reasonConst = document.getElementById("bx_reason").value.trim();
       const requester = document.getElementById("bx_requester").value.trim();
-      if (urlCol < 0) { document.getElementById("bx_status").textContent = "Pick the Form URL column."; return; }
+      if (urlCol < 0 && !pdfBytes) { document.getElementById("bx_status").textContent = "Pick the Form URL column, or load a form above to use for all rows."; return; }
       const payload = rows.map((r) => {
-        const urlCell = r[urlCol] || "";
+        const urlCell = urlCol >= 0 ? (r[urlCol] || "") : "";
         const url = (urlCell.match(urlRe) || [""])[0];
         const data = {};
         if (requester) data.name = requester;
@@ -233,13 +245,16 @@
       });
       document.getElementById("bx_status").textContent = `Filling ${payload.length} form(s)…`;
       document.getElementById("bx_results").innerHTML = "";
+      // If rows carry no URL, send the currently-loaded form for all of them.
+      const body = { rows: payload };
+      if (urlCol < 0 && pdfBytes) body.sharedPdfBase64 = u8ToBase64(pdfBytes);
       try {
-        const res = await fetch("/api/tools/form-fill/batch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rows: payload }) });
+        const res = await fetch("/api/tools/form-fill/batch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
         const out = await res.json().catch(() => ({}));
         if (!res.ok) { document.getElementById("bx_status").textContent = out.error || "Batch failed."; return; }
         document.getElementById("bx_status").textContent = `Filled ${out.filled}/${out.total}. `;
         if (out.zipBase64) {
-          const blob = new Blob([Uint8Array.from(atob(out.zipBase64), (c) => c.charCodeAt(0))], { type: "application/zip" });
+          const blob = new Blob([base64ToU8(out.zipBase64)], { type: "application/zip" });
           const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "filled-forms.zip"; a.textContent = "⬇ Download filled-forms.zip"; a.style.fontWeight = "700";
           document.getElementById("bx_status").appendChild(a);
         }
@@ -261,7 +276,7 @@
         const out = await res.json().catch(() => ({}));
         if (!res.ok) { setStatus(out.error || "Lookup failed.", "error"); return; }
         if (out.found) {
-          await loadForm(new Uint8Array(atob(out.pdfBase64).split("").map((c) => c.charCodeAt(0))));
+          await loadForm(base64ToU8(out.pdfBase64));
           setStatus(`Loaded “${out.formName || "form"}” from ${out.sourceUrl}`, "ok");
         } else {
           // Couldn't auto-download; surface the links so the operator can grab it.
@@ -345,7 +360,7 @@
       if (!pdfBytes) return;
       setStatus("Filling…");
       try {
-        const b64 = btoa(String.fromCharCode(...pdfBytes));
+        const b64 = u8ToBase64(pdfBytes);
         const res = await fetch("/api/tools/form-fill/fill", {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ pdfBase64: b64, placements: toPlacements() }),
@@ -390,7 +405,7 @@
       if (!Object.keys(data).length) { setStatus("Enter some data above first.", "error"); return; }
       setStatus("Auto-filling…");
       try {
-        const b64 = btoa(String.fromCharCode(...pdfBytes));
+        const b64 = u8ToBase64(pdfBytes);
         const res = await fetch("/api/tools/form-fill/auto", {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ pdfBase64: b64, data }),
@@ -399,7 +414,7 @@
         if (!res.ok) { setStatus(out.error || "Auto-fill failed.", "error"); return; }
         if (out.mode === "acroform") {
           // Filled server-side by field name — swap in the filled PDF and re-render.
-          pdfBytes = new Uint8Array(atob(out.filledBase64).split("").map((c) => c.charCodeAt(0)));
+          pdfBytes = base64ToU8(out.filledBase64);
           await renderAll();
           const names = out.matched.map((m) => m.key).join(", ");
           setStatus(`Filled ${out.matched.length} field(s): ${names}. Click Download.`, "ok");

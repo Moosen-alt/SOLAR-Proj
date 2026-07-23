@@ -1704,6 +1704,10 @@ app.post("/api/tools/form-fill/batch", express.json({ limit: "8mb" }), asyncHand
   const { autoFillByFieldName, isPdf } = await import("./formFiller");
   const AdmZip = (await import("adm-zip")).default;
   const zip = new AdmZip();
+  // Optional single form used for every row that has no URL of its own (the
+  // common case: load one AHJ form at the top, then batch-fill many rows).
+  const sharedB64 = String(req.body?.sharedPdfBase64 || "");
+  const shared = sharedB64 ? new Uint8Array(Buffer.from(sharedB64, "base64")) : null;
   const blankCache = new Map<string, Uint8Array | null>();
   const results: Array<{ index: number; ok: boolean; filename?: string; matched?: number; error?: string }> = [];
   const usedNames = new Set<string>();
@@ -1712,10 +1716,14 @@ app.post("/api/tools/form-fill/batch", express.json({ limit: "8mb" }), asyncHand
     const url = String(row?.url || "").trim();
     const data = (row?.data && typeof row.data === "object") ? row.data : {};
     try {
-      if (!/^https?:\/\//i.test(url)) throw new Error("no valid form URL");
-      let blank = blankCache.get(url);
-      if (blank === undefined) { blank = await fetchPdf(url); blankCache.set(url, blank); }
-      if (!blank || !isPdf(blank)) throw new Error("form URL did not return a PDF");
+      let blank: Uint8Array | null;
+      if (/^https?:\/\//i.test(url)) {
+        const cached = blankCache.get(url);
+        if (cached === undefined) { blank = await fetchPdf(url); blankCache.set(url, blank); } else { blank = cached; }
+      } else {
+        blank = shared; // no per-row URL → use the loaded form
+      }
+      if (!blank || !isPdf(blank)) throw new Error(shared ? "form URL did not return a PDF" : "no form URL and no loaded form");
       const { filled, matched } = await autoFillByFieldName(blank, data);
       let name = String(row.filename || data.permitNumber || `form-${i + 1}`).replace(/[^A-Za-z0-9._-]+/g, "_").replace(/\.pdf$/i, "");
       let unique = name; let n = 2; while (usedNames.has(unique)) unique = `${name}-${n++}`;
