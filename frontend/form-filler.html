@@ -22,6 +22,10 @@
     .ff2-field .grip { cursor: move; padding: 0 4px; display: flex; align-items: center; background: var(--accent, #6366f1); color: #fff; font-size: 10px; user-select: none; }
     .ff2-field input.val { border: 0; background: transparent; padding: 1px 4px; font-family: Helvetica, Arial, sans-serif; color: #111; min-width: 40px; outline: none; }
     .ff2-field .del { cursor: pointer; padding: 0 4px; color: var(--danger); font-weight: 700; display: flex; align-items: center; }
+    .ff2-seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+    .ff2-seg button { border: 0; background: var(--surface); color: inherit; padding: 5px 10px; font: inherit; font-size: 12px; cursor: pointer; }
+    .ff2-seg button.active { background: var(--accent, #6366f1); color: #fff; }
+    .ff2-field input.size { width: 34px; border: 0; border-left: 1px solid rgba(99,102,241,.3); background: transparent; padding: 1px 2px; text-align: center; font-size: 11px; color: #444; outline: none; }
     .ff2-empty { color: var(--muted, #778); font-size: 14px; padding: 60px 20px; text-align: center; max-width: 460px; }
     .ff2-empty code { background: var(--bg, #f1f2f4); padding: 1px 5px; border-radius: 4px; }
   </style>
@@ -33,7 +37,12 @@
     <button class="secondary" id="ff2tplSave" disabled>Save field template</button>
     <label class="button secondary" style="margin:0"><input type="file" id="ff2tplLoad" accept="application/json,.json" hidden />Load template</label>
     <div class="spacer"></div>
-    <span class="hint">Click a page to add a value · drag the ⠿ handle to position</span>
+    <span class="hint">Placing:</span>
+    <div id="ff2mode" class="ff2-seg">
+      <button data-mode="text" class="active">Text</button>
+      <button data-mode="check">✓ Check</button>
+    </div>
+    <span class="hint">click a page to add · drag ⠿ to move</span>
     <span id="ff2status">No form loaded</span>
     <button class="primary" id="ff2download" disabled>Download filled PDF</button>
   </div>
@@ -57,6 +66,13 @@
     let pdfBytes = null;           // Uint8Array of the (converted) PDF
     let pageMeta = [];             // per page: { wrap, widthPt, heightPt }
     const fields = [];             // { page, fx, fy, sizePt, text, el }
+    let placeMode = "text";        // "text" (typed value) or "check" (✓/✕ mark)
+
+    document.getElementById("ff2mode").addEventListener("click", (e) => {
+      const btn = e.target.closest("button[data-mode]"); if (!btn) return;
+      placeMode = btn.dataset.mode;
+      for (const b of document.querySelectorAll("#ff2mode button")) b.classList.toggle("active", b === btn);
+    });
 
     document.getElementById("ff2file").addEventListener("change", async (e) => {
       const file = e.target.files[0]; if (!file) return;
@@ -97,7 +113,9 @@
         wrap.addEventListener("click", (ev) => {
           if (ev.target !== canvas) return; // clicks on existing fields shouldn't add new ones
           const r = wrap.getBoundingClientRect();
-          addField(idx, (ev.clientX - r.left) / r.width, (ev.clientY - r.top) / r.height, 11, "");
+          // A "check" field is just a placement whose text is a ✓ mark — the
+          // server draws it like any other text, so checkboxes need no new plumbing.
+          addField(idx, (ev.clientX - r.left) / r.width, (ev.clientY - r.top) / r.height, placeMode === "check" ? 12 : 11, placeMode === "check" ? "X" : "");
         });
       }
     }
@@ -108,9 +126,13 @@
       const grip = document.createElement("div"); grip.className = "grip"; grip.textContent = "⠿";
       const input = document.createElement("input"); input.className = "val"; input.value = text; input.placeholder = "value";
       input.style.fontSize = (sizePt * RENDER_SCALE) + "px";
+      const size = document.createElement("input"); size.className = "size"; size.type = "number"; size.min = "5"; size.max = "48"; size.value = String(sizePt); size.title = "Font size (pt)";
       const del = document.createElement("div"); del.className = "del"; del.textContent = "×"; del.title = "Remove";
-      el.append(grip, input, del); meta.wrap.appendChild(el);
+      el.append(grip, input, size, del); meta.wrap.appendChild(el);
       const rec = { page, fx, fy, sizePt, get text() { return input.value; }, el };
+      size.addEventListener("input", () => {
+        const v = Number(size.value); if (Number.isFinite(v) && v >= 5 && v <= 48) { rec.sizePt = v; input.style.fontSize = (v * RENDER_SCALE) + "px"; }
+      });
       fields.push(rec);
       place(rec);
       input.focus();

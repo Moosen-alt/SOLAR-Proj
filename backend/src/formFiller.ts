@@ -10,6 +10,7 @@
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
+import { pathToFileURL } from "node:url";
 import path from "node:path";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
@@ -72,7 +73,10 @@ export async function convertDocxToPdf(docxBytes: Uint8Array): Promise<Uint8Arra
     await new Promise<void>((resolve, reject) => {
       execFile(
         SOFFICE_BIN,
-        ["--headless", `-env:UserInstallation=file://${path.join(workdir, "profile")}`, "--convert-to", "pdf", "--outdir", workdir, inPath],
+        // pathToFileURL yields a correct file:// URL on every OS (Windows drive
+        // paths become file:///C:/… — a hand-built "file://" + backslash path is
+        // malformed and makes soffice silently fail).
+        ["--headless", `-env:UserInstallation=${pathToFileURL(path.join(workdir, "profile")).href}`, "--convert-to", "pdf", "--outdir", workdir, inPath],
         { timeout: 120_000 },
         (err) => (err ? reject(err) : resolve()),
       );
