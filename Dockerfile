@@ -26,7 +26,12 @@ RUN apt-get update \
       libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libxfixes3 \
       libpango-1.0-0 libcairo2 libasound2 \
       procps \
+      libreoffice-writer-nogui \
  && rm -rf /var/lib/apt/lists/*
+# libreoffice-writer-nogui: headless DOCX→PDF for the standalone Form Filler tool
+# (backend/src/formFiller.ts convertDocxToPdf). Provides `soffice`. If image size
+# is a concern and DOCX upload isn't needed, drop this line — the PDF path and the
+# tool's clear "save as PDF" fallback still work without it.
 
 WORKDIR /app
 COPY --from=builder /app/node_modules ./node_modules

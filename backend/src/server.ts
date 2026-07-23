@@ -1665,6 +1665,45 @@ app.get("/api/signatures/:id/image", (req, res) => {
   res.send(img.bytes);
 });
 
+// --- Standalone form-filler tool (decoupled from projects/DB/LLM) ---------
+// Upload any flat AHJ/utility form, place values by coordinate, download filled.
+// DOCX is converted to PDF server-side (LibreOffice); overlay draw is server-side
+// so the coordinate math is the unit-tested path.
+app.post(
+  "/api/tools/form-fill/convert",
+  express.raw({ type: ["application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/msword", "application/octet-stream"], limit: "50mb" }),
+  asyncHandler(async (req, res) => {
+    if (!Buffer.isBuffer(req.body) || req.body.length === 0) throw new HttpError(400, "DOCX body required.");
+    const { convertDocxToPdf } = await import("./formFiller");
+    let pdf: Uint8Array;
+    try { pdf = await convertDocxToPdf(new Uint8Array(req.body)); }
+    catch (err) { throw new HttpError(422, err instanceof Error ? err.message : "Conversion failed."); }
+    res.type("application/pdf").send(Buffer.from(pdf));
+  }),
+);
+
+app.post(
+  "/api/tools/form-fill/inspect",
+  express.raw({ type: "application/pdf", limit: "50mb" }),
+  asyncHandler(async (req, res) => {
+    if (!Buffer.isBuffer(req.body) || req.body.length === 0) throw new HttpError(400, "PDF body required.");
+    const { inspectPdf, isPdf } = await import("./formFiller");
+    if (!isPdf(req.body)) throw new HttpError(400, "Not a PDF.");
+    res.json(await inspectPdf(new Uint8Array(req.body)));
+  }),
+);
+
+app.post("/api/tools/form-fill/fill", express.json({ limit: "60mb" }), asyncHandler(async (req, res) => {
+  const pdfBase64 = String(req.body?.pdfBase64 || "");
+  const placements = Array.isArray(req.body?.placements) ? req.body.placements : [];
+  if (!pdfBase64) throw new HttpError(400, "pdfBase64 required.");
+  const bytes = new Uint8Array(Buffer.from(pdfBase64, "base64"));
+  const { overlayText, isPdf } = await import("./formFiller");
+  if (!isPdf(bytes)) throw new HttpError(400, "pdfBase64 is not a PDF.");
+  const filled = await overlayText(bytes, placements);
+  res.type("application/pdf").send(Buffer.from(filled));
+}));
+
 // Re-check every stored form's source link now and refresh any that changed.
 // Runs automatically on a ~60-day schedule; this is the manual trigger.
 app.post("/api/ahj-templates/refresh", asyncHandler(async (_req, res) => {
@@ -2207,6 +2246,11 @@ app.get("/new-project", (_req, res) => {
 
 app.get("/fill-form", (_req, res) => {
   res.sendFile(path.join(frontendDir, "fill-form.html"));
+});
+
+// Standalone form-filler tool (upload any form, place values, download filled).
+app.get("/tools/form-filler", (_req, res) => {
+  res.sendFile(path.join(frontendDir, "form-filler.html"));
 });
 
 app.get(["/", "/dashboard"], (_req, res) => {

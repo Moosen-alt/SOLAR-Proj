@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Form Filler · standalone tool</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <style>
+    /* Standalone form-filler — no project/DB dependency. Upload any flat form
+       (PDF, or DOCX auto-converted server-side), click to drop values, drag to
+       position, save a reusable field template, download the filled PDF. */
+    .ff2-bar { position: sticky; top: 0; z-index: 20; background: var(--surface); border-bottom: 1px solid var(--line); padding: 12px 18px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .ff2-bar h1 { font-size: 16px; margin-right: 8px; }
+    .ff2-bar .spacer { flex: 1; }
+    .ff2-bar .hint { font-size: 12px; color: var(--muted, #778); }
+    #ff2status { font-size: 12px; color: var(--muted, #778); min-width: 120px; }
+    #ff2status.error { color: var(--danger); } #ff2status.ok { color: var(--success, #1a7f37); }
+    .ff2-stage { padding: 20px; display: flex; flex-direction: column; align-items: center; gap: 18px; }
+    .ff2-page { position: relative; box-shadow: var(--shadow); border: 1px solid var(--line); background: #fff; }
+    .ff2-page canvas { display: block; }
+    .ff2-field { position: absolute; display: flex; align-items: stretch; background: rgba(99,102,241,.06); border: 1px solid var(--accent, #6366f1); border-radius: 3px; }
+    .ff2-field .grip { cursor: move; padding: 0 4px; display: flex; align-items: center; background: var(--accent, #6366f1); color: #fff; font-size: 10px; user-select: none; }
+    .ff2-field input.val { border: 0; background: transparent; padding: 1px 4px; font-family: Helvetica, Arial, sans-serif; color: #111; min-width: 40px; outline: none; }
+    .ff2-field .del { cursor: pointer; padding: 0 4px; color: var(--danger); font-weight: 700; display: flex; align-items: center; }
+    .ff2-empty { color: var(--muted, #778); font-size: 14px; padding: 60px 20px; text-align: center; max-width: 460px; }
+    .ff2-empty code { background: var(--bg, #f1f2f4); padding: 1px 5px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <div class="ff2-bar">
+    <h1>Form Filler</h1>
+    <label class="button primary" style="margin:0"><input type="file" id="ff2file" accept=".pdf,.docx,.doc,application/pdf" hidden />Upload form (PDF or DOCX)</label>
+    <button class="secondary" id="ff2tplSave" disabled>Save field template</button>
+    <label class="button secondary" style="margin:0"><input type="file" id="ff2tplLoad" accept="application/json,.json" hidden />Load template</label>
+    <div class="spacer"></div>
+    <span class="hint">Click a page to add a value · drag the ⠿ handle to position</span>
+    <span id="ff2status">No form loaded</span>
+    <button class="primary" id="ff2download" disabled>Download filled PDF</button>
+  </div>
+
+  <div class="ff2-stage" id="ff2stage">
+    <div class="ff2-empty">
+      Upload a blank AHJ/utility form to begin. PDFs open directly; a <code>.docx</code>
+      (like a county refund request) is converted to PDF automatically. Then click
+      anywhere on the form to drop a value, type it, and drag it into place. Save a
+      field template to reuse the same layout on the next form of that type.
+    </div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script>
+    if (window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+    const RENDER_SCALE = 1.4;
+    const stage = document.getElementById("ff2stage");
+    const statusEl = document.getElementById("ff2status");
+    const setStatus = (t, k) => { statusEl.textContent = t; statusEl.className = k || ""; };
+    let pdfBytes = null;           // Uint8Array of the (converted) PDF
+    let pageMeta = [];             // per page: { wrap, widthPt, heightPt }
+    const fields = [];             // { page, fx, fy, sizePt, text, el }
+
+    document.getElementById("ff2file").addEventListener("change", async (e) => {
+      const file = e.target.files[0]; if (!file) return;
+      try {
+        let bytes = new Uint8Array(await file.arrayBuffer());
+        if (/\.docx?$/i.test(file.name) && bytes[0] !== 0x25) { // not already a PDF
+          setStatus("Converting DOCX → PDF…");
+          const res = await fetch("/api/tools/form-fill/convert", {
+            method: "POST",
+            headers: { "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document" },
+            body: bytes,
+          });
+          if (!res.ok) { const j = await res.json().catch(() => ({})); setStatus(j.error || "Conversion failed — save as PDF and retry.", "error"); return; }
+          bytes = new Uint8Array(await res.arrayBuffer());
+        }
+        pdfBytes = bytes;
+        await renderAll();
+        document.getElementById("ff2download").disabled = false;
+        document.getElementById("ff2tplSave").disabled = false;
+        setStatus("Loaded · click to add values", "ok");
+      } catch (err) { setStatus("Load error: " + err.message, "error"); }
+    });
+
+    async function renderAll() {
+      stage.innerHTML = ""; pageMeta = []; fields.length = 0;
+      const doc = await pdfjsLib.getDocument({ data: pdfBytes.slice() }).promise;
+      for (let n = 1; n <= doc.numPages; n++) {
+        const page = await doc.getPage(n);
+        const viewport = page.getViewport({ scale: RENDER_SCALE });
+        const wrap = document.createElement("div");
+        wrap.className = "ff2-page"; wrap.style.width = viewport.width + "px"; wrap.style.height = viewport.height + "px";
+        const canvas = document.createElement("canvas");
+        canvas.width = viewport.width; canvas.height = viewport.height;
+        wrap.appendChild(canvas); stage.appendChild(wrap);
+        await page.render({ canvasContext: canvas.getContext("2d"), viewport }).promise;
+        const idx = n - 1;
+        pageMeta.push({ wrap, widthPt: viewport.width / RENDER_SCALE, heightPt: viewport.height / RENDER_SCALE });
+        wrap.addEventListener("click", (ev) => {
+          if (ev.target !== canvas) return; // clicks on existing fields shouldn't add new ones
+          const r = wrap.getBoundingClientRect();
+          addField(idx, (ev.clientX - r.left) / r.width, (ev.clientY - r.top) / r.height, 11, "");
+        });
+      }
+    }
+
+    function addField(page, fx, fy, sizePt, text) {
+      const meta = pageMeta[page];
+      const el = document.createElement("div"); el.className = "ff2-field";
+      const grip = document.createElement("div"); grip.className = "grip"; grip.textContent = "⠿";
+      const input = document.createElement("input"); input.className = "val"; input.value = text; input.placeholder = "value";
+      input.style.fontSize = (sizePt * RENDER_SCALE) + "px";
+      const del = document.createElement("div"); del.className = "del"; del.textContent = "×"; del.title = "Remove";
+      el.append(grip, input, del); meta.wrap.appendChild(el);
+      const rec = { page, fx, fy, sizePt, get text() { return input.value; }, el };
+      fields.push(rec);
+      place(rec);
+      input.focus();
+      del.addEventListener("click", () => { el.remove(); const i = fields.indexOf(rec); if (i >= 0) fields.splice(i, 1); });
+      // Drag via the grip; fractional coords keep templates scale-independent.
+      grip.addEventListener("mousedown", (down) => {
+        down.preventDefault();
+        const rect = meta.wrap.getBoundingClientRect();
+        const move = (m) => {
+          rec.fx = Math.min(1, Math.max(0, (m.clientX - rect.left) / rect.width));
+          rec.fy = Math.min(1, Math.max(0, (m.clientY - rect.top) / rect.height));
+          place(rec);
+        };
+        const up = () => { window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up); };
+        window.addEventListener("mousemove", move); window.addEventListener("mouseup", up);
+      });
+    }
+    function place(rec) {
+      const meta = pageMeta[rec.page];
+      rec.el.style.left = (rec.fx * meta.wrap.clientWidth) + "px";
+      rec.el.style.top = (rec.fy * meta.wrap.clientHeight) + "px";
+    }
+
+    // Convert on-screen fractional field positions → pdf-lib points (bottom-left
+    // origin). y: top-anchored fraction → baseline from bottom = height - fy*height - size.
+    function toPlacements() {
+      return fields.filter((f) => f.text.trim()).map((f) => {
+        const meta = pageMeta[f.page];
+        return { page: f.page, x: f.fx * meta.widthPt, y: meta.heightPt - f.fy * meta.heightPt - f.sizePt, text: f.text, size: f.sizePt };
+      });
+    }
+
+    document.getElementById("ff2download").addEventListener("click", async () => {
+      if (!pdfBytes) return;
+      setStatus("Filling…");
+      try {
+        const b64 = btoa(String.fromCharCode(...pdfBytes));
+        const res = await fetch("/api/tools/form-fill/fill", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pdfBase64: b64, placements: toPlacements() }),
+        });
+        if (!res.ok) { const j = await res.json().catch(() => ({})); setStatus(j.error || "Fill failed.", "error"); return; }
+        const blob = await res.blob();
+        const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "filled-form.pdf"; a.click();
+        URL.revokeObjectURL(a.href);
+        setStatus("Downloaded filled PDF", "ok");
+      } catch (err) { setStatus("Error: " + err.message, "error"); }
+    });
+
+    // Template = the field layout (page + fractional pos + size + value), reusable
+    // across forms of the same type. Values are saved too so recurring text sticks.
+    document.getElementById("ff2tplSave").addEventListener("click", () => {
+      const tpl = fields.map((f) => ({ page: f.page, fx: f.fx, fy: f.fy, sizePt: f.sizePt, text: f.text }));
+      const blob = new Blob([JSON.stringify(tpl, null, 2)], { type: "application/json" });
+      const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "form-template.json"; a.click();
+      URL.revokeObjectURL(a.href);
+    });
+    document.getElementById("ff2tplLoad").addEventListener("change", async (e) => {
+      const file = e.target.files[0]; if (!file || !pdfBytes) { if (!pdfBytes) setStatus("Load a form first.", "error"); return; }
+      try {
+        const tpl = JSON.parse(await file.text());
+        for (const f of tpl) if (pageMeta[f.page]) addField(f.page, f.fx, f.fy, f.sizePt || 11, f.text || "");
+        setStatus("Template applied", "ok");
+      } catch (err) { setStatus("Bad template file: " + err.message, "error"); }
+    });
+  </script>
+</body>
+</html>
