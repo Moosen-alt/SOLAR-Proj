@@ -1701,9 +1701,25 @@ app.post("/api/tools/form-fill/batch", express.json({ limit: "8mb" }), asyncHand
   if (!rows.length) throw new HttpError(400, "rows required.");
   if (rows.length > 200) throw new HttpError(400, "Max 200 rows per batch.");
   const { fetchPdf } = await import("./ahjFormAuto");
-  const { autoFillByFieldName, isPdf } = await import("./formFiller");
+  const { autoFillByFieldName, listAcroFields, overlayText, isPdf } = await import("./formFiller");
+  const { extractLabels, hasTextLayer, autoPlaceFromData } = await import("./formTextLayer");
   const AdmZip = (await import("adm-zip")).default;
   const zip = new AdmZip();
+  // Fill a blank from data: AcroForm by field name, else text-layer overlay for
+  // flat forms (e.g. the Jackson County refund). Returns filled bytes + how many
+  // fields were populated.
+  const fillOne = async (blank: Uint8Array, data: Record<string, string>): Promise<{ filled: Uint8Array; count: number }> => {
+    if ((await listAcroFields(blank)).length > 0) {
+      const { filled, matched, checked } = await autoFillByFieldName(blank, data);
+      return { filled, count: matched.length + checked.length };
+    }
+    const items = await extractLabels(blank);
+    if (hasTextLayer(items)) {
+      const placements = autoPlaceFromData(items, data);
+      return { filled: await overlayText(blank, placements), count: placements.length };
+    }
+    return { filled: blank, count: 0 };
+  };
   // Optional single form used for every row that has no URL of its own (the
   // common case: load one AHJ form at the top, then batch-fill many rows).
   const sharedB64 = String(req.body?.sharedPdfBase64 || "");
@@ -1724,12 +1740,12 @@ app.post("/api/tools/form-fill/batch", express.json({ limit: "8mb" }), asyncHand
         blank = shared; // no per-row URL → use the loaded form
       }
       if (!blank || !isPdf(blank)) throw new Error(shared ? "form URL did not return a PDF" : "no form URL and no loaded form");
-      const { filled, matched } = await autoFillByFieldName(blank, data);
+      const { filled, count } = await fillOne(blank, data);
       let name = String(row.filename || data.permitNumber || `form-${i + 1}`).replace(/[^A-Za-z0-9._-]+/g, "_").replace(/\.pdf$/i, "");
       let unique = name; let n = 2; while (usedNames.has(unique)) unique = `${name}-${n++}`;
       usedNames.add(unique);
       zip.addFile(`${unique}.pdf`, Buffer.from(filled));
-      results.push({ index: i, ok: true, filename: `${unique}.pdf`, matched: matched.length });
+      results.push({ index: i, ok: true, filename: `${unique}.pdf`, matched: count });
     } catch (err) {
       results.push({ index: i, ok: false, error: err instanceof Error ? err.message : String(err) });
     }

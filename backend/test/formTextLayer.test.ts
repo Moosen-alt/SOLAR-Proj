@@ -4,7 +4,7 @@
 // positions. Run: tsx backend/test/formTextLayer.test.ts
 import assert from "node:assert/strict";
 import { PDFDocument, StandardFonts } from "pdf-lib";
-import { extractLabels, hasTextLayer, findLabel, anchorPlacement, autoPlaceFromData } from "../src/formTextLayer";
+import { extractLabels, hasTextLayer, findLabel, anchorPlacement, autoPlaceFromData, sideForLabel } from "../src/formTextLayer";
 
 let passed = 0;
 const ok = (n: string) => { passed++; console.log(`ok   ${n}`); };
@@ -61,6 +61,18 @@ async function main(): Promise<void> {
   assert.ok(byKey.state && byKey.state.x > 300, "state anchors to the State: label (right side of row)");
   assert.equal(byKey.name.text, "Katie Tully");
   ok("autoPlaceFromData matches synonyms and anchors each value");
+
+  // Caption-vs-inline: "LABEL:" takes value to the right; a bare caption takes it
+  // ABOVE (on the line over the caption, e.g. Jackson County's "Print Name").
+  assert.equal(sideForLabel("PROPERTY ADDRESS:"), "right");
+  assert.equal(sideForLabel("PERMIT #"), "right");
+  assert.equal(sideForLabel("Print Name"), "above");
+  ok("sideForLabel picks right for LABEL:/# and above for a caption");
+
+  const above = anchorPlacement(items, { page: 0, label: "City:", side: "above" });
+  const cityLbl = findLabel(items, "City:", 0)!;
+  assert.ok(above && above.y > cityLbl.y, "above-placement sits on the line above the caption");
+  ok("anchorPlacement 'above' draws over the caption");
 
   console.log(`\nformTextLayer: all ${passed} checks passed`);
 }

@@ -98,22 +98,30 @@ export function findLabel(items: LabelItem[], label: string, page?: number): Lab
 export interface AnchorOpts {
   page: number;
   label: string;
-  side?: "right" | "below";
+  side?: "right" | "below" | "above";
   gap?: number; // points between label and value
   size?: number;
 }
 
-/** Resolve where to draw a value relative to its label. "right" (default) puts
- *  the value just after the label on the SAME baseline — which fixes the vertical
- *  float, because the y comes from the label's real baseline, not a guess. */
+/** Resolve where to draw a value relative to its label.
+ *  - "right" (default): value just after the label on the SAME baseline.
+ *  - "above": value on the line ABOVE the label — for caption-under-line forms
+ *    ("Print Name"/"City" printed beneath the blank).
+ *  y comes from the label's real baseline, so no vertical float. */
 export function anchorPlacement(items: LabelItem[], opts: AnchorOpts): { x: number; y: number } | null {
   const lbl = findLabel(items, opts.label, opts.page);
   if (!lbl) return null;
   const gap = opts.gap ?? 5;
-  if (opts.side === "below") {
-    return { x: lbl.x, y: lbl.y - (lbl.height || opts.size || 11) - 2 };
-  }
+  const lh = lbl.height || opts.size || 11;
+  if (opts.side === "below") return { x: lbl.x, y: lbl.y - lh - 2 };
+  if (opts.side === "above") return { x: lbl.x, y: lbl.y + lh + 3 };
   return { x: lbl.x + lbl.width + gap, y: lbl.y };
+}
+
+/** A label ending in ":" or "#" takes its value to the RIGHT; a bare caption
+ *  ("Print Name") takes it ABOVE the caption (on the blank line). */
+export function sideForLabel(labelStr: string): "right" | "above" {
+  return /[:#]\s*$/.test(labelStr.trim()) ? "right" : "above";
 }
 
 // Candidate label strings per data key, most-specific first. Used to auto-place
@@ -155,7 +163,8 @@ export function autoPlaceFromData(items: LabelItem[], data: Record<string, strin
       for (let page = 0; page < 1 + Math.max(0, ...items.map((i) => i.page)); page++) {
         const lbl = findLabel(items, cand, page);
         if (!lbl) continue;
-        const p = anchorPlacement(items, { page, label: cand, side: "right", size });
+        // "LABEL:" → value to the right; a bare caption → value on the line above.
+        const p = anchorPlacement(items, { page, label: cand, side: sideForLabel(lbl.str), size });
         if (p) { placed = { page, x: p.x, y: p.y, text: v, size, label: lbl.str, key }; break; }
       }
       if (placed) break;
