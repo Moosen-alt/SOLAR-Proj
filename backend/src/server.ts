@@ -1693,6 +1693,43 @@ app.post(
   }),
 );
 
+// Batch fill: for each row {url, data}, fetch the blank (cached per URL — many
+// rows share one AHJ form), auto-fill by field name, and return all filled PDFs
+// zipped. Output stays FILLABLE (autoFillByFieldName sets values, never flattens).
+app.post("/api/tools/form-fill/batch", express.json({ limit: "8mb" }), asyncHandler(async (req, res) => {
+  const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
+  if (!rows.length) throw new HttpError(400, "rows required.");
+  if (rows.length > 200) throw new HttpError(400, "Max 200 rows per batch.");
+  const { fetchPdf } = await import("./ahjFormAuto");
+  const { autoFillByFieldName, isPdf } = await import("./formFiller");
+  const AdmZip = (await import("adm-zip")).default;
+  const zip = new AdmZip();
+  const blankCache = new Map<string, Uint8Array | null>();
+  const results: Array<{ index: number; ok: boolean; filename?: string; matched?: number; error?: string }> = [];
+  const usedNames = new Set<string>();
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i] as { url?: string; data?: Record<string, string>; filename?: string };
+    const url = String(row?.url || "").trim();
+    const data = (row?.data && typeof row.data === "object") ? row.data : {};
+    try {
+      if (!/^https?:\/\//i.test(url)) throw new Error("no valid form URL");
+      let blank = blankCache.get(url);
+      if (blank === undefined) { blank = await fetchPdf(url); blankCache.set(url, blank); }
+      if (!blank || !isPdf(blank)) throw new Error("form URL did not return a PDF");
+      const { filled, matched } = await autoFillByFieldName(blank, data);
+      let name = String(row.filename || data.permitNumber || `form-${i + 1}`).replace(/[^A-Za-z0-9._-]+/g, "_").replace(/\.pdf$/i, "");
+      let unique = name; let n = 2; while (usedNames.has(unique)) unique = `${name}-${n++}`;
+      usedNames.add(unique);
+      zip.addFile(`${unique}.pdf`, Buffer.from(filled));
+      results.push({ index: i, ok: true, filename: `${unique}.pdf`, matched: matched.length });
+    } catch (err) {
+      results.push({ index: i, ok: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+  const okCount = results.filter((r) => r.ok).length;
+  res.json({ total: rows.length, filled: okCount, results, zipBase64: okCount ? zip.toBuffer().toString("base64") : "" });
+}));
+
 // Fetch a blank form PDF from a direct URL (the operator has the link — e.g. from
 // their tracking sheet). Server-side so it dodges browser CORS; validates it's a PDF.
 app.post("/api/tools/form-fill/fetch", express.json({ limit: "1mb" }), asyncHandler(async (req, res) => {
