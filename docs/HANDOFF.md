@@ -50,6 +50,49 @@ for the hard rules; this file is the running state.
 5. **Learn-run triage agent + correction agent**: shipped but lightly used —
    confirm findings quality on the next few real bundles.
 
+## Reusable form-fill engine (built for the standalone tool — apply to the main filler)
+
+A deterministic, no-LLM form-fill engine now lives in the backend and powers the
+standalone **Form Filler** tool (`/tools/form-filler`, `frontend/form-filler.html`).
+It was built while filling AHJ **refund** forms but is general. The operator is
+done with that specific tool, but the ENGINE is the keeper — it directly fixes
+the two problems reported against the autopilot's AHJ document filler ("off a
+bit" placement, and checkboxes not filled).
+
+**Modules (tested, browser-free):**
+- `backend/src/formFiller.ts` — `autoFillByFieldName(bytes, data)`: fills an
+  AcroForm by matching data keys (name/street/mailingAddress/city/state/zip/
+  phone/email/permitNumber/date/reason/installer) to field NAMES via
+  `FIELD_SYNONYMS`; also ticks reason/permitType checkboxes via keyword overlap
+  against the field name OR the descriptive text beside a generically-named box.
+  Never flattens (stays editable). `overlayText`, `listAcroFields`,
+  `convertDocxToPdf` (LibreOffice, cross-platform), `isPdf`.
+- `backend/src/formTextLayer.ts` — `extractLabels` (pdfjs), `anchorPlacement`
+  (right/above/below, on the label's REAL baseline — no float), `sideForLabel`
+  ("LABEL:"/"#" → right; bare caption → above), `autoPlaceFromData` (auto-place
+  a data bag on a flat form), `checkboxLabels` (recover the text beside a
+  generically-named box). Tests: `backend/test/formFiller.test.ts`,
+  `formTextLayer.test.ts`.
+
+**Verified on real AHJ forms:** Bellingham (AcroForm) fills every field by name;
+Jackson County (FLAT, no fields) fills 9/10 by text-layer anchoring with correct
+above/right placement.
+
+**To fix the main AHJ filler (`ahjForms.ts` `fillForm`) with this — NOT yet done,
+it touches the production autopilot path so do it deliberately + verified:**
+1. **"Off a bit" (overlay float):** the overlay path (`ahjForms.ts:600-633`)
+   draws vision-mapped coords with a single global `OVERLAY_NUDGE_X/Y` knob — it
+   can't fix per-field drift. Re-anchor each `overlayField` to its real label via
+   `formTextLayer.anchorPlacement` when the form has a text layer. ⚠️ Overlay is
+   ALSO used by hand-tuned registry forms (exact coords) — make anchoring
+   additive/gated (e.g. only for vision-mapped forms, or a per-field opt-in) and
+   regression-check the hand-tuned Oregon forms before rollout.
+2. **Checkboxes on flat forms:** the overlay path draws NO checkboxes. Add
+   checkbox placement using `formFiller` keyword matching + `checkboxLabels`.
+3. Optionally route flat/AcroForm autopilot fills through `autoFillByFieldName` /
+   `autoPlaceFromData` directly, mapping the project record to the generic data
+   bag, to reuse the tested engine instead of the vision map.
+
 ## Cold-start readiness (deploying on a NEW utility/AHJ)
 
 Every "unknown" the learner can hit now has a look-it-up-or-figure-it-out path:
