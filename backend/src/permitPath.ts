@@ -164,6 +164,122 @@ export function resolvePermitPath(project: ProjectRecord): PermitPathResolution 
   return finalize("prescriptive", "default");
 }
 
+// ---------------------------------------------------------------------------
+// Prescriptive structural criteria — the itemized screen the AHJ's prescriptive
+// checklist asks. Each row answers Yes / No / [verify] straight from the parsed
+// structural data, so the generated checklist stops shipping hardcoded [verify].
+// Thresholds default to the Oregon residential prescriptive solar limits (which
+// match the seeded jurisdiction code profile) and can be overridden per-AHJ.
+// ---------------------------------------------------------------------------
+
+export interface PrescriptiveLimitInputs {
+  maxGroundSnowPsf?: number;
+  maxPvDeadLoadPsf?: number;
+  maxRafterSpacingIn?: number;
+  allowedWindExposures?: string[];
+  /** Ultimate design wind speed cap (mph) by exposure — prescriptive tables. */
+  maxWindSpeedMphExpC?: number;
+  maxWindSpeedMphExpB?: number;
+  /** Max module height above the roof surface (in.) to stay in the array tables. */
+  maxModuleHeightIn?: number;
+  /** Max existing roofing layers under the array. */
+  maxRoofLayers?: number;
+}
+
+export type PrescriptiveAnswer = "Yes" | "No" | "[verify]";
+
+export interface PrescriptiveCriterion {
+  label: string;
+  answer: PrescriptiveAnswer;
+  detail: string;
+}
+
+const OREGON_PRESCRIPTIVE_DEFAULTS: Required<PrescriptiveLimitInputs> = {
+  maxGroundSnowPsf: 70,
+  maxPvDeadLoadPsf: 4.5,
+  maxRafterSpacingIn: 24,
+  allowedWindExposures: ["B", "C"],
+  maxWindSpeedMphExpC: 120,
+  maxWindSpeedMphExpB: 135,
+  maxModuleHeightIn: 18,
+  maxRoofLayers: 1,
+};
+
+function yesNoFlag(raw: string): PrescriptiveAnswer {
+  const v = raw.toLowerCase();
+  if (!v) return "[verify]";
+  if (/\b(yes|y|true|conventional|light[-\s]?frame)\b/.test(v)) return "Yes";
+  if (/\b(no|n|false)\b/.test(v)) return "No";
+  return "[verify]";
+}
+
+/** Evaluate every prescriptive-screen criterion from parsed data (Yes/No/[verify]). */
+export function evaluatePrescriptiveCriteria(
+  project: ProjectRecord,
+  limits: PrescriptiveLimitInputs = {},
+): PrescriptiveCriterion[] {
+  const L = { ...OREGON_PRESCRIPTIVE_DEFAULTS, ...limits };
+  const rows: PrescriptiveCriterion[] = [];
+
+  // Numeric "<= limit" criterion: Yes when parsed and within, No when over, else verify.
+  const maxRow = (label: string, key: string, limit: number, unit: string): void => {
+    const n = num(project, key);
+    if (n == null) rows.push({ label, answer: "[verify]", detail: `${label} not parsed` });
+    else rows.push({ label, answer: n <= limit ? "Yes" : "No", detail: `${n} ${unit} (limit ${limit} ${unit})` });
+  };
+
+  // Roof-mounted PV.
+  const mounting = snap(project, "mounting").toLowerCase();
+  rows.push({
+    label: "Roof-mounted PV",
+    answer: mounting ? (/roof/.test(mounting) && !/ground|pole/.test(mounting) ? "Yes" : "No") : "[verify]",
+    detail: mounting || "mounting not parsed",
+  });
+
+  // Conventional light-frame construction.
+  const lf = yesNoFlag(snap(project, "lightFrame"));
+  rows.push({
+    label: "Conventional light-frame construction",
+    answer: lf,
+    detail: snap(project, "lightFrame") || snap(project, "framingType") || "light-frame flag not parsed",
+  });
+
+  // Risk category I or II (residential).
+  const rc = snap(project, "riskCategory").toUpperCase().replace(/[^IV]/g, "");
+  rows.push({
+    label: "Risk Category I or II",
+    answer: rc ? (rc === "I" || rc === "II" ? "Yes" : "No") : "[verify]",
+    detail: rc ? `Category ${rc}` : "risk category not parsed",
+  });
+
+  maxRow(`Ground snow load <= ${L.maxGroundSnowPsf} psf`, "snow", L.maxGroundSnowPsf, "psf");
+
+  // Wind exposure.
+  const wind = snap(project, "wind").toUpperCase().replace(/[^A-D]/g, "");
+  rows.push({
+    label: `Wind exposure ${L.allowedWindExposures.join(" or ")}`,
+    answer: wind ? (L.allowedWindExposures.includes(wind) ? "Yes" : "No") : "[verify]",
+    detail: wind ? `Exposure ${wind}` : "wind exposure not parsed",
+  });
+
+  // Ultimate design wind speed vs exposure-specific cap.
+  const windSpeed = num(project, "windSpeed");
+  const speedCap = wind === "B" ? L.maxWindSpeedMphExpB : L.maxWindSpeedMphExpC;
+  if (windSpeed == null) rows.push({ label: "Ultimate design wind speed within prescriptive cap", answer: "[verify]", detail: "wind speed not parsed" });
+  else rows.push({
+    label: "Ultimate design wind speed within prescriptive cap",
+    answer: windSpeed <= speedCap ? "Yes" : "No",
+    detail: `${windSpeed} mph (limit ${speedCap} mph for Exp ${wind || "C"})`,
+  });
+
+  maxRow(`Rafter/truss spacing <= ${L.maxRafterSpacingIn} in. o.c.`, "roofRafterSpacing", L.maxRafterSpacingIn, "in");
+  maxRow(`PV dead load <= ${L.maxPvDeadLoadPsf} psf`, "deadLoad", L.maxPvDeadLoadPsf, "psf");
+  maxRow(`Module height above roof <= ${L.maxModuleHeightIn} in.`, "moduleHeightAboveRoof", L.maxModuleHeightIn, "in");
+  maxRow(`Existing roofing layers <= ${L.maxRoofLayers}`, "roofLayers", L.maxRoofLayers, "layer(s)");
+
+  return rows;
+}
+
 /** One-line human callout summarizing the path + its fee/review implications. */
 export function permitPathCallout(res: PermitPathResolution): string {
   if (res.path === "prescriptive") {

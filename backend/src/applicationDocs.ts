@@ -7,7 +7,7 @@ import type {
 } from "../../shared/src/types";
 import { nowIso } from "./time";
 import { findAhjProcessProfile } from "./processProfiles";
-import { resolvePermitPath, permitPathCallout, hasStampedStructuralEvidence, type PermitPathResolution } from "./permitPath";
+import { resolvePermitPath, permitPathCallout, hasStampedStructuralEvidence, evaluatePrescriptiveCriteria, type PermitPathResolution } from "./permitPath";
 
 // Derive combo-vs-separate from the AHJ process knowledge when the static application
 // profile doesn't state it. Many Oregon AHJs (e.g. Beaverton) file SEPARATE building +
@@ -862,12 +862,7 @@ function buildPrescriptiveApplication(project: ProjectRecord, _profile: Applicat
 ${commonProjectBlock(project)}
 
 Prescriptive code screen (all must be Yes to remain prescriptive):
-- Roof-mounted PV: ${/roof/i.test(payload(project, "mounting")) ? "Yes" : "[verify]"}
-- Conventional light-frame construction: [verify]
-- Ground snow load <= 70 psf: ${payload(project, "snow") && Number(payload(project, "snow")) <= 70 ? "Yes" : "[verify]"}
-- Wind exposure B or C: ${/^(B|C)$/i.test(payload(project, "wind")) ? "Yes" : "[verify]"}
-- Rafter/truss spacing <= 24 in. o.c.: ${payload(project, "roofRafterSpacing") && Number(payload(project, "roofRafterSpacing")) <= 24 ? "Yes" : "[verify]"}
-- PV dead load <= 4.5 psf: ${payload(project, "deadLoad") && Number(payload(project, "deadLoad")) <= 4.5 ? "Yes" : "[verify]"}
+${evaluatePrescriptiveCriteria(project).map((c) => `- ${c.label}: ${c.answer}${c.detail ? ` — ${c.detail}` : ""}`).join("\n")}
 - Firefighter access/pathways shown: ${/pathway|fire|access/i.test(`${payload(project, "sitePlanNotesText")} ${payload(project, "splitPagesText")}`) ? "Yes" : "[verify]"}
 - Attachment/racking details included: ${payload(project, "racking") ? "Yes" : "[verify]"}
 

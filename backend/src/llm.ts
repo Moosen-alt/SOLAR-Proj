@@ -717,6 +717,12 @@ STRUCTURAL (read from structural notes / roof framing plan — drive prescriptiv
 - roofRafterSpacing: rafter/truss spacing in inches on-center (number, e.g. 24)
 - roofRafterSpan: rafter span (number, feet) if given
 - wind: wind exposure category letter (e.g. "B" or "C")
+- windSpeed: ultimate design wind speed in mph (number, e.g. 120, 135) if the structural notes state it
+- riskCategory: building risk/occupancy category as a Roman numeral ("I" or "II" for residential) if stated
+- lightFrame: "yes" if the structure is conventional light-frame (dimensional lumber or engineered wood rafters/trusses) construction, "no" if it is not (e.g. steel/concrete/heavy timber), else omit
+- framingType: "rafter" or "truss" — the roof framing member type
+- roofLayers: number of existing roofing layers/coverings under the array (number, e.g. 1)
+- moduleHeightAboveRoof: max height of the module top above the roof surface in inches (number, e.g. 10)
 - permitPath: "prescriptive" or "engineered" if determinable
 UTILITY INTERCONNECTION (PGE PowerClerk / Pacific Power customer generation NEM)
 - utilitySchedule: the utility rate schedule from the bill (e.g. PGE "Schedule 7", Pacific Power "Schedule 4")
