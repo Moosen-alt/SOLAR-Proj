@@ -210,6 +210,9 @@ export async function buildOverlayMapForPdf(
       y: Math.round((1 - f.ny) * sz.h), // flip: ny is from top, PDF y from bottom
       size: f.size && f.size > 0 ? f.size : 9,
       ...(f.maxWidthFrac && f.maxWidthFrac > 0 ? { maxWidth: Math.round(f.maxWidthFrac * sz.w) } : {}),
+      // Persist the label so the fill can anchor to the form's real text baseline
+      // (fixes the vision y-drift). The LLM already returns it; we stopped dropping it.
+      ...(f.label && f.label.trim() ? { label: f.label.trim() } : {}),
     };
   });
   const signatureFields: SignaturePlacement[] = mapped.signatures.map((sg) => {

@@ -78,20 +78,22 @@ bit" placement, and checkboxes not filled).
 Jackson County (FLAT, no fields) fills 9/10 by text-layer anchoring with correct
 above/right placement.
 
-**To fix the main AHJ filler (`ahjForms.ts` `fillForm`) with this — NOT yet done,
-it touches the production autopilot path so do it deliberately + verified:**
-1. **"Off a bit" (overlay float):** the overlay path (`ahjForms.ts:600-633`)
-   draws vision-mapped coords with a single global `OVERLAY_NUDGE_X/Y` knob — it
-   can't fix per-field drift. Re-anchor each `overlayField` to its real label via
-   `formTextLayer.anchorPlacement` when the form has a text layer. ⚠️ Overlay is
-   ALSO used by hand-tuned registry forms (exact coords) — make anchoring
-   additive/gated (e.g. only for vision-mapped forms, or a per-field opt-in) and
-   regression-check the hand-tuned Oregon forms before rollout.
-2. **Checkboxes on flat forms:** the overlay path draws NO checkboxes. Add
-   checkbox placement using `formFiller` keyword matching + `checkboxLabels`.
-3. Optionally route flat/AcroForm autopilot fills through `autoFillByFieldName` /
-   `autoPlaceFromData` directly, mapping the project record to the generic data
-   bag, to reuse the tested engine instead of the vision map.
+**Main AHJ filler — "off a bit" FIX SHIPPED (label-anchored overlay):**
+The vision mapper's LLM output already carried a `label` per placement; it was
+being dropped (`ahjFormAuto.ts:204-214`). Now `OverlayField.label` is persisted,
+and `fillLoadedForm`'s overlay branch anchors each labeled field to its real
+text-layer baseline via `formTextLayer.anchorPlacement` (falls back to stored
+x/y when no label / no text layer / label-not-found). Gated so hand-tuned
+registry forms (unlabeled overlayFields) are byte-identical — proven by
+`backend/test/ahjFormFill.test.ts` (labeled→anchored, unlabeled→exact x/y,
+not-found→fallback). Existing stored templates gain labels on their next re-map
+(`POST /api/projects/:id/find-ahj-form`); until then they use current x/y (no
+regression). ⚠️ **Operator step:** re-map old flat-form templates once to get
+accurate placement.
+- **Still open — checkboxes on flat structural checklists:** placement is now
+  fixed for any checkbox mark the LLM detects, but WHICH structural Yes/No box
+  to tick (Risk Category, snow load, …) needs answers the project record does
+  not hold — a parser-extraction effort, not a placement one. Separate follow-up.
 
 ## Cold-start readiness (deploying on a NEW utility/AHJ)
 

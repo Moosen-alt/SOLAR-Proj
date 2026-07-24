@@ -79,6 +79,11 @@ export interface OverlayField {
   // Only draw when this source resolves truthy (or equals `equals`). Used to
   // place a value on the one fee-bracket row that matches the system size.
   onlyIf?: { source: FieldSource; equals?: string };
+  // The form's printed label this value belongs to (from the vision mapper).
+  // When set AND the flat PDF has a text layer, the fill anchors to that label's
+  // real baseline instead of the LLM's estimated x/y — fixing the "off a bit"
+  // drift. Absent on hand-tuned registry defs, which keep their exact x/y.
+  label?: string;
 }
 
 // Where an operator signature image is stamped. PDF points, bottom-left origin
@@ -601,6 +606,23 @@ export async function fillLoadedForm(
     const font = await doc.embedFont(StandardFonts.Helvetica);
     const pages = doc.getPages();
     let drawn = 0;
+    // Label anchoring: when overlay fields carry a `label` (vision-mapped stored
+    // forms do; hand-tuned registry defs do NOT), snap each value to that label's
+    // real text-layer baseline instead of the LLM's estimated x/y — fixing the
+    // "off a bit" drift. Falls back to x/y for unlabeled fields / no text layer /
+    // label-not-found, so nothing regresses. Text layer is read at most once.
+    let anchorFor: ((f: OverlayField) => { x: number; y: number } | null) | null = null;
+    if ((def.overlayFields ?? []).some((f) => f.label && f.label.trim())) {
+      try {
+        const { extractLabels, hasTextLayer, anchorPlacement, sideForLabel } = await import("./formTextLayer");
+        const items = await extractLabels(templateBytes);
+        if (hasTextLayer(items)) {
+          anchorFor = (f) => (f.label && f.label.trim())
+            ? anchorPlacement(items, { page: f.page, label: f.label, side: sideForLabel(f.label), size: f.size ?? 9 })
+            : null;
+        }
+      } catch { /* keep anchorFor null → use stored x/y */ }
+    }
     for (const field of def.overlayFields ?? []) {
       const page = pages[field.page];
       if (!page) continue;
@@ -617,12 +639,13 @@ export async function fillLoadedForm(
           text = text.slice(0, -1);
         }
       }
-      // Calibration: vision-derived baselines drift a few points consistently per
-      // machine/model. OVERLAY_NUDGE_X/OVERLAY_NUDGE_Y (PDF points; +y = up) shift
-      // EVERY overlay placement so the operator can true-up alignment with one env
-      // knob instead of re-mapping ("prints a smidgen low/left" → set +2/+2).
-      const nx = field.x + (Number(process.env.OVERLAY_NUDGE_X) || 0);
-      const ny = field.y + (Number(process.env.OVERLAY_NUDGE_Y) || 0);
+      // Prefer the label-anchored baseline; else the stored x/y. Calibration:
+      // vision-derived baselines drift a few points consistently per machine/
+      // model. OVERLAY_NUDGE_X/OVERLAY_NUDGE_Y (PDF points; +y = up) shift EVERY
+      // overlay placement so the operator can true-up alignment with one env knob.
+      const anchored = anchorFor ? anchorFor(field) : null;
+      const nx = (anchored ? anchored.x : field.x) + (Number(process.env.OVERLAY_NUDGE_X) || 0);
+      const ny = (anchored ? anchored.y : field.y) + (Number(process.env.OVERLAY_NUDGE_Y) || 0);
       page.drawText(text, { x: nx, y: ny, size, font, color: rgb(0, 0, 0) });
       drawn += 1;
     }
