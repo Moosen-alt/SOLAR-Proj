@@ -513,6 +513,12 @@ export function updateProject(db: AppDb, projectId: string, payload: ParserPaylo
   // Drop the non-persistent plan-set text overlay (re-derived from project_documents
   // on every load) so document text never bloats the stored parser_json.
   const { planSetExtractedText: _planSetText, ...existingSnapshot } = existing.parserSnapshot || {};
+  // Derived canonical flags (hasExistingSystem/hasBattery) must be RECOMPUTED
+  // from the merged evidence — a stale stored value would win over the re-parse
+  // (canonicalizeSnapshot never clobbers a present key), permanently freezing
+  // e.g. an addition discovered on re-parse out of the canonical flag.
+  delete (existingSnapshot as Record<string, unknown>)["hasExistingSystem"];
+  delete (existingSnapshot as Record<string, unknown>)["hasBattery"];
   const mergedSnapshot: ParserPayload = { ...existingSnapshot, ...payload };
   const project = normalizeProject(projectId, mergedSnapshot, existing.status, existing.createdAt);
   // Preserve the client link unless the payload explicitly changes it.
@@ -540,7 +546,9 @@ export function updateProject(db: AppDb, projectId: string, payload: ParserPaylo
         project.totalExportKw,
         project.interconnectionMethod,
         project.parserConfidenceSummary,
-        asJson(mergedSnapshot),
+        // Persist the CANONICALIZED snapshot (same as createProject) so derived
+        // keys recomputed from the merged evidence actually reach parser_json.
+        asJson(project.parserSnapshot),
         nowIso(),
         projectId,
       ],

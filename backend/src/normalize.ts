@@ -80,6 +80,20 @@ export function canonicalizeSnapshot(payload: ParserPayload): ParserPayload {
   const batteryModel = pick(["batteryModel"]);
   set("hasBattery", batteryModel || (batteryQty && Number(batteryQty) > 0) ? "Yes" : "No");
 
+  // System ADDITION: an existing PV system remains in service alongside the new
+  // install. Portals/forms ask "is there existing generation on site?" — answer
+  // "Yes" ONLY from affirmative parser evidence. Absence of evidence sets
+  // NOTHING (blank, not "No"): a definitive "No" from unparsed data would let a
+  // form falsely attest "no existing generation", and a blank flag is safe under
+  // both checkbox fill semantics (equals:"Yes" and truthy both leave it unticked).
+  const existingEvidence = pick([
+    "existingSystem", "existingDcKw", "existingAcKw",
+    "existingModuleMake", "existingModuleModel", "existingModuleQty",
+    "existingInvMake", "existingInvModel", "existingInvQty",
+    "combinedDcKw", "combinedAcKw",
+  ]);
+  if (existingEvidence && !/^no$/i.test(existingEvidence)) set("hasExistingSystem", "Yes");
+
   // Build a structured pvArrays list when the parser didn't provide one.
   if (!Array.isArray(payload["pvArrays"])) {
     const qty = pick(["moduleQuantity", "moduleQty"]);

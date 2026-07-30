@@ -706,6 +706,12 @@ SYSTEM / EQUIPMENT
 - inverterSettings: note grid-support listing / settings, e.g. "UL 1741 SB" or "UL 1741 SA, PCS profile" (needed for utility interconnection)
 - batteryMake, batteryModel, batteryQty (number)
 - roofMaterial (e.g. "Composition Shingle"), mounting (e.g. "Roof Mount")
+EXISTING SYSTEM (system ADDITIONS: the plan set shows an existing PV system remaining in service alongside the new install — e.g. an "EXISTING ARRAY" on the site plan, "EXISTING SYSTEM SPECIFICATIONS" block, "(E) PV" on the SLD)
+- existingSystem: "yes" when an existing PV system is shown remaining in service; omit otherwise
+- existingDcKw (number), existingAcKw (number): the EXISTING system's size
+- existingModuleMake, existingModuleModel, existingModuleQty (number): the EXISTING modules
+- existingInvMake, existingInvModel, existingInvQty (number): the EXISTING inverter(s)
+- combinedDcKw (number), combinedAcKw (number): the COMBINED/total size after the addition (often labeled "COMBINED SYSTEM SIZE"); compute new+existing if not printed
 ELECTRICAL (read from the SLD / one-line and load calc — critical for plan review)
 - busRating: main service panel (MSP) busbar rating in amps (e.g. "200A")
 - mainBreaker: main breaker / main service rating in amps (e.g. "200A")
@@ -762,6 +768,7 @@ Rules:
 - Set confidence honestly; put anything <0.6 or guessed into lowConfidenceFields.
 - Account/meter numbers: only digits you can actually read; never invent or pad. Join spaced account segments (e.g. "65564191-001 4" -> "65564191-0014"); do not drop a trailing check digit.
 - Electrical amps/structural loads come from the PLAN SET (SLD, datasheets, structural notes) — not the bill.
+- SYSTEM ADDITIONS: when the plan set shows an existing PV system, dcKw/acKw and ALL module/inverter/pvMicro/pvArrays fields describe ONLY the NEW equipment being added under this permit — never the existing equipment and never the combined total. E.g. a cover sheet stating "SYSTEM SIZE: 5.280 kW DC" and "COMBINED SYSTEM SIZE: 10.440 kW DC" means dcKw=5.28 and combinedDcKw=10.44. Existing equipment goes ONLY in the existing* fields. Mention the addition (existing + new + combined sizes) in projectDescriptionText.
 - Prefer the utility bill for name/address/account, the meter photo for meter number, the plan set for everything else.
 - Numbers must be JSON numbers. Return valid JSON only — no prose outside the JSON.`;
 
@@ -1637,6 +1644,16 @@ Rules:
     };
   }
 
+  // The AVAILABLE DATA SOURCES list annotates entries with a trailing
+  // "  (explanation)" — models occasionally echo the annotation back with the
+  // source (sometimes whitespace-normalized to a single space). Dotted sources
+  // never contain whitespace, so keep only the first token; "lit:" literals
+  // legitimately carry spaces and keep everything before a 2+-space gap.
+  private cleanFieldSourceString(raw: string): string {
+    const s = raw.split(/\s{2,}/)[0].trim();
+    return s.startsWith("lit:") ? s : s.split(/\s+/)[0];
+  }
+
   async mapAcroFormFields(input: {
     ahj: string;
     state: string;
@@ -1659,9 +1676,10 @@ Return ONLY JSON:
   "notes": "<short note on anything ambiguous or left blank, e.g. signature/date fields left for the human>"
 }
 Rules:
-- Use the EXACT field names provided (case/spacing matters).
+- Use the EXACT field names provided (case/spacing matters). Source strings are the part BEFORE any "(...)" annotation in the sources list.
 - Put checkbox-type fields in "checkboxes", text fields in "textFields".
-- COMPLIANCE-CHECKLIST forms (rows of Yes/Complies checkboxes): map source "lit:X" for every row a code-standard residential rooftop PV install satisfies by definition; skip rows needing project-specific measurements and name them in "notes". The mapping is human-verified before real use — a mostly-complete checklist beats an empty one.
+- COMPLIANCE-CHECKLIST forms (rows of Yes/No or Complies checkboxes): for the STRUCTURAL PRESCRIPTIVE rows (roof mount, light-frame construction, risk category, ground snow load, wind exposure, wind speed, rafter/truss spacing, PV dead load, module height above roof, roofing layers) map the row's Yes box to the matching "computed.presc<Criterion>Yes" source and its No box to "computed.presc<Criterion>No" — these resolve from the project's parsed data and stay blank when unverified. A single "meets all prescriptive criteria" attestation box maps to "computed.prescAllYes". For rows a code-standard residential rooftop PV install satisfies by definition (listed equipment, rapid shutdown, racking per manufacturer letter), map "lit:X"; skip rows needing project-specific measurements with no matching source and name them in "notes". The mapping is human-verified before real use — a mostly-complete checklist beats an empty one.
+- "computed.presc*Answer" sources return the word Yes/No — use them ONLY in "textFields" (a written Yes/No blank), never as a checkbox source.
 - NEVER map signature, date-signed, or fee-payment fields — leave them for the human.
 - NEVER map utility account number or meter number onto a public form field unless the field name explicitly asks for it.
 - Return valid JSON only.`;
@@ -1682,7 +1700,7 @@ ${input.availableSources.join("\n")}`;
     const textFields: Record<string, string> = {};
     if (parsed.textFields && typeof parsed.textFields === "object") {
       for (const [k, v] of Object.entries(parsed.textFields)) {
-        const src = String(v);
+        const src = this.cleanFieldSourceString(String(v));
         if (k && src && /^(project|snapshot|client|computed)\.|^lit:/.test(src)) textFields[k] = src;
       }
     }
@@ -1690,9 +1708,24 @@ ${input.availableSources.join("\n")}`;
     if (parsed.checkboxes && typeof parsed.checkboxes === "object") {
       for (const [k, v] of Object.entries(parsed.checkboxes)) {
         const rule = v as { source?: unknown; equals?: unknown };
-        const src = String(rule?.source || "");
+        let src = this.cleanFieldSourceString(String(rule?.source || ""));
+        // An EMPTY equals must be dropped, not kept: at fill time `equals: ""`
+        // would mean "check when the value resolves EMPTY" — i.e. tick the box
+        // exactly when the data is unverified. (fillLoadedForm guards this too.)
+        const equals = rule?.equals == null || String(rule.equals).trim() === "" ? null : String(rule.equals);
+        // A presc*Answer source resolves to the word "Yes"/"No" — both truthy,
+        // so with no `equals` either answer would tick the box. Resolve which
+        // mark variant the box wants from its field name; when the name says
+        // neither yes nor no, DROP the rule (a human ticks it) — guessing Yes
+        // could put the mark in a row's No box.
+        if (equals == null && /^computed\.presc\w*Answer$/.test(src)) {
+          const tokens = k.toLowerCase().split(/[^a-z]+/);
+          if (tokens.includes("no")) src = src.replace(/Answer$/, "No");
+          else if (tokens.some((t) => ["yes", "complies", "meets", "conforms", "pass"].includes(t))) src = src.replace(/Answer$/, "Yes");
+          else continue;
+        }
         if (k && src && /^(project|snapshot|client|computed)\.|^lit:/.test(src)) {
-          checkboxes[k] = rule.equals != null ? { source: src, equals: String(rule.equals) } : { source: src };
+          checkboxes[k] = equals != null ? { source: src, equals } : { source: src };
         }
       }
     }
@@ -1731,7 +1764,7 @@ Rules:
 - Place a value ONLY where you can clearly see the matching labeled blank. Do not guess positions.
 - Do NOT put text in "fields" for signature or date-signed lines — signature lines go in "signatures"; leave date-signed for the human.
 - For checkboxes (e.g. "Type of work: Other"), use source "lit:X" placed at the box.
-- COMPLIANCE CHECKLISTS (e.g. a prescriptive solar checklist where each row has a Yes/Complies/Meets box): place "lit:X" in the Yes/Complies box of EVERY row that a code-standard residential rooftop PV install satisfies by definition (flush roof mount, listed equipment, engineered racking per manufacturer letter, rapid shutdown, permitted conductor sizing). SKIP rows requiring project-specific data you cannot know (spans, site distances) — list those skipped rows in "notes" so the operator finishes them. The map is human-verified before real use, so favor covering the standard rows over leaving the checklist blank.
+- COMPLIANCE CHECKLISTS (e.g. a prescriptive solar checklist where each row has Yes/No or Complies boxes): for the STRUCTURAL PRESCRIPTIVE rows (roof mount, light-frame construction, risk category, ground snow load, wind exposure, wind speed, rafter/truss spacing, PV dead load, module height above roof, roofing layers) place the matching "computed.presc<Criterion>Yes" source at the row's Yes/Complies box and "computed.presc<Criterion>No" at its No box — each draws an "X" only when the project's parsed data answers that way, so an unverified row stays blank for the operator. A single "meets all prescriptive criteria" box gets "computed.prescAllYes". Written blanks on those rows (e.g. "Ground snow load: ___ psf") take the matching "snapshot.*" value source. For rows a code-standard residential rooftop PV install satisfies by definition (flush roof mount, listed equipment, engineered racking per manufacturer letter, rapid shutdown, permitted conductor sizing), place "lit:X" in the Yes/Complies box. SKIP rows requiring project-specific data with no matching source (spans, site distances) — list those skipped rows in "notes" so the operator finishes them. The map is human-verified before real use, so favor covering the standard rows over leaving the checklist blank.
 - ROLE/SECTION checkboxes: if the form has checkboxes that select WHO a section describes — e.g. "Property owner" vs "Tenant", "Contractor" vs "Subcontractor", "Applicant" vs "Contact Person", "Owner" vs "Agent" — check the boxes that match THIS filing: this project is submitted by the licensed CONTRACTOR who is also the APPLICANT, and the property-owner block holds the homeowner. So place "lit:X" in the "Property owner", "Contractor", and "Applicant" boxes (and any equivalent owner/contractor/applicant selector), and DO NOT check "Tenant", "Subcontractor", or "Contact Person". Place the X precisely inside the small box, not on the label.
 - Coordinates must be precise — they will be used verbatim. Return valid JSON only.`;
 
@@ -1764,7 +1797,7 @@ Rules:
     if (Array.isArray(parsed.fields)) {
       for (const f of parsed.fields) {
         const o = f as Record<string, unknown>;
-        const source = String(o.source || "");
+        const source = this.cleanFieldSourceString(String(o.source || ""));
         const nx = Number(o.nx);
         const ny = Number(o.ny);
         if (!/^(project|snapshot|client|computed)\.|^lit:/.test(source)) continue;

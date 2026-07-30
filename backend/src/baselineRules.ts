@@ -191,6 +191,11 @@ export function evaluateBaselineRules(payload: ParserPayload, ctx?: EffectiveCod
   const utility = str(payload, "utility");
   const utilityUpper = utility.toUpperCase();
   const dcKw = num(payload, "dcKw");
+  // System additions: NEM program caps apply to the TOTAL generation on the
+  // service, so screen on the combined (new + existing) size when present.
+  const combinedDcKw = num(payload, "combinedDcKw");
+  const screenDcKw = combinedDcKw != null && (dcKw == null || combinedDcKw > dcKw) ? combinedDcKw : dcKw;
+  const combinedNote = screenDcKw !== dcKw ? " (combined new + existing system size)" : "";
   const exportKw = num(payload, "exportKw");
   const snow = num(payload, "snow");
   const deadLoad = num(payload, "deadLoad");
@@ -222,13 +227,13 @@ export function evaluateBaselineRules(payload: ParserPayload, ctx?: EffectiveCod
     ? { snow: "or-prescriptive-snow-70", dead: "or-prescriptive-deadload-4_5", framing: "or-prescriptive-roof-framing", wind: "or-prescriptive-wind-exposure", fire: "or-fire-pathways", export: "or-nem-tier1-export-25kw" }
     : { snow: `${idPrefix}-prescriptive-snow`, dead: `${idPrefix}-prescriptive-deadload`, framing: `${idPrefix}-prescriptive-roof-framing`, wind: `${idPrefix}-prescriptive-wind-exposure`, fire: `${idPrefix}-fire-pathways`, export: `${idPrefix}-export-study-screen` };
 
-  if (isOregon && dcKw != null && dcKw > 25) {
+  if (isOregon && screenDcKw != null && screenDcKw > 25) {
     out.push(result(
       "or-nem-residential-25kw",
       "Oregon residential NEM size screen",
       "warning",
       "warning",
-      `DC size is ${dcKw} kW. Confirm this is not a residential OAR 860-039 net metering project capped at 25 kW.`,
+      `DC size is ${screenDcKw} kW${combinedNote}. Confirm this is not a residential OAR 860-039 net metering project capped at 25 kW.`,
       "dcKw",
     ));
   }
@@ -236,15 +241,15 @@ export function evaluateBaselineRules(payload: ParserPayload, ctx?: EffectiveCod
   // Export-study screen: threshold from the jurisdiction profile (Oregon Tier 1 = 25 kW
   // export / 50 kW DC). The DC arm stays at 2x the export limit, matching the legacy 25/50 pair.
   const exportLimit = limits.maxExportKwWithoutStudy;
-  if (exportLimit != null && ((dcKw != null && dcKw > exportLimit * 2) || (exportKw != null && exportKw > exportLimit))) {
+  if (exportLimit != null && ((screenDcKw != null && screenDcKw > exportLimit * 2) || (exportKw != null && exportKw > exportLimit))) {
     out.push(result(
       prescriptiveIds.export,
       idPrefix === "or" ? "Oregon Tier 1 export screen" : `${jurisLabel} export/interconnection study screen`,
       "warning",
       "warning",
       idPrefix === "or"
-        ? `Generation/export may exceed Tier 1 screens (${dcKw ?? "?"} kW DC / ${exportKw ?? "?"} kW export). Confirm Tier 2/3 utility path.`
-        : `Generation/export may exceed the ${exportLimit} kW screen (${dcKw ?? "?"} kW DC / ${exportKw ?? "?"} kW export). Confirm the utility study path.`,
+        ? `Generation/export may exceed Tier 1 screens (${screenDcKw ?? "?"} kW DC${combinedNote} / ${exportKw ?? "?"} kW export). Confirm Tier 2/3 utility path.`
+        : `Generation/export may exceed the ${exportLimit} kW screen (${screenDcKw ?? "?"} kW DC${combinedNote} / ${exportKw ?? "?"} kW export). Confirm the utility study path.`,
       "exportKw",
     ));
   }

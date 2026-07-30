@@ -188,10 +188,33 @@ export interface PrescriptiveLimitInputs {
 
 export type PrescriptiveAnswer = "Yes" | "No" | "[verify]";
 
+/** Stable identifiers for each criterion row — the PDF form-fill bridge binds
+ *  checklist checkboxes to these (computed.presc<Key>Yes / ...No), so they must
+ *  never be renamed once templates reference them. */
+export type PrescriptiveCriterionKey =
+  | "roofMount"
+  | "lightFrame"
+  | "riskCategory"
+  | "snowLoad"
+  | "windExposure"
+  | "windSpeed"
+  | "rafterSpacing"
+  | "deadLoad"
+  | "moduleHeight"
+  | "roofLayers";
+
 export interface PrescriptiveCriterion {
+  key: PrescriptiveCriterionKey;
   label: string;
   answer: PrescriptiveAnswer;
   detail: string;
+}
+
+/** The criterion keys + default labels, for building the mapper's source list.
+ *  Derived from an empty evaluation so labels stay in lockstep with the rows. */
+export function prescriptiveCriterionCatalog(): Array<{ key: PrescriptiveCriterionKey; label: string }> {
+  const empty = { parserSnapshot: {} } as unknown as ProjectRecord;
+  return evaluatePrescriptiveCriteria(empty).map(({ key, label }) => ({ key, label }));
 }
 
 const OREGON_PRESCRIPTIVE_DEFAULTS: Required<PrescriptiveLimitInputs> = {
@@ -222,15 +245,16 @@ export function evaluatePrescriptiveCriteria(
   const rows: PrescriptiveCriterion[] = [];
 
   // Numeric "<= limit" criterion: Yes when parsed and within, No when over, else verify.
-  const maxRow = (label: string, key: string, limit: number, unit: string): void => {
-    const n = num(project, key);
-    if (n == null) rows.push({ label, answer: "[verify]", detail: `${label} not parsed` });
-    else rows.push({ label, answer: n <= limit ? "Yes" : "No", detail: `${n} ${unit} (limit ${limit} ${unit})` });
+  const maxRow = (key: PrescriptiveCriterionKey, label: string, snapKey: string, limit: number, unit: string): void => {
+    const n = num(project, snapKey);
+    if (n == null) rows.push({ key, label, answer: "[verify]", detail: `${label} not parsed` });
+    else rows.push({ key, label, answer: n <= limit ? "Yes" : "No", detail: `${n} ${unit} (limit ${limit} ${unit})` });
   };
 
   // Roof-mounted PV.
   const mounting = snap(project, "mounting").toLowerCase();
   rows.push({
+    key: "roofMount",
     label: "Roof-mounted PV",
     answer: mounting ? (/roof/.test(mounting) && !/ground|pole/.test(mounting) ? "Yes" : "No") : "[verify]",
     detail: mounting || "mounting not parsed",
@@ -239,6 +263,7 @@ export function evaluatePrescriptiveCriteria(
   // Conventional light-frame construction.
   const lf = yesNoFlag(snap(project, "lightFrame"));
   rows.push({
+    key: "lightFrame",
     label: "Conventional light-frame construction",
     answer: lf,
     detail: snap(project, "lightFrame") || snap(project, "framingType") || "light-frame flag not parsed",
@@ -247,16 +272,18 @@ export function evaluatePrescriptiveCriteria(
   // Risk category I or II (residential).
   const rc = snap(project, "riskCategory").toUpperCase().replace(/[^IV]/g, "");
   rows.push({
+    key: "riskCategory",
     label: "Risk Category I or II",
     answer: rc ? (rc === "I" || rc === "II" ? "Yes" : "No") : "[verify]",
     detail: rc ? `Category ${rc}` : "risk category not parsed",
   });
 
-  maxRow(`Ground snow load <= ${L.maxGroundSnowPsf} psf`, "snow", L.maxGroundSnowPsf, "psf");
+  maxRow("snowLoad", `Ground snow load <= ${L.maxGroundSnowPsf} psf`, "snow", L.maxGroundSnowPsf, "psf");
 
   // Wind exposure.
   const wind = snap(project, "wind").toUpperCase().replace(/[^A-D]/g, "");
   rows.push({
+    key: "windExposure",
     label: `Wind exposure ${L.allowedWindExposures.join(" or ")}`,
     answer: wind ? (L.allowedWindExposures.includes(wind) ? "Yes" : "No") : "[verify]",
     detail: wind ? `Exposure ${wind}` : "wind exposure not parsed",
@@ -265,17 +292,18 @@ export function evaluatePrescriptiveCriteria(
   // Ultimate design wind speed vs exposure-specific cap.
   const windSpeed = num(project, "windSpeed");
   const speedCap = wind === "B" ? L.maxWindSpeedMphExpB : L.maxWindSpeedMphExpC;
-  if (windSpeed == null) rows.push({ label: "Ultimate design wind speed within prescriptive cap", answer: "[verify]", detail: "wind speed not parsed" });
+  if (windSpeed == null) rows.push({ key: "windSpeed", label: "Ultimate design wind speed within prescriptive cap", answer: "[verify]", detail: "wind speed not parsed" });
   else rows.push({
+    key: "windSpeed",
     label: "Ultimate design wind speed within prescriptive cap",
     answer: windSpeed <= speedCap ? "Yes" : "No",
     detail: `${windSpeed} mph (limit ${speedCap} mph for Exp ${wind || "C"})`,
   });
 
-  maxRow(`Rafter/truss spacing <= ${L.maxRafterSpacingIn} in. o.c.`, "roofRafterSpacing", L.maxRafterSpacingIn, "in");
-  maxRow(`PV dead load <= ${L.maxPvDeadLoadPsf} psf`, "deadLoad", L.maxPvDeadLoadPsf, "psf");
-  maxRow(`Module height above roof <= ${L.maxModuleHeightIn} in.`, "moduleHeightAboveRoof", L.maxModuleHeightIn, "in");
-  maxRow(`Existing roofing layers <= ${L.maxRoofLayers}`, "roofLayers", L.maxRoofLayers, "layer(s)");
+  maxRow("rafterSpacing", `Rafter/truss spacing <= ${L.maxRafterSpacingIn} in. o.c.`, "roofRafterSpacing", L.maxRafterSpacingIn, "in");
+  maxRow("deadLoad", `PV dead load <= ${L.maxPvDeadLoadPsf} psf`, "deadLoad", L.maxPvDeadLoadPsf, "psf");
+  maxRow("moduleHeight", `Module height above roof <= ${L.maxModuleHeightIn} in.`, "moduleHeightAboveRoof", L.maxModuleHeightIn, "in");
+  maxRow("roofLayers", `Existing roofing layers <= ${L.maxRoofLayers}`, "roofLayers", L.maxRoofLayers, "layer(s)");
 
   return rows;
 }

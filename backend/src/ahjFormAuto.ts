@@ -7,6 +7,7 @@ import { describePermitType, findApplicationProfile } from "./applicationDocs";
 import { saveResearchedAhjProfile, knowledgeResearchHint, findKnowledgeForLearn } from "./knowledgeBase";
 import { findAhjProcessProfile } from "./processProfiles";
 import { renderPdfPageToPng } from "./pageImages";
+import { prescriptiveCriterionCatalog } from "./permitPath";
 import { nowIso } from "./time";
 
 // ---------------------------------------------------------------------------
@@ -15,6 +16,52 @@ import { nowIso } from "./time";
 // future project under that AHJ gets the real filled form. Operator upload is
 // the fallback when no form can be found (see /api/ahj-templates/upload).
 // ---------------------------------------------------------------------------
+
+// Prescriptive-checklist sources (one Yes/No pair per structural criterion, plus
+// the overall screen). Each resolves via prescriptiveComputed in ahjForms.ts:
+// "X" when the parsed data answers that way, "" when unverified — so a checklist
+// row with no parsed backing stays blank for the operator instead of attesting.
+const cap = (s: string): string => s.charAt(0).toUpperCase() + s.slice(1);
+const PRESCRIPTIVE_SOURCES: string[] = [
+  ...prescriptiveCriterionCatalog().flatMap(({ key, label }) => [
+    `computed.presc${cap(key)}Yes  (checklist row "${label}" — "X" iff the parsed data answers Yes)`,
+    `computed.presc${cap(key)}No  (same row — "X" iff it answers No)`,
+    `computed.presc${cap(key)}Answer  (same row — the word Yes/No for a written blank; TEXT FIELDS ONLY)`,
+  ]),
+  'computed.prescAllYes  ("X" iff EVERY prescriptive criterion answers Yes — for a single "meets all prescriptive criteria" box)',
+  'computed.prescAllNo  ("X" iff any prescriptive criterion answers No)',
+  'computed.prescAllAnswer  (overall Yes/No as text; TEXT FIELDS ONLY)',
+];
+
+// Parsed structural values, for checklists with written blanks ("Ground snow
+// load: ___ psf"). Same snapshot keys the prescriptive evaluator reads.
+const STRUCTURAL_VALUE_SOURCES: string[] = [
+  "snapshot.snow  (ground snow load, psf)",
+  "snapshot.wind  (wind exposure category B/C/D)",
+  "snapshot.windSpeed  (ultimate design wind speed, mph)",
+  "snapshot.deadLoad  (PV system dead load, psf)",
+  "snapshot.roofRafterSpacing  (rafter/truss spacing, in. o.c.)",
+  "snapshot.moduleHeightAboveRoof  (module height above roof surface, in.)",
+  "snapshot.roofLayers  (existing roofing layers)",
+  "snapshot.riskCategory  (risk category I/II/III/IV)",
+  "snapshot.mounting  (mounting type, e.g. roof mount)",
+];
+
+// Existing-system (addition) values, for NEM/permit forms that ask about
+// generation already on the service. Blank on projects with no existing system.
+const EXISTING_SYSTEM_SOURCES: string[] = [
+  'snapshot.hasExistingSystem  ("Yes" when an existing PV system remains in service, blank otherwise — safe for an "existing generation on site" checkbox)',
+  "snapshot.existingDcKw  (existing PV system size, kW DC)",
+  "snapshot.existingAcKw  (existing PV system size, kW AC)",
+  "snapshot.existingModuleMake  (existing PV module manufacturer)",
+  "snapshot.existingModuleModel  (existing PV module model)",
+  "snapshot.existingModuleQty  (existing module count)",
+  "snapshot.existingInvMake  (existing inverter manufacturer)",
+  "snapshot.existingInvModel  (existing inverter model)",
+  "snapshot.existingInvQty  (existing inverter count)",
+  "snapshot.combinedDcKw  (combined new + existing size, kW DC)",
+  "snapshot.combinedAcKw  (combined new + existing size, kW AC)",
+];
 
 // The project-data sources the field mapper may target. Mirrors resolveSource()
 // scopes in ahjForms.ts. Kept explicit so the LLM only maps to real fields.
@@ -55,6 +102,9 @@ export const AVAILABLE_FIELD_SOURCES: string[] = [
   "computed.systemSize",
   "computed.systemSizeDcKw",
   "computed.descriptionOfWork",
+  ...STRUCTURAL_VALUE_SOURCES,
+  ...EXISTING_SYSTEM_SOURCES,
+  ...PRESCRIPTIVE_SOURCES,
   'lit:X  (literal — use for fixed checkbox marks / constant text like "lit:Solar")',
 ];
 

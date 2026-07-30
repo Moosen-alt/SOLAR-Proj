@@ -3486,6 +3486,14 @@ const LLM_SNAPSHOT_KEYS = new Set([
   'roofMaterial','mounting',
   'busRating','mainBreaker','pvBreaker','acDiscReq',
   'snow','deadLoad','roofRafterSpacing','roofRafterSpan','wind','permitPath',
+  // Structural prescriptive-screen fields — evaluatePrescriptiveCriteria answers
+  // the AHJ checklist rows from these; dropping them here regresses to [verify].
+  'windSpeed','riskCategory','lightFrame','framingType','roofLayers','moduleHeightAboveRoof',
+  // Existing-system (addition) fields — NEM/permit forms ask for existing + combined.
+  'existingSystem','existingDcKw','existingAcKw',
+  'existingModuleMake','existingModuleModel','existingModuleQty',
+  'existingInvMake','existingInvModel','existingInvQty',
+  'combinedDcKw','combinedAcKw',
   'utilitySchedule','serviceVoltage','servicePhase','numberOfCircuits','parcelNumber','jobValue',
   'homeownerEmail','homeownerPhone',
   'azimuth','tilt','roofSlope','mainServiceRating','pvArrays',

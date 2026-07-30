@@ -10,7 +10,8 @@ import { HttpError } from "./httpError";
 import { loadDefaultSignaturesByRole } from "./signatures";
 import { nowIso } from "./time";
 import { parseJson } from "./json";
-import { resolvePermitPath } from "./permitPath";
+import { resolvePermitPath, evaluatePrescriptiveCriteria, type PrescriptiveCriterion, type PrescriptiveLimitInputs } from "./permitPath";
+import { resolveEffectiveCodeContext } from "./codeProfiles";
 
 // Classify an AHJ form by which mutually-exclusive solar application it is, from its
 // name/filename. A prescriptive and a structural application must NEVER both be filled
@@ -64,6 +65,15 @@ export interface CheckboxRule {
   // Field is checked when the resolved source is truthy, or equals `equals`.
   source: FieldSource;
   equals?: string;
+}
+
+/** The single checkbox decision, shared by fill + tests. An EMPTY `equals` is
+ *  treated as absent (truthy check), never as `value === ""` — otherwise a rule
+ *  like {source: "computed.prescSnowLoadYes", equals: ""} would tick the box
+ *  exactly when the data is unverified (the "" case), inverting the safety. */
+export function checkboxRuleChecked(rule: CheckboxRule, value: string): boolean {
+  const equals = rule.equals != null && String(rule.equals) !== "" ? String(rule.equals) : null;
+  return equals != null ? value === equals : Boolean(value);
 }
 
 // For flat (non-fillable) PDFs we draw the value at a coordinate. x/y are in
@@ -251,6 +261,13 @@ export interface FillContext {
   // Default operator signature image per role, drawn at the form's signature
   // placements. Loaded in buildContext; empty when none are stored.
   signatures?: Record<string, { bytes: Uint8Array; mime: string; widthPx: number; heightPx: number; name: string }>;
+  // Lazily-evaluated prescriptive criteria rows, cached so the presc* computed
+  // sources evaluate the screen once per fill (see prescriptiveComputed).
+  prescriptive?: PrescriptiveCriterion[];
+  // Per-AHJ prescriptive limit overrides from the jurisdiction code profile
+  // (loaded in buildContext) — the presc* sources must screen against the SAME
+  // limits QC's baseline rules use, not always the Oregon defaults.
+  prescriptiveLimits?: PrescriptiveLimitInputs;
 }
 
 function str(v: unknown): string {
@@ -287,7 +304,44 @@ function money(n: number): string {
   return n.toFixed(2);
 }
 
+// ---------------------------------------------------------------------------
+// Prescriptive-checklist bridge: computed sources that answer an AHJ's
+// prescriptive structural checklist straight from the parsed data, so a stored
+// checklist PDF's Yes/No checkboxes get ticked by the same evaluator that fills
+// the generated Markdown checklist. Names:
+//   computed.presc<Key>Yes    -> "X" when that criterion answers Yes, else ""
+//   computed.presc<Key>No     -> "X" when that criterion answers No, else ""
+//   computed.presc<Key>Answer -> "Yes"/"No" as text; "" when unverified
+//   computed.prescAllYes/No/Answer -> the overall screen (all rows Yes / any No)
+// <Key> is a PrescriptiveCriterionKey with its first letter capitalized
+// (snowLoad -> prescSnowLoadYes). An unparsed criterion answers [verify], which
+// resolves to "" in every variant — no box is ticked and no text is written, so
+// unverified data can never silently attest compliance on a real form.
+// ---------------------------------------------------------------------------
+function prescriptiveComputed(name: string, ctx: FillContext): string {
+  const m = name.match(/^presc([A-Z][A-Za-z]*?)(Yes|No|Answer)$/);
+  if (!m) return "";
+  const key = m[1][0].toLowerCase() + m[1].slice(1);
+  const variant = m[2];
+  const rows = (ctx.prescriptive ??= evaluatePrescriptiveCriteria(ctx.project, ctx.prescriptiveLimits || {}));
+  let answer: string;
+  if (key === "all") {
+    // Overall verdict: Yes only when EVERY row affirmatively passes; No as soon
+    // as any row definitively fails; otherwise unverified.
+    if (rows.length && rows.every((r) => r.answer === "Yes")) answer = "Yes";
+    else if (rows.some((r) => r.answer === "No")) answer = "No";
+    else answer = "";
+  } else {
+    const row = rows.find((r) => r.key === key);
+    answer = row && row.answer !== "[verify]" ? row.answer : "";
+  }
+  if (variant === "Yes") return answer === "Yes" ? "X" : "";
+  if (variant === "No") return answer === "No" ? "X" : "";
+  return answer;
+}
+
 function computed(name: string, ctx: FillContext): string {
+  if (name.startsWith("presc")) return prescriptiveComputed(name, ctx);
   switch (name) {
     case "todaySigned": {
       const d = new Date();
@@ -359,12 +413,23 @@ function computed(name: string, ctx: FillContext): string {
       const model = str(s["moduleModel"] ?? s["module_model"]);
       const size = ctx.project.systemSizeDcKw ? `${ctx.project.systemSizeDcKw} kW DC` : "";
       const battery = str(s["batteryModel"] ?? s["battery_model"]);
+      // System addition: an existing PV system stays in service — the scope is
+      // the NEW equipment, but the AHJ/utility must see it's an addition.
+      // Both flags demand an explicit "yes" — existingSystem:"no" must not read
+      // as an addition just because the string is truthy.
+      const isAddition = /^yes$/i.test(str(s["hasExistingSystem"])) || /^yes$/i.test(str(s["existingSystem"]));
+      const existingDc = str(s["existingDcKw"]);
+      const combinedDc = str(s["combinedDcKw"]);
+      const additionTail = isAddition
+        ? ` Addition to existing${existingDc ? ` ${existingDc} kW DC` : ""} PV system${combinedDc ? ` (combined ${combinedDc} kW DC)` : ""}.`
+        : "";
       return [
-        "Install roof-mounted photovoltaic solar system",
+        isAddition ? "Install roof-mounted photovoltaic solar system addition" : "Install roof-mounted photovoltaic solar system",
         qty && model ? `: ${qty}x ${model}` : "",
         size ? `, ${size}` : "",
         battery ? `, with ${battery} battery storage` : "",
         ".",
+        additionTail,
       ].join("");
     }
     case "installerBlock":
@@ -400,11 +465,23 @@ export function buildContext(db: AppDb, project: ProjectRecord): FillContext {
   // stay consistent. portalType "" yields licensing fields without a specific
   // installer identity.
   const client = clientStagingOverlay(db, project.clientId, "");
+  // Per-AHJ prescriptive limits (same jurisdiction code profile QC screens on),
+  // so the presc* checkbox sources answer against this AHJ's actual thresholds.
+  // Only concrete values override; anything missing keeps the Oregon defaults.
+  const prescriptiveLimits: PrescriptiveLimitInputs = {};
+  try {
+    const p = resolveEffectiveCodeContext(db, project.state, project.ahj).prescriptive || {};
+    if (p.maxGroundSnowPsf != null) prescriptiveLimits.maxGroundSnowPsf = p.maxGroundSnowPsf;
+    if (p.maxPvDeadLoadPsf != null) prescriptiveLimits.maxPvDeadLoadPsf = p.maxPvDeadLoadPsf;
+    if (p.maxRafterSpacingIn != null) prescriptiveLimits.maxRafterSpacingIn = p.maxRafterSpacingIn;
+    if (p.allowedWindExposures?.length) prescriptiveLimits.allowedWindExposures = p.allowedWindExposures;
+  } catch { /* profile data optional — Oregon defaults apply */ }
   return {
     project,
     client,
     snapshot: (project.parserSnapshot ?? {}) as Record<string, unknown>,
     signatures: loadDefaultSignaturesByRole(db),
+    prescriptiveLimits,
   };
 }
 
@@ -628,8 +705,7 @@ export async function fillLoadedForm(
       if (!page) continue;
       if (field.onlyIf) {
         const cond = resolveSource(field.onlyIf.source, ctx);
-        const pass = field.onlyIf.equals != null ? cond === field.onlyIf.equals : Boolean(cond);
-        if (!pass) continue;
+        if (!checkboxRuleChecked({ source: field.onlyIf.source, equals: field.onlyIf.equals }, cond)) continue;
       }
       let text = resolveSource(field.source, ctx);
       if (!text) continue;
@@ -683,7 +759,7 @@ export async function fillLoadedForm(
     if (!available.has(fieldName)) { unmapped.push(fieldName); continue; }
     try {
       const value = resolveSource(rule.source, ctx);
-      const checked = rule.equals != null ? value === rule.equals : Boolean(value);
+      const checked = checkboxRuleChecked(rule, value);
       const box = form.getCheckBox(fieldName);
       if (checked) box.check(); else box.uncheck();
       filled += 1;

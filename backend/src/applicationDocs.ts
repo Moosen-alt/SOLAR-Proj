@@ -481,6 +481,13 @@ export function buildSubmittalEmailDraft(
   const moduleLine = [s("moduleQty") && `${s("moduleQty")}×`, s("moduleMake"), s("moduleModel"), s("moduleWattage") && `${s("moduleWattage")}W`].filter(Boolean).join(" ");
   const inverterLine = [s("invModel") || s("pvMicroModel"), (s("invQty") || s("pvMicroQty")) && `×${s("invQty") || s("pvMicroQty")}`].filter(Boolean).join(" ");
   const sysLine = [project.systemSizeDcKw && `${project.systemSizeDcKw} kW DC`, project.systemSizeAcKw && `${project.systemSizeAcKw} kW AC`].filter(Boolean).join(" / ");
+  // System addition: tell the AHJ up front that an existing PV system remains in
+  // service, with the existing + combined sizes when the parser captured them.
+  // Explicit "yes" only — existingSystem:"no" must not read as an addition.
+  const isAddition = /^yes$/i.test(s("hasExistingSystem")) || /^yes$/i.test(s("existingSystem"));
+  const existingLine = isAddition
+    ? ["Addition to existing PV system", s("existingDcKw") && `existing ${s("existingDcKw")} kW DC`, s("combinedDcKw") && `combined ${s("combinedDcKw")} kW DC`].filter(Boolean).join(" — ")
+    : "";
 
   const docs = (profile.requiredDocuments && profile.requiredDocuments.length
     ? profile.requiredDocuments
@@ -499,6 +506,7 @@ export function buildSubmittalEmailDraft(
     `Site address: ${addr || "[address]"}`,
     `AHJ: ${project.ahj || "[AHJ]"}`,
     sysLine ? `System: ${sysLine}` : "",
+    existingLine ? `Scope: ${existingLine}` : "",
     moduleLine ? `Modules: ${moduleLine}` : "",
     inverterLine ? `Inverter: ${inverterLine}` : "",
     "",
@@ -763,7 +771,7 @@ ${commonProjectBlock(project)}
 
 Project type: ${payload(project, "projectType") || "Roof-mounted solar PV"}
 Scope of work:
-Install ${(payload(project, "projectType") || "roof-mounted photovoltaic system").toLowerCase()}. ${project.systemSizeDcKw ?? "[verify]"} kW DC / ${project.systemSizeAcKw ?? "[verify]"} kW AC. Interconnection method: ${project.interconnectionMethod || "[verify]"}.
+Install ${(payload(project, "projectType") || "roof-mounted photovoltaic system").toLowerCase()}. ${project.systemSizeDcKw ?? "[verify]"} kW DC / ${project.systemSizeAcKw ?? "[verify]"} kW AC. Interconnection method: ${project.interconnectionMethod || "[verify]"}.${/^yes$/i.test(payload(project, "hasExistingSystem")) || /^yes$/i.test(payload(project, "existingSystem")) ? ` ADDITION to an existing PV system${payload(project, "existingDcKw") ? ` (existing ${payload(project, "existingDcKw")} kW DC${payload(project, "combinedDcKw") ? `, combined ${payload(project, "combinedDcKw")} kW DC` : ""})` : ""} — existing system remains in service.` : ""}
 
 Equipment:
 - Modules: ${yesNo(payload(project, "moduleQty"))} x ${yesNo(payload(project, "moduleMake"))} ${yesNo(payload(project, "moduleModel"))}, ${yesNo(payload(project, "moduleWattage"))} W
