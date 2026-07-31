@@ -990,7 +990,24 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           if (/^(please\s+)?select\.{0,3}$/i.test(text)) return "";
           return [text, (opt?.value || "").trim()].filter(Boolean).join("\u0007");
         }
-        return (el as HTMLInputElement).value || "";
+        const tag = (el.tagName || "").toLowerCase();
+        if (tag === "input" || tag === "textarea") return (el as HTMLInputElement).value || "";
+        // Custom div widget: `.value` is undefined → "" → every verify fails and the
+        // field gets blacklisted even when the fill landed. Read its VISIBLE state
+        // instead: an associated hidden input, the aria-activedescendant option text,
+        // then the trimmed display text. All empty → null ("unreadable — trust applyFill").
+        const hidden = el.querySelector('input[type="hidden"]') as HTMLInputElement | null;
+        if (hidden && (hidden.value || "").trim()) return hidden.value.trim();
+        const activeId = el.getAttribute("aria-activedescendant")
+          || el.querySelector("[aria-activedescendant]")?.getAttribute("aria-activedescendant");
+        if (activeId) {
+          const opt = document.getElementById(activeId);
+          const t = (opt?.textContent || "").trim();
+          if (t) return t;
+        }
+        const text = (el.textContent || "").replace(/\s+/g, " ").trim();
+        if (text && !/^(please\s+)?select\.{0,3}$/i.test(text)) return text;
+        return null;
       }).catch(() => null);
     } catch {
       return null;
@@ -2554,11 +2571,19 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           // Same CONTAINS semantics as selectWithFallback's native partial match —
           // an equality-only wait burns the full cap on certified-name options
           // ("Altenergy Power System Inc. (APsystems)" vs "Altenergy Power System")
-          // even though the select will succeed immediately.
-          return Array.from((el as HTMLSelectElement).options).some((o) => {
+          // even though the select will succeed immediately. Ordered like
+          // selectWithFallback / bestOptionMatch: prefer releasing on an EXACT
+          // normalized text/value match, contains kept as the fallback pass.
+          const options = Array.from((el as HTMLSelectElement).options);
+          const real = options.filter((o) => {
             const t = norm(o.textContent || "");
-            if (!t || /^(please\s+)?select\.{0,3}$/i.test(t)) return norm(o.value) === w && w !== "";
-            return t === w || norm(o.value) === w || t.includes(w) || w.includes(t);
+            return t && !/^(please\s+)?select\.{0,3}$/i.test(t);
+          });
+          if (real.some((o) => norm(o.textContent || "") === w || norm(o.value) === w)) return true;
+          if (w !== "" && options.some((o) => norm(o.value) === w)) return true;
+          return real.some((o) => {
+            const t = norm(o.textContent || "");
+            return t.includes(w) || w.includes(t);
           });
         }, value)
         .catch(() => true);

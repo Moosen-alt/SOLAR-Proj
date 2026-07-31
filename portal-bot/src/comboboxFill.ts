@@ -48,6 +48,30 @@ const OPTION_SELECTORS = [
   '[class*="option-"]:not(input):not(button)',
 ].join(", ");
 
+// Popup containers a custom combobox renders its options into. Many widgets portal
+// the popup to <body>, so a strictly loc-rooted lookup misses — instead prefer the
+// most recently opened VISIBLE listbox/menu container and fall back to page-global.
+const POPUP_SELECTORS = [
+  '[role="listbox"]',
+  ".select2-results",
+  ".chosen-results",
+  ".dropdown-menu",
+  ".x-combo-list",
+  'ul[class*="menu"]',
+  'ul[class*="option"]',
+].join(", ");
+
+// Scope for option/search-box lookups: the last (most recently opened) visible popup
+// container when one exists, otherwise the page. Best-effort; never throws.
+async function optionScope(page: any): Promise<any> {
+  try {
+    const popups = page.locator(POPUP_SELECTORS).locator("visible=true");
+    const n = await popups.count().catch(() => 0);
+    if (n > 0) return popups.nth(n - 1);
+  } catch { /* fall through to page-global */ }
+  return page;
+}
+
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -64,7 +88,8 @@ function norm(s: string): string {
 async function waitForOptions(page: any, budgetMs = 2500): Promise<void> {
   const step = 100;
   for (let waited = 0; waited < budgetMs; waited += step) {
-    const n = await page.locator(OPTION_SELECTORS).count().catch(() => 0);
+    const scope = await optionScope(page);
+    const n = await scope.locator(OPTION_SELECTORS).count().catch(() => 0);
     if (n > 0) return;
     await page.waitForTimeout?.(step).catch(() => {});
   }
@@ -88,7 +113,8 @@ async function clickOption(loc: any): Promise<boolean> {
 async function bestOptionMatch(page: any, value: string): Promise<any | null> {
   const want = norm(value);
   if (!want) return null;
-  const rows = page.locator(OPTION_SELECTORS);
+  const scope = await optionScope(page);
+  const rows = scope.locator(OPTION_SELECTORS);
   const count = Math.min(await rows.count().catch(() => 0), 40);
   let exact: any = null;
   let contains: any = null;
@@ -118,7 +144,13 @@ export async function fillCustomCombobox(page: any, loc: any, value: string): Pr
   // 2. Type into the search box if one appeared, then WAIT for the (async) option list to
   //    actually render before matching — a fixed sleep raced the XHR that populates it.
   try {
-    const search = page.locator(SEARCH_BOX_SELECTORS).first();
+    // Prefer a search box inside the opened popup; fall back to page-global for
+    // widgets that render the search input outside the listbox container.
+    const scope = await optionScope(page);
+    let search = scope === page ? null : scope.locator(SEARCH_BOX_SELECTORS).first();
+    if (!search || !(await search.count().catch(() => 0))) {
+      search = page.locator(SEARCH_BOX_SELECTORS).first();
+    }
     if (await search.count().catch(() => 0)) {
       await search.fill(v).catch(() => {});
     }
@@ -145,7 +177,7 @@ export async function fillCustomCombobox(page: any, loc: any, value: string): Pr
 
   // 3c. Otherwise click the first visible list row containing the value text.
   try {
-    const row = page.locator(OPTION_SELECTORS).filter({ hasText: new RegExp(escapeRegExp(v), "i") }).first();
+    const row = (await optionScope(page)).locator(OPTION_SELECTORS).filter({ hasText: new RegExp(escapeRegExp(v), "i") }).first();
     if (await row.count().catch(() => 0) && (await clickOption(row))) {
       return true;
     }
@@ -156,7 +188,7 @@ export async function fillCustomCombobox(page: any, loc: any, value: string): Pr
   try {
     const lastToken = v.split(/\s+/).pop() ?? v;
     if (lastToken !== v && lastToken.length >= 1) {
-      const row = page.locator(OPTION_SELECTORS).filter({ hasText: new RegExp(`\\b${escapeRegExp(lastToken)}\\b`, "i") }).first();
+      const row = (await optionScope(page)).locator(OPTION_SELECTORS).filter({ hasText: new RegExp(`\\b${escapeRegExp(lastToken)}\\b`, "i") }).first();
       if (await row.count().catch(() => 0) && (await clickOption(row))) {
         return true;
       }
@@ -187,31 +219,44 @@ export async function fillCustomCombobox(page: any, loc: any, value: string): Pr
  * Select a value on a dropdown that may be a native <select> OR a custom div widget.
  * Three-step cascade: native selectOption(value) → selectOption({ label }) → the
  * custom-combobox open/type/pick fallback. Shared by every adapter's select path.
+ * Returns true when a native selectOption succeeded, the partial-match scan selected
+ * something, or fillCustomCombobox reported a click — false when NOTHING was selected,
+ * so callers can surface the miss instead of silently continuing.
  */
-export async function selectWithFallback(page: any, loc: any, value: string): Promise<void> {
-  await loc.selectOption(value)
-    .catch(async () => loc.selectOption({ label: value }))
-    // NATIVE PARTIAL MATCH: selectOption(value)/{label} require an EXACT option text/value.
-    // Portals routinely list "Schedule 7 - Residential Net Metering" while the bound value is
-    // just "Schedule 7", so both exact attempts miss and the value is silently dropped. Before
-    // falling to the combobox path, scan the real <select> options for a case-insensitive
-    // contains-match (either direction) and select by that option's value. No-op (throws) for
-    // non-<select> custom widgets so the combobox fallback still runs. Shared by learn + replay.
-    .catch(async () => {
-      const matchedValue = await loc.evaluate((el: Element, want: string) => {
-        if ((el.tagName || "").toLowerCase() !== "select") return "";
-        const norm = (s: string) => (s || "").trim().toLowerCase();
-        const w = norm(want);
-        if (!w) return "";
-        for (const o of Array.from((el as HTMLSelectElement).options)) {
-          const t = norm(o.textContent || "");
-          if (!t || /^(please\s+)?select\.{0,3}$/i.test(t)) continue;
-          if (t === w || t.includes(w) || w.includes(t)) return o.value;
-        }
-        return "";
-      }, value).catch(() => "");
-      if (matchedValue) return loc.selectOption(matchedValue);
-      throw new Error("no native option match");
-    })
-    .catch(async () => { await fillCustomCombobox(page, loc, value); });
+export async function selectWithFallback(page: any, loc: any, value: string): Promise<boolean> {
+  // Short timeouts on the native attempts: a HIDDEN native <select> behind a styled
+  // widget can never pass actionability, so the default timeout would stall twice
+  // before the combobox path even runs.
+  try { await loc.selectOption(value, { timeout: 5000 }); return true; } catch { /* try label */ }
+  try { await loc.selectOption({ label: value }, { timeout: 5000 }); return true; } catch { /* try partial */ }
+  // NATIVE PARTIAL MATCH: selectOption(value)/{label} require an EXACT option text/value.
+  // Portals routinely list "Schedule 7 - Residential Net Metering" while the bound value is
+  // just "Schedule 7", so both exact attempts miss and the value is silently dropped. Before
+  // falling to the combobox path, scan the real <select> options in TWO passes — exact
+  // normalized match first, then case-insensitive contains (either direction) — so "430"
+  // never picks a first-in-DOM "4300" when an exact "430" option exists (mirrors
+  // bestOptionMatch). No-op ("") for non-<select> custom widgets so the combobox fallback
+  // still runs. Shared by learn + replay.
+  const matchedValue = await loc.evaluate((el: Element, want: string) => {
+    if ((el.tagName || "").toLowerCase() !== "select") return "";
+    const norm = (s: string) => (s || "").trim().toLowerCase();
+    const w = norm(want);
+    if (!w) return "";
+    const options = Array.from((el as HTMLSelectElement).options).filter((o) => {
+      const t = norm(o.textContent || "");
+      return t && !/^(please\s+)?select\.{0,3}$/i.test(t);
+    });
+    for (const o of options) {
+      if (norm(o.textContent || "") === w) return o.value; // exact wins
+    }
+    for (const o of options) {
+      const t = norm(o.textContent || "");
+      if (t.includes(w) || w.includes(t)) return o.value;
+    }
+    return "";
+  }, value).catch(() => "");
+  if (matchedValue) {
+    try { await loc.selectOption(matchedValue, { timeout: 5000 }); return true; } catch { /* combobox */ }
+  }
+  return fillCustomCombobox(page, loc, value);
 }

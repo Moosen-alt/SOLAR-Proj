@@ -353,12 +353,13 @@ export class RecipeAdapter extends BasePortalAdapter {
         await waitForElement(scoped);
         // Native <select> first; fall back to the custom-combobox interaction for styled
         // div dropdowns (PowerClerk "Please select...", select2, ExtJS) selectOption can't drive.
-        await selectWithFallback(this.page, scoped, v);
+        const selected = await selectWithFallback(this.page, scoped, v);
         // Wait for any Vue/React re-renders triggered by the dropdown change to settle
         // before filling subsequent fields (e.g. PowerClerk resets contact fields on
         // contact-type dropdown change).
         await this.page.waitForLoadState("networkidle", { timeout: 4000 }).catch(() => null);
-        return true;
+        // Propagate the miss: a select that landed NOTHING must not report success.
+        return selected;
       }
       case "check":
         await waitForElement(scoped);

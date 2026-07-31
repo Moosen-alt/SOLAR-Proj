@@ -10,8 +10,11 @@ import { scrapeReviewScreen, compareReviewFields } from "../reviewScreenScraper"
 // Select a value on a PowerClerk dropdown that may be a native <select> OR a custom
 // "Please select..." widget. Native selectOption first; fall back to the open->type->pick
 // interaction. Replaces the old `.catch(() => null)` that silently left these fields blank.
+// Throws when NOTHING was selected so callers (routed through collect/safeAction) surface
+// the miss instead of staging a blank required dropdown.
 async function selectAny(page: any, locator: any, value: string): Promise<void> {
-  await selectWithFallback(page, locator, value);
+  const selected = await selectWithFallback(page, locator, value);
+  if (!selected) throw new Error(`no dropdown option matched "${value}"`);
 }
 
 // PowerClerk (PGE Net Metering) adapter
@@ -241,7 +244,8 @@ export class PowerClerkAdapter extends BasePortalAdapter {
         if (val != null) { await loc.selectOption(val); return; }
       }
     } catch { /* try custom combobox */ }
-    await fillCustomCombobox(page, loc, value);
+    const selected = await fillCustomCombobox(page, loc, value);
+    if (!selected) throw new Error(`no dropdown option matched "${value}"`);
   }
 
   // Wait until the current wizard SECTION has actually rendered before we fill it. PGE
@@ -557,7 +561,7 @@ export class PowerClerkAdapter extends BasePortalAdapter {
         this.checkOption(/New net metering system at a location currently served by PGE/i));
 
       const serviceType = str(s["serviceType"] ?? s["service_type"]) || "Residential";
-      await selectAny(page, page.getByLabel("Type").first(), serviceType);
+      await collect("serviceType", () => selectAny(page, page.getByLabel("Type").first(), serviceType));
       // Schedule is REQUIRED. "7" must match an option that may read "Schedule 7 — Residential",
       // so use the contains-aware selector and surface a miss (it was silently left on "Select…").
       const schedule = str(s["pgeSchedule"] ?? s["schedule"]) || "7";
@@ -587,13 +591,13 @@ export class PowerClerkAdapter extends BasePortalAdapter {
       await settleAndNext("system / service point");
 
       // --- Generation: inverter + N PV arrays -------------------------------
-      await selectAny(page, page.getByLabel("Energy Source"), "a. Solar");
-      await selectAny(page, page.getByLabel("Prime Mover"), "Photovoltaic");
-      await selectAny(page, page.getByLabel("Type"), "Static Inverter");
+      await collect("energySource", () => selectAny(page, page.getByLabel("Energy Source"), "a. Solar"));
+      await collect("primeMover", () => selectAny(page, page.getByLabel("Prime Mover"), "Photovoltaic"));
+      await collect("generatorType", () => selectAny(page, page.getByLabel("Type"), "Static Inverter"));
 
       const hasStorage = String(s["hasBattery"] ?? s["energyStorage"] ?? "").toLowerCase();
       const storageAnswer = hasStorage === "true" || hasStorage === "yes" ? "Yes" : "No";
-      await selectAny(page, page.getByLabel("Energy Storage"), storageAnswer);
+      await collect("energyStorage", () => selectAny(page, page.getByLabel("Energy Storage"), storageAnswer));
 
       // Inverter quantity + manufacturer/model via searchable dropdowns
       const inverterQty = str(s["inverterQuantity"] ?? s["inverter_quantity"]) || "1";
@@ -606,6 +610,9 @@ export class PowerClerkAdapter extends BasePortalAdapter {
         await this.selectSearchable(inverterManufacturer);
       }
       if (inverterModel) {
+        // The model dropdown cascade-loads ~600ms after the manufacturer change —
+        // selecting immediately races an empty/stale option list.
+        if (inverterManufacturer) await this.waitForCascadeLoad();
         await this.selectSearchable(inverterModel);
       }
 
@@ -652,6 +659,37 @@ export class PowerClerkAdapter extends BasePortalAdapter {
     }
   }
 
+  // Bounded wait for a PowerClerk cascade load (model options arrive ~600ms after the
+  // manufacturer change via XHR). Mirrors AutoLearnAdapter.waitForDynamicFieldsSettle:
+  // settle the network, then poll (up to ~5s) until the count of populated dropdowns
+  // stops changing. Falls back to a fixed ~800ms sleep when the page can't be polled
+  // (mock pages) or the count never stabilizes. Best-effort; never throws.
+  private async waitForCascadeLoad(budgetMs = 5000): Promise<void> {
+    const page = this.page;
+    if (!page || typeof page.evaluate !== "function") { await sleep(800); return; }
+    await page.waitForLoadState?.("networkidle", { timeout: Math.min(budgetMs, 3000) }).catch(() => null);
+    const step = 250;
+    let last = -1;
+    let stable = 0;
+    for (let waited = 0; waited < budgetMs; waited += step) {
+      const n = await page.evaluate(() => {
+        let ready = 0;
+        document.querySelectorAll("select:not([disabled])").forEach((sel) => {
+          const real = Array.from((sel as HTMLSelectElement).options).filter((o) => {
+            const t = (o.textContent || "").trim();
+            return t && !/^(please\s+)?select\.{0,3}$/i.test(t);
+          });
+          if (real.length > 1) ready++;
+        });
+        return ready;
+      }).catch(() => -1);
+      if (n < 0) break; // page not evaluable — fall back to the fixed sleep
+      if (n === last) { if (++stable >= 2) return; } else { stable = 0; last = n; }
+      await sleep(step);
+    }
+    await sleep(800);
+  }
+
   // Selects a value from a PowerClerk searchable "Please select..." dropdown.
   // Clicks the trigger, types the term into the search box, then delegates
   // option picking to fillCustomCombobox (ARIA-role or list-item fallback).
@@ -670,7 +708,11 @@ export class PowerClerkAdapter extends BasePortalAdapter {
     const firstGroup = page.getByRole("group", { name: "PV Array Delete Array" }).first();
     await firstGroup.getByPlaceholder("Qty").fill(first.quantity).catch(() => null);
     if (first.moduleManufacturer) await this.selectSearchable(first.moduleManufacturer);
-    if (first.moduleModel) await this.selectSearchable(first.moduleModel);
+    if (first.moduleModel) {
+      // Model options cascade-load after the manufacturer change — wait, don't race.
+      if (first.moduleManufacturer) await this.waitForCascadeLoad();
+      await this.selectSearchable(first.moduleModel);
+    }
     await page.getByRole("textbox", { name: "Tilt" }).first().fill(first.tilt).catch(() => null);
     await page.getByRole("textbox", { name: "Azimuth" }).first().fill(first.azimuth).catch(() => null);
 
@@ -683,16 +725,16 @@ export class PowerClerkAdapter extends BasePortalAdapter {
       const groups = page.getByRole("group", { name: "PV Array Delete Array" });
       const group = groups.nth(i);
       await group.getByPlaceholder("Qty").fill(arr.quantity).catch(() => null);
-      // Searchable selects inside the cloned group
+      // Searchable selects inside the cloned group — same open->type->pick fill as the
+      // first array group, rooted at THIS group's trigger (replaces the recorded
+      // codegen `.nth(4)` magic locator that broke whenever the option list reflowed).
       if (arr.moduleManufacturer) {
-        await group.getByText("Please select...").first().click().catch(() => null);
-        await page.getByRole("combobox", { name: "search term" }).fill(arr.moduleManufacturer).catch(() => null);
-        await page.locator("div").filter({ hasText: new RegExp(`^${arr.moduleManufacturer.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`) }).nth(4).click().catch(() => null);
+        await fillCustomCombobox(page, group.getByText("Please select...").first(), arr.moduleManufacturer);
       }
       if (arr.moduleModel) {
-        await group.getByText("Please select...").first().click().catch(() => null);
-        await page.getByRole("combobox", { name: "search term" }).fill(arr.moduleModel).catch(() => null);
-        await page.getByText(new RegExp(arr.moduleModel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i")).first().click().catch(() => null);
+        // Model options cascade-load after the manufacturer change — wait, don't race.
+        if (arr.moduleManufacturer) await this.waitForCascadeLoad();
+        await fillCustomCombobox(page, group.getByText("Please select...").first(), arr.moduleModel);
       }
       await group.getByRole("textbox", { name: "Tilt" }).fill(arr.tilt).catch(() => null);
       await group.getByRole("textbox", { name: "Azimuth" }).fill(arr.azimuth).catch(() => null);
