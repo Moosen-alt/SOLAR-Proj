@@ -130,6 +130,40 @@ export interface SubmissionPaymentQuote {
   payment: SubmissionPaymentRecord | null;
 }
 
+// Existing-system / NEM-addition disclosure. Projects adding PV or storage to an
+// already-interconnected system must disclose the existing system's size,
+// equipment, and NEM standing on interconnection applications. Intake/manual
+// fields for now — NOT auto-populated from parsing (the parser's existing*
+// snapshot fields remain the raw evidence; this block is the reviewed record).
+// agreementNumber/applicationNumber are account-linked identifiers: bound by
+// name for portal fill, never sent to the LLM (safety rule 2).
+export interface ExistingSystemInfo {
+  hasExistingSystem?: boolean;
+  /** Existing system DC size in kW (nameplate). */
+  existingDcKw?: number;
+  /** Existing system AC size in kW. */
+  existingAcKw?: number;
+  existingInverterMake?: string;
+  existingInverterModel?: string;
+  existingInverterQty?: number;
+  existingModuleMake?: string;
+  existingModuleModel?: string;
+  existingBatteryMakeModel?: string;
+  /** Combined (existing + new) DC size in kW after the addition. */
+  combinedDcKw?: number;
+  /** Combined (existing + new) AC size in kW after the addition. */
+  combinedAcKw?: number;
+  /** NEM tariff the existing system is on (e.g. "NEM1", "NEM2", "NEM3/NBT"). */
+  nemTariff?: string;
+  /** Permission-to-operate date of the existing system (ISO date). */
+  ptoDate?: string;
+  /** Existing interconnection/NEM agreement number (sensitive — never sent to the LLM). */
+  agreementNumber?: string;
+  /** Existing interconnection application number (sensitive — never sent to the LLM). */
+  applicationNumber?: string;
+  exportMode?: "export" | "non-export-pcs" | "ngom";
+}
+
 export interface ProjectRecord {
   id: string;
   clientId: string | null;
@@ -157,6 +191,9 @@ export interface ProjectRecord {
    *  Drives jurisdiction row selection (city vs county) and app-type checkbox
    *  in the Accela ACA flow. Undefined defaults to structural. */
   permitType?: "structural" | "electrical";
+  /** Existing-system / NEM-addition disclosure (derived from the parser snapshot's
+   *  existing/combined fields; intake/manual — see ExistingSystemInfo). */
+  existingSystem?: ExistingSystemInfo;
 }
 
 export interface ProjectListItem extends Omit<ProjectRecord, "parserSnapshot"> {

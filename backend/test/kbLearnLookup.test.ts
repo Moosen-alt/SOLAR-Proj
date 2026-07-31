@@ -148,6 +148,65 @@ async function main(): Promise<void> {
   const junkMatch = findKnowledgeForLearn(db, { state: "ID", utility: "Idaho Power" });
   check("fuzzy never matches a junk state-name row", junkMatch.utility === null, JSON.stringify(junkMatch.utility?.utility));
 
+  // SAFETY RULE 3: a human-verified profile (confidence "mixed") must never have
+  // its verified scalar facts field-overwritten by a learn path. learnFromProject
+  // seeds a hard-coded PowerClerk URL for PGE projects — on a verified row that
+  // must fill blanks only, never replace the human-entered values. Notes stay
+  // additive. A human RE-verifying (facts confidence "mixed") may still overwrite.
+  const { saveVerifiedAhjProfile, learnFromProject } = await import("../src/knowledgeBase");
+  // utility included so the profile_key matches the learn path's key exactly.
+  saveVerifiedAhjProfile(db, {
+    state: "OR", ahj: "Sherwood", utility: "PGE",
+    portalUrl: "https://verified.example.gov/apply", portalPlatform: "ProjectDox",
+    submissionMethod: "online portal", notes: "Verified by coordinator.",
+  });
+  const pgeProject = {
+    id: "p-mixed", clientId: null, homeownerName: "T Test", projectAddress: "1 Main St",
+    city: "Sherwood", state: "OR", zip: "97140", ahj: "Sherwood", utility: "PGE",
+    accountNumber: "", meterNumber: "", systemSizeDcKw: 5, systemSizeAcKw: 5,
+    totalExportKw: null, interconnectionMethod: "", status: "parsed", currentStage: "",
+    parserConfidenceSummary: "", parserSnapshot: {}, createdAt: "2026-01-01", updatedAt: "2026-01-01",
+  } as never;
+  // knowledge_events FKs to projects — the learn project must exist in the DB.
+  db.run(
+    "INSERT INTO projects (id, homeowner_name, city, state, ahj, utility, status, parser_json, created_at, updated_at) VALUES ('p-mixed','T Test','Sherwood','OR','Sherwood','PGE','parsed','{}','2026-01-01','2026-01-01')",
+  );
+  const afterLearn = learnFromProject(db, pgeProject);
+  check("mixed row keeps verified portal URL after learnFromProject", afterLearn.portalUrl === "https://verified.example.gov/apply", afterLearn.portalUrl);
+  check("mixed row keeps mixed confidence", afterLearn.confidence === "mixed", afterLearn.confidence);
+  check("mixed row still merges notes additively", afterLearn.notes.includes("Verified by coordinator.") && /Learned from project/i.test(afterLearn.notes), afterLearn.notes.slice(0, 300));
+  // Blanks still fill on a mixed row: the verified row had no portalName.
+  check("mixed row fills blank portalName from learn", !!afterLearn.portalName, afterLearn.portalName);
+  // A human re-verify (incoming confidence "mixed") may still overwrite.
+  const reverified = saveVerifiedAhjProfile(db, { state: "OR", ahj: "Sherwood", utility: "PGE", portalUrl: "https://corrected.example.gov/apply" });
+  check("human re-verify still overwrites verified URL", reverified.portalUrl === "https://corrected.example.gov/apply", reverified.portalUrl);
+
+  // SAFETY RULE 2: the planner's projectFields must contain no secrets — neither
+  // under alias KEYS from the parser snapshot ("acctNum", "meterNo", nem agreement
+  // numbers) nor as VALUES that equal a known secret under an innocuous key.
+  try {
+    const { buildPortalPlanner } = await import("../src/autoLearn");
+    const secretProject = {
+      id: "p-secret", clientId: null, homeownerName: "T Test", projectAddress: "1 Main St",
+      city: "Sherwood", state: "OR", zip: "97140", ahj: "Sherwood", utility: "PGE",
+      accountNumber: "ACCT-000111222", meterNumber: "MTR-999888", systemSizeDcKw: 5, systemSizeAcKw: 5,
+      totalExportKw: null, interconnectionMethod: "", status: "parsed", currentStage: "",
+      parserConfidenceSummary: "",
+      parserSnapshot: {
+        acctNum: "ACCT-000111222", meterNo: "MTR-999888", customerSsn: "123-45-6789",
+        existingNemAgreementNumber: "NEM-778899", billRef: "ACCT-000111222",
+      },
+      createdAt: "2026-01-01", updatedAt: "2026-01-01",
+    } as never;
+    const { projectFields } = buildPortalPlanner(db, secretProject, { portalType: "powerclerk", scopeType: "utility" });
+    const blob = JSON.stringify(projectFields);
+    check("planner fields drop alias secret keys", !("acctNum" in projectFields) && !("meterNo" in projectFields) && !("customerSsn" in projectFields) && !("existingNemAgreementNumber" in projectFields), Object.keys(projectFields).join(","));
+    check("planner fields drop canonical secret keys", !("accountNumber" in projectFields) && !("meterNumber" in projectFields));
+    check("planner fields contain no secret VALUES anywhere", !blob.includes("ACCT-000111222") && !blob.includes("MTR-999888") && !blob.includes("123-45-6789") && !blob.includes("NEM-778899"), blob.slice(0, 300));
+  } catch (err) {
+    check("buildPortalPlanner secret-strip testable", false, String(err));
+  }
+
   fs.rmSync(dir, { recursive: true, force: true });
   if (failures) { console.error(`\n${failures} failure(s)`); process.exit(1); }
   console.log("\nkbLearnLookup: all checks passed");

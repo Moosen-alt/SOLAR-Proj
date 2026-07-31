@@ -1,4 +1,4 @@
-import type { ParserPayload, ProjectRecord, ProjectStatus } from "../../shared/src/types";
+import type { ExistingSystemInfo, ParserPayload, ProjectRecord, ProjectStatus } from "../../shared/src/types";
 import { nowIso } from "./time";
 
 function str(payload: ParserPayload, key: string): string {
@@ -114,6 +114,50 @@ export function canonicalizeSnapshot(payload: ParserPayload): ParserPayload {
   return { ...payload, ...canonical };
 }
 
+// Structured existing-system / NEM-addition view over the snapshot's
+// existing*/combined* keys (intake/manual fields — NOT auto-populated by the
+// parser beyond what canonicalizeSnapshot already records as raw evidence).
+// Returns undefined when the snapshot carries no existing-system evidence, so
+// greenfield projects don't grow a noisy empty block.
+export function existingSystemFromSnapshot(payload: ParserPayload): ExistingSystemInfo | undefined {
+  const pick = (keys: string[]): string => first(payload, keys);
+  const numPick = (keys: string[]): number | undefined => {
+    for (const key of keys) {
+      const v = num(payload, key);
+      if (v != null) return v;
+    }
+    return undefined;
+  };
+  const hasFlag = pick(["hasExistingSystem", "existingSystem"]);
+  const info: ExistingSystemInfo = {};
+  const setStr = (key: keyof ExistingSystemInfo, value: string) => {
+    if (value) (info as Record<string, unknown>)[key] = value;
+  };
+  const setNum = (key: keyof ExistingSystemInfo, value: number | undefined) => {
+    if (value != null) (info as Record<string, unknown>)[key] = value;
+  };
+  setNum("existingDcKw", numPick(["existingDcKw"]));
+  setNum("existingAcKw", numPick(["existingAcKw"]));
+  setStr("existingInverterMake", pick(["existingInverterMake", "existingInvMake"]));
+  setStr("existingInverterModel", pick(["existingInverterModel", "existingInvModel"]));
+  setNum("existingInverterQty", numPick(["existingInverterQty", "existingInvQty"]));
+  setStr("existingModuleMake", pick(["existingModuleMake"]));
+  setStr("existingModuleModel", pick(["existingModuleModel"]));
+  setStr("existingBatteryMakeModel", pick(["existingBatteryMakeModel"]));
+  setNum("combinedDcKw", numPick(["combinedDcKw"]));
+  setNum("combinedAcKw", numPick(["combinedAcKw"]));
+  setStr("nemTariff", pick(["nemTariff", "existingNemTariff"]));
+  setStr("ptoDate", pick(["ptoDate", "existingPtoDate"]));
+  setStr("agreementNumber", pick(["existingNemAgreementNumber", "nemAgreementNumber", "agreementNumber"]));
+  setStr("applicationNumber", pick(["existingNemApplicationNumber", "nemApplicationNumber"]));
+  const em = pick(["exportMode"]).toLowerCase();
+  if (em === "export" || em === "non-export-pcs" || em === "ngom") info.exportMode = em;
+  const hasEvidence = Object.keys(info).length > 0 || (!!hasFlag && /^yes$/i.test(hasFlag));
+  if (!hasEvidence) return undefined;
+  info.hasExistingSystem = true;
+  return info;
+}
+
 export function normalizeProject(
   id: string,
   payload: ParserPayload,
@@ -143,6 +187,7 @@ export function normalizeProject(
     currentStage: status === "parsed" ? "Parsed by front-end engine" : status,
     parserConfidenceSummary: confidenceSummary(payload),
     parserSnapshot: canonicalizeSnapshot(payload),
+    existingSystem: existingSystemFromSnapshot(payload),
     createdAt,
     updatedAt,
   };

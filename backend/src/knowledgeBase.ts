@@ -315,6 +315,18 @@ function upsertKnowledge(db: AppDb, facts: KnowledgeFacts, event?: KnowledgeEven
     timelineDays == null ? existingAvg : existingSamples > 0 && existingAvg != null ? (existingAvg * existingSamples + timelineDays) / timelineSampleCount : timelineDays;
 
   if (current) {
+    // SAFETY RULE 3: a human-verified row (confidence "mixed") must never have
+    // its verified scalar facts overwritten by a learn path (learnFromProject
+    // seeds hard-coded portal URLs on every save). For mixed rows the scalar
+    // precedence flips to FILL-BLANKS-ONLY — the current value always wins and
+    // incoming facts only land where the row is empty. Notes/docs/corrections
+    // merging stays additive (segment merge) for every confidence level.
+    // Exception: an update that is ITSELF human-verified (facts.confidence
+    // "mixed" — saveVerifiedAhjProfile / verified utility edits) may still
+    // overwrite; a human correcting their own verified row is not a regression.
+    const humanVerified = current.confidence === "mixed" && facts.confidence !== "mixed";
+    const scalar = (currentValue: string, incoming: string | undefined): string =>
+      humanVerified ? currentValue || clean(incoming) : clean(incoming) || currentValue;
     db.run(
       `UPDATE permit_utility_knowledge
        SET state = ?, ahj = ?, utility = ?, portal_name = ?, portal_url = ?,
@@ -324,13 +336,13 @@ function upsertKnowledge(db: AppDb, facts: KnowledgeFacts, event?: KnowledgeEven
            confidence = ?, sources_json = ?, notes = ?, last_learned_at = ?, updated_at = ?
        WHERE profile_key = ?`,
       [
-        clean(facts.state) || current.state,
-        clean(facts.ahj) || current.ahj,
-        clean(facts.utility) || current.utility,
-        clean(facts.portalName) || current.portalName,
-        clean(facts.portalUrl) || current.portalUrl,
-        clean(facts.portalPlatform) || current.portalPlatform,
-        clean(facts.submissionMethod) || current.submissionMethod,
+        scalar(current.state, facts.state),
+        scalar(current.ahj, facts.ahj),
+        scalar(current.utility, facts.utility),
+        scalar(current.portalName, facts.portalName),
+        scalar(current.portalUrl, facts.portalUrl),
+        scalar(current.portalPlatform, facts.portalPlatform),
+        scalar(current.submissionMethod, facts.submissionMethod),
         asJson(requiredDocuments),
         averageTimelineDays,
         timelineSampleCount,

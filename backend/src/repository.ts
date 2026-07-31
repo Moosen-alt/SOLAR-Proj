@@ -102,7 +102,7 @@ import {
   classifyMboxMessages,
   type ClassifiedMboxMessage,
 } from "./knowledgeBase";
-import { compactAlnum, fieldAliases, normalizeProject, normalizeTokens } from "./normalize";
+import { compactAlnum, existingSystemFromSnapshot, fieldAliases, normalizeProject, normalizeTokens } from "./normalize";
 import { classifyPermitStatusText, nextCheckIso } from "./permitMonitor";
 import { evidenceForTopic, evidenceLines, type EvidenceTopic } from "./projectEvidence";
 import { runQcForProject } from "./qc";
@@ -157,6 +157,7 @@ interface ProjectRow extends Row {
 
 
 function mapProject(row: ProjectRow): ProjectRecord {
+  const parserSnapshot = parseJson<ParserPayload>(row.parser_json, {});
   return {
     id: row.id,
     clientId: row.client_id,
@@ -176,7 +177,8 @@ function mapProject(row: ProjectRow): ProjectRecord {
     status: row.status,
     currentStage: row.current_stage,
     parserConfidenceSummary: row.parser_confidence_summary,
-    parserSnapshot: parseJson<ParserPayload>(row.parser_json, {}),
+    parserSnapshot,
+    existingSystem: existingSystemFromSnapshot(parserSnapshot),
     assignedUserId: row.assigned_user_id ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,

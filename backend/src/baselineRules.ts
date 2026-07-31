@@ -384,6 +384,64 @@ export function evaluateBaselineRules(payload: ParserPayload, ctx?: EffectiveCod
     }
   }
 
+  // EXISTING-SYSTEM / NEM-ADDITION SCREENS (advisory — warnings only, never a
+  // blocker). Additions must disclose the existing system on interconnection
+  // applications; screen for the disclosure data being present and for the CA
+  // NEM1/NEM2 grandfathering expansion allowance.
+  const hasExisting = /^yes$/i.test(str(payload, "hasExistingSystem")) || /^yes$/i.test(str(payload, "existingSystem"));
+  if (hasExisting) {
+    const existingDcKw = num(payload, "existingDcKw");
+    const existingInvMake = str(payload, "existingInvMake") || str(payload, "existingInverterMake");
+    const existingInvModel = str(payload, "existingInvModel") || str(payload, "existingInverterModel");
+    const disclosureMissing: string[] = [];
+    if (existingDcKw == null) disclosureMissing.push("existing system DC size (existingDcKw)");
+    if (!existingInvMake || !existingInvModel) disclosureMissing.push("existing inverter make/model");
+    if (combinedDcKw == null) disclosureMissing.push("combined (existing + new) DC size (combinedDcKw)");
+    if (disclosureMissing.length) {
+      out.push(result(
+        "existing-system-disclosure",
+        "Existing-system disclosure",
+        "warning",
+        "warning",
+        `Addition to an existing system: interconnection applications must disclose the existing system, but these are missing: ${disclosureMissing.join(", ")}. Enter them from the plan set / prior NEM paperwork.`,
+        "existingDcKw",
+      ));
+    }
+
+    const agreementNumber =
+      str(payload, "existingNemAgreementNumber") || str(payload, "nemAgreementNumber") || str(payload, "agreementNumber");
+    if (!agreementNumber) {
+      out.push(result(
+        "existing-system-nem-agreement",
+        "Existing NEM agreement number",
+        "warning",
+        "warning",
+        "Addition to an existing system: the NEM/interconnection application usually asks for the EXISTING interconnection agreement number, and none was captured. Pull it from the prior PTO letter / NEM agreement.",
+        "existingNemAgreementNumber",
+      ));
+    }
+
+    // CA NEM1/NEM2 grandfathering: a legacy-tariff system generally keeps its
+    // grandfathered status only within a ONE-TIME expansion allowance of
+    // max(1 kW, 10% of the existing size). A larger addition can move the whole
+    // system to the current tariff (NEM3/NBT). Advisory only.
+    const nemTariff = str(payload, "nemTariff") || str(payload, "existingNemTariff");
+    if (/nem\s*-?\s*[12]\b|nem\s*-?\s*2\.0|nem\s*-?\s*1\.0/i.test(nemTariff) && existingDcKw != null && combinedDcKw != null) {
+      const additionKw = combinedDcKw - existingDcKw;
+      const allowanceKw = Math.max(1, 0.10 * existingDcKw);
+      if (additionKw > allowanceKw) {
+        out.push(result(
+          "existing-system-nem-grandfathering",
+          "NEM grandfathering expansion allowance",
+          "warning",
+          "warning",
+          `Existing system is on ${nemTariff}: the addition of ${additionKw.toFixed(2)} kW DC exceeds the one-time expansion allowance of ${allowanceKw.toFixed(2)} kW (greater of 1 kW / 10% of the existing ${existingDcKw} kW). The expansion may forfeit grandfathered NEM status and move the whole system to the current tariff — confirm with the utility before submitting.`,
+          "combinedDcKw",
+        ));
+      }
+    }
+  }
+
   return out;
 }
 

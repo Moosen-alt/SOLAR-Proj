@@ -260,6 +260,22 @@ export const RECIPE_FIELD_DESCRIPTIONS: Record<string, string> = {
   authorizedSignerTitle: "Authorized signer's title",
   powerclerkExistingContact: "PowerClerk existing contact ID code",
   accelaContactCode: "Accela contact/license lookup code",
+  hasExistingSystem: "Whether an existing PV/storage system is already interconnected on site (Yes/No)",
+  existingSystemSizeDcKw: "EXISTING (already interconnected) system DC size in kilowatts",
+  existingSystemSizeAcKw: "EXISTING (already interconnected) system AC size in kilowatts",
+  totalSystemSizeDcKw: "COMBINED (existing + new) total system DC size in kilowatts after the addition",
+  totalSystemSizeAcKw: "COMBINED (existing + new) total system AC size in kilowatts after the addition",
+  existingInverterMake: "EXISTING system's inverter manufacturer/make",
+  existingInverterModel: "EXISTING system's inverter model number",
+  existingInverterQty: "Number of inverters in the EXISTING system",
+  existingModuleMake: "EXISTING system's PV module manufacturer/make",
+  existingModuleModel: "EXISTING system's PV module model number",
+  existingBatteryMakeModel: "EXISTING system's battery/storage make and model",
+  nemTariff: "NEM tariff/program the existing system is on (e.g. NEM1, NEM2, NEM3/NBT)",
+  existingPtoDate: "Permission-to-operate date of the EXISTING system",
+  existingNemAgreementNumber: "EXISTING interconnection/NEM agreement number (sensitive — bind by name, never a literal)",
+  existingNemApplicationNumber: "EXISTING interconnection application number (sensitive — bind by name, never a literal)",
+  exportMode: "Export mode of the system (export / non-export-pcs / ngom)",
 };
 
 // Build the field-substitution map a recipe step's `field` resolves against at replay:
@@ -381,6 +397,43 @@ export function resolveRecipeFieldValues(db: AppDb, project: ProjectRecord, port
     put("moduleWattage", snapshotFlat.moduleWattage);
   }
 
+  // EXISTING-SYSTEM / NEM-ADDITION BINDINGS. Additions must disclose the existing
+  // system's size/equipment and the combined totals on interconnection applications.
+  // Values come from the project's structured existingSystem block (intake/manual);
+  // only non-empty values are emitted so they never blank another layer.
+  // existingNemAgreementNumber / existingNemApplicationNumber are account-linked
+  // identifiers — they bind here BY NAME for deterministic replay, and
+  // buildPortalPlanner strips them (key + value match) before anything reaches the
+  // LLM, same as accountNumber/meterNumber (safety rule 2).
+  const existingSys: Record<string, string> = {};
+  const es = project.existingSystem;
+  if (es) {
+    const putEs = (k: string, v: unknown) => {
+      const s = v == null ? "" : String(v).trim();
+      if (s) existingSys[k] = s;
+    };
+    putEs("hasExistingSystem", es.hasExistingSystem ? "Yes" : "");
+    putEs("existingSystemSizeDcKw", es.existingDcKw);
+    putEs("existingDcKw", es.existingDcKw);
+    putEs("existingSystemSizeAcKw", es.existingAcKw);
+    putEs("existingAcKw", es.existingAcKw);
+    putEs("totalSystemSizeDcKw", es.combinedDcKw);
+    putEs("combinedDcKw", es.combinedDcKw);
+    putEs("totalSystemSizeAcKw", es.combinedAcKw);
+    putEs("combinedAcKw", es.combinedAcKw);
+    putEs("existingInverterMake", es.existingInverterMake);
+    putEs("existingInverterModel", es.existingInverterModel);
+    putEs("existingInverterQty", es.existingInverterQty);
+    putEs("existingModuleMake", es.existingModuleMake);
+    putEs("existingModuleModel", es.existingModuleModel);
+    putEs("existingBatteryMakeModel", es.existingBatteryMakeModel);
+    putEs("nemTariff", es.nemTariff);
+    putEs("existingPtoDate", es.ptoDate);
+    putEs("existingNemAgreementNumber", es.agreementNumber);
+    putEs("existingNemApplicationNumber", es.applicationNumber);
+    putEs("exportMode", es.exportMode);
+  }
+
   const overlay = project.clientId ? clientStagingOverlay(db, project.clientId, portalType) : {};
 
   // Derive split installer first/last from the full installer contact name (mirrors the
@@ -396,9 +449,9 @@ export function resolveRecipeFieldValues(db: AppDb, project: ProjectRecord, port
     installerSplit.installerLastName = parts.slice(1).join(" ") || "";
   }
 
-  // Precedence: snapshot scalars → derived equipment aliases → explicit project fields →
+  // Precedence: snapshot scalars → derived equipment aliases → existing-system block → explicit project fields →
   // client licensing overlay → derived installer name split (each later layer wins).
-  return { ...snapshotFlat, ...equipment, ...projectFields, ...overlay, ...installerSplit };
+  return { ...snapshotFlat, ...equipment, ...existingSys, ...projectFields, ...overlay, ...installerSplit };
 }
 
 // ---------------------------------------------------------------------------

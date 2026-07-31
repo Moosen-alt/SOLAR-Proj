@@ -93,4 +93,83 @@ const ok = (n: string) => { passed++; console.log(`ok   ${n}`); };
   ok("descriptionOfWork calls out the addition (and only on real additions)");
 }
 
+// 5) Existing-system QC screens (advisory warnings, never blockers): disclosure
+//    data must be present, the NEM agreement number is asked for, and a CA
+//    NEM1/NEM2 grandfathered system warns when the addition exceeds the one-time
+//    max(1 kW, 10%) expansion allowance.
+{
+  // Missing disclosure fields → warn listing what's missing.
+  const missing = evaluateBaselineRules({ state: "CA", utility: "PG&E", dcKw: 5, hasExistingSystem: "Yes" });
+  const disc = missing.find((r) => r.ruleId === "existing-system-disclosure");
+  assert.ok(disc && disc.qcStatus === "warning" && disc.severity === "warning", "disclosure warn must fire and stay advisory");
+  assert.ok(/existingDcKw/.test(disc!.message) && /inverter/.test(disc!.message) && /combinedDcKw/.test(disc!.message));
+
+  // Fully disclosed → no disclosure warn.
+  const full = evaluateBaselineRules({
+    state: "CA", utility: "PG&E", dcKw: 5, hasExistingSystem: "Yes",
+    existingDcKw: 5.16, existingInvMake: "Tesla", existingInvModel: "1538000-45-y", combinedDcKw: 10.16,
+    existingNemAgreementNumber: "NEM-123456",
+  });
+  assert.ok(!full.some((r) => r.ruleId === "existing-system-disclosure"));
+  assert.ok(!full.some((r) => r.ruleId === "existing-system-nem-agreement"));
+
+  // No agreement number → advisory warn (never a blocker).
+  const noAgree = evaluateBaselineRules({
+    state: "CA", utility: "PG&E", dcKw: 5, hasExistingSystem: "Yes",
+    existingDcKw: 5.16, existingInvMake: "Tesla", existingInvModel: "1538000-45-y", combinedDcKw: 10.16,
+  });
+  const agree = noAgree.find((r) => r.ruleId === "existing-system-nem-agreement");
+  assert.ok(agree && agree.qcStatus === "warning" && agree.severity === "warning");
+
+  // NEM2 grandfathering: 5 kW addition to a 5.16 kW system exceeds max(1, 0.516) kW.
+  const grand = evaluateBaselineRules({
+    state: "CA", utility: "PG&E", dcKw: 5, hasExistingSystem: "Yes",
+    existingDcKw: 5.16, existingInvMake: "Tesla", existingInvModel: "x", combinedDcKw: 10.16,
+    existingNemAgreementNumber: "NEM-1", nemTariff: "NEM2",
+  });
+  const gf = grand.find((r) => r.ruleId === "existing-system-nem-grandfathering");
+  assert.ok(gf && gf.qcStatus === "warning", "NEM2 over-allowance addition must warn");
+  assert.ok(/grandfather/i.test(gf!.message) && /allowance/i.test(gf!.message));
+
+  // Within the allowance (0.9 kW addition, allowance = 1 kW) → no grandfathering warn.
+  const small = evaluateBaselineRules({
+    state: "CA", utility: "PG&E", dcKw: 0.9, hasExistingSystem: "Yes",
+    existingDcKw: 5.16, existingInvMake: "Tesla", existingInvModel: "x", combinedDcKw: 6.06,
+    existingNemAgreementNumber: "NEM-1", nemTariff: "NEM2",
+  });
+  assert.ok(!small.some((r) => r.ruleId === "existing-system-nem-grandfathering"));
+
+  // NEM3/NBT tariff → not grandfathered, no warn.
+  const nem3 = evaluateBaselineRules({
+    state: "CA", utility: "PG&E", dcKw: 5, hasExistingSystem: "Yes",
+    existingDcKw: 5.16, existingInvMake: "Tesla", existingInvModel: "x", combinedDcKw: 10.16,
+    existingNemAgreementNumber: "NEM-1", nemTariff: "NEM3",
+  });
+  assert.ok(!nem3.some((r) => r.ruleId === "existing-system-nem-grandfathering"));
+
+  // Greenfield project (no hasExistingSystem) → none of the existing-system rules fire.
+  const green = evaluateBaselineRules({ state: "CA", utility: "PG&E", dcKw: 5 });
+  assert.ok(!green.some((r) => r.ruleId.startsWith("existing-system-")));
+  ok("existing-system QC screens: disclosure, NEM agreement, CA grandfathering allowance");
+}
+
+// 6) Structured existingSystem block derives from the snapshot (and stays absent
+//    on greenfield projects), and its portal bindings resolve — with the
+//    account-linked agreement/application numbers stripped before the LLM.
+{
+  const { existingSystemFromSnapshot } = await import("../src/normalize");
+  const es = existingSystemFromSnapshot({
+    existingDcKw: 5.16, existingAcKw: 3.8, existingInvMake: "Tesla", existingInvModel: "1538000-45-y",
+    existingInvQty: 1, combinedDcKw: 10.44, nemTariff: "NEM2", existingNemAgreementNumber: "NEM-778899",
+  });
+  assert.ok(es && es.hasExistingSystem === true);
+  assert.equal(es!.existingDcKw, 5.16);
+  assert.equal(es!.existingInverterMake, "Tesla");
+  assert.equal(es!.combinedDcKw, 10.44);
+  assert.equal(es!.agreementNumber, "NEM-778899");
+  assert.equal(existingSystemFromSnapshot({}), undefined);
+  assert.equal(existingSystemFromSnapshot({ existingSystem: "no" }), undefined);
+  ok("existingSystemFromSnapshot derives the structured block (blank on greenfield)");
+}
+
 console.log(`\nexistingSystem: all ${passed} checks passed`);

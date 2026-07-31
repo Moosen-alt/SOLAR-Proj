@@ -179,8 +179,28 @@ export function buildPortalPlanner(
 ): { planner: (req: LearnPlanRequest) => Promise<LearnPlanResponse>; projectFields: Record<string, string> } {
   const fieldValues = resolveRecipeFieldValues(db, project, opts.portalType);
   const projectFields: Record<string, string> = {};
+  // SAFETY RULE 2: secrets never reach the LLM. Two layers:
+  // (a) KEY filter — broad, not exact-name: parser-snapshot alias keys spread into
+  //     fieldValues first (resolveRecipeFieldValues), so "acctNum", "utilityAccount",
+  //     "meterNo", "customerSSN", "nemAgreementNumber" etc. must all be caught, not
+  //     just the canonical accountNumber/meterNumber keys. Agreement/application
+  //     numbers are account-linked identifiers and are treated the same way.
+  // (b) VALUE filter — any value that string-equals a known secret (after trim) is
+  //     dropped regardless of what key it arrived under.
+  const sensitiveKey = /acc(oun)?t|meter|ssn|social|passw|agreement\s*num|application\s*num|agreementnumber|applicationnumber/i;
+  const secretValues = new Set<string>();
+  const addSecret = (v: unknown) => {
+    const s = v == null ? "" : String(v).trim();
+    if (s.length >= 4) secretValues.add(s);
+  };
+  addSecret(project.accountNumber);
+  addSecret(project.meterNumber);
   for (const [k, v] of Object.entries(fieldValues)) {
-    if (/password|accountNumber|meterNumber|ssn/i.test(k)) continue;
+    if (sensitiveKey.test(k)) addSecret(v);
+  }
+  for (const [k, v] of Object.entries(fieldValues)) {
+    if (sensitiveKey.test(k)) continue;
+    if (v && secretValues.has(String(v).trim())) continue;
     if (v) projectFields[k] = v;
   }
   // Provide today's date so the planner can compute time-relative values

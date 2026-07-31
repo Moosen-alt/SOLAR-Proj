@@ -7,17 +7,22 @@ import { fieldAliases, parserField } from "./normalize";
 import { nowIso } from "./time";
 import type { ParserPayload, QcStatus, Severity } from "../../shared/src/types";
 import { resolveEffectiveCodeContext } from "./codeProfiles";
+import { findKnowledgeForLearn } from "./knowledgeBase";
 
 // Look up whether the AHJ for this project uses a portal platform that requires
 // individual sheets to be split and uploaded separately (e.g. ProjectDox, EnerGov).
+// Uses the same fuzzy, state-aware KB resolver as the learn planner
+// (findKnowledgeForLearn) so operator short names / "City of X" variants still
+// hit the imported row — an exact AHJ+state string match silently missed them.
 function ahjRequiresSplitPages(db: AppDb, ahj: string, state: string): boolean {
   if (!ahj) return false;
-  const row = db.get<{ portal_platform: string | null }>(
-    "SELECT portal_platform FROM permit_utility_knowledge WHERE ahj = ? AND state = ? ORDER BY updated_at DESC LIMIT 1",
-    [ahj, state],
-  );
-  if (!row?.portal_platform) return false;
-  return /projectdox|energov|etrakit|accela/i.test(row.portal_platform);
+  try {
+    const match = findKnowledgeForLearn(db, { state, ahj });
+    const platform = match.ahj?.portalPlatform || "";
+    return /projectdox|energov|etrakit|accela/i.test(platform);
+  } catch {
+    return false; // KB table may not exist yet
+  }
 }
 
 interface ProjectRow {
