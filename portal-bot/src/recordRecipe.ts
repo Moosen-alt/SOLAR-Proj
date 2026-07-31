@@ -71,12 +71,25 @@ async function main(): Promise<void> {
   // The page calls this binding for every captured interaction.
   await page.exposeBinding(
     "__recordStep",
-    (_src: unknown, payload: { kind: string; selector: RecipeSelector; value?: string; sensitive?: boolean; isFile?: boolean; label?: string; fingerprint?: StepFingerprint }) => {
+    (_src: unknown, payload: { kind: string; selector: RecipeSelector; value?: string; rawValue?: string; sensitive?: boolean; isFile?: boolean; viaFileChooser?: boolean; isFinalSubmit?: boolean; label?: string; fingerprint?: StepFingerprint }) => {
       const sel = payload.selector;
       // Heal tie-break metadata (attribute names only) — attached to form-control steps.
       const fp = payload.fingerprint ? { fingerprint: payload.fingerprint } : {};
       if (payload.kind === "click") {
         steps.push({ action: "click", selector: sel, note: payload.label });
+      } else if (payload.kind === "blockedClick") {
+        // A submit/pay-worded control the operator clicked mid-flow. NEVER replayable:
+        // no selector, optional, so replay skips it — but the recipe keeps a visible
+        // placeholder instead of a silent hole. isFinalSubmit marks submit-like clicks
+        // for the operator's approval flow (safety rule 1: only a human-approved flag,
+        // never button text, can ever be auto-clicked — and this step has no target).
+        steps.push({
+          action: "click",
+          selector: {},
+          optional: true,
+          ...(payload.isFinalSubmit ? { isFinalSubmit: true } : {}),
+          note: `BLOCKED — human clicked a submit/pay-like control ("${payload.label ?? ""}") here; not replayable. Re-record as a nav step if it was mid-flow navigation.`,
+        });
       } else if (payload.kind === "fill" && payload.sensitive) {
         // Credential/secret field — never persist the typed value. The value crosses
         // ONLY this in-memory binding so it can be matched to a project field key
@@ -89,14 +102,18 @@ async function main(): Promise<void> {
         const field = bindField(payload.value || "");
         steps.push(field ? { action: "fill", selector: sel, ...fp, field, note: payload.label } : { action: "fill", selector: sel, ...fp, value: payload.value, note: payload.label });
       } else if (payload.kind === "select") {
-        const field = bindField(payload.value || "");
-        steps.push(field ? { action: "select", selector: sel, ...fp, field, note: payload.label } : { action: "select", selector: sel, ...fp, value: payload.value, note: payload.label });
+        // payload.value is the selected option's LABEL (replay's selectWithFallback
+        // matches label first); rawValue is the option's value attribute, kept in the
+        // note for debugging. Try binding on either — project data may hold one or the other.
+        const field = bindField(payload.value || "") || bindField(payload.rawValue || "");
+        const note = [payload.label, payload.rawValue && payload.rawValue !== payload.value ? `(option value: ${payload.rawValue})` : ""].filter(Boolean).join(" ");
+        steps.push(field ? { action: "select", selector: sel, ...fp, field, note } : { action: "select", selector: sel, ...fp, value: payload.value, note });
       } else if (payload.kind === "check") {
         steps.push({ action: "check", selector: sel, ...fp, note: payload.label });
       } else if (payload.kind === "uncheck") {
         steps.push({ action: "uncheck", selector: sel, ...fp, note: payload.label });
       } else if (payload.kind === "upload") {
-        steps.push({ action: "upload", selector: sel, docType: "", note: `UPLOAD — set docType (e.g. sld, site_plan) in the dashboard. ${payload.label ?? ""}` });
+        steps.push({ action: "upload", selector: sel, docType: "", ...(payload.viaFileChooser ? { viaFileChooser: true } : {}), note: `UPLOAD — set docType (e.g. sld, site_plan) in the dashboard. ${payload.label ?? ""}` });
       }
       process.stdout.write(`  · captured ${payload.kind}${steps[steps.length - 1]?.field ? ` → field ${steps[steps.length - 1].field}` : ""}\n`);
     },
@@ -164,25 +181,36 @@ async function main(): Promise<void> {
 function captureScript(): void {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const w = window as any;
+  // Shadow-aware target: the real element through composedPath() (same as humanCapture.ts).
+  function target(e: Event): Element | null {
+    const path = typeof e.composedPath === "function" ? e.composedPath() : [];
+    const t = (path && path[0]) || e.target;
+    return t instanceof Element ? t : null;
+  }
   function describe(el: Element): Record<string, unknown> {
     const role = el.getAttribute("role") || ({ INPUT: "textbox", BUTTON: "button", SELECT: "combobox", A: "link", TEXTAREA: "textbox" } as Record<string, string>)[el.tagName] || "";
+    // Shadow-aware: resolve label[for] in the element's OWN root, not the top document.
+    const root = el.getRootNode() as Document | ShadowRoot;
+    const id = el.getAttribute("id");
     const name =
       el.getAttribute("aria-label") ||
-      (el.getAttribute("id") ? (document.querySelector(`label[for="${el.getAttribute("id")}"]`)?.textContent || "").trim() : "") ||
+      (id ? (root.querySelector(`label[for="${CSS.escape(id)}"]`)?.textContent || "").trim() : "") ||
       (el as HTMLInputElement).placeholder ||
       (el.textContent || "").trim().slice(0, 60);
     const sel: Record<string, unknown> = {};
-    const frameName = window.name || undefined;
+    // Frame key replay understands (safeAction.frameSelectorFor): the frame element's
+    // name, or "src:<pathname>" for unnamed frames (matched on the parent's iframe[src]).
+    const frameName = window.name || (window !== window.top ? `src:${window.location.pathname}` : "");
     if (frameName) sel.frame = frameName;
     if (role && name) { sel.role = role; sel.name = name; }
     else if (el.getAttribute("aria-label")) sel.label = el.getAttribute("aria-label");
     else if ((el as HTMLInputElement).placeholder) sel.placeholder = (el as HTMLInputElement).placeholder;
-    else if (el.getAttribute("id")) sel.css = `#${CSS.escape(el.getAttribute("id") as string)}`;
+    else if (id) sel.css = `#${CSS.escape(id)}`;
     else if (el.getAttribute("name")) sel.css = `${el.tagName.toLowerCase()}[name="${el.getAttribute("name")}"]`;
     else if (name) sel.text = name;
     // Fingerprint: attribute NAMES only for replay-heal tie-breaking — never values.
     const fp: Record<string, string> = {};
-    if (el.getAttribute("id")) fp.id = el.getAttribute("id") as string;
+    if (id) fp.id = id;
     if (el.getAttribute("name")) fp.name = el.getAttribute("name") as string;
     if ((el as HTMLInputElement).placeholder) fp.placeholder = (el as HTMLInputElement).placeholder;
     if (el.getAttribute("aria-label")) fp.ariaLabel = el.getAttribute("aria-label") as string;
@@ -190,18 +218,48 @@ function captureScript(): void {
     if (legend) fp.section = legend;
     return { selector: sel, label: name, ...(Object.keys(fp).length ? { fingerprint: fp } : {}) };
   }
-  // Final-submit / payment intent — NEVER captured (same guard as humanCapture.ts).
-  // Replay additionally hard-blocks submit-keyword clicks, but the step must not be
-  // persisted in the first place: a recorded bare "Submit" click sits in replayable
-  // position forever. Losing a mid-flow "Submit Documents" nav click is the safer trade.
+  // Final-submit / payment intent — NEVER captured as a replayable click (same guard as
+  // humanCapture.ts). A recorded bare "Submit" click must never sit in replayable
+  // position. Instead of silently dropping it (leaving an invisible hole in the recipe),
+  // a targetless optional placeholder is recorded — see the "blockedClick" handler.
   const OFF_LIMITS = /\b(submit|pay|pay fee|pay now|make payment|continue to payment|add to cart|proceed to (payment|checkout)|checkout|file application|confirm submission|complete submission|finalize|place order)\b/i;
   document.addEventListener("click", (e) => {
-    const el = e.target as Element;
-    if (!el || !(el instanceof Element)) return;
-    const tag = el.tagName;
-    if (tag === "INPUT" && (el as HTMLInputElement).type === "file") return; // handled by change
-    const d = describe(el.closest("button,a,[role]") || el);
-    if (OFF_LIMITS.test(String((d as { label?: unknown }).label || ""))) return;
+    const el = target(e);
+    if (!el) return;
+    // Custom (non-native) dropdown: a click on an option-like element is recorded as a
+    // SELECT step against the owning combobox so replay goes through selectWithFallback
+    // (label-first matching) instead of a brittle click on a transient option node.
+    const option = el.closest('[role="option"], .select2-results li, .select2-results__option, ul.ui-autocomplete li, .ui-menu-item');
+    if (option) {
+      const optionText = (option.textContent || "").trim();
+      if (optionText) {
+        const listbox = option.closest('[role="listbox"], .select2-results, .select2-drop, .select2-dropdown, ul.ui-autocomplete, .ui-menu') || option.parentElement;
+        const root = option.getRootNode() as Document | ShadowRoot;
+        // The owning control: an expanded combobox, or one wired to the listbox via
+        // aria-owns/aria-controls. Fall back to the listbox container itself.
+        const listboxId = listbox?.getAttribute("id");
+        const combo =
+          (listboxId ? root.querySelector(`[aria-owns~="${CSS.escape(listboxId)}"], [aria-controls~="${CSS.escape(listboxId)}"]`) : null) ||
+          root.querySelector('[role="combobox"][aria-expanded="true"]') ||
+          listbox || option;
+        w.__recordStep({ kind: "select", value: optionText, ...describe(combo) });
+        return;
+      }
+    }
+    // Only actionable elements — plain page clicks are noise, not replayable steps.
+    const actionable = el.closest('button,a,[role="button"],[role="link"],input[type="button"],input[type="submit"],summary');
+    if (!actionable) return;
+    if ((actionable as HTMLInputElement).type === "file") return; // handled by change
+    const d = describe(actionable);
+    const label = String((d as { label?: unknown }).label || "");
+    if (OFF_LIMITS.test(label)) {
+      // Record a targetless placeholder instead of losing the step: submit-like labels
+      // are flagged isFinalSubmit for the approval flow (safety rule 1 — a human, not
+      // button text, decides what may ever be clicked; this step has no selector).
+      const isFinalSubmit = /\b(submit|confirm submission|complete submission|file application|finalize)\b/i.test(label);
+      w.__recordStep({ kind: "blockedClick", selector: {}, label, isFinalSubmit });
+      return;
+    }
     w.__recordStep({ kind: "click", ...d });
   }, true);
   // A field whose value must never be persisted as a plaintext recipe value:
@@ -221,11 +279,23 @@ function captureScript(): void {
     return /password|passcode|account\s*(no|num|#)|account number|acct|meter|ssn|social security|card\s*number|cvv|security code|mfa|otp|one.time/.test(hay);
   }
   document.addEventListener("change", (e) => {
-    const el = e.target as HTMLInputElement;
-    if (!el) return;
+    const el = target(e) as HTMLInputElement | null;
+    if (!el || !(el instanceof Element)) return;
     const d = describe(el);
-    if (el.type === "file") w.__recordStep({ kind: "upload", ...d });
-    else if (el.tagName === "SELECT") w.__recordStep({ kind: "select", value: el.value, ...d });
+    if (el.type === "file") {
+      // A hidden/offscreen file input belongs to a custom Browse widget — replay must
+      // go through the file-chooser dialog (click + setFiles), not setInputFiles.
+      const viaFileChooser = !(el as unknown as HTMLElement).offsetParent && getComputedStyle(el).position !== "fixed";
+      w.__recordStep({ kind: "upload", viaFileChooser, ...d });
+    }
+    else if (el.tagName === "SELECT") {
+      // Record the option's LABEL as the value (replay's selectWithFallback matches
+      // label first, and labels survive portals whose option values are opaque ids);
+      // the raw value rides along for the note/binding.
+      const opt = (el as unknown as HTMLSelectElement).selectedOptions[0];
+      const optLabel = (opt?.textContent || "").trim();
+      w.__recordStep({ kind: "select", value: optLabel || el.value, rawValue: el.value, ...d });
+    }
     else if (el.type === "checkbox" || el.type === "radio") {
       // A radio only ever fires change when it becomes checked; a checkbox the operator
       // UNCHECKS (portals pre-check "same as mailing" etc.) must record an uncheck step,
@@ -233,7 +303,9 @@ function captureScript(): void {
       if (el.checked) w.__recordStep({ kind: "check", ...d });
       else if (el.type === "checkbox") w.__recordStep({ kind: "uncheck", ...d });
     }
-    else if (isSensitiveField(el)) w.__recordStep({ kind: "fill", sensitive: true, ...d });
+    // Sensitive: the value crosses ONLY the in-page→handler binding so it can be
+    // bound to a project field key by NAME; the handler strips it before persisting.
+    else if (isSensitiveField(el)) w.__recordStep({ kind: "fill", sensitive: true, value: el.value, ...d });
     else w.__recordStep({ kind: "fill", value: el.value, ...d });
   }, true);
 }
