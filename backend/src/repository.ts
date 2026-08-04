@@ -457,6 +457,19 @@ export function createProject(db: AppDb, payload: ParserPayload): ProjectDetail 
   addAuditLog(db, project.id, "system", "qc gate", "project.qc_completed", { ...qc });
   const detail = getProjectDetail(db, project.id);
   learnFromProject(db, detail.project, "project.created");
+  // AUTONOMY: auto-start autopilot Segment A on every new project (disable with
+  // AUTOPILOT_AUTO_START=0). Safe by construction: Segment A re-runs QC, stops
+  // `blocked` on any gate (409/402), stages only to the portal REVIEW screen,
+  // and can never cross the single human approval gate — approval/submit still
+  // requires the explicit auth-gated POST /autopilot/approve. Dynamic import per
+  // the repository<->jobQueue circular-import guard; enqueueJob self-kicks.
+  if (process.env.AUTOPILOT_AUTO_START !== "0") {
+    void import("./jobQueue")
+      // maxRetries 0: staging is not idempotent portal-side; failures escalate
+      // and the event-driven auto-resume path handles recovery.
+      .then(({ enqueueJob }) => { enqueueJob(db, "autopilot", {}, { projectId: project.id, priority: 6, maxRetries: 0 }); })
+      .catch(() => null);
+  }
   return getProjectDetail(db, project.id);
 }
 
@@ -4927,7 +4940,10 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   // the CLIENT; the portal's own fee checkout stays human-only regardless.
   assertSubmissionPaid(db, detail.project, track);
   const failCount = detail.qcResults.filter((result) => result.qcStatus === "fail").length;
-  const pendingCount = detail.humanReviewItems.filter((item) => item.status === "pending" && item.fieldName !== "correction").length;
+  // 'Background job failed' items are OPERATOR NOTIFICATIONS (escalated by the
+  // job worker), not data-quality gates — counting them would let e.g. a failed
+  // advisory job hard-block staging of an otherwise-clean project.
+  const pendingCount = detail.humanReviewItems.filter((item) => item.status === "pending" && item.fieldName !== "correction" && item.issueType !== "Background job failed").length;
   const reviewerReport = buildReviewerReportFor(db, detail.project);
   const reviewerBlockers = reviewerReport.findings.filter((finding) => finding.severity === "blocker");
   const historicalReport = buildHistoricalFailureReport(db, projectId);
@@ -5370,10 +5386,40 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
       } catch {
         /* best-effort: surfacing the staleness still happens below */
       }
+      // SELF-HEAL: the system already has a safe autonomous learner (never clicks
+      // final submit, respects the portal kill-switch) — queue a fresh learn of
+      // this portal instead of leaving a manual "re-record it" dead end. One-shot
+      // event-driven enqueue (maxRetries 0 — a failed learn must not relaunch
+      // browsers on a timer), deduped against an already-queued learn.
+      let relearnQueued = false;
+      try {
+        if (process.env.ANTHROPIC_API_KEY && !portalPaused && recipe.portalUrl && process.env.AUTO_RELEARN_STALE !== "0") {
+          // Dedupe portal-wide, not per-project: the stale recipe is shared by
+          // every project on this AHJ/utility, and N projects hitting it must
+          // not queue N identical browser learns of the same portal. Also skip
+          // if this portal was already re-learned recently (6h window).
+          const pending = db.get<Row>(
+            `SELECT id FROM job_queue WHERE job_type = 'auto_learn' AND payload LIKE ?
+               AND (status IN ('pending','running') OR created_at > ?) LIMIT 1`,
+            [`%${recipe.portalUrl}%`, new Date(Date.now() - 6 * 3600_000).toISOString()],
+          );
+          if (!pending) {
+            void import("./jobQueue").then(({ enqueueJob }) => {
+              enqueueJob(db, "auto_learn", {
+                scope: track === "nem" ? "utility" : "ahj",
+                portalUrl: recipe.portalUrl,
+                createdBy: "auto-relearn (stale recipe)",
+                permitType: track === "nem" ? undefined : (detail.project.permitType === "electrical" ? "electrical" : "structural"),
+              }, { projectId, priority: 5, maxRetries: 0 });
+            }).catch(() => null);
+            relearnQueued = true;
+          }
+        }
+      } catch { /* self-heal is best-effort */ }
       result = {
         ...result,
         recipeStale: true,
-        message: `${result.message} — this recipe looks stale (the portal likely changed) and has been flagged for re-recording. Re-record it, then re-stage.`,
+        message: `${result.message} — this recipe looks stale (the portal likely changed) and has been flagged for re-recording. ${relearnQueued ? "A fresh learn of the portal was queued automatically; re-stage once it finishes." : "Re-record it, then re-stage."}`,
       };
     }
   } else if (runActorLabel === "AutoLearnAdapter") {
@@ -5459,6 +5505,23 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   const capturedConfirmation = autoSubmitted ? String((result as Record<string, unknown>).capturedConfirmationNumber || "").trim() : "";
   const capturedRecordLink = autoSubmitted ? String((result as Record<string, unknown>).capturedRecordLink || "").trim() : "";
   const runStatus = pauseReason ? "paused_for_human" : autoSubmitted ? "submitted" : adapterFailed ? "failed" : "awaiting_human_submit";
+  // SELF-HEAL: a failed/paused STAGING run produces the same debug bundle the
+  // learn path already triages automatically — enqueue the triage agent here
+  // too so production staging failures get root-caused (and safe fixes applied)
+  // without an operator manually opening the bundle. Best-effort, opt out with
+  // RUN_TRIAGE=off; the enqueue self-kicks the worker.
+  try {
+    const debugDir = String((result as Record<string, unknown>).debugDir ?? "");
+    const gapMissing = Array.isArray((result as Record<string, unknown>).gapFillMissing) && ((result as Record<string, unknown>).gapFillMissing as unknown[]).length > 0;
+    if ((runStatus === "failed" || pauseReason || gapMissing) && debugDir && process.env.RUN_TRIAGE !== "off") {
+      const triageRunId = debugDir.split(/[\\/]/).filter(Boolean).pop() || "";
+      if (triageRunId) {
+        void import("./jobQueue").then(({ enqueueJob }) => {
+          enqueueJob(db, "run_triage", { runId: triageRunId }, { projectId, priority: 3 });
+        }).catch(() => null);
+      }
+    }
+  } catch { /* triage is best-effort */ }
   if (autoSubmitted) {
     addAuditLog(db, projectId, "portal_bot", runActorLabel, "portal.auto_submitted", {
       track: track ?? "permit", finalSubmitClickedByAutomation: true, feePaymentAutomated: false,

@@ -227,6 +227,77 @@ export function evaluateBaselineRules(payload: ParserPayload, ctx?: EffectiveCod
     ? { snow: "or-prescriptive-snow-70", dead: "or-prescriptive-deadload-4_5", framing: "or-prescriptive-roof-framing", wind: "or-prescriptive-wind-exposure", fire: "or-fire-pathways", export: "or-nem-tier1-export-25kw" }
     : { snow: `${idPrefix}-prescriptive-snow`, dead: `${idPrefix}-prescriptive-deadload`, framing: `${idPrefix}-prescriptive-roof-framing`, wind: `${idPrefix}-prescriptive-wind-exposure`, fire: `${idPrefix}-fire-pathways`, export: `${idPrefix}-export-study-screen` };
 
+  // -------------------------------------------------------------------------
+  // DETERMINISTIC PARSER CROSS-CHECKS — jurisdiction-agnostic arithmetic over
+  // the parsed payload. These catch exactly the extraction errors (transposed
+  // digits, unit swaps, wrong-system values) that otherwise surface as an AHJ
+  // correction cycle days later. Warning severity only: never a hard block.
+  // -------------------------------------------------------------------------
+  const moduleQty = num(payload, "moduleQty") ?? num(payload, "moduleQuantity");
+  const moduleWattage = num(payload, "moduleWattage") ?? num(payload, "moduleWatts");
+  if (moduleQty != null && moduleWattage != null && dcKw != null && moduleQty > 0 && moduleWattage > 0) {
+    const computedDc = (moduleQty * moduleWattage) / 1000;
+    // Tolerance: 150 W absolute floor, or 1.5% for larger systems — plan sets
+    // legitimately round the nameplate (140 × 430 W = 60.2 stated as "60 kW").
+    const tolerance = Math.max(0.15, dcKw * 0.015);
+    if (Math.abs(computedDc - dcKw) > tolerance) {
+      out.push(result(
+        "xcheck-module-math",
+        "Module math vs DC size",
+        "warning",
+        "warning",
+        `${moduleQty} × ${moduleWattage} W = ${computedDc.toFixed(2)} kW DC, but dcKw is ${dcKw}. One of the three was misread — verify against the plan set before staging.`,
+        "dcKw",
+      ));
+    }
+  }
+  const existingDcKw = num(payload, "existingDcKw");
+  if (dcKw != null && existingDcKw != null && combinedDcKw != null && Math.abs(combinedDcKw - (dcKw + existingDcKw)) > 0.1) {
+    out.push(result(
+      "xcheck-combined-size",
+      "Combined system size arithmetic",
+      "warning",
+      "warning",
+      `combinedDcKw ${combinedDcKw} ≠ new ${dcKw} + existing ${existingDcKw} = ${(dcKw + existingDcKw).toFixed(2)} kW. Verify which value the plan set actually states.`,
+      "combinedDcKw",
+    ));
+  }
+  const acKw = num(payload, "acKw");
+  if (dcKw != null && acKw != null && dcKw > 0 && acKw > dcKw * 1.1) {
+    out.push(result(
+      "xcheck-dc-ac-ratio",
+      "DC/AC ratio sanity",
+      "warning",
+      "warning",
+      `AC size ${acKw} kW exceeds DC size ${dcKw} kW by >10% — almost always a swapped or misread value. Verify both against the plan set.`,
+      "acKw",
+    ));
+  }
+  // NEC 705/240: the backfed PV breaker must be ≥ 125% of the inverters'
+  // continuous output current. invOutputW/pvMicroOutputW hold rated output
+  // CURRENT in amps per unit (see the parser prompt).
+  const pvBreaker = num(payload, "pvBreaker");
+  const unitAmps = num(payload, "invOutputW") ?? num(payload, "pvMicroOutputW");
+  const unitQty = num(payload, "invOutputW") != null ? (num(payload, "invQty") ?? 1) : (num(payload, "pvMicroQty") ?? num(payload, "invQty") ?? 1);
+  // PLAUSIBILITY GUARD: these fields are DOCUMENTED as amps per unit, but real
+  // payloads sometimes carry the WATT rating (e.g. an IQ8M parsed as 325). A
+  // per-unit residential inverter output above 100 A — or a computed minimum
+  // beyond any residential backfeed breaker — means the units are off, and a
+  // false warning would erode trust in every other cross-check. Stay silent.
+  if (pvBreaker != null && unitAmps != null && unitAmps > 0 && unitAmps <= 100 && unitQty > 0) {
+    const minBreaker = 1.25 * unitAmps * unitQty;
+    if (minBreaker <= 400 && pvBreaker < minBreaker - 0.01) {
+      out.push(result(
+        "xcheck-pv-breaker-125",
+        "PV breaker 125% continuous-output check",
+        "warning",
+        "warning",
+        `PV breaker ${pvBreaker} A is below 125% of the inverters' continuous output (${unitQty} × ${unitAmps} A × 1.25 = ${minBreaker.toFixed(1)} A minimum). Verify the breaker size or the inverter output current.`,
+        "pvBreaker",
+      ));
+    }
+  }
+
   if (isOregon && screenDcKw != null && screenDcKw > 25) {
     out.push(result(
       "or-nem-residential-25kw",

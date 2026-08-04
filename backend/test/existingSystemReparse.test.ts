@@ -12,6 +12,7 @@ import path from "node:path";
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "existing-reparse-test-"));
 process.env.AUTOPILOT_DB_PATH = path.join(tmpDir, "test.sqlite");
 process.env.SEED_TEST_INSTALLER = "false";
+process.env.AUTOPILOT_AUTO_START = "0"; // keep the test deterministic — no background autopilot
 
 const { openDatabase } = await import("../src/db");
 const { createProject, updateProject } = await import("../src/repository");

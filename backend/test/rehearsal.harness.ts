@@ -82,6 +82,7 @@ export async function rehearse(options: RehearsalOptions = {}): Promise<Rehearsa
   const dbPath = options.dbPath || path.resolve(process.cwd(), "backend/data/rehearsal.sqlite");
   fs.rmSync(dbPath, { force: true });
   process.env.AUTOPILOT_DB_PATH = dbPath;
+process.env.AUTOPILOT_AUTO_START = "0"; // deterministic tests — no background autopilot
 
   const db: AppDb = await openDatabase();
 

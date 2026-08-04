@@ -107,6 +107,13 @@ export function enqueueJob(
       options.maxRetries ?? 3,
     ],
   );
+  // Instant kick: don't make an operator-enqueued job wait for the next 30s
+  // worker tick. Deferred a macrotask so the enqueuing transaction settles;
+  // processNextJob's atomic claim + the in-flight set make an overlap with the
+  // interval tick harmless (one of the two claims wins, the other no-ops).
+  if (!options.scheduledAt) {
+    setTimeout(() => { void drainPendingJobs(db).catch(() => null); }, 0).unref?.();
+  }
   return mapJob(db.get<Row>("SELECT * FROM job_queue WHERE id = ?", [id])!);
 }
 
@@ -296,6 +303,7 @@ export function recoverOrphanedJobs(
         "UPDATE job_queue SET status = 'failed', finished_at = ?, error = ? WHERE id = ? AND status = 'running'",
         [now, "orphaned job exceeded retry budget after interruption", job.id],
       );
+      escalateJobFailure(db, job.jobType, job.projectId, "orphaned job exceeded retry budget after interruption");
     }
   }
   console.log(`[job-worker] recovered ${stale.length} orphaned job(s)${opts.startup ? " on startup" : ""}`);
@@ -335,19 +343,74 @@ export function startJobWorker(db: AppDb): ReturnType<typeof setInterval> {
   recoverOrphanedJobs(db, { startup: true });
   const timer = setInterval(() => {
     // Each tick, first reclaim any job that has blown past the runtime watchdog,
-    // then process the next pending job.
+    // then DRAIN pending jobs (bounded) instead of processing exactly one — a
+    // burst of N queued jobs no longer takes N ticks to clear.
     try {
       recoverOrphanedJobs(db);
       recoverStalePortalRecordings(db);
     } catch (err) {
       console.error("[job-worker] orphan recovery error:", err instanceof Error ? err.message : String(err));
     }
-    processNextJob(db).catch((err) => {
+    drainPendingJobs(db).catch((err) => {
       console.error("[job-worker] uncaught error:", err instanceof Error ? err.message : String(err));
     });
   }, intervalMs);
   console.log(`[job-worker] started — polling every ${intervalMs / 1000}s`);
   return timer;
+}
+
+// A permanently-failed job must be VISIBLE, not just a logger.warn: broadcast
+// to the dashboard and (for project-scoped jobs) open a human-review item so
+// the failure lands in the operator's queue instead of dying in the logs.
+// Best-effort by design — escalation must never mask or replace the failure.
+function escalateJobFailure(db: AppDb, jobType: string, projectId: string | null, message: string): void {
+  void import("./events")
+    .then(({ sseBroadcast }) => {
+      sseBroadcast({ type: "job_failed", projectId: projectId ?? undefined, message: `${jobType} failed permanently: ${message}`.slice(0, 500) });
+    })
+    .catch(() => null);
+  if (!projectId) return;
+  // Advisory agents (triage) are best-effort by contract — their failure must
+  // never become a pipeline gate, so they surface via SSE/log only.
+  if (jobType === "run_triage" || jobType === "correction_triage") return;
+  try {
+    const ts = nowIso();
+    // Dedupe: one open item per (project, jobType) — a flapping job must not
+    // flood the review queue.
+    const existing = db.get<Row>(
+      "SELECT id FROM human_review_items WHERE project_id = ? AND issue_type = 'Background job failed' AND field_name = ? AND status = 'pending' LIMIT 1",
+      [projectId, jobType],
+    );
+    if (existing) {
+      db.run("UPDATE human_review_items SET notes = ?, updated_at = ? WHERE id = ?", [message.slice(0, 800), ts, String(existing.id)]);
+      return;
+    }
+    db.run(
+      `INSERT INTO human_review_items
+        (id, project_id, issue_type, field_name, parser_value, llm_suggested_value, source_excerpt, status, notes, created_at, updated_at)
+       VALUES (?, ?, 'Background job failed', ?, '', '', '', 'pending', ?, ?, ?)`,
+      [crypto.randomUUID(), projectId, jobType, message.slice(0, 800), ts, ts],
+    );
+  } catch { /* escalation is best-effort */ }
+}
+
+// Bounded serial drain used by the worker tick and the enqueue kick. The flag
+// keeps drains strictly serial (a 30s tick can't stack onto a long drain);
+// jobs stay one-at-a-time within a drain. Direct processNextJob callers keep
+// today's semantics — the atomic claim makes any overlap a no-op, not a dupe.
+let drainBusy = false;
+const MAX_JOBS_PER_TICK = Math.max(1, Number(process.env.MAX_JOBS_PER_TICK ?? 5));
+
+export async function drainPendingJobs(db: AppDb): Promise<number> {
+  if (drainBusy) return 0;
+  drainBusy = true;
+  let processed = 0;
+  try {
+    while (processed < MAX_JOBS_PER_TICK && (await processNextJob(db))) processed += 1;
+  } finally {
+    drainBusy = false;
+  }
+  return processed;
 }
 
 // Process one pending job. Returns true if a job was found and processed.
@@ -389,6 +452,19 @@ export async function processNextJob(db: AppDb): Promise<boolean> {
       const track = (job.payload.track as string | undefined) || undefined;
       const seg = await runAutopilotSegmentA(db, String(job.projectId), track as never);
       result = { blocked: seg.blocked, blockers: seg.blockers, message: seg.message, phase: seg.state.phase };
+      // Announce the ACTUAL outcome from the one place every path runs through
+      // (route kick, worker drain, auto-start, auto-resume). Best-effort.
+      void import("./events").then(({ sseBroadcast }) => {
+        const projectId = job.projectId ?? undefined;
+        if (seg.blocked) {
+          const why = seg.blockers.map((b) => b.detail).join("; ").slice(0, 400) || seg.message;
+          sseBroadcast({ type: "run_failed", projectId, message: `Autopilot blocked: ${why}` });
+        } else if (seg.state.phase === "awaiting_approval") {
+          sseBroadcast({ type: "run_complete", projectId, message: "Autopilot reached the approval gate." });
+        } else if (seg.state.phase === "paused_for_human") {
+          sseBroadcast({ type: "run_paused", projectId, message: "Autopilot paused — the portal needs human attention." });
+        }
+      }).catch(() => null);
     } else if (job.jobType === "prepare_submission") {
       // Operator-initiated staging run, off the HTTP request path so a multi-second
       // (sometimes multi-minute) live portal pass never hangs or times out the request.
@@ -513,6 +589,7 @@ export async function processNextJob(db: AppDb): Promise<boolean> {
         "UPDATE job_queue SET status = 'failed', finished_at = ?, error = ? WHERE id = ? AND status = 'running'",
         [nowIso(), msg, job.id],
       );
+      escalateJobFailure(db, job.jobType, job.projectId, msg);
     }
   } finally {
     inFlightJobIds.delete(job.id);

@@ -134,11 +134,19 @@ export function submitIntakeRequest(
     throw new HttpError(400, "No values provided.");
   }
 
+  const firstCompletion = row.status !== "completed";
   updateProject(db, row.project_id, payload);
   db.run("UPDATE project_intake_requests SET status = 'completed', completed_at = ? WHERE id = ?", [
     nowIso(),
     row.id,
   ]);
+  // The installer just supplied missing data — re-drive the project toward the
+  // approval gate without waiting for an operator click. Only on the FIRST
+  // completion: this endpoint is public (token-auth only), so repeat posts to
+  // the same link must not keep triggering automation runs.
+  if (firstCompletion) {
+    void import("./autopilot").then(({ maybeResumeAutopilot }) => maybeResumeAutopilot(db, row.project_id)).catch(() => null);
+  }
   return { ok: true, projectId: row.project_id };
 }
 

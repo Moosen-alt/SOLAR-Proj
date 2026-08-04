@@ -237,6 +237,48 @@ export function getAutopilotState(db: AppDb, projectId: string): AutopilotState 
   return { projectId, phase: "idle", stage: "Idle", message: "Autopilot has not been started for this project.", blockers: [], canApprove: false, pauseReason: null, portalRunId: null, updatedAt: ts, ...noReview };
 }
 
+// AUTO-RESUME — called (fire-and-forget) from every route that can CLEAR a
+// blocker: human-review verify, document upload, payment mark-paid/waive,
+// client assignment, correction apply/resolve, and intake submission. If the
+// latest autopilot run ended blocked and the project is still pre-stage, a
+// fresh Segment A is enqueued so the project re-drives itself to the gate the
+// moment the blocker is fixed. Premature resumes are harmless — Segment A
+// re-evaluates every gate and simply re-blocks. It can NEVER cross the human
+// approval gate: awaiting_human_submit is not in PRE_STAGE_STATUSES, and
+// approval still requires the explicit POST /autopilot/approve.
+export function maybeResumeAutopilot(db: AppDb, projectId: string): void {
+  try {
+    if (process.env.AUTOPILOT_AUTO_START === "0") return;
+    const project = db.get<Row>("SELECT status FROM projects WHERE id = ?", [projectId]);
+    if (!project || !PRE_STAGE_STATUSES.has(String(project.status))) return;
+    const job = db.get<Row>(
+      "SELECT status, result, payload FROM job_queue WHERE project_id = ? AND job_type = 'autopilot' ORDER BY created_at DESC LIMIT 1",
+      [projectId],
+    );
+    if (!job) return; // never started — nothing to resume
+    const status = String(job.status);
+    if (status === "pending" || status === "running") return; // already in flight
+    // Resume ONLY runs that ended blocked on a gate. A FAILED run is an error —
+    // it is escalated to the operator (job_failed SSE + review item) and must
+    // not be silently relaunched by an unrelated clearing event (that would let
+    // e.g. a public intake link repeatedly trigger live browser runs).
+    const result = parseJson<{ blocked?: boolean } | null>(job.result == null ? null : String(job.result), null);
+    if (!result?.blocked) return;
+    // Carry the original run's track — a resume of an NEM-track run must not
+    // restage the default track.
+    const payload = parseJson<{ track?: string } | null>((job as { payload?: unknown }).payload == null ? null : String((job as { payload?: unknown }).payload), null);
+    const track = payload?.track;
+    void import("./jobQueue")
+      .then(({ enqueueJob }) => {
+        // maxRetries 0: staging drives a live portal and is not idempotent —
+        // recovery happens through THIS event-driven resume path, never a timer.
+        enqueueJob(db, "autopilot", track ? { track } : {}, { projectId, priority: 6, maxRetries: 0 });
+        logger.info("autopilot", "auto-resume enqueued (blocker-clearing event)", { project: projectId });
+      })
+      .catch(() => null);
+  } catch { /* auto-resume is best-effort — never break the clearing action */ }
+}
+
 // SEGMENT A — drive the project automatically to the approval gate. Reuses the
 // existing stage functions; prepareSubmission enforces every gate and throws
 // HttpError 409 with a structured blocker payload, which we surface as `blocked`.
@@ -246,6 +288,17 @@ export async function runAutopilotSegmentA(
   track?: SubmittalTrackType,
 ): Promise<{ blocked: boolean; blockers: AutopilotBlocker[]; message: string; state: AutopilotState }> {
   const t0 = performance.now();
+  // EXECUTION-TIME GUARD: a queued autopilot job may be stale by the time it
+  // runs (another job/operator already staged the project). Staging is NOT
+  // idempotent on the portal side — a re-run would create a duplicate live
+  // application draft. Re-check status here, not just at enqueue time.
+  const currentRow = db.get<Row>("SELECT status FROM projects WHERE id = ?", [projectId]);
+  const currentStatus = currentRow ? String(currentRow.status) : "";
+  if (!PRE_STAGE_STATUSES.has(currentStatus)) {
+    const msg = `Project status is '${currentStatus || "unknown"}' — already staged or past the gate, so autopilot will not re-stage it. Use the explicit Stage action if a re-stage is intended.`;
+    logger.info("autopilot", "Segment A skipped — project is not pre-stage", { project: projectId, status: currentStatus });
+    return { blocked: true, blockers: [{ code: "not_pre_stage", detail: msg }], message: msg, state: getAutopilotState(db, projectId) };
+  }
   logger.info("autopilot", "Segment A started — QC → build → reviewer gate → stage", { project: projectId, track: track ?? "all" });
   // Re-run QC so the project's gate state is fresh before staging.
   rerunQc(db, projectId);
@@ -261,6 +314,15 @@ export async function runAutopilotSegmentA(
       const blockers = blockersFromHttpError(err);
       addAuditLog(db, projectId, "system", "autopilot", "autopilot.blocked", { blockers });
       logger.warn("autopilot", "Segment A blocked at a gate", { project: projectId, ms: `${Math.round(performance.now() - t0)}ms`, blockers: blockers.length, reasons: blockers.map((b) => b.code).slice(0, 5) });
+      return { blocked: true, blockers, message: err.message, state: getAutopilotState(db, projectId) };
+    }
+    // The per-submission payment gate throws 402 (assertSubmissionPaid runs first
+    // in prepareSubmission). That's a GATE, not a failure — surface it as blocked
+    // with a structured blocker so mark-paid/waive can auto-resume the run.
+    if (err instanceof HttpError && err.status === 402) {
+      const blockers: AutopilotBlocker[] = [{ code: "payment_required", detail: err.message }];
+      addAuditLog(db, projectId, "system", "autopilot", "autopilot.blocked", { blockers });
+      logger.warn("autopilot", "Segment A blocked on the payment gate", { project: projectId, ms: `${Math.round(performance.now() - t0)}ms` });
       return { blocked: true, blockers, message: err.message, state: getAutopilotState(db, projectId) };
     }
     logger.error("autopilot", "Segment A failed", { project: projectId, ms: `${Math.round(performance.now() - t0)}ms`, err: err instanceof Error ? err.message : String(err) });

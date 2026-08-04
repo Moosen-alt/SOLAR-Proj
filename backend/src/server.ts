@@ -53,7 +53,7 @@ import { listCodeProfiles, getCodeProfile, saveResearchedCodeProfile, saveVerifi
 import { runStandaloneReview, getReviewSubmission, listReviewSubmissions, reviewSubjectToProject } from "./reviewSubject";
 import { renderReviewerReportHtml } from "./reviewerEngine";
 import { REVIEW_PACKS } from "./reviewPacks";
-import { getAutopilotState, runAutopilotApproval } from "./autopilot";
+import { getAutopilotState, maybeResumeAutopilot, runAutopilotApproval } from "./autopilot";
 import {
   addCommunication,
   createCustomer,
@@ -316,7 +316,9 @@ app.delete("/api/clients/:id/logo", (req, res) => {
 
 app.post("/api/projects/:id/client", (req, res) => {
   const clientId = req.body?.clientId === null ? null : String(req.body?.clientId || "").trim() || null;
-  res.json(assignProjectClient(db, String(req.params.id), clientId));
+  const assigned = assignProjectClient(db, String(req.params.id), clientId);
+  maybeResumeAutopilot(db, String(req.params.id)); // a client assignment clears needsClient/CCB blockers
+  res.json(assigned);
 });
 
 // --- Per-client portal credentials (encrypted; plaintext never returned) ---
@@ -1529,7 +1531,9 @@ app.post(
     const filename = String(req.query.filename || req.headers["x-filename"] || "upload.bin").trim();
     const docType = String(req.query.docType || req.headers["x-doc-type"] || "").trim();
     const contentType = String(req.headers["content-type"] || "application/octet-stream");
-    res.status(201).json(saveProjectDocument(db, String(req.params.id), { filename, docType, contentType, buffer: req.body, source: "upload" }));
+    const saved = saveProjectDocument(db, String(req.params.id), { filename, docType, contentType, buffer: req.body, source: "upload" });
+    maybeResumeAutopilot(db, String(req.params.id)); // a new document may clear a missing-document blocker
+    res.status(201).json(saved);
   },
 );
 app.get("/api/projects/:id/documents/:docId", (req, res) => {
@@ -2024,6 +2028,7 @@ app.post("/api/projects/:id/payment/mark-paid", asyncHandler(async (req, res) =>
   addAuditLog(db, detail.project.id, "human", "operator", "payment.marked_paid", {
     track: quote.track, totalUsd: quote.totalUsd, reference: quote.payment?.paymentReference || "",
   });
+  maybeResumeAutopilot(db, detail.project.id); // payment clears the 402 gate
   res.json({ quote });
 }));
 
@@ -2032,6 +2037,7 @@ app.post("/api/projects/:id/payment/waive", asyncHandler(async (req, res) => {
   const detail = getProjectDetail(db, String(req.params.id));
   const quote = waiveSubmissionPayment(db, detail.project, String(req.body?.track || ""));
   addAuditLog(db, detail.project.id, "human", "operator", "payment.waived", { track: quote.track });
+  maybeResumeAutopilot(db, detail.project.id); // waiver clears the 402 gate
   res.json({ quote });
 }));
 
@@ -2108,11 +2114,26 @@ app.post("/api/projects/:id/autopilot/start", (req, res) => {
   const projectId = String(req.params.id);
   const rawTrack = String(req.body?.track || "").trim();
   const track = SUBMITTAL_TRACK_TYPES.includes(rawTrack as SubmittalTrackType) ? rawTrack : undefined;
+  // DEDUPE: an autopilot job may already be queued (createProject auto-start or
+  // an auto-resume). Two queued Segment A jobs would stage the same project
+  // TWICE against a live portal — return the in-flight job instead.
+  const pendingAutopilot = db.get<{ id?: string }>(
+    "SELECT id FROM job_queue WHERE project_id = ? AND job_type = 'autopilot' AND status IN ('pending','running') LIMIT 1",
+    [projectId],
+  );
+  if (pendingAutopilot?.id) {
+    res.status(202).json({ jobId: String(pendingAutopilot.id), state: getAutopilotState(db, projectId), deduped: true });
+    return;
+  }
+  // maxRetries 0: staging drives a live portal and is NOT idempotent portal-side
+  // (a timer/orphan re-run could create a duplicate application draft). Failures
+  // escalate via job_failed; recovery is the event-driven auto-resume path.
   const job = enqueueJob(db, "autopilot", { track }, { projectId, priority: 7, maxRetries: 0 });
   // Kick the worker immediately so Segment A starts without waiting for the poll
-  // interval. The claim is atomic, so the background worker can't double-process it.
+  // interval. The claim is atomic, so the background worker can't double-process
+  // it. The outcome broadcast happens in the job handler (jobQueue.ts) so every
+  // path — route kick, worker drain, auto-start, auto-resume — announces it.
   processNextJob(db)
-    .then(() => sseBroadcast({ type: "run_complete", projectId, message: "Autopilot reached the approval gate." }))
     .catch((err) => logger.warn("autopilot", `segment A error: ${err instanceof Error ? err.message : String(err)}`));
   sseBroadcast({ type: "autopilot_started", projectId, message: "Autopilot started — running QC, build, reviewer gate, and staging." });
   res.status(202).json({ jobId: job.id, state: getAutopilotState(db, projectId) });
@@ -2151,14 +2172,14 @@ app.post("/api/projects/:id/human-verify", (req, res) => {
   const action = String(req.body?.action || "").trim();
   if (!reviewItemId) throw new HttpError(400, "reviewItemId is required.");
   if (!["approve", "edit", "reject"].includes(action)) throw new HttpError(400, "action must be approve, edit, or reject.");
-  res.json(
-    humanVerify(db, req.params.id, {
-      reviewItemId,
-      action: action as "approve" | "edit" | "reject",
-      fieldValue: req.body?.fieldValue,
-      notes: req.body?.notes,
-    }),
-  );
+  const verifyResult = humanVerify(db, req.params.id, {
+    reviewItemId,
+    action: action as "approve" | "edit" | "reject",
+    fieldValue: req.body?.fieldValue,
+    notes: req.body?.notes,
+  });
+  maybeResumeAutopilot(db, String(req.params.id)); // clearing review items may unblock QC
+  res.json(verifyResult);
 });
 
 // Equipment-spec auto-fill: look up the inverter's rated output from its model

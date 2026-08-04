@@ -302,7 +302,9 @@ export function ensureCodeProfilesResearched(db: AppDb, state: string, ahj: stri
       if (recent) continue;
       // Lazy import avoids a static cycle (jobQueue -> ... -> codeProfiles).
       void import("./jobQueue").then(({ enqueueJob, processNextJob }) => {
-        enqueueJob(db, "code_research", { state: layer.state, ahj: layer.ahj, profileKey: key }, { priority: 3, maxRetries: 1 });
+        // maxRetries 2: the worker's retry math (`retryCount+1 < maxRetries`)
+        // means 1 yields ZERO retries — 2 gives the intended single retry.
+        enqueueJob(db, "code_research", { state: layer.state, ahj: layer.ahj, profileKey: key }, { priority: 3, maxRetries: 2 });
         void processNextJob(db).catch(() => null);
       }).catch(() => null);
       enqueued++;

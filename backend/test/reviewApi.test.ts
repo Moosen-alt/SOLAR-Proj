@@ -14,6 +14,7 @@ const BASE = `http://127.0.0.1:${PORT}`;
 const env = {
   ...process.env,
   AUTOPILOT_DB_PATH: path.join(tmpDir, "test.sqlite"),
+  AUTOPILOT_AUTO_START: "0", // deterministic tests — no background autopilot
   PORT: String(PORT),
   SEED_TEST_INSTALLER: "false",
   MONITOR_INTERVAL_MINUTES: "0",

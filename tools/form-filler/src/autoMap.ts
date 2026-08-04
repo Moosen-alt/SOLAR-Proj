@@ -12,7 +12,7 @@ import { normalizeName } from "./engine";
 import { renderPdfPagesToPng } from "./render";
 import type { CheckboxRule, DataRow, FormMap, OverlayField, SignaturePlacement } from "./types";
 
-const MODEL = process.env.FORM_FILLER_MODEL || "claude-opus-4-8";
+const MODEL = process.env.FORM_FILLER_MODEL || "claude-opus-5";
 
 export interface BuildMapInput {
   bytes: Uint8Array;

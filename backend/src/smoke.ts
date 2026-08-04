@@ -44,6 +44,9 @@ process.env.AUTOPILOT_DB_PATH = smokeDb;
 // (auto-seed ON) operation a stage with no registered portal surfaces a blocker instead of silently
 // mocking; pin auto-seed OFF here so the smoke path keeps exercising the mock end-to-end.
 process.env.PORTAL_AUTOSEED = "0";
+// The smoke drives each stage explicitly — background auto-started autopilot
+// runs would race the scripted flow and the end-of-run project deletion.
+process.env.AUTOPILOT_AUTO_START = "0";
 
 const db = await openDatabase();
 const seededKnowledge = getKnowledgeBase(db).profiles;

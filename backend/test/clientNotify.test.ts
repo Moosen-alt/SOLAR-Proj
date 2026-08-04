@@ -8,6 +8,7 @@ import path from "node:path";
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "client-notify-test-"));
 process.env.AUTOPILOT_DB_PATH = path.join(tmpDir, "test.sqlite");
+process.env.AUTOPILOT_AUTO_START = "0"; // deterministic tests — no background autopilot
 process.env.SEED_TEST_INSTALLER = "false";
 delete process.env.SMTP_HOST; // force the draft path — no network in tests
 delete process.env.CLIENT_NOTIFICATIONS;

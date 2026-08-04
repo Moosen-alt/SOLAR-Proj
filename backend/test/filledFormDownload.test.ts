@@ -20,6 +20,7 @@ const env = {
   DATA_DIR: path.join(tmpDir, "data"),
   PORT: String(PORT),
   SEED_TEST_INSTALLER: "false",
+  AUTOPILOT_AUTO_START: "0", // deterministic tests — no background autopilot
   MONITOR_INTERVAL_MINUTES: "0",
   LOG_LEVEL: "warn",
   ANTHROPIC_API_KEY: "", // stub LLM — deterministic, no network

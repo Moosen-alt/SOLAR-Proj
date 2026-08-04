@@ -25,6 +25,7 @@ function buildXlsx(rows: string[][]): Buffer {
 async function main(): Promise<void> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cec-test-"));
   process.env.AUTOPILOT_DB_PATH = path.join(dir, "test.db");
+process.env.AUTOPILOT_AUTO_START = "0"; // deterministic tests — no background autopilot
   process.env.ANTHROPIC_API_KEY = "";
   const { openDatabase } = await import("../src/db");
   const { parseCecSheet, importCecRows, certifiedNamesForMake, primeCecCache, lookupCecInverter, isCecListed, cecTableCount } = await import("../src/cecEquipment");

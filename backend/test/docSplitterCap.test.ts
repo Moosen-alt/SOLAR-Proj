@@ -12,6 +12,7 @@ import { PDFDocument, StandardFonts } from "pdf-lib";
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "doc-splitter-cap-test-"));
 process.env.AUTOPILOT_DB_PATH = path.join(tmpDir, "test.sqlite");
+process.env.AUTOPILOT_AUTO_START = "0"; // deterministic tests — no background autopilot
 process.env.SEED_TEST_INSTALLER = "false";
 
 const { openDatabase } = await import("../src/db");

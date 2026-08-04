@@ -5655,6 +5655,7 @@ const SSE_EVENT_KINDS = {
   nem_approved: "success",
   run_paused: "warning",
   run_failed: "error",
+  job_failed: "error",
   run_complete: "info",
   // Kickoff signals — previously emitted by the backend but never subscribed, so the
   // "staging started / autopilot started" toasts silently never appeared.

@@ -5,7 +5,13 @@ import { RECIPE_FIELD_DESCRIPTIONS } from "./portalRecipes";
 import { logger } from "./logger";
 import { lookupCecInverter } from "./cecEquipment";
 
-const MODEL = "claude-opus-4-8";
+// Claude Opus 5: drop-in successor to Opus 4.8 at identical pricing with a
+// step-change in agentic/vision capability. Verified safe for this codebase:
+// every call site already uses adaptive thinking (on by default on Opus 5), no
+// sampling params, no prefills, no thinking:{disabled}. Prompt-cache minimum
+// also drops 1024→512 tokens, so mid-size system prompts start caching.
+// NOTE: claude-opus-5 draws from a SEPARATE rate-limit bucket than Opus 4.x.
+const MODEL = process.env.AUTOPILOT_LLM_MODEL || "claude-opus-5";
 
 // Does the (possibly truncated) response text contain a complete, parseable JSON object?
 // Used by the max_tokens retry: when the JSON block finished before the cap and only
@@ -491,7 +497,12 @@ export class ClaudeLLMProvider implements LLMProvider {
   private client: Anthropic;
 
   constructor(apiKey: string) {
-    this.client = new Anthropic({ apiKey });
+    // maxRetries 5 (SDK default 2): the SDK auto-retries 408/429/5xx/connection
+    // errors with backoff and honors retry-after. learn/prepare_submission/
+    // autopilot jobs are enqueued with maxRetries:0, so a 529 burst that
+    // outlasts two quick retries would otherwise permanently fail a run
+    // mid-flight and discard all page progress.
+    this.client = new Anthropic({ apiKey, maxRetries: 5 });
   }
 
   // ---------------------------------------------------------------------------
@@ -866,7 +877,7 @@ CRITICAL accuracy rules:
         max_tokens: 3500,
         thinking: { type: "adaptive" },
         output_config: { effort: "high" },
-        system,
+        system: this.cachedSystem(system),
         messages: [{ role: "user", content }],
       }),
     );
@@ -949,12 +960,10 @@ Return JSON: {"draft": "<response text>", "confidence": 0.0-1.0}`;
     extractedText?: string;
     applicantFacts?: Record<string, string>;
   }): Promise<AiPlanReviewResult> {
-    const system = `You are an experienced municipal plans examiner performing a PRE-REVIEW of a permit application plan set. You are ASSISTING a human reviewer, never replacing them: your findings are advisory observations the human confirms against the adopted codes.
-
-WORK TYPE: ${input.workType.replace(/_/g, " ")}.
-JURISDICTION: ${input.jurisdictionLabel}.
-ADOPTED CODES / DESIGN CRITERIA (${input.verifiedProfile ? "verified by the jurisdiction's staff" : "UNVERIFIED — phrase every citation as 'verify locally'"}):
-${input.codeSummary || "No adopted-code data available — cite current model codes and say 'verify the locally adopted edition'."}
+    // CACHING: keep the system prompt STATIC (jurisdiction/work-type context
+    // moves to the user turn) so every review shares one cached prefix instead
+    // of writing a rarely-re-read cache entry per jurisdiction.
+    const system = `You are an experienced municipal plans examiner performing a PRE-REVIEW of a permit application plan set. You are ASSISTING a human reviewer, never replacing them: your findings are advisory observations the human confirms against the adopted codes. The user message states the WORK TYPE, JURISDICTION, and the adopted codes / design criteria to ground every citation in; when the criteria are marked UNVERIFIED, phrase every citation as 'verify locally'.
 
 Review the attached plan-sheet images (and extracted text, when provided) the way a plans examiner triages an intake packet:
 - COMPLETENESS: are the sheets a reviewer needs present and legible (site plan, structural details, sections, schedules appropriate to this work type)?
@@ -975,7 +984,12 @@ Return ONLY JSON:
     const factLines = Object.entries(input.applicantFacts ?? {}).filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`).join("\n");
     userParts.push({
       type: "text",
-      text: `Applicant facts:\n${factLines || "(none provided)"}\n\nExtracted plan text (may be partial):\n${(input.extractedText || "").slice(0, 6000) || "(none)"}\n\nPerform the pre-review now.`,
+      text: `WORK TYPE: ${input.workType.replace(/_/g, " ")}.
+JURISDICTION: ${input.jurisdictionLabel}.
+ADOPTED CODES / DESIGN CRITERIA (${input.verifiedProfile ? "verified by the jurisdiction's staff" : "UNVERIFIED — phrase every citation as 'verify locally'"}):
+${input.codeSummary || "No adopted-code data available — cite current model codes and say 'verify the locally adopted edition'."}
+
+Applicant facts:\n${factLines || "(none provided)"}\n\nExtracted plan text (may be partial):\n${(input.extractedText || "").slice(0, 6000) || "(none)"}\n\nPerform the pre-review now.`,
     });
     const msg = await this.instrument("reviewPlanSetGeneral", { effort: "high", image: input.pageImagesBase64.length > 0, pages: input.pageImagesBase64.length }, () =>
       this.client.messages.create({
@@ -1455,7 +1469,7 @@ Return ONLY JSON:
     let parsed: Partial<PortalFillVerification> = {};
     try {
       const msg = await this.instrument("verifyPortalFillVision", { effort: "high", image: true }, () =>
-        this.client.messages.create({ model: MODEL, max_tokens: 3072, thinking: { type: "adaptive" }, output_config: { effort: "high" }, system, messages: [{ role: "user", content: user }] }),
+        this.client.messages.create({ model: MODEL, max_tokens: 3072, thinking: { type: "adaptive" }, output_config: { effort: "high" }, system: this.cachedSystem(system), messages: [{ role: "user", content: user }] }),
       );
       parsed = this.parseJson<Partial<PortalFillVerification>>(this.textOf(msg), {});
     } catch { parsed = {}; }
@@ -1489,7 +1503,7 @@ Return ONLY JSON:
               thinking: { type: "adaptive" },
               // eslint-disable-next-line @typescript-eslint/no-explicit-any
               tools: [{ type: "web_search_20260209", name: "web_search", max_uses: maxUses }] as any,
-              system: systemPrompt,
+              system: this.cachedSystem(systemPrompt),
               messages: [{ role: "user", content: userMessage }],
             },
             { signal: controller.signal },
@@ -1785,7 +1799,7 @@ Rules:
           max_tokens: 4096,
           thinking: { type: "adaptive" },
           output_config: { effort: "high" },
-          system,
+          system: this.cachedSystem(system),
           messages: [{ role: "user", content }],
         }),
       );
