@@ -1,141 +1,503 @@
 {
-  "comment": "Jurisdiction code profiles seeded at boot (codeProfiles.seedReferenceCodeProfiles). NEVER overwrites rows that already exist in the DB — operator edits and verifications always win. 'verified' here is reserved for values lifted verbatim from the previously hardcoded, production-proven rule constants (Oregon). Everything else ships 'seeded' and MUST be verified against official sources (research flow + human verify) before its citations are treated as authoritative.",
-  "profiles": [
+ "comment": "Jurisdiction code profiles seeded at boot (codeProfiles.seedReferenceCodeProfiles). NEVER overwrites rows that already exist in the DB \u2014 operator edits and verifications always win. 'verified' here is reserved for values lifted verbatim from the previously hardcoded, production-proven rule constants (Oregon). Everything else ships 'seeded' and MUST be verified against official sources (research flow + human verify) before its citations are treated as authoritative.",
+ "profiles": [
+  {
+   "key": "",
+   "state": "OR",
+   "ahj": "",
+   "confidence": "verified",
+   "adoptedCodes": [
     {
-      "key": "",
-      "state": "OR",
-      "ahj": "",
-      "confidence": "verified",
-      "adoptedCodes": [
-        {
-          "code": "OESC",
-          "edition": "2023",
-          "title": "Oregon Electrical Specialty Code (based on the 2023 NEC)",
-          "sourceUrl": "https://www.oregon.gov/bcd/codes-stand/pages/electrical.aspx",
-          "notes": "Oregon BCD lists the 2023 OESC effective Oct. 1, 2023, based on the 2023 NEC."
-        },
-        {
-          "code": "NEC",
-          "edition": "2023",
-          "title": "National Electrical Code as adopted via the 2023 OESC",
-          "sourceUrl": "https://www.oregon.gov/bcd/codes-stand/pages/electrical.aspx"
-        },
-        {
-          "code": "ORSC",
-          "edition": "2021",
-          "title": "Oregon Residential Specialty Code (IRC-based)",
-          "sourceUrl": "https://www.oregon.gov/bcd/codes-stand/pages/residential.aspx",
-          "notes": "IRC R324 rooftop PV provisions apply as adopted; see prescriptive solar checklist."
-        },
-        {
-          "code": "IRC",
-          "edition": "2021",
-          "title": "International Residential Code (basis of the ORSC)",
-          "sourceUrl": "https://codes.iccsafe.org/content/IRC2021P1/chapter-3-building-planning"
-        },
-        {
-          "code": "IFC",
-          "edition": "2021",
-          "title": "International Fire Code / Oregon Fire Code (PV access & pathways, IFC 1205)",
-          "sourceUrl": "https://www.oregon.gov/osp/programs/sfm/pages/fire-code.aspx"
-        }
-      ],
-      "amendments": [],
-      "designCriteria": {},
-      "prescriptive": {
-        "maxGroundSnowPsf": 70,
-        "maxPvDeadLoadPsf": 4.5,
-        "maxRafterSpacingIn": 24,
-        "allowedWindExposures": ["B", "C"],
-        "maxExportKwWithoutStudy": 25,
-        "engineerStampOverKwDc": 50
-      },
-      "fireSetbacks": [],
-      "citations": [
-        { "label": "Oregon BCD — electrical code program (OESC)", "sourceUrl": "https://www.oregon.gov/bcd/codes-stand/pages/electrical.aspx" },
-        { "label": "Oregon prescriptive rooftop solar PV checklist (Washington County copy)", "sourceUrl": "https://www.washingtoncountyor.gov/lut/building-services/documents/solar-checklist/download?inline=" }
-      ],
-      "updatedAt": ""
+     "code": "OESC",
+     "edition": "2023",
+     "title": "Oregon Electrical Specialty Code (based on the 2023 NEC)",
+     "sourceUrl": "https://www.oregon.gov/bcd/codes-stand/pages/electrical.aspx",
+     "notes": "Oregon BCD lists the 2023 OESC effective Oct. 1, 2023, based on the 2023 NEC."
     },
     {
-      "key": "",
-      "state": "OR",
-      "ahj": "Portland",
-      "confidence": "verified",
-      "adoptedCodes": [],
-      "amendments": [
-        {
-          "code": "OSSC",
-          "section": "Table 2308.7.2(1)",
-          "summary": "Portland solar worksheet applies OSSC rafter-span tables to prescriptive rooftop PV review; rafter size/spacing/span evidence expected on the plan set.",
-          "sourceUrl": "https://www.portland.gov/ppd/documents/solar-worksheet/download"
-        }
-      ],
-      "designCriteria": {},
-      "prescriptive": {},
-      "fireSetbacks": [],
-      "citations": [
-        { "label": "Portland solar worksheet", "sourceUrl": "https://www.portland.gov/ppd/documents/solar-worksheet/download" }
-      ],
-      "updatedAt": ""
+     "code": "NEC",
+     "edition": "2023",
+     "title": "National Electrical Code as adopted via the 2023 OESC",
+     "sourceUrl": "https://www.oregon.gov/bcd/codes-stand/pages/electrical.aspx"
     },
     {
-      "key": "",
-      "state": "ID",
-      "ahj": "",
-      "confidence": "seeded",
-      "adoptedCodes": [
-        {
-          "code": "IRC",
-          "edition": "2018",
-          "title": "International Residential Code with Idaho amendments",
-          "sourceUrl": "https://dopl.idaho.gov/building/",
-          "notes": "SEEDED — confirm the current Idaho-adopted IRC cycle and amendments with Idaho DOPL Division of Building Safety before citing."
-        },
-        {
-          "code": "IBC",
-          "edition": "2018",
-          "title": "International Building Code with Idaho amendments",
-          "sourceUrl": "https://dopl.idaho.gov/building/",
-          "notes": "SEEDED — confirm the current Idaho-adopted IBC cycle with Idaho DOPL before citing."
-        },
-        {
-          "code": "NEC",
-          "edition": "2023",
-          "title": "National Electrical Code as adopted by the Idaho Electrical Board",
-          "sourceUrl": "https://dopl.idaho.gov/electrical/",
-          "notes": "SEEDED — confirm the current Idaho-adopted NEC cycle and any state amendments before citing."
-        }
-      ],
-      "amendments": [],
-      "designCriteria": {},
-      "prescriptive": {},
-      "fireSetbacks": [],
-      "citations": [
-        { "label": "Idaho DOPL — Division of Building Safety (adopted codes)", "sourceUrl": "https://dopl.idaho.gov/building/" },
-        { "label": "Idaho DOPL — electrical program", "sourceUrl": "https://dopl.idaho.gov/electrical/" }
-      ],
-      "updatedAt": ""
+     "code": "ORSC",
+     "edition": "2021",
+     "title": "Oregon Residential Specialty Code (IRC-based)",
+     "sourceUrl": "https://www.oregon.gov/bcd/codes-stand/pages/residential.aspx",
+     "notes": "IRC R324 rooftop PV provisions apply as adopted; see prescriptive solar checklist."
     },
     {
-      "key": "",
-      "state": "ID",
-      "ahj": "Elmore County",
-      "confidence": "seeded",
-      "adoptedCodes": [],
-      "amendments": [],
-      "designCriteria": {
-        "sourceUrl": "https://elmorecounty.org/departments/building/",
-        "windExposure": "",
-        "seismicDesignCategory": ""
-      },
-      "prescriptive": {},
-      "fireSetbacks": [],
-      "citations": [
-        { "label": "Elmore County building department — local design criteria (ground snow, wind, frost depth) and any county amendments", "sourceUrl": "https://elmorecounty.org/departments/building/" },
-        { "label": "Idaho DOPL — state-adopted codes Elmore County builds on", "sourceUrl": "https://dopl.idaho.gov/building/" }
-      ],
-      "updatedAt": ""
+     "code": "IRC",
+     "edition": "2021",
+     "title": "International Residential Code (basis of the ORSC)",
+     "sourceUrl": "https://codes.iccsafe.org/content/IRC2021P1/chapter-3-building-planning"
+    },
+    {
+     "code": "IFC",
+     "edition": "2021",
+     "title": "International Fire Code / Oregon Fire Code (PV access & pathways, IFC 1205)",
+     "sourceUrl": "https://www.oregon.gov/osp/programs/sfm/pages/fire-code.aspx"
     }
-  ]
+   ],
+   "amendments": [],
+   "designCriteria": {},
+   "prescriptive": {
+    "maxGroundSnowPsf": 70,
+    "maxPvDeadLoadPsf": 4.5,
+    "maxRafterSpacingIn": 24,
+    "allowedWindExposures": [
+     "B",
+     "C"
+    ],
+    "maxExportKwWithoutStudy": 25,
+    "engineerStampOverKwDc": 50
+   },
+   "fireSetbacks": [],
+   "citations": [
+    {
+     "label": "Oregon BCD \u2014 electrical code program (OESC)",
+     "sourceUrl": "https://www.oregon.gov/bcd/codes-stand/pages/electrical.aspx"
+    },
+    {
+     "label": "Oregon prescriptive rooftop solar PV checklist (Washington County copy)",
+     "sourceUrl": "https://www.washingtoncountyor.gov/lut/building-services/documents/solar-checklist/download?inline="
+    }
+   ],
+   "updatedAt": ""
+  },
+  {
+   "key": "",
+   "state": "OR",
+   "ahj": "Portland",
+   "confidence": "verified",
+   "adoptedCodes": [],
+   "amendments": [
+    {
+     "code": "OSSC",
+     "section": "Table 2308.7.2(1)",
+     "summary": "Portland solar worksheet applies OSSC rafter-span tables to prescriptive rooftop PV review; rafter size/spacing/span evidence expected on the plan set.",
+     "sourceUrl": "https://www.portland.gov/ppd/documents/solar-worksheet/download"
+    }
+   ],
+   "designCriteria": {},
+   "prescriptive": {},
+   "fireSetbacks": [],
+   "citations": [
+    {
+     "label": "Portland solar worksheet",
+     "sourceUrl": "https://www.portland.gov/ppd/documents/solar-worksheet/download"
+    }
+   ],
+   "updatedAt": ""
+  },
+  {
+   "key": "",
+   "state": "ID",
+   "ahj": "",
+   "confidence": "seeded",
+   "adoptedCodes": [
+    {
+     "code": "IRC",
+     "edition": "2018",
+     "title": "International Residential Code with Idaho amendments",
+     "sourceUrl": "https://dopl.idaho.gov/building/",
+     "notes": "SEEDED \u2014 confirm the current Idaho-adopted IRC cycle and amendments with Idaho DOPL Division of Building Safety before citing."
+    },
+    {
+     "code": "IBC",
+     "edition": "2018",
+     "title": "International Building Code with Idaho amendments",
+     "sourceUrl": "https://dopl.idaho.gov/building/",
+     "notes": "SEEDED \u2014 confirm the current Idaho-adopted IBC cycle with Idaho DOPL before citing."
+    },
+    {
+     "code": "NEC",
+     "edition": "2023",
+     "title": "National Electrical Code as adopted by the Idaho Electrical Board",
+     "sourceUrl": "https://dopl.idaho.gov/electrical/",
+     "notes": "SEEDED \u2014 confirm the current Idaho-adopted NEC cycle and any state amendments before citing."
+    }
+   ],
+   "amendments": [],
+   "designCriteria": {},
+   "prescriptive": {},
+   "fireSetbacks": [],
+   "citations": [
+    {
+     "label": "Idaho DOPL \u2014 Division of Building Safety (adopted codes)",
+     "sourceUrl": "https://dopl.idaho.gov/building/"
+    },
+    {
+     "label": "Idaho DOPL \u2014 electrical program",
+     "sourceUrl": "https://dopl.idaho.gov/electrical/"
+    }
+   ],
+   "updatedAt": ""
+  },
+  {
+   "key": "",
+   "state": "ID",
+   "ahj": "Elmore County",
+   "confidence": "seeded",
+   "adoptedCodes": [],
+   "amendments": [],
+   "designCriteria": {
+    "sourceUrl": "https://elmorecounty.org/departments/building/",
+    "windExposure": "",
+    "seismicDesignCategory": ""
+   },
+   "prescriptive": {},
+   "fireSetbacks": [],
+   "citations": [
+    {
+     "label": "Elmore County building department \u2014 local design criteria (ground snow, wind, frost depth) and any county amendments",
+     "sourceUrl": "https://elmorecounty.org/departments/building/"
+    },
+    {
+     "label": "Idaho DOPL \u2014 state-adopted codes Elmore County builds on",
+     "sourceUrl": "https://dopl.idaho.gov/building/"
+    }
+   ],
+   "updatedAt": ""
+  },
+  {
+   "key": "",
+   "state": "CA",
+   "ahj": "",
+   "confidence": "seeded",
+   "adoptedCodes": [
+    {
+     "code": "CRC",
+     "edition": "2025",
+     "title": "California Residential Code (Title 24 Part 2.5), effective Jan 1, 2026",
+     "sourceUrl": "https://www.dgs.ca.gov/BSC/Codes",
+     "notes": "SEEDED \u2014 AB 130 extends this cycle to ~6 years. R324 governs rooftop PV (fire setbacks/pathways)."
+    },
+    {
+     "code": "CEC-CA",
+     "edition": "2025",
+     "title": "California Electrical Code (Title 24 Part 3), effective Jan 1, 2026",
+     "sourceUrl": "https://www.dgs.ca.gov/BSC/Codes",
+     "notes": "SEEDED \u2014 confirm the NEC basis edition with the AHJ; vendor sources conflict (2023 vs 2026 NEC basis). Plan sets on the wrong NEC cycle are rejected."
+    },
+    {
+     "code": "T24-P6",
+     "edition": "2025",
+     "title": "Building Energy Efficiency Standards (Title 24 Part 6) \u2014 solar + storage mandate for most new construction",
+     "sourceUrl": "https://www.energy.ca.gov/programs-and-topics/programs/building-energy-efficiency-standards"
+    }
+   ],
+   "amendments": [
+    {
+     "code": "CRC",
+     "section": "R324.6",
+     "summary": "Fire access: two 36-inch pathways on separate roof planes (one on the street/driveway side); ridge setback 18 in. when the array covers \u226433% of plan-view roof area, 36 in. when >33%.",
+     "sourceUrl": "https://up.codes/s/roof-access-and-pathways"
+    },
+    {
+     "code": "Rule 21",
+     "section": "",
+     "summary": "Interconnection under CPUC Rule 21; new PG&E/SCE/SDG&E applications land on the NEM 3.0 net-billing tariff (export credits at avoided cost, ~75% below NEM 2.0). System-size expansion >10% can forfeit legacy NEM 2.0 status.",
+     "sourceUrl": "https://www.cpuc.ca.gov/rule21/"
+    },
+    {
+     "code": "SolarAPP+",
+     "section": "",
+     "summary": "Many CA AHJs accept SolarAPP+ instant permitting for code-standard rooftop PV; structural PE stamp commonly required over ~10 kW.",
+     "sourceUrl": "https://solarapp.nrel.gov/"
+    }
+   ],
+   "designCriteria": {
+    "seismicDesignCategory": "D",
+    "sourceUrl": "https://www.dgs.ca.gov/BSC/Codes"
+   },
+   "prescriptive": {
+    "engineerStampOverKwDc": 10
+   },
+   "fireSetbacks": [
+    {
+     "id": "crc-r324-ridge",
+     "description": "CRC R324.6.2: 18 in. ridge setback (array \u226433% of roof plan area) / 36 in. (>33%); two 36 in. pathways on separate planes, one street-side."
+    }
+   ],
+   "citations": [
+    {
+     "label": "California Building Standards Commission \u2014 2025 Title 24 codes",
+     "sourceUrl": "https://www.dgs.ca.gov/BSC/Codes"
+    },
+    {
+     "label": "CPUC Rule 21 interconnection",
+     "sourceUrl": "https://www.cpuc.ca.gov/rule21/"
+    }
+   ],
+   "updatedAt": ""
+  },
+  {
+   "key": "",
+   "state": "FL",
+   "ahj": "",
+   "confidence": "seeded",
+   "adoptedCodes": [
+    {
+     "code": "FBC-R",
+     "edition": "2023",
+     "title": "Florida Building Code, Residential \u2014 8th Edition (effective Dec 31, 2023)",
+     "sourceUrl": "https://floridabuilding.org/",
+     "notes": "SEEDED \u2014 wind design per ASCE 7-22; ultimate design wind speeds 140\u2013180 mph by county."
+    },
+    {
+     "code": "FBC-B",
+     "edition": "2023",
+     "title": "Florida Building Code, Building \u2014 8th Edition (HVHZ provisions for Miami-Dade/Broward)",
+     "sourceUrl": "https://floridabuilding.org/"
+    },
+    {
+     "code": "NEC",
+     "edition": "2020",
+     "title": "National Electrical Code as adopted by the FBC 8th Edition",
+     "sourceUrl": "https://floridabuilding.org/",
+     "notes": "SEEDED \u2014 confirm the NEC edition with the AHJ; the FBC references a specific NEC cycle."
+    }
+   ],
+   "amendments": [
+    {
+     "code": "FBC-B",
+     "section": "HVHZ",
+     "summary": "High-Velocity Hurricane Zone (Miami-Dade 175 mph, Broward 170 mph): every module, racking, and attachment component needs a Miami-Dade NOA (Notice of Acceptance) or Florida Product Approval with TAS impact/uplift testing; Exposure C mandatory. Engineered path is the norm \u2014 expect no prescriptive rooftop-PV track in HVHZ.",
+     "sourceUrl": "https://www.miamidade.gov/global/economy/building/product-approval.page"
+    },
+    {
+     "code": "FBC-R",
+     "section": "ASCE 7-22",
+     "summary": "Wind uplift calcs per ASCE 7-22 component-and-cladding; attachment schedules and product approval numbers must appear on the plan set.",
+     "sourceUrl": "https://floridabuilding.org/"
+    }
+   ],
+   "designCriteria": {
+    "windExposure": "C",
+    "sourceUrl": "https://floridabuilding.org/"
+   },
+   "prescriptive": {
+    "allowedWindExposures": [
+     "B",
+     "C",
+     "D"
+    ]
+   },
+   "fireSetbacks": [],
+   "citations": [
+    {
+     "label": "Florida Building Code (official)",
+     "sourceUrl": "https://floridabuilding.org/"
+    },
+    {
+     "label": "Miami-Dade Product Control (NOA search)",
+     "sourceUrl": "https://www.miamidade.gov/global/economy/building/product-approval.page"
+    }
+   ],
+   "updatedAt": ""
+  },
+  {
+   "key": "",
+   "state": "NY",
+   "ahj": "",
+   "confidence": "seeded",
+   "adoptedCodes": [
+    {
+     "code": "RCNYS",
+     "edition": "2020",
+     "title": "Residential Code of New York State (Uniform Code)",
+     "sourceUrl": "https://dos.ny.gov/building-standards-and-codes",
+     "notes": "SEEDED \u2014 confirm the current Uniform Code cycle; NYC has its own construction codes."
+    },
+    {
+     "code": "NEC",
+     "edition": "2023",
+     "title": "National Electrical Code as adopted by the NYS Uniform Code",
+     "sourceUrl": "https://dos.ny.gov/building-standards-and-codes",
+     "notes": "SEEDED \u2014 confirm edition."
+    }
+   ],
+   "amendments": [
+    {
+     "code": "Ed Law 145",
+     "section": "",
+     "summary": "New York AHJs generally require a PE or RA stamp on solar permit drawings, plus a structural letter whenever the array adds more than ~5 psf to the roof. Upstate snow loads (Albany 40\u201355 psf, Syracuse 55\u201370 psf, NYC ~30 psf) must carry sealed calcs.",
+     "sourceUrl": "https://dos.ny.gov/building-standards-and-codes"
+    },
+    {
+     "code": "SIR",
+     "section": "",
+     "summary": "Utility interconnection under the NY Standardized Interconnection Requirements (SIR); residential \u226425 kW is the expedited track, larger systems can trigger a CESIR study.",
+     "sourceUrl": "https://www.nyserda.ny.gov/All-Programs/NY-Sun"
+    }
+   ],
+   "designCriteria": {},
+   "prescriptive": {
+    "maxPvDeadLoadPsf": 5
+   },
+   "fireSetbacks": [],
+   "citations": [
+    {
+     "label": "NYS Division of Building Standards and Codes",
+     "sourceUrl": "https://dos.ny.gov/building-standards-and-codes"
+    },
+    {
+     "label": "NY-Sun / NY Standardized Interconnection Requirements",
+     "sourceUrl": "https://www.nyserda.ny.gov/All-Programs/NY-Sun"
+    }
+   ],
+   "updatedAt": ""
+  },
+  {
+   "key": "",
+   "state": "MA",
+   "ahj": "",
+   "confidence": "seeded",
+   "adoptedCodes": [
+    {
+     "code": "780 CMR",
+     "edition": "10",
+     "title": "Massachusetts State Building Code, 10th Edition (2021 I-codes basis)",
+     "sourceUrl": "https://www.mass.gov/orgs/board-of-building-regulations-and-standards",
+     "notes": "SEEDED \u2014 confirm edition/effective date."
+    },
+    {
+     "code": "527 CMR",
+     "edition": "12.00",
+     "title": "Massachusetts Electrical Code (NEC with MA amendments)",
+     "sourceUrl": "https://www.mass.gov/regulations/527-CMR-1200-massachusetts-electrical-code",
+     "notes": "SEEDED \u2014 confirm the NEC basis edition."
+    }
+   ],
+   "amendments": [
+    {
+     "code": "780 CMR",
+     "section": "structural",
+     "summary": "Separate building (structural) and electrical permits required. PE-stamped structural drawings expected by most MA AHJs \u2014 especially older roofs and snow-load concerns; local amendments commonly require a stamp for arrays over ~10 kW.",
+     "sourceUrl": "https://www.mass.gov/orgs/board-of-building-regulations-and-standards"
+    }
+   ],
+   "designCriteria": {},
+   "prescriptive": {
+    "engineerStampOverKwDc": 10
+   },
+   "fireSetbacks": [],
+   "citations": [
+    {
+     "label": "MA Board of Building Regulations and Standards (780 CMR)",
+     "sourceUrl": "https://www.mass.gov/orgs/board-of-building-regulations-and-standards"
+    }
+   ],
+   "updatedAt": ""
+  },
+  {
+   "key": "",
+   "state": "CO",
+   "ahj": "",
+   "confidence": "seeded",
+   "adoptedCodes": [
+    {
+     "code": "IECC",
+     "edition": "2021",
+     "title": "2021 IECC + Colorado Model Electric Ready & Solar Ready Code (mandatory on any code update Jul 2023\u2013Jun 2026)",
+     "sourceUrl": "https://energyoffice.colorado.gov/building-energy-codes",
+     "notes": "SEEDED \u2014 building/electrical codes are otherwise per home-rule jurisdiction; confirm each AHJ's cycle."
+    }
+   ],
+   "amendments": [
+    {
+     "code": "SB19-077",
+     "section": "",
+     "summary": "Residential solar permit fees capped at $500 statewide. PE stamps are standard practice for snow + wind load review regardless of size in many front-range/mountain AHJs.",
+     "sourceUrl": "https://leg.colorado.gov/bills/sb19-077"
+    },
+    {
+     "code": "Xcel",
+     "section": "interconnection",
+     "summary": "Xcel Energy interconnection typically 12\u201316 weeks after application when no distribution upgrades are needed \u2014 plan the NEM track early.",
+     "sourceUrl": "https://www.xcelenergy.com/"
+    }
+   ],
+   "designCriteria": {},
+   "prescriptive": {},
+   "fireSetbacks": [],
+   "citations": [
+    {
+     "label": "Colorado Energy Office \u2014 building energy codes",
+     "sourceUrl": "https://energyoffice.colorado.gov/building-energy-codes"
+    }
+   ],
+   "updatedAt": ""
+  },
+  {
+   "key": "",
+   "state": "AZ",
+   "ahj": "",
+   "confidence": "seeded",
+   "adoptedCodes": [
+    {
+     "code": "IRC",
+     "edition": "2018",
+     "title": "International Residential Code as commonly adopted by AZ jurisdictions",
+     "sourceUrl": "https://solarapp.nrel.gov/",
+     "notes": "SEEDED \u2014 codes are per-AHJ (Phoenix/Maricopa on newer cycles); confirm locally."
+    }
+   ],
+   "amendments": [
+    {
+     "code": "HB2301",
+     "section": "",
+     "summary": "As of Jan 1, 2026 every AZ municipality/county must offer instant solar permitting; Phoenix, Tucson/Pima, Maricopa, Mesa accept SolarAPP+ (eligibility: \u226425 kW AC, wood-frame roof, UL 1741 inverter, pre-approved racking, load-side interconnection, no ESS on the same permit). PE stamp typically required over ~15 kW.",
+     "sourceUrl": "https://www.azleg.gov/"
+    }
+   ],
+   "designCriteria": {},
+   "prescriptive": {
+    "engineerStampOverKwDc": 15
+   },
+   "fireSetbacks": [],
+   "citations": [
+    {
+     "label": "SolarAPP+ (NREL)",
+     "sourceUrl": "https://solarapp.nrel.gov/"
+    }
+   ],
+   "updatedAt": ""
+  },
+  {
+   "key": "",
+   "state": "TX",
+   "ahj": "",
+   "confidence": "seeded",
+   "adoptedCodes": [
+    {
+     "code": "NEC",
+     "edition": "2020",
+     "title": "National Electrical Code \u2014 statewide baseline for electrical licensing; most TX cities enforce NEC 2020",
+     "sourceUrl": "https://www.tdlr.texas.gov/electricians/",
+     "notes": "SEEDED \u2014 building codes and solar permitting are entirely per-city; no statewide streamlining law."
+    }
+   ],
+   "amendments": [
+    {
+     "code": "IEEE 1547",
+     "section": "2018",
+     "summary": "All TX TDSPs require IEEE 1547-2018-compliant smart inverters for interconnection; per-utility (Oncor/CenterPoint/AEP/TNMP) application processes apply outside muni/co-op territory.",
+     "sourceUrl": "https://www.tdlr.texas.gov/electricians/"
+    }
+   ],
+   "designCriteria": {},
+   "prescriptive": {},
+   "fireSetbacks": [],
+   "citations": [
+    {
+     "label": "TDLR \u2014 Texas electricians / NEC adoption",
+     "sourceUrl": "https://www.tdlr.texas.gov/electricians/"
+    }
+   ],
+   "updatedAt": ""
+  }
+ ]
 }
