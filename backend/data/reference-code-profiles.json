@@ -498,6 +498,108 @@
     }
    ],
    "updatedAt": ""
+  },
+  {
+   "key": "",
+   "state": "IL",
+   "ahj": "",
+   "confidence": "seeded",
+   "adoptedCodes": [
+    {
+     "code": "IECC",
+     "edition": "2021",
+     "title": "Illinois Energy Conservation Code (statewide) \u2014 the only statewide construction code; building/electrical codes are per-jurisdiction",
+     "sourceUrl": "https://cdb.illinois.gov/business/codes.html",
+     "notes": "SEEDED \u2014 Illinois has NO statewide building or electrical code; confirm each AHJ's adopted IRC/NEC cycle (many collar-county suburbs run 2018-2021 I-codes)."
+    }
+   ],
+   "amendments": [
+    {
+     "code": "Part 466",
+     "section": "",
+     "summary": "Utility interconnection under 83 Ill. Adm. Code Part 466 (tiered review; small residential systems take the expedited track). A separate ComEd/Ameren interconnection application after permit approval is required before the system may export.",
+     "sourceUrl": "https://www.icc.illinois.gov/"
+    },
+    {
+     "code": "NEM",
+     "section": "Smart Solar Billing",
+     "summary": "Systems interconnected on/after Jan 1, 2025 get supply-only netting (credits offset supply+transmission, not delivery) \u2014 full-retail net metering ended for new ComEd/Ameren customers. ComEd pairs this with a one-time smart-inverter rebate (~$300/kW residential; smart inverter required). ComEd NEM eligibility \u22642,000 kW AC.",
+     "sourceUrl": "https://www.ameren.com/illinois/residential/supply-choice/renewables/net-metering"
+    },
+    {
+     "code": "IL Shines",
+     "section": "ABP",
+     "summary": "Illinois Shines (Adjustable Block Program) buys 15 years of SRECs; the installer must be an IPA-registered Approved Vendor/Designee, and Distributed Generation installer certification via the ICC applies.",
+     "sourceUrl": "https://illinoisshines.com/"
+    }
+   ],
+   "designCriteria": {},
+   "prescriptive": {},
+   "fireSetbacks": [],
+   "citations": [
+    {
+     "label": "Illinois Capital Development Board \u2014 codes",
+     "sourceUrl": "https://cdb.illinois.gov/business/codes.html"
+    },
+    {
+     "label": "Ameren Illinois net metering",
+     "sourceUrl": "https://www.ameren.com/illinois/residential/supply-choice/renewables/net-metering"
+    },
+    {
+     "label": "Illinois Shines (Adjustable Block Program)",
+     "sourceUrl": "https://illinoisshines.com/"
+    }
+   ],
+   "updatedAt": ""
+  },
+  {
+   "key": "",
+   "state": "IL",
+   "ahj": "Chicago",
+   "confidence": "seeded",
+   "adoptedCodes": [
+    {
+     "code": "CBC-CHI",
+     "edition": "2019",
+     "title": "Chicago Building Code (2019 Chicago Construction Codes)",
+     "sourceUrl": "https://www.chicago.gov/city/en/depts/bldgs.html",
+     "notes": "SEEDED \u2014 confirm the current Chicago Construction Codes cycle with DOB."
+    },
+    {
+     "code": "CEC-CHI",
+     "edition": "2018",
+     "title": "Chicago Electrical Code (based on the 2017 NEC, with Chicago amendments \u2014 e.g. conduit requirements)",
+     "sourceUrl": "https://www.chicago.gov/city/en/depts/bldgs.html",
+     "notes": "SEEDED \u2014 Chicago runs its own electrical code on an older NEC basis than most of the country; plan sets citing NEC 2020/2023 articles get corrected. EMT/rigid conduit generally required where other AHJs allow cable."
+    }
+   ],
+   "amendments": [
+    {
+     "code": "CBC-CHI",
+     "section": "structural",
+     "summary": "Structural documentation must be certified by an Illinois-licensed structural engineer or architect (all sizes). DOB permit first, then a separate ComEd interconnection application before export.",
+     "sourceUrl": "https://www.solarpermitsolutions.com/blog/chicago-solar-permit"
+    }
+   ],
+   "designCriteria": {
+    "groundSnowLoadPsf": 25,
+    "sourceUrl": "https://www.chicago.gov/city/en/depts/bldgs.html"
+   },
+   "prescriptive": {
+    "engineerStampOverKwDc": 0
+   },
+   "fireSetbacks": [],
+   "citations": [
+    {
+     "label": "Chicago DOB",
+     "sourceUrl": "https://www.chicago.gov/city/en/depts/bldgs.html"
+    },
+    {
+     "label": "Chicago solar permit guide (2026)",
+     "sourceUrl": "https://www.solarpermitsolutions.com/blog/chicago-solar-permit"
+    }
+   ],
+   "updatedAt": ""
   }
  ]
 }
