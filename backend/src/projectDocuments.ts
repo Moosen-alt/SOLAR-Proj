@@ -6,6 +6,7 @@ import { id } from "./ids";
 import { nowIso } from "./time";
 import { text as s } from "./json";
 import { extractPdfText } from "./batchImport";
+import { sniffFileKind, looksLikeCad, isImageKind, describeKind, type SniffedKind } from "./fileTypes";
 
 type Row = Record<string, unknown>;
 
@@ -55,7 +56,9 @@ export function planSetTextForProject(db: AppDb, projectId: string): string {
   return parts.join("\n").slice(0, MAX_PLAN_TEXT_CHARS);
 }
 
-const DOCS_DIR = path.resolve(process.cwd(), process.env.PROJECT_DOCS_DIR || "backend/data/project-documents");
+// Uploaded files live OUTSIDE the SQLite database, so anything that backs the system
+// up has to know where they are. Exported for backup.ts — the two must never drift.
+export const DOCS_DIR = path.resolve(process.cwd(), process.env.PROJECT_DOCS_DIR || "backend/data/project-documents");
 
 export interface ProjectDocumentView {
   id: string;
@@ -88,6 +91,57 @@ function safeName(name: string): string {
   return name.replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 120) || "file";
 }
 
+// Slots whose contents we later PARSE (split into sheets, extract text, hand to a
+// portal file input). Anything that isn't a real PDF in one of these is not a
+// degraded upload — it is an upload that cannot work, and every downstream step
+// will fail confusingly instead of here.
+const PDF_REQUIRED_DOC_TYPES = new Set([
+  "plan_set", "plan", "plan_pdf", "combined_plan_set", "full_plan_set",
+  "sld", "site_plan", "structural", "structural_letter", "stamped_plans",
+  "engineering_letter", "electrical", "module_spec", "inverter_spec", "labels",
+  "permit_application", "building_application", "electrical_application", "solar_checklist",
+]);
+
+// Slots that hold a photo or a scan. A PDF is fine here too — people scan the meter
+// tag and the utility bill to PDF constantly.
+const IMAGE_OR_PDF_DOC_TYPES = new Set(["meter_photo", "site_photo", "roof_photo", "utility_bill", "photo"]);
+
+// Where a native CAD file is allowed to live: as reference material an operator can
+// download, never as something the pipeline will try to read.
+export const CAD_REFERENCE_DOC_TYPE = "cad_source";
+
+/**
+ * Reject an upload that cannot serve the slot it was given, with a message that says
+ * what to do about it. Returns the sniffed kind so the caller can record it.
+ */
+function assertUploadUsable(docType: string, filename: string, buffer: Buffer): SniffedKind {
+  const kind = sniffFileKind(buffer);
+  const isCad = looksLikeCad(filename, kind);
+
+  if (isCad && docType !== CAD_REFERENCE_DOC_TYPE) {
+    throw new HttpError(
+      415,
+      `"${filename}" is a CAD drawing, not a submittable document. AHJ and utility portals only accept PDFs, ` +
+        `and we cannot read sheets, sizes, or structural data out of a CAD file. Export the plan set to PDF and ` +
+        `upload that. To keep the source drawing on the project for reference, upload it with document type "${CAD_REFERENCE_DOC_TYPE}".`,
+    );
+  }
+
+  if (PDF_REQUIRED_DOC_TYPES.has(docType) && kind !== "pdf") {
+    const what = describeKind(kind, filename);
+    const extra = isImageKind(kind)
+      ? " Scans and photos of plan sheets can't be split or read — print or export to PDF instead."
+      : "";
+    throw new HttpError(415, `"${filename}" is ${what}, but the "${docType}" slot needs a PDF.${extra}`);
+  }
+
+  if (IMAGE_OR_PDF_DOC_TYPES.has(docType) && kind !== "pdf" && !isImageKind(kind)) {
+    throw new HttpError(415, `"${filename}" is ${describeKind(kind, filename)}, but the "${docType}" slot needs a photo or a PDF.`);
+  }
+
+  return kind;
+}
+
 export function listProjectDocuments(db: AppDb, projectId: string): ProjectDocumentView[] {
   return db
     .query<Row>("SELECT * FROM project_documents WHERE project_id = ? ORDER BY uploaded_at DESC", [projectId])
@@ -102,6 +156,7 @@ export function saveProjectDocument(
   const project = db.get<Row>("SELECT id FROM projects WHERE id = ?", [projectId]);
   if (!project) throw new HttpError(404, "Project not found.");
   if (!input.buffer || input.buffer.length === 0) throw new HttpError(400, "Empty file.");
+  const kind = assertUploadUsable(s(input.docType), input.filename, input.buffer);
   const docId = id();
   const dir = path.join(DOCS_DIR, projectId);
   fs.mkdirSync(dir, { recursive: true });
@@ -114,9 +169,9 @@ export function saveProjectDocument(
     [docId, projectId, s(input.docType), s(input.filename), stored, s(input.contentType), input.buffer.length, input.source || "upload", s(input.uploadedBy), nowIso()],
   );
   // Extract PDF text in the background so the reviewer gate can check the actual sheets.
-  if (/pdf/i.test(s(input.contentType)) || /\.pdf$/i.test(input.filename)) {
-    void extractDocumentText(db, docId, stored);
-  }
+  // Keyed off the sniffed bytes, not the filename — a plan set saved as "plans" with no
+  // extension is still a PDF we can read.
+  if (kind === "pdf") void extractDocumentText(db, docId, stored);
   return mapDoc(db.get<Row>("SELECT * FROM project_documents WHERE id = ?", [docId])!);
 }
 
@@ -146,5 +201,20 @@ export function projectDocsByType(db: AppDb, projectId: string): Record<string, 
     const p = s(row.stored_path);
     if (t && p && !out[t] && fs.existsSync(p)) out[t] = p;
   }
+  // The same physical document arrives under several names depending on which upload
+  // path produced it (the parser's structural-letter slot, a batch import that called it
+  // stamped plans, an operator picking "engineering letter"). Everything downstream —
+  // the submittal package and the portal bot's upload-slot matcher — asks for the
+  // canonical type, so fill it in from an alias rather than making each consumer guess.
+  for (const [canonical, aliases] of Object.entries(DOC_TYPE_ALIASES)) {
+    if (out[canonical]) continue;
+    const hit = aliases.find((a) => out[a]);
+    if (hit) out[canonical] = out[hit];
+  }
   return out;
 }
+
+const DOC_TYPE_ALIASES: Record<string, string[]> = {
+  structural_letter: ["stamped_plans", "engineering_letter"],
+  plan_set: ["combined_plan_set", "full_plan_set", "plan", "plan_pdf"],
+};

@@ -1,4 +1,10 @@
 # Litestream — continuous SQLite replication to S3.
+#
+# SCOPE: this replicates the DATABASE ONLY. Uploaded plan sets, sealed structural
+# letters, meter photos and split sheets are FILES under PROJECT_DOCS_DIR, and a
+# database-only restore yields projects whose every document 404s. The backup
+# scheduler mirrors those files into BACKUP_DIR/documents/; sync that off-box
+# separately (restic/rclone → the same bucket is fine). See docs/SERVER_SETUP.md.
 # Runs as a sidecar: `litestream replicate -config litestream.yml`
 # Or wrap the app: `litestream replicate -exec "npm start" -config litestream.yml`
 #

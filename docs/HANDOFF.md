@@ -24,6 +24,50 @@ for the hard rules; this file is the running state.
 | `dd901a8` | Edge agents: run-triage (reads learn-run debug bundles, auto-applies safe fixes) + correction handling (closes the correction lifecycle; `/apply`, `/resolve`). |
 | earlier | LLM cost cut (~10×/run), self-teaching digest topics, deterministic equipment pass v1, credential/portal-scope guards, upload naming, recording sweep. |
 
+## Scale-readiness audit (Aug 2026) — what blocks a SECOND company
+
+A workflow audit of the intake path against "multiple companies, multiple people,
+multiple locations, CAD files, conditional SS stamps". Verdict: the system works
+well as a **single-operator service bureau** and is not yet a multi-tenant product.
+
+**Fixed in the intake-hardening commit** (the three that were live-data risks):
+
+1. **Uploaded documents were on no backup path at all.** `runBackup` copied only
+   the SQLite file and `litestream.yml` replicates only the DB, so a restore
+   produced complete-looking projects whose every document 404'd. Backups now
+   mirror `PROJECT_DOCS_DIR` into `BACKUP_DIR/documents/` (append-only, not pruned
+   with snapshot rotation) and report document rows whose file has gone missing.
+2. **CAD and other non-PDFs were accepted as a plan set.** No format validation
+   existed anywhere on the upload path: a `.dwg` was stored, extracted to the
+   "[no text layer]" marker, satisfied `planSetPresent()`, and then 500'd the
+   splitter. Uploads are now sniffed by MAGIC BYTES (`fileTypes.ts`) — a renamed
+   `.dwg` doesn't get through either — and refused with a message naming the fix.
+   CAD is accepted under the `cad_source` doc type as reference material only.
+3. **An uploaded sealed structural letter never reached the AHJ.** `PACKAGE_SETS`
+   omitted `structural_letter` entirely, and the portal bot's generic `/structural/`
+   label pattern grabbed the roof-framing SHEET for slots labelled "Structural
+   engineering letter" — an AHJ rejection that looks like a successful upload.
+
+**Still open, ranked (each needs an explicit go-ahead — the first is a big change):**
+
+- **Tenancy (`org_id`) is the real gate on a second company.** `orgs`/`api_keys`
+  exist (migration v7) and `users`/`review_submissions` carry `org_id`, but
+  `projects`, `clients`, `project_documents` and `portal_credentials` do NOT, and
+  ~189 of 193 routes have no role check. Today anyone who can log in sees every
+  company's projects and portal credentials. Needs: migration adding `org_id` to
+  those four tables (backfill `'org-default'`), an org filter in every repository
+  read, and a role gate on write routes. Do this BEFORE any outside company gets a
+  login — retrofitting it after real multi-company data exists is far worse.
+- **One `resolveStampRequirement(project, {codeContext, processProfile})`** →
+  `{required, source, reason, waivable}` in `permitPath.ts`, read by all four
+  consumers instead of each deciding separately, satisfiable only by a real file.
+  123 of 381 AHJ rows already carry `requiresStructuralStamp` and nothing reads it.
+- **Per-company defaults** (contractor license, CSLB/PE numbers, signature blocks,
+  logo, portal accounts) — currently single-installer assumptions in several docs.
+- **Document retention/deletion policy** — the backup mirror is append-only by
+  design, which is correct for recovery but needs a stated policy before
+  someone else's customer data lives in it.
+
 ## Audited autonomy/intelligence backlog (from the 4-auditor review, ranked — full plan in the session workflow output)
 
 Implemented this commit: ranks 1-2, 4-9 of the plan. Still open, in order:

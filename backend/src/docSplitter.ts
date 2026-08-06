@@ -83,10 +83,19 @@ const PACKAGE_SETS: Record<string, string[]> = {
   // Meter photo is uploaded separately and never in the plan set.
   nem: ["meter_photo", "sld", "site_plan", "inverter_spec"],
   // ProjectDox AHJ permit upload set — each sheet in its own slot.
-  permit: ["sld", "site_plan", "structural", "module_spec", "inverter_spec", "labels"],
+  permit: ["sld", "site_plan", "structural", "structural_letter", "module_spec", "inverter_spec", "labels"],
   // Everything we could split/attach — for debug or portals with no defined set yet.
-  all: ["sld", "site_plan", "structural", "module_spec", "inverter_spec", "labels", "meter_photo", "utility_bill"],
+  all: ["sld", "site_plan", "structural", "structural_letter", "module_spec", "inverter_spec", "labels", "meter_photo", "utility_bill"],
 };
+
+// Doc types packaged WHEN PRESENT but never reported as missing. The sealed structural
+// letter is only required for some projects (engineered path, or a jurisdiction stamp
+// threshold) and requiredDocuments() is the single authority on which — duplicating that
+// rule here would give two places to keep in sync and would flag every clean prescriptive
+// job as incomplete. What this set fixes is the other half: before, "structural_letter"
+// was absent from PACKAGE_SETS entirely, so a stamped letter the operator had uploaded
+// was silently left out of the AHJ package.
+const CONDITIONAL_PACKAGE_DOC_TYPES = new Set(["structural_letter", "utility_bill"]);
 
 export interface UtilityPackageResult {
   target: string;
@@ -185,11 +194,14 @@ export async function buildUtilityPackage(db: AppDb, projectId: string, target =
   const packaged: string[] = [];
   const missing: string[] = [];
   for (const docType of wanted) {
+    // Separately-uploaded types (meter photo, utility bill, the sealed structural
+    // letter) come straight from project_documents; projectDocsByType has already
+    // resolved the aliases operators file them under.
     const filePath = available[docType];
     if (filePath && fs.existsSync(filePath)) {
       zip.addFile(`${docType}${path.extname(filePath) || ".pdf"}`, fs.readFileSync(filePath));
       packaged.push(docType);
-    } else {
+    } else if (!CONDITIONAL_PACKAGE_DOC_TYPES.has(docType)) {
       missing.push(docType);
     }
   }

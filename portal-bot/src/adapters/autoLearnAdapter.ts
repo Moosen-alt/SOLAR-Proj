@@ -288,6 +288,14 @@ const UPLOAD_LABEL_PATTERNS: Array<{ re: RegExp; docType: string }> = [
   { re: /(completed|signed|permit|solar)\s*application|application\s*(form|packet)/i, docType: "permit_application" },
   { re: /one[-\s]?line|single[-\s]?line|\bsld\b|electrical\s*(diagram|schematic|one)/i, docType: "sld" },
   { re: /site\s*plan|plot\s*plan/i, docType: "site_plan" },
+  // The SEALED LETTER before the generic structural pattern. These are different
+  // documents: "structural" is the roof-framing/attachment-detail sheet split out of
+  // the plan set, while a slot asking for an engineer's letter, calcs, or a wet stamp
+  // wants the separately-uploaded PE-sealed PDF. Ordered first because the generic
+  // pattern below matches the word "structural" and would otherwise file the framing
+  // sheet against "Structural engineering letter" — an AHJ rejection that looks like
+  // a successful upload.
+  { re: /(structural|engineer(ing|'s|s')?|\bPE\b|design)\s*(letter|certification|certificate)|letter\s*of\s*certification|structural\s*(calc|analysis|report)|wet\s*stamp|stamped\s*letter|sealed\s*letter/i, docType: "structural_letter" },
   { re: /structural|roof\s*framing|mounting|attachment\s*detail/i, docType: "structural" },
   { re: /inverter|micro[-\s]?inverter/i, docType: "inverter_spec" },
   { re: /module|panel\s*(spec|data\s*sheet)|cut\s*sheets?/i, docType: "module_spec" },

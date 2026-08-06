@@ -287,19 +287,22 @@
                     <option value="meter_photo">Meter photo</option>
                     <option value="sld">SLD / one-line</option>
                     <option value="site_plan">Site / plot plan</option>
-                    <option value="structural">Structural</option>
+                    <option value="structural">Structural sheet (roof framing / attachment)</option>
+                    <option value="structural_letter">Structural letter (PE / SE sealed)</option>
                     <option value="module_spec">Module spec</option>
                     <option value="inverter_spec">Inverter spec</option>
+                    <option value="cad_source">CAD source drawing (reference only)</option>
                     <option value="other">Other</option>
                   </select>
                 </label>
-                <label style="flex:2">File(s)<input id="docUploadFile" type="file" accept=".pdf,image/*,application/pdf" multiple /></label>
+                <label style="flex:2">File(s)<input id="docUploadFile" type="file" accept=".pdf,image/*,application/pdf,.dwg,.dxf,.rvt,.skp,.dgn" multiple /></label>
               </div>
               <div class="actions">
                 <button id="docUploadBtn" class="secondary"><i data-lucide="upload"></i><span>Upload</span></button>
                 <span id="docUploadStatus" class="muted" style="font-size:12px"></span>
               </div>
               <p class="muted" style="font-size:12px;margin:4px 0 0">Tip: select multiple files at once to attach several checklist docs in one go.</p>
+              <p class="muted" style="font-size:12px;margin:4px 0 0">Submittable documents must be PDFs — portals only accept PDFs and we can't read sheets out of a CAD file. Upload a .dwg/.dxf/.rvt as <strong>CAD source drawing</strong> to keep it on the project for reference; it is stored but never submitted and never counts as the plan set.</p>
             </section>
           </div>
         </details>

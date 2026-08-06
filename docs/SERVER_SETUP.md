@@ -60,12 +60,36 @@ WantedBy=multi-user.target
 HTTPS front door (Caddy — automatic certificates):
 `caddy reverse-proxy --from autopilot.yourco.com --to localhost:4000`
 
-Rules: ONE instance only (SQLite). Backups: the built-in scheduler snapshots
-the DB (`POST /api/admin/backup`, `GET /api/admin/backups`); add an off-box
-copy (restic → S3) of the data dir nightly. Updates: `git pull && npm install
+Rules: ONE instance only (SQLite). Updates: `git pull && npm install
 && npm run smoke && systemctl restart solar` — migrations self-apply.
 NEVER run with AUTH_ENABLED unset on a public interface (the server logs a
 warning for a reason).
+
+### Backups — two halves, and you need both
+
+Project state lives in **two** places: rows in SQLite, and the uploaded files
+(plan sets, sealed structural letters, meter photos, split sheets) under
+`PROJECT_DOCS_DIR` (default `backend/data/project-documents`). A database-only
+backup restores clean-looking projects whose every document 404s, so each
+snapshot does both:
+
+- `POST /api/admin/backup` / the scheduler writes `backups/autopilot-<ts>.sqlite`
+  and mirrors new document files into `backups/documents/`. The mirror is
+  append-only and is deliberately NOT pruned with the rotating snapshots — a
+  14-day-old snapshot restored tomorrow still needs the files it referenced.
+- Each run also counts document rows whose file is missing from the live tree
+  and logs `[backup] WARNING: N document row(s) point at files missing…`. That
+  line means data has already been lost locally; look for the copy in
+  `backups/documents/`.
+
+`litestream.yml` replicates **only the SQLite file** — continuous DB replication,
+not files. So the off-box copy still matters: nightly `restic`/`rclone` of the
+whole data dir (or at minimum `backups/`) to S3/R2. Restore = `litestream restore`
+(or the newest snapshot) **plus** the document tree; do the files first, so the
+restored rows point at something.
+
+Env: `BACKUP_DIR`, `BACKUP_KEEP` (snapshots, default 14), `BACKUP_INTERVAL_HOURS`
+(default 24), `PROJECT_DOCS_DIR`.
 
 ## Employee logins
 
