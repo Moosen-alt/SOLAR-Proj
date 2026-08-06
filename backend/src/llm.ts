@@ -778,6 +778,15 @@ NARRATIVE EVIDENCE BLOBS — also include these as fields (value = a short factu
 - projectDescriptionText: one-paragraph scope (size, module/inverter counts, mounting, interconnection)
 - locateCalloutText: any utility-locate / call-before-dig (811) callouts on the plan set. If the system is roof-mounted with no underground conduit or excavation, write "No excavation — roof mount only". If a 811 callout or locate note is shown, quote it. Never leave blank.
 
+READING PLAN-SET TEXT (these quirks are common across design vendors — handle them, don't be defeated by them):
+- LABELS ARE OFTEN GLUED TO THEIR VALUES with no space, because PDF table cells extract without whitespace: "SYSTEM SIZE10800WATTS DC", "MODULES13Q.PEAK DUO ML-G10+ 400W", "INVERTER(S)27ENPHASE IQ7PLUS-72-2-US", "NUMBER OF MODULES27", "SIZE (kW)10.8", "LBS/SQ.FT2.46". Split the label from the value and read the value.
+- UNITS VARY: system size is often given in WATTS, not kW ("10800WATTS DC" -> dcKw 10.8; "4810WATTS AC" -> acKw 4.81). Always return dcKw/acKw in KILOWATTS. A "SYSTEM SPECIFICATIONS" table elsewhere in the set may state "SIZE (kW)" directly — prefer whichever is unambiguous, and make sure the two agree.
+- QUANTITY IS OFTEN GLUED TO THE MAKE: "27QCELLS Q.PEAK DUO BLK ML-G10" means moduleQty 27, moduleMake "QCELLS", moduleModel "Q.PEAK DUO BLK ML-G10"; "13ENPHASE IQ7PLUS-72-2-US" means 13 microinverters, pvMicroMake "Enphase", pvMicroModel "IQ7PLUS-72-2-US". A trailing wattage in the module string ("... ML-G10+ 400W", or a lone "400" in the next cell) is moduleWattage.
+- PV DEAD LOAD is frequently expressed as a distributed weight in the array/loading table — "LBS/SQ.FT2.46", "DISTRIBUTED LOAD 2.46 PER SQFT" — which IS deadLoad in psf (2.46). Do not confuse it with MODULE WEIGHT (LBS) or SYSTEM WEIGHT (LBS), which are totals, not psf.
+- ADDRESS FIELDS CAN RUN TOGETHER, and an assessor parcel number often follows the ZIP with no separator: "32189 CAMINO CALIARITEMECULA, CA 92592959352002" is street "32189 Camino Caliari", city "Temecula", state CA, zip "92592", parcelNumber "959352002". A US ZIP is 5 digits (or 5+4 hyphenated) — never absorb trailing digits into it.
+- MULTIPLE ROOF PLANES show as a slashed list: "AZIMUTH(°)180/ 0" or "TILT 18/ 22" means TWO arrays — populate pvArrays with one entry per plane.
+- SOME PLAN SETS CARRY NO STRUCTURAL BLOCK AT ALL (common in California, where loads live in a separate stamped structural letter). If snow/wind/dead load/rafter data is not in the documents, OMIT those keys — never infer them from the jurisdiction or from typical values.
+
 Rules:
 - Set confidence honestly; put anything <0.6 or guessed into lowConfidenceFields.
 - Account/meter numbers: only digits you can actually read; never invent or pad. Join spaced account segments (e.g. "65564191-001 4" -> "65564191-0014"); do not drop a trailing check digit.
