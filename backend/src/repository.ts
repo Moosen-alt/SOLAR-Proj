@@ -4388,17 +4388,20 @@ export function resolveOpenCorrectionsOnResubmit(db: AppDb, projectId: string): 
   return open.length;
 }
 
-export function listOverdueCorrections(db: AppDb): CorrectionRecord[] {
+export function listOverdueCorrections(db: AppDb, orgId: string | null = DEFAULT_ORG_ID): CorrectionRecord[] {
   const today = new Date().toISOString().slice(0, 10);
+  // corrections carry no org of their own; they reach one through their project,
+  // which is the grain that owns them.
   const rows = db.query<Row>(
-    `SELECT * FROM corrections
-     WHERE closed_at IS NULL
+    `SELECT c.* FROM corrections c
+     JOIN projects p ON p.id = c.project_id${orgId ? " AND p.org_id = ?" : ""}
+     WHERE c.closed_at IS NULL
        AND (
-         due_at < ?
-         OR (due_at IS NULL AND date(created_at, '+' || sla_days || ' days') < ?)
+         c.due_at < ?
+         OR (c.due_at IS NULL AND date(c.created_at, '+' || c.sla_days || ' days') < ?)
        )
-     ORDER BY created_at ASC`,
-    [today, today],
+     ORDER BY c.created_at ASC`,
+    orgId ? [orgId, today, today] : [today, today],
   );
   return rows.map(mapCorrection);
 }

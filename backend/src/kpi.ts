@@ -1,3 +1,4 @@
+import { DEFAULT_ORG_ID } from "./db";
 import type { AppDb, SqlParam } from "./db";
 
 type Row = Record<string, SqlParam>;
@@ -147,32 +148,45 @@ export function touchProjectMetrics(db: AppDb, projectId: string): void {
 
 export function getKpiReport(
   db: AppDb,
-  options: { startDate?: string; endDate?: string } = {},
+  options: { startDate?: string; endDate?: string; orgId?: string | null } = {},
 ): KpiReport {
+  // Tenant scope. `null` reads across every org (superadmin); omitting it means the
+  // default tenant, so a forgotten filter under-reports rather than leaking.
+  const orgId = options.orgId === null ? null : (options.orgId || DEFAULT_ORG_ID);
+  const orgAnd = (col: string) => (orgId ? ` AND ${col} = ?` : "");
+  const orgP = orgId ? [orgId] : [];
   const start = options.startDate || new Date(Date.now() - 90 * 86_400_000).toISOString().slice(0, 10);
   const end = options.endDate || new Date().toISOString().slice(0, 10);
   const today = new Date().toISOString().slice(0, 10);
 
   const metrics = db.query<Row>(
-    "SELECT * FROM project_metrics WHERE submitted_at >= ? AND submitted_at <= ?",
-    [start, end + "T23:59:59"],
+    `SELECT m.* FROM project_metrics m
+     JOIN projects p ON p.id = m.project_id${orgId ? " AND p.org_id = ?" : ""}
+     WHERE m.submitted_at >= ? AND m.submitted_at <= ?`,
+    [...orgP, start, end + "T23:59:59"],
   ).map(mapMetrics);
 
   const allCorrections = db.query<Row>(
     `SELECT c.*, p.assigned_user_id FROM corrections c
-     JOIN projects p ON c.project_id = p.id
+     JOIN projects p ON c.project_id = p.id${orgId ? " AND p.org_id = ?" : ""}
      WHERE c.created_at >= ? AND c.created_at <= ?`,
-    [start, end + "T23:59:59"],
+    [...orgP, start, end + "T23:59:59"],
   );
   const openCorrections = Number(
-    db.get<Row>("SELECT COUNT(*) as cnt FROM corrections WHERE closed_at IS NULL")?.cnt ?? 0,
+    db.get<Row>(
+      `SELECT COUNT(*) as cnt FROM corrections c
+       JOIN projects p ON p.id = c.project_id${orgId ? " AND p.org_id = ?" : ""}
+       WHERE c.closed_at IS NULL`,
+      orgP,
+    )?.cnt ?? 0,
   );
   const overdueCorrections = Number(
     db.get<Row>(
-      `SELECT COUNT(*) as cnt FROM corrections
-       WHERE closed_at IS NULL
-         AND (due_at < ? OR (due_at IS NULL AND date(created_at, '+' || sla_days || ' days') < ?))`,
-      [today, today],
+      `SELECT COUNT(*) as cnt FROM corrections c
+       JOIN projects p ON p.id = c.project_id${orgId ? " AND p.org_id = ?" : ""}
+       WHERE c.closed_at IS NULL
+         AND (c.due_at < ? OR (c.due_at IS NULL AND date(c.created_at, '+' || c.sla_days || ' days') < ?))`,
+      [...orgP, today, today],
     )?.cnt ?? 0,
   );
 
@@ -193,13 +207,16 @@ export function getKpiReport(
   const handoffCount = Number(
     db.get<Row>(
       `SELECT COUNT(*) as cnt FROM projects
-       WHERE status = 'handoff_ready' AND updated_at >= ? AND updated_at <= ?`,
-      [start, end + "T23:59:59"],
+       WHERE status = 'handoff_ready'${orgAnd("org_id")} AND updated_at >= ? AND updated_at <= ?`,
+      [...orgP, start, end + "T23:59:59"],
     )?.cnt ?? 0,
   );
 
   // Per-user breakdown
-  const users = db.query<Row>("SELECT * FROM users WHERE active = 1");
+  const users = db.query<Row>(
+    `SELECT * FROM users WHERE active = 1${orgAnd("org_id")}`,
+    orgP,
+  );
   const byUser = users.map((u) => {
     const uid = String(u.id);
     const userMetrics = metrics.filter((m) => m.assignedUserId === uid);
@@ -207,16 +224,16 @@ export function getKpiReport(
     const userOverdue = Number(
       db.get<Row>(
         `SELECT COUNT(*) as cnt FROM corrections c
-         JOIN projects p ON c.project_id = p.id
+         JOIN projects p ON c.project_id = p.id${orgId ? " AND p.org_id = ?" : ""}
          WHERE p.assigned_user_id = ? AND c.closed_at IS NULL
            AND (c.due_at < ? OR (c.due_at IS NULL AND date(c.created_at, '+' || c.sla_days || ' days') < ?))`,
-        [uid, today, today],
+        [...orgP, uid, today, today],
       )?.cnt ?? 0,
     );
     const userOpen = Number(
       db.get<Row>(
-        "SELECT COUNT(*) as cnt FROM projects WHERE assigned_user_id = ? AND status NOT IN ('handoff_ready','blocked')",
-        [uid],
+        `SELECT COUNT(*) as cnt FROM projects WHERE assigned_user_id = ?${orgAnd("org_id")} AND status NOT IN ('handoff_ready','blocked')`,
+        [uid, ...orgP],
       )?.cnt ?? 0,
     );
     return {
@@ -225,8 +242,8 @@ export function getKpiReport(
       submitted: userMetrics.length,
       handedOff: Number(
         db.get<Row>(
-          "SELECT COUNT(*) as cnt FROM projects WHERE assigned_user_id = ? AND status = 'handoff_ready' AND updated_at >= ? AND updated_at <= ?",
-          [uid, start, end + "T23:59:59"],
+          `SELECT COUNT(*) as cnt FROM projects WHERE assigned_user_id = ?${orgAnd("org_id")} AND status = 'handoff_ready' AND updated_at >= ? AND updated_at <= ?`,
+          [uid, ...orgP, start, end + "T23:59:59"],
         )?.cnt ?? 0,
       ),
       openProjects: userOpen,

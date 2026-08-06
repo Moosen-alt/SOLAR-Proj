@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import type { AppDb, SqlParam } from "./db";
+import { DEFAULT_ORG_ID } from "./db";
 import { nowIso } from "./time";
 
 type Row = Record<string, SqlParam>;
@@ -46,9 +47,14 @@ function mapCustomer(row: Row): CustomerRecord {
   };
 }
 
-export function listCustomers(db: AppDb, opts: { stage?: string; search?: string } = {}): CustomerRecord[] {
+export function listCustomers(db: AppDb, opts: { stage?: string; search?: string; orgId?: string | null } = {}): CustomerRecord[] {
   const where: string[] = [];
   const params: SqlParam[] = [];
+  // Tenant scope first. `orgId: null` is the explicit superadmin bypass; omitting it
+  // means the default tenant, so a caller who forgets sees one org rather than every
+  // company's lead list.
+  const scopeOrgId = opts.orgId === null ? null : (opts.orgId || DEFAULT_ORG_ID);
+  if (scopeOrgId) { where.push("org_id = ?"); params.push(scopeOrgId); }
   if (opts.stage) {
     where.push("lead_stage = ?");
     params.push(opts.stage);
@@ -69,13 +75,13 @@ export function getCustomer(db: AppDb, id: string): CustomerRecord | null {
 
 type CustomerInput = Partial<Omit<CustomerRecord, "id" | "createdAt" | "updatedAt">>;
 
-export function createCustomer(db: AppDb, input: CustomerInput): CustomerRecord {
+export function createCustomer(db: AppDb, input: CustomerInput, orgId: string = DEFAULT_ORG_ID): CustomerRecord {
   const id = crypto.randomUUID();
   const ts = nowIso();
   db.run(
     `INSERT INTO customers
-      (id, name, email, phone, address, city, state, zip, lead_source, lead_stage, client_id, assigned_user_id, notes, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (id, name, email, phone, address, city, state, zip, lead_source, lead_stage, client_id, assigned_user_id, notes, created_at, updated_at, org_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       (input.name ?? "").trim(),
@@ -92,6 +98,7 @@ export function createCustomer(db: AppDb, input: CustomerInput): CustomerRecord 
       input.notes ?? "",
       ts,
       ts,
+      orgId,
     ],
   );
   return getCustomer(db, id)!;

@@ -38,6 +38,39 @@ AHJ documents → stage the portal application → human verifies + submits.
    proposals require human approval (`/api/corrections/:id/apply`).
 5. A permit track must never resolve/launch a utility portal URL (PowerClerk)
    and vice versa — see `permitSafeUrl` + track-scoped lookups in repository.ts.
+6. Tenant data never crosses orgs. New `/api/*` routes are DENY-BY-DEFAULT
+   (`entitlementGate`); anything under `/api/projects/:id`, `/api/clients/:id`,
+   `/api/customers/:id` inherits a scope guard automatically. A route at a NEW
+   top-level path must be scoped or justified in `routeScope.test.ts`, which
+   fails until you do. Out-of-scope returns 404, never 403.
+
+## Tenancy model (two grains — don't conflate them)
+
+- **`client`** = the solar company the work is FOR. On `projects`,
+  `portal_credentials` (NOT NULL), `customers`, `portal_profiles`. Carries the
+  licence/business fields. This is the service-bureau grain.
+- **`org`** = the tenant that LOGS IN and holds a licence. On `users`,
+  `api_keys`, `review_submissions`, and (migration v11) `projects`, `clients`,
+  `customers`, `email_tracking_sources`, `job_queue`, `communications`.
+  Child rows (qc_results, submissions, documents, corrections…) reach an org
+  through their project — do NOT add `org_id` to them.
+- Data-layer convention: an org filter of `string | null`, where `null` means
+  "read across every org" (superadmin) and omitting it means the default tenant.
+  Never an optional trailing `orgId?` — that fails open when forgotten.
+- Enforcement lives at the ROUTE EDGE, not the data layer, so background work
+  (scheduler, job queue, permit monitor) can run as system with no principal.
+
+**Products/entitlements**: `orgs.edition` is a legacy display label. What an org
+can reach comes from `org_entitlements` rows against the registry in
+`entitlements.ts` — which is also the single source of truth for the API-key
+allowlist (401) and the licensing gate (403), so they cannot desync.
+
+**Shared knowledge is shared ON PURPOSE**: `permit_utility_knowledge`,
+`jurisdiction_code_profiles`, `ahj_form_templates`, `portal_recipes`,
+`cec_equipment`. An AHJ's portal quirk learned once should help every tenant —
+that pooled knowledge is the product's core asset. Only
+`historical_failure_examples` (which carries homeowner names/addresses) is
+org-scoped. Do not "fix" the shared tables by scoping them without a decision.
 
 ## Architecture notes (things that will bite you)
 

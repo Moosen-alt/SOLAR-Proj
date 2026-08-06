@@ -48,16 +48,39 @@ well as a **single-operator service bureau** and is not yet a multi-tenant produ
    label pattern grabbed the roof-framing SHEET for slots labelled "Structural
    engineering letter" — an AHJ rejection that looks like a successful upload.
 
-**Still open, ranked (each needs an explicit go-ahead — the first is a big change):**
+**Tenancy — DONE (migration v11 + three commits).** `org_id` on the root tables,
+entitlements replacing the single `edition` string, superadmin, role lockdown,
+route scope guards, and `tenancy.test.ts` proving isolation over real HTTP. See
+CLAUDE.md for the model and the conventions. What it fixed, verified in code:
 
-- **Tenancy (`org_id`) is the real gate on a second company.** `orgs`/`api_keys`
-  exist (migration v7) and `users`/`review_submissions` carry `org_id`, but
-  `projects`, `clients`, `project_documents` and `portal_credentials` do NOT, and
-  ~189 of 193 routes have no role check. Today anyone who can log in sees every
-  company's projects and portal credentials. Needs: migration adding `org_id` to
-  those four tables (backfill `'org-default'`), an org filter in every repository
-  read, and a role gate on write routes. Do this BEFORE any outside company gets a
-  login — retrofitting it after real multi-company data exists is far worse.
+- `matchProjectForEmail` loaded EVERY project when a source had no client set and
+  fuzzy-matched inbound email against all of them — a cross-tenant WRITE (status
+  checks, corrections, status transitions). Scope now comes from the source row.
+- `PUT /api/users/:id` accepted `role` from anyone: any authenticated user could
+  make themselves admin. Roles now need an admin actor from the session, nobody
+  edits their own role, and only a superadmin grants superadmin.
+- `GET /api/clients` returned every client id; `portal_credentials` is keyed only
+  on client_id, so that was the route to another company's portal logins.
+- `sseBroadcast` fanned every event to every socket, including
+  `Permit issued for ${homeownerName}`. Now per-tenant, with unattributable
+  events going to superadmins only.
+- `getOrg` returned the DEFAULT org for any unknown id — a licence + data-scope
+  escalation on a typo'd or stale org id.
+- Admin-shaped routes (`/api/admin/*`, `/api/diagnostics`) had no role check.
+
+**Tenancy follow-ups still open** (each is named in `routeScope.test.ts`'s
+`UNSCOPED_BY_DESIGN` map with a TODO, so they cannot be silently forgotten):
+
+- Scope via parent project: `/api/corrections/:id/*`, `/api/portal-runs/:id/*`,
+  `/api/learn-runs`, `/api/communications`. Same `scopeGuard` shape, but the
+  guard needs to join through `project_id` rather than read `org_id` directly.
+- `/api/jobs` + `job_queue` fairness: the column exists (v11) but the claim query
+  is still a global FIFO with `MAX_JOBS_PER_TICK` 5, and `runDuePermitChecks`
+  takes a global `LIMIT 50` — one busy tenant starves every other.
+- `/api/batch-import/*` must stamp imported projects with the caller's org.
+- `/api/signatures` — operator signatures are global; make them per-org.
+- `/api/ops-actions`, `/api/ops-report` — aggregate views, still unscoped.
+- `knowledgeBase.ts:2010` startup backfill scans every project unbounded.
 - **One `resolveStampRequirement(project, {codeContext, processProfile})`** →
   `{required, source, reason, waivable}` in `permitPath.ts`, read by all four
   consumers instead of each deciding separately, satisfiable only by a real file.

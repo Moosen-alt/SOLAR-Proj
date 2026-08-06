@@ -15,7 +15,10 @@ import os from "node:os";
 import path from "node:path";
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tenancy-test-"));
-const PORT = 4930 + Math.floor(Math.random() * 20);
+// Distinct port band per server-booting suite: filledFormDownload owns 4930-4949
+// and reviewApi owns 4970-4989. These run sequentially in the chain, but a socket
+// lingering in TIME_WAIT from the previous suite made a shared band flaky.
+const PORT = 5040 + Math.floor(Math.random() * 20);
 const BASE = `http://127.0.0.1:${PORT}`;
 
 const env = {

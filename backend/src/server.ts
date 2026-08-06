@@ -50,6 +50,7 @@ import { extractZipToWorkdir } from "./batchZip";
 import { AUTH_ENABLED, currentUser, login, logout, me, requireAuth, seedAdminUser, entitlementGate, requestOrg, createApiKey, ADMIN_ROLES } from "./auth";
 import { PRODUCTS, PRODUCT_KEYS, grantProduct, revokeProduct, orgEntitlements, productsForEdition } from "./entitlements";
 import { requestScope, orgFilter, reqOrgFilter, assertInScope, auditCrossOrgAccess } from "./scope";
+import { DEFAULT_ORG_ID } from "./db";
 import { ensureStatusShareToken, formatProjectAddress, statusShareUrl } from "./clientNotifier";
 import { listCodeProfiles, getCodeProfile, saveResearchedCodeProfile, saveVerifiedCodeProfile, codeProfileKey } from "./codeProfiles";
 import { runStandaloneReview, getReviewSubmission, listReviewSubmissions, reviewSubjectToProject } from "./reviewSubject";
@@ -80,7 +81,7 @@ import { addAuditLog } from "./audit";
 import { buildAuthUrl, exchangeCodeForTokens, gmailStatus, pollGmail } from "./gmail";
 import { imapStatus, pollImap, upsertImapSource } from "./emailPoller";
 import { createIntakeRequest, getIntakeRequestPublic, submitIntakeRequest } from "./intakeRequests";
-import { ensureHeartbeat, sseBroadcast, sseSubscribe } from "./events";
+import { ensureHeartbeat, sseBroadcast, sseSubscribe, setSseOrgResolver } from "./events";
 import {
   addManualCorrection,
   draftLatestCorrectionResponse,
@@ -214,6 +215,13 @@ app.use((_req, res, next) => {
 // Auth gate (no-op unless AUTH_ENABLED=true). Must run before static so
 // unauthenticated requests for the dashboard are redirected to /login.
 seedAdminUser(db);
+
+// Teach the event bus how to attribute an event to a tenant. Injected here so
+// events.ts (imported by nearly everything) stays free of a database dependency.
+setSseOrgResolver((projectId) => {
+  const row = db.get<{ org_id?: string }>("SELECT org_id FROM projects WHERE id = ?", [projectId]);
+  return row ? String(row.org_id || DEFAULT_ORG_ID) : null;
+});
 app.post("/api/auth/login", (req, res) => login(db, req, res));
 app.post("/api/auth/logout", (req, res) => logout(req, res));
 app.get("/api/auth/me", (req, res) => me(db, req, res));
@@ -276,7 +284,8 @@ app.get("/health", (_req, res) => {
 });
 
 // Full runtime diagnostics — paste this output to troubleshoot. No secrets/PII.
-app.get("/api/diagnostics", (_req, res) => {
+app.get("/api/diagnostics", (req, res) => {
+  requireAdmin(req);
   res.json(collectDiagnostics(db, { version: APP_VERSION, port, dbPath }));
 });
 
@@ -924,7 +933,8 @@ app.post("/api/intake/:token", asyncHandler(async (req, res) => {
 // Frontend subscribes here to receive typed events: correction_received,
 // permit_issued, nem_approved, run_paused, run_failed, etc. No sensitive data.
 app.get("/api/events", (req, res) => {
-  sseSubscribe(res);
+  const scope = requestScope(db, req);
+  sseSubscribe(res, { orgId: scope.orgId, crossOrg: scope.crossOrg });
   ensureHeartbeat();
 });
 
@@ -1164,8 +1174,8 @@ app.post("/api/projects/:id/qc", (req, res) => {
   res.json(rerunQc(db, req.params.id));
 });
 
-app.get("/api/corrections/overdue", (_req, res) => {
-  res.json(listOverdueCorrections(db));
+app.get("/api/corrections/overdue", (req, res) => {
+  res.json(listOverdueCorrections(db, reqOrgFilter(db, req)));
 });
 
 app.patch("/api/corrections/:id/sla", (req, res) => {
@@ -1569,7 +1579,7 @@ app.post("/api/projects/:id/assign", (req, res) => {
 
 // Customers / leads
 app.get("/api/customers", (req, res) => {
-  res.json(listCustomers(db, { stage: req.query.stage ? String(req.query.stage) : undefined, search: req.query.search ? String(req.query.search) : undefined }));
+  res.json(listCustomers(db, { stage: req.query.stage ? String(req.query.stage) : undefined, search: req.query.search ? String(req.query.search) : undefined, orgId: reqOrgFilter(db, req) }));
 });
 app.get("/api/customers/:id", (req, res) => {
   const customer = getCustomer(db, req.params.id);
@@ -1578,7 +1588,7 @@ app.get("/api/customers/:id", (req, res) => {
 });
 app.post("/api/customers", (req, res) => {
   if (!req.body?.name && !req.body?.email && !req.body?.phone) throw new HttpError(400, "A name, email, or phone is required.");
-  res.status(201).json(createCustomer(db, req.body || {}));
+  res.status(201).json(createCustomer(db, req.body || {}, requestScope(db, req).orgId));
 });
 app.put("/api/customers/:id", (req, res) => {
   res.json(updateCustomer(db, req.params.id, req.body || {}));
@@ -1640,14 +1650,17 @@ app.post("/api/projects/:id/build-utility-package", asyncHandler(async (req, res
 
 // Backups (manual trigger + list; a scheduled snapshot also runs automatically)
 // Manual CEC equipment-list sync (weekly scheduler does this automatically).
-app.post("/api/admin/cec-sync", asyncHandler(async (_req, res) => {
+app.post("/api/admin/cec-sync", asyncHandler(async (req, res) => {
+  requireAdmin(req);
   res.json(await syncCecEquipment(db));
 }));
 
-app.post("/api/admin/backup", (_req, res) => {
+app.post("/api/admin/backup", (req, res) => {
+  requireAdmin(req);
   res.json(runBackup(db));
 });
-app.get("/api/admin/backups", (_req, res) => {
+app.get("/api/admin/backups", (req, res) => {
+  requireAdmin(req);
   res.json(listBackups());
 });
 
@@ -1655,7 +1668,7 @@ app.get("/api/admin/backups", (_req, res) => {
 app.get("/api/kpi", (req, res) => {
   const startDate = typeof req.query.startDate === "string" ? req.query.startDate : undefined;
   const endDate = typeof req.query.endDate === "string" ? req.query.endDate : undefined;
-  res.json(getKpiReport(db, { startDate, endDate }));
+  res.json(getKpiReport(db, { startDate, endDate, orgId: reqOrgFilter(db, req) }));
 });
 // Job queue
 app.get("/api/jobs", (req, res) => {
