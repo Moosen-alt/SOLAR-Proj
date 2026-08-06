@@ -1967,14 +1967,15 @@ app.post("/api/parser/llm-extract", asyncHandler(async (req, res) => {
   const planText = typeof req.body?.planText === "string" ? req.body.planText : "";
   const utilityBillText = typeof req.body?.utilityBillText === "string" ? req.body.utilityBillText : "";
   const meterText = typeof req.body?.meterText === "string" ? req.body.meterText : "";
+  const structuralLetterText = typeof req.body?.structuralLetterText === "string" ? req.body.structuralLetterText : "";
   const defaultState = typeof req.body?.defaultState === "string" ? req.body.defaultState : undefined;
-  if (!planText.trim() && !utilityBillText.trim() && !meterText.trim()) {
-    throw new HttpError(400, "Provide at least one of planText, utilityBillText, or meterText.");
+  if (!planText.trim() && !utilityBillText.trim() && !meterText.trim() && !structuralLetterText.trim()) {
+    throw new HttpError(400, "Provide at least one of planText, utilityBillText, meterText, or structuralLetterText.");
   }
   const { createLLMProvider } = await import("./llm");
   const llm = createLLMProvider();
   try {
-    const result = await llm.extractProjectFields({ planText, utilityBillText, meterText, defaultState });
+    const result = await llm.extractProjectFields({ planText, utilityBillText, meterText, structuralLetterText, defaultState });
     res.json(result);
   } catch (err) {
     throw normalizeLlmError(err);

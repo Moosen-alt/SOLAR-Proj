@@ -218,6 +218,10 @@
         <label>Meter photo image or PDF</label>
         <input id="meterPhotoFile" type="file" accept=".pdf,image/*,application/pdf" />
       </div>
+      <div>
+        <label>Stamped structural letter / calcs <span class="muted">(when required)</span></label>
+        <input id="structuralLetterFile" type="file" accept=".pdf,image/*,application/pdf" />
+      </div>
     </div>
 
     <div class="section-note" style="margin-top:12px;background:rgba(34,197,94,.06);border-color:rgba(34,197,94,.3)">
@@ -317,12 +321,19 @@
       <div><label>PV breaker / OCPD (A)</label><input id="pvBreaker" /></div>
       <div><label>Roof material</label><input id="roofMaterial" /></div>
       <div><label>Racking</label><input id="racking" /></div>
-      <div><label>Mounting</label><input id="mounting" value="Roof Mount" /></div>
-      <div><label>Wind speed / exposure</label><input id="wind" /></div>
-      <div><label>Snow load</label><input id="snow" /></div>
-      <div><label>Dead load / PSF</label><input id="deadLoad" /></div>
+      <div><label>Mounting</label><input id="mounting" placeholder="Roof Mount (from the plan set)" /></div>
+      <div><label>Wind exposure (B/C/D)</label><input id="wind" /></div>
+      <div><label>Design wind speed (mph)</label><input id="windSpeed" /></div>
+      <div><label>Snow load (ground, psf)</label><input id="snow" /></div>
+      <div><label>PV dead load (psf)</label><input id="deadLoad" /></div>
+      <div><label>Risk category (I/II)</label><input id="riskCategory" /></div>
       <div><label>Roof rafter size</label><input id="roofRafterSize" /></div>
       <div><label>Roof rafter spacing</label><input id="roofRafterSpacing" /></div>
+      <div><label>Framing type (rafter/truss)</label><input id="framingType" /></div>
+      <div><label>Conventional light-frame? (yes/no)</label><input id="lightFrame" /></div>
+      <div><label>Existing roof layers</label><input id="roofLayers" /></div>
+      <div><label>Module height above roof (in)</label><input id="moduleHeightAboveRoof" /></div>
+      <div><label>Roof slope</label><input id="roofSlope" /></div>
       <div><label>Grade of wood</label><input id="woodGrade" /></div>
       <div><label>Roof rafter span in feet</label><input id="roofRafterSpanFeet" /></div>
       <div><label>Tilt (dominant plane)</label><input id="tilt" /></div>
@@ -494,6 +505,8 @@ if (window.pdfjsLib) {
 
 const state = {
   planDoc:null,
+  structuralLetterFile:null,
+  structuralDoc:null,
   ubDoc:null,
   meterDoc:null,
   planFile:null,
@@ -1644,7 +1657,13 @@ function parsePlanData(planDoc){
   const racking = title(matchFirst(cover, [
     /RACKING\s*:?\s*([A-Z0-9 #\-./+]+?(?:SYSTEM(?: FOR [A-Z ]+)?)?)(?=\s+ARRAY AREA|\s+UTILITY|\s+MSP|\n|$)/i
   ]));
-  const wind = matchFirst(cover, [/WIND SPEED AND EXPOSURE\s*:?\s*([\d]+\s*MPH,?\s*[A-Z])/i, /WIND SPEED\s*=?\s*([\d]+\s*MPH)/i]);
+  // The backend screens wind EXPOSURE (letter) and wind SPEED (mph) separately
+  // (permitPath evaluatePrescriptiveCriteria), so capture them into their own
+  // fields instead of one combined "110 MPH, C" string.
+  const windRaw = matchFirst(cover, [/WIND SPEED AND EXPOSURE\s*:?\s*([\d]+\s*MPH,?\s*[A-Z])/i, /WIND SPEED\s*=?\s*([\d]+\s*MPH)/i]);
+  const windSpeed = (windRaw.match(/(\d{2,3})\s*MPH/i) || [])[1] || '';
+  const windExposure = (windRaw.match(/MPH,?\s*([A-D])\b/i) || [])[1]
+    || (matchFirst(cover, [/EXPOSURE\s*(?:CATEGORY)?\s*:?\s*([A-D])\b/i]) || '');
   const snow = matchFirst(`${struct}\n${cover}`, [/GROUND SNOW LOAD\s*=?\s*([\d.]+\s*PSF)/i, /ROOF SNOW LOAD\s*:?\s*([\d.]+\s*PSF)/i]);
   const deadLoad = matchFirst(`${cover}\n${struct}`, [/DEAD LOAD[\s\S]{0,80}?([\d.]+\s*PSF)/i, /Distributed Load[\s\S]{0,60}?([\d.]+)\s*Per SqFt/i]);
   const rafterSize = matchFirst(struct, [/(\d+\s*["']?\s*[xX]\s*\d+\s*["']?)\s+(?:TRUSS|RAFTER)/i, /(2\s*[xX]\s*4)\s*@\s*24/i]).replace(/\s+/g,'');
@@ -1717,8 +1736,13 @@ function parsePlanData(planDoc){
     pvBreaker,
     roofMaterial,
     racking,
-    mounting:'Roof Mount',
-    wind,
+    // Never assume the mounting type: evaluatePrescriptiveCriteria answers the
+    // "Roof-mounted PV" checklist row from this, and the checkbox bridge ticks
+    // that row on a real AHJ form. Unstated => blank => "[verify]".
+    mounting: /GROUND[-\s]?MOUNT|POLE[-\s]?MOUNT/i.test(all) ? 'Ground Mount'
+      : /ROOF[-\s]?MOUNT|ROOF MOUNTED/i.test(all) ? 'Roof Mount' : '',
+    wind: windExposure,
+    windSpeed,
     snow,
     deadLoad: deadLoad && !/PSF/i.test(deadLoad) ? `${deadLoad} PSF` : deadLoad,
     roofRafterSize: rafterSize,
@@ -3438,6 +3462,9 @@ const LLM_FIELD_TARGETS = {
   invMake: ['invMake'], invModel: ['invModel'], invQty: ['invQty'],
   batteryMake: ['batteryMake'], batteryModel: ['batteryModel'], batteryQty: ['batteryQty'],
   roofMaterial: ['roofMaterial'], mounting: ['mounting'],
+  // Canonical key -> DOM id where the two differ. Everything else falls back to
+  // a same-name input (see applyExtraction).
+  roofRafterSpan: ['roofRafterSpanFeet'],
 };
 
 // Confidence at/above which the LLM may OVERWRITE a value the regex parser already filled.
@@ -3497,6 +3524,7 @@ const LLM_SNAPSHOT_KEYS = new Set([
   'utilitySchedule','serviceVoltage','servicePhase','numberOfCircuits','parcelNumber','jobValue',
   'homeownerEmail','homeownerPhone',
   'azimuth','tilt','roofSlope','mainServiceRating','pvArrays',
+  'stampRecommendation',
   'electricalCalcText','structuralCalcText','sitePlanNotesText','roofPlanNotesText',
   'labelsText','projectDescriptionText','locateCalloutText',
 ]);
@@ -3545,6 +3573,14 @@ function applyExtraction(result, applied, opts = {}){
       // and a misread photo silently overwrote the plan-set value.
       targets = opts.vision ? ['meter', 'ubMeterNumber'] : ['planMeterNumber'];
     }
+    // Same-name fallback: LLM_FIELD_TARGETS only maps the ~24 fields whose DOM id
+    // differs from the canonical key. Everything else the LLM harvests (the whole
+    // structural block — snow, deadLoad, wind, rafter spacing… — plus the
+    // electrical and existing-system keys) has an input with the SAME id, so wire
+    // it automatically. Without this the value reached the save payload but was
+    // never rendered: the banner said "30 fields pulled" over a form that looked
+    // empty, which reads as "the parser is broken".
+    if (!targets && $(fieldId)) targets = [fieldId];
     if (!targets) return;
     const authoritative = opts.vision && VISION_AUTHORITATIVE.has(fieldId) && (entry.confidence ?? 0) >= 0.5;
     targets.forEach(targetId => {
@@ -3586,7 +3622,8 @@ async function runLlmAssist(){
   const planText = state.planDoc?.text || '';
   const utilityBillText = state.ubDoc?.text || '';
   const meterText = state.meterDoc?.text || '';
-  const haveText = planText.trim() || utilityBillText.trim() || meterText.trim();
+  const structuralLetterText = state.structuralDoc?.text || '';
+  const haveText = planText.trim() || utilityBillText.trim() || meterText.trim() || structuralLetterText.trim();
   // Collect document images for vision (most accurate for account/meter numbers).
   const visionImages = [];
   try {
@@ -3616,7 +3653,7 @@ async function runLlmAssist(){
   if (haveText){
     setProgress(null, 'Reading the plan set…');
     try {
-      const t = await postJson('/api/parser/llm-extract', { planText, utilityBillText, meterText, defaultState: getVal('state') || 'OR' });
+      const t = await postJson('/api/parser/llm-extract', { planText, utilityBillText, meterText, structuralLetterText, defaultState: getVal('state') || 'OR' });
       if (t.provider === 'stub'){ authOff = true; }
       else { applyExtraction(t, applied, { vision: false }); ranAny = true; }
     } catch (e){
@@ -3664,8 +3701,9 @@ async function runParse(){
   state.planFile = $('planFile').files[0] || null;
   state.ubFile = $('ubFile').files[0] || null;
   state.meterFile = $('meterPhotoFile').files[0] || null;
+  state.structuralLetterFile = $('structuralLetterFile') ? ($('structuralLetterFile').files[0] || null) : null;
 
-  if (!state.planFile && !state.ubFile && !state.meterFile){
+  if (!state.planFile && !state.ubFile && !state.meterFile && !state.structuralLetterFile){
     $('parseStatus').textContent = 'Upload at least one file first.';
     return;
   }
@@ -3704,6 +3742,14 @@ async function runParse(){
     setProgress(docStep(), 'Reading your meter photo…');
     state.meterDoc = await extractAnyFileTextFast(state.meterFile, 'meter photo');
     meterPhoto = parseMeterPhotoData(state.meterDoc);
+  }
+
+  if (state.structuralLetterFile){
+    setProgress(docStep(), 'Reading your stamped structural letter…');
+    // kind !== 'plan' on purpose: extractAnyFileText only applies the OCR
+    // fallback for non-plan kinds, and a sealed/stamped letter is very often a
+    // scan with no text layer.
+    state.structuralDoc = await extractAnyFileText(state.structuralLetterFile, 'structural letter');
   }
 
   if (state.ubDoc || state.meterDoc){
@@ -3748,8 +3794,27 @@ async function runParse(){
         : 'Smart read ran; no additional fields needed.')
     : '';
   setProgress(100, null);
+  // A packet with no PV plan set can never yield system size, equipment, the
+  // interconnection method, or (usually) the AHJ — say so plainly instead of
+  // reporting "ready to review" over a form full of empty boxes.
+  const docsIn = [
+    state.planFile ? 'plan set' : '',
+    state.ubFile ? 'utility bill' : '',
+    state.meterFile ? 'meter photo' : '',
+    state.structuralLetterFile ? 'structural letter' : '',
+  ].filter(Boolean);
+  const equipmentSeen = Boolean(finalPlan.dcKw || finalPlan.moduleMake || finalPlan.moduleModel || finalPlan.invModel || finalPlan.pvMicroModel);
+  let planWarning = '';
+  if (!state.planFile){
+    planWarning = 'NO PV PLAN SET UPLOADED — system size, module/inverter equipment, interconnection method and AHJ come ONLY from the plan set (cover sheet + single-line + equipment schedule). Those fields are expected to be blank until you add it.';
+  } else if (!equipmentSeen){
+    planWarning = 'The file in the plan-set slot does not look like a PV plan set — no system size or equipment schedule was found in it. Check that you uploaded the full plan set (a structural letter or spec sheet alone is not enough).';
+  }
+  if (planWarning) state.reviewFlags.push(planWarning);
   $('parseStatus').textContent = [
-    'All done — your packet is ready to review.',
+    planWarning ? '⚠ Parsed — but the packet is INCOMPLETE.' : 'All done — your packet is ready to review.',
+    `Documents read: ${docsIn.join(', ') || 'none'}.`,
+    planWarning,
     llmLine,
     finalPlan.moduleWattage ? `Module wattage parsed: ${finalPlan.moduleWattage}W.` : 'Module wattage missing.',
     getVal('account') ? `Account parsed: ${getVal('account')}.` : (state.ubDoc ? 'UB uploaded, but account not confidently parsed — enter visible account manually if needed.' : 'UB account missing or not uploaded.'),
@@ -3762,15 +3827,14 @@ function resetAll(){
   // Only non-client UI defaults remain hardcoded. Installer/contractor/CCB info is
   // NEVER defaulted — it comes from the selected client to avoid wrong-client data.
   document.querySelectorAll('input:not([type=file]), textarea').forEach(el => {
-    if (el.id === 'mounting') el.value = 'Roof Mount';
-    else if (el.id === 'state') el.value = 'OR';
+    if (el.id === 'state') el.value = 'OR';
     else if (el.id === 'projectDoxSplitMode') el.value = 'individual';
     else if (el.id === 'projectDoxNamingPreset') el.value = 'numericSheet';
     else el.value = '';
   });
   if ($('clientSelect')) $('clientSelect').value = '';
   document.querySelectorAll('input[type=file]').forEach(el => el.value = '');
-  state.planDoc = state.ubDoc = state.meterDoc = null;
+  state.planDoc = state.ubDoc = state.meterDoc = state.structuralDoc = null;
   state.reviewFlags = [];
   state.utilityPriorityFlags = [];
   $('parseStatus').textContent = 'Waiting for files.';
@@ -4481,8 +4545,11 @@ function buildSystemPayload() {
   // human doesn't have to re-enter anything that was on the plan set.
   const payload = { ...(state.llmSnapshot || {}) };
 
-  // Visible-form values (the human may have edited these) take precedence.
-  Object.assign(payload, {
+  // Visible-form values (the human may have edited these) take precedence — but
+  // ONLY when non-empty (see the merge loop below). The old order assigned a
+  // blank box over the LLM value and deleted the key afterwards, which DESTROYED
+  // the extracted value instead of protecting it.
+  const overrides = {
     owner: getVal('owner'),
     street: getVal('street'),
     homeownerName: getVal('owner'),
@@ -4525,10 +4592,52 @@ function buildSystemPayload() {
     roofMaterial: getVal('roofMaterial'),
     mounting: getVal('mounting'),
     description: getVal('projectDescriptionText') || payload.projectDescriptionText || '',
+    // STRUCTURAL — the prescriptive screen + the AHJ checklist checkboxes read
+    // these. They render in section 2 now, so the operator's corrections must
+    // actually reach the project (previously edits here were dropped entirely).
+    // Sent as typed: the backend's num() strips units ("50 psf" -> 50).
+    snow: getVal('snow'),
+    deadLoad: getVal('deadLoad'),
+    wind: getVal('wind'),
+    windSpeed: getVal('windSpeed'),
+    riskCategory: getVal('riskCategory'),
+    lightFrame: getVal('lightFrame'),
+    framingType: getVal('framingType'),
+    roofLayers: getVal('roofLayers'),
+    moduleHeightAboveRoof: getVal('moduleHeightAboveRoof'),
+    roofSlope: getVal('roofSlope'),
+    roofRafterSize: getVal('roofRafterSize'),
+    roofRafterSpacing: getVal('roofRafterSpacing'),
+    roofRafterSpan: getVal('roofRafterSpanFeet'),
+    woodGrade: getVal('woodGrade'),
+    racking: getVal('racking'),
+    // ELECTRICAL — the 705.12 / breaker math and the NEM application read these.
+    busRating: getVal('busRating'),
+    mainBreaker: getVal('mainBreaker'),
+    pvBreaker: getVal('pvBreaker'),
+    invOutputW: getVal('invOutputW'),
+    pvMicroMake: getVal('pvMicroMake'),
+    pvMicroModel: getVal('pvMicroModel'),
+    pvMicroQty: numVal(getVal('pvMicroQty')),
+    pvMicroOutputW: getVal('pvMicroOutputW'),
+    acDiscReq: getVal('acDiscReq'),
+    phase: getVal('phase'),
+    voltage: getVal('voltage'),
+    // ARRAY
+    tilt: getVal('tilt'),
+    azimuth: getVal('azimuth'),
+    exportKw: numVal(getVal('exportKw')),
+    moduleType: getVal('moduleType'),
     // Provenance trail the PM can audit on the project record.
     parserEvidenceText: buildEvidenceText(),
-  });
-  // Drop empty-string overrides so they don't clobber a good LLM value.
+  };
+  // Merge only NON-EMPTY overrides, so a box the operator left blank keeps the
+  // value the LLM/regex parser extracted.
+  for (const [k, v] of Object.entries(overrides)) {
+    if (v === '' || v === null || v === undefined || (typeof v === 'number' && Number.isNaN(v))) continue;
+    payload[k] = v;
+  }
+  // Drop empties that came in from the snapshot itself.
   for (const k of Object.keys(payload)) {
     if (payload[k] === '' || payload[k] === null || (typeof payload[k] === 'number' && Number.isNaN(payload[k]))) delete payload[k];
   }
@@ -4612,6 +4721,7 @@ async function uploadIntakeDocs(projectId){
     [state.planFile, 'plan_set'],
     [state.ubFile, 'utility_bill'],
     [state.meterFile, 'meter_photo'],
+    [state.structuralLetterFile, 'structural_letter'],
   ];
   for (const [file, docType] of planned){
     if (!file) continue;

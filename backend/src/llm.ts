@@ -678,6 +678,7 @@ Set confidence (0-1) for each field. Return only valid JSON.`;
     planText?: string;
     utilityBillText?: string;
     meterText?: string;
+    structuralLetterText?: string;
     defaultState?: string;
   }): Promise<ParserLlmExtraction> {
     const system = `You are an expert solar permit intake specialist. You read the raw extracted text of a residential solar project's documents and pull out every field a permit/interconnection application needs. The text comes from PDF extraction and OCR, so it may be noisy, out of order, or have character errors — use judgment and cross-check between documents.
@@ -686,6 +687,7 @@ You are given up to three documents:
 - PLAN_SET: the engineering plan set (cover sheet, site plan, electrical SLD, datasheets). Best source for system size, equipment, roof, AHJ.
 - UTILITY_BILL: the electric utility bill. Best source for homeowner name(s), service address, utility company, account number, and sometimes meter number.
 - METER_PHOTO: OCR of a photo of the electric meter. Best source for the meter number/serial.
+- STRUCTURAL_LETTER: a stamped/sealed engineering letter or structural calculation package. AUTHORITATIVE for the structural block (ground snow, PV dead load, roof dead/live load, ultimate design wind speed + exposure category, risk category, rafter/truss size + spacing + span, wood grade, roof material, roof slope, attachment/withdrawal values) and for whether a PE stamp exists. It does NOT contain the electrical single-line or the equipment schedule — never infer module/inverter make, model, wattage, quantity, or system size from it.
 
 Return ONLY a JSON object of this exact shape:
 {
@@ -741,6 +743,7 @@ STRUCTURAL (read from structural notes / roof framing plan — drive prescriptiv
 - roofLayers: number of existing roofing layers/coverings under the array (number, e.g. 1)
 - moduleHeightAboveRoof: max height of the module top above the roof surface in inches (number, e.g. 10)
 - permitPath: "prescriptive" or "engineered" if determinable
+- stampRecommendation: one line on whether PE-stamped/sealed structural documentation is present or required (e.g. "PE-sealed structural letter provided — existing framing adequate" / "no stamp present; AHJ may require one"). Base it ONLY on what the documents show.
 UTILITY INTERCONNECTION (PGE PowerClerk / Pacific Power customer generation NEM)
 - utilitySchedule: the utility rate schedule from the bill (e.g. PGE "Schedule 7", Pacific Power "Schedule 4")
 - serviceVoltage: service voltage (e.g. "240V")
@@ -778,7 +781,8 @@ NARRATIVE EVIDENCE BLOBS — also include these as fields (value = a short factu
 Rules:
 - Set confidence honestly; put anything <0.6 or guessed into lowConfidenceFields.
 - Account/meter numbers: only digits you can actually read; never invent or pad. Join spaced account segments (e.g. "65564191-001 4" -> "65564191-0014"); do not drop a trailing check digit.
-- Electrical amps/structural loads come from the PLAN SET (SLD, datasheets, structural notes) — not the bill.
+- Electrical amps come from the PLAN SET (SLD, datasheets) — not the bill. Structural loads come from the STRUCTURAL_LETTER when one is supplied (it is the sealed source of record), otherwise from the plan set's structural notes.
+- When a STRUCTURAL_LETTER is present, set stampRecommendation to a one-line statement of what it certifies and whether it is sealed/stamped (e.g. "PE-sealed structural letter provided: existing framing adequate, no upgrades required"). Never claim a stamp that the document does not show.
 - SYSTEM ADDITIONS: when the plan set shows an existing PV system, dcKw/acKw and ALL module/inverter/pvMicro/pvArrays fields describe ONLY the NEW equipment being added under this permit — never the existing equipment and never the combined total. E.g. a cover sheet stating "SYSTEM SIZE: 5.280 kW DC" and "COMBINED SYSTEM SIZE: 10.440 kW DC" means dcKw=5.28 and combinedDcKw=10.44. Existing equipment goes ONLY in the existing* fields. Mention the addition (existing + new + combined sizes) in projectDescriptionText.
 - Prefer the utility bill for name/address/account, the meter photo for meter number, the plan set for everything else.
 - Numbers must be JSON numbers. Return valid JSON only — no prose outside the JSON.`;
@@ -788,6 +792,7 @@ Rules:
     if (input.planText?.trim()) parts.push(`=== PLAN_SET ===\n${input.planText.slice(0, 24000)}`);
     if (input.utilityBillText?.trim()) parts.push(`=== UTILITY_BILL ===\n${input.utilityBillText.slice(0, 8000)}`);
     if (input.meterText?.trim()) parts.push(`=== METER_PHOTO ===\n${input.meterText.slice(0, 2000)}`);
+    if (input.structuralLetterText?.trim()) parts.push(`=== STRUCTURAL_LETTER ===\n${input.structuralLetterText.slice(0, 12000)}`);
     if (!parts.length) {
       return { provider: "claude", fields: {}, lowConfidenceFields: [], notes: "No document text supplied." };
     }

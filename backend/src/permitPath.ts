@@ -66,6 +66,13 @@ export const ENGINEERED_REQUIRED_DOCS = [
 export function hasStampedStructuralEvidence(project: ProjectRecord): boolean {
   const blob = [
     snap(project, "stampRecommendation"),
+    // structuralCalcText is the key the parser actually emits (the narrative
+    // structural blob); planSetExtractedText is the uploaded-document text
+    // overlay. The three legacy keys below this were read for years but are
+    // written NOWHERE in the codebase — kept only so an older snapshot that
+    // happens to carry them still resolves.
+    snap(project, "structuralCalcText"),
+    snap(project, "planSetExtractedText"),
     snap(project, "structuralText"),
     snap(project, "structuralNotesText"),
     snap(project, "splitPagesText"),

@@ -1346,6 +1346,9 @@ export interface LLMProvider {
     planText?: string;
     utilityBillText?: string;
     meterText?: string;
+    /** Stamped/sealed structural letter or calc package — the source of record for
+     *  the structural screen (loads, exposure, framing) and for stamp evidence. */
+    structuralLetterText?: string;
     defaultState?: string;
   }): Promise<ParserLlmExtraction>;
   /** Vision-based extraction from the actual document images — accurate for account/meter numbers that OCR mangles. */

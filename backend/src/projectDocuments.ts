@@ -10,7 +10,7 @@ import { extractPdfText } from "./batchImport";
 type Row = Record<string, unknown>;
 
 // Doc types whose text is design/plan evidence for the reviewer gate.
-const PLAN_TEXT_DOC_TYPES = new Set(["plan_set", "sld", "site_plan", "structural", "electrical", "inverter_spec", "module_spec", "labels"]);
+const PLAN_TEXT_DOC_TYPES = new Set(["plan_set", "sld", "site_plan", "structural", "structural_letter", "stamped_plans", "engineering_letter", "electrical", "inverter_spec", "module_spec", "labels"]);
 const MAX_PLAN_TEXT_CHARS = 150_000;
 
 function isPdfDoc(row: Row): boolean {

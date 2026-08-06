@@ -600,6 +600,115 @@
     }
    ],
    "updatedAt": ""
+  },
+  {
+   "key": "",
+   "state": "PA",
+   "ahj": "",
+   "confidence": "seeded",
+   "adoptedCodes": [
+    {
+     "code": "IRC",
+     "edition": "2021",
+     "title": "2021 IRC as adopted by the Pennsylvania Uniform Construction Code (UCC), effective Jan 1, 2026",
+     "sourceUrl": "https://www.dli.pa.gov/ucc/Pages/default.aspx",
+     "notes": "SEEDED \u2014 the 2021 I-codes replaced the 2018 cycle on 1/1/2026; a plan set on the 2018 cycle may be corrected. Confirm with the municipality or its third-party agency."
+    },
+    {
+     "code": "IBC",
+     "edition": "2021",
+     "title": "2021 IBC as adopted by the PA UCC (eff. Jan 1, 2026)",
+     "sourceUrl": "https://www.dli.pa.gov/ucc/Pages/default.aspx"
+    },
+    {
+     "code": "IFC",
+     "edition": "2021",
+     "title": "2021 IFC as adopted by the PA UCC (rooftop PV access/pathways)",
+     "sourceUrl": "https://www.dli.pa.gov/ucc/Pages/default.aspx"
+    },
+    {
+     "code": "NEC",
+     "edition": "2020",
+     "title": "NEC 2020 adopted under the PA UCC (effective Jul 13, 2025; full enforcement Jan 12, 2026)",
+     "sourceUrl": "https://www.dli.pa.gov/ucc/Pages/default.aspx",
+     "notes": "SEEDED \u2014 PA runs NEC 2020, NOT 2023/2026. Plan sets citing newer NEC articles get corrected."
+    },
+    {
+     "code": "ASCE",
+     "edition": "7-16",
+     "title": "ASCE 7-16 loads as referenced by the 2021 IRC/IBC",
+     "sourceUrl": "https://www.dli.pa.gov/ucc/Pages/default.aspx"
+    }
+   ],
+   "amendments": [
+    {
+     "code": "PA UCC",
+     "section": "permits",
+     "summary": "BOTH a building permit and an electrical permit are required for residential rooftop PV (Philadelphia's EZ Permit is the exception: 1-2 family dwellings at or below 10 kW need only the electrical permit). Plan on a separate-permit (not combo) submittal.",
+     "sourceUrl": "https://www.dli.pa.gov/ucc/Pages/default.aspx"
+    },
+    {
+     "code": "PA UCC",
+     "section": "enforcement",
+     "summary": "Over 90% of PA's 2,562 municipalities enforce the UCC locally \u2014 via municipal staff OR a certified third-party agency (TPA), so the plan reviewer is often a private firm rather than the township. In opt-out municipalities L&I covers commercial and the owner hires a certified TPA for residential inspection. ALWAYS confirm who reviews and where the application goes before staging.",
+     "sourceUrl": "https://www.dli.pa.gov/ucc/Pages/default.aspx"
+    },
+    {
+     "code": "52 Pa. Code",
+     "section": "75.21",
+     "summary": "Interconnection under PUC 52 Pa. Code \u00a775.21; AEPS mandates net metering for residential systems up to 50 kW with retail-rate credit for exports. File with the territory utility: PECO, PPL, FirstEnergy (Penelec / Met-Ed / West Penn Power / Penn Power), or Duquesne Light.",
+     "sourceUrl": "https://www.puc.pa.gov/filing-resources/net-metering/"
+    },
+    {
+     "code": "HICPA",
+     "section": "",
+     "summary": "Solar contractors must hold PA Home Improvement Contractor (HIC) registration; electrical work is licensed at the municipal level (no statewide electrical license).",
+     "sourceUrl": "https://www.attorneygeneral.gov/protect-yourself/home-improvement-contractor-registration/"
+    }
+   ],
+   "designCriteria": {
+    "sourceUrl": "https://www.dli.pa.gov/ucc/Pages/default.aspx"
+   },
+   "prescriptive": {
+    "maxExportKwWithoutStudy": 50
+   },
+   "fireSetbacks": [],
+   "citations": [
+    {
+     "label": "PA Department of Labor & Industry \u2014 Uniform Construction Code",
+     "sourceUrl": "https://www.dli.pa.gov/ucc/Pages/default.aspx"
+    },
+    {
+     "label": "PA PUC \u2014 net metering / interconnection",
+     "sourceUrl": "https://www.puc.pa.gov/filing-resources/net-metering/"
+    }
+   ],
+   "updatedAt": ""
+  },
+  {
+   "key": "",
+   "state": "PA",
+   "ahj": "Philadelphia",
+   "confidence": "seeded",
+   "adoptedCodes": [],
+   "amendments": [
+    {
+     "code": "Phila EZ Permit",
+     "section": "",
+     "summary": "Philadelphia EZ Permit: rooftop PV at or below 10 kW on 1-2 family dwellings needs ONLY an electrical permit (no building permit). Above 10 kW, or on other occupancies, the standard building + electrical path applies.",
+     "sourceUrl": "https://www.phila.gov/departments/department-of-licenses-and-inspections/permits/"
+    }
+   ],
+   "designCriteria": {},
+   "prescriptive": {},
+   "fireSetbacks": [],
+   "citations": [
+    {
+     "label": "Philadelphia L&I permits",
+     "sourceUrl": "https://www.phila.gov/departments/department-of-licenses-and-inspections/permits/"
+    }
+   ],
+   "updatedAt": ""
   }
  ]
 }
