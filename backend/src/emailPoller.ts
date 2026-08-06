@@ -3,6 +3,7 @@ import { unlink, mkdtemp } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { AppDb } from "./db";
+import { DEFAULT_ORG_ID } from "./db";
 import { logger } from "./logger";
 import { runEmailTracker } from "./repository";
 import { encryptStorageState, decryptStorageState } from "../../portal-bot/src/cryptoStorage";
@@ -30,7 +31,8 @@ import { writeMboxMessage } from "./mbox";
 
 interface ImapSourceConfig {
   sourceId?: string; // DB row id; undefined for the env-based source
-  clientId?: string; // DB client_id for this source; constrains project matching
+  orgId?: string;    // tenant this source belongs to; SCOPES project matching
+  clientId?: string; // DB client_id for this source; further constrains matching
   label: string;
   host: string;
   port: number;
@@ -85,12 +87,13 @@ interface ImapSourceRow {
   imap_max_messages: number;
   recipient_tag: string;
   client_id: string | null;
+  org_id: string | null;
 }
 
 function dbImapSources(db: AppDb): ImapSourceConfig[] {
   const rows = db.query<ImapSourceRow>(
     `SELECT id, label, imap_host, imap_port, imap_secure, imap_user,
-            imap_pass_encrypted, imap_mailbox, imap_max_messages, recipient_tag, client_id
+            imap_pass_encrypted, imap_mailbox, imap_max_messages, recipient_tag, client_id, org_id
      FROM email_tracking_sources
      WHERE source_type = 'imap' AND active = 1 AND imap_host != ''
      ORDER BY created_at`,
@@ -110,6 +113,7 @@ function dbImapSources(db: AppDb): ImapSourceConfig[] {
     return [
       {
         sourceId: row.id,
+        orgId: row.org_id || DEFAULT_ORG_ID,
         clientId: row.client_id ?? undefined,
         label: row.label || row.id,
         host: row.imap_host,
@@ -144,6 +148,9 @@ export function upsertImapSource(
     maxMessages?: number;
     recipientTag?: string;
     clientId?: string;
+    /** Owning tenant. Set on create; never changed by an update — a source does not
+     *  move between orgs, and its org is what scopes every project match it makes. */
+    orgId?: string;
     active?: boolean;
   },
 ): string {
@@ -187,8 +194,8 @@ export function upsertImapSource(
       `INSERT INTO email_tracking_sources
          (id, source_type, label, file_path, imap_host, imap_port, imap_secure, imap_user,
           imap_pass_encrypted, imap_mailbox, imap_max_messages, recipient_tag, client_id,
-          active, created_at, updated_at)
-       VALUES (?, 'imap', ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          org_id, active, created_at, updated_at)
+       VALUES (?, 'imap', ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         opts.label,
@@ -201,6 +208,7 @@ export function upsertImapSource(
         opts.maxMessages ?? 100,
         opts.recipientTag ?? "",
         opts.clientId ?? null,
+        opts.orgId || DEFAULT_ORG_ID,
         opts.active !== false ? 1 : 0,
         now,
         now,
@@ -308,7 +316,7 @@ async function runSourcePoll(
     count = result.count;
 
     if (count > 0) {
-      const tracked = await runEmailTracker(db, { filePath, clientId: cfg.clientId });
+      const tracked = await runEmailTracker(db, { filePath, orgId: cfg.orgId, clientId: cfg.clientId });
       matches = tracked.matches?.length ?? 0;
     }
 

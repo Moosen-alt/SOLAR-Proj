@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import type { NextFunction, Request, Response } from "express";
 import type { AppDb, SqlParam } from "./db";
+import { DEFAULT_ORG_ID } from "./db";
 import { apiKeyAuthPrefixes, orgEntitlements, productsAllowPath } from "./entitlements";
 
 type Row = Record<string, SqlParam>;
@@ -127,8 +128,7 @@ export interface OrgInfo {
   edition: string;
 }
 
-/** The single-operator / auth-disabled tenant. Every pre-tenancy row back-fills here. */
-export const DEFAULT_ORG_ID = "org-default";
+export { DEFAULT_ORG_ID } from "./db";
 
 // Roles, most privileged first. `superadmin` is the operator/owner: it reads across
 // EVERY org (for support and for running the service bureau) and is the only bypass

@@ -900,16 +900,19 @@ app.get("/api/knowledge-base", (_req, res) => {
   res.json(getKnowledgeBase(db));
 });
 
-app.get("/api/email-tracker", (_req, res) => {
-  res.json(getEmailTrackerStatus(db));
+app.get("/api/email-tracker", (req, res) => {
+  res.json(getEmailTrackerStatus(db, requestOrg(db, req).id));
 });
 
 app.post("/api/email-tracker/sources", (req, res) => {
-  res.status(201).json(configureEmailTrackingSource(db, req.body || {}));
+  res.status(201).json(configureEmailTrackingSource(db, { ...(req.body || {}), orgId: requestOrg(db, req).id }));
 });
 
 app.post("/api/email-tracker/run", asyncHandler(async (req, res) => {
-  res.json(await runEmailTracker(db, req.body || {}));
+  // orgId comes from the SESSION, never the body — otherwise a caller could post
+  // {orgId:"..."} and fuzzy-match their inbound email against another tenant's
+  // projects, which is a write (status checks, corrections, status transitions).
+  res.json(await runEmailTracker(db, { ...(req.body || {}), orgId: requestOrg(db, req).id }));
 }));
 
 app.post("/api/knowledge-base/import-mbox", asyncHandler(async (req, res) => {

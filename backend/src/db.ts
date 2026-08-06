@@ -4,6 +4,15 @@ import Database, { type Database as DB, type Statement } from "better-sqlite3";
 import { baselineRuleDefinitions } from "./baselineRules";
 import { knowledgeProfileKey, seedInitialKnowledgeBase } from "./knowledgeBase";
 
+/**
+ * The single-operator / auth-disabled tenant. Every pre-tenancy row back-fills here
+ * (migration v11), and every request resolves here when AUTH_ENABLED is off — which
+ * is what keeps local single-operator use working with zero config.
+ * Lives here rather than in auth.ts so the data layer can scope queries without
+ * importing the HTTP layer.
+ */
+export const DEFAULT_ORG_ID = "org-default";
+
 export type SqlParam = string | number | null | Uint8Array;
 export type SqlParams = SqlParam[];
 

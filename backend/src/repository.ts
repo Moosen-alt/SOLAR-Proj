@@ -81,6 +81,7 @@ import { buildUtilityPackage } from "./docSplitter";
 import { classifyCorrection, humanizeBucket, humanizeEnum } from "./corrections";
 import { parseCorrectionProposals } from "./correctionAgent";
 import type { AppDb } from "./db";
+import { DEFAULT_ORG_ID } from "./db";
 import { HttpError } from "./httpError";
 import { buildHistoricalFailureReport } from "./historicalFailures";
 import { id } from "./ids";
@@ -3586,16 +3587,27 @@ export function getProjectTimelineReport(db: AppDb, projectId: string): ProjectT
   };
 }
 
-export function getEmailTrackerStatus(db: AppDb): { sources: EmailTrackingSource[]; recentMatches: EmailProjectMatch[] } {
+export function getEmailTrackerStatus(db: AppDb, orgId: string = DEFAULT_ORG_ID): { sources: EmailTrackingSource[]; recentMatches: EmailProjectMatch[] } {
   return {
-    sources: db.query<Row>("SELECT * FROM email_tracking_sources ORDER BY active DESC, updated_at DESC").map(mapEmailTrackingSource),
-    recentMatches: db.query<Row>("SELECT * FROM email_project_matches ORDER BY created_at DESC LIMIT 50").map(mapEmailProjectMatch),
+    sources: db
+      .query<Row>("SELECT * FROM email_tracking_sources WHERE org_id = ? ORDER BY active DESC, updated_at DESC", [orgId])
+      .map(mapEmailTrackingSource),
+    // email_project_matches carries no org of its own — it reaches one through the
+    // project it matched, which is the grain that actually owns the row.
+    recentMatches: db
+      .query<Row>(
+        `SELECT m.* FROM email_project_matches m
+         JOIN projects p ON p.id = m.project_id AND p.org_id = ?
+         ORDER BY m.created_at DESC LIMIT 50`,
+        [orgId],
+      )
+      .map(mapEmailProjectMatch),
   };
 }
 
 export function configureEmailTrackingSource(
   db: AppDb,
-  input: { filePath?: string; label?: string; defaultState?: string; defaultAhj?: string; defaultUtility?: string; active?: boolean },
+  input: { filePath?: string; label?: string; defaultState?: string; defaultAhj?: string; defaultUtility?: string; active?: boolean; orgId?: string },
 ): { sources: EmailTrackingSource[]; recentMatches: EmailProjectMatch[] } {
   const filePath = path.resolve(String(input.filePath || "").trim());
   if (!String(input.filePath || "").trim()) throw new HttpError(400, "MBOX watch path is required.");
@@ -3604,8 +3616,8 @@ export function configureEmailTrackingSource(
   db.run(
     `INSERT INTO email_tracking_sources
       (id, source_type, label, file_path, default_state, default_ahj, default_utility, active,
-       last_message_count, last_matched_count, last_error, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       last_message_count, last_matched_count, last_error, org_id, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(file_path) DO UPDATE SET
        label = excluded.label,
        default_state = excluded.default_state,
@@ -3625,11 +3637,15 @@ export function configureEmailTrackingSource(
       0,
       0,
       "",
+      // org_id is set on create and deliberately NOT in the DO UPDATE list: a watched
+      // source never changes tenant, and its org is what scopes every project it can
+      // match an inbound email to.
+      input.orgId || DEFAULT_ORG_ID,
       ts,
       ts,
     ],
   );
-  return getEmailTrackerStatus(db);
+  return getEmailTrackerStatus(db, input.orgId || DEFAULT_ORG_ID);
 }
 
 
@@ -3668,12 +3684,30 @@ function extractTrackingNumber(raw: string, labels: RegExp[]): string {
   return "";
 }
 
-function matchProjectForEmail(db: AppDb, message: ClassifiedMboxMessage, clientId?: string): { project: ProjectRecord; confidence: number; reason: string } | null {
+/**
+ * Find the project an inbound tracked email belongs to.
+ *
+ * ALWAYS org-scoped. This used to take an OPTIONAL clientId and, when it was absent,
+ * load every project in the database and fuzzy-match the email against all of them —
+ * and `clientId` came from `email_tracking_sources.client_id`, which is nullable, so
+ * the unscoped branch was the DEFAULT for any source without a client set. A match
+ * writes an email_project_matches row, records a permit status check, can open a
+ * correction and transition project status, so that was a cross-tenant WRITE: one
+ * company's AHJ correction email could land on another company's project.
+ *
+ * Scope comes from the SOURCE ROW, never from a caller-supplied argument, so a caller
+ * cannot widen it. clientId only ever NARROWS within the org.
+ */
+function matchProjectForEmail(
+  db: AppDb,
+  message: ClassifiedMboxMessage,
+  scope: { orgId: string; clientId?: string },
+): { project: ProjectRecord; confidence: number; reason: string } | null {
   const raw = message.rawSearchText;
   const haystack = normalizeTokens(raw);
-  const projects = clientId
-    ? db.query<ProjectRow>("SELECT * FROM projects WHERE client_id = ? ORDER BY updated_at DESC", [clientId]).map(mapProject)
-    : db.query<ProjectRow>("SELECT * FROM projects ORDER BY updated_at DESC").map(mapProject);
+  const projects = scope.clientId
+    ? db.query<ProjectRow>("SELECT * FROM projects WHERE org_id = ? AND client_id = ? ORDER BY updated_at DESC", [scope.orgId, scope.clientId]).map(mapProject)
+    : db.query<ProjectRow>("SELECT * FROM projects WHERE org_id = ? ORDER BY updated_at DESC", [scope.orgId]).map(mapProject);
   let best: { project: ProjectRecord; score: number; reasons: string[] } | null = null;
 
   for (const project of projects) {
@@ -3744,7 +3778,7 @@ function emailStatusText(message: ClassifiedMboxMessage): string {
 
 export async function runEmailTracker(
   db: AppDb,
-  input: { sourceId?: string; filePath?: string; clientId?: string } = {},
+  input: { sourceId?: string; filePath?: string; clientId?: string; orgId?: string } = {},
 ): Promise<EmailTrackerRunResult> {
   const sourceRows = input.filePath
     ? [{
@@ -3754,6 +3788,10 @@ export async function runEmailTracker(
         default_state: "",
         default_ahj: "",
         default_utility: "",
+        // Ad-hoc one-off import (no stored source row): the caller's org is the only
+        // scope available, defaulting to the single-operator tenant.
+        org_id: input.orgId || DEFAULT_ORG_ID,
+        client_id: input.clientId ?? null,
       } as Row]
     : input.sourceId
       ? db.query<Row>("SELECT * FROM email_tracking_sources WHERE id = ?", [input.sourceId])
@@ -3776,6 +3814,10 @@ export async function runEmailTracker(
     const sourceId = text(source.id) || null;
     const filePath = path.resolve(text(source.file_path));
     const sourceLabel = text(source.label) || path.basename(filePath) || "Watched MBOX";
+    // Tenant scope for everything this source produces, read from the source row —
+    // never from the caller, so a caller can't widen it.
+    const sourceOrgId = text(source.org_id) || DEFAULT_ORG_ID;
+    const sourceClientId = text(source.client_id) || undefined;
     let sourceMatched = 0;
     let messageCount = 0;
     try {
@@ -3810,7 +3852,7 @@ export async function runEmailTracker(
           result.skippedDuplicates += 1;
           continue;
         }
-        const match = matchProjectForEmail(db, message, input.clientId);
+        const match = matchProjectForEmail(db, message, { orgId: sourceOrgId, clientId: sourceClientId });
         if (!match) {
           result.unmatchedMessages += 1;
           continue;
