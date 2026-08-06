@@ -47,7 +47,8 @@ import { startMonitorScheduler } from "./scheduler";
 import { startAhjFormRefreshScheduler, startKbLinkCheckScheduler } from "./ahjFormRefresh";
 import { startCecSyncScheduler, primeCecCache, syncCecEquipment } from "./cecEquipment";
 import { extractZipToWorkdir } from "./batchZip";
-import { AUTH_ENABLED, currentUser, login, logout, me, requireAuth, seedAdminUser, editionGate, requestOrg, getOrg, createApiKey } from "./auth";
+import { AUTH_ENABLED, currentUser, login, logout, me, requireAuth, seedAdminUser, entitlementGate, requestOrg, createApiKey, ADMIN_ROLES } from "./auth";
+import { PRODUCTS, PRODUCT_KEYS, grantProduct, revokeProduct, orgEntitlements, productsForEdition } from "./entitlements";
 import { ensureStatusShareToken, formatProjectAddress, statusShareUrl } from "./clientNotifier";
 import { listCodeProfiles, getCodeProfile, saveResearchedCodeProfile, saveVerifiedCodeProfile, codeProfileKey } from "./codeProfiles";
 import { runStandaloneReview, getReviewSubmission, listReviewSubmissions, reviewSubjectToProject } from "./reviewSubject";
@@ -221,8 +222,9 @@ app.get("/intake", (_req, res) => res.sendFile(path.join(frontendDir, "intake.ht
 // Public read-only client status page (tokenized link, no login).
 app.get("/status", (_req, res) => res.sendFile(path.join(frontendDir, "status.html")));
 app.use(requireAuth(db));
-// Licensing: 'review_gate' orgs reach only the review surface (deny-gate w/ allowlist).
-app.use(editionGate(db));
+// Licensing: an org reaches only the routes of the products it holds. Deny-by-default,
+// driven by the product registry in entitlements.ts.
+app.use(entitlementGate(db));
 // AHJ-facing review gate — AFTER the auth gate so anonymous visitors are sent to
 // /login (the page's data calls are auth-gated regardless).
 app.get("/review", (_req, res) => res.sendFile(path.join(frontendDir, "review.html")));
@@ -711,14 +713,24 @@ app.get("/api/review/submissions/:id", (req, res) => {
 function requireAdmin(req: Request): void {
   if (!AUTH_ENABLED) return; // local single-operator use
   const user = currentUser(db, req);
-  if (!user || user.role !== "admin" || getOrg(db, user.orgId).edition !== "full") {
+  // Admin administration belongs to the operator's own org: an admin/superadmin whose
+  // org holds the autopilot. A tenant who bought one tool can never administer orgs,
+  // no matter what role their own row claims.
+  if (!user || !ADMIN_ROLES.has(user.role) || !orgEntitlements(db, user.orgId).has("autopilot")) {
     throw new HttpError(403, "Admin access required.");
   }
 }
 
 app.get("/api/orgs", (req, res) => {
   requireAdmin(req);
-  res.json({ orgs: db.query<Record<string, unknown>>("SELECT id, name, edition, created_at FROM orgs ORDER BY created_at") });
+  const orgs = db.query<Record<string, unknown>>("SELECT id, name, edition, created_at FROM orgs ORDER BY created_at");
+  res.json({ orgs: orgs.map((o) => ({ ...o, products: [...orgEntitlements(db, String(o.id))].sort() })) });
+});
+
+/** The products a licence can carry, for the admin UI. */
+app.get("/api/products", (req, res) => {
+  requireAdmin(req);
+  res.json({ products: PRODUCTS.map((p) => ({ key: p.key, label: p.label })) });
 });
 
 app.post("/api/orgs", (req, res) => {
@@ -726,10 +738,33 @@ app.post("/api/orgs", (req, res) => {
   const name = String(req.body?.name || "").trim();
   const edition = String(req.body?.edition || "review_gate") === "full" ? "full" : "review_gate";
   if (!name) throw new HttpError(400, "name is required.");
+  // Products may be named explicitly; otherwise they're implied by the legacy edition
+  // so existing callers (and the review-gate flow) keep working unchanged.
+  const requested = Array.isArray(req.body?.products) ? req.body.products.map((p: unknown) => String(p)) : null;
+  const products = requested?.length ? requested : productsForEdition(edition);
+  const unknown = products.filter((p: string) => !PRODUCT_KEYS.includes(p));
+  if (unknown.length) throw new HttpError(400, `Unknown product(s): ${unknown.join(", ")}. Known: ${PRODUCT_KEYS.join(", ")}.`);
   const orgId = `org-${crypto.randomUUID().slice(0, 8)}`;
   db.run("INSERT INTO orgs (id, name, edition, created_at) VALUES (?, ?, ?, ?)", [orgId, name, edition, new Date().toISOString()]);
-  addAuditLog(db, null, "human", currentUser(db, req)?.email || "operator", "org.created", { orgId, name, edition });
-  res.status(201).json({ org: { id: orgId, name, edition } });
+  for (const product of products) grantProduct(db, orgId, product);
+  addAuditLog(db, null, "human", currentUser(db, req)?.email || "operator", "org.created", { orgId, name, edition, products });
+  res.status(201).json({ org: { id: orgId, name, edition, products } });
+});
+
+/** Grant or revoke a product on an org — how a tool gets sold to an existing tenant. */
+app.put("/api/orgs/:id/products", (req, res) => {
+  requireAdmin(req);
+  const orgId = String(req.params.id);
+  if (!db.get("SELECT id FROM orgs WHERE id = ?", [orgId])) throw new HttpError(404, "Org not found.");
+  const products = Array.isArray(req.body?.products) ? req.body.products.map((p: unknown) => String(p)) : [];
+  const unknown = products.filter((p: string) => !PRODUCT_KEYS.includes(p));
+  if (unknown.length) throw new HttpError(400, `Unknown product(s): ${unknown.join(", ")}. Known: ${PRODUCT_KEYS.join(", ")}.`);
+  for (const product of PRODUCT_KEYS) {
+    if (products.includes(product)) grantProduct(db, orgId, product);
+    else revokeProduct(db, orgId, product);
+  }
+  addAuditLog(db, null, "human", currentUser(db, req)?.email || "operator", "org.products_changed", { orgId, products });
+  res.json({ orgId, products });
 });
 
 app.post("/api/orgs/:id/users", (req, res) => {

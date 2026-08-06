@@ -1182,6 +1182,67 @@ const VERSIONED_MIGRATIONS: VersionedMigration[] = [
       `);
     },
   },
+  {
+    version: 11,
+    name: "org_scope_and_entitlements",
+    up: (db) => {
+      // TENANCY. Two grains already existed and only one was modelled:
+      //   • client = the solar company the work is FOR. Already on projects,
+      //     portal_credentials (NOT NULL), customers, portal_profiles.
+      //   • org    = the tenant that LOGS IN and holds a licence. Existed only on
+      //     users, api_keys, review_submissions.
+      // This adds org_id to the ROOT tables — the ones reachable without already
+      // holding a scoped parent. Child rows (qc_results, submissions, documents,
+      // corrections…) stay scoped through their project: denormalising org_id onto
+      // fifteen child tables would create fifteen ways to drift, and the few queries
+      // that scan a child table globally can join back to projects instead.
+      //
+      // portal_credentials deliberately gets NO org_id: it is client_id NOT NULL and
+      // clients now carry org_id, so scope flows org → client → credential. The gap
+      // there was never a missing column, it was that nothing verified the caller
+      // owned the client id.
+      //
+      // Every existing row lands in 'org-default' via the column default, so a
+      // single-operator install and AUTH_ENABLED=false behave exactly as before.
+      for (const table of ["projects", "clients", "customers", "email_tracking_sources", "job_queue", "communications"]) {
+        addColumnIfMissing(db, table, "org_id", "TEXT NOT NULL DEFAULT 'org-default'");
+      }
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_projects_org ON projects(org_id, updated_at);
+        CREATE INDEX IF NOT EXISTS idx_clients_org ON clients(org_id, company_name);
+        CREATE INDEX IF NOT EXISTS idx_customers_org ON customers(org_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_email_sources_org ON email_tracking_sources(org_id);
+        CREATE INDEX IF NOT EXISTS idx_job_queue_org ON job_queue(org_id, status);
+        CREATE INDEX IF NOT EXISTS idx_communications_org ON communications(org_id, created_at);
+      `);
+
+      // ENTITLEMENTS. orgs.edition is a single string ('full' | 'review_gate') and
+      // cannot express "bought the form filler and the reviewer but not the
+      // autopilot". Products become rows so they compose. edition is kept as a
+      // display label and is seeded from here on; nothing gates on it afterwards.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS org_entitlements (
+          org_id TEXT NOT NULL,
+          product TEXT NOT NULL,
+          granted_at TEXT NOT NULL,
+          PRIMARY KEY (org_id, product)
+        );
+        CREATE INDEX IF NOT EXISTS idx_org_entitlements_org ON org_entitlements(org_id);
+      `);
+      const ts = new Date().toISOString();
+      for (const org of db.query<{ id: unknown; edition: unknown }>("SELECT id, edition FROM orgs")) {
+        const orgId = String(org.id);
+        // 'full' historically meant the whole all-in-one product, so it grants every
+        // product; 'review_gate' bought exactly one.
+        const products = String(org.edition || "full") === "review_gate"
+          ? ["permit_reviewer"]
+          : ["autopilot", "permit_reviewer", "form_filler"];
+        for (const product of products) {
+          db.run("INSERT OR IGNORE INTO org_entitlements (org_id, product, granted_at) VALUES (?, ?, ?)", [orgId, product, ts]);
+        }
+      }
+    },
+  },
 ];
 
 // One-time repair for the runaway-notes bug: upsertKnowledge used to merge the

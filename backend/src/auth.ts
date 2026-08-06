@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import type { NextFunction, Request, Response } from "express";
 import type { AppDb, SqlParam } from "./db";
+import { apiKeyAuthPrefixes, orgEntitlements, productsAllowPath } from "./entitlements";
 
 type Row = Record<string, SqlParam>;
 
@@ -117,9 +118,27 @@ export interface SessionUser {
 export interface OrgInfo {
   id: string;
   name: string;
-  /** Licensing edition: 'full' (all-in-one autopilot) | 'review_gate' (AHJ review-gate-only). */
+  /**
+   * LEGACY display label ('full' | 'review_gate'). Nothing gates on this any more —
+   * what an org can reach is decided by its rows in `org_entitlements` (see
+   * entitlements.ts). Kept so existing admin UI and the /api/orgs payload still read
+   * naturally, and seeded for newly created orgs.
+   */
   edition: string;
 }
+
+/** The single-operator / auth-disabled tenant. Every pre-tenancy row back-fills here. */
+export const DEFAULT_ORG_ID = "org-default";
+
+// Roles, most privileged first. `superadmin` is the operator/owner: it reads across
+// EVERY org (for support and for running the service bureau) and is the only bypass
+// of org scoping. `admin` administers its own org. `operator` is staff.
+export const ROLE_SUPERADMIN = "superadmin";
+export const ROLE_ADMIN = "admin";
+export const ROLE_OPERATOR = "operator";
+/** Roles allowed to administer orgs, users, and licences. */
+export const ADMIN_ROLES = new Set([ROLE_ADMIN, ROLE_SUPERADMIN]);
+export const ALL_ROLES = [ROLE_SUPERADMIN, ROLE_ADMIN, ROLE_OPERATOR];
 
 export function currentUser(db: AppDb, req: Request): SessionUser | null {
   const token = readCookie(req, COOKIE);
@@ -128,14 +147,22 @@ export function currentUser(db: AppDb, req: Request): SessionUser | null {
   if (!parsed) return null;
   const row = db.get<Row>("SELECT id, name, email, role, org_id FROM users WHERE id = ? AND active = 1", [parsed.userId]);
   return row
-    ? { id: String(row.id), name: String(row.name), email: String(row.email), role: String(row.role), orgId: String(row.org_id || "org-default") }
+    ? { id: String(row.id), name: String(row.name), email: String(row.email), role: String(row.role), orgId: String(row.org_id || DEFAULT_ORG_ID) }
     : null;
 }
 
 export function getOrg(db: AppDb, orgId: string): OrgInfo {
   const row = db.get<Row>("SELECT id, name, edition FROM orgs WHERE id = ?", [orgId]);
-  if (!row) return { id: "org-default", name: "Default (all-in-one)", edition: "full" };
-  return { id: String(row.id), name: String(row.name), edition: String(row.edition || "full") };
+  if (row) return { id: String(row.id), name: String(row.name), edition: String(row.edition || "full") };
+  // Bootstrap only: the default org is seeded by migration v7, but synthesize it if a
+  // caller races that (fresh DB, tests constructing an AppDb by hand).
+  if (orgId === DEFAULT_ORG_ID) return { id: DEFAULT_ORG_ID, name: "Default (all-in-one)", edition: "full" };
+  // ANY OTHER unknown id fails CLOSED. This used to return the default org, which
+  // meant a stale cookie or a typo'd org id silently inherited the default org's
+  // licence AND its data scope — a privilege escalation on a typo. Keeping the
+  // unknown id means the entitlement lookup finds nothing and every org_id predicate
+  // matches nothing, so the request can see and do exactly zero.
+  return { id: orgId, name: "", edition: "" };
 }
 
 // --- API keys (programmatic access for review-gate tenants) -------------------
@@ -168,7 +195,7 @@ export function requestOrg(db: AppDb, req: Request): OrgInfo {
   if (viaKey) return viaKey;
   const user = currentUser(db, req);
   if (user) return getOrg(db, user.orgId);
-  return getOrg(db, "org-default");
+  return getOrg(db, DEFAULT_ORG_ID);
 }
 
 // Simple in-memory per-IP login throttle to blunt brute force on the internet-facing
@@ -207,7 +234,7 @@ export function login(db: AppDb, req: Request, res: Response): void {
     secure: String(process.env.AUTH_COOKIE_SECURE || "").toLowerCase() === "true",
     maxAge: SESSION_HOURS * 3600_000,
   });
-  res.json({ user: { id: String(row.id), name: String(row.name), email: String(row.email), role: String(row.role), orgId: String(row.org_id || "org-default") } });
+  res.json({ user: { id: String(row.id), name: String(row.name), email: String(row.email), role: String(row.role), orgId: String(row.org_id || DEFAULT_ORG_ID) } });
 }
 
 export function logout(_req: Request, res: Response): void {
@@ -232,9 +259,12 @@ export function requireAuth(db: AppDb) {
     if (req.path === "/status" || req.path.startsWith("/api/public/status/")) return next();
     // Public shared review report (tokenized, no login).
     if (req.path.startsWith("/api/public/review/")) return next();
-    // Programmatic review-gate access: an org API key authenticates /api/review* and
-    // read-only code-profile lookups (never the full-edition project APIs).
-    if ((req.path.startsWith("/api/review") || req.path === "/api/code-profiles" || req.path === "/api/code-profiles/resolve") && orgFromApiKey(db, req)) {
+    // Programmatic access: an org API key authenticates the routes of products that
+    // allow key auth (review gate, form filler) — never the autopilot, whose routes
+    // stage real filings and need a human identity in the audit trail. The prefix
+    // list is DERIVED from the product registry so it can't drift from the
+    // entitlement gate below.
+    if (apiKeyAuthPrefixes().some((p) => req.path.startsWith(p)) && orgFromApiKey(db, req)) {
       return next();
     }
     if (currentUser(db, req)) return next();
@@ -247,28 +277,25 @@ export function requireAuth(db: AppDb) {
 }
 
 // ---------------------------------------------------------------------------
-// Edition gating (licensing). A 'review_gate' org buys ONLY the review gate:
-// its users/keys reach the review surface (review page/APIs, code-profile
-// reads) but never the all-in-one product (projects, portal automation, CRM…).
-// The 'full' edition (default org) is unaffected. Enforced as a deny-gate over
-// /api/* with an explicit allowlist, so a newly added full-product route is
-// closed to review_gate tenants BY DEFAULT.
+// Licensing gate. An org reaches only the routes of the products it holds
+// (org_entitlements). Enforced as a DENY-GATE over /api/* driven by the product
+// registry, so a newly added route is closed to every non-autopilot tenant BY
+// DEFAULT — you have to name a route's prefix in a product to expose it.
+//
+// This replaces the old single-'edition' check. The autopilot product is a
+// wildcard, so a full-edition org behaves exactly as it did before.
 // ---------------------------------------------------------------------------
-const REVIEW_EDITION_API_ALLOW = [
-  "/api/auth/",
-  "/api/review",
-  "/api/code-profiles",
-  "/api/public/",
-  "/health",
-];
-
-export function editionGate(db: AppDb) {
+export function entitlementGate(db: AppDb) {
   return (req: Request, res: Response, next: NextFunction) => {
     if (!req.path.startsWith("/api/")) return next(); // pages handle their own redirects
     const org = requestOrg(db, req);
     (req as Request & { org?: OrgInfo }).org = org;
-    if (org.edition !== "review_gate") return next();
-    if (REVIEW_EDITION_API_ALLOW.some((p) => req.path.startsWith(p))) return next();
-    res.status(403).json({ error: "Your plan includes the review gate only. This feature is part of the full permitting autopilot." });
+    const products = orgEntitlements(db, org.id);
+    if (productsAllowPath(products, req.path)) return next();
+    res.status(403).json({
+      error: products.size === 0
+        ? "This account has no active product licence."
+        : "This feature isn't part of your plan.",
+    });
   };
 }
