@@ -413,7 +413,7 @@ function mapAudit(row: Row): AuditLog {
   };
 }
 
-export function createProject(db: AppDb, payload: ParserPayload): ProjectDetail {
+export function createProject(db: AppDb, payload: ParserPayload, orgId: string = DEFAULT_ORG_ID): ProjectDetail {
   const project = normalizeProject(id(), payload);
   db.transaction(() => {
     db.run(
@@ -421,8 +421,8 @@ export function createProject(db: AppDb, payload: ParserPayload): ProjectDetail 
         id, client_id, homeowner_name, project_address, city, state, zip, ahj, utility,
         account_number, meter_number, system_size_dc_kw, system_size_ac_kw, total_export_kw,
         interconnection_method, status, current_stage, parser_confidence_summary, parser_json,
-        created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        created_at, updated_at, org_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         project.id,
         project.clientId,
@@ -445,6 +445,7 @@ export function createProject(db: AppDb, payload: ParserPayload): ProjectDetail 
         asJson(project.parserSnapshot),
         project.createdAt,
         project.updatedAt,
+        orgId,
       ],
     );
 
@@ -681,6 +682,9 @@ export function getProjectList(
     userId?: string;
     clientId?: string;
     sort?: "updated_desc" | "created_desc" | "name_asc" | "status_asc";
+    /** Tenant filter. `null` reads across every org (superadmin); omitted means the
+     *  single-operator default tenant, which is what every pre-tenancy row is. */
+    orgId?: string | null;
   } = {},
 ): { projects: ProjectListItem[]; total: number } {
   const today = new Date().toISOString().slice(0, 10);
@@ -689,6 +693,13 @@ export function getProjectList(
 
   const conditions: string[] = [];
   const filterParams: (string | number)[] = [];
+
+  // Tenant scope FIRST, so it is applied to the count and the page alike (both
+  // interpolate the same `where`). `orgId: null` is the explicit superadmin bypass;
+  // `undefined` means the default tenant rather than "everything", so a caller that
+  // forgets to pass one sees only the default org instead of the whole database.
+  const scopeOrgId = options.orgId === null ? null : (options.orgId || DEFAULT_ORG_ID);
+  if (scopeOrgId) { conditions.push("p.org_id = ?"); filterParams.push(scopeOrgId); }
 
   if (options.search) {
     conditions.push("(p.homeowner_name LIKE ? OR p.project_address LIKE ? OR p.ahj LIKE ? OR p.status LIKE ?)");
@@ -3587,20 +3598,22 @@ export function getProjectTimelineReport(db: AppDb, projectId: string): ProjectT
   };
 }
 
-export function getEmailTrackerStatus(db: AppDb, orgId: string = DEFAULT_ORG_ID): { sources: EmailTrackingSource[]; recentMatches: EmailProjectMatch[] } {
+export function getEmailTrackerStatus(db: AppDb, orgId: string | null = DEFAULT_ORG_ID): { sources: EmailTrackingSource[]; recentMatches: EmailProjectMatch[] } {
   return {
-    sources: db
-      .query<Row>("SELECT * FROM email_tracking_sources WHERE org_id = ? ORDER BY active DESC, updated_at DESC", [orgId])
+    sources: (orgId
+      ? db.query<Row>("SELECT * FROM email_tracking_sources WHERE org_id = ? ORDER BY active DESC, updated_at DESC", [orgId])
+      : db.query<Row>("SELECT * FROM email_tracking_sources ORDER BY active DESC, updated_at DESC"))
       .map(mapEmailTrackingSource),
     // email_project_matches carries no org of its own — it reaches one through the
     // project it matched, which is the grain that actually owns the row.
-    recentMatches: db
-      .query<Row>(
-        `SELECT m.* FROM email_project_matches m
-         JOIN projects p ON p.id = m.project_id AND p.org_id = ?
-         ORDER BY m.created_at DESC LIMIT 50`,
-        [orgId],
-      )
+    recentMatches: (orgId
+      ? db.query<Row>(
+          `SELECT m.* FROM email_project_matches m
+           JOIN projects p ON p.id = m.project_id AND p.org_id = ?
+           ORDER BY m.created_at DESC LIMIT 50`,
+          [orgId],
+        )
+      : db.query<Row>("SELECT * FROM email_project_matches ORDER BY created_at DESC LIMIT 50"))
       .map(mapEmailProjectMatch),
   };
 }

@@ -1,5 +1,6 @@
 import type { ClientPortalIdentity, ClientRecord } from "../../shared/src/types";
 import type { AppDb } from "./db";
+import { DEFAULT_ORG_ID } from "./db";
 import { HttpError } from "./httpError";
 import { id } from "./ids";
 import { nowIso } from "./time";
@@ -107,8 +108,16 @@ function identitiesFor(db: AppDb, clientId: string): ClientPortalIdentity[] {
     .map(mapIdentity);
 }
 
-export function listClients(db: AppDb): ClientRecord[] {
-  const rows = db.query<Row>("SELECT * FROM clients ORDER BY company_name, created_at");
+/**
+ * Clients in one tenant. This was an unfiltered `SELECT * FROM clients`, which handed
+ * every company's id to anyone who could log in — and portal_credentials is keyed only
+ * on client_id, so a leaked id was the route to another company's portal logins.
+ * `null` reads across every org (superadmin).
+ */
+export function listClients(db: AppDb, orgId: string | null = DEFAULT_ORG_ID): ClientRecord[] {
+  const rows = orgId
+    ? db.query<Row>("SELECT * FROM clients WHERE org_id = ? ORDER BY company_name, created_at", [orgId])
+    : db.query<Row>("SELECT * FROM clients ORDER BY company_name, created_at");
   return rows.map((row) => mapClient(row, identitiesFor(db, s(row.id))));
 }
 
@@ -148,13 +157,13 @@ function replaceIdentities(db: AppDb, clientId: string, identities: PortalIdenti
   }
 }
 
-export function createClient(db: AppDb, payload: Record<string, unknown>): ClientRecord {
+export function createClient(db: AppDb, payload: Record<string, unknown>, orgId: string = DEFAULT_ORG_ID): ClientRecord {
   const companyName = s(payload.companyName).trim() || s(payload.legalBusinessName).trim();
   if (!companyName) throw new HttpError(400, "companyName (or legalBusinessName) is required.");
 
   const clientId = id();
-  const columns = ["id", "created_at", ...FIELD_COLUMNS.map(([, col]) => col)];
-  const values: (string | number | null)[] = [clientId, nowIso(), ...FIELD_COLUMNS.map(([key]) => fieldValue(key, payload[key]))];
+  const columns = ["id", "created_at", "org_id", ...FIELD_COLUMNS.map(([, col]) => col)];
+  const values: (string | number | null)[] = [clientId, nowIso(), orgId, ...FIELD_COLUMNS.map(([key]) => fieldValue(key, payload[key]))];
   const placeholders = columns.map(() => "?").join(", ");
 
   return db.transaction(() => {

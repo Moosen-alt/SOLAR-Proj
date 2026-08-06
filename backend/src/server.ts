@@ -49,6 +49,7 @@ import { startCecSyncScheduler, primeCecCache, syncCecEquipment } from "./cecEqu
 import { extractZipToWorkdir } from "./batchZip";
 import { AUTH_ENABLED, currentUser, login, logout, me, requireAuth, seedAdminUser, entitlementGate, requestOrg, createApiKey, ADMIN_ROLES } from "./auth";
 import { PRODUCTS, PRODUCT_KEYS, grantProduct, revokeProduct, orgEntitlements, productsForEdition } from "./entitlements";
+import { requestScope, orgFilter, reqOrgFilter, assertInScope, auditCrossOrgAccess } from "./scope";
 import { ensureStatusShareToken, formatProjectAddress, statusShareUrl } from "./clientNotifier";
 import { listCodeProfiles, getCodeProfile, saveResearchedCodeProfile, saveVerifiedCodeProfile, codeProfileKey } from "./codeProfiles";
 import { runStandaloneReview, getReviewSubmission, listReviewSubmissions, reviewSubjectToProject } from "./reviewSubject";
@@ -229,6 +230,45 @@ app.use(entitlementGate(db));
 // /login (the page's data calls are auth-gated regardless).
 app.get("/review", (_req, res) => res.sendFile(path.join(frontendDir, "review.html")));
 
+// ---------------------------------------------------------------------------
+// TENANT SCOPE GUARDS. One registration per addressable root resource, covering
+// every current AND future subroute beneath it — /api/projects/:id alone has 57.
+// Threading an org id through the ~70 getProjectDetail call sites would have made
+// every one of them a place to forget; this is a single place that cannot be
+// forgotten, because a new route inherits it by virtue of its path.
+//
+// Out-of-scope resolves to 404, not 403 — the convention review_submissions
+// already uses, so an id you don't own is indistinguishable from one that doesn't
+// exist and can't be used to probe for existence.
+//
+// Scope is enforced HERE, at the edge, rather than in the data layer, precisely so
+// background work (scheduler, job queue, permit monitor) can keep running as system
+// with no request and no principal to fake.
+// ---------------------------------------------------------------------------
+function scopeGuard(table: string, label: string) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    const scope = requestScope(db, req);
+    if (scope.crossOrg) {
+      auditCrossOrgAccess(db, scope, "read", { table, id: req.params.id, path: req.originalUrl });
+      return next();
+    }
+    const row = db.get<{ org_id?: string }>(`SELECT org_id FROM ${table} WHERE id = ?`, [String(req.params.id)]);
+    // A missing row falls through so the handler produces its own, more specific 404.
+    if (!row) return next();
+    try {
+      assertInScope(scope, row.org_id, label);
+    } catch (err) {
+      next(err);
+      return;
+    }
+    next();
+  };
+}
+
+app.use("/api/projects/:id", scopeGuard("projects", "Project"));
+app.use("/api/clients/:id", scopeGuard("clients", "Client"));
+app.use("/api/customers/:id", scopeGuard("customers", "Customer"));
+
 app.use(express.static(frontendDir));
 
 app.get("/health", (_req, res) => {
@@ -245,7 +285,7 @@ app.post("/api/projects", (req, res) => {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     throw new HttpError(400, "Project payload must be an object.");
   }
-  res.status(201).json(createProject(db, payload));
+  res.status(201).json(createProject(db, payload, requestScope(db, req).orgId));
 });
 
 app.put("/api/projects/:id", (req, res) => {
@@ -267,12 +307,12 @@ app.get("/api/projects", (req, res) => {
   const validSorts = ["updated_desc", "created_desc", "name_asc", "status_asc"] as const;
   type SortOption = typeof validSorts[number];
   const sortVal = validSorts.includes(sort as SortOption) ? (sort as SortOption) : undefined;
-  res.json(getProjectList(db, { limit, offset, search, status, userId, clientId, sort: sortVal }));
+  res.json(getProjectList(db, { limit, offset, search, status, userId, clientId, sort: sortVal, orgId: reqOrgFilter(db, req) }));
 });
 
 // --- Clients (contractor profiles + licensing) ---
-app.get("/api/clients", (_req, res) => {
-  res.json({ clients: listClients(db) });
+app.get("/api/clients", (req, res) => {
+  res.json({ clients: listClients(db, reqOrgFilter(db, req)) });
 });
 
 app.get("/api/clients/:id", (req, res) => {
@@ -281,7 +321,7 @@ app.get("/api/clients/:id", (req, res) => {
 
 app.post("/api/clients", (req, res) => {
   const payload = req.body && typeof req.body === "object" ? req.body : {};
-  res.status(201).json(createClient(db, payload));
+  res.status(201).json(createClient(db, payload, requestScope(db, req).orgId));
 });
 
 app.put("/api/clients/:id", (req, res) => {
@@ -901,7 +941,7 @@ app.get("/api/knowledge-base", (_req, res) => {
 });
 
 app.get("/api/email-tracker", (req, res) => {
-  res.json(getEmailTrackerStatus(db, requestOrg(db, req).id));
+  res.json(getEmailTrackerStatus(db, reqOrgFilter(db, req)));
 });
 
 app.post("/api/email-tracker/sources", (req, res) => {
@@ -1509,17 +1549,21 @@ app.post("/api/nem-monitor/run", asyncHandler(async (_req, res) => {
 }));
 
 // Users
-app.get("/api/users", (_req, res) => { res.json(listUsers(db)); });
+app.get("/api/users", (req, res) => { res.json(listUsers(db, reqOrgFilter(db, req))); });
 app.post("/api/users", (req, res) => {
   if (!req.body?.name || !req.body?.email) throw new HttpError(400, "name and email are required.");
-  res.status(201).json(createUser(db, req.body));
+  res.status(201).json(createUser(db, { ...req.body, orgId: requestOrg(db, req).id }));
 });
 app.put("/api/users/:id", (req, res) => {
-  res.json(updateUser(db, req.params.id, req.body || {}));
+  // The actor is the SESSION identity, never anything from the body — updateUser uses
+  // it to decide whether a role change is allowed at all.
+  const user = currentUser(db, req);
+  const actor = user ? { id: user.id, role: user.role, orgId: user.orgId } : null;
+  res.json(updateUser(db, req.params.id, req.body || {}, actor));
 });
-app.get("/api/users/workload", (_req, res) => { res.json(getUserWorkload(db)); });
+app.get("/api/users/workload", (req, res) => { res.json(getUserWorkload(db, reqOrgFilter(db, req))); });
 app.post("/api/projects/:id/assign", (req, res) => {
-  assignProjectToUser(db, req.params.id, req.body?.userId || null);
+  assignProjectToUser(db, req.params.id, req.body?.userId || null, requestOrg(db, req).id);
   res.json({ ok: true });
 });
 
