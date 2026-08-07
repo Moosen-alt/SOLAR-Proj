@@ -50,6 +50,7 @@ import { extractZipToWorkdir } from "./batchZip";
 import { AUTH_ENABLED, currentUser, login, logout, me, requireAuth, seedAdminUser, entitlementGate, requestOrg, createApiKey, ADMIN_ROLES } from "./auth";
 import { PRODUCTS, PRODUCT_KEYS, grantProduct, revokeProduct, orgEntitlements, productsForEdition } from "./entitlements";
 import { requestScope, orgFilter, reqOrgFilter, assertInScope, auditCrossOrgAccess } from "./scope";
+import type { RequestScope } from "./scope";
 import { DEFAULT_ORG_ID } from "./db";
 import { ensureStatusShareToken, formatProjectAddress, statusShareUrl } from "./clientNotifier";
 import { listCodeProfiles, getCodeProfile, saveResearchedCodeProfile, saveVerifiedCodeProfile, codeProfileKey } from "./codeProfiles";
@@ -273,9 +274,52 @@ function scopeGuard(table: string, label: string) {
   };
 }
 
+/**
+ * Same guard for a CHILD row, which carries no org of its own and reaches one through
+ * its project. Child tables deliberately have no org_id — denormalising it onto fifteen
+ * of them would create fifteen ways to drift — so the join IS the scope check.
+ */
+function childScopeGuard(table: string, label: string, param = "id") {
+  return (req: Request, res: Response, next: NextFunction) => {
+    const scope = requestScope(db, req);
+    const rowId = String(req.params[param] ?? "");
+    if (scope.crossOrg) {
+      auditCrossOrgAccess(db, scope, "read", { table, id: rowId, path: req.originalUrl });
+      return next();
+    }
+    const row = db.get<{ org_id?: string }>(
+      `SELECT p.org_id FROM ${table} c JOIN projects p ON p.id = c.project_id WHERE c.id = ?`,
+      [rowId],
+    );
+    // Missing row (or one with no project) falls through to the handler's own 404.
+    if (!row) return next();
+    try {
+      assertInScope(scope, row.org_id, label);
+    } catch (err) {
+      next(err);
+      return;
+    }
+    next();
+  };
+}
+
+/**
+ * Check a row id that arrives in a request BODY rather than the path, where no mounted
+ * guard can reach it. No-op when the id is absent.
+ */
+function assertRefInScope(scope: RequestScope, table: string, rawId: unknown, label: string): void {
+  const rowId = typeof rawId === "string" ? rawId.trim() : "";
+  if (!rowId || scope.crossOrg) return;
+  const row = db.get<{ org_id?: string }>(`SELECT org_id FROM ${table} WHERE id = ?`, [rowId]);
+  if (!row) throw new HttpError(404, `${label} not found.`);
+  assertInScope(scope, row.org_id, label);
+}
+
 app.use("/api/projects/:id", scopeGuard("projects", "Project"));
 app.use("/api/clients/:id", scopeGuard("clients", "Client"));
 app.use("/api/customers/:id", scopeGuard("customers", "Customer"));
+app.use("/api/corrections/:id", childScopeGuard("corrections", "Correction"));
+app.use("/api/portal-runs/:id", childScopeGuard("portal_runs", "Portal run"));
 
 app.use(express.static(frontendDir));
 
@@ -938,12 +982,12 @@ app.get("/api/events", (req, res) => {
   ensureHeartbeat();
 });
 
-app.get("/api/ops-actions", (_req, res) => {
-  res.json(getOperationsActionQueue(db));
+app.get("/api/ops-actions", (req, res) => {
+  res.json(getOperationsActionQueue(db, reqOrgFilter(db, req)));
 });
 
-app.get("/api/ops-report", (_req, res) => {
-  res.json(getOperationsDailyReport(db));
+app.get("/api/ops-report", (req, res) => {
+  res.json(getOperationsDailyReport(db, reqOrgFilter(db, req)));
 });
 
 app.get("/api/knowledge-base", (_req, res) => {
@@ -1608,7 +1652,13 @@ app.get("/api/projects/:id/communications", (req, res) => {
 app.post("/api/communications", (req, res) => {
   if (!req.body?.customerId && !req.body?.projectId) throw new HttpError(400, "customerId or projectId is required.");
   if (!req.body?.body && !req.body?.subject) throw new HttpError(400, "A subject or body is required.");
-  res.status(201).json(addCommunication(db, req.body || {}));
+  // The subject id arrives in the BODY, so no path guard can cover this one — the
+  // referenced project/customer has to be checked explicitly or a tenant could log a
+  // communication against another company's job.
+  const scope = requestScope(db, req);
+  assertRefInScope(scope, "projects", req.body?.projectId, "Project");
+  assertRefInScope(scope, "customers", req.body?.customerId, "Customer");
+  res.status(201).json(addCommunication(db, { ...(req.body || {}), orgId: scope.orgId }));
 });
 
 // --- Project documents (upload / list / download / delete) -----------------
@@ -1676,17 +1726,24 @@ app.get("/api/jobs", (req, res) => {
     status: req.query.status as string | undefined as any,
     jobType: req.query.jobType as string | undefined as any,
     limit: req.query.limit ? Number(req.query.limit) : 100,
+    orgId: reqOrgFilter(db, req),
   }));
 });
 app.get("/api/jobs/:id", (req, res) => {
+  const scope = requestScope(db, req);
   const job = getJob(db, req.params.id);
   if (!job) throw new HttpError(404, "Job not found.");
+  assertInScope(scope, job.orgId, "Job");
   res.json(job);
 });
 app.post("/api/jobs", (req, res) => {
   const { jobType, payload, priority, assignedToUser, projectId, scheduledAt } = req.body || {};
   if (!jobType) throw new HttpError(400, "jobType is required.");
-  res.status(201).json(enqueueJob(db, jobType, payload || {}, { priority, assignedToUser, projectId, scheduledAt }));
+  const scope = requestScope(db, req);
+  // A job naming another tenant's project would run against it as system, so the
+  // reference is checked before the job is ever queued.
+  assertRefInScope(scope, "projects", projectId, "Project");
+  res.status(201).json(enqueueJob(db, jobType, payload || {}, { priority, assignedToUser, projectId, scheduledAt, orgId: scope.orgId }));
 });
 // Batch folder scan — enqueues a background job to classify + import all PDFs in a folder
 // ---------------------------------------------------------------------------
@@ -1729,8 +1786,8 @@ app.post(
 );
 
 // --- Operator signatures (stored once, stamped onto permit forms) ---
-app.get("/api/signatures", (_req, res) => {
-  res.json({ signatures: listSignatures(db) });
+app.get("/api/signatures", (req, res) => {
+  res.json({ signatures: listSignatures(db, reqOrgFilter(db, req)) });
 });
 
 app.post(
@@ -1742,23 +1799,23 @@ app.post(
     const name = String(req.query.name || "").trim();
     const isDefault = String(req.query.default || "") === "1" || String(req.query.default || "") === "true";
     const mime = String(req.headers["content-type"] || "image/png");
-    const view = await createSignature(db, { role, name, bytes: new Uint8Array(req.body), mime, isDefault });
+    const view = await createSignature(db, { role, name, bytes: new Uint8Array(req.body), mime, isDefault, orgId: requestScope(db, req).orgId });
     res.status(201).json(view);
   }),
 );
 
 app.patch("/api/signatures/:id/default", (req, res) => {
-  setDefaultSignature(db, String(req.params.id));
+  setDefaultSignature(db, String(req.params.id), requestScope(db, req).orgId);
   res.json({ ok: true });
 });
 
 app.delete("/api/signatures/:id", (req, res) => {
-  deleteSignature(db, String(req.params.id));
+  deleteSignature(db, String(req.params.id), requestScope(db, req).orgId);
   res.json({ deleted: true });
 });
 
 app.get("/api/signatures/:id/image", (req, res) => {
-  const img = getSignatureImage(db, String(req.params.id));
+  const img = getSignatureImage(db, String(req.params.id), reqOrgFilter(db, req));
   res.setHeader("Content-Type", img.mime);
   res.setHeader("Cache-Control", "private, max-age=300");
   res.send(img.bytes);
@@ -2008,7 +2065,7 @@ app.post("/api/batch-import/scan", (req, res) => {
   if (!folderPath) throw new HttpError(400, "folderPath is required.");
   if (!fs.existsSync(folderPath)) throw new HttpError(404, `Folder not found: ${folderPath}`);
   if (!fs.statSync(folderPath).isDirectory()) throw new HttpError(400, "Path must be a directory.");
-  const job = enqueueJob(db, "folder_scan", { folderPath, defaultState, defaultAhj, defaultUtility, useLlm: !!useLlm }, { priority: 2, maxRetries: 1 });
+  const job = enqueueJob(db, "folder_scan", { folderPath, defaultState, defaultAhj, defaultUtility, useLlm: !!useLlm }, { priority: 2, maxRetries: 1, orgId: requestScope(db, req).orgId });
   res.status(201).json(job);
 });
 
@@ -2373,7 +2430,8 @@ const learnRunsBase = (): string =>
   process.env.AUTOLEARN_RUN_DIR ? path.resolve(process.env.AUTOLEARN_RUN_DIR) : path.resolve(process.cwd(), "data", "learn-runs");
 const SAFE_RUN_ID = /^[A-Za-z0-9._-]+$/;
 
-app.get("/api/learn-runs", (_req, res) => {
+app.get("/api/learn-runs", (req, res) => {
+  requireAdmin(req); // portal debug bundles: operator artifacts, not tenant rows
   const base = learnRunsBase();
   let names: string[] = [];
   try {
@@ -2392,6 +2450,7 @@ app.get("/api/learn-runs", (_req, res) => {
 });
 
 app.get("/api/learn-runs/:runId/bundle.zip", asyncHandler(async (req, res) => {
+  requireAdmin(req); // portal debug bundles: operator artifacts, not tenant rows
   const base = learnRunsBase();
   let runId = String(req.params.runId);
   if (runId === "latest") {

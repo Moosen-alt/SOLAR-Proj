@@ -36,9 +36,9 @@ const apiRoutes = routes.filter((r) => r.path.startsWith("/api/"));
 // 1. Path prefixes covered by a scope guard registered with app.use(...).
 //    Parsed from the source so this test tracks the guards rather than duplicating them.
 // ---------------------------------------------------------------------------
-const GUARD_RE = /app\.use\("(\/api\/[^"]+)",\s*scopeGuard\(/g;
+const GUARD_RE = /app\.use\("(\/api\/[^"]+)",\s*(?:child)?[sS]copeGuard\(/g;
 const guardedPrefixes = [...source.matchAll(GUARD_RE)].map((m) => m[1].replace(/\/:id$/, ""));
-run("scope guards are registered", guardedPrefixes.length >= 3, `found ${JSON.stringify(guardedPrefixes)}`);
+run("scope guards are registered", guardedPrefixes.length >= 5, `found ${JSON.stringify(guardedPrefixes)}`);
 
 // ---------------------------------------------------------------------------
 // 2. Routes that are NOT under a guard and must therefore be justified.
@@ -89,21 +89,17 @@ const UNSCOPED_BY_DESIGN: Record<string, string> = {
   "/health": "liveness probe",
   "/api/events": "SSE stream; per-subscriber org filtering lives in events.ts",
 
-  // Project-scoped writes and reads whose id is a CHILD of a project. These reach a
-  // tenant through their project and still need their own guard — tracked as
-  // follow-up work in docs/HANDOFF.md rather than left silently unaccounted.
-  "/api/corrections/:id/sla": "TODO scope via parent project (HANDOFF)",
-  "/api/corrections/:id/apply": "TODO scope via parent project (HANDOFF)",
-  "/api/corrections/:id/resolve": "TODO scope via parent project (HANDOFF)",
-  "/api/portal-runs/:id/capture-confirmation": "TODO scope via parent project (HANDOFF)",
-  "/api/portal-runs/:id/tracking-url": "TODO scope via parent project (HANDOFF)",
-  "/api/learn-runs": "TODO scope via parent project (HANDOFF)",
-  "/api/jobs": "TODO scope job_queue by org (HANDOFF)",
-  "/api/batch-import": "TODO stamp imported projects with the caller's org (HANDOFF)",
-  "/api/signatures": "TODO per-org operator signatures (HANDOFF)",
-  "/api/communications": "TODO scope via parent project (HANDOFF)",
-  "/api/ops-actions": "TODO scope aggregate ops views (HANDOFF)",
-  "/api/ops-report": "TODO scope aggregate ops views (HANDOFF)",
+  // Accounted for by other means than a path guard.
+  "/api/jobs/:id": "handler asserts job.orgId is in scope",
+  "/api/signatures/:id/default": "handler passes requestScope().orgId to setDefaultSignature",
+  "/api/signatures/:id": "handler passes requestScope().orgId to deleteSignature",
+  "/api/signatures/:id/image": "handler passes reqOrgFilter to getSignatureImage",
+  "/api/communications": "subject id arrives in the body; checked with assertRefInScope",
+  "/api/learn-runs": "portal debug bundles are operator artifacts; admin-gated",
+
+  // Learns into the SHARED knowledge base only — creates no projects, clients or
+  // documents (verified: no createProject/saveProjectDocument in batchImport.ts).
+  "/api/batch-import": "shared-knowledge learning; creates no tenant rows",
 
   // Operator-level integrations and global background triggers. Reachable only by
   // autopilot-entitled orgs; in the service-bureau model that is the operator alone.
@@ -131,6 +127,10 @@ const SCOPED_LIST_ROUTES: Record<string, string> = {
   "/api/customers": "reqOrgFilter",
   "/api/kpi": "reqOrgFilter",
   "/api/corrections/overdue": "reqOrgFilter",
+  "/api/jobs": "reqOrgFilter",
+  "/api/signatures": "reqOrgFilter",
+  "/api/ops-actions": "reqOrgFilter",
+  "/api/ops-report": "reqOrgFilter",
 };
 
 const topLevel = (p: string): string => {
@@ -159,6 +159,11 @@ run(
       `         UNSCOPED_BY_DESIGN map with a one-line reason.`
     : "",
 );
+
+// Child guards must stay registered.
+for (const expected of ["/api/corrections", "/api/portal-runs"]) {
+  run(`${expected}/:id is behind a child scope guard`, guardedPrefixes.includes(expected), `guards: ${guardedPrefixes.join(", ")}`);
+}
 
 // The declared list routes must still actually pass a filter. Matched on the handler
 // body between this route and the next app.<verb>( registration, so a long handler

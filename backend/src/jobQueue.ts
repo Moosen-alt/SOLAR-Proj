@@ -1,6 +1,7 @@
 import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
 import type { AppDb, SqlParam } from "./db";
+import { DEFAULT_ORG_ID } from "./db";
 import { importMboxKnowledge } from "./knowledgeBase";
 import { runDuePermitChecks } from "./repository";
 import { scanFolder } from "./batchImport";
@@ -39,6 +40,7 @@ export interface JobRecord {
   error: string | null;
   retryCount: number;
   maxRetries: number;
+  orgId: string;
 }
 
 type Row = Record<string, SqlParam>;
@@ -73,6 +75,7 @@ function mapJob(row: Row): JobRecord {
     error: row.error == null ? null : String(row.error),
     retryCount: Number(row.retry_count ?? 0),
     maxRetries: Number(row.max_retries ?? 3),
+    orgId: String(row.org_id || DEFAULT_ORG_ID),
   };
 }
 
@@ -86,15 +89,24 @@ export function enqueueJob(
     projectId?: string;
     scheduledAt?: string;
     maxRetries?: number;
+    /** Tenant this job belongs to. Carried so work the job creates lands in the right
+     *  org, and so the claim can be fair across tenants rather than first-come. */
+    orgId?: string;
   } = {},
 ): JobRecord {
   const id = crypto.randomUUID();
   const ts = nowIso();
+  // Prefer the org of the job's project when there is one — the project is the
+  // authority, and it can't be spoofed by a caller passing the wrong orgId.
+  const projectOrg = options.projectId
+    ? db.get<{ org_id?: string }>("SELECT org_id FROM projects WHERE id = ?", [options.projectId])?.org_id
+    : undefined;
+  const orgId = String(projectOrg || options.orgId || DEFAULT_ORG_ID);
   db.run(
     `INSERT INTO job_queue
       (id, job_type, payload, status, priority, assigned_to_user, project_id,
-       created_at, scheduled_at, progress, progress_total, retry_count, max_retries)
-     VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, 0, 0, 0, ?)`,
+       created_at, scheduled_at, progress, progress_total, retry_count, max_retries, org_id)
+     VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, 0, 0, 0, ?, ?)`,
     [
       id,
       jobType,
@@ -105,6 +117,7 @@ export function enqueueJob(
       ts,
       options.scheduledAt ?? null,
       options.maxRetries ?? 3,
+      orgId,
     ],
   );
   // Instant kick: don't make an operator-enqueued job wait for the next 30s
@@ -119,10 +132,12 @@ export function enqueueJob(
 
 export function listJobs(
   db: AppDb,
-  filter: { status?: JobStatus; jobType?: JobType; limit?: number } = {},
+  filter: { status?: JobStatus; jobType?: JobType; limit?: number; orgId?: string | null } = {},
 ): JobRecord[] {
   const conditions: string[] = [];
   const params: (string | number)[] = [];
+  const scopeOrgId = filter.orgId === null ? null : (filter.orgId || DEFAULT_ORG_ID);
+  if (scopeOrgId) { conditions.push("org_id = ?"); params.push(scopeOrgId); }
   if (filter.status) { conditions.push("status = ?"); params.push(filter.status); }
   if (filter.jobType) { conditions.push("job_type = ?"); params.push(filter.jobType); }
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
@@ -416,15 +431,36 @@ export async function drainPendingJobs(db: AppDb): Promise<number> {
 // Process one pending job. Returns true if a job was found and processed.
 export async function processNextJob(db: AppDb): Promise<boolean> {
   const now = nowIso();
-  // Claim a job atomically
-  const row = db.get<Row>(
+  // Claim a job atomically.
+  //
+  // FAIRNESS: this used to be a straight global FIFO, so one tenant enqueueing a
+  // hundred jobs held every worker slot until they drained and every other tenant's
+  // work waited behind them. The order is now: priority first (an operator-triggered
+  // job still beats background sweeps), then the org with the least work IN FLIGHT,
+  // then age. That keeps a busy tenant from starving a quiet one without needing a
+  // separate worker per org.
+  const runningByOrg = new Map<string, number>();
+  for (const r of db.query<Row>("SELECT org_id, COUNT(*) AS cnt FROM job_queue WHERE status = 'running' GROUP BY org_id")) {
+    runningByOrg.set(String(r.org_id || DEFAULT_ORG_ID), Number(r.cnt ?? 0));
+  }
+  const candidates = db.query<Row>(
     `SELECT * FROM job_queue
      WHERE status = 'pending'
        AND (scheduled_at IS NULL OR scheduled_at <= ?)
      ORDER BY priority DESC, created_at ASC
-     LIMIT 1`,
+     LIMIT 50`,
     [now],
   );
+  if (candidates.length === 0) return false;
+  const topPriority = Number(candidates[0].priority ?? 5);
+  const row = candidates
+    .filter((c) => Number(c.priority ?? 5) === topPriority)
+    .sort((x, y) => {
+      const bx = runningByOrg.get(String(x.org_id || DEFAULT_ORG_ID)) ?? 0;
+      const by = runningByOrg.get(String(y.org_id || DEFAULT_ORG_ID)) ?? 0;
+      if (bx !== by) return bx - by;
+      return String(x.created_at).localeCompare(String(y.created_at));
+    })[0];
   if (!row) return false;
 
   const job = mapJob(row);

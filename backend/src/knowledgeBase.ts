@@ -2006,8 +2006,32 @@ function eventExists(db: AppDb, projectId: string, eventType: string): boolean {
   return Boolean(row);
 }
 
+// Teach the shared knowledge base from projects that predate a learning change.
+// Deliberately cross-tenant: an AHJ's behaviour learned from one job should help
+// everyone (see the shared-knowledge policy in CLAUDE.md).
+//
+// BOUNDED. This used to `SELECT * FROM projects` unbounded on every single startup,
+// re-walking the whole table plus several per-project queries even though every
+// project was already backfilled and guarded by eventExists. That is fine at fifty
+// projects and a slow boot at fifty thousand. It now takes only projects with no
+// backfill event yet, a batch at a time, and says so when it caps out — the work is
+// idempotent, so the remainder is simply picked up on the next restart.
+const BACKFILL_BATCH = Number(process.env.KB_BACKFILL_BATCH || 500);
+
 function backfillExistingProjectLearning(db: AppDb): void {
-  const projects = db.query<Row>("SELECT * FROM projects ORDER BY created_at ASC");
+  const projects = db.query<Row>(
+    `SELECT p.* FROM projects p
+     WHERE NOT EXISTS (
+       SELECT 1 FROM knowledge_events e
+       WHERE e.project_id = p.id AND e.event_type = 'backfill.v2.project'
+     )
+     ORDER BY p.created_at ASC
+     LIMIT ?`,
+    [Math.max(1, BACKFILL_BATCH)],
+  );
+  if (projects.length >= BACKFILL_BATCH) {
+    console.log(`[kb] backfilling ${projects.length} project(s) this start; more remain and will run on the next restart.`);
+  }
   for (const row of projects) {
     const project = projectFromRow(row);
     upsertProjectFingerprint(db, project);

@@ -1252,6 +1252,17 @@ const VERSIONED_MIGRATIONS: VersionedMigration[] = [
       }
     },
   },
+  {
+    version: 12,
+    name: "signatures_org_scope",
+    up: (db) => {
+      // A stored signature is a person's actual signature image applied to permit
+      // forms. It is the one remaining root table that was global, so every tenant
+      // could list — and apply — every other tenant's signature.
+      addColumnIfMissing(db, "signatures", "org_id", "TEXT NOT NULL DEFAULT 'org-default'");
+      db.exec("CREATE INDEX IF NOT EXISTS idx_signatures_org ON signatures(org_id, role);");
+    },
+  },
 ];
 
 // One-time repair for the runaway-notes bug: upsertKnowledge used to merge the

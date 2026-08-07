@@ -205,6 +205,39 @@ try {
     assert.equal((await b("/api/projects")).status, 200);
   });
 
+  await run("signatures are per-tenant", async () => {
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
+    const mk = (c: ReturnType<typeof as>) => c("/api/signatures?role=applicant&name=sig", { method: "POST", headers: { "content-type": "image/png" }, body: png });
+    assert.equal((await mk(a)).status, 201);
+    const listB = await (await b("/api/signatures")).json();
+    assert.equal(listB.signatures.length, 0, `B saw ${listB.signatures.length} of A's signatures`);
+    const listA = await (await a("/api/signatures")).json();
+    assert.equal(listA.signatures.length, 1);
+    // B cannot download A's signature image or re-point its default.
+    const sigA = listA.signatures[0].id;
+    assert.equal((await b(`/api/signatures/${sigA}/image`)).status, 404);
+    assert.equal((await b(`/api/signatures/${sigA}/default`, { method: "PATCH" })).status, 404);
+  });
+
+  await run("background job queue rows are tenant-scoped", async () => {
+    const made = await jsonOk(await a("/api/jobs", { method: "POST", body: JSON.stringify({ jobType: "permit_checks", payload: {} }) }));
+    const jobId = String(made.id);
+    assert.equal((await b(`/api/jobs/${jobId}`)).status, 404, "B read A's job");
+    const listB = await (await b("/api/jobs")).json();
+    assert.ok(!listB.some((j: { id: string }) => j.id === jobId), "A's job appeared in B's queue");
+    // A job naming another tenant's project is refused before it is ever queued.
+    const cross = await b("/api/jobs", { method: "POST", body: JSON.stringify({ jobType: "autopilot", payload: {}, projectId: projA }) });
+    assert.equal(cross.status, 404, `cross-tenant job enqueue returned ${cross.status}`);
+  });
+
+  await run("the aggregate ops views are scoped", async () => {
+    const actionsB = await (await b("/api/ops-actions")).json();
+    const names = JSON.stringify(actionsB);
+    assert.ok(!names.includes("Alice A"), "B's action queue named A's homeowner");
+    const reportB = await (await b("/api/ops-report")).json();
+    assert.ok(!JSON.stringify(reportB).includes("Alice A"), "B's daily report named A's homeowner");
+  });
+
   await run("the operator (superadmin) sees across every tenant", async () => {
     const usersA = await (await owner("/api/users")).json();
     const ownerRow = (Array.isArray(usersA) ? usersA : usersA.users || []).find((u: { email: string }) => u.email === "owner@operator.test");

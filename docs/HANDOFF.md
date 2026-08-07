@@ -68,19 +68,36 @@ CLAUDE.md for the model and the conventions. What it fixed, verified in code:
   escalation on a typo'd or stale org id.
 - Admin-shaped routes (`/api/admin/*`, `/api/diagnostics`) had no role check.
 
-**Tenancy follow-ups still open** (each is named in `routeScope.test.ts`'s
-`UNSCOPED_BY_DESIGN` map with a TODO, so they cannot be silently forgotten):
+**Tenancy follow-ups — CLOSED** (migration v12 + a second pass). Every route in
+`routeScope.test.ts` is now accounted for with no TODOs left in the map:
 
-- Scope via parent project: `/api/corrections/:id/*`, `/api/portal-runs/:id/*`,
-  `/api/learn-runs`, `/api/communications`. Same `scopeGuard` shape, but the
-  guard needs to join through `project_id` rather than read `org_id` directly.
-- `/api/jobs` + `job_queue` fairness: the column exists (v11) but the claim query
-  is still a global FIFO with `MAX_JOBS_PER_TICK` 5, and `runDuePermitChecks`
-  takes a global `LIMIT 50` — one busy tenant starves every other.
-- `/api/batch-import/*` must stamp imported projects with the caller's org.
-- `/api/signatures` — operator signatures are global; make them per-org.
-- `/api/ops-actions`, `/api/ops-report` — aggregate views, still unscoped.
-- `knowledgeBase.ts:2010` startup backfill scans every project unbounded.
+- `childScopeGuard` joins through `project_id` for rows that carry no org of their
+  own — mounted on `/api/corrections/:id` and `/api/portal-runs/:id`. Child tables
+  deliberately have no `org_id`, so the join IS the scope check.
+- `assertRefInScope` covers ids that arrive in a request BODY, where no mounted
+  guard can reach them (`POST /api/communications`, `POST /api/jobs`).
+- **Job queue fairness is fixed.** The claim was a straight global FIFO, so one
+  tenant enqueueing a hundred jobs held every slot. It now orders by priority,
+  then by the org with the least work IN FLIGHT, then age — a busy tenant can no
+  longer starve a quiet one, without needing a worker per org.
+- Signatures are per-org (v12), including "default for this role" — promoting one
+  tenant's signature no longer demotes another's. Form fill takes the signature
+  from the org that owns the PROJECT, since it runs from background jobs with no
+  session.
+- `/api/ops-actions`, `/api/ops-report`, `/api/jobs`, `/api/signatures` scoped.
+- `/api/learn-runs` is admin-gated: portal debug bundles are operator artifacts.
+- The startup KB backfill was `SELECT * FROM projects` unbounded on **every**
+  boot. It now takes only projects with no backfill event, `KB_BACKFILL_BATCH`
+  (default 500) at a time, and logs when it caps out. The work is idempotent, so
+  the remainder is picked up on the next restart.
+- **Corrected an inherited assumption**: batch import does NOT create projects or
+  documents (no `createProject`/`saveProjectDocument` anywhere in
+  `batchImport.ts`) — it only learns into the shared KB, so it needs no org stamp.
+
+Still open, deliberately: `runDuePermitChecks` takes a global `LIMIT 50` per
+sweep. Unlike the job queue this is a monitoring cadence rather than a work
+queue, so a busy tenant delays checks rather than blocking work — worth
+revisiting when project volume grows.
 - **One `resolveStampRequirement(project, {codeContext, processProfile})`** →
   `{required, source, reason, waivable}` in `permitPath.ts`, read by all four
   consumers instead of each deciding separately, satisfiable only by a real file.

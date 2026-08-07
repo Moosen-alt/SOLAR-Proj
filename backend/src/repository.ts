@@ -1836,8 +1836,8 @@ function boardHealthRank(health: OperationsBrief["health"]): number {
   return 2;
 }
 
-export function getOperationsBoard(db: AppDb): OperationsBoard {
-  const { projects } = getProjectList(db);
+export function getOperationsBoard(db: AppDb, orgId: string | null = DEFAULT_ORG_ID): OperationsBoard {
+  const { projects } = getProjectList(db, { orgId });
   const boardProjects: OperationsBoardProject[] = projects.map((project) => {
     const brief = getOperationsBrief(db, project.id);
     const primaryAction = brief.immediateActions[0];
@@ -1907,8 +1907,8 @@ function actionDueBucket(dueAt: string | null, now = new Date()): OperationsActi
   return "upcoming";
 }
 
-export function getOperationsActionQueue(db: AppDb): OperationsActionQueue {
-  const { projects } = getProjectList(db);
+export function getOperationsActionQueue(db: AppDb, orgId: string | null = DEFAULT_ORG_ID): OperationsActionQueue {
+  const { projects } = getProjectList(db, { orgId });
   const activeStatuses = new Set<OperationStepStatus>(["blocked", "waiting", "in_progress"]);
   const actions = projects.flatMap((project) => {
     const plan = syncOperationsPlan(db, project.id);
@@ -2020,9 +2020,9 @@ function renderDailyReportText(input: {
   return lines.join("\n");
 }
 
-export function getOperationsDailyReport(db: AppDb): OperationsDailyReport {
-  const board = getOperationsBoard(db);
-  const actionQueue = getOperationsActionQueue(db);
+export function getOperationsDailyReport(db: AppDb, orgId: string | null = DEFAULT_ORG_ID): OperationsDailyReport {
+  const board = getOperationsBoard(db, orgId);
+  const actionQueue = getOperationsActionQueue(db, orgId);
   const owners = ownerWorkload(actionQueue.actions);
   const topProjects = board.projects.filter((project) => project.health === "blocked").slice(0, 6);
   const dueNow = actionQueue.actions.filter((action) => action.dueBucket === "overdue" || action.dueBucket === "today").slice(0, 8);

@@ -5,6 +5,7 @@ import net from "node:net";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import type { ProjectRecord } from "../../shared/src/types";
 import type { AppDb } from "./db";
+import { DEFAULT_ORG_ID } from "./db";
 import { clientStagingOverlay } from "./clients";
 import { HttpError } from "./httpError";
 import { loadDefaultSignaturesByRole } from "./signatures";
@@ -480,9 +481,18 @@ export function buildContext(db: AppDb, project: ProjectRecord): FillContext {
     project,
     client,
     snapshot: (project.parserSnapshot ?? {}) as Record<string, unknown>,
-    signatures: loadDefaultSignaturesByRole(db),
+    // The signature stamped on a permit form comes from the org that OWNS the
+    // project — this runs from background jobs with no request, so it can't be
+    // taken from a session.
+    signatures: loadDefaultSignaturesByRole(db, projectOrgId(db, project.id)),
     prescriptiveLimits,
   };
+}
+
+/** The org that owns a project, for background work that has no request context. */
+function projectOrgId(db: AppDb, projectId: string): string {
+  const row = db.get<{ org_id?: string }>("SELECT org_id FROM projects WHERE id = ?", [projectId]);
+  return String(row?.org_id || DEFAULT_ORG_ID);
 }
 
 // Stamp the operator's stored signature image(s) onto the form at the detected

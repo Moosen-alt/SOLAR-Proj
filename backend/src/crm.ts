@@ -201,14 +201,15 @@ export function addCommunication(
     body?: string;
     loggedBy?: string;
     occurredAt?: string;
+    orgId?: string;
   },
 ): CommunicationRecord {
   const id = crypto.randomUUID();
   const ts = nowIso();
   db.run(
     `INSERT INTO communications
-      (id, customer_id, project_id, direction, channel, subject, body, logged_by, occurred_at, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (id, customer_id, project_id, direction, channel, subject, body, logged_by, occurred_at, created_at, org_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       input.customerId ?? null,
@@ -220,6 +221,7 @@ export function addCommunication(
       input.loggedBy ?? "",
       input.occurredAt || ts,
       ts,
+      input.orgId || DEFAULT_ORG_ID,
     ],
   );
   return mapComm(db.get<Row>("SELECT * FROM communications WHERE id = ?", [id])!);
