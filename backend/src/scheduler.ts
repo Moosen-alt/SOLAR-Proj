@@ -1,5 +1,6 @@
 import type { AppDb } from "./db";
 import { imapStatus, pollImap } from "./emailPoller";
+import { gmailStatus, pollGmail } from "./gmail";
 import { sseBroadcast } from "./events";
 import { logger } from "./logger";
 import { runDuePermitChecks, runEmailTracker } from "./repository";
@@ -74,8 +75,26 @@ export function startMonitorScheduler(db: AppDb): void {
         }
       }
 
-      if (permit.checked > 0 || emailMatches > 0 || imapMatches > 0) {
-        logger.info("monitor", `auto-run: ${permit.checked} permit/NEM check(s), ${emailMatches + imapMatches} email match(es) across ${sources.length} mbox source(s).`);
+      // Gmail OAuth polling. Same tracker pipeline as mbox/IMAP; previously this
+      // ONLY ran via a manual POST /api/gmail/poll, so a connected Gmail inbox was
+      // silently never watched. Skipped entirely (not an error) when Gmail isn't
+      // configured+authorized, and polls a short window since the last tick.
+      let gmailMatches = 0;
+      if (gmailStatus().authorized) {
+        try {
+          const gm = await pollGmail(db, "newer_than:1d");
+          gmailMatches = gm.matches?.length ?? 0;
+          if (gm.fetched > 0) {
+            logger.info("monitor", `Gmail: fetched ${gm.fetched} message(s), ${gmailMatches} match(es).`);
+            sseBroadcast({ type: "imap_poll_done", message: `Gmail: ${gm.fetched} fetched, ${gmailMatches} matched.`, data: { fetched: gm.fetched, matches: gmailMatches } });
+          }
+        } catch (err) {
+          logger.warn("monitor", `Gmail poll failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+
+      if (permit.checked > 0 || emailMatches > 0 || imapMatches > 0 || gmailMatches > 0) {
+        logger.info("monitor", `auto-run: ${permit.checked} permit/NEM check(s), ${emailMatches + imapMatches + gmailMatches} email match(es) across ${sources.length} mbox source(s).`);
       }
     } catch (err) {
       logger.warn("monitor", `tick failed: ${err instanceof Error ? err.message : String(err)}`);

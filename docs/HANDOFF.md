@@ -113,14 +113,15 @@ revisiting when project volume grows.
 DONE since: **scheduler last-run persistence** (migration v13 + `schedulerState.ts` —
 the three long sweeps persist their clock, catch up ~60s after boot when overdue,
 and a failed tick retries next day instead of waiting out the interval; state
-visible in the `scheduler_state` table). **Stamp authority** consolidated
+visible in the `scheduler_state` table). **Gmail polling in the monitor tick**
+(an authorized Gmail inbox is now watched every tick with a 1-day window; the
+tracker's source-signature dedupe makes the overlap harmless). **Stamp authority** consolidated
 (`resolveStampRequirement` in permitPath.ts — all four consumers agree; profile
 hearsay is advisory, path/threshold block).
 
 Still open, in order:
 
 - **Structured outputs (rank 3, partially blocked)**: bump `@anthropic-ai/sdk` ^0.105 → latest and add `output_config.format json_schema` to parse-critical calls. CAVEAT the audit missed: `extractProjectFields.fields` and `mapAcroFormFields.textFields/checkboxes` are **Record-typed (dynamic keys)** — json_schema requires `additionalProperties:false`, so those need an array-of-entries redesign first. Closed-shape candidates that work today: `planPortalFields` (empty-plan stall killer), `mapFlatFormOverlay`, `verifyPortalFill`, `classifyCorrection`. Exclude every web-search call (citations are incompatible, 400).
-- **Schedule Gmail polling in the monitor tick** (OAuth-connected Gmail currently polls only via manual POST /api/gmail/poll).
 - **Effort tuning on ask()** (classifiers to `low`, verify to `medium`) — validate against a learn run on opus-5 first.
 - **Parallelize**: reviewer-gate vision verifies (~24 serial roundtrips), auto-learn text+vision verify pair, parser-page vision+text POSTs (apply in TODAY'S order: vision first), AHJ form acquisition passes + downloads (+ reuse field maps by PDF sha256 — never copy `map.verified`).
 - **Plan-page vision extraction**: plumbing exists end-to-end (`kind:'plan_page'`) but the frontend never sends plan pages and the vision prompt doesn't describe them — biggest remaining accuracy lever for scanned plan sets.
