@@ -15,6 +15,7 @@ import type { AppDb } from "./db";
 import { readXlsx, pick, type SheetData } from "./xlsxRead";
 import { id } from "./ids";
 import { logger } from "./logger";
+import { startPersistentSchedule } from "./schedulerState";
 import { nowIso } from "./time";
 
 export type CecKind = "module" | "inverter";
@@ -290,28 +291,15 @@ export function startCecSyncScheduler(db: AppDb): void {
     logger.info("cec-sync", "CEC equipment sync scheduler disabled (CEC_SYNC_DAYS <= 0).");
     return;
   }
-  let running = false;
-  const tick = async (): Promise<void> => {
-    if (running) return;
-    running = true;
-    try {
+  logger.info("cec-sync", `CEC equipment sync scheduler started — refreshing listings every ${days} day(s).`);
+  // Clock persisted in scheduler_state — restarts resume it rather than resetting it.
+  startPersistentSchedule(db, {
+    task: "cec_sync",
+    days,
+    scope: "cec-sync",
+    tick: async () => {
       const summary = await syncCecEquipment(db);
       logger.info("cec-sync", `CEC sync: ${summary.modules} module(s), ${summary.inverters} inverter(s)${summary.skipped.length ? `; skipped: ${summary.skipped.join(" | ")}` : ""}.`);
-    } catch (err) {
-      logger.warn("cec-sync", `sync tick failed: ${err instanceof Error ? err.message : String(err)}`);
-    } finally {
-      running = false;
-    }
-  };
-  logger.info("cec-sync", `CEC equipment sync scheduler started — refreshing listings every ${days} day(s).`);
-  const intervalMs = days * 24 * 60 * 60 * 1000;
-  const stepMs = Math.min(intervalMs, 24 * 60 * 60 * 1000);
-  let elapsedMs = 0;
-  setInterval(() => {
-    elapsedMs += stepMs;
-    if (elapsedMs >= intervalMs) {
-      elapsedMs = 0;
-      void tick();
-    }
-  }, stepMs).unref();
+    },
+  });
 }

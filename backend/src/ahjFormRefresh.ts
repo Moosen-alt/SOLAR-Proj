@@ -5,6 +5,7 @@ import { nowIso } from "./time";
 import { parseJson } from "./json";
 import { buildFieldMapForPdf, fetchPdf, sha256, storeAhjFormTemplate, type StoredFieldMap } from "./ahjFormAuto";
 import { knowledgeResearchHint } from "./knowledgeBase";
+import { startPersistentSchedule } from "./schedulerState";
 
 // ---------------------------------------------------------------------------
 // Keep auto-acquired AHJ form templates current. AHJs revise their PDF forms
@@ -242,77 +243,48 @@ export async function checkKnowledgeLinks(
 }
 
 // KB link sweep scheduler. KB_LINK_CHECK_DAYS (default 14); 0 disables.
+// Clock persisted in scheduler_state — a restart resumes it rather than resetting it.
 export function startKbLinkCheckScheduler(db: AppDb): void {
   const days = Number(process.env.KB_LINK_CHECK_DAYS ?? 14);
   if (!Number.isFinite(days) || days <= 0) {
     logger.info("kb-links", "KB link check scheduler disabled (KB_LINK_CHECK_DAYS <= 0).");
     return;
   }
-  let running = false;
-  const tick = async (): Promise<void> => {
-    if (running) return;
-    running = true;
-    try {
+  logger.info("kb-links", `KB link check scheduler started — sweeping stored portal links every ${days} day(s).`);
+  startPersistentSchedule(db, {
+    task: "kb_link_check",
+    days,
+    scope: "kb-links",
+    tick: async () => {
       const { createLLMProvider } = await import("./llm");
       const summary = await checkKnowledgeLinks(db, createLLMProvider());
       if (summary.checked > 0) {
         logger.info("kb-links", `KB link check: ${summary.checked} checked — ${summary.ok} ok, ${summary.unknown} unknown, ${summary.dead} dead, ${summary.replaced} replaced.`);
       }
-    } catch (err) {
-      logger.warn("kb-links", `link check tick failed: ${err instanceof Error ? err.message : String(err)}`);
-    } finally {
-      running = false;
-    }
-  };
-  logger.info("kb-links", `KB link check scheduler started — sweeping stored portal links every ${days} day(s).`);
-  const intervalMs = days * 24 * 60 * 60 * 1000;
-  const stepMs = Math.min(intervalMs, 24 * 60 * 60 * 1000);
-  let elapsedMs = 0;
-  setInterval(() => {
-    elapsedMs += stepMs;
-    if (elapsedMs >= intervalMs) {
-      elapsedMs = 0;
-      void tick();
-    }
-  }, stepMs).unref();
+    },
+  });
 }
 
 // Long-interval scheduler. AHJ_FORM_REFRESH_DAYS (default 60); 0 disables.
+// Clock persisted in scheduler_state — the 60-day interval used to require 60 days
+// of CONTINUOUS uptime, because the elapsed counter reset on every restart.
 export function startAhjFormRefreshScheduler(db: AppDb): void {
   const days = Number(process.env.AHJ_FORM_REFRESH_DAYS ?? 60);
   if (!Number.isFinite(days) || days <= 0) {
     logger.info("ahj-forms", "AHJ form refresh scheduler disabled (AHJ_FORM_REFRESH_DAYS <= 0).");
     return;
   }
-  let running = false;
-  const tick = async (): Promise<void> => {
-    if (running) return;
-    running = true;
-    try {
+  logger.info("ahj-forms", `AHJ form refresh scheduler started — re-checking source links every ${days} day(s).`);
+  startPersistentSchedule(db, {
+    task: "ahj_form_refresh",
+    days,
+    scope: "ahj-forms",
+    tick: async () => {
       const { createLLMProvider } = await import("./llm");
       const summary = await refreshAhjFormTemplates(db, createLLMProvider());
       if (summary.checked > 0) {
         logger.info("ahj-forms", `Form freshness check: ${summary.checked} checked, ${summary.updated} updated, ${summary.brokenLinks} broken link(s), ${summary.unchanged} unchanged.`);
       }
-    } catch (err) {
-      logger.warn("ahj-forms", `refresh tick failed: ${err instanceof Error ? err.message : String(err)}`);
-    } finally {
-      running = false;
-    }
-  };
-  logger.info("ahj-forms", `AHJ form refresh scheduler started — re-checking source links every ${days} day(s).`);
-  // A days-long interval in ms overflows setInterval's 32-bit cap (~24.8 days),
-  // which silently collapses the delay to 1ms — firing the refresh constantly.
-  // Wake once a day (safely within the cap) and only run the tick once the full
-  // interval has elapsed.
-  const intervalMs = days * 24 * 60 * 60 * 1000;
-  const stepMs = Math.min(intervalMs, 24 * 60 * 60 * 1000);
-  let elapsedMs = 0;
-  setInterval(() => {
-    elapsedMs += stepMs;
-    if (elapsedMs >= intervalMs) {
-      elapsedMs = 0;
-      void tick();
-    }
-  }, stepMs).unref();
+    },
+  });
 }

@@ -1263,6 +1263,24 @@ const VERSIONED_MIGRATIONS: VersionedMigration[] = [
       db.exec("CREATE INDEX IF NOT EXISTS idx_signatures_org ON signatures(org_id, role);");
     },
   },
+  {
+    version: 13,
+    name: "scheduler_state",
+    up: (db) => {
+      // Last-run timestamps for the long-interval sweeps (KB link check 14d, AHJ
+      // form refresh 60d, CEC sync 7d). These tracked elapsed time IN MEMORY, so a
+      // server restarted more often than the interval NEVER ran them — the 60-day
+      // form refresh required 60 days of continuous uptime. Persisting the clock is
+      // the whole fix; see schedulerState.ts.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS scheduler_state (
+          task TEXT PRIMARY KEY,
+          last_run_at TEXT NOT NULL,
+          last_result TEXT NOT NULL DEFAULT ''
+        );
+      `);
+    },
+  },
 ];
 
 // One-time repair for the runaway-notes bug: upsertKnowledge used to merge the

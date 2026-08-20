@@ -110,10 +110,16 @@ revisiting when project volume grows.
 
 ## Audited autonomy/intelligence backlog (from the 4-auditor review, ranked — full plan in the session workflow output)
 
-Implemented this commit: ranks 1-2, 4-9 of the plan. Still open, in order:
+DONE since: **scheduler last-run persistence** (migration v13 + `schedulerState.ts` —
+the three long sweeps persist their clock, catch up ~60s after boot when overdue,
+and a failed tick retries next day instead of waiting out the interval; state
+visible in the `scheduler_state` table). **Stamp authority** consolidated
+(`resolveStampRequirement` in permitPath.ts — all four consumers agree; profile
+hearsay is advisory, path/threshold block).
+
+Still open, in order:
 
 - **Structured outputs (rank 3, partially blocked)**: bump `@anthropic-ai/sdk` ^0.105 → latest and add `output_config.format json_schema` to parse-critical calls. CAVEAT the audit missed: `extractProjectFields.fields` and `mapAcroFormFields.textFields/checkboxes` are **Record-typed (dynamic keys)** — json_schema requires `additionalProperties:false`, so those need an array-of-entries redesign first. Closed-shape candidates that work today: `planPortalFields` (empty-plan stall killer), `mapFlatFormOverlay`, `verifyPortalFill`, `classifyCorrection`. Exclude every web-search call (citations are incompatible, 400).
-- **Persist scheduler last-run** (KB link sweep 14d / form refresh 60d / CEC sync 7d track in-memory elapsed — regularly-restarted servers NEVER run them). Needs a `scheduler_state` table migration.
 - **Schedule Gmail polling in the monitor tick** (OAuth-connected Gmail currently polls only via manual POST /api/gmail/poll).
 - **Effort tuning on ask()** (classifiers to `low`, verify to `medium`) — validate against a learn run on opus-5 first.
 - **Parallelize**: reviewer-gate vision verifies (~24 serial roundtrips), auto-learn text+vision verify pair, parser-page vision+text POSTs (apply in TODAY'S order: vision first), AHJ form acquisition passes + downloads (+ reuse field maps by PDF sha256 — never copy `map.verified`).
