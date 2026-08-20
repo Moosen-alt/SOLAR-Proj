@@ -88,6 +88,85 @@ export function hasStampedStructuralEvidence(project: ProjectRecord): boolean {
   return hasStamp && !onlyNeeds;
 }
 
+// ---------------------------------------------------------------------------
+// SEALED STRUCTURAL STAMP — the single authority.
+//
+// "Does THIS project need a PE/SE-sealed structural letter?" used to be answered
+// independently by four consumers (required-documents, the reviewer gate, the
+// application-docs builder, and the dashboard via documentInventory), each with
+// its own subset of the triggers. They could disagree — the dashboard nagging for
+// a letter the reviewer didn't require, or vice versa. Every consumer now asks
+// here and passes in whatever context it has; missing context simply means that
+// trigger can't fire, never a guess.
+// ---------------------------------------------------------------------------
+
+export interface StampRequirement {
+  required: boolean;
+  /** Which trigger fired. Ordered strongest-first; the first that fires wins. */
+  source: "engineered_path" | "jurisdiction_threshold" | "process_profile" | "none";
+  /** Operator-facing sentence naming WHY, so the requirement is actionable. */
+  reason: string;
+  /**
+   * True when the trigger is hearsay (a learned process-profile flag) rather than
+   * this project's own path or the jurisdiction's adopted rule. Waivable sources
+   * surface as advisories ("confirm before submittal"), never hard blocks.
+   */
+  waivable: boolean;
+  /** A stamp/sealed letter is already evidenced in the parsed documents. */
+  satisfiedByEvidence: boolean;
+}
+
+export function resolveStampRequirement(
+  project: ProjectRecord,
+  inputs: {
+    /** Jurisdiction threshold (prescriptive.engineerStampOverKwDc): <=0 means a
+     *  stamp at ANY size (Chicago); positive means above that DC size (CA/MA 10). */
+    stampThresholdKwDc?: number | null;
+    jurisdictionLabel?: string;
+    /** The learned AHJ process profile's requiresStructuralStamp flag. */
+    processProfileRequiresStamp?: boolean;
+  } = {},
+): StampRequirement {
+  const satisfiedByEvidence = hasStampedStructuralEvidence(project);
+  const done = (
+    required: boolean,
+    source: StampRequirement["source"],
+    reason: string,
+    waivable = false,
+  ): StampRequirement => ({ required, source, reason, waivable, satisfiedByEvidence });
+
+  // 1. This project's own path. Strongest signal — engineered means engineered.
+  if (resolvePermitPath(project).path === "engineered") {
+    return done(true, "engineered_path",
+      "Non-prescriptive path: the AHJ requires a wet/digital PE stamp on the structural sheets and a sealed engineering letter.");
+  }
+
+  // 2. The jurisdiction's adopted rule. Unknown system size never fabricates a
+  //    requirement from a positive threshold — only <=0 (any-size) fires sizeless.
+  const threshold = inputs.stampThresholdKwDc;
+  const dcKw = Number(project.systemSizeDcKw ?? 0);
+  const where = inputs.jurisdictionLabel || "This jurisdiction";
+  if (threshold != null && Number.isFinite(threshold)) {
+    if (threshold <= 0) {
+      return done(true, "jurisdiction_threshold",
+        `${where} requires stamped/sealed structural certification on every rooftop PV permit, regardless of system size.`);
+    }
+    if (dcKw > 0 && dcKw > threshold) {
+      return done(true, "jurisdiction_threshold",
+        `${where} requires a stamped structural letter above ${threshold} kW DC (this system is ${dcKw} kW DC).`);
+    }
+  }
+
+  // 3. The learned process profile. Hearsay from imports/research, so it is an
+  //    advisory the operator confirms — never a hard block on its own.
+  if (inputs.processProfileRequiresStamp) {
+    return done(true, "process_profile",
+      `${where} process profile indicates a structural stamp/letter may be required. Confirm before submittal.`, true);
+  }
+
+  return done(false, "none", "Prescriptive path with no jurisdiction stamp rule — no sealed structural letter needed.");
+}
+
 /**
  * Resolve a project's permit path across all signals:
  *   1. Operator override (snapshot.permitPathOverride) — always wins.

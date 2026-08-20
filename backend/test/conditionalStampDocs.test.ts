@@ -5,6 +5,7 @@
 // Browser/DB-free. Run: tsx backend/test/conditionalStampDocs.test.ts
 import assert from "node:assert/strict";
 import { requiredDocuments } from "../src/requiredDocuments";
+import { resolveStampRequirement } from "../src/permitPath";
 import type { ProjectRecord } from "../../shared/src/types";
 
 let passed = 0;
@@ -51,5 +52,34 @@ const alwaysWhy = requiredDocuments(proj({ systemSizeDcKw: 4 }), { stampThreshol
   .find((d) => d.docType === "structural_letter")?.why || "";
 assert.ok(/Chicago/.test(alwaysWhy) && /any size|regardless/i.test(alwaysWhy), `reason should say any-size: ${alwaysWhy}`);
 ok("the requirement explains which rule triggered it");
+
+// 7) The single authority itself: source + waivability contract that all four
+//    consumers (required-docs, reviewer, application-docs, dashboard) rely on.
+const eng = resolveStampRequirement(proj({}, { permitPathOverride: "engineered" }));
+assert.equal(eng.source, "engineered_path");
+assert.equal(eng.waivable, false);
+const jur = resolveStampRequirement(proj({ systemSizeDcKw: 12 }, { mounting: "Roof Mount" }), { stampThresholdKwDc: 10, jurisdictionLabel: "California" });
+assert.equal(jur.source, "jurisdiction_threshold");
+assert.equal(jur.waivable, false);
+const hearsay = resolveStampRequirement(prescriptive, { processProfileRequiresStamp: true, jurisdictionLabel: "Marion County" });
+assert.equal(hearsay.required, true);
+assert.equal(hearsay.source, "process_profile");
+assert.equal(hearsay.waivable, true, "profile hearsay must be waivable — advisory, never a hard block");
+assert.ok(/[Cc]onfirm/.test(hearsay.reason), `hearsay reason should say confirm: ${hearsay.reason}`);
+const none = resolveStampRequirement(prescriptive);
+assert.equal(none.required, false);
+assert.equal(none.source, "none");
+ok("resolveStampRequirement: source + waivability contract (engineered/threshold hard, profile advisory)");
+
+// 8) Hearsay-only trigger reaches the document list as ADVISORY, never blocking.
+const advisory = requiredDocuments(prescriptive, { processProfileRequiresStamp: true, jurisdictionLabel: "Marion County" })
+  .find((d) => d.docType === "structural_letter");
+assert.ok(advisory, "profile hearsay adds the letter to the list");
+assert.equal(advisory?.blocking, false, "…as an advisory, not a submit blocker");
+// The hard triggers still block.
+const hard = requiredDocuments(proj({ systemSizeDcKw: 12 }), { stampThresholdKwDc: 10 })
+  .find((d) => d.docType === "structural_letter");
+assert.equal(hard?.blocking, true);
+ok("profile-flagged letter is advisory in the doc list; path/threshold letters still block");
 
 console.log(`\nconditionalStampDocs: all ${passed} checks passed`);

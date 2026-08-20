@@ -7,7 +7,7 @@ import type {
 } from "../../shared/src/types";
 import { nowIso } from "./time";
 import { findAhjProcessProfile } from "./processProfiles";
-import { resolvePermitPath, permitPathCallout, hasStampedStructuralEvidence, evaluatePrescriptiveCriteria, type PermitPathResolution } from "./permitPath";
+import { resolvePermitPath, resolveStampRequirement, permitPathCallout, hasStampedStructuralEvidence, evaluatePrescriptiveCriteria, type PermitPathResolution } from "./permitPath";
 
 // Derive combo-vs-separate from the AHJ process knowledge when the static application
 // profile doesn't state it. Many Oregon AHJs (e.g. Beaverton) file SEPARATE building +
@@ -316,7 +316,12 @@ function applicationProfileFromProcess(project: ProjectRecord): ApplicationRequi
   if (wantsChecklist) requiredDocuments.push("Solar prescriptive checklist");
   if (/mpu|panel upgrade|service upgrade/.test(notes)) requiredDocuments.push("Electrical permit application (when a main panel/service upgrade is in scope)");
   if (proc.requiresPlanSet) requiredDocuments.push("Plan set and specifications");
-  if (proc.requiresStructuralStamp) requiredDocuments.push("PE-stamped structural plans + engineering letter (non-prescriptive path)");
+  // Single stamp authority: fires on the profile flag AND on this project's own
+  // engineered path — previously a stamped-path project whose profile lacked the
+  // flag got no stamped-plans line here.
+  if (resolveStampRequirement(project, { processProfileRequiresStamp: proc.requiresStructuralStamp, jurisdictionLabel: proc.ahj }).required) {
+    requiredDocuments.push("PE-stamped structural plans + engineering letter (non-prescriptive path)");
+  }
   if (!requiredDocuments.length) requiredDocuments.push("Plan set and specifications");
 
   const submissionMethod = isEpermitting ? "Oregon ePermitting (Accela)"

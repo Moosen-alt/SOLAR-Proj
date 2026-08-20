@@ -30,8 +30,9 @@
 import type { AppDb } from "./db";
 import type { ProjectRecord } from "../../shared/src/types";
 import { projectDocsByType } from "./projectDocuments";
-import { resolvePermitPath, hasStampedStructuralEvidence } from "./permitPath";
+import { resolvePermitPath, resolveStampRequirement, hasStampedStructuralEvidence } from "./permitPath";
 import { resolveEffectiveCodeContext } from "./codeProfiles";
+import { findAhjProcessProfile } from "./processProfiles";
 
 export interface RequiredDocItem {
   /** project_documents.doc_type this maps to (or a synthetic key for path docs). */
@@ -121,7 +122,7 @@ function present(docType: string, project: ProjectRecord, docsByType: Record<str
  */
 export function requiredDocuments(
   project: ProjectRecord,
-  opts: { stampThresholdKwDc?: number | null; jurisdictionLabel?: string } = {},
+  opts: { stampThresholdKwDc?: number | null; jurisdictionLabel?: string; processProfileRequiresStamp?: boolean } = {},
 ): RequiredDocItem[] {
   const path = resolvePermitPath(project).path;
   const hasUtility = Boolean((project.utility || "").trim());
@@ -135,32 +136,23 @@ export function requiredDocuments(
     { docType: "labels", label: "Label / placard schedule", why: "Placard/label schedule (705.10 directory, RSD, disconnects) — usually a plan-set sheet.", lane: "permit", blocking: false },
   ];
 
-  // CONDITIONAL — a sealed structural letter ("SS stamp") is required only when
-  // this project actually needs one. Two independent triggers:
-  //   1. the engineered (non-prescriptive) path, and
-  //   2. the JURISDICTION's stamp threshold from its code profile
-  //      (prescriptive.engineerStampOverKwDc): 0 or less = a stamp is required at
-  //      ANY size (e.g. Chicago, where an IL-licensed SE/architect must certify
-  //      every rooftop PV job); a positive number = required above that DC size
-  //      (e.g. CA/MA 10 kW, AZ 15 kW).
-  // A project on the prescriptive path in a jurisdiction with no threshold never
-  // gets nagged for a stamp it doesn't need.
-  const threshold = opts.stampThresholdKwDc;
-  const dcKw = Number(project.systemSizeDcKw ?? 0);
-  const jurisdictionRequiresStamp = threshold != null && Number.isFinite(threshold)
-    && (threshold <= 0 || (dcKw > 0 && dcKw > threshold));
-  if (path === "engineered" || jurisdictionRequiresStamp) {
-    const why = path === "engineered"
-      ? "Non-prescriptive path: the AHJ requires a wet/digital PE stamp on the structural sheets and a sealed engineering letter."
-      : (threshold != null && threshold <= 0
-        ? `${opts.jurisdictionLabel || "This jurisdiction"} requires stamped/sealed structural certification on every rooftop PV permit, regardless of system size.`
-        : `${opts.jurisdictionLabel || "This jurisdiction"} requires a stamped structural letter above ${threshold} kW DC (this system is ${dcKw} kW DC).`);
+  // CONDITIONAL — the sealed structural letter ("SS stamp"). One authority decides
+  // (resolveStampRequirement in permitPath.ts): the engineered path or the
+  // jurisdiction's own threshold is a hard requirement; a learned process-profile
+  // flag is hearsay and surfaces as an advisory the operator confirms rather than
+  // a block. A prescriptive project in a jurisdiction with no rule is never nagged.
+  const stamp = resolveStampRequirement(project, {
+    stampThresholdKwDc: opts.stampThresholdKwDc,
+    jurisdictionLabel: opts.jurisdictionLabel,
+    processProfileRequiresStamp: opts.processProfileRequiresStamp,
+  });
+  if (stamp.required) {
     items.push({
       docType: "structural_letter",
       label: "PE-stamped structural plans + sealed structural letter/calcs",
-      why,
+      why: stamp.reason,
       lane: "permit",
-      blocking: true,
+      blocking: !stamp.waivable,
     });
   }
 
@@ -188,7 +180,12 @@ export function documentInventory(db: AppDb, project: ProjectRecord): DocumentIn
     if (typeof t === "number" && Number.isFinite(t)) stampThresholdKwDc = t;
     jurisdictionLabel = ctx.ahj || ctx.state || "";
   } catch { /* profile data optional */ }
-  const required = requiredDocuments(project, { stampThresholdKwDc, jurisdictionLabel });
+  // The learned AHJ process profile can also flag a stamp (hearsay → advisory).
+  let processProfileRequiresStamp = false;
+  try {
+    processProfileRequiresStamp = Boolean(findAhjProcessProfile(project)?.requiresStructuralStamp);
+  } catch { /* profile optional */ }
+  const required = requiredDocuments(project, { stampThresholdKwDc, jurisdictionLabel, processProfileRequiresStamp });
   const presence: DocPresence[] = required.map((item) => {
     const p = present(item.docType, project, docsByType);
     return { ...item, present: p.present, via: p.via };

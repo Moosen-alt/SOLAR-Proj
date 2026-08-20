@@ -4,7 +4,7 @@ import { findAhjProcessProfile } from "./processProfiles";
 import { evidenceForTopic, evidenceLines, fieldValue, requirementsForTopic, type EvidenceTopic, type ProjectEvidence } from "./projectEvidence";
 import { nowIso } from "./time";
 import { resolveValuation } from "./valuation";
-import { resolvePermitPath, hasStampedStructuralEvidence } from "./permitPath";
+import { resolvePermitPath, resolveStampRequirement, hasStampedStructuralEvidence } from "./permitPath";
 import type { EffectiveCodeContext } from "./codeProfiles";
 
 function payload(project: ProjectRecord, key: string): string {
@@ -656,8 +656,17 @@ function addProfileFindings(project: ProjectRecord, profile: AhjProcessProfile |
   if (profile.requiresPlanSet && !docs.trim()) {
     findings.push(finding("reviewer.profile.plan-set", "blocker", "ahj_profile", "AHJ profile requires plan set", `${profile.ahj} profile requires a plan set/upload package. No split mapping found.`, true));
   }
-  if (profile.requiresStructuralStamp && !/stamp|engineer|structural letter|calc/i.test(stampText + docs)) {
-    findings.push(finding("reviewer.profile.structural-stamp", "warning", "structural", "Structural stamp/letter may be required", `${profile.ahj} process profile indicates structural stamp/letter may be required. Confirm before submittal.`, true));
+  // Stamp decision comes from the single authority (permitPath.resolveStampRequirement)
+  // so the reviewer can never disagree with the dashboard's required-documents list.
+  // Advisory here: only the process-profile trigger is in play (the path/threshold
+  // triggers produce their own blocking findings elsewhere), and it stays a warning.
+  const stampReq = resolveStampRequirement(project, {
+    processProfileRequiresStamp: profile.requiresStructuralStamp,
+    jurisdictionLabel: profile.ahj,
+  });
+  if (stampReq.required && stampReq.source === "process_profile" && !stampReq.satisfiedByEvidence
+      && !/stamp|engineer|structural letter|calc/i.test(stampText + docs)) {
+    findings.push(finding("reviewer.profile.structural-stamp", "warning", "structural", "Structural stamp/letter may be required", stampReq.reason, true));
   }
   if (profile.requiresElectricalStamp && !/electrical stamp|engineer|sealed/i.test(docs)) {
     findings.push(finding("reviewer.profile.electrical-stamp", "warning", "electrical", "Electrical stamp may be required", `${profile.ahj} process profile indicates electrical stamp may be required.`, true));
