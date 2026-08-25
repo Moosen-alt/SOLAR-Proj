@@ -162,5 +162,18 @@ const afterLoss = runBackup(db);
 run("a document lost from the live tree is reported", afterLoss.documentsMissingOnDisk >= 1, `missing=${afterLoss.documentsMissingOnDisk}`);
 run("the mirrored copy survives the loss", fs.existsSync(mirrored));
 
+console.log("\n[8] deleting a project removes its FILES, not just its rows");
+const { deleteProject } = await import("../src/repository");
+const doomed = createProject(db, {
+  owner: "Doomed", street: "13 Gone St", city: "Salem", state: "OR", zip: "97301",
+  ahj: "City of Scale", utility: "PGE", dcKw: "5.0",
+});
+saveProjectDocument(db, doomed.project.id, { docType: "plan_set", filename: "doomed.pdf", contentType: "application/pdf", buffer: planSet, source: "upload" });
+const doomedFile = projectDocsByType(db, doomed.project.id).plan_set;
+run("the file exists before deletion", fs.existsSync(doomedFile));
+deleteProject(db, doomed.project.id);
+run("the file is gone after deletion — no orphaned homeowner PII on disk", !fs.existsSync(doomedFile), doomedFile);
+run("the project's document folder is gone too", !fs.existsSync(path.dirname(doomedFile)), path.dirname(doomedFile));
+
 console.log(failures === 0 ? "\nuploadIntake: all checks passed" : `\nuploadIntake: ${failures} FAILURE(S)`);
 if (failures > 0) process.exit(1);

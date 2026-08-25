@@ -103,7 +103,8 @@ The dependency to watch when splitting: everything imports `db.ts` and
 ## Dev workflow
 
 `npm run dev` (server on :4000 by default) · scratch DB via
-`AUTOPILOT_DB_PATH` env · `npm run typecheck && npm run smoke &&
+`AUTOPILOT_DB_PATH` env · `SEED_TEST_INSTALLER=true` to pre-seed the TML test
+installer in a dev DB (default OFF — production databases start empty) · `npm run typecheck && npm run smoke &&
 npm run backend:test:unit && npm run portal:test:unit` before every push ·
 every bug fix ships with a regression test in the chain · risky data-path
 changes get an adversarial review before merging (this practice has caught

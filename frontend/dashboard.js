@@ -4259,8 +4259,17 @@ async function deleteSelectedProject() {
   if (!state.selectedProjectId || !state.detail?.project) return;
   const project = state.detail.project;
   const label = project.homeownerName || project.projectAddress || project.id;
-  const confirmed = window.confirm(`Delete this test project and its project-specific learned history?\n\n${label}`);
-  if (!confirmed) return;
+  // Deleting a project cascades: documents, QC results, corrections, notes,
+  // submissions history, review items — permanently. Proportional friction: the
+  // operator types DELETE rather than clicking through a reflex confirm.
+  const typed = window.prompt(
+    `PERMANENTLY delete this project and everything attached to it?\n\n` +
+    `  ${label}\n\n` +
+    `This removes its documents, QC results, corrections, notes, and submission history. ` +
+    `It cannot be undone from the app (backups keep mirrored document files only).\n\n` +
+    `Type DELETE to confirm:`,
+  );
+  if (typed !== "DELETE") return;
   const deletedId = state.selectedProjectId;
   await api(`/api/projects/${deletedId}`, { method: "DELETE" });
   state.selectedProjectId = null;
@@ -4281,7 +4290,7 @@ async function deleteSelectedProject() {
   state.installerPacket = null;
   state.submitGate = null;
   await loadProjects();
-  if (state.detail) showMessage(`Deleted test project ${deletedId}.`);
+  if (state.detail) showMessage(`Deleted project ${deletedId}.`);
 }
 
 function openReviewerPacket() {

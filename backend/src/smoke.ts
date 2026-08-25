@@ -40,6 +40,14 @@ import {
 const smokeDb = path.resolve(process.cwd(), "backend/data/smoke.sqlite");
 fs.rmSync(smokeDb, { force: true });
 process.env.AUTOPILOT_DB_PATH = smokeDb;
+// Isolate the FILE trees too. Smoke uploads real documents; without these
+// overrides they landed in the PRODUCTION project-documents dir (and from there
+// into the append-only backup mirror, forever) every time SERVER_SETUP's
+// "run smoke on every update" advice was followed on the live box.
+const smokeFiles = path.resolve(process.cwd(), "backend/data/smoke-files");
+fs.rmSync(smokeFiles, { recursive: true, force: true });
+process.env.PROJECT_DOCS_DIR = path.join(smokeFiles, "project-documents");
+process.env.BACKUP_DIR = path.join(smokeFiles, "backups");
 // Offline smoke: no real portal is registered, so staging uses the MockPortalAdapter. In normal
 // (auto-seed ON) operation a stage with no registered portal surfaces a blocker instead of silently
 // mocking; pin auto-seed OFF here so the smoke path keeps exercising the mock end-to-end.

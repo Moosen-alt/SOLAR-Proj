@@ -65,7 +65,7 @@ import { checkStatusWithAdapter, stageWithAccela, stageWithMockPortal, stageWith
 import { findCompleteRecipeForProject, findAnyRecipeForProject, resolveRecipeFieldValues, markPortalRecipeForRerecord, getPortalRecipe, savePortalRecipeSteps } from "./portalRecipes";
 import { notifyClientOfStatusChange, shouldNotifyClient } from "./clientNotifier";
 import { detectPlatform, publicPermitStatusCheck } from "./publicPermitStatus";
-import { planSetTextForProject, projectDocsByType } from "./projectDocuments";
+import { planSetTextForProject, projectDocsByType, DOCS_DIR } from "./projectDocuments";
 import { findAhjProcessProfile } from "./processProfiles";
 import { documentInventory } from "./requiredDocuments";
 import { STAGE_COUNT, stageForStatus, isBlockedStatus } from "./projectStage";
@@ -893,6 +893,17 @@ export function deleteProject(db: AppDb, projectId: string): { deleted: true; pr
       .filter(Boolean),
   );
 
+  // The FILES first, before the transaction drops the rows that point at them.
+  // This cascade used to delete the project_documents ROWS only, so every deleted
+  // project left its plan set, meter photo, and stamped letters orphaned on disk —
+  // homeowner PII with no DB reference, invisible to every check (the backup
+  // integrity scan counts rows-missing-files, not files-missing-rows). Collected
+  // before, unlinked after the transaction commits, so a rollback never loses files.
+  const storedFiles = db
+    .query<Row>("SELECT stored_path FROM project_documents WHERE project_id = ?", [projectId])
+    .map((r) => text(r.stored_path))
+    .filter(Boolean);
+
   db.transaction(() => {
     db.run("DELETE FROM email_project_matches WHERE project_id = ?", [projectId]);
     db.run("DELETE FROM permit_status_checks WHERE project_id = ?", [projectId]);
@@ -929,6 +940,16 @@ export function deleteProject(db: AppDb, projectId: string): { deleted: true; pr
       affectedKnowledgeProfiles: affectedKeys.size,
     });
   });
+
+  // Rows are gone — now remove the files, then the project's (empty) folder.
+  // Best-effort per file: one locked/missing file must not strand the rest.
+  for (const stored of storedFiles) {
+    try { fs.unlinkSync(stored); } catch { /* already gone or busy */ }
+  }
+  try {
+    const dir = path.join(DOCS_DIR, projectId);
+    if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
+  } catch { /* best effort */ }
 
   return { deleted: true, projectId, affectedKnowledgeProfiles: affectedKeys.size };
 }

@@ -1339,13 +1339,13 @@ function runVersionedMigrations(db: AppDb): void {
 }
 
 // Seeds the primary test installer (TML INTERNATIONAL LLC) so project flows can
-// be exercised end-to-end before onboarding live installers. Idempotent: only
-// inserts if a client with this CCB does not already exist, so edits made in the
-// UI survive within a database. Because the dev DB is ephemeral, this keeps the
-// test client available in every fresh environment. Turn it off for go-live with
-// SEED_TEST_INSTALLER=false (then onboard real installers through the Clients UI).
+// be exercised end-to-end in a dev environment. OPT-IN: production databases must
+// start empty and onboard real installers through the Clients UI — this used to
+// default ON, which meant every fresh PRODUCTION database silently gained a
+// pre-filled installer unless someone remembered to set SEED_TEST_INSTALLER=false.
+// Set SEED_TEST_INSTALLER=true in a dev .env to get the old convenience back.
 function seedTestInstaller(db: AppDb): void {
-  if (process.env.SEED_TEST_INSTALLER === "false") return;
+  if (process.env.SEED_TEST_INSTALLER !== "true") return;
   const ccb = "223690";
   const existing = db.get<{ id: string }>("SELECT id FROM clients WHERE ccb_license_number = ?", [ccb]);
   if (existing) return;
