@@ -12,12 +12,12 @@ function field(partial: Partial<ExtractedField>): ExtractedField {
 }
 
 function testGroundingRules() {
-  const pf = { commissioningDate: "2026-07-17", homeownerName: "Jeffery Bienvenu", systemSizeDcKw: "9.89" };
+  const pf = { commissioningDate: "2026-07-17", homeownerName: "Testy McTestface", systemSizeDcKw: "9.89" };
 
   // Text bound to a real project key (even reformatted) → grounded.
   assert.equal(isGrounded(field({ fieldType: "text" }), "7/17/2026", "commissioningDate", pf), true, "mapped date is grounded");
   // Text whose value traces to a real project value → grounded.
-  assert.equal(isGrounded(field({ fieldType: "text" }), "Jeffery", undefined, pf), true, "value tracing to project data is grounded");
+  assert.equal(isGrounded(field({ fieldType: "text" }), "Testy", undefined, pf), true, "value tracing to project data is grounded");
   // Text with a fabricated value and no backing key → REJECTED (a guess).
   assert.equal(isGrounded(field({ fieldType: "text" }), "totally made up", undefined, pf), false, "invented free text is rejected");
   // Text with a hallucinated key not in projectFields and value not traceable → REJECTED.
@@ -89,10 +89,10 @@ async function testGapFillAppliesOnlyGroundedData() {
     { label: "Random Notes", type: "text", value: "", checked: false },
     // Required, empty, and no project data to fill it → must be reported, not guessed.
     { label: "Special Permit ID", type: "text", value: "", checked: false, required: true },
-    { label: "Homeowner Name", type: "text", value: "Jeffery Bienvenu", checked: false }, // already filled
+    { label: "Homeowner Name", type: "text", value: "Testy McTestface", checked: false }, // already filled
   ]);
 
-  const projectFields = { commissioningDate: "2026-07-17", homeownerName: "Jeffery Bienvenu" };
+  const projectFields = { commissioningDate: "2026-07-17", homeownerName: "Testy McTestface" };
 
   // A planner that proposes one grounded date, one grounded option, and one invented value.
   const planner = async (req: { fields: ExtractedField[] }): Promise<LearnPlanResponse> => {
@@ -110,7 +110,7 @@ async function testGapFillAppliesOnlyGroundedData() {
   assert.equal(state.get("Estimated Commissioning Date")!.value, "7/17/2026", "grounded date applied");
   assert.equal(state.get("Smart Inverter Settings")!.value, "Yes", "grounded option applied");
   assert.equal(state.get("Random Notes")!.value, "", "invented value NOT applied");
-  assert.equal(state.get("Homeowner Name")!.value, "Jeffery Bienvenu", "already-filled field untouched");
+  assert.equal(state.get("Homeowner Name")!.value, "Testy McTestface", "already-filled field untouched");
   assert.ok(outcome.filled.includes("Estimated Commissioning Date"), "reports the date as filled");
   assert.ok(outcome.filled.includes("Smart Inverter Settings"), "reports the option as filled");
   assert.ok(outcome.skippedUngrounded.includes("Random Notes"), "reports the guess as skipped");

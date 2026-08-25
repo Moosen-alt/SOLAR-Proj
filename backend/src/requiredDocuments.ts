@@ -188,6 +188,28 @@ export function documentInventory(db: AppDb, project: ProjectRecord): DocumentIn
   const required = requiredDocuments(project, { stampThresholdKwDc, jurisdictionLabel, processProfileRequiresStamp });
   const presence: DocPresence[] = required.map((item) => {
     const p = present(item.docType, project, docsByType);
+    // HONESTY CHECK on the sealed letter: presence only proves a FILE is in the
+    // slot — a placeholder PDF satisfies the gate identically (live-tested with a
+    // file literally named "FAKE STAMPS.pdf"). We can't verify a real PE seal
+    // automatically, but when the attached letter HAS a text layer and that text
+    // carries no seal/engineer language at all, say so on the row instead of
+    // presenting it as settled. Advisory only — scanned letters with no text
+    // layer stay untouched, and the human reviewer remains the authority.
+    if (item.docType === "structural_letter" && p.present && p.via === "attached file") {
+      try {
+        const row = db.get<{ extracted_text?: string }>(
+          `SELECT extracted_text FROM project_documents
+           WHERE project_id = ? AND doc_type IN ('structural_letter','stamped_plans','engineering_letter')
+           ORDER BY uploaded_at DESC LIMIT 1`,
+          [project.id],
+        );
+        const text = String(row?.extracted_text || "");
+        const hasSealLanguage = /seal|stamp|p\.?\s?e\.?\b|professional engineer|structural engineer|licensed engineer|expires/i.test(text);
+        if (text && text !== "[no text layer]" && text.length > 40 && !hasSealLanguage) {
+          return { ...item, present: true, via: "attached file — no PE seal language found in its text; confirm it is the real sealed letter before submitting" };
+        }
+      } catch { /* advisory only — never block on this check */ }
+    }
     return { ...item, present: p.present, via: p.via };
   });
   return {

@@ -69,9 +69,9 @@
 
   <div id="ff2batch" style="display:none;background:var(--surface);border-bottom:1px solid var(--line);padding:14px 18px">
     <div style="font-size:13px;font-weight:700;margin-bottom:6px">Batch fill — paste rows from your spreadsheet (tab-separated)</div>
-    <textarea id="bx_rows" placeholder="12758&#9;Katie Tully&#9;&#9;1801 35th St, Bellingham, WA, 98229&#9;…&#9;https://cob.org/.../024-refund-request-form.pdf" style="width:100%;height:90px;border:1px solid var(--line);border-radius:6px;padding:8px;font-family:monospace;font-size:12px"></textarea>
+    <textarea id="bx_rows" placeholder="12758&#9;Jane Example&#9;&#9;123 Example St, Bellingham, WA, 98229&#9;…&#9;https://cob.org/.../024-refund-request-form.pdf" style="width:100%;height:90px;border:1px solid var(--line);border-radius:6px;padding:8px;font-family:monospace;font-size:12px"></textarea>
     <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-top:10px">
-      <label style="font-size:11px;font-weight:700;display:flex;flex-direction:column;gap:3px">Person requesting refund (all rows)<input id="bx_requester" value="Infinity Solar" style="padding:7px 9px;border:1px solid var(--line);border-radius:6px;font:inherit;font-weight:400" /></label>
+      <label style="font-size:11px;font-weight:700;display:flex;flex-direction:column;gap:3px">Person requesting refund (all rows)<input id="bx_requester" placeholder="Your company name" style="padding:7px 9px;border:1px solid var(--line);border-radius:6px;font:inherit;font-weight:400" /></label>
       <label style="font-size:11px;font-weight:700;display:flex;flex-direction:column;gap:3px">Form URL column<select id="bx_url" class="bx-col"></select></label>
       <label style="font-size:11px;font-weight:700;display:flex;flex-direction:column;gap:3px">Project address column<select id="bx_addr" class="bx-col"></select></label>
       <label style="font-size:11px;font-weight:700;display:flex;flex-direction:column;gap:3px">Permit # column<select id="bx_permit" class="bx-col"></select></label>
@@ -85,7 +85,7 @@
 
   <div class="ff2-data" id="ff2data">
     <div class="ff2-data-grid">
-      <label>Name<input id="d_name" placeholder="Seamus Ericson" /></label>
+      <label>Name<input id="d_name" placeholder="Full name" /></label>
       <label>Permit #<input id="d_permitNumber" placeholder="ELE2026-0918" /></label>
       <label>Project address<input id="d_street" placeholder="1801 35th St" /></label>
       <label>City<input id="d_city" /></label>
@@ -95,9 +95,9 @@
     </div>
     <div style="font-size:11px;font-weight:700;color:var(--muted,#667);margin:2px 0 6px">Company boilerplate (applied to every form — edit if needed)</div>
     <div class="ff2-data-grid">
-      <label>Installer / company<input id="d_installer" value="TML INTERNATIONAL LLC" /></label>
-      <label>Mailing address<input id="d_mailingAddress" value="808 SE Chkalov Dr ST 3-337, Vancouver, WA 98683" /></label>
-      <label>Phone<input id="d_phone" value="(800) 818-0598" /></label>
+      <label>Installer / company<input id="d_installer" placeholder="Your company LLC" /></label>
+      <label>Mailing address<input id="d_mailingAddress" placeholder="Company mailing address" /></label>
+      <label>Phone<input id="d_phone" placeholder="(555) 555-5555" /></label>
       <label>Email<input id="d_email" value="permit@infinitysolarusa.com" /></label>
       <label>Reason<input id="d_reason" value="Project cancellation" /></label>
     </div>

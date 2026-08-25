@@ -27,7 +27,7 @@ export function sleep(ms: number): Promise<void> {
 const MAX_STATUS_SNIPPET = 320;
 
 // Mask a sensitive identifier (account/meter/permit number), keeping only the
-// last 4 chars: "4036870000" -> "******0000". Short values are fully masked.
+// last 4 chars: "9990001111" -> "******0000". Short values are fully masked.
 export function maskId(value: string): string {
   const v = value.trim();
   if (v.length <= 4) return "*".repeat(v.length);

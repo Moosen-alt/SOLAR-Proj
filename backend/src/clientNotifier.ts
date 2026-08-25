@@ -76,8 +76,15 @@ export function formatProjectAddress(p: { projectAddress?: string; city?: string
   return parts.filter(Boolean).join(", ");
 }
 
+let warnedLocalhostBase = false;
 export function statusShareUrl(token: string): string {
   const base = (process.env.PUBLIC_BASE_URL || `http://localhost:${process.env.PORT || 4173}`).replace(/\/+$/, "");
+  // A client-facing email carrying a localhost link is dead on arrival — say so
+  // once, loudly, instead of letting every notification quietly ship broken links.
+  if (!process.env.PUBLIC_BASE_URL && !warnedLocalhostBase) {
+    warnedLocalhostBase = true;
+    console.warn("[notify] PUBLIC_BASE_URL is not set — client-facing status links will point at localhost and will not work off this machine. Set PUBLIC_BASE_URL in .env.");
+  }
   return `${base}/status?token=${encodeURIComponent(token)}`;
 }
 

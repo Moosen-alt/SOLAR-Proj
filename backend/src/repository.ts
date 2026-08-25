@@ -954,6 +954,18 @@ export function deleteProject(db: AppDb, projectId: string): { deleted: true; pr
   return { deleted: true, projectId, affectedKnowledgeProfiles: affectedKeys.size };
 }
 
+
+// A pending human-review item that actually gates staging. Corrections have their
+// own lifecycle, and ADVISORY items — run-triage suggestions ("add the portal
+// login, then retry") and background-job failure notices — are guidance, not
+// unverified extraction data: they must never flip the submit gate to blocked.
+// Live-tested failure: a triage tip about missing portal credentials blocked a
+// clean Coos Bay submittal while the QC panel showed nothing to fix.
+const ADVISORY_REVIEW_ISSUE_TYPES = new Set(["Run triage", "Background job failed"]);
+function isCriticalReviewItem(item: { status: string; fieldName: string; issueType?: string }): boolean {
+  return item.status === "pending" && item.fieldName !== "correction" && !ADVISORY_REVIEW_ISSUE_TYPES.has(item.issueType || "");
+}
+
 export function getKnowledgeBase(db: AppDb): { profiles: PermitUtilityKnowledgeProfile[] } {
   return { profiles: listKnowledgeProfiles(db) };
 }
@@ -1007,7 +1019,7 @@ function operationDrafts(db: AppDb, detail: ProjectDetail): OperationStepDraft[]
   const historicalReport = buildHistoricalFailureReport(db, project.id);
   const reviewerReport = applyCachedVisionVerdicts(db, buildReviewerReportFor(db, project));
   const applicationDocs = buildApplicationDocumentPackage(project);
-  const pendingCritical = detail.humanReviewItems.filter((item) => item.status === "pending" && item.fieldName !== "correction").length;
+  const pendingCritical = detail.humanReviewItems.filter(isCriticalReviewItem).length;
   const pendingCorrections = detail.humanReviewItems.filter((item) => item.status === "pending" && item.fieldName === "correction").length;
   const qcFails = detail.qcResults.filter((item) => item.qcStatus === "fail").length;
   const qcWarnings = detail.qcResults.filter((item) => item.qcStatus === "warning").length;
@@ -1500,7 +1512,7 @@ export function getOperationsBrief(db: AppDb, projectId: string): OperationsBrie
 
   const qcFails = detail.qcResults.filter((item) => item.qcStatus === "fail");
   const qcWarnings = detail.qcResults.filter((item) => item.qcStatus === "warning");
-  const pendingCritical = detail.humanReviewItems.filter((item) => item.status === "pending" && item.fieldName !== "correction");
+  const pendingCritical = detail.humanReviewItems.filter(isCriticalReviewItem);
   const pendingCorrections = detail.humanReviewItems.filter((item) => item.status === "pending" && item.fieldName === "correction");
   const reviewerBlockers = reviewerReport.findings.filter((item) => item.severity === "blocker");
   const reviewerWarnings = reviewerReport.findings.filter((item) => item.severity === "warning");
@@ -2125,7 +2137,7 @@ export function getLiveProjectReadinessReport(db: AppDb, projectId: string): Liv
   const sldEvidence = evidenceForTopic(project, "sld");
   const siteEvidence = evidenceForTopic(project, "siteRoofPlan");
   const inverterEvidence = evidenceForTopic(project, "inverterSettings");
-  const pendingCritical = detail.humanReviewItems.filter((item) => item.status === "pending" && item.fieldName !== "correction").length;
+  const pendingCritical = detail.humanReviewItems.filter(isCriticalReviewItem).length;
   const qcFails = detail.qcResults.filter((item) => item.qcStatus === "fail").length;
   const qcWarnings = detail.qcResults.filter((item) => item.qcStatus === "warning").length;
   const learnedHistoricalBlockers = historicalReport.checklist.filter((item) => {
@@ -2386,7 +2398,7 @@ export function getProjectProcessMap(db: AppDb, projectId: string): ProjectProce
   const siteEvidence = evidenceForTopic(project, "siteRoofPlan");
   const inverterEvidence = evidenceForTopic(project, "inverterSettings");
   const utilityApprovalEvidence = evidenceForTopic(project, "utilityApproval");
-  const pendingCritical = detail.humanReviewItems.filter((item) => item.status === "pending" && item.fieldName !== "correction").length;
+  const pendingCritical = detail.humanReviewItems.filter(isCriticalReviewItem).length;
   const qcFails = detail.qcResults.filter((item) => item.qcStatus === "fail").length;
   const qcWarnings = detail.qcResults.filter((item) => item.qcStatus === "warning").length;
   const reviewerBlockers = reviewerReport.findings.filter((item) => item.severity === "blocker");
@@ -2809,7 +2821,7 @@ export function getInstallerActionPacket(db: AppDb, projectId: string): Installe
     });
   }
 
-  for (const review of detail.humanReviewItems.filter((item) => item.status === "pending" && item.fieldName !== "correction").slice(0, 8)) {
+  for (const review of detail.humanReviewItems.filter(isCriticalReviewItem).slice(0, 8)) {
     add({
       id: `human-review:${review.id}`,
       category: /account|meter|utility|interconnection/i.test(review.fieldName) ? "utility_nem" : "field_verification",
@@ -2975,7 +2987,7 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
   const siteEvidence = evidenceForTopic(project, "siteRoofPlan");
   const inverterEvidence = evidenceForTopic(project, "inverterSettings");
   const utilityApprovalEvidence = evidenceForTopic(project, "utilityApproval");
-  const pendingCritical = detail.humanReviewItems.filter((item) => item.status === "pending" && item.fieldName !== "correction");
+  const pendingCritical = detail.humanReviewItems.filter(isCriticalReviewItem);
   const qcFails = detail.qcResults.filter((item) => item.qcStatus === "fail");
   const qcWarnings = detail.qcResults.filter((item) => item.qcStatus === "warning");
   const reviewerBlockers = reviewerReport.findings.filter((item) => item.severity === "blocker");
@@ -3180,7 +3192,9 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
         ...docInventory.missingAdvisory.map((d) => `Missing (advisory): ${d.label}`),
       ],
       nextAction: docInventory.missingBlocking.length
-        ? `Attach or split out the missing document(s) before staging: ${docInventory.missingBlocking.map((d) => d.label).join("; ")}.`
+        ? `Attach or split out the missing document(s) before staging: ${docInventory.missingBlocking
+            .map((d) => (d.docType === "structural_letter" && d.why ? `${d.label} — ${d.why}` : d.label))
+            .join("; ")}.`
         : docInventory.missingAdvisory.length
           ? "Confirm the advisory document(s) are included in the plan set."
           : "All required documents are attached.",
@@ -3992,7 +4006,7 @@ export function runProjectWorkflow(db: AppDb, projectId: string): ProjectWorkflo
 
   const qcFails = detail.qcResults.filter((item) => item.qcStatus === "fail").length;
   const qcWarnings = detail.qcResults.filter((item) => item.qcStatus === "warning").length;
-  const pendingReview = detail.humanReviewItems.filter((item) => item.status === "pending" && item.fieldName !== "correction").length;
+  const pendingReview = detail.humanReviewItems.filter(isCriticalReviewItem).length;
   const reviewerBlockers = reviewerReport.findings.filter((item) => item.severity === "blocker").length;
   const reviewerWarnings = reviewerReport.findings.filter((item) => item.severity === "warning").length;
   const historicalMissing = historicalReport.checklist.filter((item) => item.status === "missing").length;
@@ -5409,6 +5423,9 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
     isAccela,
     isPowerClerk,
     autoSeedEnabled,
+    // Simulation is an EXPLICIT opt-in (smoke test, simulated rehearsal) — never
+    // implied by PORTAL_AUTOSEED=0 on a production box.
+    simulationEnabled: process.env.MOCK_PORTAL === "1",
     portalPaused,
   });
   const runActorLabel = channelDecision.adapterLabel;
@@ -5544,19 +5561,21 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
     result = await stageWithAccela(stagedProject, files, stageOptions);
   } else if (runActorLabel === "PowerClerkAdapter") {
     result = await stageWithPowerClerk(stagedProject, files, stageOptions);
-  } else if (autoSeedEnabled) {
-    // REAL MODE (auto-seed on) with nothing real to drive: no recorded recipe, no portal_profiles
-    // row, and no known portal-ENTRY URL for this AHJ/utility. Do NOT silently run the mock — that
-    // fabricates a "staged to review" for a run that never touched a portal (the exact silent-mock
-    // confusion this whole change removes). Stop and surface a clear, actionable blocker so the
-    // operator knows to register the portal. The mock no-op is reachable only with PORTAL_AUTOSEED=0
-    // (offline dev / smoke / simulated rehearsal).
+  } else if (runActorLabel === "NoAdapter" || autoSeedEnabled) {
+    // Nothing REAL to drive: no recorded recipe and either no adapter for this real
+    // portal (NoAdapter — including PORTAL_AUTOSEED=0, where the "legacy hand-coded
+    // fallback" only exists for Accela/PowerClerk) or no known portal at all in
+    // real mode. Do NOT run the mock — a mock "staged to review" that never touched
+    // the portal moves a real filing to awaiting_human_submit, and the mock approve
+    // path then fabricates MOCK-/CONF- permit numbers staff would trust. Stop and
+    // surface the actionable blocker instead.
     const where = track === "nem" ? (detail.project.utility || "this utility") : (detail.project.ahj || "this AHJ");
-    const msg = `No portal is registered for ${where} yet, so there's nothing to stage against. Record the portal once (paste its login/landing URL under "Record this portal") or add its URL to the knowledge base, then re-stage.`;
+    const msg = `No portal automation is available for ${where} yet, so there's nothing to stage against. Record the portal once (paste its login/landing URL under "Record this portal") or add its URL to the knowledge base, then re-stage.`;
     result = { ok: false, finalSubmitClicked: false, pauseReason: null, message: msg, steps: [{ ok: false, message: msg }] };
   } else {
-    // Offline / simulated fallback (PORTAL_AUTOSEED=0): the mock no-op stands in for a real portal
-    // in dev, smoke, and the CI rehearsal. Never reached in normal (auto-seed on) operation.
+    // The mock stands in ONLY when there is no real portal AND auto-seed is off —
+    // offline dev, the smoke test, and the simulated rehearsal. A project with a
+    // real portal can never reach it in any mode.
     result = await stageWithMockPortal(stagedProject, files, reviewerReport);
   }
 

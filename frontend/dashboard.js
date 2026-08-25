@@ -219,7 +219,15 @@ async function loadProjectDocuments() {
           <button class="danger" data-doc-del="${esc(d.id)}" style="font-size:11px">Delete</button></div>`).join("")
       : '<p class="muted" style="font-size:12px">No documents uploaded yet.</p>';
     listEl.querySelectorAll("[data-doc-del]").forEach((b) => b.addEventListener("click", async () => {
-      try { await api(`/api/projects/${state.selectedProjectId}/documents/${b.getAttribute("data-doc-del")}`, { method: "DELETE" }); await loadProjectDocuments(); }
+      // Permanently removes the FILE from disk (only the append-only backup mirror
+      // keeps a copy) — one accidental click on a plan set must not be silent.
+      if (!window.confirm("Permanently delete this document file from the project?\n\nThe live file is removed from disk; only the backup mirror retains a copy.")) return;
+      try {
+        await api(`/api/projects/${state.selectedProjectId}/documents/${b.getAttribute("data-doc-del")}`, { method: "DELETE" });
+        await loadProjectDocuments();
+        // Removing a document can re-raise a submit blocker — refresh the banner.
+        if (state.selectedProjectId) await selectProject(state.selectedProjectId);
+      }
       catch (err) { $("docUploadStatus").textContent = err.message || "Delete failed."; }
     }));
   } catch (err) {
@@ -258,6 +266,10 @@ async function uploadProjectDocument() {
   }
   fileInput.value = "";
   await loadProjectDocuments();
+  // A document upload can clear a submit blocker (e.g. the sealed structural
+  // letter) — re-pull the full detail so the blocker banner updates NOW, not on
+  // the next unrelated click.
+  if (state.selectedProjectId) await selectProject(state.selectedProjectId);
 }
 
 async function loadPortalRecipes() {
@@ -440,6 +452,8 @@ function renderAhjForms() {
     catch (err) { showMessage(err.message || "Delete failed.", "error"); }
   }));
   el.querySelectorAll("[data-form-remap]").forEach((b) => b.addEventListener("click", async () => {
+    const priorLabel = b.textContent;
+    b.disabled = true; b.textContent = "Re-mapping…";
     const status = $("ahjFormsStatus");
     if (status) status.textContent = "Re-mapping from the stored blank…";
     try {
@@ -447,6 +461,7 @@ function renderAhjForms() {
       if (status) status.textContent = out.message || "Re-mapped.";
       await loadAhjForms();
     } catch (err) { if (status) status.textContent = ""; showMessage(err.message || "Re-map failed.", "error"); }
+    finally { b.disabled = false; b.textContent = priorLabel; }
   }));
   if (window.lucide) window.lucide.createIcons();
 }
@@ -3262,7 +3277,7 @@ function bindFilledFormControls() {
   const upload = $("uploadAhjFormInput");
   if (upload) upload.addEventListener("change", uploadAhjForm);
   document.querySelectorAll("[data-verify-form]").forEach((b) => b.addEventListener("click", () => verifyFilledForm(b.getAttribute("data-verify-form"))));
-  document.querySelectorAll("[data-remap-form]").forEach((b) => b.addEventListener("click", () => remapFilledForm(b.getAttribute("data-remap-form"))));
+  document.querySelectorAll("[data-remap-form]").forEach((b) => b.addEventListener("click", () => remapFilledForm(b.getAttribute("data-remap-form"), b)));
   document.querySelectorAll("[data-detect-sign]").forEach((b) => b.addEventListener("click", () => detectRegistrySignatures(b.getAttribute("data-detect-sign"))));
 }
 
@@ -3287,14 +3302,19 @@ async function verifyFilledForm(templateId) {
   } catch (err) { showMessage(err.message || "Verify failed.", "error"); }
 }
 
-async function remapFilledForm(templateId) {
+async function remapFilledForm(templateId, btn) {
   if (!templateId) return;
-  showMessage("Re-mapping the form…", "info");
+  // Re-mapping calls the vision mapper and can take a minute — without visible
+  // busy state the operator can't tell whether the click took, and clicks again.
+  const prior = btn ? btn.textContent : "";
+  if (btn) { btn.disabled = true; btn.textContent = "Re-mapping… (can take ~1 min)"; }
+  showMessage("Re-mapping the form from the stored blank…", "info");
   try {
     const out = await api(`/api/ahj-templates/${templateId}/remap`, { method: "POST", body: "{}" });
-    showMessage(out.message || "Re-mapped.", "success");
+    showMessage(out.message || "Re-mapped. Open the PDF again to check placement, then verify.", "success");
     await rebuildFilledForms();
   } catch (err) { showMessage(err.message || "Re-map failed.", "error"); }
+  finally { if (btn) { btn.disabled = false; btn.textContent = prior || "Re-map"; } }
 }
 
 async function detectRegistrySignatures(formId) {
@@ -4374,7 +4394,9 @@ $("deleteProjectBtn").addEventListener("click", deleteSelectedProject);
 $("addCorrectionBtn").addEventListener("click", addCorrection);
 $("addPermitTargetBtn").addEventListener("click", addPermitTarget);
 $("recordPermitStatusBtn").addEventListener("click", () => recordPermitStatus("manual"));
-$("mockPermitCheckBtn").addEventListener("click", () => recordPermitStatus("mock"));
+// Mock Check removed for production: it recorded a FABRICATED status check on a
+// real project's permit history. Simulated checks live in tests, not the UI.
+$("mockPermitCheckBtn")?.addEventListener("click", () => recordPermitStatus("mock"));
 $("confirmationForm").addEventListener("submit", captureConfirmation);
 $("mboxFile").addEventListener("change", importMbox);
 $("importMboxPathBtn").addEventListener("click", importMboxPath);
@@ -4579,7 +4601,11 @@ async function loadClientCredentials(clientId) {
           <button class="danger" data-cred-del="${esc(c.id)}" style="font-size:11px">Delete</button></div>`).join("")
       : '<p class="muted" style="font-size:12px">No saved logins yet.</p>';
     list.querySelectorAll("[data-cred-del]").forEach((b) => b.addEventListener("click", async () => {
-      try { await api(`/api/clients/${clientId}/portal-credentials/${b.getAttribute("data-cred-del")}`, { method: "DELETE" }); await loadClientCredentials(clientId); }
+      try {
+        // A stored portal login is unrecoverable once deleted (encrypted at rest,
+        // shown once) — never a silent one-click.
+        if (!window.confirm("Permanently delete this stored portal login?\n\nIt cannot be recovered — you would re-enter the credentials to restore it.")) return;
+        await api(`/api/clients/${clientId}/portal-credentials/${b.getAttribute("data-cred-del")}`, { method: "DELETE" }); await loadClientCredentials(clientId); }
       catch (err) { $("credStatus").textContent = err.message || "Delete failed."; }
     }));
   } catch (err) {
@@ -4850,7 +4876,9 @@ async function renderPortalLogins() {
       </div>`).join("")
     : '<p class="muted" style="font-size:12px">No saved logins yet. Pick a portal above to pre-fill, then enter the username and password.</p>';
   $("plList").querySelectorAll("[data-pl-del]").forEach((b) => b.addEventListener("click", async () => {
-    try { await api(`/api/clients/${client.id}/portal-credentials/${b.getAttribute("data-pl-del")}`, { method: "DELETE" }); await renderPortalLogins(); }
+    try {
+      if (!window.confirm("Permanently delete this stored portal login?\n\nIt cannot be recovered — you would re-enter the credentials to restore it.")) return;
+      await api(`/api/clients/${client.id}/portal-credentials/${b.getAttribute("data-pl-del")}`, { method: "DELETE" }); await renderPortalLogins(); }
     catch (err) { $("plStatus").textContent = err.message || "Delete failed."; }
   }));
 

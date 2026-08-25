@@ -52,6 +52,10 @@ process.env.BACKUP_DIR = path.join(smokeFiles, "backups");
 // (auto-seed ON) operation a stage with no registered portal surfaces a blocker instead of silently
 // mocking; pin auto-seed OFF here so the smoke path keeps exercising the mock end-to-end.
 process.env.PORTAL_AUTOSEED = "0";
+// Explicit simulation opt-in: the mock portal is no longer an implicit fallback of
+// auto-seed-off (that silently simulated stagings for REAL projects in production);
+// smoke declares its intent to simulate.
+process.env.MOCK_PORTAL = "1";
 // The smoke drives each stage explicitly — background auto-started autopilot
 // runs would race the scripted flow and the end-of-run project deletion.
 process.env.AUTOPILOT_AUTO_START = "0";

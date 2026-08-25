@@ -527,7 +527,13 @@ async function drawSignatures(doc: PDFDocument, def: AhjFormDefinition, ctx: Fil
     const boxW = Number.isFinite(pl.width) && pl.width > 0 ? pl.width : 130;
     const boxH = Number.isFinite(pl.height) && pl.height > 0 ? pl.height : 34;
     const scale = Math.min(boxW / img.width, boxH / img.height) || 1;
-    page.drawImage(img, { x: pl.x, y: pl.y, width: img.width * scale, height: img.height * scale });
+    // Sit the signature ON the line, not on the label under it. Vision detections
+    // anchor at the label's baseline, which put the ink overlapping "SIGNATURE
+    // OWNER / AUTHORIZED AGENT" on real forms (Coos Bay building permit +
+    // acknowledgement page, live-tested) — lift the image so its bottom rests
+    // just above the rule line the way a pen signature would.
+    const SIGNATURE_LIFT = 6;
+    page.drawImage(img, { x: pl.x, y: pl.y + SIGNATURE_LIFT, width: img.width * scale, height: img.height * scale });
     drawn += 1;
     // The operator signs today — write today's date on the adjacent date line.
     if (pl.dateX != null && pl.dateY != null && Number.isFinite(pl.dateX) && Number.isFinite(pl.dateY)) {

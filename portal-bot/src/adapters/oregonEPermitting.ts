@@ -146,6 +146,23 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
   // ---------------------------------------------------------------------------
   // openSubmission — clicks "Building Dept Application" and accepts disclaimer
   // ---------------------------------------------------------------------------
+
+  // "Continue Application »" renders as an <a> on some Accela layouts and as a
+  // BUTTON/submit-input on others (live-tested: the Building disclaimer page's
+  // teal button is not a link, so a link-role click times out and the run stalls
+  // on the terms page with the checkbox already ticked). Pre-application
+  // navigation — never a final submit, which is always a human.
+  private continueApplicationLocator() {
+    if (!this.page) throw new Error("no page");
+    return this.page
+      .locator('a:has-text("Continue Application"), button:has-text("Continue Application"), input[type="submit"][value*="Continue Application" i]')
+      .first();
+  }
+
+  private async clickContinueApplication(timeout = 10000): Promise<void> {
+    await this.continueApplicationLocator().click({ timeout });
+  }
+
   async openSubmission(project: ProjectRecord): Promise<PortalStepResult> {
     if (!this.page) return fail("Not logged in. Call login() first.");
     try {
@@ -157,7 +174,7 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
       // Accept the disclaimer (checkbox id is termAccept on the current layout) and continue.
       await this.page.getByRole("checkbox", { name: /I have read and agree/i }).check({ timeout: 10000 })
         .catch(async () => { await this.page.locator('input[id$="termAccept"]').first().check({ timeout: 8000 }); });
-      await this.page.getByRole("link", { name: /Continue Application/i }).first().click({ timeout: 10000 });
+      await this.clickContinueApplication(10000);
       await this.page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
 
       // Step 1: Work-site address search. On the current WorkLocation.aspx the fields are
@@ -205,7 +222,7 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
         // Fallback: check the first available checkbox (only one option on the page)
         await this.page.locator('input[type="checkbox"]').first().check({ timeout: 8000 });
       }
-      await this.page.getByRole("link", { name: /Continue Application/i }).first().click({ timeout: 10000 });
+      await this.clickContinueApplication(10000);
 
       // PII redaction: do NOT return the street number/name/full address — only a
       // boolean confirming the address search resolved, plus the permit discipline chosen.
@@ -266,7 +283,7 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
       // the staging runner enabled it; best-effort, never throws.
       await this.runGapFill(this.page);
       const preUrl = String(this.page.url());
-      const cont = this.page.getByRole("link", { name: /Continue Application/i }).first();
+      const cont = this.continueApplicationLocator();
       if ((await cont.count()) === 0) return `${label}: Continue link not found on page`;
       await cont.click({ timeout: 15000 });
       await this.page.waitForLoadState("networkidle", { timeout: 12000 }).catch(() => null);
@@ -312,9 +329,9 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
         const present = (await jvField.count().catch(() => 0)) > 0 &&
           (await jvField.first().isVisible().catch(() => false));
         if (present) break;
-        const cont = this.page.getByRole("link", { name: /Continue Application/i });
+        const cont = this.continueApplicationLocator();
         if ((await cont.count()) === 0) break;
-        await cont.first().click({ timeout: 10000 }).catch(() => null);
+        await cont.click({ timeout: 10000 }).catch(() => null);
         await this.page.waitForLoadState("networkidle", { timeout: 12000 }).catch(() => null);
       }
 
@@ -619,8 +636,7 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
       }
     }
 
-    await this.page.getByRole("link", { name: /Continue Application/i }).first()
-      .click({ timeout: 10000 }).catch(() => null);
+    await this.continueApplicationLocator().click({ timeout: 10000 }).catch(() => null);
     await this.page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => null);
 
     if (failed.length > 0 && uploaded.length === 0) {
@@ -654,9 +670,9 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
 
       let reviewReached = await isReviewPage();
       for (let i = 0; i < 8 && !reviewReached; i++) {
-        const continueLink = this.page.getByRole("link", { name: /Continue Application/i });
+        const continueLink = this.continueApplicationLocator();
         if ((await continueLink.count().catch(() => 0)) === 0) break;
-        await continueLink.first().click({ timeout: 10000 });
+        await continueLink.click({ timeout: 10000 });
         await this.page.waitForLoadState("networkidle", { timeout: 12000 }).catch(() => null);
         reviewReached = await isReviewPage();
       }

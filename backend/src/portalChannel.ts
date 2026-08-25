@@ -58,11 +58,22 @@ export function selectStagingActor(opts: {
   isAccela: boolean;
   isPowerClerk: boolean;
   autoSeedEnabled: boolean;
+  /** EXPLICIT simulation switch (MOCK_PORTAL=1) — set by the smoke test and the
+   *  simulated rehearsal, never in a production .env. */
+  simulationEnabled?: boolean;
 }): string {
   if (opts.hasRecipe) return "RecipeAdapter";
   if (opts.isRealPortal && opts.autoSeedEnabled) return "AutoLearnAdapter";
   if (opts.isRealPortal && opts.isAccela) return "OregonEPermittingAdapter";
   if (opts.isRealPortal && opts.isPowerClerk) return "PowerClerkAdapter";
+  // The mock is reachable ONLY by explicit opt-in. PORTAL_AUTOSEED=0 alone used to
+  // fall through here for any real portal without a hand-coded adapter — the mock
+  // reported a successful "staged to review" that never touched the portal, the
+  // real filing moved to awaiting_human_submit, and the approve path fabricated
+  // MOCK-/CONF- permit numbers staff would trust. Disabling auto-learn must mean
+  // "surface a blocker", never "silently simulate".
+  if (opts.simulationEnabled) return "MockPortalAdapter";
+  if (opts.isRealPortal) return "NoAdapter";
   return "MockPortalAdapter";
 }
 
@@ -72,6 +83,7 @@ const ADAPTER_TO_CHANNEL: Record<string, PortalChannel> = {
   OregonEPermittingAdapter: "handcoded",
   PowerClerkAdapter: "handcoded",
   MockPortalAdapter: "mock",
+  NoAdapter: "manual",
 };
 
 export interface PortalChannelInputs {
@@ -80,6 +92,8 @@ export interface PortalChannelInputs {
   isAccela: boolean;
   isPowerClerk: boolean;
   autoSeedEnabled: boolean;
+  /** EXPLICIT simulation opt-in (MOCK_PORTAL=1) — smoke/rehearsal only. */
+  simulationEnabled?: boolean;
   // RESERVED: an installer with working API access for this portal. Always false in
   // this build (no API adapter); wired up the day API access lands.
   apiAvailable?: boolean;
@@ -117,6 +131,7 @@ export function resolvePortalChannel(input: PortalChannelInputs): PortalChannelD
     isAccela: input.isAccela,
     isPowerClerk: input.isPowerClerk,
     autoSeedEnabled: input.autoSeedEnabled,
+    simulationEnabled: input.simulationEnabled,
   });
   const channel = ADAPTER_TO_CHANNEL[adapterLabel] ?? "mock";
   const reason =

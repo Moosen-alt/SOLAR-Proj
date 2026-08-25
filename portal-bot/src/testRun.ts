@@ -34,18 +34,24 @@ const PORTAL_URLS: Record<string, string> = {
   accela: "https://aca-oregon.accela.com/oregon/Default.aspx",
 };
 
+// OBVIOUSLY SYNTHETIC test data. This used to be a real homeowner's record —
+// name, street, PGE account and meter numbers — which the documented
+// `npm run portal:test -- powerclerk` command then typed into the LIVE PGE
+// portal, where per-field autosave persists a draft application under that
+// person's identity. Test data must be unmistakably fake at a glance, and it
+// must never resemble anything a utility could match to a real account.
 const SAMPLE_PROJECT: ProjectRecord & { uploadFiles?: string[] } = {
   id: "test-project",
   clientId: null,
-  homeownerName: "Jeffery Bienvenu",
-  projectAddress: "1227 Trent",
-  city: "Keizer",
+  homeownerName: "TEST DO-NOT-SUBMIT",
+  projectAddress: "0 Test Fixture Rd",
+  city: "Testville",
   state: "OR",
-  zip: "97303",
-  ahj: "Marion County",
+  zip: "97000",
+  ahj: "Test County",
   utility: "PGE",
-  accountNumber: "4036870000",
-  meterNumber: "41 306 707",
+  accountNumber: "0000000000",
+  meterNumber: "000 000 000",
   systemSizeDcKw: 9.89,
   systemSizeAcKw: 7.6,
   totalExportKw: 7.6,
@@ -54,11 +60,11 @@ const SAMPLE_PROJECT: ProjectRecord & { uploadFiles?: string[] } = {
   currentStage: "submission",
   parserConfidenceSummary: "",
   parserSnapshot: {
-    installerCompanyName: "TML INTERNATIONAL LLC",
-    installerEmail: "permit@infinitysolarusa.com",
-    installerPhone: "(800) 818-0598",
-    homeownerPhone: "(541) 364-9960",
-    homeownerEmail: "contact.ces@gmail.com",
+    installerCompanyName: "Test Installer LLC",
+    installerEmail: "test@example.com",
+    installerPhone: "(000) 000-0000",
+    homeownerPhone: "(000) 000-0000",
+    homeownerEmail: "test-homeowner@example.com",
     inverterManufacturer: "Tesla",
     inverterModel: "1538000",
     inverterQuantity: "1",
@@ -114,10 +120,22 @@ async function doTest(portal: string, projectPath: string | undefined): Promise<
     process.exit(1);
   }
 
-  const project: ProjectRecord & { uploadFiles?: string[] } =
-    projectPath && fs.existsSync(projectPath)
-      ? (JSON.parse(fs.readFileSync(projectPath, "utf8")) as ProjectRecord & { uploadFiles?: string[] })
-      : SAMPLE_PROJECT;
+  // A supplied project path that does NOT exist is an ERROR, never a silent
+  // fallback to the sample — a typo used to stage the sample record into a real
+  // portal while the operator believed their own project was being driven.
+  if (projectPath && !fs.existsSync(projectPath)) {
+    console.error(`\n✗ Project file not found: ${projectPath}`);
+    console.error(`  Refusing to fall back to the built-in sample against a real portal.\n`);
+    process.exit(1);
+  }
+  const project: ProjectRecord & { uploadFiles?: string[] } = projectPath
+    ? (JSON.parse(fs.readFileSync(projectPath, "utf8")) as ProjectRecord & { uploadFiles?: string[] })
+    : SAMPLE_PROJECT;
+  if (!projectPath) {
+    console.log("\n▲ Using the built-in SYNTHETIC sample project (homeowner \"TEST DO-NOT-SUBMIT\").");
+    console.log("  This drives the REAL portal UI — fields it fills may autosave as a draft at the");
+    console.log("  portal. Never approve or submit this application; delete the draft when done.\n");
+  }
 
   const files: string[] = Array.isArray(project.uploadFiles) ? project.uploadFiles : [];
 

@@ -28,7 +28,7 @@ import { resolveHeadless } from "../../portal-bot/src/browser";
 import { compareReviewFields } from "../../portal-bot/src/reviewScreenScraper";
 import type { LearnPlanRequest, LearnPlanResponse } from "../../portal-bot/src/adapters/autoLearnAdapter";
 import { createLLMProvider, getRecentLlmCalls } from "./llm";
-import { getDecryptedCredential, getDecryptedCredentialByUrl, getDecryptedCredentialAny } from "./portalCredentials";
+import { getDecryptedCredential, getDecryptedCredentialByUrl, getDecryptedCredentialAny, listPortalCredentials } from "./portalCredentials";
 import { learnNoteTopicsFromMisses, activeLearnedNoteTerms } from "./noteTopics";
 import { resolveRecipeFieldValues, startPortalRecording, savePortalRecipeSteps, getPortalRecipe, convertLiteralsToBoundFields, findAnyRecipeForProject, appendHumanPatchSteps, promoteRecordingIfEligible } from "./portalRecipes";
 import { HUMAN_SUBMIT_OBSERVED_NOTE } from "../../portal-bot/src/humanCapture";
@@ -466,6 +466,23 @@ export async function autoLearnPortal(
     }));
   } catch (err) {
     throw new HttpError(502, `Portal learn failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  // NEAR-MISS credential diagnosis. "No stored credential was found" is technically
+  // true and operationally maddening when the client HAS logins — just for a
+  // different portal host (live-tested: a PGE PowerClerk login saved, project on
+  // Pacific Power's PowerClerk — same platform, different tenant host, correctly
+  // refused). Name what IS stored so the operator adds the right login instead of
+  // hunting a phantom bug.
+  if (!credential && project.clientId && /no stored credential/i.test(String(learn.message || ""))) {
+    try {
+      const stored = listPortalCredentials(db, project.clientId)
+        .map((c) => c.portalUrl ? `${c.portalType} (${new URL(c.portalUrl).hostname})` : c.portalType)
+        .filter(Boolean);
+      if (stored.length) {
+        learn.message += ` Note: this client HAS ${stored.length} stored login(s) — ${stored.join(", ")} — but none match this portal's address (${(() => { try { return new URL(portalUrl).hostname; } catch { return portalUrl; } })()}). Utilities on the same platform (e.g. PowerClerk) still use separate per-utility hosts and accounts, so add a login for THIS portal.`;
+      }
+    } catch { /* diagnostic only */ }
   }
 
   // Per-run debug bundle (data/learn-runs/<runId>) created by the adapter. `finalize` is the

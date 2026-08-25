@@ -101,6 +101,14 @@ export async function refreshAhjFormTemplates(db: AppDb, llm: LLMProvider): Prom
     } catch (err) {
       logger.warn("ahj-forms", `Re-map failed for ${row.ahj_name}: ${err instanceof Error ? err.message : String(err)}`);
     }
+    // HARD RULE: human-verified knowledge is never auto-overwritten. This used to
+    // build a fresh map that dropped overlayFields, signatureFields, and the
+    // verified flag entirely — a background job silently destroying an operator's
+    // verified placement work because the AHJ re-published the PDF. The new blank
+    // must replace the old (the old revision is obsolete at the counter), but the
+    // mapping work is CARRIED OVER as a starting point and demoted to unverified,
+    // so the fill gate blocks real submits until a human re-checks it.
+    const wasVerified = Boolean(map.verified);
     storeAhjFormTemplate(db, {
       ahjName: row.ahj_name,
       state: row.state,
@@ -110,12 +118,20 @@ export async function refreshAhjFormTemplates(db: AppDb, llm: LLMProvider): Prom
       map: {
         formName,
         sourceUrl: map.sourceUrl,
-        fillMode: newMap ? "acroform" : "overlay",
+        fillMode: newMap ? "acroform" : (map.fillMode || "overlay"),
         textFields: newMap?.textFields || map.textFields || {},
         checkboxes: newMap?.checkboxes || map.checkboxes || {},
-        notes: newMap ? `Refreshed ${nowIso()} — AHJ revised the form; fields re-mapped.` : `Refreshed ${nowIso()} — form changed but has no fillable fields.`,
+        overlayFields: map.overlayFields,
+        signatureFields: map.signatureFields,
+        verified: false,
+        notes: `Refreshed ${nowIso()} — the AHJ revised this form.` +
+          (wasVerified ? ` The PREVIOUS mapping was human-verified and has been carried over as a starting point, but the revision may have moved fields — RE-VERIFY before any real submit.` :
+            (newMap ? " Fields re-mapped from the new revision." : " Form changed; previous overlay mapping carried over — re-verify.")),
       },
     });
+    if (wasVerified) {
+      logger.warn("ahj-forms", `${row.ahj_name} (${row.state}) "${formName}" was HUMAN-VERIFIED and the AHJ revised it — mapping carried over but demoted to unverified. Re-verify before submitting.`);
+    }
     summary.updated += 1;
     logger.info("ahj-forms", `Refreshed revised form for ${row.ahj_name} (${row.state}).`);
   }

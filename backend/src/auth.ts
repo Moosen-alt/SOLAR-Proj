@@ -228,10 +228,15 @@ export function login(db: AppDb, req: Request, res: Response): void {
   }
   loginAttempts.delete(ip);
   const token = makeToken(String(row.id));
+  // Secure DEFAULTS ON when the request itself arrived over HTTPS (the documented
+  // Caddy deploy, with trust proxy set), so the session cookie is never replayable
+  // over plaintext there. Localhost/dev over http keeps working because req.secure
+  // is false. AUTH_COOKIE_SECURE=true/false still forces it either way.
+  const secureEnv = String(process.env.AUTH_COOKIE_SECURE || "").toLowerCase();
   res.cookie(COOKIE, token, {
     httpOnly: true,
     sameSite: "lax",
-    secure: String(process.env.AUTH_COOKIE_SECURE || "").toLowerCase() === "true",
+    secure: secureEnv === "true" ? true : secureEnv === "false" ? false : req.secure,
     maxAge: SESSION_HOURS * 3600_000,
   });
   res.json({ user: { id: String(row.id), name: String(row.name), email: String(row.email), role: String(row.role), orgId: String(row.org_id || DEFAULT_ORG_ID) } });

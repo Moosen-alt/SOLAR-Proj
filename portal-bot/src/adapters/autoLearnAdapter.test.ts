@@ -466,7 +466,7 @@ async function testSensitiveFieldsRedacted() {
   const planner: LearnPlanner = async (): Promise<LearnPlanResponse> => ({
     fills: [
       { selectorIndex: 0, value: "supersecret-pw", field: "password" },
-      { selectorIndex: 1, value: "4036870000", field: "accountNumber" },
+      { selectorIndex: 1, value: "9990001111", field: "accountNumber" },
       { selectorIndex: 3, value: "Normal Value", field: "homeownerName" },
     ],
     atReview: true,
@@ -529,7 +529,7 @@ async function testSensitiveFieldsRedacted() {
   // guess, and not the real project account/meter value that was typed into the browser.
   const serialized = JSON.stringify(result.steps);
   assert.ok(!serialized.includes("supersecret-pw"), "the password literal must never be in the recorded steps");
-  assert.ok(!serialized.includes("4036870000"), "the planner account value must never be in the recorded steps");
+  assert.ok(!serialized.includes("9990001111"), "the planner account value must never be in the recorded steps");
   assert.ok(!serialized.includes("ACCT-9001"), "the project account number must never be in the recorded steps");
   assert.ok(!serialized.includes("MTR-5002"), "the project meter number must never be in the recorded steps");
 }

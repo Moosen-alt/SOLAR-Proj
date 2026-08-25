@@ -42,7 +42,8 @@ ANTHROPIC_API_KEY=sk-ant-...
 SESSION_ENCRYPTION_KEY=<openssl rand -hex 32>   # portal credentials at rest — LOSING THIS LOSES STORED LOGINS
 ALLOWED_ORIGINS=https://autopilot.yourco.com     # lock CORS to your domain
 AUTOPILOT_DB_PATH=/var/lib/solar/autopilot.db   # persistent disk
-HEADLESS=true
+PORTAL_HEADLESS=true
+PUBLIC_BASE_URL=https://autopilot.yourco.com   # client-facing links in emails; NEVER leave the localhost default in production
 PORT=4000
 ```
 
@@ -94,9 +95,11 @@ Env: `BACKUP_DIR`, `BACKUP_KEEP` (snapshots, default 14), `BACKUP_INTERVAL_HOURS
 ## Employee logins
 
 - Log in as admin (ADMIN_EMAIL/PASSWORD) at the dashboard → session cookie.
-- Create workers: `POST /api/users {"email","name","password"}` (or the
-  dashboard Users panel); per-org users for SaaS customers:
-  `POST /api/orgs/:id/users`. Passwords hashed; API keys sha256 + shown once.
+- Create login-capable workers with the org users API:
+  `POST /api/orgs/:id/users {"email","name","password"}` (your own org's id is
+  `org-default`). NOTE: the plain `POST /api/users` route and the dashboard
+  Users panel create directory entries only — they take no password and cannot
+  produce a login. Passwords hashed; API keys sha256 + shown once.
 - Assign projects per user (`projects.assigned_user_id`, dashboard selector).
 - `/api/auth/login` / `/api/auth/logout`; everything else 401s without a
   session or `x-api-key`.

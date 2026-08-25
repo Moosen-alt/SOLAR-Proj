@@ -8,19 +8,19 @@ import type { ProjectRecord } from "../../shared/src/types";
 
 // Minimal project record — compareReviewFields only reads these fields.
 const project = {
-  homeownerName: "Jeffery Bienvenu",
+  homeownerName: "Testy McTestface",
   projectAddress: "1420 Marigold Street, Portland, OR 97201",
   systemSizeDcKw: "9.89",
-  accountNumber: "4036870000",
+  accountNumber: "9990001111",
   meterNumber: "88812345",
 } as unknown as ProjectRecord;
 
 function structuredReview(): ReviewField[] {
   return [
-    { label: "Applicant Name", value: "Jeffery Bienvenu" },
+    { label: "Applicant Name", value: "Testy McTestface" },
     { label: "Service Address", value: "1420 Marigold Street" },
     { label: "System Size (DC kW)", value: "9.89" },
-    { label: "Account Number", value: "******0000" },
+    { label: "Account Number", value: "******1111" },
     { label: "Meter Number", value: "******2345" },
   ];
 }
@@ -39,10 +39,10 @@ function run() {
   {
     const bodyText = [
       "Step 3: Review",
-      "Applicant: Jeffery Bienvenu",
+      "Applicant: Testy McTestface",
       "Service Address: 1420 Marigold Street, Portland, OR 97201",
       "System Size: 9.89 kW DC",
-      "Account: ******0000",
+      "Account: ******1111",
       "Meter: ******2345",
       "Please review all information before submitting.",
     ].join("\n");
@@ -67,7 +67,7 @@ function run() {
       "Step 3: Review",
       "Service Address: 1420 Marigold Street",
       "System Size: 9.89 kW",
-      "Account: ******0000",
+      "Account: ******1111",
       "Meter: ******2345",
     ].join("\n");
     const m = compareReviewFields([], project, bodyText);
@@ -82,11 +82,11 @@ function run() {
   //    also lacks it (no false pass from the fallback).
   {
     const fields: ReviewField[] = [
-      { label: "Applicant Name", value: "Jeffery Bienvenu" },
+      { label: "Applicant Name", value: "Testy McTestface" },
       { label: "Service Address", value: "1420 Marigold Street" },
       { label: "System Size (DC kW)", value: "3.21" }, // wrong
     ];
-    const m = compareReviewFields(fields, project, "Applicant Jeffery Bienvenu Address 1420 Marigold Street Size 3.21 kW");
+    const m = compareReviewFields(fields, project, "Applicant Testy McTestface Address 1420 Marigold Street Size 3.21 kW");
     assert.ok(m.some((x) => x.field === "systemSizeDcKw"), `wrong system size should be flagged, got ${JSON.stringify(m)}`);
     console.log("  ✅ wrong value flagged (fallback does not mask it)");
   }

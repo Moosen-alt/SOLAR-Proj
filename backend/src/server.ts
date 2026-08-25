@@ -201,8 +201,15 @@ app.use(
       : undefined,
   ),
 );
+// Behind the documented same-host reverse proxy (Caddy), req.ip must reflect the
+// CLIENT (login brute-force lockout keys on it), not 127.0.0.1 — otherwise one
+// attacker locks every user out and the lock never actually keys on the attacker.
+app.set("trust proxy", process.env.TRUST_PROXY ?? "loopback");
 app.use(requestLogger);
-app.use(express.json({ limit: "80mb" }));
+// Global JSON cap kept modest — an 80MB parser mounted before the auth gate let an
+// unauthenticated request burn memory/CPU on this box. The one legitimately large
+// JSON body (the pasted-mbox import) gets its own per-route parser below.
+app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: false, limit: "1mb" }));
 
 // Lightweight security headers (no extra deps). Safe for a same-origin app.
@@ -1009,7 +1016,7 @@ app.post("/api/email-tracker/run", asyncHandler(async (req, res) => {
   res.json(await runEmailTracker(db, { ...(req.body || {}), orgId: requestOrg(db, req).id }));
 }));
 
-app.post("/api/knowledge-base/import-mbox", asyncHandler(async (req, res) => {
+app.post("/api/knowledge-base/import-mbox", express.json({ limit: process.env.MBOX_JSON_LIMIT || "200mb" }), asyncHandler(async (req, res) => {
   const mboxText = String(req.body?.mboxText || "");
   if (!mboxText.trim()) throw new HttpError(400, "mboxText is required.");
   res.status(201).json(
@@ -2035,8 +2042,17 @@ app.patch("/api/ahj-templates/:id/verify", (req, res) => {
 
 // Fully delete a stored template (blob + map).
 app.delete("/api/ahj-templates/:id", (req, res) => {
-  const row = db.get<{ id: string }>("SELECT id FROM ahj_form_templates WHERE id = ?", [String(req.params.id)]);
+  // SHARED cross-tenant knowledge: one delete removes the template (and any
+  // human-verified field map) for EVERY tenant. Admin-only, and a verified map
+  // needs the explicit ?force=1 acknowledgement — verified mapping work is the
+  // product's asset and must never vanish on a casual click.
+  requireAdmin(req);
+  const row = db.get<{ id: string; field_map?: string }>("SELECT id, field_map FROM ahj_form_templates WHERE id = ?", [String(req.params.id)]);
   if (!row) throw new HttpError(404, "Template not found.");
+  const map = parseJson<Record<string, unknown>>(String(row.field_map || "{}"), {});
+  if (map.verified === true && String(req.query.force || "") !== "1") {
+    throw new HttpError(409, "This template's field map is HUMAN-VERIFIED. Deleting it destroys that work for every tenant — retry with ?force=1 if you really mean it.");
+  }
   db.run("DELETE FROM ahj_form_templates WHERE id = ?", [String(req.params.id)]);
   res.json({ deleted: true });
 });
@@ -2569,14 +2585,20 @@ app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
   if (httpError.status >= 500) logErrorBlock("http", err, { route: `${req.method} ${req.path}`, status: httpError.status });
   else logger.warn("http", `${httpError.status} ${req.method} ${req.path}`, { reason: httpError.message });
   res.status(httpError.status).json({
-    error: httpError.message,
+    error: httpError.status >= 500 ? "Internal error. Details are in the server log." : httpError.message,
     details: httpError.details,
   });
 });
 
 // Crash visibility — never die silently.
 process.on("unhandledRejection", (reason) => logErrorBlock("unhandledRejection", reason));
-process.on("uncaughtException", (err) => logErrorBlock("uncaughtException", err));
+process.on("uncaughtException", (err) => {
+  // Log, then EXIT. Swallowing left a zombie process in an unknown state serving
+  // real filings; the systemd unit (Restart=always, see SERVER_SETUP) restarts a
+  // clean one, and migrations/orphan recovery handle the rest on boot.
+  logErrorBlock("uncaughtException", err);
+  setTimeout(() => process.exit(1), 250).unref();
+});
 
 const server = app.listen(port, () => {
   const diag = collectDiagnostics(db, { version: APP_VERSION, port, dbPath });

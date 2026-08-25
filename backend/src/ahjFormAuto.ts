@@ -102,6 +102,11 @@ export const AVAILABLE_FIELD_SOURCES: string[] = [
   "computed.systemSize",
   "computed.systemSizeDcKw",
   "computed.descriptionOfWork",
+  // Print-name lines under signatures. These resolvers existed in the fill path
+  // but were never OFFERED to the mapper, so every "Print name" blank on every
+  // auto-mapped form stayed empty (caught on the live Coos Bay building permit).
+  'computed.applicantSignerName  (typed name of the applicant/agent signer — for "Print name" lines under the authorized signature)',
+  'computed.electricianSignerName  (typed name of the electrician signer — for "Print name" next to the electrician signature)',
   ...STRUCTURAL_VALUE_SOURCES,
   ...EXISTING_SYSTEM_SOURCES,
   ...PRESCRIPTIVE_SOURCES,
