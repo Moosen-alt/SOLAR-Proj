@@ -164,6 +164,18 @@ Still open, in order:
    custom searchable combobox in some templates (see `fillCustomCombobox`);
    (b) section extraction returning "" on their DOM — check `p00N-plan.json`
    `fieldsSeen[].section` in the bundle.
+   **A read-only probe now answers (a) and (b) without a stage run**:
+   `npm run portal:probe:specs` (`portal-bot/src/liveSpecsProbe.ts`) logs in,
+   opens an EXISTING draft, and dumps every equipment control's label + section
+   + element shape, ending in a verdict line (`bareLabels` / `emptySections` /
+   `customComboboxes` / `nativeSelects`). It fills and saves nothing, clicks
+   nothing submit-shaped, and exits 2 on MFA/CAPTCHA. Credentials come from
+   `PC_URL` / `PC_EMAIL` / `PC_PASS` in the environment.
+   **Run it from the operator's normal machine, never CI or a cloud box** —
+   headed, non-datacenter IP, per `docs/research/GOLIVE_OPS_LEGAL_2026-07.md`;
+   a headless fresh login from an unfamiliar datacenter IP is exactly the
+   pattern PowerClerk's bot management flags, and the account at risk is the
+   operator's real one.
 2. **Stripe checkout** for the payment screen (operator said "later"): a
    Payment Link per quote; `submission_payments.payment_reference` is ready.
 3. **HOA list import** (`HOA_List.xlsx`) — needs an `hoa_library` table + an

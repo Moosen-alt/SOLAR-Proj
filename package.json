@@ -18,6 +18,7 @@
     "portal:test:net": "tsx portal-bot/src/networkRecorder.test.ts",
     "portal:test:learn": "tsx portal-bot/src/adapters/autoLearnAdapter.test.ts",
     "portal:test:dom": "tsx portal-bot/src/adapters/autoLearnDom.smoke.ts",
+    "portal:probe:specs": "tsx portal-bot/src/liveSpecsProbe.ts",
     "portal:test:specs": "tsx portal-bot/src/adapters/powerClerkSpecs.dom.smoke.ts",
     "portal:test:live": "tsx portal-bot/src/adapters/autoLearnLive.smoke.ts",
     "portal:test:stress": "tsx portal-bot/src/adapters/powerClerk.stress.test.ts && tsx portal-bot/src/adapters/oregonEPermitting.stress.smoke.ts",
