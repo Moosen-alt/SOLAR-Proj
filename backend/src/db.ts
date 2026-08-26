@@ -876,6 +876,12 @@ function migrate(db: AppDb): void {
   // (Migrated here — after the table exists — so a fresh DB doesn't fail.)
   addColumnIfMissing(db, "portal_recipes", "login_step_json", "TEXT");
 
+  // Snapshot of the last COMPLETE recording's steps, taken when a re-record starts.
+  // An abandoned re-record used to leave the portal with no working recipe at all
+  // (steps wiped before anything new was captured); the stale-recording sweep now
+  // restores this snapshot instead of stranding the portal at needs_rerecord.
+  addColumnIfMissing(db, "portal_recipes", "prev_steps_json", "TEXT");
+
   // Hybrid auto-submit opt-in (per recorded portal). 0 = guided-manual (default):
   // automation stops at the final review for a human submit. 1 = trusted: the operator
   // has explicitly enabled one-click approve-submit for this portal, and the recipe was

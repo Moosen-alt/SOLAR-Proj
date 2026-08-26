@@ -178,7 +178,13 @@ export function getAutopilotState(db: AppDb, projectId: string): AutopilotState 
   const project = detail.project;
   const ts = project.updatedAt || nowIso();
   const run = latestPortalRun(db, projectId);
-  const pauseReason = run && typeof run.pause_reason === "string" && run.pause_reason ? String(run.pause_reason) : null;
+  // A pause is only CURRENT while the run itself still sits at paused_for_human AND the
+  // project hasn't since moved past it (manual track submit / captureConfirmation update
+  // the project, not the run row) — otherwise the panel pins "paused for MFA" forever
+  // after the moment has passed, on the strength of a historical pause_reason.
+  const projectMovedOn = ["submitted", "ready_for_issue", "issued", "nem_approved", "handoff_ready", "awaiting_human_submit"].includes(project.status);
+  const pauseReason = run && String(run.status) === "paused_for_human" && !projectMovedOn
+    && typeof run.pause_reason === "string" && run.pause_reason ? String(run.pause_reason) : null;
   const noReview = { reviewMismatches: [] as ReviewMismatch[], reviewAccurate: null as boolean | null, gapFillMissing: [] as string[] };
 
   // A run that paused mid-fill for MFA/CAPTCHA needs a human at the browser.

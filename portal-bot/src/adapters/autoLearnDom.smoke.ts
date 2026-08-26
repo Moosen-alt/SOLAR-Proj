@@ -142,11 +142,21 @@ check("human select captured with its label + value", () => {
   assert.ok(sel, `captured: ${JSON.stringify(captured)}`);
   assert.equal(sel!.value, "s7");
 });
-check("sensitive field captured WITHOUT its typed value", () => {
-  const fill = captured.find((c) => c.action === "fill");
-  assert.ok(fill, "fill captured");
-  assert.equal(fill!.sensitive, true, "flagged sensitive");
-  assert.ok(!JSON.stringify(captured).includes("ACCT-12345"), "typed account number never stored");
+check("sensitive field flagged for the merge-time strip, value confined to its own step", () => {
+  // Contract: the typed secret rides IN MEMORY on the sensitive step only, so the
+  // backend merge can bind it to a project field key — appendHumanPatchSteps then
+  // strips the literal unconditionally before anything is persisted (covered by
+  // backend/test/humanPatch.test.ts). Capture-side, what must hold is: the step is
+  // flagged sensitive (the strip trigger), its note says so, and the secret leaks
+  // into NO other captured step.
+  const fills = captured.filter((c) => c.action === "fill");
+  assert.ok(fills.length >= 1, "fill captured");
+  for (const fill of fills) {
+    assert.equal(fill.sensitive, true, "flagged sensitive");
+    assert.ok((fill.note || "").includes("SENSITIVE"), "note marks the strip-at-merge contract");
+  }
+  const nonSensitive = captured.filter((c) => c.sensitive !== true);
+  assert.ok(!JSON.stringify(nonSensitive).includes("ACCT-12345"), "secret never rides an unflagged step");
 });
 check("navigation click captured; submit/pay clicks NEVER captured as replayable steps", () => {
   const clicks = captured.filter((c) => c.action === "click" && (c.note || "") !== "__human_submit_observed__");

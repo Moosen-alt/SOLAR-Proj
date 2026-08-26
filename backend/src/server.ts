@@ -40,7 +40,7 @@ import { buildUtilityPackage } from "./docSplitter";
 import { buildSubmittalEmailDraft } from "./applicationDocs";
 import type { EvidenceTopic } from "./projectEvidence";
 import { createClient, deleteClient, getClient, listClients, updateClient } from "./clients";
-import { enqueueJob, getJob, listJobs, processNextJob, startJobWorker } from "./jobQueue";
+import { enqueueJob, getJob, inFlightJobCount, listJobs, processNextJob, startJobWorker } from "./jobQueue";
 import { createUser, getUserWorkload, listUsers, updateUser, assignProjectToUser } from "./users";
 import { listBackups, runBackup, startBackupScheduler } from "./backup";
 import { startMonitorScheduler } from "./scheduler";
@@ -1257,7 +1257,9 @@ app.post("/api/corrections/:id/apply", (req, res) => {
 // Close a correction (first writer of closed_at/resubmitted). `resubmitted: true`
 // records that the corrected package was resubmitted, completing cycle-time KPIs.
 app.post("/api/corrections/:id/resolve", (req, res) => {
-  res.json(resolveCorrection(db, String(req.params.id), { resubmitted: Boolean(req.body?.resubmitted) }));
+  const correction = resolveCorrection(db, String(req.params.id), { resubmitted: Boolean(req.body?.resubmitted) });
+  maybeResumeAutopilot(db, correction.projectId); // closing the last correction makes the project re-stageable
+  res.json(correction);
 });
 
 app.post("/api/projects/:id/permit-targets", (req, res) => {
@@ -2619,11 +2621,33 @@ const server = app.listen(port, () => {
   primeCecCache(db);
 });
 
-// Graceful shutdown so the DB/WAL flushes cleanly on deploy restarts.
+// Graceful shutdown so the DB/WAL flushes cleanly on deploy restarts — and so a
+// deploy does NOT kill a live portal browser mid-staging: while this process has
+// jobs in flight (a staging/learn run driving a real portal), exit is held until
+// they finish or the drain window elapses. The window is bounded so a hung run
+// can't wedge a deploy forever (systemd's TimeoutStopSec remains the backstop).
+const SHUTDOWN_DRAIN_MS = Number(process.env.SHUTDOWN_DRAIN_MS ?? 5 * 60_000);
+let shuttingDown = false;
 for (const sig of ["SIGINT", "SIGTERM"] as const) {
   process.on(sig, () => {
-    logger.info("server", `${sig} received — shutting down`);
-    server.close(() => process.exit(0));
-    setTimeout(() => process.exit(0), 5000).unref();
+    if (shuttingDown) { process.exit(0); } // second signal = operator insists
+    shuttingDown = true;
+    server.close(() => { /* stop accepting new work; exit is decided below */ });
+    const deadline = Date.now() + SHUTDOWN_DRAIN_MS;
+    const inFlight = inFlightJobCount();
+    if (inFlight > 0) {
+      logger.info("server", `${sig} received — draining ${inFlight} in-flight job(s) before exit (up to ${Math.round(SHUTDOWN_DRAIN_MS / 1000)}s; send the signal again to force)`);
+    } else {
+      logger.info("server", `${sig} received — shutting down`);
+    }
+    const poll = setInterval(() => {
+      if (inFlightJobCount() === 0 || Date.now() >= deadline) {
+        if (inFlightJobCount() > 0) logger.warn("server", "drain window elapsed with jobs still in flight — exiting; orphan recovery will escalate them on next boot");
+        clearInterval(poll);
+        process.exit(0);
+      }
+    }, 500);
+    poll.unref();
+    // With nothing in flight this exits on the first poll tick (~500ms).
   });
 }

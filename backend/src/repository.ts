@@ -4408,6 +4408,22 @@ export function resolveCorrection(
     [ts, projectId],
   );
   addAuditLog(db, projectId, "human", "correction", "correction.resolved", { correctionId, resubmitted: !!opts.resubmitted });
+  // Closing the LAST open correction un-strands the project: correction_received /
+  // correction_triaged are not pre-stage statuses, so autopilot (and its execution-time
+  // guard) refuses to re-stage from them — without this transition the project would sit
+  // in the correction state forever with no path back to staging. Move it back to
+  // "parsed"; Segment A re-runs QC and every gate from there.
+  const projRow = db.get<Row>("SELECT status FROM projects WHERE id = ?", [projectId]);
+  const inCorrectionState = projRow && ["correction_received", "correction_triaged"].includes(text(projRow.status));
+  const stillOpen = db.get<Row>(
+    "SELECT id FROM corrections WHERE project_id = ? AND closed_at IS NULL LIMIT 1", [projectId],
+  );
+  if (inCorrectionState && !stillOpen) {
+    db.run("UPDATE projects SET status = 'parsed', current_stage = ?, updated_at = ? WHERE id = ?", [
+      "Correction resolved — ready to re-stage.", ts, projectId,
+    ]);
+    addAuditLog(db, projectId, "system", "correction", "correction.project_restageable", { correctionId });
+  }
   touchProjectMetrics(db, projectId);
   return mapCorrection(db.get<Row>("SELECT * FROM corrections WHERE id = ?", [correctionId])!);
 }

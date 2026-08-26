@@ -94,12 +94,20 @@ export function startPortalRecording(
   const now = nowIso();
   if (existing) {
     const nextVersion = Number(existing.version ?? 1) + 1;
+    // Snapshot the outgoing steps BEFORE wiping so an abandoned re-record can be
+    // rolled back to the last working recipe (see restoreRecipeSnapshotIfAbandoned).
+    // Only a non-empty step list overwrites the snapshot — re-recording twice in a
+    // row must not clobber a good snapshot with the empty stub of attempt one.
+    const outgoingSteps = parseJson<RecipeStep[]>(s(existing.steps_json) || "[]", []);
     db.run(
       `UPDATE portal_recipes SET status = 'recording', version = ?, steps_json = '[]',
+         prev_steps_json = CASE WHEN ? != '' THEN ? ELSE prev_steps_json END,
          portal_platform = COALESCE(NULLIF(?, ''), portal_platform),
          portal_url = COALESCE(NULLIF(?, ''), portal_url),
          updated_at = ? WHERE profile_key = ?`,
-      [nextVersion, s(input.portalPlatform), s(input.portalUrl), now, key],
+      [nextVersion,
+        outgoingSteps.length ? s(existing.steps_json) : "", outgoingSteps.length ? s(existing.steps_json) : "",
+        s(input.portalPlatform), s(input.portalUrl), now, key],
     );
     return getPortalRecipe(db, s(existing.id));
   }
@@ -111,6 +119,25 @@ export function startPortalRecording(
     [recipeId, scopeType, key, s(input.state), ahj, s(input.utility), s(input.portalPlatform), s(input.portalUrl), s(input.createdBy), now, now],
   );
   return getPortalRecipe(db, recipeId);
+}
+
+// Roll an ABANDONED re-record back to the last working recipe. Called by the
+// stale-recording sweep: if the stub still holds a pre-re-record snapshot, the
+// portal gets its proven steps back as 'complete' (the bot can replay again)
+// instead of being stranded with no recipe at 'needs_rerecord'. Returns true
+// when a snapshot was restored.
+export function restoreRecipeSnapshotIfAbandoned(db: AppDb, recipeId: string): boolean {
+  const row = db.get<Row>("SELECT * FROM portal_recipes WHERE id = ?", [recipeId]);
+  if (!row || s(row.status) !== "recording") return false;
+  const snapshot = parseJson<RecipeStep[]>(s(row.prev_steps_json) || "[]", []);
+  if (!snapshot.length) return false;
+  db.run(
+    `UPDATE portal_recipes SET steps_json = ?, status = 'complete', structure_sig = ?, prev_steps_json = NULL,
+       notes = notes || ?, updated_at = ? WHERE id = ? AND status = 'recording'`,
+    [asJson(snapshot), recipeStructureSignature(snapshot),
+      " [re-record abandoned — restored the previous working recipe]", nowIso(), recipeId],
+  );
+  return true;
 }
 
 // A stable fingerprint of a recipe's STRUCTURE — the ordered shape of its steps
@@ -146,8 +173,12 @@ export function savePortalRecipeSteps(
   getPortalRecipe(db, recipeId); // 404 if missing
   const status = options.status ?? (Array.isArray(steps) && steps.length > 0 ? "complete" : "recording");
   db.run(
-    "UPDATE portal_recipes SET steps_json = ?, status = ?, structure_sig = ?, notes = COALESCE(NULLIF(?, ''), notes), updated_at = ? WHERE id = ?",
-    [asJson(steps ?? []), status, recipeStructureSignature(steps ?? []), s(options.notes), nowIso(), recipeId],
+    // A recording that lands 'complete' supersedes the pre-re-record snapshot,
+    // so drop it; anything still mid-recording keeps the rollback available.
+    `UPDATE portal_recipes SET steps_json = ?, status = ?, structure_sig = ?,
+       prev_steps_json = CASE WHEN ? = 'complete' THEN NULL ELSE prev_steps_json END,
+       notes = COALESCE(NULLIF(?, ''), notes), updated_at = ? WHERE id = ?`,
+    [asJson(steps ?? []), status, recipeStructureSignature(steps ?? []), status, s(options.notes), nowIso(), recipeId],
   );
   return getPortalRecipe(db, recipeId);
 }
@@ -160,7 +191,7 @@ export function finishPortalRecipe(db: AppDb, recipeId: string, finishedBy?: str
   const recipe = getPortalRecipe(db, recipeId);
   if (recipe.status === "complete") return recipe;
   if (!recipe.steps.length) throw new HttpError(409, "This recording has no captured steps yet — nothing to save as a replayable recipe.");
-  db.run("UPDATE portal_recipes SET status = 'complete', notes = notes || ?, updated_at = ? WHERE id = ?", [
+  db.run("UPDATE portal_recipes SET status = 'complete', prev_steps_json = NULL, notes = notes || ?, updated_at = ? WHERE id = ?", [
     ` [verified by ${finishedBy || "operator"} — promoted from recording]`, nowIso(), recipeId,
   ]);
   return getPortalRecipe(db, recipeId);

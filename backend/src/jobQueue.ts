@@ -3,6 +3,7 @@ import { createInterface } from "node:readline";
 import type { AppDb, SqlParam } from "./db";
 import { DEFAULT_ORG_ID } from "./db";
 import { importMboxKnowledge } from "./knowledgeBase";
+import { restoreRecipeSnapshotIfAbandoned } from "./portalRecipes";
 import { runDuePermitChecks } from "./repository";
 import { scanFolder } from "./batchImport";
 import { nowIso } from "./time";
@@ -116,7 +117,10 @@ export function enqueueJob(
       options.projectId ?? null,
       ts,
       options.scheduledAt ?? null,
-      options.maxRetries ?? 3,
+      // Portal-effecting jobs are pinned to 0 retries regardless of what the caller
+      // asked for (the generic /api/jobs route would otherwise let one in with the
+      // default budget of 3, and a timer would replay a live browser run).
+      PORTAL_EFFECT_JOB_TYPES.has(jobType) ? 0 : options.maxRetries ?? 3,
       orgId,
     ],
   );
@@ -280,6 +284,19 @@ const JOB_MAX_RUNTIME_MS = Number(process.env.JOB_MAX_RUNTIME_MS ?? 30 * 60_000)
 // `running` row is correctly reclaimed.
 const inFlightJobIds = new Set<string>();
 
+// Job types whose handler drives a live portal browser. Their side effects are not
+// idempotent (a re-run can stage the same application twice), so they are pinned to
+// maxRetries 0 at enqueue — whatever the caller asked for — and the orphan watchdog
+// fails them for a human instead of re-queuing.
+const PORTAL_EFFECT_JOB_TYPES = new Set<JobType>(["prepare_submission", "auto_learn", "autopilot"]);
+
+// How many jobs THIS process is actively running right now. The shutdown handler
+// uses it to hold a deploy restart until live portal runs finish (or a bounded
+// drain window elapses) instead of killing a browser mid-staging.
+export function inFlightJobCount(): number {
+  return inFlightJobIds.size;
+}
+
 // Reclaim jobs stranded in `running`. The worker is single-process, so any job still
 // `running` either (a) was interrupted by a restart, or (b) has outlived the max
 // runtime watchdog. Either way it is dead: re-queue it for another attempt (counting
@@ -308,6 +325,18 @@ export function recoverOrphanedJobs(
   for (const row of stale) {
     const job = mapJob(row);
     const retryCount = job.retryCount + 1;
+    // A portal-effecting job is NEVER auto-rerun after an interruption: its browser
+    // may already have staged (or half-staged) a live application, and replaying it
+    // blind could file the same application twice. Fail it and put it in front of a
+    // human, whatever its retry budget says.
+    if (PORTAL_EFFECT_JOB_TYPES.has(job.jobType)) {
+      db.run(
+        "UPDATE job_queue SET status = 'failed', finished_at = ?, error = ? WHERE id = ? AND status = 'running'",
+        [now, "portal run was interrupted — not auto-rerun (staging is not idempotent portal-side); a human must check the portal and re-stage", job.id],
+      );
+      escalateJobFailure(db, job.jobType, job.projectId, "Portal run interrupted mid-flight. Check the portal for a partial application before re-staging.");
+      continue;
+    }
     if (retryCount < job.maxRetries) {
       db.run(
         "UPDATE job_queue SET status = 'pending', retry_count = ?, started_at = NULL, scheduled_at = NULL, error = ? WHERE id = ? AND status = 'running'",
@@ -340,13 +369,19 @@ export function recoverStalePortalRecordings(db: AppDb): number {
     [cutoff],
   );
   if (!stale.length) return 0;
+  let restored = 0;
   for (const row of stale) {
+    // An abandoned RE-record rolls back to the last working recipe (kept alongside
+    // when the re-record wiped the steps) — a proven replayable recipe beats any
+    // partial capture the abandoned attempt left behind. Only a portal with no
+    // snapshot (a first recording) is marked needs_rerecord.
+    if (restoreRecipeSnapshotIfAbandoned(db, String(row.id))) { restored++; continue; }
     db.run(
       "UPDATE portal_recipes SET status = 'needs_rerecord', notes = ?, updated_at = ? WHERE id = ? AND status = 'recording'",
       [`Recording was interrupted (no activity since ${String(row.updated_at)}); marked for re-record.`, nowIso(), String(row.id)],
     );
   }
-  console.log(`[job-worker] marked ${stale.length} stale portal recording(s) as needs_rerecord`);
+  console.log(`[job-worker] swept ${stale.length} stale portal recording(s): ${restored} restored to their previous recipe, ${stale.length - restored} marked needs_rerecord`);
   return stale.length;
 }
 

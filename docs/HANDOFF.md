@@ -110,19 +110,17 @@ revisiting when project volume grows.
 
 ## Production-readiness residuals (swept Aug 2026 — the fixed items are in the commit log)
 
-Confirmed findings NOT yet fixed, in priority order:
+Confirmed findings NOT yet fixed, in priority order (items fixed by the Aug 2026
+outside-in assessment — re-record snapshot/restore, portal-job double-run guard,
+correction-flow dead-end, stale pause pinning, SIGTERM drain — are recorded in
+`docs/ASSESSMENT_2026-08.md`):
 
-1. **Recording wipes a complete recipe's steps before anything new is captured**
-   (`portalRecipes.ts:98`) — an abandoned re-record leaves the portal with no
-   working recipe. Fix: snapshot the old steps and restore on abandonment.
-2. **deleteProject hard-deletes the project's audit trail** (`audit_logs` rows in
+1. **deleteProject hard-deletes the project's audit trail** (`audit_logs` rows in
    the cascade). Consider `UPDATE audit_logs SET project_id = NULL` like
    permit_fee_history so approvals/submit records survive the project.
-3. **parser.html / form-filler.html load CDN scripts with no SRI** on pages that
+2. **parser.html / form-filler.html load CDN scripts with no SRI** on pages that
    handle homeowner PII. Vendor them like `frontend/vendor/lucide.min.js`.
-4. **SIGTERM force-exits after 5s mid portal run** — a deploy restart can kill a
-   browser mid-staging. Consider draining in-flight portal runs first.
-5. **Server binds all interfaces with no HOST env** — fine behind the documented
+3. **Server binds all interfaces with no HOST env** — fine behind the documented
    firewall+Caddy, but add `HOST=127.0.0.1` support for proxy-only deploys.
 
 ## Audited autonomy/intelligence backlog (from the 4-auditor review, ranked — full plan in the session workflow output)

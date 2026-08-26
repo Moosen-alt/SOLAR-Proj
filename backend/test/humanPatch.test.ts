@@ -106,6 +106,24 @@ run("submit/pay CLICKS are dropped at merge (defense in depth)", () => {
   );
 });
 
+run("SENSITIVE literals never persist — bound on match, stripped regardless", () => {
+  // The capture ships the typed secret in-memory only (payloadToStep keeps it so the
+  // merge can bind it); THIS is the boundary where it must die. Two cases: a literal
+  // matching project data binds to the field key; one matching nothing still strips.
+  const recipe = mkRecipe(baseSteps);
+  appendHumanPatchSteps(db, recipe.id, [
+    { action: "fill", selector: { label: "Account Number" }, value: "ACCT-9876543", sensitive: true, note: "human-patch: Account Number — SENSITIVE, bound at replay (no value stored)" },
+    { action: "fill", selector: { label: "Meter Number" }, value: "MTR-UNMATCHED-1", sensitive: true, note: "human-patch: Meter Number — SENSITIVE, bound at replay (no value stored)" },
+  ], { accountNumber: "ACCT-9876543" });
+  const raw = String(db.get<{ steps_json?: string }>("SELECT steps_json FROM portal_recipes WHERE id = ?", [recipe.id])?.steps_json);
+  assert.ok(!raw.includes("ACCT-9876543"), "matched secret must not land in steps_json");
+  assert.ok(!raw.includes("MTR-UNMATCHED-1"), "UNMATCHED secret must not land in steps_json either");
+  const updated = getPortalRecipe(db, recipe.id);
+  const acct = updated.steps.find((s) => (s.note || "").includes("Account Number"))!;
+  assert.equal(acct.field, "accountNumber", "matched secret bound to its project field key");
+  assert.equal(acct.value, undefined, "no literal on the persisted step");
+});
+
 run("finishPortalRecipe promotes recording → complete; empty recording refuses", () => {
   const recipe = mkRecipe(baseSteps);
   const done = finishPortalRecipe(db, recipe.id, "test");
