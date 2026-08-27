@@ -34,6 +34,7 @@ import { getProjectDetail, rerunQc, captureConfirmation } from "./repository";
 import { parseJson } from "./json";
 import { buildReviewerReportFor } from "./repository";
 import type { ProjectRecord, SubmittalTrackType } from "../../shared/src/types";
+import { requiredTracks } from "./submittalTracks";
 
 type Row = Record<string, SqlParam>;
 
@@ -83,6 +84,32 @@ const PRE_STAGE_STATUSES = new Set([
   "ready_to_stage",
   "submit_staging",
 ]);
+
+// A track counts as STAGED once it has a portal run that reached the portal (awaiting a
+// human submit, already submitted, or paused mid-flow for a human). Staging is NOT
+// idempotent portal-side — a re-run creates a duplicate live application draft — so this
+// is what stops autopilot re-staging work that is already sitting in the portal.
+// Pure DB read; exported for tests.
+export function trackAlreadyStaged(db: AppDb, projectId: string, track: SubmittalTrackType): boolean {
+  const row = db.get<Row>(
+    `SELECT id FROM portal_runs
+      WHERE project_id = ? AND permit_type = ?
+        AND status IN ('awaiting_human_submit', 'submitted', 'paused_for_human')
+      LIMIT 1`,
+    [projectId, track],
+  );
+  return Boolean(row);
+}
+
+// Which tracks THIS autopilot invocation should stage. An explicit track stages just
+// that one; with no track we stage every track the project actually requires (NEM +
+// the AHJ's permit structure). Before this, a track-less run made ONE untracked stage:
+// the second permit discipline never filed at all, and the run was recorded against
+// permit_type 'permit' so it showed on no track.
+export function tracksToStage(db: AppDb, project: ProjectRecord, requested?: SubmittalTrackType): SubmittalTrackType[] {
+  const wanted = requested ? [requested] : requiredTracks(project);
+  return wanted.filter((t) => !trackAlreadyStaged(db, project.id, t));
+}
 
 // Reviewer-gate blockers for a project, in the same shape the dashboard already
 // renders. Mirrors the check inside prepareSubmission so the gate is consistent.
@@ -322,60 +349,85 @@ export async function runAutopilotSegmentA(
   track?: SubmittalTrackType,
 ): Promise<{ blocked: boolean; blockers: AutopilotBlocker[]; message: string; state: AutopilotState }> {
   const t0 = performance.now();
-  // EXECUTION-TIME GUARD: a queued autopilot job may be stale by the time it
-  // runs (another job/operator already staged the project). Staging is NOT
-  // idempotent on the portal side — a re-run would create a duplicate live
-  // application draft. Re-check status here, not just at enqueue time.
-  const currentRow = db.get<Row>("SELECT status FROM projects WHERE id = ?", [projectId]);
-  const currentStatus = currentRow ? String(currentRow.status) : "";
-  if (!PRE_STAGE_STATUSES.has(currentStatus)) {
-    const msg = `Project status is '${currentStatus || "unknown"}' — already staged or past the gate, so autopilot will not re-stage it. Use the explicit Stage action if a re-stage is intended.`;
-    logger.info("autopilot", "Segment A skipped — project is not pre-stage", { project: projectId, status: currentStatus });
+  // EXECUTION-TIME GUARD, PER TRACK. A queued autopilot job may be stale by the time it
+  // runs, and staging is NOT idempotent portal-side — a re-run creates a duplicate live
+  // application draft. This used to be a PROJECT-status check, which also meant that once
+  // the first track staged, the project left the pre-stage statuses and every remaining
+  // track was refused: a separate-permit AHJ filed its structural permit and never its
+  // electrical one. The check is now "has THIS track already reached the portal", which
+  // keeps the anti-duplicate guarantee while letting the other tracks run.
+  const currentStatus = String(db.get<Row>("SELECT status FROM projects WHERE id = ?", [projectId])?.status ?? "");
+  const pendingTracks = tracksToStage(db, getProjectDetail(db, projectId).project, track);
+  if (pendingTracks.length === 0) {
+    const msg = track
+      ? `The ${track} track is already staged to the portal, so autopilot will not re-stage it. Use the explicit Stage action if a re-stage is intended.`
+      : `Every required track is already staged to the portal (project status '${currentStatus || "unknown"}'), so autopilot has nothing to stage. Use the explicit Stage action if a re-stage is intended.`;
+    logger.info("autopilot", "Segment A skipped — nothing left to stage", { project: projectId, status: currentStatus, track: track ?? "all" });
     return { blocked: true, blockers: [{ code: "not_pre_stage", detail: msg }], message: msg, state: getAutopilotState(db, projectId) };
   }
-  logger.info("autopilot", "Segment A started — QC → build → reviewer gate → stage", { project: projectId, track: track ?? "all" });
-  // Re-run QC so the project's gate state is fresh before staging.
+  logger.info("autopilot", "Segment A started — QC → build → reviewer gate → stage", { project: projectId, tracks: pendingTracks.join(", ") });
+  // Re-run QC ONCE so the project's gate state is fresh before staging (it is
+  // project-wide, not per track).
   rerunQc(db, projectId);
-  addAuditLog(db, projectId, "system", "autopilot", "autopilot.segment_a_started", { track: track ?? "all" });
+  addAuditLog(db, projectId, "system", "autopilot", "autopilot.segment_a_started", { tracks: pendingTracks });
 
   // prepareSubmission is imported lazily to avoid a module cycle (repository imports
   // are heavy and this module is imported by the job worker).
   const { prepareSubmission } = await import("./repository");
-  try {
-    await prepareSubmission(db, projectId, track, /* autoSubmit */ false);
-  } catch (err) {
-    if (err instanceof HttpError && err.status === 409) {
-      const blockers = blockersFromHttpError(err);
-      addAuditLog(db, projectId, "system", "autopilot", "autopilot.blocked", { blockers });
-      logger.warn("autopilot", "Segment A blocked at a gate", { project: projectId, ms: `${Math.round(performance.now() - t0)}ms`, blockers: blockers.length, reasons: blockers.map((b) => b.code).slice(0, 5) });
-      return { blocked: true, blockers, message: err.message, state: getAutopilotState(db, projectId) };
+  // Stage each required track IN SEQUENCE. Sequential, never parallel: each stage drives
+  // a live browser on the same per-client persistent profile, and two Chromium instances
+  // on one profile directory collide.
+  const staged: SubmittalTrackType[] = [];
+  const trackBlockers: AutopilotBlocker[] = [];
+  for (const t of pendingTracks) {
+    try {
+      await prepareSubmission(db, projectId, t, /* autoSubmit */ false);
+    } catch (err) {
+      if (err instanceof HttpError && err.status === 409) {
+        const blockers = blockersFromHttpError(err).map((b) => ({ ...b, detail: `${t}: ${b.detail}` }));
+        addAuditLog(db, projectId, "system", "autopilot", "autopilot.blocked", { track: t, blockers });
+        logger.warn("autopilot", "Segment A blocked at a gate", { project: projectId, track: t, ms: `${Math.round(performance.now() - t0)}ms`, blockers: blockers.length, reasons: blockers.map((b) => b.code).slice(0, 5) });
+        // A project-wide gate (QC, reviewer, documents) blocks every remaining track
+        // too — stop rather than re-running the same refusal per track.
+        return { blocked: true, blockers: [...trackBlockers, ...blockers], message: err.message, state: getAutopilotState(db, projectId) };
+      }
+      // The per-submission payment gate throws 402 (assertSubmissionPaid runs first
+      // in prepareSubmission). That's a GATE, not a failure — surface it as blocked
+      // with a structured blocker so mark-paid/waive can auto-resume the run.
+      if (err instanceof HttpError && err.status === 402) {
+        const blockers: AutopilotBlocker[] = [{ code: "payment_required", detail: err.message }];
+        addAuditLog(db, projectId, "system", "autopilot", "autopilot.blocked", { track: t, blockers });
+        logger.warn("autopilot", "Segment A blocked on the payment gate", { project: projectId, track: t, ms: `${Math.round(performance.now() - t0)}ms` });
+        return { blocked: true, blockers: [...trackBlockers, ...blockers], message: err.message, state: getAutopilotState(db, projectId) };
+      }
+      logger.error("autopilot", "Segment A failed", { project: projectId, track: t, ms: `${Math.round(performance.now() - t0)}ms`, err: err instanceof Error ? err.message : String(err) });
+      throw err;
     }
-    // The per-submission payment gate throws 402 (assertSubmissionPaid runs first
-    // in prepareSubmission). That's a GATE, not a failure — surface it as blocked
-    // with a structured blocker so mark-paid/waive can auto-resume the run.
-    if (err instanceof HttpError && err.status === 402) {
-      const blockers: AutopilotBlocker[] = [{ code: "payment_required", detail: err.message }];
-      addAuditLog(db, projectId, "system", "autopilot", "autopilot.blocked", { blockers });
-      logger.warn("autopilot", "Segment A blocked on the payment gate", { project: projectId, ms: `${Math.round(performance.now() - t0)}ms` });
-      return { blocked: true, blockers, message: err.message, state: getAutopilotState(db, projectId) };
+    // prepareSubmission resolved — but that only means the DISPATCH ran to completion.
+    // The stage itself may have failed or paused; the portal_runs row it just wrote is
+    // the authoritative outcome. Report it honestly instead of logging "complete" for a
+    // run that never reached the portal's review screen.
+    const stageOutcome = segmentAOutcomeFromRun(latestPortalRun(db, projectId, t));
+    if (stageOutcome) {
+      // One track failing does not invalidate the others — record it and keep going, so a
+      // structural permit that staged is not thrown away because the electrical one broke.
+      trackBlockers.push({ ...stageOutcome, detail: `${t}: ${stageOutcome.detail}` });
+      addAuditLog(db, projectId, "system", "autopilot", "autopilot.blocked", { track: t, blockers: [stageOutcome] });
+      logger.warn("autopilot", "Segment A stage did not complete — the portal run reports it", {
+        project: projectId, track: t, ms: `${Math.round(performance.now() - t0)}ms`, code: stageOutcome.code,
+      });
+      continue;
     }
-    logger.error("autopilot", "Segment A failed", { project: projectId, ms: `${Math.round(performance.now() - t0)}ms`, err: err instanceof Error ? err.message : String(err) });
-    throw err;
+    staged.push(t);
   }
-  // prepareSubmission resolved — but that only means the DISPATCH ran to completion.
-  // The stage itself may have failed or paused; the portal_runs row it just wrote is
-  // the authoritative outcome. Report it honestly instead of logging "complete" for a
-  // run that never reached the portal's review screen.
-  const stageOutcome = segmentAOutcomeFromRun(latestPortalRun(db, projectId, track));
-  if (stageOutcome) {
-    addAuditLog(db, projectId, "system", "autopilot", "autopilot.blocked", { blockers: [stageOutcome] });
-    logger.warn("autopilot", "Segment A stage did not complete — the portal run reports it", {
-      project: projectId, ms: `${Math.round(performance.now() - t0)}ms`, code: stageOutcome.code,
-    });
-    return { blocked: true, blockers: [stageOutcome], message: stageOutcome.detail, state: getAutopilotState(db, projectId) };
+  if (trackBlockers.length) {
+    const msg = staged.length
+      ? `Staged ${staged.join(", ")} to portal review. ${trackBlockers.length} track(s) did not: ${trackBlockers.map((b) => b.detail).join("; ")}`
+      : trackBlockers.map((b) => b.detail).join("; ");
+    return { blocked: true, blockers: trackBlockers, message: msg, state: getAutopilotState(db, projectId) };
   }
-  logger.info("autopilot", "Segment A complete — staged to portal review, awaiting human approval", { project: projectId, ms: `${Math.round(performance.now() - t0)}ms` });
-  return { blocked: false, blockers: [], message: "Staged to portal review; awaiting human approval.", state: getAutopilotState(db, projectId) };
+  logger.info("autopilot", "Segment A complete — staged to portal review, awaiting human approval", { project: projectId, tracks: staged.join(", "), ms: `${Math.round(performance.now() - t0)}ms` });
+  return { blocked: false, blockers: [], message: `Staged ${staged.join(", ")} to portal review; awaiting human approval.`, state: getAutopilotState(db, projectId) };
 }
 
 // SEGMENT B — the human-approval action. Authorizes and audit-logs WHO approved

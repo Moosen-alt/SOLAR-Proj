@@ -136,7 +136,18 @@ process.env.AUTOPILOT_AUTO_START = "0"; // deterministic tests — no background
 
   // 6. HUMAN GATE → Segment B. Simulated mode submits autonomously via the mock so the
   // full approval loop is asserted end-to-end.
-  const approved = await runAutopilotApproval(db, projectId, { approverName: "Rehearsal Approver", approverUserId: null });
+  // A project files SEVERAL applications (the NEM track plus the AHJ's permit tracks), and
+  // Segment A now stages every one of them. Approving submits ONE staged run, so the gate
+  // legitimately stays open for the rest — approve until none are left awaiting.
+  let approved = await runAutopilotApproval(db, projectId, { approverName: "Rehearsal Approver", approverUserId: null });
+  for (let i = 0; i < 5; i++) {
+    const remaining = db.get<{ id: string }>(
+      "SELECT id FROM portal_runs WHERE project_id = ? AND status = 'awaiting_human_submit' LIMIT 1",
+      [projectId],
+    );
+    if (!remaining) break;
+    approved = await runAutopilotApproval(db, projectId, { approverName: "Rehearsal Approver", approverUserId: null });
+  }
   const final = getProjectDetail(db, projectId);
   const submitted = approved.phase === "submitted";
   assert.equal(approved.phase, "submitted", `expected submitted after approval, got ${approved.phase}`);

@@ -102,8 +102,53 @@ run("a paused_for_human run is NEVER auto-resumed (no second browser at the chal
   assert.equal(autopilotJobs("p-pause"), 1, "no new job for a paused portal stage");
 });
 
+
+// ── Segment A stages EVERY required track ───────────────────────────────────────────
+// The pre-stage guard used to be project-wide: once the first track staged, the project
+// left the pre-stage statuses and every remaining track was refused, so a separate-permit
+// AHJ filed its structural permit and never its electrical one.
+const { tracksToStage, trackAlreadyStaged } = await import("../src/autopilot");
+
+const seedRun = (pid: string, track: string, status: string) => {
+  db.run(
+    `INSERT INTO portal_runs (id, project_id, run_type, status, started_at, human_action_required, permit_type)
+     VALUES (?, ?, 'prepare_submit', ?, ?, 1, ?)`,
+    [`run-${pid}-${track}-${status}`, pid, status, now, track],
+  );
+};
+const proj = (pid: string) => ({ id: pid, ahj: "City of Coos Bay", state: "OR", utility: "Pacific Power" } as never);
+
+db.run("INSERT INTO projects (id, status, parser_json, created_at, updated_at) VALUES ('p-tracks', 'ready_to_stage', '{}', ?, ?)", [now, now]);
+
+run("an explicit track is staged on its own", () => {
+  assert.deepEqual(tracksToStage(db, proj("p-tracks"), "electrical" as never), ["electrical"]);
+});
+
+run("a staged track is skipped; the OTHER discipline still runs", () => {
+  seedRun("p-tracks", "building", "awaiting_human_submit");
+  assert.equal(trackAlreadyStaged(db, "p-tracks", "building" as never), true);
+  assert.equal(trackAlreadyStaged(db, "p-tracks", "electrical" as never), false);
+  assert.deepEqual(tracksToStage(db, proj("p-tracks"), "building" as never), [], "building will not be re-staged");
+  assert.deepEqual(tracksToStage(db, proj("p-tracks"), "electrical" as never), ["electrical"], "electrical still runs");
+});
+
+run("a paused or submitted run also counts as staged (no duplicate drafts)", () => {
+  db.run("INSERT INTO projects (id, status, parser_json, created_at, updated_at) VALUES ('p-paused', 'ready_to_stage', '{}', ?, ?)", [now, now]);
+  seedRun("p-paused", "electrical", "paused_for_human");
+  assert.equal(trackAlreadyStaged(db, "p-paused", "electrical" as never), true);
+  db.run("INSERT INTO projects (id, status, parser_json, created_at, updated_at) VALUES ('p-sub', 'ready_to_stage', '{}', ?, ?)", [now, now]);
+  seedRun("p-sub", "nem", "submitted");
+  assert.equal(trackAlreadyStaged(db, "p-sub", "nem" as never), true);
+});
+
+run("a FAILED run does not count as staged — that track is retried", () => {
+  db.run("INSERT INTO projects (id, status, parser_json, created_at, updated_at) VALUES ('p-failed', 'ready_to_stage', '{}', ?, ?)", [now, now]);
+  seedRun("p-failed", "electrical", "failed");
+  assert.equal(trackAlreadyStaged(db, "p-failed", "electrical" as never), false);
+});
+
 // Best-effort teardown: the instant-kicked worker may still hold the handle briefly.
-try { db.close(); } catch { /* worker mid-claim - exit below ends it */ }
+try { db.close(); } catch { /* worker mid-claim - the hard exit below ends it */ }
 try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* leave to OS */ }
 
 if (failures) {
