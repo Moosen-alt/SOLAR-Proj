@@ -35,6 +35,18 @@ import { armHumanCaptureOnPage } from "../humanCapture";
 // The contract the backend depends on (must match exactly).
 // ---------------------------------------------------------------------------
 
+/** One portal contact: who is filing (applicant) or who owns the site (site contact). */
+export interface ContactIdentity {
+  firstName?: string;
+  lastName?: string;
+  email?: string;
+  phone?: string;
+  street?: string;
+  city?: string;
+  state?: string;
+  zip?: string;
+}
+
 export interface ExtractedField {
   /** A stable selector for this field (prefer label/role+name/name, then css #id). */
   selector: RecipeSelector;
@@ -836,6 +848,10 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   private policyProfile: "residential_nem" | "none";
   private equipment: Record<string, string>;
   private certifiedAliases: Record<string, string[]>;
+  private contactIdentity: ContactIdentity = {};
+  private siteContactIdentity: ContactIdentity = {};
+  // Attach keys used this RUN (pathname::slotLabel::file) - see the duplicate-row guard.
+  private attachedKeys = new Set<string>();
   // Equipment fields whose select verification failed for EVERY candidate this
   // run — retrying them each rescan pass just burns waitForOptionReady caps.
   private equipmentFillFailed = new Set<string>();
@@ -867,6 +883,17 @@ export class AutoLearnAdapter extends BasePortalAdapter {
        *  cec_equipment sync) — appended AFTER the curated static alias table;
        *  empty map = byte-identical behavior. */
       certifiedAliases?: Record<string, string[]>;
+      /** Contractor contact identity for the deterministic ACA "Add New" contact
+       *  pass (firstName/lastName/email/phone). The operator's account carries many
+       *  pre-existing contacts, so "Add New" with the filing contractor's own info is
+       *  preferred over selecting one. Empty = the pass is skipped (planner handles it). */
+      /** Contact identities for the deterministic ACA "Add New" pass, IN SECTION ORDER
+       *  (ACA renders Applicant first, then Site Contact). The applicant is the FILING
+       *  CONTRACTOR; the site contact is the PROPERTY OWNER. Filling installer identity
+       *  into both produces a mixed contact (owner name + contractor address), which is
+       *  what a live Coos Bay run wrote. Empty = the pass is skipped for that section. */
+      contactIdentity?: ContactIdentity;
+      siteContactIdentity?: ContactIdentity;
     } = {},
   ) {
     super();
@@ -875,6 +902,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     this.policyProfile = options.policyProfile ?? "residential_nem";
     this.equipment = options.equipment ?? {};
     this.certifiedAliases = options.certifiedAliases ?? {};
+    this.contactIdentity = options.contactIdentity ?? {};
+    this.siteContactIdentity = options.siteContactIdentity ?? {};
     // Default page budget. Multi-step utility/permit wizards (PowerClerk NEM, Accela)
     // routinely run 10-15 input steps before the review screen, so 8 was too low — it
     // capped out mid-form. The stuck-page guard + review detection bound the loop, so a
@@ -1387,6 +1416,28 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     return out;
   }
 
+  // Hard time bound for a whole PHASE. Playwright bounds individual actions, but a phase
+  // that loops over several controls (uploads on a multi-row attachment section) has no
+  // ceiling of its own — a live Coos Bay run sat in the upload phase for 10+ minutes and
+  // only ended when the browser was closed. On timeout we log, return the fallback, and
+  // let the loop move on rather than wedging the run.
+  private async withPhaseTimeout<T>(phase: string, ms: number, fn: () => Promise<T>, fallback: T): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        fn(),
+        new Promise<T>((resolve) => {
+          timer = setTimeout(() => {
+            this.debug?.event({ type: "phase_timeout", phase, ms });
+            resolve(fallback);
+          }, ms);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
   // Universal upload pass. Detects every document-upload control on the current page —
   // native <input type=file> AND custom Browse/Upload widgets whose real input is created
   // only on click — attaches the matching split document, and records a replayable `upload`
@@ -1395,22 +1446,45 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   private async performUploads(
     steps: RecipeStep[],
     alreadyFilledLabels: string[],
-  ): Promise<{ filled: string[]; missingRequired: string[] }> {
+  ): Promise<{ filled: string[]; missingRequired: string[]; attached: number }> {
     const filled: string[] = [];
     const missingRequired: string[] = [];
-    if (!this.page || typeof this.page.evaluate !== "function") return { filled, missingRequired };
+    // Count of files actually attached. Distinct from `filled`, which only records slots
+    // that HAVE a visible label - Accela's attachment rows are unlabeled, so a label-based
+    // signal reports zero even when the upload succeeded (and the Save pass never fires).
+    let attached = 0;
+    if (!this.page || typeof this.page.evaluate !== "function") return { filled, missingRequired, attached };
 
     let slots: UploadSlot[] = [];
     try {
       slots = await this.page.evaluate(tagUploadControls);
-    } catch { return { filled, missingRequired }; }
-    if (!Array.isArray(slots) || slots.length === 0) return { filled, missingRequired };
+    } catch { return { filled, missingRequired, attached }; }
+    if (!Array.isArray(slots) || slots.length === 0) return { filled, missingRequired, attached };
 
+    // Attach keys already used THIS RUN. Per-visit scoping is not enough: Accela serves
+    // every wizard step from the same CapEdit.aspx and the loop re-enters it many times,
+    // so a per-visit set still re-attached the file on each pass (live: 3 pending rows of
+    // one PDF). Key = pathname + slot label + file, so a labeled slot on another page can
+    // still receive the same combined document.
+    let pathKey = "";
+    try { pathKey = new URL(String(this.page.url?.() ?? "")).pathname.toLowerCase(); } catch { pathKey = ""; }
     for (const slot of slots) {
       const resolved = this.resolveUploadByLabel(slot.label, !!slot.required);
       if (!resolved) {
         // No document for this control — never fake it. Report it if the portal requires it.
         if (slot.required) missingRequired.push(slot.label || "Required document");
+        continue;
+      }
+      // DUPLICATE-ROW GUARD. A LABELED slot names the document it wants, so combined mode
+      // legitimately gives each one the same plan set. An UNLABELED/generic slot is just a
+      // repeated attachment row (Accela's Attachment section renders several) — attaching
+      // the same file to each creates duplicate rows that EACH demand their own required
+      // Description + Type, which then block the page (live Coos Bay: 3 rows of one PDF,
+      // two of them empty and flagged). One attach per file through generic slots.
+      const genericLabel = !slot.label || /^(browse|upload|attach|choose(\s+file)?|add\s+file|select\s+file|file|document|attachment)\b/i.test(slot.label.trim());
+      const attachKey = `${pathKey}::${genericLabel ? "" : slot.label.trim().toLowerCase()}::${resolved.file}`;
+      if (this.attachedKeys.has(attachKey)) {
+        this.debug?.event({ type: "upload_dedupe", why: "this document was already attached to this control during the run", docType: resolved.docType });
         continue;
       }
       const selector: RecipeSelector = { css: `[data-al-upl="${slot.key}"]` };
@@ -1469,6 +1543,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         rejected = this.detectNewUploadRejection(bannersBefore, await this.collectUploadBannerTexts());
       }
       if (res.ok && !res.message && !rejected) {
+        this.attachedKeys.add(attachKey);
+        attached++;
         steps.push({
           action: "upload",
           phase: "fill",
@@ -1490,7 +1566,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         missingRequired.push(slot.label || "Required document");
       }
     }
-    return { filled, missingRequired };
+    return { filled, missingRequired, attached };
   }
 
   // Snapshot the VISIBLE error-banner texts currently on the page. Two uses per upload:
@@ -1709,7 +1785,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     try { pathname = new URL(url).pathname.toLowerCase(); } catch { return null; }
     const marker = (re: RegExp) =>
       fields.some((f) => re.test(f.label || "") || re.test(f.selector?.name || "") || re.test(f.selector?.css || ""));
-    if (pathname.endsWith("/cap/caphome.aspx") && marker(/generalsearchform|gdvpermitlist/i)) return "records_home";
+    if ((pathname.endsWith("/cap/caphome.aspx") || pathname.endsWith("/cap/myrecordscap.aspx")) && marker(/generalsearchform|gdvpermitlist/i)) return "records_home";
     if (pathname.endsWith("/cap/capdetail.aspx") && marker(/addfordetailpage|attachmentedit/i)) return "record_detail";
     return null;
   }
@@ -1801,27 +1877,55 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       "a[id$='WorkLocationEdit_btnSearch'], a[id^='ctl00_PlaceHolderMain'][id$='_btnSearch'], input[id^='ctl00_PlaceHolderMain'][id$='_btnSearch'], button[id^='ctl00_PlaceHolderMain'][id$='_btnSearch']",
     ).first();
     if (!(await searchBtn.count().catch(() => 0))) return bail("address panel search button not found");
-    const doSearch = async (nameValue: string): Promise<void> => {
+    // Results detection must POLL: ACA renders the grid (and the "Address Not Found"
+    // banner) via partial postbacks, so a single fixed-delay read can see the PREVIOUS
+    // attempt's stale banner and falsely bail (live Coos Bay run: the retry's verdict
+    // was read ~2s after the click, against the first attempt's banner).
+    const resultRows = async (): Promise<number> => {
+      const links = await scope.getByRole("link", { name: /^Select$/i }).count().catch(() => 0);
+      if (links) return links;
+      return await scope.locator("table input[type='radio'], table input[type='checkbox']").count().catch(() => 0);
+    };
+    const noResultsText = async (): Promise<boolean> => {
+      const body = String((await scope.locator("body").innerText().catch(() => "")) ?? "");
+      return /address not found|no records? (were )?found|returned no results|no results (were )?found/i.test(body);
+    };
+    // Returns "results" | "empty" | "unknown" after polling up to ~12s.
+    const doSearch = async (nameValue: string): Promise<"results" | "empty" | "unknown"> => {
       await numBox.fill(streetNo).catch(() => null);
       await nameBox.fill(nameValue).catch(() => null);
       await searchBtn.click({ timeout: 10000 }).catch(() => null);
       await page.waitForLoadState?.("networkidle", { timeout: 15000 }).catch(() => null);
-      await page.waitForTimeout?.(2000).catch(() => null);
+      let sawEmpty = 0;
+      for (let i = 0; i < 12; i++) {
+        await page.waitForTimeout?.(1000).catch(() => null);
+        if (await resultRows()) return "results";
+        // Require the banner on TWO consecutive polls so a stale banner mid-postback
+        // (about to be replaced by the grid) doesn't end the attempt early.
+        if (await noResultsText()) { if (++sawEmpty >= 2) return "empty"; }
+        else sawEmpty = 0;
+      }
+      return (await noResultsText()) ? "empty" : "unknown";
     };
-    const noResults = async (): Promise<boolean> => {
-      const body = String((await scope.locator("body").innerText().catch(() => "")) ?? "");
-      return /address not found|no records? (were )?found|returned no results|no results (were )?found/i.test(body);
-    };
-    let nameUsed = nameCore;
-    await doSearch(nameUsed);
-    if (await noResults()) {
-      // The portal's own hint: "enter JUST the exact street number and a portion of the
-      // street name". Retry once with the first 3 characters.
-      nameUsed = nameCore.slice(0, 3);
-      this.debug?.event({ type: "work_location_retry", why: "no results for full street name — retrying with 3-char portion" });
-      await doSearch(nameUsed);
-      if (await noResults()) return bail("address search returned no results");
+    // The portal's own hint — "enter JUST the exact street number and a portion of the
+    // street name. For example, enter 1234 pin instead of 1234 Pine St" — and this
+    // build's Street Name watermark ("First 3 characters only") both say the PORTION
+    // leads. Full core name is the fallback for builds that match full names.
+    let nameUsed = nameCore.slice(0, 3);
+    let outcome = await doSearch(nameUsed);
+    if (outcome !== "results" && nameCore.length > 3) {
+      this.debug?.event({ type: "work_location_retry", why: `no results for 3-char portion (${outcome}) — retrying with the full core name` });
+      nameUsed = nameCore;
+      outcome = await doSearch(nameUsed);
     }
+    if (outcome !== "results") return bail(`address search returned no results (${outcome})`);
+    // Forensics: capture the result rows' text (address + jurisdiction offerings) so a
+    // wrong-row selection is diagnosable from the bundle alone (address only — already
+    // part of this run's data, no new PII).
+    try {
+      const gridText = String((await scope.locator("table").filter({ hasText: /APPLICATIONS|Select/i }).first().innerText().catch(() => "")) ?? "").replace(/\s+/g, " ").slice(0, 400);
+      if (gridText) this.debug?.event({ type: "work_location_rows", rows: gridText });
+    } catch { /* forensics only */ }
     // The fills are BOUND (field:), not literal — portal_recipes are shared, so a replay
     // must search THAT project's address, never the learn project's. The backend's
     // resolveRecipeFieldValues derives both keys with the same addressParse helpers.
@@ -1886,6 +1990,290 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       }
     }
     return true;
+  }
+
+  // ACA CONTACT step (CapEdit "Step 1: General Info > Applicant"): a section with a
+  // "Select from Account" button + an "Add New" button. The operator's ePermitting
+  // account carries MANY pre-existing contacts (leftovers from other filings), and the
+  // account-dialog's Continue stays disabled until a radio is picked — the planner
+  // stalls there (live Coos Bay: stuck ×3 → recovery exhausted). Per the operator, the
+  // right move is "Add New" with THIS filing's contractor identity. Detect the contacts
+  // page by the Add New control + an Applicant/Contact section, and only BEFORE any
+  // dialog is open.
+  private acaContactPageDetected(fields: ExtractedField[], _bodyText: string): boolean {
+    // Detect from the extracted CONTROLS, never from bodyText: that is capped at 2000
+    // chars and ACA's nav chrome pushes the "Applicant" / "Select from Account" wording
+    // past the cap, so a text-based gate silently never fires (live: the planner then
+    // opened the account picker itself). The "Select from Account" + "Add New" button
+    // PAIR is the contact section's signature.
+    const btn = (re: RegExp) => fields.some((f) => f.fieldType === "button" && re.test(f.label || ""));
+    const hasContactPair = btn(/select from account/i) && btn(/add new/i);
+    if (!hasContactPair) return false;
+    if (!this.hasContactIdentity()) return false;
+    // A dialog already open is still ours to finish — the pass cancels the account
+    // picker and takes the Add New path instead.
+    return true;
+  }
+
+  private hasContactIdentity(): boolean {
+    const any = (c: ContactIdentity) => Boolean(c.lastName || c.email);
+    return any(this.contactIdentity) || any(this.siteContactIdentity);
+  }
+
+  // ACA renders the contact sections in a fixed order (Applicant, then Site Contact),
+  // each with its own "Select from Account" / "Add New" pair. Section 0 is the filing
+  // CONTRACTOR; section 1 is the PROPERTY OWNER.
+  private identityForSection(index: number): ContactIdentity {
+    return index === 0 ? this.contactIdentity : this.siteContactIdentity;
+  }
+
+  // Click "Add New", then fill the contractor identity into the ACADialogFrame form
+  // (First/Last/Email/Phone by row-label; the dialog's own Continue commits it). Bails
+  // to the planner if Add New or the dialog can't be resolved.
+  private async accelaAddContactPass(steps: RecipeStep[], sectionIndex: number): Promise<boolean> {
+    const page = this.page;
+    if (!page) return false;
+    const id = this.identityForSection(sectionIndex);
+    const who = sectionIndex === 0 ? "applicant" : "site contact";
+    if (!id.lastName && !id.email) { this.debug?.event({ type: "contact_add_bail", why: `no identity for section ${sectionIndex} (${who})` }); return false; }
+    const dlg = page.frameLocator('iframe[name="ACADialogFrame"]');
+    // The planner may already have opened the ACCOUNT PICKER ("Select Contact from
+    // Account"). Never pick from it: on a shared operator account that attaches another
+    // company's contact to this filing, and even on a per-client login it attaches an
+    // arbitrary colleague rather than the person filing. Cancel it and use Add New.
+    const cancel = dlg.getByRole("link", { name: /^cancel$/i }).or(dlg.getByRole("button", { name: /^cancel$/i })).first();
+    if (await cancel.count().catch(() => 0)) {
+      await cancel.click({ timeout: 6000 }).catch(() => null);
+      this.debug?.event({ type: "contact_account_picker_cancelled" });
+      await page.waitForTimeout?.(1200).catch(() => null);
+    }
+    const addNewAll = page.getByRole("button", { name: /add new/i })
+      .or(page.getByRole("link", { name: /add new/i }))
+      .or(page.locator('input[value*="Add New" i], button:has-text("Add New"), a:has-text("Add New")'));
+    const addNewCount = await addNewAll.count().catch(() => 0);
+    if (!addNewCount) { this.debug?.event({ type: "contact_add_bail", why: "no Add New control", section: sectionIndex }); return false; }
+    // Take the FIRST VISIBLE Add New rather than the nth in DOM order: once a section is
+    // saved, ACA re-renders it with Edit/Remove and its Add New disappears, so the button
+    // indices SHIFT between passes (live: section 1 clicked a stale index and bailed).
+    // Sections complete in order, so the first visible one is always the next section's.
+    let addNew = addNewAll.first();
+    for (let i = 0; i < addNewCount; i++) {
+      const candidate = addNewAll.nth(i);
+      if (await candidate.isVisible?.().catch(() => false)) { addNew = candidate; break; }
+    }
+    if (!(await addNew.click({ timeout: 8000 }).then(() => true).catch(() => false))) return false;
+    await page.waitForLoadState?.("networkidle", { timeout: 12000 }).catch(() => null);
+    await page.waitForTimeout?.(1500).catch(() => null);
+    // VERIFY the Add-New form actually opened before recording anything — an unopened
+    // dialog would otherwise leave a recorded click that replays into nothing.
+    const anyInput = dlg.locator("input[type='text']").first();
+    if (!(await anyInput.count().catch(() => 0))) {
+      this.debug?.event({ type: "contact_add_bail", why: "Add New dialog did not open" });
+      return false;
+    }
+    steps.push({ action: "click", phase: "fill", selector: { role: "button", name: "Add New", fallbacks: [{ css: 'a:has-text("Add New")' }] }, note: `contact(${who}): add new` });
+    // Field-specific ASP.NET control ids/names — NOT row-label scoping. ACA renders First
+    // and Last name in the SAME table row, so a row filter for /last name/ also matches
+    // that row and .first() returns the FIRST-name box: the last name would overwrite the
+    // first (review finding). Distinct selectors also keep each recorded step replayable
+    // into its own control instead of all four landing in one input.
+    const bindKey = (installerKey: string): string =>
+      sectionIndex === 0 ? installerKey : installerKey.replace(/^installer/, "homeowner");
+    const fillField = async (idPart: string, value: string | undefined, note: string, field: string): Promise<void> => {
+      if (!value) return;
+      const css = `input[id*='${idPart}' i], input[name*='${idPart}' i]`;
+      const loc = dlg.locator(css).first();
+      if (!(await loc.count().catch(() => 0))) { this.debug?.event({ type: "contact_field_miss", field }); return; }
+      if (await loc.fill(value).then(() => true).catch(() => false)) {
+        steps.push({ action: "fill", phase: "fill", selector: { css, frame: "ACADialogFrame" }, field: bindKey(field), value, note: `${note} [${who}]` });
+      }
+    };
+    await fillField("FirstName", id.firstName, "contact: first name", "installerFirstName");
+    await fillField("LastName", id.lastName, "contact: last name", "installerLastName");
+    await fillField("Email", id.email, "contact: email", "installerEmail");
+    // ACA's contact dialog also REQUIRES the address block (Address / City / State / Zip)
+    // and validates Zip as exactly ##### — a ZIP+4 or a stray space is rejected.
+    // Address ids vary by build (AddressLine1 / addressLine1 / txtAddress) - the
+    // live Coos Bay dialog missed on "AddressLine1" alone.
+    await fillField("Address", id.street, "contact: address", "installerStreet");
+    await fillField("City", id.city, "contact: city", "installerCity");
+    const zip5 = (id.zip || "").replace(/\D/g, "").slice(0, 5);
+    if (zip5) {
+      const zipLoc = dlg.locator("input[id*='Zip' i], input[name*='Zip' i]").first();
+      if (await zipLoc.count().catch(() => 0)) {
+        // Keystrokes: ACA's zip validator ignores a programmatic value set.
+        await this.typeMasked(zipLoc, zip5);
+        steps.push({ action: "fill", phase: "fill", selector: { css: "input[id*='Zip' i]", frame: "ACADialogFrame" }, field: bindKey("installerZip"), value: zip5, note: `contact: zip [${who}]` });
+      }
+    }
+    // State is a dropdown keyed by the 2-letter code.
+    const stateCode = (id.state || "").trim().toUpperCase();
+    if (/^[A-Z]{2}$/.test(stateCode)) {
+      const stateSel = dlg.locator("select[id*='State' i], select[name*='State' i]").first();
+      if (await stateSel.count().catch(() => 0)) {
+        const okState = await stateSel.selectOption(stateCode).then(() => true)
+          .catch(async () => stateSel.selectOption({ label: stateCode }).then(() => true).catch(() => false));
+        if (okState) steps.push({ action: "select", phase: "fill", selector: { css: "select[id*='State' i]", frame: "ACADialogFrame" }, field: bindKey("installerState"), value: stateCode, note: `contact: state [${who}]` });
+      }
+    }
+    // PRIMARY PHONE is a SEGMENTED control on ACA: three boxes (area / prefix / line,
+    // rendered as ...$ChildControl0/1/2) whose validator reads KEYSTROKES, not an assigned
+    // value. Writing the whole formatted string into one box leaves the other two empty and
+    // the portal reports "Primary Phone: Invalid" (operator-observed).
+    const phoneDigits = (id.phone || "").replace(/\D/g, "").replace(/^1(?=\d{10}$)/, "");
+    if (phoneDigits.length >= 10) {
+      const phoneCss = "input[id*='Phone' i]:not([id*='Secondary' i]):not([id*='Fax' i])";
+      const phoneMode = await this.fillPhoneSegments(page, id.phone || "", "ACADialogFrame");
+      const parts = [phoneDigits.slice(0, 3), phoneDigits.slice(3, 6), phoneDigits.slice(6, 10)];
+      if (phoneMode === "ok") {
+        for (let i = 0; i < 3; i++) {
+          steps.push({ action: "fill", phase: "fill", selector: { css: phoneCss, nth: i, frame: "ACADialogFrame" }, value: parts[i], note: `contact: phone (${["area", "prefix", "line"][i]}) [${who}]` });
+        }
+      } else if (phoneMode === "not-segmented") {
+        const single = dlg.locator(phoneCss).first();
+        if (await single.count().catch(() => 0)) {
+          const dashed = `${parts[0]}-${parts[1]}-${parts[2]}`;
+          await this.typeMasked(single, dashed);
+          steps.push({ action: "fill", phase: "fill", selector: { css: phoneCss, frame: "ACADialogFrame" }, field: bindKey("installerPhone"), value: dashed, note: `contact: phone [${who}]` });
+        }
+      }
+    } else if (id.phone) {
+      await fillField("Phone", id.phone, "contact: phone", "installerPhone");
+    }
+    // The dialog's Continue/Save/Submit commits the contact (NOT "Continue Application").
+    const dlgSubmit = dlg.getByRole("button", { name: /^(continue|save|submit|ok)$/i })
+      .or(dlg.locator('a:has-text("Continue"), input[type="submit"]')).first();
+    if (await dlgSubmit.count().catch(() => 0)) {
+      if (await dlgSubmit.click({ timeout: 8000 }).then(() => true).catch(() => false)) {
+        steps.push({ action: "click", phase: "fill", selector: { role: "button", name: "Continue", frame: "ACADialogFrame", fallbacks: [{ css: 'a:has-text("Continue")', frame: "ACADialogFrame" }] }, note: `contact(${who}): save new contact` });
+      }
+    }
+    await page.waitForLoadState?.("networkidle", { timeout: 15000 }).catch(() => null);
+    await page.waitForTimeout?.(1500).catch(() => null);
+    return true;
+  }
+
+  // ACA ATTACHMENT step. Accela stages attachments in a pending list that is only
+  // COMMITTED by the section's own "Save" button — "Continue Application" alone leaves
+  // the files uncommitted (operator-reported, live). Each pending row also demands its
+  // own required Description + Type before Save will take it. Deterministic: fill the
+  // empty Description/Type on every pending row, click Save (never "Save and resume
+  // later"), and wait for the grid to stop reading "No records found".
+  private async accelaAttachmentSavePass(project: ProjectRecord, steps: RecipeStep[]): Promise<boolean> {
+    const page = this.page;
+    if (!page) return false;
+    const isElectrical = /elec/i.test(project.permitType ?? "");
+    const description = isElectrical
+      ? "Solar PV plan set — electrical plans and specifications"
+      : "Solar PV plan set — structural plans and specifications";
+    // Row layout differs across ACA builds (table rows on some, divs on others), so work
+    // from the CONTROLS themselves rather than a row structure. The document-Type select
+    // is the section's signature: it is the only select whose options are document types
+    // ("Plans - Structural", "Plans - Electrical", …).
+    const typePrefs = isElectrical
+      ? [/plans?\s*[-–—]?\s*electrical/i, /electrical/i, /plans?\b/i]
+      : [/plans?\s*[-–—]?\s*structural/i, /structural/i, /plans?\b/i];
+    const readOptions = async (sel: { evaluate?: unknown }): Promise<Array<{ v: string; t: string }>> => {
+      // Best-effort: a locator with no .evaluate (older runtime / stub page) throws
+      // SYNCHRONOUSLY, which .catch() cannot absorb — and this pass must never abort a run.
+      try {
+        return await (sel as { evaluate: (fn: unknown) => Promise<Array<{ v: string; t: string }>> })
+          .evaluate((el: HTMLSelectElement) => Array.from(el.options).map((o) => ({ v: o.value, t: (o.text || "").trim() })))
+          .catch(() => []);
+      } catch { return []; }
+    };
+    // 1) Document-Type selects: fill only the EMPTY ones (--Select-- reads as "").
+    const allSelects = page.locator("select");
+    const selCount = await allSelects.count().catch(() => 0);
+    let typeSet = 0;
+    let sawTypeSelect = false;
+    let pickedTypeText = "";
+    for (let i = 0; i < selCount; i++) {
+      const sel = allSelects.nth(i);
+      const opts = await readOptions(sel);
+      const isDocType = opts.some((o) => /plans?\s*[-–—]/i.test(o.t)) || opts.some((o) => /^(plans|calculations|photos?|forms?)\b/i.test(o.t));
+      if (!isDocType) continue;
+      sawTypeSelect = true;
+      const current = String((await sel.inputValue().catch(() => "")) ?? "").trim();
+      if (current) continue;
+      let pick: { v: string; t: string } | undefined;
+      for (const re of typePrefs) { pick = opts.find((o) => o.v && re.test(o.t)); if (pick) break; }
+      if (!pick) continue; // no sensible option — leave it for the human rather than guess
+      if (await sel.selectOption(pick.v).then(() => true).catch(() => false)) {
+        typeSet++;
+        pickedTypeText = pick.t;
+        // Each Type choice fires an ACA partial postback; without a settle the next
+        // row's select can be re-rendered mid-iteration and the choice lost.
+        await page.waitForTimeout?.(900).catch(() => null);
+      }
+    }
+    // 2) Description textareas: only inside a CONFIRMED attachment section (a document-Type
+    //    select exists), and only the empty ones — never overwrite the planner's text or a
+    //    "Description of Work" field on some other step.
+    let descFilled = 0;
+    if (sawTypeSelect) {
+      const descBoxes = page.locator("textarea");
+      const descCount = await descBoxes.count().catch(() => 0);
+      for (let i = 0; i < descCount; i++) {
+        const box = descBoxes.nth(i);
+        const current = String((await box.inputValue().catch(() => "")) ?? "").trim();
+        if (current) continue;
+        if (await box.fill(description).then(() => true).catch(() => false)) descFilled++;
+      }
+    }
+    // 3) SAVE — the commit. On the live ACA DOM this is an ANCHOR:
+    //      <a id="…_Attachment_24Edit_btnSave" title="Save" href="javascript:…"><span>Save</span></a>
+    //    so its ARIA role is LINK, not button, and `a:text-is("Save")` matches the inner
+    //    <span> rather than the anchor — a button/text-is locator counts ZERO and the pass
+    //    bails without ever committing (verified against the captured live trace; the
+    //    hand-coded OregonEPermittingAdapter uses the link form for the same reason).
+    //    The exact name keeps "Save and resume later:" out (its accessible name is that
+    //    control's long img alt text).
+    const saveBtn = page.getByRole("link", { name: /^\s*Save\s*$/i })
+      .or(page.getByRole("button", { name: /^\s*Save\s*$/i }))
+      .or(page.locator("a[id*='btnSave' i], input[type='submit'][value='Save' i], input[type='button'][value='Save' i]"))
+      .first();
+    // ACA keeps the Save anchor inside a container it reveals with JS only once the
+    // uploads finish, and a role locator skips the hidden a11y tree — so WAIT for it
+    // instead of counting once.
+    await saveBtn.waitFor?.({ state: "visible", timeout: 15000 }).catch(() => null);
+    if (!(await saveBtn.count().catch(() => 0))) { this.debug?.event({ type: "attachment_save_bail", why: "no Save control" }); return false; }
+    if (!(await saveBtn.click({ timeout: 10000 }).then(() => true).catch(() => false))) return false;
+    await page.waitForLoadState?.("networkidle", { timeout: 20000 }).catch(() => null);
+    await page.waitForTimeout?.(2500).catch(() => null);
+    // 4) Verify the commit. The committed-file grid renders in a CHILD IFRAME
+    //    (…iframeAttachmentList → FileUpload/AttachmentsList.aspx), so "No records found"
+    //    never appears in the main-frame body — reading it there reports success
+    //    unconditionally. Prefer the grid frame; fall back to the main body only when no
+    //    such frame exists (other ACA builds render the list inline).
+    let gridText = "";
+    try {
+      gridText = String((await page.frameLocator("iframe[id*='AttachmentList' i], iframe[src*='AttachmentsList' i]")
+        .locator("body").innerText().catch(() => "")) ?? "");
+    } catch { gridText = ""; }
+    const verifyText = gridText || String((await page.locator("body").innerText().catch(() => "")) ?? "");
+    const committed = Boolean(verifyText) && !/no records found/i.test(verifyText);
+    this.debug?.event({ type: "attachment_save", descFilled, typeSet, committed });
+    if (descFilled) steps.push({ action: "fill", phase: "upload", selector: { css: "textarea" }, value: description, note: "attachment: description" });
+    // Record the option the pass ACTUALLY selected - a fabricated label would replay as
+    // a select-by-label miss on any build whose wording differs.
+    if (typeSet && pickedTypeText) steps.push({ action: "select", phase: "upload", selector: { css: "select" }, value: pickedTypeText, note: "attachment: document type" });
+    steps.push({
+      action: "click",
+      phase: "upload",
+      selector: {
+        // LINK role - the live control is an anchor (see the locator note above).
+        role: "link",
+        name: "Save",
+        exact: true,
+        fallbacks: [
+          { css: "a[id*='btnSave' i]" },
+          { role: "button", name: "Save", exact: true },
+        ],
+      },
+      note: "attachment: save (commits the upload)",
+    });
+    return committed;
   }
 
   // True when the page offers ACA record types to choose from — at least one
@@ -1953,6 +2341,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     let acaReentries = 0;
     let acaDisclaimerPasses = 0;
     let acaRecordTypeHandled = false;
+    let acaContactDialogPasses = 0;
+    let acaAttachmentSaves = 0;
     let reachedReview = false;
     // Stuck-page detection: if the page fingerprint doesn't change across consecutive
     // iterations (an advance silently failed — e.g. blocked by a validation error), stop
@@ -2096,7 +2486,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         (this.acaWrongModulePage(url, fields) !== null && acaReentries < 2) ||
         (/CapApplyDisclaimer/i.test(url) && acaDisclaimerPasses < 3) ||
         (!workLocationHandled && (/WorkLocation/i.test(url) || /enter work site location/i.test(bodyText))) ||
-        (!acaRecordTypeHandled && this.acaRecordTypePageDetected(fields))
+        (!acaRecordTypeHandled && this.acaRecordTypePageDetected(fields)) ||
+        (acaContactDialogPasses < 2 && this.acaContactPageDetected(fields, bodyText))
       );
 
       // a0) STUCK / CYCLE GUARD with SELF-RECOVERY. Two failure shapes:
@@ -2206,6 +2597,16 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           const advanced = await this.accelaWorkLocationPass(_project, steps);
           this.debug?.event({ type: "work_location_pass", page: pageCount, advanced });
           if (advanced) continue; // next iteration re-extracts the page the Continue landed on
+        }
+        // CONTACT step (CapEdit): "Add New" + fill the contractor identity (operator's
+        // guidance — the account has many pre-existing contacts). Appears once per
+        // contact section (Applicant, Site Contact), so allow a few.
+        if (acaContactDialogPasses < 2 && this.acaContactPageDetected(fields, bodyText)) {
+          const sectionIndex = acaContactDialogPasses;
+          acaContactDialogPasses++;
+          const advanced = await this.accelaAddContactPass(steps, sectionIndex);
+          this.debug?.event({ type: "aca_contact_add_pass", page: pageCount, section: sectionIndex, advanced });
+          if (advanced) continue;
         }
         // Record-type selection (the page right after the address row is chosen).
         if (!acaRecordTypeHandled && this.acaRecordTypePageDetected(fields)) {
@@ -2492,9 +2893,39 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       //     "Browse"/"Upload"/"Choose File" widgets whose real input is created only on click
       //     (driven via the browser's filechooser event). Required slots with no matching
       //     document are reported (never faked) so the human can complete them.
-      {
-        const up = await this.performUploads(steps, alreadyFilledLabels);
+      // A REVIEW/confirm screen is a read-only summary of what was already staged — it
+      // lists the attachments rather than accepting new ones. Uploading there re-attaches
+      // a document that is already committed and then re-runs the attachment Save on a
+      // page that has nothing to commit (operator-observed on ACA's Step 3: Review).
+      if (isReviewPage || plan.atReview) {
+        this.debug?.event({ type: "upload_skipped_on_review", page: pageCount });
+      } else {
+        this.debug?.event({ type: "upload_phase_start", page: pageCount });
+        const up = await this.withPhaseTimeout(
+          "uploads",
+          150_000,
+          () => this.performUploads(steps, alreadyFilledLabels),
+          { filled: [] as string[], missingRequired: [] as string[], attached: 0 },
+        );
+        this.debug?.event({ type: "upload_phase_done", page: pageCount, attached: up.attached, missing: up.missingRequired.length });
         for (const m of up.missingRequired) if (!missingRequiredDocs.includes(m)) missingRequiredDocs.push(m);
+        // ACA commits attachments only on the section's own Save (Continue Application
+        // leaves them pending) — and each pending row needs its Description + Type first.
+        if (up.attached > 0 && this.isAcaUrl(url) && acaAttachmentSaves < 3) {
+          acaAttachmentSaves++;
+          const saved = await this.withPhaseTimeout(
+            "attachment_save",
+            90_000,
+            () => this.accelaAttachmentSavePass(_project, steps),
+            false,
+          );
+          this.debug?.event({ type: "aca_attachment_save_pass", page: pageCount, saved });
+          if (saved) continue; // re-extract: the grid now lists the committed file(s)
+          // A commit that did NOT take is invisible to the operator otherwise: the run
+          // walks on and the portal shows an application with no documents attached.
+          const warn = "Attachments were uploaded but the portal's Save did not confirm them — re-attach and click Save by hand before submitting.";
+          if (!missingRequiredDocs.includes(warn)) missingRequiredDocs.push(warn);
+        }
       }
 
       // d) Apply the fills and record each as a RecipeStep.
@@ -3154,6 +3585,81 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     return out;
   }
 
+  // Fields whose control is MASKED/validated on keystrokes rather than on a value
+  // assignment. Playwright's fill() sets .value and fires input+change, but ACA's phone
+  // and zip controls (AJAX masked-edit + segmented ChildControls) keep their own state
+  // from key events — so a filled box shows the right text and STILL reports
+  // "Required Invalid" (operator-observed on both Primary Phone and Zip).
+  private static readonly MASKED_LABEL = /\b(phone|telephone|fax|zip|postal(\s*code)?)\b/i;
+
+  // Type a value as real keystrokes, then blur to commit + trigger validation. Falls back
+  // to fill() when the locator has no typing API (stub pages in tests).
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async typeMasked(loc: any, value: string): Promise<void> {
+    // focus(), never click(): a click on some portals opens a picker/overlay.
+    if (typeof loc.focus === "function") await loc.focus().catch(() => null);
+    if (typeof loc.fill === "function") await loc.fill("").catch(() => null);
+    if (typeof loc.pressSequentially === "function") {
+      await loc.pressSequentially(value, { delay: 35 }).catch(() => null);
+    } else if (typeof loc.type === "function") {
+      await loc.type(value, { delay: 35 }).catch(() => null);
+    } else if (typeof loc.fill === "function") {
+      await loc.fill(value).catch(() => null);
+    }
+    if (typeof loc.blur === "function") await loc.blur().catch(() => null);
+  }
+
+  // A US phone on ACA is THREE boxes (area / prefix / line, rendered as …$ChildControl0/1/2).
+  // Writing the whole number into whichever box a single locator resolved leaves the other
+  // two empty and the portal rejects it. Returns true when it filled a segmented control.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async fillPhoneSegments(scope: any, value: string, frame?: string): Promise<"ok" | "partial" | "not-segmented"> {
+    const digits = (value || "").replace(/\D/g, "").replace(/^1(?=\d{10}$)/, "");
+    if (digits.length < 10) return "not-segmented";
+    const css = "input[id*='Phone' i]:not([id*='Secondary' i]):not([id*='Fax' i])";
+    try {
+      const target = frame && typeof scope.frameLocator === "function"
+        ? scope.frameLocator(`iframe[name="${frame}"]`).locator(css)
+        : scope.locator(css);
+      if ((await target.count().catch(() => 0)) < 3) return "not-segmented";
+      const parts = [digits.slice(0, 3), digits.slice(3, 6), digits.slice(6, 10)];
+      // Read back what each segment actually holds — the only reliable success signal.
+      const segValues = async (): Promise<string[]> => {
+        const out: string[] = [];
+        for (let i = 0; i < 3; i++) out.push(String((await target.nth(i).inputValue?.().catch(() => "")) ?? "").replace(/\D/g, ""));
+        return out;
+      };
+      const filledOk = async (): Promise<boolean> => (await segValues()).join("") === digits;
+      // PASS 1 — type it the way a human does: focus the FIRST box and type all ten
+      // digits straight through. The mask ADVANCES FOCUS between segments on its own, so
+      // driving each box separately fights it (live: only "800" landed, boxes 2-3 empty).
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const kb = (this.page as any)?.keyboard;
+      if (kb && typeof kb.type === "function") {
+        await target.nth(0).focus?.().catch(() => null);
+        await target.nth(0).fill?.("").catch(() => null);
+        await kb.type(digits, { delay: 60 }).catch(() => null);
+        await target.nth(2).blur?.().catch(() => null);
+        if (await filledOk()) { this.debug?.event({ type: "phone_segments", how: "continuous" }); return "ok"; }
+      }
+      // PASS 2 — per segment, letting each box's own key handling settle before moving on.
+      for (let i = 0; i < 3; i++) {
+        await target.nth(i).focus?.().catch(() => null);
+        await target.nth(i).fill?.("").catch(() => null);
+        if (kb && typeof kb.type === "function") await kb.type(parts[i], { delay: 60 }).catch(() => null);
+        else await this.typeMasked(target.nth(i), parts[i]);
+        await this.page?.waitForTimeout?.(250).catch(() => null);
+      }
+      await target.nth(2).blur?.().catch(() => null);
+      const ok = await filledOk();
+      // Values are PII — log only which segments came back non-empty.
+      this.debug?.event({ type: "phone_segments", how: "per-segment", ok, filled: (await segValues()).map((v) => v.length) });
+      // "partial" still means SEGMENTED - callers must not fall back to writing the whole
+      // number into one box, which is what produced the live "Invalid" state.
+      return ok ? "ok" : "partial";
+    } catch { return "not-segmented"; }
+  }
+
   private async applyFill(
     field: ExtractedField,
     fillReq: { value: string; field?: string },
@@ -3240,6 +3746,20 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             }).catch(() => "");
             if (NOT_LISTED_CHECKBOX.test(ownText)) throw new Error(`refusing to check "not listed" escape hatch (${ownText.slice(0, 60)})`);
             await loc.check({ timeout: 5000 });
+          }
+        } else if (AutoLearnAdapter.MASKED_LABEL.test(field.label || "")) {
+          // Masked/segmented control: keystrokes, not a value assignment (see MASKED_LABEL).
+          const isPhone = /\b(phone|telephone|fax)\b/i.test(field.label || "");
+          // "partial" still means the control IS segmented — writing the whole number into
+          // one box is exactly the state the portal rejects, so only fall through when no
+          // segmented control was found at all.
+          const phoneMode = isPhone ? await this.fillPhoneSegments(this.page, value, field.selector?.frame) : "not-segmented";
+          if (phoneMode === "not-segmented") {
+            // Zip must be exactly ##### on ACA — a ZIP+4 is rejected outright.
+            const typed = /\b(zip|postal)\b/i.test(field.label || "")
+              ? (value.replace(/\D/g, "").slice(0, 5) || value)
+              : value;
+            await this.typeMasked(loc, typed);
           }
         } else {
           await loc.fill(value);
@@ -4008,8 +4528,13 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private async locator(sel?: RecipeSelector): Promise<any | null> {
     if (!sel || !this.page) return null;
-    const primary = this._buildLocator(this.page, sel);
-    if ((await primary.count().catch(() => 0)) > 0) return primary;
+    // A selector with no usable strategy (empty {} — e.g. an ASP.NET radio the extractor
+    // couldn't key) makes _buildLocator THROW; catch it so a deterministic pass bails
+    // gracefully instead of crashing the whole run (live: contact-dialog radio).
+    let primary: any;
+    try { primary = this._buildLocator(this.page, sel); }
+    catch { primary = null; }
+    if (primary && (await primary.count().catch(() => 0)) > 0) return primary;
     for (const fb of sel.fallbacks ?? []) {
       try {
         const loc = this._buildLocator(this.page, fb);

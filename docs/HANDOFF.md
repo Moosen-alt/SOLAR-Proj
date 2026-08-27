@@ -307,6 +307,62 @@ Still open, in order:
         blocks it honestly instead of filing wrong). Recipes need a per-
         discipline key (and the trusted-learn replacement rule must respect it);
         do this deliberately, not as a drive-by.
+        LIVE RUN SESSION (2026-08-27, ten runs against Coos Bay — a REAL Oregon
+        ePermitting jurisdiction; **Salem is NOT on Accela**, it runs its own
+        portal, so the earlier Salem runs were never going to resolve an address.
+        The Salem KB rows had their Accela URL cleared; Coos Bay's AHJ row now
+        carries the verified aca-oregon URL instead of the Pacific Power NEM one).
+        The learner now drives login → disclaimer → work location → record type →
+        applicant contact → project detail → attachments, all deterministically.
+        Each fix below came from a live failure the operator saw on screen:
+        - ADDRESS SEARCH: portion-FIRST (the portal's own hint and the live
+          watermark say "First 3 characters only"), with polling for the results
+          grid — a fixed-delay read saw the PREVIOUS attempt's stale "Address Not
+          Found" banner and bailed.
+        - CONTACTS: the account picker is never used. It attaches an arbitrary
+          contact from the account (15 of them on the operator's), which is wrong
+          data on a legal filing even on a per-client login, and a genuine
+          cross-company leak on any shared account. The pass clicks "Add New" and
+          fills the filing party's own identity, cancelling the picker if the
+          planner opened it. SECTION-AWARE: section 0 (Applicant) = the filing
+          CONTRACTOR, section 1 (Site Contact) = the PROPERTY OWNER — filling
+          installer identity into both produced a mixed contact live (owner name
+          + contractor address). Recorded steps bind to installer*/homeowner*
+          keys accordingly. The "Add New" button is chosen as the first VISIBLE
+          one, not by index: a saved section re-renders with Edit/Remove and the
+          indices shift between passes.
+        - MASKED INPUTS (the big one, portal-agnostic): ACA's phone and zip
+          controls validate on KEYSTROKES. Playwright's fill() assigns .value and
+          fires input+change, so the box showed the right text and the portal
+          still said "Required Invalid". Masked fields are now TYPED (with blur);
+          zip is trimmed to exactly ##### (ZIP+4 is rejected); and PHONE is three
+          segmented boxes (…$ChildControl0/1/2) — the mask auto-advances focus, so
+          the fix is to focus the first box and type all ten digits straight
+          through, then READ THE SEGMENTS BACK to confirm (fallback: per-segment).
+          A "partial" segmented fill must never fall back to writing the whole
+          number into one box — that IS the rejected state.
+        - ATTACHMENTS: Accela commits them only via the section's own Save;
+          Continue Application leaves them pending. Adversarial review caught
+          (with real-Chromium proof against the captured trace) that the Save
+          control is an ANCHOR — `<a id="…btnSave"><span>Save</span></a>` — so a
+          button-role locator and `a:text-is("Save")` both count ZERO and the pass
+          bailed silently. Now role=link (matching the hand-coded adapter), and
+          the commit check reads the AttachmentsList IFRAME, since "No records
+          found" never appears in the main-frame body (it was reporting success
+          unconditionally). Uploads are deduped RUN-wide (pathname::control::file):
+          ACA serves every wizard step from CapEdit.aspx and the loop revisits it
+          ~10x, so a per-visit set still produced 3 pending rows of one PDF, two
+          with empty required Description/Type, blocking the page. Uploads are
+          also skipped entirely on review screens, and the upload phase has a
+          150s ceiling (a live run sat in it 10+ minutes and only died when the
+          browser was closed).
+        STILL OPEN: no run has reached the review screen yet — the remaining
+        frontier is the wizard steps AFTER attachments. Re-run
+        `npx tsx live-accela-learn.ts` (delete after the session) and read the
+        bundle's events.jsonl: aca_contact_add_pass / phone_segments /
+        aca_attachment_save_pass / attachment_save carry the per-pass verdicts.
+        CLEANUP OWED: several TMP draft applications on the Coos Bay account from
+        these runs (never submitted — delete from the portal).
 2. **Stripe checkout** for the payment screen (operator said "later"): a
    Payment Link per quote; `submission_payments.payment_reference` is ready.
 3. **HOA list import** (`HOA_List.xlsx`) — needs an `hoa_library` table + an

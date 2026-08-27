@@ -27,9 +27,16 @@ const norm = normLabel;
 
 /** Extract every non-empty text item with its position from a PDF. Returns [] on
  *  any failure or when the doc has no usable text layer (scanned/flattened). */
+// pdfjs REFUSES Node Buffers outright ("provide binary data as Uint8Array"), and
+// Buffer.slice() is still a Buffer — so a Buffer caller (fs.readFileSync, DB blobs)
+// used to throw into the catch and silently get an EMPTY result, killing the whole
+// text-layer path (anchoring, flat fill, checkbox recovery) with no visible error.
+// new Uint8Array(bytes) copies AND strips the Buffer identity.
+const asPlainBytes = (bytes: Uint8Array): Uint8Array => new Uint8Array(bytes);
+
 export async function extractLabels(pdfBytes: Uint8Array): Promise<LabelItem[]> {
   try {
-    const doc = await getDocument({ data: pdfBytes.slice(), useSystemFonts: true }).promise;
+    const doc = await getDocument({ data: asPlainBytes(pdfBytes), useSystemFonts: true }).promise;
     const out: LabelItem[] = [];
     for (let n = 1; n <= doc.numPages; n++) {
       const page = await doc.getPage(n);
@@ -51,7 +58,7 @@ export async function extractLabels(pdfBytes: Uint8Array): Promise<LabelItem[]> 
  *  reason phrase can be matched to the right box. Empty on any failure. */
 export async function checkboxLabels(pdfBytes: Uint8Array): Promise<Record<string, string>> {
   try {
-    const doc = await getDocument({ data: pdfBytes.slice(), useSystemFonts: true }).promise;
+    const doc = await getDocument({ data: asPlainBytes(pdfBytes), useSystemFonts: true }).promise;
     const out: Record<string, string> = {};
     for (let n = 1; n <= doc.numPages; n++) {
       const page = await doc.getPage(n);
@@ -59,12 +66,36 @@ export async function checkboxLabels(pdfBytes: Uint8Array): Promise<Record<strin
       if (!boxes.length) continue;
       const text = (await page.getTextContent()).items as Array<{ str: string; transform: number[] }>;
       const items = text.map((t) => ({ s: t.str, x: t.transform[4], y: t.transform[5] })).filter((t) => t.s.trim());
+      // Visual lines (same y within 3pt), for the Yes/No-grid fallback below.
+      const lineMap = new Map<number, { y: number; parts: { s: string; x: number }[] }>();
+      for (const t of items) {
+        const key = Math.round(t.y / 3);
+        const line = lineMap.get(key) ?? { y: t.y, parts: [] };
+        line.parts.push({ s: t.s, x: t.x });
+        lineMap.set(key, line);
+      }
+      const lines = [...lineMap.values()].map((L) => ({
+        y: L.y,
+        text: L.parts.sort((p, q) => p.x - q.x).map((p) => p.s).join(" ").replace(/\s+/g, " ").trim(),
+      }));
       for (const a of boxes) {
         const r = a.rect as number[];
         const cy = (r[1] + r[3]) / 2;
         const cx = Math.max(r[0], r[2]);
         const near = items.filter((t) => Math.abs(t.y - cy) < 8 && t.x >= cx - 4).sort((p, q) => p.x - q.x)[0];
-        if (near && !out[a.fieldName as string]) out[a.fieldName as string] = near.s.trim();
+        let label = (near?.s ?? "").trim();
+        // Yes/No GRIDS (AHJ questionnaires): the text right of a box is only the SIBLING
+        // caption ("Yes [ ]  No [ ]") — the QUESTION lives on the line(s) above the pair
+        // (PDF y grows upward). Join up to two lines within 40pt, top line first.
+        if (!label || /^(yes|no)$/i.test(label)) {
+          const above = lines
+            .filter((L) => L.y > cy + 2 && L.y < cy + 40 && L.text && !/^(yes|no)(\s+(yes|no))*$/i.test(L.text))
+            .sort((p, q) => p.y - q.y)
+            .slice(0, 2)
+            .sort((p, q) => q.y - p.y);
+          if (above.length) label = above.map((L) => L.text).join(" ").slice(0, 200);
+        }
+        if (label && !out[a.fieldName as string]) out[a.fieldName as string] = label;
       }
     }
     return out;

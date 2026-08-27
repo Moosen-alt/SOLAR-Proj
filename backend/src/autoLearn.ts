@@ -304,7 +304,14 @@ export async function autoLearnPortal(
   // getProjectDetail is the canonical mapper; import lazily to avoid a cycle. A caller may pass
   // a pre-overlaid project (staging self-seed); otherwise load the canonical record.
   const { getProjectDetail } = await import("./repository");
-  const project: ProjectRecord = input.project ?? getProjectDetail(db, projectId).project;
+  const baseProject: ProjectRecord = input.project ?? getProjectDetail(db, projectId).project;
+  // Thread the requested permit discipline onto the project the LEARNER sees — the
+  // deterministic ACA passes key jurisdiction-row (CITY=structural / COUNTY=electrical)
+  // and record-type selection off project.permitType, which the stored record rarely
+  // carries. The planner prompt receives the same discipline separately.
+  const project: ProjectRecord = input.permitType && !baseProject.permitType
+    ? { ...baseProject, permitType: input.permitType }
+    : baseProject;
 
   const scopeType = input.scope === "utility" ? "utility" : "ahj";
   const portalUrl = (input.portalUrl || "").trim();
@@ -414,6 +421,34 @@ export async function autoLearnPortal(
       credential,
       userDataDir,
       docsByType,
+      // Contractor contact identity for the deterministic ACA "Add New" contact pass
+      // (Accela permit portals). buildPortalPlanner already split installerContactName
+      // into first/last in projectFields; the account has many pre-existing contacts,
+      // so the pass adds a fresh one with the filing contractor's own info.
+      // SITE CONTACT is the PROPERTY OWNER, not the contractor - filling installer
+      // identity into both sections produced a mixed contact live (owner name +
+      // contractor address).
+      siteContactIdentity: {
+        firstName: projectFields.homeownerFirstName || "",
+        lastName: projectFields.homeownerLastName || "",
+        email: projectFields.homeownerEmail || "",
+        phone: projectFields.homeownerPhone || "",
+        street: projectFields.street || "",
+        city: projectFields.city || "",
+        state: projectFields.state || "",
+        zip: projectFields.zip || "",
+      },
+      contactIdentity: {
+        firstName: projectFields.installerFirstName || "",
+        lastName: projectFields.installerLastName || projectFields.installerCompanyName || "",
+        email: projectFields.installerEmail || "",
+        phone: projectFields.installerPhone || "",
+        // ACA's contact dialog requires the address block too (and validates zip #####).
+        street: projectFields.installerStreet || "",
+        city: projectFields.installerCity || "",
+        state: projectFields.installerState || "",
+        zip: projectFields.installerZip || "",
+      },
       // Equipment identity for the deterministic PV-spec combobox pass (matched with
       // certified-name aliases + distinctive-token fallback inside the adapter).
       // CEC-certified manufacturer names (weekly cec_equipment sync) — appended

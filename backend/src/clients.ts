@@ -225,6 +225,11 @@ export function clientStagingOverlay(db: AppDb, clientId: string | null, portalT
       .filter(Boolean)
       .join(", "),
     installerStreet: client.businessAddress,
+    // Separate parts too: portal contact forms ask for city / state / zip in their own
+    // controls (ACA's Add-Contact dialog validates zip as exactly #####).
+    installerCity: client.businessCity,
+    installerState: client.businessState,
+    installerZip: client.businessZip,
     installerCityStateZip:
       [client.businessCity, client.businessState].filter(Boolean).join(", ") +
       (client.businessZip ? ` ${client.businessZip}` : ""),

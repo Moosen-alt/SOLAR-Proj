@@ -85,6 +85,9 @@ function selectorKey(sel: any): string {
 function makeFakePage(spec: FakePageSpec, log: ActionLog) {
   // Current page index advances when the adapter clicks the "advance" button.
   let pageIdx = 0;
+  // Last value written per selector key, so inputValue() read-backs match what was
+  // filled (the adapter DROPS a fill whose read-back does not hold).
+  const written = new Map<string, string>();
 
   function curPage() {
     return spec.pages[Math.min(pageIdx, spec.pages.length - 1)];
@@ -102,9 +105,11 @@ function makeFakePage(spec: FakePageSpec, log: ActionLog) {
         // is configured to block the advance (validation error), in which case pageIdx stays.
         if (!curPage().blockedValidationErrors) pageIdx++;
       },
-      fill: async (v: string) => { log.fills.push({ key, value: v }); },
+      fill: async (v: string) => { log.fills.push({ key, value: v }); written.set(key, v); },
       selectOption: async (v: any) => {
-        log.selects.push({ key, value: typeof v === "string" ? v : v?.label ?? "" });
+        const value = typeof v === "string" ? v : v?.label ?? "";
+        log.selects.push({ key, value });
+        written.set(key, value);
       },
       check: async () => { log.checks.push(key); },
       uncheck: async () => undefined,
@@ -112,12 +117,19 @@ function makeFakePage(spec: FakePageSpec, log: ActionLog) {
       waitFor: async () => undefined,
       setInputFiles: async () => undefined,
       innerText: async () => curPage().body,
+      // Read-back used by fill verification and by the ACA attachment pass's
+      // empty-Description/Type detection.
+      inputValue: async () => written.get(key) ?? "",
       // detectChallengeFrame reads iframe src attributes via evaluateAll.
       evaluateAll: async () => [],
-      // Chainable row-scoping helpers the ACA work-location pass uses
-      // (page.locator("tr", {hasText}).filter(...).getByRole("link", ...)).
+      // Chainable helpers the ACA passes use: row-scoping (locator("tr").filter().
+      // getByRole()), the Add-New OR-chain (getByRole().or().or().first()), and the
+      // dialog-frame fills (frameLocator().locator("tr").filter().locator("input")).
       filter: () => loc,
+      or: () => loc,
       getByRole: (role: string, o?: { name?: RegExp | string }) => locatorFor(`role:${role}:${String(o?.name ?? "")}`),
+      locator: (css: string) => locatorFor(`css:${css}`),
+      frameLocator: () => loc,
     };
     return loc;
   }
@@ -1314,7 +1326,9 @@ async function testAcaWorkLocationAndRecordTypeDeterministic() {
   assert.equal(numFill!.value, "1717");
   const nameFill = log.fills.find((f) => f.key.includes("txtStreetName"));
   assert.ok(nameFill, "street name filled via the id hook");
-  assert.equal(nameFill!.value, "17th", "core street name only (no suffix/direction)");
+  // Portion-FIRST search (the portal's own hint + the live watermark "First 3
+  // characters only"); the full core name is the fallback attempt.
+  assert.equal(nameFill!.value, "17t", "3-char portion of the core street name leads");
   // The PANEL search button was clicked — never a bare role/name "Search" (the nav trap).
   assert.ok(log.clicks.some((k) => k.includes("btnSearch")), `panel search clicked: ${JSON.stringify(log.clicks)}`);
   assert.ok(!log.clicks.includes("role:button:Search"), "the header-nav Search tab must never be clicked");
@@ -1331,7 +1345,7 @@ async function testAcaWorkLocationAndRecordTypeDeterministic() {
   const numStep = result.steps.find((s) => s.note === "work location: street number");
   assert.ok(numStep?.selector?.css?.includes("StreetNo4Search"), "street-number step records the id-hook selector");
   assert.equal(numStep?.field, "streetNumber", "street number is field-bound for replay");
-  assert.equal(result.steps.find((s) => s.note === "work location: street name (portion)")?.field, "streetNameCore", "street name is field-bound for replay");
+  assert.equal(result.steps.find((s) => s.note === "work location: street name (portion)")?.field, "streetNameSearchPortion", "street name is field-bound to the portion key the search actually matched");
   // The Select click keeps its jurisdiction row context — a bare role/name "Select"
   // resolves to .first() at replay and silently files under the wrong authority.
   const selStep = result.steps.find((s) => (s.note || "").startsWith("work location: select"));
@@ -1451,7 +1465,212 @@ async function testResumeApplicationNeverClicked() {
   assert.ok(!log.clicks.some((k) => /resume application/i.test(k)), "Resume Application never clicked");
 }
 
+// ACA CONTACT step: CapEdit's Applicant/Site-Contact section stalls the planner (the
+// account-dialog's Continue is disabled until a row is picked — live Coos Bay run:
+// stuck ×3 → recovery exhausted). Per the operator, the pass clicks "Add New" and fills
+// the FILING contractor's identity into the ACADialogFrame, never selecting one of the
+// account's many pre-existing contacts.
+async function testAcaAddContactDeterministic() {
+  const log: ActionLog = { clicks: [], fills: [], selects: [], checks: [] };
+  let plannerCalls = 0;
+  const planner: LearnPlanner = async (req: LearnPlanRequest): Promise<LearnPlanResponse> => {
+    plannerCalls++;
+    assert.match(req.url, /CapConfirm/, `planner saw the contacts page it should own: ${req.url}`);
+    return { fills: [], atReview: true, finalSubmitSelectorIndex: 0 };
+  };
+  const adapter = new AutoLearnAdapter("Oregon ePermitting", planner, {
+    contactIdentity: {
+      firstName: "TML", lastName: "International", email: "permit@example.com",
+      // Formatted phone + ZIP+4: ACA validates Primary Phone as three segments and Zip
+      // as exactly ##### (operator-observed "Required Invalid" on both).
+      phone: "(800) 818-0598", street: "808 SE Chkalov Dr ST 3-337",
+      city: "Vancouver", state: "WA", zip: "98683-1234",
+    },
+  });
+  withFakePage(
+    adapter,
+    makeFakePage(
+      {
+        pages: [
+          {
+            url: "https://aca-oregon.accela.com/oregon/Cap/CapEdit.aspx",
+            title: "General Info",
+            body: "Step 1: General Info > Applicant. Select from Account or Add New.",
+            rawFields: [
+              { label: "Select from Account", fieldType: "button", role: "button", text: "Select from Account" },
+              { label: "Add New", fieldType: "button", role: "button", text: "Add New" },
+              { label: "Continue Application", fieldType: "button", role: "button", text: "Continue Application" },
+            ],
+          },
+          {
+            url: "https://aca-oregon.accela.com/oregon/Cap/CapConfirm.aspx",
+            title: "Review",
+            body: "Step 3: Review. Please review all information.",
+            rawFields: [{ label: "Continue Application", fieldType: "button", role: "button", text: "Continue Application" }],
+            reviewPairs: [{ label: "Applicant", value: "TML International" }],
+          },
+        ],
+      },
+      log,
+    ),
+  );
+  const result = await adapter.learn(fakeContext, fakeProject);
+  assert.equal(result.ok, true, `run should complete (${result.message || ""})`);
+  assert.ok(log.clicks.some((k) => /add new/i.test(k)), `Add New was clicked: ${JSON.stringify(log.clicks)}`);
+  assert.ok(!log.clicks.some((k) => /select from account/i.test(k)), "must NOT select a pre-existing account contact");
+  // Steps are tagged with the SECTION role: section 0 is the filing contractor
+  // (applicant), section 1 is the property owner (site contact). Installer identity must
+  // never be written into the site-contact section.
+  assert.ok(result.steps.some((s) => (s.note || "") === "contact(applicant): add new"), "add-new recorded for the applicant section");
+  assert.ok(result.steps.some((s) => /^contact: last name \[applicant\]$/.test(s.note || "") && s.field === "installerLastName"), `contact last name filled + field-bound: ${JSON.stringify(result.steps.map((s) => s.note))}`);
+  assert.ok(result.steps.some((s) => /^contact: email \[applicant\]$/.test(s.note || "") && s.field === "installerEmail"), "contact email filled + field-bound");
+  // Each contact field must record its OWN selector - one shared selector replays every
+  // value into the same input (and, at learn time, last name overwrote first name).
+  const contactSels = result.steps
+    .filter((s) => (s.note || "").startsWith("contact: ") && s.action === "fill")
+    .map((s) => String(s.selector?.css ?? ""));
+  assert.equal(new Set(contactSels).size, contactSels.length, `contact fills use distinct selectors: ${JSON.stringify(contactSels)}`);
+  // Zip is trimmed to exactly 5 digits (ACA rejects ZIP+4 with "Invalid (#####)").
+  const zipStep = result.steps.find((s) => (s.note || "").startsWith("contact: zip"));
+  assert.ok(zipStep, "zip recorded");
+  assert.equal(zipStep!.value, "98683", `zip trimmed to 5 digits, got ${zipStep!.value}`);
+  // The phone is split across the segmented control, never dumped whole into one box.
+  const phoneSegs = result.steps.filter((s) => (s.note || "").startsWith("contact: phone"));
+  assert.ok(phoneSegs.length >= 1, "phone recorded");
+  const phoneValues = phoneSegs.map((s) => String(s.value));
+  assert.ok(!phoneValues.includes("(800) 818-0598"), `the raw formatted string is never filled: ${JSON.stringify(phoneValues)}`);
+  assert.ok(phoneValues.every((v) => /^\d{3,4}$/.test(v) || /^\d{3}-\d{3}-\d{4}$/.test(v)), `phone parts are digit segments: ${JSON.stringify(phoneValues)}`);
+  assert.equal(plannerCalls, 1, "no planner call burned on the contacts step");
+}
+
+// ACA ATTACHMENT: Accela commits attachments only on the section's own "Save" —
+// "Continue Application" leaves them pending (operator-reported, live). Each pending row
+// also demands its own Description + Type. The pass must fill the empty ones and click
+// Save, never "Save and resume later".
+async function testAcaAttachmentSavePass() {
+  const log: ActionLog = { clicks: [], fills: [], selects: [], checks: [] };
+  // The attachment step is a FORM page (uploads are skipped on review screens), so the
+  // planner advances off it; page 2 is the review screen.
+  let call = 0;
+  const planner: LearnPlanner = async (): Promise<LearnPlanResponse> => {
+    call++;
+    if (call === 1) return { fills: [], advanceSelectorIndex: 2, atReview: false };
+    return { fills: [], atReview: true, finalSubmitSelectorIndex: 0 };
+  };
+  const adapter = new AutoLearnAdapter("Oregon ePermitting", planner, {
+    docsByType: { plan_set: "C:/tmp/plan-set.pdf" },
+    uploadMode: "combined",
+  });
+  const page = makeFakePage(
+    {
+      pages: [
+        {
+          url: "https://aca-oregon.accela.com/oregon/Cap/CapAttachment.aspx",
+          title: "Attachment",
+          body: "Attachment. File names should not contain special characters. No records found. Description Type (Required)",
+          rawFields: [
+            { label: "Type (Required)", fieldType: "select", id: "docType", options: ["--Select--", "Plans - Structural", "Plans - Electrical"] },
+            { label: "Description", fieldType: "text", id: "desc" },
+            { label: "Next", fieldType: "button", role: "button", text: "Next" },
+          ],
+          reviewPairs: [],
+        },
+        {
+          url: "https://aca-oregon.accela.com/oregon/Cap/CapConfirm.aspx",
+          title: "Review",
+          body: "Step 3: Review. Please review all information.",
+          rawFields: [{ label: "Continue Application", fieldType: "button", role: "button", text: "Continue Application" }],
+          reviewPairs: [{ label: "Attachment", value: "plan-set.pdf" }],
+        },
+      ],
+    },
+    log,
+  );
+  // page.evaluate serves the upload-slot detector ONLY (it is also used for
+  // fingerprints / banner scrapes, which must stay empty).
+  const slotEval = (slots: unknown[]) => async (fn: unknown) =>
+    (/data-al-upl/.test(String(fn ?? "")) ? slots : []);
+  page.evaluate = slotEval([{ key: "u0", label: "", kind: "input", required: true }]);
+  withFakePage(adapter, page);
+  const project = { permitType: "structural" } as ProjectRecord;
+  const result = await adapter.learn(fakeContext, project);
+  assert.equal(result.ok, true, `run should complete (${result.message || ""})`);
+  // The live ACA Save is an <a> (role=link) whose inner <span> holds the text, so a
+  // button-role / :text-is locator counts ZERO on the real DOM - the pass must try the
+  // LINK role first, and record it that way.
+  assert.ok(log.clicks.some((k) => /role:link:.*Save/.test(k)), `Save clicked via the link role: ${JSON.stringify(log.clicks)}`);
+  const saveStep = result.steps.find((s) => (s.note || "") === "attachment: save (commits the upload)");
+  assert.ok(saveStep, "attachment save recorded for replay");
+  assert.equal(saveStep!.selector?.role, "link", "recorded Save targets the anchor role the live control uses");
+  assert.equal(saveStep!.selector?.exact, true, "Save is matched exactly so 'Save and resume later' can't be hit");
+}
+
+// UPLOAD DEDUPE: the same file must not be attached through several GENERIC slots — on
+// Accela that creates duplicate pending rows, each demanding its own Description/Type
+// (live Coos Bay: 3 rows of one PDF, two empty and blocking). Labeled slots are
+// unaffected: combined mode legitimately gives each named slot the same plan set.
+async function testUploadDedupeGenericSlots() {
+  const log: ActionLog = { clicks: [], fills: [], selects: [], checks: [] };
+  // The planner keeps trying to advance, but the portal BLOCKS it (validation), so the
+  // loop re-enters the SAME attachment page several times — exactly the live Accela shape
+  // (every wizard step is served from CapEdit.aspx and the loop revisits it repeatedly).
+  // The dedupe must be RUN-scoped: a per-visit set still re-attached on each pass and
+  // produced a new pending row each time.
+  const planner: LearnPlanner = async (): Promise<LearnPlanResponse> =>
+    ({ fills: [], advanceSelectorIndex: 1, atReview: false });
+  const adapter = new AutoLearnAdapter("Oregon ePermitting", planner, {
+    docsByType: { plan_set: "C:/tmp/plan-set.pdf" },
+    uploadMode: "combined",
+  });
+  const page = makeFakePage(
+    {
+      pages: [
+        {
+          url: "https://aca-oregon.accela.com/oregon/Cap/CapAttachment.aspx",
+          title: "Attachment",
+          body: "Attachment section",
+          rawFields: [
+            { label: "Notes", fieldType: "text", id: "n" },
+            { label: "Next", fieldType: "button", role: "button", text: "Next" },
+          ],
+          // The portal refuses the advance, so the loop revisits this page.
+          blockedValidationErrors: ["Description is required"],
+          reviewPairs: [],
+        },
+        {
+          url: "https://aca-oregon.accela.com/oregon/Cap/CapConfirm.aspx",
+          title: "Review",
+          body: "Step 3: Review. Please review all information.",
+          rawFields: [{ label: "Continue Application", fieldType: "button", role: "button", text: "Continue Application" }],
+          reviewPairs: [{ label: "Attachment", value: "plan-set.pdf" }],
+        },
+      ],
+    },
+    log,
+  );
+  // Three GENERIC slots (Accela's repeated attachment rows) + one LABELED slot.
+  page.evaluate = async (fn: unknown) =>
+    (/data-al-upl/.test(String(fn ?? "")) && /CapAttachment/.test(String(page.url()))
+      ? [
+          { key: "u0", label: "", kind: "input", required: true },
+          { key: "u1", label: "", kind: "input", required: false },
+          { key: "u2", label: "Browse", kind: "input", required: false },
+          { key: "u3", label: "One-Line Electrical Diagram", kind: "input", required: false },
+        ]
+      : []);
+  withFakePage(adapter, page);
+  const result = await adapter.learn(fakeContext, fakeProject);
+  const uploads = result.steps.filter((s) => s.action === "upload");
+  // Across the WHOLE run (several visits to this page): one attach through the generic
+  // slots + one through the labeled slot. Never one pair per visit.
+  assert.equal(uploads.length, 2, `run-scoped dedupe holds across re-visits: ${JSON.stringify(uploads.map((u) => u.note))}`);
+  assert.ok(uploads.some((u) => /One-Line/i.test(String(u.note))), "the labeled slot still received the combined plan set");
+}
+
 const tests: Array<[string, () => Promise<void>]> = [
+  ["ACA ATTACHMENT: Save commits the upload (not Continue), rows get Description + Type", testAcaAttachmentSavePass],
+  ["UPLOAD DEDUPE: one attach through generic slots, labeled slots unaffected", testUploadDedupeGenericSlots],
+  ["ACA CONTACT: Add New with the contractor identity, never a pre-existing account contact", testAcaAddContactDeterministic],
   ["ACA DETERMINISTIC: work-location + record-type handled without the planner", testAcaWorkLocationAndRecordTypeDeterministic],
   ["ACA WRONG-MODULE: records/search module exited via bounded re-entry, real records untouched", testAcaWrongModuleReentry],
   ["ACA DISCLAIMER: entry T&C accepted deterministically, no planner call", testAcaDisclaimerDeterministic],

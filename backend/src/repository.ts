@@ -5382,9 +5382,9 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
       const built = buildPortalPlanner(db, stagedProject, {
         portalType,
         scopeType: isNemTrack ? "utility" : "ahj",
-        // The permit/AHJ application lists differ by discipline; default to structural (the prior
-        // hardcoded behavior) since the staging track doesn't carry the discipline.
-        permitType: isNemTrack ? undefined : "structural",
+        // The permit/AHJ application lists differ by discipline - the TRACK carries it
+        // (electrical files the electrical application; building/combo file structural).
+        permitType: isNemTrack ? undefined : (track === "electrical" ? "electrical" : "structural"),
       });
       gapFillPlanner = built.planner;
       gapFillFields = built.projectFields;
@@ -5557,7 +5557,7 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
                 scope: track === "nem" ? "utility" : "ahj",
                 portalUrl: recipe.portalUrl,
                 createdBy: "auto-relearn (stale recipe)",
-                permitType: track === "nem" ? undefined : (detail.project.permitType === "electrical" ? "electrical" : "structural"),
+                permitType: track === "nem" ? undefined : (track === "electrical" || detail.project.permitType === "electrical" ? "electrical" : "structural"),
               }, { projectId, priority: 5, maxRetries: 0 });
             }).catch(() => null);
             relearnQueued = true;
@@ -5596,7 +5596,7 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
           scope: track === "nem" ? "utility" : "ahj",
           portalUrl: credentialUrl,
           createdBy: "auto-seed (staging)",
-          permitType: track === "nem" ? undefined : (detail.project.permitType === "electrical" ? "electrical" : "structural"),
+          permitType: track === "nem" ? undefined : (track === "electrical" || detail.project.permitType === "electrical" ? "electrical" : "structural"),
           project: stagedProject,
           // Match the hand-coded/replay adapters' headed setting so the self-seed opens a visible
           // browser locally and leaves it open at review for the human (headless on a server).
