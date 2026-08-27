@@ -873,9 +873,14 @@ function migrate(db: AppDb): void {
       created_by TEXT NOT NULL DEFAULT '',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      notes TEXT NOT NULL DEFAULT ''
+      notes TEXT NOT NULL DEFAULT '',
+      -- '' = utility/NEM recipes and legacy rows; else 'structural' | 'electrical' | 'combo'.
+      discipline TEXT NOT NULL DEFAULT ''
     );
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_portal_recipes_profile ON portal_recipes(profile_key);
+    -- UNIQUE on (profile_key, discipline): one recipe per AHJ PER PERMIT DISCIPLINE.
+    -- Keyed on profile_key alone, whichever discipline learned first owned the AHJ and
+    -- the other track could neither replay nor self-seed (see migration v14).
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_portal_recipes_profile_discipline ON portal_recipes(profile_key, discipline);
     CREATE INDEX IF NOT EXISTS idx_portal_recipes_status ON portal_recipes(status);
   `);
 
@@ -1291,6 +1296,40 @@ const VERSIONED_MIGRATIONS: VersionedMigration[] = [
           last_run_at TEXT NOT NULL,
           last_result TEXT NOT NULL DEFAULT ''
         );
+      `);
+    },
+  },
+  {
+    version: 14,
+    name: "recipe_discipline",
+    up: (db) => {
+      // ONE RECIPE PER AHJ was a hard ceiling: portal_recipes had a UNIQUE index on
+      // profile_key alone, so whichever permit discipline learned first OWNED the key.
+      // The other track then resolved that same recipe, was forced onto the replay
+      // adapter (hasRecipe short-circuits to RecipeAdapter), and the discipline gate
+      // correctly refused it — so the second discipline could neither replay NOR
+      // self-seed. Oregon solar needs BOTH filings per project (city/structural and
+      // county/electrical), so the key gains a discipline dimension.
+      addColumnIfMissing(db, "portal_recipes", "discipline", "TEXT NOT NULL DEFAULT ''");
+      // Backfill from the deterministic passes' own recorded notes before the unique
+      // index changes, so existing rows land on the discipline they were learned for.
+      db.run(
+        `UPDATE portal_recipes SET discipline = 'electrical'
+         WHERE scope_type = 'ahj' AND discipline = ''
+           AND (steps_json LIKE '%county/electrical%' OR steps_json LIKE '%record type: Residential - Electrical%')`,
+      );
+      db.run(
+        `UPDATE portal_recipes SET discipline = 'structural'
+         WHERE scope_type = 'ahj' AND discipline = ''
+           AND (steps_json LIKE '%city/structural%' OR steps_json LIKE '%record type: Residential - Structural%')`,
+      );
+      // Utility (NEM) recipes have no permit discipline and stay ''.
+      // The old index is a standalone UNIQUE INDEX (not a table constraint), so it can
+      // be swapped without rebuilding the table.
+      db.exec(`
+        DROP INDEX IF EXISTS idx_portal_recipes_profile;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_portal_recipes_profile_discipline
+          ON portal_recipes(profile_key, discipline);
       `);
     },
   },

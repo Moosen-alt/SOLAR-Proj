@@ -32,6 +32,7 @@ function mapRecipe(row: Row): PortalRecipe {
     notes: s(row.notes),
     // bool() (not Boolean()) — a string "0" cell must read as false, never as trusted.
     autoSubmitEnabled: bool(row.auto_submit_enabled),
+    discipline: s(row.discipline),
   };
 }
 
@@ -66,12 +67,24 @@ export function getPortalRecipe(db: AppDb, recipeId: string): PortalRecipe {
   return mapRecipe(row);
 }
 
+// Recipes are keyed per AHJ PER DISCIPLINE: Oregon solar files a city/structural permit
+// AND a county/electrical one for the same project, and their portal steps differ
+// (different jurisdiction row, different record type). An exact discipline match wins; a
+// LEGACY row (discipline '', learned before the dimension existed) is accepted as a
+// fallback so existing recipes keep replaying — the staging discipline gate still refuses
+// one whose recorded steps belong to the other discipline.
 export function findCompleteRecipeForProject(
   db: AppDb,
-  input: { scopeType: "ahj" | "utility"; state?: string; ahj?: string; utility?: string },
+  input: { scopeType: "ahj" | "utility"; state?: string; ahj?: string; utility?: string; discipline?: string },
 ): PortalRecipe | null {
   const key = recipeProfileKey(input);
-  const row = db.get<Row>("SELECT * FROM portal_recipes WHERE profile_key = ? AND status = 'complete'", [key]);
+  const discipline = s(input.discipline);
+  const row = db.get<Row>(
+    `SELECT * FROM portal_recipes
+      WHERE profile_key = ? AND status = 'complete' AND (discipline = ? OR discipline = '')
+      ORDER BY CASE WHEN discipline = ? THEN 0 ELSE 1 END, updated_at DESC LIMIT 1`,
+    [key, discipline, discipline],
+  );
   return row ? mapRecipe(row) : null;
 }
 
@@ -82,10 +95,20 @@ export function findCompleteRecipeForProject(
 // draft has no URL to launch and the self-seed can't fire — staging silently falls to the no-op mock.
 export function findAnyRecipeForProject(
   db: AppDb,
-  input: { scopeType: "ahj" | "utility"; state?: string; ahj?: string; utility?: string },
+  input: { scopeType: "ahj" | "utility"; state?: string; ahj?: string; utility?: string; discipline?: string },
 ): PortalRecipe | null {
   const key = recipeProfileKey(input);
-  const row = db.get<Row>("SELECT * FROM portal_recipes WHERE profile_key = ? ORDER BY updated_at DESC LIMIT 1", [key]);
+  const discipline = s(input.discipline);
+  // Discipline-scoped for the same reason as above. Critically, this is what the learn
+  // path calls to decide whether a trusted recipe already exists: unscoped, an ELECTRICAL
+  // learn would see the STRUCTURAL recipe, "preserve" it, and silently discard its own
+  // pass — the other half of the one-recipe-per-AHJ ceiling.
+  const row = db.get<Row>(
+    `SELECT * FROM portal_recipes
+      WHERE profile_key = ? AND (discipline = ? OR discipline = '')
+      ORDER BY CASE WHEN discipline = ? THEN 0 ELSE 1 END, updated_at DESC LIMIT 1`,
+    [key, discipline, discipline],
+  );
   return row ? mapRecipe(row) : null;
 }
 
@@ -94,7 +117,7 @@ export function findAnyRecipeForProject(
 // the steps so the admin re-records cleanly (used for "delete & re-record").
 export function startPortalRecording(
   db: AppDb,
-  input: { scopeType: "ahj" | "utility"; state?: string; ahj?: string; utility?: string; portalPlatform?: string; portalUrl?: string; createdBy?: string },
+  input: { scopeType: "ahj" | "utility"; state?: string; ahj?: string; utility?: string; portalPlatform?: string; portalUrl?: string; createdBy?: string; discipline?: string },
 ): PortalRecipe {
   const scopeType = input.scopeType === "utility" ? "utility" : "ahj";
   if (scopeType === "ahj" && !s(input.ahj).trim()) throw new HttpError(400, "ahj is required for an AHJ recipe.");
@@ -104,7 +127,16 @@ export function startPortalRecording(
   // gets mislabeled as a city ("PGE shown as City of Dayton"). Null out ahj for utility.
   const ahj = scopeType === "utility" ? "" : s(input.ahj);
   const key = recipeProfileKey(input);
-  const existing = db.get<Row>("SELECT * FROM portal_recipes WHERE profile_key = ?", [key]);
+  // Scoped to THIS discipline: an electrical learn must not reset the AHJ's structural
+  // recipe (or vice versa). A legacy row (discipline '') is adopted by the first learn
+  // that claims a discipline, so the existing recipe is upgraded in place rather than
+  // orphaned beside a duplicate.
+  const discipline = scopeType === "utility" ? "" : s(input.discipline);
+  const existing = db.get<Row>(
+    `SELECT * FROM portal_recipes WHERE profile_key = ? AND (discipline = ? OR discipline = '')
+      ORDER BY CASE WHEN discipline = ? THEN 0 ELSE 1 END, updated_at DESC LIMIT 1`,
+    [key, discipline, discipline],
+  );
   const now = nowIso();
   if (existing) {
     const nextVersion = Number(existing.version ?? 1) + 1;
@@ -118,19 +150,19 @@ export function startPortalRecording(
          prev_steps_json = CASE WHEN ? != '' THEN ? ELSE prev_steps_json END,
          portal_platform = COALESCE(NULLIF(?, ''), portal_platform),
          portal_url = COALESCE(NULLIF(?, ''), portal_url),
-         updated_at = ? WHERE profile_key = ?`,
+         discipline = ?, updated_at = ? WHERE id = ?`,
       [nextVersion,
         outgoingSteps.length ? s(existing.steps_json) : "", outgoingSteps.length ? s(existing.steps_json) : "",
-        s(input.portalPlatform), s(input.portalUrl), now, key],
+        s(input.portalPlatform), s(input.portalUrl), discipline, now, s(existing.id)],
     );
     return getPortalRecipe(db, s(existing.id));
   }
   const recipeId = id();
   db.run(
     `INSERT INTO portal_recipes
-      (id, scope_type, profile_key, state, ahj, utility, portal_platform, portal_url, status, version, steps_json, created_by, created_at, updated_at, notes)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'recording', 1, '[]', ?, ?, ?, '')`,
-    [recipeId, scopeType, key, s(input.state), ahj, s(input.utility), s(input.portalPlatform), s(input.portalUrl), s(input.createdBy), now, now],
+      (id, scope_type, profile_key, state, ahj, utility, portal_platform, portal_url, status, version, steps_json, created_by, created_at, updated_at, notes, discipline)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'recording', 1, '[]', ?, ?, ?, '', ?)`,
+    [recipeId, scopeType, key, s(input.state), ahj, s(input.utility), s(input.portalPlatform), s(input.portalUrl), s(input.createdBy), now, now, discipline],
   );
   return getPortalRecipe(db, recipeId);
 }

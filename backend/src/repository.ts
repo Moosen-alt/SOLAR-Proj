@@ -74,7 +74,7 @@ import { clientStagingOverlay, getClient } from "./clients";
 import { assertSubmissionPaid } from "./submissionFees";
 import { getDecryptedCredential, getDecryptedCredentialByUrl, getDecryptedCredentialAny } from "./portalCredentials";
 import { logger } from "./logger";
-import { selectAdapterActor, selectStagingActor, resolvePortalChannel, seedOutcomeToStageResult, isUtilityPlatformUrl, isAutoSeedDisabled, recipeDisciplineFromSteps, disciplineConflictsWithTrack } from "./portalChannel";
+import { selectAdapterActor, selectStagingActor, resolvePortalChannel, seedOutcomeToStageResult, isUtilityPlatformUrl, isAutoSeedDisabled, recipeDisciplineFromSteps, disciplineConflictsWithTrack, recipeDisciplineForTrack } from "./portalChannel";
 import { isPortalPaused } from "./portalPause";
 import { buildApplicationDocumentPackage, findApplicationProfile } from "./applicationDocs";
 import { buildUtilityPackage } from "./docSplitter";
@@ -5189,12 +5189,35 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   // for this AHJ (or its utility), replay it — even on a known platform (PowerClerk/Accela). The
   // hand-coded platform adapters are the FALLBACK when no recipe exists. The lookup is track-
   // scoped so a NEM stage never picks up an AHJ permit recipe (and vice-versa).
-  const recipe = track === "nem"
+  // Which permit discipline this track files under - the recipe key's second dimension.
+  const trackDiscipline = recipeDisciplineForTrack(track);
+  let recipe = track === "nem"
     // NEM stages against the utility's recorded recipe.
     ? findCompleteRecipeForProject(db, { scopeType: "utility", state: detail.project.state, utility: detail.project.utility })
     // Permit tracks replay ONLY an AHJ-scoped recipe — never a utility (NEM) recipe, which is a
     // different portal and form. No AHJ recipe → self-seed / hand-coded fallback, not a wrong-track replay.
-    : findCompleteRecipeForProject(db, { scopeType: "ahj", state: detail.project.state, ahj: detail.project.ahj, utility: detail.project.utility });
+    : findCompleteRecipeForProject(db, { scopeType: "ahj", state: detail.project.state, ahj: detail.project.ahj, utility: detail.project.utility, discipline: trackDiscipline });
+  // LEGACY-ROW DISCIPLINE CHECK. Recipes are keyed per AHJ per discipline, but rows
+  // recorded before that dimension existed carry discipline '' and are accepted as a
+  // fallback. If such a row was actually learned for the OTHER discipline, its steps pick
+  // the wrong jurisdiction row and record type — so drop it here rather than replaying it.
+  // Dropping (instead of refusing the stage) is the unlock: with no recipe in hand the
+  // dispatch falls through to the universal learner, which now seeds THIS discipline's own
+  // recipe. Refusing left the second discipline able to neither replay nor self-seed.
+  let droppedLegacyRecipeDiscipline: "electrical" | "structural" | null = null;
+  if (recipe && trackDiscipline && !recipe.discipline) {
+    try {
+      const learnedFor = recipeDisciplineFromSteps(getPortalRecipe(db, recipe.id).steps);
+      if (disciplineConflictsWithTrack(learnedFor, track)) {
+        droppedLegacyRecipeDiscipline = learnedFor;
+        addAuditLog(db, projectId, "system", "submit gate", "portal.discipline_recipe_skipped", {
+          track: track ?? "permit", recipeId: recipe.id, learnedFor,
+        });
+        recipe = null;
+      }
+    } catch { /* unreadable steps — leave the recipe in place for the gate below */ }
+  }
+
   // Precedence: recipe (universal, first-line) → hand-coded platform adapter → mock.
   const adapterActorName = selectAdapterActor(Boolean(recipe), isAccela, isPowerClerk);
 
@@ -5263,7 +5286,7 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   // like the complete-recipe lookup above (NEM → utility key; permit → AHJ only, never utility).
   const draftRecipe = track === "nem"
     ? findAnyRecipeForProject(db, { scopeType: "utility", state: detail.project.state, utility: detail.project.utility })
-    : findAnyRecipeForProject(db, { scopeType: "ahj", state: detail.project.state, ahj: detail.project.ahj, utility: detail.project.utility });
+    : findAnyRecipeForProject(db, { scopeType: "ahj", state: detail.project.state, ahj: detail.project.ahj, utility: detail.project.utility, discipline: trackDiscipline });
   // A PERMIT track must never launch a utility platform (PowerClerk etc.). A learned
   // profile / recipe / KB row matched via the project's UTILITY can carry the NEM portal
   // URL — filter those candidates out here so resolution falls through to a real AHJ
@@ -5471,6 +5494,10 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   // learner bakes the learn project's permit discipline into the recorded jurisdiction
   // row + record-type steps, and recipes are not yet discipline-keyed. Best-effort load
   // — a failed read must not block the stage.
+  // DEFENCE IN DEPTH. The legacy check above drops a cross-discipline recipe before the
+  // channel is chosen, so this should no longer fire; it stays as the last guard against
+  // replaying a recipe whose steps file under the wrong authority (silently - the clicks
+  // all succeed, so neither drift detection nor self-heal would notice).
   let recipeDisciplineConflict: "electrical" | "structural" | null = null;
   if (recipe && (track === "electrical" || track === "building")) {
     try {
@@ -5603,6 +5630,11 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
           headless: stageOptions.headless,
         });
         result = seedOutcomeToStageResult(seed);
+        // Say WHY this stage learned instead of replaying, so a re-learn on an AHJ that
+        // already had a recipe doesn't look like the recipe went missing.
+        if (droppedLegacyRecipeDiscipline && typeof result.message === "string") {
+          result.message = `${result.message} (This AHJ's existing recipe was recorded for the ${droppedLegacyRecipeDiscipline} permit, so the ${track} track learned its own — each discipline now keeps a separate recipe.)`;
+        }
       } catch (err) {
         // Learner couldn't even start (network/login/validation) — stop and surface.
         const msg = `Universal learn failed before staging: ${err instanceof Error ? err.message : String(err)}. Resolve the blocker and re-stage, or record the portal manually.`;

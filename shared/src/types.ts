@@ -1889,6 +1889,11 @@ export interface PortalRecipe {
   notes: string;
   /** Hybrid: operator has trusted this portal for one-click approve-submit. Off by default. */
   autoSubmitEnabled?: boolean;
+  /** Permit discipline this recipe was learned for — "structural" | "electrical" | "combo".
+   *  Empty for utility (NEM) recipes and for legacy rows recorded before recipes gained the
+   *  dimension. An AHJ holds ONE recipe PER DISCIPLINE: the city/structural and
+   *  county/electrical filings drive different portal steps. */
+  discipline?: string;
 }
 
 // ---------------------------------------------------------------------------

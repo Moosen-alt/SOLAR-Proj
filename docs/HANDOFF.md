@@ -300,13 +300,39 @@ Still open, in order:
         portalChannel.ts) refuses to replay an electrical-learned recipe for a
         building track and vice versa — the baked COUNTY/CITY row + record-type
         clicks would file under the wrong authority SILENTLY.
-        OPEN DESIGN DECISION (from that gate): AHJ recipes are keyed
-        state|ahj|utility with NO permit-discipline dimension, and Oregon solar
-        needs BOTH a city/structural and a county/electrical filing per project —
-        so the second discipline of any AHJ currently cannot replay (the gate
-        blocks it honestly instead of filing wrong). Recipes need a per-
-        discipline key (and the trusted-learn replacement rule must respect it);
-        do this deliberately, not as a drive-by.
+        RESOLVED (migration v14, `recipe_discipline`): AHJ recipes are now keyed
+        state|ahj|utility PER DISCIPLINE. `portal_recipes` gained a `discipline`
+        column ('' | structural | electrical | combo) and the UNIQUE index moved
+        from `profile_key` to `(profile_key, discipline)` — the old single-column
+        index was a standalone INDEX, not a table constraint, so no rebuild was
+        needed. v14 backfills existing rows from the deterministic passes' own
+        recorded notes (`county/electrical` / `city/structural` / the record-type
+        note) before swapping the index. Track → discipline lives in ONE place:
+        `recipeDisciplineForTrack` (portalChannel.ts) — building→structural,
+        electrical→electrical, mpu→electrical (a service upgrade files as an
+        electrical permit), combo→combo, nem/untracked→''.
+        Lookups (`findCompleteRecipeForProject` / `findAnyRecipeForProject`) take
+        a discipline, prefer an exact match, and still accept a LEGACY '' row so
+        existing recipes keep replaying. `startPortalRecording` claims this
+        discipline's own row (adopting a legacy row in place), so an electrical
+        learn no longer resets the structural recipe — and the learn path's
+        protect-complete lookup is discipline-scoped too, which was the other
+        half of the ceiling (unscoped, an electrical learn saw the structural
+        recipe, "preserved" it, and silently discarded its own pass).
+        THE ACTUAL UNLOCK: when a legacy '' recipe turns out to have been learned
+        for the OTHER discipline, prepareSubmission now DROPS it (recipe = null)
+        instead of refusing the stage, so the dispatch falls through to the
+        universal learner and this discipline seeds its own recipe. Refusing left
+        the second discipline able to neither replay nor self-seed. The old
+        conflict gate stays as defence-in-depth. Pinned by
+        backend/test/recipeDiscipline.test.ts (7 checks incl. the v14 replay).
+        STILL OPEN for the electrical track end-to-end: autopilot itself only
+        drives ONE track (the UI sends no track and the pre-stage status guard
+        refuses the project once the first track stages), the county filing
+        AUTHORITY exists only inside the two Playwright passes (tracking and
+        labelling still attribute the electrical record to the city), and an
+        untracked stage on a separate-permit AHJ records permit_type='permit'
+        and shows on no track.
         LIVE RUN SESSION (2026-08-27, ten runs against Coos Bay — a REAL Oregon
         ePermitting jurisdiction; **Salem is NOT on Accela**, it runs its own
         portal, so the earlier Salem runs were never going to resolve an address.

@@ -567,11 +567,15 @@ export async function autoLearnPortal(
   // /auto-learn endpoint can target a portal that already has a verified-complete recipe —
   // and a paused/failed/unverified pass must NOT destroy it. A complete recipe is only ever
   // replaced by a NEW learn that itself verified trusted (or by an explicit delete/re-record).
+  // Discipline-scoped: unscoped, an ELECTRICAL learn would find the AHJ's STRUCTURAL
+  // recipe, treat it as "already trusted", and silently discard its own pass.
+  const learnDiscipline = scopeType === "utility" ? "" : (input.permitType === "electrical" ? "electrical" : input.permitType === "structural" ? "structural" : "");
   const existingRecipe = findAnyRecipeForProject(db, {
     scopeType,
     state: project.state,
     ahj: project.ahj,
     utility: project.utility,
+    discipline: learnDiscipline,
   });
   const protectComplete = existingRecipe?.status === "complete";
   // Terminal progress signal — the LearnProgress contract includes phase "done" so the UI
@@ -600,6 +604,8 @@ export async function autoLearnPortal(
     portalPlatform: "auto-learned",
     portalUrl,
     createdBy: input.createdBy || "auto-learn",
+    // Claims this discipline's own row instead of resetting the AHJ's other one.
+    discipline: learnDiscipline,
   });
 
   if (learn.pauseReason) {

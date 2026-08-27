@@ -172,6 +172,29 @@ export function seedOutcomeToStageResult(seed: {
 }
 
 
+// The permit DISCIPLINE a submittal track files under — the dimension portal_recipes is
+// keyed on alongside the jurisdiction. Oregon solar files a city/structural permit AND a
+// county/electrical one for the same project, and those drive different portal steps
+// (different jurisdiction row, different record type), so they cannot share a recipe.
+// "" = no permit discipline: the NEM/utility track, and legacy untracked stages.
+export function recipeDisciplineForTrack(track: string | null | undefined): string {
+  switch (track) {
+    case "electrical":
+      return "electrical";
+    // A main-panel/service upgrade is filed as an electrical permit.
+    case "mpu":
+      return "electrical";
+    case "building":
+      return "structural";
+    // A combination permit covers both trades in ONE filing — its own record type, so its
+    // own recipe rather than being folded into either discipline.
+    case "combo":
+      return "combo";
+    default:
+      return "";
+  }
+}
+
 // ── Recipe permit-discipline detection ──────────────────────────────────────────────────
 // The ACA learner's deterministic passes record jurisdiction-row and record-type steps
 // whose notes carry the LEARN project's permit discipline ("work location: select
