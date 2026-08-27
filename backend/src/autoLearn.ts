@@ -215,6 +215,17 @@ export function buildPortalPlanner(
   // required questions past runs couldn't answer) extend the built-in topic list.
   const digest = designNotesDigest(project, 1200, activeLearnedNoteTerms(db));
   if (digest) projectFields["designNotes"] = digest;
+  // EXPORT-LIMITING ANSWER. NEM portals ask a REQUIRED "Do you propose to limit the
+  // export capacity?" radio; without a bound field the planner leaves it blank and the
+  // trust gate refuses the recipe on every run (seen live on PGE). Derive it: the
+  // answer is "Yes" only when the design carries actual export-limiting evidence
+  // (PCS / power control system, export limit, non-export, NGOM) — a plain NEM system
+  // exports and answers "No". Never override an explicit parser/operator value.
+  if (!projectFields["exportLimiting"]) {
+    const evidence = `${fieldValues["exportMode"] ?? ""} ${fieldValues["pcs"] ?? ""} ${fieldValues["exportLimit"] ?? ""} ${projectFields["designNotes"] ?? ""}`;
+    projectFields["exportLimiting"] =
+      /non.?export|export.?limit\b|power control system|\bpcs\b|\bngom\b/i.test(evidence) ? "Yes" : "No";
+  }
 
   // KB CONTEXT. Fuzzy, state-aware lookup so imported reference knowledge
   // ("Portland General Electric" / "Arizona Public Service Company") still hits
@@ -716,7 +727,20 @@ export async function autoLearnPortal(
   }
   const bindingNote = boundLiterals.length ? ` Bound ${boundLiterals.length} literal value(s) to project fields for safe replay.` : "";
 
-  let trusted = verification.accurate && !textContradicts && !hasHardBlockers && ambiguousLiterals.length === 0;
+  // PROMOTION FLOOR: a trusted recipe must have actually WALKED a wizard. The live Salem
+  // run stopped on page 2 (entry disclaimer misread as review) with a single recorded fill
+  // and was promoted with an EMPTY application — "accurate" was vacuous: nothing present,
+  // nothing contradicted. Below these minimums the recipe stays draft for human
+  // confirmation; it is never auto-trusted.
+  const substantiveSteps = (learn.steps ?? []).filter((s) => s.action === "fill" || s.action === "select" || s.action === "check").length;
+  const tooThin = (learn.pageCount ?? 0) < 3 || substantiveSteps < 5;
+  if (tooThin) {
+    verification.issues.push(
+      `Learn run too thin to auto-trust (${learn.pageCount} page(s), ${substantiveSteps} recorded fill(s)) — verify the captured fill by hand before trusting.`,
+    );
+  }
+
+  let trusted = verification.accurate && !textContradicts && !hasHardBlockers && ambiguousLiterals.length === 0 && !tooThin;
   if (hasHardBlockers) {
     if (requiredMisses.length) verification.issues.push(`Required field(s) left blank/unselected — fill before trusting: ${requiredMisses.slice(0, 12).join(", ")}${requiredMisses.length > 12 ? ", …" : ""}.`);
     if (docMisses.length) verification.issues.push(`Required document(s) not attached: ${docMisses.slice(0, 8).join(", ")}.`);

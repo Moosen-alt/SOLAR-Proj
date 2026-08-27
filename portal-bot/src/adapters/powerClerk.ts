@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import type { ProjectRecord, ReviewerReport } from "../../../shared/src/types";
 import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, ok, fail, type PortalContext, type PortalStepResult } from "../adapter";
@@ -120,25 +121,56 @@ export class PowerClerkAdapter extends BasePortalAdapter {
       this.opened = opened;
       this.page = opened.page;
 
-      await this.page.goto(PGE_LOGIN_URL);
+      // Portal-aware login URL: PowerClerk hosts many utilities (PGE, PacifiCorp…) on
+      // per-utility subdomains. The staging dispatch resolves the track-scoped portal URL
+      // (portal_credentials / recipe / KB) into context.startUrl — use it when it's a real
+      // PowerClerk login page; the hardcoded PGE URL remains the compatibility default.
+      const loginUrl = context.startUrl && /powerclerk\.com/i.test(context.startUrl)
+        ? context.startUrl
+        : PGE_LOGIN_URL;
+      await this.page.goto(loginUrl);
       await this.page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
 
       const loginVisible = await this.page.getByRole("button", { name: "Log In" }).count();
       if (loginVisible > 0) {
         if (context.credential) {
           // Session expired — auto-fill the login form with stored credentials.
+          // Selector strategy proven on live pgenm.powerclerk.com (2026-08): the label
+          // association on the login inputs doesn't resolve for getByLabel, and the page
+          // renders more than one "Log In" control — target the FORM that holds the
+          // password input and its own submit, then confirm login by URL, not by button
+          // visibility (the Vue login transition can outlast one networkidle).
           try {
-            await this.page.getByLabel(/email|username/i).fill(context.credential.username);
-            await this.page.getByLabel(/password/i).fill(context.credential.password);
-            await this.page.getByRole("button", { name: "Log In" }).click();
+            await this.page.locator("input[type='email'], input[id*='user' i], input[name*='user' i], input[id*='email' i]").first()
+              .fill(context.credential.username);
+            await this.page.locator("input[type='password']").first().fill(context.credential.password);
+            await this.page.locator("form").filter({ has: this.page.locator("input[type='password']") })
+              .locator("button, input[type='submit']").first().click();
             await this.page.waitForLoadState("networkidle", { timeout: 20000 }).catch(() => null);
+            // Give the post-login redirect up to ~15s to land on an authenticated page.
+            // Test the PATHNAME only: a FAILED login sits at
+            // /MvcAccount/Login?ReturnUrl=%2FHomepage%2FProgramHome… whose query contains
+            // the literal "Homepage" — a whole-URL regex would call that authenticated.
+            const authedNow = () => {
+              try {
+                const p = new URL(String(this.page.url() ?? "")).pathname;
+                return /Homepage|ProgramHome|ProjectList/i.test(p) && !/MvcAccount\/Login/i.test(p);
+              } catch { return false; }
+            };
+            for (let i = 0; i < 30; i++) {
+              if (authedNow()) break;
+              await this.page.waitForTimeout(500).catch(() => null);
+            }
 
             const mfaVisible = await this.page.getByText(/verify|two.factor|authenticat/i).count() > 0;
             if (mfaVisible) {
               return { ok: false, message: "MFA/2FA required after credential fill — pausing for human. Complete verification in the browser window, then retry the portal run.", pauseReason: "mfa_captcha" };
             }
+            // URL is the authoritative signal — an authenticated PowerClerk page can still
+            // render "Log In" text in a nav/footer, so button visibility alone false-fails.
+            const authed = authedNow();
             const stillVisible = await this.page.getByRole("button", { name: "Log In" }).count();
-            if (stillVisible > 0) {
+            if (!authed && stillVisible > 0) {
               return fail("Credential auto-fill did not result in a successful login. Check the stored username/password in Portal Credentials.");
             }
           } catch (fillErr) {
@@ -340,13 +372,34 @@ export class PowerClerkAdapter extends BasePortalAdapter {
     if (!this.page) return fail("Not logged in. Call login() first.");
     const page = this.page;
     try {
-      // PowerClerk's Program Home renders "New Net Metering Application" as an <a class="btn">
+      // PowerClerk's Program Home renders "New <Program> Application" as an <a class="btn">
       // LINK (matched by role "link") with an onboarding popover anchored on it that
       // intercepts clicks. Match link-OR-button and click through the overlay.
+      // Program names differ per utility (PGE: "New Net Metering Application"; PacifiCorp
+      // shows BOTH "New Pacific Power Customer Generation Application" and a Rocky Mountain
+      // Power sibling) — prefer the button naming the project's utility, then the PGE
+      // default, then any "New … Application".
       await clearPowerClerkOverlays(page);
-      const newApp = page.getByRole("link", { name: "New Net Metering Application" })
-        .or(page.getByRole("button", { name: "New Net Metering Application" }));
-      await this.clickResilient(newApp, "New Net Metering Application");
+      // Match by the PROGRAM wording the button actually carries, not the raw utility
+      // string: PGE's button says "New Net Metering Application" (no "PGE" in it), and
+      // the codebase's canonical utility value IS the short form "PGE" — so a naive
+      // `.*PGE.*` regex never matched and always degraded to the loose fallback.
+      const utilRaw = String(project.utility || "").trim();
+      const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const utilityWord = /^(pge|portland general electric)$/i.test(utilRaw)
+        ? "" // PGE's program button carries no utility name — use the exact default below
+        : /pacificorp|pacific power/i.test(utilRaw)
+          ? "Pacific Power" // PacifiCorp's page shows Pacific Power + Rocky Mountain siblings
+          : utilRaw;
+      const newAppRe = utilityWord
+        ? new RegExp(`^New .*${escapeRe(utilityWord)}.* Application$`, "i")
+        : /^New Net Metering Application$/i;
+      let newApp = page.getByRole("link", { name: newAppRe }).or(page.getByRole("button", { name: newAppRe }));
+      if ((await newApp.count().catch(() => 0)) === 0) {
+        const anyNew = /^New .* Application$/i;
+        newApp = page.getByRole("link", { name: anyNew }).or(page.getByRole("button", { name: anyNew }));
+      }
+      await this.clickResilient(newApp.first(), "New application");
       await page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => null);
 
       // The wizard opens on one or more intro/instruction pages (a Welcome page, sometimes a
@@ -367,13 +420,29 @@ export class PowerClerkAdapter extends BasePortalAdapter {
         reachedData = await this.dataSectionReached(firstSection, introProbeMs);
         if (reachedData) break; // first data section is up — do NOT click past it
         await clearPowerClerkOverlays(page);
+        // ACKNOWLEDGMENT GATE: the Welcome/terms intro page renders an "I agree"-style
+        // checkbox and DISABLES Next until it's ticked — a disabled button defeats every
+        // click strategy (normal/force/dispatch all no-op), so the loop used to strand on
+        // the Welcome page whenever a fresh session showed the terms. Intro pages carry no
+        // data form (dataSectionReached just said so), so any unchecked checkbox here is an
+        // acknowledgment — tick them all (there are at most a couple).
+        const introBoxes = page.locator("input[type='checkbox']");
+        const boxCount = Math.min(await introBoxes.count().catch(() => 0), 4);
+        for (let b = 0; b < boxCount; b++) {
+          const box = introBoxes.nth(b);
+          if (await box.isVisible().catch(() => false) && !(await box.isChecked().catch(() => true))) {
+            await box.check({ timeout: 4000 }).catch(() => null);
+            console.error(`[powerclerk] openSubmission: ticked intro acknowledgment checkbox ${b + 1}`);
+          }
+        }
         const next = page.getByRole("button", { name: "Next", exact: true })
           .or(page.getByRole("link", { name: "Next", exact: true }));
         if ((await next.count().catch(() => 0)) === 0) break; // nothing left to advance with
+        console.error(`[powerclerk] openSubmission: advancing intro page ${i + 1}`);
         await this.clickResilient(next, `Next (intro ${i + 1})`);
         await page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => null);
       }
-      if (!reachedData && process.env.POWERCLERK_DEBUG === "1") {
+      if (!reachedData) {
         console.error(`[powerclerk] openSubmission: did not reach the first data section after ${MAX_INTRO_PAGES} intro pages — fillApplication will surface required-field failures if it landed wrong.`);
       }
       return ok("New Net Metering Application started.", { projectId: project.id });
@@ -451,10 +520,36 @@ export class PowerClerkAdapter extends BasePortalAdapter {
           ".validation-summary-errors,.field-validation-error,[class*=error-message],[class*=alert-danger],[class*=text-danger]"
         ).first();
         const errText = await errEl.isVisible().then(() => errEl.textContent()).catch(() => null);
+        // The scraped error is often just the "*" the asterisk-marker renders — name the
+        // REQUIRED fields still empty on this page instead (labels only, never values),
+        // and drop a debug screenshot so a stalled live run is diagnosable after the fact.
+        const emptyRequired: string[] = await page.evaluate(() => {
+          const out: string[] = [];
+          document.querySelectorAll<HTMLElement>("input, select, textarea").forEach((el) => {
+            const inp = el as HTMLInputElement;
+            if (inp.type === "hidden" || inp.type === "checkbox" || inp.type === "radio") return;
+            const r = el.getBoundingClientRect();
+            if (r.width === 0 || r.height === 0) return;
+            if ((inp.value || "").trim()) return;
+            const id = el.getAttribute("id");
+            const lbl = (id ? document.querySelector(`label[for="${CSS.escape(id)}"]`)?.textContent : "")
+              || el.closest("label")?.textContent || el.getAttribute("aria-label") || inp.placeholder || "";
+            const clean = (lbl || "").replace(/\s+/g, " ").trim().slice(0, 50);
+            const required = inp.required || el.getAttribute("aria-required") === "true" || /\*/.test(clean);
+            if (required && clean) out.push(clean);
+          });
+          return out.slice(0, 8);
+        }).catch(() => []);
+        try {
+          const dir = process.env.POWERCLERK_DEBUG_DIR || path.join("data", "portal-debug");
+          fs.mkdirSync(dir, { recursive: true });
+          await page.screenshot({ path: path.join(dir, `stall-${(section || "section").replace(/[^a-z0-9]+/gi, "-")}-${Date.now()}.png`), fullPage: true }).catch(() => null);
+        } catch { /* best-effort */ }
         const loc = section ? ` (${section})` : "";
-        throw new Error(
-          `PowerClerk Next click did not advance${loc}${errText ? `: ${errText.trim().slice(0, 120)}` : " — possible validation error or required field missing"}`
-        );
+        const detail = emptyRequired.length
+          ? `: required fields still empty — ${emptyRequired.join("; ")}`
+          : errText ? `: ${errText.trim().slice(0, 120)}` : " — possible validation error or required field missing";
+        throw new Error(`PowerClerk Next click did not advance${loc}${detail}`);
       }
       // The URL advanced — now WAIT for the next section to actually render before the caller
       // starts filling it. This is the fix for "walks to the end and fills nothing": a Vue
@@ -499,16 +594,61 @@ export class PowerClerkAdapter extends BasePortalAdapter {
         );
       }
 
-      // The page may render multiple contact sections; pin the installer block
-      // to the first matching field of each kind to stay unambiguous. These are
-      // REQUIRED (submitting-party identity) — route through safeAction so a missed
-      // fill fails the run instead of submitting a half-populated installer block.
-      await collect("installerName", () => page.getByRole("textbox", { name: "Name" }).first().fill(installerFirst));
-      await collect("installerLast", () => page.getByRole("textbox", { name: "Last" }).first().fill(installerLast));
-      await collect("installerAddress", () => page.getByRole("textbox", { name: "Address", exact: true }).first().fill(installerAddress));
-      await collect("installerEmail", () => page.getByRole("textbox", { name: "Email" }).first().fill(installerEmail));
-      await collect("installerPhone", () => page.getByRole("textbox", { name: "Phone" }).first().fill(installerPhone));
-      await settleAndNext("installer contact", /PGE Customer Information|Applicant/i);
+      // LIVE PAGE SHAPE (2026-08, from a stalled-run screenshot): the Preparer page's
+      // labels ("Name *", "Address *") are headings NOT associated with the inputs — the
+      // accessible names are the PLACEHOLDERS ("First", "Last", "Company", "Street",
+      // "City", "Zip Code", "Email", "(###) ###-####"). getByRole("textbox",{name:"Name"})
+      // matched nothing, every fill silently missed, and Next was blocked on the empty
+      // required fields. Fill placeholder-first with the old role-name selector kept as a
+      // fallback for older program builds. These are REQUIRED (submitting-party identity) —
+      // route through safeAction so a missed fill fails the run instead of submitting a
+      // half-populated preparer block.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const fillText = async (key: string, placeholder: string | RegExp, roleName: string | null, value: string, scope: any = page) => {
+        if (!value) return;
+        await collect(key, async () => {
+          // Selector priority: associated label (live probe confirmed label[for] exists on
+          // Preparer/Applicant fields) → placeholder → role-name.
+          let loc = roleName ? scope.getByLabel(roleName, { exact: true }).first() : scope.getByPlaceholder(placeholder).first();
+          if (!(await loc.count().catch(() => 0))) loc = scope.getByPlaceholder(placeholder).first();
+          if (!(await loc.count().catch(() => 0)) && roleName) loc = scope.getByRole("textbox", { name: roleName }).first();
+          await loc.fill(value);
+          // PowerClerk's Vue AUTOSAVES PER FIELD ON BLUR (documented quirk). Without the
+          // blur the value shows on screen but never reaches the saved model — a blocked
+          // Next then re-renders from that empty model and silently WIPES every fill
+          // (the "page still empty at the stall screenshot" failure). Blur each field,
+          // then verify the value actually held. Log field keys only — never values.
+          await loc.blur().catch(() => null);
+          await page.waitForTimeout(250).catch(() => null);
+          const held = String(await loc.inputValue().catch(() => ""));
+          console.error(`[powerclerk] fill ${key}: ${held.trim() ? "held" : "NOT HELD"}`);
+          if (!held.trim()) throw new Error(`fill did not hold for ${key}`);
+        });
+      };
+      // Client business address parts: installerCityStateZip is "City, ST 12345".
+      const cszRaw = str(s["installerCityStateZip"] ?? s["installer_city_state_zip"]);
+      const cszMatch = cszRaw.match(/^(.*?),\s*([A-Z]{2})\s*(\d{5})?/i);
+      const instCity = cszMatch?.[1]?.trim() || "";
+      const instState = cszMatch?.[2]?.toUpperCase() || "";
+      const instZip = cszMatch?.[3] || "";
+      const instStreet = str(s["installerStreet"] ?? s["installer_street"]) || installerAddress;
+
+      await fillText("preparerFirst", "First", "Name", installerFirst);
+      await fillText("preparerLast", "Last", "Last", installerLast);
+      await fillText("preparerCompany", "Company", "Company", installerCompanyName);
+      await fillText("preparerStreet", "Street", "Address", instStreet);
+      await fillText("preparerCity", "City", "City", instCity);
+      if (instState) {
+        // The state dropdown is unlabeled — pin it by its state-code options so a
+        // sibling select (e.g. a contact picker) can never be hit by mistake.
+        await collect("preparerState", async () => {
+          await selectWithFallback(page, page.locator("select").filter({ has: page.locator("option[value='OR'], option[value='WA']") }).first(), instState);
+        });
+      }
+      await fillText("preparerZip", "Zip Code", "Zip Code", instZip);
+      await fillText("preparerEmail", "Email", "Email", installerEmail);
+      await fillText("preparerPhone", "(###) ###-####", "Phone", installerPhone);
+      await settleAndNext("preparer contact", /PGE Customer Information|Applicant/i);
 
       // --- Applicant (PGE Customer / homeowner) -----------------------------
       // Scope the whole block to the Applicant group so it never collides with
@@ -526,18 +666,31 @@ export class PowerClerkAdapter extends BasePortalAdapter {
       const applicantScope = (await applicant.count()) > 0 ? applicant : page;
 
       // Applicant identity is REQUIRED — surface failures (field names only; never the
-      // owner name / address value itself).
-      await collect("applicantName", () => applicantScope.getByRole("textbox", { name: "Name" }).first().fill(ownerFirst));
-      await collect("applicantLast", () => applicantScope.getByPlaceholder("Last").first().fill(ownerLast));
-      await collect("applicantAddress", () => applicantScope.getByRole("textbox", { name: "Address", exact: true }).first().fill(project.projectAddress ?? ""));
-      await collect("applicantCity", () => applicantScope.getByRole("textbox", { name: "City" }).first().fill(project.city ?? ""));
-      await collect("applicantState", () => applicantScope.getByLabel("State").first().selectOption(project.state || "OR"));
-      await collect("applicantZip", () => applicantScope.getByRole("textbox", { name: "Zip Code" }).first().fill(project.zip ?? ""));
+      // owner name / address value itself). Same live-page shape as the Preparer step:
+      // labels are unassociated headings, the accessible names are the PLACEHOLDERS —
+      // fill placeholder-first with the old role-name selectors as the fallback.
+      // The street placeholder is "Street"; project.projectAddress carries the full
+      // "street, city, ST, zip" — send only the street segment.
+      const ownerStreet = String(project.projectAddress ?? "").split(",")[0].trim();
+      await fillText("applicantName", "First", "Name", ownerFirst, applicantScope);
+      await fillText("applicantLast", "Last", "Last", ownerLast, applicantScope);
+      await fillText("applicantAddress", "Street", "Address", ownerStreet || (project.projectAddress ?? ""), applicantScope);
+      await fillText("applicantCity", "City", "City", project.city ?? "", applicantScope);
+      // Pin the state select by its state-code options — the applicant block also renders
+      // a "New Contact" picker <select>, and .first() would land on it.
+      await collect("applicantState", async () => {
+        let sel = applicantScope.getByLabel("State").first();
+        if (!(await sel.count().catch(() => 0))) {
+          sel = applicantScope.locator("select").filter({ has: page.locator("option[value='OR'], option[value='WA']") }).first();
+        }
+        await selectWithFallback(page, sel, project.state || "OR");
+      });
+      await fillText("applicantZip", "Zip Code", "Zip Code", project.zip ?? "", applicantScope);
 
       const ownerPhone = str(s["homeownerPhone"] ?? s["owner_phone"]);
       const ownerEmail = str(s["homeownerEmail"] ?? s["owner_email"]);
-      if (ownerPhone) await applicantScope.getByRole("textbox", { name: "Phone" }).first().fill(ownerPhone);
-      if (ownerEmail) await applicantScope.getByRole("textbox", { name: "Email" }).first().fill(ownerEmail);
+      await fillText("applicantPhone", "(###) ###-####", "Phone", ownerPhone, applicantScope);
+      await fillText("applicantEmail", "Email", "Email", ownerEmail, applicantScope);
       await settleAndNext("applicant");
 
       // --- Installer company selection (same authoritative client value) -----
@@ -604,16 +757,31 @@ export class PowerClerkAdapter extends BasePortalAdapter {
       const inverterManufacturer = str(s["inverterManufacturer"] ?? s["inverter_manufacturer"]);
       const inverterModel = str(s["inverterModel"] ?? s["inverter_model"]);
 
-      await page.locator("#pcInputBase32").fill(inverterQty).catch(() => null);
+      // Scope every inverter control to the inverter <fieldset> (role=group, legend
+      // "Inverter…"). The old path used #pcInputBase32 for qty and a PAGE-WIDE
+      // getByText("Please select...").first() for make/model — both drift: the
+      // pcInputBase id is assigned at mount and shifts with the number of arrays
+      // (live it's pcInputBase42, not 32), and ".first()" can land on a PV array's
+      // combobox once the inverter's is filled. Group-scoping pins them; the old
+      // locators stay as a fallback if the group can't be found.
+      const invGroup = page.getByRole("group", { name: /Inverter/i }).first();
+      const invGroupOk = (await invGroup.count().catch(() => 0)) > 0;
+      // Qty is placeholder-labeled on the array blocks (getByPlaceholder below), but
+      // may be a <label for> on the inverter block — accept either.
+      const invQty = invGroupOk
+        ? invGroup.getByPlaceholder("Qty").or(invGroup.getByLabel("Qty", { exact: true })).first()
+        : page.locator("#pcInputBase32");
+      await invQty.fill(inverterQty).catch(() => null);
+      const invTrigger = () => (invGroupOk ? invGroup : page).getByText("Please select...").first();
 
       if (inverterManufacturer) {
-        await this.selectSearchable(inverterManufacturer);
+        await fillCustomCombobox(page, invTrigger(), inverterManufacturer);
       }
       if (inverterModel) {
         // The model dropdown cascade-loads ~600ms after the manufacturer change —
         // selecting immediately races an empty/stale option list.
         if (inverterManufacturer) await this.waitForCascadeLoad();
-        await this.selectSearchable(inverterModel);
+        await fillCustomCombobox(page, invTrigger(), inverterModel);
       }
 
       // PV arrays — fill the first, clone for each additional array
@@ -690,14 +858,6 @@ export class PowerClerkAdapter extends BasePortalAdapter {
     await sleep(800);
   }
 
-  // Selects a value from a PowerClerk searchable "Please select..." dropdown.
-  // Clicks the trigger, types the term into the search box, then delegates
-  // option picking to fillCustomCombobox (ARIA-role or list-item fallback).
-  private async selectSearchable(term: string): Promise<void> {
-    const trigger = this.page.getByText("Please select...").first();
-    await fillCustomCombobox(this.page, trigger, term);
-  }
-
   // Fills the first PV array, then clones and fills each additional array.
   private async fillArrays(arrays: PvArray[]): Promise<void> {
     const page = this.page;
@@ -707,11 +867,16 @@ export class PowerClerkAdapter extends BasePortalAdapter {
     const first = arrays[0];
     const firstGroup = page.getByRole("group", { name: "PV Array Delete Array" }).first();
     await firstGroup.getByPlaceholder("Qty").fill(first.quantity).catch(() => null);
-    if (first.moduleManufacturer) await this.selectSearchable(first.moduleManufacturer);
+    // Scope make/model to THIS array's group (like the cloned arrays below) rather
+    // than a page-wide "Please select...".first(), which could land on the inverter
+    // combobox if its fill hadn't yet cleared the prompt.
+    if (first.moduleManufacturer) {
+      await fillCustomCombobox(page, firstGroup.getByText("Please select...").first(), first.moduleManufacturer);
+    }
     if (first.moduleModel) {
       // Model options cascade-load after the manufacturer change — wait, don't race.
       if (first.moduleManufacturer) await this.waitForCascadeLoad();
-      await this.selectSearchable(first.moduleModel);
+      await fillCustomCombobox(page, firstGroup.getByText("Please select...").first(), first.moduleModel);
     }
     await page.getByRole("textbox", { name: "Tilt" }).first().fill(first.tilt).catch(() => null);
     await page.getByRole("textbox", { name: "Azimuth" }).first().fill(first.azimuth).catch(() => null);

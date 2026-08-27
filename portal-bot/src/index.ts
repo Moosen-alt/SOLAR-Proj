@@ -73,6 +73,9 @@ export async function submitStagedRun(
       headless: options.headless,
       credential: options.credential,
       userDataDir: options.userDataDir,
+      // Same track-scoped portal URL runAdapter passes — without it a multi-tenant
+      // platform adapter (PowerClerk) would fall back to its hardcoded PGE default.
+      startUrl: options.loginUrl,
     });
     if (!loginResult.ok) {
       return { portalName: adapter.portalName, ok: false, finalSubmitClicked: false, pauseReason: loginResult.pauseReason ?? null, steps: [loginResult] };
@@ -206,6 +209,10 @@ interface StageOptions {
   // missed, from real project data only. Resolved server-side; secrets already stripped.
   gapFillPlanner?: import("./adapters/autoLearnAdapter").LearnPlanner;
   gapFillFields?: Record<string, string>;
+  // Track-scoped portal login URL (resolved server-side from portal_credentials/recipe/KB).
+  // Lets platform adapters that host many tenants (PowerClerk: PGE, PacifiCorp…) land on
+  // the right subdomain instead of a hardcoded default.
+  loginUrl?: string;
 }
 
 // Headed, guided-manual staging leaves the browser OPEN at the review screen so the human
@@ -330,6 +337,10 @@ async function runAdapter(
       headless: options.headless,
       credential: options.credential,
       userDataDir: options.userDataDir,
+      // Track-scoped portal login URL (portal_credentials / recipe / KB). Lets the
+      // PowerClerk adapter land on the RIGHT utility's subdomain (PacifiCorp vs PGE)
+      // instead of its hardcoded PGE default.
+      startUrl: options.loginUrl,
     });
     if (!loginResult.ok) {
       return {
@@ -557,7 +568,7 @@ export async function checkStatusWithAdapter(
   await closePriorStagingBrowser(options.userDataDir);
   try {
     tmpStatePath = resolveStorageStatePath(options.encryptedStorageStatePath);
-    const ctx = { storageStatePath: tmpStatePath, headless: options.headless ?? true, credential: options.credential, userDataDir: options.userDataDir };
+    const ctx = { storageStatePath: tmpStatePath, headless: options.headless ?? true, credential: options.credential, userDataDir: options.userDataDir, startUrl: options.loginUrl };
 
     adapter =
       adapterType === "accela" ? new OregonEPermittingAdapter() :

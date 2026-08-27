@@ -82,6 +82,13 @@ export async function scrapeReviewScreen(page: any): Promise<ReviewField[]> {
             const sel = el as HTMLSelectElement;
             const opt = sel.selectedOptions && sel.selectedOptions[0];
             value = opt ? (opt.textContent || "").trim() : sel.value;
+          } else if (typeAttr === "checkbox" || typeAttr === "radio") {
+            // A checkbox's .value is "on" (the HTML default) whether or not it is CHECKED —
+            // scraping it made every unchecked box read as filled, and the LLM verifier
+            // flagged phantom "checked but shouldn't be" contradictions (live PGE:
+            // "Alternative Billing Contact" blocked recipe promotion on every run).
+            // Report the actual state; skip unchecked boxes entirely (no value = no row).
+            value = (el as HTMLInputElement).checked ? "checked" : "";
           } else {
             value = (el as HTMLInputElement).value || "";
           }

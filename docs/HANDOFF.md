@@ -155,27 +155,83 @@ Still open, in order:
    bare unlabeled Manufacturer/Model within 3 fields of PV fields (and not
    matching the negative guard) can still inherit the PV side — the proximity
    bound + guard-reset make this narrow.
-1. **Verify the specs-page fix live** on the PGE stage run (Javier project).
-   The root cause found: bare labels ("Manufacturer"/"Model") carry no side —
-   fixed via `field.section` context; ALSO duplicate labels were permanently
-   skipped after the first fill (alreadyFilledLabels dedupe) — the inverter
-   section would never fill. Watch debug events `equipment_fill` in the bundle.
-   If it still stalls, suspect: (a) PowerClerk renders the model select as a
-   custom searchable combobox in some templates (see `fillCustomCombobox`);
-   (b) section extraction returning "" on their DOM — check `p00N-plan.json`
-   `fieldsSeen[].section` in the bundle.
-   **A read-only probe now answers (a) and (b) without a stage run**:
-   `npm run portal:probe:specs` (`portal-bot/src/liveSpecsProbe.ts`) logs in,
-   opens an EXISTING draft, and dumps every equipment control's label + section
-   + element shape, ending in a verdict line (`bareLabels` / `emptySections` /
-   `customComboboxes` / `nativeSelects`). It fills and saves nothing, clicks
-   nothing submit-shaped, and exits 2 on MFA/CAPTCHA. Credentials come from
-   `PC_URL` / `PC_EMAIL` / `PC_PASS` in the environment.
-   **Run it from the operator's normal machine, never CI or a cloud box** —
-   headed, non-datacenter IP, per `docs/research/GOLIVE_OPS_LEGAL_2026-07.md`;
-   a headless fresh login from an unfamiliar datacenter IP is exactly the
-   pattern PowerClerk's bot management flags, and the account at risk is the
-   operator's real one.
+1. **✅ VERIFIED + FIXED LIVE (2026-08-26/27, operator's machine)** — the
+   specs-page stall was reproduced and fixed against the REAL PGE + PacifiCorp
+   portals. Both utilities now stage end-to-end through the app path (learner):
+   PGE all 4 equipment picks held (Altenergy Power System / DS3-L / Znshine
+   PV-Tech / 440W ZXM7), PacifiCorp both picks held first pass on its different
+   layout. Root causes, all fixed in PRODUCTION code:
+   (a) live make/model are READONLY `input[role=combobox]` Vue filtered-selects —
+       classified as text, `.fill()` threw, value silently dropped → classifier
+       upgrade in `autoLearnAdapter.ts` (inputs only) + `selectWithFallback` tag
+       gate;
+   (b) the open-click is a TOGGLE and Escape doesn't close the popper — a second
+       open closed it → `aria-expanded`-aware open (stale-attribute tolerant);
+   (c) `optionScope`'s last-visible-popup heuristic read a SIBLING widget's
+       lingering popper → own-popup scoping via `aria-controls`;
+   (d) the Enter fallback committed the highlighted first row when nothing
+       matched (picked "AblyTek"/"Solar Long PV-Tech" wrongly) → Enter is
+       suppressed whenever visible option rows exist; trailing-token fallback
+       now requires a digit-bearing token;
+   (e) certified lists respell models (plan "ZXM7-UHLD108-440/N" vs certified
+       "ZXM7-UHLDD108-440/N") → digit-signature matching (all digit groups +
+       alpha prefix) in BOTH `bestOptionMatch` and the learner's
+       `equipmentValueMatches` verify;
+   (f) typed search filters that match nothing empty the list (popper shows a
+       "no results" row) → clear-search retry after a best-match miss;
+   (g) `bestOptionMatch` scanned only 40 rows; certified lists run to 225+ →
+       single-`evaluateAll` full-list scan.
+   Regression net: `portal:test:specs:combobox`
+   (`powerClerkSpecsCombobox.dom.smoke.ts`) recreates the LIVE readonly-combobox
+   widget (captured DOM) and runs the learner's real fill path against it.
+   Also fixed: `PowerClerkAdapter` login (pathname-based success check; form
+   selectors), intro-page acknowledgment checkbox, preparer/applicant
+   placeholder-named fills with per-field blur-commit + held verification,
+   portal-aware login URL threading (`StageOptions.loginUrl` → `startUrl`) so
+   PacifiCorp never lands on the hardcoded PGE URL.
+   **Remaining on this front:**
+   (i) MULTI-ARRAY: the learner fills array 1 only — `pvArrays` per-array data
+       never reaches it (autoLearn.ts seeds flat equipment only). Feature: pass
+       pvArrays through, click "Add Array" per missing block, fill by ordinal.
+       Until then the human completes arrays 2/3 at review.
+   (ii) RECIPE KEY MISS: recipes match by exact profile key; a project with
+        utility "Portland General Electric" missed the complete `or|unknown|pge`
+        recipe (key uses the short name) and re-learned instead of replaying.
+        Consider normalizing utility names into profile keys.
+   (iii) The old read-only probe (`portal:probe:specs`) remains for future
+        portal-shape checks; run headed from the operator's machine only, per
+        `docs/research/GOLIVE_OPS_LEGAL_2026-07.md`.
+   (iv) CLEANUP OWED: several unsubmitted PGE test drafts + one PacifiCorp
+        test draft under the operator account (never submitted — delete from
+        the portals); Daniel Daly test project cf1c56aa in the app DB; the
+        operator planned a PowerClerk password rotation.
+   (v) ACCELA (Oregon ePermitting) — live frontier as of 2026-08-27 03:00:
+        the learner reaches CapDetail.aspx (8 pages: login → T&C accepted via the
+        new entry-disclaimer pass-through → WorkLocation → CapHome → CapDetail).
+        Remaining: deterministic passes for ACA record-type selection (CapHome)
+        and the detail form — the planner clicks the section nav tab instead of
+        filling (contained by the new no-revisit navigate guard, but burns page
+        budget). The accelaWorkLocationPass exists but bails "street inputs not
+        found" — the captured name attr is
+        ctl00$PlaceHolderMain$WorkLocationEdit$txtStreetNo4Search$ChildControl0/1;
+        verify whether that string is the name or aria-label on the live DOM
+        before the next iteration (the planner currently advances the address
+        step organically, so the pass is an optimization, not a blocker).
+        DEEP FINDING — DISPATCH: nothing ever writes `portal_profiles`, so
+        `portalType` is always "mock" → `isRealPortal` false → the hand-coded
+        Accela/PowerClerk adapters are UNREACHABLE on the dispatch path; the
+        auto-seed learner is the only live route (PORTAL_AUTOSEED=0 yields
+        NoAdapter for everything). Decide: either populate portal_profiles or
+        base isRealPortal on resolved credentials/KB platform.
+        ALSO FIXED TONIGHT (production): entry-disclaimer never review (structural
+        + planner overrides); no-revisit navigate guard; trust-gate promotion
+        floor (min 3 pages / 5 fills — a 2-page "review" promoted an EMPTY Salem
+        recipe, since demoted to needs_rerecord); checkbox scrape reported "on"
+        for unchecked boxes (phantom verifier contradictions); alt-billing
+        checkbox deterministic refusal; derived exportLimiting answer;
+        Segment A logs "complete" even when the stage FAILED (portal_runs row is
+        authoritative) — reporting fix still TODO; platform sniffed from KB
+        portal_url when portal_platform is empty (Salem rows backfilled).
 2. **Stripe checkout** for the payment screen (operator said "later"): a
    Payment Link per quote; `submission_payments.payment_reference` is ready.
 3. **HOA list import** (`HOA_List.xlsx`) — needs an `hoa_library` table + an

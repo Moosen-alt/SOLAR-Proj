@@ -4928,6 +4928,9 @@ export async function runDuePermitChecks(
         headless: true,
         credential,
         userDataDir,
+        // Track-scoped portal URL (already resolved for the credential lookup above) so a
+        // multi-tenant platform adapter checks status on the RIGHT subdomain.
+        loginUrl: text(target.portal_url) || undefined,
       }).catch(() => null);
       if (scraped) {
         rawStatusText = scraped;
@@ -5172,8 +5175,16 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
     ? findLearnedProfileForProject(db, { state: detail.project.state, ahj: detail.project.ahj, utility: detail.project.utility })
     : null;
   const platform = String(learnedProfile?.portalPlatform ?? "").toLowerCase();
-  const isAccela = portalType === "accela_oregon" || (isRealPortal && platform.includes("accela"));
-  const isPowerClerk = portalType === "powerclerk_pge" || (isRealPortal && platform.includes("powerclerk"));
+  // PLATFORM FALLBACK FROM URL: portal_platform is empty on many learned/seeded KB rows
+  // (nothing backfills it), and an empty platform used to dead-end dispatch as NoAdapter
+  // even when the row's portal_url plainly identifies the platform (live: City of Salem
+  // carried the aca-oregon.accela.com URL with a blank platform). Sniff the URL only when
+  // the platform column is empty — an explicit value always wins.
+  const platformUrlHint = String((learnedProfile as { portalUrl?: string } | null)?.portalUrl ?? "").toLowerCase();
+  const isAccela = portalType === "accela_oregon"
+    || (isRealPortal && (platform.includes("accela") || (!platform && /accela\.com|citizenaccess/.test(platformUrlHint))));
+  const isPowerClerk = portalType === "powerclerk_pge"
+    || (isRealPortal && (platform.includes("powerclerk") || (!platform && /powerclerk\.com/.test(platformUrlHint))));
   // Recipe replay is the FIRST-LINE (universal) path: if an admin has recorded a complete recipe
   // for this AHJ (or its utility), replay it — even on a known platform (PowerClerk/Accela). The
   // hand-coded platform adapters are the FALLBACK when no recipe exists. The lookup is track-
@@ -5389,6 +5400,10 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
     autoSubmit: resolvedAutoSubmit,
     gapFillPlanner,
     gapFillFields,
+    // Track-scoped portal URL so multi-tenant platform adapters (PowerClerk hosts PGE
+    // AND PacifiCorp on different subdomains) log in to the RIGHT portal instead of a
+    // hardcoded default. Already permit/utility scoped by the credentialUrl resolution.
+    loginUrl: credentialUrl || undefined,
   };
 
   // UNIVERSAL-FIRST dispatch with SELF-SEED (see selectStagingActor):

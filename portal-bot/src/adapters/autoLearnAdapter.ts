@@ -453,6 +453,27 @@ export function extractFieldsInPage(els: Element[]): RawField[] {
       else fieldType = "text";
     }
 
+    // ROLE=COMBOBOX / aria-haspopup=listbox is a DROPDOWN even when it's an <input>.
+    // PowerClerk's live "System Information" renders each equipment Manufacturer/Model as a
+    // Vue "filtered select": a READONLY <input role="combobox" aria-haspopup="listbox"
+    // aria-label="Manufacturer" class="visually-hidden"> backed by an aria-controls listbox.
+    // Classified as "text" (the tag check above) it takes applyFill's fill() path — which
+    // THROWS on the readonly input and drops the value silently (the specs-page stall). Route
+    // it through the select/combobox path (click -> open -> pick) instead. Only upgrades text/
+    // other, never a real <select>/checkbox/radio/file.
+    // INPUTS ONLY: a styled <div role="combobox"> stays "other" so the pre-existing
+    // custom-dropdown block below still handles it — that block ALSO captures the
+    // aria-controls listbox's rendered options into RawField.options, which gap-fill
+    // uses to validate planner-proposed values. Upgrading divs here would skip it.
+    {
+      const comboRole = (el.getAttribute("role") || "").toLowerCase();
+      const comboPopup = (el.getAttribute("aria-haspopup") || "").toLowerCase();
+      if ((comboRole === "combobox" || comboRole === "listbox" || comboPopup === "listbox") &&
+          tag === "input" && fieldType === "text") {
+        fieldType = "select";
+      }
+    }
+
     // Custom (non-native-<select>) dropdowns: PowerClerk "Please select..." widgets,
     // select2 / chosen / ui-select / ExtJS comboboxes. These render as styled divs, so
     // the tag checks above miss them and the planner never sees a dropdown to fill.
@@ -1030,6 +1051,14 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     const cand = candidate.trim().toLowerCase();
     if (!cand) return false;
     const candNumeric = /^[\d.,\s]+$/.test(cand);
+    // DIGIT-SIGNATURE tolerance (mirrors comboboxFill.bestOptionMatch): certified lists
+    // respell model names with minor letter variance (live PGE: plan-set
+    // "ZXM7-UHLD108-440/N" vs certified "ZXM7-UHLDD108-440/N") — plain contains fails
+    // and the verify rejects a CORRECT pick, so the pass retries and blacklists the
+    // field. All digit groups + the leading alpha token are series-defining.
+    const candDigits = Array.from(new Set(cand.match(/\d+/g) ?? []));
+    const candAlpha = (cand.match(/[a-z]{2,}/i)?.[0] ?? "").toLowerCase();
+    const digitSigApplies = candDigits.length >= 2 && candAlpha.length >= 2;
     for (const part of currentRaw.split("\u0007")) {
       const cur = part.trim().toLowerCase();
       if (!cur) continue;
@@ -1037,6 +1066,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       if (candNumeric || /^[\d.,\s]+$/.test(cur)) continue; // numbers: exact only
       if (cand.length >= 4 && cur.includes(cand)) return true;
       if (cur.length >= 4 && cand.includes(cur)) return true;
+      if (digitSigApplies && cur.includes(candAlpha)
+          && candDigits.every((d) => new RegExp(`(^|\\D)${d}(\\D|$)`).test(cur))) return true;
     }
     return false;
   }
@@ -1614,11 +1645,80 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // ACCELA WORK-SITE LOCATION PASS. Oregon ePermitting's Apply flow starts with an
+  // address SEARCH step ("Enter Work Site Location"): street number + a PORTION of the
+  // street name → Search → pick the matching parcel row → Continue Application. The LLM
+  // planner filled the fields but clicked past the Search, and Accela bounced the run
+  // back to the records home (live Salem run). Deterministic: parse the project street,
+  // search, select the first result, continue. Steps are recorded for replay (literal
+  // address parts — the post-learn binding pass evaluates them like any other literal).
+  // ---------------------------------------------------------------------------
+  private async accelaWorkLocationPass(project: ProjectRecord, steps: RecipeStep[]): Promise<boolean> {
+    const page = this.page;
+    if (!page) return false;
+    const bail = (why: string): false => { this.debug?.event({ type: "work_location_bail", why }); return false; };
+    const addr = String(project.projectAddress ?? "");
+    const m = addr.match(/^\s*(\d+)\s+(?:([NSEW]{1,2})\s+)?([A-Za-z0-9]+)/i);
+    if (!m) return bail("address unparseable");
+    const streetNo = m[1];
+    const nameToken = (m[3] || "").slice(0, 8);
+    if (!streetNo || !nameToken) return bail("address tokens empty");
+    // ACA renders the application content inside an IFRAME (the extractor walks frames for
+    // the same reason) — resolve the frame that holds the WorkLocation controls first.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let scope: any = page;
+    try {
+      for (const f of (typeof page.frames === "function" ? page.frames() : [])) {
+        if (await f.locator("input[name*='StreetNumber'], input[id*='StreetNumber']").count().catch(() => 0)) { scope = f; break; }
+      }
+    } catch { /* keep page scope */ }
+    // ACA is classic ASP.NET — labels aren't associated and the visible hints are
+    // watermarks, so getByLabel/getByPlaceholder both miss. The ASP.NET control NAMES are
+    // the stable hooks (ctl00$PlaceHolderMain$WorkLocationEdit$txtStreetNumber / …Name),
+    // verified from the live extraction; label lookups stay as fallback for other builds.
+    let numBox = scope.locator("input[name*='StreetNumber'], input[id*='StreetNumber']").first();
+    if (!(await numBox.count().catch(() => 0))) numBox = scope.getByLabel(/street number/i).first();
+    let nameBox = scope.locator("input[name*='StreetName'], input[id*='StreetName']").first();
+    if (!(await nameBox.count().catch(() => 0))) nameBox = scope.getByLabel(/street name/i).first();
+    if (!(await numBox.count().catch(() => 0)) || !(await nameBox.count().catch(() => 0))) return bail("street inputs not found (checked frames)");
+    await numBox.fill(streetNo).catch(() => null);
+    await nameBox.fill(nameToken).catch(() => null);
+    steps.push({ action: "fill", phase: "fill", selector: { label: "Street Number" }, value: streetNo, note: "work location: street number" });
+    steps.push({ action: "fill", phase: "fill", selector: { label: "Street Name" }, value: nameToken, note: "work location: street name (portion)" });
+    const searchBtn = page.locator("a[id*='btnSearch' i], input[id*='btnSearch' i], button[id*='btnSearch' i]").first()
+      .or(page.getByRole("button", { name: /^Search$/i }).first())
+      .or(page.locator("a, input[type='button'], input[type='submit']").filter({ hasText: /^Search$/i }).first()).first();
+    if (!(await searchBtn.count().catch(() => 0))) return false;
+    await searchBtn.click({ timeout: 10000 }).catch(() => null);
+    steps.push({ action: "click", phase: "fill", selector: { role: "button", name: "Search", exact: true }, note: "work location: search" });
+    await page.waitForLoadState?.("networkidle", { timeout: 15000 }).catch(() => null);
+    await page.waitForTimeout?.(2500).catch(() => null);
+    // Result rows render one radio/checkbox per matched address — select the first.
+    const pick = page.locator("table input[type='radio'], table input[type='checkbox']").first();
+    if (await pick.count().catch(() => 0)) {
+      await pick.check().catch(() => null);
+      steps.push({ action: "check", phase: "fill", selector: { css: "table input[type='radio']" }, note: "work location: select first address result" });
+      await page.waitForTimeout?.(1000).catch(() => null);
+    }
+    const cont = page.getByRole("button", { name: /continue application/i })
+      .or(page.getByRole("link", { name: /continue application/i })).first();
+    if (!(await cont.count().catch(() => 0))) return false;
+    await cont.click({ timeout: 10000 }).catch(() => null);
+    steps.push({ action: "click", phase: "fill", selector: { role: "button", name: "Continue Application »" }, note: "work location: continue" });
+    await page.waitForLoadState?.("networkidle", { timeout: 20000 }).catch(() => null);
+    await page.waitForTimeout?.(2000).catch(() => null);
+    return true;
+  }
+
   private async learnImpl(context: PortalContext, _project: ProjectRecord): Promise<LearnResult> {
     const steps: RecipeStep[] = [];
     const alreadyFilledLabels: string[] = [];
     let pageCount = 0;
     let finalSubmitRecorded = false;
+    // Accela's "Enter Work Site Location" step is handled deterministically once per run
+    // (see the pass below) — flag prevents re-running it if the page reappears.
+    let workLocationHandled = false;
     let reachedReview = false;
     // Stuck-page detection: if the page fingerprint doesn't change across consecutive
     // iterations (an advance silently failed — e.g. blocked by a validation error), stop
@@ -1678,6 +1778,13 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     // Surfaced in the final message so the operator re-checks them before a human submits.
     const fillVerifyMisses: string[] = [];
 
+    // Pathnames already walked this run. Mid-wizard, a planner NAVIGATE back to one of
+    // these RESTARTS the flow (live Salem/Accela: from CapHome it clicked a link back to
+    // the Apply entry — disclaimer → address → CapHome all over again, burning 3 pages of
+    // budget). A navigate whose target was already visited is rejected once any fill has
+    // been recorded; the advance path handles forward motion.
+    const visitedPaths = new Set<string>();
+
     for (let pageIdx = 0; pageIdx < this.maxPages; pageIdx++) {
       pageCount++;
       // Reset per-page label tracking so the planner sees a clean slate on each page —
@@ -1720,6 +1827,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         fields = raws.map(toExtractedField);
         pageTitle = typeof this.page.title === "function" ? String((await this.page.title().catch(() => "")) ?? "") : "";
         url = typeof this.page.url === "function" ? String(this.page.url() ?? "") : "";
+        try { visitedPaths.add(new URL(url).pathname.toLowerCase()); } catch { /* non-URL (test fakes) */ }
         const rawBody = await this.page.locator("body").innerText().catch(() => "");
         bodyText = (redactStatusText(String(rawBody)) ?? "").slice(0, 2000);
       } catch (err) {
@@ -1812,6 +1920,18 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         // else: text keyword on a field-rich form — false positive, continue learning.
       }
 
+      // b9) ACCELA WORK-SITE LOCATION (deterministic, once per run) — the address SEARCH
+      //     step needs Search → select result → Continue; the planner can't be trusted to
+      //     sequence it (live Salem run clicked past the Search and bounced off-wizard).
+      // Trigger on the URL too — bodyText is capped at 2000 chars and ACA's chrome/header
+      // can push the "Enter Work Site Location" heading past the cap.
+      if (!workLocationHandled && (/WorkLocation/i.test(url) || /enter work site location/i.test(bodyText))) {
+        workLocationHandled = true;
+        const advanced = await this.accelaWorkLocationPass(_project, steps);
+        this.debug?.event({ type: "work_location_pass", page: pageCount, advanced });
+        if (advanced) continue; // next iteration re-extracts the page the Continue landed on
+      }
+
       // c) Ask the planner what to do on this page. Attach a screenshot so it can SEE the
       //    section headings/layout (vision-assisted planning) — the reliable signal for which
       //    contact block is the customer vs the installer.
@@ -1833,10 +1953,21 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       // carrying review markers + a submit button; OR a submit button gated by a terms/
       // certification checkbox (PowerClerk's final page has a live "Accept Terms" checkbox,
       // so it IS fillable — the first clause would miss it). The last shape is portal-agnostic.
+      // ENTRY-DISCLAIMER EXCLUSION: the third shape (submit-intent button + accept-terms
+      // checkbox) ALSO describes Accela's T&C page at the very START of the wizard
+      // (CapApplyDisclaimer: terms text + agree box + "Continue Application »") — the live
+      // Salem run stopped there at page 2 and promoted an EMPTY recipe to trusted. A true
+      // review/submit screen cannot precede the first recorded fill: when nothing has been
+      // filled yet and the page reads as terms/disclaimer, it is a pass-through page
+      // (accept + continue), never review.
+      const disclaimerish =
+        /disclaimer|(^|\/)terms/i.test(url) ||
+        /terms and conditions/i.test((bodyText || "").slice(0, 4000));
+      const entryDisclaimer = disclaimerish && alreadyFilledLabels.length === 0;
       const isReviewPage =
-        (!hasFillable && !isDashboard) ||
-        (reviewSignals && hasSubmitIntentBtn) ||
-        (hasSubmitIntentBtn && hasAcceptTermsCheckbox);
+        ((!hasFillable && !isDashboard) ||
+          (reviewSignals && hasSubmitIntentBtn) ||
+          (hasSubmitIntentBtn && hasAcceptTermsCheckbox)) && !entryDisclaimer;
       if (isReviewPage && !plan.atReview) {
         // Promote a planner "advance" that is actually a submit-intent button to finalSubmit.
         let promotedFinal = typeof plan.finalSubmitSelectorIndex === "number" ? plan.finalSubmitSelectorIndex : undefined;
@@ -1882,6 +2013,14 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           for (const m of prematureUnfilled) if (!fillVerifyMisses.includes(m)) fillVerifyMisses.push(m);
           if (process.env.AUTOLEARN_DEBUG === "1") console.error(`[learn] rejected premature atReview on a form page (p${pageCount}) — ${prematureUnfilled.length} required field(s) still unfilled.`);
         }
+      }
+      // c2a') The planner itself has claimed atReview on the ENTRY disclaimer (it carries no
+      // unfilled required fields, so the guard above can't catch it). Nothing has been filled
+      // yet — this cannot be the review screen; accept-and-continue handling takes it instead.
+      if (plan.atReview && entryDisclaimer) {
+        plan = { ...plan, atReview: false };
+        this.debug?.event({ type: "entry_disclaimer_pass_through", page: pageCount });
+        if (process.env.AUTOLEARN_DEBUG === "1") console.error(`[learn] rejected atReview on the entry disclaimer (p${pageCount}) — passing through.`);
       }
 
       // c2b) DIAGNOSTIC BREADCRUMB — record what we saw + what the planner decided on this
@@ -1966,7 +2105,21 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       //     actual application form. Recorded as a click step (phase:"open") then loop again.
       if (typeof plan.navigateSelectorIndex === "number") {
         const navField = fields[plan.navigateSelectorIndex];
-        if (navField && !this.isOffLimitsButton(navField)) {
+        // NO-REVISIT GUARD: once any fill has been recorded, a NAVIGATE whose target
+        // pathname was already walked this run would RESTART the wizard (live Salem/Accela:
+        // CapHome → back to the Apply disclaimer → address → CapHome, burning page budget).
+        // Reject it; the advance path owns forward motion.
+        let navRevisit = false;
+        if (navField?.href && steps.some((st) => st.action === "fill" || st.action === "select" || st.action === "check")) {
+          try {
+            const target = new URL(navField.href, url).pathname.toLowerCase();
+            navRevisit = visitedPaths.has(target);
+          } catch { /* non-URL href — leave allowed */ }
+        }
+        if (navRevisit) {
+          this.debug?.event({ type: "navigate_revisit_rejected", page: pageCount, label: (navField?.label || "").slice(0, 60) });
+          if (process.env.AUTOLEARN_DEBUG === "1") console.error(`[learn] rejected navigate to an already-visited path (p${pageCount}).`);
+        } else if (navField && !this.isOffLimitsButton(navField)) {
           navCount++;
           steps.push({
             action: "click",
@@ -2707,6 +2860,13 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     // unlisted plain-text. The planner is told to skip it but has been seen checking it anyway,
     // so refuse here regardless of the requested value — record no step, leave it unchecked.
     if (field.fieldType === "checkbox" && NOT_LISTED_CHECKBOX.test(field.label || "")) return null;
+
+    // DETERMINISTIC GUARD: never check an "Alternative Billing Contact"-style checkbox.
+    // Unchecked routes the portal's invoice to the installer email on file — the correct
+    // default — while checking it demands an alternative email the project data doesn't
+    // carry; the planner has been seen ticking it anyway, and the resulting contradiction
+    // (checked box, no alt email) blocks the recipe trust gate on every run.
+    if (field.fieldType === "checkbox" && /alternative\s+billing/i.test(field.label || "")) return null;
 
     // A "false/no/off/0" value means "leave this control unselected":
     //   • checkbox → leave it unchecked (its default); record no step.

@@ -85,12 +85,23 @@ function norm(s: string): string {
 // search keystrokes settle — a fixed sleep races them, leaving count()===0 so the
 // matcher falls through and either picks nothing or, worse, a stale row). Returns when
 // options appear or the budget elapses; never throws.
-async function waitForOptions(page: any, budgetMs = 2500): Promise<void> {
+async function waitForOptions(page: any, budgetMs = 2500, ownScope?: any): Promise<void> {
   const step = 100;
   for (let waited = 0; waited < budgetMs; waited += step) {
-    const scope = await optionScope(page);
-    const n = await scope.locator(OPTION_SELECTORS).count().catch(() => 0);
-    if (n > 0) return;
+    const scope = ownScope ?? await optionScope(page);
+    // Count only VISIBLE option rows. A closed combobox leaves its <li role="option">s in
+    // the DOM (hidden), and while a dependent/cascading list is still loading its own popup
+    // is empty (0-height) so optionScope falls back to page-global — a plain count() then
+    // sees the PRIOR combobox's stale hidden rows and returns early, so the cascade's real
+    // (visible) options are never waited for and never picked (mirrors bestOptionMatch,
+    // which already skips invisible rows).
+    const rows = scope.locator(OPTION_SELECTORS);
+    const total = Math.min(await rows.count().catch(() => 0), 12);
+    let anyVisible = false;
+    for (let i = 0; i < total; i++) {
+      if (await rows.nth(i).isVisible().catch(() => false)) { anyVisible = true; break; }
+    }
+    if (anyVisible) return;
     await page.waitForTimeout?.(step).catch(() => {});
   }
 }
@@ -110,23 +121,49 @@ async function clickOption(loc: any): Promise<boolean> {
 // From the live option rows pick the BEST text match for `value`, preferring an exact
 // (normalized) hit over a substring hit so "430" never selects "4300" and "SEG Solar"
 // never selects "SEG Solar Industrial". Returns the matching locator or null.
-async function bestOptionMatch(page: any, value: string): Promise<any | null> {
+async function bestOptionMatch(page: any, value: string, ownScope?: any): Promise<any | null> {
   const want = norm(value);
   if (!want) return null;
-  const scope = await optionScope(page);
+  // DIGIT-SIGNATURE fallback: certified equipment lists respell model names with minor
+  // letter variance (live PGE: plan-set "ZXM7-UHLD108-440/N" vs certified
+  // "ZXM7-UHLDD108-440/N" — one extra D defeats plain contains). The digit groups
+  // (7, 108, 440) plus the leading alpha token are series-defining: require ALL digit
+  // groups AND the alpha prefix, which uniquely separates UHLDD108-440 from the six
+  // other 440W options. Only meaningful when the value carries ≥2 digit groups (never
+  // fires for "Schedule 7"-style values).
+  const wantDigits = Array.from(new Set(want.match(/\d+/g) ?? []));
+  const wantAlpha = (want.match(/[a-z]{2,}/i)?.[0] ?? "").toLowerCase();
+  const digitSigApplies = wantDigits.length >= 2 && wantAlpha.length >= 2;
+  const scope = ownScope ?? await optionScope(page);
   const rows = scope.locator(OPTION_SELECTORS);
-  const count = Math.min(await rows.count().catch(() => 0), 40);
-  let exact: any = null;
-  let contains: any = null;
-  for (let i = 0; i < count; i++) {
-    const row = rows.nth(i);
-    if (!(await row.isVisible().catch(() => false))) continue;
-    const text = norm(String((await row.textContent().catch(() => "")) ?? ""));
+  // ONE in-page pass over ALL rows. The old per-row isVisible()/textContent() loop was
+  // capped at 40 rows for latency — but certified equipment lists run to hundreds
+  // (live PGE: 225 Znshine models sorted by wattage), so the right option sat far past
+  // the cap and could never match. evaluateAll reads every row in a single round-trip.
+  const texts: Array<string | null> = await rows.evaluateAll((els: Element[]) =>
+    els.slice(0, 2000).map((el) => {
+      const r = (el as HTMLElement).getBoundingClientRect();
+      const st = getComputedStyle(el as HTMLElement);
+      const vis = r.width > 0 && r.height > 0 && st.visibility !== "hidden" && st.display !== "none";
+      return vis ? ((el.textContent || "").replace(/\s+/g, " ").trim()) : null;
+    })).catch(() => []);
+  let containsIdx = -1;
+  let digitSigIdx = -1;
+  for (let i = 0; i < texts.length; i++) {
+    const raw = texts[i];
+    if (raw == null) continue;
+    const text = norm(raw);
     if (!text || /^(please\s+)?select\.{0,3}$/.test(text)) continue;
-    if (text === want) return row; // exact wins immediately
-    if (!exact && (text.includes(want) || want.includes(text))) contains = contains ?? row;
+    if (text === want) return rows.nth(i); // exact wins immediately
+    if (containsIdx < 0 && (text.includes(want) || want.includes(text))) containsIdx = i;
+    if (digitSigIdx < 0 && digitSigApplies && text.includes(wantAlpha)
+        && wantDigits.every((d) => new RegExp(`(^|\\D)${d}(\\D|$)`).test(text))) {
+      digitSigIdx = i;
+    }
   }
-  return exact ?? contains;
+  if (containsIdx >= 0) return rows.nth(containsIdx);
+  if (digitSigIdx >= 0) return rows.nth(digitSigIdx);
+  return null;
 }
 
 /**
@@ -137,8 +174,64 @@ export async function fillCustomCombobox(page: any, loc: any, value: string): Pr
   const v = (value ?? "").trim();
   if (!v) return false;
 
-  // 1. Open the widget.
-  await loc.click({ timeout: 5000 }).catch(() => {});
+  // OWN-POPUP SCOPE: an ARIA combobox names its listbox via aria-controls/aria-owns.
+  // Prefer THAT container for the search box, option wait, and option matching — the
+  // "last visible popup" heuristic reads a sibling widget's lingering popper when several
+  // comboboxes coexist (live PGE: the array-model matcher scanned the inverter-model list).
+  let ownPopup: any = null;
+  try {
+    const controlsId = (await loc.getAttribute("aria-controls").catch(() => null))
+      || (await loc.getAttribute("aria-owns").catch(() => null));
+    if (controlsId && /^[A-Za-z][\w-]*$/.test(controlsId)) {
+      const cand = page.locator(`#${controlsId}`);
+      if (await cand.count().catch(() => 0)) ownPopup = cand;
+    }
+  } catch { /* fall back to the heuristic scope */ }
+  const scopeOf = async () => (ownPopup && await ownPopup.isVisible().catch(() => false)) ? ownPopup : await optionScope(page);
+
+  // 1. Open the widget. The trigger may be a visually-hidden input[role="combobox"]
+  //    (PowerClerk's Vue filtered-select) whose real clickable is a visible sibling display —
+  //    Playwright can't click a hidden element, so when loc isn't visible, fall back to an
+  //    in-page click on the nearest visible opener within the widget, plus a focus (some
+  //    widgets open on focus for keyboard a11y).
+  //    ALREADY-OPEN CHECK FIRST: the open click is a TOGGLE on these widgets (and Escape
+  //    does not close the popper), so clicking an already-expanded combobox closes it and
+  //    every matcher below then runs against nothing (verified live on PGE PowerClerk).
+  // Trust aria-expanded only when a popup is actually on screen — the attribute can be
+  // STALE (left "true" after an interrupted interaction), and skipping the open-click on
+  // a stale flag leaves every matcher staring at a closed widget.
+  const ariaOpen = (await loc.getAttribute("aria-expanded").catch(() => null)) === "true";
+  const popupVisible = async () => {
+    if (ownPopup && await ownPopup.isVisible().catch(() => false)) return true;
+    return (await optionScope(page)) !== page;
+  };
+  const alreadyOpen = ariaOpen && await popupVisible();
+  let openedWidget = alreadyOpen;
+  if (!openedWidget && await loc.isVisible().catch(() => false)) {
+    try { await loc.click({ timeout: 5000 }); openedWidget = true; } catch { /* fall through */ }
+  }
+  if (!openedWidget) {
+    await loc.evaluate((el: Element) => {
+      const isVis = (n: Element) => {
+        const r = n.getBoundingClientRect();
+        const s = getComputedStyle(n as HTMLElement);
+        return r.width > 0 && r.height > 0 && s.visibility !== "hidden" && s.display !== "none";
+      };
+      // Walk up a few levels and click the widget's visible opener — prefer a select-like
+      // display/toggle over any visible node, so the popup's own options aren't clicked.
+      let root: Element = el;
+      for (let k = 0; k < 5 && root.parentElement; k++) {
+        root = root.parentElement;
+        const cands = Array.from(root.querySelectorAll<HTMLElement>("*")).filter((n) => n !== el && n.getAttribute("role") !== "listbox" && n.getAttribute("role") !== "option" && isVis(n));
+        if (!cands.length) continue;
+        const preferred = cands.find((n) => /form-select|\bselect\b|display|toggle|control|dropdown/i.test(n.className || "") || n.getAttribute("role") === "button");
+        (preferred || cands[0]).click();
+        return;
+      }
+      (el as HTMLElement).click();
+    }).catch(() => {});
+    await loc.focus().catch(() => {});
+  }
   await page.waitForTimeout?.(300).catch(() => {});
 
   // 2. Type into the search box if one appeared, then WAIT for the (async) option list to
@@ -149,21 +242,71 @@ export async function fillCustomCombobox(page: any, loc: any, value: string): Pr
     const scope = await optionScope(page);
     let search = scope === page ? null : scope.locator(SEARCH_BOX_SELECTORS).first();
     if (!search || !(await search.count().catch(() => 0))) {
+      // The popup's filter box may carry none of the known attributes (PGE PowerClerk's
+      // popper renders a bare <input> with a magnifier icon) — any visible input inside
+      // the POPUP is the search box. Page-global stays the last resort.
+      search = scope === page ? null : scope.locator("input:visible").first();
+    }
+    if (!search || !(await search.count().catch(() => 0))) {
       search = page.locator(SEARCH_BOX_SELECTORS).first();
     }
     if (await search.count().catch(() => 0)) {
-      await search.fill(v).catch(() => {});
+      // Only type into an EDITABLE search box, with a SHORT timeout. PowerClerk's Vue
+      // filtered-select exposes a READONLY input[role="combobox"] as its only combobox
+      // input — fill() on it retries against the DEFAULT 30s timeout before throwing, so a
+      // page of these stalls for minutes. isEditable() is false for readonly/disabled, and
+      // the 2s cap keeps a genuinely-editable-but-slow box from hanging; the widget already
+      // renders its full option list on open, so bestOptionMatch resolves without the typed
+      // filter when it's skipped.
+      if (await search.isEditable().catch(() => false)) {
+        await search.fill(v, { timeout: 2000 }).catch(() => {});
+        // FILTER-EMPTIED-THE-LIST RECOVERY: when the value's spelling differs slightly
+        // from the certified option text (live PGE: plan-set "UHLD108" vs certified
+        // "UHLDD108"), the typed filter matches NOTHING and every matcher below stares
+        // at an empty list. Clear the search so the FULL list renders again — the
+        // digit-signature pass in bestOptionMatch can discriminate from the full list.
+        await page.waitForTimeout?.(700).catch(() => {});
+        const filteredScope = (ownPopup && await ownPopup.isVisible().catch(() => false)) ? ownPopup : await optionScope(page);
+        const filteredRows = filteredScope.locator(OPTION_SELECTORS);
+        let anyLeft = false;
+        const nRows = Math.min(await filteredRows.count().catch(() => 0), 8);
+        for (let i = 0; i < nRows; i++) {
+          if (await filteredRows.nth(i).isVisible().catch(() => false)) { anyLeft = true; break; }
+        }
+        if (!anyLeft) {
+          await search.fill("", { timeout: 2000 }).catch(() => {});
+        }
+      }
     }
   } catch { /* no search box — some widgets filter inline */ }
-  await waitForOptions(page);
+  await waitForOptions(page, 2500, (ownPopup && await ownPopup.isVisible().catch(() => false)) ? ownPopup : undefined);
 
   // 3a. BEST normalized match across the live option rows — exact (whitespace/case-
   //     insensitive) preferred over substring so we never pick a near-neighbour like
   //     "4300" for "430" or a longer model that merely contains the typed token.
   try {
-    const best = await bestOptionMatch(page, v);
+    const best = await bestOptionMatch(page, v, (ownPopup && await ownPopup.isVisible().catch(() => false)) ? ownPopup : undefined);
     if (best && (await best.count().catch(() => 0)) && (await clickOption(best))) {
       return true;
+    }
+  } catch { /* fall through */ }
+
+  // 3a'. FILTERED-LIST MISS RECOVERY: when the typed filter matched nothing usable (the
+  //      popper may render only a "no results" placeholder row — which defeats a naive
+  //      row-count check), CLEAR the search so the full list renders, and run the best
+  //      match once more — the digit-signature pass discriminates from the full list
+  //      (live PGE: plan-set "UHLD108" vs certified "UHLDD108" filters to zero hits).
+  try {
+    const sScope = await scopeOf();
+    const searchBox = sScope === page ? page.locator(SEARCH_BOX_SELECTORS).first() : sScope.locator("input:visible").first();
+    const typedNow = String(await searchBox.inputValue().catch(() => "")).trim();
+    if (typedNow && await searchBox.isEditable().catch(() => false)) {
+      await searchBox.fill("", { timeout: 2000 }).catch(() => {});
+      await waitForOptions(page, 2500, (ownPopup && await ownPopup.isVisible().catch(() => false)) ? ownPopup : undefined);
+      const best2 = await bestOptionMatch(page, v, (ownPopup && await ownPopup.isVisible().catch(() => false)) ? ownPopup : undefined);
+      if (best2 && (await best2.count().catch(() => 0)) && (await clickOption(best2))) {
+        return true;
+      }
     }
   } catch { /* fall through */ }
 
@@ -177,7 +320,7 @@ export async function fillCustomCombobox(page: any, loc: any, value: string): Pr
 
   // 3c. Otherwise click the first visible list row containing the value text.
   try {
-    const row = (await optionScope(page)).locator(OPTION_SELECTORS).filter({ hasText: new RegExp(escapeRegExp(v), "i") }).first();
+    const row = (await scopeOf()).locator(OPTION_SELECTORS).filter({ hasText: new RegExp(escapeRegExp(v), "i") }).first();
     if (await row.count().catch(() => 0) && (await clickOption(row))) {
       return true;
     }
@@ -185,9 +328,13 @@ export async function fillCustomCombobox(page: any, loc: any, value: string): Pr
 
   // 3d. Trailing-token looser match: "Schedule 7" → look for an option containing just "7"
   //     as a word boundary (catches "7 - Residential Net Metering" style labels).
+  //     DIGIT-BEARING TOKENS ONLY: a word token like "PV-Tech" (from "Znshine PV-Tech")
+  //     matches unrelated options ("Solar Long PV-Tech (Cambodia)" — seen live on PGE) and
+  //     silently selects the WRONG manufacturer. Schedule/size tokens carry digits; brand
+  //     words don't.
   try {
     const lastToken = v.split(/\s+/).pop() ?? v;
-    if (lastToken !== v && lastToken.length >= 1) {
+    if (lastToken !== v && lastToken.length >= 1 && /\d/.test(lastToken)) {
       const row = (await optionScope(page)).locator(OPTION_SELECTORS).filter({ hasText: new RegExp(`\\b${escapeRegExp(lastToken)}\\b`, "i") }).first();
       if (await row.count().catch(() => 0) && (await clickOption(row))) {
         return true;
@@ -209,7 +356,17 @@ export async function fillCustomCombobox(page: any, loc: any, value: string): Pr
 
   // 4. Last resort: accept the typed value with Enter (covers free-text comboboxes).
   // Only press Enter when we actually typed something — otherwise we'd accept whatever
-  // the widget already had selected.
+  // the widget already had selected. NEVER press Enter while visible option rows exist:
+  // on a list-only combobox Enter commits the HIGHLIGHTED row (typically the first),
+  // silently selecting an arbitrary wrong option (live PGE: "AblyTek" instead of
+  // "Znshine PV-Tech"). Options rendered + none matched = fail soft, don't guess.
+  try {
+    const rows = (await scopeOf()).locator(OPTION_SELECTORS);
+    const total = Math.min(await rows.count().catch(() => 0), 8);
+    for (let i = 0; i < total; i++) {
+      if (await rows.nth(i).isVisible().catch(() => false)) return false; // options exist — no blind Enter
+    }
+  } catch { /* fall through to the free-text path */ }
   const typed = await page.locator(SEARCH_BOX_SELECTORS).first().inputValue().catch(() => "");
   if (typed) await page.keyboard?.press("Enter").catch(() => {});
   return false;
@@ -224,6 +381,17 @@ export async function fillCustomCombobox(page: any, loc: any, value: string): Pr
  * so callers can surface the miss instead of silently continuing.
  */
 export async function selectWithFallback(page: any, loc: any, value: string): Promise<boolean> {
+  // Only a real <select> can take selectOption. Running it on a styled-div widget or a
+  // (readonly, visually-hidden) input[role="combobox"] — PowerClerk's Vue filtered-select —
+  // stalls the full actionability timeout TWICE before the combobox path even runs (the
+  // element can never become an actionable <select>). Detect the tag and, for a NON-select,
+  // skip straight to the combobox path. When the locator can't be evaluated (a fake/test
+  // locator with no .evaluate), tag is unknown — attempt the native path anyway, preserving
+  // the historical try-selectOption-then-combobox behavior so a real <select> isn't skipped.
+  const tag: string | null = typeof loc.evaluate === "function"
+    ? await loc.evaluate((el: Element) => (el.tagName || "").toLowerCase()).catch(() => null)
+    : null;
+  if (tag !== null && tag !== "select") return fillCustomCombobox(page, loc, value);
   // Short timeouts on the native attempts: a HIDDEN native <select> behind a styled
   // widget can never pass actionability, so the default timeout would stall twice
   // before the combobox path even runs.
