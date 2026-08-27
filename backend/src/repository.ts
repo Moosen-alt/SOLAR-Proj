@@ -5584,7 +5584,8 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
                 scope: track === "nem" ? "utility" : "ahj",
                 portalUrl: recipe.portalUrl,
                 createdBy: "auto-relearn (stale recipe)",
-                permitType: track === "nem" ? undefined : (track === "electrical" || detail.project.permitType === "electrical" ? "electrical" : "structural"),
+                permitType: track === "nem" ? undefined : (track === "electrical" || track === "mpu" || detail.project.permitType === "electrical" ? "electrical" : "structural"),
+                discipline: trackDiscipline,
               }, { projectId, priority: 5, maxRetries: 0 });
             }).catch(() => null);
             relearnQueued = true;
@@ -5623,7 +5624,10 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
           scope: track === "nem" ? "utility" : "ahj",
           portalUrl: credentialUrl,
           createdBy: "auto-seed (staging)",
-          permitType: track === "nem" ? undefined : (track === "electrical" || detail.project.permitType === "electrical" ? "electrical" : "structural"),
+          permitType: track === "nem" ? undefined : (track === "electrical" || track === "mpu" || detail.project.permitType === "electrical" ? "electrical" : "structural"),
+          // The recipe key's discipline for this track - MUST be the same value the
+          // lookup above asked for, or the learned recipe is never found again.
+          discipline: trackDiscipline,
           project: stagedProject,
           // Match the hand-coded/replay adapters' headed setting so the self-seed opens a visible
           // browser locally and leaves it open at review for the human (headless on a server).

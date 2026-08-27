@@ -557,13 +557,15 @@ export async function processNextJob(db: AppDb): Promise<boolean> {
       // the same coarse phase→percent mapping the dashboard's progress bar expects.
       const { autoLearnPortal } = await import("./autoLearn");
       const { sseBroadcast } = await import("./events");
-      const p = job.payload as { scope?: string; portalUrl?: string; createdBy?: string; permitType?: string };
+      const p = job.payload as { scope?: string; portalUrl?: string; createdBy?: string; permitType?: string; discipline?: string };
       const projectId = String(job.projectId);
       const learnResult = await autoLearnPortal(db, projectId, {
         scope: p.scope === "utility" ? "utility" : "ahj",
         portalUrl: String(p.portalUrl || ""),
         createdBy: p.createdBy || "operator",
         permitType: p.permitType === "electrical" ? "electrical" : p.permitType === "structural" ? "structural" : undefined,
+        // Carried so a queued/auto re-learn writes the SAME discipline the lookup keys on.
+        discipline: typeof p.discipline === "string" ? p.discipline : undefined,
         onProgress: (prog) => {
           const percent =
             prog.phase === "login" ? 8

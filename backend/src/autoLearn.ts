@@ -286,6 +286,9 @@ export async function autoLearnPortal(
     portalUrl: string;
     createdBy?: string;
     permitType?: "structural" | "electrical";
+    /** Recipe discipline for THIS stage's track (recipeDisciplineForTrack). Authoritative
+     *  over permitType — it is the same value the recipe lookup keys on. */
+    discipline?: string;
     // Optional pre-resolved project record. The staging self-seed path passes its
     // client-contractor *overlaid* stagedProject (authoritative CCB#/installer identity) so the
     // learner fills the same data the hand-coded adapters would. When omitted (the manual
@@ -569,7 +572,14 @@ export async function autoLearnPortal(
   // replaced by a NEW learn that itself verified trusted (or by an explicit delete/re-record).
   // Discipline-scoped: unscoped, an ELECTRICAL learn would find the AHJ's STRUCTURAL
   // recipe, treat it as "already trusted", and silently discard its own pass.
-  const learnDiscipline = scopeType === "utility" ? "" : (input.permitType === "electrical" ? "electrical" : input.permitType === "structural" ? "structural" : "");
+  // The discipline the CALLER is staging, not one re-derived from permitType. Deriving it
+  // here could never produce "combo" (the DEFAULT permit track for any AHJ that is not
+  // split) and mapped "mpu" to structural, so the value WRITTEN never matched the value
+  // the lookup asks for: the combo track re-learned the portal on every single stage, and
+  // each of those learns claimed the building track's structural row and wiped its steps.
+  const learnDiscipline = scopeType === "utility"
+    ? ""
+    : (input.discipline ?? (input.permitType === "electrical" ? "electrical" : input.permitType === "structural" ? "structural" : ""));
   const existingRecipe = findAnyRecipeForProject(db, {
     scopeType,
     state: project.state,

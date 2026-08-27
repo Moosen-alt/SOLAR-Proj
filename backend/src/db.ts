@@ -877,16 +877,22 @@ function migrate(db: AppDb): void {
       -- '' = utility/NEM recipes and legacy rows; else 'structural' | 'electrical' | 'combo'.
       discipline TEXT NOT NULL DEFAULT ''
     );
-    -- UNIQUE on (profile_key, discipline): one recipe per AHJ PER PERMIT DISCIPLINE.
-    -- Keyed on profile_key alone, whichever discipline learned first owned the AHJ and
-    -- the other track could neither replay nor self-seed (see migration v14).
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_portal_recipes_profile_discipline ON portal_recipes(profile_key, discipline);
     CREATE INDEX IF NOT EXISTS idx_portal_recipes_status ON portal_recipes(status);
   `);
 
   // Recipe login step: selectors for auto-filling the login form on session expiry.
   // (Migrated here — after the table exists — so a fresh DB doesn't fail.)
   addColumnIfMissing(db, "portal_recipes", "login_step_json", "TEXT");
+
+  // One recipe per AHJ PER PERMIT DISCIPLINE. On an EXISTING database the CREATE TABLE
+  // above is a no-op, so this column does not exist yet — the unique index below must
+  // come AFTER addColumnIfMissing or it throws "no such column: discipline" and
+  // openDatabase() rejects, taking the whole backend down on every deployed DB (the
+  // migration that adds the column never gets to run). Same rule as the columns above.
+  addColumnIfMissing(db, "portal_recipes", "discipline", "TEXT NOT NULL DEFAULT ''");
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_portal_recipes_profile_discipline ON portal_recipes(profile_key, discipline);
+  `);
 
   // Snapshot of the last COMPLETE recording's steps, taken when a re-record starts.
   // An abandoned re-record used to leave the portal with no working recipe at all
