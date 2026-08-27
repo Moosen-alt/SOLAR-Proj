@@ -181,6 +181,11 @@ const SUBMIT_INTENT = /\b(continue application|submit application|file applicati
 // "Pay Fees Due" is a payment path. Off-limits for click/advance/nav alike.
 const EXISTING_RECORD_ACTION = /\bresume application\b|\bpay fees? due\b/i;
 
+// ACA contact-section controls. Once the applicant is filled deterministically with the
+// FILING CONTRACTOR's identity, a planner click on one of these re-opens that contact and
+// overwrites it with the homeowner's details (live Coos Bay).
+const CONTACT_CONTROL = /add new|select from account/i;
+
 // Accela ACA's wizard-advance control: an <a> on some layouts, a button/submit-input on
 // others (live-verified union from the hand-coded OregonEPermittingAdapter).
 const ACA_CONTINUE_CSS = 'a:has-text("Continue Application"), button:has-text("Continue Application"), input[type="submit"][value*="Continue Application" i]';
@@ -852,6 +857,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   private siteContactIdentity: ContactIdentity = {};
   // Attach keys used this RUN (pathname::slotLabel::file) - see the duplicate-row guard.
   private attachedKeys = new Set<string>();
+  // Set once the APPLICANT contact has been filled with the contractor identity.
+  private acaApplicantFilled = false;
   // Equipment fields whose select verification failed for EVERY candidate this
   // run — retrying them each rescan pass just burns waitForOptionReady caps.
   private equipmentFillFailed = new Set<string>();
@@ -1992,6 +1999,45 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     return true;
   }
 
+  // CLOSE the ACA dialog and WAIT for it to actually go away. After a save, ACA leaves the
+  // dialog iframe in the DOM — so "are there inputs in the frame" never reports closed, and
+  // the still-present overlay silently swallows the NEXT click (live: the Site Contact's
+  // Add New and then Continue Application both returned without doing anything, and the
+  // page was handed back to the planner mid-modal). Visibility of the iframe ELEMENT is the
+  // honest signal. Returns true when the dialog is gone.
+  private async closeAcaDialog(): Promise<boolean> {
+    const page = this.page;
+    if (!page) return true;
+    const frameEl = page.locator('iframe[name="ACADialogFrame"]').first();
+    // typeof guard, not `?.()`: optional chaining stops at the CALL, so `.catch()` would
+    // then run on undefined and throw (a stub locator has no isVisible).
+    const stillUp = async (): Promise<boolean> => {
+      if ((await frameEl.count().catch(() => 0)) === 0) return false;
+      if (typeof frameEl.isVisible !== "function") return false;
+      return await frameEl.isVisible().catch(() => false);
+    };
+    if (!(await stillUp())) return true;
+    // The modal's own close control first, then Escape.
+    for (const sel of ["#ACADialogFrame_Close", ".ui-dialog-titlebar-close", 'a[title="Close" i]', 'button[aria-label="Close" i]', 'img[alt="Close" i]']) {
+      const c = page.locator(sel).first();
+      const closeVisible = (await c.count().catch(() => 0)) > 0
+        && (typeof c.isVisible === "function" ? await c.isVisible().catch(() => false) : false);
+      if (closeVisible) {
+        await c.click({ timeout: 4000 }).catch(() => null);
+        break;
+      }
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const kb = (page as any)?.keyboard;
+    if (kb && typeof kb.press === "function") await kb.press("Escape").catch(() => null);
+    for (let i = 0; i < 10; i++) {
+      if (!(await stillUp())) return true;
+      await page.waitForTimeout?.(500).catch(() => null);
+    }
+    this.debug?.event({ type: "aca_dialog_still_open" });
+    return false;
+  }
+
   // ACA CONTACT step (CapEdit "Step 1: General Info > Applicant"): a section with a
   // "Select from Account" button + an "Add New" button. The operator's ePermitting
   // account carries MANY pre-existing contacts (leftovers from other filings), and the
@@ -2077,7 +2123,12 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       break;
     }
     if (!addNew) { this.debug?.event({ type: "contact_add_bail", why: `no unused Add New control for section ${sectionIndex} (${who})`, sections: addNewCount }); return { ok: false, usedId: "" }; }
-    if (!(await addNew.click({ timeout: 8000 }).then(() => true).catch(() => false))) return { ok: false, usedId };
+    if (!(await addNew.click({ timeout: 8000 }).then(() => true).catch(() => false))) {
+      // Almost always the PREVIOUS section's dialog still overlaying the page: ACA leaves
+      // the dialog iframe in the DOM after a save, and it intercepts the click.
+      this.debug?.event({ type: "contact_add_bail", why: `Add New click intercepted for section ${sectionIndex} (${who})`, control: usedId });
+      return { ok: false, usedId };
+    }
     await page.waitForLoadState?.("networkidle", { timeout: 12000 }).catch(() => null);
     await page.waitForTimeout?.(1500).catch(() => null);
     // VERIFY the Add-New form actually opened before recording anything — an unopened
@@ -2645,24 +2696,31 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           // (live Coos Bay). Owning the whole step closes that window.
           let anyFilled = false;
           const usedAddNew: string[] = [];
+          // BOTH sections: Site Contact is a REQUIRED section, so the wizard cannot advance
+          // until it is filled (live: with only the applicant filled, Continue Application
+          // did nothing and the page came back to the planner, which then overwrote the
+          // applicant). Applicant = filing contractor, Site Contact = property owner.
           for (const sectionIndex of [0, 1]) {
             const idn = this.identityForSection(sectionIndex);
             if (!idn.lastName && !idn.email) continue;
             const res = await this.accelaAddContactPass(steps, sectionIndex, usedAddNew);
             this.debug?.event({ type: "aca_contact_add_pass", page: pageCount, section: sectionIndex, advanced: res.ok, control: res.usedId });
             if (res.usedId) usedAddNew.push(res.usedId);
-            if (res.ok) anyFilled = true;
-            // WAIT for the saved dialog to close before the next section. Starting while
-            // it is still open let the next section resolve the SAME control and rewrite
-            // the contact we had just saved.
-            for (let w = 0; w < 12; w++) {
-              const stillOpen = await this.page.frameLocator('iframe[name="ACADialogFrame"]')
-                .locator("input[type='text']").first().count().catch(() => 0);
-              if (!stillOpen) break;
-              await this.page.waitForTimeout?.(1000).catch(() => null);
-            }
+            if (res.ok) { anyFilled = true; if (sectionIndex === 0) this.acaApplicantFilled = true; }
+            // Close the saved dialog before the next section — an overlay that is still up
+            // swallows the next Add New click.
+            await this.closeAcaDialog();
           }
           if (anyFilled) {
+            // CLEAR THE LINGERING MODAL FIRST. ACA leaves the saved dialog's iframe in the
+            // DOM and its overlay swallows the next click — that is how the Continue below
+            // silently missed, handing the page back to the planner mid-modal to overwrite
+            // the applicant we had just filled.
+            await this.closeAcaDialog();
+            await this.dismissModals();
+            await this.clearOverlays();
+            await this.page.waitForTimeout?.(800).catch(() => null);
+            const beforeFp = await this.pageFingerprint();
             const cont = this.acaContinueLocator();
             if (await cont.count().catch(() => 0)) {
               if (await cont.click({ timeout: 10000 }).then(() => true).catch(() => false)) {
@@ -2671,6 +2729,11 @@ export class AutoLearnAdapter extends BasePortalAdapter {
                 await this.page.waitForTimeout?.(1500).catch(() => null);
               }
             }
+            // Did the page ACTUALLY move? If not, the planner is about to get this page
+            // back — say so in the bundle rather than leaving a silent overwrite to
+            // explain later.
+            const afterFp = await this.pageFingerprint();
+            this.debug?.event({ type: "aca_contacts_continue", advanced: Boolean(afterFp) && afterFp !== beforeFp });
             continue;
           }
         }
@@ -2895,6 +2958,11 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         if (navRevisit) {
           this.debug?.event({ type: "navigate_revisit_rejected", page: pageCount, label: (navField?.label || "").slice(0, 60) });
           if (process.env.AUTOLEARN_DEBUG === "1") console.error(`[learn] rejected navigate to an already-visited path (p${pageCount}).`);
+        } else if (navField && this.acaApplicantFilled && CONTACT_CONTROL.test(navField.label || "")) {
+          // The applicant contact is already filled with the FILING CONTRACTOR's identity.
+          // Re-opening that section is how the planner overwrote it with the homeowner's
+          // details (live Coos Bay), so refuse the click and let the advance path move on.
+          this.debug?.event({ type: "contact_reopen_refused", label: (navField.label || "").slice(0, 60) });
         } else if (navField && !this.isOffLimitsButton(navField)) {
           navCount++;
           steps.push({

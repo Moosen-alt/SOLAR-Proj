@@ -17,7 +17,10 @@ const res = await autoLearnPortal(db, projectId, {
   scope: "ahj",
   portalUrl: "https://aca-oregon.accela.com/oregon/",
   createdBy: "live ACA verification run",
-  permitType: "structural", // the CITY (COOS_BAY) offering — run 2 proved the city's record-type list is structural-only
+  // Discipline from argv so both tracks can be exercised: `npx tsx live-accela-learn.ts electrical`.
+  // structural -> the CITY (COOS_BAY) offering; electrical -> the COUNTY (COOS_CO) one.
+  permitType: (process.argv[2] === "electrical" ? "electrical" : "structural"),
+  discipline: (process.argv[2] === "electrical" ? "electrical" : "structural"),
   headless: false, // operator convention: headed, browser left open at review
   onProgress: (p) => console.log(`[progress] ${p.phase} p${p.pageCount}/${p.maxPages} ${p.message ?? ""}`),
 });
