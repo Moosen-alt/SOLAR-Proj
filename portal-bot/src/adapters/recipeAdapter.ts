@@ -331,7 +331,22 @@ export class RecipeAdapter extends BasePortalAdapter {
         const v = this.resolveValue(step);
         if (!v) return false;
         await waitForElement(scoped);
-        await scoped!.fill(v);
+        // MASKED CONTROLS (Accela phone / zip): they keep their validation state from KEY
+        // events, so .fill() - which assigns .value and fires input+change - leaves the box
+        // showing the right text while the portal still reports "Required Invalid". The
+        // learner had to type these; replay must type them too or it re-creates exactly the
+        // state the learn run fixed. Detected from the step's own note/selector.
+        const maskedStep = /(phone|telephone|fax|zip|postal)/i.test(String(step.note ?? ""))
+          || /phone|zip/i.test(String(step.selector?.css ?? ""));
+        if (maskedStep) {
+          if (typeof scoped!.focus === "function") await scoped!.focus().catch(() => null);
+          await scoped!.fill("").catch(() => null);
+          if (typeof scoped!.pressSequentially === "function") await scoped!.pressSequentially(v, { delay: 35 }).catch(() => null);
+          else if (typeof scoped!.type === "function") await scoped!.type(v, { delay: 35 }).catch(() => null);
+          else await scoped!.fill(v);
+        } else {
+          await scoped!.fill(v);
+        }
         // Blur to COMMIT the value into the portal's JS model (PowerClerk's Vue saves on
         // blur). Without it the field shows filled but never persists → blank draft.
         if (typeof scoped!.blur === "function") await scoped!.blur().catch(() => {});

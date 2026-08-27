@@ -2030,12 +2030,12 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   // Click "Add New", then fill the contractor identity into the ACADialogFrame form
   // (First/Last/Email/Phone by row-label; the dialog's own Continue commits it). Bails
   // to the planner if Add New or the dialog can't be resolved.
-  private async accelaAddContactPass(steps: RecipeStep[], sectionIndex: number): Promise<boolean> {
+  private async accelaAddContactPass(steps: RecipeStep[], sectionIndex: number, usedAddNew: string[] = []): Promise<{ ok: boolean; usedId: string }> {
     const page = this.page;
-    if (!page) return false;
+    if (!page) return { ok: false, usedId: "" };
     const id = this.identityForSection(sectionIndex);
     const who = sectionIndex === 0 ? "applicant" : "site contact";
-    if (!id.lastName && !id.email) { this.debug?.event({ type: "contact_add_bail", why: `no identity for section ${sectionIndex} (${who})` }); return false; }
+    if (!id.lastName && !id.email) { this.debug?.event({ type: "contact_add_bail", why: `no identity for section ${sectionIndex} (${who})` }); return { ok: false, usedId: "" }; }
     const dlg = page.frameLocator('iframe[name="ACADialogFrame"]');
     // The planner may already have opened the ACCOUNT PICKER ("Select Contact from
     // Account"). Never pick from it: on a shared operator account that attaches another
@@ -2051,17 +2051,33 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       .or(page.getByRole("link", { name: /add new/i }))
       .or(page.locator('input[value*="Add New" i], button:has-text("Add New"), a:has-text("Add New")'));
     const addNewCount = await addNewAll.count().catch(() => 0);
-    if (!addNewCount) { this.debug?.event({ type: "contact_add_bail", why: "no Add New control", section: sectionIndex }); return false; }
-    // Take the FIRST VISIBLE Add New rather than the nth in DOM order: once a section is
-    // saved, ACA re-renders it with Edit/Remove and its Add New disappears, so the button
-    // indices SHIFT between passes (live: section 1 clicked a stale index and bailed).
-    // Sections complete in order, so the first visible one is always the next section's.
-    let addNew = addNewAll.first();
+    if (!addNewCount) { this.debug?.event({ type: "contact_add_bail", why: "no Add New control", section: sectionIndex }); return { ok: false, usedId: "" }; }
+    // Pick by ELEMENT IDENTITY, never by position. Once a section is saved ACA re-renders
+    // it with Edit/Remove and its Add New disappears, so indices shift; and if the save has
+    // not settled yet the applicant's button is still there, so "first visible" re-opened
+    // the SAME dialog and overwrote the applicant with the owner's details (live Coos Bay:
+    // Charles Bitton became Wynema Wright over the contractor's street). Skipping the ids
+    // we already used makes reusing a section structurally impossible.
+    let addNew: any = null;
+    let usedId = "";
     for (let i = 0; i < addNewCount; i++) {
       const candidate = addNewAll.nth(i);
-      if (await candidate.isVisible?.().catch(() => false)) { addNew = candidate; break; }
+      // typeof guards, not `?.()`: optional chaining stops at the CALL, so `.catch()`
+      // would then run on undefined and throw. A stub locator (tests) counts as visible.
+      const visible = typeof candidate.isVisible === "function"
+        ? await candidate.isVisible().catch(() => false)
+        : true;
+      if (!visible) continue;
+      const cid = (typeof candidate.getAttribute === "function"
+        ? String((await candidate.getAttribute("id").catch(() => "")) ?? "")
+        : "") || `idx:${i}`;
+      if (usedAddNew.includes(cid)) continue;
+      addNew = candidate;
+      usedId = cid;
+      break;
     }
-    if (!(await addNew.click({ timeout: 8000 }).then(() => true).catch(() => false))) return false;
+    if (!addNew) { this.debug?.event({ type: "contact_add_bail", why: `no unused Add New control for section ${sectionIndex} (${who})`, sections: addNewCount }); return { ok: false, usedId: "" }; }
+    if (!(await addNew.click({ timeout: 8000 }).then(() => true).catch(() => false))) return { ok: false, usedId };
     await page.waitForLoadState?.("networkidle", { timeout: 12000 }).catch(() => null);
     await page.waitForTimeout?.(1500).catch(() => null);
     // VERIFY the Add-New form actually opened before recording anything — an unopened
@@ -2069,7 +2085,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     const anyInput = dlg.locator("input[type='text']").first();
     if (!(await anyInput.count().catch(() => 0))) {
       this.debug?.event({ type: "contact_add_bail", why: "Add New dialog did not open" });
-      return false;
+      return { ok: false, usedId };
     }
     steps.push({ action: "click", phase: "fill", selector: { role: "button", name: "Add New", fallbacks: [{ css: 'a:has-text("Add New")' }] }, note: `contact(${who}): add new` });
     // Field-specific ASP.NET control ids/names — NOT row-label scoping. ACA renders First
@@ -2077,8 +2093,23 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     // that row and .first() returns the FIRST-name box: the last name would overwrite the
     // first (review finding). Distinct selectors also keep each recorded step replayable
     // into its own control instead of all four landing in one input.
+    // Section 1 (site contact) binds to the PROJECT's own keys. A blind
+    // installer→homeowner prefix swap invents homeownerStreet/City/State/Zip, which exist
+    // nowhere in resolveRecipeFieldValues — at replay those resolve to "" and the required
+    // address block goes in BLANK with no error. The site address lives under
+    // street/city/state/zip; only the person fields carry a homeowner* prefix.
+    const SITE_KEYS: Record<string, string> = {
+      installerFirstName: "homeownerFirstName",
+      installerLastName: "homeownerLastName",
+      installerEmail: "homeownerEmail",
+      installerPhone: "homeownerPhone",
+      installerStreet: "street",
+      installerCity: "city",
+      installerState: "state",
+      installerZip: "zip",
+    };
     const bindKey = (installerKey: string): string =>
-      sectionIndex === 0 ? installerKey : installerKey.replace(/^installer/, "homeowner");
+      sectionIndex === 0 ? installerKey : (SITE_KEYS[installerKey] ?? installerKey);
     const fillField = async (idPart: string, value: string | undefined, note: string, field: string): Promise<void> => {
       if (!value) return;
       const css = `input[id*='${idPart}' i], input[name*='${idPart}' i]`;
@@ -2127,7 +2158,11 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       const parts = [phoneDigits.slice(0, 3), phoneDigits.slice(3, 6), phoneDigits.slice(6, 10)];
       if (phoneMode === "ok") {
         for (let i = 0; i < 3; i++) {
-          steps.push({ action: "fill", phase: "fill", selector: { css: phoneCss, nth: i, frame: "ACADialogFrame" }, value: parts[i], note: `contact: phone (${["area", "prefix", "line"][i]}) [${who}]` });
+          // BOUND per segment, never frozen: a literal here replays the LEARN project's
+          // phone number for every future project. resolveRecipeFieldValues derives
+          // <base>Area/Prefix/Line via phoneSegmentKeys.
+          const segKey = `${bindKey("installerPhone")}${["Area", "Prefix", "Line"][i]}`;
+          steps.push({ action: "fill", phase: "fill", selector: { css: phoneCss, nth: i, frame: "ACADialogFrame" }, field: segKey, value: parts[i], note: `contact: phone (${["area", "prefix", "line"][i]}) [${who}]` });
         }
       } else if (phoneMode === "not-segmented") {
         const single = dlg.locator(phoneCss).first();
@@ -2150,7 +2185,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     }
     await page.waitForLoadState?.("networkidle", { timeout: 15000 }).catch(() => null);
     await page.waitForTimeout?.(1500).catch(() => null);
-    return true;
+    return { ok: true, usedId };
   }
 
   // ACA ATTACHMENT step. Accela stages attachments in a pending list that is only
@@ -2487,7 +2522,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         (/CapApplyDisclaimer/i.test(url) && acaDisclaimerPasses < 3) ||
         (!workLocationHandled && (/WorkLocation/i.test(url) || /enter work site location/i.test(bodyText))) ||
         (!acaRecordTypeHandled && this.acaRecordTypePageDetected(fields)) ||
-        (acaContactDialogPasses < 2 && this.acaContactPageDetected(fields, bodyText))
+        (acaContactDialogPasses < 1 && this.acaContactPageDetected(fields, bodyText))
       );
 
       // a0) STUCK / CYCLE GUARD with SELF-RECOVERY. Two failure shapes:
@@ -2601,12 +2636,43 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         // CONTACT step (CapEdit): "Add New" + fill the contractor identity (operator's
         // guidance — the account has many pre-existing contacts). Appears once per
         // contact section (Applicant, Site Contact), so allow a few.
-        if (acaContactDialogPasses < 2 && this.acaContactPageDetected(fields, bodyText)) {
-          const sectionIndex = acaContactDialogPasses;
+        if (acaContactDialogPasses < 1 && this.acaContactPageDetected(fields, bodyText)) {
           acaContactDialogPasses++;
-          const advanced = await this.accelaAddContactPass(steps, sectionIndex);
-          this.debug?.event({ type: "aca_contact_add_pass", page: pageCount, section: sectionIndex, advanced });
-          if (advanced) continue;
+          // BOTH sections in ONE visit, then advance off the page ourselves. Handing the
+          // page back to the planner between sections let it re-open the contact we had
+          // just filled and overwrite the applicant's NAME with the homeowner's, leaving
+          // the contractor address underneath — a mixed contact on the review screen
+          // (live Coos Bay). Owning the whole step closes that window.
+          let anyFilled = false;
+          const usedAddNew: string[] = [];
+          for (const sectionIndex of [0, 1]) {
+            const idn = this.identityForSection(sectionIndex);
+            if (!idn.lastName && !idn.email) continue;
+            const res = await this.accelaAddContactPass(steps, sectionIndex, usedAddNew);
+            this.debug?.event({ type: "aca_contact_add_pass", page: pageCount, section: sectionIndex, advanced: res.ok, control: res.usedId });
+            if (res.usedId) usedAddNew.push(res.usedId);
+            if (res.ok) anyFilled = true;
+            // WAIT for the saved dialog to close before the next section. Starting while
+            // it is still open let the next section resolve the SAME control and rewrite
+            // the contact we had just saved.
+            for (let w = 0; w < 12; w++) {
+              const stillOpen = await this.page.frameLocator('iframe[name="ACADialogFrame"]')
+                .locator("input[type='text']").first().count().catch(() => 0);
+              if (!stillOpen) break;
+              await this.page.waitForTimeout?.(1000).catch(() => null);
+            }
+          }
+          if (anyFilled) {
+            const cont = this.acaContinueLocator();
+            if (await cont.count().catch(() => 0)) {
+              if (await cont.click({ timeout: 10000 }).then(() => true).catch(() => false)) {
+                steps.push({ action: "click", phase: "fill", selector: { css: ACA_CONTINUE_CSS, fallbacks: [{ role: "button", name: "Continue Application »" }] }, note: "contacts: continue" });
+                await this.page.waitForLoadState?.("networkidle", { timeout: 20000 }).catch(() => null);
+                await this.page.waitForTimeout?.(1500).catch(() => null);
+              }
+            }
+            continue;
+          }
         }
         // Record-type selection (the page right after the address row is chosen).
         if (!acaRecordTypeHandled && this.acaRecordTypePageDetected(fields)) {
@@ -3626,7 +3692,11 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       // Read back what each segment actually holds — the only reliable success signal.
       const segValues = async (): Promise<string[]> => {
         const out: string[] = [];
-        for (let i = 0; i < 3; i++) out.push(String((await target.nth(i).inputValue?.().catch(() => "")) ?? "").replace(/\D/g, ""));
+        for (let i = 0; i < 3; i++) {
+          const box = target.nth(i);
+          const v = typeof box.inputValue === "function" ? await box.inputValue().catch(() => "") : "";
+          out.push(String(v ?? "").replace(/\D/g, ""));
+        }
         return out;
       };
       const filledOk = async (): Promise<boolean> => (await segValues()).join("") === digits;

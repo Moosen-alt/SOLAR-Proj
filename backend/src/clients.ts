@@ -2,6 +2,7 @@ import type { ClientPortalIdentity, ClientRecord } from "../../shared/src/types"
 import type { AppDb } from "./db";
 import { DEFAULT_ORG_ID } from "./db";
 import { HttpError } from "./httpError";
+import { phoneSegmentKeys } from "./portalRecipes";
 import { id } from "./ids";
 import { nowIso } from "./time";
 import { text as s } from "./json";
@@ -230,6 +231,7 @@ export function clientStagingOverlay(db: AppDb, clientId: string | null, portalT
     installerCity: client.businessCity,
     installerState: client.businessState,
     installerZip: client.businessZip,
+    ...phoneSegmentKeys("installerPhone", client.businessPhone || client.phone),
     installerCityStateZip:
       [client.businessCity, client.businessState].filter(Boolean).join(", ") +
       (client.businessZip ? ` ${client.businessZip}` : ""),

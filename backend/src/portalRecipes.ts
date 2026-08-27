@@ -35,6 +35,19 @@ function mapRecipe(row: Row): PortalRecipe {
   };
 }
 
+// Split a US phone into the three boxes segmented portal controls use (Accela renders
+// area / prefix / line as separate inputs). Emitted as derived substitution keys so a
+// recorded segment step binds to a KEY rather than freezing the learn project's number.
+export function phoneSegmentKeys(base: string, raw: string): Record<string, string> {
+  const digits = String(raw || "").replace(/\D/g, "").replace(/^1(?=\d{10}$)/, "");
+  if (digits.length < 10) return {};
+  return {
+    [`${base}Area`]: digits.slice(0, 3),
+    [`${base}Prefix`]: digits.slice(3, 6),
+    [`${base}Line`]: digits.slice(6, 10),
+  };
+}
+
 export function recipeProfileKey(input: { scopeType: "ahj" | "utility"; state?: string; ahj?: string; utility?: string }): string {
   // AHJ recipes key on state|ahj|utility; utility recipes key on the utility only
   // (ahj empty) so they match any AHJ in that utility territory.
@@ -360,6 +373,10 @@ export function resolveRecipeFieldValues(db: AppDb, project: ProjectRecord, port
     // Bound instead of streetNameCore when the LEARN run's full-name search returned
     // zero results and its 3-char retry succeeded (the portal's own search hint).
     streetNameSearchPortion: parseStreetName(project.projectAddress || "").slice(0, 3),
+    // SEGMENTED PHONE parts. Accela renders a US phone as three boxes (area/prefix/line);
+    // recording the digits as literals would replay the LEARN project's phone number for
+    // every future project, so each segment binds to its own derived key.
+    ...phoneSegmentKeys("homeownerPhone", String(snapshotFlat.homeownerPhone || snapshotFlat.ownerPhone || "")),
     projectAddress: project.projectAddress,
     city: project.city,
     state: project.state,
