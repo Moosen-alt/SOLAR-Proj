@@ -31,6 +31,13 @@ export class AppDb {
 
   constructor(private readonly db: DB) {}
 
+  // Close the underlying handle. Needed by tests that delete their scratch DB file:
+  // Windows keeps an open handle as a file lock, so the unlink EBUSYs until closed.
+  close(): void {
+    this.stmtCache.clear();
+    this.db.close();
+  }
+
   private prepare(sql: string): Statement {
     let stmt = this.stmtCache.get(sql);
     if (!stmt) {

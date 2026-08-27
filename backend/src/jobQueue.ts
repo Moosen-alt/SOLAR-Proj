@@ -527,7 +527,11 @@ export async function processNextJob(db: AppDb): Promise<boolean> {
       // (route kick, worker drain, auto-start, auto-resume). Best-effort.
       void import("./events").then(({ sseBroadcast }) => {
         const projectId = job.projectId ?? undefined;
-        if (seg.blocked) {
+        if (seg.blocked && seg.blockers.some((b) => b.code === "paused_for_human")) {
+          // An MFA/CAPTCHA pause is a designed human handoff, not an error — keep the
+          // warning-severity pause toast even though Segment A reports it as blocked.
+          sseBroadcast({ type: "run_paused", projectId, message: "Autopilot paused — the portal needs human attention." });
+        } else if (seg.blocked) {
           const why = seg.blockers.map((b) => b.detail).join("; ").slice(0, 400) || seg.message;
           sseBroadcast({ type: "run_failed", projectId, message: `Autopilot blocked: ${why}` });
         } else if (seg.state.phase === "awaiting_approval") {

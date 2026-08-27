@@ -172,6 +172,38 @@ export function seedOutcomeToStageResult(seed: {
 }
 
 
+// ── Recipe permit-discipline detection ──────────────────────────────────────────────────
+// The ACA learner's deterministic passes record jurisdiction-row and record-type steps
+// whose notes carry the LEARN project's permit discipline ("work location: select
+// county/electrical address row", "record type: Residential - Electrical …"). AHJ
+// recipes are keyed WITHOUT a discipline dimension (state|ahj|utility), so replaying an
+// electrical-learned recipe for a structural stage would silently click the COUNTY row
+// and the electrical record type — filing the permit down the wrong jurisdiction's
+// path, invisibly (the clicks succeed, so no drift detection fires). Until recipes grow
+// a per-discipline key (open design decision — see HANDOFF), detect the discipline from
+// the recorded steps and refuse the clear mismatches at dispatch.
+export function recipeDisciplineFromSteps(steps: Array<{ note?: string }> | null | undefined): "electrical" | "structural" | null {
+  for (const s of steps ?? []) {
+    const note = String(s?.note ?? "").toLowerCase();
+    if (note.includes("county/electrical") || /record type: .*electrical/.test(note)) return "electrical";
+    if (note.includes("city/structural") || /record type: .*structural/.test(note)) return "structural";
+  }
+  return null;
+}
+
+// Only the UNAMBIGUOUS mismatches conflict: an electrical track must not replay a
+// structural-learned recipe and vice versa. combo/permit/mpu tracks (and recipes with
+// no discernible discipline) keep today's behavior.
+export function disciplineConflictsWithTrack(
+  discipline: "electrical" | "structural" | null,
+  track: string | null | undefined,
+): boolean {
+  if (!discipline) return false;
+  if (track === "electrical") return discipline === "structural";
+  if (track === "building") return discipline === "electrical";
+  return false;
+}
+
 // ── Utility-platform host knowledge ─────────────────────────────────────────────────────
 // The ONE place that knows which URL hosts are utility interconnection platforms — used by
 // the staging track/host gates so a permit (AHJ) track never launches or replays against a

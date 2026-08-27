@@ -47,6 +47,10 @@ run("v8 clears the PowerClerk URL from the AHJ-keyed row", ahjRow?.portal_url ==
 const utilRow = db2.get<{ portal_url: string }>("SELECT portal_url FROM permit_utility_knowledge WHERE id = 't-util'");
 run("v8 keeps the utility-keyed row's PowerClerk URL", (utilRow?.portal_url || "").includes("powerclerk.com"), `got: ${utilRow?.portal_url}`);
 
+// Close BOTH handles before deleting the scratch DB - Windows holds any open handle as
+// a file lock (EBUSY). db2 is the reopen that replayed migration v8.
+db2.close();
+db.close();
 fs.rmSync(tmpDir, { recursive: true, force: true });
 if (failures > 0) { console.error(`\n${failures} portal-url-scope test(s) FAILED.`); process.exit(1); }
 console.log("\nAll portal-url-scope tests passed.");

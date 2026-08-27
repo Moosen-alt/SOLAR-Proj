@@ -133,6 +133,8 @@ run("finishPortalRecipe promotes recording → complete; empty recording refuses
   assert.throws(() => finishPortalRecipe(db, empty.id), /no captured steps/i);
 });
 
+// Close before deleting the scratch DB - Windows holds the open handle as a file lock (EBUSY).
+db.close();
 fs.rmSync(tmpDir, { recursive: true, force: true });
 if (failures > 0) {
   console.error(`\n${failures} human-patch test(s) FAILED.`);

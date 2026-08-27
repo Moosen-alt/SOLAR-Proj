@@ -86,6 +86,8 @@ async function main(): Promise<void> {
   const trueUp = recordActualPermitFee(db, project("proj-1"), "nem", 50, "operator");
   check("nem true-up records actual without paying", trueUp.permitFeeUsd === 50 && trueUp.payment?.status === "quoted");
 
+  // Close before deleting the scratch DB - Windows holds the open handle as a file lock (EBUSY).
+  db.close();
   fs.rmSync(dir, { recursive: true, force: true });
   if (failures) { console.error(`\n${failures} failure(s)`); process.exit(1); }
   console.log("\nsubmissionFees: all checks passed");

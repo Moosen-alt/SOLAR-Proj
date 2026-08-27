@@ -137,7 +137,31 @@ run("resolvePortalChannel: apiAvailable → reserved 'api' tier", () => {
   const d = resolvePortalChannel({ hasRecipe: false, isRealPortal: true, isAccela: false, isPowerClerk: false, autoSeedEnabled: true, apiAvailable: true });
   assert.equal(d.channel, "api");
 });
-const registryExtra = 5;
+// ── Discipline gate: an AHJ recipe learned for one permit discipline must not replay
+// for the other (recipes aren't discipline-keyed; the baked jurisdiction-row and
+// record-type clicks would file under the wrong authority, silently).
+const { recipeDisciplineFromSteps, disciplineConflictsWithTrack } = await import("../src/portalChannel");
+run("discipline: detected from the learner's jurisdiction-row note", () => {
+  assert.equal(recipeDisciplineFromSteps([{ note: "work location: select county/electrical address row" }]), "electrical");
+  assert.equal(recipeDisciplineFromSteps([{ note: "work location: select city/structural address row" }]), "structural");
+});
+run("discipline: detected from the record-type note", () => {
+  assert.equal(recipeDisciplineFromSteps([{ note: "record type: Residential - Electrical Comprehensive" }]), "electrical");
+  assert.equal(recipeDisciplineFromSteps([{ note: "entry url" }, { note: "record type: Residential - Structural" }]), "structural");
+});
+run("discipline: no marker → null → never conflicts", () => {
+  assert.equal(recipeDisciplineFromSteps([{ note: "fill homeowner name" }]), null);
+  assert.equal(disciplineConflictsWithTrack(null, "electrical"), false);
+});
+run("discipline: only the unambiguous cross-matches conflict", () => {
+  assert.equal(disciplineConflictsWithTrack("structural", "electrical"), true);
+  assert.equal(disciplineConflictsWithTrack("electrical", "building"), true);
+  assert.equal(disciplineConflictsWithTrack("electrical", "electrical"), false);
+  assert.equal(disciplineConflictsWithTrack("structural", "building"), false);
+  assert.equal(disciplineConflictsWithTrack("electrical", "combo"), false);
+  assert.equal(disciplineConflictsWithTrack("structural", "permit"), false);
+});
+const registryExtra = 5 + 4;
 
 const total = platformCases.length + dispatchCases.length + 4 + registryChecks + registryExtra;
 if (failures) {

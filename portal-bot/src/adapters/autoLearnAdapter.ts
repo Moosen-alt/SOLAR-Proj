@@ -8,6 +8,7 @@ import { selectWithFallback } from "../comboboxFill";
 import { detectChallengeFrame, frameSelectorFor, readbackMatches, redactStatusText, safeAction, sleep, smartWait, waitForElement, waitForInteractiveControls } from "../safeAction";
 import { scrapeReviewScreen as scrapeReviewScreenShared } from "../reviewScreenScraper";
 import { performLogin } from "./loginFlow";
+import { parseStreetName, parseStreetNumber } from "../addressParse";
 import { portalUploadCapBytes } from "../uploadCap";
 import { LearnRunDebug } from "../learnDebug";
 import { armHumanCaptureOnPage } from "../humanCapture";
@@ -162,6 +163,15 @@ const PAY_FEE = /\b(pay fee|pay now|submit & pay|submit and pay|make payment|con
 // pages but submits on the review page). The structural guard below treats them as the
 // final submit (recorded, never clicked) whenever the page has no fillable inputs.
 const SUBMIT_INTENT = /\b(continue application|submit application|file application|submit|finish|finalize|confirm submission|place order|complete submission)\b/i;
+
+// Controls that act on an EXISTING portal record (the operator's real filings) — never
+// part of learning a NEW application. "Resume Application" reopens a draft record;
+// "Pay Fees Due" is a payment path. Off-limits for click/advance/nav alike.
+const EXISTING_RECORD_ACTION = /\bresume application\b|\bpay fees? due\b/i;
+
+// Accela ACA's wizard-advance control: an <a> on some layouts, a button/submit-input on
+// others (live-verified union from the hand-coded OregonEPermittingAdapter).
+const ACA_CONTINUE_CSS = 'a:has-text("Continue Application"), button:has-text("Continue Application"), input[type="submit"][value*="Continue Application" i]';
 
 // Markers that a page is the review/confirm step — portal-AGNOSTIC phrasing only (a generic
 // "Step N: Review", a read-only summary, a "please review" instruction, or a terms-acceptance /
@@ -1646,68 +1656,286 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   }
 
   // ---------------------------------------------------------------------------
-  // ACCELA WORK-SITE LOCATION PASS. Oregon ePermitting's Apply flow starts with an
-  // address SEARCH step ("Enter Work Site Location"): street number + a PORTION of the
-  // street name → Search → pick the matching parcel row → Continue Application. The LLM
-  // planner filled the fields but clicked past the Search, and Accela bounced the run
-  // back to the records home (live Salem run). Deterministic: parse the project street,
-  // search, select the first result, continue. Steps are recorded for replay (literal
-  // address parts — the post-learn binding pass evaluates them like any other literal).
+  // ACCELA (ACA) DETERMINISTIC PASSES. Oregon ePermitting's Apply flow has three
+  // steps the LLM planner reliably fumbled on live Salem runs (2026-08-27 bundles):
+  //   1. entry T&C (CapApplyDisclaimer) — agree checkbox + "Continue Application";
+  //   2. "Enter Work Site Location" — the street-number control is an UNLABELED
+  //      from/to range pair (name …txtStreetNo4Search$ChildControl0/1), so the
+  //      planner left the number EMPTY; and the page carries TWO "Search" controls
+  //      (the header-nav tab and the panel button) — every live run clicked the
+  //      NAV tab and bounced into the records/search module (CapHome), so no run
+  //      ever reached record-type selection;
+  //   3. record-type selection — a checkbox list of application types + Continue.
+  // Selector hooks are the live-verified ones from the hand-coded
+  // OregonEPermittingAdapter (operator codegen) plus the captured extractions in
+  // data/learn-runs/2026-08-27_*_city-of-salem_*. Every pass bails to the planner
+  // when its hooks don't match. Steps are recorded for replay (literal address
+  // parts — the post-learn binding pass evaluates them like any other literal).
   // ---------------------------------------------------------------------------
+
+  private isAcaUrl(url: string): boolean {
+    return /accela\.com|citizenaccess/i.test(url || "");
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private acaContinueLocator(): any {
+    if (!this.page) throw new Error("acaContinueLocator called before login() opened a page");
+    return this.page.locator(ACA_CONTINUE_CSS).first();
+  }
+
+  // Derive the Apply-flow entry URL (Building-module disclaimer) from any ACA page
+  // URL: /{instance}/Cap/CapHome.aspx → /{instance}/Cap/CapApplyDisclaimer.aspx.
+  // The learner only ever drives ACA for the PERMIT track (utilities are PowerClerk),
+  // so module=Building is the right wizard for both structural and electrical.
+  private acaApplyEntryUrl(url: string): string | null {
+    try {
+      const u = new URL(url);
+      const m = u.pathname.match(/^(.*)\/Cap\/[^/]+$/i);
+      if (!m) return null;
+      return `${u.origin}${m[1]}/Cap/CapApplyDisclaimer.aspx?module=Building`;
+    } catch { return null; }
+  }
+
+  // The records/search module — NOT part of the Apply wizard. A learner that lands here
+  // has drifted (live: the header-nav "Search" click). CapHome is the "Applications &
+  // Permits" list + General Search; CapDetail is an EXISTING record's detail view. Both
+  // are full of controls that act on the operator's REAL filings ("Resume Application",
+  // "Pay Fees Due", record links, attachment uploads) — the learner must never operate
+  // them. Detect by URL + the module's own captured control names, so an ACA build that
+  // reuses these URLs for wizard steps is left to the planner rather than misdetected.
+  private acaWrongModulePage(url: string, fields: ExtractedField[]): "records_home" | "record_detail" | null {
+    if (!this.isAcaUrl(url)) return null;
+    let pathname = "";
+    try { pathname = new URL(url).pathname.toLowerCase(); } catch { return null; }
+    const marker = (re: RegExp) =>
+      fields.some((f) => re.test(f.label || "") || re.test(f.selector?.name || "") || re.test(f.selector?.css || ""));
+    if (pathname.endsWith("/cap/caphome.aspx") && marker(/generalsearchform|gdvpermitlist/i)) return "records_home";
+    if (pathname.endsWith("/cap/capdetail.aspx") && marker(/addfordetailpage|attachmentedit/i)) return "record_detail";
+    return null;
+  }
+
+  // Entry T&C: agree + continue without burning an LLM call. The agree checkbox id is
+  // …termAccept on the live build (codegen-verified); role-name fallback for others.
+  private async accelaDisclaimerPass(steps: RecipeStep[]): Promise<boolean> {
+    const page = this.page;
+    if (!page) return false;
+    let agree = page.locator("input[id$='termAccept'], input[name$='termAccept']").first();
+    if (!(await agree.count().catch(() => 0))) agree = page.getByRole("checkbox", { name: /i have read and agree|agree|accept/i }).first();
+    if (!(await agree.count().catch(() => 0))) return false;
+    await agree.check({ timeout: 8000 }).catch(() => null);
+    const cont = this.acaContinueLocator();
+    if (!(await cont.count().catch(() => 0))) return false;
+    const preUrl = typeof page.url === "function" ? String(page.url() ?? "") : "";
+    await cont.click({ timeout: 10000 }).catch(() => null);
+    await page.waitForLoadState?.("networkidle", { timeout: 15000 }).catch(() => null);
+    await page.waitForTimeout?.(1500).catch(() => null);
+    // Record ONLY on a verified advance — the check/click above swallow failures, and an
+    // unverified true would re-run the pass (cap 3) and duplicate the accept/continue
+    // pair in the recipe. Still sitting on the same disclaimer URL → bail to the planner.
+    const postUrl = typeof page.url === "function" ? String(page.url() ?? "") : "";
+    if (postUrl && postUrl === preUrl && /CapApplyDisclaimer/i.test(postUrl)) return false;
+    // Recorded selectors carry the SAME breadth the pass matched with (id OR name css;
+    // role-name as fallback) so a build that only the wider union matched still replays.
+    steps.push({ action: "check", phase: "fill", selector: { css: "input[id$='termAccept'], input[name$='termAccept']", fallbacks: [{ role: "checkbox", name: "I have read and agree" }] }, note: "accela: accept entry terms" });
+    steps.push({ action: "click", phase: "fill", selector: { css: ACA_CONTINUE_CSS, fallbacks: [{ role: "button", name: "Continue Application »" }] }, note: "accela: continue past entry disclaimer" });
+    return true;
+  }
+
   private async accelaWorkLocationPass(project: ProjectRecord, steps: RecipeStep[]): Promise<boolean> {
     const page = this.page;
     if (!page) return false;
     const bail = (why: string): false => { this.debug?.event({ type: "work_location_bail", why }); return false; };
     const addr = String(project.projectAddress ?? "");
-    const m = addr.match(/^\s*(\d+)\s+(?:([NSEW]{1,2})\s+)?([A-Za-z0-9]+)/i);
-    if (!m) return bail("address unparseable");
-    const streetNo = m[1];
-    const nameToken = (m[3] || "").slice(0, 8);
-    if (!streetNo || !nameToken) return bail("address tokens empty");
-    // ACA renders the application content inside an IFRAME (the extractor walks frames for
-    // the same reason) — resolve the frame that holds the WorkLocation controls first.
+    // The live-tested parsers from the hand-coded adapter: number = first token of the
+    // street LINE; name = the CORE name only ("925 N Grant St" → "Grant" — direction and
+    // suffix in the search field return zero results).
+    const streetNo = parseStreetNumber(addr);
+    const nameCore = parseStreetName(addr);
+    if (!streetNo || !nameCore) return bail("address unparseable");
+    // Some ACA builds render the wizard inside an IFRAME — resolve the frame holding the
+    // WorkLocation controls first (aca-oregon renders top-level, so page scope wins there).
+    // EVERYTHING below must stay in this scope: results, retries, row selection, and the
+    // Continue click all live in the same frame as the inputs.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let scope: any = page;
+    let frameKey: string | undefined;
     try {
+      const main = typeof page.mainFrame === "function" ? page.mainFrame() : null;
       for (const f of (typeof page.frames === "function" ? page.frames() : [])) {
-        if (await f.locator("input[name*='StreetNumber'], input[id*='StreetNumber']").count().catch(() => 0)) { scope = f; break; }
+        if (main && f === main) continue;
+        if (await f.locator("input[id*='StreetNo4Search'], input[name*='StreetNo4Search']").count().catch(() => 0)) {
+          scope = f;
+          // Same frame-key derivation as extractAllFrames, so the recorded steps carry
+          // selector.frame and replay into the right frame (a bare css selector on the
+          // main page finds nothing on iframe builds).
+          try {
+            const el = await f.frameElement();
+            frameKey = (await el.getAttribute("name")) || (await el.getAttribute("id")) || undefined;
+            if (!frameKey) {
+              const src = (await el.getAttribute("src")) || "";
+              if (src && !/^about:|^javascript:/i.test(src)) {
+                const u = new URL(src, String(typeof page.url === "function" ? page.url() : ""));
+                if (u.pathname && u.pathname !== "/") frameKey = `src:${u.pathname}`;
+              }
+            }
+          } catch { frameKey = undefined; }
+          break;
+        }
       }
     } catch { /* keep page scope */ }
-    // ACA is classic ASP.NET — labels aren't associated and the visible hints are
-    // watermarks, so getByLabel/getByPlaceholder both miss. The ASP.NET control NAMES are
-    // the stable hooks (ctl00$PlaceHolderMain$WorkLocationEdit$txtStreetNumber / …Name),
-    // verified from the live extraction; label lookups stay as fallback for other builds.
-    let numBox = scope.locator("input[name*='StreetNumber'], input[id*='StreetNumber']").first();
+    const inFrame: Partial<RecipeSelector> = frameKey ? { frame: frameKey } : {};
+    // ACA is classic ASP.NET — the street-number pair has NO label/aria (watermark hints
+    // only), so getByLabel misses it. The stable hooks are the control ids/names
+    // (…txtStreetNo4Search$ChildControl0/1 — a from/to range; fill the FROM box only,
+    // ACA matches an exact number). Captured live: p003-plan.json in the Salem bundles.
+    let numBox = scope.locator("input[id*='StreetNo4Search'], input[name*='StreetNo4Search']").first();
     if (!(await numBox.count().catch(() => 0))) numBox = scope.getByLabel(/street number/i).first();
-    let nameBox = scope.locator("input[name*='StreetName'], input[id*='StreetName']").first();
+    let nameBox = scope.locator("input[id*='txtStreetName'], input[name*='txtStreetName']").first();
     if (!(await nameBox.count().catch(() => 0))) nameBox = scope.getByLabel(/street name/i).first();
     if (!(await numBox.count().catch(() => 0)) || !(await nameBox.count().catch(() => 0))) return bail("street inputs not found (checked frames)");
-    await numBox.fill(streetNo).catch(() => null);
-    await nameBox.fill(nameToken).catch(() => null);
-    steps.push({ action: "fill", phase: "fill", selector: { label: "Street Number" }, value: streetNo, note: "work location: street number" });
-    steps.push({ action: "fill", phase: "fill", selector: { label: "Street Name" }, value: nameToken, note: "work location: street name (portion)" });
-    const searchBtn = page.locator("a[id*='btnSearch' i], input[id*='btnSearch' i], button[id*='btnSearch' i]").first()
-      .or(page.getByRole("button", { name: /^Search$/i }).first())
-      .or(page.locator("a, input[type='button'], input[type='submit']").filter({ hasText: /^Search$/i }).first()).first();
-    if (!(await searchBtn.count().catch(() => 0))) return false;
-    await searchBtn.click({ timeout: 10000 }).catch(() => null);
-    steps.push({ action: "click", phase: "fill", selector: { role: "button", name: "Search", exact: true }, note: "work location: search" });
-    await page.waitForLoadState?.("networkidle", { timeout: 15000 }).catch(() => null);
-    await page.waitForTimeout?.(2500).catch(() => null);
-    // Result rows render one radio/checkbox per matched address — select the first.
-    const pick = page.locator("table input[type='radio'], table input[type='checkbox']").first();
-    if (await pick.count().catch(() => 0)) {
-      await pick.check().catch(() => null);
-      steps.push({ action: "check", phase: "fill", selector: { css: "table input[type='radio']" }, note: "work location: select first address result" });
-      await page.waitForTimeout?.(1000).catch(() => null);
+    // The address panel's OWN Search control — NEVER a bare role/name "Search", which
+    // also matches the header-nav Search tab (the live drift that left the wizard).
+    // Precise codegen-verified suffix first, then the PlaceHolderMain-scoped generic
+    // (…_btnSearch never matches the nav — the nav lives outside PlaceHolderMain).
+    const searchBtn = scope.locator(
+      "a[id$='WorkLocationEdit_btnSearch'], a[id^='ctl00_PlaceHolderMain'][id$='_btnSearch'], input[id^='ctl00_PlaceHolderMain'][id$='_btnSearch'], button[id^='ctl00_PlaceHolderMain'][id$='_btnSearch']",
+    ).first();
+    if (!(await searchBtn.count().catch(() => 0))) return bail("address panel search button not found");
+    const doSearch = async (nameValue: string): Promise<void> => {
+      await numBox.fill(streetNo).catch(() => null);
+      await nameBox.fill(nameValue).catch(() => null);
+      await searchBtn.click({ timeout: 10000 }).catch(() => null);
+      await page.waitForLoadState?.("networkidle", { timeout: 15000 }).catch(() => null);
+      await page.waitForTimeout?.(2000).catch(() => null);
+    };
+    const noResults = async (): Promise<boolean> => {
+      const body = String((await scope.locator("body").innerText().catch(() => "")) ?? "");
+      return /address not found|no records? (were )?found|returned no results|no results (were )?found/i.test(body);
+    };
+    let nameUsed = nameCore;
+    await doSearch(nameUsed);
+    if (await noResults()) {
+      // The portal's own hint: "enter JUST the exact street number and a portion of the
+      // street name". Retry once with the first 3 characters.
+      nameUsed = nameCore.slice(0, 3);
+      this.debug?.event({ type: "work_location_retry", why: "no results for full street name — retrying with 3-char portion" });
+      await doSearch(nameUsed);
+      if (await noResults()) return bail("address search returned no results");
     }
-    const cont = page.getByRole("button", { name: /continue application/i })
-      .or(page.getByRole("link", { name: /continue application/i })).first();
-    if (!(await cont.count().catch(() => 0))) return false;
-    await cont.click({ timeout: 10000 }).catch(() => null);
-    steps.push({ action: "click", phase: "fill", selector: { role: "button", name: "Continue Application »" }, note: "work location: continue" });
-    await page.waitForLoadState?.("networkidle", { timeout: 20000 }).catch(() => null);
-    await page.waitForTimeout?.(2000).catch(() => null);
+    // The fills are BOUND (field:), not literal — portal_recipes are shared, so a replay
+    // must search THAT project's address, never the learn project's. The backend's
+    // resolveRecipeFieldValues derives both keys with the same addressParse helpers.
+    steps.push({ action: "fill", phase: "fill", selector: { css: "input[id*='StreetNo4Search']", fallbacks: [{ label: "Street Number" }], ...inFrame }, field: "streetNumber", value: streetNo, note: "work location: street number" });
+    // When THIS portal only matched the 3-char portion (the retry fired), bind the
+    // portion key — replaying the full core name would re-hit the same zero-result
+    // wall on every future project, and the replay has no retry of its own.
+    steps.push({ action: "fill", phase: "fill", selector: { css: "input[id*='txtStreetName']", fallbacks: [{ label: "Street Name" }], ...inFrame }, field: nameUsed === nameCore ? "streetNameCore" : "streetNameSearchPortion", value: nameUsed, note: "work location: street name (portion)" });
+    // Recorded with the SAME union breadth the pass matched with, so a build whose
+    // panel search is an input/button (not an <a>) still replays.
+    steps.push({ action: "click", phase: "fill", selector: { css: "a[id$='WorkLocationEdit_btnSearch'], a[id^='ctl00_PlaceHolderMain'][id$='_btnSearch'], input[id^='ctl00_PlaceHolderMain'][id$='_btnSearch'], button[id^='ctl00_PlaceHolderMain'][id$='_btnSearch']", ...inFrame }, note: "work location: search" });
+    // Result selection. Oregon's grid lists the SAME address once per jurisdiction
+    // offering (CITY APPLICATIONS → structural/building; COUNTY APPLICATIONS →
+    // electrical) with a per-row "Select" link — pick by permit discipline, narrowed by
+    // city when known (the hand-coded adapter's live-verified logic). Other ACA builds
+    // render a radio/checkbox per address row instead.
+    const isElectrical = /elec/i.test(project.permitType ?? "");
+    const rowText = isElectrical ? "COUNTY APPLICATIONS" : "CITY APPLICATIONS";
+    const cityUpper = (project.city || "").toUpperCase();
+    let selected = false;
+    const selectLinks = scope.getByRole("link", { name: /^Select$/i });
+    if (await selectLinks.count().catch(() => 0)) {
+      let rows = scope.locator("tr", { hasText: new RegExp(rowText, "i") });
+      if (cityUpper) rows = rows.filter({ hasText: cityUpper });
+      const rowLink = rows.getByRole("link", { name: /^Select$/i }).first();
+      const link = (await rowLink.count().catch(() => 0)) ? rowLink : selectLinks.first();
+      // Verified action → recorded step: a swallowed click failure recorded anyway
+      // leaves a duplicate pair once the planner retakes the page.
+      if (!(await link.click({ timeout: 15000 }).then(() => true).catch(() => false))) return bail("address row select click failed");
+      // The ROW CONTEXT is baked into the recorded selector — a bare role/name "Select"
+      // resolves to .first() at replay and silently files under the wrong jurisdiction.
+      steps.push({ action: "click", phase: "fill", selector: { css: `tr:has-text("${rowText}") a:has-text("Select")`, fallbacks: [{ role: "link", name: "Select", exact: true }], ...inFrame }, note: `work location: select ${isElectrical ? "county/electrical" : "city/structural"} address row` });
+      selected = true;
+    } else {
+      const pick = scope.locator("table input[type='radio'], table input[type='checkbox']").first();
+      if (await pick.count().catch(() => 0)) {
+        if (!(await pick.check().then(() => true).catch(() => false))) return bail("address result radio check failed");
+        steps.push({ action: "check", phase: "fill", selector: { css: "table input[type='radio']", ...inFrame }, note: "work location: select first address result" });
+        selected = true;
+      }
+    }
+    if (!selected) return bail("no address results to select");
+    await page.waitForLoadState?.("networkidle", { timeout: 15000 }).catch(() => null);
+    await page.waitForTimeout?.(1000).catch(() => null);
+    // Selecting the row can itself advance the wizard (ASP.NET postback). Only click
+    // Continue when we are STILL on the WorkLocation step — clicking it after an
+    // auto-advance would skip the record-type page unanswered. On iframe builds the
+    // step URL lives on the FRAME, not the top page.
+    const currentUrl = typeof scope.url === "function"
+      ? String(scope.url() ?? "")
+      : (typeof page.url === "function" ? String(page.url() ?? "") : "");
+    if (/worklocation/i.test(currentUrl)) {
+      const cont = scope.locator(ACA_CONTINUE_CSS).first();
+      if (await cont.count().catch(() => 0)) {
+        // Record only a Continue that actually clicked — on failure the planner retakes
+        // the page next iteration and records its own advance instead.
+        if (await cont.click({ timeout: 10000 }).then(() => true).catch(() => false)) {
+          steps.push({ action: "click", phase: "fill", selector: { css: ACA_CONTINUE_CSS, fallbacks: [{ role: "button", name: "Continue Application »" }], ...inFrame }, note: "work location: continue" });
+        }
+        await page.waitForLoadState?.("networkidle", { timeout: 20000 }).catch(() => null);
+        await page.waitForTimeout?.(2000).catch(() => null);
+      }
+    }
+    return true;
+  }
+
+  // True when the page offers ACA record types to choose from — at least one
+  // checkbox/radio labeled like a discipline record type ("Residential - Electrical
+  // Comprehensive"). Deliberately narrow: a detail form with a stray "Solar" checkbox
+  // must NOT trigger this (only the selection pass may then PREFER a solar-labeled
+  // type once the page is confirmed to be record-type selection).
+  private acaRecordTypePageDetected(fields: ExtractedField[]): boolean {
+    return fields.some((f) =>
+      (f.fieldType === "checkbox" || f.fieldType === "radio") &&
+      /residential\s*[-–—]?\s*(electrical|structural|mechanical|plumbing|building)/i.test(f.label || ""));
+  }
+
+  // Record-type selection: prefer a solar/PV-specific type when the AHJ offers one,
+  // else the discipline's residential type (electrical vs structural — same mapping the
+  // hand-coded adapter live-verified: county rows file electrical, city structural).
+  private async accelaRecordTypePass(project: ProjectRecord, fields: ExtractedField[], steps: RecipeStep[]): Promise<boolean> {
+    const page = this.page;
+    if (!page) return false;
+    const isElectrical = /elec/i.test(project.permitType ?? "");
+    const prefs: RegExp[] = [
+      /solar|photovoltaic|\bpv\b/i,
+      isElectrical ? /residential\s*[-–—]?\s*electrical/i : /residential\s*[-–—]?\s*structural/i,
+    ];
+    const candidates = fields.filter((f) => f.fieldType === "checkbox" || f.fieldType === "radio");
+    let chosen: ExtractedField | undefined;
+    for (const re of prefs) {
+      chosen = candidates.find((f) => re.test(f.label || ""));
+      if (chosen) break;
+    }
+    if (!chosen) { this.debug?.event({ type: "record_type_bail", why: "no candidate matched the solar/discipline preference" }); return false; }
+    const loc = await this.locator(chosen.selector);
+    if (!loc) return false;
+    // Verified action → recorded step (an unverified push here duplicates the pair once
+    // the planner retakes the page, and the duplicate corrupts every future replay).
+    const checkOk = await loc.check({ timeout: 10000 }).then(() => true)
+      .catch(async () => loc.click({ timeout: 8000 }).then(() => true).catch(() => false));
+    if (!checkOk) { this.debug?.event({ type: "record_type_bail", why: "record-type check/click failed" }); return false; }
+    steps.push({ action: "check", phase: "fill", selector: chosen.selector, note: `record type: ${(chosen.label || "").slice(0, 60)}` });
+    const cont = this.acaContinueLocator();
+    if (await cont.count().catch(() => 0)) {
+      if (!(await cont.click({ timeout: 10000 }).then(() => true).catch(() => false))) {
+        // Checked but couldn't advance — leave the advance to the planner next iteration
+        // (the recorded check stands; the box holds its state on the live page).
+        return false;
+      }
+      steps.push({ action: "click", phase: "fill", selector: { css: ACA_CONTINUE_CSS, fallbacks: [{ role: "button", name: "Continue Application »" }] }, note: "record type: continue" });
+      await page.waitForLoadState?.("networkidle", { timeout: 20000 }).catch(() => null);
+      await page.waitForTimeout?.(2000).catch(() => null);
+    }
     return true;
   }
 
@@ -1719,6 +1947,12 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     // Accela's "Enter Work Site Location" step is handled deterministically once per run
     // (see the pass below) — flag prevents re-running it if the page reappears.
     let workLocationHandled = false;
+    // Accela deterministic-pass state: wrong-module re-entries are BOUNDED (a broken
+    // entry URL must not goto-loop), the disclaimer pass may legitimately run again
+    // after a re-entry (capped), record-type selection happens once.
+    let acaReentries = 0;
+    let acaDisclaimerPasses = 0;
+    let acaRecordTypeHandled = false;
     let reachedReview = false;
     // Stuck-page detection: if the page fingerprint doesn't change across consecutive
     // iterations (an advance silently failed — e.g. blocked by a validation error), stop
@@ -1854,6 +2088,17 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       const isDashboard = !hasFillable && !hasSubmitIntentBtn && !reviewSignals;
       if (hasFillable) everFoundFillable = true;
 
+      // A deterministic ACA pass is about to handle this page (see b8 below) — its
+      // page revisits are DELIBERATE (wrong-module re-entry walks back through the
+      // disclaimer + address steps), so they must not consume the stuck/cycle
+      // recovery budget or trip its exhaustion break before the pass can run.
+      const acaDeterministicAhead = this.isAcaUrl(url) && (
+        (this.acaWrongModulePage(url, fields) !== null && acaReentries < 2) ||
+        (/CapApplyDisclaimer/i.test(url) && acaDisclaimerPasses < 3) ||
+        (!workLocationHandled && (/WorkLocation/i.test(url) || /enter work site location/i.test(bodyText))) ||
+        (!acaRecordTypeHandled && this.acaRecordTypePageDetected(fields))
+      );
+
       // a0) STUCK / CYCLE GUARD with SELF-RECOVERY. Two failure shapes:
       //   - STUCK: the same page recurs on consecutive iterations (an advance had no effect).
       //   - CYCLE: an EARLIER page reappears (A→B→C→A) — e.g. the planner keeps restarting an
@@ -1870,7 +2115,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       }
       if (consecutiveStuck) stuckStreak++; else stuckStreak = 0;
       lastLoopFp = loopFp;
-      if ((consecutiveStuck && stuckStreak >= 2) || cycling) {
+      if (((consecutiveStuck && stuckStreak >= 2) || cycling) && !acaDeterministicAhead) {
         if (recoveryAttempts >= MAX_RECOVERY) {
           this.debug?.event({ type: "recovery_exhausted", mode: cycling ? "cycle" : "stuck", page: pageCount });
           if (process.env.AUTOLEARN_DEBUG === "1") console.error(`[learn] ${cycling ? "cycling" : "stuck"} and recovery budget exhausted — stopping.`);
@@ -1920,16 +2165,55 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         // else: text keyword on a field-rich form — false positive, continue learning.
       }
 
-      // b9) ACCELA WORK-SITE LOCATION (deterministic, once per run) — the address SEARCH
-      //     step needs Search → select result → Continue; the planner can't be trusted to
-      //     sequence it (live Salem run clicked past the Search and bounced off-wizard).
-      // Trigger on the URL too — bodyText is capped at 2000 chars and ACA's chrome/header
-      // can push the "Enter Work Site Location" heading past the cap.
-      if (!workLocationHandled && (/WorkLocation/i.test(url) || /enter work site location/i.test(bodyText))) {
-        workLocationHandled = true;
-        const advanced = await this.accelaWorkLocationPass(_project, steps);
-        this.debug?.event({ type: "work_location_pass", page: pageCount, advanced });
-        if (advanced) continue; // next iteration re-extracts the page the Continue landed on
+      // b8) ACCELA DETERMINISTIC PASSES (see the ACA section above) — each bails to the
+      //     planner when its hooks don't match, and `continue` re-extracts whatever page
+      //     the pass landed on.
+      if (this.isAcaUrl(url)) {
+        // Wrong-module drift: the records/search module is never part of the Apply
+        // wizard — leave immediately (bounded), BEFORE the planner can operate on the
+        // operator's real filings (Resume Application / Pay Fees Due / attachments).
+        const wrongModule = this.acaWrongModulePage(url, fields);
+        if (wrongModule && acaReentries < 2) {
+          const entry = this.acaApplyEntryUrl(url);
+          if (entry) {
+            acaReentries++;
+            this.debug?.event({ type: "aca_wrong_module", page: pageCount, kind: wrongModule, reentry: acaReentries });
+            const gotoOk = await this.page.goto(entry, { waitUntil: "domcontentloaded", timeout: 30000 }).then(() => true).catch(() => false);
+            await this.page.waitForLoadState?.("networkidle", { timeout: 15000 }).catch(() => null);
+            // Record only a navigation that actually happened — a failed goto recorded
+            // anyway would replay a dead re-entry.
+            if (gotoOk) steps.push({ action: "goto", phase: "fill", value: entry, note: `accela: re-enter apply flow (left ${wrongModule})` });
+            // The re-entry walks back through the address AND record-type steps — let
+            // both passes run again (an unreset record-type leg would also trip the
+            // cycle guard mid-walk-back with no exemption, burning recovery budget).
+            workLocationHandled = false;
+            acaRecordTypeHandled = false;
+            continue;
+          }
+        }
+        // Entry T&C — accept + continue without burning an LLM call on a static page.
+        if (/CapApplyDisclaimer/i.test(url) && acaDisclaimerPasses < 3) {
+          acaDisclaimerPasses++;
+          const advanced = await this.accelaDisclaimerPass(steps);
+          this.debug?.event({ type: "aca_disclaimer_pass", page: pageCount, advanced });
+          if (advanced) continue;
+        }
+        // Work-site location (address search → jurisdiction row → continue). Trigger on
+        // the URL too — bodyText is capped at 2000 chars and ACA's chrome/header can
+        // push the "Enter Work Site Location" heading past the cap.
+        if (!workLocationHandled && (/WorkLocation/i.test(url) || /enter work site location/i.test(bodyText))) {
+          workLocationHandled = true;
+          const advanced = await this.accelaWorkLocationPass(_project, steps);
+          this.debug?.event({ type: "work_location_pass", page: pageCount, advanced });
+          if (advanced) continue; // next iteration re-extracts the page the Continue landed on
+        }
+        // Record-type selection (the page right after the address row is chosen).
+        if (!acaRecordTypeHandled && this.acaRecordTypePageDetected(fields)) {
+          acaRecordTypeHandled = true;
+          const advanced = await this.accelaRecordTypePass(_project, fields, steps);
+          this.debug?.event({ type: "aca_record_type_pass", page: pageCount, advanced });
+          if (advanced) continue;
+        }
       }
 
       // c) Ask the planner what to do on this page. Attach a screenshot so it can SEE the
@@ -1963,7 +2247,22 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       const disclaimerish =
         /disclaimer|(^|\/)terms/i.test(url) ||
         /terms and conditions/i.test((bodyText || "").slice(0, 4000));
-      const entryDisclaimer = disclaimerish && alreadyFilledLabels.length === 0;
+      // "Nothing filled yet" must mean REAL FORM DATA this RUN, not the current page:
+      // alreadyFilledLabels resets every iteration (so it can't carry the signal), and
+      // terms/acknowledgment checks must not count either — the agree box recorded ON
+      // the entry disclaimer itself would otherwise arm this after one blocked advance,
+      // flipping the T&C page into a forced review stop with its Continue recorded as
+      // the final submit. A real review screen with a terms gate at the END of the
+      // wizard still re-arms the guard through its earlier genuine fills.
+      const isTermsAcknowledgment = (s: RecipeStep): boolean =>
+        s.action === "check" && (
+          ACCEPT_TERMS.test(String(s.selector?.name ?? "")) ||
+          ACCEPT_TERMS.test(String(s.selector?.label ?? "")) ||
+          /termaccept/i.test(String(s.selector?.css ?? "")) ||
+          /accept entry terms/i.test(String(s.note ?? "")));
+      const anyFormMutationRecorded = steps.some(
+        (s) => (s.action === "fill" || s.action === "check" || s.action === "select") && !isTermsAcknowledgment(s));
+      const entryDisclaimer = disclaimerish && !anyFormMutationRecorded;
       const isReviewPage =
         ((!hasFillable && !isDashboard) ||
           (reviewSignals && hasSubmitIntentBtn) ||
@@ -2018,7 +2317,17 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       // unfilled required fields, so the guard above can't catch it). Nothing has been filled
       // yet — this cannot be the review screen; accept-and-continue handling takes it instead.
       if (plan.atReview && entryDisclaimer) {
-        plan = { ...plan, atReview: false };
+        // Convert the planner's "final submit" (the disclaimer's Continue) into the
+        // ADVANCE for this page — leaving finalSubmitSelectorIndex set would record the
+        // entry Continue as isFinalSubmit:true (a bogus allowlist entry that trusted
+        // auto-submit would later click), and clearing it without an advance dead-ends
+        // the run on page 1-2 instead of passing through.
+        plan = {
+          ...plan,
+          atReview: false,
+          advanceSelectorIndex: plan.advanceSelectorIndex ?? plan.finalSubmitSelectorIndex,
+          finalSubmitSelectorIndex: undefined,
+        };
         this.debug?.event({ type: "entry_disclaimer_pass_through", page: pageCount });
         if (process.env.AUTOLEARN_DEBUG === "1") console.error(`[learn] rejected atReview on the entry disclaimer (p${pageCount}) — passing through.`);
       }
@@ -3169,7 +3478,10 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   // A button is off-limits if its label/selector text matches a pay/fee/checkout keyword.
   private isOffLimitsButton(field: ExtractedField): boolean {
     const sel = field.selector;
-    return isPayFee(field.label) || isPayFee(sel?.name) || isPayFee(sel?.text);
+    return isPayFee(field.label) || isPayFee(sel?.name) || isPayFee(sel?.text)
+      || EXISTING_RECORD_ACTION.test(field.label || "")
+      || EXISTING_RECORD_ACTION.test(sel?.name || "")
+      || EXISTING_RECORD_ACTION.test(sel?.text || "");
   }
 
   // Scrape visible label/value pairs on the review screen. Delegates to the shared

@@ -205,33 +205,108 @@ Still open, in order:
         test draft under the operator account (never submitted — delete from
         the portals); Daniel Daly test project cf1c56aa in the app DB; the
         operator planned a PowerClerk password rotation.
-   (v) ACCELA (Oregon ePermitting) — live frontier as of 2026-08-27 03:00:
-        the learner reaches CapDetail.aspx (8 pages: login → T&C accepted via the
-        new entry-disclaimer pass-through → WorkLocation → CapHome → CapDetail).
-        Remaining: deterministic passes for ACA record-type selection (CapHome)
-        and the detail form — the planner clicks the section nav tab instead of
-        filling (contained by the new no-revisit navigate guard, but burns page
-        budget). The accelaWorkLocationPass exists but bails "street inputs not
-        found" — the captured name attr is
-        ctl00$PlaceHolderMain$WorkLocationEdit$txtStreetNo4Search$ChildControl0/1;
-        verify whether that string is the name or aria-label on the live DOM
-        before the next iteration (the planner currently advances the address
-        step organically, so the pass is an optimization, not a blocker).
-        DEEP FINDING — DISPATCH: nothing ever writes `portal_profiles`, so
-        `portalType` is always "mock" → `isRealPortal` false → the hand-coded
-        Accela/PowerClerk adapters are UNREACHABLE on the dispatch path; the
-        auto-seed learner is the only live route (PORTAL_AUTOSEED=0 yields
-        NoAdapter for everything). Decide: either populate portal_profiles or
-        base isRealPortal on resolved credentials/KB platform.
-        ALSO FIXED TONIGHT (production): entry-disclaimer never review (structural
+   (v) ACCELA (Oregon ePermitting) — CORRECTED READING of the 2026-08-27 bundles,
+        then fixed (2026-08-26 session). What the earlier note called "reaches
+        CapDetail" was actually DRIFT: no Salem run ever legitimately passed
+        WorkLocation. Screenshot p003-after (run yq98) shows the planner left
+        Street Number EMPTY (the control is an unlabeled from/to range pair named
+        ctl00$PlaceHolderMain$WorkLocationEdit$txtStreetNo4Search$ChildControl0/1
+        — that string is the NAME attr; the extractor's label falls back to it)
+        and its "Search" click resolved to the HEADER-NAV Search tab, landing in
+        the records/search module: CapHome.aspx = "Applications & Permits" list +
+        General Search (with live "Resume Application"/"Pay Fees Due" links on the
+        operator's real account), CapDetail.aspx = an EXISTING record's detail.
+        The record-type selection page has NEVER been captured live.
+        FIXED THIS SESSION (autoLearnAdapter.ts, all unit-tested):
+        - accelaWorkLocationPass rewritten on the live-verified hooks from the
+          hand-coded adapter: StreetNo4Search/txtStreetName id selectors, the
+          PANEL search button only (id$='_btnSearch' under ctl00_PlaceHolderMain —
+          never a bare role "Search"), core-street-name parsing reused from
+          oregonEPermitting.ts (now exported), a 3-char retry on "Address Not
+          Found", jurisdiction row Select links (COUNTY=electrical, CITY=
+          structural, narrowed by city), and Continue only if still on
+          WorkLocation (row select can auto-advance).
+        - NEW accelaDisclaimerPass (termAccept + Continue, no LLM call) and
+          accelaRecordTypePass (solar/PV type preferred, else the discipline's
+          "Residential - Electrical/Structural"; triggers only when a
+          residential-discipline checkbox/radio exists).
+        - NEW wrong-module guard: on CapHome/CapDetail with the module's own
+          control names (generalSearchForm/gdvPermitList/addForDetailPage/
+          attachmentEdit), goto the derived …/Cap/CapApplyDisclaimer.aspx?module=
+          Building (bounded at 2 re-entries) BEFORE the planner can touch real
+          records. "Resume Application"/"Pay Fees Due" are now off-limits
+          everywhere (isOffLimitsButton).
+        - Deterministic ACA revisits no longer consume the stuck/cycle recovery
+          budget (acaDeterministicAhead exemption).
+        STILL OPEN: the record-type page and everything past it are UNSEEN live —
+        the deterministic record-type pass is built from the hand-coded adapter's
+        codegen, so the next live Salem learn run must verify: (a) address search
+        returns rows and the Select-link shape matches; (b) the record-type page
+        triggers the pass (check aca_record_type_pass in events.jsonl); (c) the
+        wizard pages after it (project info → contacts → construction details)
+        are within the planner's reach — the hand-coded fillApplication encodes
+        the full field knowledge if a deterministic pass is needed there too.
+        DISPATCH (previous "deep finding") — RESOLVED as designed: isRealPortal
+        already falls back to hasLaunchablePortal (KB/recipe entry URL) and the
+        platform is sniffed from portal_url, so the learner launches for Salem;
+        the hand-coded adapters remain the PORTAL_AUTOSEED=0 legacy fallback.
+        ALSO FIXED EARLIER (production): entry-disclaimer never review (structural
         + planner overrides); no-revisit navigate guard; trust-gate promotion
         floor (min 3 pages / 5 fills — a 2-page "review" promoted an EMPTY Salem
         recipe, since demoted to needs_rerecord); checkbox scrape reported "on"
         for unchecked boxes (phantom verifier contradictions); alt-billing
-        checkbox deterministic refusal; derived exportLimiting answer;
-        Segment A logs "complete" even when the stage FAILED (portal_runs row is
-        authoritative) — reporting fix still TODO; platform sniffed from KB
-        portal_url when portal_platform is empty (Salem rows backfilled).
+        checkbox deterministic refusal; derived exportLimiting answer; platform
+        sniffed from KB portal_url when portal_platform is empty (Salem rows
+        backfilled). Segment A reporting is now honest: runAutopilotSegmentA
+        checks the portal_runs row after prepareSubmission (segmentAOutcomeFromRun,
+        backend/test/autopilotStageOutcome.test.ts) and reports failed/paused
+        stages as blocked instead of "complete". CRITICAL COMPANION FIX (caught
+        by adversarial review of that change): maybeResumeAutopilot resumes on
+        ANY blocked result, so the new stage_failed/paused_for_human outcomes
+        would have let every clearing event (client assign, doc upload, payment,
+        public intake) silently relaunch live browser runs — those two codes are
+        now excluded from auto-resume (gates still resume; test-pinned), and the
+        jobQueue SSE keeps MFA pauses as warning-severity run_paused, not
+        run_failed.
+        REPLAY HARDENING (same review round): the work-location fills are now
+        BOUND (field: streetNumber/streetNameCore, resolved by the new shared
+        portal-bot/src/addressParse.ts in backend resolveRecipeFieldValues) so a
+        shared recipe replays THAT project's address, never the learn project's
+        literals; the recorded Select step bakes in the CITY/COUNTY row context
+        (a bare role "Select" replays as .first() = wrong jurisdiction); recorded
+        selectors keep the full learn-time union breadth; iframe ACA builds get
+        selector.frame stamped and frame-scoped results/continue handling; the
+        disclaimer pass records steps only on a VERIFIED advance (no duplicate
+        accept/continue pairs); and the entry-disclaimer review-guard exclusion
+        is now run-scoped (any recorded mutation this RUN re-arms the structural
+        review guard — it was vacuously true on every terms-bearing page,
+        including true review screens).
+        WINDOWS DEV BOX: backend tests now pass on Windows — AppDb.close() +
+        close-before-delete in scratch-DB tests, spawn node+tsx directly (npx is
+        not spawnable on win32), await server exit before temp cleanup, and
+        fileURLToPath for the golden fixtures path (C:\C:\ ENOENT).
+        SECOND REVIEW ROUND (post-fix verify, all five confirmed + fixed): the
+        entry-disclaimer exclusion ignores terms-acknowledgment checks (the agree
+        box recorded ON the disclaimer armed the "something filled" signal after
+        one blocked advance, flipping the T&C page into a forced review stop);
+        c2a' converts the planner's bogus disclaimer "final submit" into the
+        page's ADVANCE (it used to leave an isFinalSubmit step pointing at the
+        entry Continue — a poisoned auto-submit allowlist entry); every ACA pass
+        now records steps only on VERIFIED actions (no duplicate pairs when the
+        planner retakes a page); a learn that needed the 3-char street-name
+        retry binds streetNameSearchPortion instead of streetNameCore (replay
+        has no retry of its own); and a DISCIPLINE GATE in prepareSubmission
+        (recipeDisciplineFromSteps/disciplineConflictsWithTrack in
+        portalChannel.ts) refuses to replay an electrical-learned recipe for a
+        building track and vice versa — the baked COUNTY/CITY row + record-type
+        clicks would file under the wrong authority SILENTLY.
+        OPEN DESIGN DECISION (from that gate): AHJ recipes are keyed
+        state|ahj|utility with NO permit-discipline dimension, and Oregon solar
+        needs BOTH a city/structural and a county/electrical filing per project —
+        so the second discipline of any AHJ currently cannot replay (the gate
+        blocks it honestly instead of filing wrong). Recipes need a per-
+        discipline key (and the trusted-learn replacement rule must respect it);
+        do this deliberately, not as a drive-by.
 2. **Stripe checkout** for the payment screen (operator said "later"): a
    Payment Link per quote; `submission_payments.payment_reference` is ready.
 3. **HOA list import** (`HOA_List.xlsx`) — needs an `hoa_library` table + an

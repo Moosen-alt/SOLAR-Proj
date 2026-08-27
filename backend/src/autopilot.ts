@@ -110,6 +110,27 @@ function blockersFromHttpError(err: HttpError): AutopilotBlocker[] {
   return out;
 }
 
+// The staging outcome the portal_runs row recorded — prepareSubmission RESOLVES (returns
+// ProjectDetail) even when the adapter itself failed or paused mid-run, so "no exception"
+// must never be reported as "staged to review". The portal_runs row is authoritative.
+// Returns null when the run genuinely staged (awaiting_human_submit / submitted).
+// Pure + exported so the mapping is unit-tested without a browser or a live stage.
+export function segmentAOutcomeFromRun(
+  run: { status?: unknown; error_message?: unknown; pause_reason?: unknown } | null | undefined,
+): AutopilotBlocker | null {
+  const status = run ? String(run.status ?? "") : "";
+  if (status === "failed") {
+    const detail = String(run?.error_message ?? "").trim()
+      || "The portal stage failed before reaching the review screen — see the run's debug bundle.";
+    return { code: "stage_failed", detail };
+  }
+  if (status === "paused_for_human") {
+    const why = String(run?.pause_reason ?? "").trim() || "human input required";
+    return { code: "paused_for_human", detail: `The portal run paused for a human (${why}). Complete the challenge and resume from the portal panel.` };
+  }
+  return null;
+}
+
 function latestPortalRun(db: AppDb, projectId: string, track?: SubmittalTrackType): Row | null {
   if (track) {
     const scoped = db.get<Row>(
@@ -268,8 +289,15 @@ export function maybeResumeAutopilot(db: AppDb, projectId: string): void {
     // it is escalated to the operator (job_failed SSE + review item) and must
     // not be silently relaunched by an unrelated clearing event (that would let
     // e.g. a public intake link repeatedly trigger live browser runs).
-    const result = parseJson<{ blocked?: boolean } | null>(job.result == null ? null : String(job.result), null);
+    const result = parseJson<{ blocked?: boolean; blockers?: Array<{ code?: string }> } | null>(job.result == null ? null : String(job.result), null);
     if (!result?.blocked) return;
+    // PORTAL-RUN OUTCOMES ARE NOT GATES. Segment A also reports blocked:true when the
+    // stage itself failed or paused mid-run (stage_failed / paused_for_human, from the
+    // portal_runs row). No clearing event fixes those — relaunching would drive an
+    // unattended live browser run (and, on a pause, a SECOND browser while the paused
+    // one still sits at its MFA/CAPTCHA challenge). Same no-relaunch invariant as a
+    // failed job: the operator resumes explicitly.
+    if ((result.blockers ?? []).some((b) => b?.code === "stage_failed" || b?.code === "paused_for_human")) return;
     // Carry the original run's track — a resume of an NEM-track run must not
     // restage the default track.
     const payload = parseJson<{ track?: string } | null>((job as { payload?: unknown }).payload == null ? null : String((job as { payload?: unknown }).payload), null);
@@ -333,6 +361,18 @@ export async function runAutopilotSegmentA(
     }
     logger.error("autopilot", "Segment A failed", { project: projectId, ms: `${Math.round(performance.now() - t0)}ms`, err: err instanceof Error ? err.message : String(err) });
     throw err;
+  }
+  // prepareSubmission resolved — but that only means the DISPATCH ran to completion.
+  // The stage itself may have failed or paused; the portal_runs row it just wrote is
+  // the authoritative outcome. Report it honestly instead of logging "complete" for a
+  // run that never reached the portal's review screen.
+  const stageOutcome = segmentAOutcomeFromRun(latestPortalRun(db, projectId, track));
+  if (stageOutcome) {
+    addAuditLog(db, projectId, "system", "autopilot", "autopilot.blocked", { blockers: [stageOutcome] });
+    logger.warn("autopilot", "Segment A stage did not complete — the portal run reports it", {
+      project: projectId, ms: `${Math.round(performance.now() - t0)}ms`, code: stageOutcome.code,
+    });
+    return { blocked: true, blockers: [stageOutcome], message: stageOutcome.detail, state: getAutopilotState(db, projectId) };
   }
   logger.info("autopilot", "Segment A complete — staged to portal review, awaiting human approval", { project: projectId, ms: `${Math.round(performance.now() - t0)}ms` });
   return { blocked: false, blockers: [], message: "Staged to portal review; awaiting human approval.", state: getAutopilotState(db, projectId) };

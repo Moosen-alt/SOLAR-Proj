@@ -74,7 +74,7 @@ import { clientStagingOverlay, getClient } from "./clients";
 import { assertSubmissionPaid } from "./submissionFees";
 import { getDecryptedCredential, getDecryptedCredentialByUrl, getDecryptedCredentialAny } from "./portalCredentials";
 import { logger } from "./logger";
-import { selectAdapterActor, selectStagingActor, resolvePortalChannel, seedOutcomeToStageResult, isUtilityPlatformUrl, isAutoSeedDisabled } from "./portalChannel";
+import { selectAdapterActor, selectStagingActor, resolvePortalChannel, seedOutcomeToStageResult, isUtilityPlatformUrl, isAutoSeedDisabled, recipeDisciplineFromSteps, disciplineConflictsWithTrack } from "./portalChannel";
 import { isPortalPaused } from "./portalPause";
 import { buildApplicationDocumentPackage, findApplicationProfile } from "./applicationDocs";
 import { buildUtilityPackage } from "./docSplitter";
@@ -5467,6 +5467,17 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
       ? (detail.project.utility ? `${detail.project.utility} (NEM portal)` : "Utility NEM portal")
       : (detail.project.ahj ? `${detail.project.ahj} (permit portal)` : "AHJ permit portal");
   }
+  // DISCIPLINE GATE input (see portalChannel.recipeDisciplineFromSteps): the ACA
+  // learner bakes the learn project's permit discipline into the recorded jurisdiction
+  // row + record-type steps, and recipes are not yet discipline-keyed. Best-effort load
+  // — a failed read must not block the stage.
+  let recipeDisciplineConflict: "electrical" | "structural" | null = null;
+  if (recipe && (track === "electrical" || track === "building")) {
+    try {
+      const d = recipeDisciplineFromSteps(getPortalRecipe(db, recipe.id).steps);
+      recipeDisciplineConflict = disciplineConflictsWithTrack(d, track) ? d : null;
+    } catch { recipeDisciplineConflict = null; }
+  }
   let result: Record<string, unknown>;
   if (channelDecision.blocked) {
     // Kill-switch tripped: surface a manual handoff and drive NO automation.
@@ -5481,6 +5492,16 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
     try { markPortalRecipeForRerecord(db, recipe.id); } catch { /* best-effort */ }
     const msg = `The recorded recipe for ${portalLabel} points at a utility interconnection portal (${recipe.portalUrl}) — that's the NEM portal, not the ${detail.project.ahj || "AHJ"} permit portal. It was mis-recorded and has been flagged for re-recording. Record the AHJ's permit portal, then re-stage.`;
     addAuditLog(db, projectId, "system", "submit gate", "portal.track_host_conflict", { track: track ?? "permit", url: recipe.portalUrl, recipeId: recipe.id });
+    result = { ok: false, finalSubmitClicked: false, pauseReason: null, message: msg, steps: [{ ok: false, message: msg }] };
+  } else if (recipe && runActorLabel === "RecipeAdapter" && recipeDisciplineConflict) {
+    // DISCIPLINE GATE: this AHJ's recipe was learned for the OTHER permit discipline —
+    // its recorded steps select that discipline's jurisdiction row and record type, and
+    // the replay clicks would succeed silently (no drift, no self-heal), filing this
+    // track down the wrong jurisdiction's application path. NOT flagged for re-record:
+    // the recipe is valid for its own discipline; recipes just aren't discipline-keyed
+    // yet (open design decision — see HANDOFF).
+    const msg = `The recorded recipe for ${portalLabel} was learned for the ${recipeDisciplineConflict} permit path, so replaying it for the ${track} track would file under the wrong jurisdiction/application type. Recipes aren't discipline-scoped yet — submit this track by hand for now (the ${recipeDisciplineConflict} track still replays automatically).`;
+    addAuditLog(db, projectId, "system", "submit gate", "portal.discipline_conflict", { track: track ?? "permit", recipeDiscipline: recipeDisciplineConflict, recipeId: recipe.id });
     result = { ok: false, finalSubmitClicked: false, pauseReason: null, message: msg, steps: [{ ok: false, message: msg }] };
   } else if (recipe && runActorLabel === "RecipeAdapter") {
     result = await stageWithRecipe(recipe, stagedProject, resolveRecipeFieldValues(db, stagedProject, portalType), docsByType, files, stageOptions);

@@ -61,8 +61,11 @@ const fixture = {
 } as unknown as ProjectRecord;
 
 import { evaluateBaselineRules } from "../src/baselineRules";
+import { fileURLToPath } from "node:url";
 
-const fixturesDir = path.join(path.dirname(new URL(import.meta.url).pathname), "fixtures");
+// fileURLToPath, not URL.pathname — the pathname form ("/C:/Users/…") re-resolves
+// against the cwd drive on Windows and yields "C:\C:\Users\…" (ENOENT).
+const fixturesDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures");
 const goldenPath = path.join(fixturesDir, "reviewerOregonGolden.json");
 const baselineGoldenPath = path.join(fixturesDir, "baselineOregonGolden.json");
 

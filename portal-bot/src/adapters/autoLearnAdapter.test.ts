@@ -114,6 +114,10 @@ function makeFakePage(spec: FakePageSpec, log: ActionLog) {
       innerText: async () => curPage().body,
       // detectChallengeFrame reads iframe src attributes via evaluateAll.
       evaluateAll: async () => [],
+      // Chainable row-scoping helpers the ACA work-location pass uses
+      // (page.locator("tr", {hasText}).filter(...).getByRole("link", ...)).
+      filter: () => loc,
+      getByRole: (role: string, o?: { name?: RegExp | string }) => locatorFor(`role:${role}:${String(o?.name ?? "")}`),
     };
     return loc;
   }
@@ -1237,7 +1241,221 @@ async function testEquipmentCombinedSelectRepeater() {
   assert.ok(boundKeys.includes("inverterModel") && boundKeys.includes("moduleModel"), `data-bound steps recorded: ${JSON.stringify(boundKeys)}`);
 }
 
+// ACA WORK-LOCATION + RECORD-TYPE (deterministic passes, live-verified selectors from
+// the 2026-08-27 Salem bundles): the street-number control is an unlabeled from/to pair
+// (…txtStreetNo4Search$ChildControl0/1) the planner left EMPTY on every live run, and
+// the page's bare "Search" also matches the header-nav tab (the drift that bounced every
+// run into the records module). The pass must fill via the id hooks, click the PANEL
+// search, pick the jurisdiction row's Select link, and the record-type pass must then
+// check the discipline's type — all without a planner call for those pages.
+async function testAcaWorkLocationAndRecordTypeDeterministic() {
+  const log: ActionLog = { clicks: [], fills: [], selects: [], checks: [] };
+  let plannerCalls = 0;
+  const planner: LearnPlanner = async (req: LearnPlanRequest): Promise<LearnPlanResponse> => {
+    plannerCalls++;
+    // The ONLY page the planner should ever see in this run is the final review page.
+    assert.match(req.url, /CapConfirm/, `planner saw a page the deterministic passes own: ${req.url}`);
+    return { fills: [], atReview: true, finalSubmitSelectorIndex: 0 };
+  };
+  const adapter = new AutoLearnAdapter("Oregon ePermitting", planner);
+  const project = {
+    projectAddress: "1717 17th St SE, Salem, OR, 97302",
+    permitType: "electrical",
+    city: "Salem",
+  } as ProjectRecord;
+  withFakePage(
+    adapter,
+    makeFakePage(
+      {
+        pages: [
+          {
+            // p1: the address-search step. The pass fills + clicks Search (→ p2).
+            url: "https://aca-oregon.accela.com/oregon/Cap/WorkLocation.aspx",
+            title: "Work Location",
+            body: "Begin your application by entering the work site location. Enter Work Site Location",
+            rawFields: [{ label: "Search", fieldType: "button", role: "button", text: "Search" }],
+          },
+          {
+            // p2: same step showing the results grid — the pass clicks the row's Select (→ p3).
+            url: "https://aca-oregon.accela.com/oregon/Cap/WorkLocation.aspx",
+            title: "Work Location",
+            body: "Enter Work Site Location 1717 17TH ST SE COUNTY APPLICATIONS SALEM Select",
+            rawFields: [{ label: "Select", fieldType: "button", role: "link", text: "Select" }],
+          },
+          {
+            // p3: record-type selection — the record-type pass checks the electrical type (→ p4).
+            url: "https://aca-oregon.accela.com/oregon/Cap/CapType.aspx",
+            title: "Select a Record Type",
+            body: "Select a Record Type",
+            rawFields: [
+              { label: "Residential - Structural Comprehensive", fieldType: "checkbox", id: "rtStruct" },
+              { label: "Residential - Electrical Comprehensive", fieldType: "checkbox", id: "rtElec" },
+              { label: "Continue Application", fieldType: "button", role: "button", text: "Continue Application" },
+            ],
+          },
+          {
+            // p4: review — the planner's first (and only) look.
+            url: "https://aca-oregon.accela.com/oregon/Cap/CapConfirm.aspx",
+            title: "Review",
+            body: "Step 3: Review. Please review all information.",
+            rawFields: [{ label: "Continue Application", fieldType: "button", role: "button", text: "Continue Application" }],
+            reviewPairs: [{ label: "Street", value: "17th" }],
+          },
+        ],
+      },
+      log,
+    ),
+  );
+  const result = await adapter.learn(fakeContext, project);
+  assert.equal(result.ok, true, `run should complete (${result.message || ""})`);
+  // Street number went in through the live-verified id hook — the labeled lookup misses it.
+  const numFill = log.fills.find((f) => f.key.includes("StreetNo4Search"));
+  assert.ok(numFill, `street number filled via the id hook: ${JSON.stringify(log.fills)}`);
+  assert.equal(numFill!.value, "1717");
+  const nameFill = log.fills.find((f) => f.key.includes("txtStreetName"));
+  assert.ok(nameFill, "street name filled via the id hook");
+  assert.equal(nameFill!.value, "17th", "core street name only (no suffix/direction)");
+  // The PANEL search button was clicked — never a bare role/name "Search" (the nav trap).
+  assert.ok(log.clicks.some((k) => k.includes("btnSearch")), `panel search clicked: ${JSON.stringify(log.clicks)}`);
+  assert.ok(!log.clicks.includes("role:button:Search"), "the header-nav Search tab must never be clicked");
+  // The jurisdiction row's Select link advanced the wizard.
+  assert.ok(log.clicks.some((k) => k.startsWith("role:link:") && k.includes("Select")), "address row Select link clicked");
+  // Record type: the ELECTRICAL type was checked (permitType drives the choice).
+  assert.ok(log.checks.length > 0, "record-type checkbox checked");
+  const recordTypeStep = result.steps.find((s) => (s.note || "").startsWith("record type:"));
+  assert.ok(recordTypeStep, "record-type step recorded for replay");
+  assert.match(String(recordTypeStep!.note), /Electrical/i, "electrical record type chosen for an electrical permit");
+  // Replayable steps recorded for the address search with css selectors — and BOUND to
+  // project fields (recipes are shared: a replay must search THAT project's address,
+  // never this run's literals).
+  const numStep = result.steps.find((s) => s.note === "work location: street number");
+  assert.ok(numStep?.selector?.css?.includes("StreetNo4Search"), "street-number step records the id-hook selector");
+  assert.equal(numStep?.field, "streetNumber", "street number is field-bound for replay");
+  assert.equal(result.steps.find((s) => s.note === "work location: street name (portion)")?.field, "streetNameCore", "street name is field-bound for replay");
+  // The Select click keeps its jurisdiction row context — a bare role/name "Select"
+  // resolves to .first() at replay and silently files under the wrong authority.
+  const selStep = result.steps.find((s) => (s.note || "").startsWith("work location: select"));
+  assert.ok(selStep?.selector?.css?.includes("COUNTY APPLICATIONS"), `row context recorded: ${JSON.stringify(selStep?.selector)}`);
+  assert.equal(plannerCalls, 1, "planner consulted only on the review page");
+}
+
+// ACA WRONG-MODULE GUARD: CapHome's "Applications & Permits" list + General Search is
+// the records/search module, NOT the Apply wizard — the live runs drifted there and the
+// planner then operated on the operator's REAL filings. The learner must leave
+// immediately (goto the apply-flow entry, bounded) and never click Resume Application.
+async function testAcaWrongModuleReentry() {
+  const log: ActionLog = { clicks: [], fills: [], selects: [], checks: [] };
+  const gotoUrls: string[] = [];
+  let plannerCalls = 0;
+  const planner: LearnPlanner = async (): Promise<LearnPlanResponse> => {
+    plannerCalls++;
+    // Once the bounded re-entries are exhausted the planner may see the page — it must
+    // do nothing dangerous; end the run.
+    return { fills: [], atReview: true };
+  };
+  const adapter = new AutoLearnAdapter("Oregon ePermitting", planner);
+  const page = makeFakePage(
+    {
+      pages: [{
+        url: "https://aca-oregon.accela.com/oregon/Cap/CapHome.aspx?module=Building",
+        title: "Applications & Permits",
+        body: "Applications and Permits. General Search.",
+        rawFields: [
+          { label: "Resume Application", fieldType: "button", role: "link", text: "Resume Application" },
+          { label: "ctl00$PlaceHolderMain$generalSearchForm$txtGSNumber$ChildControl0", fieldType: "text", id: "gs0" },
+          { label: "Search >>", fieldType: "button", role: "button", text: "Search >>" },
+        ],
+      }],
+    },
+    log,
+  );
+  page.goto = async (u: string) => { gotoUrls.push(u); };
+  withFakePage(adapter, page);
+  const result = await adapter.learn(fakeContext, fakeProject);
+  // The guard re-entered the apply flow (bounded at 2) with the derived disclaimer URL.
+  assert.equal(gotoUrls.length, 2, `bounded re-entry: ${JSON.stringify(gotoUrls)}`);
+  assert.match(gotoUrls[0], /\/oregon\/Cap\/CapApplyDisclaimer\.aspx\?module=Building$/);
+  assert.ok(result.steps.filter((s) => s.action === "goto" && (s.note || "").includes("re-enter apply flow")).length === 2, "re-entry gotos recorded");
+  // The records module's own controls were never operated.
+  assert.ok(!log.clicks.some((k) => /resume application/i.test(k)), "Resume Application never clicked");
+  assert.ok(!log.fills.some((f) => /generalSearchForm/i.test(f.key)), "General Search never filled");
+}
+
+// ACA ENTRY DISCLAIMER (deterministic): the T&C page is handled without a planner call —
+// agree checkbox via the codegen-verified id hook, then Continue Application.
+async function testAcaDisclaimerDeterministic() {
+  const log: ActionLog = { clicks: [], fills: [], selects: [], checks: [] };
+  let plannerCalls = 0;
+  const planner: LearnPlanner = async (req: LearnPlanRequest): Promise<LearnPlanResponse> => {
+    plannerCalls++;
+    assert.doesNotMatch(req.url, /CapApplyDisclaimer/, "planner must never see the disclaimer page");
+    return { fills: [], atReview: true, finalSubmitSelectorIndex: 0 };
+  };
+  const adapter = new AutoLearnAdapter("Oregon ePermitting", planner);
+  withFakePage(
+    adapter,
+    makeFakePage(
+      {
+        pages: [
+          {
+            url: "https://aca-oregon.accela.com/oregon/Cap/CapApplyDisclaimer.aspx?module=Building",
+            title: "Disclaimer",
+            body: "Please review the Terms and Conditions. I have read and agree.",
+            rawFields: [{ label: "Continue Application", fieldType: "button", role: "button", text: "Continue Application" }],
+          },
+          {
+            url: "https://aca-oregon.accela.com/oregon/Cap/CapConfirm.aspx",
+            title: "Review",
+            body: "Step 3: Review. Please review all information.",
+            rawFields: [{ label: "Continue Application", fieldType: "button", role: "button", text: "Continue Application" }],
+            reviewPairs: [{ label: "Street", value: "17th" }],
+          },
+        ],
+      },
+      log,
+    ),
+  );
+  const result = await adapter.learn(fakeContext, fakeProject);
+  assert.equal(result.ok, true, `run should complete (${result.message || ""})`);
+  assert.ok(log.checks.some((k) => k.includes("termAccept")), `agree box checked via the id hook: ${JSON.stringify(log.checks)}`);
+  assert.ok(result.steps.some((s) => (s.note || "") === "accela: accept entry terms"), "disclaimer accept recorded for replay");
+  assert.equal(plannerCalls, 1, "no LLM call burned on the static T&C page");
+}
+
+// EXISTING-RECORD CONTROLS ARE OFF-LIMITS: a planner that returns "Resume Application"
+// (someone's real draft filing) as the advance button must be refused, same as pay/fee.
+async function testResumeApplicationNeverClicked() {
+  const log: ActionLog = { clicks: [], fills: [], selects: [], checks: [] };
+  const planner: LearnPlanner = async (): Promise<LearnPlanResponse> =>
+    ({ fills: [{ selectorIndex: 0, value: "x", field: "notes" }], advanceSelectorIndex: 1, atReview: false });
+  const adapter = new AutoLearnAdapter("Some County Portal", planner);
+  withFakePage(
+    adapter,
+    makeFakePage(
+      {
+        pages: [{
+          url: "https://permits.example.gov/records",
+          title: "Records",
+          body: "Your records",
+          rawFields: [
+            { label: "Notes", fieldType: "text", id: "notes" },
+            { label: "Resume Application", fieldType: "button", role: "link", text: "Resume Application" },
+          ],
+        }],
+      },
+      log,
+    ),
+  );
+  const result = await adapter.learn(fakeContext, fakeProject);
+  assert.equal(result.ok, false, "run must stop rather than resume an existing record");
+  assert.ok(!log.clicks.some((k) => /resume application/i.test(k)), "Resume Application never clicked");
+}
+
 const tests: Array<[string, () => Promise<void>]> = [
+  ["ACA DETERMINISTIC: work-location + record-type handled without the planner", testAcaWorkLocationAndRecordTypeDeterministic],
+  ["ACA WRONG-MODULE: records/search module exited via bounded re-entry, real records untouched", testAcaWrongModuleReentry],
+  ["ACA DISCLAIMER: entry T&C accepted deterministically, no planner call", testAcaDisclaimerDeterministic],
+  ["EXISTING-RECORD GUARD: Resume Application advance is refused, never clicked", testResumeApplicationNeverClicked],
   ["POWERCLERK COMBINED SELECTS: unlabeled repeater dropdowns filled by row order, traps untouched", testEquipmentCombinedSelectRepeater],
   ["POWERCLERK SPECS: bare labels filled via section context; EV/meter traps untouched", testEquipmentSpecsSectionContext],
   ["EQUIPMENT PROXIMITY: sectionless bare Model inherits side from preceding make", testEquipmentProximityFallback],

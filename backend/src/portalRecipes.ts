@@ -7,6 +7,7 @@ import { id } from "./ids";
 import { asJson, bool, parseJson, text as s } from "./json";
 import { knowledgeProfileKey } from "./knowledgeBase";
 import { nowIso } from "./time";
+import { parseStreetNumber, parseStreetName } from "../../portal-bot/src/addressParse";
 
 type Row = Record<string, unknown>;
 
@@ -351,6 +352,14 @@ export function resolveRecipeFieldValues(db: AppDb, project: ProjectRecord, port
     homeownerEmail: String(snapshotFlat.homeownerEmail || snapshotFlat.ownerEmail || ""),
     homeownerPhone: String(snapshotFlat.homeownerPhone || snapshotFlat.ownerPhone || ""),
     street: streetOnly || project.projectAddress,
+    // Accela-style address SEARCH forms take the number and CORE street name in separate
+    // boxes. The learner's work-location pass records its fills bound to these keys so a
+    // shared recipe replays THIS project's address, never the learn project's literals.
+    streetNumber: parseStreetNumber(project.projectAddress || ""),
+    streetNameCore: parseStreetName(project.projectAddress || ""),
+    // Bound instead of streetNameCore when the LEARN run's full-name search returned
+    // zero results and its 3-char retry succeeded (the portal's own search hint).
+    streetNameSearchPortion: parseStreetName(project.projectAddress || "").slice(0, 3),
     projectAddress: project.projectAddress,
     city: project.city,
     state: project.state,

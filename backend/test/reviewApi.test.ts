@@ -33,7 +33,9 @@ delete (env as Record<string, string | undefined>).https_proxy;
 delete (env as Record<string, string | undefined>).HTTP_PROXY;
 delete (env as Record<string, string | undefined>).http_proxy;
 
-const server = spawn("npx", ["tsx", "backend/src/server.ts"], { env, stdio: ["ignore", "pipe", "pipe"], detached: false });
+// node + the tsx CLI directly: "npx" is not spawnable on Windows (ENOENT), and a
+// shell wrapper would make kill() stop the shell while orphaning the server.
+const server = spawn(process.execPath, ["node_modules/tsx/dist/cli.mjs", "backend/src/server.ts"], { env, stdio: ["ignore", "pipe", "pipe"], detached: false });
 let serverLog = "";
 server.stdout?.on("data", (d) => { serverLog += String(d); });
 server.stderr?.on("data", (d) => { serverLog += String(d); });
@@ -203,8 +205,11 @@ try {
 
 } finally {
   server.kill("SIGTERM");
-  await new Promise((r) => setTimeout(r, 500));
-  fs.rmSync(tmpDir, { recursive: true, force: true });
+  // Wait for the ACTUAL process exit - on Windows kill() returns while the server still
+  // holds the sqlite handle, and an immediate rm EBUSYs. Bounded so a hung child can't
+  // wedge the test; the rm is best-effort (temp dir, OS cleans it eventually).
+  await new Promise((r) => { server.once("exit", r); setTimeout(r, 5000); });
+  try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* still locked - leave to OS */ }
 }
 
 if (failures > 0) {

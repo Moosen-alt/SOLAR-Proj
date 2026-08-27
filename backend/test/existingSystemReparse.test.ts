@@ -42,5 +42,7 @@ assert.equal(updated.project.parserSnapshot.existingDcKw, 5.16, "merge keeps the
 assert.equal(updated.project.parserSnapshot.moduleModel, "ZXM7-UHLD108-440/N", "merge keeps prior fields");
 ok("re-parse evidence flips hasExistingSystem to Yes in the persisted snapshot");
 
+// Close before deleting the scratch DB - Windows holds the open handle as a file lock (EBUSY).
+db.close();
 fs.rmSync(tmpDir, { recursive: true, force: true });
 console.log(`\nexistingSystemReparse: all ${passed} checks passed`);

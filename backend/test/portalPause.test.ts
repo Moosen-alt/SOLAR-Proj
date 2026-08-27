@@ -62,6 +62,8 @@ run("pause is idempotent on its key (no duplicate rows)", () => {
   assert.equal(after, before, "re-pausing the same key updates, not duplicates");
 });
 
+// Close before deleting — Windows holds the open handle as a file lock (EBUSY).
+db.close();
 fs.rmSync(dbPath, { force: true });
 fs.rmSync(`${dbPath}-wal`, { force: true });
 fs.rmSync(`${dbPath}-shm`, { force: true });

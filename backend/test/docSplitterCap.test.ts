@@ -93,6 +93,8 @@ try {
   delete process.env.PORTAL_UPLOAD_MAX_MB;
 }
 
+// Close before deleting the scratch DB - Windows holds the open handle as a file lock (EBUSY).
+db.close();
 fs.rmSync(tmpDir, { recursive: true, force: true });
 if (failures) { console.error(`\n${failures} doc-splitter-cap test(s) FAILED.`); process.exit(1); }
 console.log("\nAll doc-splitter-cap tests passed.");

@@ -93,9 +93,13 @@ process.env.AUTOPILOT_AUTO_START = "0"; // deterministic tests — no background
   // 6) Migration v10 replay idempotent.
   db.run("DELETE FROM schema_meta WHERE version >= 10");
   const { openDatabase: reopen } = await import("../src/db");
-  await reopen();
+  const db2 = await reopen();
   check("migration v10 replays idempotently", cecTableCount(db) === 0);
 
+  // Close BOTH handles before deleting the scratch DB - Windows holds any open handle
+  // as a file lock (EBUSY).
+  db2.close();
+  db.close();
   fs.rmSync(dir, { recursive: true, force: true });
   if (failures) { console.error(`\n${failures} failure(s)`); process.exit(1); }
   console.log("\ncecEquipment: all checks passed");
