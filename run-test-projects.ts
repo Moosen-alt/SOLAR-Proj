@@ -98,9 +98,36 @@ function groundTruth(folder: string): { owner: string; city: string; state: stri
 const norm = (v: unknown) => String(v ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
 const val = (fields: Record<string, { value?: string }>, k: string) => String(fields?.[k]?.value ?? "").trim();
 
-const folders = fs.readdirSync(ARCHIVE, { withFileTypes: true })
+// SYNTHETIC utility data. A plan set legitimately does not carry the utility account or
+// meter number (they come from a bill), so every project stops at the reviewer gate on
+// those. Fill them with OBVIOUSLY FAKE values so the rest of the gate can be exercised —
+// prefixed TEST- so a stray value can never be mistaken for a real account on a filing.
+function syntheticUtilityData(seed: number): Record<string, string> {
+  const n = String(100000000 + (seed * 7919) % 899999999);
+  return {
+    account: `TEST-${n}`,
+    meter: `TEST-M${n.slice(0, 8)}`,
+    homeownerEmail: "test.homeowner@example.invalid",
+    homeownerPhone: "541-555-0100",
+    jobValue: "30000",
+  };
+}
+
+// RANDOM sample by default so a run is not always the same alphabetical head — pass
+// --seed=N to reproduce one. --all runs the whole archive.
+const SEED = Number((process.argv.find((a) => a.startsWith("--seed=")) || "--seed=1").split("=")[1]);
+const ALL = process.argv.includes("--all");
+const allFolders = fs.readdirSync(ARCHIVE, { withFileTypes: true })
   .filter((d) => d.isDirectory() && d.name !== "COMPLETED" && d.name.includes(" - "))
-  .map((d) => d.name).sort().slice(OFFSET, OFFSET + LIMIT);
+  .map((d) => d.name).sort();
+// Deterministic shuffle (mulberry32) so a seed reproduces the exact sample.
+let rnd = SEED >>> 0;
+const next = () => { rnd = (rnd + 0x6D2B79F5) >>> 0; let t = rnd; t = Math.imul(t ^ (t >>> 15), 1 | t); t ^= t + Math.imul(t ^ (t >>> 7), 61 | t); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+const shuffled = [...allFolders];
+for (let i = shuffled.length - 1; i > 0; i--) { const j = Math.floor(next() * (i + 1)); [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]]; }
+const folders = ALL ? allFolders : shuffled.slice(OFFSET, OFFSET + LIMIT);
+console.log(`archive: ${allFolders.length} projects — running ${folders.length}${ALL ? " (all)" : ` (random, seed ${SEED})`}
+`);
 
 const results: Record<string, unknown>[] = [];
 for (const folder of folders) {
@@ -172,6 +199,12 @@ for (const folder of folders) {
         return true;
       };
       row.truth = { street: truth.street, city: truth.city, state: truth.state, zip: truth.zip, ahj: truth.ahj, sizeKw: truth.sizeKw };
+      // Only score a field the CRM ACTUALLY carries. An empty tracker cell is missing
+      // ground truth, not a wrong extraction — counting it as a miss understates accuracy
+      // and (worse) invents bugs to chase. Unscorable fields are reported separately.
+      const scorable = (v: string) => Boolean(String(v ?? "").trim());
+      row.unscorable = ["street", "city", "state", "zip", "ahj", "sizeKw"]
+        .filter((k) => !scorable((truth as unknown as Record<string, string>)[k === "sizeKw" ? "sizeKw" : k]));
       row.vsTruth = {
         street: Boolean(got.street) && streetKey(got.street) === streetKey(truth.street),
         city: Boolean(got.city) && norm(got.city) === norm(truth.city),
@@ -182,6 +215,7 @@ for (const folder of folders) {
         // kW within 2% covers rounding between DC nameplate conventions.
         sizeKw: num(got.dcKw) > 0 && num(truth.sizeKw) > 0 && Math.abs(num(got.dcKw) - num(truth.sizeKw)) / num(truth.sizeKw) <= 0.02,
       };
+      for (const k of row.unscorable as string[]) delete (row.vsTruth as Record<string, boolean>)[k];
     } else {
       row.truth = null;
     }
@@ -193,6 +227,11 @@ for (const folder of folders) {
     payload.owner = got.owner || gt.owner;
     payload.city = payload.city || gt.city;
     payload.state = payload.state || gt.state;
+    // Synthetic ONLY where the plan set cannot supply it — never overwrite an extracted
+    // value, so this can never flatter the extraction's accuracy score.
+    const synth = syntheticUtilityData(folders.indexOf(folder) + 1);
+    for (const [k, v] of Object.entries(synth)) if (!String(payload[k] ?? "").trim()) payload[k] = v;
+    row.synthesized = Object.keys(synth).filter((k) => payload[k] === synth[k as keyof typeof synth]);
     const detail = createProject(db, payload as never);
     row.projectId = detail.project.id;
 
@@ -223,8 +262,27 @@ for (const folder of folders) {
   const r = row as Record<string, unknown>;
   const vt = r.vsTruth as Record<string, boolean> | undefined;
   const vtStr = vt ? Object.entries(vt).map(([k, v]) => `${k}=${v ? "Y" : "n"}`).join(" ") : "no-crm-row";
-  console.log(`${folder.slice(0, 30).padEnd(30)} | ${String(r.msTotal).padStart(6)}ms | ${vtStr} | missing=${(r.missing as string[] | undefined)?.length ?? "-"} blockers=${r.blockers ?? "-"} ${r.error ? "| ERR " + r.error : ""}`);
+  const gate = r.error ? "ERR" : (r.atReviewGate ? "AT-GATE" : `blocked(${r.blockers ?? "?"})`);
+  console.log(`${folder.slice(0, 28).padEnd(28)} | ${String(r.msTotal).padStart(6)}ms | ${String(gate).padEnd(11)} | ${vtStr} | missing=${(r.missing as string[] | undefined)?.length ?? "-"} ${r.error ? "| " + String(r.error).slice(0, 80) : ""}`);
 }
+
+// AGGREGATE — the number that matters: how many reached the reviewer gate cleanly.
+const done = results.filter((r) => !r.error);
+const atGate = done.filter((r) => r.atReviewGate).length;
+const scored = results.filter((r) => r.vsTruth) as Array<Record<string, Record<string, boolean>>>;
+const fieldTally: Record<string, { ok: number; n: number }> = {};
+for (const r of scored) for (const [k, v] of Object.entries(r.vsTruth)) {
+  fieldTally[k] = fieldTally[k] || { ok: 0, n: 0 };
+  fieldTally[k].n++; if (v) fieldTally[k].ok++;
+}
+console.log(`
+=== ${results.length} projects | ${done.length} parsed | ${atGate} reached the review gate cleanly | ${results.length - done.length} errored`);
+if (scored.length) {
+  console.log(`=== accuracy vs CRM (${scored.length} with a tracker row): ` +
+    Object.entries(fieldTally).map(([k, v]) => `${k} ${v.ok}/${v.n}`).join("  "));
+}
+const llmMs = done.map((r) => Number(r.msLlm || 0)).filter(Boolean);
+if (llmMs.length) console.log(`=== llm mean ${Math.round(llmMs.reduce((a, b) => a + b, 0) / llmMs.length)}ms of ${Math.round(done.reduce((a, b) => a + Number(b.msTotal || 0), 0) / done.length)}ms total`);
 
 const out = path.resolve("data/test-run-report.json");
 fs.mkdirSync(path.dirname(out), { recursive: true });
