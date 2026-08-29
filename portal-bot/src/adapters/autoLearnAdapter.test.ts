@@ -603,7 +603,10 @@ async function testNewTabPopupAdopted() {
   const pages: any[] = [];
   function fakeLoc(key: string, onClick?: () => void): any {
     const loc: any = {
-      first: () => loc, nth: () => loc, count: async () => 1, isVisible: async () => false,
+      // isVisible TRUE: these stand in for real, fillable controls. applyFill now skips a
+      // control that reports itself invisible (a live display:none field cost 137s of
+      // timeouts), so a stub claiming false would mean "nothing is fillable".
+      first: () => loc, nth: () => loc, count: async () => 1, isVisible: async () => true,
       waitFor: async () => undefined, scrollIntoViewIfNeeded: async () => undefined,
       click: async () => { log.clicks.push(key); if (onClick) onClick(); },
       fill: async (v: string) => { log.fills.push({ key, value: v }); },
@@ -629,7 +632,10 @@ async function testNewTabPopupAdopted() {
       getByLabel: (l: string) => fakeLoc(`label:${l}`),
       getByPlaceholder: (p: string) => fakeLoc(`placeholder:${p}`),
       getByTestId: (t: string) => fakeLoc(`testId:${t}`),
-      getByText: () => fakeLoc("text"),
+      // No challenge text on this popup form. The stub previously returned a match for
+      // ANY text with count 1, which reads as a CAPTCHA to the challenge gate the moment
+      // the controls report themselves visible.
+      getByText: () => ({ ...fakeLoc("text"), count: async () => 0 }),
       locator: (css: string) => {
         if (css === "body") return { innerText: async () => opts.body };
         if (css === "iframe") return { evaluateAll: async () => [] };
@@ -673,7 +679,7 @@ async function testNewTabPopupAdopted() {
   (adapter as unknown as { opened: unknown }).opened = { context: { pages: () => pages } };
 
   const result = await adapter.learn(fakeContext, fakeProject);
-  assert.equal(result.ok, true, "should succeed: adopted the popup and filled the form");
+  assert.equal(result.ok, true, `should succeed: adopted the popup and filled the form (${result.message || ""})`);
   assert.equal(log.fills.length, 1, "the form field on the popup tab was filled");
   assert.ok(result.steps.some((s) => s.action === "fill" && s.field === "homeownerName"), "form fill recorded from the adopted tab");
   // The nav link was clicked exactly once; the dashboard was not re-scraped into a stuck loop.

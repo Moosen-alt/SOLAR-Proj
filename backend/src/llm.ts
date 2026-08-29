@@ -809,18 +809,53 @@ Rules:
 
     // Generous budget: every field now carries evidence + several narrative
     // blobs, so the JSON is large. Too small a budget truncates it (unparseable).
-    const raw = await this.askLong("extractProjectFields", system, parts.join("\n\n"), 16000);
-    return this.normalizeExtraction(raw, "Could not parse LLM response.");
+    // ONE RETRY on an unreadable response. Intake is a long, expensive pipeline and this
+    // call is ~99% of it; a transient upstream error should not cost the operator the whole
+    // project. Observed live: the same plan set returned an unparseable response in 1.8s
+    // and 6.4s, then extracted cleanly in 88s — i.e. a fast failure is transient, not a
+    // property of the document. The retry is bounded at one so a genuinely unparseable
+    // response still surfaces promptly rather than doubling the wait repeatedly.
+    const user = parts.join("\n\n");
+    try {
+      return this.normalizeExtraction(
+        await this.askLong("extractProjectFields", system, user, 16000),
+        "Could not parse LLM response.",
+      );
+    } catch (err) {
+      logger.warn("llm", "extractProjectFields response unreadable — retrying once", {
+        err: err instanceof Error ? err.message.slice(0, 120) : String(err).slice(0, 120),
+      });
+      return this.normalizeExtraction(
+        await this.askLong("extractProjectFields", system, user, 16000),
+        "Could not parse LLM response (retry).",
+      );
+    }
   }
 
   // Shared parser for both text and vision extraction results — captures
   // value, confidence, and evidence (provenance) per field.
   private normalizeExtraction(raw: string, parseFailNote: string): ParserLlmExtraction {
+    const FAILED = Symbol("parse-failed");
     const parsed = this.parseJson<{
       fields?: Record<string, { value: unknown; confidence?: number; evidence?: { source?: string; sheet?: string; excerpt?: string } }>;
       lowConfidenceFields?: string[];
       notes?: string;
-    }>(raw, { fields: {}, lowConfidenceFields: [], notes: parseFailNote });
+      [FAILED]?: boolean;
+    }>(raw, { fields: {}, lowConfidenceFields: [], notes: parseFailNote, [FAILED]: true });
+    // A RESPONSE WE COULD NOT PARSE IS NOT AN EMPTY PLAN SET. Degrading it to
+    // `{fields:{}}` made a failed call indistinguishable from "this document says
+    // nothing" — observed live: a 1.8s call came back with zero fields and
+    // lowConfidence 0, and the caller happily created a project with 13 missing fields
+    // and 15 reviewer blockers, with nothing anywhere saying the extraction had failed.
+    // Fail loudly instead; the callers already map thrown LLM errors to a real message.
+    if (parsed[FAILED]) {
+      // Say WHAT came back. Without a sample of the response there is no way to tell a
+      // truncation from a refusal from an upstream error, and the operator is left with an
+      // unactionable "could not parse". Redacted and capped — this text can contain
+      // project data.
+      const sample = String(raw || "").trim().slice(0, 200).replace(/\d[\d-]{6,}/g, "[redacted]") || "(empty response)";
+      throw new Error(`${parseFailNote} The model's response could not be read as JSON — the document was NOT parsed. Response began: ${sample}`);
+    }
 
     const fields: ParserLlmExtraction["fields"] = {};
     for (const [key, entry] of Object.entries(parsed.fields || {})) {

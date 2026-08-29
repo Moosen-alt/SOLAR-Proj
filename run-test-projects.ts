@@ -8,7 +8,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-const ARCHIVE = "E:/INFINITY SOLAR DOCS/INFINITY SOLAR DOCS/01 - CUSTOMERS";
+const ROOT = "L:/INFINITY SOLAR DOCS";              // fuller archive: 102 customer folders
+const ARCHIVE = `${ROOT}/01 - CUSTOMERS`;
+const TRACKER = `${ROOT}/08 - TRACKERS & DATA/Seamus Projects - 1776869677626.csv`;
 const LIMIT = Number(process.argv[2] || 8);
 const OFFSET = Number((process.argv.find((a) => a.startsWith("--offset=")) || "--offset=0").split("=")[1]);
 
@@ -44,7 +46,48 @@ function pickPlanSet(dir: string): string | null {
   return pool.sort((a, b) => b.size - a.size)[0].full;
 }
 
-// GROUND TRUTH from the folder name: "Dennis Moore - Falls City OR" -> owner/city/state.
+// REAL GROUND TRUTH: the operator's CRM export. It carries the values that were actually
+// filed — street, city, state, zip, AHJ and system size — which is far stronger than the
+// folder name (owner/city only). Joined to a folder by owner name.
+interface TruthRow { owner: string; street: string; city: string; state: string; zip: string; ahj: string; sizeKw: string; value: string }
+function loadTracker(): TruthRow[] {
+  if (!fs.existsSync(TRACKER)) return [];
+  const text = fs.readFileSync(TRACKER, "utf8").replace(/^﻿/, "");
+  // Minimal CSV reader: quoted fields may contain commas.
+  const rows: string[][] = [];
+  let cur: string[] = [], cell = "", q = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) {
+      if (c === '"' && text[i + 1] === '"') { cell += '"'; i++; }
+      else if (c === '"') q = false;
+      else cell += c;
+    } else if (c === '"') q = true;
+    else if (c === ",") { cur.push(cell); cell = ""; }
+    else if (c === "\n") { cur.push(cell); rows.push(cur); cur = []; cell = ""; }
+    else if (c !== "\r") cell += c;
+  }
+  if (cell || cur.length) { cur.push(cell); rows.push(cur); }
+  const head = rows.shift() ?? [];
+  const idx = (name: string) => head.findIndex((h) => h.trim().toLowerCase() === name.toLowerCase());
+  const iOwner = idx("Account title"), iStreet = idx("Site Address Street"), iCity = idx("Site Address City");
+  const iState = idx("Site Address State"), iZip = idx("Site Address Zipcode"), iAhj = idx("AHJ");
+  const iSize = idx("Project size"), iVal = idx("Project value");
+  const get = (r: string[], i: number) => (i >= 0 ? (r[i] ?? "").trim() : "");
+  return rows.filter((r) => get(r, iOwner)).map((r) => ({
+    owner: get(r, iOwner), street: get(r, iStreet), city: get(r, iCity), state: get(r, iState),
+    zip: get(r, iZip), ahj: get(r, iAhj), sizeKw: get(r, iSize), value: get(r, iVal),
+  }));
+}
+const TRACKER_ROWS = loadTracker();
+function truthFor(owner: string): TruthRow | null {
+  const key = owner.toLowerCase().replace(/[^a-z]/g, "");
+  return TRACKER_ROWS.find((t) => t.owner.toLowerCase().replace(/[^a-z]/g, "") === key)
+    ?? TRACKER_ROWS.find((t) => key.length > 5 && t.owner.toLowerCase().replace(/[^a-z]/g, "").includes(key.slice(0, 8)))
+    ?? null;
+}
+
+// Fallback ground truth from the folder name: "Dennis Moore - Falls City OR".
 function groundTruth(folder: string): { owner: string; city: string; state: string } {
   const [ownerRaw, locRaw = ""] = folder.split(" - ");
   const loc = locRaw.replace(/,/g, " ").trim().split(/\s+/);
@@ -100,6 +143,48 @@ for (const folder of folders) {
     row.ownerMatch = Boolean(got.owner) && norm(got.owner).includes(norm(gt.owner).slice(0, 6));
     row.cityMatch = Boolean(got.city) && norm(got.city) === norm(gt.city);
     row.stateMatch = got.state.toUpperCase() === gt.state;
+    // Score against the CRM's FILED values where we have them — the real accuracy signal.
+    const truth = truthFor(gt.owner);
+    if (truth) {
+      const num = (v: string) => Number(String(v).replace(/[^0-9.]/g, "")) || 0;
+      // The CRM writes addresses long-form ("15622 Southeast Vivian Way") while plan sets
+      // use postal abbreviations ("15622 SE Vivian Way"). Both are correct, so canonicalise
+      // directionals and street types before comparing — otherwise the harness reports a
+      // miss on a perfect extraction and sends us hunting a bug that does not exist.
+      const ABBREV: Record<string, string> = {
+        southeast: "se", southwest: "sw", northeast: "ne", northwest: "nw",
+        south: "s", north: "n", east: "e", west: "w",
+        street: "st", avenue: "ave", boulevard: "blvd", road: "rd", drive: "dr",
+        lane: "ln", court: "ct", place: "pl", terrace: "ter", circle: "cir",
+        parkway: "pkwy", highway: "hwy", trail: "trl",
+      };
+      const streetKey = (v: string) => String(v).toLowerCase().replace(/[^a-z0-9\s]/g, " ")
+        .split(/\s+/).filter(Boolean).map((w) => ABBREV[w] ?? w).join(" ").trim();
+      // "City of Happy Valley" and "Happy Valley city" are the same jurisdiction: compare
+      // the distinctive tokens, dropping the boilerplate.
+      const ahjKey = (v: string) => new Set(String(v).toLowerCase().replace(/[^a-z\s]/g, " ")
+        .split(/\s+/).filter((w) => w && !["city", "county", "of", "town", "the"].includes(w)));
+      const sameAhj = (a: string, b: string): boolean => {
+        const A = ahjKey(a), B = ahjKey(b);
+        if (!A.size || !B.size) return false;
+        for (const t of A) if (!B.has(t)) return false;
+        for (const t of B) if (!A.has(t)) return false;
+        return true;
+      };
+      row.truth = { street: truth.street, city: truth.city, state: truth.state, zip: truth.zip, ahj: truth.ahj, sizeKw: truth.sizeKw };
+      row.vsTruth = {
+        street: Boolean(got.street) && streetKey(got.street) === streetKey(truth.street),
+        city: Boolean(got.city) && norm(got.city) === norm(truth.city),
+        state: Boolean(got.state) && got.state.toUpperCase() === truth.state.toUpperCase(),
+        zip: Boolean(got.zip) && got.zip.replace(/\D/g, "").slice(0, 5) === truth.zip.replace(/\D/g, "").slice(0, 5),
+        // AHJ naming legitimately varies ("Beaverton" vs "City of Beaverton") — token match.
+        ahj: Boolean(got.ahj) && Boolean(truth.ahj) && sameAhj(got.ahj, truth.ahj),
+        // kW within 2% covers rounding between DC nameplate conventions.
+        sizeKw: num(got.dcKw) > 0 && num(truth.sizeKw) > 0 && Math.abs(num(got.dcKw) - num(truth.sizeKw)) / num(truth.sizeKw) <= 0.02,
+      };
+    } else {
+      row.truth = null;
+    }
     // COMPLETENESS of the fields a permit/NEM filing actually needs.
     const required = ["owner", "street", "city", "state", "zip", "ahj", "utility", "dcKw", "moduleMake", "moduleModel", "invMake", "invModel", "moduleQty"];
     row.missing = required.filter((k) => !String((got as Record<string, string>)[k] || "").trim());
@@ -136,7 +221,9 @@ for (const folder of folders) {
   row.msTotal = Date.now() - t0;
   results.push(row);
   const r = row as Record<string, unknown>;
-  console.log(`${folder} | ${r.msTotal}ms (llm ${r.msLlm ?? "-"}ms) | owner=${r.ownerMatch} city=${r.cityMatch} state=${r.stateMatch} | missing=${(r.missing as string[] | undefined)?.length ?? "-"} | blockers=${r.blockers ?? "-"} ${r.error ? "| ERR " + r.error : ""}`);
+  const vt = r.vsTruth as Record<string, boolean> | undefined;
+  const vtStr = vt ? Object.entries(vt).map(([k, v]) => `${k}=${v ? "Y" : "n"}`).join(" ") : "no-crm-row";
+  console.log(`${folder.slice(0, 30).padEnd(30)} | ${String(r.msTotal).padStart(6)}ms | ${vtStr} | missing=${(r.missing as string[] | undefined)?.length ?? "-"} blockers=${r.blockers ?? "-"} ${r.error ? "| ERR " + r.error : ""}`);
 }
 
 const out = path.resolve("data/test-run-report.json");

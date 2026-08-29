@@ -2194,12 +2194,25 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     };
     const bindKey = (installerKey: string): string =>
       sectionIndex === 0 ? installerKey : (SITE_KEYS[installerKey] ?? installerKey);
-    const fillField = async (idPart: string, value: string | undefined, note: string, field: string): Promise<void> => {
+    // Accept SEVERAL id tokens per field, tried in order. ACA's control names vary by
+    // build and the guess only has to be wrong once to matter: the street box here is
+    // `txtAppStreetAdd1`, which contains neither "AddressLine1" nor "Address", so the fill
+    // missed, Playwright waited out its full timeout twice (30s each, measured), and the
+    // half-filled contact let ACA substitute one of the ACCOUNT's own contacts on the
+    // review screen. The hidden `hfIsForNewContactAddress` is skipped by firstVisible.
+    const fillField = async (idParts: string | string[], value: string | undefined, note: string, field: string): Promise<void> => {
       if (!value) return;
-      const css = `input[id*='${idPart}' i], input[name*='${idPart}' i]`;
-      const loc = await this.firstVisible(dlg, css);
-      if (!loc) { this.debug?.event({ type: "contact_field_miss", field }); return; }
-      if (await loc.fill(value).then(() => true).catch(() => false)) {
+      const parts = Array.isArray(idParts) ? idParts : [idParts];
+      let loc: unknown = null;
+      let css = "";
+      for (const part of parts) {
+        css = `input[id*='${part}' i], input[name*='${part}' i]`;
+        loc = await this.firstVisible(dlg, css);
+        if (loc) break;
+      }
+      if (!loc) { this.debug?.event({ type: "contact_field_miss", field, tried: parts }); return; }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      if (await (loc as any).fill(value, { timeout: 8000 }).then(() => true).catch(() => false)) {
         steps.push({ action: "fill", phase: "fill", selector: { css, frame: "ACADialogFrame" }, field: bindKey(field), value, note: `${note} [${who}]` });
       }
     };
@@ -2210,7 +2223,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     // and validates Zip as exactly ##### — a ZIP+4 or a stray space is rejected.
     // Address ids vary by build (AddressLine1 / addressLine1 / txtAddress) - the
     // live Coos Bay dialog missed on "AddressLine1" alone.
-    await fillField("Address", id.street, "contact: address", "installerStreet");
+    await fillField(["StreetAdd", "AddressLine", "Address", "Street"], id.street, "contact: address", "installerStreet");
     await fillField("City", id.city, "contact: city", "installerCity");
     const zip5 = (id.zip || "").replace(/\D/g, "").slice(0, 5);
     if (zip5) {
@@ -3911,6 +3924,16 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       async () => {
         const loc = await this.locator(field.selector);
         if (!loc) throw new Error("selector unresolved");
+        // NEVER WAIT ON A CONTROL THAT CANNOT BECOME ACTIONABLE. fill()/check() block on
+        // visibility for 30s (Playwright's default) and safeAction then retries 4x with
+        // backoff — measured on a live Accela run, ONE display:none date input inside a
+        // 0x0 container (title "This is a hidden field.") cost 137 SECONDS and recorded
+        // nothing, because the field is optional so the failure was swallowed. A visibility
+        // probe costs ~5ms. isVisible, NOT isEditable: a hidden input is still "editable".
+        if (typeof loc.isVisible === "function" && !(await loc.isVisible().catch(() => true))) {
+          this.debug?.event({ type: "hidden_field_skipped", label: (field.label || "").slice(0, 60) });
+          throw new Error("control is not visible (hidden field)");
+        }
         if (action === "select") {
           // A dependent/cascading <select> may still be disabled or have an empty option list
           // when we reach it (its options arrive via the AJAX a prior field triggered). Wait
@@ -3963,7 +3986,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             await this.typeMasked(loc, typed);
           }
         } else {
-          await loc.fill(value);
+          // Bounded: a control that never becomes actionable must not cost the 30s default.
+          await loc.fill(value, { timeout: 8000 });
           // Blur to COMMIT the value into the portal's JS model. Playwright's fill() fires
           // input+change, but some frameworks (PowerClerk's Vue) only push a field into their
           // saved model on blur — and PowerClerk autosaves per field. Without the blur the
