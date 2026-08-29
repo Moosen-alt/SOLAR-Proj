@@ -98,18 +98,32 @@ function groundTruth(folder: string): { owner: string; city: string; state: stri
 const norm = (v: unknown) => String(v ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
 const val = (fields: Record<string, { value?: string }>, k: string) => String(fields?.[k]?.value ?? "").trim();
 
-// SYNTHETIC utility data. A plan set legitimately does not carry the utility account or
-// meter number (they come from a bill), so every project stops at the reviewer gate on
-// those. Fill them with OBVIOUSLY FAKE values so the rest of the gate can be exercised —
-// prefixed TEST- so a stray value can never be mistaken for a real account on a filing.
-function syntheticUtilityData(seed: number): Record<string, string> {
+// SYNTHETIC data for the fields a HUMAN types at intake, not the plan set. The operator
+// keys the CONTRACT AMOUNT and the homeowner's EMAIL into the parser by hand (they come
+// from the sales contract and the CRM, and appear nowhere in a plan set), and the utility
+// ACCOUNT/METER numbers come off a bill. Without them every project stops at the reviewer
+// gate on missing data and nothing downstream is exercised — so stand them in here, and
+// make them OBVIOUSLY FAKE: TEST- prefixed so a stray value can never be mistaken for a
+// real account on a live filing, and an .invalid email domain (RFC 2606) that can never
+// route mail to a real person.
+//
+// The contract amount SCALES WITH SYSTEM SIZE rather than being a flat constant: permit
+// fee schedules and the valuation-based fee estimator are driven by job value, so a fixed
+// 30000 across a 4 kW and a 15 kW system would make the fee/valuation path look
+// artificially uniform and hide errors in it.
+function syntheticIntakeData(seed: number, dcKw: number): Record<string, string> {
   const n = String(100000000 + (seed * 7919) % 899999999);
+  // ~$2.80/W installed is a representative residential contract price; vary it a little by
+  // project so nothing downstream can key off one exact number.
+  const perWatt = 2.6 + ((seed * 13) % 45) / 100;
+  const dc = dcKw > 0 ? dcKw : 7;
+  const contract = Math.round((dc * 1000 * perWatt) / 100) * 100;
   return {
     account: `TEST-${n}`,
     meter: `TEST-M${n.slice(0, 8)}`,
-    homeownerEmail: "test.homeowner@example.invalid",
-    homeownerPhone: "541-555-0100",
-    jobValue: "30000",
+    homeownerEmail: `test.owner${seed}@example.invalid`,
+    homeownerPhone: `541-555-${String(1000 + (seed % 9000)).slice(0, 4)}`,
+    jobValue: String(contract),
   };
 }
 
@@ -229,7 +243,7 @@ for (const folder of folders) {
     payload.state = payload.state || gt.state;
     // Synthetic ONLY where the plan set cannot supply it — never overwrite an extracted
     // value, so this can never flatter the extraction's accuracy score.
-    const synth = syntheticUtilityData(folders.indexOf(folder) + 1);
+    const synth = syntheticIntakeData(folders.indexOf(folder) + 1, Number(got.dcKw) || 0);
     for (const [k, v] of Object.entries(synth)) if (!String(payload[k] ?? "").trim()) payload[k] = v;
     row.synthesized = Object.keys(synth).filter((k) => payload[k] === synth[k as keyof typeof synth]);
     const detail = createProject(db, payload as never);

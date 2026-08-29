@@ -234,10 +234,47 @@ export function disciplineConflictsWithTrack(
 // enter the knowledge base; the runtime gates pick them up automatically. (Migration v8's
 // SQL predicate is deliberately NOT derived from this: a shipped data-repair migration
 // stays frozen.)
-const UTILITY_PLATFORM_HOSTS = ["powerclerk.com"];
+// Two kinds of host belong here, and only knowing the first kind left a hole:
+//
+//   PLATFORMS — the interconnection software a utility runs (PowerClerk and friends).
+//
+//   THE UTILITIES' OWN DOMAINS. A KB audit found five AHJ rows carrying a utility URL, and
+//   the AHJ row for City of Beaverton resolves to
+//   "portlandgeneral.com/resources-for-solar-installers" — PGE's installer page. That is
+//   not a permit portal, but it is not powerclerk.com either, so the permit-track guard
+//   waved it through and staging would have driven a building permit at a utility's
+//   marketing site. The rows are auto-`learned`, so more will arrive; the guard has to know
+//   the utility by its own domain, not only by the platform it happens to buy.
+//
+// Add hosts as new utilities/platforms enter the knowledge base; the runtime gates pick
+// them up automatically. (Migration v8's SQL predicate is deliberately NOT derived from
+// this: a shipped data-repair migration stays frozen.)
+const UTILITY_PLATFORM_HOSTS = [
+  // Interconnection platforms.
+  "powerclerk.com",
+  // Utility-owned domains whose solar/net-metering pages keep landing on AHJ rows.
+  "portlandgeneral.com",
+  "pacificpower.net",
+  "pacificorp.com",
+  "idahopower.com",
+  "pge.com",
+  "sce.com",
+  "sdge.com",
+  "srpnet.com",
+  "aps.com",
+  "xcelenergy.com",
+  "pse.com",
+  "avistautilities.com",
+  "eweb.org",
+];
 export function isUtilityPlatformUrl(url: string | null | undefined): boolean {
   const u = (url || "").toLowerCase();
-  return UTILITY_PLATFORM_HOSTS.some((host) => u.includes(host));
+  // Match on the HOST only. A substring test over the whole URL would flag an AHJ portal
+  // whose path merely mentions a utility (".../permits?utility=pge.com/..."), and would
+  // also let a lookalike domain ("notpge.com.evil.test") slip past a naive check.
+  let host: string;
+  try { host = new URL(u).hostname; } catch { host = u; }
+  return UTILITY_PLATFORM_HOSTS.some((h) => host === h || host.endsWith(`.${h}`));
 }
 
 // Single parse of the PORTAL_AUTOSEED mode switch — hand-rolled copies of this predicate

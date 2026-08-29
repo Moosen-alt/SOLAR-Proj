@@ -47,6 +47,33 @@ run("v8 clears the PowerClerk URL from the AHJ-keyed row", ahjRow?.portal_url ==
 const utilRow = db2.get<{ portal_url: string }>("SELECT portal_url FROM permit_utility_knowledge WHERE id = 't-util'");
 run("v8 keeps the utility-keyed row's PowerClerk URL", (utilRow?.portal_url || "").includes("powerclerk.com"), `got: ${utilRow?.portal_url}`);
 
+// THE GUARD MUST KNOW A UTILITY BY ITS OWN DOMAIN, NOT ONLY BY ITS PLATFORM.
+// A KB audit of the live DB found five AHJ rows carrying a utility URL, and the AHJ row
+// for City of Beaverton resolves to "portlandgeneral.com/resources-for-solar-installers"
+// — PGE's installer page. Not a permit portal, but not powerclerk.com either, so the
+// permit-track guard waved it through and staging would have driven a building permit at
+// a utility's marketing site. These rows are auto-`learned`, so more keep arriving.
+const { isUtilityPlatformUrl } = await import("../src/portalChannel");
+for (const [url, shouldBlock, why] of [
+  ["https://pgenm.powerclerk.com/MvcAccount/Login", true, "PowerClerk platform"],
+  ["https://pacificorpnetmetering.powerclerk.com/MvcAccount/Login", true, "PowerClerk platform"],
+  ["https://portlandgeneral.com/resources-for-solar-installers", true, "the utility's OWN domain (found on a live AHJ row)"],
+  ["https://www.pacificpower.net/savings-energy-choices/net-metering.html", true, "the utility's own domain, www subdomain"],
+  // Blocking an AHJ permit portal would break permit staging outright — the more dangerous
+  // direction of this change.
+  ["https://aca-oregon.accela.com/oregon/", false, "Oregon ePermitting is an AHJ portal"],
+  ["https://devhub.portlandoregon.gov/", false, "a city permit portal"],
+  ["https://permits.cityofsalem.net/", false, "a city permit portal"],
+  // Host-based, not substring: a lookalike domain must not pass as the real utility, and an
+  // AHJ url that merely mentions a utility in its path must not be blocked.
+  ["https://notpge.com.evil.test/permits", false, "lookalike domain is not pge.com"],
+  ["https://permits.example.gov/apply?ref=pge.com", false, "utility named in the path, not the host"],
+  ["", false, "empty"],
+] as Array<[string, boolean, string]>) {
+  const got = isUtilityPlatformUrl(url);
+  run(`${shouldBlock ? "blocks" : "allows"} ${url || "(empty)"} — ${why}`, got === shouldBlock, `got ${got}`);
+}
+
 // Close BOTH handles before deleting the scratch DB - Windows holds any open handle as
 // a file lock (EBUSY). db2 is the reopen that replayed migration v8.
 db2.close();
