@@ -402,7 +402,20 @@ export class RecipeAdapter extends BasePortalAdapter {
   }
 
   private resolveValue(step: RecipeStep): string {
-    if (step.field) return this.fieldValues[step.field] ?? "";
+    if (step.field) {
+      // PREFER THE PORTAL'S OWN STRING for equipment models. The backend resolves
+      // "<field>Certified" from the CEC list — the same list the portal builds its dropdown
+      // from — so "DS3-L" arrives as "DS3-L {240V}" and "Q.TRON BLK M-G2.C1+/AC" as the
+      // wattage-correct one of six. Resolved server-side because a portal renders a native
+      // <select> on one page and a combobox <input> on another, and a combobox exposes no
+      // <option> elements for a page-side matcher to read. Falls through to the plan-set
+      // value whenever the CEC list is unsynced or the choice was ambiguous.
+      if (/model$/i.test(step.field)) {
+        const certified = this.fieldValues[`${step.field}Certified`];
+        if (certified) return certified;
+      }
+      return this.fieldValues[step.field] ?? "";
+    }
     return step.value ?? "";
   }
 

@@ -71,6 +71,10 @@ const fieldValues = {
   moduleModel: "Q.TRON BLK M-G2.C1+/AC",
   moduleModel2: "ZXM7-SH108-410M",
   moduleWattage: "425",
+  // No "*Certified" keys here ON PURPOSE. The backend normally resolves those from the CEC
+  // list, and replay prefers them; omitting them keeps this test exercising the PAGE-SIDE
+  // rules, which are what remain when the CEC table is unsynced (it holds zero rows until
+  // the server has run once) or when the choice was ambiguous server-side.
 };
 
 const browser = await chromium.launch();

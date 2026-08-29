@@ -6,6 +6,7 @@ import { HttpError } from "./httpError";
 import { id } from "./ids";
 import { asJson, bool, parseJson, text as s } from "./json";
 import { knowledgeProfileKey, knowledgeNameMatchScore } from "./knowledgeBase";
+import { certifiedModelFor } from "./cecEquipment";
 import { nowIso } from "./time";
 import { parseStreetNumber, parseStreetName } from "../../portal-bot/src/addressParse";
 
@@ -438,6 +439,31 @@ function wholeDegrees(value: unknown): unknown {
   return String(Math.round(n));
 }
 
+// The model strings a portal will actually list, for this project's equipment. Kept beside
+// the other derived fields so both learn and replay see the same map.
+function certifiedModelFields(
+  db: AppDb,
+  snapshotFlat: Record<string, string>,
+  equipment: Record<string, string>,
+): Record<string, string> {
+  const pick = (...keys: string[]): string => {
+    for (const k of keys) {
+      const v = String(equipment[k] ?? snapshotFlat[k] ?? "").trim();
+      if (v) return v;
+    }
+    return "";
+  };
+  const out: Record<string, string> = {};
+  try {
+    const modWatts = pick("moduleWattage", "moduleWatts", "watts");
+    const mod = certifiedModelFor(db, "module", pick("moduleMake", "moduleManufacturer"), pick("moduleModel"), modWatts);
+    if (mod) out.moduleModelCertified = mod;
+    const inv = certifiedModelFor(db, "inverter", pick("inverterMake", "inverterManufacturer"), pick("inverterModel"), pick("inverterWattage"));
+    if (inv) out.inverterModelCertified = inv;
+  } catch { /* CEC table absent or unsynced — fall back to the plan-set values */ }
+  return out;
+}
+
 export function resolveRecipeFieldValues(db: AppDb, project: ProjectRecord, portalType: string): Record<string, string> {
   const snapshot = project.parserSnapshot || {};
   const snapshotFlat: Record<string, string> = {};
@@ -665,7 +691,15 @@ export function resolveRecipeFieldValues(db: AppDb, project: ProjectRecord, port
 
   // Precedence: snapshot scalars → derived equipment aliases → existing-system block → explicit project fields →
   // client licensing overlay → derived installer name split (each later layer wins).
-  return { ...snapshotFlat, ...equipment, ...existingSys, ...projectFields, ...overlay, ...installerSplit };
+  // PORTAL-READY EQUIPMENT MODELS, resolved last so it can see the merged equipment map.
+  // A portal's dropdown lists CEC strings and the plan set's model is a prefix of them
+  // ("DS3-L" vs "DS3-L {240V}"). Resolved HERE, where the CEC table lives, rather than in
+  // the browser: PowerClerk renders a native <select> on one page and a Vue combobox
+  // <input> on another, and a combobox has no <option> elements for a page-side matcher to
+  // read — so it gave up exactly where the equipment matters. Empty when the CEC list is
+  // unsynced or the choice is ambiguous, leaving the plan-set value to be used unchanged.
+  const certifiedModels = certifiedModelFields(db, snapshotFlat, equipment);
+  return { ...snapshotFlat, ...equipment, ...existingSys, ...projectFields, ...overlay, ...installerSplit, ...certifiedModels };
 }
 
 // ---------------------------------------------------------------------------

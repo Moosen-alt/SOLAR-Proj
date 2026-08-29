@@ -281,6 +281,75 @@ export function lookupCecInverter(model: string): { manufacturer: string; model:
   return null;
 }
 
+/**
+ * The model string a PORTAL will actually list, for a plan-set model.
+ *
+ * Utility portals load their equipment dropdowns from the CEC list, whose model strings
+ * carry suffixes a plan set does not. Measured against the synced list:
+ *   plan set "Q.MI.349B-G1"            CEC "Q.MI.349B-G1 {240V}"
+ *   plan set "ZXM7-SH108-410M"         CEC "ZXM7-SH108-410/M"
+ *   plan set "DS3-L"                   CEC "DS3-L {240V}"  AND  "DS3-LV {120V}"
+ *   plan set "Q.TRON BLK M-G2.C1+/AC"  CEC ...415 / 420 / 425 / 430 / 435 / 440
+ *
+ * Resolving this HERE rather than in the browser is what makes it work on every portal
+ * shape: PowerClerk renders a native <select> on one page and a Vue combobox <input> on
+ * another, and the combobox has no <option> elements to read, so a page-side matcher
+ * silently gives up exactly where the equipment matters most.
+ *
+ * Rules, in order — the same ones a person would use:
+ *   1. exact, including punctuation-insensitively ("410M" vs "410/M");
+ *   2. otherwise the listing must START with the model at a TOKEN BOUNDARY, so "DS3-L"
+ *      can never resolve to "DS3-LV";
+ *   3. among several, the project's WATTAGE decides — it is the only thing separating the
+ *      six Q.TRON options.
+ * Returns "" when the choice stays ambiguous: filing the wrong module beats nothing.
+ */
+export function certifiedModelFor(
+  db: AppDb,
+  kind: CecKind,
+  make: string,
+  model: string,
+  watts?: string | number | null,
+): string {
+  const want = String(model ?? "").trim();
+  if (!want) return "";
+  const wantNorm = want.toLowerCase().replace(/\s+/g, " ").trim();
+  const wantBare = wantNorm.replace(/[^a-z0-9]/g, "");
+  if (wantBare.length < 3) return "";
+  try {
+    // Scope to the manufacturer when we can name it — two makes can ship models whose
+    // strings collide, and the make is already resolved by the time this is asked.
+    const makers = make ? certifiedNamesForMake(db, kind, make) : [];
+    const rows = makers.length
+      ? db.query<{ model: string }>(
+        `SELECT model FROM cec_equipment WHERE kind = ? AND manufacturer IN (${makers.map(() => "?").join(",")})`,
+        [kind, ...makers],
+      )
+      : db.query<{ model: string }>("SELECT model FROM cec_equipment WHERE kind = ?", [kind]);
+
+    const boundary: string[] = [];
+    for (const row of rows) {
+      const listed = String(row.model ?? "");
+      const t = listed.toLowerCase().replace(/\s+/g, " ").trim();
+      if (!t) continue;
+      if (t === wantNorm || t.replace(/[^a-z0-9]/g, "") === wantBare) return listed; // exact
+      if (t.startsWith(wantNorm)) {
+        const next = t.charAt(wantNorm.length);
+        if (!next || !/[a-z0-9]/.test(next)) boundary.push(listed);
+      }
+    }
+    if (boundary.length === 1) return boundary[0];
+    const w = String(watts ?? "").replace(/[^0-9]/g, "");
+    if (boundary.length > 1 && w) {
+      const byWatts = boundary.filter((b) => b.replace(/[^0-9]/g, "").includes(w));
+      if (byWatts.length === 1) return byWatts[0];
+    }
+    return "";
+  } catch {
+    return "";
+  }
+}
+
 /** Is a model on the CEC list? Used by the ADVISORY QC check. */
 export function isCecListed(db: AppDb, kind: CecKind, model: string): boolean {
   const want = compact(model);
