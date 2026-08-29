@@ -4300,69 +4300,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   // Loops up to 3 times (back-to-back modals) and falls back to Escape for popovers with no
   // matched button. Best-effort: never throws.
   private async dismissModals(): Promise<void> {
-    if (!this.page) return;
-    // Match dismiss controls whether they're <button>, <a>, or .btn (PowerClerk uses
-    // Bootstrap .btn links/buttons), so a "Got it"/"Close" link is caught too.
-    const clickable = ":is(button, a, .btn, [role=button])";
-    const dismissSelectors = [
-      // PowerClerk cookie-consent banner — a high z-index (999999) "shadow-lg border"
-      // floating div that covers the bottom of the page (where the wizard "Next" button
-      // sits), intercepting the click. Dismiss it by its specific Close button.
-      '#cpr-banner-dimiss-btn',
-      '[id*="cpr-banner"][id*="dismiss"]',
-      '[id*="cookie"] [class*="dismiss"], [class*="cookie-banner"] [aria-label="Close"]',
-      // PowerClerk "What's new?" popover
-      `${clickable}:has-text("Got it")`,
-      `${clickable}:has-text("Got It")`,
-      // Bootstrap/Vue popover + modal close controls (PowerClerk uses these).
-      '.popover-header button',
-      '.popover .btn-close',
-      '.modal .btn-close',
-      '.btn-close',
-      '[aria-label="Close"]',
-      '[aria-label="close"]',
-      '[class*="modal"] [class*="close"]',
-      '[class*="popover"] [class*="close"]',
-      // Accela ACA (ExtJS): window/dialog close tools (.x-tool-close is the ExtJS close icon)
-      '.x-tool-close',
-      '.x-window-header-right .x-tool',
-      '[class*="x-window"] [class*="close"]',
-      `${clickable}:has-text("Dismiss")`,
-      `${clickable}:has-text("Close")`,
-      // Cookie consent
-      `${clickable}:has-text("Accept All")`,
-      `${clickable}:has-text("Accept")`,
-      `${clickable}:has-text("OK")`,
-      // Generic "×" close
-      `${clickable}:has-text("×")`,
-      '[role="dialog"] button',
-    ];
-    for (let attempt = 0; attempt < 3; attempt++) {
-      let dismissed = false;
-      for (const sel of dismissSelectors) {
-        try {
-          const loc = this.page.locator(sel).first();
-          if ((await loc.count()) > 0 && (await loc.isVisible().catch(() => false))) {
-            await loc.click({ timeout: 2000 }).catch(() => null);
-            await smartWait(this.page, 400);
-            dismissed = true;
-            break;
-          }
-        } catch { /* non-fatal */ }
-      }
-      // Fallback: a lingering backdrop/popover with no matched button — press Escape.
-      if (!dismissed) {
-        const backdrop = await this.page
-          .locator('.modal-backdrop, [class*="backdrop"], div.position-absolute.opacity-50.bg-black, .popover')
-          .first().count().catch(() => 0);
-        if (backdrop > 0) {
-          try { await this.page.keyboard?.press?.("Escape"); } catch { /* no keyboard (mock) */ }
-          await smartWait(this.page, 300);
-          dismissed = true; // loop once more to confirm it cleared
-        }
-      }
-      if (!dismissed) break;
-    }
+    await dismissPageModals(this.page);
   }
 
   // GENERIC overlay breaker for UNKNOWN portals. Given the locator we're trying to click,
@@ -4607,64 +4545,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   // overlays. Scoped to backdrop/scrim selectors only — never removes form fields or modal
   // content, just the transparent layer on top. Best-effort; never throws.
   private async clearOverlays(): Promise<void> {
-    if (!this.page || typeof this.page.evaluate !== "function") return;
-    try {
-      await this.page.evaluate(() => {
-        const sel = [
-          // PowerClerk (Bootstrap/Vue): semi-transparent position-absolute loading scrims
-          "div.position-absolute.opacity-50.bg-black",
-          ".modal-backdrop",
-          // PowerClerk "new feature" onboarding popover — a Bootstrap popover (z-index 900)
-          // anchored ON the toolbar buttons (e.g. "New Net Metering Application"), so its
-          // header overlaps and intercepts the click. The backdrop above is removed but the
-          // popover itself must be too, or every navigate click is intercepted. It has a
-          // sequence of "Got it" steps, so clicking-through is unreliable — just remove it.
-          ".popover.new-feature-popper",
-          ".new-feature-popper",
-          // Generic loading/spinner overlays
-          "[class*='loading-overlay']",
-          "[class*='spinner-overlay']",
-          // Accela ACA (ExtJS): page-wide loading masks that cover ALL content during AJAX
-          ".x-mask",
-          ".x-mask-loading",
-          // Accela-specific global cover divs
-          "#divGlobalCover",
-          "#divProgress",
-          ".ACA_Loading",
-          // ExtJS/Accela pattern: any div whose ID contains "loadingMask" or "Loading"
-          "[id*='loadingMask']",
-          "[id*='LoadingMask']",
-          // jQuery BlockUI / jQuery UI overlay (used by some Accela modules)
-          ".blockUI",
-          ".ui-widget-overlay",
-          ".ui-blocker",
-          // Floating date-picker popups. We type dates straight into the input and never click
-          // the calendar, so an open picker is pure click-interception (the P006 hang). These
-          // only exist while a picker is open; pointer-events:none lets the next click through.
-          "#ui-datepicker-div",            // jQuery UI datepicker
-          ".datepicker.dropdown-menu",     // bootstrap-datepicker
-          ".datepicker-dropdown",          // bootstrap-datepicker (alt)
-          ".flatpickr-calendar.open",      // flatpickr
-          ".react-datepicker__portal",     // react-datepicker (portal mode)
-          ".react-datepicker-popper",      // react-datepicker (popper mode)
-          ".air-datepicker.-active-",      // air-datepicker
-          ".k-calendar-container",         // Kendo UI
-          ".mat-datepicker-popup",         // Angular Material
-          ".p-datepicker-panel",           // PrimeNG/PrimeReact
-        ].join(", ");
-        // Remove any scrims present right now...
-        document.querySelectorAll(sel).forEach((el) => el.remove());
-        // ...AND inject a persistent rule so RE-RENDERED scrims (PowerClerk's Vue re-adds its
-        // loading backdrop reactively; Accela's ExtJS re-renders masks on each AJAX call)
-        // can't intercept clicks. pointer-events:none lets clicks pass through to the real control.
-        if (!document.getElementById("__autolearn_scrim_bypass")) {
-          const style = document.createElement("style");
-          style.id = "__autolearn_scrim_bypass";
-          style.textContent = sel + " { pointer-events: none !important; }";
-          document.head.appendChild(style);
-        }
-      });
-    } catch { /* mock page or no DOM — non-fatal */ }
+    await clearPageOverlays(this.page);
   }
 
   // Build a Playwright locator for a single selector descriptor (no fallback chain).
@@ -4812,4 +4693,145 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     // Return the primary even if empty — the caller's waitFor will surface a clear timeout.
     return primary;
   }
+}
+
+// SHARED WITH REPLAY. Extracted verbatim from AutoLearnAdapter.dismissModals so the RecipeAdapter
+// can run the same pass: replay had NO modal handling at all, and the first live replay died
+// on step 2 of 99 because PowerClerk's "What's new?" popover — which this code already knows
+// how to dismiss — swallowed the click that opens a new application. The learner never hit it
+// because it dismisses modals at the top of every page; replay is the path that actually runs
+// for every project.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function dismissPageModals(page: any): Promise<void> {
+  if (!page) return;
+  // Match dismiss controls whether they're <button>, <a>, or .btn (PowerClerk uses
+  // Bootstrap .btn links/buttons), so a "Got it"/"Close" link is caught too.
+  const clickable = ":is(button, a, .btn, [role=button])";
+  const dismissSelectors = [
+    // PowerClerk cookie-consent banner — a high z-index (999999) "shadow-lg border"
+    // floating div that covers the bottom of the page (where the wizard "Next" button
+    // sits), intercepting the click. Dismiss it by its specific Close button.
+    '#cpr-banner-dimiss-btn',
+    '[id*="cpr-banner"][id*="dismiss"]',
+    '[id*="cookie"] [class*="dismiss"], [class*="cookie-banner"] [aria-label="Close"]',
+    // PowerClerk "What's new?" popover
+    `${clickable}:has-text("Got it")`,
+    `${clickable}:has-text("Got It")`,
+    // Bootstrap/Vue popover + modal close controls (PowerClerk uses these).
+    '.popover-header button',
+    '.popover .btn-close',
+    '.modal .btn-close',
+    '.btn-close',
+    '[aria-label="Close"]',
+    '[aria-label="close"]',
+    '[class*="modal"] [class*="close"]',
+    '[class*="popover"] [class*="close"]',
+    // Accela ACA (ExtJS): window/dialog close tools (.x-tool-close is the ExtJS close icon)
+    '.x-tool-close',
+    '.x-window-header-right .x-tool',
+    '[class*="x-window"] [class*="close"]',
+    `${clickable}:has-text("Dismiss")`,
+    `${clickable}:has-text("Close")`,
+    // Cookie consent
+    `${clickable}:has-text("Accept All")`,
+    `${clickable}:has-text("Accept")`,
+    `${clickable}:has-text("OK")`,
+    // Generic "×" close
+    `${clickable}:has-text("×")`,
+    '[role="dialog"] button',
+  ];
+  for (let attempt = 0; attempt < 3; attempt++) {
+    let dismissed = false;
+    for (const sel of dismissSelectors) {
+      try {
+        const loc = page.locator(sel).first();
+        if ((await loc.count()) > 0 && (await loc.isVisible().catch(() => false))) {
+          await loc.click({ timeout: 2000 }).catch(() => null);
+          await smartWait(page, 400);
+          dismissed = true;
+          break;
+        }
+      } catch { /* non-fatal */ }
+    }
+    // Fallback: a lingering backdrop/popover with no matched button — press Escape.
+    if (!dismissed) {
+      const backdrop = await page
+        .locator('.modal-backdrop, [class*="backdrop"], div.position-absolute.opacity-50.bg-black, .popover')
+        .first().count().catch(() => 0);
+      if (backdrop > 0) {
+        try { await page.keyboard?.press?.("Escape"); } catch { /* no keyboard (mock) */ }
+        await smartWait(page, 300);
+        dismissed = true; // loop once more to confirm it cleared
+      }
+    }
+    if (!dismissed) break;
+  }
+}
+
+// SHARED WITH REPLAY. Extracted verbatim from AutoLearnAdapter.clearOverlays so the RecipeAdapter
+// can run the same pass: replay had NO modal handling at all, and the first live replay died
+// on step 2 of 99 because PowerClerk's "What's new?" popover — which this code already knows
+// how to dismiss — swallowed the click that opens a new application. The learner never hit it
+// because it dismisses modals at the top of every page; replay is the path that actually runs
+// for every project.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function clearPageOverlays(page: any): Promise<void> {
+  if (!page || typeof page.evaluate !== "function") return;
+  try {
+    await page.evaluate(() => {
+      const sel = [
+        // PowerClerk (Bootstrap/Vue): semi-transparent position-absolute loading scrims
+        "div.position-absolute.opacity-50.bg-black",
+        ".modal-backdrop",
+        // PowerClerk "new feature" onboarding popover — a Bootstrap popover (z-index 900)
+        // anchored ON the toolbar buttons (e.g. "New Net Metering Application"), so its
+        // header overlaps and intercepts the click. The backdrop above is removed but the
+        // popover itself must be too, or every navigate click is intercepted. It has a
+        // sequence of "Got it" steps, so clicking-through is unreliable — just remove it.
+        ".popover.new-feature-popper",
+        ".new-feature-popper",
+        // Generic loading/spinner overlays
+        "[class*='loading-overlay']",
+        "[class*='spinner-overlay']",
+        // Accela ACA (ExtJS): page-wide loading masks that cover ALL content during AJAX
+        ".x-mask",
+        ".x-mask-loading",
+        // Accela-specific global cover divs
+        "#divGlobalCover",
+        "#divProgress",
+        ".ACA_Loading",
+        // ExtJS/Accela pattern: any div whose ID contains "loadingMask" or "Loading"
+        "[id*='loadingMask']",
+        "[id*='LoadingMask']",
+        // jQuery BlockUI / jQuery UI overlay (used by some Accela modules)
+        ".blockUI",
+        ".ui-widget-overlay",
+        ".ui-blocker",
+        // Floating date-picker popups. We type dates straight into the input and never click
+        // the calendar, so an open picker is pure click-interception (the P006 hang). These
+        // only exist while a picker is open; pointer-events:none lets the next click through.
+        "#ui-datepicker-div",            // jQuery UI datepicker
+        ".datepicker.dropdown-menu",     // bootstrap-datepicker
+        ".datepicker-dropdown",          // bootstrap-datepicker (alt)
+        ".flatpickr-calendar.open",      // flatpickr
+        ".react-datepicker__portal",     // react-datepicker (portal mode)
+        ".react-datepicker-popper",      // react-datepicker (popper mode)
+        ".air-datepicker.-active-",      // air-datepicker
+        ".k-calendar-container",         // Kendo UI
+        ".mat-datepicker-popup",         // Angular Material
+        ".p-datepicker-panel",           // PrimeNG/PrimeReact
+      ].join(", ");
+      // Remove any scrims present right now...
+      document.querySelectorAll(sel).forEach((el) => el.remove());
+      // ...AND inject a persistent rule so RE-RENDERED scrims (PowerClerk's Vue re-adds its
+      // loading backdrop reactively; Accela's ExtJS re-renders masks on each AJAX call)
+      // can't intercept clicks. pointer-events:none lets clicks pass through to the real control.
+      if (!document.getElementById("__autolearn_scrim_bypass")) {
+        const style = document.createElement("style");
+        style.id = "__autolearn_scrim_bypass";
+        style.textContent = sel + " { pointer-events: none !important; }";
+        document.head.appendChild(style);
+      }
+    });
+  } catch { /* mock page or no DOM — non-fatal */ }
 }

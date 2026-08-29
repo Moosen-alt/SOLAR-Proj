@@ -6,7 +6,7 @@ import { openPortal } from "../browser";
 import { selectWithFallback } from "../comboboxFill";
 import { detectChallengeFrame, frameSelectorFor, hasNumericValidationError, scanStatusFromBody, RETRY_BACKOFF_MS, sleep, smartWait, toBareNumber, waitForElement, waitForInteractiveControls } from "../safeAction";
 import { performLogin } from "./loginFlow";
-import { EXTRACT_SEL, extractFieldsInPage, toExtractedField } from "./autoLearnAdapter";
+import { EXTRACT_SEL, extractFieldsInPage, toExtractedField, dismissPageModals, clearPageOverlays } from "./autoLearnAdapter";
 import { tagUploadControls } from "./autoLearnAdapter";
 
 // RecipeAdapter — replays a recorded portal recipe (see portal_recipes / the recorder).
@@ -237,7 +237,22 @@ export class RecipeAdapter extends BasePortalAdapter {
         prevWasInput = false;
       }
 
+      // CLEAR THE WAY BEFORE A CLICK. Replay had no modal handling at all, while the
+      // learner dismisses modals at the top of every page — so the learner never met the
+      // popover that the first live replay died on. PowerClerk raises a "What's new?"
+      // announcement over its home page; it swallowed the click that opens a new
+      // application, and the run failed on the NEXT step with a bare 30s click timeout
+      // 2 steps into 99. Cheap: each pass exits immediately when nothing matches.
+      if (step.action === "click" || step.action === "goto") {
+        await dismissPageModals(this.page).catch(() => null);
+      }
+
       let lastErr: unknown;
+      // Context from the FIRST failure. The retry path RELOADS the page, and a portal that
+      // reloads to its first wizard page (PowerClerk does) then shows a screenshot of the
+      // start of the form for a step that failed two-thirds of the way in — evidence that
+      // points at entirely the wrong problem. Capture before any reload can rewrite it.
+      let failureContext = "";
       let succeeded = false;
       for (let attempt = 0; attempt <= RETRY_BACKOFF_MS.length; attempt++) {
         try {
@@ -248,11 +263,18 @@ export class RecipeAdapter extends BasePortalAdapter {
           break;
         } catch (err) {
           lastErr = err;
+          if (!failureContext) failureContext = await this.captureFailureContext(step, stepIdx).catch(() => "");
           const isTimeout = err instanceof Error && /timeout|TimeoutError/i.test(err.message);
           if (!isTimeout || attempt >= RETRY_BACKOFF_MS.length) break;
           await sleep(RETRY_BACKOFF_MS[attempt]);
           // Reload on timeout retries to recover from stale page state.
           await this.page.reload({ waitUntil: "networkidle", timeout: 15000 }).catch(() => null);
+          // A reload can bring the announcement/cookie banner straight back, and a timeout
+          // is the signature of a covered target — clear both before spending the next
+          // attempt. clearOverlays is the generic breaker for portals we have no selector
+          // for; dismissModals handles the ones we do.
+          await dismissPageModals(this.page).catch(() => null);
+          await clearPageOverlays(this.page).catch(() => null);
         }
       }
       if (!succeeded && !step.isFinalSubmit && process.env.RECIPE_SELF_HEAL !== "off") {
@@ -280,7 +302,14 @@ export class RecipeAdapter extends BasePortalAdapter {
           skipped.push(`${step.note || step.action} (optional, skipped: ${lastErr instanceof Error ? lastErr.message : String(lastErr)})`);
           continue;
         }
-        return fail(`Recipe step failed (${step.action}${step.note ? ` — ${step.note}` : ""}): ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings });
+        // CAPTURE THE PAGE BEFORE GIVING UP. Replay is the path that runs for every
+        // project, on a live portal, and until now it recorded NOTHING when a step
+        // failed — a run that died on step 2 of 99 left only "locator.click: Timeout",
+        // which cannot distinguish a drifted selector from a portal that put up a
+        // different page entirely. The screenshot plus the page's own url/title and its
+        // visible buttons is usually enough to tell those apart at a glance.
+        const context = failureContext || await this.captureFailureContext(step, stepIdx);
+        return fail(`Recipe step failed (${step.action}${step.note ? ` — ${step.note}` : ""}): ${lastErr instanceof Error ? lastErr.message : String(lastErr)}${context}`, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, failedStepIndex: stepIdx });
       }
       // Remember whether this step entered data, so the next advancing click waits for the
       // portal's autosave to commit (prevents blank-draft saves on PowerClerk).
@@ -319,7 +348,9 @@ export class RecipeAdapter extends BasePortalAdapter {
   // Returns true if the step performed an action, false if it was safely skipped.
   // `pastReview` is true only in autoSubmit mode AFTER the stopForReview marker.
   private async executeStep(step: RecipeStep, pastReview: boolean): Promise<boolean> {
-    const scoped = await this.resolveLocator(step.selector);
+    // `let`, not `const`: the upload branch may re-anchor to a different slot once the
+    // page's real upload controls have been re-tagged (see the upload case below).
+    let scoped = await this.resolveLocator(step.selector);
     switch (step.action) {
       case "goto":
         await this.page.goto(this.resolveValue(step));
@@ -423,10 +454,29 @@ export class RecipeAdapter extends BasePortalAdapter {
           }
         })();
         // Custom Browse/Upload widgets tag their controls with data-al-upl at record time;
-        // that attribute is gone on a fresh page, so deterministically re-tag (same DOM →
-        // same keys) before resolving the selector.
+        // that attribute is gone on a fresh page, so re-tag before resolving the selector.
+        //
+        // But the tag is an INDEX ("f0", "f1") assigned in DOM order, and an upload step is
+        // the only step type recorded with no fallbacks and no label to re-anchor on — so
+        // "same DOM → same keys" is the whole safety argument, and it fails quietly in both
+        // directions: one extra or conditional upload control shifts every key, and f0 then
+        // attaches the one-line drawing to whatever now sits first. Wrong document, no
+        // error. The recorded NOTE carries the control's own label ("upload sld: Please
+        // upload your one-line drawing"), so prefer matching that against the labels the
+        // re-tag reports, and fall back to the recorded index only when nothing matches.
         if (step.selector?.css?.includes("data-al-upl")) {
-          await this.page.evaluate(tagUploadControls).catch(() => null);
+          const slots = await this.page.evaluate(tagUploadControls).catch(() => null) as Array<{ key: string; label: string }> | null;
+          const wanted = String(step.note ?? "").split(":").slice(1).join(":").trim();
+          if (slots?.length && wanted) {
+            const norm = (v: string) => String(v ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+            const want = norm(wanted);
+            const hit = slots.find((sl) => norm(sl.label) === want)
+              ?? slots.find((sl) => want.length > 6 && (norm(sl.label).includes(want) || want.includes(norm(sl.label))));
+            if (hit && `[data-al-upl="${hit.key}"]` !== step.selector.css) {
+              this.driftWarnings.push(`upload "${wanted.slice(0, 48)}" moved from ${step.selector.css} to slot ${hit.key} — re-anchored by label`);
+              scoped = await this.locator({ css: `[data-al-upl="${hit.key}"]` });
+            }
+          }
         }
         if (step.viaFileChooser) {
           // The real <input> is created on click — intercept the file-chooser dialog.
@@ -630,6 +680,52 @@ export class RecipeAdapter extends BasePortalAdapter {
    *  Deterministic semantic anchor — no LLM cost; returns null without a
    *  confident, action-compatible match, and never "heals" onto the selector
    *  that just failed. */
+  /**
+   * What the page actually looked like when a step gave up: a screenshot on disk plus the
+   * url, title and the visible clickable text. Appended to the failure message so a live
+   * replay is diagnosable from its result alone — before this, a run that died on step 2
+   * of 99 reported only "locator.click: Timeout", which cannot tell a drifted selector
+   * from a portal that showed a different page entirely. Best-effort and never throws: a
+   * capture problem must not replace the real failure.
+   */
+  private async captureFailureContext(step: RecipeStep, stepIdx: number): Promise<string> {
+    if (!this.page) return "";
+    const parts: string[] = [];
+    try {
+      const url = typeof this.page.url === "function" ? String(this.page.url()) : "";
+      const title = typeof this.page.title === "function" ? String((await this.page.title().catch(() => "")) ?? "") : "";
+      if (url) parts.push(`url=${url.slice(0, 160)}`);
+      if (title) parts.push(`title=${JSON.stringify(title.slice(0, 80))}`);
+    } catch { /* best-effort */ }
+    try {
+      // The portal's own affordances. When a recorded "Next" is gone, what IS on the page
+      // is the single most useful thing to see.
+      const names = await this.page.$$eval(
+        "button, a[href], [role=button], input[type=submit], input[type=button]",
+        (els: Element[]) => els
+          .filter((el) => {
+            const r = (el as HTMLElement).getBoundingClientRect?.();
+            return !!r && r.width > 0 && r.height > 0;
+          })
+          .map((el) => ((el as HTMLElement).innerText || el.getAttribute("value") || el.getAttribute("aria-label") || "").trim().replace(/\s+/g, " "))
+          .filter((t) => t.length > 0 && t.length < 60)
+          .slice(0, 14),
+      ).catch(() => [] as string[]);
+      if (names.length) parts.push(`visible controls: ${names.map((n: string) => JSON.stringify(n)).join(", ")}`);
+    } catch { /* best-effort */ }
+    try {
+      if (typeof this.page.screenshot === "function") {
+        const dir = process.env.PORTAL_SCREENSHOT_DIR || path.join(process.cwd(), "data", "screenshots");
+        await fs.promises.mkdir(dir, { recursive: true });
+        const file = path.join(dir, `replay-fail-step${String(stepIdx).padStart(3, "0")}-${Date.now()}.png`);
+        await this.page.screenshot({ path: file, fullPage: true });
+        parts.push(`screenshot:${file}`);
+      }
+    } catch { /* best-effort */ }
+    void step;
+    return parts.length ? ` [${parts.join(" | ")}]` : "";
+  }
+
   private async healSelectorForStep(step: RecipeStep): Promise<RecipeSelector | null> {
     if (!this.page || typeof this.page.$$eval !== "function") return null;
     const wanted = (step.note || step.selector?.label || step.selector?.name || "").trim().toLowerCase();
