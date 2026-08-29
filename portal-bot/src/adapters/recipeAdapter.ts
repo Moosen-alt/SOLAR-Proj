@@ -700,10 +700,20 @@ export class RecipeAdapter extends BasePortalAdapter {
         // A policy radio's recorded id carries a per-render counter — re-anchor by the
         // question's stable prefix and the recorded answer before waiting out a timeout on
         // an id that cannot exist on this project.
-        const recovered = (await scoped?.count?.().catch(() => 0)) ? null : await this.recoverVolatileIdOption(step);
+        // Recover when the recorded id matches NOTHING, and equally when it matches an
+        // element that cannot be checked. Requiring a zero count missed the live case
+        // entirely: PowerClerk's radio ids carry a per-render suffix
+        // ("#XWXYUBJ7ZTNQInput_11513"), and on a new project that id often still exists
+        // while pointing at the hidden half of a styled widget — so count() was 1, recovery
+        // never ran, and check() spent its full 30s before failing the whole replay.
+        const present = await scoped?.count?.().catch(() => 0);
+        const usable = present ? await scoped.first().isVisible().catch(() => false) : false;
+        const recovered = usable ? null : await this.recoverVolatileIdOption(step);
         const target = recovered ?? scoped;
         await waitForElement(target);
-        await target!.check();
+        // force: a radio inside a styled widget is driven by its label, so the input itself
+        // can be visually hidden while still being the thing that must end up checked.
+        await target!.check({ force: !usable && !recovered });
         // Same settle for checkbox changes that may trigger form re-renders.
         await this.page.waitForLoadState("networkidle", { timeout: 3000 }).catch(() => null);
         return true;
