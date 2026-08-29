@@ -26,7 +26,9 @@ const DEFAULT_PROJECT: Record<string, string> = {
   pge: "cf1c56aa-aeb0-44d5-b797-f663436463a7",         // Daniel Daly, Salem
   pacificorp: "9c63ae75-45b5-473f-a4ea-794fb973586d",  // Wynema Wright, Coos Bay
 };
-const projectId = process.argv[3] || DEFAULT_PROJECT[which];
+// Positional args only — a flag like --no-gapfill must not be mistaken for a project id.
+const positional = process.argv.slice(3).filter((a) => !a.startsWith("--"));
+const projectId = positional[0] || DEFAULT_PROJECT[which];
 if (!projectId) {
   console.error(`unknown target ${JSON.stringify(which)} — use "pge" or "pacificorp", or pass a project id`);
   process.exit(2);
@@ -76,9 +78,13 @@ console.log("Deterministic replay — no planner calls. Stops at the review scre
 // recorded steps missed (a portal that renders a different spec template for this project,
 // a control the recipe's selector no longer reaches). Secrets are stripped inside
 // buildPortalPlanner and never reach the model.
+// `--no-gapfill` isolates it: the one fully clean PacifiCorp replay predates gap-fill being
+// wired into this driver, so whether it HELPS or HURTS the recorded flow is an open
+// question — and production always passes it, so the answer matters either way.
 let gapFillPlanner;
 let gapFillFields;
 try {
+  if (process.argv.includes("--no-gapfill")) throw new Error("disabled by --no-gapfill");
   const { buildPortalPlanner } = await import("./backend/src/autoLearn");
   const built = buildPortalPlanner(db, stagedProject, { portalType, scopeType: "utility" });
   gapFillPlanner = built.planner;
@@ -103,7 +109,13 @@ const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
 // `data` on the failing step result.
 const data = (result.data as Record<string, unknown> | undefined) ?? result;
 const steps = (result.steps as Array<{ ok?: boolean; message?: string; note?: string; data?: Record<string, unknown> }> | undefined) ?? [];
-const detailData = (steps.find((x) => x.ok === false && x.data)?.data) ?? data;
+// The adapter's counters ride on the step result that carries them — which on a SUCCESSFUL
+// replay is an ok step, not a failing one. Looking only at failures made a clean run report
+// "0 skipped" when nothing had been measured at all, and that false zero is what turned one
+// ok:true run into a claim that PacifiCorp "replays end to end with 0 skipped".
+const detailData = (steps.find((x) => x.data && ("executed" in (x.data ?? {}) || "skipped" in (x.data ?? {})))?.data)
+  ?? (steps.find((x) => x.ok === false && x.data)?.data)
+  ?? data;
 const failed = steps.filter((s) => s.ok === false);
 console.log("=== RESULT ===");
 console.log(JSON.stringify({

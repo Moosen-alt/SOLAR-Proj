@@ -148,10 +148,27 @@ Still open, in order:
 
 ## Open issues / next work (priority order)
 
-0b. **FIRST LIVE REPLAYS RUN (2026-08-29).** PacifiCorp REPLAYS END TO END:
-   ok=true, 99/99 steps, 0 skipped, 4.2 min, stopped at review, nothing
-   submitted. That is the deterministic path (no planner calls) staging a real
-   project on a real utility portal.
+0b. **FIRST LIVE REPLAYS RUN (2026-08-29). READ THE CAVEATS — an earlier version
+   of this entry overstated the result.** PacifiCorp reached review once
+   (ok=true, 4.2 min, nothing submitted) — the deterministic path, no planner
+   calls, on a real portal. It has NOT reproduced since across four attempts
+   (later runs fail at the uploads with 4 skipped steps, and take 15 min rather
+   than 4). The "0 skipped" originally reported for that run was a DRIVER BUG,
+   not a measurement: the adapter returns its counters on the step result that
+   carries them, which on a clean run is an ok step, and the driver only read
+   failing ones. So that run reached review with an UNKNOWN number of blank
+   fields. Fixed in live-nem-replay.ts; any future claim must come from a run
+   after that fix.
+
+   **Two recipe defects behind the PacifiCorp skips, both deterministic (not
+   timing).** Steps 53 and 59 of 6282e671 are `select` steps recorded with an
+   EMPTY value: 53 binds `field: descriptionOfService`, which is not a key
+   resolveRecipeFieldValues produces, so it resolves to ""; 59 carries neither a
+   field nor a value. resolveValue returns "" and the step returns false, so
+   they can NEVER fill, on any run. Worth a guard at LEARN time: a select
+   recorded with no value and no resolvable field binding is not a replayable
+   step and should either be dropped or block promotion. Gap-fill was ruled out
+   as a cause by an isolation run (`--no-gapfill`): identical 4 skips without it.
 
    **PGE does NOT yet replay.** It reaches step 47 of 68 and one skipped step
    cascades into a failure at 55. Root cause is identified with page evidence
