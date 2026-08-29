@@ -510,6 +510,24 @@ export function resolveRecipeFieldValues(db: AppDb, project: ProjectRecord, port
     // project would have filed it. These fields let the binder swap such a literal for a
     // binding that is recomputed on every replay. Both formats exist because the recorded
     // literal proves which one the portal accepted.
+    // AC DISCONNECT. Utility interconnection portals ask for this by make/model/rating and
+    // PacifiCorp REQUIRES it — a learn against a real project failed promotion on exactly
+    // "Disconnect Switch Manufacturer" and "Disconnect Switch Model".
+    //
+    // The plan set's equipment schedule DOES carry the rating ("AC DISCONNECT 1 60A
+    // NON-FUSIBLE AC DISCONNECT, 240V"), so those come from the parser. It does NOT carry
+    // the make/model: the schedule leaves the part to the installer, and the manufacturer
+    // named nearby belongs to the COMBINER PANEL, not the disconnect. So make/model is
+    // operator knowledge (like the contract amount) and falls back to a per-installer
+    // default. `disconnectMakeModel` is what a portal with ONE combined field wants.
+    disconnectQty: String(snapshotFlat.acDiscQty ?? "").trim() || "1",
+    disconnectAmps: String(snapshotFlat.acDiscAmps ?? "").trim(),
+    disconnectVoltage: String(snapshotFlat.acDiscVoltage ?? "").trim(),
+    disconnectType: String(snapshotFlat.acDiscFused ?? "").trim(),
+    disconnectMake: String(snapshotFlat.acDiscMake ?? "").trim(),
+    disconnectModel: String(snapshotFlat.acDiscModel ?? "").trim(),
+    disconnectMakeModel: [String(snapshotFlat.acDiscMake ?? "").trim(), String(snapshotFlat.acDiscModel ?? "").trim()]
+      .filter(Boolean).join(" ").trim(),
     ...dateFields(),
     // EXPORT LIMITING. Derived here, not only in the learner's planner map: a step that
     // BINDS to this key must resolve at REPLAY time, and it used to exist only at learn

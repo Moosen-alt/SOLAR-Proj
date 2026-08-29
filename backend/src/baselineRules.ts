@@ -298,6 +298,46 @@ export function evaluateBaselineRules(payload: ParserPayload, ctx?: EffectiveCod
     }
   }
 
+  // AC DISCONNECT vs the installer's STANDARD part. Utility portals require a disconnect
+  // make and model, and a plan set's equipment schedule specifies only the RATING ("60A
+  // NON-FUSIBLE AC DISCONNECT, 240V") — it leaves the part to the installer, so make/model
+  // comes from a per-installer default. That default is a CONSTANT while the plan set
+  // varies per job, which is exactly where a silent mismatch hides: filing a 30 A
+  // non-fusible part against a plan set calling for a 60 A FUSIBLE switch is wrong on the
+  // application AND wrong on the roof. Surface the disagreement instead of letting the
+  // default quietly win. Observed on real plan sets: two of four called for FUSIBLE while
+  // the installer's standard part is non-fusible.
+  const stdModel = String((payload as Record<string, unknown>).standardDisconnectModel ?? "").trim();
+  if (stdModel) {
+    const discFused = String((payload as Record<string, unknown>).acDiscFused ?? "").toLowerCase();
+    const discAmps = num(payload, "acDiscAmps");
+    // Eaton DG-series part numbers state their own fusing and frame: "DG221URB" — the "U"
+    // means unfused, and the "221" frame is the 30 A / 2-pole / 240 V switch. Only assert
+    // what the part number itself says; an unrecognised model asserts nothing.
+    const modelIsNonFused = /dg\d{3}u/i.test(stdModel);
+    const modelIs30A = /dg2\s*2\s*1/i.test(stdModel.replace(/[^a-z0-9]/gi, ""));
+    if (modelIsNonFused && /fusible/.test(discFused) && !/non/.test(discFused)) {
+      out.push(result(
+        "xcheck-disconnect-fusing",
+        "AC disconnect fusing vs the standard part",
+        "warning",
+        "warning",
+        `The plan set specifies a FUSIBLE AC disconnect, but the installer's standard part (${stdModel}) is non-fusible. Confirm which is actually being installed before the utility application is filed.`,
+        "acDiscFused",
+      ));
+    }
+    if (modelIs30A && discAmps != null && discAmps > 30) {
+      out.push(result(
+        "xcheck-disconnect-rating",
+        "AC disconnect rating vs the standard part",
+        "warning",
+        "warning",
+        `The plan set calls for a ${discAmps} A AC disconnect, but the installer's standard part (${stdModel}) is rated 30 A. Confirm the disconnect size before filing.`,
+        "acDiscAmps",
+      ));
+    }
+  }
+
   if (isOregon && screenDcKw != null && screenDcKw > 25) {
     out.push(result(
       "or-nem-residential-25kw",

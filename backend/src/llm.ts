@@ -731,6 +731,16 @@ ELECTRICAL (read from the SLD / one-line and load calc — critical for plan rev
 - mainBreaker: main breaker / main service rating in amps (e.g. "200A")
 - pvBreaker: PV backfeed breaker / OCPD size in amps (e.g. "40A")
 - acDiscReq: AC/manual disconnect — "yes/required/provided/shown" if a lockable visible load-break disconnect is shown, else note the exception
+- acDiscQty: how many AC disconnects the equipment schedule lists (a number, e.g. "1", "2")
+- acDiscAmps: the AC disconnect's amp rating from the equipment schedule (e.g. "60A")
+- acDiscFused: "fusible" or "non-fusible" exactly as the equipment schedule words it
+- acDiscVoltage: the AC disconnect's voltage rating (e.g. "240V")
+- acDiscMakeModel: the AC disconnect's manufacturer and model IF the schedule names one. Most
+  plan sets do NOT — they specify only the rating ("60A NON-FUSIBLE AC DISCONNECT, 240V") and
+  leave the part to the installer. Return "" rather than guessing, and NEVER borrow the
+  combiner panel's or load centre's make/model (an equipment schedule lists those adjacent,
+  e.g. "COMBINER PANEL 1 EATON BR STYLE 1-INCH LOAD CENTER 816L125RP AC DISCONNECT 1 60A ..."
+  — the Eaton part there is the COMBINER, not the disconnect)
 STRUCTURAL (read from structural notes / roof framing plan — drive prescriptive screening)
 - snow: ground snow load in PSF (number)
 - deadLoad: PV dead load in PSF (number)

@@ -69,6 +69,10 @@ export interface ClientRecord {
   legalBusinessName: string;
   dba: string;
   ccbLicenseNumber: string;
+  /** The installer's standard AC disconnect — plan sets specify the RATING but leave the
+   *  part to the installer, and utility portals require a make and model. */
+  standardDisconnectMake: string;
+  standardDisconnectModel: string;
   ccbExpiration: string;
   electricalLicenseNumber: string;
   // Metro/city contractor license (e.g. Portland Metro), and the supervising

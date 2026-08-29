@@ -1442,6 +1442,16 @@ function seedTestInstaller(db: AppDb): void {
 }
 
 const CLIENT_LICENSING_COLUMNS: [string, string][] = [
+  // The installer's STANDARD AC disconnect. Utility interconnection portals require a
+  // disconnect manufacturer and model (a PacifiCorp learn failed promotion on exactly
+  // "Disconnect Switch Manufacturer"/"Model"), but a plan set's equipment schedule
+  // specifies only the RATING — "AC DISCONNECT 1 60A NON-FUSIBLE AC DISCONNECT, 240V" —
+  // and leaves the part to the installer. The manufacturer printed nearby belongs to the
+  // COMBINER PANEL, not the disconnect. So this is per-installer knowledge, like the CCB
+  // number beside it: set once, applied to every job, overridden per project whenever a
+  // plan set does name a part.
+  ["standard_disconnect_make", "TEXT NOT NULL DEFAULT ''"],
+  ["standard_disconnect_model", "TEXT NOT NULL DEFAULT ''"],
   ["legal_business_name", "TEXT NOT NULL DEFAULT ''"],
   ["dba", "TEXT NOT NULL DEFAULT ''"],
   ["ccb_license_number", "TEXT NOT NULL DEFAULT ''"],

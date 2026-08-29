@@ -34,6 +34,8 @@ function mapClient(row: Row, identities: ClientPortalIdentity[]): ClientRecord {
     legalBusinessName: s(row.legal_business_name),
     dba: s(row.dba),
     ccbLicenseNumber: s(row.ccb_license_number),
+    standardDisconnectMake: s(row.standard_disconnect_make),
+    standardDisconnectModel: s(row.standard_disconnect_model),
     ccbExpiration: s(row.ccb_expiration),
     electricalLicenseNumber: s(row.electrical_license_number),
     metroCityLicenseNumber: s(row.metro_city_license_number),
@@ -78,6 +80,8 @@ const FIELD_COLUMNS: [keyof ClientRecord, string][] = [
   ["legalBusinessName", "legal_business_name"],
   ["dba", "dba"],
   ["ccbLicenseNumber", "ccb_license_number"],
+  ["standardDisconnectMake", "standard_disconnect_make"],
+  ["standardDisconnectModel", "standard_disconnect_model"],
   ["ccbExpiration", "ccb_expiration"],
   ["electricalLicenseNumber", "electrical_license_number"],
   ["metroCityLicenseNumber", "metro_city_license_number"],
@@ -228,6 +232,12 @@ export function clientStagingOverlay(db: AppDb, clientId: string | null, portalT
     installerStreet: client.businessAddress,
     // Separate parts too: portal contact forms ask for city / state / zip in their own
     // controls (ACA's Add-Contact dialog validates zip as exactly #####).
+    // STANDARD AC DISCONNECT. Not on the plan set — the equipment schedule specifies only
+    // the rating and leaves the part to the installer — but utility portals require a
+    // make and model, so it is per-installer knowledge, defaulted here and overridable per
+    // project by the parser. A cross-check warns when the plan set's rating contradicts it.
+    disconnectMake: client.standardDisconnectMake || "",
+    disconnectModel: client.standardDisconnectModel || "",
     installerCity: client.businessCity,
     installerState: client.businessState,
     installerZip: client.businessZip,
