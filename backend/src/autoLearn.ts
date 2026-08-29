@@ -769,11 +769,20 @@ export async function autoLearnPortal(
   // every future project. Convert such literals into reusable field bindings; a literal that
   // matches project data AMBIGUOUSLY (>1 field) can't be safely auto-bound, so treat it as a hard
   // blocker — never promote a contaminated recipe to trusted.
-  const { steps: boundSteps, bound: boundLiterals, ambiguous: ambiguousLiterals } =
+  const { steps: boundSteps, bound: boundLiterals, ambiguous: ambiguousLiterals, portalConstants } =
     convertLiteralsToBoundFields(learn.steps, projectFields);
   if (ambiguousLiterals.length) {
     verification.issues.push(
       `Recorded literal value(s) match this project's data but could not be uniquely bound to a field (${ambiguousLiterals.slice(0, 6).map((a) => `"${a.value}"→${a.candidates.join("/")}`).join(", ")}). These would replay verbatim onto other projects — review before trusting.`,
+    );
+  }
+  // A literal KEPT because its label showed the control asks something else entirely. Not a
+  // blocker — but the operator must still see it, because the rule reads the label and a
+  // question worded without any recognisable token ("backup power unit on site?") would be
+  // frozen at this project's answer for every future project. This list is where that shows.
+  if (portalConstants.length) {
+    verification.issues.push(
+      `Kept as portal constant(s) — the control's own wording shows it is not asking about this project's data, so the recorded answer replays unchanged (${portalConstants.slice(0, 6).map((c) => `"${String(c.value).slice(0, 24)}"${c.note ? ` @ ${String(c.note).slice(0, 40)}` : ""}`).join("; ")}). Confirm each is right for every project this portal will file.`,
     );
   }
   const bindingNote = boundLiterals.length ? ` Bound ${boundLiterals.length} literal value(s) to project fields for safe replay.` : "";

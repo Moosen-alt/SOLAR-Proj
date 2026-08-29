@@ -173,7 +173,12 @@ run("a coincidental collision keeps its literal without blocking the recipe", ()
   assert.equal(result.ambiguous.length, 0, "still blocking on a question that is not about either field");
   assert.equal(result.steps[0].value, "No", "the portal's own answer must survive");
   assert.equal(result.steps[0].field, undefined, "and must NOT be bound to unrelated project data");
+  // The awareness report is the ONLY mitigation for the rule's blind spot: a question
+  // worded without any recognisable token ("backup power unit on site?") would be frozen at
+  // this project's answer for every future project. If it is computed and dropped, nobody
+  // ever sees it — so assert the payload an operator can actually act on.
   assert.equal(result.portalConstants.length, 1, "the collision should still be reported for awareness");
+  assert.equal(result.portalConstants[0].value, "No");
 });
 
 // -- WHOLE DEGREES ----------------------------------------------------------------------
