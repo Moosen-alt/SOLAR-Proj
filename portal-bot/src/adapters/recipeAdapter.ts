@@ -447,12 +447,18 @@ export class RecipeAdapter extends BasePortalAdapter {
         // Propagate the miss: a select that landed NOTHING must not report success.
         return selected;
       }
-      case "check":
-        await waitForElement(scoped);
-        await scoped!.check();
+      case "check": {
+        // A policy radio's recorded id carries a per-render counter — re-anchor by the
+        // question's stable prefix and the recorded answer before waiting out a timeout on
+        // an id that cannot exist on this project.
+        const recovered = (await scoped?.count?.().catch(() => 0)) ? null : await this.recoverVolatileIdOption(step);
+        const target = recovered ?? scoped;
+        await waitForElement(target);
+        await target!.check();
         // Same settle for checkbox changes that may trigger form re-renders.
         await this.page.waitForLoadState("networkidle", { timeout: 3000 }).catch(() => null);
         return true;
+      }
       case "uncheck":
         await waitForElement(scoped);
         await scoped!.uncheck();
@@ -636,6 +642,44 @@ export class RecipeAdapter extends BasePortalAdapter {
       }
     }
     return primary;
+  }
+
+  /**
+   * Recover a css id that carries a PER-RENDER suffix. PowerClerk numbers each radio
+   * OPTION as `<stableFieldId>_<counter>` ("#XWXYUBJ7ZTNQInput_11513"), and the counter is
+   * assigned per rendered project — so the id recorded during a learn can never match on a
+   * new one. The deterministic policy pass records exactly this shape with no fallbacks and
+   * no label, which made it the one step type that could not survive a replay: the live PGE
+   * run died on it at step 55 of 68.
+   *
+   * The stable prefix still identifies the QUESTION; what is lost is which OPTION. The
+   * recorded note carries that ("… → Yes"), so re-anchor on the prefix and pick the option
+   * whose own label says the recorded answer. No answer, no guess — a radio group is
+   * exactly where picking the wrong member would be worst.
+   */
+  private async recoverVolatileIdOption(step: RecipeStep) {
+    const css = String(step.selector?.css ?? "");
+    const m = /^#([A-Za-z0-9_-]+?)_\d+$/.exec(css);
+    if (!m) return null;
+    const answer = (/→\s*(.+?)\s*$/.exec(String(step.note ?? "")) ?? [])[1];
+    if (!answer) return null;
+    const prefix = m[1];
+    try {
+      const group = this.page.locator(`[id^="${prefix}_"]`);
+      const n = await group.count();
+      if (!n) return null;
+      for (let i = 0; i < Math.min(n, 12); i++) {
+        const opt = group.nth(i);
+        const id = await opt.getAttribute("id").catch(() => null);
+        if (!id) continue;
+        const label = await this.page.locator(`label[for="${id}"]`).first().innerText({ timeout: 700 }).catch(() => "");
+        if (String(label ?? "").trim().toLowerCase() === answer.trim().toLowerCase()) {
+          this.driftWarnings.push(`policy option "${answer}" re-anchored from ${css} to #${id} (per-render id suffix)`);
+          return opt;
+        }
+      }
+    } catch { /* recovery is best-effort */ }
+    return null;
   }
 
   // Build a Playwright locator from a portable selector descriptor.
