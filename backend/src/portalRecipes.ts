@@ -648,6 +648,41 @@ export interface LiteralBindingResult {
   ambiguous: Array<{ value: string; candidates: string[]; note?: string }>;
 }
 
+// Disambiguate a literal that matches SEVERAL project fields, using the control's own
+// label. A Yes/No portal question is the common case: "No" is equally the value of
+// hasBattery and of exportLimiting, so the binder refused to bind either and treated the
+// ambiguity as a hard blocker — which by itself kept the live PGE recipe out of trust. The
+// control was labelled "Energy Storage", which says plainly which field it is.
+// Synonyms bridge the portal's wording to the field's name; a candidate wins only if it is
+// the UNIQUE best match, so a genuinely ambiguous literal still blocks as before.
+const FIELD_TOKEN_SYNONYMS: Record<string, string[]> = {
+  battery: ["battery", "batteries", "storage", "ess"],
+  export: ["export", "exporting"],
+  limiting: ["limit", "limiting", "limited", "curtail", "curtailment"],
+  phone: ["phone", "telephone", "mobile", "cell"],
+  email: ["email", "e-mail"],
+  zip: ["zip", "postal"],
+  street: ["street", "address"],
+  installer: ["installer", "contractor", "company"],
+  homeowner: ["homeowner", "owner", "customer", "applicant"],
+};
+function fieldNameTokens(field: string): string[] {
+  const words = field.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().split(/[^a-z0-9]+/)
+    .filter((t) => t && !["has", "is", "the", "of", "a", "an", "no", "number"].includes(t));
+  const out = new Set<string>();
+  for (const w of words) for (const t of (FIELD_TOKEN_SYNONYMS[w] ?? [w])) out.add(t);
+  return [...out];
+}
+export function disambiguateByLabel(label: string, candidates: string[]): string | null {
+  const text = String(label || "").toLowerCase();
+  if (!text.trim() || candidates.length < 2) return null;
+  const scored = candidates.map((c) => ({ c, n: fieldNameTokens(c).filter((t) => text.includes(t)).length }));
+  const best = Math.max(...scored.map((x) => x.n));
+  if (best === 0) return null;
+  const winners = scored.filter((x) => x.n === best);
+  return winners.length === 1 ? winners[0].c : null;
+}
+
 export function convertLiteralsToBoundFields(
   steps: RecipeStep[],
   projectFields: Record<string, string>,
@@ -688,6 +723,15 @@ export function convertLiteralsToBoundFields(
       // Replace the frozen literal with a reusable binding (resolveValue() at replay reads
       // fieldValues[field]); drop the literal so it can never be replayed verbatim.
       const next: RecipeStep = { ...step, field: matches[0] };
+      delete next.value;
+      return next;
+    }
+    // The control's LABEL usually settles it — "Energy Storage" is hasBattery, not
+    // exportLimiting, even though both hold "No".
+    const picked = disambiguateByLabel(`${step.selector?.label ?? ""} ${step.note ?? ""}`, matches);
+    if (picked) {
+      bound.push({ value: step.value as string, field: picked, note: step.note });
+      const next: RecipeStep = { ...step, field: picked };
       delete next.value;
       return next;
     }

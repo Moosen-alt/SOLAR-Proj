@@ -23,7 +23,7 @@ const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "recipe-date-test-"));
 process.env.AUTOPILOT_DB_PATH = path.join(tmpDir, "test.sqlite");
 process.env.SEED_TEST_INSTALLER = "false";
 
-const { dateFieldForLiteral, convertLiteralsToBoundFields } = await import("../src/portalRecipes");
+const { dateFieldForLiteral, convertLiteralsToBoundFields, disambiguateByLabel } = await import("../src/portalRecipes");
 
 let failures = 0;
 const run = (label: string, fn: () => void) => {
@@ -88,11 +88,53 @@ run("a sensitive step is never rebound by the date rule either", () => {
   assert.equal(result.steps[0].field, undefined, "a sensitive field must not be rebound");
 });
 
+// -- AMBIGUOUS LITERALS ----------------------------------------------------------------
+// A Yes/No portal question is worth as much as a date here: "No" is equally the value of
+// hasBattery and of exportLimiting, so the binder refused both and reported an ambiguity —
+// which the trust gate treats as a HARD BLOCKER. That alone kept the live PGE recipe out
+// of trust. The control was labelled "Energy Storage", which says which field it is.
+
+run("the control's label settles a literal that matches two fields", () => {
+  assert.equal(disambiguateByLabel("Energy Storage", ["hasBattery", "exportLimiting"]), "hasBattery");
+  assert.equal(disambiguateByLabel("Do you propose to limit the export capacity?", ["hasBattery", "exportLimiting"]), "exportLimiting");
+});
+
+run("a label that settles nothing still blocks, as before", () => {
+  // No token of either candidate appears — guessing here would bind the wrong data.
+  assert.equal(disambiguateByLabel("Please answer", ["hasBattery", "exportLimiting"]), null);
+  assert.equal(disambiguateByLabel("", ["hasBattery", "exportLimiting"]), null);
+});
+
+run("a tie between two equally-matching candidates is left ambiguous", () => {
+  // Both name the homeowner; the label cannot choose, so it must not.
+  assert.equal(disambiguateByLabel("Homeowner", ["homeownerFirstName", "homeownerLastName"]), null);
+});
+
+run("an ambiguous Yes/No binds instead of blocking the recipe", () => {
+  const steps: RecipeStep[] = [
+    { action: "select", phase: "fill", selector: { label: "Energy Storage" }, value: "No", note: "Energy Storage" },
+  ];
+  const result = convertLiteralsToBoundFields(steps, { hasBattery: "No", exportLimiting: "No" });
+  assert.equal(result.ambiguous.length, 0, "still reported ambiguous — the recipe cannot be trusted");
+  assert.equal(result.steps[0].field, "hasBattery");
+  assert.equal(result.steps[0].value, undefined, "the literal must not survive");
+});
+
+run("a truly ambiguous literal is STILL reported (the guard is intact)", () => {
+  const steps: RecipeStep[] = [
+    { action: "select", phase: "fill", selector: { label: "Please answer" }, value: "No", note: "" },
+  ];
+  const result = convertLiteralsToBoundFields(steps, { hasBattery: "No", exportLimiting: "No" });
+  assert.equal(result.ambiguous.length, 1, "an unresolvable ambiguity must still block promotion");
+  assert.equal(result.steps[0].field, undefined);
+  assert.equal(result.steps[0].value, "No");
+});
+
 try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* leave to OS */ }
 
 if (failures) {
-  console.error(`\n${failures} recipe date-binding test(s) failed.`);
+  console.error(`\n${failures} recipe literal-binding test(s) failed.`);
   process.exit(1);
 }
-console.log("\nAll recipe date-binding tests passed.");
+console.log("\nAll recipe literal-binding tests passed.");
 process.exit(0);

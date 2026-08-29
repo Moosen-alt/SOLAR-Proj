@@ -2565,6 +2565,12 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       // passing stale labels from page N to page N+1 caused the planner to skip re-fills.
       alreadyFilledLabels.length = 0;
 
+      // Required-field misses recorded PROVISIONALLY by the premature-atReview guard below.
+      // That guard sweeps BEFORE this page's fills and before the deterministic policy pass,
+      // so a field it reports as blank is very often filled moments later — the misses are
+      // evidence for the guard's decision, not a final verdict. Reconciled at d4b.
+      const provisionalMisses: string[] = [];
+
       // a2) Dismiss any modals/popups/banners and clear lingering loading scrims before
       //     extracting fields, so overlays can't intercept the actions we take this page.
       await this.dismissModals();
@@ -2902,7 +2908,10 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         const prematureUnfilled = await this.collectUnfilledRequired();
         if (prematureUnfilled.length > 0) {
           plan = { ...plan, atReview: false };
-          for (const m of prematureUnfilled) if (!fillVerifyMisses.includes(m)) fillVerifyMisses.push(m);
+          for (const m of prematureUnfilled) {
+            if (!fillVerifyMisses.includes(m)) fillVerifyMisses.push(m);
+            if (!provisionalMisses.includes(m)) provisionalMisses.push(m);
+          }
           if (process.env.AUTOLEARN_DEBUG === "1") console.error(`[learn] rejected premature atReview on a form page (p${pageCount}) — ${prematureUnfilled.length} required field(s) still unfilled.`);
         }
       }
@@ -3433,6 +3442,22 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       if (!plan.atReview && !isDashboard && hasFillable) {
         const unfilled = await this.collectUnfilledRequired();
         for (const m of unfilled) if (!fillVerifyMisses.includes(m)) fillVerifyMisses.push(m);
+        // RETRACT a provisional miss the page has since answered. The premature-atReview
+        // guard sweeps before this page's fills and before applyPolicyDefaults, so a
+        // question the policy pass then answers ("Do you propose to limit the export
+        // capacity?" → No) stayed on the miss list for the rest of the run. That list is a
+        // HARD BLOCKER in the trust gate, so a portal whose planner once over-claimed
+        // atReview could never be promoted no matter how clean the run — the live PGE
+        // recipe sat at draft through twelve learns for exactly this reason. `unfilled` is
+        // the CURRENT state of the same sweep, so anything absent from it is answered.
+        for (const m of provisionalMisses) {
+          if (unfilled.includes(m)) continue;
+          const at = fillVerifyMisses.indexOf(m);
+          if (at >= 0) {
+            fillVerifyMisses.splice(at, 1);
+            if (process.env.AUTOLEARN_DEBUG === "1") console.error(`[learn] retracted provisional required-miss now answered: ${m}`);
+          }
+        }
       }
 
       // e) Record the final submit (if any) — NEVER click it. Reject pay/fee buttons.
