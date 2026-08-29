@@ -709,6 +709,22 @@ export class RecipeAdapter extends BasePortalAdapter {
         const present = await scoped?.count?.().catch(() => 0);
         const usable = present ? await scoped.first().isVisible().catch(() => false) : false;
         const recovered = usable ? null : await this.recoverVolatileIdOption(step);
+        // A CONDITIONAL QUESTION THE PORTAL DID NOT ASK THIS TIME.
+        //
+        // Portals show sections conditionally, and a recipe records whatever the LEARN
+        // project happened to trigger. Measured live: PGE renders "Disconnect Requirements"
+        // only above 7.2 kW at 240V single phase, so a recipe learned on a 10.32 kW system
+        // carries a disconnect step that a 6.97 kW system is never asked. The control is
+        // genuinely absent — not drifted, not hidden — and failing the whole replay over a
+        // question the portal declined to ask is wrong.
+        //
+        // Only for a POLICY DEFAULT: those are fixed answers to questions that may or may
+        // not appear, so "not asked" needs no answer. A recorded data fill that vanishes is
+        // a different matter and still fails, because that IS missing information.
+        if (!usable && !recovered && /^policy default:/i.test(String(step.note ?? ""))) {
+          this.driftWarnings.push(`policy question not asked for this project — skipped: ${String(step.note ?? "").slice(0, 60)}`);
+          return false;
+        }
         const target = recovered ?? scoped;
         await waitForElement(target);
         // force: a radio inside a styled widget is driven by its label, so the input itself
