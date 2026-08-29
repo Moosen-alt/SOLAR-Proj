@@ -395,6 +395,40 @@ export const RECIPE_FIELD_DESCRIPTIONS: Record<string, string> = {
 // Build the field-substitution map a recipe step's `field` resolves against at replay:
 // the project's authoritative fields + the assigned client's licensing overlay (so the
 // correct contractor identity is always used) + parser-snapshot extras as fallback.
+// Commissioning is an ESTIMATE the applicant supplies, not a known project date — no
+// parser snapshot in the live DB carries one. Six weeks out matches the horizon the
+// planner was already told to use ("todayDate plus a few weeks") and is comfortably
+// future-dated for a portal that rejects a past commissioning date.
+const COMMISSIONING_HORIZON_DAYS = 42;
+function dateFields(): Record<string, string> {
+  const today = new Date();
+  const commissioning = new Date(today.getTime() + COMMISSIONING_HORIZON_DAYS * 86400000);
+  const iso = (d: Date): string => d.toISOString().slice(0, 10);
+  const us = (d: Date): string => `${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}/${d.getFullYear()}`;
+  return {
+    todayDate: iso(today),
+    todayDateUs: us(today),
+    estimatedCommissioningDate: us(commissioning),
+    estimatedCommissioningDateIso: iso(commissioning),
+  };
+}
+
+// Which date field a recorded date literal should become. Value-equality binding cannot
+// reach these (that is exactly why they froze), so this matches on the CONTROL's label
+// and picks the format the portal already demonstrated it accepts.
+const DATE_LITERAL = /^(\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}\/\d{4})$/;
+const FUTURE_DATE_LABEL = /commission|in[- ]?service|energiz|operation|installation|completion|start|planned|expected|estimated|anticipat|schedul/i;
+export function dateFieldForLiteral(label: string, value: string): string | null {
+  const raw = String(value || "").trim();
+  if (!DATE_LITERAL.test(raw)) return null;
+  const text = String(label || "");
+  if (!/date/i.test(text)) return null; // only rebind a control that is actually a date
+  const isUs = raw.includes("/");
+  if (FUTURE_DATE_LABEL.test(text)) return isUs ? "estimatedCommissioningDate" : "estimatedCommissioningDateIso";
+  // A signature/application date is "today", not a future estimate.
+  return isUs ? "todayDateUs" : "todayDate";
+}
+
 export function resolveRecipeFieldValues(db: AppDb, project: ProjectRecord, portalType: string): Record<string, string> {
   const snapshot = project.parserSnapshot || {};
   const snapshotFlat: Record<string, string> = {};
@@ -458,6 +492,16 @@ export function resolveRecipeFieldValues(db: AppDb, project: ProjectRecord, port
     systemSizeAcKw: project.systemSizeAcKw == null ? "" : String(project.systemSizeAcKw),
     totalExportKw: project.totalExportKw == null ? "" : String(project.totalExportKw),
     interconnectionMethod: project.interconnectionMethod,
+    // DATES ARE COMPUTED AT REPLAY, NEVER FROZEN. A portal date field has no project
+    // value to bind to, so the learn-time planner computes one (llm.ts tells it to use
+    // todayDate plus a few weeks) and — because convertLiteralsToBoundFields deliberately
+    // skips the volatile todayDate — that computed value used to freeze into the recipe.
+    // The live PGE recipe carried "08/08/2026" as its Estimated Commissioning Date: fine
+    // the day it was learned, a PAST date by the time this was written, and every future
+    // project would have filed it. These fields let the binder swap such a literal for a
+    // binding that is recomputed on every replay. Both formats exist because the recorded
+    // literal proves which one the portal accepted.
+    ...dateFields(),
   };
   // EQUIPMENT BINDING (portal-agnostic). The PV module spec lives in a nested `pvArrays`
   // array in the parser snapshot, which the scalar-only flatten above drops — so the module
@@ -627,6 +671,16 @@ export function convertLiteralsToBoundFields(
   const out = steps.map((step) => {
     const bindable = (step.action === "fill" || step.action === "select") && !!step.value && !step.field && !step.sensitive;
     if (!bindable) return step;
+    // A DATE never matches by value (todayDate is skipped above as volatile), so it would
+    // otherwise stay frozen and replay a stale — eventually PAST — date onto a live
+    // application. Rebind it by the control's label to a field recomputed every replay.
+    const dateField = dateFieldForLiteral(`${step.selector?.label ?? ""} ${step.note ?? ""}`, step.value as string);
+    if (dateField) {
+      bound.push({ value: step.value as string, field: dateField, note: step.note });
+      const next: RecipeStep = { ...step, field: dateField };
+      delete next.value;
+      return next;
+    }
     const matches = valueToFields.get(norm(step.value as string));
     if (!matches || matches.length === 0) return step; // portal-specific literal — keep as-is
     if (matches.length === 1) {

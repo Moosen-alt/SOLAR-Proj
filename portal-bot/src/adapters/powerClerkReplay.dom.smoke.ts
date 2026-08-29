@@ -33,6 +33,7 @@ const PAGE = `<!doctype html><html><body>
   <select id="mfr"><option value="">Please select...</option><option value="Enphase">Enphase</option></select>
   <label for="model">Model</label>
   <select id="model"><option value="">Please select...</option></select>
+  <label for="commdate">Estimated Commissioning Date</label><input id="commdate" type="text">
   <div id="saved">unsaved</div>
   <a id="next" href="#" onclick="document.getElementById('done').textContent='ADVANCED';return false;"><span>Next</span></a>
   <div id="done"></div>
@@ -68,6 +69,10 @@ const steps: RecipeStep[] = [
   // Cascade: the model list does not exist until the manufacturer change settles.
   { action: "select", phase: "fill", selector: { label: "Manufacturer" }, field: "inverterMake", value: "Enphase", note: "inverter manufacturer" },
   { action: "select", phase: "fill", selector: { label: "Model" }, field: "inverterModel", value: "IQ8PLUS-72-2-US", note: "inverter model" },
+  // A DATE the portal requires but the project does not carry. The learn-time planner
+  // computes one; frozen as a literal it ages into a PAST date and gets filed (or
+  // rejected) on every later replay. It must arrive as a binding, recomputed here and now.
+  { action: "fill", phase: "fill", selector: { label: "Estimated Commissioning Date" }, field: "estimatedCommissioningDate", note: "Estimated Commissioning Date" },
   { action: "click", phase: "fill", selector: { role: "link", name: "Next", exact: true, fallbacks: [{ css: "#next" }] }, note: "advance" },
 ];
 
@@ -78,7 +83,15 @@ const recipe = {
 } as unknown as PortalRecipe;
 
 // THIS project's values — every recorded literal is deliberately different.
+// The date is resolved fresh at replay (portalRecipes.dateFields()), exactly as the real
+// staging path supplies it — six weeks out, so it is always future-dated.
+const commissioningDate = (() => {
+  const d = new Date(Date.now() + 42 * 86400000);
+  return `${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}/${d.getFullYear()}`;
+})();
+
 const fieldValues = {
+  estimatedCommissioningDate: commissioningDate,
   accountNumber: "8000123456",
   homeownerPhone: "541-808-5853",
   inverterMake: "Enphase",
@@ -98,6 +111,7 @@ const value = async (sel: string): Promise<string> => page.locator(sel).inputVal
 const acct = await value("#acct");
 const phone = await value("#phone");
 const model = await value("#model");
+const commdate = await value("#commdate");
 const saved = (await page.locator("#saved").textContent().catch(() => "")) ?? "";
 const done = (await page.locator("#done").textContent().catch(() => "")) ?? "";
 
@@ -120,6 +134,11 @@ check("per-field autosave was committed by a blur after the fill", () => {
 });
 check("a cascading model select waits for its options to load", () => {
   assert.equal(model, "IQ8PLUS-72-2-US", `model: got ${JSON.stringify(model)} (options load ~600ms after the make changes)`);
+});
+check("a required date replays as a FUTURE date, never the learn-time literal", () => {
+  assert.equal(commdate, commissioningDate, `commissioning date: got ${JSON.stringify(commdate)}`);
+  const [mm, dd, yyyy] = commdate.split("/").map(Number);
+  assert.ok(new Date(yyyy, mm - 1, dd).getTime() > Date.now(), `${commdate} is not in the future — a portal that validates this rejects the application`);
 });
 check("the recorded advance ran", () => {
   assert.equal(done, "ADVANCED", `expected the advance to fire, got ${JSON.stringify(done)}`);
