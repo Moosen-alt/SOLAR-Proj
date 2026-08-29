@@ -148,6 +148,49 @@ Still open, in order:
 
 ## Open issues / next work (priority order)
 
+0c. **REPLAY DESYNC — diagnosed, guarded (2026-08-29). Read this before touching
+   replay.** Everything below 0b that reads like a selector problem was a
+   NAVIGATION problem. Root cause, from live PacifiCorp runs:
+
+   A blocked "Next" is not a failed click. The button is there, the click lands,
+   and the portal refuses because a required field is blank. Replay took that as
+   success, ran the NEXT page's steps against the page it was still on, and every
+   recorded id resolved onto whatever unrelated control happened to occupy it —
+   59 steps executed and 6 skipped past the desync before anything noticed.
+   `waitForInteractiveControls` cannot catch it: it is page-global and
+   identity-free, so a page that never moved satisfies it instantly.
+
+   **Two guards now exist, in this order.** (a) `assertAdvanced` in
+   `recipeAdapter.ts` — compares page IDENTITY (heading + on-screen control ids)
+   before/after a click and, when the page did not move AND the portal is showing
+   inline validation errors, fails with the portal's own words. (b)
+   `precheckPageDrift` stops below 15% label overlap (was: only at zero, so two
+   incidental "Name"/"Email" hits suppressed it). (a) catches it at the click;
+   (b) is the backstop.
+
+   **Do NOT "fix" these by making them stricter.** Requiring every click to move
+   the page broke the Accela replay smoke instantly — "Calculate", "Add Array",
+   "Add New" contact and saves all legitimately leave the page unchanged. A block
+   requires positive evidence (the portal complaining). And do not use the
+   learner's `pageFingerprint` here: it includes body text length, so a
+   validation message appearing reads as "the page changed".
+
+   **Known hole:** `expectedLabelsForSegment` counts only fill/select steps, so an
+   upload-only segment has zero expected labels and `precheckPageDrift` skips
+   entirely (`expected.length < 3`). Guard (a) is independent of label count and
+   covers it, but be aware when reading an upload-page failure.
+
+   **Standing rule this session earned twice:** verify a navigation actually
+   happened. A diagnostic probe hit the identical bug from the other side — an
+   announcement modal ate every click and it sat on one page for 14 iterations.
+   Anything that clicks to advance must confirm the page moved.
+
+   **The `__name` trap, third occurrence:** a function declared INSIDE
+   `page.evaluate` is wrapped by esbuild's keepNames as `__name(fn,…)`, throws in
+   the page, and the surrounding `.catch` turns it into "found nothing". Declare
+   no functions inside an evaluate. `openPortal` installs the shim
+   (`browser.ts` ~51); a raw `chromium.launch()` harness must add it itself.
+
 0b. **FIRST LIVE REPLAYS RUN (2026-08-29). READ THE CAVEATS — an earlier version
    of this entry overstated the result.** PacifiCorp reached review once
    (ok=true, 4.2 min, nothing submitted) — the deterministic path, no planner
