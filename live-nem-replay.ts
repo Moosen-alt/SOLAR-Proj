@@ -103,7 +103,7 @@ console.log(JSON.stringify({
   driftWarnings: ((detailData.driftWarnings as unknown[]) ?? []).length,
   message: String(result.message || "").slice(0, 1200),
 }, null, 1));
-const trace = (detailData.trace as Array<{ i: number; action: string; note: string; outcome: string; page: string }> | undefined) ?? [];
+const trace = (detailData.trace as Array<{ i: number; action: string; note: string; outcome: string; page: string; resolved?: string; shot?: string }> | undefined) ?? [];
 if (trace.length) {
   console.log("\nstep trace (step -> the wizard page it acted on):");
   let lastPage = "";
@@ -112,8 +112,16 @@ if (trace.length) {
     if (t.page) lastPage = t.page;
     if (t.outcome !== "ok" || marker) {
       console.log(`  ${String(t.i).padStart(3)} ${t.action.padEnd(7)} ${t.outcome.padEnd(8)} ${t.note.padEnd(52)}${marker}`);
+      if (t.resolved) console.log(`      resolved to: ${t.resolved}`);
+      if (t.shot) console.log(`      page:${t.shot}`);
     }
   }
+}
+const drift = (detailData.driftWarnings as string[] | undefined) ?? [];
+if (drift.length) {
+  console.log(`
+self-repairs applied (${drift.length}):`);
+  for (const d of drift) console.log(`  - ${String(d).slice(0, 120)}`);
 }
 const skippedNotes = (detailData.skipped as string[] | undefined) ?? [];
 if (skippedNotes.length) {

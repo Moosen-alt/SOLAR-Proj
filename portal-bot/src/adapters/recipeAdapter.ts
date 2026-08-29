@@ -208,7 +208,7 @@ export class RecipeAdapter extends BasePortalAdapter {
     // can march through most of a recipe against the wrong pages and only surface at the
     // first step that throws. Recording the wizard page alongside each step is what turns
     // that into a readable story. Cheap: one heading read per step, no screenshots.
-    const trace: Array<{ i: number; action: string; note: string; outcome: string; page: string }> = [];
+    const trace: Array<{ i: number; action: string; note: string; outcome: string; page: string; resolved?: string; shot?: string }> = [];
     // ONE non-blocking DOM read. Written first with Playwright locators and innerText
     // timeouts, this ran per step and waited out its budget on every page that had no
     // active-tab element — about 700ms x every step, which doubled the replay smoke.
@@ -281,7 +281,23 @@ export class RecipeAdapter extends BasePortalAdapter {
           const done = await this.executeStep(step, pastReview);
           if (done) executed++;
           else skipped.push(step.note || step.action);
-          trace.push({ i: stepIdx, action: step.action, note: String(step.note ?? "").slice(0, 52), outcome: done ? "ok" : "SKIPPED", page: await currentPageLabel() });
+          trace.push({
+            i: stepIdx, action: step.action, note: String(step.note ?? "").slice(0, 52),
+            outcome: done ? "ok" : "SKIPPED", page: await currentPageLabel(),
+            // A SKIPPED step is the silent failure mode, and "it didn't take" says nothing
+            // about WHY. Recording what its selector actually landed on separates a control
+            // that isn't there from one that is the WRONG control — the difference between
+            // portal drift and a recorded id (pcInputBase34, ..._11513) that is really a
+            // render-order counter pointing somewhere else on a fresh project. Only paid
+            // for on the skip path.
+            ...(done ? {} : {
+              resolved: await this.describeResolved(step),
+              // A skip is silent AND cheap to photograph — and "the control is hidden" does
+              // not say whether the row it belongs to was ever rendered. Capped so a recipe
+              // that skips widely cannot fill the disk.
+              ...(skipped.length <= 3 ? { shot: await this.captureFailureContext(step, stepIdx) } : {}),
+            }),
+          });
           succeeded = true;
           break;
         } catch (err) {
@@ -453,8 +469,15 @@ export class RecipeAdapter extends BasePortalAdapter {
         // than the recipe recorded. Give the list time to arrive before believing the miss.
         for (let attempt = 0; !selected && attempt < 3; attempt++) {
           await sleep(800);
+          // RE-RESOLVE, don't just retry. The cascade does not only fill an option list —
+          // PowerClerk keeps the model control HIDDEN until its manufacturer's list has
+          // loaded, and reveals it by rendering the widget a person clicks. Retrying against
+          // the locator resolved before the wait keeps aiming at the element that was there
+          // then (the hidden readonly input the label points at), so the retry could never
+          // have worked no matter how long it waited.
+          scoped = await this.resolveLocator(step.selector);
           selected = await selectWithFallback(this.page, scoped, v);
-          if (selected) this.driftWarnings.push(`select "${String(step.note ?? step.field ?? "")}" needed ${(attempt + 1) * 800}ms for its options to load (cascade)`);
+          if (selected) this.driftWarnings.push(`select "${String(step.note ?? step.field ?? "")}" needed ${(attempt + 1) * 800}ms for its control to appear (cascade)`);
         }
         // Wait for any Vue/React re-renders triggered by the dropdown change to settle
         // before filling subsequent fields (e.g. PowerClerk resets contact fields on
@@ -643,7 +666,17 @@ export class RecipeAdapter extends BasePortalAdapter {
     const primary = this.locator(sel);
     if (!sel || !sel.fallbacks?.length || !primary) return this.preferVisible(primary, sel);
     try {
-      if (await primary.count() > 0) return this.preferVisible(primary, sel);
+      // EXISTING IS NOT THE SAME AS USABLE. A recorded css id can resolve to the HIDDEN
+      // half of a styled widget — PowerClerk's filtered-select keeps a readonly input
+      // behind the control a person actually clicks. Because the id matched, the recorded
+      // label fallback (which finds the visible half) was never tried, and the step landed
+      // nothing and was skipped in silence: the live PGE replay lost its inverter Model
+      // that way, and with it every downstream capacity on the review page.
+      // So only accept the primary if something it matches is actually interactable, and
+      // otherwise let the fallbacks have their turn.
+      if (await primary.count() > 0 && await this.hasUsableMatch(primary, sel)) {
+        return this.preferVisible(primary, sel);
+      }
     } catch {
       // count() can throw on a malformed primary — fall through to fallbacks.
     }
@@ -652,12 +685,37 @@ export class RecipeAdapter extends BasePortalAdapter {
       const loc = this.locator({ ...fb, fallbacks: undefined });
       if (!loc) continue;
       try {
-        if (await loc.count() > 0) return this.preferVisible(loc, fb);
+        if (await loc.count() > 0 && await this.hasUsableMatch(loc, fb)) return this.preferVisible(loc, fb);
       } catch {
         // Try the next fallback.
       }
     }
+    // No alternative offered anything visible either — keep the recorded behaviour so the
+    // failure stays the familiar one rather than becoming a different mystery.
     return primary;
+  }
+
+  /**
+   * Does this locator match anything a person could interact with? A hidden `input[type=file]`
+   * counts: portals routinely hide the real file input behind a styled Browse button, and
+   * setInputFiles drives it perfectly well. Unreadable → treated as usable, so this can only
+   * ever move resolution ON to a fallback that IS visible, never strand a working selector.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async hasUsableMatch(loc: any, sel?: RecipeSelector): Promise<boolean> {
+    if (sel?.nth != null) return true; // an explicit nth is honoured exactly, as recorded
+    try {
+      const n = await loc.count();
+      for (let i = 0; i < Math.min(n, 12); i++) {
+        const c = loc.nth(i);
+        if (typeof c.isVisible !== "function") return true;
+        if (await c.isVisible().catch(() => true)) return true;
+        const isFile = await c.evaluate((el: Element) =>
+          (el.tagName || "").toLowerCase() === "input" && (el as HTMLInputElement).type === "file").catch(() => false);
+        if (isFile) return true;
+      }
+      return false;
+    } catch { return true; }
   }
 
   /**
@@ -673,6 +731,32 @@ export class RecipeAdapter extends BasePortalAdapter {
    * whose own label says the recorded answer. No answer, no guess — a radio group is
    * exactly where picking the wrong member would be worst.
    */
+  /**
+   * What a step's selector actually landed on, for the trace. Reports the element's id, its
+   * own label, and (for a select) how many options it is offering — enough to tell "the
+   * control is missing" from "the control is there but it is the wrong one" from "the
+   * control is right but its option list has not loaded".
+   */
+  private async describeResolved(step: RecipeStep): Promise<string> {
+    try {
+      const loc = await this.resolveLocator(step.selector);
+      const n = await loc?.count?.().catch(() => 0);
+      if (!n) return "no element matched";
+      return await loc.first().evaluate((el: Element) => {
+        const id = el.getAttribute("id") || "";
+        const tag = (el.tagName || "").toLowerCase();
+        let label = "";
+        if (id) label = (document.querySelector(`label[for="${id}"]`) as HTMLElement | null)?.innerText?.trim() ?? "";
+        if (!label) label = (el.closest("label") as HTMLElement | null)?.innerText?.trim() ?? "";
+        if (!label) label = el.getAttribute("aria-label") || "";
+        const opts = tag === "select" ? (el as HTMLSelectElement).options.length : -1;
+        const vis = !!(el as HTMLElement).getBoundingClientRect
+          && ((el as HTMLElement).getBoundingClientRect().width > 0 || (el as HTMLElement).getBoundingClientRect().height > 0);
+        return `<${tag} id="${id}" label="${(label || "").replace(/\s+/g, " ").slice(0, 40)}"${opts >= 0 ? ` options=${opts}` : ""} visible=${vis}>`;
+      }, undefined as never).catch(() => "element present but unreadable") as string;
+    } catch { return "resolve failed"; }
+  }
+
   private async recoverVolatileIdOption(step: RecipeStep) {
     const css = String(step.selector?.css ?? "");
     const m = /^#([A-Za-z0-9_-]+?)_\d+$/.exec(css);
