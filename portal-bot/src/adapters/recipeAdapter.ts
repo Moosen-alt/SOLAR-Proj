@@ -48,6 +48,8 @@ const FILL_TIMEOUT_MS = 8000;
 // Actions whose target control is identified by a LABEL and therefore worth verifying
 // before we touch it. Navigation (goto/click) and uploads are excluded: a button's text is
 // already its selector, and an upload's real input is routinely unlabelled and hidden.
+// Escape an id for a css selector on the NODE side (CSS.escape is browser-only).
+const CSS_ESCAPE = (v: string): string => v.replace(/([^a-zA-Z0-9_-])/g, "\$1");
 const IDENTITY_CHECKED = new Set(["fill", "select", "check", "uncheck"]);
 // Words too common in portal labels to prove two labels mean the same question.
 const IDENTITY_STOPWORDS = new Set([
@@ -461,18 +463,40 @@ export class RecipeAdapter extends BasePortalAdapter {
     if (!a.size || !b.size) return null;
     for (const w of a) if (b.has(w)) return null; // they agree on something — accept it
 
-    // They share nothing. Look for the control the recipe actually meant.
-    const byLabel = this.page.getByLabel(recorded, { exact: false });
-    const n = await byLabel.count().catch(() => 0);
-    for (let i = 0; i < Math.min(n, 8); i++) {
-      const cand = byLabel.nth(i);
-      if (await cand.isVisible().catch(() => false)) {
-        this.driftWarnings.push(
-          `step "${recorded.slice(0, 44)}" resolved onto a control labelled "${actual.slice(0, 44)}" — re-anchored by label`,
-        );
-        return cand;
+    // They share nothing. Find the control the recipe actually meant — by scanning the
+    // page's own label associations, the SAME mechanism that just detected the mismatch.
+    // getByLabel was tried first and found nothing on the live portal even though the
+    // control was demonstrably there with a `for` association, so this does not depend on
+    // Playwright's accessible-name computation matching the recorded string exactly.
+    const wanted = [...a];
+    const foundId = await this.page.evaluate((args: { words: string[] }) => {
+      const norm = (v: string | null | undefined) =>
+        (v || "").toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(Boolean);
+      const controls = Array.from(document.querySelectorAll("input, select, textarea")) as HTMLElement[];
+      let best: { id: string; score: number } | null = null;
+      for (const el of controls) {
+        const id = el.getAttribute("id");
+        if (!id) continue;
+        const r = el.getBoundingClientRect();
+        if (!r || (r.width === 0 && r.height === 0)) continue; // invisible: not the one a person sees
+        const forLbl = document.querySelector(`label[for="${CSS.escape(id)}"]`) as HTMLElement | null;
+        const wrap = el.closest("label") as HTMLElement | null;
+        const text = norm(forLbl?.innerText || wrap?.innerText || el.getAttribute("aria-label"));
+        if (!text.length) continue;
+        const score = args.words.filter((w) => text.includes(w)).length;
+        if (score && (!best || score > best.score)) best = { id, score };
       }
+      // Require a real overlap, not one incidental word.
+      return best && best.score >= Math.min(2, args.words.length) ? best.id : "";
+    }, { words: wanted }).catch(() => "") as string;
+
+    if (foundId) {
+      this.driftWarnings.push(
+        `step "${recorded.slice(0, 44)}" resolved onto "${actual.slice(0, 34)}" — re-anchored by label to #${foundId}`,
+      );
+      return this.page.locator(`#${CSS_ESCAPE(foundId)}`);
     }
+
     // No better candidate. ABORT the step — never act on a control we have just proven is
     // the wrong one. Filing the right answer into the wrong question is far worse than
     // leaving it blank for the human at review, and the warning says which it was.

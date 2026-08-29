@@ -40,9 +40,19 @@ const project = detail.project;
 const portalType = which === "pacificorp" ? "powerclerk_pacificorp_nem_portal" : "powerclerk_pge_nem_portal";
 
 // The SAME lookup staging uses — utility-scoped, so a permit recipe can never be picked up.
-const recipe = findCompleteRecipeForProject(db, {
-  scopeType: "utility", state: project.state, utility: project.utility, discipline: "",
-});
+// --recipe <idPrefix> replays a SPECIFIC recipe, including one still in draft. That is how
+// a freshly-learned recipe gets tested against a different project WITHOUT first promoting
+// it — promoting to make a test possible would be exactly backwards.
+const forced = (() => {
+  const i = process.argv.indexOf("--recipe");
+  return i >= 0 ? process.argv[i + 1] : undefined;
+})();
+const { getPortalRecipe } = await import("./backend/src/portalRecipes");
+const recipe = forced
+  ? getPortalRecipe(db, db.get<{ id: string }>("SELECT id FROM portal_recipes WHERE id LIKE ?", [`${forced}%`])!.id)
+  : findCompleteRecipeForProject(db, {
+    scopeType: "utility", state: project.state, utility: project.utility, discipline: "",
+  });
 if (!recipe) {
   console.error(`no COMPLETE utility recipe for ${project.utility} (${project.state}) — nothing to replay.`);
   process.exit(1);
