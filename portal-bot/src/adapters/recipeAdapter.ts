@@ -627,7 +627,15 @@ export class RecipeAdapter extends BasePortalAdapter {
         // interconnection application is far worse than the skip this started as, so the
         // model rules have to run before that fallback ever sees the value.
         let selected = false;
-        if (this.isModelStep(step)) {
+        // The page-side model rules can only read a NATIVE <select>. PowerClerk renders a
+        // Vue combobox <input> on its spec pages, which exposes no <option> elements — and
+        // treating "cannot read this control" as "no match" made the guard refuse every
+        // combobox model, blocking the very values the CEC lookup had just resolved
+        // correctly. For a non-select, hand straight to selectWithFallback's combobox path;
+        // the value it receives is already the portal's own certified string, so the
+        // wrong-neighbour risk that motivated these rules is largely gone.
+        const isNativeSelect = await this.isNativeSelect(scoped);
+        if (this.isModelStep(step) && isNativeSelect) {
           // The model list is populated by an XHR fired when the manufacturer above it
           // changed (~600ms on PowerClerk), so "no match" and "not loaded yet" look
           // identical on the first look. Retry only while the list is still unloaded —
@@ -969,6 +977,13 @@ export class RecipeAdapter extends BasePortalAdapter {
   // Is this step selecting an equipment MANUFACTURER? Checked against the bound field name
   // first (authoritative) and the control's own label second — PowerClerk's spec-page
   // labels are bare "Manufacturer", which is exactly the wording to match.
+  /** Is this locator a native <select>, whose options can actually be read? */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async isNativeSelect(loc: any): Promise<boolean> {
+    if (!loc || typeof loc.evaluate !== "function") return false;
+    return await loc.evaluate((el: Element) => (el.tagName || "").toLowerCase() === "select").catch(() => false) as boolean;
+  }
+
   /** Is this step choosing an equipment MODEL? Field name first, the control's own bare
    *  "Model" label second — PowerClerk spec pages label them exactly that. */
   private isModelStep(step: RecipeStep): boolean {
