@@ -30,7 +30,7 @@ import type { LearnPlanRequest, LearnPlanResponse } from "../../portal-bot/src/a
 import { createLLMProvider, getRecentLlmCalls } from "./llm";
 import { getDecryptedCredential, getDecryptedCredentialByUrl, getDecryptedCredentialAny, listPortalCredentials } from "./portalCredentials";
 import { learnNoteTopicsFromMisses, activeLearnedNoteTerms } from "./noteTopics";
-import { resolveRecipeFieldValues, startPortalRecording, savePortalRecipeSteps, getPortalRecipe, convertLiteralsToBoundFields, findAnyRecipeForProject, appendHumanPatchSteps, promoteRecordingIfEligible } from "./portalRecipes";
+import { deadFieldBindings, resolveRecipeFieldValues, startPortalRecording, savePortalRecipeSteps, getPortalRecipe, convertLiteralsToBoundFields, findAnyRecipeForProject, appendHumanPatchSteps, promoteRecordingIfEligible } from "./portalRecipes";
 import { HUMAN_SUBMIT_OBSERVED_NOTE } from "../../portal-bot/src/humanCapture";
 import { projectDocsByType } from "./projectDocuments";
 import { buildUtilityPackage } from "./docSplitter";
@@ -785,6 +785,25 @@ export async function autoLearnPortal(
       `Kept as portal constant(s) — the control's own wording shows it is not asking about this project's data, so the recorded answer replays unchanged (${portalConstants.slice(0, 6).map((c) => `"${String(c.value).slice(0, 24)}"${c.note ? ` @ ${String(c.note).slice(0, 40)}` : ""}`).join("; ")}). Confirm each is right for every project this portal will file.`,
     );
   }
+  // DEAD BINDINGS. The LLM planner CHOOSES the field name a fill binds to
+  // (autoLearnAdapter.ts sets `step.field = fillReq.field` verbatim), and nothing checked
+  // that the name it chose is one resolveRecipeFieldValues can actually produce. A step
+  // bound to an invented key resolves to "" on every replay, forever: resolveValue returns
+  // empty, the step returns false, and it is SKIPPED IN SILENCE. Found live — the
+  // PacifiCorp recipe carries `field: "descriptionOfService"`, which is not a key the
+  // resolver emits, so that select could never fill on any project, and the blank it left
+  // changed the portal's own branching two pages later.
+  //
+  // A recipe with a dead binding cannot replay correctly, so this BLOCKS promotion rather
+  // than being a warning: promoting one is exactly how a recipe becomes trusted and still
+  // never works. Sensitive steps are included on purpose — they carry a field and no
+  // literal, so a bad key there is silently unfillable too.
+  const deadBindings = deadFieldBindings(boundSteps, projectFields);
+  if (deadBindings.length) {
+    verification.issues.push(
+      `Step(s) bound to a field the project data does not define, so they can NEVER fill on replay: ${deadBindings.slice(0, 8).join(", ")}${deadBindings.length > 8 ? `, +${deadBindings.length - 8} more` : ""}. Re-record these fields, or bind them to a real project field.`,
+    );
+  }
   const bindingNote = boundLiterals.length ? ` Bound ${boundLiterals.length} literal value(s) to project fields for safe replay.` : "";
 
   // PROMOTION FLOOR: a trusted recipe must have actually WALKED a wizard. The live Salem
@@ -800,7 +819,8 @@ export async function autoLearnPortal(
     );
   }
 
-  let trusted = verification.accurate && !textContradicts && !hasHardBlockers && ambiguousLiterals.length === 0 && !tooThin;
+  let trusted = verification.accurate && !textContradicts && !hasHardBlockers && ambiguousLiterals.length === 0 && !tooThin
+    && deadBindings.length === 0;
   if (hasHardBlockers) {
     if (requiredMisses.length) verification.issues.push(`Required field(s) left blank/unselected — fill before trusting: ${requiredMisses.slice(0, 12).join(", ")}${requiredMisses.length > 12 ? ", …" : ""}.`);
     if (docMisses.length) verification.issues.push(`Required document(s) not attached: ${docMisses.slice(0, 8).join(", ")}.`);

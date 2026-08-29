@@ -741,6 +741,24 @@ export function labelRulesOutAllCandidates(label: string, candidates: string[]):
   return candidates.every((c) => fieldNameTokens(c).every((t) => !text.includes(t)));
 }
 
+// Steps bound to a field name the project data does not define. The LLM planner CHOOSES
+// the field a fill binds to (autoLearnAdapter sets `step.field = fillReq.field` verbatim),
+// and an invented key resolves to "" on every replay forever: resolveValue returns empty,
+// the step returns false, and it is SKIPPED IN SILENCE. Found live — the PacifiCorp recipe
+// binds `descriptionOfService`, which no resolver produces, so that select could never fill
+// on any project, and the blank it left changed the portal's branching two pages later.
+export function deadFieldBindings(steps: RecipeStep[], projectFields: Record<string, string>): string[] {
+  const known = new Set(Object.keys(projectFields ?? {}));
+  const out: string[] = [];
+  for (const step of steps ?? []) {
+    const field = String(step.field ?? "");
+    // A field the resolver DOES define but which is empty for THIS project is fine — the
+    // next project may have it. Only a key that cannot exist at all is dead.
+    if (field && !known.has(field)) out.push(`${field} (${String(step.note ?? step.action).slice(0, 40)})`);
+  }
+  return out;
+}
+
 export function convertLiteralsToBoundFields(
   steps: RecipeStep[],
   projectFields: Record<string, string>,

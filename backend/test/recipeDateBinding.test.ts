@@ -23,7 +23,7 @@ const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "recipe-date-test-"));
 process.env.AUTOPILOT_DB_PATH = path.join(tmpDir, "test.sqlite");
 process.env.SEED_TEST_INSTALLER = "false";
 
-const { dateFieldForLiteral, convertLiteralsToBoundFields, disambiguateByLabel, labelRulesOutAllCandidates } = await import("../src/portalRecipes");
+const { dateFieldForLiteral, convertLiteralsToBoundFields, disambiguateByLabel, labelRulesOutAllCandidates, deadFieldBindings } = await import("../src/portalRecipes");
 
 let failures = 0;
 const run = (label: string, fn: () => void) => {
@@ -186,6 +186,45 @@ run("a coincidental collision keeps its literal without blocking the recipe", ()
 // and it was being typed into a field that wants whole degrees. Verified end to end below
 // against the real project, because the rounding sits inside resolveRecipeFieldValues and
 // several aliases (array1Azimuth, azimuth) reach a portal by different routes.
+
+// -- DEAD BINDINGS -----------------------------------------------------------------------
+// The LLM planner CHOOSES the field name a fill binds to, and nothing checked that the name
+// exists. A step bound to an invented key resolves to "" on EVERY replay, forever — the
+// step returns false and is skipped in silence. Found live: the PacifiCorp recipe binds
+// `descriptionOfService`, a key no resolver produces.
+
+run("a binding to a field the project data cannot define is reported", () => {
+  const steps: RecipeStep[] = [
+    { action: "select", phase: "fill", selector: { label: "Description of Service:" }, field: "descriptionOfService", note: "Description of Service:" },
+  ];
+  const dead = deadFieldBindings(steps, { homeownerName: "A", street: "B" });
+  assert.equal(dead.length, 1, "a dead binding must be reported — it can never fill");
+  assert.ok(dead[0].startsWith("descriptionOfService"), dead[0]);
+});
+
+run("a REAL field that is merely empty for THIS project is NOT dead", () => {
+  // The next project may well have it; only a key that cannot exist at all is dead.
+  const steps: RecipeStep[] = [
+    { action: "fill", phase: "fill", selector: { label: "Meter" }, field: "meterNumber", note: "meter" },
+  ];
+  assert.deepEqual(deadFieldBindings(steps, { meterNumber: "" }), []);
+});
+
+run("a literal step with no binding is not a dead binding", () => {
+  const steps: RecipeStep[] = [
+    { action: "select", phase: "fill", selector: { label: "Energy Source" }, value: "Solar PV", note: "Energy Source" },
+  ];
+  assert.deepEqual(deadFieldBindings(steps, {}), []);
+});
+
+run("a SENSITIVE step is checked too — it carries a field and no literal", () => {
+  // These fill from the credential store at replay, so a bad key there is just as unfillable
+  // and just as silent.
+  const steps: RecipeStep[] = [
+    { action: "fill", phase: "fill", selector: { label: "Account" }, field: "utilityAcctNo", sensitive: true, value: "", note: "account" },
+  ];
+  assert.equal(deadFieldBindings(steps, { accountNumber: "123" }).length, 1);
+});
 
 // Resolved OUTSIDE the sync runner — an async body inside it would escape the try/catch
 // and report a phantom "ok".
