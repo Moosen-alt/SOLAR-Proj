@@ -267,13 +267,20 @@ export class PowerClerkAdapter extends BasePortalAdapter {
   private async selectDropdownSmart(loc: any, value: string): Promise<void> {
     const page = this.page;
     await clearPowerClerkOverlays(page);
-    try { await loc.selectOption(value); return; } catch { /* try label */ }
-    try { await loc.selectOption({ label: value }); return; } catch { /* try contains */ }
+    // BOUNDED. selectOption waits for a matching option, otherwise burning Playwright's 30s
+    // default — and PowerClerk renders this control as a hidden native <select> behind a
+    // styled widget, so the native attempts CANNOT succeed and the whole point is to reach
+    // the combobox path below. Measured on that shape: 30,005ms unbounded vs 5,003ms
+    // bounded, on the REQUIRED Schedule field. selectWithFallback (comboboxFill.ts) already
+    // caps its native attempts at 5s for exactly this reason.
+    const NATIVE_MS = 5000;
+    try { await loc.selectOption(value, { timeout: NATIVE_MS }); return; } catch { /* try label */ }
+    try { await loc.selectOption({ label: value }, { timeout: NATIVE_MS }); return; } catch { /* try contains */ }
     try {
       const opt = loc.locator("option").filter({ hasText: new RegExp(`(^|\\D)${value}(\\D|$)`) }).first();
       if ((await opt.count()) > 0) {
         const val = await opt.getAttribute("value");
-        if (val != null) { await loc.selectOption(val); return; }
+        if (val != null) { await loc.selectOption(val, { timeout: NATIVE_MS }); return; }
       }
     } catch { /* try custom combobox */ }
     const selected = await fillCustomCombobox(page, loc, value);
@@ -613,7 +620,12 @@ export class PowerClerkAdapter extends BasePortalAdapter {
           let loc = roleName ? scope.getByLabel(roleName, { exact: true }).first() : scope.getByPlaceholder(placeholder).first();
           if (!(await loc.count().catch(() => 0))) loc = scope.getByPlaceholder(placeholder).first();
           if (!(await loc.count().catch(() => 0)) && roleName) loc = scope.getByRole("textbox", { name: roleName }).first();
-          await loc.fill(value);
+          // BOUNDED. A bare fill() waits Playwright's 30s default when the control never
+          // becomes actionable — and this adapter's own comments note fields that are "not
+          // present on every schedule". Across 14 call sites that is minutes of dead time
+          // per run for controls that were never going to be filled. 8s is well beyond any
+          // real Vue re-render while turning a miss into a prompt, visible failure.
+          await loc.fill(value, { timeout: 8000 });
           // PowerClerk's Vue AUTOSAVES PER FIELD ON BLUR (documented quirk). Without the
           // blur the value shows on screen but never reaches the saved model — a blocked
           // Next then re-renders from that empty model and silently WIPES every fill

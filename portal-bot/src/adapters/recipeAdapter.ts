@@ -41,6 +41,10 @@ function isFinalSubmitStep(step: RecipeStep): boolean {
   return (step as { isFinalSubmit?: unknown }).isFinalSubmit === true;
 }
 
+// A fill on a control that never becomes actionable must not cost Playwright's 30s
+// default — on replay that failure aborts the entire run, not just the step.
+const FILL_TIMEOUT_MS = 8000;
+
 export class RecipeAdapter extends BasePortalAdapter {
   portalName: string;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -343,9 +347,13 @@ export class RecipeAdapter extends BasePortalAdapter {
           await scoped!.fill("").catch(() => null);
           if (typeof scoped!.pressSequentially === "function") await scoped!.pressSequentially(v, { delay: 35 }).catch(() => null);
           else if (typeof scoped!.type === "function") await scoped!.type(v, { delay: 35 }).catch(() => null);
-          else await scoped!.fill(v);
+          else await scoped!.fill(v, { timeout: FILL_TIMEOUT_MS });
         } else {
-          await scoped!.fill(v);
+          // BOUNDED. Replay does NOT go through the learner's applyFill, so the visibility
+          // probe and bounded fill added there are not shared: a control that never becomes
+          // actionable blocked Playwright's full 30s default here and then FAILED THE WHOLE
+          // REPLAY. 8s is far beyond any real re-render while surfacing a genuine miss fast.
+          await scoped!.fill(v, { timeout: FILL_TIMEOUT_MS });
         }
         // Blur to COMMIT the value into the portal's JS model (PowerClerk's Vue saves on
         // blur). Without it the field shows filled but never persists → blank draft.
