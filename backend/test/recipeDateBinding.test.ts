@@ -23,7 +23,7 @@ const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "recipe-date-test-"));
 process.env.AUTOPILOT_DB_PATH = path.join(tmpDir, "test.sqlite");
 process.env.SEED_TEST_INSTALLER = "false";
 
-const { dateFieldForLiteral, convertLiteralsToBoundFields, disambiguateByLabel } = await import("../src/portalRecipes");
+const { dateFieldForLiteral, convertLiteralsToBoundFields, disambiguateByLabel, labelRulesOutAllCandidates } = await import("../src/portalRecipes");
 
 let failures = 0;
 const run = (label: string, fn: () => void) => {
@@ -128,6 +128,79 @@ run("a truly ambiguous literal is STILL reported (the guard is intact)", () => {
   assert.equal(result.ambiguous.length, 1, "an unresolvable ambiguity must still block promotion");
   assert.equal(result.steps[0].field, undefined);
   assert.equal(result.steps[0].value, "No");
+});
+
+run("a tie is broken by PRECISION, not left unresolved", () => {
+  // "Installation Voltage" matches both on "voltage", but serviceVoltage also carries
+  // "service", which the label never says — so plain voltage is the better read.
+  assert.equal(disambiguateByLabel("Installation Voltage", ["serviceVoltage", "voltage"]), "voltage");
+  // When the label DOES say service, the richer match wins on count before precision.
+  assert.equal(disambiguateByLabel("Service Voltage", ["serviceVoltage", "voltage"]), "serviceVoltage");
+});
+
+// -- COINCIDENTAL COLLISIONS ------------------------------------------------------------
+// PacifiCorp asks four separate questions whose answer is "No" — switchgear, parallel
+// blocking scheme, serving more than one customer, a marketing opt-in. "No" is also this
+// project's hasBattery and exportLimiting. Binding any of them would be actively wrong: a
+// later project with a battery would flip its answer about a switchgear. But REPORTING them
+// as ambiguous is a hard blocker in the trust gate, and it kept the PacifiCorp recipe out
+// of trust over questions that have nothing to do with the fields they collided with.
+
+run("a substantive label that names none of the candidates marks a portal constant", () => {
+  for (const label of [
+    "Will the net metering facility interconnect to a switchgear?",
+    "Will the net metering facility include a parallel blocking scheme?",
+    "Will the output of this generation system serve more than one customer?",
+  ]) {
+    assert.equal(labelRulesOutAllCandidates(label, ["hasBattery", "exportLimiting"]), true, label);
+  }
+});
+
+run("a THIN label concludes nothing and still blocks", () => {
+  // Absence of evidence is not evidence — without a real label we cannot tell a portal
+  // constant from project data, so the ambiguity guard must stand.
+  assert.equal(labelRulesOutAllCandidates("", ["hasBattery", "exportLimiting"]), false);
+  assert.equal(labelRulesOutAllCandidates("Please select", ["hasBattery", "exportLimiting"]), false);
+  // And a substantive label that DOES name a candidate is not a constant — it binds.
+  assert.equal(labelRulesOutAllCandidates("Do you propose to limit the export capacity?", ["hasBattery", "exportLimiting"]), false);
+});
+
+run("a coincidental collision keeps its literal without blocking the recipe", () => {
+  const steps: RecipeStep[] = [
+    { action: "select", phase: "fill", selector: { label: "Will the net metering facility interconnect to a switchgear?" }, value: "No", note: "" },
+  ];
+  const result = convertLiteralsToBoundFields(steps, { hasBattery: "No", exportLimiting: "No" });
+  assert.equal(result.ambiguous.length, 0, "still blocking on a question that is not about either field");
+  assert.equal(result.steps[0].value, "No", "the portal's own answer must survive");
+  assert.equal(result.steps[0].field, undefined, "and must NOT be bound to unrelated project data");
+  assert.equal(result.portalConstants.length, 1, "the collision should still be reported for awareness");
+});
+
+// -- WHOLE DEGREES ----------------------------------------------------------------------
+// Flagged live on the PacifiCorp form: the plan set carries a fractional azimuth ("180.5")
+// and it was being typed into a field that wants whole degrees. Verified end to end below
+// against the real project, because the rounding sits inside resolveRecipeFieldValues and
+// several aliases (array1Azimuth, azimuth) reach a portal by different routes.
+
+// Resolved OUTSIDE the sync runner — an async body inside it would escape the try/catch
+// and report a phantom "ok".
+const { openDatabase: openLiveDb } = await import("../src/db");
+const liveDb = await openLiveDb();
+const { resolveRecipeFieldValues } = await import("../src/portalRecipes");
+const degreeFields = resolveRecipeFieldValues(liveDb, {
+  homeownerName: "Test Owner", projectAddress: "1 Test St", city: "", state: "OR", zip: "",
+  ahj: "", utility: "Pacific Power", accountNumber: "", meterNumber: "",
+  parserSnapshot: { azimuth: "180.5", tilt: "22.4", pvArrays: [{ quantity: "14", azimuth: "180.5", tilt: "22.4" }] },
+} as never, "powerclerk");
+try { liveDb.close(); } catch { /* best effort */ }
+
+run("a fractional plan-set orientation reaches the portal as whole degrees", () => {
+  for (const key of ["array1Azimuth", "azimuth"]) {
+    assert.equal(degreeFields[key], "181", `${key} reached the portal as ${JSON.stringify(degreeFields[key])}`);
+  }
+  for (const key of ["array1Tilt", "tilt"]) {
+    assert.equal(degreeFields[key], "22", `${key} reached the portal as ${JSON.stringify(degreeFields[key])}`);
+  }
 });
 
 try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* leave to OS */ }

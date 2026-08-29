@@ -429,6 +429,15 @@ export function dateFieldForLiteral(label: string, value: string): string | null
   return isUs ? "todayDateUs" : "todayDate";
 }
 
+// A plan-set orientation rounded to the whole degree the portals accept. Anything that is
+// not a number is passed through untouched (a portal may legitimately want "SW").
+function wholeDegrees(value: unknown): unknown {
+  if (value == null || value === "") return value;
+  const n = Number(String(value).trim());
+  if (!Number.isFinite(n)) return value;
+  return String(Math.round(n));
+}
+
 export function resolveRecipeFieldValues(db: AppDb, project: ProjectRecord, portalType: string): Record<string, string> {
   const snapshot = project.parserSnapshot || {};
   const snapshotFlat: Record<string, string> = {};
@@ -545,9 +554,18 @@ export function resolveRecipeFieldValues(db: AppDb, project: ProjectRecord, port
       put(`${p}ModuleManufacturer`, make);
       put(`${p}ModuleModel`, model);
       put(`${p}ModuleWattage`, watt);
-      put(`${p}Azimuth`, arr.azimuth);
-      put(`${p}Tilt`, arr.tilt);
+      // WHOLE DEGREES. Plan sets carry fractional orientations ("180.5"), but the utility
+      // portals ask for degrees as an integer — filing the decimal was flagged live on the
+      // PacifiCorp form. Half a degree is far below anything that changes an
+      // interconnection review, so round rather than truncate or pass it through.
+      put(`${p}Azimuth`, wholeDegrees(arr.azimuth));
+      put(`${p}Tilt`, wholeDegrees(arr.tilt));
     });
+    // The bare aliases some portals bind to come from the raw snapshot, which keeps the
+    // plan-set decimal — round those the same way so no path can reach a portal with a
+    // fractional degree. `equipment` overrides snapshotFlat in the merge below.
+    put("azimuth", wholeDegrees(snapshotFlat.azimuth));
+    put("tilt", wholeDegrees(snapshotFlat.tilt));
     put("moduleManufacturer", firstMake);
     put("moduleMake", firstMake);
     put("moduleModel", firstModel);
@@ -646,6 +664,12 @@ export interface LiteralBindingResult {
   bound: Array<{ value: string; field: string; note?: string }>;
   /** Literals that equal project data but map to >1 field — cannot be safely auto-bound. */
   ambiguous: Array<{ value: string; candidates: string[]; note?: string }>;
+  /**
+   * Literals that COLLIDED with project data by coincidence — the control's label shows it
+   * is asking something else entirely (a portal policy question), so the literal is kept
+   * and the collision is reported for awareness rather than blocking the recipe.
+   */
+  portalConstants: Array<{ value: string; note?: string }>;
 }
 
 // Disambiguate a literal that matches SEVERAL project fields, using the control's own
@@ -676,11 +700,45 @@ function fieldNameTokens(field: string): string[] {
 export function disambiguateByLabel(label: string, candidates: string[]): string | null {
   const text = String(label || "").toLowerCase();
   if (!text.trim() || candidates.length < 2) return null;
-  const scored = candidates.map((c) => ({ c, n: fieldNameTokens(c).filter((t) => text.includes(t)).length }));
+  const scored = candidates.map((c) => {
+    const toks = fieldNameTokens(c);
+    const hit = toks.filter((t) => text.includes(t));
+    return { c, n: hit.length, extra: toks.length - hit.length };
+  });
   const best = Math.max(...scored.map((x) => x.n));
   if (best === 0) return null;
-  const winners = scored.filter((x) => x.n === best);
+  let winners = scored.filter((x) => x.n === best);
+  // Tiebreak on PRECISION: "Installation Voltage" matches both serviceVoltage and voltage
+  // on the token "voltage", but serviceVoltage also carries "service", which the label does
+  // not say. The candidate with nothing left over is the better read of the label.
+  if (winners.length > 1) {
+    const fewest = Math.min(...winners.map((x) => x.extra));
+    winners = winners.filter((x) => x.extra === fewest);
+  }
   return winners.length === 1 ? winners[0].c : null;
+}
+
+// A literal can match project data by COINCIDENCE. PacifiCorp asks "Will the net metering
+// facility interconnect to a switchgear?", "…include a parallel blocking scheme?", "…serve
+// more than one customer?" — four separate questions whose answer is "No", which is also
+// this project's hasBattery and exportLimiting. Binding any of them would be actively
+// wrong: a later project with a battery would flip its answer about a switchgear. But
+// REPORTING them as ambiguous is a hard blocker in the trust gate, and it kept the
+// PacifiCorp recipe out of trust over a question that has nothing to do with the fields it
+// collided with.
+//
+// A label that is SUBSTANTIVE and shares nothing with any candidate's name is strong
+// evidence the control is a portal constant, not project data. A thin or missing label is
+// not evidence of anything, so that case still blocks exactly as before.
+const LABEL_STOPWORDS = new Set([
+  "the", "a", "an", "of", "to", "in", "is", "are", "will", "do", "does", "you", "your",
+  "this", "that", "for", "and", "or", "be", "on", "at", "it", "if", "any", "please", "select",
+]);
+export function labelRulesOutAllCandidates(label: string, candidates: string[]): boolean {
+  const text = String(label || "").toLowerCase();
+  const words = text.split(/[^a-z0-9]+/).filter((w) => w.length > 1 && !LABEL_STOPWORDS.has(w));
+  if (new Set(words).size < 3) return false; // too thin to conclude anything
+  return candidates.every((c) => fieldNameTokens(c).every((t) => !text.includes(t)));
 }
 
 export function convertLiteralsToBoundFields(
@@ -703,6 +761,7 @@ export function convertLiteralsToBoundFields(
 
   const bound: LiteralBindingResult["bound"] = [];
   const ambiguous: LiteralBindingResult["ambiguous"] = [];
+  const portalConstants: Array<{ value: string; note?: string }> = [];
   const out = steps.map((step) => {
     const bindable = (step.action === "fill" || step.action === "select") && !!step.value && !step.field && !step.sensitive;
     if (!bindable) return step;
@@ -735,11 +794,18 @@ export function convertLiteralsToBoundFields(
       delete next.value;
       return next;
     }
+    // A substantive label that shares nothing with any candidate means this control is a
+    // portal constant that merely collided with project data — keep the literal, and do
+    // NOT report an ambiguity that would block the recipe forever.
+    if (labelRulesOutAllCandidates(`${step.selector?.label ?? ""} ${step.note ?? ""}`, matches)) {
+      portalConstants.push({ value: step.value as string, note: step.note });
+      return step;
+    }
     ambiguous.push({ value: step.value as string, candidates: matches, note: step.note });
     return step; // leave literal; caller forces a draft
   });
 
-  return { steps: out, bound, ambiguous };
+  return { steps: out, bound, ambiguous, portalConstants };
 }
 
 // ---------------------------------------------------------------------------
