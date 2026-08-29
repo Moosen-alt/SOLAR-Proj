@@ -469,25 +469,31 @@ export class RecipeAdapter extends BasePortalAdapter {
     // control was demonstrably there with a `for` association, so this does not depend on
     // Playwright's accessible-name computation matching the recorded string exactly.
     const wanted = [...a];
+    // NO NESTED FUNCTION DECLARATIONS IN HERE. esbuild's keepNames wraps any nameable
+    // function as __name(fn, "..."), and __name does not exist in the page — the evaluate
+    // then throws, the .catch swallows it, and this silently reports "no candidate found".
+    // That is exactly what happened on the first live attempt: every re-anchor failed while
+    // the control sat right there. The detection code above works because it declares
+    // nothing. Keep it that way; the normalisation is inlined for the same reason.
     const foundId = await this.page.evaluate((args: { words: string[] }) => {
-      const norm = (v: string | null | undefined) =>
-        (v || "").toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(Boolean);
       const controls = Array.from(document.querySelectorAll("input, select, textarea")) as HTMLElement[];
-      let best: { id: string; score: number } | null = null;
+      let bestId = "";
+      let bestScore = 0;
       for (const el of controls) {
         const id = el.getAttribute("id");
         if (!id) continue;
         const r = el.getBoundingClientRect();
-        if (!r || (r.width === 0 && r.height === 0)) continue; // invisible: not the one a person sees
+        if (!r || (r.width === 0 && r.height === 0)) continue; // not the control a person sees
         const forLbl = document.querySelector(`label[for="${CSS.escape(id)}"]`) as HTMLElement | null;
         const wrap = el.closest("label") as HTMLElement | null;
-        const text = norm(forLbl?.innerText || wrap?.innerText || el.getAttribute("aria-label"));
-        if (!text.length) continue;
-        const score = args.words.filter((w) => text.includes(w)).length;
-        if (score && (!best || score > best.score)) best = { id, score };
+        const raw = (forLbl ? forLbl.innerText : wrap ? wrap.innerText : el.getAttribute("aria-label")) || "";
+        const text = raw.toLowerCase().replace(/[^a-z0-9\s]/g, " ");
+        let score = 0;
+        for (const w of args.words) if (text.indexOf(w) >= 0) score++;
+        if (score > bestScore) { bestScore = score; bestId = id; }
       }
       // Require a real overlap, not one incidental word.
-      return best && best.score >= Math.min(2, args.words.length) ? best.id : "";
+      return bestScore >= (args.words.length < 2 ? 1 : 2) ? bestId : "";
     }, { words: wanted }).catch(() => "") as string;
 
     if (foundId) {
