@@ -209,16 +209,20 @@ export class RecipeAdapter extends BasePortalAdapter {
     // first step that throws. Recording the wizard page alongside each step is what turns
     // that into a readable story. Cheap: one heading read per step, no screenshots.
     const trace: Array<{ i: number; action: string; note: string; outcome: string; page: string }> = [];
+    // ONE non-blocking DOM read. Written first with Playwright locators and innerText
+    // timeouts, this ran per step and waited out its budget on every page that had no
+    // active-tab element — about 700ms x every step, which doubled the replay smoke.
+    // A trace must never be able to slow down the thing it is tracing.
     const currentPageLabel = async (): Promise<string> => {
-      try {
-        // The active wizard tab, then any page heading — whatever the portal offers.
-        const active = await this.page.locator('[class*="active"]:has-text(""), .nav-link.active, [aria-current="page"]')
-          .first().innerText({ timeout: 700 }).catch(() => "");
-        const text = String(active ?? "").trim().replace(/\s+/g, " ");
-        if (text) return text.slice(0, 48);
-        const h = await this.page.locator("h1, h2, legend").first().innerText({ timeout: 500 }).catch(() => "");
-        return String(h ?? "").trim().replace(/\s+/g, " ").slice(0, 48);
-      } catch { return ""; }
+      if (typeof this.page?.evaluate !== "function") return "";
+      return await this.page.evaluate(() => {
+        const clean = (s: string | null | undefined) => (s || "").trim().replace(/\s+/g, " ").slice(0, 48);
+        const active = document.querySelector('.nav-link.active, [aria-current="page"], [class*="active"]');
+        const fromTab = clean(active && (active as HTMLElement).innerText);
+        if (fromTab) return fromTab;
+        const h = document.querySelector("h1, h2, legend");
+        return clean(h && (h as HTMLElement).innerText);
+      }).catch(() => "") as Promise<string>;
     };
 
     for (let stepIdx = 0; stepIdx < this.recipe.steps.length; stepIdx++) {
@@ -439,6 +443,18 @@ export class RecipeAdapter extends BasePortalAdapter {
               break;
             }
           }
+        }
+        // CASCADE. A model list is populated by an XHR fired when the manufacturer above it
+        // changed (~600ms on PowerClerk, per CLAUDE.md), so the first attempt can run
+        // against an option list that is still just "Please select...". The learner waits
+        // for this; replay did not, so the model select landed nothing, returned false, and
+        // was SKIPPED IN SILENCE — which on the live PGE run left the array with no module,
+        // every capacity reading 0.00 kW, and the wizard branching down a different path
+        // than the recipe recorded. Give the list time to arrive before believing the miss.
+        for (let attempt = 0; !selected && attempt < 3; attempt++) {
+          await sleep(800);
+          selected = await selectWithFallback(this.page, scoped, v);
+          if (selected) this.driftWarnings.push(`select "${String(step.note ?? step.field ?? "")}" needed ${(attempt + 1) * 800}ms for its options to load (cascade)`);
         }
         // Wait for any Vue/React re-renders triggered by the dropdown change to settle
         // before filling subsequent fields (e.g. PowerClerk resets contact fields on

@@ -4723,6 +4723,25 @@ export class AutoLearnAdapter extends BasePortalAdapter {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export async function dismissPageModals(page: any): Promise<void> {
   if (!page) return;
+  // FAST PATH. The walk below probes 20+ selectors, up to 3 times, plus an Escape fallback
+  // — about 1.5s even on a page with no overlay at all. That was fine when only the learner
+  // called it once per page; replay calls it before every click, where it added ~5s to a
+  // three-click run and would add far more across a 99-step recipe. One round trip decides
+  // whether the expensive walk is worth running: is there ANY overlay-shaped element, or
+  // any button whose text is a dismissal? Deliberately broader than the selectors below, so
+  // it can only skip work that would have found nothing.
+  if (typeof page.evaluate === "function") {
+    const worthDoing = await page.evaluate(() => {
+      const CSS_HINTS = '.modal, .popover, .modal-backdrop, [class*="backdrop"], [id*="cpr-banner"],'
+        + ' [class*="cookie"], [class*="consent"], .btn-close, [aria-label="Close"], [aria-label="close"],'
+        + ' .x-tool-close, [class*="x-window"], [class*="modal"], [class*="popover"]';
+      if (document.querySelector(CSS_HINTS)) return true;
+      const DISMISS_TEXT = /^(got it|dismiss|close|accept all|accept|ok|×|x)$/i;
+      const els = Array.from(document.querySelectorAll("button, a, .btn, [role=button]"));
+      return els.some((el) => DISMISS_TEXT.test(((el as HTMLElement).innerText || "").trim()));
+    }).catch(() => true); // unreadable page → do the full walk, as before
+    if (!worthDoing) return;
+  }
   // Match dismiss controls whether they're <button>, <a>, or .btn (PowerClerk uses
   // Bootstrap .btn links/buttons), so a "Got it"/"Close" link is caught too.
   const clickable = ":is(button, a, .btn, [role=button])";
