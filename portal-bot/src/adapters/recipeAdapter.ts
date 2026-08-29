@@ -6,7 +6,7 @@ import { openPortal } from "../browser";
 import { selectWithFallback } from "../comboboxFill";
 import { detectChallengeFrame, frameSelectorFor, hasNumericValidationError, scanStatusFromBody, RETRY_BACKOFF_MS, sleep, smartWait, toBareNumber, waitForElement, waitForInteractiveControls } from "../safeAction";
 import { performLogin } from "./loginFlow";
-import { EXTRACT_SEL, extractFieldsInPage, toExtractedField, dismissPageModals, clearPageOverlays, equipmentMakeCandidates } from "./autoLearnAdapter";
+import { EXTRACT_SEL, extractFieldsInPage, toExtractedField, dismissPageModals, clearPageOverlays, equipmentMakeCandidates, pageFingerprintOf, collectValidationErrorsFrom } from "./autoLearnAdapter";
 import { tagUploadControls } from "./autoLearnAdapter";
 
 // RecipeAdapter — replays a recorded portal recipe (see portal_recipes / the recorder).
@@ -44,6 +44,12 @@ function isFinalSubmitStep(step: RecipeStep): boolean {
 // A fill on a control that never becomes actionable must not cost Playwright's 30s
 // default — on replay that failure aborts the entire run, not just the step.
 const FILL_TIMEOUT_MS = 8000;
+
+// How long to let a same-URL SPA wizard render its next section before deciding the portal
+// refused the advance. Four short waits rather than one long one, so the common case (the
+// page moved immediately) costs a single fingerprint read.
+const ADVANCE_SETTLE_TRIES = 4;
+const ADVANCE_SETTLE_MS = 600;
 
 // Actions whose target control is identified by a LABEL and therefore worth verifying
 // before we touch it. Navigation (goto/click) and uploads are excluded: a button's text is
@@ -372,7 +378,7 @@ export class RecipeAdapter extends BasePortalAdapter {
         // New page segment begins after an advance — precheck it before burning
         // per-step timeouts on a page the portal may have rebuilt.
         const driftFail = await this.precheckPageDrift(stepIdx + 1);
-        if (driftFail) return fail(driftFail, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings });
+        if (driftFail) return fail(driftFail, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, failedStepIndex: stepIdx, trace });
       }
     }
 
@@ -767,13 +773,111 @@ export class RecipeAdapter extends BasePortalAdapter {
     }
 
     // 5) Ordinary navigation/UI click (pre-review). Safe to perform.
+    //
+    // Fingerprint FIRST: this is the only way to tell "the portal advanced" from "the
+    // portal refused". waitForInteractiveControls below cannot — it is page-global and
+    // identity-free, so a page that never moved satisfies it instantly.
+    const beforeUrl = typeof this.page.url === "function" ? String(this.page.url() ?? "") : "";
+    const beforeFp = await this.pageIdentity();
+
     await waitForElement(scoped);
     await scoped!.click();
     // A recorded Next/Continue advances a Vue wizard to a not-yet-bound section. Wait for an
     // interactive control to mount before the next fill so we never type onto an unmounted page
     // (best-effort; never skips — the retry/reload loop still recovers a genuine miss).
     await waitForInteractiveControls(this.page);
+    await this.assertAdvanced(step, beforeUrl, beforeFp);
     return true;
+  }
+
+  /**
+   * WHICH page this is, not whether anything on it changed. The learner's pageFingerprint
+   * includes document.body.innerText.length, which is right for its purpose but wrong here:
+   * a portal REFUSING an advance renders a validation message, the body text grows, and the
+   * fingerprint duly changes — so "the portal rejected you" would read as "the page moved".
+   * That is not hypothetical; it is what the first version of the advance guard did.
+   *
+   * Identity is the wizard heading plus the ids of the controls currently on screen. A
+   * validation message perturbs neither.
+   */
+  private async pageIdentity(): Promise<string> {
+    if (!this.page || typeof this.page.evaluate !== "function") return "";
+    return await this.page.evaluate(() => {
+      const h = document.querySelector("h1, h2, legend, .wizard-step.active, .nav-link.active, [aria-current='page']");
+      const heading = ((h as HTMLElement | null)?.textContent || "").trim().replace(/\s+/g, " ").slice(0, 60);
+      const ids: string[] = [];
+      const els = Array.from(document.querySelectorAll("input, select, textarea")) as HTMLElement[];
+      for (const el of els) {
+        const r = el.getBoundingClientRect();
+        if (!r || (r.width === 0 && r.height === 0)) continue;
+        ids.push(el.getAttribute("id") || el.getAttribute("name") || (el.tagName || "").toLowerCase());
+      }
+      return `${location.pathname}|${heading}|${ids.sort().join(",")}`;
+    }).catch(() => "") as Promise<string>;
+  }
+
+  /**
+   * DID THE PORTAL ACTUALLY MOVE? The learner has always checked this (its POST-ADVANCE
+   * VALIDATION GUARD); replay never did, and that single omission is what turned a blocked
+   * "Next" into forty steps of wrong-control fills.
+   *
+   * When a required field is left blank, the portal refuses the advance but the CLICK still
+   * succeeds — the button was there and was clicked. Replay then believed it had advanced,
+   * ran the next page's steps against the page it was still on, and every recorded id
+   * resolved onto whatever unrelated control happened to occupy it. Measured live: 59 steps
+   * executed and 6 skipped past a desync before anything noticed.
+   *
+   * Throws on a confirmed block, so the caller's existing retry/fail path reports it with
+   * the "Recipe step failed" prefix that repository.ts matches to flag the recipe and queue
+   * a fresh learn. A goto/navigation click legitimately changes the URL, which counts as
+   * moving; only a click that changes NOTHING is a block.
+   */
+  private async assertAdvanced(step: RecipeStep, beforeUrl: string, beforeFp: string): Promise<void> {
+    // No identity means a mock/no-DOM page (the unit-test doubles) — assert nothing.
+    if (!beforeFp) return;
+    const moved = async (): Promise<boolean> => {
+      const url = typeof this.page.url === "function" ? String(this.page.url() ?? "") : "";
+      if (url && url !== beforeUrl) return true;
+      const fp = await this.pageIdentity();
+      return !!fp && fp !== beforeFp;
+    };
+
+    // FAST PATH 1 — it moved. One identity read, no waiting. This is the common case and it
+    // must stay free: an earlier ordering settled first and put 5s on every click, which is
+    // the opposite of what "fast once learned" needs.
+    if (await moved()) return;
+
+    // FAST PATH 2 — it did not move and the portal is not complaining. NOT every recorded
+    // click is an advance: "Calculate", "Add Array", "Add New" contact and saves all
+    // legitimately leave the page as it was, and failing those would break working replays
+    // (the Accela replay smoke caught exactly that). Note it and move on; precheckPageDrift
+    // remains the backstop if this really was a desync.
+    let blockers = await collectValidationErrorsFrom(this.page).catch(() => [] as string[]);
+    if (!blockers.length) {
+      this.driftWarnings.push(`click "${String(step.note ?? "click").slice(0, 44)}" left the page unchanged (in-page action, or an advance that silently did nothing)`);
+      return;
+    }
+
+    // The portal is refusing. Give a slow SPA a moment in case the complaint is stale and
+    // the next section is still rendering, then try clearing an overlay and clicking once
+    // more — an announcement modal ate every click of a diagnostic probe for fourteen
+    // iterations without it ever noticing.
+    for (let i = 0; i < ADVANCE_SETTLE_TRIES && !(await moved()); i++) await sleep(ADVANCE_SETTLE_MS);
+    if (await moved()) return;
+    await dismissPageModals(this.page).catch(() => null);
+    await clearPageOverlays(this.page).catch(() => null);
+    const again = await this.resolveLocator(step.selector).catch(() => null);
+    if (again && typeof again.click === "function") await again.click({ timeout: 8000 }).catch(() => null);
+    for (let i = 0; i < ADVANCE_SETTLE_TRIES && !(await moved()); i++) await sleep(ADVANCE_SETTLE_MS);
+    if (await moved()) {
+      this.driftWarnings.push(`advance "${String(step.note ?? "click").slice(0, 44)}" needed an overlay dismissed before it took`);
+      return;
+    }
+
+    // Still refused. Report the PORTAL'S OWN words — "Meter Number: This field is required."
+    // is worth more to an operator than any drift percentage we could compute.
+    blockers = await collectValidationErrorsFrom(this.page).catch(() => blockers);
+    throw new Error(`the portal did not advance (it refused "${String(step.note ?? "the advance").slice(0, 44)}"). The portal says: ${blockers.slice(0, 6).join(" | ")}`);
   }
 
   // Resolve a selector to a present locator: try the primary, and if it matches

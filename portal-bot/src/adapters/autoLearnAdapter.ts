@@ -4565,16 +4565,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   // the next step (input count + the step heading + body length). Not a security hash —
   // just "did the page meaningfully change". Returns "" on a mock/no-DOM page.
   private async pageFingerprint(): Promise<string> {
-    if (!this.page || typeof this.page.evaluate !== "function") return "";
-    try {
-      return await this.page.evaluate(() => {
-        const inputs = document.querySelectorAll("input, select, textarea").length;
-        const heading = (document.querySelector("h1, h2, legend, .wizard-step.active, .active")?.textContent || "").trim().slice(0, 50);
-        return `${location.href}|${inputs}|${heading}|${(document.body?.innerText || "").length}`;
-      });
-    } catch {
-      return "";
-    }
+    return pageFingerprintOf(this.page);
   }
 
   // Remove stubborn overlay SCRIMS that intercept pointer events but aren't dismissible by a
@@ -4658,55 +4649,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   //   "Schedule: This field is required."  or  "Energy Source: Please select an option."
   // Best-effort; never throws. Returns [] when nothing is found.
   private async collectValidationErrors(): Promise<string[]> {
-    if (!this.page || typeof this.page.evaluate !== "function") return [];
-    try {
-      return await this.page.evaluate((): string[] => {
-        const seen = new Set<string>();
-        const out: string[] = [];
-        const add = (msg: string) => { const t = msg.trim(); if (t && !seen.has(t)) { seen.add(t); out.push(t); } };
-        // Include OPEN shadow roots — a web component's inline validation must be able to
-        // block an advance exactly like light-DOM validation.
-        const deepQueryAll = (root: ParentNode, sel: string): Element[] => {
-          const found: Element[] = Array.from(root.querySelectorAll(sel));
-          for (const host of Array.from(root.querySelectorAll("*"))) {
-            if ((host as Element).shadowRoot) found.push(...deepQueryAll((host as Element).shadowRoot as ShadowRoot, sel));
-          }
-          return found;
-        };
-
-        // 1. Visible text inside validation/error elements.
-        const errSels = [
-          '[class*="validation-message"]:not([style*="display:none"]):not([style*="display: none"])',
-          '[class*="field-validation-error"]',
-          '.invalid-feedback:not([style*="display:none"])',
-          '[class*="error-message"]:not([style*="display:none"])',
-          '[role="alert"]:not([style*="display:none"])',
-          '[aria-live="assertive"]:not([style*="display:none"])',
-          '.alert-danger:not([style*="display:none"])',
-        ];
-        for (const sel of errSels) {
-          for (const el of deepQueryAll(document, sel) as HTMLElement[]) {
-            const t = el.innerText?.trim();
-            if (t && t.length > 3 && el.offsetParent !== null) add(t);
-          }
-        }
-
-        // 2. aria-invalid inputs that are also required — append a synthetic label+message.
-        for (const el of deepQueryAll(
-          document,
-          "input[aria-invalid='true'][required], select[aria-invalid='true'][required], " +
-          "textarea[aria-invalid='true'][required]"
-        ) as Array<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) {
-          const label = ((el.getRootNode() as Document | ShadowRoot).querySelector(`label[for="${el.id}"]`) as HTMLLabelElement)?.innerText?.trim()
-            || (el as HTMLInputElement).placeholder || el.name || "Field";
-          add(`${label}: This field is required.`);
-        }
-
-        return out.slice(0, 20);
-      });
-    } catch {
-      return [];
-    }
+    return collectValidationErrorsFrom(this.page);
   }
 
   // Resolve a selector descriptor to the first locator that has ≥1 matching element on
@@ -4891,4 +4834,81 @@ export async function clearPageOverlays(page: any): Promise<void> {
       }
     });
   } catch { /* mock page or no DOM — non-fatal */ }
+}
+
+// SHARED WITH REPLAY. Extracted verbatim from AutoLearnAdapter.pageFingerprint so RecipeAdapter can
+// run the same POST-ADVANCE guard the learner has always had. The learner detects a portal
+// that refused a "Next" (the click succeeds, the page does not move) and scrapes the
+// portal's own complaint; replay had none of it, so it marched on a page behind and filled
+// forty steps into whatever controls happened to sit at the recorded ids.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function pageFingerprintOf(page: any): Promise<string> {
+  if (!page || typeof page.evaluate !== "function") return "";
+  try {
+    return await page.evaluate(() => {
+      const inputs = document.querySelectorAll("input, select, textarea").length;
+      const heading = (document.querySelector("h1, h2, legend, .wizard-step.active, .active")?.textContent || "").trim().slice(0, 50);
+      return `${location.href}|${inputs}|${heading}|${(document.body?.innerText || "").length}`;
+    });
+  } catch {
+    return "";
+  }
+}
+
+// SHARED WITH REPLAY. Extracted verbatim from AutoLearnAdapter.collectValidationErrors so RecipeAdapter can
+// run the same POST-ADVANCE guard the learner has always had. The learner detects a portal
+// that refused a "Next" (the click succeeds, the page does not move) and scrapes the
+// portal's own complaint; replay had none of it, so it marched on a page behind and filled
+// forty steps into whatever controls happened to sit at the recorded ids.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function collectValidationErrorsFrom(page: any): Promise<string[]> {
+  if (!page || typeof page.evaluate !== "function") return [];
+  try {
+    return await page.evaluate((): string[] => {
+      const seen = new Set<string>();
+      const out: string[] = [];
+      const add = (msg: string) => { const t = msg.trim(); if (t && !seen.has(t)) { seen.add(t); out.push(t); } };
+      // Include OPEN shadow roots — a web component's inline validation must be able to
+      // block an advance exactly like light-DOM validation.
+      const deepQueryAll = (root: ParentNode, sel: string): Element[] => {
+        const found: Element[] = Array.from(root.querySelectorAll(sel));
+        for (const host of Array.from(root.querySelectorAll("*"))) {
+          if ((host as Element).shadowRoot) found.push(...deepQueryAll((host as Element).shadowRoot as ShadowRoot, sel));
+        }
+        return found;
+      };
+
+      // 1. Visible text inside validation/error elements.
+      const errSels = [
+        '[class*="validation-message"]:not([style*="display:none"]):not([style*="display: none"])',
+        '[class*="field-validation-error"]',
+        '.invalid-feedback:not([style*="display:none"])',
+        '[class*="error-message"]:not([style*="display:none"])',
+        '[role="alert"]:not([style*="display:none"])',
+        '[aria-live="assertive"]:not([style*="display:none"])',
+        '.alert-danger:not([style*="display:none"])',
+      ];
+      for (const sel of errSels) {
+        for (const el of deepQueryAll(document, sel) as HTMLElement[]) {
+          const t = el.innerText?.trim();
+          if (t && t.length > 3 && el.offsetParent !== null) add(t);
+        }
+      }
+
+      // 2. aria-invalid inputs that are also required — append a synthetic label+message.
+      for (const el of deepQueryAll(
+        document,
+        "input[aria-invalid='true'][required], select[aria-invalid='true'][required], " +
+        "textarea[aria-invalid='true'][required]"
+      ) as Array<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) {
+        const label = ((el.getRootNode() as Document | ShadowRoot).querySelector(`label[for="${el.id}"]`) as HTMLLabelElement)?.innerText?.trim()
+          || (el as HTMLInputElement).placeholder || el.name || "Field";
+        add(`${label}: This field is required.`);
+      }
+
+      return out.slice(0, 20);
+    });
+  } catch {
+    return [];
+  }
 }
