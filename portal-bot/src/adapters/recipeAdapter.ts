@@ -479,21 +479,31 @@ export class RecipeAdapter extends BasePortalAdapter {
       const controls = Array.from(document.querySelectorAll("input, select, textarea")) as HTMLElement[];
       let bestId = "";
       let bestScore = 0;
+      let bestWords = 0;
       for (const el of controls) {
         const id = el.getAttribute("id");
         if (!id) continue;
-        const r = el.getBoundingClientRect();
-        if (!r || (r.width === 0 && r.height === 0)) continue; // not the control a person sees
         const forLbl = document.querySelector(`label[for="${CSS.escape(id)}"]`) as HTMLElement | null;
         const wrap = el.closest("label") as HTMLElement | null;
-        const raw = (forLbl ? forLbl.innerText : wrap ? wrap.innerText : el.getAttribute("aria-label")) || "";
+        const src = forLbl || wrap;
+        // textContent, NOT innerText: innerText is layout-dependent and returns "" for a
+        // label that is not currently rendered, which silently drops the candidate.
+        const raw = (src ? src.textContent : el.getAttribute("aria-label")) || "";
         const text = raw.toLowerCase().replace(/[^a-z0-9\s]/g, " ");
         let score = 0;
         for (const w of args.words) if (text.indexOf(w) >= 0) score++;
-        if (score > bestScore) { bestScore = score; bestId = id; }
+        if (!score) continue;
+        // Visibility is a TIE-BREAK, not a filter. A portal that keeps its real control
+        // behind a styled widget (PowerClerk does) would otherwise have every candidate
+        // discarded before scoring — and selectWithFallback drives a hidden native fine.
+        const r = el.getBoundingClientRect();
+        const visible = !!r && (r.width > 0 || r.height > 0);
+        const rank = score * 2 + (visible ? 1 : 0);
+        if (rank > bestScore) { bestScore = rank; bestId = id; bestWords = score; }
       }
-      // Require a real overlap, not one incidental word.
-      return bestScore >= (args.words.length < 2 ? 1 : 2) ? bestId : "";
+      // Require a real overlap of MEANINGFUL WORDS, not one incidental hit. bestScore
+      // carries the visibility tie-break, so gate on the word count itself.
+      return bestWords >= (args.words.length < 2 ? 1 : 2) ? bestId : "";
     }, { words: wanted }).catch(() => "") as string;
 
     if (foundId) {
@@ -941,13 +951,26 @@ export class RecipeAdapter extends BasePortalAdapter {
       const hit = expected.filter(matches).length;
       const overlap = hit / expected.length;
       if (overlap >= 0.34) return null;
-      if (hit > 0) {
-        this.driftWarnings.push(
-          `Page drift: only ${hit}/${expected.length} recorded fields found for this section (${expected.slice(0, 4).join(", ")}…) — the portal may have changed; verify the review screen closely.`,
-        );
-        return null;
+      // BELOW THIS, WE ARE NOT ON THE RECORDED PAGE — stop rather than warn.
+      //
+      // Stopping used to require ZERO matches, so a couple of incidental hits ("Name",
+      // "Email" appear on half a wizard's pages) suppressed it. Measured live: a replay
+      // found 2 of 26 recorded fields, warned, and carried on for forty more steps — every
+      // one of them resolving onto whatever control happened to sit at the recorded id on
+      // a page the recipe was not looking at. That is how a wizard desync turns into wrong
+      // data rather than a clean failure.
+      //
+      // The desync itself is upstream: a step that does not fill leaves a required field
+      // blank, the portal then refuses the "Next", and the recipe marches on believing it
+      // advanced. Detecting it HERE is what converts that into a stop plus a re-learn (the
+      // "recipe step failed" wording is what repository.ts matches to queue one).
+      if (overlap < 0.15) {
+        return `Recipe step failed (page drift): only ${hit} of ${expected.length} recorded fields for this section (${expected.slice(0, 3).map((e) => `"${e}"`).join(", ")}…) are on the current page — the replay is not on the page the recipe expects, most likely because an earlier required field was left blank and the portal refused to advance. Stopping rather than filling the wrong controls.`;
       }
-      return `Recipe step failed (page drift): none of the ${expected.length} recorded fields for this section ("${expected.slice(0, 3).join('", "')}"…) are on the current page — the portal has likely changed. Re-record the recipe.`;
+      this.driftWarnings.push(
+        `Page drift: only ${hit}/${expected.length} recorded fields found for this section (${expected.slice(0, 4).join(", ")}…) — the portal may have changed; verify the review screen closely.`,
+      );
+      return null;
     } catch {
       return null; // precheck must never break a replay
     }
