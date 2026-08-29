@@ -197,6 +197,15 @@ export async function syncCecEquipment(db: AppDb): Promise<CecSyncSummary> {
 
 const compact = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]/g, "");
 
+// Words that appear in so many manufacturer names that matching on them would return
+// noise rather than the certified name for THIS make.
+const CEC_GENERIC_MAKE_WORDS = new Set([
+  "solar", "energy", "power", "systems", "system", "technologies", "technology", "electric",
+  "electronics", "america", "american", "international", "industries", "industry", "group",
+  "company", "limited", "corporation", "holdings", "global", "green", "clean", "renewable",
+  "manufacturing", "trading", "science", "sciences",
+]);
+
 /** Certified manufacturer names matching an operator/plan-set make ("apsystems"
  *  → "Altenergy Power System Inc."). Same compact normalization the static
  *  alias table uses; contains-match both ways, min 4 chars, capped at 5. */
@@ -206,9 +215,25 @@ export function certifiedNamesForMake(db: AppDb, kind: CecKind | "battery", make
   try {
     const rows = db.query<{ manufacturer: string }>("SELECT DISTINCT manufacturer FROM cec_equipment WHERE kind = ?", [kind]);
     const out: string[] = [];
+    // A DISTINCTIVE token from the plan-set make, for the very common case where the
+    // certified name is a different phrase rather than a longer version of the same one.
+    // Whole-string containment alone silently missed exactly the makes these projects use:
+    //   "ZNShine Solar"  vs  "ZNSHINE PV-TECH Co., Ltd."   -> neither contains the other
+    //   "Q CELLS"        vs  "Hanwha Qcells (Qidong) Co."
+    // Generic words are excluded because "solar"/"energy"/"power" would match hundreds of
+    // manufacturers and turn a precise lookup into noise; a token must also be >= 5 chars,
+    // so "ap" from "AP Systems" cannot match half the list either. Makes whose certified
+    // name shares NO distinctive token ("AP Systems" -> "Altenergy Power System Inc.")
+    // remain the job of the curated alias table, which is why both sources are consulted.
+    const tokens = String(make ?? "").toLowerCase().split(/[^a-z0-9]+/)
+      .filter((t) => t.length >= 5 && !CEC_GENERIC_MAKE_WORDS.has(t))
+      .map((t) => t);
     for (const row of rows) {
       const c = compact(row.manufacturer);
-      if (c.length >= 4 && (c.includes(want) || want.includes(c))) {
+      if (c.length < 4) continue;
+      const whole = c.includes(want) || want.includes(c);
+      const byToken = !whole && tokens.some((t) => c.includes(t));
+      if (whole || byToken) {
         out.push(row.manufacturer);
         if (out.length >= 5) break;
       }
