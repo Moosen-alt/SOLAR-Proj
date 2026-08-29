@@ -4638,22 +4638,31 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     const savingVisible = async (): Promise<boolean> => {
       try {
         return await this.page!.evaluate(() => {
-          const vis = (el: Element): boolean => {
-            const r = (el as HTMLElement).getBoundingClientRect();
-            const st = window.getComputedStyle(el as HTMLElement);
-            return r.width > 0 && r.height > 0 && st.visibility !== "hidden" && st.display !== "none";
-          };
+          // NO HOISTED HELPER OF ANY KIND inside an in-page callback: the bundler's
+          // keepNames transform wraps any function it can infer a name for — both
+          // `const vis = (el) => …` and `const vis = function (el) {…}` — as
+          // `__name(fn, "vis")`, and `__name` does not exist in the browser. Verified in
+          // real Chromium: both forms throw "ReferenceError: __name is not defined"; only
+          // a fully inline anonymous callback survives. The surrounding catch turned that
+          // throw into a permanent "no autosave in flight", so this guard never fired.
           // Text-based "Saving…/Processing…" status (PowerClerk's top-right "Saving…").
           const texts = Array.from(document.querySelectorAll<HTMLElement>("span, div, small, p, label"));
           for (const el of texts) {
             const t = (el.textContent || "").trim();
-            if (/^(saving|processing|uploading|please wait)(\.{0,3}|…)?$/i.test(t) && vis(el)) return true;
+            const rr = el.getBoundingClientRect();
+            const ss = window.getComputedStyle(el);
+            const visible = rr.width > 0 && rr.height > 0 && ss.visibility !== "hidden" && ss.display !== "none";
+            if (/^(saving|processing|uploading|please wait)(\.{0,3}|…)?$/i.test(t) && visible) return true;
           }
           // Common spinner/overlay classes used by SPA wizards while an XHR is in flight.
           const spinners = document.querySelectorAll(
             "[class*='saving'], [class*='spinner']:not([style*='display: none']), .loading-overlay, .x-mask-loading, [aria-busy='true']",
           );
-          for (const el of spinners) if (vis(el)) return true;
+          for (const el of spinners) {
+            const rr = (el as HTMLElement).getBoundingClientRect();
+            const ss = window.getComputedStyle(el as HTMLElement);
+            if (rr.width > 0 && rr.height > 0 && ss.visibility !== "hidden" && ss.display !== "none") return true;
+          }
           return false;
         });
       } catch { return false; }

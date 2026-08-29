@@ -138,18 +138,22 @@ export async function waitForInteractiveControls(page: any, timeoutMs?: number):
     || Number(process.env.POWERCLERK_SECTION_READY_MS)
     || 12000;
   try {
+    // NO NAMED FUNCTIONS INSIDE AN IN-PAGE PREDICATE. The bundler's keepNames transform
+    // rewrites a named arrow (`const vis = (el) => ...`) as `__name((el) => ..., "vis")`,
+    // and `__name` does not exist in the browser — the predicate threw
+    // "ReferenceError: __name is not defined" on EVERY poll, so this gate could never
+    // return true on any page of any portal and simply burned its full 12s budget each
+    // time it was called (measured: 9/9 calls x 12s = 108s in one Accela run, and the
+    // RecipeAdapter calls it after every goto and advancing click too). Keep the callback
+    // anonymous and inline.
     await page.waitForFunction(
-      () => {
-        const vis = (el: Element): boolean => {
-          const r = (el as HTMLElement).getBoundingClientRect();
-          const st = window.getComputedStyle(el as HTMLElement);
-          return r.width > 0 && r.height > 0 && st.visibility !== "hidden" && st.display !== "none";
-        };
-        const controls = Array.from(document.querySelectorAll(
-          "input:not([type=hidden]):not([disabled]):not([readonly]), select:not([disabled]), textarea:not([disabled]), [role=radio], [role=checkbox]",
-        ));
-        return controls.some(vis);
-      },
+      () => Array.from(document.querySelectorAll(
+        "input:not([type=hidden]):not([disabled]):not([readonly]), select:not([disabled]), textarea:not([disabled]), [role=radio], [role=checkbox]",
+      )).some((el) => {
+        const r = (el as HTMLElement).getBoundingClientRect();
+        const st = window.getComputedStyle(el as HTMLElement);
+        return r.width > 0 && r.height > 0 && st.visibility !== "hidden" && st.display !== "none";
+      }),
       undefined,
       { timeout: budget, polling: 250 },
     );

@@ -352,17 +352,18 @@ export class PowerClerkAdapter extends BasePortalAdapter {
     // Fallback (live heading wording may drift from the regex): a genuine data form has two or
     // more visible, enabled text-like inputs. A disclaimer page's lone checkbox/select fails
     // this, so the loop keeps clicking Next instead of stranding on the acknowledgment page.
-    return await page.evaluate(() => {
-      const vis = (el: Element): boolean => {
-        const r = (el as HTMLElement).getBoundingClientRect();
-        const st = window.getComputedStyle(el as HTMLElement);
-        return r.width > 0 && r.height > 0 && st.visibility !== "hidden" && st.display !== "none";
-      };
-      const textInputs = Array.from(document.querySelectorAll(
-        "input:not([type=hidden]):not([type=checkbox]):not([type=radio]):not([type=button]):not([type=submit]):not([type=reset]):not([disabled]):not([readonly]), textarea:not([disabled])",
-      )).filter(vis);
-      return textInputs.length >= 2;
-    }).catch(() => false);
+    // Anonymous + inline: a NAMED arrow inside an in-page callback is rewritten by the
+    // bundler's keepNames transform to `__name(fn, "vis")`, and `__name` does not exist in
+    // the browser — this whole fallback threw "ReferenceError: __name is not defined" and
+    // the .catch(() => false) turned it into a silent always-false, so the form-shape check
+    // never actually ran.
+    return await page.evaluate(() => Array.from(document.querySelectorAll(
+      "input:not([type=hidden]):not([type=checkbox]):not([type=radio]):not([type=button]):not([type=submit]):not([type=reset]):not([disabled]):not([readonly]), textarea:not([disabled])",
+    )).filter((el) => {
+      const r = (el as HTMLElement).getBoundingClientRect();
+      const st = window.getComputedStyle(el as HTMLElement);
+      return r.width > 0 && r.height > 0 && st.visibility !== "hidden" && st.display !== "none";
+    }).length >= 2).catch(() => false);
   }
 
   // ---------------------------------------------------------------------------

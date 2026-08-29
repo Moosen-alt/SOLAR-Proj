@@ -171,6 +171,41 @@ check("bare Submit click emits the submit-observed signal, then DISARMS capture"
   assert.equal(selects.length, 1, `post-submit select change leaked: ${JSON.stringify(selects)}`);
 });
 
+// IN-PAGE PREDICATES MUST NOT REFERENCE __name. The bundler's keepNames transform wraps
+// any function it can infer a name for — `const f = (x) => …` and `const f = function (x)
+// {…}` alike — as `__name(fn, "f")`, which does not exist in the browser. A predicate that
+// hits it throws ReferenceError on every poll: waitForInteractiveControls could never
+// return true and burned its full 12s budget on EVERY page of every portal (measured 9/9
+// x 12s = 108s in one Accela run), and two other guards were silently catch-to-false.
+// Only fully inline anonymous callbacks survive, so exercise the real helpers in a real
+// browser rather than trusting review.
+{
+  const probe = await browser.newPage();
+  await probe.setContent("<html><body><input type='text' style='width:120px;height:24px'><button>Go</button></body></html>");
+
+  const { waitForInteractiveControls } = await import("../safeAction");
+  const t0 = Date.now();
+  const ready = await waitForInteractiveControls(probe, 4000);
+  const ms = Date.now() - t0;
+  check("waitForInteractiveControls resolves on a page WITH a visible control (no __name throw)", () => {
+    assert.equal(ready, true, "readiness gate must see the visible input");
+    assert.ok(ms < 2000, `must resolve promptly, took ${ms}ms (a __name ReferenceError burns the whole budget)`);
+  });
+
+  // Guard the whole class: any inline predicate shaped like the ones we ship must run.
+  const namedArrowThrows = await probe.evaluate(() => {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const helper = (n: number): number => n + 1;
+      return helper(1) !== 2;
+    } catch { return true; }
+  }).catch(() => true);
+  check("a named helper inside an in-page callback is the known-bad shape", () => {
+    assert.equal(namedArrowThrows, true, "if this ever passes, keepNames stopped rewriting and the rule can relax");
+  });
+  await probe.close();
+}
+
 await browser.close();
 child.close();
 parent.close();
