@@ -5,7 +5,7 @@ import type { AppDb } from "./db";
 import { HttpError } from "./httpError";
 import { id } from "./ids";
 import { asJson, bool, parseJson, text as s } from "./json";
-import { knowledgeProfileKey } from "./knowledgeBase";
+import { knowledgeProfileKey, knowledgeNameMatchScore } from "./knowledgeBase";
 import { nowIso } from "./time";
 import { parseStreetNumber, parseStreetName } from "../../portal-bot/src/addressParse";
 
@@ -73,6 +73,43 @@ export function getPortalRecipe(db: AppDb, recipeId: string): PortalRecipe {
 // LEGACY row (discipline '', learned before the dimension existed) is accepted as a
 // fallback so existing recipes keep replaying — the staging discipline gate still refuses
 // one whose recorded steps belong to the other discipline.
+// NAME-ALIAS FALLBACK for the recipe key. The profile key is built from the utility/AHJ
+// string as the PROJECT spells it, so a portal learned under one spelling is invisible to a
+// project that uses another. Measured on the live DB: the trusted 60-step PGE recipe is
+// keyed "or|unknown|pge", but a real PGE project stores "Portland General Electric" and
+// therefore resolved to NO complete recipe — every NEM stage re-learned the portal from
+// scratch instead of replaying, and the second key quietly accumulated its own draft
+// (v11). Same for "Pacific Power". This reuses the KB's own scorer, which already bridges
+// operator short names to legal names ("PGE" -> "Portland General Electric" scores 78).
+// EXACT KEY ALWAYS WINS (CLAUDE.md); this only runs when the exact key finds nothing.
+const NAME_ALIAS_MIN_SCORE = 78;
+function findRecipeByNameAlias(
+  db: AppDb,
+  input: { scopeType: "ahj" | "utility"; state?: string; ahj?: string; utility?: string; discipline?: string },
+  requireComplete: boolean,
+): PortalRecipe | null {
+  const wanted = s(input.scopeType === "utility" ? input.utility : input.ahj).trim();
+  if (!wanted) return null;
+  // A state-less project is exactly where a wrong-portal replay could slip through, since
+  // the state guard below can only compare states it has. Fuzzy needs both sides known.
+  if (!s(input.state).trim()) return null;
+  const discipline = s(input.discipline);
+  const rows = db.query<Row>(
+    `SELECT * FROM portal_recipes WHERE scope_type = ?${requireComplete ? " AND status = 'complete'" : ""}
+       AND (discipline = ? OR discipline = '') ORDER BY updated_at DESC`,
+    [input.scopeType, discipline],
+  );
+  let best: { row: Row; score: number } | null = null;
+  for (const row of rows) {
+    // Never cross states — a same-named utility in another state is a different portal.
+    const rowState = s(row.state);
+    if (!rowState || rowState.toLowerCase() !== s(input.state).trim().toLowerCase()) continue;
+    const score = knowledgeNameMatchScore(wanted, s(input.scopeType === "utility" ? row.utility : row.ahj));
+    if (score >= NAME_ALIAS_MIN_SCORE && (!best || score > best.score)) best = { row, score };
+  }
+  return best ? mapRecipe(best.row) : null;
+}
+
 export function findCompleteRecipeForProject(
   db: AppDb,
   input: { scopeType: "ahj" | "utility"; state?: string; ahj?: string; utility?: string; discipline?: string },
@@ -85,7 +122,7 @@ export function findCompleteRecipeForProject(
       ORDER BY CASE WHEN discipline = ? THEN 0 ELSE 1 END, updated_at DESC LIMIT 1`,
     [key, discipline, discipline],
   );
-  return row ? mapRecipe(row) : null;
+  return row ? mapRecipe(row) : findRecipeByNameAlias(db, input, true);
 }
 
 // Like findCompleteRecipeForProject, but matches a recipe of ANY status (recording / needs_rerecord
@@ -109,7 +146,7 @@ export function findAnyRecipeForProject(
       ORDER BY CASE WHEN discipline = ? THEN 0 ELSE 1 END, updated_at DESC LIMIT 1`,
     [key, discipline, discipline],
   );
-  return row ? mapRecipe(row) : null;
+  return row ? mapRecipe(row) : findRecipeByNameAlias(db, input, false);
 }
 
 // Start (or reset) a recording for a portal. Creates a 'recording' stub keyed by
