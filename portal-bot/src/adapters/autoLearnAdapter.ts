@@ -3797,7 +3797,16 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             selector,
             label: groupLabel,
             fieldType: "radio",
-            expected: policy.answer,
+            // The selector above targets the ONE radio input whose label equals the policy
+            // answer, so "did this land?" means "is THAT input checked" — not "is the group's
+            // value truthy". Recording the answer itself here made fieldHoldsValue read "No"
+            // as the boolean false and conclude the control should be UNCHECKED, so every
+            // policy answer of "No" reported itself as a required-field miss the moment it
+            // succeeded. That miss is a hard blocker in the trust gate, which is why the live
+            // PGE recipe could never be promoted while its export-limit answer ("No") was
+            // correct on the page. The "Yes" answers never tripped it -- hence only ever this
+            // one question. The human-readable answer stays in the step note.
+            expected: "true",
             sensitive: false,
             required: true,
           },
