@@ -6,7 +6,7 @@ import { openPortal } from "../browser";
 import { selectWithFallback } from "../comboboxFill";
 import { detectChallengeFrame, frameSelectorFor, hasNumericValidationError, scanStatusFromBody, RETRY_BACKOFF_MS, sleep, smartWait, toBareNumber, waitForElement, waitForInteractiveControls } from "../safeAction";
 import { performLogin } from "./loginFlow";
-import { EXTRACT_SEL, extractFieldsInPage, toExtractedField, dismissPageModals, clearPageOverlays } from "./autoLearnAdapter";
+import { EXTRACT_SEL, extractFieldsInPage, toExtractedField, dismissPageModals, clearPageOverlays, equipmentMakeCandidates } from "./autoLearnAdapter";
 import { tagUploadControls } from "./autoLearnAdapter";
 
 // RecipeAdapter — replays a recorded portal recipe (see portal_recipes / the recorder).
@@ -203,6 +203,24 @@ export class RecipeAdapter extends BasePortalAdapter {
       const driftFail = await this.precheckPageDrift(0);
       if (driftFail) return fail(driftFail, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings });
     }
+    // PER-STEP TRACE. A replay that "executed 60 and skipped 5" says nothing about WHERE it
+    // was when each of those happened, and a skipped step is silent by design — so a run
+    // can march through most of a recipe against the wrong pages and only surface at the
+    // first step that throws. Recording the wizard page alongside each step is what turns
+    // that into a readable story. Cheap: one heading read per step, no screenshots.
+    const trace: Array<{ i: number; action: string; note: string; outcome: string; page: string }> = [];
+    const currentPageLabel = async (): Promise<string> => {
+      try {
+        // The active wizard tab, then any page heading — whatever the portal offers.
+        const active = await this.page.locator('[class*="active"]:has-text(""), .nav-link.active, [aria-current="page"]')
+          .first().innerText({ timeout: 700 }).catch(() => "");
+        const text = String(active ?? "").trim().replace(/\s+/g, " ");
+        if (text) return text.slice(0, 48);
+        const h = await this.page.locator("h1, h2, legend").first().innerText({ timeout: 500 }).catch(() => "");
+        return String(h ?? "").trim().replace(/\s+/g, " ").slice(0, 48);
+      } catch { return ""; }
+    };
+
     for (let stepIdx = 0; stepIdx < this.recipe.steps.length; stepIdx++) {
       const step = this.recipe.steps[stepIdx];
       // Guided-manual: stop at review. autoSubmit (trusted, approved): proceed past
@@ -259,6 +277,7 @@ export class RecipeAdapter extends BasePortalAdapter {
           const done = await this.executeStep(step, pastReview);
           if (done) executed++;
           else skipped.push(step.note || step.action);
+          trace.push({ i: stepIdx, action: step.action, note: String(step.note ?? "").slice(0, 52), outcome: done ? "ok" : "SKIPPED", page: await currentPageLabel() });
           succeeded = true;
           break;
         } catch (err) {
@@ -309,7 +328,8 @@ export class RecipeAdapter extends BasePortalAdapter {
         // different page entirely. The screenshot plus the page's own url/title and its
         // visible buttons is usually enough to tell those apart at a glance.
         const context = failureContext || await this.captureFailureContext(step, stepIdx);
-        return fail(`Recipe step failed (${step.action}${step.note ? ` — ${step.note}` : ""}): ${lastErr instanceof Error ? lastErr.message : String(lastErr)}${context}`, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, failedStepIndex: stepIdx });
+        trace.push({ i: stepIdx, action: step.action, note: String(step.note ?? "").slice(0, 52), outcome: "FAILED", page: await currentPageLabel() });
+        return fail(`Recipe step failed (${step.action}${step.note ? ` — ${step.note}` : ""}): ${lastErr instanceof Error ? lastErr.message : String(lastErr)}${context}`, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, failedStepIndex: stepIdx, trace });
       }
       // Remember whether this step entered data, so the next advancing click waits for the
       // portal's autosave to commit (prevents blank-draft saves on PowerClerk).
@@ -371,7 +391,7 @@ export class RecipeAdapter extends BasePortalAdapter {
         // showing the right text while the portal still reports "Required Invalid". The
         // learner had to type these; replay must type them too or it re-creates exactly the
         // state the learn run fixed. Detected from the step's own note/selector.
-        const maskedStep = /(phone|telephone|fax|zip|postal)/i.test(String(step.note ?? ""))
+        const maskedStep = /\b(phone|telephone|fax|zip|postal)\b/i.test(String(step.note ?? ""))
           || /phone|zip/i.test(String(step.selector?.css ?? ""));
         if (maskedStep) {
           if (typeof scoped!.focus === "function") await scoped!.focus().catch(() => null);
@@ -407,7 +427,19 @@ export class RecipeAdapter extends BasePortalAdapter {
         await waitForElement(scoped);
         // Native <select> first; fall back to the custom-combobox interaction for styled
         // div dropdowns (PowerClerk "Please select...", select2, ExtJS) selectOption can't drive.
-        const selected = await selectWithFallback(this.page, scoped, v);
+        let selected = await selectWithFallback(this.page, scoped, v);
+        // A MANUFACTURER dropdown lists CEC certified names, not the plan set's wording.
+        // Retry the certified aliases before giving up — the learner has always done this,
+        // and without it a select lands nothing, returns false, and is SKIPPED silently.
+        if (!selected && this.isManufacturerStep(step)) {
+          for (const alt of equipmentMakeCandidates(v).slice(1)) {
+            selected = await selectWithFallback(this.page, scoped, alt);
+            if (selected) {
+              this.driftWarnings.push(`manufacturer "${v}" matched the portal's certified name "${alt}"`);
+              break;
+            }
+          }
+        }
         // Wait for any Vue/React re-renders triggered by the dropdown change to settle
         // before filling subsequent fields (e.g. PowerClerk resets contact fields on
         // contact-type dropdown change).
@@ -574,6 +606,15 @@ export class RecipeAdapter extends BasePortalAdapter {
     } catch { /* fall through */ }
     // Nothing visible: keep the recorded behaviour so the failure is the familiar one.
     return collapse();
+  }
+
+  // Is this step selecting an equipment MANUFACTURER? Checked against the bound field name
+  // first (authoritative) and the control's own label second — PowerClerk's spec-page
+  // labels are bare "Manufacturer", which is exactly the wording to match.
+  private isManufacturerStep(step: RecipeStep): boolean {
+    const field = String(step.field ?? "");
+    if (/(^|[a-z])(make|manufacturer)$/i.test(field)) return true;
+    return /manufacturer|\bmake\b/i.test(`${step.selector?.label ?? ""} ${step.note ?? ""}`);
   }
 
   private async resolveLocator(sel?: RecipeSelector) {

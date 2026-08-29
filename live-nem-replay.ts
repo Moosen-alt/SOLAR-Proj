@@ -103,6 +103,18 @@ console.log(JSON.stringify({
   driftWarnings: ((detailData.driftWarnings as unknown[]) ?? []).length,
   message: String(result.message || "").slice(0, 1200),
 }, null, 1));
+const trace = (detailData.trace as Array<{ i: number; action: string; note: string; outcome: string; page: string }> | undefined) ?? [];
+if (trace.length) {
+  console.log("\nstep trace (step -> the wizard page it acted on):");
+  let lastPage = "";
+  for (const t of trace) {
+    const marker = t.page && t.page !== lastPage ? `  << ${t.page}` : "";
+    if (t.page) lastPage = t.page;
+    if (t.outcome !== "ok" || marker) {
+      console.log(`  ${String(t.i).padStart(3)} ${t.action.padEnd(7)} ${t.outcome.padEnd(8)} ${t.note.padEnd(52)}${marker}`);
+    }
+  }
+}
 const skippedNotes = (detailData.skipped as string[] | undefined) ?? [];
 if (skippedNotes.length) {
   console.log(`\nskipped steps (${skippedNotes.length}) — these did NOTHING on the live portal:`);

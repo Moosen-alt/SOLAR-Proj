@@ -718,6 +718,25 @@ export interface UploadSlot {
 // when the trigger is clicked — those never appear in the normal field scrape. Each matched
 // control is tagged with a data-al-upl attribute so the adapter can locate it deterministically.
 // Returns one slot per control with its derived label + required flag. Never throws.
+// The certified names a portal's manufacturer dropdown actually lists, for a plan-set
+// make. PowerClerk (and friends) load equipment dropdowns from the CEC listing, whose legal
+// names rarely match what a plan set prints — "ZNShine Solar" is listed as "Znshine
+// PV-Tech". The learner has always applied these; REPLAY did not, so a recorded
+// manufacturer select silently selected nothing, and because a select that lands nothing
+// returns false rather than throwing, the step was SKIPPED in silence. On PowerClerk that
+// also strands the array's dependent fields (Tilt/Azimuth never render), so one unmatched
+// name took out the whole equipment section.
+//
+// MAKES ONLY, deliberately: a manufacturer is a closed set an alias table can map exactly,
+// whereas guessing at a MODEL could select the wrong equipment onto a live interconnection
+// application — a silent skip is much the safer failure there.
+export function equipmentMakeCandidates(make: string): string[] {
+  const raw = String(make ?? "").trim();
+  if (!raw) return [];
+  const compact = raw.toLowerCase().replace(/[^a-z0-9]/g, "");
+  return [...new Set([raw, ...(EQUIPMENT_MAKE_ALIASES[compact] ?? [])])];
+}
+
 export function tagUploadControls(): UploadSlot[] {
   const slots: UploadSlot[] = [];
 

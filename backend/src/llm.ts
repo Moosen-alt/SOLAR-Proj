@@ -853,7 +853,7 @@ Rules:
       // truncation from a refusal from an upstream error, and the operator is left with an
       // unactionable "could not parse". Redacted and capped — this text can contain
       // project data.
-      const sample = String(raw || "").trim().slice(0, 200).replace(/\d[\d-]{6,}/g, "[redacted]") || "(empty response)";
+      const sample = String(raw || "").trim().slice(0, 200).replace(/\b\d[\d-]{6,}\b/g, "[redacted]") || "(empty response)";
       throw new Error(`${parseFailNote} The model's response could not be read as JSON — the document was NOT parsed. Response began: ${sample}`);
     }
 
