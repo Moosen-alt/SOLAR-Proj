@@ -148,6 +148,46 @@ Still open, in order:
 
 ## Open issues / next work (priority order)
 
+0d. **THREE-PORTAL LEARN + CROSS-HOMEOWNER REPLAY (2026-08-29, live).** Each
+   portal learned on one homeowner, then replayed against a DIFFERENT one.
+
+   | Portal | Learn | Replay | Result |
+   |---|---|---|---|
+   | PacifiCorp | Edgar Miner, Lincoln City | Kristi Hofer, Hood River | ok=true, 93/100 steps, skips all explained |
+   | PGE | Bren Trask, Portland | Abby Johnson, Happy Valley | 0 failures, 65 steps, 2 explained skips |
+   | Accela | Wynema Wright, Coos Bay (trusted, HIGH conf) | Kristi Hofer, Hood River | BLOCKED at step 1 |
+
+   **Both NEM portals now replay onto a homeowner they have never seen.** The
+   remaining skips are a conditional question the portal did not ask, missing
+   meter/account data that comes off a bill, and the intentional final-submit
+   stop.
+
+   **ACCELA IS BLOCKED BY AN ENTRY-NAVIGATION ASYMMETRY — not staleness, and not
+   the cross-jurisdiction question.** A FRESH v7 learn records
+   "navigate to application: Building Dept Application" as its first nav and
+   reaches it fine. Replay lands on `Dashboard.aspx` instead, whose nav is
+   Apply / Building / Licensing / Planning, and that link is not there. The
+   difference is SESSION STATE: replay reuses the persistent authenticated
+   profile and gets the logged-in dashboard; the learner reaches the entry page
+   that lists the applications. Do not chase this as portal drift — two live runs
+   (stale v6 and fresh v7) fail identically, which rules drift out.
+
+   **THE CROSS-JURISDICTION QUESTION IS STILL OPEN**, and it is the one with real
+   money attached. Oregon ePermitting is ONE portal serving ~100 jurisdictions,
+   and the Coos Bay recipe does NOT hardcode its city — it types the project's own
+   `streetNumber` and `streetNameSearchPortion` into the portal's address search
+   and picks the matching row. If that generalises, one learn covers every
+   ePermitting city; if not, each city needs its own ~6-minute learn. Every AHJ
+   except Coos Bay currently resolves to "NONE — would need its own learn". The
+   run never reached the address search, so this remains untested. The risk to
+   watch when it does run: `click work location: select city/structural address
+   row` is positional, and a city whose search returns several rows could file
+   against the wrong parcel.
+
+   Drivers: `live-nem-learn.ts`, `live-nem-replay.ts` (both take a projectId and
+   `--recipe <id>`), `live-accela-learn.ts`, `live-accela-replay.ts`,
+   `verify-recipe.ts` (preconditions before trusting a replay result).
+
 0c. **REPLAY DESYNC — diagnosed, guarded (2026-08-29). Read this before touching
    replay.** Everything below 0b that reads like a selector problem was a
    NAVIGATION problem. Root cause, from live PacifiCorp runs:
