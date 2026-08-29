@@ -183,8 +183,31 @@ Still open, in order:
    `equipmentFillFailed`, `equipmentValueFor` — so it is an extraction, not a
    move. `powerClerkSpecs.dom.smoke.ts` already covers the pass.
 
-   Until then a PGE NEM stage falls back to the hand-coded PowerClerk adapter or
-   a fresh learn; PacifiCorp replays.
+   **Confirmed downstream**: the step-55 disconnect radio is not drift. At LEARN
+   time that page reads Total Inverter Capacity 7.80 kW and renders a "Disconnect
+   Requirements" section (a disconnect is only required above 7.2 kW for 240V
+   single phase); on REPLAY the capacities are 0.00 kW because the equipment page
+   never filled, PGE renders no Disconnect section, and the recorded radio
+   genuinely does not exist. ONE root cause, everything else is consequence.
+
+   **What a live PGE stage does TODAY (this is a regression, own it).** Recipe
+   replay is FIRST-LINE (repository.ts ~5190); hand-coded adapters are the
+   fallback only when NO recipe exists. 481c00f4 is complete+trusted, so a real
+   PGE stage now routes into the replay that fails. It is not a dead end — a
+   "recipe step failed" result marks the recipe needs_rerecord and queues a
+   relearn, so the NEXT stage self-seeds through the learner and reaches review —
+   but that relearn re-promotes the same recipe to trusted/high-confidence, so it
+   OSCILLATES: fail, demote, learn, promote, fail. Before today the legal-name
+   key had no complete recipe at all and every stage self-seeded, which worked.
+   Interim options: (a) demote 481c00f4 AND set PORTAL_REPLAY_SELFTEST=1 so the
+   next learn cannot re-promote a recipe whose replay is broken (costs one extra
+   deletable draft per learn) — demoting alone just restarts the oscillation; or
+   (b) do the fillEquipmentSelects extraction. PacifiCorp replays either way.
+
+   **Policy question this raises**: the trust gate promotes on LEARN-time
+   verification alone. PGE is proof a recipe can be trusted at high confidence
+   and still never replay. PORTAL_REPLAY_SELFTEST=1 exists and would have caught
+   it — worth making it the default for a newly learned portal.
 
    Drivers: `live-nem-replay.ts <pge|pacificorp>` (deterministic replay, no
    bookkeeping) and `live-nem-learn.ts <pge|pacificorp>`.
