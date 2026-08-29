@@ -853,7 +853,17 @@ export class RecipeAdapter extends BasePortalAdapter {
     // (the Accela replay smoke caught exactly that). Note it and move on; precheckPageDrift
     // remains the backstop if this really was a desync.
     let blockers = await collectValidationErrorsFrom(this.page).catch(() => [] as string[]);
-    if (!blockers.length) {
+    // IS THIS STEP AN ADVANCE? The recorder answers that: the learner marks a page advance
+    // "advance: <button>" and gives in-page actions their own wording ("compute totals:
+    // Calculate", "contacts: continue"). For a step the recorder called an advance, a page
+    // that did not move IS the failure — whether or not the portal explains itself.
+    //
+    // That distinction is load-bearing. Requiring visible validation errors was too weak on
+    // the live portal: PacifiCorp refuses silently, so six advances "left the page
+    // unchanged" and were all waved through as in-page actions. Requiring EVERY click to
+    // move the page is too strong and broke the Accela replay smoke outright.
+    const isAdvance = /^advance\b/i.test(String(step.note ?? "").trim());
+    if (!blockers.length && !isAdvance) {
       this.driftWarnings.push(`click "${String(step.note ?? "click").slice(0, 44)}" left the page unchanged (in-page action, or an advance that silently did nothing)`);
       return;
     }
@@ -877,7 +887,10 @@ export class RecipeAdapter extends BasePortalAdapter {
     // Still refused. Report the PORTAL'S OWN words — "Meter Number: This field is required."
     // is worth more to an operator than any drift percentage we could compute.
     blockers = await collectValidationErrorsFrom(this.page).catch(() => blockers);
-    throw new Error(`the portal did not advance (it refused "${String(step.note ?? "the advance").slice(0, 44)}"). The portal says: ${blockers.slice(0, 6).join(" | ")}`);
+    const said = blockers.length
+      ? ` The portal says: ${blockers.slice(0, 6).join(" | ")}`
+      : " The portal gave no visible reason — check that page for a required field the recipe left blank.";
+    throw new Error(`the portal did not advance (it refused "${String(step.note ?? "the advance").slice(0, 44)}").${said}`);
   }
 
   // Resolve a selector to a present locator: try the primary, and if it matches

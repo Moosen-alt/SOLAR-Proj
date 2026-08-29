@@ -26,6 +26,7 @@ const check = (label: string, fn: () => void): void => {
 // hidden twin of the account field (the shape that broke Accela replay).
 const PAGE = `<!doctype html><html><body>
   <h2>Interconnection Application</h2>
+  <div id="sec1">
   <input type="hidden" id="hdnAccountNumber" value="stale">
   <label for="acct">Utility Account Number</label><input id="acct" type="text">
   <input id="phone" type="text" placeholder="(###) ###-####">
@@ -35,8 +36,15 @@ const PAGE = `<!doctype html><html><body>
   <select id="model"><option value="">Please select...</option></select>
   <label for="commdate">Estimated Commissioning Date</label><input id="commdate" type="text">
   <div id="saved">unsaved</div>
-  <a id="next" href="#" onclick="document.getElementById('done').textContent='ADVANCED';return false;"><span>Next</span></a>
+  </div>
+  <a id="next" href="#" onclick="document.getElementById('done').textContent='ADVANCED';document.getElementById('sec1').style.display='none';document.getElementById('sec2').style.display='block';return false;"><span>Next</span></a>
   <div id="done"></div>
+  <!-- A real advance CHANGES THE PAGE. This fixture used to leave everything in place and
+       only set a flag, which meant it could not distinguish a working advance from a portal
+       silently refusing one — the exact bug replay shipped with. The advance guard reads
+       page identity (heading + on-screen control ids), so the section has to actually swap
+       for this to represent a genuine advance. -->
+  <div id="sec2" style="display:none"><h2>Section 2</h2><input id="after" type="text"></div>
   <script>
     // Autosave commits on BLUR only — a fill that never blurs is lost.
     for (const id of ['acct','phone']) {
