@@ -148,6 +148,47 @@ Still open, in order:
 
 ## Open issues / next work (priority order)
 
+0b. **FIRST LIVE REPLAYS RUN (2026-08-29).** PacifiCorp REPLAYS END TO END:
+   ok=true, 99/99 steps, 0 skipped, 4.2 min, stopped at review, nothing
+   submitted. That is the deterministic path (no planner calls) staging a real
+   project on a real utility portal.
+
+   **PGE does NOT yet replay.** It reaches step 47 of 68 and one skipped step
+   cascades into a failure at 55. Root cause is identified with page evidence
+   (`data/screenshots/replay-fail-step047-*.png`): the recorded inverter Model
+   step resolves to `<input id="pcInputBase34" label="Model" visible=false>` —
+   the right control by label, but the HIDDEN half of the widget. This project
+   renders PowerClerk's COMBINED make+model spec template (one "Please
+   select..." per repeater row, flagged "This field is required"), while the
+   recipe records the SEPARATE Manufacturer/Model template. Both exist in the
+   DOM, so the recipe drives the hidden one — which is also why the manufacturer
+   selects report success while the visible dropdowns stay empty, every capacity
+   reads 0.00 kW, and the wizard then branches away from the recorded path.
+
+   Ruled out, each by a live run: re-learning (produces the same steps and
+   promotes to trusted/HIGH confidence, so the learner does not see the
+   problem); waiting for the cascade; re-resolving the locator after the wait;
+   preferring a visible fallback over a hidden primary; and enabling the
+   production LLM gap-fill planner (`buildPortalPlanner`), which the replay
+   driver now supplies exactly as `repository.ts` does.
+
+   **The bounded next step**: the learner fills that page with
+   `fillEquipmentSelects` (autoLearnAdapter.ts:1145) — a DETERMINISTIC pass that
+   matches by section+label context, inherits side by proximity and tolerates
+   duplicate/bare labels. It is learner-only, and what it does is not expressible
+   as the recorded steps it produces, so replay cannot reproduce it. Expose it to
+   RecipeAdapter as a fallback when an equipment step is skipped (the same shape
+   as the `dismissPageModals` extraction in this session). It couples to five
+   instance members — `applyFill`, `currentControlValue`, `debug`,
+   `equipmentFillFailed`, `equipmentValueFor` — so it is an extraction, not a
+   move. `powerClerkSpecs.dom.smoke.ts` already covers the pass.
+
+   Until then a PGE NEM stage falls back to the hand-coded PowerClerk adapter or
+   a fresh learn; PacifiCorp replays.
+
+   Drivers: `live-nem-replay.ts <pge|pacificorp>` (deterministic replay, no
+   bookkeeping) and `live-nem-learn.ts <pge|pacificorp>`.
+
 0a. **NEM portal caveats the operator must know (2026-08-29).**
    (a) The trusted **PacifiCorp** recipe FREEZES answers that are only constant
    for a standard OWNED, ROOFTOP residential system: `Wattsmart Battery Program

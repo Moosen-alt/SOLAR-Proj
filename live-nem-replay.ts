@@ -70,12 +70,32 @@ console.log(`portal   ${recipe.portalUrl}`);
 console.log(`bound    ${new Set(recipe.steps.filter((s) => s.field).map((s) => s.field)).size} field(s); credential ${credential ? "resolved" : "NOT FOUND"}; ${Object.keys(docsByType).length} split doc(s)`);
 console.log("Deterministic replay — no planner calls. Stops at the review screen; never submits.\n");
 
+// LLM GAP-FILL, exactly as repository.ts supplies it to the production replay path. Without
+// it this driver was testing a WEAKER replay than production actually runs: RecipeAdapter
+// calls runGapFill after each page's fills, and that is what covers a required field the
+// recorded steps missed (a portal that renders a different spec template for this project,
+// a control the recipe's selector no longer reaches). Secrets are stripped inside
+// buildPortalPlanner and never reach the model.
+let gapFillPlanner;
+let gapFillFields;
+try {
+  const { buildPortalPlanner } = await import("./backend/src/autoLearn");
+  const built = buildPortalPlanner(db, stagedProject, { portalType, scopeType: "utility" });
+  gapFillPlanner = built.planner;
+  gapFillFields = built.projectFields;
+} catch (err) {
+  console.log(`(no gap-fill planner: ${err instanceof Error ? err.message : String(err)})`);
+}
+console.log(`gapfill  ${gapFillPlanner ? `enabled (${Object.keys(gapFillFields ?? {}).length} project fields)` : "NOT available"}`);
+
 const t0 = Date.now();
 const result = await stageWithRecipe(recipe, stagedProject, fieldValues, docsByType, [], {
   headless: false, // operator convention: headed, browser left open at review
   credential,
   userDataDir,
   loginUrl: recipe.portalUrl,
+  gapFillPlanner,
+  gapFillFields,
 }) as Record<string, unknown>;
 const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
 
