@@ -17,7 +17,7 @@
     "portal:test:unit": "tsx portal-bot/src/adapters/recipeAdapter.test.ts && tsx portal-bot/src/adapters/autoLearnAdapter.test.ts && tsx portal-bot/src/networkRecorder.test.ts && tsx portal-bot/src/reviewScreenScraper.test.ts && tsx portal-bot/src/llmGapFill.test.ts && tsx portal-bot/src/learnDebug.test.ts && tsx portal-bot/src/cryptoStorage.test.ts",
     "portal:test:net": "tsx portal-bot/src/networkRecorder.test.ts",
     "portal:test:learn": "tsx portal-bot/src/adapters/autoLearnAdapter.test.ts",
-    "portal:test:dom": "tsx portal-bot/src/adapters/autoLearnDom.smoke.ts",
+    "portal:test:dom": "tsx portal-bot/src/adapters/autoLearnDom.smoke.ts && tsx portal-bot/src/adapters/recipeReplay.dom.smoke.ts",
     "portal:probe:specs": "tsx portal-bot/src/liveSpecsProbe.ts",
     "portal:test:specs": "tsx portal-bot/src/adapters/powerClerkSpecs.dom.smoke.ts",
     "portal:test:specs:combobox": "tsx portal-bot/src/adapters/powerClerkSpecsCombobox.dom.smoke.ts",

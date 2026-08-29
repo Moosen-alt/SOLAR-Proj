@@ -495,11 +495,34 @@ export class RecipeAdapter extends BasePortalAdapter {
   // nothing, walk the recorded fallbacks in order and use the first that exists.
   // Returns the primary locator unchanged when there are no fallbacks (so the
   // action/wait still fails or times out naturally and the retry loop applies).
+  // Prefer the first VISIBLE match of a locator that resolves to several elements.
+  // A recorded css union can legitimately match a hidden ASP.NET twin of the real control
+  // (Accela's contact dialog carries `hfIsForNewContactAddress` alongside the real
+  // `txtAppStreetAdd1`). `.first()` then resolves to the hidden one and fill() waits out
+  // its full 30s before FAILING THE WHOLE REPLAY — verified in real Chromium by
+  // recipeReplay.dom.smoke.ts. Explicit nth stays exactly as recorded.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async preferVisible(loc: any, sel?: RecipeSelector): Promise<any> {
+    if (!loc || typeof loc.count !== "function" || sel?.nth != null) return loc;
+    const collapse = () => (typeof loc.first === "function" ? loc.first() : loc);
+    try {
+      const n = await loc.count();
+      if (n <= 1) return collapse();
+      for (let i = 0; i < Math.min(n, 12); i++) {
+        const c = loc.nth(i);
+        if (typeof c.isVisible !== "function") return collapse();
+        if (await c.isVisible().catch(() => false)) return c;
+      }
+    } catch { /* fall through */ }
+    // Nothing visible: keep the recorded behaviour so the failure is the familiar one.
+    return collapse();
+  }
+
   private async resolveLocator(sel?: RecipeSelector) {
     const primary = this.locator(sel);
-    if (!sel || !sel.fallbacks?.length || !primary) return primary;
+    if (!sel || !sel.fallbacks?.length || !primary) return this.preferVisible(primary, sel);
     try {
-      if (await primary.count() > 0) return primary;
+      if (await primary.count() > 0) return this.preferVisible(primary, sel);
     } catch {
       // count() can throw on a malformed primary — fall through to fallbacks.
     }
@@ -508,7 +531,7 @@ export class RecipeAdapter extends BasePortalAdapter {
       const loc = this.locator({ ...fb, fallbacks: undefined });
       if (!loc) continue;
       try {
-        if (await loc.count() > 0) return loc;
+        if (await loc.count() > 0) return this.preferVisible(loc, fb);
       } catch {
         // Try the next fallback.
       }
@@ -533,7 +556,11 @@ export class RecipeAdapter extends BasePortalAdapter {
     else if (sel.css) loc = scope.locator(sel.css);
     else if (sel.role) loc = scope.getByRole(sel.role);
     else throw new Error("Recipe step has no usable selector.");
-    return typeof sel.nth === "number" ? loc.nth(sel.nth) : loc.first();
+    // An explicit nth is honoured exactly. Otherwise return the UNCOLLAPSED locator so
+    // resolveLocator can prefer the first VISIBLE match — collapsing with .first() here
+    // hid the choice: a css union that also matches a hidden ASP.NET twin resolved to the
+    // hidden element and fill() waited out 30s before failing the whole replay.
+    return typeof sel.nth === "number" ? loc.nth(sel.nth) : loc;
   }
 
   /** Labels the recipe expects on the page segment starting at fromIndex (steps
