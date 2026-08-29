@@ -469,13 +469,6 @@ export class RecipeAdapter extends BasePortalAdapter {
         // than the recipe recorded. Give the list time to arrive before believing the miss.
         for (let attempt = 0; !selected && attempt < 3; attempt++) {
           await sleep(800);
-          // RE-RESOLVE, don't just retry. The cascade does not only fill an option list —
-          // PowerClerk keeps the model control HIDDEN until its manufacturer's list has
-          // loaded, and reveals it by rendering the widget a person clicks. Retrying against
-          // the locator resolved before the wait keeps aiming at the element that was there
-          // then (the hidden readonly input the label points at), so the retry could never
-          // have worked no matter how long it waited.
-          scoped = await this.resolveLocator(step.selector);
           selected = await selectWithFallback(this.page, scoped, v);
           if (selected) this.driftWarnings.push(`select "${String(step.note ?? step.field ?? "")}" needed ${(attempt + 1) * 800}ms for its control to appear (cascade)`);
         }
@@ -666,17 +659,7 @@ export class RecipeAdapter extends BasePortalAdapter {
     const primary = this.locator(sel);
     if (!sel || !sel.fallbacks?.length || !primary) return this.preferVisible(primary, sel);
     try {
-      // EXISTING IS NOT THE SAME AS USABLE. A recorded css id can resolve to the HIDDEN
-      // half of a styled widget — PowerClerk's filtered-select keeps a readonly input
-      // behind the control a person actually clicks. Because the id matched, the recorded
-      // label fallback (which finds the visible half) was never tried, and the step landed
-      // nothing and was skipped in silence: the live PGE replay lost its inverter Model
-      // that way, and with it every downstream capacity on the review page.
-      // So only accept the primary if something it matches is actually interactable, and
-      // otherwise let the fallbacks have their turn.
-      if (await primary.count() > 0 && await this.hasUsableMatch(primary, sel)) {
-        return this.preferVisible(primary, sel);
-      }
+      if (await primary.count() > 0) return this.preferVisible(primary, sel);
     } catch {
       // count() can throw on a malformed primary — fall through to fallbacks.
     }
@@ -685,52 +668,14 @@ export class RecipeAdapter extends BasePortalAdapter {
       const loc = this.locator({ ...fb, fallbacks: undefined });
       if (!loc) continue;
       try {
-        if (await loc.count() > 0 && await this.hasUsableMatch(loc, fb)) return this.preferVisible(loc, fb);
+        if (await loc.count() > 0) return this.preferVisible(loc, fb);
       } catch {
         // Try the next fallback.
       }
     }
-    // No alternative offered anything visible either — keep the recorded behaviour so the
-    // failure stays the familiar one rather than becoming a different mystery.
     return primary;
   }
 
-  /**
-   * Does this locator match anything a person could interact with? A hidden `input[type=file]`
-   * counts: portals routinely hide the real file input behind a styled Browse button, and
-   * setInputFiles drives it perfectly well. Unreadable → treated as usable, so this can only
-   * ever move resolution ON to a fallback that IS visible, never strand a working selector.
-   */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private async hasUsableMatch(loc: any, sel?: RecipeSelector): Promise<boolean> {
-    if (sel?.nth != null) return true; // an explicit nth is honoured exactly, as recorded
-    try {
-      const n = await loc.count();
-      for (let i = 0; i < Math.min(n, 12); i++) {
-        const c = loc.nth(i);
-        if (typeof c.isVisible !== "function") return true;
-        if (await c.isVisible().catch(() => true)) return true;
-        const isFile = await c.evaluate((el: Element) =>
-          (el.tagName || "").toLowerCase() === "input" && (el as HTMLInputElement).type === "file").catch(() => false);
-        if (isFile) return true;
-      }
-      return false;
-    } catch { return true; }
-  }
-
-  /**
-   * Recover a css id that carries a PER-RENDER suffix. PowerClerk numbers each radio
-   * OPTION as `<stableFieldId>_<counter>` ("#XWXYUBJ7ZTNQInput_11513"), and the counter is
-   * assigned per rendered project — so the id recorded during a learn can never match on a
-   * new one. The deterministic policy pass records exactly this shape with no fallbacks and
-   * no label, which made it the one step type that could not survive a replay: the live PGE
-   * run died on it at step 55 of 68.
-   *
-   * The stable prefix still identifies the QUESTION; what is lost is which OPTION. The
-   * recorded note carries that ("… → Yes"), so re-anchor on the prefix and pick the option
-   * whose own label says the recorded answer. No answer, no guess — a radio group is
-   * exactly where picking the wrong member would be worst.
-   */
   /**
    * What a step's selector actually landed on, for the trace. Reports the element's id, its
    * own label, and (for a select) how many options it is offering — enough to tell "the
@@ -750,8 +695,8 @@ export class RecipeAdapter extends BasePortalAdapter {
         if (!label) label = (el.closest("label") as HTMLElement | null)?.innerText?.trim() ?? "";
         if (!label) label = el.getAttribute("aria-label") || "";
         const opts = tag === "select" ? (el as HTMLSelectElement).options.length : -1;
-        const vis = !!(el as HTMLElement).getBoundingClientRect
-          && ((el as HTMLElement).getBoundingClientRect().width > 0 || (el as HTMLElement).getBoundingClientRect().height > 0);
+        const r = (el as HTMLElement).getBoundingClientRect?.();
+        const vis = !!r && (r.width > 0 || r.height > 0);
         return `<${tag} id="${id}" label="${(label || "").replace(/\s+/g, " ").slice(0, 40)}"${opts >= 0 ? ` options=${opts}` : ""} visible=${vis}>`;
       }, undefined as never).catch(() => "element present but unreadable") as string;
     } catch { return "resolve failed"; }
