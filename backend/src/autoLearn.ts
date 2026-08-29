@@ -510,6 +510,11 @@ export async function autoLearnPortal(
         process.env.PORTAL_POLICY_DEFAULTS === "off" || process.env.PORTAL_POLICY_DEFAULTS === "0"
           ? "none"
           : scopeType === "utility" ? "residential_nem" : "none",
+      // The keys a REPLAY can resolve. The planner picks the field each fill binds to, and
+      // a key that exists only in the planner's richer map (or one it invents outright)
+      // fills "" forever. Handing the adapter the replay map stops a dead binding being
+      // recorded at all, rather than catching it afterwards at the trust gate.
+      bindableFields: Object.keys(resolveRecipeFieldValues(db, project, portalType)),
       onProgress: input.onProgress,
       onHumanStep,
     }));
@@ -798,7 +803,13 @@ export async function autoLearnPortal(
   // than being a warning: promoting one is exactly how a recipe becomes trusted and still
   // never works. Sensitive steps are included on purpose — they carry a field and no
   // literal, so a bad key there is silently unfillable too.
-  const deadBindings = deadFieldBindings(boundSteps, projectFields);
+  // Validate against the REPLAY map, not the learn map. `projectFields` here is the
+  // PLANNER's map, which is a superset: autoLearn injects `designNotes` (a digest for the
+  // model) and used to inject `exportLimiting`. A step bound to a learn-only key passes a
+  // check against this map and still resolves to "" on every replay — the precise hole that
+  // makes a recipe trusted and non-functional. resolveRecipeFieldValues IS the replay map.
+  const replayFields = resolveRecipeFieldValues(db, project, portalType);
+  const deadBindings = deadFieldBindings(boundSteps, replayFields);
   if (deadBindings.length) {
     verification.issues.push(
       `Step(s) bound to a field the project data does not define, so they can NEVER fill on replay: ${deadBindings.slice(0, 8).join(", ")}${deadBindings.length > 8 ? `, +${deadBindings.length - 8} more` : ""}. Re-record these fields, or bind them to a real project field.`,

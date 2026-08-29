@@ -45,6 +45,17 @@ function isFinalSubmitStep(step: RecipeStep): boolean {
 // default — on replay that failure aborts the entire run, not just the step.
 const FILL_TIMEOUT_MS = 8000;
 
+// Actions whose target control is identified by a LABEL and therefore worth verifying
+// before we touch it. Navigation (goto/click) and uploads are excluded: a button's text is
+// already its selector, and an upload's real input is routinely unlabelled and hidden.
+const IDENTITY_CHECKED = new Set(["fill", "select", "check", "uncheck"]);
+// Words too common in portal labels to prove two labels mean the same question.
+const IDENTITY_STOPWORDS = new Set([
+  "this", "that", "your", "will", "with", "from", "please", "select", "there", "have",
+  "does", "the", "and", "for", "are", "you", "system", "site", "number", "name", "type",
+  "information", "address", "would", "like", "used", "using", "enter", "provide",
+]);
+
 export class RecipeAdapter extends BasePortalAdapter {
   portalName: string;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -385,12 +396,113 @@ export class RecipeAdapter extends BasePortalAdapter {
     return step.value ?? "";
   }
 
+  /**
+   * Does this control still look like it is WAITING for its options? True for a native
+   * <select> holding nothing but a placeholder ("Select...", "Please select…"), and for a
+   * non-select widget whose list we cannot read — those are the shapes a cascade produces
+   * before its XHR lands. False for a populated list, which is the signal that a missing
+   * value is genuinely missing rather than merely late.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async optionsLookUnloaded(loc: any): Promise<boolean> {
+    if (!loc || typeof loc.evaluate !== "function") return true;
+    return await loc.evaluate((el: Element) => {
+      if ((el.tagName || "").toLowerCase() !== "select") return true; // custom widget — unreadable
+      const real = Array.from((el as HTMLSelectElement).options).filter((o) => {
+        const t = (o.textContent || "").trim().toLowerCase();
+        return t && !/^(please\s+)?select\.{0,3}$/.test(t) && !/^--/.test(t);
+      });
+      return real.length === 0;
+    }).catch(() => true) as boolean;
+  }
+
+  /**
+   * When a step's selector lands on a control whose OWN label contradicts the one recorded,
+   * re-anchor to the labelled control instead. Returns the replacement locator, or null to
+   * keep what was resolved (which is the answer whenever there is no contradiction, no
+   * recorded label to compare against, or no better candidate on the page).
+   *
+   * Deliberately conservative: a mismatch is declared only when the two labels share NO
+   * meaningful word. Portal labels get truncated, re-punctuated and suffixed with "*", so
+   * anything stricter would fire on formatting differences and re-anchor correct steps onto
+   * worse ones — the exact mistake that broke a working replay earlier today.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async reanchorIfWrongControl(step: RecipeStep, scoped: any): Promise<any | "abort" | null> {
+    const recorded = String(step.selector?.label || step.note || "").trim();
+    if (!recorded || !scoped || typeof scoped.count !== "function") return null;
+    // Nothing resolved at all is a different problem (a genuine miss); leave it alone.
+    if (!(await scoped.count().catch(() => 0))) return null;
+
+    // A locator without .first()/.evaluate is a fake/legacy page (the unit-test doubles, and
+    // any adapter host that predates evaluate). There is nothing to contradict, so accept
+    // what was resolved. Guarded with typeof, not optional chaining: `x.evaluate?.(...)`
+    // still throws when `first()` itself is missing, and a synchronous throw here escapes
+    // the .catch() entirely and fails the whole step.
+    if (typeof scoped.first !== "function") return null;
+    const el0 = scoped.first();
+    if (!el0 || typeof el0.evaluate !== "function") return null;
+    const actual = await el0.evaluate((el: Element) => {
+      const id = el.getAttribute("id");
+      const forLbl = id ? document.querySelector(`label[for="${id}"]`) : null;
+      const wrap = el.closest("label");
+      return ((forLbl as HTMLElement | null)?.innerText
+        || (wrap as HTMLElement | null)?.innerText
+        || el.getAttribute("aria-label") || "").trim();
+    }).catch(() => "") as string;
+    if (!actual) return null; // unlabelled control — nothing to contradict
+
+    const words = (v: string) => new Set(
+      v.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/)
+        .filter((w) => w.length > 3 && !IDENTITY_STOPWORDS.has(w)),
+    );
+    const a = words(recorded);
+    const b = words(actual);
+    if (!a.size || !b.size) return null;
+    for (const w of a) if (b.has(w)) return null; // they agree on something — accept it
+
+    // They share nothing. Look for the control the recipe actually meant.
+    const byLabel = this.page.getByLabel(recorded, { exact: false });
+    const n = await byLabel.count().catch(() => 0);
+    for (let i = 0; i < Math.min(n, 8); i++) {
+      const cand = byLabel.nth(i);
+      if (await cand.isVisible().catch(() => false)) {
+        this.driftWarnings.push(
+          `step "${recorded.slice(0, 44)}" resolved onto a control labelled "${actual.slice(0, 44)}" — re-anchored by label`,
+        );
+        return cand;
+      }
+    }
+    // No better candidate. ABORT the step — never act on a control we have just proven is
+    // the wrong one. Filing the right answer into the wrong question is far worse than
+    // leaving it blank for the human at review, and the warning says which it was.
+    this.driftWarnings.push(
+      `step "${recorded.slice(0, 44)}" resolved onto an UNRELATED control labelled "${actual.slice(0, 44)}" and the recorded field could not be found — SKIPPED rather than filled into the wrong control`,
+    );
+    return "abort";
+  }
+
   // Returns true if the step performed an action, false if it was safely skipped.
   // `pastReview` is true only in autoSubmit mode AFTER the stopForReview marker.
   private async executeStep(step: RecipeStep, pastReview: boolean): Promise<boolean> {
     // `let`, not `const`: the upload branch may re-anchor to a different slot once the
-    // page's real upload controls have been re-tagged (see the upload case below).
+    // page's real upload controls have been re-tagged (see the upload case below), and the
+    // identity check below may re-anchor a step that resolved onto the wrong control.
     let scoped = await this.resolveLocator(step.selector);
+    // IS THIS THE CONTROL WE RECORDED? Portal field ids are routinely per-form-instance
+    // (PowerClerk's "AWQBPS8U00XGInput"), so on a NEW project the same id is a DIFFERENT
+    // question. Measured live: a step recorded for "Description of Service:" resolved to
+    // the "Will the System be Customer-Owned or Third-Party Owned" dropdown, and two later
+    // steps both resolved onto one unrelated control. Skipping was the lucky outcome — the
+    // value simply did not match that control's options. Had it matched, replay would have
+    // filed the RIGHT ANSWER IN THE WRONG BOX on a live interconnection application, with
+    // nothing reported. So confirm the control's own label still agrees with what was
+    // recorded before touching it, and re-anchor by label when it does not.
+    if (IDENTITY_CHECKED.has(step.action)) {
+      const anchored = await this.reanchorIfWrongControl(step, scoped);
+      if (anchored === "abort") return false;
+      if (anchored) scoped = anchored;
+    }
     switch (step.action) {
       case "goto":
         await this.page.goto(this.resolveValue(step));
@@ -467,7 +579,12 @@ export class RecipeAdapter extends BasePortalAdapter {
         // was SKIPPED IN SILENCE — which on the live PGE run left the array with no module,
         // every capacity reading 0.00 kW, and the wizard branching down a different path
         // than the recipe recorded. Give the list time to arrive before believing the miss.
-        for (let attempt = 0; !selected && attempt < 3; attempt++) {
+        // Retry ONLY while the option list looks unloaded. A select whose list is fully
+        // populated and simply does not contain this value will never contain it, and each
+        // retry costs several multi-second actionability timeouts — on a 99-step recipe
+        // that is minutes of replay spent proving a known negative. The cascade signature
+        // is an EMPTY or placeholder-only list, so gate on that.
+        for (let attempt = 0; !selected && attempt < 3 && await this.optionsLookUnloaded(scoped); attempt++) {
           await sleep(800);
           selected = await selectWithFallback(this.page, scoped, v);
           if (selected) this.driftWarnings.push(`select "${String(step.note ?? step.field ?? "")}" needed ${(attempt + 1) * 800}ms for its control to appear (cascade)`);

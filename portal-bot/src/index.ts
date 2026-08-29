@@ -464,6 +464,9 @@ export async function learnPortal(input: {
   // Which deterministic policy-answer set the learner may apply ("residential_nem" for
   // utility NEM portals, "none" for AHJ/permit portals). See AutoLearnAdapter options.
   policyProfile?: "residential_nem" | "none";
+  // Field keys a REPLAY can resolve. Passed through so the learner refuses to record a
+  // binding that could never fill on a future project.
+  bindableFields?: string[];
   // Optional live-progress sink so callers can drive a UI progress bar. Non-PII signals only.
   onProgress?: import("./adapters/autoLearnAdapter").LearnProgressFn;
   // PATCH-BY-DEMONSTRATION sink: when the headed browser is left open at review, every
@@ -479,7 +482,7 @@ export async function learnPortal(input: {
   siteContactIdentity?: import("./adapters/autoLearnAdapter").ContactIdentity;
 }): Promise<import("./adapters/autoLearnAdapter").LearnResult> {
   const { AutoLearnAdapter } = await import("./adapters/autoLearnAdapter");
-  const adapter = new AutoLearnAdapter(input.portalName, input.planner, { maxPages: input.maxPages, docsByType: input.docsByType, uploadMode: input.uploadMode, policyProfile: input.policyProfile, onProgress: input.onProgress, equipment: input.equipment, certifiedAliases: input.certifiedAliases, contactIdentity: input.contactIdentity, siteContactIdentity: input.siteContactIdentity });
+  const adapter = new AutoLearnAdapter(input.portalName, input.planner, { maxPages: input.maxPages, docsByType: input.docsByType, uploadMode: input.uploadMode, policyProfile: input.policyProfile, bindableFields: input.bindableFields, onProgress: input.onProgress, equipment: input.equipment, certifiedAliases: input.certifiedAliases, contactIdentity: input.contactIdentity, siteContactIdentity: input.siteContactIdentity });
   let tmpStatePath: string | undefined;
   let leaveOpen = false;
   // A browser left open by a prior guided-manual stage holds this profile's lock — close it

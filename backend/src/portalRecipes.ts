@@ -511,6 +511,14 @@ export function resolveRecipeFieldValues(db: AppDb, project: ProjectRecord, port
     // binding that is recomputed on every replay. Both formats exist because the recorded
     // literal proves which one the portal accepted.
     ...dateFields(),
+    // EXPORT LIMITING. Derived here, not only in the learner's planner map: a step that
+    // BINDS to this key must resolve at REPLAY time, and it used to exist only at learn
+    // time — so a recipe binding it filled nothing, forever, silently. Same derivation the
+    // learner uses (autoLearn.ts), kept in the resolver so both sides agree by construction.
+    exportLimiting:
+      /non.?export|export.?limit\b|power control system|\bpcs\b|\bngom\b/i
+        .test(`${snapshotFlat.exportMode ?? ""} ${snapshotFlat.pcs ?? ""} ${snapshotFlat.exportLimit ?? ""}`)
+        ? "Yes" : "No",
   };
   // EQUIPMENT BINDING (portal-agnostic). The PV module spec lives in a nested `pvArrays`
   // array in the parser snapshot, which the scalar-only flatten above drops — so the module

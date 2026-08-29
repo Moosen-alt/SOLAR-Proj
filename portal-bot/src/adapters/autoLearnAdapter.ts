@@ -870,6 +870,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
 
   // See constructor options.policyProfile.
   private policyProfile: "residential_nem" | "none";
+  /** Field keys a replay can resolve; empty means "do not validate". */
+  private bindableFields: Set<string>;
   private equipment: Record<string, string>;
   private certifiedAliases: Record<string, string[]>;
   private contactIdentity: ContactIdentity = {};
@@ -905,6 +907,14 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       // certified names ("AP Systems" → "Altenergy Power System"), so these are
       // matched with aliases + distinctive-token fallback, never left to the planner.
       equipment?: Record<string, string>;
+      /** The field keys a REPLAY can actually resolve (Object.keys of
+       *  resolveRecipeFieldValues). The planner CHOOSES the field a fill binds to, and a
+       *  key it invents — or one that exists only in the planner's own richer map —
+       *  resolves to "" on every replay, forever, and the step is skipped in silence.
+       *  When supplied, a binding outside this set is refused and the literal actually
+       *  filled is recorded instead, so the step still fills. Empty/omitted = no
+       *  validation (byte-identical to the previous behaviour). */
+      bindableFields?: string[];
       /** CEC-certified manufacturer names per compact plan-set make (weekly
        *  cec_equipment sync) — appended AFTER the curated static alias table;
        *  empty map = byte-identical behavior. */
@@ -926,6 +936,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     this.portalName = portalName;
     this.onProgress = options.onProgress;
     this.policyProfile = options.policyProfile ?? "residential_nem";
+    this.bindableFields = new Set(options.bindableFields ?? []);
     this.equipment = options.equipment ?? {};
     this.certifiedAliases = options.certifiedAliases ?? {};
     this.contactIdentity = options.contactIdentity ?? {};
@@ -4083,9 +4094,17 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       step.sensitive = true;
       step.value = "";
       step.field = fillReq.field || undefined;
-    } else if (fillReq.field) {
+    } else if (fillReq.field && (!this.bindableFields.size || this.bindableFields.has(fillReq.field))) {
       // Data-bound to a project/client field — resolved at replay time.
       step.field = fillReq.field;
+    } else if (fillReq.field) {
+      // The planner picked a field name a REPLAY cannot resolve. Binding it would make this
+      // step fill "" on every future project, silently, forever. Keep the literal actually
+      // filled instead: for the portal-policy questions this happens on ("Description of
+      // Service"), the learn-time answer is the right constant anyway, and a frozen literal
+      // that fills beats a binding that never will.
+      this.debug?.event({ type: "unbindable_field_refused", field: String(fillReq.field), label: String(field.label ?? "").slice(0, 60) });
+      if (action !== "check") step.value = value;
     } else if (action !== "check") {
       // A portal-literal value (dropdown option / fixed text).
       step.value = value;

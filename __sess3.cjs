@@ -1,0 +1,20 @@
+const path=require('node:path'),fs=require('node:fs'),os=require('node:os'),http=require('node:http');
+(async()=>{const {chromium}=require('playwright');
+ const srv=http.createServer((q,r)=>{r.writeHead(200,{'Content-Type':'text/html'});r.end('<h1>p</h1>');});
+ await new Promise(res=>srv.listen(0,'127.0.0.1',res));
+ const url='http://127.0.0.1:'+srv.address().port+'/';
+ const dir=path.join(os.tmpdir(),'sess3-'+Date.now());fs.mkdirSync(dir,{recursive:true});
+ // EXACT production flags + headed, as repository.ts:5419 forces
+ const ARGS=["--start-maximized","--disable-dev-shm-usage","--no-sandbox","--disable-setuid-sandbox","--disable-extensions","--disable-background-timer-throttling","--disable-backgrounding-occluded-windows","--disable-renderer-backgrounding","--disable-features=TranslateUI","--disable-ipc-flooding-protection"];
+ const opts={headless:false,viewport:null,args:ARGS};
+ const exp=Math.floor(Date.now()/1000)+86400;
+ const login=async(c,v)=>{const p=c.pages()[0]||await c.newPage();await p.goto(url);await c.addCookies([{name:'PORTALSESSION',value:v,domain:'127.0.0.1',path:'/',expires:exp}]);};
+ const who=async(c)=>{const p=c.pages()[0]||await c.newPage();await p.goto(url);const k=(await c.cookies(url)).find(x=>x.name==='PORTALSESSION');return k?k.value:'<LOGGED OUT>';};
+ let c=await chromium.launchPersistentContext(dir,opts);await login(c,'HUMAN-LOGIN');await c.close();
+ const A=await chromium.launchPersistentContext(dir,opts);
+ const B=await chromium.launchPersistentContext(dir,opts);
+ console.log('HEADED concurrent A ->',await who(A));
+ console.log('HEADED concurrent B ->',await who(B));
+ await A.close();await B.close();
+ c=await chromium.launchPersistentContext(dir,opts);console.log('HEADED next lone run ->',await who(c));await c.close();
+ srv.close();fs.rmSync(dir,{recursive:true,force:true});})().catch(e=>{console.log('ERR:',e.message.split('\n')[0]);});
