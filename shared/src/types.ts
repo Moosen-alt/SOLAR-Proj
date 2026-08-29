@@ -1324,7 +1324,12 @@ export interface ParserFieldEvidence {
 
 /** One extracted parser field with provenance and confidence. */
 export interface ParserExtractedField {
-  value: string | number | null;
+  /** Scalar for almost every field. STRUCTURED for the few the prompt asks for as
+   *  objects/arrays — notably `pvArrays`, the per-roof-plane breakdown utility portals
+   *  need one repeater row from. Stringifying those collapsed them to "[object Object]",
+   *  which the normalizer then discarded, so a multi-plane project silently filed a
+   *  single synthesized array. */
+  value: string | number | null | Array<Record<string, unknown>> | Record<string, unknown>;
   confidence: number; // 0-1
   evidence?: ParserFieldEvidence;
 }

@@ -21,11 +21,22 @@ function isPdfDoc(row: Row): boolean {
 // Extract + store PDF text for one document row. Fire-and-forget from upload and
 // from the lazy backfill — a failed extraction stores a marker so we don't retry
 // the same broken file on every project view.
+// Documents whose text extraction is ALREADY running. planSetTextForProject is called on
+// every getProjectDetail (i.e. every project view, every reviewer-gate build), and it used
+// to fire a fresh fire-and-forget extraction each time a document had no stored text yet —
+// so ten views of one project meant ten concurrent parses of the same multi-megabyte plan
+// set, each racing to write the same row. One in-flight extraction per document.
+const extractionsInFlight = new Set<string>();
+
 async function extractDocumentText(db: AppDb, docId: string, storedPath: string): Promise<void> {
+  if (extractionsInFlight.has(docId)) return;
+  extractionsInFlight.add(docId);
   let extracted = "";
   try {
     extracted = (await extractPdfText(storedPath, 40)).slice(0, MAX_PLAN_TEXT_CHARS);
-  } catch { /* fall through to marker */ }
+  } catch { /* fall through to marker */ } finally {
+    extractionsInFlight.delete(docId);
+  }
   db.run("UPDATE project_documents SET extracted_text = ? WHERE id = ?", [extracted || "[no text layer]", docId]);
 }
 

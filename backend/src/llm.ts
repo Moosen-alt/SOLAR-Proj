@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { performance } from "node:perf_hooks";
-import type { AgentRunInput, AgentRunResult, AgentToolResult, AhjFieldMapResult, AhjFormUrlResult, AhjOverlayMapResult, AhjResearchResult, CorrectionBucket, InverterSpecLookup, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, PortalFieldPlan, PortalFieldPlanInput, PortalFillVerification, PortalFillVerifyInput, PortalFillVisionVerifyInput, ProjectRecord, UtilityResearchResult, AiPlanReviewResult, ReviewWorkType, JurisdictionCodeProfile, JurisdictionCodeResearchResult } from "../../shared/src/types";
+import type { AgentRunInput, AgentRunResult, AgentToolResult, AhjFieldMapResult, AhjFormUrlResult, AhjOverlayMapResult, AhjResearchResult, CorrectionBucket, InverterSpecLookup, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, PortalFieldPlan, PortalFieldPlanInput, PortalFillVerification, PortalFillVerifyInput, PortalFillVisionVerifyInput, ProjectRecord, UtilityResearchResult, AiPlanReviewResult, ReviewWorkType, JurisdictionCodeProfile, JurisdictionCodeResearchResult, ParserExtractedField } from "../../shared/src/types";
 import { RECIPE_FIELD_DESCRIPTIONS } from "./portalRecipes";
 import { logger } from "./logger";
 import { lookupCecInverter } from "./cecEquipment";
@@ -692,13 +692,14 @@ You are given up to three documents:
 Return ONLY a JSON object of this exact shape:
 {
   "fields": {
-    "<fieldId>": { "value": <string|number|null>, "confidence": <0..1>, "evidence": { "source": "plan_set|utility_bill|meter_photo", "sheet": "<sheet/page hint e.g. PV-2 or Cover>", "excerpt": "<short verbatim text you read it from>" } }
+    "<fieldId>": { "value": <string|number|null|array|object>, "confidence": <0..1>, "evidence": { "source": "plan_set|utility_bill|meter_photo", "sheet": "<sheet/page hint e.g. PV-2 or Cover>", "excerpt": "<verbatim text you read it from, MAX 100 CHARACTERS>" } }
   },
   "lowConfidenceFields": ["<fieldId>", ...],
   "notes": "<short notes on anything ambiguous or worth a human double-check>"
 }
 
-EVIDENCE IS REQUIRED for accuracy: for every field, include an "evidence" object citing where you read it (which document, the sheet/page hint if visible, and a short verbatim excerpt). This lets a human verify the value. If you cannot cite a source, lower confidence and add the field to lowConfidenceFields.
+EVIDENCE IS REQUIRED for accuracy: for every field, include an "evidence" object citing where you read it (which document, the sheet/page hint if visible, and a verbatim excerpt of AT MOST 100 CHARACTERS — just enough for a human to find the line; longer excerpts are truncated on receipt and only cost time). If you cannot cite a source, lower confidence and add the field to lowConfidenceFields.
+VALUE TYPES: almost every field is a scalar. The few documented as structured (notably pvArrays) MUST be emitted as real JSON arrays/objects, never as a stringified version of one.
 
 Use EXACTLY these fieldId keys when you find a value (omit a key entirely if absent):
 IDENTITY / SITE
@@ -824,8 +825,18 @@ Rules:
     const fields: ParserLlmExtraction["fields"] = {};
     for (const [key, entry] of Object.entries(parsed.fields || {})) {
       if (!entry || entry.value == null || entry.value === "") continue;
-      const value = typeof entry.value === "number" ? entry.value : String(entry.value).trim();
+      // STRUCTURED values pass through intact. String() on an array/object yields
+      // "[object Object]", and normalizeProject then discards it because it is not an
+      // array — so a multi-roof-plane pvArrays (which the prompt explicitly asks for, and
+      // which utility portals need one repeater row per entry from) silently collapsed to
+      // a single synthesized array. Scalars keep their existing trim.
+      const rawValue = entry.value as unknown;
+      const structured = typeof rawValue === "object" && rawValue !== null;
+      const value = structured
+        ? (rawValue as Array<Record<string, unknown>> | Record<string, unknown>)
+        : (typeof rawValue === "number" ? rawValue : String(rawValue).trim());
       if (value === "") continue;
+      if (Array.isArray(value) && value.length === 0) continue;
       const confidence = typeof entry.confidence === "number" ? Math.max(0, Math.min(1, entry.confidence)) : 0.5;
       const ev = entry.evidence;
       const evidence = ev && (ev.sheet || ev.excerpt || ev.source)
@@ -835,7 +846,7 @@ Rules:
             excerpt: ev.excerpt ? String(ev.excerpt).slice(0, 200) : undefined,
           }
         : undefined;
-      fields[key] = { value: value as string | number, confidence, evidence };
+      fields[key] = { value: value as ParserExtractedField["value"], confidence, evidence };
     }
     return {
       provider: "claude",

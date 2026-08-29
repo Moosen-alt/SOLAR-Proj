@@ -1495,7 +1495,9 @@ async function testAcaAddContactDeterministic() {
           {
             url: "https://aca-oregon.accela.com/oregon/Cap/CapEdit.aspx",
             title: "General Info",
-            body: "Step 1: General Info > Applicant. Select from Account or Add New.",
+            // The saved contact's name appears on the page after the dialog commits — the
+          // read-back the pass uses to prove ACA did not substitute an account contact.
+          body: "Step 1: General Info > Applicant. Select from Account or Add New. TML International",
             rawFields: [
               { label: "Select from Account", fieldType: "button", role: "button", text: "Select from Account" },
               { label: "Add New", fieldType: "button", role: "button", text: "Add New" },
@@ -1505,7 +1507,10 @@ async function testAcaAddContactDeterministic() {
           {
             url: "https://aca-oregon.accela.com/oregon/Cap/CapConfirm.aspx",
             title: "Review",
-            body: "Step 3: Review. Please review all information.",
+            // The real review screen lists the Applicant block — that is what the pass
+            // reads back to prove ACA attached the contact we saved rather than
+            // substituting one of the account's own.
+            body: "Step 3: Review. Please review all information. Applicant TML International",
             rawFields: [{ label: "Continue Application", fieldType: "button", role: "button", text: "Continue Application" }],
             reviewPairs: [{ label: "Applicant", value: "TML International" }],
           },
@@ -1667,7 +1672,51 @@ async function testUploadDedupeGenericSlots() {
   assert.ok(uploads.some((u) => /One-Line/i.test(String(u.note))), "the labeled slot still received the combined plan set");
 }
 
+// ACA CONTACT SUBSTITUTION: a dialog save that does not commit leaves ACA free to attach
+// one of the ACCOUNT's own contacts instead. Live, the Applicant came out as the account's
+// "Permit Tech" while the pass reported success — the permit would have been filed under
+// the wrong person. The pass must READ BACK the saved name and refuse to claim success.
+async function testAcaContactSubstitutionDetected() {
+  const log: ActionLog = { clicks: [], fills: [], selects: [], checks: [] };
+  const planner: LearnPlanner = async (): Promise<LearnPlanResponse> => ({ fills: [], atReview: true });
+  const adapter = new AutoLearnAdapter("Oregon ePermitting", planner, {
+    contactIdentity: { firstName: "TML", lastName: "International", email: "permit@example.com", phone: "800-818-0598", zip: "98683" },
+  });
+  withFakePage(
+    adapter,
+    makeFakePage(
+      {
+        pages: [
+          {
+            url: "https://aca-oregon.accela.com/oregon/Cap/CapEdit.aspx",
+            title: "General Info",
+            body: "Step 1: General Info > Applicant. Select from Account or Add New.",
+            rawFields: [
+              { label: "Select from Account", fieldType: "button", role: "button", text: "Select from Account" },
+              { label: "Add New", fieldType: "button", role: "button", text: "Add New" },
+              { label: "Continue Application", fieldType: "button", role: "button", text: "Continue Application" },
+            ],
+          },
+          {
+            url: "https://aca-oregon.accela.com/oregon/Cap/CapEdit.aspx",
+            title: "General Info",
+            // ACA attached one of the ACCOUNT's contacts instead of ours.
+            body: "Step 1: General Info > Applicant. Permit Tech 808 SE Chkalov Dr Vancouver WA 98664",
+            rawFields: [{ label: "Continue Application", fieldType: "button", role: "button", text: "Continue Application" }],
+          },
+        ],
+      },
+      log,
+    ),
+  );
+  const result = await adapter.learn(fakeContext, fakeProject);
+  // No contact step may survive: a save the portal did not honour must not replay later.
+  const contactSteps = result.steps.filter((st) => /contact/i.test(String(st.note ?? "")));
+  assert.equal(contactSteps.length, 0, `contact steps rolled back: ${JSON.stringify(contactSteps.map((c) => c.note))}`);
+}
+
 const tests: Array<[string, () => Promise<void>]> = [
+  ["ACA CONTACT SUBSTITUTION: a contact the portal did not attach is not reported as saved", testAcaContactSubstitutionDetected],
   ["ACA ATTACHMENT: Save commits the upload (not Continue), rows get Description + Type", testAcaAttachmentSavePass],
   ["UPLOAD DEDUPE: one attach through generic slots, labeled slots unaffected", testUploadDedupeGenericSlots],
   ["ACA CONTACT: Add New with the contractor identity, never a pre-existing account contact", testAcaAddContactDeterministic],

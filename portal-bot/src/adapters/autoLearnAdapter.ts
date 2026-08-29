@@ -1999,6 +1999,25 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     return true;
   }
 
+  // First VISIBLE match for a css selector. ASP.NET pages carry hidden inputs whose ids
+  // contain the same token as the real control (state fields, collapsed second contact
+  // blocks), so a bare .first() can type into an invisible input while the field the
+  // reviewer sees keeps the portal's own prefill — live: the applicant ZIP read 98664 on
+  // screen while our 98683 went somewhere invisible, and the primary phone ended in
+  // digits belonging to neither party. Falls back to .first() on a stub locator.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async firstVisible(scope: any, css: string): Promise<any | null> {
+    const all = scope.locator(css);
+    const n = await all.count().catch(() => 0);
+    if (!n) return null;
+    for (let i = 0; i < n; i++) {
+      const c = all.nth(i);
+      if (typeof c.isVisible !== "function") return all.first();
+      if (await c.isVisible().catch(() => false)) return c;
+    }
+    return null;
+  }
+
   // CLOSE the ACA dialog and WAIT for it to actually go away. After a save, ACA leaves the
   // dialog iframe in the DOM — so "are there inputs in the frame" never reports closed, and
   // the still-present overlay silently swallows the NEXT click (live: the Site Contact's
@@ -2081,6 +2100,10 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     if (!page) return { ok: false, usedId: "" };
     const id = this.identityForSection(sectionIndex);
     const who = sectionIndex === 0 ? "applicant" : "site contact";
+    // Steps recorded from here belong to THIS section; if the portal turns out not to have
+    // attached the contact, they are rolled back so the recipe never replays a save that
+    // achieved nothing.
+    const stepMark = steps.length;
     if (!id.lastName && !id.email) { this.debug?.event({ type: "contact_add_bail", why: `no identity for section ${sectionIndex} (${who})` }); return { ok: false, usedId: "" }; }
     const dlg = page.frameLocator('iframe[name="ACADialogFrame"]');
     // The planner may already have opened the ACCOUNT PICKER ("Select Contact from
@@ -2139,6 +2162,16 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       return { ok: false, usedId };
     }
     steps.push({ action: "click", phase: "fill", selector: { role: "button", name: "Add New", fallbacks: [{ css: 'a:has-text("Add New")' }] }, note: `contact(${who}): add new` });
+    // GROUND TRUTH for the dialog's real control ids. The field locators are guesses from
+    // one build's DOM; when one misses (live: the Address field), the pass fills a partial
+    // contact and ACA quietly falls back to an ACCOUNT contact, which then shows on the
+    // review screen as somebody else entirely. Dump ids/names once per section so the next
+    // run's bundle says exactly what to target. Ids only - no values, so no PII.
+    try {
+      const ids = await dlg.locator("input, select").evaluateAll((els: Element[]) =>
+        els.slice(0, 40).map((el) => `${el.tagName.toLowerCase()}#${el.getAttribute("id") || ""}|${el.getAttribute("name") || ""}`));
+      this.debug?.event({ type: "contact_dialog_controls", section: sectionIndex, ids });
+    } catch { /* diagnostics only */ }
     // Field-specific ASP.NET control ids/names — NOT row-label scoping. ACA renders First
     // and Last name in the SAME table row, so a row filter for /last name/ also matches
     // that row and .first() returns the FIRST-name box: the last name would overwrite the
@@ -2164,8 +2197,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     const fillField = async (idPart: string, value: string | undefined, note: string, field: string): Promise<void> => {
       if (!value) return;
       const css = `input[id*='${idPart}' i], input[name*='${idPart}' i]`;
-      const loc = dlg.locator(css).first();
-      if (!(await loc.count().catch(() => 0))) { this.debug?.event({ type: "contact_field_miss", field }); return; }
+      const loc = await this.firstVisible(dlg, css);
+      if (!loc) { this.debug?.event({ type: "contact_field_miss", field }); return; }
       if (await loc.fill(value).then(() => true).catch(() => false)) {
         steps.push({ action: "fill", phase: "fill", selector: { css, frame: "ACADialogFrame" }, field: bindKey(field), value, note: `${note} [${who}]` });
       }
@@ -2181,8 +2214,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     await fillField("City", id.city, "contact: city", "installerCity");
     const zip5 = (id.zip || "").replace(/\D/g, "").slice(0, 5);
     if (zip5) {
-      const zipLoc = dlg.locator("input[id*='Zip' i], input[name*='Zip' i]").first();
-      if (await zipLoc.count().catch(() => 0)) {
+      const zipLoc = await this.firstVisible(dlg, "input[id*='Zip' i], input[name*='Zip' i]");
+      if (zipLoc) {
         // Keystrokes: ACA's zip validator ignores a programmatic value set.
         await this.typeMasked(zipLoc, zip5);
         steps.push({ action: "fill", phase: "fill", selector: { css: "input[id*='Zip' i]", frame: "ACADialogFrame" }, field: bindKey("installerZip"), value: zip5, note: `contact: zip [${who}]` });
@@ -2191,8 +2224,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     // State is a dropdown keyed by the 2-letter code.
     const stateCode = (id.state || "").trim().toUpperCase();
     if (/^[A-Z]{2}$/.test(stateCode)) {
-      const stateSel = dlg.locator("select[id*='State' i], select[name*='State' i]").first();
-      if (await stateSel.count().catch(() => 0)) {
+      const stateSel = await this.firstVisible(dlg, "select[id*='State' i], select[name*='State' i]");
+      if (stateSel) {
         const okState = await stateSel.selectOption(stateCode).then(() => true)
           .catch(async () => stateSel.selectOption({ label: stateCode }).then(() => true).catch(() => false));
         if (okState) steps.push({ action: "select", phase: "fill", selector: { css: "select[id*='State' i]", frame: "ACADialogFrame" }, field: bindKey("installerState"), value: stateCode, note: `contact: state [${who}]` });
@@ -2236,6 +2269,23 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     }
     await page.waitForLoadState?.("networkidle", { timeout: 15000 }).catch(() => null);
     await page.waitForTimeout?.(1500).catch(() => null);
+    // READ BACK what the section now shows. A dialog save that silently does not commit
+    // leaves ACA free to attach one of the ACCOUNT's own contacts instead, which reads as
+    // success here but files the permit under the wrong person (live: the Applicant came
+    // out as the account's "Permit Tech", not the contractor we typed). Claiming success
+    // without checking is how that reached the review screen unnoticed.
+    const expectName = `${id.firstName ?? ""} ${id.lastName ?? ""}`.trim();
+    if (expectName) {
+      const body = String((await page.locator("body").innerText().catch(() => "")) ?? "");
+      const norm = (v: string) => v.toLowerCase().replace(/[^a-z0-9]/g, "");
+      const committed = norm(body).includes(norm(expectName));
+      this.debug?.event({ type: "contact_readback", section: sectionIndex, who, committed });
+      if (!committed) {
+        this.debug?.event({ type: "contact_add_bail", why: `saved contact is not on the page - ACA may have substituted an account contact (${who})` });
+        steps.length = stepMark; // drop this section's steps: they did not take
+        return { ok: false, usedId };
+      }
+    }
     return { ok: true, usedId };
   }
 
@@ -3752,10 +3802,23 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     if (digits.length < 10) return "not-segmented";
     const css = "input[id*='Phone' i]:not([id*='Secondary' i]):not([id*='Fax' i])";
     try {
-      const target = frame && typeof scope.frameLocator === "function"
-        ? scope.frameLocator(`iframe[name="${frame}"]`).locator(css)
-        : scope.locator(css);
-      if ((await target.count().catch(() => 0)) < 3) return "not-segmented";
+      const root = frame && typeof scope.frameLocator === "function"
+        ? scope.frameLocator(`iframe[name="${frame}"]`)
+        : scope;
+      // VISIBLE segments only: hidden ASP.NET inputs sharing the "Phone" token would
+      // otherwise absorb the digits while the on-screen boxes kept the portal's prefill
+      // (live: the applicant primary phone ended in digits belonging to neither party).
+      const all = root.locator(css);
+      const total = await all.count().catch(() => 0);
+      const visibleIdx: number[] = [];
+      for (let i = 0; i < total; i++) {
+        const c = all.nth(i);
+        const vis = typeof c.isVisible === "function" ? await c.isVisible().catch(() => false) : true;
+        if (vis) visibleIdx.push(i);
+        if (visibleIdx.length >= 3) break;
+      }
+      if (visibleIdx.length < 3) return "not-segmented";
+      const target = { nth: (i: number) => all.nth(visibleIdx[i]), count: async () => visibleIdx.length };
       const parts = [digits.slice(0, 3), digits.slice(3, 6), digits.slice(6, 10)];
       // Read back what each segment actually holds — the only reliable success signal.
       const segValues = async (): Promise<string[]> => {

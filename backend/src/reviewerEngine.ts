@@ -99,11 +99,23 @@ export function buildReviewerReport(project: ProjectRecord, opts: { codeContext?
     "reviewer.utility.pacpower-meter-photo": "topic:meter",
   };
   const dedupeKey = (f: ReviewerFinding): string => DEDUPE_ALIASES[f.id] || f.id;
-  const seenKeys = new Set<string>();
+  // KEEP THE MOST ACTIONABLE of an aliased pair, not merely the first one added.
+  // addCoreProjectFindings runs before addUtilityFindings, so first-wins always kept the
+  // generic "Utility account number missing." and discarded the utility-specific finding
+  // that names the utility, the evidence needed, and the design-team action — measured on
+  // real projects, every account blocker surfaced as the generic one. A `reviewer.core.*`
+  // finding is the fallback; anything else on the same topic is the specific one.
+  const isGeneric = (f: ReviewerFinding): boolean => f.id.startsWith("reviewer.core.");
+  const bestByKey = new Map<string, ReviewerFinding>();
+  for (const f of findings) {
+    const key = dedupeKey(f);
+    const held = bestByKey.get(key);
+    if (!held || (isGeneric(held) && !isGeneric(f))) bestByKey.set(key, f);
+  }
+  const keep = new Set<ReviewerFinding>(bestByKey.values());
   for (let i = 0; i < findings.length; i++) {
-    const key = dedupeKey(findings[i]);
-    if (seenKeys.has(key)) { findings.splice(i, 1); i--; continue; }
-    seenKeys.add(key);
+    if (!keep.has(findings[i])) { findings.splice(i, 1); i--; continue; }
+    keep.delete(findings[i]); // a duplicate object reference must not survive twice
   }
 
   if (!profile) {
