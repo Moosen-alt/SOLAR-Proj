@@ -4,8 +4,8 @@
 // NEVER clicks final submit, NEVER pays fees, NEVER solves CAPTCHA/MFA — it stops at the
 // review screen and leaves the browser open for the operator.
 //
-//   npx tsx live-nem-learn.ts pge          -> Portland General Electric
-//   npx tsx live-nem-learn.ts pacificorp   -> Pacific Power / PacifiCorp
+//   npx tsx live-nem-learn.ts pge [projectId]          -> Portland General Electric
+//   npx tsx live-nem-learn.ts pacificorp [projectId]   -> Pacific Power / PacifiCorp
 //
 // Delete this file after the session.
 import "dotenv/config";
@@ -30,6 +30,10 @@ const TARGETS: Record<string, { projectId: string; portalUrl: string; who: strin
   },
 };
 const target = TARGETS[which];
+// A projectId may be passed to learn against a DIFFERENT project than the built-in default
+// — otherwise "learn with live data" quietly re-learns the same one every time.
+const overrideProject = process.argv.slice(3).filter((a) => !a.startsWith("--"))[0];
+if (target && overrideProject) target.projectId = overrideProject;
 if (!target) {
   console.error(`unknown target ${JSON.stringify(which)} — use "pge" or "pacificorp"`);
   process.exit(2);
