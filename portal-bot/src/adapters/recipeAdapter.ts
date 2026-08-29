@@ -49,6 +49,8 @@ const FILL_TIMEOUT_MS = 8000;
 // refused the advance. Four short waits rather than one long one, so the common case (the
 // page moved immediately) costs a single fingerprint read.
 const ADVANCE_SETTLE_TRIES = 4;
+// How many times to re-look at a model dropdown whose options are still cascading in.
+const MODEL_CASCADE_TRIES = 4;
 const ADVANCE_SETTLE_MS = 600;
 
 // Actions whose target control is identified by a LABEL and therefore worth verifying
@@ -605,7 +607,38 @@ export class RecipeAdapter extends BasePortalAdapter {
         await waitForElement(scoped);
         // Native <select> first; fall back to the custom-combobox interaction for styled
         // div dropdowns (PowerClerk "Please select...", select2, ExtJS) selectOption can't drive.
-        let selected = await selectWithFallback(this.page, scoped, v);
+        // MODEL FIRST — before the generic select. selectWithFallback matches "exact, then
+        // contains either direction", and contains-matching picks whatever option comes
+        // first in the DOM: asked for "DS3-L" it selects "DS3-LV {120V}", a different
+        // inverter, and reports SUCCESS. Silently filing the wrong equipment on a live
+        // interconnection application is far worse than the skip this started as, so the
+        // model rules have to run before that fallback ever sees the value.
+        let selected = false;
+        if (this.isModelStep(step)) {
+          // The model list is populated by an XHR fired when the manufacturer above it
+          // changed (~600ms on PowerClerk), so "no match" and "not loaded yet" look
+          // identical on the first look. Retry only while the list is still unloaded —
+          // a populated list that lacks the value will never gain it, and each extra
+          // attempt costs multi-second timeouts on a path that has to stay fast.
+          let picked = "";
+          for (let attempt = 0; attempt <= MODEL_CASCADE_TRIES; attempt++) {
+            picked = await this.bestModelOption(scoped, v, step);
+            if (picked || !(await this.optionsLookUnloaded(scoped))) break;
+            await sleep(ADVANCE_SETTLE_MS);
+          }
+          if (picked) {
+            selected = await selectWithFallback(this.page, scoped, picked);
+            if (selected && picked !== v) this.driftWarnings.push(`model "${v}" matched the portal's listing "${picked}"`);
+          } else {
+            // No safe match on a list that IS loaded. Leave it blank for the human rather
+            // than let the generic contains-match choose a neighbouring model for us —
+            // asked for "DS3-L" it would take "DS3-LV {120V}" and report success.
+            this.driftWarnings.push(`model "${v}" has no unambiguous match in this dropdown — left blank for review`);
+            await this.page.waitForLoadState("networkidle", { timeout: 4000 }).catch(() => null);
+            return false;
+          }
+        }
+        if (!selected) selected = await selectWithFallback(this.page, scoped, v);
         // A MANUFACTURER dropdown lists CEC certified names, not the plan set's wording.
         // Retry the certified aliases before giving up — the learner has always done this,
         // and without it a select lands nothing, returns false, and is SKIPPED silently.
@@ -923,6 +956,71 @@ export class RecipeAdapter extends BasePortalAdapter {
   // Is this step selecting an equipment MANUFACTURER? Checked against the bound field name
   // first (authoritative) and the control's own label second — PowerClerk's spec-page
   // labels are bare "Manufacturer", which is exactly the wording to match.
+  /** Is this step choosing an equipment MODEL? Field name first, the control's own bare
+   *  "Model" label second — PowerClerk spec pages label them exactly that. */
+  private isModelStep(step: RecipeStep): boolean {
+    if (/model$/i.test(String(step.field ?? ""))) return true;
+    return /\bmodel\b/i.test(`${step.selector?.label ?? ""} ${step.note ?? ""}`);
+  }
+
+  /**
+   * The option in THIS control that the plan set's model refers to. Reads the live option
+   * list rather than guessing at suffixes, and applies three rules in order:
+   *   1. exact (normalised) match wins;
+   *   2. otherwise the option must START with the model at a TOKEN BOUNDARY — so "DS3-L"
+   *      matches "DS3-L {240V}" but never "DS3-LV {120V}", which a plain contains-match
+   *      would happily choose;
+   *   3. among several boundary matches, prefer the one carrying this project's wattage —
+   *      "Q.TRON BLK M-G2.C1+/AC" lists six options differing only by 415…440 W, and the
+   *      wattage is the only thing that distinguishes them.
+   * Returns "" when nothing matches or the choice stays ambiguous: selecting the wrong
+   * module on a live interconnection application is worse than leaving it for the human.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async bestModelOption(loc: any, want: string, step: RecipeStep): Promise<string> {
+    if (!loc || typeof loc.evaluate !== "function" || !want) return "";
+    // The wattage that disambiguates a module family, from whichever key this project has.
+    const side = /module/i.test(String(step.field ?? "")) ? "module" : "inverter";
+    const watts = String(
+      (side === "module" ? this.fieldValues.moduleWattage : this.fieldValues.inverterWattage) ?? "",
+    ).replace(/[^0-9]/g, "");
+    return await loc.evaluate((el: Element, args: { want: string; watts: string }) => {
+      // No nested function declarations in here — esbuild's keepNames would wrap them as
+      // __name(...) and the evaluate would throw into a swallowed catch.
+      const opts: string[] = [];
+      if ((el.tagName || "").toLowerCase() === "select") {
+        for (const o of Array.from((el as HTMLSelectElement).options)) opts.push((o.textContent || "").trim());
+      }
+      if (!opts.length) return "";
+      const norm = args.want.toLowerCase().replace(/\s+/g, " ").trim();
+      // Punctuation-free form too: the CEC writes "ZXM7-SH108-410/M" where the plan set
+      // writes "ZXM7-SH108-410M". That is one inserted slash, not a suffix, so prefix
+      // matching alone cannot see it.
+      const bare = norm.replace(/[^a-z0-9]/g, "");
+      let exact = "";
+      const boundary: string[] = [];
+      for (const raw of opts) {
+        const t = raw.toLowerCase().replace(/\s+/g, " ").trim();
+        if (!t || /^(please\s+)?select/.test(t)) continue;
+        if (t === norm || t.replace(/[^a-z0-9]/g, "") === bare) { exact = raw; break; }
+        if (t.startsWith(norm)) {
+          // The character right after the model must not continue the token, or "DS3-L"
+          // would swallow "DS3-LV".
+          const next = t.charAt(norm.length);
+          if (!next || !/[a-z0-9]/.test(next)) boundary.push(raw);
+        }
+      }
+      if (exact) return exact;
+      if (!boundary.length) return "";
+      if (boundary.length === 1) return boundary[0];
+      if (args.watts) {
+        const byWatts = boundary.filter((b) => b.replace(/[^0-9]/g, "").includes(args.watts));
+        if (byWatts.length === 1) return byWatts[0];
+      }
+      return ""; // still ambiguous — leave it for the human rather than guess a module
+    }, { want, watts }).catch(() => "") as string;
+  }
+
   private isManufacturerStep(step: RecipeStep): boolean {
     const field = String(step.field ?? "");
     if (/(^|[a-z])(make|manufacturer)$/i.test(field)) return true;
