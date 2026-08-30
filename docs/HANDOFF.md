@@ -158,24 +158,16 @@ added the run says "filed array 1 only (10 of 24 modules). REVIEW BEFORE SUBMIT.
 of understating in silence. Covered by `multiArray.dom.smoke.ts` (mutation-checked).
 Still to do: watch one live PGE run on Bren Trask (4 arrays) and confirm four rows.
 
-**PGE's option text is formatted differently from the CEC name (open).** PGE lists module
-options as `430W (Model Q.TRON BLK M-G2.C1+/AC)` while the certified name resolves to
-`Q.TRON BLK M-G2.C1+/AC 430`. Neither string contains the other, so exact AND both
-contains-directions miss, and the module model is left blank. Photographed on the live
-step-49 failure screenshot. The fix is a model-vs-option normaliser that pulls the wattage
-and the parenthesised model out of the option text; not yet written.
-
-**PowerClerk work MUST be serialised per account (found 2026-08-30).** PGE and
-PacifiCorp are two programs on ONE platform (Clean Power Research), and this client uses
-the SAME login for both. Logging into one invalidates the other's session: three PGE runs
-today died on `/MvcAccount/InvalidSession`, each within seconds-to-minutes of a PacifiCorp
-run logging in, including one that lasted only 35s. This was originally mis-diagnosed as
-"replay is too slow and the portal times out" — it is not; it is self-inflicted by running
-both portals concurrently. Consequences: (a) never run PGE and PacifiCorp at the same time
-for one client; (b) for the 200-project plan, NEM staging needs a per-ACCOUNT lock, not
-just a per-profile one — `browserLimiter` bounds concurrency but does not know two portals
-share a login; (c) a portal profile lock is NOT sufficient protection, since the two
-portals have different profile directories.
+**PGE's option text formatting is NOT the cause of the model skip (checked 2026-08-30).**
+PGE lists options as `430W (Model Q.TRON BLK M-G2.C1+/AC)` while the certified name is
+`Q.TRON BLK M-G2.C1+/AC 430`, and neither contains the other — so this looked like the
+cause. It is not: `bestOptionMatch`'s digit-signature fallback (written for
+`UHLD108`/`UHLDD108`) already requires the alpha token plus every digit group, which this
+shape satisfies. Proven by `optionFormat.dom.smoke.ts`, which picks the right option and
+rejects both a wrong-wattage sibling and a same-wattage different-series decoy. The skip
+has some other cause; `048e940` added a diagnostic that reports, on a miss, whether any
+option list was open and what it offered. Get that from the next live run before touching
+any matcher.
 
 **A killed run wedges that portal profile.** Stopping a replay leaves its Chromium
 holding the persistent profile, and the next run dies instantly with "profile is already
