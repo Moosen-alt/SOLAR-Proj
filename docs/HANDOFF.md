@@ -165,6 +165,18 @@ contains-directions miss, and the module model is left blank. Photographed on th
 step-49 failure screenshot. The fix is a model-vs-option normaliser that pulls the wattage
 and the parenthesised model out of the option text; not yet written.
 
+**PowerClerk work MUST be serialised per account (found 2026-08-30).** PGE and
+PacifiCorp are two programs on ONE platform (Clean Power Research), and this client uses
+the SAME login for both. Logging into one invalidates the other's session: three PGE runs
+today died on `/MvcAccount/InvalidSession`, each within seconds-to-minutes of a PacifiCorp
+run logging in, including one that lasted only 35s. This was originally mis-diagnosed as
+"replay is too slow and the portal times out" — it is not; it is self-inflicted by running
+both portals concurrently. Consequences: (a) never run PGE and PacifiCorp at the same time
+for one client; (b) for the 200-project plan, NEM staging needs a per-ACCOUNT lock, not
+just a per-profile one — `browserLimiter` bounds concurrency but does not know two portals
+share a login; (c) a portal profile lock is NOT sufficient protection, since the two
+portals have different profile directories.
+
 **A killed run wedges that portal profile.** Stopping a replay leaves its Chromium
 holding the persistent profile, and the next run dies instantly with "profile is already
 in use by another instance of Chromium". Matters for the 200-project capacity plan: any
