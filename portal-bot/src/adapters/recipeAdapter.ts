@@ -104,6 +104,8 @@ export class RecipeAdapter extends BasePortalAdapter {
    *  recipe has none. */
   private arrayBlockStart = -1;
   private arrayBlockEnd = -1;
+  /** The post-pass held-check runs exactly once, after the last array pass. */
+  private arrayVerifyDone = false;
   /** Drift-precheck annotations ("this page barely matches the recipe") — surfaced
    *  in every result payload so a run that squeaked through via heals still tells
    *  the operator the portal likely changed. */
@@ -311,6 +313,18 @@ export class RecipeAdapter extends BasePortalAdapter {
     };
     for (let stepIdx = 0; stepIdx < this.recipe.steps.length; stepIdx++) {
       const recordedStep = this.recipe.steps[stepIdx];
+      const inArrayBlock = this.arrayBlockStart >= 0
+        && stepIdx >= this.arrayBlockStart && stepIdx <= this.arrayBlockEnd;
+      // ON A REPEAT PASS, ONLY THE PER-ARRAY STEPS RUN AGAIN. The block's bounds are
+      // "first array1* step .. last array1* step", which sweeps in whatever the learner
+      // recorded between them — on PacifiCorp that is the battery section and a duplicate
+      // inverter Manufacturer/Model pair. Re-running those nth-shifted lands them on OTHER
+      // sections' controls: measured live, the pass-2 "inverter Manufacturer" landed on
+      // array 1's module manufacturer (their labels are identically "Manufacturer", so no
+      // re-anchor guard can see it), whose cascade then offered inverter models to the
+      // module-model step — "landed nothing though 58 option(s) were showing". They
+      // already ran on pass 1; nothing per-array is lost by not repeating them.
+      if (this.arrayPass > 1 && inArrayBlock && !this.isPerArrayStep(recordedStep)) continue;
       // ON A REPEAT PASS, TARGET THE Nth RENDERED COPY OF EACH CONTROL.
       //
       // The recorded selector points at the FIRST array's control, because that is the only
@@ -320,13 +334,8 @@ export class RecipeAdapter extends BasePortalAdapter {
       // block's controls, so the Nth match IS array N. When the recorded selector is a
       // row-unique id there is no Nth match, the step finds nothing and skips — which
       // leaves array 1 intact rather than corrupting it.
-      const step = (this.arrayPass > 1 && this.arrayBlockStart >= 0
-        && stepIdx >= this.arrayBlockStart && stepIdx <= this.arrayBlockEnd && recordedStep?.selector)
-        ? {
-          ...recordedStep,
-          selector: { ...recordedStep.selector, nth: this.arrayPass - 1 },
-          note: `${recordedStep.note ?? ""} [array ${this.arrayPass}]`,
-        }
+      const step = (this.arrayPass > 1 && inArrayBlock && recordedStep?.selector)
+        ? this.arrayPassStep(recordedStep)
         : recordedStep;
       closePrevStepTiming();
       prevStart = Date.now();
@@ -567,7 +576,12 @@ export class RecipeAdapter extends BasePortalAdapter {
           }
         }
       }
-      if (!succeeded && !step.isFinalSubmit && process.env.RECIPE_SELF_HEAL !== "off") {
+      if (!succeeded && !step.isFinalSubmit && this.arrayPass === 1 && process.env.RECIPE_SELF_HEAL !== "off") {
+        // arrayPass === 1: heal re-anchors BY LABEL against the whole page with no row
+        // concept, and a repeat-pass step's labels are bare copies ("Manufacturer") of
+        // controls in OTHER sections — a heal here would write array N's value into the
+        // inverter's dropdown and then PATCH THE RECIPE with that selector. A repeat pass
+        // that misses simply skips; the post-pass held-check reports what stayed empty.
         // PER-STEP SELF-HEAL (research-validated: targeted repair beats full
         // re-record). Re-extract the live page and re-anchor this step by its
         // recorded LABEL (semantic anchor) — portals churn ids/markup far more
@@ -674,6 +688,19 @@ export class RecipeAdapter extends BasePortalAdapter {
             + `(${this.fieldValues.array1ModuleQuantity ?? "?"} of ${this.fieldValues.totalModuleQuantity ?? "?"} modules). REVIEW BEFORE SUBMIT.`,
           );
           this.arrayPass = want; // do not retry the add on every later pass
+        }
+        // DID THE FILLS ACTUALLY HOLD? Adding a row makes PowerClerk re-render the whole
+        // spec section from SERVER state, and a select that was never committed (blur) is
+        // rendered back to its placeholder — measured live: array 1's module manufacturer
+        // reverted to "Please select..." after the row-add, and nothing noticed because
+        // every write had individually reported success. The learner has verified its
+        // equipment fills persist since the beginning (equipment_fill_not_held); replay
+        // now does the same for the array rows it owns: read each row back, re-run the
+        // recorded per-array steps for any row left on a placeholder, and say so loudly
+        // when even the repair does not hold.
+        if (this.arrayPass >= this.projectArrayCount() && !this.arrayVerifyDone) {
+          this.arrayVerifyDone = true;
+          await this.verifyAndRepairArrayRows();
         }
       }
     }
@@ -790,6 +817,185 @@ export class RecipeAdapter extends BasePortalAdapter {
       } catch { /* try the next shape */ }
     }
     return false;
+  }
+
+  /** A step that must run once per rendered array row: the array1* numbers plus the
+   *  module make/model selects the row owns. Everything else the learner happened to
+   *  record between the block's bounds (battery, disconnect, duplicate inverter steps)
+   *  belongs to OTHER sections and runs on pass 1 only. */
+  private isPerArrayStep(step: RecipeStep | undefined): boolean {
+    const f = String(step?.field ?? "");
+    return /^array1[A-Z]/.test(f) || f === "moduleMake" || f === "moduleModel";
+  }
+
+  /**
+   * The recorded step re-targeted at array row `pass`. The recorded selector (and each of
+   * its fallbacks) ranked Nth among the page-wide matches AT LEARN TIME — one array row on
+   * a fresh application — so row `pass` is that recorded rank plus one per added row.
+   * Shifting only the top level was measured live to do nothing at all: the primary is a
+   * volatile learn-time id (zero matches at any nth), and the label fallbacks kept their
+   * recorded rank — so every pass-2 write landed back on array 1 and array 2 stayed empty.
+   */
+  private arrayPassStep(recordedStep: RecipeStep, pass = this.arrayPass): RecipeStep {
+    const shift = pass - 1;
+    // A row-1 re-run (shift 0) keeps the selector EXACTLY as recorded: forcing nth:0 onto
+    // a selector that had none would bypass preferVisible and could land a hidden twin.
+    if (shift === 0) return recordedStep;
+    const sel = recordedStep.selector ?? {};
+    return {
+      ...recordedStep,
+      selector: {
+        ...sel,
+        nth: (typeof sel.nth === "number" ? sel.nth : 0) + shift,
+        fallbacks: sel.fallbacks?.map((fb) => ({
+          ...fb,
+          nth: (typeof fb.nth === "number" ? fb.nth : 0) + shift,
+        })),
+      },
+      note: `${recordedStep.note ?? ""} [array ${pass}]`,
+    };
+  }
+
+  /** Every rendered array row's controls, read back by label: value, and whether a select
+   *  is still sitting on its placeholder. Rows are found the same way countArrayRows finds
+   *  them — each rendered PV Array owns a "Delete Array" control. */
+  private async readArrayRowsBack(): Promise<Array<Array<{ label: string; tag: string; value: string; placeholder: boolean }>>> {
+    if (!this.page || typeof this.page.evaluate !== "function") return [];
+    return await this.page.evaluate(() => {
+      const visible = (el: HTMLElement) => {
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+      };
+      const markers = (Array.from(document.querySelectorAll("a, button, span, div")) as HTMLElement[])
+        .filter((el) => /^delete\s+array$/i.test((el.innerText || "").trim()) && visible(el));
+      // Innermost only: a wrapper around the real control repeats its innerText.
+      const inner = markers.filter((el) => !markers.some((o) => o !== el && el.contains(o)));
+      const rows: Array<Array<{ label: string; tag: string; value: string; placeholder: boolean }>> = [];
+      // Section-level controls bound the climb: with ONE rendered row, "contains exactly
+      // one marker" is true of every ancestor up to the page, and the "row" would balloon
+      // to the whole section — reading the INVERTER's Manufacturer for the module step.
+      const sectionCtl = (Array.from(document.querySelectorAll("a, button")) as HTMLElement[])
+        .filter((el) => /add\s*(another\s*)?array|add\s*inverter|clone\s*system|^calculate$/i.test((el.innerText || "").trim()) && visible(el));
+      for (const marker of inner) {
+        // The row container: the largest ancestor still containing exactly this one marker
+        // and none of the section-level controls that live OUTSIDE any row.
+        let row: HTMLElement = marker;
+        let up: HTMLElement | null = marker.parentElement;
+        while (up && up !== document.body
+          && inner.filter((m) => up!.contains(m)).length === 1
+          && !sectionCtl.some((c) => up!.contains(c))) {
+          row = up;
+          up = up.parentElement;
+        }
+        const controls = (Array.from(row.querySelectorAll("input, select, textarea")) as HTMLElement[])
+          .filter((el) => visible(el) && (el.getAttribute("type") || "").toLowerCase() !== "hidden");
+        rows.push(controls.map((el) => {
+          const id = el.getAttribute("id") || "";
+          let label = id ? ((document.querySelector(`label[for="${CSS.escape(id)}"]`) as HTMLElement | null)?.innerText ?? "") : "";
+          if (!label) label = (el.closest("label") as HTMLElement | null)?.innerText ?? "";
+          if (!label) label = el.getAttribute("aria-label") || "";
+          const tag = (el.tagName || "").toLowerCase();
+          let value = "";
+          let placeholder = false;
+          if (tag === "select") {
+            const s = el as HTMLSelectElement;
+            value = (s.options[s.selectedIndex]?.textContent || "").trim();
+            placeholder = !value || /^(please\s+)?select\.{0,3}$/i.test(value) || /^--/.test(value);
+          } else {
+            value = (el as HTMLInputElement).value ?? "";
+          }
+          return { label: label.replace(/\s+/g, " ").trim(), tag, value, placeholder };
+        }));
+      }
+      return rows;
+    }).catch(() => []) as Array<Array<{ label: string; tag: string; value: string; placeholder: boolean }>>;
+  }
+
+  /** The label a recorded step would resolve by — its selector's, or the first fallback's. */
+  private stepLabel(step: RecipeStep): string {
+    const sel = step.selector;
+    return String(sel?.label ?? sel?.fallbacks?.find((f) => f.label)?.label ?? "").trim();
+  }
+
+  /**
+   * Post-pass held-check over the array rows. For each rendered row, every recorded
+   * per-array step whose value resolves non-empty must have left its control non-empty —
+   * a select on its placeholder or a blank number means the write did not survive
+   * (PowerClerk re-renders the section from server state on a row-add, and an uncommitted
+   * value is simply gone). One repair round re-runs that row's recorded steps through the
+   * normal execution path (same matching, aliases, cascade waits); what still does not
+   * hold is reported in driftWarnings AND requiredStillEmpty so the operator sees it in
+   * the same list as every other blank.
+   */
+  private async verifyAndRepairArrayRows(): Promise<void> {
+    if (this.arrayBlockStart < 0) return;
+    const perArraySteps = this.recipe.steps
+      .slice(this.arrayBlockStart, this.arrayBlockEnd + 1)
+      .filter((s) => this.isPerArrayStep(s));
+    if (!perArraySteps.length) return;
+    const savedPass = this.arrayPass;
+    try {
+      const seen = (await this.readArrayRowsBack()).length;
+      const want = Math.min(this.projectArrayCount(), Math.max(1, seen));
+      // FAIL LOUD, NOT OPEN. A held-check that could not see the rows must not read as
+      // "verified and held" — that is the exact false confidence this sweep removes.
+      if (seen < this.projectArrayCount()) {
+        this.driftWarnings.push(
+          `held-check could read only ${seen} of ${this.projectArrayCount()} array row(s) — verify the arrays by eye before submit`,
+        );
+      }
+      const brokenRows = async (): Promise<number[]> => {
+        const rows = await this.readArrayRowsBack();
+        const out: number[] = [];
+        for (let i = 1; i <= Math.min(want, rows.length); i++) {
+          const row = rows[i - 1];
+          for (const s of perArraySteps) {
+            this.arrayPass = i; // resolveValue maps array1* -> array{i}*
+            const expected = this.resolveValue(this.arrayPassStep(s, i));
+            if (!expected) continue;
+            const lbl = this.stepLabel(s).toLowerCase();
+            if (!lbl) continue;
+            const ctl = row.find((c) => {
+              const own = c.label.toLowerCase();
+              return own && (own.includes(lbl) || lbl.includes(own));
+            });
+            if (!ctl) continue; // no such control in this row — nothing to verify against
+            const empty = ctl.tag === "select" ? ctl.placeholder : !String(ctl.value ?? "").trim();
+            if (empty) { out.push(i); break; }
+            // A NUMBER CAN BE PRESENT AND WRONG. The live incident filed array 2's
+            // qty/tilt into array 1 — non-empty, so an emptiness check blesses it. Fill
+            // values are the project's own numbers (no certified-name aliasing), so they
+            // must match; selects stay emptiness-only because the landed option is
+            // legitimately the portal's spelling of the value.
+            if (s.action === "fill" && ctl.tag !== "select") {
+              const got = String(ctl.value ?? "").trim();
+              const numEq = got !== "" && expected !== ""
+                && Number.isFinite(Number(got)) && Number.isFinite(Number(expected))
+                && Number(got) === Number(expected);
+              if (got !== expected.trim() && !numEq) { out.push(i); break; }
+            }
+          }
+        }
+        return out;
+      };
+      const broken = await brokenRows();
+      if (!broken.length) return;
+      for (const i of broken) {
+        this.arrayPass = i;
+        this.driftWarnings.push(`array row ${i} lost fills to a re-render — re-running its recorded steps`);
+        for (const s of perArraySteps) {
+          await this.executeStep(this.arrayPassStep(s, i), false).catch(() => false);
+        }
+      }
+      const still = await brokenRows();
+      for (const i of still) {
+        const msg = `array row ${i}: fills did not hold even after repair — REVIEW BEFORE SUBMIT`;
+        this.driftWarnings.push(msg);
+        if (!this.requiredStillEmpty.includes(msg)) this.requiredStillEmpty.push(msg);
+      }
+    } finally {
+      this.arrayPass = savedPass;
+    }
   }
 
   /** What option rows are on screen right now, for diagnosing a select that landed
@@ -1106,6 +1312,23 @@ export class RecipeAdapter extends BasePortalAdapter {
               ? `select "${String(step.note ?? step.field ?? "")}" landed nothing and NO option list was open — the widget never opened (wanted ${JSON.stringify(v.slice(0, 40))})`
               : `select "${String(step.note ?? step.field ?? "")}" landed nothing though ${seen.count} option(s) were showing — wanted ${JSON.stringify(v.slice(0, 40))}, list offers ${seen.sample.map((o) => JSON.stringify(o)).join(", ")}`,
           );
+        }
+        // COMMIT WHAT LANDED. PowerClerk autosaves per field on blur — the fill path has
+        // always blurred for exactly this reason (and so does the learner after a model
+        // select), but a replayed select never did. The value showed in the DOM, every
+        // check passed, and the next server re-render (a row-add, a Calculate) restored
+        // the placeholder — measured live on array 1's module manufacturer.
+        // FOCUS FIRST: selectOption never focuses the element, and blurring an unfocused
+        // element fires no blur event — the smoke proved a bare blur() commits nothing.
+        // NATIVE ONLY: a custom combobox commits through its option CLICK, and focus() is
+        // an OPENER on some of those widgets (comboboxFill uses it to open) — focusing a
+        // just-landed combobox re-opens its popper, which then shadows the NEXT widget's
+        // option scan and can swallow the Add Array click.
+        if (selected && isNativeSelect && typeof scoped?.blur === "function") {
+          try {
+            if (typeof scoped.focus === "function") await scoped.focus({ timeout: 2000 });
+            await scoped.blur({ timeout: 2000 });
+          } catch { /* commit is best-effort — never fail a landed select over it */ }
         }
         // Propagate the miss: a select that landed NOTHING must not report success.
         return selected;
