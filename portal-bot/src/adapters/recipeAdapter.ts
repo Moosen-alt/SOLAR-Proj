@@ -77,6 +77,10 @@ export class RecipeAdapter extends BasePortalAdapter {
   /** Steps repaired mid-replay by label re-anchoring (reported to the backend,
    *  which patches the recipe and requires human re-verification). */
   private healedSteps: Array<{ note: string; action: string; selector: RecipeSelector }> = [];
+  /** Why the last self-heal attempt produced nothing. Empty when it healed or was never
+   *  tried. Surfaced in the failure context so "the selector drifted" and "the control is
+   *  present but unclickable" stop looking identical from the outside. */
+  private healDiagnostic = "";
   /** Drift-precheck annotations ("this page barely matches the recipe") — surfaced
    *  in every result payload so a run that squeaked through via heals still tells
    *  the operator the portal likely changed. */
@@ -312,8 +316,17 @@ export class RecipeAdapter extends BasePortalAdapter {
       // announcement over its home page; it swallowed the click that opens a new
       // application, and the run failed on the NEXT step with a bare 30s click timeout
       // 2 steps into 99. Cheap: each pass exits immediately when nothing matches.
+      // dismissPageModals CLICKS a dismissal ("Got it"). PowerClerk's "What's new?"
+      // popover is a SEQUENCE of those, anchored on the very toolbar button we are
+      // about to click — so clicking through it is unreliable and it stays up,
+      // intercepting the click anyway. clearPageOverlays REMOVES it (it already
+      // knows .new-feature-popper by name), but replay only reached that on the
+      // retry and advance-guard paths, never before the first click. A live run
+      // died at step 1 behind exactly that popover, announcing the homepage
+      // redesign that moved the button underneath it.
       if (step.action === "click" || step.action === "goto") {
         await dismissPageModals(this.page).catch(() => null);
+        await clearPageOverlays(this.page).catch(() => null);
       }
 
       let lastErr: unknown;
@@ -1541,6 +1554,10 @@ export class RecipeAdapter extends BasePortalAdapter {
       ).catch(() => [] as string[]);
       if (names.length) parts.push(`visible controls: ${names.map((n: string) => JSON.stringify(n)).join(", ")}`);
     } catch { /* best-effort */ }
+    // The listing above says what the page HAS; this says what the repair made of it.
+    // Without it, a control that is present and named in that very list but still fails
+    // to click gives no clue whether the re-anchor looked, or looked and declined.
+    if (this.healDiagnostic) parts.push(`self-heal: ${this.healDiagnostic}`);
     try {
       if (typeof this.page.screenshot === "function") {
         const dir = process.env.PORTAL_SCREENSHOT_DIR || path.join(process.cwd(), "data", "screenshots");
@@ -1555,21 +1572,41 @@ export class RecipeAdapter extends BasePortalAdapter {
   }
 
   private async healSelectorForStep(step: RecipeStep): Promise<RecipeSelector | null> {
-    if (!this.page || typeof this.page.$$eval !== "function") return null;
+    // WHY THIS REPORTS. Every exit below used to be a bare `return null`, so a heal that
+    // never ran (page gone, $$eval threw) looked exactly like a heal that ran and found
+    // nothing. A live PGE replay failed at step 1 on a control the failure diagnostic
+    // listed as VISIBLE, with healedSteps: 0 and no way to tell which had happened.
+    this.healDiagnostic = "";
+    if (!this.page || typeof this.page.$$eval !== "function") {
+      this.healDiagnostic = "no page to re-extract from";
+      return null;
+    }
     const wanted = (step.note || step.selector?.label || step.selector?.name || "").trim().toLowerCase();
-    if (wanted.length < 3) return null;
+    if (wanted.length < 3) {
+      this.healDiagnostic = `nothing to anchor on (note/label is ${JSON.stringify(wanted)})`;
+      return null;
+    }
     let raws: unknown[] = [];
-    try { raws = await this.page.$$eval(EXTRACT_SEL, extractFieldsInPage); } catch { return null; }
+    try { raws = await this.page.$$eval(EXTRACT_SEL, extractFieldsInPage); }
+    catch (err) {
+      // Do NOT swallow this. A function declared inside the extraction script compiles to
+      // __name(fn, "…"), which does not exist in the browser; that throw is what made an
+      // earlier scan read as "found nothing" for three separate investigations.
+      this.healDiagnostic = `re-extraction threw: ${err instanceof Error ? err.message : String(err)}`;
+      return null;
+    }
     const compat = (t: string): boolean =>
       step.action === "select" ? t === "select"
       : step.action === "check" || step.action === "uncheck" ? t === "checkbox" || t === "radio"
       : step.action === "click" ? t === "button"
       : t === "text" || t === "other" || t === "select";
     let best: { sel: RecipeSelector; score: number } | null = null;
+    const sawCompatible: string[] = [];
     for (const raw of raws as Parameters<typeof toExtractedField>[0][]) {
       const f = toExtractedField(raw);
       if (!compat(f.fieldType)) continue;
       const label = (f.label || "").trim().toLowerCase();
+      if (label && sawCompatible.length < 10) sawCompatible.push(label.slice(0, 40));
       if (!label) continue;
       const contains = label.includes(wanted) || wanted.includes(label);
       const base = label === wanted ? 100 : contains && Math.min(label.length, wanted.length) >= 5 ? 70 : 0;
@@ -1581,7 +1618,18 @@ export class RecipeAdapter extends BasePortalAdapter {
       const score = base + fingerprintBoost(f.fingerprint, step.fingerprint);
       if (!best || score > best.score) best = { sel: f.selector, score };
     }
-    if (best && JSON.stringify(best.sel) === JSON.stringify(step.selector)) return null;
+    if (best && JSON.stringify(best.sel) === JSON.stringify(step.selector)) {
+      // The page still offers exactly the control we recorded, so the selector is not the
+      // problem — something is stopping the click from LANDING (an overlay, a disabled
+      // state). Saying so points at a completely different fix than "selector drifted".
+      this.healDiagnostic = "the live page offers the SAME selector that just failed — the control is there but the click is not landing (overlay/disabled?), not a drifted selector";
+      return null;
+    }
+    if (!best) {
+      this.healDiagnostic = sawCompatible.length
+        ? `no ${step.action}-compatible control matched ${JSON.stringify(wanted.slice(0, 50))}; page offers: ${sawCompatible.map((s) => JSON.stringify(s)).join(", ")}`
+        : `re-extraction returned no ${step.action}-compatible controls at all (${raws.length} element(s) scanned)`;
+    }
     return best?.sel ?? null;
   }
 }
