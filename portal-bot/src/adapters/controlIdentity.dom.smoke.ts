@@ -39,6 +39,9 @@ const PAGE = `<!doctype html><html><body>
 
   <label for="idD">E-mail:</label>
   <input id="idD">
+
+  <label for="idE">*Type (Required):</label>
+  <select id="idE"><option value="">Select...</option><option>Plans</option><option>Calculations</option></select>
 </body></html>`;
 
 const server = http.createServer((_q, r) => { r.writeHead(200, { "Content-Type": "text/html" }); r.end(PAGE); });
@@ -64,6 +67,11 @@ const steps: RecipeStep[] = [
   // ("email" vs {"mail"}), and the identity check skipped a correctly-resolved fill on a
   // live ACA contact popup, which then saved NO contact record at all.
   { action: "fill", phase: "fill", selector: { css: "#idD" }, value: "someone@example.com", note: "contact: email [applicant]" },
+  // A LABEL THAT IS ALL MARKERS HAS NOTHING TO CONTRADICT. ACA's attachment-type select
+  // is labelled "*Type (Required):" — "type" is rightly a stopword, and "required" is a
+  // requirement marker, not identity. The identity check refused this correctly-resolved
+  // select on a live run and the attachment saved without its required type.
+  { action: "select", phase: "fill", selector: { css: "#idE" }, value: "Plans", note: "attachment: document type" },
 ];
 
 const recipe = {
@@ -95,7 +103,7 @@ for (const step of steps.filter((s) => s.action !== "goto")) {
 }
 
 const value = async (sel: string): Promise<string> => page.locator(sel).inputValue().catch(() => "");
-const [a, b, c, d] = [await value("#idA"), await value("#idB"), await value("#idC"), await value("#idD")];
+const [a, b, c, d, e] = [await value("#idA"), await value("#idB"), await value("#idC"), await value("#idD"), await value("#idE")];
 const drift = internals.driftWarnings;
 
 check("a step re-anchors to the control its recorded LABEL names", () => {
@@ -115,6 +123,10 @@ check("a correctly-resolved step is left alone (no over-firing)", () => {
 
 check("a hyphenated label is not a contradiction (E-mail: accepts an email fill)", () => {
   assert.equal(d, "someone@example.com", `the identity check must accept "E-mail:" for an email step; got ${JSON.stringify(d)}`);
+});
+
+check("an all-markers label (*Type (Required):) has nothing to contradict — the select fills", () => {
+  assert.equal(e, "Plans", `the attachment-type select must fill despite its marker-only label; got ${JSON.stringify(e)}`);
 });
 
 check("every mis-resolution is REPORTED, never silent", () => {

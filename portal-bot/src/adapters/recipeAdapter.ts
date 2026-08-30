@@ -72,6 +72,11 @@ const IDENTITY_STOPWORDS = new Set([
   "this", "that", "your", "will", "with", "from", "please", "select", "there", "have",
   "does", "the", "and", "for", "are", "you", "system", "site", "number", "name", "type",
   "information", "address", "would", "like", "used", "using", "enter", "provide",
+  // Requirement MARKERS carry no identity: ACA labels its attachment-type select
+  // "*Type (Required):" — with "type" rightly stopped, "required" was the only token
+  // left, and a correctly-resolved select was refused as unrelated. A label that is all
+  // markers has nothing to contradict.
+  "required", "optional",
 ]);
 
 export class RecipeAdapter extends BasePortalAdapter {
