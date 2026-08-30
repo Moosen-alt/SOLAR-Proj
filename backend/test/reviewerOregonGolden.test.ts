@@ -155,5 +155,41 @@ try {
   console.error(err instanceof Error ? err.message.slice(0, 2000) : String(err));
 }
 
+// A COMPLETE PACKAGE MUST NOT BE BLOCKED FOR "No split mapping found".
+//
+// The plan-set requirement was decided from parser TEXT (splitPagesText /
+// utilityDownloadChecklistText / projectDescriptionText). Those are a proxy for "a package
+// was produced", and the proxy reads MISSING for a project that holds every split document.
+// Live: Abby Johnson (Happy Valley) had plan_set, sld, site_plan, module_spec, inverter_spec
+// and five more attached, and staging was hard-blocked with "No split mapping found" —
+// unclearable from the UI, because nothing an operator can type creates parser text.
+//
+// Built on its own fixture, not the Oregon golden: that one's profile never raises this
+// finding, so asserting "no blocker" against it passed vacuously and proved nothing.
+try {
+  const happyValley = {
+    id: "t1", homeownerName: "Plan Set Test", projectAddress: "1 Test St", city: "Happy Valley",
+    state: "OR", zip: "97086", ahj: "City Of Happy Valley", utility: "PGE",
+    parserSnapshot: { splitPagesText: "", utilityDownloadChecklistText: "", projectDescriptionText: "" },
+  } as never;
+  const planSetBlocker = (types: string[]): boolean =>
+    buildReviewerReport(happyValley, { uploadedDocTypes: types })
+      .findings.some((f) => f.id === "reviewer.profile.plan-set" && f.severity === "blocker");
+
+  // The control: with nothing attached this MUST block, or the assertions below are vacuous.
+  assert.ok(planSetBlocker([]), "a project with no package at all must still be blocked");
+  assert.ok(planSetBlocker(["meter_photo", "utility_bill"]), "a meter photo and a bill are not a plan set");
+  // And with a package present it must not.
+  assert.ok(!planSetBlocker(["plan_set", "sld", "site_plan", "module_spec"]),
+    "a project holding the split package was still blocked for a missing plan set");
+  assert.ok(!planSetBlocker(["sld", "site_plan"]),
+    "the split documents alone should satisfy the plan-set requirement");
+  console.log("  ok   - plan-set requirement is settled by the attached documents, not parser text");
+} catch (err) {
+  failures++;
+  console.error("  FAIL - plan-set requirement vs attached documents");
+  console.error(err instanceof Error ? err.message.slice(0, 2000) : String(err));
+}
+
 if (failures > 0) process.exit(1);
 console.log("\nAll reviewer-golden tests passed.");

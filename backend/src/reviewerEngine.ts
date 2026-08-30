@@ -65,7 +65,16 @@ function confidenceVerb(check: ProjectEvidence): string {
 // opts.codeContext: the jurisdiction's adopted-codes context (resolveEffectiveCodeContext).
 // When omitted the engine behaves exactly as before the data-driven refactor — legacy
 // Oregon detection + hardcoded constants (pinned by backend/test/reviewerOregonGolden).
-export function buildReviewerReport(project: ProjectRecord, opts: { codeContext?: EffectiveCodeContext } = {}): ReviewerReport {
+export function buildReviewerReport(
+  project: ProjectRecord,
+  opts: {
+    codeContext?: EffectiveCodeContext;
+    /** doc_type values actually attached to the project. The plan-set requirement is about
+     *  whether the package EXISTS, and the parser-text signals below are only a proxy for
+     *  that — a proxy that reads "missing" for a project holding every split document. */
+    uploadedDocTypes?: string[];
+  } = {},
+): ReviewerReport {
   const profile = findAhjProcessProfile(project);
   const findings: ReviewerFinding[] = [];
 
@@ -74,7 +83,7 @@ export function buildReviewerReport(project: ProjectRecord, opts: { codeContext?
   findings.push(...evaluateDesignCodeFindings(project, profile, opts.codeContext));
   addPlanSetFindings(project, findings);
   addUtilityFindings(project, findings);
-  addProfileFindings(project, profile, findings);
+  addProfileFindings(project, profile, findings, opts.uploadedDocTypes ?? []);
   addPermitPathFindings(project, findings);
   addInstallerCallouts(project, profile, findings);
 
@@ -661,12 +670,22 @@ function addUtilityFindings(project: ProjectRecord, findings: ReviewerFinding[])
   }
 }
 
-function addProfileFindings(project: ProjectRecord, profile: AhjProcessProfile | null, findings: ReviewerFinding[]): void {
+function addProfileFindings(project: ProjectRecord, profile: AhjProcessProfile | null, findings: ReviewerFinding[], uploadedDocTypes: string[] = []): void {
   if (!profile) return;
   const docs = `${payload(project, "splitPagesText")}\n${payload(project, "utilityDownloadChecklistText")}\n${payload(project, "projectDescriptionText")}`;
   const stampText = `${payload(project, "stampRecommendation")}\n${payload(project, "reviewFlags")}`;
-  if (profile.requiresPlanSet && !docs.trim()) {
-    findings.push(finding("reviewer.profile.plan-set", "blocker", "ahj_profile", "AHJ profile requires plan set", `${profile.ahj} profile requires a plan set/upload package. No split mapping found.`, true));
+  // THE DOCUMENTS THEMSELVES SETTLE THIS, NOT THE PARSER'S NOTES ABOUT THEM.
+  //
+  // The three payload fields above are parser text — a proxy for "a package was produced".
+  // A project can hold plan_set, sld, site_plan, module_spec and inverter_spec on disk and
+  // still have those fields empty, and this fired as a BLOCKER on exactly that: a complete
+  // package, hard-blocked from staging, with the operator told "No split mapping found"
+  // while the dashboard listed ten documents. There is no way out of that from the UI,
+  // because nothing the operator can type creates parser text.
+  const PACKAGE_DOC_TYPES = ["plan_set", "combined_plan_set", "full_plan_set", "utility_package_zip", "sld", "site_plan"];
+  const hasPackageOnDisk = uploadedDocTypes.some((t) => PACKAGE_DOC_TYPES.includes(String(t)));
+  if (profile.requiresPlanSet && !docs.trim() && !hasPackageOnDisk) {
+    findings.push(finding("reviewer.profile.plan-set", "blocker", "ahj_profile", "AHJ profile requires plan set", `${profile.ahj} profile requires a plan set/upload package. No plan set or split package is attached to this project.`, true));
   }
   // Stamp decision comes from the single authority (permitPath.resolveStampRequirement)
   // so the reviewer can never disagree with the dashboard's required-documents list.

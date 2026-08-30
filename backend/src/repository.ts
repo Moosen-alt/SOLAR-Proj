@@ -124,7 +124,10 @@ export function buildReviewerReportFor(db: AppDb, project: ProjectRecord): Revie
   // AUTONOMY: the internal gate self-onboards too — reviewing a project in an
   // un-profiled jurisdiction queues background code research for its layers.
   if (!codeContext.verified) ensureCodeProfilesResearched(db, project.state, project.ahj);
-  return buildReviewerReport(project, { codeContext });
+  // The reviewer's plan-set requirement is about whether the package EXISTS; give it the
+  // attached document types so it cannot block a project that has them.
+  const uploadedDocTypes = Object.keys(projectDocsByType(db, project.id));
+  return buildReviewerReport(project, { codeContext, uploadedDocTypes });
 }
 
 
