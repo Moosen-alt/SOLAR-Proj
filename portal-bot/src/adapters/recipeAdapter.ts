@@ -1489,7 +1489,10 @@ export class RecipeAdapter extends BasePortalAdapter {
         await waitForElement(target);
         // force: a radio inside a styled widget is driven by its label, so the input itself
         // can be visually hidden while still being the thing that must end up checked.
-        await target!.check({ force: !usable && !recovered });
+        // A RECOVERED radio is usually exactly that hidden half (recovery only runs when
+        // the recorded id was unusable) — force must follow !usable alone, or the check
+        // waits out its full actionability timeout on an element that can never be visible.
+        await target!.check({ force: !usable });
         // Same settle for checkbox changes that may trigger form re-renders.
         await this.page.waitForLoadState("networkidle", { timeout: 3000 }).catch(() => null);
         return true;
@@ -1844,6 +1847,33 @@ export class RecipeAdapter extends BasePortalAdapter {
         const clean = name.replace(/\s*\*\s*$/, "").trim().slice(0, 70);
         if (clean && !out.includes(clean)) out.push(clean);
       }
+      // UNANSWERED REQUIRED RADIO GROUPS. Radios are skipped above (a single unchecked
+      // radio is not a blank), but a GROUP where nothing is checked is exactly a blank —
+      // and PGE's required "disconnect within 10 feet" pair sat unanswered while this
+      // sweep reported a clean page. Conservative: only groups whose shared container
+      // carries a required marker (asterisk or a visible complaint), keyed by name attr
+      // or the per-render id prefix PowerClerk uses.
+      const radios = (Array.from(document.querySelectorAll("input[type=radio]")) as HTMLInputElement[])
+        .filter((el) => { const r = el.getBoundingClientRect(); return (r.width > 0 && r.height > 0) || !!el.closest("label"); });
+      const groups = new Map<string, HTMLInputElement[]>();
+      for (const r of radios) {
+        const key = r.getAttribute("name") || (r.getAttribute("id") || "").replace(/_\d+$/, "");
+        if (!key) continue;
+        (groups.get(key) ?? groups.set(key, []).get(key)!).push(r);
+      }
+      for (const [, members] of groups) {
+        if (members.length < 2 || members.some((r) => r.checked)) continue;
+        // The group's shared container: the closest ancestor of the first radio that
+        // contains every member.
+        let cont: HTMLElement | null = members[0].parentElement;
+        while (cont && cont !== document.body && !members.every((r) => cont!.contains(r))) cont = cont.parentElement;
+        if (!cont || cont === document.body) continue;
+        const text = (cont.innerText || "").replace(/\s+/g, " ").trim();
+        const requiredish = /\*/.test(text.slice(0, 200)) || /this field is required|required field|please (select|choose)/i.test(text);
+        if (!requiredish) continue;
+        const q = text.replace(/\s*\*\s*/g, " ").trim().slice(0, 70);
+        if (q && !out.includes(q)) out.push(q);
+      }
       return out.slice(0, 12);
     }).catch(() => [] as string[]) as string[];
   }
@@ -2133,8 +2163,17 @@ export class RecipeAdapter extends BasePortalAdapter {
         const opt = group.nth(i);
         const id = await opt.getAttribute("id").catch(() => null);
         if (!id) continue;
-        const label = await this.page.locator(`label[for="${id}"]`).first().innerText({ timeout: 700 }).catch(() => "");
-        if (String(label ?? "").trim().toLowerCase() === answer.trim().toLowerCase()) {
+        // The FULL accessible-label chain, not just label[for]: PGE's disconnect radios
+        // WRAP their input in the label, so a for-only lookup read "" and recovery
+        // declared the question "not asked" — while it sat unanswered on the live page.
+        const label = await opt.evaluate((el: Element) => {
+          const eid = el.getAttribute("id") || "";
+          let t = eid ? ((document.querySelector(`label[for="${CSS.escape(eid)}"]`) as HTMLElement | null)?.innerText ?? "") : "";
+          if (!t) t = (el.closest("label") as HTMLElement | null)?.innerText ?? "";
+          if (!t) t = el.getAttribute("aria-label") || "";
+          return t;
+        }).catch(() => "");
+        if (String(label ?? "").replace(/\s+/g, " ").trim().toLowerCase() === answer.trim().toLowerCase()) {
           this.driftWarnings.push(`policy option "${answer}" re-anchored from ${css} to #${id} (per-render id suffix)`);
           return opt;
         }

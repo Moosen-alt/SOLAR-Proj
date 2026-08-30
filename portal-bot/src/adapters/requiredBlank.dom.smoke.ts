@@ -45,6 +45,20 @@ const PAGE = `<!doctype html><html><body>
       <select id="mfr"><option value="">Please select...</option><option>Altenergy Power System</option></select>
       <span class="err">This field is required.</span>
     </div>
+    <!-- PGE's shape: a REQUIRED radio pair with NOTHING checked. A single unchecked radio
+         is not a blank, but an unanswered group is — this one sat empty on a live PGE
+         draft while the sweep reported a clean page. -->
+    <div class="form-group">
+      <span>Is your disconnect within 10 feet of the utility meter? *</span>
+      <label><input type="radio" name="disc10"> Yes</label>
+      <label><input type="radio" name="disc10"> No</label>
+    </div>
+    <!-- An OPTIONAL unanswered pair must NOT be reported. -->
+    <div class="form-group">
+      <span>Would you like marketing emails?</span>
+      <label><input type="radio" name="mkt"> Yes</label>
+      <label><input type="radio" name="mkt"> No</label>
+    </div>
     <button id="next" type="button">Next</button>
   </div>
   <div id="page2" style="display:none"><h3>Review</h3></div>
@@ -103,6 +117,15 @@ check("a control marked required by a VALIDATION MESSAGE is reported", () => {
     blanks.some((b) => /inverter manufacturer/i.test(b)),
     `a blank required dropdown marked only by "This field is required." was missed; got ${JSON.stringify(blanks)}`,
   );
+});
+check("an unanswered REQUIRED radio group is reported", () => {
+  assert.ok(
+    blanks.some((b) => /disconnect within 10 feet/i.test(b)),
+    `a required radio pair with nothing checked was missed; got ${JSON.stringify(blanks)}`,
+  );
+});
+check("an unanswered OPTIONAL radio group is not reported", () => {
+  assert.ok(!blanks.some((b) => /marketing emails/i.test(b)), `optional radio group reported: ${JSON.stringify(blanks)}`);
 });
 check("an OPTIONAL empty box is not reported", () => {
   // A list that includes everything empty is a list nobody reads.
