@@ -4090,7 +4090,23 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       // Heal tie-break metadata (attribute names only — never values).
       ...(field.fingerprint ? { fingerprint: field.fingerprint } : {}),
     };
-    if (sensitive) {
+    // A SECRET IS FREE TEXT, NEVER A CHOICE FROM A FIXED LIST.
+    //
+    // SENSITIVE_LABEL makes the identifier suffix optional ("meter\s*(number|no|#)?"), so a
+    // bare "meter" matches — and PacifiCorp's meter PAGE is full of Yes/No questions that
+    // merely mention one: "Will there be a Meter Mounted Device (MMD)", "Is this meter
+    // located inside a garage/residence/facility?", "Possible meter access issues?",
+    // "...meter aggregation...". Each was redacted as a secret, so its answer was recorded
+    // as "" with no field to bind — a dead step filling nothing on every future replay.
+    // Live consequence: those REQUIRED questions stayed blank and PacifiCorp refused the
+    // page, quoting them straight back at us.
+    //
+    // Narrowed for RECORDING only. Redaction of what we SEND the planner is unchanged and
+    // stays deliberately broad, because under-redacting an account number is the worse
+    // failure. An account number is not a dropdown, so keeping a select/radio/checkbox
+    // answer leaks nothing.
+    const answerComesFromFixedOptions = field.fieldType === "select" || field.fieldType === "radio" || field.fieldType === "checkbox";
+    if (sensitive && !answerComesFromFixedOptions) {
       // Password fields are login credentials handled by the login step — never record as
       // a form fill step (the planner may send one but we drop it here to avoid replaying
       // a stored blank into a plain-text login form on review/settings pages).

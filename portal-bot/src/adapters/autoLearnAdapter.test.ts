@@ -485,6 +485,8 @@ async function testSensitiveFieldsRedacted() {
       { selectorIndex: 0, value: "supersecret-pw", field: "password" },
       { selectorIndex: 1, value: "9990001111", field: "accountNumber" },
       { selectorIndex: 3, value: "Normal Value", field: "homeownerName" },
+      // A Yes/No QUESTION that merely mentions a meter — not the meter number.
+      { selectorIndex: 4, value: "No" },
     ],
     atReview: true,
   });
@@ -503,6 +505,7 @@ async function testSensitiveFieldsRedacted() {
               { label: "Account Number", fieldType: "text", id: "acct" },
               { label: "Meter Number", fieldType: "text", id: "mtr" },
               { label: "Homeowner Name", fieldType: "text", id: "hn" },
+              { label: "Will there be a Meter Mounted Device (MMD)", fieldType: "select", id: "mmd", options: ["Select...", "Yes", "No"] },
             ],
           },
         ],
@@ -536,6 +539,18 @@ async function testSensitiveFieldsRedacted() {
   assert.equal(meterStep?.sensitive, true, "meter number must be flagged sensitive");
   assert.equal(meterStep?.value, "", "meter number literal value must NOT be stored");
   assert.equal(meterStep?.field, "meterNumber", "meter number bound by field for replay");
+
+  // A QUESTION THAT MERELY MENTIONS A METER IS NOT A SECRET.
+  //
+  // SENSITIVE_LABEL makes the identifier suffix optional, so bare "meter" matches and every
+  // Yes/No question on PacifiCorp's meter page was redacted — recorded with value "" and no
+  // field, a dead step that fills nothing forever. Those questions are REQUIRED, so the
+  // portal refused the page and quoted them back. An answer chosen from a fixed option list
+  // is not an identifier and must be kept.
+  const mmdStep = result.steps.find((s) => s.note === "Will there be a Meter Mounted Device (MMD)");
+  assert.ok(mmdStep, "the MMD question is recorded");
+  assert.notEqual(mmdStep?.sensitive, true, "a Yes/No question is not a secret just for saying 'meter'");
+  assert.equal(mmdStep?.value, "No", "the recorded answer must survive, or replay leaves a required question blank");
 
   // A non-sensitive field keeps its binding/value normally.
   const nameStep = fillSteps.find((s) => s.note === "Homeowner Name");
