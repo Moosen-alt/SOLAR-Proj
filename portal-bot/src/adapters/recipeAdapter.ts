@@ -1085,23 +1085,36 @@ export class RecipeAdapter extends BasePortalAdapter {
     };
     const empty = (v: string | null) => v !== null && (!v || /^(please\s+)?select\.{0,3}$/i.test(v) || /^--/.test(v));
     let repairedMake = false;
+    let makeCommitted = false;
     for (const s of steps) {
       if (!this.resolveValue(s)) continue; // nothing to hold
-      // Never-landed steps stay out — EXCEPT a model whose make was just repaired: its
-      // cascade parent was the blocker (an unset make renders no/empty model list), so
-      // one fresh attempt is warranted. The ambiguous-model guard still applies inside
-      // the step, so a genuinely unlistable model is still left blank for the human.
-      const cascadeUnblocked = repairedMake && this.isModelStep(s);
+      // Never-landed steps stay out — EXCEPT a model whose make is COMMITTED: the cascade
+      // parent exists, so its list is real and one fresh attempt is warranted. This used
+      // to require the make to have been JUST REPAIRED — but the blur-commit fix means
+      // the make now survives the row-add, the repair never fires, and the model lost
+      // its accidental rescue: a production replay shipped "Altenergy Power System" with
+      // its Model still on "Please select...". The ambiguous-model guard still applies
+      // inside the step, so a genuinely unlistable model stays blank for the human.
+      const cascadeUnblocked = (repairedMake || makeCommitted) && this.isModelStep(s);
       if (!this.landedSelectFields.has(String(s.field)) && !cascadeUnblocked) continue;
       const before = await displayed(s);
-      if (!empty(before)) continue;
+      if (!empty(before)) {
+        if (this.isManufacturerStep(s)) makeCommitted = true;
+        continue;
+      }
       this.driftWarnings.push(cascadeUnblocked && !this.landedSelectFields.has(String(s.field))
-        ? `equipment select "${this.stepLabel(s)}" (${s.field}) — its make was just repaired, retrying the cascade child`
+        ? `equipment select "${this.stepLabel(s)}" (${s.field}) — its make is set, retrying the cascade child`
         : `equipment select "${this.stepLabel(s)}" (${s.field}) lost its fill to a re-render — re-running it`);
+      const hadLanded = this.landedSelectFields.has(String(s.field));
       await this.executeStep(labelOnly(s), false).catch(() => false);
       const after = await displayed(s);
       if (empty(after)) {
-        const msg = `${this.stepLabel(s)} (${s.field}): fill did not hold even after repair — REVIEW BEFORE SUBMIT`;
+        // Say what actually happened: a landed pick that vanished is "did not hold";
+        // a pick that never landed (the ambiguity guard keeps refusing it) was LEFT
+        // BLANK deliberately — both belong in the blanks list, under honest names.
+        const msg = hadLanded
+          ? `${this.stepLabel(s)} (${s.field}): fill did not hold even after repair — REVIEW BEFORE SUBMIT`
+          : `${this.stepLabel(s)} (${s.field}): no safe match — left blank for review`;
         this.driftWarnings.push(msg);
         if (!this.requiredStillEmpty.includes(msg)) this.requiredStillEmpty.push(msg);
       } else if (this.isManufacturerStep(s)) {

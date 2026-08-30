@@ -5558,7 +5558,19 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
     // the operator plainly instead of leaving a raw "Recipe step failed" message.
     // NOTE: the "(page drift)" fail-fast in recipeAdapter.precheckPageDrift relies
     // on this same /recipe step failed/i match to land in needs_rerecord.
-    if (result && result.ok === false && typeof result.message === "string" && /recipe step failed/i.test(result.message)) {
+    // THE FAILURE TEXT LIVES ON THE FAILING STEP, NOT THE SUMMARY. stageWithRecipe's
+    // failure result carries no top-level message — "Recipe step failed (fill — inverter
+    // quantity)" rides in steps[].message — so testing result.message alone made this
+    // entire block DEAD CODE for replay step failures: a fresh Daly intake staged NEM
+    // against a stale recipe, failed cleanly, and the recipe stayed "complete" with no
+    // re-learn queued and no staleness note for the operator.
+    const stageFailText = [
+      typeof result.message === "string" ? result.message : "",
+      ...(Array.isArray((result as { steps?: Array<{ message?: unknown }> }).steps)
+        ? ((result as { steps: Array<{ message?: unknown }> }).steps ?? []).map((s) => (typeof s.message === "string" ? s.message : ""))
+        : []),
+    ].filter(Boolean).join(" | ");
+    if (result && result.ok === false && /recipe step failed/i.test(stageFailText)) {
       try {
         markPortalRecipeForRerecord(db, recipe.id);
       } catch {
@@ -5598,7 +5610,7 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
       result = {
         ...result,
         recipeStale: true,
-        message: `${result.message} — this recipe looks stale (the portal likely changed) and has been flagged for re-recording. ${relearnQueued ? "A fresh learn of the portal was queued automatically; re-stage once it finishes." : "Re-record it, then re-stage."}`,
+        message: `${result.message || stageFailText.slice(0, 300)} — this recipe looks stale (the portal likely changed) and has been flagged for re-recording. ${relearnQueued ? "A fresh learn of the portal was queued automatically; re-stage once it finishes." : "Re-record it, then re-stage."}`,
       };
     }
   } else if (runActorLabel === "AutoLearnAdapter") {

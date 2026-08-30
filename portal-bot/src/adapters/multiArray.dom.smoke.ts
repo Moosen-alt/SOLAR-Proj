@@ -415,6 +415,13 @@ check("powerclerk single-array: the run completes with the row committed", () =>
 check("powerclerk single-array: no false 'did not hold' alarm from reading the wrong section", () => {
   assert.doesNotMatch(r4blanks, /did not hold/i, `false held-check alarm on a correctly filled page: ${r4blanks.slice(0, 200)}`);
 });
+check("powerclerk single-array: the unlistable inverter model IS reported as left blank", () => {
+  // Its make is committed, so the cascade-child retry runs — and when the ambiguity
+  // guard still refuses (the model is not offered), the blank is REPORTED under an
+  // honest name instead of silently shipping "Please select..." (measured live: a
+  // production replay staged an inverter make with its Model on the placeholder).
+  assert.match(r4blanks, /inverterModel.*left blank for review/i, `expected the unlistable model in the blanks list: ${r4blanks.slice(0, 250)}`);
+});
 
 await browser.close();
 server.close();
