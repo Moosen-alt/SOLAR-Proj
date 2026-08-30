@@ -254,8 +254,28 @@ export class RecipeAdapter extends BasePortalAdapter {
       }).catch(() => "") as Promise<string>;
     };
 
+    // WHERE THE TIME GOES. Two live PowerClerk replays spent ~1300s on ~25 steps and were
+    // cut off mid-run by the portal's own session timeout (PGE landed on
+    // /MvcAccount/InvalidSession). "Learn slow, replay fast" is the product's whole
+    // economics, so a replay that cannot finish inside a portal session is a correctness
+    // problem, not a comfort one — and averages hide it. Record the steps that actually
+    // cost seconds so the next fix targets the right one.
+    const slowSteps: Array<{ i: number; action: string; note: string; ms: number }> = [];
+    // Timed from the TOP of the next iteration rather than the bottom of this one: the loop
+    // body has a dozen `continue` paths (skips, policy defaults, drift), and a bottom-of-loop
+    // timer would silently miss exactly the steps most likely to be slow.
+    let prevStart = 0;
+    let prevStep: { i: number; action: string; note: string } | null = null;
+    const closePrevStepTiming = (): void => {
+      if (!prevStep) return;
+      const ms = Date.now() - prevStart;
+      if (ms >= 4000) slowSteps.push({ ...prevStep, ms });
+    };
     for (let stepIdx = 0; stepIdx < this.recipe.steps.length; stepIdx++) {
       const step = this.recipe.steps[stepIdx];
+      closePrevStepTiming();
+      prevStart = Date.now();
+      prevStep = { i: stepIdx, action: String(step?.action ?? ""), note: String(step?.note ?? "").slice(0, 52) };
       // Guided-manual: stop at review. autoSubmit (trusted, approved): proceed past
       // the review marker to replay ONLY allowlisted final-submit steps.
       if (step.action === "stopForReview") {
@@ -483,7 +503,8 @@ export class RecipeAdapter extends BasePortalAdapter {
         // visible buttons is usually enough to tell those apart at a glance.
         const context = failureContext || await this.captureFailureContext(step, stepIdx);
         trace.push({ i: stepIdx, action: step.action, note: String(step.note ?? "").slice(0, 52), outcome: "FAILED", page: await currentPageLabel() });
-        return fail(`Recipe step failed (${step.action}${step.note ? ` — ${step.note}` : ""}): ${lastErr instanceof Error ? lastErr.message : String(lastErr)}${context}`, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, failedStepIndex: stepIdx, trace });
+        closePrevStepTiming();
+        return fail(`Recipe step failed (${step.action}${step.note ? ` — ${step.note}` : ""}): ${lastErr instanceof Error ? lastErr.message : String(lastErr)}${context}`, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, failedStepIndex: stepIdx, trace, slowSteps });
       }
       // Remember whether this step entered data, so the next advancing click waits for the
       // portal's autosave to commit (prevents blank-draft saves on PowerClerk).
@@ -530,7 +551,8 @@ export class RecipeAdapter extends BasePortalAdapter {
           // from a step throwing — and it is precisely when "what page am I actually on?"
           // is the whole question. Capture it like any other failure.
           const driftContext = await this.captureFailureContext(step, stepIdx);
-          return fail(`${driftFail}${driftContext}`, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, failedStepIndex: stepIdx, trace });
+          closePrevStepTiming();
+          return fail(`${driftFail}${driftContext}`, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, failedStepIndex: stepIdx, trace, slowSteps });
         }
       }
     }
@@ -546,10 +568,11 @@ export class RecipeAdapter extends BasePortalAdapter {
         recordLink: capture.data?.recordLink || "",
         // What the LLM gap-fill added (and what it left blank for lack of real data) — same key
         // the hand-coded adapters surface, so the operator/UI sees a uniform report.
-        gapFill: this.gapFillReport, healedSteps: this.healedSteps,
+        gapFill: this.gapFillReport, healedSteps: this.healedSteps, slowSteps,
       });
     }
-    return ok(`Replayed ${executed} recorded step(s); stopped at review.`, { executed, skipped, finalSubmitClicked: false, gapFill: this.gapFillReport, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings });
+    closePrevStepTiming();
+    return ok(`Replayed ${executed} recorded step(s); stopped at review.`, { executed, skipped, finalSubmitClicked: false, gapFill: this.gapFillReport, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, slowSteps });
   }
 
   private resolveValue(step: RecipeStep): string {

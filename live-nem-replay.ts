@@ -159,6 +159,16 @@ if (trace.length) {
     }
   }
 }
+const slow = ((detailData.slowSteps as Array<{ i: number; action: string; note: string; ms: number }> | undefined) ?? [])
+  .sort((a, b) => b.ms - a.ms);
+if (slow.length) {
+  const total = slow.reduce((n, s2) => n + s2.ms, 0);
+  console.log(`
+slowest steps (${slow.length} step(s) over 4s, ${(total / 1000).toFixed(0)}s of the run):`);
+  for (const s2 of slow.slice(0, 12)) {
+    console.log(`  ${String(s2.i).padStart(3)} ${s2.action.padEnd(7)} ${String(s2.ms / 1000).padStart(6)}s  ${s2.note}`);
+  }
+}
 const drift = (detailData.driftWarnings as string[] | undefined) ?? [];
 if (drift.length) {
   console.log(`
