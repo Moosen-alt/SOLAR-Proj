@@ -337,6 +337,41 @@ export class RecipeAdapter extends BasePortalAdapter {
           await clearPageOverlays(this.page).catch(() => null);
         }
       }
+      // ACA ADDRESS-ROW SELECTION: PICK THE ROW WHOSE ADDRESS MATCHES THIS PROJECT.
+      //
+      // This is the one thing standing between one Accela recipe and every city on the
+      // instance. Oregon ePermitting is a single statewide portal and the jurisdiction comes
+      // from the address search, so the rest of the flow generalises — but the recorded row
+      // selector does not:
+      //     tr:has-text("CITY APPLICATIONS") a:has-text("Select")
+      // "CITY APPLICATIONS" is how COOS BAY labels its row. Another city labels it its own
+      // way, the selector misses, and the recorded fallback is a bare "Select" link that
+      // takes whichever row comes first — potentially the county's offering instead of the
+      // city's, or another parcel entirely.
+      //
+      // The search returns one row per matching ADDRESS, so match the address: the project's
+      // street number plus street name, compared with directionals and street types
+      // normalised, because a portal writes "SE" where a plan set writes "Southeast" (and
+      // "St"/"Street", "Ave"/"Avenue"). Exact-normalised first, and only a UNIQUE match is
+      // clicked — several candidate rows means a human should choose, not us.
+      if (!succeeded && /work location:.*address row/i.test(String(step.note ?? ""))) {
+        const num = String(this.fieldValues.streetNumber ?? "").trim();
+        const street = String(this.fieldValues.street ?? "").trim();
+        if (num && street) {
+          // ACA returns ONE ROW PER JURISDICTION for the same address — city and county
+          // both serve it. Which one is right is the discipline: a structural permit files
+          // with the CITY, an electrical one with the COUNTY, and the recorded note says
+          // which ("select city/structural address row"). Without that tiebreak the address
+          // match is ambiguous on essentially every search.
+          const wantCounty = /county|electrical/i.test(String(step.note ?? "")) && !/city/i.test(String(step.note ?? ""));
+          const picked = await this.pickAddressRow(num, street, wantCounty ? "county" : "city");
+          if (picked) {
+            this.driftWarnings.push(`address row chosen by matching "${picked.slice(0, 52)}" (the recorded row label belongs to the city this recipe was learned on)`);
+            executed++;
+            succeeded = true;
+          }
+        }
+      }
       // ACA APPLY-FLOW RE-ENTRY. Accela Citizen Access serves one portal to many
       // jurisdictions and picks the jurisdiction from the ADDRESS SEARCH inside the Apply
       // wizard, so getting INTO the wizard is the only thing standing between one city and
@@ -1028,6 +1063,69 @@ export class RecipeAdapter extends BasePortalAdapter {
   // Is this step selecting an equipment MANUFACTURER? Checked against the bound field name
   // first (authoritative) and the control's own label second — PowerClerk's spec-page
   // labels are bare "Manufacturer", which is exactly the wording to match.
+  /**
+   * Click the search-result row whose ADDRESS is this project's, and return its text.
+   *
+   * Normalises the way portals and plan sets disagree: directionals ("SE" vs "Southeast")
+   * and street types ("St" vs "Street", "Ave" vs "Avenue"). Requires the street NUMBER to
+   * match as well, so "25th St" cannot select a different building on the same street.
+   * Returns "" unless exactly one row matches — several candidates is a decision for the
+   * human at review, not a guess that files against the wrong parcel.
+   */
+  private async pickAddressRow(streetNumber: string, street: string, prefer: "city" | "county" = "city"): Promise<string> {
+    if (!this.page || typeof this.page.evaluate !== "function") return "";
+    const id = await this.page.evaluate((args: { num: string; street: string; prefer: string }) => {
+      // No nested function declarations — esbuild's keepNames would wrap them as __name(…)
+      // and this evaluate would throw into a swallowed catch.
+      const DIRECTIONS: Record<string, string> = {
+        n: "north", s: "south", e: "east", w: "west",
+        ne: "northeast", nw: "northwest", se: "southeast", sw: "southwest",
+      };
+      const TYPES: Record<string, string> = {
+        st: "street", ave: "avenue", av: "avenue", rd: "road", dr: "drive", ln: "lane",
+        ct: "court", blvd: "boulevard", pl: "place", ter: "terrace", cir: "circle",
+        hwy: "highway", pkwy: "parkway", way: "way", loop: "loop", trl: "trail",
+      };
+      const rows = Array.from(document.querySelectorAll("tr"));
+      const hits: Array<{ idx: number; text: string }> = [];
+      // Expand the wanted address once.
+      const wantWords: string[] = [];
+      for (const raw of `${args.num} ${args.street}`.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/)) {
+        if (!raw) continue;
+        wantWords.push(DIRECTIONS[raw] || TYPES[raw] || raw);
+      }
+      for (let i = 0; i < rows.length; i++) {
+        const tr = rows[i];
+        if (!tr.querySelector("a")) continue; // only rows offering a Select link
+        const words: string[] = [];
+        for (const raw of (tr.textContent || "").toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/)) {
+          if (!raw) continue;
+          words.push(DIRECTIONS[raw] || TYPES[raw] || raw);
+        }
+        let all = true;
+        for (const w of wantWords) if (words.indexOf(w) < 0) { all = false; break; }
+        if (all) hits.push({ idx: i, text: (tr.textContent || "").replace(/\s+/g, " ").trim().slice(0, 90) });
+      }
+      if (!hits.length) return "";
+      let chosen = hits[0];
+      if (hits.length > 1) {
+        // Same address, several jurisdictions. Prefer the one this discipline files with;
+        // the county row usually names "COUNTY" and the city row does not.
+        const wantCounty = args.prefer === "county";
+        const matching = hits.filter((h) => /county/i.test(h.text) === wantCounty);
+        if (matching.length !== 1) return ""; // still ambiguous — a human should choose
+        chosen = matching[0];
+      }
+      rows[chosen.idx].setAttribute("data-replay-addr", "1");
+      return chosen.text;
+    }, { num: streetNumber, street, prefer }).catch(() => "") as string;
+    if (!id) return "";
+    const link = this.page.locator('tr[data-replay-addr="1"]').locator("a:has-text('Select')").first();
+    if (!(await link.count().catch(() => 0))) return "";
+    await link.click({ timeout: 8000 }).catch(() => null);
+    return id;
+  }
+
   /** Is this locator a native <select>, whose options can actually be read? */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private async isNativeSelect(loc: any): Promise<boolean> {
