@@ -280,6 +280,28 @@ export class RecipeAdapter extends BasePortalAdapter {
         prevWasInput = false;
       }
 
+      // DO NOT ADVANCE PAST A PAGE YOU STILL NEED TO FILL.
+      //
+      // One portal, many jurisdictions, DIFFERENT PAGE COUNTS. Oregon ePermitting lets each
+      // participating city configure its own Building application, so a recipe learned in
+      // one city can carry an advance the next city does not need. Measured live: the Coos
+      // Bay recipe has TWO consecutive "advance: Continue Application" steps, and replaying
+      // it in Hood River the second one skipped clean over the page holding Job Value,
+      // Category of Construction and Project Name — the run then stopped reporting 0 of 4
+      // fields, from inside the wizard, two pages past where it should have been.
+      //
+      // So before an advancing click, look at what the NEXT segment expects: if those fields
+      // are on the page right now, this advance is one the recipe brought from another
+      // jurisdiction. Skip it and let the fills happen. Deliberately conservative — it needs
+      // a real overlap of the next segment's labels, not a single incidental match.
+      if (step.action === "click" && /^advance\b/i.test(String(step.note ?? ""))) {
+        const upcoming = this.expectedLabelsForSegment(stepIdx + 1);
+        if (upcoming.length >= 3 && await this.segmentIsOnThisPage(upcoming)) {
+          this.driftWarnings.push(`skipped an advance this jurisdiction does not need — the next section's fields (${upcoming.slice(0, 3).join(", ")}…) are already on this page`);
+          continue;
+        }
+      }
+
       // CLEAR THE WAY BEFORE A CLICK. Replay had no modal handling at all, while the
       // learner dismisses modals at the top of every page — so the learner never met the
       // popover that the first live replay died on. PowerClerk raises a "What's new?"
@@ -1083,6 +1105,24 @@ export class RecipeAdapter extends BasePortalAdapter {
   // Is this step selecting an equipment MANUFACTURER? Checked against the bound field name
   // first (authoritative) and the control's own label second — PowerClerk's spec-page
   // labels are bare "Manufacturer", which is exactly the wording to match.
+  /** Are most of these recorded labels on the page right now? Used to spot an advance the
+   *  recipe carries from another jurisdiction, where the next section is already showing.
+   *  Reuses the drift precheck's own matcher so both agree on what "this section" means. */
+  private async segmentIsOnThisPage(expected: string[]): Promise<boolean> {
+    try {
+      if (!this.page || typeof this.page.$$eval !== "function") return false;
+      const raws = (await this.page.$$eval(EXTRACT_SEL, extractFieldsInPage)) as Array<{ label?: string }>;
+      const live = raws.map((r) => (r.label || "").trim().toLowerCase()).filter(Boolean);
+      let hit = 0;
+      for (const want of expected) {
+        const w = want.toLowerCase();
+        if (live.some((l) => l === w || (Math.min(l.length, w.length) >= 5 && (l.includes(w) || w.includes(l))))) hit++;
+      }
+      // The same 34% bar precheckPageDrift uses to call a page "the recorded one".
+      return hit / expected.length >= 0.34;
+    } catch { return false; }
+  }
+
   /** Did the address search return ANY selectable result rows? Distinguishes "the portal
    *  does not serve this jurisdiction" from "it does, but the row could not be matched". */
   private async addressSearchHadResults(): Promise<boolean> {
