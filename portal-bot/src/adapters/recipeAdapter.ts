@@ -1060,18 +1060,28 @@ export class RecipeAdapter extends BasePortalAdapter {
       }).catch(() => null) as string | null;
     };
     const empty = (v: string | null) => v !== null && (!v || /^(please\s+)?select\.{0,3}$/i.test(v) || /^--/.test(v));
+    let repairedMake = false;
     for (const s of steps) {
       if (!this.resolveValue(s)) continue; // nothing to hold
-      if (!this.landedSelectFields.has(String(s.field))) continue; // never landed — already reported its own way
+      // Never-landed steps stay out — EXCEPT a model whose make was just repaired: its
+      // cascade parent was the blocker (an unset make renders no/empty model list), so
+      // one fresh attempt is warranted. The ambiguous-model guard still applies inside
+      // the step, so a genuinely unlistable model is still left blank for the human.
+      const cascadeUnblocked = repairedMake && this.isModelStep(s);
+      if (!this.landedSelectFields.has(String(s.field)) && !cascadeUnblocked) continue;
       const before = await displayed(s);
       if (!empty(before)) continue;
-      this.driftWarnings.push(`equipment select "${this.stepLabel(s)}" (${s.field}) lost its fill to a re-render — re-running it`);
+      this.driftWarnings.push(cascadeUnblocked && !this.landedSelectFields.has(String(s.field))
+        ? `equipment select "${this.stepLabel(s)}" (${s.field}) — its make was just repaired, retrying the cascade child`
+        : `equipment select "${this.stepLabel(s)}" (${s.field}) lost its fill to a re-render — re-running it`);
       await this.executeStep(labelOnly(s), false).catch(() => false);
       const after = await displayed(s);
       if (empty(after)) {
         const msg = `${this.stepLabel(s)} (${s.field}): fill did not hold even after repair — REVIEW BEFORE SUBMIT`;
         this.driftWarnings.push(msg);
         if (!this.requiredStillEmpty.includes(msg)) this.requiredStillEmpty.push(msg);
+      } else if (this.isManufacturerStep(s)) {
+        repairedMake = true;
       }
     }
   }
@@ -1303,7 +1313,7 @@ export class RecipeAdapter extends BasePortalAdapter {
         // correctly. For a non-select, hand straight to selectWithFallback's combobox path;
         // the value it receives is already the portal's own certified string, so the
         // wrong-neighbour risk that motivated these rules is largely gone.
-        const isNativeSelect = await this.isNativeSelect(scoped);
+        let isNativeSelect = await this.isNativeSelect(scoped);
         if (this.isModelStep(step) && isNativeSelect) {
           // The model list is populated by an XHR fired when the manufacturer above it
           // changed (~600ms on PowerClerk), so "no match" and "not loaded yet" look
@@ -1374,6 +1384,38 @@ export class RecipeAdapter extends BasePortalAdapter {
           selected = await selectWithFallback(this.page, scoped, v);
           if (selected) this.driftWarnings.push(`select "${String(step.note ?? step.field ?? "")}" needed ${(attempt + 1) * 800}ms for its control to appear (cascade)`);
         }
+        // A VOLATILE PRIMARY CAN RESOLVE TO THE WRONG CONTROL MID-RUN. The recorded css id
+        // ("#pcInputBase55") carries a per-render counter: on a fresh load it does not
+        // exist (fallbacks fire, all is well), but mid-run — after eight pages have
+        // rendered controls — the SAME id can exist on an arbitrary control, and every
+        // match attempt above then runs against the wrong element. Before giving up,
+        // re-resolve by the LABEL fallback alone and try once more. Bare labels repeat
+        // ("Model" is on every equipment row), so the fallback keeps its recorded nth.
+        if (!selected && step.selector?.css) {
+          const fbl = step.selector.fallbacks?.find((f2) => f2.label);
+          if (fbl) {
+            const relox = await this.resolveLocator({ ...fbl, fallbacks: undefined }).catch(() => null);
+            if (relox && (await relox.count?.().catch(() => 0)) > 0) {
+              const same = await relox.first().evaluate(
+                (el: Element, cssId: string) => `#${el.getAttribute("id") || ""}` === cssId, step.selector.css,
+              ).catch(() => false);
+              if (!same) {
+                selected = await selectWithFallback(this.page, relox.first(), v);
+                if (!selected && this.isManufacturerStep(step)) {
+                  for (const alt of equipmentMakeCandidates(v).slice(1)) {
+                    selected = await selectWithFallback(this.page, relox.first(), alt);
+                    if (selected) { this.driftWarnings.push(`manufacturer "${v}" matched the portal's certified name "${alt}"`); break; }
+                  }
+                }
+                if (selected) {
+                  this.driftWarnings.push(`select "${String(step.note ?? step.field ?? "")}" landed via its LABEL fallback — the recorded id resolved to a different control mid-run`);
+                  scoped = relox.first();
+                  isNativeSelect = await this.isNativeSelect(scoped); // the commit path needs the RETRIED widget's type
+                }
+              }
+            }
+          }
+        }
         // Wait for any Vue/React re-renders triggered by the dropdown change to settle
         // before filling subsequent fields (e.g. PowerClerk resets contact fields on
         // contact-type dropdown change).
@@ -1385,10 +1427,11 @@ export class RecipeAdapter extends BasePortalAdapter {
         // there was no way to tell which of the two had happened. Only paid for on a miss.
         if (!selected) {
           const seen = await this.visibleOptionSample();
+          const resolved = await this.describeResolved(step);
           this.driftWarnings.push(
             seen.count === 0
-              ? `select "${String(step.note ?? step.field ?? "")}" landed nothing and NO option list was open — the widget never opened (wanted ${JSON.stringify(v.slice(0, 40))})`
-              : `select "${String(step.note ?? step.field ?? "")}" landed nothing though ${seen.count} option(s) were showing — wanted ${JSON.stringify(v.slice(0, 40))}, list offers ${seen.sample.map((o) => JSON.stringify(o)).join(", ")}`,
+              ? `select "${String(step.note ?? step.field ?? "")}" landed nothing and NO option list was open — the widget never opened (wanted ${JSON.stringify(v.slice(0, 40))}; resolved ${resolved})`
+              : `select "${String(step.note ?? step.field ?? "")}" landed nothing though ${seen.count} option(s) were showing — wanted ${JSON.stringify(v.slice(0, 40))}, resolved ${resolved}, list offers ${seen.sample.map((o) => JSON.stringify(o)).join(", ")}`,
           );
         }
         // COMMIT WHAT LANDED. PowerClerk autosaves per field on blur — the fill path has
@@ -1783,7 +1826,16 @@ export class RecipeAdapter extends BasePortalAdapter {
           || /\*/.test(labelText)
           || complaint;
         if (!required) continue;
-        if (((el as HTMLInputElement).value || "").trim()) continue;
+        // "Filled" must mean filled: a native select sitting on its placeholder option
+        // reports that option's text as .value, and a custom COMBOBOX is an input whose
+        // .value IS the placeholder ("Please select...") — both read as non-empty and
+        // made this sweep bless unanswered controls.
+        const raw = ((el as HTMLInputElement).value || "").trim();
+        const shown = (el.tagName || "").toLowerCase() === "select"
+          ? ((((el as HTMLSelectElement).options[(el as HTMLSelectElement).selectedIndex] || {}).textContent) || "").trim()
+          : raw;
+        const sitsOnPlaceholder = /^(please\s+)?select\.{0,3}$/i.test(shown) || /^--/.test(shown);
+        if (raw && !sitsOnPlaceholder) continue;
         const name = labelText
           || el.getAttribute("aria-label")
           || el.getAttribute("placeholder")
