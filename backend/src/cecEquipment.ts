@@ -304,6 +304,20 @@ export function lookupCecInverter(model: string): { manufacturer: string; model:
  *      six Q.TRON options.
  * Returns "" when the choice stays ambiguous: filing the wrong module beats nothing.
  */
+/**
+ * True when `a` and `b` differ by exactly one INSERTED/DELETED LETTER.
+ * Substitutions are deliberately excluded: at distance 1 they turn a trailing
+ * revision letter into a different SKU ("…-440/M" vs "…-440/N").
+ */
+function oneLetterIndel(a: string, b: string): boolean {
+  const [short, long] = a.length < b.length ? [a, b] : [b, a];
+  if (long.length - short.length !== 1) return false;
+  let i = 0;
+  while (i < short.length && short[i] === long[i]) i++;
+  if (!/[a-z]/.test(long[i] ?? "")) return false; // the extra character must be a letter
+  return short.slice(i) === long.slice(i + 1);
+}
+
 export function certifiedModelFor(
   db: AppDb,
   kind: CecKind,
@@ -321,29 +335,39 @@ export function certifiedModelFor(
     // strings collide, and the make is already resolved by the time this is asked.
     const makers = make ? certifiedNamesForMake(db, kind, make) : [];
     const rows = makers.length
-      ? db.query<{ model: string }>(
-        `SELECT model FROM cec_equipment WHERE kind = ? AND manufacturer IN (${makers.map(() => "?").join(",")})`,
+      ? db.query<{ model: string; power_w: number | null }>(
+        `SELECT model, power_w FROM cec_equipment WHERE kind = ? AND manufacturer IN (${makers.map(() => "?").join(",")})`,
         [kind, ...makers],
       )
-      : db.query<{ model: string }>("SELECT model FROM cec_equipment WHERE kind = ?", [kind]);
+      : db.query<{ model: string; power_w: number | null }>("SELECT model, power_w FROM cec_equipment WHERE kind = ?", [kind]);
 
     const boundary: string[] = [];
+    const indel: string[] = [];
+    const w = String(watts ?? "").replace(/[^0-9]/g, "");
     for (const row of rows) {
       const listed = String(row.model ?? "");
       const t = listed.toLowerCase().replace(/\s+/g, " ").trim();
       if (!t) continue;
-      if (t === wantNorm || t.replace(/[^a-z0-9]/g, "") === wantBare) return listed; // exact
+      const tBare = t.replace(/[^a-z0-9]/g, "");
+      if (t === wantNorm || tBare === wantBare) return listed; // exact
       if (t.startsWith(wantNorm)) {
         const next = t.charAt(wantNorm.length);
         if (!next || !/[a-z0-9]/.test(next)) boundary.push(listed);
       }
+      // Plan sets drop or double a series letter ("ZXM7-UHLD108-440/N" for the
+      // listed "ZXM7-UHLDD108-440/N"). Only a one-LETTER insert/delete counts,
+      // and only when the listed wattage matches what the plan set states — a
+      // digit edit would silently swap 440W for 445W, or 108 cells for 109.
+      if (w && Number(row.power_w ?? 0) === Number(w) && oneLetterIndel(wantBare, tBare)) indel.push(listed);
     }
     if (boundary.length === 1) return boundary[0];
-    const w = String(watts ?? "").replace(/[^0-9]/g, "");
     if (boundary.length > 1 && w) {
       const byWatts = boundary.filter((b) => b.replace(/[^0-9]/g, "").includes(w));
       if (byWatts.length === 1) return byWatts[0];
     }
+    // Fires only when nothing above matched and exactly one listing is a
+    // one-letter edit away. Ambiguity means we say nothing, not "probably this".
+    if (!boundary.length && wantBare.length >= 8 && indel.length === 1) return indel[0];
     return "";
   } catch {
     return "";

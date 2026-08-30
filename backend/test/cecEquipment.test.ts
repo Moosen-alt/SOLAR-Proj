@@ -28,7 +28,7 @@ async function main(): Promise<void> {
 process.env.AUTOPILOT_AUTO_START = "0"; // deterministic tests — no background autopilot
   process.env.ANTHROPIC_API_KEY = "";
   const { openDatabase } = await import("../src/db");
-  const { parseCecSheet, importCecRows, certifiedNamesForMake, primeCecCache, lookupCecInverter, isCecListed, cecTableCount } = await import("../src/cecEquipment");
+  const { parseCecSheet, importCecRows, certifiedNamesForMake, certifiedModelFor, primeCecCache, lookupCecInverter, isCecListed, cecTableCount } = await import("../src/cecEquipment");
   const { createProject } = await import("../src/repository");
   const { runQcForProject } = await import("../src/qc");
   const db = await openDatabase();
@@ -89,6 +89,41 @@ process.env.AUTOPILOT_AUTO_START = "0"; // deterministic tests — no background
   runQcForProject(db, detail.project.id);
   const after = db.query("SELECT rule_id FROM qc_results WHERE project_id = ? AND rule_id LIKE 'cec.%'", [detail.project.id]);
   check("QC: empty table → no cec rows at all", after.length === 0, JSON.stringify(after));
+
+  // 5b) certifiedModelFor: plan sets drop a series letter. Repair that ONLY when
+  // the wattage agrees and one listing survives — never a digit or revision edit.
+  const M = (model: string, powerW: number) =>
+    ({ manufacturer: "ZNSHINE PV-TECH Co., Ltd.", model, powerW, outputCurrentA: null, listedAt: "" });
+  importCecRows(db, "module", [
+    M("ZXM7-UHLDD108-440/N", 440),
+    M("ZXM7-UHLDD108-445/N", 445),
+    M("ZXM7-SHLDD120-435/M", 435),
+    M("ZXM6-NH144-440/M {Blk}", 440),
+    M("ZXM6-NH144-440/M {Wht}", 440),
+  ]);
+  const cm = (model: string, watts?: number | null) => certifiedModelFor(db, "module", "ZNShine Solar", model, watts);
+  check("dropped series letter + matching wattage → the listed name",
+    cm("ZXM7-UHLD108-440/N", 440) === "ZXM7-UHLDD108-440/N", cm("ZXM7-UHLD108-440/N", 440));
+  check("exact listing still wins untouched",
+    cm("ZXM7-UHLDD108-445/N", 445) === "ZXM7-UHLDD108-445/N", cm("ZXM7-UHLDD108-445/N", 445));
+  check("no wattage → refuses to guess",
+    cm("ZXM7-UHLD108-440/N", null) === "", cm("ZXM7-UHLD108-440/N", null));
+  check("wattage disagrees with the listing → refuses",
+    cm("ZXM7-UHLD108-440/N", 445) === "", cm("ZXM7-UHLD108-440/N", 445));
+  // A dropped DIGIT changes cell count or wattage — must never resolve.
+  check("dropped digit → refuses",
+    cm("ZXM7-UHLDD108-40/N", 440) === "", cm("ZXM7-UHLDD108-40/N", 440));
+  // Equal-length digit change (108 cells → 109) is a substitution, never repaired.
+  check("digit substitution (109 for 108) → refuses",
+    cm("ZXM7-UHLDD109-440/N", 440) === "", cm("ZXM7-UHLDD109-440/N", 440));
+  // A revision-letter SUBSTITUTION is a different SKU, not a typo.
+  check("revision-letter substitution (/M for /N) → refuses",
+    cm("ZXM7-UHLDD108-440/M", 440) === "", cm("ZXM7-UHLDD108-440/M", 440));
+  // Two same-wattage listings each one letter away → ambiguous, say nothing.
+  importCecRows(db, "module", [M("ZXM6-NH144-440/MA", 440), M("ZXM6-NH144-440/MB", 440)]);
+  check("two one-letter candidates → refuses",
+    cm("ZXM6-NH144-440/M", 440) === "", cm("ZXM6-NH144-440/M", 440));
+  db.run("DELETE FROM cec_equipment");
 
   // 6) Migration v10 replay idempotent.
   db.run("DELETE FROM schema_meta WHERE version >= 10");
