@@ -86,6 +86,12 @@ export class RecipeAdapter extends BasePortalAdapter {
    *  present but unclickable" stop looking identical from the outside. */
   private healDiagnostic = "";
   /** Which of the project's arrays the array block is currently filling (1-based). */
+  /** Required controls this run left empty, by page. The learner has always reported its
+   *  required-field misses; replay reported nothing, so an application could reach the
+   *  reviewer with a REQUIRED upload blank and no one the wiser — live PacifiCorp asks for
+   *  "a photo of the meter where the system will be interconnected", which is never in a
+   *  plan set, so no recipe step exists for it and no QC rule looks for it. */
+  private requiredStillEmpty: string[] = [];
   private arrayPass = 1;
   /** Bounds of the recorded array block — the span of steps bound to array1*. -1 when the
    *  recipe has none. */
@@ -401,6 +407,18 @@ export class RecipeAdapter extends BasePortalAdapter {
         await clearPageOverlays(this.page).catch(() => null);
       }
 
+      // WHAT DID WE LEAVE BLANK? Swept just before an ADVANCING click, which is the moment
+      // this page is as filled as the recipe will ever make it. Restricted to advancing
+      // clicks so in-page actions ("add new contact") do not report fields that are about
+      // to be filled. A portal can require something no recipe step covers and no QC rule
+      // looks for — PacifiCorp wants a photo of the meter, which is never in a plan set —
+      // and until now that reached the reviewer as a silently empty box.
+      if (step.action === "click" && /^advance\b/i.test(String(step.note ?? ""))) {
+        for (const label of await this.emptyRequiredControls()) {
+          if (!this.requiredStillEmpty.includes(label)) this.requiredStillEmpty.push(label);
+        }
+      }
+
       let lastErr: unknown;
       // Context from the FIRST failure. The retry path RELOADS the page, and a portal that
       // reloads to its first wizard page (PowerClerk does) then shows a screenshot of the
@@ -573,7 +591,7 @@ export class RecipeAdapter extends BasePortalAdapter {
         const context = failureContext || await this.captureFailureContext(step, stepIdx);
         trace.push({ i: stepIdx, action: step.action, note: String(step.note ?? "").slice(0, 52), outcome: "FAILED", page: await currentPageLabel() });
         closePrevStepTiming();
-        return fail(`Recipe step failed (${step.action}${step.note ? ` — ${step.note}` : ""}): ${lastErr instanceof Error ? lastErr.message : String(lastErr)}${context}`, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, failedStepIndex: stepIdx, trace, slowSteps });
+        return fail(`Recipe step failed (${step.action}${step.note ? ` — ${step.note}` : ""}): ${lastErr instanceof Error ? lastErr.message : String(lastErr)}${context}`, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, failedStepIndex: stepIdx, trace, slowSteps, requiredStillEmpty: this.requiredStillEmpty });
       }
       // Remember whether this step entered data, so the next advancing click waits for the
       // portal's autosave to commit (prevents blank-draft saves on PowerClerk).
@@ -622,7 +640,7 @@ export class RecipeAdapter extends BasePortalAdapter {
           // is the whole question. Capture it like any other failure.
           const driftContext = await this.captureFailureContext(step, stepIdx);
           closePrevStepTiming();
-          return fail(`${driftFail}${driftContext}`, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, failedStepIndex: stepIdx, trace, slowSteps });
+          return fail(`${driftFail}${driftContext}`, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, failedStepIndex: stepIdx, trace, slowSteps, requiredStillEmpty: this.requiredStillEmpty });
         }
       }
 
@@ -661,11 +679,11 @@ export class RecipeAdapter extends BasePortalAdapter {
         recordLink: capture.data?.recordLink || "",
         // What the LLM gap-fill added (and what it left blank for lack of real data) — same key
         // the hand-coded adapters surface, so the operator/UI sees a uniform report.
-        gapFill: this.gapFillReport, healedSteps: this.healedSteps, slowSteps,
+        gapFill: this.gapFillReport, healedSteps: this.healedSteps, slowSteps, requiredStillEmpty: this.requiredStillEmpty,
       });
     }
     closePrevStepTiming();
-    return ok(`Replayed ${executed} recorded step(s); stopped at review.`, { executed, skipped, finalSubmitClicked: false, gapFill: this.gapFillReport, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, slowSteps });
+    return ok(`Replayed ${executed} recorded step(s); stopped at review.`, { executed, skipped, finalSubmitClicked: false, gapFill: this.gapFillReport, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, slowSteps, requiredStillEmpty: this.requiredStillEmpty });
   }
 
   private resolveValue(step: RecipeStep): string {
@@ -1356,6 +1374,42 @@ export class RecipeAdapter extends BasePortalAdapter {
   // Is this step selecting an equipment MANUFACTURER? Checked against the bound field name
   // first (authoritative) and the control's own label second — PowerClerk's spec-page
   // labels are bare "Manufacturer", which is exactly the wording to match.
+  /**
+   * Visible REQUIRED controls that are still empty, by label. The mirror of
+   * pageIsPassThrough — that one asks "is anything unfilled?", this one asks "what?".
+   * File inputs count: an empty one reads as value "", which is exactly the meter-photo
+   * case that prompted this.
+   */
+  private async emptyRequiredControls(): Promise<string[]> {
+    if (!this.page || typeof this.page.evaluate !== "function") return [];
+    return await this.page.evaluate(() => {
+      const out: string[] = [];
+      const els = Array.from(document.querySelectorAll("input, select, textarea")) as HTMLElement[];
+      for (const el of els) {
+        const r = el.getBoundingClientRect();
+        if (!r || (r.width === 0 && r.height === 0)) continue;
+        const type = (el.getAttribute("type") || "").toLowerCase();
+        if (type === "hidden" || type === "submit" || type === "button" || type === "checkbox" || type === "radio") continue;
+        const id = el.getAttribute("id") || "";
+        const lbl = id ? document.querySelector(`label[for="${CSS.escape(id)}"]`) : null;
+        const labelText = ((lbl && (lbl as HTMLElement).textContent) || "").replace(/\s+/g, " ").trim();
+        const required = el.hasAttribute("required")
+          || el.getAttribute("aria-required") === "true"
+          || /\*/.test(labelText);
+        if (!required) continue;
+        if (((el as HTMLInputElement).value || "").trim()) continue;
+        const name = labelText
+          || el.getAttribute("aria-label")
+          || el.getAttribute("placeholder")
+          || el.getAttribute("name")
+          || "(unlabelled control)";
+        const clean = name.replace(/\s*\*\s*$/, "").trim().slice(0, 70);
+        if (clean && !out.includes(clean)) out.push(clean);
+      }
+      return out.slice(0, 12);
+    }).catch(() => [] as string[]) as string[];
+  }
+
   /** Nothing here to fill: no visible required control is empty. A page like ACA's
    *  "Licensed Professional List" — already populated from the account, just needing a
    *  Continue — is safe to click through; a page with an empty required field is not,

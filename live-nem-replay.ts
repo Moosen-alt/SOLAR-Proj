@@ -169,6 +169,12 @@ slowest steps (${slow.length} step(s) over 4s, ${(total / 1000).toFixed(0)}s of 
     console.log(`  ${String(s2.i).padStart(3)} ${s2.action.padEnd(7)} ${String(s2.ms / 1000).padStart(6)}s  ${s2.note}`);
   }
 }
+const blanks = (detailData.requiredStillEmpty as string[] | undefined) ?? [];
+if (blanks.length) {
+  console.log(`
+REQUIRED CONTROLS LEFT EMPTY (${blanks.length}) — the portal asked, the recipe had no answer:`);
+  for (const b of blanks) console.log(`  - ${b}`);
+}
 const drift = (detailData.driftWarnings as string[] | undefined) ?? [];
 if (drift.length) {
   console.log(`
