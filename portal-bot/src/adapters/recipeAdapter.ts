@@ -365,6 +365,20 @@ export class RecipeAdapter extends BasePortalAdapter {
           // match is ambiguous on essentially every search.
           const wantCounty = /county|electrical/i.test(String(step.note ?? "")) && !/city/i.test(String(step.note ?? ""));
           const picked = await this.pickAddressRow(num, street, wantCounty ? "county" : "city");
+          // AN EMPTY SEARCH IS A CONCLUSION, NOT A RETRY. Oregon ePermitting participation is
+          // VOLUNTARY: a jurisdiction that has not joined never appears in this search at all.
+          // So an address the statewide portal cannot find almost always means the AHJ runs
+          // its OWN permit portal — and re-learning ePermitting will never fix that. Say so
+          // plainly, and deliberately WITHOUT the "recipe step failed" prefix, so the backend
+          // does not flag this recipe stale and queue a pointless re-learn of a portal that
+          // is working correctly.
+          if (!picked && !(await this.addressSearchHadResults())) {
+            throw new Error(
+              `ADDRESS NOT IN OREGON EPERMITTING: the statewide portal returned no results for ${num} ${street}. `
+              + `Participation is voluntary, so this almost certainly means ${this.recipe.ahj || "this jurisdiction"} runs its own permit portal. `
+              + `Find and record that portal for this AHJ rather than re-recording this recipe.`,
+            );
+          }
           if (picked) {
             this.driftWarnings.push(`address row chosen by matching "${picked.slice(0, 52)}" (the recorded row label belongs to the city this recipe was learned on)`);
             executed++;
@@ -1063,6 +1077,20 @@ export class RecipeAdapter extends BasePortalAdapter {
   // Is this step selecting an equipment MANUFACTURER? Checked against the bound field name
   // first (authoritative) and the control's own label second — PowerClerk's spec-page
   // labels are bare "Manufacturer", which is exactly the wording to match.
+  /** Did the address search return ANY selectable result rows? Distinguishes "the portal
+   *  does not serve this jurisdiction" from "it does, but the row could not be matched". */
+  private async addressSearchHadResults(): Promise<boolean> {
+    if (!this.page || typeof this.page.evaluate !== "function") return true;
+    return await this.page.evaluate(() => {
+      const rows = Array.from(document.querySelectorAll("tr"));
+      for (const tr of rows) {
+        const a = tr.querySelector("a");
+        if (a && /select/i.test(a.textContent || "")) return true;
+      }
+      return false;
+    }).catch(() => true) as boolean;
+  }
+
   /**
    * Click the search-result row whose ADDRESS is this project's, and return its text.
    *
