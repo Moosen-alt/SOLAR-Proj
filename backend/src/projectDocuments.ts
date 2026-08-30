@@ -159,6 +159,29 @@ export function listProjectDocuments(db: AppDb, projectId: string): ProjectDocum
     .map(mapDoc);
 }
 
+/**
+ * Wrap a photo in a single-page PDF.
+ *
+ * The meter photo arrives from the field as a JPEG, but portals that accept "documents"
+ * commonly reject a bare image — the upload control wants a PDF like every other
+ * attachment. Fitted to Letter (orientation chosen by the photo's own aspect) rather than
+ * left at native pixel size, so a 2048x1536 phone photo does not become a 28-inch page.
+ */
+export async function imageToSinglePagePdf(buffer: Buffer, contentType: string): Promise<Buffer> {
+  const { PDFDocument } = await import("pdf-lib");
+  const doc = await PDFDocument.create();
+  const img = /png/i.test(contentType) ? await doc.embedPng(buffer) : await doc.embedJpg(buffer);
+  const landscape = img.width >= img.height;
+  const pageW = landscape ? 792 : 612;
+  const pageH = landscape ? 612 : 792;
+  const scale = Math.min(pageW / img.width, pageH / img.height);
+  const w = img.width * scale;
+  const h = img.height * scale;
+  const page = doc.addPage([pageW, pageH]);
+  page.drawImage(img, { x: (pageW - w) / 2, y: (pageH - h) / 2, width: w, height: h });
+  return Buffer.from(await doc.save());
+}
+
 export function saveProjectDocument(
   db: AppDb,
   projectId: string,

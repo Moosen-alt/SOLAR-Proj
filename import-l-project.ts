@@ -43,7 +43,7 @@ const { openDatabase } = await import("./backend/src/db");
 const { extractPdfText } = await import("./backend/src/batchImport");
 const { createLLMProvider } = await import("./backend/src/llm");
 const { createProject, rerunQc, getProjectDetail } = await import("./backend/src/repository");
-const { saveProjectDocument } = await import("./backend/src/projectDocuments");
+const { saveProjectDocument, imageToSinglePagePdf } = await import("./backend/src/projectDocuments");
 const { buildUtilityPackage } = await import("./backend/src/docSplitter");
 const { resolveRecipeFieldValues } = await import("./backend/src/portalRecipes");
 
@@ -97,12 +97,15 @@ saveProjectDocument(db, detail.project.id, {
 const meterPhoto = fs.readdirSync(dir)
   .find((f) => /meter/i.test(f) && /\.(jpe?g|png|webp)$/i.test(f));
 if (meterPhoto) {
+  // As a PDF: the portal's upload control wants a document, and rejects a bare image.
+  const raw = fs.readFileSync(path.join(dir, meterPhoto));
+  const mime = /\.png$/i.test(meterPhoto) ? "image/png" : "image/jpeg";
+  const pdfName = meterPhoto.replace(/\.[^.]+$/, "") + ".pdf";
   saveProjectDocument(db, detail.project.id, {
-    docType: "meter_photo", filename: meterPhoto,
-    contentType: /\.png$/i.test(meterPhoto) ? "image/png" : "image/jpeg",
-    buffer: fs.readFileSync(path.join(dir, meterPhoto)), source: "upload",
+    docType: "meter_photo", filename: pdfName, contentType: "application/pdf",
+    buffer: await imageToSinglePagePdf(raw, mime), source: "upload",
   });
-  console.log(`meter    ${meterPhoto}`);
+  console.log(`meter    ${meterPhoto} -> ${pdfName}`);
 } else {
   console.log("meter    NO meter photo in the archive folder — the portal will ask for one");
 }
