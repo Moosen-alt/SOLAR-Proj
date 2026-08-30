@@ -487,6 +487,8 @@ async function testSensitiveFieldsRedacted() {
       { selectorIndex: 3, value: "Normal Value", field: "homeownerName" },
       // A Yes/No QUESTION that merely mentions a meter — not the meter number.
       { selectorIndex: 4, value: "No" },
+      // The planner reading "…distance from the utility meter?" as the meter NUMBER.
+      { selectorIndex: 5, value: "Yes", field: "meterNumber" },
     ],
     atReview: true,
   });
@@ -506,6 +508,7 @@ async function testSensitiveFieldsRedacted() {
               { label: "Meter Number", fieldType: "text", id: "mtr" },
               { label: "Homeowner Name", fieldType: "text", id: "hn" },
               { label: "Will there be a Meter Mounted Device (MMD)", fieldType: "select", id: "mmd", options: ["Select...", "Yes", "No"] },
+              { label: "Are the AC disconnect(s) for this installation within the states required distance from the utility meter?", fieldType: "select", id: "acdisc", options: ["Select...", "Yes", "No"] },
             ],
           },
         ],
@@ -551,6 +554,18 @@ async function testSensitiveFieldsRedacted() {
   assert.ok(mmdStep, "the MMD question is recorded");
   assert.notEqual(mmdStep?.sensitive, true, "a Yes/No question is not a secret just for saying 'meter'");
   assert.equal(mmdStep?.value, "No", "the recorded answer must survive, or replay leaves a required question blank");
+
+  // AN IDENTIFIER IS NOT AN ENUMERATION.
+  //
+  // The planner reads "…within the states required distance from the utility meter?" as
+  // being about the meter NUMBER and binds it there. Replay then tries to select the option
+  // "84198350" in a Yes/No dropdown, lands nothing, and leaves a REQUIRED question blank —
+  // PacifiCorp refuses the page over exactly this one. A dropdown cannot hold an identifier,
+  // so the binding is refused and the recorded answer is kept instead.
+  const acStep = result.steps.find((s) => /AC disconnect/i.test(String(s.note ?? "")));
+  assert.ok(acStep, "the AC-disconnect question is recorded");
+  assert.notEqual(acStep?.field, "meterNumber", "a Yes/No dropdown must not be bound to the meter number");
+  assert.equal(acStep?.value, "Yes", "refusing the binding must keep the recorded answer, not blank it");
 
   // A non-sensitive field keeps its binding/value normally.
   const nameStep = fillSteps.find((s) => s.note === "Homeowner Name");

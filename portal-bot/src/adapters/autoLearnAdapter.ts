@@ -238,6 +238,17 @@ const POLICY_RADIO_DEFAULTS: Array<{ question: RegExp; answer: "Yes" | "No"; enf
 ];
 
 // Sensitive field labels whose literal value must NEVER be stored in a recorded step.
+// FREE-TEXT IDENTIFIERS. An account or meter number is typed; it is never one of three
+// options in a dropdown. The planner picks the field a fill binds to and its choice is taken
+// verbatim, and it reads a label like "Are the AC disconnect(s) ... within the states
+// required distance from the utility meter?" as being ABOUT the meter number — so replay
+// then tried to select the option "84198350" in a Yes/No select, landed nothing, and left a
+// REQUIRED question blank that PacifiCorp refuses the page over.
+//
+// labelRulesOutAllCandidates cannot catch this: the label really does contain "meter". The
+// control's SHAPE settles it instead — an enumeration cannot hold an identifier.
+const IDENTIFIER_FIELDS = new Set(["meterNumber", "accountNumber"]);
+
 const SENSITIVE_LABEL = /\b(password|passcode|account\s*(number|no|#)?|acct|meter\s*(number|no|#)?|ssn|social security|tax\s*id|ein|routing|card\s*number|cvv|security code)\b/i;
 
 // Portal upload-field label → document type. Maps a file-input's visible label to the
@@ -4120,7 +4131,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       step.sensitive = true;
       step.value = "";
       step.field = fillReq.field || undefined;
-    } else if (fillReq.field && (!this.bindableFields.size || this.bindableFields.has(fillReq.field))) {
+    } else if (fillReq.field && (!this.bindableFields.size || this.bindableFields.has(fillReq.field))
+      && !(answerComesFromFixedOptions && IDENTIFIER_FIELDS.has(String(fillReq.field)))) {
       // Data-bound to a project/client field — resolved at replay time.
       step.field = fillReq.field;
     } else if (fillReq.field) {
