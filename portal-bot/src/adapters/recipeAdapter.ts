@@ -110,6 +110,11 @@ export class RecipeAdapter extends BasePortalAdapter {
    *  A field that never landed (ambiguous model left blank for the human) is not
    *  "lost to a re-render" and must not be repaired or reported as such. */
   private landedSelectFields = new Set<string>();
+  /** Policy-default steps whose control was absent when their turn came — re-tried once
+   *  just before the page's advance, when a conditional section has had every chance to
+   *  render. Cleared on each advance. */
+  private pendingPolicyRetries: RecipeStep[] = [];
+  private inPolicyRetry = false;
   /** Drift-precheck annotations ("this page barely matches the recipe") — surfaced
    *  in every result payload so a run that squeaked through via heals still tells
    *  the operator the portal likely changed. */
@@ -434,6 +439,20 @@ export class RecipeAdapter extends BasePortalAdapter {
       // looks for — PacifiCorp wants a photo of the meter, which is never in a plan set —
       // and until now that reached the reviewer as a silently empty box.
       if (step.action === "click" && /^advance\b/i.test(String(step.note ?? ""))) {
+        // A CONDITIONAL POLICY QUESTION CAN RENDER LATE. PGE's "disconnect within 10
+        // feet" appears only once the computed system size warrants it — potentially
+        // AFTER the recorded step's turn, which then skipped it as "not asked". This is
+        // the last moment on the page: give each skipped policy question one more look.
+        if (this.pendingPolicyRetries.length) {
+          const retries = this.pendingPolicyRetries.splice(0);
+          this.inPolicyRetry = true;
+          try {
+            for (const ps of retries) {
+              const done = await this.executeStep(ps, pastReview).catch(() => false);
+              if (done) this.driftWarnings.push(`policy question appeared after the page settled — answered on the way out: ${String(ps.note ?? "").slice(0, 60)}`);
+            }
+          } finally { this.inPolicyRetry = false; }
+        }
         for (const label of await this.emptyRequiredControls()) {
           if (!this.requiredStillEmpty.includes(label)) this.requiredStillEmpty.push(label);
         }
@@ -1482,7 +1501,16 @@ export class RecipeAdapter extends BasePortalAdapter {
         // not appear, so "not asked" needs no answer. A recorded data fill that vanishes is
         // a different matter and still fails, because that IS missing information.
         if (!usable && !recovered && /^policy default:/i.test(String(step.note ?? ""))) {
-          this.driftWarnings.push(`policy question not asked for this project — skipped: ${String(step.note ?? "").slice(0, 60)}`);
+          if (!this.inPolicyRetry) {
+            // Say what the recovery SAW, not just that it gave up — "no candidates" (the
+            // question truly is not rendered) and "candidates whose labels match nothing"
+            // (a lookup gap) need different fixes and looked identical for a whole day.
+            const diag = await this.describePolicyGroup(step);
+            this.driftWarnings.push(`policy question not asked for this project — skipped: ${String(step.note ?? "").slice(0, 60)}${diag}`);
+            // A CONDITIONAL QUESTION CAN ALSO RENDER LATE — give it one more look just
+            // before this page's advance, when the page is as settled as it will ever be.
+            this.pendingPolicyRetries.push(step);
+          }
           return false;
         }
         const target = recovered ?? scoped;
@@ -2146,6 +2174,31 @@ export class RecipeAdapter extends BasePortalAdapter {
         return `<${tag} id="${id}" label="${(label || "").replace(/\s+/g, " ").slice(0, 40)}"${opts >= 0 ? ` options=${opts}` : ""} visible=${vis}>`;
       }, undefined as never).catch(() => "element present but unreadable") as string;
     } catch { return "resolve failed"; }
+  }
+
+  /** One line of ground truth for a policy-radio miss: how many candidates the volatile-id
+   *  group held at that moment, and what their labels read. "(0 candidates)" means the
+   *  question was not rendered; candidates with labels that match nothing means the
+   *  LOOKUP is wrong — two different bugs that read identically without this. */
+  private async describePolicyGroup(step: RecipeStep): Promise<string> {
+    const css = String(step.selector?.css ?? "");
+    const m = /^#([A-Za-z0-9_-]+?)_\d+$/.exec(css);
+    if (!m) return " (no volatile-id group to inspect)";
+    try {
+      const labels = await this.page.evaluate((prefix: string) => {
+        const els = Array.from(document.querySelectorAll(`[id^="${prefix}_"]`));
+        return els.slice(0, 6).map((el) => {
+          const eid = el.getAttribute("id") || "";
+          let t = eid ? ((document.querySelector(`label[for="${CSS.escape(eid)}"]`) as HTMLElement | null)?.innerText ?? "") : "";
+          if (!t) t = (el.closest("label") as HTMLElement | null)?.innerText ?? "";
+          if (!t) t = el.getAttribute("aria-label") || "";
+          const r = (el as HTMLElement).getBoundingClientRect?.();
+          return `#${eid.slice(-8)}="${t.replace(/\s+/g, " ").trim().slice(0, 20)}"${r && (r.width > 0 || r.height > 0) ? "" : "[hidden]"}`;
+        });
+      }, m[1]).catch(() => null) as string[] | null;
+      if (!labels) return " (group unreadable)";
+      return labels.length ? ` (${labels.length} candidate(s): ${labels.join(", ")})` : " (0 candidates — not rendered)";
+    } catch { return " (group inspect failed)"; }
   }
 
   private async recoverVolatileIdOption(step: RecipeStep) {
