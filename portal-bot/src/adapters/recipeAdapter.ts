@@ -51,6 +51,10 @@ const FILL_TIMEOUT_MS = 8000;
 const ADVANCE_SETTLE_TRIES = 4;
 // How many times to re-look at a model dropdown whose options are still cascading in.
 const MODEL_CASCADE_TRIES = 4;
+// How many unknown pass-through pages to click past before giving up. Bounded on purpose:
+// "click Continue until something matches" is how automation ends up deep in a wizard it
+// does not understand.
+const DRIFT_SEEK_PAGES = 3;
 const ADVANCE_SETTLE_MS = 600;
 
 // Actions whose target control is identified by a LABEL and therefore worth verifying
@@ -475,7 +479,39 @@ export class RecipeAdapter extends BasePortalAdapter {
         prevWasInput = false;
         // New page segment begins after an advance — precheck it before burning
         // per-step timeouts on a page the portal may have rebuilt.
-        const driftFail = await this.precheckPageDrift(stepIdx + 1);
+        let driftFail = await this.precheckPageDrift(stepIdx + 1);
+        // AN EXTRA PAGE THIS JURISDICTION HAS AND THE RECIPE DOES NOT.
+        //
+        // The mirror of the skip above: one portal, many jurisdictions, different page
+        // counts — so a city can also have a page the recipe never saw. Measured live,
+        // replaying Coos Bay's recipe in Hood River: the run stopped on
+        // "Step 1: General Info > Licensed Professional", a page listing the CCB and
+        // electrician already attached to the account, with nothing to fill and a
+        // "Continue Application" button. The recipe had no step for it because Coos Bay's
+        // application does not include it.
+        //
+        // So before failing on drift, try clicking through — but ONLY when the page has
+        // nothing to fill. A page with an empty required field is a page that needs DATA,
+        // and clicking past it would file an incomplete application; that still fails, which
+        // is the whole point of the drift stop. Bounded, because "click Continue until
+        // something matches" is how automation ends up deep in a wizard it does not
+        // understand.
+        if (driftFail) {
+          let sought = 0;
+          while (sought < DRIFT_SEEK_PAGES && await this.pageIsPassThrough()) {
+            const cont = this.page.getByRole("link", { name: /continue application/i }).first();
+            const has = await cont.count().catch(() => 0);
+            if (!has) break;
+            await cont.click({ timeout: 8000 }).catch(() => null);
+            await waitForInteractiveControls(this.page);
+            sought++;
+            if (!(await this.precheckPageDrift(stepIdx + 1))) {
+              this.driftWarnings.push(`clicked through ${sought} page(s) this jurisdiction has that the recipe does not (nothing to fill on them)`);
+              driftFail = null;
+              break;
+            }
+          }
+        }
         if (driftFail) {
           // A drift stop is the one failure with NO screenshot, because it does not come
           // from a step throwing — and it is precisely when "what page am I actually on?"
@@ -1105,6 +1141,32 @@ export class RecipeAdapter extends BasePortalAdapter {
   // Is this step selecting an equipment MANUFACTURER? Checked against the bound field name
   // first (authoritative) and the control's own label second — PowerClerk's spec-page
   // labels are bare "Manufacturer", which is exactly the wording to match.
+  /** Nothing here to fill: no visible required control is empty. A page like ACA's
+   *  "Licensed Professional List" — already populated from the account, just needing a
+   *  Continue — is safe to click through; a page with an empty required field is not,
+   *  because clicking past it files an incomplete application. */
+  private async pageIsPassThrough(): Promise<boolean> {
+    if (!this.page || typeof this.page.evaluate !== "function") return false;
+    return await this.page.evaluate(() => {
+      const els = Array.from(document.querySelectorAll("input, select, textarea")) as HTMLElement[];
+      for (const el of els) {
+        const r = el.getBoundingClientRect();
+        if (!r || (r.width === 0 && r.height === 0)) continue;
+        const type = (el.getAttribute("type") || "").toLowerCase();
+        if (type === "hidden" || type === "submit" || type === "button" || type === "checkbox" || type === "radio") continue;
+        const id = el.getAttribute("id") || "";
+        const lbl = id ? document.querySelector(`label[for="${CSS.escape(id)}"]`) : null;
+        const required = el.hasAttribute("required")
+          || el.getAttribute("aria-required") === "true"
+          || /\*/.test((lbl && (lbl as HTMLElement).textContent) || "");
+        if (!required) continue;
+        const value = (el as HTMLInputElement).value || "";
+        if (!value.trim()) return false; // something here needs data
+      }
+      return true;
+    }).catch(() => false) as boolean;
+  }
+
   /** Are most of these recorded labels on the page right now? Used to spot an advance the
    *  recipe carries from another jurisdiction, where the next section is already showing.
    *  Reuses the drift precheck's own matcher so both agree on what "this section" means. */
