@@ -6,7 +6,7 @@ import { openPortal } from "../browser";
 import { selectWithFallback } from "../comboboxFill";
 import { detectChallengeFrame, frameSelectorFor, hasNumericValidationError, scanStatusFromBody, RETRY_BACKOFF_MS, sleep, smartWait, toBareNumber, waitForElement, waitForInteractiveControls } from "../safeAction";
 import { performLogin } from "./loginFlow";
-import { EXTRACT_SEL, extractFieldsInPage, toExtractedField, dismissPageModals, clearPageOverlays, equipmentMakeCandidates, pageFingerprintOf, collectValidationErrorsFrom } from "./autoLearnAdapter";
+import { EXTRACT_SEL, extractFieldsInPage, toExtractedField, dismissPageModals, clearPageOverlays, equipmentMakeCandidates, pageFingerprintOf, collectValidationErrorsFrom, acaApplyEntryFrom } from "./autoLearnAdapter";
 import { tagUploadControls } from "./autoLearnAdapter";
 
 // RecipeAdapter — replays a recorded portal recipe (see portal_recipes / the recorder).
@@ -335,6 +335,31 @@ export class RecipeAdapter extends BasePortalAdapter {
           // for; dismissModals handles the ones we do.
           await dismissPageModals(this.page).catch(() => null);
           await clearPageOverlays(this.page).catch(() => null);
+        }
+      }
+      // ACA APPLY-FLOW RE-ENTRY. Accela Citizen Access serves one portal to many
+      // jurisdictions and picks the jurisdiction from the ADDRESS SEARCH inside the Apply
+      // wizard, so getting INTO the wizard is the only thing standing between one city and
+      // the next. The learner starts from the public entry page that lists the applications;
+      // replay reuses the persistent AUTHENTICATED profile and lands on Dashboard.aspx,
+      // whose nav is Apply / Building / Licensing / Planning — the recorded application link
+      // is not on that page at all. Two live runs, one stale recipe and one freshly learned,
+      // failed identically here, which is what ruled out portal drift.
+      //
+      // The learner already re-enters the wizard by URL when it drifts out of it; do the
+      // same rather than hunting for a link that is on a different page.
+      if (!succeeded && /^navigate to application/i.test(String(step.note ?? ""))) {
+        const here = typeof this.page.url === "function" ? String(this.page.url() ?? "") : "";
+        const entry = acaApplyEntryFrom(here);
+        if (entry) {
+          const went = await this.page.goto(entry, { waitUntil: "domcontentloaded", timeout: 30000 })
+            .then(() => true).catch(() => false);
+          if (went) {
+            await waitForInteractiveControls(this.page);
+            this.driftWarnings.push(`recorded application link was not on ${here.split("/").pop()} — re-entered the Apply flow directly`);
+            executed++;
+            succeeded = true;
+          }
         }
       }
       if (!succeeded && !step.isFinalSubmit && process.env.RECIPE_SELF_HEAL !== "off") {

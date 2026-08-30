@@ -4842,6 +4842,35 @@ export async function clearPageOverlays(page: any): Promise<void> {
 // portal's own complaint; replay had none of it, so it marched on a page behind and filled
 // forty steps into whatever controls happened to sit at the recorded ids.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
+// SHARED WITH REPLAY. Oregon ePermitting (and every Accela Citizen Access build) serves one
+// portal to many jurisdictions, and the jurisdiction is chosen by the ADDRESS SEARCH inside
+// the Apply wizard — not by a different site per city. So reaching the wizard is all that
+// separates one city from another.
+//
+// The learner already knows how to get there; replay did not, and that is what blocked a
+// cross-jurisdiction replay at its very first click. The learner starts from the public
+// entry page that lists the applications, while replay reuses the persistent AUTHENTICATED
+// profile and lands on Dashboard.aspx, whose nav is Apply / Building / Licensing / Planning
+// — the recorded application link is simply not on that page. Two live runs, one with a
+// stale recipe and one with a freshly-learned one, failed identically, which is what ruled
+// out portal drift.
+//
+// Derive the Apply entry from ANY page of the instance (the learner's own version only
+// worked from a /Cap/ URL, which Dashboard.aspx is not). module=Building is correct for both
+// structural and electrical: ACA drives permits through the Building module, and utilities
+// are PowerClerk, never this.
+export function acaApplyEntryFrom(url: string): string | null {
+  if (!/accela\.com|citizenaccess/i.test(url || "")) return null;
+  try {
+    const u = new URL(url);
+    // The instance is the first path segment ("/oregon"), shared by /oregon/Dashboard.aspx
+    // and /oregon/Cap/CapHome.aspx alike.
+    const seg = u.pathname.split("/").filter(Boolean)[0];
+    if (!seg) return null;
+    return `${u.origin}/${seg}/Cap/CapApplyDisclaimer.aspx?module=Building`;
+  } catch { return null; }
+}
+
 export async function pageFingerprintOf(page: any): Promise<string> {
   if (!page || typeof page.evaluate !== "function") return "";
   try {
