@@ -638,6 +638,17 @@ export class RecipeAdapter extends BasePortalAdapter {
    * value is genuinely missing rather than merely late.
    */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  /** Signature of a NATIVE select's option list. Compared between polls to tell a list
+   *  that is still being replaced by the cascade from one that has settled. */
+  private async optionListSignature(loc: any): Promise<string> {
+    if (!loc || typeof loc.evaluate !== "function") return "";
+    return await loc.evaluate((el: Element) => {
+      if ((el.tagName || "").toLowerCase() !== "select") return "";
+      const o = Array.from((el as HTMLSelectElement).options).map((x) => (x.textContent || "").trim());
+      return o.length + "|" + o.slice(0, 40).join("~");
+    }).catch(() => "") as string;
+  }
+
   private async optionsLookUnloaded(loc: any): Promise<boolean> {
     if (!loc || typeof loc.evaluate !== "function") return true;
     return await loc.evaluate((el: Element) => {
@@ -853,9 +864,25 @@ export class RecipeAdapter extends BasePortalAdapter {
           // a populated list that lacks the value will never gain it, and each extra
           // attempt costs multi-second timeouts on a path that has to stay fast.
           let picked = "";
+          // "Populated" is NOT "ready". The cascade REPLACES the list, so between the
+          // manufacturer change and the XHR landing the control still holds the PREVIOUS
+          // manufacturer's models — plenty of options, none of them ours. Photographed live
+          // on PGE: the Model popup listing SF160-24-M155, SF160-24-M160 ... while the
+          // manufacturer beside it read "Hanwha Q CELLS (Qidong)". The old gate broke out
+          // the moment the list was non-empty, so it matched against the wrong list.
+          // Wait while the list is empty OR still changing; stop once it has settled.
+          let prevSig = await this.optionListSignature(scoped);
           for (let attempt = 0; attempt <= MODEL_CASCADE_TRIES; attempt++) {
             picked = await this.bestModelOption(scoped, v, step);
-            if (picked || !(await this.optionsLookUnloaded(scoped))) break;
+            if (picked) break;
+            const sig = await this.optionListSignature(scoped);
+            const stillChanging = sig !== prevSig;
+            prevSig = sig;
+            // TWO quiet polls before calling a list settled, not one. With a single
+            // window, "the cascade has not fired yet" and "the cascade is done" are the
+            // same observation — the list is unchanged either way — and the wait ends
+            // exactly when the stale list is still showing.
+            if (!(await this.optionsLookUnloaded(scoped)) && !stillChanging && attempt >= 2) break;
             await sleep(ADVANCE_SETTLE_MS);
           }
           if (picked) {
