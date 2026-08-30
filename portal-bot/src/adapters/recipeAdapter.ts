@@ -782,6 +782,26 @@ export class RecipeAdapter extends BasePortalAdapter {
     return false;
   }
 
+  /** What option rows are on screen right now, for diagnosing a select that landed
+   *  nothing: zero means the widget never opened; a populated list means the value simply
+   *  is not offered (or is spelled differently). */
+  private async visibleOptionSample(): Promise<{ count: number; sample: string[] }> {
+    if (!this.page || typeof this.page.evaluate !== "function") return { count: 0, sample: [] };
+    return await this.page.evaluate(() => {
+      const rows = Array.from(document.querySelectorAll(
+        '[role=option], .dropdown-item, .v-list-item, li[class*="option"], li[class*="item"], select option',
+      )) as HTMLElement[];
+      const texts = rows
+        .filter((el) => {
+          const r = el.getBoundingClientRect();
+          return (r.width > 0 && r.height > 0) || (el.tagName || "").toLowerCase() === "option";
+        })
+        .map((el) => (el.innerText || el.textContent || "").trim())
+        .filter(Boolean);
+      return { count: texts.length, sample: texts.slice(0, 6) };
+    }).catch(() => ({ count: 0, sample: [] as string[] })) as { count: number; sample: string[] };
+  }
+
   private async optionsLookUnloaded(loc: any): Promise<boolean> {
     if (!loc || typeof loc.evaluate !== "function") return true;
     return await loc.evaluate((el: Element) => {
@@ -1064,6 +1084,19 @@ export class RecipeAdapter extends BasePortalAdapter {
         // before filling subsequent fields (e.g. PowerClerk resets contact fields on
         // contact-type dropdown change).
         await this.page.waitForLoadState("networkidle", { timeout: 4000 }).catch(() => null);
+        // WHY DID IT MISS? A select that lands nothing is reported as a bare SKIP, and
+        // "the widget never opened" and "it opened but this value is not in it" need
+        // completely different fixes. Live PacifiCorp skipped both equipment Model steps
+        // after 26 seconds each, on a control the diagnostic showed as visible=false — and
+        // there was no way to tell which of the two had happened. Only paid for on a miss.
+        if (!selected) {
+          const seen = await this.visibleOptionSample();
+          this.driftWarnings.push(
+            seen.count === 0
+              ? `select "${String(step.note ?? step.field ?? "")}" landed nothing and NO option list was open — the widget never opened (wanted ${JSON.stringify(v.slice(0, 40))})`
+              : `select "${String(step.note ?? step.field ?? "")}" landed nothing though ${seen.count} option(s) were showing — wanted ${JSON.stringify(v.slice(0, 40))}, list offers ${seen.sample.map((o) => JSON.stringify(o)).join(", ")}`,
+          );
+        }
         // Propagate the miss: a select that landed NOTHING must not report success.
         return selected;
       }
