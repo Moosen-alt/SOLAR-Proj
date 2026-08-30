@@ -3033,7 +3033,12 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             fieldsSeen: fields.map((f, i) => ({ i, type: f.fieldType, label: (f.label || "").slice(0, 80) })),
             decisions: (plan.fills ?? []).map((fl) => {
               const f = fields[fl.selectorIndex];
-              const sensitive = f ? isSensitiveLabel(f.label) : false;
+              // Match what applyFill actually RECORDS, or this diagnostic lies about the
+              // one bug it is best placed to reveal: a Yes/No question whose label merely
+              // says "meter" is not a secret, and its answer IS stored. Showing the
+              // redaction placeholder for it sent an investigation down the wrong path.
+              const fixedOptions = f ? (f.fieldType === "select" || f.fieldType === "radio" || f.fieldType === "checkbox") : false;
+              const sensitive = f ? isSensitiveLabel(f.label) && !fixedOptions : false;
               return {
                 index: fl.selectorIndex,
                 label: (f?.label || "?").slice(0, 80),
