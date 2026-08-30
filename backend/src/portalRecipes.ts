@@ -563,6 +563,28 @@ export function resolveRecipeFieldValues(db: AppDb, project: ProjectRecord, port
       /non.?export|export.?limit\b|power control system|\bpcs\b|\bngom\b/i
         .test(`${snapshotFlat.exportMode ?? ""} ${snapshotFlat.pcs ?? ""} ${snapshotFlat.exportLimit ?? ""}`)
         ? "Yes" : "No",
+    // ENERGY SOURCE — the GATE for a portal's whole battery section, and the reason it is
+    // derived here rather than left as a recorded literal.
+    //
+    // PacifiCorp's recipe learned on a project WITH a Tesla battery recorded the literal
+    // "Solar PV and Battery" with no field binding, so replaying it onto a project without
+    // storage would have declared a battery that does not exist on an interconnection
+    // application. The same portal's earlier learns, on projects WITHOUT batteries,
+    // recorded "Solar PV" and carried ZERO battery steps — the portal only renders that
+    // section once Battery is chosen. So this one answer decides whether ~17 downstream
+    // questions are asked at all, and it must follow the project rather than whichever
+    // system happened to be learned.
+    //
+    // Both option strings are taken from real recorded recipes for this portal, not
+    // invented: "Solar PV" (v4/v6 backups) and "Solar PV and Battery" (v9).
+    // hasBattery is set by normalize.ts, so it is present on real projects — but fall back
+    // to the same inputs normalize derives it from, so this cannot silently answer "no
+    // battery" for a snapshot that simply never went through normalisation.
+    energySource: (
+      /^y/i.test(String(snapshotFlat.hasBattery ?? "").trim())
+      || String(snapshotFlat.batteryModel ?? "").trim() !== ""
+      || Number(snapshotFlat.batteryQty ?? 0) > 0
+    ) ? "Solar PV and Battery" : "Solar PV",
   };
   // EQUIPMENT BINDING (portal-agnostic). The PV module spec lives in a nested `pvArrays`
   // array in the parser snapshot, which the scalar-only flatten above drops — so the module

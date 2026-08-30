@@ -236,7 +236,39 @@ const degreeFields = resolveRecipeFieldValues(liveDb, {
   ahj: "", utility: "Pacific Power", accountNumber: "", meterNumber: "",
   parserSnapshot: { azimuth: "180.5", tilt: "22.4", pvArrays: [{ quantity: "14", azimuth: "180.5", tilt: "22.4" }] },
 } as never, "powerclerk");
+// ENERGY SOURCE GATES THE BATTERY SECTION. PacifiCorp only renders its ~17 storage
+// questions once "Solar PV and Battery" is chosen, so a recipe learned on a battery
+// project froze that literal and would have declared storage on every project it replayed
+// onto. Both option strings come from real recorded recipes for this portal.
+const withBattery = resolveRecipeFieldValues(liveDb, {
+  homeownerName: "Batt Owner", projectAddress: "1 Test St", city: "", state: "OR", zip: "",
+  ahj: "", utility: "Pacific Power", accountNumber: "", meterNumber: "",
+  parserSnapshot: { batteryModel: "Powerwall 3", batteryQty: "1" },
+} as never, "powerclerk");
+const noBattery = resolveRecipeFieldValues(liveDb, {
+  homeownerName: "Plain Owner", projectAddress: "2 Test St", city: "", state: "OR", zip: "",
+  ahj: "", utility: "Pacific Power", accountNumber: "", meterNumber: "",
+  parserSnapshot: {},
+} as never, "powerclerk");
+const normalisedBattery = resolveRecipeFieldValues(liveDb, {
+  homeownerName: "Norm Owner", projectAddress: "3 Test St", city: "", state: "OR", zip: "",
+  ahj: "", utility: "Pacific Power", accountNumber: "", meterNumber: "",
+  parserSnapshot: { hasBattery: "Yes" },
+} as never, "powerclerk");
 try { liveDb.close(); } catch { /* best effort */ }
+
+run("a battery project files Energy Source as Solar PV and Battery", () => {
+  // Derived from the battery equipment itself, so it holds even for a snapshot that never
+  // went through normalize.ts (which is what sets hasBattery).
+  assert.equal(withBattery.energySource, "Solar PV and Battery");
+});
+run("the normalised hasBattery flag is honoured too", () => {
+  assert.equal(normalisedBattery.energySource, "Solar PV and Battery");
+});
+run("a project WITHOUT storage never declares a battery", () => {
+  assert.equal(noBattery.energySource, "Solar PV",
+    "a recipe learned on a battery project would otherwise file storage that does not exist");
+});
 
 run("a fractional plan-set orientation reaches the portal as whole degrees", () => {
   for (const key of ["array1Azimuth", "azimuth"]) {
