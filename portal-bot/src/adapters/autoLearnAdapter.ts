@@ -234,7 +234,12 @@ const POLICY_RADIO_DEFAULTS: Array<{ question: RegExp; answer: "Yes" | "No"; enf
   // Standard residential detail places the lockable AC disconnect adjacent to the meter;
   // the prompt default alone was observed missed (required radio left blank → portal
   // blocked the submit), so the deterministic pass backs it like the other two.
+  // Two phrasings of the same rule. PGE asks "within 10 feet of the meter"; PacifiCorp asks
+  // "within the states required distance from the utility meter? (California - 3 Ft.,
+  // Oregon - 10 Ft., Washington - 3 Ft.)" — the operator confirms standard residential
+  // detail places the lockable AC disconnect within the required distance on every install.
   { question: /disconnect within 10\s*(feet|ft|')\s*of the .{0,20}meter/i, answer: "Yes" },
+  { question: /disconnect.{0,60}(required distance|within the state).{0,40}meter/i, answer: "Yes" },
 ];
 
 // Sensitive field labels whose literal value must NEVER be stored in a recorded step.
@@ -3771,6 +3776,72 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   // confirms nothing in the group is already checked, clicks the matching option, and returns a
   // replayable `check` step (css-targeted by id) plus an AppliedFill record. Best-effort; never
   // throws. Skips any group whose question label is already in `alreadyFilledLabels`.
+  /**
+   * The select-shaped twin of applyPolicyDefaults' radio walk: answer a policy question
+   * rendered as a dropdown. Only touches a select that is UNANSWERED (empty or a
+   * "Select..." placeholder), so a portal that already carries an answer is left alone.
+   */
+  private async applyPolicySelect(
+    policy: { question: RegExp; answer: "Yes" | "No" },
+    alreadyFilledLabels: string[],
+  ): Promise<{ step: RecipeStep; applied: AppliedFill } | null> {
+    if (!this.page || typeof this.page.evaluate !== "function") return null;
+    const found = await this.page.evaluate(
+      (args: { qSource: string; answer: string }) => {
+        const norm = (s: string | null | undefined) => (s || "").trim().replace(/\s+/g, " ");
+        const question = new RegExp(args.qSource, "i");
+        const wanted = args.answer.trim().toLowerCase();
+        const selects = Array.from(document.querySelectorAll("select")) as HTMLSelectElement[];
+        for (const sel of selects) {
+          const id = sel.getAttribute("id") || "";
+          const lbl = id ? document.querySelector(`label[for="${CSS.escape(id)}"]`) : null;
+          const own = norm(lbl?.textContent || sel.getAttribute("aria-label") || "");
+          const grp = sel.closest("fieldset, .form-group, [class*='form-group'], [class*='field'], .row, [class*='row']");
+          if (!question.test(own) && !question.test(norm(grp?.textContent || ""))) continue;
+          const current = norm(sel.options[sel.selectedIndex]?.textContent || "");
+          const placeholder = !current || /^(please\s+)?select\.{0,3}$/i.test(current);
+          if (!placeholder) return { answered: true as const };
+          const match = Array.from(sel.options).find((o) => norm(o.textContent).toLowerCase() === wanted);
+          if (!match || !id) return null;
+          return { id, optionText: norm(match.textContent), label: own || norm(grp?.textContent || "").slice(0, 80) };
+        }
+        return null;
+      },
+      { qSource: policy.question.source, answer: policy.answer },
+    ).catch(() => null) as { answered?: true; id?: string; optionText?: string; label?: string } | null;
+
+    if (!found || found.answered || !found.id || !found.optionText) return null;
+    const groupLabel = (found.label || `policy:${policy.answer}`).slice(0, 80);
+    if (alreadyFilledLabels.includes(groupLabel)) return null;
+    const selector: RecipeSelector = { css: `#${found.id}` };
+    const loc = await this.locator(selector);
+    if (!loc) return null;
+    const res = await safeAction(
+      groupLabel.slice(0, 40),
+      async () => { await selectWithFallback(this.page, loc, found.optionText as string); },
+      { required: false },
+    );
+    if (!res.ok || res.message) return null;
+    alreadyFilledLabels.push(groupLabel);
+    return {
+      step: {
+        action: "select",
+        phase: "fill",
+        selector,
+        value: found.optionText,
+        note: `policy default: ${groupLabel} → ${policy.answer}`,
+      },
+      applied: {
+        selector,
+        label: groupLabel,
+        fieldType: "select",
+        expected: found.optionText,
+        sensitive: false,
+        required: true,
+      },
+    };
+  }
+
   private async applyPolicyDefaults(
     alreadyFilledLabels: string[],
   ): Promise<Array<{ step: RecipeStep; applied: AppliedFill }>> {
@@ -3822,7 +3893,17 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           { qSource: policy.question.source, answer: policy.answer, enforce: !!policy.enforce },
         ).catch(() => null);
 
-        if (!target || (target as { answered?: boolean }).answered) continue;
+        // A POLICY QUESTION IS NOT ALWAYS A RADIO GROUP. PacifiCorp asks the same
+        // disconnect-distance question as a three-option <select>, so the radio walk above
+        // finds nothing, the required field is left blank, and the portal refuses
+        // "compute totals: Calculate" 113 steps into the run. Same policy, same answer,
+        // different control — so try the select shape before giving up on this question.
+        if (!target) {
+          const picked = await this.applyPolicySelect(policy, alreadyFilledLabels);
+          if (picked) out.push(picked);
+          continue;
+        }
+        if ((target as { answered?: boolean }).answered) continue;
         const css = (target as { css?: string | null }).css;
         if (!css) continue;
         const groupLabel = ((target as { groupLabel?: string }).groupLabel || "").slice(0, 80) || `policy:${policy.answer}`;

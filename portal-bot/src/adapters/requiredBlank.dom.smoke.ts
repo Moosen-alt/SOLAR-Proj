@@ -37,6 +37,14 @@ const PAGE = `<!doctype html><html><body>
     <label for="meter">Upload a photo of meter where system will be interconnected *</label>
     <input id="meter" type="file" required>
     <label for="notes">Additional notes</label><input id="notes">
+    <!-- PacifiCorp's shape: no required attribute, no asterisk — just a red complaint
+         rendered beside the control. A blank REQUIRED inverter manufacturer marked this
+         way went unreported on a run that ended ok:true. -->
+    <div class="form-group">
+      <label for="mfr">Inverter Manufacturer</label>
+      <select id="mfr"><option value="">Please select...</option><option>Altenergy Power System</option></select>
+      <span class="err">This field is required.</span>
+    </div>
     <button id="next" type="button">Next</button>
   </div>
   <div id="page2" style="display:none"><h3>Review</h3></div>
@@ -89,6 +97,12 @@ check("the unfillable REQUIRED upload is named", () => {
 });
 check("a field the recipe DID fill is not reported", () => {
   assert.ok(!blanks.some((b) => /account number/i.test(b)), `false alarm on a filled field: ${JSON.stringify(blanks)}`);
+});
+check("a control marked required by a VALIDATION MESSAGE is reported", () => {
+  assert.ok(
+    blanks.some((b) => /inverter manufacturer/i.test(b)),
+    `a blank required dropdown marked only by "This field is required." was missed; got ${JSON.stringify(blanks)}`,
+  );
 });
 check("an OPTIONAL empty box is not reported", () => {
   // A list that includes everything empty is a list nobody reads.

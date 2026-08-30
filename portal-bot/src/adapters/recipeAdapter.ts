@@ -1461,9 +1461,24 @@ export class RecipeAdapter extends BasePortalAdapter {
         const id = el.getAttribute("id") || "";
         const lbl = id ? document.querySelector(`label[for="${CSS.escape(id)}"]`) : null;
         const labelText = ((lbl && (lbl as HTMLElement).textContent) || "").replace(/\s+/g, " ").trim();
+        // A PORTAL CAN MARK "REQUIRED" WITH A MESSAGE, NOT AN ATTRIBUTE. PacifiCorp
+        // renders a red "This field is required." beside the control and carries neither
+        // the attribute nor an asterisk in the label — so a blank REQUIRED inverter
+        // manufacturer went unreported on a run that ended ok:true, and the operator found
+        // it by looking at the portal. A visible complaint in the control's own container
+        // is the requirement marker, plainly.
+        // A bare div ancestor is the whole PAGE on some layouts, which made every control
+        // inherit one control's complaint. Bound it: the container must own exactly ONE
+        // form control, or the message is not about this control.
+        const container = el.closest('[class*="form-group"], [class*="field"], [class*="row"], li, tr, dd, p');
+        const ownsOne = !!container && container.querySelectorAll("input, select, textarea").length === 1;
+        const complaint = ownsOne
+          && /this field is required|required field|cannot be (blank|empty)|please (select|enter)/i
+            .test((container as HTMLElement).innerText || "");
         const required = el.hasAttribute("required")
           || el.getAttribute("aria-required") === "true"
-          || /\*/.test(labelText);
+          || /\*/.test(labelText)
+          || complaint;
         if (!required) continue;
         if (((el as HTMLInputElement).value || "").trim()) continue;
         const name = labelText
