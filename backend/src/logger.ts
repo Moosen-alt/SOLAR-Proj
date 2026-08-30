@@ -10,6 +10,7 @@
 // ---------------------------------------------------------------------------
 import { performance } from "node:perf_hooks";
 import fs from "node:fs";
+import path from "node:path";
 import type { Request, Response, NextFunction } from "express";
 import type { AppDb } from "./db";
 
@@ -49,6 +50,38 @@ function emit(level: Level, scope: string, message: string, extra?: Record<strin
   if (level === "error") console.error(line);
   else if (level === "warn") console.warn(line);
   else console.log(line);
+  appendToLogFile(line);
+}
+
+// --- File sink ---------------------------------------------------------------
+// The backend logs to stdout, visible only to whoever is watching that terminal.
+// Mirroring the SAME lines to a file lets a second pair of eyes tail them live, and
+// lets a crash be read afterwards when the terminal is gone. Nothing extra is written:
+// same lines, same redaction guarantees as the console output above.
+const LOG_FILE = process.env.AUTOPILOT_LOG_FILE === ""
+  ? "" // explicitly disabled
+  : (process.env.AUTOPILOT_LOG_FILE || path.join(process.cwd(), "data", "logs", "backend.log"));
+const LOG_MAX_BYTES = Number(process.env.AUTOPILOT_LOG_MAX_BYTES || 8 * 1024 * 1024);
+let logDirReady = false;
+let logWriteFailed = false;
+
+function appendToLogFile(line: string): void {
+  if (!LOG_FILE || logWriteFailed) return;
+  try {
+    if (!logDirReady) {
+      fs.mkdirSync(path.dirname(LOG_FILE), { recursive: true });
+      logDirReady = true;
+    }
+    // Rotate ONE generation: bounds disk and keeps a live tail cheap, without pulling in
+    // a rotation dependency for what is a diagnostic convenience.
+    try {
+      if (fs.statSync(LOG_FILE).size > LOG_MAX_BYTES) fs.renameSync(LOG_FILE, LOG_FILE + ".1");
+    } catch { /* no file yet */ }
+    fs.appendFileSync(LOG_FILE, line + "\n");
+  } catch {
+    // Never let logging break the server, and never retry-storm on a bad path.
+    logWriteFailed = true;
+  }
 }
 
 export const logger = {
