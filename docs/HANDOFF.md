@@ -149,16 +149,21 @@ Still open, in order:
 
 ## Open issues / next work (priority order)
 
-**Multi-array systems are filed UNDERSTATED (found 2026-08-30, not yet fixed).** The
-PacifiCorp recipe fills `array1ModuleQuantity/Tilt/Azimuth` and nothing else, but real
-projects routinely have two arrays: Randal Rowland is 18 + 5 = 23 modules, Edgar Miner
-(the project the recipe LEARNED on) is 21 + 2 = 23. The resolver produces `array2*`
-correctly — the recipe simply has no steps for it, so the portal receives 18 of 23
-modules. Either the form has one array block, in which case the binding should be
-`totalModuleQuantity` rather than `array1ModuleQuantity`, or it supports adding array
-rows and the learner never recorded the "add" step. Decide which by LOOKING at the live
-form. The `compute totals: Calculate` step that takes 122s and "left the page unchanged"
-is likely the same story. Bren Trask has FOUR arrays and is the worst case.
+**Multi-array: FIXED 2026-08-30, needs a live confirmation.** Replay now repeats the
+recorded array block once per roof plane, adding a row and verifying the page gained one
+before filling it. Two guards make it safe: the add must be CONFIRMED (each PV Array
+carries its own "Delete Array", so rows are countable) and repeat passes target the Nth
+rendered control, because the recorded selector points at array 1. When no row can be
+added the run says "filed array 1 only (10 of 24 modules). REVIEW BEFORE SUBMIT." instead
+of understating in silence. Covered by `multiArray.dom.smoke.ts` (mutation-checked).
+Still to do: watch one live PGE run on Bren Trask (4 arrays) and confirm four rows.
+
+**PGE's option text is formatted differently from the CEC name (open).** PGE lists module
+options as `430W (Model Q.TRON BLK M-G2.C1+/AC)` while the certified name resolves to
+`Q.TRON BLK M-G2.C1+/AC 430`. Neither string contains the other, so exact AND both
+contains-directions miss, and the module model is left blank. Photographed on the live
+step-49 failure screenshot. The fix is a model-vs-option normaliser that pulls the wattage
+and the parenthesised model out of the option text; not yet written.
 
 **A killed run wedges that portal profile.** Stopping a replay leaves its Chromium
 holding the persistent profile, and the next run dies instantly with "profile is already
