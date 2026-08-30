@@ -36,6 +36,9 @@ const PAGE = `<!doctype html><html><body>
 
   <label for="idC">Installation Voltage</label>
   <select id="idC"><option value="">Select...</option><option>240V</option><option>208V</option></select>
+
+  <label for="idD">E-mail:</label>
+  <input id="idD">
 </body></html>`;
 
 const server = http.createServer((_q, r) => { r.writeHead(200, { "Content-Type": "text/html" }); r.end(PAGE); });
@@ -56,6 +59,11 @@ const steps: RecipeStep[] = [
   { action: "select", phase: "fill", selector: { css: "#idB" }, value: "Commercial", note: "Will the System be Customer-Owned or Third-Party Owned?" },
   // Correctly resolved: must be left completely alone.
   { action: "select", phase: "fill", selector: { css: "#idC" }, value: "240V", note: "Installation Voltage" },
+  // HYPHENS ARE NOT A CONTRADICTION. The control's label reads "E-mail:" while the
+  // recorded note says "contact: email [applicant]" — tokenized they share nothing
+  // ("email" vs {"mail"}), and the identity check skipped a correctly-resolved fill on a
+  // live ACA contact popup, which then saved NO contact record at all.
+  { action: "fill", phase: "fill", selector: { css: "#idD" }, value: "someone@example.com", note: "contact: email [applicant]" },
 ];
 
 const recipe = {
@@ -87,7 +95,7 @@ for (const step of steps.filter((s) => s.action !== "goto")) {
 }
 
 const value = async (sel: string): Promise<string> => page.locator(sel).inputValue().catch(() => "");
-const [a, b, c] = [await value("#idA"), await value("#idB"), await value("#idC")];
+const [a, b, c, d] = [await value("#idA"), await value("#idB"), await value("#idC"), await value("#idD")];
 const drift = internals.driftWarnings;
 
 check("a step re-anchors to the control its recorded LABEL names", () => {
@@ -103,6 +111,10 @@ check("the right answer NEVER lands in the wrong box", () => {
 
 check("a correctly-resolved step is left alone (no over-firing)", () => {
   assert.equal(c, "240V", `a step whose control matches its label must fill normally; got ${JSON.stringify(c)}`);
+});
+
+check("a hyphenated label is not a contradiction (E-mail: accepts an email fill)", () => {
+  assert.equal(d, "someone@example.com", `the identity check must accept "E-mail:" for an email step; got ${JSON.stringify(d)}`);
 });
 
 check("every mis-resolution is REPORTED, never silent", () => {

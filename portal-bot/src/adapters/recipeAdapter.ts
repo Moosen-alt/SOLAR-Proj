@@ -1181,6 +1181,15 @@ export class RecipeAdapter extends BasePortalAdapter {
     const b = words(actual);
     if (!a.size || !b.size) return null;
     for (const w of a) if (b.has(w)) return null; // they agree on something — accept it
+    // HYPHENS SPLIT WHAT PEOPLE READ AS ONE WORD. "E-mail:" tokenizes to {mail} while the
+    // recorded note says "email" — zero overlap, and a correctly-resolved control got
+    // SKIPPED as unrelated (measured live: ACA's contact popup email). Compare against the
+    // compacted form too, both directions, before calling two labels strangers.
+    const compact = (v: string) => v.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const aCompact = compact(recorded);
+    const bCompact = compact(actual);
+    for (const w of a) if (bCompact.includes(w)) return null;
+    for (const w of b) if (aCompact.includes(w)) return null;
 
     // They share nothing. Find the control the recipe actually meant — by scanning the
     // page's own label associations, the SAME mechanism that just detected the mismatch.
@@ -1209,8 +1218,10 @@ export class RecipeAdapter extends BasePortalAdapter {
         // label that is not currently rendered, which silently drops the candidate.
         const raw = (src ? src.textContent : el.getAttribute("aria-label")) || "";
         const text = raw.toLowerCase().replace(/[^a-z0-9\s]/g, " ");
+        // Compacted twin for hyphenated labels: "E-mail:" must count as a hit for "email".
+        const textCompact = raw.toLowerCase().replace(/[^a-z0-9]/g, "");
         let score = 0;
-        for (const w of args.words) if (text.indexOf(w) >= 0) score++;
+        for (const w of args.words) if (text.indexOf(w) >= 0 || textCompact.indexOf(w) >= 0) score++;
         if (!score) continue;
         // Visibility is a TIE-BREAK, not a filter. A portal that keeps its real control
         // behind a styled widget (PowerClerk does) would otherwise have every candidate
