@@ -85,6 +85,12 @@ export class RecipeAdapter extends BasePortalAdapter {
    *  tried. Surfaced in the failure context so "the selector drifted" and "the control is
    *  present but unclickable" stop looking identical from the outside. */
   private healDiagnostic = "";
+  /** Which of the project's arrays the array block is currently filling (1-based). */
+  private arrayPass = 1;
+  /** Bounds of the recorded array block — the span of steps bound to array1*. -1 when the
+   *  recipe has none. */
+  private arrayBlockStart = -1;
+  private arrayBlockEnd = -1;
   /** Drift-precheck annotations ("this page barely matches the recipe") — surfaced
    *  in every result payload so a run that squeaked through via heals still tells
    *  the operator the portal likely changed. */
@@ -269,6 +275,16 @@ export class RecipeAdapter extends BasePortalAdapter {
     // economics, so a replay that cannot finish inside a portal session is a correctness
     // problem, not a comfort one — and averages hide it. Record the steps that actually
     // cost seconds so the next fix targets the right one.
+    // THE RECORDED ARRAY BLOCK. A learn records one array's worth of steps because that is
+    // what the portal renders on a fresh application — but real projects routinely have
+    // several roof planes. Measured: Bren Trask has FOUR arrays (10+3+5+6 = 24 modules) and
+    // the recipe learned on him types "10"; Randal Rowland has two (18+5 = 23) and gets 18.
+    // A 10.32 kW system was being filed as roughly 4.4 kW.
+    const arrayBound = this.recipe.steps
+      .map((s2, i) => ({ s2, i }))
+      .filter(({ s2 }) => /^array1[A-Z]/.test(String(s2.field ?? "")));
+    this.arrayBlockStart = arrayBound.length ? arrayBound[0].i : -1;
+    this.arrayBlockEnd = arrayBound.length ? arrayBound[arrayBound.length - 1].i : -1;
     const slowSteps: Array<{ i: number; action: string; note: string; ms: number }> = [];
     // Timed from the TOP of the next iteration rather than the bottom of this one: the loop
     // body has a dozen `continue` paths (skips, policy defaults, drift), and a bottom-of-loop
@@ -281,7 +297,24 @@ export class RecipeAdapter extends BasePortalAdapter {
       if (ms >= 4000) slowSteps.push({ ...prevStep, ms });
     };
     for (let stepIdx = 0; stepIdx < this.recipe.steps.length; stepIdx++) {
-      const step = this.recipe.steps[stepIdx];
+      const recordedStep = this.recipe.steps[stepIdx];
+      // ON A REPEAT PASS, TARGET THE Nth RENDERED COPY OF EACH CONTROL.
+      //
+      // The recorded selector points at the FIRST array's control, because that is the only
+      // one that existed while learning. Replaying the block unscoped would refill array 1
+      // with array 2's numbers — the same silent overwrite as the Preparer/Customer bug,
+      // with the same absence of any error. Each added row renders its own copy of the
+      // block's controls, so the Nth match IS array N. When the recorded selector is a
+      // row-unique id there is no Nth match, the step finds nothing and skips — which
+      // leaves array 1 intact rather than corrupting it.
+      const step = (this.arrayPass > 1 && this.arrayBlockStart >= 0
+        && stepIdx >= this.arrayBlockStart && stepIdx <= this.arrayBlockEnd && recordedStep?.selector)
+        ? {
+          ...recordedStep,
+          selector: { ...recordedStep.selector, nth: this.arrayPass - 1 },
+          note: `${recordedStep.note ?? ""} [array ${this.arrayPass}]`,
+        }
+        : recordedStep;
       closePrevStepTiming();
       prevStart = Date.now();
       prevStep = { i: stepIdx, action: String(step?.action ?? ""), note: String(step?.note ?? "").slice(0, 52) };
@@ -592,6 +625,29 @@ export class RecipeAdapter extends BasePortalAdapter {
           return fail(`${driftFail}${driftContext}`, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, failedStepIndex: stepIdx, trace, slowSteps });
         }
       }
+
+      // REPEAT THE ARRAY BLOCK, ONCE PER ROOF PLANE.
+      //
+      // Only after the portal CONFIRMS a new row exists. A silently-failed add would leave
+      // the second array's values landing on the first array's controls — the identical
+      // failure to the Preparer/Customer overwrite, and just as invisible. When no row can
+      // be added we say so loudly and file array 1, which is no worse than before.
+      if (stepIdx === this.arrayBlockEnd && this.arrayBlockStart >= 0) {
+        const want = this.projectArrayCount();
+        if (this.arrayPass < want) {
+          if (await this.addAnotherArrayRow()) {
+            this.arrayPass++;
+            this.driftWarnings.push(`added array row ${this.arrayPass} of ${want} and refilled the recorded array block for it`);
+            stepIdx = this.arrayBlockStart - 1; // the loop's ++ lands us back on the block
+            continue;
+          }
+          this.driftWarnings.push(
+            `project has ${want} arrays but no array row could be added — filed array 1 only `
+            + `(${this.fieldValues.array1ModuleQuantity ?? "?"} of ${this.fieldValues.totalModuleQuantity ?? "?"} modules). REVIEW BEFORE SUBMIT.`,
+          );
+          this.arrayPass = want; // do not retry the add on every later pass
+        }
+      }
     }
 
     if (this.finalSubmitClicked) {
@@ -625,6 +681,14 @@ export class RecipeAdapter extends BasePortalAdapter {
         const certified = this.fieldValues[`${step.field}Certified`];
         if (certified) return certified;
       }
+      // ON A REPEAT PASS, array1Tilt means array2Tilt. The recipe only ever records ONE
+      // array block (the learner fills the block the portal renders), so replaying it for
+      // a second roof plane is a matter of reading the second array's values into the
+      // same recorded steps.
+      if (this.arrayPass > 1 && /^array1[A-Z]/.test(step.field)) {
+        const mapped = step.field.replace(/^array1/, `array${this.arrayPass}`);
+        return this.fieldValues[mapped] ?? "";
+      }
       return this.fieldValues[step.field] ?? "";
     }
     return step.value ?? "";
@@ -647,6 +711,57 @@ export class RecipeAdapter extends BasePortalAdapter {
       const o = Array.from((el as HTMLSelectElement).options).map((x) => (x.textContent || "").trim());
       return o.length + "|" + o.slice(0, 40).join("~");
     }).catch(() => "") as string;
+  }
+
+  /** How many arrays the PROJECT has, from the resolved values (array1..N ModuleQuantity). */
+  private projectArrayCount(): number {
+    let n = 0;
+    for (let i = 1; i <= 12; i++) {
+      if (String(this.fieldValues[`array${i}ModuleQuantity`] ?? "").trim()) n = i;
+      else break;
+    }
+    return n || 1;
+  }
+
+  /** How many array rows the PAGE is showing. Each rendered PV Array carries its own
+   *  "Delete Array" control, which makes counting them a reliable proxy — and gives the
+   *  add below something to verify against rather than trusting a click. */
+  private async countArrayRows(): Promise<number> {
+    if (!this.page || typeof this.page.evaluate !== "function") return 0;
+    return await this.page.evaluate(() => {
+      const els = Array.from(document.querySelectorAll("a, button, span, div")) as HTMLElement[];
+      return els.filter((el) => {
+        const t = (el.innerText || "").trim();
+        if (!/^delete\s+array$/i.test(t)) return false;
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+      }).length;
+    }).catch(() => 0) as number;
+  }
+
+  /** Add one PV Array row, and return whether the page actually gained one. */
+  private async addAnotherArrayRow(): Promise<boolean> {
+    if (!this.page || typeof this.page.getByRole !== "function") return false;
+    const before = await this.countArrayRows();
+    const candidates = [
+      () => this.page.getByRole("button", { name: /add\s*array/i }),
+      () => this.page.getByRole("link", { name: /add\s*array/i }),
+      // PowerClerk labels the array-level duplicate simply "Clone". EXACT, because
+      // "Clone System" beside it duplicates the WHOLE generating system.
+      () => this.page.getByRole("button", { name: "Clone", exact: true }),
+      () => this.page.getByRole("link", { name: "Clone", exact: true }),
+    ];
+    for (const make of candidates) {
+      try {
+        const loc = make();
+        if (!(await loc.count().catch(() => 0))) continue;
+        await loc.first().click({ timeout: 8000 });
+        await sleep(1200);
+        await this.page.waitForLoadState("networkidle", { timeout: 4000 }).catch(() => null);
+        if (await this.countArrayRows() > before) return true;
+      } catch { /* try the next shape */ }
+    }
+    return false;
   }
 
   private async optionsLookUnloaded(loc: any): Promise<boolean> {
