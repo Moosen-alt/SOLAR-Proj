@@ -454,7 +454,13 @@ export class RecipeAdapter extends BasePortalAdapter {
         // New page segment begins after an advance — precheck it before burning
         // per-step timeouts on a page the portal may have rebuilt.
         const driftFail = await this.precheckPageDrift(stepIdx + 1);
-        if (driftFail) return fail(driftFail, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, failedStepIndex: stepIdx, trace });
+        if (driftFail) {
+          // A drift stop is the one failure with NO screenshot, because it does not come
+          // from a step throwing — and it is precisely when "what page am I actually on?"
+          // is the whole question. Capture it like any other failure.
+          const driftContext = await this.captureFailureContext(step, stepIdx);
+          return fail(`${driftFail}${driftContext}`, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, failedStepIndex: stepIdx, trace });
+        }
       }
     }
 
