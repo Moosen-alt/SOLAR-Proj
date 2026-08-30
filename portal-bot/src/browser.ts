@@ -93,6 +93,16 @@ export async function openPortal(opts: {
   const proxyOpts = httpsProxy ? { server: httpsProxy, bypass: proxyBypass } : undefined;
 
   if (opts.userDataDir) {
+    // A PROFILE STILL HELD BY A DEAD RUN. Chromium refuses a persistent profile that
+    // another instance has open, and Playwright reports it as "Opening in existing browser
+    // session." buried under a 30-line launch dump — which reads like a launch failure
+    // rather than the one-line problem it is. The usual cause is a run that was killed:
+    // the node process goes, its browser does not, and the profile stays locked until
+    // something clears it. Three runs were lost to this in one session.
+    //
+    // Deliberately NOT auto-killing: a library that hunts down and terminates browser
+    // processes could take out a run that legitimately owns the profile. Name the problem
+    // and the remedy; let the caller decide.
     const context = await chromium.launchPersistentContext(opts.userDataDir, {
       headless,
       slowMo,
@@ -100,6 +110,17 @@ export async function openPortal(opts: {
       args: CHROMIUM_ARGS,
       ignoreHTTPSErrors,
       proxy: proxyOpts,
+    }).catch((err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/existing browser session|already in use|ProcessSingleton/i.test(msg)) {
+        throw new Error(
+          `Portal profile is still locked by a previous run: ${opts.userDataDir}
+`
+          + "  A killed run leaves its browser alive and holding the profile. Close that browser, "
+          + "or end the chrome processes whose command line contains this directory, then retry.",
+        );
+      }
+      throw err;
     });
     await context.addInitScript({ content: NAME_SHIM });
     const page = context.pages()[0] ?? (await context.newPage());
