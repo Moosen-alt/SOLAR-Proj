@@ -92,6 +92,13 @@ export class RecipeAdapter extends BasePortalAdapter {
    *  "a photo of the meter where the system will be interconnected", which is never in a
    *  plan set, so no recipe step exists for it and no QC rule looks for it. */
   private requiredStillEmpty: string[] = [];
+  /** Where this run's page screenshots go, and how many were written. Replay only ever
+   *  photographed FAILURES, so every page that filled "successfully" was invisible — and
+   *  the two worst bugs of this session (the homeowner's details written into the
+   *  installer's block; a required meter-photo upload left blank) were both caught by a
+   *  human looking at the portal, not by anything the run reported. */
+  private pageShotDir = "";
+  private pageShotCount = 0;
   private arrayPass = 1;
   /** Bounds of the recorded array block — the span of steps bound to array1*. -1 when the
    *  recipe has none. */
@@ -417,6 +424,9 @@ export class RecipeAdapter extends BasePortalAdapter {
         for (const label of await this.emptyRequiredControls()) {
           if (!this.requiredStillEmpty.includes(label)) this.requiredStillEmpty.push(label);
         }
+        // PHOTOGRAPH THE FINISHED PAGE. Same moment as the sweep above: everything the
+        // recipe will put on this page is on it, and the next click leaves it for good.
+        await this.capturePageShot(await currentPageLabel());
       }
 
       let lastErr: unknown;
@@ -591,7 +601,7 @@ export class RecipeAdapter extends BasePortalAdapter {
         const context = failureContext || await this.captureFailureContext(step, stepIdx);
         trace.push({ i: stepIdx, action: step.action, note: String(step.note ?? "").slice(0, 52), outcome: "FAILED", page: await currentPageLabel() });
         closePrevStepTiming();
-        return fail(`Recipe step failed (${step.action}${step.note ? ` — ${step.note}` : ""}): ${lastErr instanceof Error ? lastErr.message : String(lastErr)}${context}`, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, failedStepIndex: stepIdx, trace, slowSteps, requiredStillEmpty: this.requiredStillEmpty });
+        return fail(`Recipe step failed (${step.action}${step.note ? ` — ${step.note}` : ""}): ${lastErr instanceof Error ? lastErr.message : String(lastErr)}${context}`, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, failedStepIndex: stepIdx, trace, slowSteps, requiredStillEmpty: this.requiredStillEmpty, pageShotDir: this.pageShotDir });
       }
       // Remember whether this step entered data, so the next advancing click waits for the
       // portal's autosave to commit (prevents blank-draft saves on PowerClerk).
@@ -640,7 +650,7 @@ export class RecipeAdapter extends BasePortalAdapter {
           // is the whole question. Capture it like any other failure.
           const driftContext = await this.captureFailureContext(step, stepIdx);
           closePrevStepTiming();
-          return fail(`${driftFail}${driftContext}`, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, failedStepIndex: stepIdx, trace, slowSteps, requiredStillEmpty: this.requiredStillEmpty });
+          return fail(`${driftFail}${driftContext}`, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, failedStepIndex: stepIdx, trace, slowSteps, requiredStillEmpty: this.requiredStillEmpty, pageShotDir: this.pageShotDir });
         }
       }
 
@@ -679,11 +689,11 @@ export class RecipeAdapter extends BasePortalAdapter {
         recordLink: capture.data?.recordLink || "",
         // What the LLM gap-fill added (and what it left blank for lack of real data) — same key
         // the hand-coded adapters surface, so the operator/UI sees a uniform report.
-        gapFill: this.gapFillReport, healedSteps: this.healedSteps, slowSteps, requiredStillEmpty: this.requiredStillEmpty,
+        gapFill: this.gapFillReport, healedSteps: this.healedSteps, slowSteps, requiredStillEmpty: this.requiredStillEmpty, pageShotDir: this.pageShotDir,
       });
     }
     closePrevStepTiming();
-    return ok(`Replayed ${executed} recorded step(s); stopped at review.`, { executed, skipped, finalSubmitClicked: false, gapFill: this.gapFillReport, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, slowSteps, requiredStillEmpty: this.requiredStillEmpty });
+    return ok(`Replayed ${executed} recorded step(s); stopped at review.`, { executed, skipped, finalSubmitClicked: false, gapFill: this.gapFillReport, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, slowSteps, requiredStillEmpty: this.requiredStillEmpty, pageShotDir: this.pageShotDir });
   }
 
   private resolveValue(step: RecipeStep): string {
@@ -1413,6 +1423,31 @@ export class RecipeAdapter extends BasePortalAdapter {
    * File inputs count: an empty one reads as value "", which is exactly the meter-photo
    * case that prompted this.
    */
+  /**
+   * One screenshot per completed wizard page, so a run can be reviewed by eye afterwards
+   * instead of only when it fails. Capped, so a recipe that loops cannot fill the disk.
+   */
+  private async capturePageShot(label: string): Promise<void> {
+    if (!this.page || typeof this.page.screenshot !== "function") return;
+    if (this.pageShotCount >= 40) return;
+    try {
+      if (!this.pageShotDir) {
+        const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+        const who = String(this.recipe?.utility || this.recipe?.ahj || "portal")
+          .toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 28);
+        this.pageShotDir = path.join(
+          process.env.REPLAY_RUN_DIR || path.join(process.cwd(), "data", "replay-runs"),
+          stamp + "-" + who,
+        );
+        await fs.promises.mkdir(this.pageShotDir, { recursive: true });
+      }
+      this.pageShotCount++;
+      const safe = String(label || "page").replace(/[^a-zA-Z0-9]+/g, "_").slice(0, 40) || "page";
+      const n = String(this.pageShotCount).padStart(3, "0");
+      await this.page.screenshot({ path: path.join(this.pageShotDir, "p" + n + "-" + safe + ".png"), fullPage: true });
+    } catch { /* best-effort: never fail a replay over a screenshot */ }
+  }
+
   private async emptyRequiredControls(): Promise<string[]> {
     if (!this.page || typeof this.page.evaluate !== "function") return [];
     return await this.page.evaluate(() => {

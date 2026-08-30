@@ -169,6 +169,9 @@ slowest steps (${slow.length} step(s) over 4s, ${(total / 1000).toFixed(0)}s of 
     console.log(`  ${String(s2.i).padStart(3)} ${s2.action.padEnd(7)} ${String(s2.ms / 1000).padStart(6)}s  ${s2.note}`);
   }
 }
+const shotDir = String(detailData.pageShotDir ?? "");
+if (shotDir) console.log(`
+page screenshots: ${shotDir}`);
 const blanks = (detailData.requiredStillEmpty as string[] | undefined) ?? [];
 if (blanks.length) {
   console.log(`
