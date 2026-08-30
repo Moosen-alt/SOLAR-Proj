@@ -89,12 +89,22 @@ const pclerkPage = (): string => `<!doctype html><html><body>
       }
       return h + '</select>';
     }
+    // The inverter pair is a CUSTOM COMBOBOX, as PowerClerk renders it: a readonly input
+    // whose "value" is the placeholder text, options in a [role=listbox] popper whose
+    // option mousedown is prevented (focus STAYS on the input — the real widgets do this,
+    // which is why an explicit blur is what commits), and commit on blur only. The FIRST
+    // invMfr commit is dropped to model a flaky autosave: only the post-add held-check
+    // re-run can land it after the wipe.
+    var invMfrDrops = 1;
+    function comboHtml(id, current) {
+      return '<input id="' + id + '" readonly role="combobox" value="' + (current || 'Please select...') + '" style="width:22em">';
+    }
     function renderSection() {
       render++;
       var h = '<div><label for="invMfr' + render + '">Manufacturer</label>'
-        + selectHtml('invMfr' + render, MAKES, server.invMfr)
+        + comboHtml('invMfr' + render, server.invMfr)
         + '<label for="invModel' + render + '">Model</label>'
-        + selectHtml('invModel' + render, server.invMfr ? MODELS[server.invMfr] || [] : [], server.invModel)
+        + comboHtml('invModel' + render, server.invModel)
         + '</div>';
       for (var i = 0; i < server.rows.length; i++) {
         var row = server.rows[i];
@@ -134,20 +144,53 @@ const pclerkPage = (): string => `<!doctype html><html><body>
       var val = el.tagName === 'SELECT'
         ? (el.selectedIndex > 0 ? el.options[el.selectedIndex].textContent : '')
         : el.value;
+      if (/^please select/i.test(String(val || ''))) val = '';
       var m = /^(qty|mfr|model|tilt|azi)\\d+_(\\d+)$/.exec(id);
       if (m) {
         var key = { qty: 'qty', mfr: 'mfr', model: 'model', tilt: 'tilt', azi: 'azi' }[m[1]];
         server.rows[Number(m[2])][key] = val;
         return;
       }
-      if (/^invMfr/.test(id)) server.invMfr = val;
-      else if (/^invModel/.test(id)) server.invModel = val;
+      if (/^invMfr/.test(id)) {
+        if (val && invMfrDrops > 0) { invMfrDrops--; return; } // the flaky autosave
+        server.invMfr = val;
+      } else if (/^invModel/.test(id)) server.invModel = val;
       else if (/^batt/.test(id)) server.batt = val;
+    }
+    function wireCombo(input) {
+      input.addEventListener('click', function () {
+        var old = document.getElementById('combo-popper');
+        if (old) old.remove();
+        var isMfr = /^invMfr/.test(input.id);
+        var opts = isMfr ? MAKES : (MODELS[(document.querySelector('[id^="invMfr"]') || {}).value] || []);
+        var box = document.createElement('div');
+        box.id = 'combo-popper';
+        box.setAttribute('role', 'listbox');
+        for (var i = 0; i < opts.length; i++) {
+          (function (text) {
+            var o = document.createElement('div');
+            o.setAttribute('role', 'option');
+            o.textContent = text;
+            // The real widgets prevent mousedown so the INPUT KEEPS FOCUS through the
+            // option click — no natural blur, no autosave, until something blurs it.
+            o.addEventListener('mousedown', function (e) { e.preventDefault(); });
+            o.addEventListener('click', function () { input.value = text; box.remove(); });
+            box.appendChild(o);
+          })(opts[i]);
+        }
+        input.insertAdjacentElement('afterend', box);
+      });
+      input.addEventListener('blur', function () {
+        var b = document.getElementById('combo-popper');
+        if (b) b.remove();
+        commit(input);
+      });
     }
     function wire() {
       var els = document.getElementById('section').querySelectorAll('input, select');
       for (var i = 0; i < els.length; i++) {
         (function (el) {
+          if (/^inv(Mfr|Model)/.test(el.id || '')) { wireCombo(el); return; }
           // Commit on BLUR only — PowerClerk's per-field autosave. A change that never
           // blurs is visible in the DOM and absent from the server.
           el.addEventListener('blur', function () { commit(el); });

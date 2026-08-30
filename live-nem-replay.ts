@@ -184,6 +184,16 @@ if (drift.length) {
 self-repairs applied (${drift.length}):`);
   for (const d of drift) console.log(`  - ${String(d).slice(0, 120)}`);
 }
+// What the LLM gap-fill did. Without this the two planPortalFields calls in the log are
+// unaccountable — a field the recipe skipped may have been rescued here, and the only
+// way to know was to eyeball the portal.
+const gf = detailData.gapFill as { filled?: string[]; skippedUngrounded?: string[]; reportedMissing?: string[] } | undefined;
+if (gf && ((gf.filled?.length ?? 0) + (gf.skippedUngrounded?.length ?? 0) + (gf.reportedMissing?.length ?? 0)) > 0) {
+  console.log(`\ngap-fill (LLM, after each page's recorded fills):`);
+  for (const f of gf.filled ?? []) console.log(`  + filled   ${String(f).slice(0, 100)}`);
+  for (const f of gf.skippedUngrounded ?? []) console.log(`  ~ no data  ${String(f).slice(0, 100)}`);
+  for (const f of gf.reportedMissing ?? []) console.log(`  ! missing  ${String(f).slice(0, 100)}`);
+}
 const skippedNotes = (detailData.skipped as string[] | undefined) ?? [];
 if (skippedNotes.length) {
   console.log(`\nskipped steps (${skippedNotes.length}) — these did NOTHING on the live portal:`);

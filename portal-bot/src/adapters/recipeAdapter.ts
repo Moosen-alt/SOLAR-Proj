@@ -106,6 +106,10 @@ export class RecipeAdapter extends BasePortalAdapter {
   private arrayBlockEnd = -1;
   /** The post-pass held-check runs exactly once, after the last array pass. */
   private arrayVerifyDone = false;
+  /** Select-step fields that reported SUCCESS this run — the held-check's candidates.
+   *  A field that never landed (ambiguous model left blank for the human) is not
+   *  "lost to a re-render" and must not be repaired or reported as such. */
+  private landedSelectFields = new Set<string>();
   /** Drift-precheck annotations ("this page barely matches the recipe") — surfaced
    *  in every result payload so a run that squeaked through via heals still tells
    *  the operator the portal likely changed. */
@@ -450,6 +454,9 @@ export class RecipeAdapter extends BasePortalAdapter {
           const done = await this.executeStep(step, pastReview);
           if (done) executed++;
           else skipped.push(step.note || step.action);
+          // The held-check distinguishes LANDED-THEN-LOST from NEVER-LANDED: only a
+          // select that reported success is a candidate for "a re-render took it back".
+          if (done && step.action === "select" && recordedStep?.field) this.landedSelectFields.add(String(recordedStep.field));
           trace.push({
             i: stepIdx, action: step.action, note: String(step.note ?? "").slice(0, 52),
             outcome: done ? "ok" : "SKIPPED", page: await currentPageLabel(),
@@ -701,6 +708,7 @@ export class RecipeAdapter extends BasePortalAdapter {
         if (this.arrayPass >= this.projectArrayCount() && !this.arrayVerifyDone) {
           this.arrayVerifyDone = true;
           await this.verifyAndRepairArrayRows();
+          await this.verifyEquipmentSelectsHeld();
         }
       }
     }
@@ -787,7 +795,10 @@ export class RecipeAdapter extends BasePortalAdapter {
       const els = Array.from(document.querySelectorAll("a, button, span, div")) as HTMLElement[];
       return els.filter((el) => {
         const t = (el.innerText || "").trim();
-        if (!/^delete\s+array$/i.test(t)) return false;
+        // Portal-agnostic repeater vocabulary, but "array" stays required: it is the
+        // domain's own word for a roof plane (the field family is array1*), while a bare
+        // "Remove"/"Delete Row" would count unrelated repeaters (contacts, attachments).
+        if (!/^(delete|remove)\s+(pv\s+)?array$/i.test(t)) return false;
         const r = el.getBoundingClientRect();
         return r.width > 0 && r.height > 0;
       }).length;
@@ -799,8 +810,10 @@ export class RecipeAdapter extends BasePortalAdapter {
     if (!this.page || typeof this.page.getByRole !== "function") return false;
     const before = await this.countArrayRows();
     const candidates = [
-      () => this.page.getByRole("button", { name: /add\s*array/i }),
-      () => this.page.getByRole("link", { name: /add\s*array/i }),
+      // Portal-agnostic adder wording, "array" required for the same reason the row
+      // marker requires it — a bare "Add Row" could belong to any repeater on the page.
+      () => this.page.getByRole("button", { name: /add\s*(another\s*)?(pv\s*)?array/i }),
+      () => this.page.getByRole("link", { name: /add\s*(another\s*)?(pv\s*)?array/i }),
       // PowerClerk labels the array-level duplicate simply "Clone". EXACT, because
       // "Clone System" beside it duplicates the WHOLE generating system.
       () => this.page.getByRole("button", { name: "Clone", exact: true }),
@@ -867,15 +880,18 @@ export class RecipeAdapter extends BasePortalAdapter {
         return r.width > 0 && r.height > 0;
       };
       const markers = (Array.from(document.querySelectorAll("a, button, span, div")) as HTMLElement[])
-        .filter((el) => /^delete\s+array$/i.test((el.innerText || "").trim()) && visible(el));
+        .filter((el) => /^(delete|remove)\s+(pv\s+)?array$/i.test((el.innerText || "").trim()) && visible(el));
       // Innermost only: a wrapper around the real control repeats its innerText.
       const inner = markers.filter((el) => !markers.some((o) => o !== el && el.contains(o)));
       const rows: Array<Array<{ label: string; tag: string; value: string; placeholder: boolean }>> = [];
       // Section-level controls bound the climb: with ONE rendered row, "contains exactly
       // one marker" is true of every ancestor up to the page, and the "row" would balloon
       // to the whole section — reading the INVERTER's Manufacturer for the module step.
+      // Generic adder/section vocabulary: "Add …" and Calculate-style controls live
+      // OUTSIDE any row on every repeater layout seen so far; a wider net here only
+      // stops the climb EARLIER, which is the safe direction.
       const sectionCtl = (Array.from(document.querySelectorAll("a, button")) as HTMLElement[])
-        .filter((el) => /add\s*(another\s*)?array|add\s*inverter|clone\s*system|^calculate$/i.test((el.innerText || "").trim()) && visible(el));
+        .filter((el) => /^add\s|clone\s*system|^(re)?calculate$/i.test((el.innerText || "").trim()) && visible(el));
       for (const marker of inner) {
         // The row container: the largest ancestor still containing exactly this one marker
         // and none of the section-level controls that live OUTSIDE any row.
@@ -903,6 +919,11 @@ export class RecipeAdapter extends BasePortalAdapter {
             placeholder = !value || /^(please\s+)?select\.{0,3}$/i.test(value) || /^--/.test(value);
           } else {
             value = (el as HTMLInputElement).value ?? "";
+            // A custom COMBOBOX renders as an input whose "value" is its placeholder
+            // text — PowerClerk's equipment make/model are exactly this shape, and
+            // treating "Please select..." as a filled value made this sweep blind to
+            // the very widgets it was written for.
+            placeholder = /^(please\s+)?select\.{0,3}$/i.test(value.trim());
           }
           return { label: label.replace(/\s+/g, " ").trim(), tag, value, placeholder };
         }));
@@ -960,7 +981,7 @@ export class RecipeAdapter extends BasePortalAdapter {
               return own && (own.includes(lbl) || lbl.includes(own));
             });
             if (!ctl) continue; // no such control in this row — nothing to verify against
-            const empty = ctl.tag === "select" ? ctl.placeholder : !String(ctl.value ?? "").trim();
+            const empty = ctl.placeholder || (ctl.tag !== "select" && !String(ctl.value ?? "").trim());
             if (empty) { out.push(i); break; }
             // A NUMBER CAN BE PRESENT AND WRONG. The live incident filed array 2's
             // qty/tilt into array 1 — non-empty, so an emptiness check blesses it. Fill
@@ -995,6 +1016,63 @@ export class RecipeAdapter extends BasePortalAdapter {
       }
     } finally {
       this.arrayPass = savedPass;
+    }
+  }
+
+  /**
+   * The NON-row equipment selects get the same held-check as the array rows. Measured
+   * live: the inverter Manufacturer (filled at its recorded step, BEFORE the array
+   * passes) sat uncommitted in the DOM, Add Array's server re-render wiped it, and the
+   * committed draft held "Please select..." — while every write had reported success.
+   * Pre-fix it was rescued BY ACCIDENT: a duplicate recorded step re-ran after the add;
+   * the foreign-step skip removed the accident, so this is the intentional replacement.
+   *
+   * Resolution is by the step's LABEL fallback only — the recorded css primary is a
+   * volatile per-render id ("#pcInputBase54") whose counter depends on how many controls
+   * rendered before it, so mid-run it can point at an arbitrary same-page control.
+   */
+  private async verifyEquipmentSelectsHeld(): Promise<void> {
+    const fields = ["inverterMake", "inverterModel"];
+    const steps: RecipeStep[] = [];
+    for (const f of fields) {
+      // The LAST recorded step for the field that carries a usable label — dup steps
+      // (a learner rescan) record the same control twice; any labeled one will do.
+      const s = [...this.recipe.steps].reverse().find((x) =>
+        x.field === f && (x.action === "select" || x.action === "fill") && this.stepLabel(x));
+      if (s) steps.push(s);
+    }
+    if (!steps.length) return;
+    const labelOnly = (s: RecipeStep): RecipeStep => {
+      const sel = s.selector ?? {};
+      const fb = sel.label ? sel : sel.fallbacks?.find((f2) => f2.label);
+      return { ...s, selector: { label: fb?.label ?? this.stepLabel(s), nth: fb?.nth, exact: fb?.exact } };
+    };
+    const displayed = async (s: RecipeStep): Promise<string | null> => {
+      const loc = await this.resolveLocator(labelOnly(s).selector).catch(() => null);
+      if (!loc || !(await loc.count?.().catch(() => 0))) return null;
+      return await loc.first().evaluate((el: Element) => {
+        const tag = (el.tagName || "").toLowerCase();
+        if (tag === "select") {
+          const sl = el as HTMLSelectElement;
+          return (sl.options[sl.selectedIndex]?.textContent || "").trim();
+        }
+        return ((el as HTMLInputElement).value ?? "").trim();
+      }).catch(() => null) as string | null;
+    };
+    const empty = (v: string | null) => v !== null && (!v || /^(please\s+)?select\.{0,3}$/i.test(v) || /^--/.test(v));
+    for (const s of steps) {
+      if (!this.resolveValue(s)) continue; // nothing to hold
+      if (!this.landedSelectFields.has(String(s.field))) continue; // never landed — already reported its own way
+      const before = await displayed(s);
+      if (!empty(before)) continue;
+      this.driftWarnings.push(`equipment select "${this.stepLabel(s)}" (${s.field}) lost its fill to a re-render — re-running it`);
+      await this.executeStep(labelOnly(s), false).catch(() => false);
+      const after = await displayed(s);
+      if (empty(after)) {
+        const msg = `${this.stepLabel(s)} (${s.field}): fill did not hold even after repair — REVIEW BEFORE SUBMIT`;
+        this.driftWarnings.push(msg);
+        if (!this.requiredStillEmpty.includes(msg)) this.requiredStillEmpty.push(msg);
+      }
     }
   }
 
@@ -1317,16 +1395,18 @@ export class RecipeAdapter extends BasePortalAdapter {
         // always blurred for exactly this reason (and so does the learner after a model
         // select), but a replayed select never did. The value showed in the DOM, every
         // check passed, and the next server re-render (a row-add, a Calculate) restored
-        // the placeholder — measured live on array 1's module manufacturer.
-        // FOCUS FIRST: selectOption never focuses the element, and blurring an unfocused
-        // element fires no blur event — the smoke proved a bare blur() commits nothing.
-        // NATIVE ONLY: a custom combobox commits through its option CLICK, and focus() is
-        // an OPENER on some of those widgets (comboboxFill uses it to open) — focusing a
-        // just-landed combobox re-opens its popper, which then shadows the NEXT widget's
-        // option scan and can swallow the Add Array click.
-        if (selected && isNativeSelect && typeof scoped?.blur === "function") {
+        // the placeholder — measured live on array 1's module manufacturer, and again on
+        // the inverter manufacturer (a COMBOBOX: its pick sat uncommitted, Add Array's
+        // re-render wiped it, and the committed draft held "Please select...").
+        // NATIVE: focus first — selectOption never focuses, and blurring an unfocused
+        // element fires no blur event (the smoke proved a bare blur() commits nothing).
+        // COMBOBOX: blur ONLY — the interaction already focused its input, and focus()
+        // is an OPENER on these widgets (comboboxFill uses it to open); re-focusing pops
+        // the list back open to shadow the NEXT widget's option scan. The learner has
+        // blurred after combobox model picks since the beginning ("saved model on blur").
+        if (selected && typeof scoped?.blur === "function") {
           try {
-            if (typeof scoped.focus === "function") await scoped.focus({ timeout: 2000 });
+            if (isNativeSelect && typeof scoped.focus === "function") await scoped.focus({ timeout: 2000 });
             await scoped.blur({ timeout: 2000 });
           } catch { /* commit is best-effort — never fail a landed select over it */ }
         }
