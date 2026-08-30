@@ -63,6 +63,10 @@ const ADVANCE_SETTLE_MS = 600;
 // Escape an id for a css selector on the NODE side (CSS.escape is browser-only).
 const CSS_ESCAPE = (v: string): string => v.replace(/([^a-zA-Z0-9_-])/g, "\$1");
 const IDENTITY_CHECKED = new Set(["fill", "select", "check", "uncheck"]);
+/** Steps that write project data. A missing control for one of these can legitimately mean
+ *  "this portal did not ask that for this project" — unlike a missing button, which means
+ *  the flow itself has drifted. */
+const DATA_ACTIONS = new Set(["fill", "select", "check", "uncheck"]);
 // Words too common in portal labels to prove two labels mean the same question.
 const IDENTITY_STOPWORDS = new Set([
   "this", "that", "your", "will", "with", "from", "please", "select", "there", "have",
@@ -400,6 +404,23 @@ export class RecipeAdapter extends BasePortalAdapter {
           if (!failureContext) failureContext = await this.captureFailureContext(step, stepIdx).catch(() => "");
           const isTimeout = err instanceof Error && /timeout|TimeoutError/i.test(err.message);
           if (!isTimeout || attempt >= RETRY_BACKOFF_MS.length) break;
+          // A RELOAD CANNOT CONJURE A CONTROL THE PAGE DOES NOT HAVE — and on PowerClerk it
+          // costs more than time: the reload returns the wizard to its FIRST page, throwing
+          // away where we are. Portals ask conditional questions ("Who will install this
+          // generation system?") that simply are not rendered for every project, and the
+          // recipe carries the shape of the project it was learned on.
+          //
+          // Measured: one such step burned 301 SECONDS of a 340-second run — three
+          // sleep/reload/settle cycles proving a control absent that a single DOM read
+          // settles. Only short-circuit on an explicit false; null means the page could not
+          // be read, which is not evidence the control is missing.
+          if (DATA_ACTIONS.has(step.action)) {
+            const want = String(step.note || step.selector?.label || step.selector?.name || "").trim();
+            if (want.length >= 3 && (await this.labelPresentOnPage(want)) === false) {
+              this.driftWarnings.push(`"${want.slice(0, 44)}" is not on this page — stopped retrying rather than reloading (a reload sends PowerClerk back to page 1)`);
+              break;
+            }
+          }
           await sleep(RETRY_BACKOFF_MS[attempt]);
           // Reload on timeout retries to recover from stale page state.
           await this.page.reload({ waitUntil: "networkidle", timeout: 15000 }).catch(() => null);
@@ -1222,6 +1243,30 @@ export class RecipeAdapter extends BasePortalAdapter {
   /** Are most of these recorded labels on the page right now? Used to spot an advance the
    *  recipe carries from another jurisdiction, where the next section is already showing.
    *  Reuses the drift precheck's own matcher so both agree on what "this section" means. */
+  /**
+   * Is this ONE recorded label on the page right now?
+   *   true  - found it
+   *   false - read the page and it is genuinely not there
+   *   null  - could NOT read the page, which is not evidence of anything
+   * The tri-state is the point. segmentIsOnThisPage collapses "absent" and "unreadable"
+   * into false, and a caller that skips work on false would then skip it hardest exactly
+   * when the page is unreadable. That conflation has produced three wrong diagnoses in
+   * this codebase already.
+   */
+  private async labelPresentOnPage(label: string): Promise<boolean | null> {
+    if (!this.page || typeof this.page.$$eval !== "function") return null;
+    let raws: Array<{ label?: string }>;
+    try { raws = (await this.page.$$eval(EXTRACT_SEL, extractFieldsInPage)) as Array<{ label?: string }>; }
+    catch { return null; }
+    if (!Array.isArray(raws) || !raws.length) return null; // nothing extracted at all: unreadable, not empty
+    const w = label.trim().toLowerCase();
+    return raws.some((r) => {
+      const l = (r.label || "").trim().toLowerCase();
+      if (!l) return false;
+      return l === w || (Math.min(l.length, w.length) >= 5 && (l.includes(w) || w.includes(l)));
+    });
+  }
+
   private async segmentIsOnThisPage(expected: string[]): Promise<boolean> {
     try {
       if (!this.page || typeof this.page.$$eval !== "function") return false;
