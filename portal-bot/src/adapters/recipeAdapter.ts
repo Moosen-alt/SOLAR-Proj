@@ -226,6 +226,11 @@ export class RecipeAdapter extends BasePortalAdapter {
     // Tracks whether the previous executed step entered data, so we can let the portal's
     // autosave commit before an advancing click (mirrors the auto-learn persist-settle).
     let prevWasInput = false;
+    // Did the steps that just ran WRITE to the page we are standing on? Distinct from
+    // prevWasInput, which the persist-settle block clears before the advance guard reads it.
+    // Without this, the "extra page" guard below cannot tell a genuinely-skippable duplicate
+    // advance from the page it has this instant finished filling.
+    let wroteToThisPage = false;
 
     // PAGE-DRIFT PRECHECK before the first segment (see precheckPageDrift).
     {
@@ -324,7 +329,17 @@ export class RecipeAdapter extends BasePortalAdapter {
       // a real overlap of the next segment's labels, not a single incidental match.
       if (step.action === "click" && /^advance\b/i.test(String(step.note ?? ""))) {
         const upcoming = this.expectedLabelsForSegment(stepIdx + 1);
-        if (upcoming.length >= 3 && await this.segmentIsOnThisPage(upcoming)) {
+        // NEVER skip an advance off a page we just filled. Label overlap alone cannot tell
+        // two DIFFERENT sections apart when a portal reuses one contact block — PowerClerk's
+        // "Preparer Information" and "Customer Information" pages carry byte-identical
+        // labels (Name, Last, Address, City, State, Zip, Email, Phone), so this guard saw
+        // the customer segment "already on the page", skipped the Next, and the homeowner
+        // steps overwrote the installer's details. Measured live: Charles Bitton of TML
+        // INTERNATIONAL replaced by the homeowner Randal Rowland, with the homeowner's
+        // site address, in the PREPARER block of a real interconnection application.
+        // Recorded steps carry section="" so there is no heading to disambiguate with —
+        // but "we just wrote to this page" is decisive on its own and needs no recording.
+        if (upcoming.length >= 3 && !wroteToThisPage && await this.segmentIsOnThisPage(upcoming)) {
           this.driftWarnings.push(`skipped an advance this jurisdiction does not need — the next section's fields (${upcoming.slice(0, 3).join(", ")}…) are already on this page`);
           continue;
         }
@@ -508,9 +523,10 @@ export class RecipeAdapter extends BasePortalAdapter {
       }
       // Remember whether this step entered data, so the next advancing click waits for the
       // portal's autosave to commit (prevents blank-draft saves on PowerClerk).
-      if (["fill", "select", "check", "uncheck", "press"].includes(step.action)) prevWasInput = true;
+      if (["fill", "select", "check", "uncheck", "press"].includes(step.action)) { prevWasInput = true; wroteToThisPage = true; }
       else if (step.action === "click" || step.action === "goto") {
         prevWasInput = false;
+        wroteToThisPage = false;
         // New page segment begins after an advance — precheck it before burning
         // per-step timeouts on a page the portal may have rebuilt.
         let driftFail = await this.precheckPageDrift(stepIdx + 1);
