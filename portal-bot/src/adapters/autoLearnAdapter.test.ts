@@ -12,6 +12,7 @@ process.on("exit", () => { try { fs.rmSync(debugTmpBase, { recursive: true, forc
 import type { ProjectRecord } from "../../../shared/src/types";
 import {
   AutoLearnAdapter,
+  UPLOAD_LABEL_PATTERNS,
   type ExtractedField,
   type LearnPlanRequest,
   type LearnPlanResponse,
@@ -1721,7 +1722,33 @@ async function testAcaContactSubstitutionDetected() {
   assert.equal(contactSteps.length, 0, `contact steps rolled back: ${JSON.stringify(contactSteps.map((c) => c.note))}`);
 }
 
+
+// UPLOAD LABEL -> DOCUMENT TYPE, using the portals' OWN wording.
+//
+// PacifiCorp asks for "Upload a photo of meter where system will be interconnected".
+// The pattern only matched meter-FIRST wording ("meter photo"), so this label matched
+// nothing — and because the slot is REQUIRED, resolveUpload fell through to the plan_set
+// substitute and would have filed the whole plan set into the meter-photo slot. Worse
+// than blank, and invisible in the run output. The operator caught it on the live portal.
+async function testUploadLabelPatterns(): Promise<void> {
+  const typeFor = (label: string): string | null => {
+    for (const { re, docType } of UPLOAD_LABEL_PATTERNS) if (re.test(label)) return docType;
+    return null;
+  };
+  // The exact live label, and the word order that already worked.
+  assert.equal(typeFor("Upload a photo of meter where system will be interconnected"), "meter_photo");
+  assert.equal(typeFor("Meter Photo"), "meter_photo");
+  assert.equal(typeFor("picture of the meter"), "meter_photo");
+  // Neighbouring slots must not be swallowed by the widened pattern.
+  assert.equal(typeFor("Please upload your one-line drawing"), "sld");
+  assert.equal(typeFor("Please upload your site plan"), "site_plan");
+  assert.equal(typeFor("Inverter Technical Specifications"), "inverter_spec");
+  // "meter" alone is not a photo request — e.g. a meter NUMBER field label.
+  assert.equal(typeFor("Meter Number"), null);
+}
+
 const tests: Array<[string, () => Promise<void>]> = [
+  ["UPLOAD LABELS: the portal's own wording maps to the right document type", testUploadLabelPatterns],
   ["ACA CONTACT SUBSTITUTION: a contact the portal did not attach is not reported as saved", testAcaContactSubstitutionDetected],
   ["ACA ATTACHMENT: Save commits the upload (not Continue), rows get Description + Type", testAcaAttachmentSavePass],
   ["UPLOAD DEDUPE: one attach through generic slots, labeled slots unaffected", testUploadDedupeGenericSlots],

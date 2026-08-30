@@ -89,6 +89,23 @@ saveProjectDocument(db, detail.project.id, {
   docType: "plan_set", filename: path.basename(planSet),
   contentType: "application/pdf", buffer: fs.readFileSync(planSet), source: "upload",
 });
+// THE METER PHOTO. Never in the plan set — it is taken at the house — so the split above
+// cannot produce it, and PacifiCorp's interconnection application asks for "a photo of
+// meter where system will be interconnected". The operator's archive folder already holds
+// one (Utility_Meter-NN.jpg) for most projects; without ingesting it the application
+// reaches review with a required upload blank.
+const meterPhoto = fs.readdirSync(dir)
+  .find((f) => /meter/i.test(f) && /\.(jpe?g|png|webp)$/i.test(f));
+if (meterPhoto) {
+  saveProjectDocument(db, detail.project.id, {
+    docType: "meter_photo", filename: meterPhoto,
+    contentType: /\.png$/i.test(meterPhoto) ? "image/png" : "image/jpeg",
+    buffer: fs.readFileSync(path.join(dir, meterPhoto)), source: "upload",
+  });
+  console.log(`meter    ${meterPhoto}`);
+} else {
+  console.log("meter    NO meter photo in the archive folder — the portal will ask for one");
+}
 // Split into the per-type documents the portal upload steps attach (sld, site_plan, specs).
 try {
   const pkg = await buildUtilityPackage(db, detail.project.id, "all");

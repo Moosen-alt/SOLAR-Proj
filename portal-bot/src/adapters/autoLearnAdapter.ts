@@ -304,7 +304,7 @@ const EQUIPMENT_MAKE_ALIASES: Record<string, string[]> = {
   vsun: ["VSUN Solar", "Vietnam Sunergy"],
 };
 
-const UPLOAD_LABEL_PATTERNS: Array<{ re: RegExp; docType: string }> = [
+export const UPLOAD_LABEL_PATTERNS: Array<{ re: RegExp; docType: string }> = [
   // Completed-application slots FIRST (before the generic doc patterns): even
   // portal-entry AHJs (some Accela configs) ask for the filled application/
   // checklist PDF as an attachment. The filled forms are overlaid into
@@ -326,7 +326,12 @@ const UPLOAD_LABEL_PATTERNS: Array<{ re: RegExp; docType: string }> = [
   { re: /structural|roof\s*framing|mounting|attachment\s*detail/i, docType: "structural" },
   { re: /inverter|micro[-\s]?inverter/i, docType: "inverter_spec" },
   { re: /module|panel\s*(spec|data\s*sheet)|cut\s*sheets?/i, docType: "module_spec" },
-  { re: /meter\s*(photo|picture|image|spec|reading|tag)/i, docType: "meter_photo" },
+  // Both word orders. PacifiCorp's label is "Upload a photo of meter where system will
+  // be interconnected" — photo BEFORE meter — which the meter-first pattern missed, so
+  // the control matched nothing and, being REQUIRED, fell through to the plan_set
+  // substitute: the entire plan set filed into the meter-photo slot, which is worse
+  // than leaving it empty.
+  { re: /meter\s*(photo|picture|image|spec|reading|tag)|(photo|picture|image)\s+of\s+(the\s+)?meter/i, docType: "meter_photo" },
   { re: /label|placard/i, docType: "labels" },
   { re: /utility\s*bill|electric(ity)?\s*bill/i, docType: "utility_bill" },
   { re: /plan\s*set|full\s*plan|construction\s*(plan|doc)|drawings?/i, docType: "plan_set" },
