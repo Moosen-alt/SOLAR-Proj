@@ -22,12 +22,13 @@ export interface Credential {
 
 export type LoginStatus =
   | "logged_in" // a form was filled and submitted, and the form is now gone
-  | "already_authenticated" // no login form present (persistent session still valid)
+  | "already_authenticated" // no login form present AND a positive authenticated signal (logout/session valid)
   | "no_credential" // a login form is present but no credential was supplied
   | "still_on_login" // filled + submitted, but the form is still showing (bad creds)
   | "mfa_captcha" // a challenge appeared — a human must finish
   | "no_username_field" // a password field exists but no username field could be found
   | "no_submit_control" // fields filled but no login button/link could be found
+  | "login_form_unrecognized" // no login form found, but NO proof of a session either — do not proceed as logged in
   | "error";
 
 export interface LoginResult {
@@ -49,7 +50,9 @@ const USERNAME_CANDIDATES: RecipeSelector[] = [
   { css: "#username" }, // Accela ACA AngularUI login (in an iframe — verified live)
   { css: "#txtLoginEmail" }, // Accela ACA (newer)
   { css: "#txtUserName, #txtUserId, #ctl00_PlaceHolderMain_LoginBox_txtUserId" }, // Accela (classic)
+  { css: 'input[id*="loginid" i], input[id*="txtlogin" i]' }, // eTRAKiT (#ucLogin_txtLoginId — verified live)
   { label: "Username" },
+  { label: "User Name" }, // eTRAKiT et al. label the field "User Name:"
   { label: "Email" },
   { label: "User ID" },
   { css: 'input[type="email"]' },
@@ -62,12 +65,20 @@ const PASSWORD_CANDIDATES: RecipeSelector[] = [
   { css: "#Password" }, // PowerClerk (verified live)
   { css: "#passwordRequired" }, // Accela ACA AngularUI login (in an iframe — verified live)
   { css: "#txtLoginPassword, #ctl00_PlaceHolderMain_LoginBox_txtPassword" }, // Accela
-  { css: 'input[type="password"]' }, // universal
+  { css: 'input[type="password"]' }, // universal — the common case
+  // Password fields that are NOT type=password: some ASP.NET/Telerik skins render the
+  // password box as type=text with a password-ish id/name/placeholder. These are safe to
+  // match by attribute; the table-layout case with NO password-ish attribute (eTRAKiT's
+  // RadTextBox) is handled by the adjacent-label fallback below, not here.
+  { css: 'input[id*="pass" i], input[name*="pass" i], input[id*="pwd" i], input[name*="pwd" i]' },
+  { label: "Password" },
+  { placeholder: "Password" },
 ];
 
 const SUBMIT_CANDIDATES: RecipeSelector[] = [
   { css: "#LoginButton" }, // PowerClerk (verified live — a <button> with NO type)
   { css: "#hlLogin, #btnLogin, #ctl00_PlaceHolderMain_LoginBox_btnLogin" }, // Accela
+  { css: 'input[id*="btnlogin" i], input[id*="loginbutton" i]' }, // eTRAKiT (#ucLogin_btnLogin — an <input type=button> with __doPostBack)
   { role: "button", name: "Log In" }, // PowerClerk button text (verified)
   { role: "button", name: "Sign In" },
   { role: "button", name: "Login" },
@@ -83,10 +94,66 @@ const REVEAL_TRIGGERS: RecipeSelector[] = [
   { role: "link", name: "Login" },
   { role: "link", name: "Log In" },
   { role: "link", name: "Sign In" },
+  { role: "link", name: "My Account" }, // some portals hide the form behind "My Account"
   { role: "button", name: "Login" },
   { role: "button", name: "Log In" },
-  { css: 'a[href*="login" i], a[id*="login" i]' },
+  { role: "button", name: "My Account" },
+  // href-based, but never a SIGN-OUT link (…/account/logout contains "account"): excluding
+  // logout/signout keeps a reveal-trigger from clicking the very control that proves we're
+  // already signed in.
+  { css: 'a[href*="login" i]:not([href*="logout" i]), a[id*="login" i]:not([id*="logout" i]), a[href*="signin" i], a[href*="account" i]:not([href*="logout" i]):not([href*="signout" i])' },
 ];
+
+// Positive proof of an authenticated session — a control that only appears once logged in.
+// Used to distinguish a genuinely valid persistent session from "we simply failed to find
+// the login form" (a portal that shows a public landing page). Never treats the mere
+// ABSENCE of a login form as success.
+const AUTHENTICATED_SIGNALS: RecipeSelector[] = [
+  { css: 'a[href*="logout" i], a[href*="signout" i], a[id*="logout" i], a[id*="signout" i], button[id*="logout" i]' },
+];
+async function authenticatedSignalPresent(page: Page): Promise<boolean> {
+  if (await firstVisible(page, AUTHENTICATED_SIGNALS)) return true;
+  // Text fallback: a visible "Log Out" / "Sign Out" control the css selectors above missed.
+  try {
+    const byText = page.getByText(/^\s*(log\s?out|sign\s?out)\s*$/i).first();
+    if ((await byText.count().catch(() => 0)) > 0 && (await byText.isVisible().catch(() => false))) return true;
+  } catch { /* ignore */ }
+  return false;
+}
+
+// Find a login input by an ADJACENT visual label — for table-layout ASP.NET portals whose
+// "User Name:" / "Password:" labels are laid out in a sibling cell and associated to the
+// input by neither `for=`, wrapping `<label>`, nor aria (so getByLabel cannot see them).
+// eTRAKiT's password box is a Telerik RadTextBox: type=text, id "RadTextBox2" with no
+// password token — the ONLY signal is the "Password:" text just before it. Generic: match a
+// short visible element whose text is the label, then take the nearest input AFTER it in
+// document order. Password-kind only accepts type=password or type=text (never a checkbox).
+async function findInputByAdjacentLabel(page: Page, kind: "user" | "pass"): Promise<Locator | null> {
+  try {
+    const id = await (page as unknown as { evaluate: (fn: (k: string) => string | null, arg: string) => Promise<string | null> }).evaluate((k: string) => {
+      const isVis = (el: Element) => { const r = (el as HTMLElement).getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+      const re = k === "pass" ? /^\s*password\s*:?\s*$/i : /^\s*(user\s*name|username|user\s*id|email|login)\s*:?\s*$/i;
+      const labels = (Array.from(document.querySelectorAll("td, th, label, span, div, b, strong, p")) as HTMLElement[])
+        .filter((e) => isVis(e) && re.test((e.textContent || "")) && (e.textContent || "").trim().length < 24);
+      const inputs = (Array.from(document.querySelectorAll("input")) as HTMLInputElement[]).filter((e) => {
+        const t = (e.getAttribute("type") || "text").toLowerCase();
+        if (!isVis(e)) return false;
+        return k === "pass" ? (t === "password" || t === "text") : (t === "text" || t === "email" || t === "");
+      });
+      if (!labels.length || !inputs.length) return null;
+      const all = Array.from(document.querySelectorAll("*"));
+      const order = new Map<Element, number>(); all.forEach((el, i) => order.set(el, i));
+      for (const lab of labels) {
+        const li = order.get(lab) ?? -1;
+        let best: HTMLInputElement | null = null; let bestDelta = Infinity;
+        for (const inp of inputs) { const ii = order.get(inp) ?? -1; const d = ii - li; if (d > 0 && d < bestDelta) { bestDelta = d; best = inp; } }
+        if (best && best.id) return best.id;
+      }
+      return null;
+    }, kind);
+    return id ? page.locator(`[id="${id}"]`).first() : null;
+  } catch { return null; }
+}
 
 // Build a Playwright locator from a portable selector descriptor (mirrors the adapters'
 // own locator()). Standalone so it has no adapter-state dependency.
@@ -132,8 +199,20 @@ async function firstVisible(page: Page, candidates: RecipeSelector[]): Promise<L
 }
 
 // Is a password field present? The reliable structural signal that we're on a login form.
+// Falls back to the adjacent-label scan for portals whose password box is not type=password
+// and carries no password-ish attribute (eTRAKiT's Telerik RadTextBox).
 export async function loginFormPresent(page: Page): Promise<boolean> {
-  return (await firstVisible(page, PASSWORD_CANDIDATES)) !== null;
+  if (await firstVisible(page, PASSWORD_CANDIDATES)) return true;
+  return (await findInputByAdjacentLabel(page, "pass")) !== null;
+}
+
+// Locate the username / password field, trying the prioritized candidates first and the
+// adjacent-label scan as a last resort. One place so loginFormPresent and performLogin agree.
+async function findUsernameField(page: Page): Promise<Locator | null> {
+  return (await firstVisible(page, USERNAME_CANDIDATES)) ?? (await findInputByAdjacentLabel(page, "user"));
+}
+async function findPasswordField(page: Page): Promise<Locator | null> {
+  return (await firstVisible(page, PASSWORD_CANDIDATES)) ?? (await findInputByAdjacentLabel(page, "pass"));
 }
 
 // If no login form is visible, click a "Log In" trigger to reveal one (Accela pattern).
@@ -162,7 +241,12 @@ export async function performLogin(
     await smartWait(page, 1500);
 
     // 1) Make sure a login form is actually showing (reveal it if the portal hides it).
+    //    But if there is NO form and we already see a signed-in signal, we're authenticated —
+    //    return now, before any reveal click could hit a logout/account control by mistake.
     let present = await loginFormPresent(page);
+    if (!present && await authenticatedSignalPresent(page)) {
+      return { ok: true, status: "already_authenticated", message: "Already signed in (a logout control is present) — using the existing session." };
+    }
     if (!present) present = await revealLoginForm(page);
 
     // 2) No form yet. Distinguish "session valid (redirected off the login page)" from
@@ -182,15 +266,26 @@ export async function performLogin(
       }
     }
 
-    // 3) Still no form. If we're STILL on a login URL, do NOT claim an authenticated
-    //    session — that's a detection miss (e.g. an iframed/odd login form), not success.
-    //    Only conclude "authenticated" when we're off any login URL.
+    // 3) Still no form. The mere ABSENCE of a login form is NOT proof of a session — many
+    //    portals show a public landing page (or a login box the heuristics didn't match).
+    //    Only conclude "already_authenticated" when a POSITIVE signal (a logout/sign-out
+    //    control) is present. Otherwise this is an unrecognized login page: return a distinct
+    //    status so the caller records/learns the portal instead of "learning" a page it is
+    //    not actually logged in to. (This turned a silent false-success on eTRAKiT-style
+    //    public landings into an honest failure.)
     if (!present) {
-      const url = (typeof page.url === "function" ? page.url() : "").toLowerCase();
-      if (/login|sign-?in|account\/(login|signin)|logon/.test(url)) {
-        return { ok: false, status: "still_on_login", message: "On a login page but the login form could not be located (it may be inside an iframe or use an unusual layout). Record this portal manually." };
+      if (await authenticatedSignalPresent(page)) {
+        return { ok: true, status: "already_authenticated", message: "No login form present and a signed-in signal was found — using the existing session." };
       }
-      return { ok: true, status: "already_authenticated", message: "No login form present — using the existing session." };
+      const url = (typeof page.url === "function" ? page.url() : "").toLowerCase();
+      const onLoginUrl = /login|sign-?in|account\/(login|signin)|logon/.test(url);
+      return {
+        ok: false,
+        status: onLoginUrl ? "still_on_login" : "login_form_unrecognized",
+        message: onLoginUrl
+          ? "On a login page but the login form could not be located (it may be inside an iframe or use an unusual layout). Record this portal manually."
+          : "Could not find a login form or any signed-in signal on this portal — it likely hides login behind an unrecognized control or a separate page. Record/learn this portal's login manually rather than proceeding as authenticated.",
+      };
     }
 
     // 3) A form is showing but we have nothing to fill it with.
@@ -204,15 +299,15 @@ export async function performLogin(
       return { ok: false, status: "mfa_captcha", message: `Login paused: ${preChallenge}. Complete verification in the browser, then retry.` };
     }
 
-    // 5) Fill username + password.
-    const userLoc = await firstVisible(page, USERNAME_CANDIDATES);
+    // 5) Fill username + password (candidate lists first, adjacent-label scan as fallback).
+    const userLoc = await findUsernameField(page);
     if (!userLoc) {
       return { ok: false, status: "no_username_field", message: "Found a password field but could not locate the username/email field — the portal layout is unusual. Record it manually." };
     }
     await waitForElement(userLoc);
     await userLoc.fill(credential.username);
 
-    const passLoc = await firstVisible(page, PASSWORD_CANDIDATES);
+    const passLoc = await findPasswordField(page);
     if (!passLoc) {
       return { ok: false, status: "no_username_field", message: "Password field disappeared after filling the username — record this portal manually." };
     }
