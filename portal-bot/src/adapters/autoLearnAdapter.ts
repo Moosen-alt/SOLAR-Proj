@@ -912,6 +912,9 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   private attachedKeys = new Set<string>();
   // Set once the APPLICANT contact has been filled with the contractor identity.
   private acaApplicantFilled = false;
+  /** Record-type categories already expanded this run, so a category that reveals nothing
+   *  useful is not retried. */
+  private readonly acaTypeCategoriesTried = new Set<string>();
   // Equipment fields whose select verification failed for EVERY candidate this
   // run — retrying them each rescan pass just burns waitForOptionReady caps.
   private equipmentFillFailed = new Set<string>();
@@ -2498,6 +2501,47 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       /residential\s*[-–—]?\s*(electrical|structural|mechanical|plumbing|building)/i.test(f.label || ""));
   }
 
+  /** Expand a record-type CATEGORY so its types become selectable. Ordered by where a
+   *  residential solar permit actually lives: an explicit solar/PV category if the AHJ has
+   *  one, then Residential (never "Non Residential"), then Trades — where many counties file
+   *  electrical. Clicks at most one category per call; the caller re-extracts and either the
+   *  radios appear (record-type pass takes over) or the next call tries the next category. */
+  private async accelaExpandRecordTypeCategory(steps: RecipeStep[]): Promise<boolean> {
+    const page = this.page;
+    if (!page) return false;
+    const prefs: RegExp[] = [/solar|photovoltaic|\bpv\b/i, /^residential$/i, /^trades$/i, /^building$/i];
+    let labels: string[] = [];
+    try {
+      labels = await page.evaluate(() => {
+        const vis = (el: Element) => { const r = (el as HTMLElement).getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+        return (Array.from(document.querySelectorAll("a")) as HTMLElement[])
+          .filter(vis)
+          .map((el) => (el.textContent || "").replace(/\s+/g, " ").trim())
+          .filter((t) => t && t.length < 40);
+      });
+    } catch { return false; }
+    for (const pref of prefs) {
+      const label = labels.find((l) => pref.test(l) && !/^non[\s-]?residential$/i.test(l) && !this.acaTypeCategoriesTried.has(l));
+      if (!label) continue;
+      this.acaTypeCategoriesTried.add(label);
+      // Exact-text link; ACA renders these as <a> inside the category tree. A category that
+      // refuses the click is not fatal — the next call tries the next preference.
+      const loc = page.getByRole("link", { name: label, exact: true }).first();
+      const ok = await loc.click({ timeout: 8000 }).then(() => true).catch(() => false);
+      if (!ok) continue;
+      await page.waitForLoadState?.("networkidle", { timeout: 12000 }).catch(() => null);
+      await page.waitForTimeout?.(1200).catch(() => null);
+      steps.push({
+        action: "click",
+        phase: "fill",
+        selector: { role: "link", name: label, exact: true },
+        note: `accela: expand record-type category "${label}"`,
+      });
+      return true;
+    }
+    return false;
+  }
+
   // Record-type selection: prefer a solar/PV-specific type when the AHJ offers one,
   // else the discipline's residential type (electrical vs structural — same mapping the
   // hand-coded adapter live-verified: county rows file electrical, city structural).
@@ -2557,6 +2601,10 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     const ENTRY_PASS_MAX = 2;
     let entryPasses = 0;
     let acaRecordTypeHandled = false;
+    // Record-type CATEGORY expansions used this run (ACA CapType tree). Two is enough for
+    // Residential then Trades; more means the tree is not the blocker.
+    const ACA_TYPE_EXPANSION_MAX = 2;
+    let acaTypeExpansions = 0;
     let acaContactDialogPasses = 0;
     let acaAttachmentSaves = 0;
     let reachedReview = false;
@@ -2872,6 +2920,18 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             this.debug?.event({ type: "aca_contacts_continue", advanced: Boolean(afterFp) && afterFp !== beforeFp });
             continue;
           }
+        }
+        // Record-type CATEGORY expansion. ACA's CapType page can list collapsible category
+        // links ("Residential", "Trades", "Non Residential"…) and only reveals the actual
+        // record-type radios once a category is expanded. Until then the page has no radios,
+        // so the record-type pass below cannot fire and the planner clicks a category blind —
+        // live on Anne Arundel that cost an 8s timeout on "Residential" and ended the run.
+        // Expanding is a disclosure click: it selects nothing and starts nothing.
+        if (/CapType\.aspx/i.test(url) && !acaRecordTypeHandled && !this.acaRecordTypePageDetected(fields) && acaTypeExpansions < ACA_TYPE_EXPANSION_MAX) {
+          acaTypeExpansions++;
+          const expanded = await this.accelaExpandRecordTypeCategory(steps);
+          this.debug?.event({ type: "aca_record_type_expand", page: pageCount, expanded });
+          if (expanded) continue;
         }
         // Record-type selection (the page right after the address row is chosen).
         if (!acaRecordTypeHandled && this.acaRecordTypePageDetected(fields)) {
