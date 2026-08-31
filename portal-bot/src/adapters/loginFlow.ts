@@ -108,14 +108,19 @@ const REVEAL_TRIGGERS: RecipeSelector[] = [
 // Used to distinguish a genuinely valid persistent session from "we simply failed to find
 // the login form" (a portal that shows a public landing page). Never treats the mere
 // ABSENCE of a login form as success.
+// Only a SIGN-OUT control is used as the positive signal: it appears when logged in and
+// essentially never on a public login landing. (Deliberately NOT "My Account"/"Dashboard" —
+// those also appear as login prompts on public pages, which is the false-positive we are
+// avoiding.) Covered variants: logout / log out / logoff / log off / signout / sign out /
+// sign off, by href, id, and visible text.
 const AUTHENTICATED_SIGNALS: RecipeSelector[] = [
-  { css: 'a[href*="logout" i], a[href*="signout" i], a[id*="logout" i], a[id*="signout" i], button[id*="logout" i]' },
+  { css: 'a[href*="logout" i], a[href*="log-out" i], a[href*="logoff" i], a[href*="signout" i], a[href*="sign-out" i], a[href*="signoff" i], a[id*="logout" i], a[id*="signout" i], button[id*="logout" i], button[id*="signout" i]' },
 ];
 async function authenticatedSignalPresent(page: Page): Promise<boolean> {
   if (await firstVisible(page, AUTHENTICATED_SIGNALS)) return true;
-  // Text fallback: a visible "Log Out" / "Sign Out" control the css selectors above missed.
+  // Text fallback: a visible sign-out control the css selectors above missed.
   try {
-    const byText = page.getByText(/^\s*(log\s?out|sign\s?out)\s*$/i).first();
+    const byText = page.getByText(/^\s*(log\s?-?\s?out|sign\s?-?\s?out|log\s?off|sign\s?off)\s*$/i).first();
     if ((await byText.count().catch(() => 0)) > 0 && (await byText.isVisible().catch(() => false))) return true;
   } catch { /* ignore */ }
   return false;
