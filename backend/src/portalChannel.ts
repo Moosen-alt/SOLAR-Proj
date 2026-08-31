@@ -252,6 +252,8 @@ export function disciplineConflictsWithTrack(
 const UTILITY_PLATFORM_HOSTS = [
   // Interconnection platforms.
   "powerclerk.com",
+  // ComEd's Intellio Connect (West Monroe) lives on the utility's own subdomain —
+  // comed.com below covers it; other Intellio tenants get their utility domain added here.
   // Utility-owned domains whose solar/net-metering pages keep landing on AHJ rows.
   "portlandgeneral.com",
   "pacificpower.net",
@@ -266,6 +268,14 @@ const UTILITY_PLATFORM_HOSTS = [
   "pse.com",
   "avistautilities.com",
   "eweb.org",
+  // Illinois (seeded 2026-08-30): interconnect.comed.com is the Intellio Connect
+  // tenant; ameren.com covers Ameren marketing pages (their PowerClerk tenant is
+  // already caught by powerclerk.com above).
+  "comed.com",
+  "ameren.com",
+  "exeloncorp.com",
+  // Utah (next market): Rocky Mountain Power is PacifiCorp's brand there.
+  "rockymountainpower.net",
 ];
 export function isUtilityPlatformUrl(url: string | null | undefined): boolean {
   const u = (url || "").toLowerCase();

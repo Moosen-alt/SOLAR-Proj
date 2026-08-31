@@ -59,6 +59,16 @@ for (const [url, shouldBlock, why] of [
   ["https://pacificorpnetmetering.powerclerk.com/MvcAccount/Login", true, "PowerClerk platform"],
   ["https://portlandgeneral.com/resources-for-solar-installers", true, "the utility's OWN domain (found on a live AHJ row)"],
   ["https://www.pacificpower.net/savings-energy-choices/net-metering.html", true, "the utility's own domain, www subdomain"],
+  // Illinois utilities (KB-seeded 2026-08-30) — the guard must know them BEFORE the
+  // first IL learn runs, not after the first wrong-portal incident.
+  ["https://interconnect.comed.com/", true, "ComEd's Intellio Connect interconnection platform"],
+  ["https://amerenillinoisinterconnect.powerclerk.com/MvcAccount/Login", true, "Ameren Illinois PowerClerk tenant"],
+  ["https://www.ameren.com/illinois/company/environment-and-sustainability/renewables", true, "Ameren's own domain (marketing page shape)"],
+  // Utah (next market): PacifiCorp trades as Rocky Mountain Power there.
+  ["https://www.rockymountainpower.net/savings-energy-choices/customer-generation.html", true, "Rocky Mountain Power = PacifiCorp's Utah brand"],
+  // Chicago's permit portal must NOT be blocked — it is the AHJ entry for the whole city.
+  ["https://ipi.cityofchicago.org", false, "Chicago Express Permit Program is an AHJ portal"],
+  ["https://aca-prod.accela.com/Evanston/default.aspx", false, "Evanston Accela is an AHJ portal"],
   // Blocking an AHJ permit portal would break permit staging outright — the more dangerous
   // direction of this change.
   ["https://aca-oregon.accela.com/oregon/", false, "Oregon ePermitting is an AHJ portal"],

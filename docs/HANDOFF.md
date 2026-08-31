@@ -152,6 +152,26 @@ Still open, in order:
 
 ## Open issues / next work (priority order)
 
+**Illinois market entry — researched + KB-seeded 2026-08-30, waiting on logins.**
+Deep research (7 agents, verifier-checked) is written up in `docs/IL_ONBOARDING.md`;
+41 KB rows seeded through the sanctioned import helpers (all `seeded`, sourceLabel
+"IL deep research (web, 2026-08-30)"; source of record: workflow journal
+`wf_cf106f03-b45/journal.jsonl` in the session dir). Verified ready for the bot:
+operator short names resolve through `findKnowledgeForLearn` ("Ameren"→Ameren Illinois
+PowerClerk URL, "ComEd"→interconnect.comed.com, "Chicago"→ipi.cityofchicago.org, 12/12
+AHJ spot-checks; Ameren@MO correctly no-match), and `UTILITY_PLATFORM_HOSTS` now knows
+comed.com/ameren.com/exeloncorp.com (+ rockymountainpower.net for Utah) so a permit
+track can never launch an IL utility portal (`portalUrlScope.test.ts` extended).
+Headline: **Ameren Illinois = PowerClerk** (our proven platform — expect same-day
+learn+replay once logins + one real IL project exist); **ComEd = Intellio Connect,
+NOT PowerClerk** (new platform, first-encounter learn; simpler Level 1 form, no
+drawings). When logins arrive: store credentials per client for both portal URLs, do a
+read-only landing-shape look first, Ameren first, then ComEd. Licensing gates before
+any REAL submission: ICC DG Installer cert, municipal electrical license/registration
+(no statewide IL electrical license), Illinois Shines AV/Designee. Ameren pays the $50
+Level 1 fee by MAILED CHECK (no online payment — operator step), uses DocuSign
+(human-capture), 10-digit account number digits-only.
+
 **Multi-array: FIXED 2026-08-30, needs a live confirmation.** Replay now repeats the
 recorded array block once per roof plane, adding a row and verifying the page gained one
 before filling it. Two guards make it safe: the add must be CONFIRMED (each PV Array
