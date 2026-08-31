@@ -20,6 +20,19 @@ const INTERVAL_HOURS = Number(process.env.BACKUP_INTERVAL_HOURS || 24);
 // the live tree but leaves the mirrored copy — which is what you want from a backup.
 const DOCS_MIRROR = path.join(BACKUP_DIR, "documents");
 
+// PORTAL LOGIN SESSIONS. `portal-profiles/` holds a Chrome profile per (client, portal) —
+// cookies and localStorage — and those directories ARE the live portal logins. They are not
+// in the database and no key protects them, so a restore that covered only the DB and the
+// documents came back with every portal session gone: the same failure mode the document
+// mirror above exists to prevent, one layer down.
+//
+// Only session state is mirrored (Cookies, Local/Session Storage, Login Data, Preferences).
+// A Chrome profile is mostly cache — hundreds of MB of it — and copying that would make
+// every backup enormous while restoring nothing of value.
+const PROFILES_DIR = path.resolve(process.cwd(), process.env.PORTAL_PROFILES_DIR || "portal-profiles");
+const PROFILES_MIRROR = path.join(BACKUP_DIR, "portal-profiles");
+const SESSION_FILE_RE = /(^|[\\/])(Cookies|Cookies-journal|Login Data|Login Data-journal|Web Data|Preferences|Local State|Secure Preferences)$|[\\/](Local Storage|Session Storage|IndexedDB)[\\/]/i;
+
 /** One snapshot file on disk. */
 export interface BackupInfo {
   file: string;
@@ -35,6 +48,10 @@ export interface BackupRunInfo extends BackupInfo {
   documentsMirrored: number;
   /** Document rows whose file is already gone from the live tree — data loss, if > 0. */
   documentsMissingOnDisk: number;
+  /** Portal session files refreshed into the mirror by THIS run. */
+  portalSessionFilesCopied: number;
+  /** Portal session files now held in the mirror — 0 means NO portal logins are backed up. */
+  portalSessionFilesMirrored: number;
 }
 
 // Write one snapshot now. Returns the created file path.
@@ -45,6 +62,7 @@ export function runBackup(db: AppDb): BackupRunInfo {
   db.backupTo(file);
   pruneOldBackups();
   const docs = mirrorDocuments();
+  const profiles = mirrorPortalProfiles();
   const stat = fs.statSync(file);
   return {
     file,
@@ -53,6 +71,8 @@ export function runBackup(db: AppDb): BackupRunInfo {
     documentsCopied: docs.copied,
     documentsMirrored: docs.total,
     documentsMissingOnDisk: countMissingDocumentFiles(db),
+    portalSessionFilesCopied: profiles.copied,
+    portalSessionFilesMirrored: profiles.total,
   };
 }
 
@@ -79,6 +99,35 @@ function pruneOldBackups(): void {
       /* best effort */
     }
   }
+}
+
+// Mirror portal session state. Unlike documents this is NOT append-only — a session file
+// changes in place every time a login refreshes — so a changed file is re-copied (size or
+// mtime differing), and the newest copy wins.
+function mirrorPortalProfiles(): { copied: number; total: number } {
+  if (!fs.existsSync(PROFILES_DIR)) return { copied: 0, total: 0 };
+  let copied = 0;
+  let total = 0;
+  for (const rel of walkFiles(PROFILES_DIR)) {
+    if (!SESSION_FILE_RE.test(rel)) continue;
+    total++;
+    const src = path.join(PROFILES_DIR, rel);
+    const dest = path.join(PROFILES_MIRROR, rel);
+    try {
+      const srcStat = fs.statSync(src);
+      const destStat = fs.existsSync(dest) ? fs.statSync(dest) : null;
+      if (destStat && destStat.size === srcStat.size && destStat.mtimeMs >= srcStat.mtimeMs) continue;
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      const tmp = `${dest}.partial`;
+      fs.copyFileSync(src, tmp);
+      fs.renameSync(tmp, dest);
+      copied++;
+    } catch {
+      // A profile in use by a live run can refuse a copy (locked SQLite files); the next
+      // backup catches it. Never fail a backup over one session file.
+    }
+  }
+  return { copied, total };
 }
 
 // Copy any document file not already mirrored (matched on relative path + byte size).

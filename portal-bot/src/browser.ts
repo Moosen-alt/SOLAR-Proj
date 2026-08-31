@@ -20,6 +20,107 @@ export interface OpenedPortal {
   // Present only in the non-persistent (browser.launch) mode. In persistent-context
   // mode the context IS the browser, so this is undefined.
   browser?: Browser;
+  /** Releases this run's hold on the persistent profile. Set only in persistent mode;
+   *  closePortal calls it. Idempotent. */
+  releaseProfile?: () => void;
+}
+
+// ── One run at a time per portal profile ────────────────────────────────────────────────
+// A Chromium persistent profile is a single-holder OS lock, and the profile path is keyed
+// by (client, portal) — never by run. While jobs drained serially that could not collide;
+// with JOB_CONCURRENCY > 1 two runs for the same client and portal would race, and the
+// loser dies at launch with an error that blames a dead run and tells the operator to kill
+// Chrome — advice that, mid-flight, would kill a live submission.
+//
+// So runs QUEUE on the profile instead of failing: different portals still run in parallel
+// (which is where the concurrency actually is — a team files across many AHJs at once),
+// while two runs on the SAME login serialise, which is what the portal expects anyway.
+//
+// In-process only, deliberately: it protects the supported topology (one server process,
+// see docs/SCALE_DEPLOYMENT.md). A second process needs a real cross-process lock, and the
+// launch error below remains the backstop for that case.
+// How long a run waits for a busy profile before giving up. A live portal run routinely
+// takes minutes (LLM planning + page loads), so this is generous; PORTAL_PROFILE_WAIT_MS
+// tunes it. Timing out is the safe outcome — the job is retried, nothing collides.
+const PROFILE_WAIT_MS = Math.max(1000, Number(process.env.PORTAL_PROFILE_WAIT_MS ?? 15 * 60 * 1000));
+
+const profileQueues = new Map<string, Promise<void>>();
+
+/** Wait for the profile to be free, then hold it until the returned release() is called.
+ *  Waits are bounded: a leaked hold must not wedge a queue forever. */
+async function acquireProfile(dir: string, waitMs: number): Promise<() => void> {
+  const key = dir.toLowerCase();
+  const prior = profileQueues.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    let done = false;
+    release = () => { if (!done) { done = true; resolve(); } };
+  });
+  // Queue behind whoever holds it now; the chain is what serialises runs.
+  profileQueues.set(key, prior.then(() => held).catch(() => held));
+  let timer: NodeJS.Timeout | undefined;
+  const waited = await Promise.race([
+    prior.then(() => "free" as const).catch(() => "free" as const),
+    new Promise<"timeout">((resolve) => { timer = setTimeout(() => resolve("timeout"), waitMs); }),
+  ]);
+  if (timer) clearTimeout(timer);
+  if (waited === "timeout") {
+    // Do NOT launch anyway — that is the collision this exists to prevent. Release our own
+    // slot so the queue keeps moving, and let the caller retry the job.
+    release();
+    throw new Error(
+      `Timed out after ${Math.round(waitMs / 1000)}s waiting for the portal profile to free up: ${dir}\n`
+      + "  Another run for this client and portal is still going. This run was not started; retry it once that finishes.",
+    );
+  }
+  return release;
+}
+
+// ── Orphaned-browser reaper ─────────────────────────────────────────────────────────────
+// When a run is killed (deploy, OOM, Ctrl-C, crash) the Node process dies but ITS BROWSER
+// DOES NOT. The orphan keeps holding the profile's OS lock, and every future run for that
+// client+portal fails to launch until a human finds and kills it. That happened twice in one
+// session of live testing, and on an unattended server nobody is watching to do it.
+//
+// Only safe to call at STARTUP, which is exactly when it is needed: no run of ours is in
+// flight, so any browser still holding one of our profiles is by definition an orphan.
+//
+// NOTE THE PROCESS NAME. Playwright's headless Chromium is "chrome-headless-shell", not
+// "chrome" — a reaper matching only chrome.exe silently misses every headless orphan (which
+// is how the first one here was missed).
+export async function reapOrphanedProfileBrowsers(profilesRoot: string): Promise<number> {
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  const run = promisify(execFile);
+  const needle = profilesRoot.replace(/[\\/]+$/, "");
+  if (!needle) return 0;
+  const pids: string[] = [];
+  try {
+    if (process.platform === "win32") {
+      // CIM gives the full command line, which is where the profile path lives.
+      const { stdout } = await run("powershell", [
+        "-NoProfile", "-Command",
+        "Get-CimInstance Win32_Process | Where-Object { $_.Name -like 'chrome*' -and $_.CommandLine -like '*" +
+          needle.replace(/'/g, "''").replace(/\\/g, "\\") + "*' } | ForEach-Object { $_.ProcessId }",
+      ], { timeout: 20000 });
+      pids.push(...stdout.split(/\s+/).filter((t) => /^\d+$/.test(t)));
+    } else {
+      const { stdout } = await run("ps", ["-eo", "pid=,args="], { timeout: 20000 });
+      for (const line of stdout.split("\n")) {
+        if (!line.includes(needle)) continue;
+        if (!/chrome|chromium|headless_shell|chrome-headless-shell/i.test(line)) continue;
+        const pid = line.trim().split(/\s+/)[0];
+        if (/^\d+$/.test(pid)) pids.push(pid);
+      }
+    }
+  } catch {
+    return 0; // listing failed — never let cleanup break startup
+  }
+  let killed = 0;
+  for (const pid of pids) {
+    try { process.kill(Number(pid), "SIGKILL"); killed += 1; } catch { /* already gone */ }
+  }
+  return killed;
 }
 
 // Chromium flags for stability in server/container environments.
@@ -103,6 +204,8 @@ export async function openPortal(opts: {
     // Deliberately NOT auto-killing: a library that hunts down and terminates browser
     // processes could take out a run that legitimately owns the profile. Name the problem
     // and the remedy; let the caller decide.
+    // Queue behind any run already holding this profile (see acquireProfile).
+    const releaseProfile = await acquireProfile(opts.userDataDir, PROFILE_WAIT_MS);
     const context = await chromium.launchPersistentContext(opts.userDataDir, {
       headless,
       slowMo,
@@ -111,6 +214,7 @@ export async function openPortal(opts: {
       ignoreHTTPSErrors,
       proxy: proxyOpts,
     }).catch((err: unknown) => {
+      releaseProfile(); // never hold the profile for a launch that failed
       const msg = err instanceof Error ? err.message : String(err);
       if (/existing browser session|already in use|ProcessSingleton/i.test(msg)) {
         throw new Error(
@@ -125,7 +229,7 @@ export async function openPortal(opts: {
     await context.addInitScript({ content: NAME_SHIM });
     const page = context.pages()[0] ?? (await context.newPage());
     // Persistent context owns its own browser process; closing the context closes it.
-    return { page, context };
+    return { page, context, releaseProfile };
   }
 
   const browser = await chromium.launch({ headless, slowMo, args: CHROMIUM_ARGS, proxy: proxyOpts });
@@ -157,4 +261,7 @@ export async function closePortal(opened: OpenedPortal | null | undefined): Prom
   } catch {
     // ignore — best-effort teardown
   }
+  // Hand the profile to whoever is queued behind us. LAST, and outside the try/catch above,
+  // so a teardown error can never strand the queue.
+  try { opened.releaseProfile?.(); } catch { /* release is idempotent */ }
 }

@@ -138,6 +138,15 @@ export abstract class BasePortalAdapter implements PortalAdapter {
     const { closePortal } = await import("./browser");
     await closePortal(opened);
   }
+
+  /** Tear the browser down from OUTSIDE the run, to break a run that has hung.
+   *  Whatever Playwright call is stuck then rejects and the run unwinds through its normal
+   *  error path — which is the only way to end a hang, since the stuck call will never
+   *  return on its own. Same teardown as close(), so the profile is released too; safe to
+   *  call when nothing is open. */
+  async forceClose(): Promise<void> {
+    try { await this.close(); } catch { /* the point is to break the hang, not to succeed cleanly */ }
+  }
 }
 
 export const HUMAN_REVIEW_MESSAGE =

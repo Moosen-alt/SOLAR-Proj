@@ -488,6 +488,28 @@ export async function learnPortal(input: {
   // A browser left open by a prior guided-manual stage holds this profile's lock — close it
   // so the recorder can launch.
   await closePriorStagingBrowser(input.userDataDir);
+
+  // HARD WALL-CLOCK CEILING. A learn could previously hang forever: measured live on
+  // 2026-08-31, an Accela run went silent mid-wizard for 13+ minutes, still holding a
+  // browser and a portal session, with no timeout anywhere to end it. The job-level
+  // watchdog does not help — the in-flight guard exists precisely to stop it reclaiming a
+  // long portal run, so a hung run is indistinguishable from a slow one and simply sits
+  // there. On a workstation you notice; on an unattended server it is a wedged worker and,
+  // now that profiles queue, everything behind it for that portal waits too.
+  //
+  // Force-closing the browser is what actually breaks the hang: whatever Playwright call is
+  // stuck rejects, and the run unwinds through its normal error path into a failed job with
+  // a real message. Generous by default — a legitimate LLM-driven learn takes minutes.
+  const runCeilingMs = Math.max(60_000, Number(process.env.PORTAL_RUN_MAX_MS ?? 25 * 60_000));
+  let ceiling: NodeJS.Timeout | undefined = setTimeout(() => {
+    try {
+      adapter.debug?.event({ type: "run_ceiling_exceeded", ms: runCeilingMs });
+    } catch { /* diagnostics are best-effort */ }
+    // Close the context out from under the stuck call; the run fails rather than hanging.
+    void adapter.forceClose?.();
+  }, runCeilingMs);
+  const clearCeiling = () => { if (ceiling) { clearTimeout(ceiling); ceiling = undefined; } };
+
   try {
     tmpStatePath = resolveStorageStatePath(input.encryptedStorageStatePath);
     const loginResult = await adapter.login({
@@ -548,6 +570,9 @@ export async function learnPortal(input: {
       debugDir: adapter.debug?.dir,
     };
   } finally {
+    // Disarm the ceiling first: a run that finished must never have its browser closed out
+    // from under a human who is being handed it at review.
+    clearCeiling();
     // Keep a reached-review headed browser open for the human (tracked for cleanup); every other
     // path (login fail, headless/server, error, never-reached-review) closes to release the lock.
     if (leaveOpen && input.userDataDir) {

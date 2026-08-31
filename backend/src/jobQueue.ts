@@ -444,23 +444,58 @@ function escalateJobFailure(db: AppDb, jobType: string, projectId: string | null
   } catch { /* escalation is best-effort */ }
 }
 
-// Bounded serial drain used by the worker tick and the enqueue kick. The flag
-// keeps drains strictly serial (a 30s tick can't stack onto a long drain);
-// jobs stay one-at-a-time within a drain. Direct processNextJob callers keep
-// today's semantics — the atomic claim makes any overlap a no-op, not a dupe.
+// Bounded drain used by the worker tick and the enqueue kick. The flag keeps drains from
+// stacking (a 30s tick can't pile onto a long drain).
+//
+// CONCURRENCY. This was a strictly serial loop: one job at a time, however much hardware
+// the box had, which capped a team deployment at one portal run at a time regardless of
+// RAM. It now runs up to JOB_CONCURRENCY jobs at once, keeping the pool topped up rather
+// than draining in barriered batches.
+//
+// Default 1 — identical to the old behaviour. Concurrency is OPT-IN because it arms
+// hazards serial execution masked (chiefly the per-(client, portal) Chromium profile lock,
+// which is why openPortal now queues on the profile). A single-operator workstation should
+// leave it at 1; a team server sets it to what its RAM affords, roughly 400MB per
+// concurrent browser. See docs/SCALE_DEPLOYMENT.md.
 let drainBusy = false;
 const MAX_JOBS_PER_TICK = Math.max(1, Number(process.env.MAX_JOBS_PER_TICK ?? 5));
+const JOB_CONCURRENCY = Math.max(1, Number(process.env.JOB_CONCURRENCY ?? 1));
 
 export async function drainPendingJobs(db: AppDb): Promise<number> {
   if (drainBusy) return 0;
   drainBusy = true;
-  let processed = 0;
+  let started = 0;
+  let completed = 0;
+  let queueEmpty = false;
+  const running = new Set<Promise<void>>();
+  const startOne = (): void => {
+    started += 1;
+    const p = (async () => {
+      // The claim inside processNextJob is fully synchronous (better-sqlite3 is sync and
+      // there is no await before the row is marked 'running'), so parallel callers each
+      // take a DIFFERENT job — they cannot interleave mid-claim.
+      const ran = await processNextJob(db);
+      if (ran) completed += 1; else queueEmpty = true;
+    })();
+    running.add(p);
+    void p.catch(() => null).finally(() => { running.delete(p); });
+  };
   try {
-    while (processed < MAX_JOBS_PER_TICK && (await processNextJob(db))) processed += 1;
+    while (!queueEmpty && started < MAX_JOBS_PER_TICK) {
+      while (!queueEmpty && started < MAX_JOBS_PER_TICK && running.size < JOB_CONCURRENCY) {
+        startOne();
+        // Yield so a just-started call that found an empty queue can set queueEmpty before
+        // we start another; at worst we start one extra call that finds nothing and returns.
+        await Promise.resolve();
+      }
+      if (!running.size) break;
+      await Promise.race([...running]).catch(() => null);
+    }
+    await Promise.all([...running].map((p) => p.catch(() => null)));
   } finally {
     drainBusy = false;
   }
-  return processed;
+  return completed;
 }
 
 // Process one pending job. Returns true if a job was found and processed.

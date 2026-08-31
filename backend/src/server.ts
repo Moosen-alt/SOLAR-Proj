@@ -2612,6 +2612,18 @@ const server = app.listen(port, () => {
   if (!AUTH_ENABLED) {
     logger.warn("security", "AUTH_ENABLED is off and the server listens on all interfaces — anyone who can reach this port has full access to customer data and the approve/credential endpoints. Set AUTH_ENABLED=true (with ADMIN_EMAIL/ADMIN_PASSWORD) before exposing it beyond localhost.");
   }
+  // Clear browsers orphaned by a previous crash/deploy BEFORE the worker starts claiming
+  // jobs. An orphan still holds its profile's OS lock, so without this the first run for
+  // that client+portal fails to launch and stays failing until a human kills the process.
+  // Safe here and only here: nothing of ours is in flight at startup.
+  void (async () => {
+    try {
+      const { reapOrphanedProfileBrowsers } = await import("../../portal-bot/src/browser");
+      const profileBase = process.env.PORTAL_PROFILES_DIR || path.join(process.cwd(), "portal-profiles");
+      const killed = await reapOrphanedProfileBrowsers(profileBase);
+      if (killed > 0) logger.warn("portal", `Reaped ${killed} orphaned portal browser(s) left by a previous run — their profiles are free again.`);
+    } catch { /* cleanup is best-effort; never block startup */ }
+  })();
   startJobWorker(db);
   startBackupScheduler(db);
   startMonitorScheduler(db);
