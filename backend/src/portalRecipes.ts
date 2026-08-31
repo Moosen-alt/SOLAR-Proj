@@ -292,7 +292,7 @@ export function finishPortalRecipe(db: AppDb, recipeId: string, finishedBy?: str
 export function promoteRecordingIfEligible(
   db: AppDb,
   recipeId: string,
-  opts: { finishedBy: string; via: string; projectId?: string | null },
+  opts: { finishedBy: string; via: string; projectId?: string | null; /** Promote DESPITE recorded required-blank findings. Requires a written reason — see below. */ overrideBlankFields?: string },
 ): PortalRecipe | null {
   const recipe = getPortalRecipe(db, recipeId);
   if (recipe.status !== "recording" || recipe.steps.length === 0) return null;
@@ -300,10 +300,33 @@ export function promoteRecordingIfEligible(
     (st) => st.action === "stopForReview" || (st as { isFinalSubmit?: boolean }).isFinalSubmit === true,
   );
   if (!reachedReview) return null;
+
+  // REACHING REVIEW IS NOT THE SAME AS FILLING THE FORM. The learn's required-field sweep
+  // writes "Required field(s) left blank/unselected" into the notes precisely so a recipe
+  // that walked the whole wizard while leaving required fields empty cannot be trusted.
+  // That happened on the first Ameren Illinois learn — the sweep named Email, Street, Name,
+  // Company, Address and Docket Number, and the recipe was promoted anyway on the strength
+  // of a summary row that looked populated. Replay then faithfully reproduced an incomplete
+  // application, reporting "no failures" because every recorded step did succeed.
+  //
+  // So the blank finding now BLOCKS promotion. Overriding is still possible, because a
+  // sweep can be wrong, but it takes a written reason that lands in the notes and the audit
+  // log next to the fields it overrode.
+  const blankFinding = /required field\(s\) left blank/i.test(recipe.notes || "");
+  if (blankFinding && !opts.overrideBlankFields) {
+    throw new HttpError(409,
+      "This recipe recorded REQUIRED FIELDS LEFT BLANK, so it is not trustworthy yet: "
+      + `${(recipe.notes.match(/Required field\(s\) left blank[^.]*/i) || [""])[0].slice(0, 300)}. `
+      + "Fill those fields (usually by adding the missing project/client data and re-learning), "
+      + "or promote with an explicit written reason if the sweep is wrong.");
+  }
   const finished = finishPortalRecipe(db, recipeId, opts.finishedBy);
   try {
     addAuditLog(db, opts.projectId ?? null, "human", "operator", "portal_recipe.finished", {
       recipeId, via: opts.via, profileKey: recipe.profileKey,
+      // An override is the thing a later reader most needs to see, so it is stored
+      // explicitly rather than buried in the free-text `via`.
+      ...(opts.overrideBlankFields ? { overrodeBlankFieldFinding: opts.overrideBlankFields } : {}),
     });
   } catch { /* audit is best-effort */ }
   return finished;
