@@ -8,6 +8,7 @@ import { selectWithFallback } from "../comboboxFill";
 import { detectChallengeFrame, frameSelectorFor, readbackMatches, redactStatusText, safeAction, sleep, smartWait, waitForElement, waitForInteractiveControls } from "../safeAction";
 import { scrapeReviewScreen as scrapeReviewScreenShared } from "../reviewScreenScraper";
 import { performLogin } from "./loginFlow";
+import { enterApplicationFlow } from "./applicationEntry";
 import { parseStreetName, parseStreetNumber } from "../addressParse";
 import { portalUploadCapBytes } from "../uploadCap";
 import { LearnRunDebug } from "../learnDebug";
@@ -2540,6 +2541,11 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     // after a re-entry (capped), record-type selection happens once.
     let acaReentries = 0;
     let acaDisclaimerPasses = 0;
+    // Deterministic "start an application" passes used this run (see b9). Two is enough for
+    // a dashboard → apply hop plus one recovery; more would mean the portal keeps bouncing
+    // us back, which the stuck/cycle guards should handle instead.
+    const ENTRY_PASS_MAX = 2;
+    let entryPasses = 0;
     let acaRecordTypeHandled = false;
     let acaContactDialogPasses = 0;
     let acaAttachmentSaves = 0;
@@ -2863,6 +2869,34 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           const advanced = await this.accelaRecordTypePass(_project, fields, steps);
           this.debug?.event({ type: "aca_record_type_pass", page: pageCount, advanced });
           if (advanced) continue;
+        }
+      }
+
+      // b9) DETERMINISTIC APPLICATION ENTRY (portal-agnostic). On a logged-in DASHBOARD the
+      //     only useful move is "start a new application", and every vendor words that
+      //     control differently ("Create an Application", a bare "Apply" tile, "Apply for a
+      //     permit", "Apply Online", "Apply Here"). That is a lookup, not a judgement call,
+      //     so do it here instead of paying a planner call to guess — and the finder refuses
+      //     controls that touch the operator's REAL filings (Resume/Pay/Search/Renew), which
+      //     a planner staring at a dashboard can mistake for the way in.
+      //     Strictly bounded: dashboards only (never a form or review page — isDashboard is
+      //     false for both), and at most ENTRY_PASS_MAX times per run, so a portal whose
+      //     dashboard reappears can't loop here.
+      if (isDashboard && entryPasses < ENTRY_PASS_MAX && this.page) {
+        entryPasses++;
+        const entered = await enterApplicationFlow(this.page).catch(() => null);
+        this.debug?.event({ type: "application_entry_pass", page: pageCount, ok: Boolean(entered?.ok), label: entered?.label ?? null });
+        if (entered?.ok) {
+          // Record it the way replay will need it: click the control by its visible text.
+          steps.push({
+            action: "click",
+            phase: "open",
+            selector: { text: entered.label, fallbacks: [{ role: "link", name: entered.label }, { role: "button", name: entered.label }] },
+            note: `application entry: ${entered.label}`,
+          });
+          await this.page.waitForLoadState?.("networkidle", { timeout: 15000 }).catch(() => null);
+          await this.page.waitForTimeout?.(1200).catch(() => null);
+          continue;
         }
       }
 
