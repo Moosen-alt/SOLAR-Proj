@@ -591,7 +591,23 @@ export function extractFieldsInPage(els: Element[]): RawField[] {
     // button-type fields for extraction. Use "link" so Playwright's getByRole locator
     // resolves correctly; explicit [role="button"] overrides this.
     const role = el.getAttribute("role") || (tag === "a" ? "link" : fieldType === "button" ? "button" : undefined);
-    const text = fieldType === "button" ? (el.textContent || "").trim() || undefined : undefined;
+    // AN ICON BUTTON'S TEXT IS NOT ITS NAME. Icon fonts render by LIGATURE, so a Material
+    // icon button's textContent is literally "add" / "search" / "filter_list" while the name
+    // a person (or a screen reader) sees lives in aria-label. Recording the ligature makes a
+    // useless selector: ComEd's interconnection portal is icon-only, and its first learn
+    // died clicking getByRole('button', { name: 'add' }) even though the planner had
+    // correctly read "New Application Button. This will open a popup drawer." from the
+    // aria-label. Prefer the aria-label whenever the visible text is a bare ligature-shaped
+    // token, or the element is marked as an icon.
+    const iconish = (e: Element): boolean => {
+      const cls = `${e.className ?? ""} ${(e.querySelector("i, span, svg")?.className ?? "")}`;
+      return typeof cls === "string" && /material-(icons|symbols)|mat-icon|glyphicon|\bfa-|\bicon\b/i.test(cls);
+    };
+    const rawText = (el.textContent || "").trim();
+    const ariaName = el.getAttribute("aria-label")?.trim() || "";
+    const ligatureShaped = /^[a-z][a-z0-9_]{1,24}$/.test(rawText); // one lowercase token, no spaces
+    const buttonText = ariaName && (ligatureShaped || !rawText || iconish(el)) ? ariaName : rawText;
+    const text = fieldType === "button" ? buttonText || undefined : undefined;
     // Capture href for anchors so a hidden/menu-nested nav link can be reached by direct
     // navigation when it can't be clicked.
     const href = tag === "a" ? (el.getAttribute("href") || undefined) : undefined;
