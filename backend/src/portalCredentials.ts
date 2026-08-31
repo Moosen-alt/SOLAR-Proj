@@ -75,7 +75,7 @@ export function updatePortalCredential(
   db: AppDb,
   clientId: string,
   credId: string,
-  payload: { portalType?: string; portalUrl?: string; username?: string; password?: string; notes?: string },
+  payload: { portalType?: string; portalUrl?: string; username?: string; password?: string; notes?: string; securityAnswers?: string },
 ): PortalCredentialView {
   const row = db.get<Row>("SELECT * FROM portal_credentials WHERE id = ? AND client_id = ?", [credId, clientId]);
   if (!row) throw new HttpError(404, "Portal credential not found.");
@@ -90,8 +90,20 @@ export function updatePortalCredential(
   // require both to rotate.
   if (s(payload.password)) {
     const username = s(payload.username).trim() || s(row.username_reference);
+    // Carry the existing security answers across a password rotation unless new ones are
+    // supplied — re-encrypting with only {username, password} would silently discard them,
+    // and the portal still challenges for them on a new device.
+    let securityAnswers = s(payload.securityAnswers).trim();
+    if (!securityAnswers && s(row.encrypted_secret)) {
+      try {
+        const prev = decryptStorageState(s(row.encrypted_secret)) as { securityAnswers?: string };
+        securityAnswers = s(prev?.securityAnswers).trim();
+      } catch { /* unreadable previous secret — nothing to carry */ }
+    }
+    const secret: { username: string; password: string; securityAnswers?: string } = { username, password: s(payload.password) };
+    if (securityAnswers) secret.securityAnswers = securityAnswers;
     sets.push("encrypted_secret = ?");
-    params.push(encryptStorageState({ username, password: s(payload.password) }));
+    params.push(encryptStorageState(secret));
   }
   if (sets.length === 0) return mapView(row);
   sets.push("updated_at = ?");

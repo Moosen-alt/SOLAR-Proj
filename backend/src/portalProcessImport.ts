@@ -28,7 +28,7 @@
 
 import type { AppDb } from "./db";
 import { readXlsx, type SheetData } from "./xlsxRead";
-import { createPortalCredential } from "./portalCredentials";
+import { createPortalCredential, updatePortalCredential, listPortalCredentials } from "./portalCredentials";
 import { importSeededAhjKnowledge } from "./knowledgeBase";
 
 // Sheets that are not portal lists: valuation calculators, contractor-license
@@ -37,7 +37,26 @@ const SKIP_SHEET_RE = /valuation|^ccbs|secretary contacts|\(old\)|^old |do not u
 
 // The operator's known login identities. A password-bearing row with no explicit
 // user almost always uses the primary; we default to it and RECORD that we did.
-const KNOWN_USERNAMES = [/[\w.+-]+@[\w.+-]+\.[a-z]{2,}/i, /InfinitySolar\w*/i];
+//
+// ORDER MATTERS AND THE FIRST EMAIL ON THE ROW IS USUALLY THE WRONG ONE. These rows mix the
+// operator's login with the JURISDICTION'S contact address ("permits@dmgov.org",
+// "lboard@gloucester-ma.gov"), and a live sweep found credentials stored under
+// building@gainesvillefl.gov and bldg@sterlingheights.gov — the AHJ's own inbox, not ours.
+// Logging in with those fails, and repeated failures lock real accounts. So: prefer an
+// address on the OPERATOR'S OWN domain, then a non-government address, and treat a .gov/.us
+// address as a contact, never a login.
+const OPERATOR_EMAIL = /[\w.+-]+@infinitysolarusa\.com/i;
+const ANY_EMAIL = /[\w.+-]+@[\w.+-]+\.[a-z]{2,}/gi;
+const GOV_EMAIL = /@[\w.-]*\.(gov|us)$/i;
+function pickUsername(blob: string): string {
+  const operator = blob.match(OPERATOR_EMAIL);
+  if (operator) return operator[0];
+  const emails = [...new Set(blob.match(ANY_EMAIL) ?? [])];
+  const nonGov = emails.find((e) => !GOV_EMAIL.test(e));
+  if (nonGov) return nonGov;
+  const handle = blob.match(/InfinitySolar\w*/i);
+  return handle ? handle[0] : "";
+}
 
 // The operator's password family. This is deliberately narrow — a broad "any
 // token with a digit and !" would sweep up addresses and license numbers. Add a
@@ -224,8 +243,7 @@ export function extractPortalRows(sheet: SheetData): ExtractedPortalRow[] {
 
     // Username: an explicit email/known handle in the row; else, when a password is
     // present, default to the primary operator login and mark it.
-    let username = "";
-    for (const re of KNOWN_USERNAMES) { const hit = firstMatch(blob, re); if (hit) { username = hit; break; } }
+    let username = pickUsername(blob);
     let usernameDefaulted = false;
     if (!username && password) { username = "permit@infinitysolarusa.com"; usernameDefaulted = true; }
 
@@ -275,6 +293,7 @@ export interface PortalImportSummary {
   knowledgeSeeded: number;
   knowledgeSkippedVerified: number;
   mfaPortals: number;
+  credentialsUpdated?: number;
   credentialErrors?: number;
   lastCredentialError?: string;
   samples: string[];
@@ -293,6 +312,15 @@ export function importPortalProcessesWorkbook(
   const sheets = readXlsx(buffer);
   const sourceLabel = opts.sourceLabel || "Permit Processes workbook";
   const out: PortalImportSummary[] = [];
+  // Re-importing an operator's updated sheet must REFRESH the stored logins, not stack a
+  // second copy beside them — and a corrected username has to land on the row the resolver
+  // already finds. Key by portal URL, which is what getDecryptedCredentialByUrl matches on.
+  const existingByUrl = new Map<string, string>();
+  if (!opts.dryRun) {
+    for (const c of listPortalCredentials(db, opts.clientId)) {
+      if (c.portalUrl) existingByUrl.set(c.portalUrl.toLowerCase(), c.id);
+    }
+  }
   for (const sheet of sheets) {
     if (SKIP_SHEET_RE.test(sheet.name)) continue;
     const state = stateFromSheetName(sheet.name);
@@ -311,15 +339,23 @@ export function importPortalProcessesWorkbook(
       if (r.portalUrl && r.password && r.username) {
         let stored = true;
         if (!opts.dryRun) {
+          const payload = {
+            portalType: `${state} · ${r.platform}`.slice(0, 120),
+            portalUrl: r.portalUrl,
+            username: r.username,
+            password: r.password,
+            securityAnswers: r.securityAnswers || undefined,
+            notes: `Imported from ${sourceLabel} (${state}). ${r.mfaEmailCode ? "Login emails a one-time code (human-capture at login)." : ""}`.trim(),
+          };
           try {
-            createPortalCredential(db, opts.clientId, {
-              portalType: `${state} · ${r.platform}`.slice(0, 120),
-              portalUrl: r.portalUrl,
-              username: r.username,
-              password: r.password,
-              securityAnswers: r.securityAnswers || undefined,
-              notes: `Imported from ${sourceLabel} (${state}). ${r.mfaEmailCode ? "Login emails a one-time code (human-capture at login)." : ""}`.trim(),
-            });
+            const existingId = existingByUrl.get(r.portalUrl.toLowerCase());
+            if (existingId) {
+              updatePortalCredential(db, opts.clientId, existingId, payload);
+              summary.credentialsUpdated = (summary.credentialsUpdated || 0) + 1;
+            } else {
+              const created = createPortalCredential(db, opts.clientId, payload);
+              existingByUrl.set(r.portalUrl.toLowerCase(), created.id);
+            }
           } catch (e) { stored = false; summary.credentialErrors = (summary.credentialErrors || 0) + 1; summary.lastCredentialError = (e as Error).message; }
         }
         if (stored) {

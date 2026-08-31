@@ -86,6 +86,36 @@ run("Accela tenant code comes from the first path segment", () => {
   assert.equal(r.platform, "Accela Citizen Access");
 });
 
+run("the AHJ's own contact address is NEVER stored as our login", () => {
+  // A live sweep found credentials saved under building@gainesvillefl.gov and
+  // bldg@sterlingheights.gov — the jurisdiction's inbox, which fails to log in and, retried,
+  // locks a real account. The operator's own domain must win no matter the cell order.
+  const r = extractPortalRows(sheet("FL PROCESS", [[
+    "GAINESVILLE https://www4.citizenserve.com/Portal/Login",
+    "Contact: building@gainesvillefl.gov",
+    "USR NM: permit@infinitysolarusa.com PSWRD: Walmart5!",
+  ]]))[0];
+  assert.equal(r.username, "permit@infinitysolarusa.com");
+});
+
+run("a row whose ONLY email is the jurisdiction's leaves the username to the operator default", () => {
+  const r = extractPortalRows(sheet("MI PROCESS", [[
+    "STERLING HEIGHTS https://bsaonline.com/Account/LogOn?uid=272 bldg@sterlingheights.gov Walmart5!",
+  ]]))[0];
+  assert.notEqual(r.username, "bldg@sterlingheights.gov");
+  assert.equal(r.username, "permit@infinitysolarusa.com");
+  assert.equal(r.usernameDefaulted, true, "and it must be MARKED as a defaulted guess");
+});
+
+run("a non-gov operator alias (licensing@) is kept as-is", () => {
+  const r = extractPortalRows(sheet("FL PROCESS", [[
+    "HIALEAH https://hialeahfl-energovpub.tylerhost.net/apps/selfservice",
+    "licensing@infinitysolarusa.com Walmart5!",
+  ]]))[0];
+  assert.equal(r.username, "licensing@infinitysolarusa.com");
+  assert.equal(r.usernameDefaulted, false);
+});
+
 run("password with no explicit username defaults to the operator login, and is marked", () => {
   const r = extractPortalRows(sheet("OR PROCESS", [[
     "https://app.govoutreach.com/daytoncityor/public/home", "Walmart5!",

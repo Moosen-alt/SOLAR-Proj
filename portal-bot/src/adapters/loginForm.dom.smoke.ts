@@ -46,7 +46,94 @@ const SIGNED_IN = `<!doctype html><html><body>
   <a href="/account/logout" id="lnkLogout">Log Out</a><h1>My Applications</h1>
 </body></html>`;
 
-const routes: Record<string, string> = { "/etrakit": ETRAKIT_LOGIN, "/public": PUBLIC_LANDING, "/signed-in": SIGNED_IN };
+// (4) IDENTIFIER-FIRST ("two-step") login — OpenGov's portal and most SSO front doors ask
+// for the email alone, then reveal the password after Continue. There is no password field
+// on arrival, so the engine used to stop one click short of the actual login.
+const TWO_STEP = `<!doctype html><html><body>
+  <h1>Sign in</h1>
+  <div id="step1"><input type="email" id="email" placeholder="Email"><button id="cont">Continue</button></div>
+  <div id="step2" style="display:none"><input type="password" id="pw"><button id="go">Sign In</button></div>
+  <script>
+    document.getElementById('cont').onclick = function(){
+      if(!document.getElementById('email').value) return;
+      document.getElementById('step1').style.display='none';
+      document.getElementById('step2').style.display='block';
+    };
+    document.getElementById('go').onclick = function(){
+      if(document.getElementById('pw').value) document.body.innerHTML='<a href="/logout">Log Out</a><h1>Dashboard</h1>';
+    };
+  </script>
+</body></html>`;
+
+// (5) A login whose submit control is an <a href="javascript:…"> with the text "Submit" —
+// Citizenserve's shape (verified live). No "login" token anywhere on the control, so the
+// engine reported no_submit_control and stopped. The form still submits on Enter.
+const JS_SUBMIT = `<!doctype html><html><body>
+  <input type="text" id="u" name="username"><input type="password" id="p" name="password">
+  <a href="javascript:void(0)" id="sub">Submit</a>
+  <script>
+    function done(){ if(document.getElementById('p').value) document.body.innerHTML='<a href="/logout">Log Out</a><h1>Home</h1>'; }
+    document.getElementById('sub').onclick = done;
+    document.getElementById('p').addEventListener('keydown', function(e){ if(e.key==='Enter') done(); });
+  </script>
+</body></html>`;
+
+// (6) A login form painted LATE (Momentum's Liferay portlet renders after networkidle).
+// The engine used to conclude "no form" on a non-login-looking URL and give up.
+const LATE_FORM = `<!doctype html><html><body>
+  <h1>City Portal Home</h1><div id="slot"></div>
+  <script>
+    setTimeout(function(){
+      document.getElementById('slot').innerHTML =
+        '<input type="text" id="lu" name="username"><input type="password" id="lp" name="password">' +
+        '<button id="lb">LOG IN</button>';
+      document.getElementById('lb').onclick = function(){
+        if(document.getElementById('lp').value) document.body.innerHTML='<a href="/logout">Log Out</a><h1>My Dashboard</h1>';
+      };
+    }, 2500);
+  </script>
+</body></html>`;
+
+// (7) RESPONSIVE DUPLICATE MARKUP — the same login shipped twice, mobile copy hidden and
+// FIRST in the DOM. Testing only the first match of each selector found the hidden copy and
+// declared the portal formless (measured live on Momentum: two password inputs, one
+// visible, engine reported none).
+const HIDDEN_DUPLICATE = `<!doctype html><html><body>
+  <div id="mobile" style="display:none">
+    <input type="text" id="mu" name="username"><input type="password" id="mp" name="password">
+    <button id="mb">LOG IN</button>
+  </div>
+  <div id="desktop">
+    <input type="text" id="du" name="username"><input type="password" id="dp" name="password">
+    <button id="db" onclick="if(document.getElementById('dp').value) document.body.innerHTML='<a href=\\'/logout\\'>Log Out</a><h1>Home</h1>'">LOG IN</button>
+  </div>
+</body></html>`;
+
+// (8) SSO HAND-OFF BEHIND A STALE LINK. The header "Login" link is still on the login page
+// it navigates to, so a reveal that always picks the first trigger re-clicks it forever and
+// never reaches the hand-off button below (measured live on OpenGov).
+const SSO_HANDOFF = `<!doctype html><html><body>
+  <a href="#" id="login-desktop">Login</a>
+  <button id="sso">Login using Secure Portal</button>
+  <div id="slot"></div>
+  <script>
+    document.getElementById('login-desktop').onclick = function(){ return false; }; // dead link
+    document.getElementById('sso').onclick = function(){
+      document.getElementById('slot').innerHTML =
+        '<input type="text" id="su" name="username"><input type="password" id="sp" name="password">' +
+        '<button id="sb">Sign In</button>';
+      document.getElementById('sb').onclick = function(){
+        if(document.getElementById('sp').value) document.body.innerHTML='<a href="/logout">Log Out</a><h1>Portal</h1>';
+      };
+    };
+  </script>
+</body></html>`;
+
+const routes: Record<string, string> = {
+  "/etrakit": ETRAKIT_LOGIN, "/public": PUBLIC_LANDING, "/signed-in": SIGNED_IN,
+  "/two-step": TWO_STEP, "/js-submit": JS_SUBMIT, "/late-form": LATE_FORM,
+  "/hidden-duplicate": HIDDEN_DUPLICATE, "/sso-handoff": SSO_HANDOFF,
+};
 const server = http.createServer((q, r) => { r.writeHead(200, { "Content-Type": "text/html" }); r.end(routes[q.url || ""] ?? "<html><body>?</body></html>"); });
 await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
 const port = (server.address() as { port: number }).port;
@@ -87,6 +174,46 @@ await check("missing credential on a real form → no_credential (never a false 
   await page.goto(`http://127.0.0.1:${port}/etrakit`);
   const res = await performLogin(page, undefined);
   assert.equal(res.status, "no_credential", `got ${res.status}: ${res.message}`);
+});
+
+await check("identifier-first (two-step) login completes both steps", async () => {
+  await page.goto(`http://127.0.0.1:${port}/two-step`);
+  const res = await performLogin(page, cred);
+  assert.equal(res.status, "logged_in", `got ${res.status}: ${res.message}`);
+});
+
+await check("two-step login with no credential → no_credential, and nothing is typed", async () => {
+  await page.goto(`http://127.0.0.1:${port}/two-step`);
+  const res = await performLogin(page, undefined);
+  assert.equal(res.status, "no_credential", `got ${res.status}: ${res.message}`);
+  assert.equal(await page.locator("#email").inputValue(), "", "must not type into a portal with no credential");
+});
+
+await check("a javascript: 'Submit' link is used (Citizenserve shape)", async () => {
+  await page.goto(`http://127.0.0.1:${port}/js-submit`);
+  const res = await performLogin(page, cred);
+  assert.equal(res.status, "logged_in", `got ${res.status}: ${res.message}`);
+});
+
+await check("a LATE-rendered login form is waited for, not declared missing", async () => {
+  await page.goto(`http://127.0.0.1:${port}/late-form`);
+  const res = await performLogin(page, cred);
+  assert.equal(res.status, "logged_in", `got ${res.status}: ${res.message}`);
+});
+
+await check("a HIDDEN duplicate login (responsive markup) does not mask the visible one", async () => {
+  await page.goto(`http://127.0.0.1:${port}/hidden-duplicate`);
+  assert.equal(await loginFormPresent(page), true, "the visible desktop form must be found past the hidden mobile copy");
+  const res = await performLogin(page, cred);
+  assert.equal(res.status, "logged_in", `got ${res.status}: ${res.message}`);
+  // The VISIBLE field is the one that got filled — not the hidden copy.
+  assert.equal(await page.locator("#mu").count(), 0, "page should have advanced past the login");
+});
+
+await check("reveal walks to the NEXT trigger when the first one is a dead link (SSO hand-off)", async () => {
+  await page.goto(`http://127.0.0.1:${port}/sso-handoff`);
+  const res = await performLogin(page, cred);
+  assert.equal(res.status, "logged_in", `got ${res.status}: ${res.message}`);
 });
 
 await browser.close();

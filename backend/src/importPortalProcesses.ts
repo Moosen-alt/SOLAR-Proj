@@ -30,7 +30,7 @@ async function main(): Promise<void> {
     for (const sm of summaries) {
       creds += sm.credentialsStored; defaulted += sm.credentialsDefaultedUser;
       seeded += sm.knowledgeSeeded; skipped += sm.knowledgeSkippedVerified; mfa += sm.mfaPortals;
-      console.log(`  ${sm.state.padEnd(3)} [${sm.sheet}] creds=${sm.credentialsStored}(default-user ${sm.credentialsDefaultedUser}) seeded=${sm.knowledgeSeeded} skipVerified=${sm.knowledgeSkippedVerified} mfaPortals=${sm.mfaPortals}${sm.credentialErrors ? ` credErrors=${sm.credentialErrors}` : ""}`);
+      console.log(`  ${sm.state.padEnd(3)} [${sm.sheet}] creds=${sm.credentialsStored}(updated ${sm.credentialsUpdated ?? 0}, default-user ${sm.credentialsDefaultedUser}) seeded=${sm.knowledgeSeeded} skipVerified=${sm.knowledgeSkippedVerified} mfaPortals=${sm.mfaPortals}${sm.credentialErrors ? ` credErrors=${sm.credentialErrors}` : ""}`);
       if (sm.credentialErrors) console.log(`      ! credential error: ${sm.lastCredentialError}`);
       for (const s of sm.samples) console.log(`      • ${s}`);
     }
