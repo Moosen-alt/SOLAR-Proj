@@ -1502,6 +1502,77 @@ async function testResumeApplicationNeverClicked() {
   assert.ok(!log.clicks.some((k) => /resume application/i.test(k)), "Resume Application never clicked");
 }
 
+// THE DENYLIST WAS TWO LITERAL PHRASES. "Renew", "Withdraw", "Amend" and "Search
+// Applications" all reach into the operator's REAL filings and every one of them used to
+// pass straight through to a click. This is not theoretical: a live Accela run drifted into
+// the records module on a planner-chosen click. Each label here is refused as an ADVANCE
+// (which stops the run) — the same guard the two original phrases get.
+async function testRecordActionsNeverClicked() {
+  for (const label of ["Renew Permit", "Withdraw Application", "Amend Record", "Search Applications", "My Records"]) {
+    const log: ActionLog = { clicks: [], fills: [], selects: [], checks: [] };
+    const planner: LearnPlanner = async (): Promise<LearnPlanResponse> =>
+      ({ fills: [{ selectorIndex: 0, value: "x", field: "notes" }], advanceSelectorIndex: 1, atReview: false });
+    const adapter = new AutoLearnAdapter("Some County Portal", planner);
+    withFakePage(
+      adapter,
+      makeFakePage(
+        {
+          pages: [{
+            url: "https://permits.example.gov/records",
+            title: "Records",
+            body: "Your records",
+            rawFields: [
+              { label: "Notes", fieldType: "text", id: "notes" },
+              { label, fieldType: "button", role: "link", text: label },
+            ],
+          }],
+        },
+        log,
+      ),
+    );
+    const result = await adapter.learn(fakeContext, fakeProject);
+    assert.equal(result.ok, false, `run must stop rather than click "${label}"`);
+    assert.ok(!log.clicks.some((k) => k.toLowerCase().includes(label.toLowerCase())), `"${label}" never clicked`);
+  }
+}
+
+// A BARE "Search" IS NOT A RECORDS ACTION. The address/parcel lookup on a permit wizard is a
+// legitimate, required click — widening the denylist must not break it, or every Accela
+// WorkLocation step dies.
+async function testBareSearchStillAllowed() {
+  const log: ActionLog = { clicks: [], fills: [], selects: [], checks: [] };
+  const planner: LearnPlanner = async (): Promise<LearnPlanResponse> =>
+    ({ fills: [{ selectorIndex: 0, value: "925", field: "streetNumber" }], advanceSelectorIndex: 1, atReview: false });
+  const adapter = new AutoLearnAdapter("Some County Portal", planner);
+  withFakePage(
+    adapter,
+    makeFakePage(
+      {
+        pages: [
+          {
+            url: "https://permits.example.gov/apply/address",
+            title: "Work Location",
+            body: "Enter work site location",
+            rawFields: [
+              { label: "Street Number", fieldType: "text", id: "streetNumber" },
+              { label: "Search", fieldType: "button", role: "button", text: "Search" },
+            ],
+          },
+          {
+            url: "https://permits.example.gov/apply/next",
+            title: "Next",
+            body: "Record type",
+            rawFields: [{ label: "Type", fieldType: "text", id: "t" }],
+          },
+        ],
+      },
+      log,
+    ),
+  );
+  await adapter.learn(fakeContext, fakeProject);
+  assert.ok(log.clicks.some((k) => /search/i.test(k)), "the address-lookup Search button must still be clickable");
+}
+
 // ACA CONTACT step: CapEdit's Applicant/Site-Contact section stalls the planner (the
 // account-dialog's Continue is disabled until a row is picked — live Coos Bay run:
 // stuck ×3 → recovery exhausted). Per the operator, the pass clicks "Add New" and fills
@@ -1787,6 +1858,8 @@ const tests: Array<[string, () => Promise<void>]> = [
   ["ACA WRONG-MODULE: records/search module exited via bounded re-entry, real records untouched", testAcaWrongModuleReentry],
   ["ACA DISCLAIMER: entry T&C accepted deterministically, no planner call", testAcaDisclaimerDeterministic],
   ["EXISTING-RECORD GUARD: Resume Application advance is refused, never clicked", testResumeApplicationNeverClicked],
+  ["EXISTING-RECORD GUARD: Renew/Withdraw/Amend/Search Applications/My Records all refused", testRecordActionsNeverClicked],
+  ["EXISTING-RECORD GUARD: a bare address-lookup Search is still allowed", testBareSearchStillAllowed],
   ["POWERCLERK COMBINED SELECTS: unlabeled repeater dropdowns filled by row order, traps untouched", testEquipmentCombinedSelectRepeater],
   ["POWERCLERK SPECS: bare labels filled via section context; EV/meter traps untouched", testEquipmentSpecsSectionContext],
   ["EQUIPMENT PROXIMITY: sectionless bare Model inherits side from preceding make", testEquipmentProximityFallback],

@@ -8,7 +8,7 @@ import { selectWithFallback } from "../comboboxFill";
 import { detectChallengeFrame, frameSelectorFor, readbackMatches, redactStatusText, safeAction, sleep, smartWait, waitForElement, waitForInteractiveControls } from "../safeAction";
 import { scrapeReviewScreen as scrapeReviewScreenShared } from "../reviewScreenScraper";
 import { performLogin } from "./loginFlow";
-import { enterApplicationFlow } from "./applicationEntry";
+import { enterApplicationFlow, isExcludedEntryLabel } from "./applicationEntry";
 import { parseStreetName, parseStreetNumber } from "../addressParse";
 import { portalUploadCapBytes } from "../uploadCap";
 import { LearnRunDebug } from "../learnDebug";
@@ -180,7 +180,17 @@ const SUBMIT_INTENT = /\b(continue application|submit application|file applicati
 // Controls that act on an EXISTING portal record (the operator's real filings) — never
 // part of learning a NEW application. "Resume Application" reopens a draft record;
 // "Pay Fees Due" is a payment path. Off-limits for click/advance/nav alike.
-const EXISTING_RECORD_ACTION = /\bresume application\b|\bpay fees? due\b/i;
+//
+// These two phrases were the WHOLE denylist, and they are literal: "Resume" alone, "Renew",
+// "Withdraw", "Amend" and "Search Applications" all passed straight through to a click. A
+// live Accela run drifted into the records module on a planner "Search" click — landing on
+// a page of the operator's real filings — so this is a demonstrated path, not a theoretical
+// one. Widened to the record actions that are NEVER part of starting a new application.
+//
+// Deliberately NOT here: a bare "Search". The address/parcel lookup on a permit wizard is a
+// legitimate, required click ("Search" next to the address fields), so only the record-noun
+// forms ("Search Applications"/"Search Records"/"Search Permits") are refused.
+const EXISTING_RECORD_ACTION = /\bresume\b|\bpay fees? due\b|\brenew\b|\bwithdraw\b|\bamend\b|\bmy (records|permits|applications)\b|\bsearch (applications|records|permits)\b/i;
 
 // ACA contact-section controls. Once the applicant is filled deterministically with the
 // FILING CONTRACTOR's identity, a planner click on one of these re-opens that contact and
@@ -2879,10 +2889,17 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       //     so do it here instead of paying a planner call to guess — and the finder refuses
       //     controls that touch the operator's REAL filings (Resume/Pay/Search/Renew), which
       //     a planner staring at a dashboard can mistake for the way in.
-      //     Strictly bounded: dashboards only (never a form or review page — isDashboard is
-      //     false for both), and at most ENTRY_PASS_MAX times per run, so a portal whose
-      //     dashboard reappears can't loop here.
-      if (isDashboard && entryPasses < ENTRY_PASS_MAX && this.page) {
+      //     GATE: "the application has not been started yet" — no fill/select/check has been
+      //     recorded — plus a bound of ENTRY_PASS_MAX. Deliberately NOT gated on isDashboard:
+      //     that requires ZERO fillable inputs, and a real portal home carries a search box
+      //     (Accela's AACO dashboard reports 4), so the pass never fired where it was needed
+      //     and the planner guessed "Permits" — landing in the operator's RECORDS module on a
+      //     live run. Once any value has been entered, this must never fire: clicking "start
+      //     an application" mid-flow would restart the wizard. A review page is likewise
+      //     excluded (fills are always recorded by then), and the finder's own exclusion list
+      //     still refuses anything touching existing records.
+      const applicationStarted = steps.some((st) => st.action === "fill" || st.action === "select" || st.action === "check");
+      if (!applicationStarted && !reviewSignals && entryPasses < ENTRY_PASS_MAX && this.page) {
         entryPasses++;
         const entered = await enterApplicationFlow(this.page).catch(() => null);
         this.debug?.event({ type: "application_entry_pass", page: pageCount, ok: Boolean(entered?.ok), label: entered?.label ?? null });
@@ -3125,7 +3142,13 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           // Re-opening that section is how the planner overwrote it with the homeowner's
           // details (live Coos Bay), so refuse the click and let the advance path move on.
           this.debug?.event({ type: "contact_reopen_refused", label: (navField.label || "").slice(0, 60) });
-        } else if (navField && !this.isOffLimitsButton(navField)) {
+        } else if (navField && (isDashboard ? this.isOffLimitsDashboardTarget(navField) : this.isOffLimitsButton(navField))) {
+          // The planner picked a control that reaches into the operator's existing records
+          // (or, on a dashboard, anything that isn't starting a new application). Refuse and
+          // let the next pass try again — a live run drifted into Accela's records module
+          // exactly this way.
+          this.debug?.event({ type: "navigate_offlimits_rejected", page: pageCount, label: (navField.label || "").slice(0, 60), dashboard: isDashboard });
+        } else if (navField) {
           navCount++;
           steps.push({
             action: "click",
@@ -4452,6 +4475,22 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       || EXISTING_RECORD_ACTION.test(field.label || "")
       || EXISTING_RECORD_ACTION.test(sel?.name || "")
       || EXISTING_RECORD_ACTION.test(sel?.text || "");
+  }
+
+  /** Off-limits for a DASHBOARD navigate specifically. On a logged-in home the only valid
+   *  move is starting a NEW application, so the full exclusion list the deterministic entry
+   *  finder uses applies here too — the planner gets to pick a control the patterns don't
+   *  recognise ("Begin Submittal"), but never one that reaches into existing records. This
+   *  is stricter than isOffLimitsButton on purpose and must NOT be used on form pages, where
+   *  "Search" (address lookup) and "View" controls are legitimate. */
+  private isOffLimitsDashboardTarget(field: ExtractedField): boolean {
+    if (this.isOffLimitsButton(field)) return true;
+    const sel = field.selector;
+    // Only test text we actually have: isExcludedEntryLabel treats an EMPTY label as
+    // excluded (nothing to start an application with), which would refuse every control
+    // whose selector happens to carry no name/text.
+    const texts = [field.label, sel?.name, sel?.text].map((t) => String(t ?? "").trim()).filter(Boolean);
+    return texts.some((t) => isExcludedEntryLabel(t));
   }
 
   // Scrape visible label/value pairs on the review screen. Delegates to the shared

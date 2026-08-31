@@ -247,10 +247,19 @@ export async function findApplicationEntryDeep(
  */
 export async function enterApplicationFlow(
   page: Page,
-): Promise<{ ok: boolean; message: string; url: string; label?: string }> {
+): Promise<{ ok: boolean; message: string; url: string; label?: string; viaModule?: string }> {
+  // DEEP by design. Accela's logged-in home offers only module tabs — the entry is one hop
+  // inside Permits — so a shallow look finds nothing and the caller falls through to the LLM
+  // planner, which is exactly the path that drifted into the records module on a live run.
+  const deep = await findApplicationEntryDeep(page);
+  if (!deep) {
+    return { ok: false, message: "No 'start an application' control found on this page.", url: typeof page.url === "function" ? page.url() : "" };
+  }
+  // findApplicationEntryDeep leaves the page wherever the entry was found; re-resolve the
+  // control there so the click targets what it actually located.
   const found = await findApplicationEntry(page);
   if (!found) {
-    return { ok: false, message: "No 'start an application' control found on this page.", url: typeof page.url === "function" ? page.url() : "" };
+    return { ok: false, message: `Found "${deep.match.label}" but it was gone when the click was attempted.`, url: typeof page.url === "function" ? page.url() : "", label: deep.match.label };
   }
   const before = typeof page.url === "function" ? page.url() : "";
   try {
@@ -263,8 +272,9 @@ export async function enterApplicationFlow(
   const after = typeof page.url === "function" ? page.url() : "";
   return {
     ok: true,
-    message: `Entered the application flow via "${found.match.label}".`,
+    message: `Entered the application flow via "${found.match.label}"${deep.viaModule ? ` (one hop through "${deep.viaModule}")` : ""}.`,
     url: after,
     label: found.match.label,
+    viaModule: deep.viaModule,
   };
 }
