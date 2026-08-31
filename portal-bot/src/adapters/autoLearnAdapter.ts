@@ -241,7 +241,11 @@ const NOT_LISTED_CHECKBOX =
 //     listing (UL 1741-SB lab certification is "Yes" for standard listed residential inverters).
 const POLICY_RADIO_DEFAULTS: Array<{ question: RegExp; answer: "Yes" | "No"; enforce?: boolean }> = [
   { question: /do you propose to limit the export capacity/i, answer: "No" },
-  { question: /are all inverters lab certified|inverters?\s+lab\s+certified|UL\s*1741/i, answer: "Yes", enforce: true },
+  // HYPHENS COUNT. Ameren Illinois asks "Is the inverter lab-certified as that term is
+  // defined in the Illinois Distributed Generation Interconnection Standard?" — hyphenated,
+  // which a whitespace-only pattern misses, leaving a REQUIRED question blank on every
+  // Illinois run. Separators are now flexible everywhere in this rule.
+  { question: /are all inverters lab[-\s]*certified|inverters?\s+lab[-\s]*certified|\blab[-\s]*certified\b|UL\s*1741/i, answer: "Yes", enforce: true },
   // Standard residential detail places the lockable AC disconnect adjacent to the meter;
   // the prompt default alone was observed missed (required radio left blank → portal
   // blocked the submit), so the deterministic pass backs it like the other two.
@@ -266,6 +270,17 @@ const POLICY_RADIO_DEFAULTS: Array<{ question: RegExp; answer: "Yes" | "No"; enf
   // project data — always wins.
   { question: /net\s*k?wh|kwh\s*netting|net\s*metering\s*\(k?wh\)/i, answer: "Yes" },
   { question: /monetiz/i, answer: "Yes" },
+  // Ameren Illinois: "requires a Manual, External Knife-Blade Type Disconnect OR a Circuit
+  // Breaker in a Secured Compartment/Enclosure … along with signage … no less than 5\" by 7\"
+  // … Will your system meet this requirement?" — Yes; standard residential detail includes
+  // both, and the matching site photo is the "labels" document.
+  { question: /knife[-\s]?blade|secured (compartment|enclosure).{0,60}meter|signage.{0,40}5\s*("|in|inch)?\s*(by|x)\s*7/i, answer: "Yes" },
+  // METER COLLAR ADAPTER — genuinely job-dependent, and a Yes opens additional MMD fields.
+  // It is visible on the SLD, so the right long-term answer is parsed project data driving
+  // it; until the parser extracts that, No is the common residential case and enforce=false
+  // means a human answer or project data always wins. If a job DOES use one, expect extra
+  // required fields to appear and be reported by the required-field sweep.
+  { question: /meter\s*collar\s*(adapter|adaptor)?/i, answer: "No" },
 ];
 
 // Sensitive field labels whose literal value must NEVER be stored in a recorded step.
