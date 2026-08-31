@@ -94,6 +94,13 @@ const PAGES: Record<string, string> = {
     <a href="/register">Create a Profile</a>
     <a href="/submit">Apply Here</a>
   </body>`,
+  // A mobile-first home where the whole menu — entry included — is behind a hamburger.
+  // Verified live: Momentum's logged-in home offers only "Open Navigation Menu".
+  "/collapsed-nav": `<!doctype html><body>
+    <button aria-label="Open Navigation Menu" id="burger">☰</button>
+    <div id="nav" style="display:none"><a href="/apply">Apply Here</a><a href="/pay">Pay Fees Due</a></div>
+    <script>document.getElementById('burger').onclick=function(){document.getElementById('nav').style.display='block';};</script>
+  </body>`,
 };
 
 const server = http.createServer((q, r) => { r.writeHead(200, { "Content-Type": "text/html" }); r.end(PAGES[q.url || ""] ?? "<body>?</body>"); });
@@ -157,6 +164,14 @@ await check("Accela: follows ONE module hop to reach 'Create an Application'", a
   assert.ok(deep, "deep search should find the entry inside a module");
   assert.equal(deep!.match.label, "Create an Application");
   assert.equal(deep!.viaModule, "Permits", "and should report which module it went through");
+});
+
+await check("opens a collapsed hamburger nav to reach the entry behind it", async () => {
+  await page.goto(`http://127.0.0.1:${port}/collapsed-nav`);
+  assert.equal(await findApplicationEntry(page), null, "hidden behind the toggle — that's the premise");
+  const deep = await findApplicationEntryDeep(page);
+  assert.ok(deep, "should open the menu and find the entry");
+  assert.equal(deep!.match.label, "Apply Here");
 });
 
 await check("deep search still refuses a portal that only offers real-filing controls", async () => {

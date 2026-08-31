@@ -205,6 +205,44 @@ unfamiliar platforms. Two results:
   a device-verification email we can't read yet. One attempt per portal; drive the rest
   when the operator can watch or when the inbox-code path is wired.
 
+**Stress sweep across nine platform families (2026-08-31) — `npm run portal:reach`.**
+New command: `npm run portal:reach -- <url> [--enter] [--headed]`. It drives the ENGINE'S
+own paths (`performLogin` + `findApplicationEntryDeep`) and holds no portal-specific logic,
+so what it exercises is what production uses. Point it at any portal to see how far the bot
+gets. Results after the fixes below:
+
+| Portal (family) | Login | Application entry |
+|---|---|---|
+| Anne Arundel (Accela) | logged in | **"Create an Application" — one hop via Permits** |
+| Prince George's (Momentum) | logged in *(was: form not found)* | none on the dashboard (reported honestly) |
+| Gainesville (Citizenserve) | logged in *(was: no_submit_control)* | none found |
+| Lynn (SmartGov) | logged in | none on landing |
+| Quincy (OpenGov) | reaches + submits the form *(was: form not found)*; credential rejected | — |
+| Hialeah (EnerGov CSS) | SSO hand-off, unresolved | — |
+| Sterling Heights (BS&A) | reCAPTCHA — correctly stops for a human | — |
+| Shoreline (eTRAKiT) | form detected, credential rejected (no real account) | — |
+| Tukwila (eTRAKiT) | ERR_CONNECTION_RESET (host blocks us) | — |
+
+Five GENERIC login gaps found live and fixed (`loginFlow.ts`, pinned by
+`loginForm.dom.smoke.ts`, 11 shapes): a hidden responsive DUPLICATE field masking the real
+one (`firstVisible` tested only `.first()` — the widest-reaching fix); identifier-first
+two-step logins; an SSO hand-off behind a stale "Login" link that reveal kept re-clicking;
+an unrecognisable submit control (Enter-key fallback); and a form painted after networkidle.
+`applicationEntry.ts` (pinned by `applicationEntry.dom.smoke.ts`, 13 shapes) finds the
+"start an application" control across vendors, follows one module hop, opens a collapsed
+hamburger nav — and REFUSES to click anything touching the operator's real filings (Resume,
+Pay Fees, Search, Renew, Upload), returning nothing rather than a least-bad click.
+- **Importer correctness caught by the same sweep**: credentials had been stored under the
+  JURISDICTION'S address (building@gainesvillefl.gov) because the first email on a row won.
+  The operator's own domain now wins, `.gov`/`.us` is a contact never a login, and
+  re-import is an UPSERT keyed by portal URL (re-ran: 81 credentials, no duplicates, zero
+  .gov logins). `updatePortalCredential` no longer discards security answers on rotation.
+- **Still open**: EnerGov's Tyler-Identity SSO hand-off; Quincy OpenGov credential looks
+  wrong/unregistered; Momentum + SmartGov + Citizenserve post-login homes surface no apply
+  control (may need an account with apply rights, or a direct apply URL per tenant). AACO's
+  own account only offers "Create an Application" under Complaints/Violations — permits may
+  not be filable online for this account, which is a real operator question.
+
 **Illinois market entry — researched + KB-seeded 2026-08-30, waiting on logins.**
 Deep research (7 agents, verifier-checked) is written up in `docs/IL_ONBOARDING.md`;
 41 KB rows seeded through the sanctioned import helpers (all `seeded`, sourceLabel

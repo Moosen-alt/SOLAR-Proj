@@ -138,12 +138,45 @@ export function matchesModuleLabel(label: string): boolean {
  * Bounded to `maxModules` hops so a portal that never offers an entry can't be walked
  * indefinitely, and module candidates are exclusion-filtered like everything else.
  */
+// Collapsed navigation. Mobile-first portals hide the whole menu — application entry
+// included — behind a hamburger toggle, so a logged-in home can legitimately offer nothing
+// but "Open Navigation Menu" (measured live on Momentum). Opening it is safe: a toggle
+// reveals links, it never submits or mutates anything.
+const NAV_TOGGLE_SELECTORS = [
+  "button[aria-label*='menu' i]",
+  "button[aria-label*='navigation' i]",
+  "a[aria-label*='menu' i]",
+  "[aria-controls][aria-expanded='false']",
+  ".navbar-toggler",
+  "button.hamburger, .hamburger-menu, [class*='hamburger']",
+  "[class*='menu-toggle'], [id*='menu-toggle']",
+];
+async function openCollapsedNav(page: Page): Promise<boolean> {
+  for (const sel of NAV_TOGGLE_SELECTORS) {
+    try {
+      const loc = page.locator(sel).first();
+      if ((await loc.count()) === 0 || !(await loc.isVisible().catch(() => false))) continue;
+      await loc.click({ timeout: 5000 });
+      await page.waitForTimeout?.(1200);
+      return true;
+    } catch { /* try the next toggle shape */ }
+  }
+  return false;
+}
+
 export async function findApplicationEntryDeep(
   page: Page,
   opts: { maxModules?: number } = {},
 ): Promise<{ match: ApplicationEntryMatch; viaModule?: string } | null> {
   const direct = await findApplicationEntry(page);
   if (direct) return { match: direct.match };
+
+  // Nothing visible — the menu may simply be collapsed. Open it and look again before
+  // walking modules.
+  if (await openCollapsedNav(page)) {
+    const afterNav = await findApplicationEntry(page);
+    if (afterNav) return { match: afterNav.match, viaModule: "navigation menu" };
+  }
 
   const maxModules = opts.maxModules ?? 3;
   let moduleLabels: string[] = [];
