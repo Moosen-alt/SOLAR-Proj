@@ -43,6 +43,7 @@ import { createClient, deleteClient, getClient, listClients, updateClient } from
 import { enqueueJob, getJob, inFlightJobCount, listJobs, processNextJob, startJobWorker } from "./jobQueue";
 import { createUser, getUserWorkload, listUsers, updateUser, assignProjectToUser } from "./users";
 import { listBackups, runBackup, startBackupScheduler } from "./backup";
+import { startArtifactRetention } from "./artifactRetention";
 import { startMonitorScheduler } from "./scheduler";
 import { startAhjFormRefreshScheduler, startKbLinkCheckScheduler } from "./ahjFormRefresh";
 import { startCecSyncScheduler, primeCecCache, syncCecEquipment } from "./cecEquipment";
@@ -330,8 +331,42 @@ app.use("/api/portal-runs/:id", childScopeGuard("portal_runs", "Portal run"));
 
 app.use(express.static(frontendDir));
 
+// Liveness AND readiness in one unauthenticated endpoint, because a monitor that only
+// learns "the process is up" tells you nothing: the failure that matters on an unattended
+// server is work silently piling up while the port still answers. Reports the few numbers
+// worth paging on — the database answers, jobs are moving, and nothing is stuck.
+// No secrets or PII: counts and ages only.
 app.get("/health", (_req, res) => {
-  res.json({ ok: true, service: "Solar Submission Autopilot", version: APP_VERSION });
+  const out: Record<string, unknown> = { ok: true, service: "Solar Submission Autopilot", version: APP_VERSION };
+  try {
+    db.get<{ one: number }>("SELECT 1 AS one"); // a DB that has gone away is the loudest failure
+    out.db = "ok";
+    const pending = db.get<{ n: number }>("SELECT COUNT(*) AS n FROM job_queue WHERE status = 'pending'")?.n ?? 0;
+    const running = db.get<{ n: number }>("SELECT COUNT(*) AS n FROM job_queue WHERE status = 'running'")?.n ?? 0;
+    const failed24h = db.get<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM job_queue WHERE status = 'failed' AND COALESCE(finished_at, created_at) >= ?",
+      [new Date(Date.now() - 24 * 3600_000).toISOString()],
+    )?.n ?? 0;
+    const oldest = db.get<{ created_at: string }>(
+      "SELECT created_at FROM job_queue WHERE status = 'pending' ORDER BY created_at ASC LIMIT 1",
+    )?.created_at;
+    const oldestPendingAgeSec = oldest ? Math.max(0, Math.round((Date.now() - Date.parse(oldest)) / 1000)) : 0;
+    out.jobs = { pending, running, failed24h, oldestPendingAgeSec, inFlightThisProcess: inFlightJobCount() };
+    out.uptimeSec = Math.round(process.uptime());
+    // A queue that is long AND not draining is the shape worth alerting on — a big backlog
+    // is fine while work is flowing. Reported as a WARNING, not as unhealthy: /health is
+    // also the startup and load-balancer probe, and a stuck queue is a reason to page
+    // someone, not to pull a working server out of rotation (or to fail a boot, which is
+    // exactly what conflating the two did to the test suite).
+    if (pending > 0 && running === 0 && oldestPendingAgeSec > 900) {
+      out.warning = "Jobs are pending but nothing is running — the worker may be stuck.";
+    }
+  } catch (err) {
+    out.ok = false;
+    out.db = "error";
+    out.error = err instanceof Error ? err.message.slice(0, 200) : String(err);
+  }
+  res.status(out.ok ? 200 : 503).json(out);
 });
 
 // Full runtime diagnostics — paste this output to troubleshoot. No secrets/PII.
@@ -2626,6 +2661,7 @@ const server = app.listen(port, () => {
   })();
   startJobWorker(db);
   startBackupScheduler(db);
+  startArtifactRetention();
   startMonitorScheduler(db);
   startAhjFormRefreshScheduler(db);
   startKbLinkCheckScheduler(db);

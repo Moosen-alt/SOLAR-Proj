@@ -33,6 +33,8 @@ async function main(): Promise<void> {
   const server = http.createServer((req, res) => {
     if (req.url === "/ok") { res.writeHead(200, { "content-type": "text/html" }); res.end("<html>portal</html>"); return; }
     if (req.url === "/blocked") { res.writeHead(403); res.end("forbidden"); return; }
+    // A minimal PDF so the refresh sweep's fetch succeeds and it takes the re-map path.
+    if (req.url === "/form.pdf") { res.writeHead(200, { "content-type": "application/pdf" }); res.end(Buffer.from("%PDF-1.4 refreshed blank %%EOF")); return; }
     res.writeHead(404); res.end("not found");
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -88,6 +90,34 @@ async function main(): Promise<void> {
   const checklistResult = ensured.results.find((r) => r.formType === "solar_checklist");
   check("stored application short-circuits as exists", appResult?.status === "exists", JSON.stringify(appResult));
   check("checklist still attempted (stub → not_found)", Boolean(checklistResult) && checklistResult!.status !== "exists", JSON.stringify(checklistResult));
+
+  // AN OPERATOR VERIFYING MID-REFRESH MUST NOT LOSE THAT WORK.
+  // The refresh reads a template's field map, then spends minutes fetching the PDF and
+  // re-mapping it with an LLM, then writes back. It used to write the SNAPSHOT it read
+  // before all that, so a verify/edit made in the window was silently overwritten by a
+  // minutes-old copy of itself. The write must carry over the CURRENT stored map.
+  const { refreshAhjFormTemplates } = await import("../src/ahjFormRefresh");
+  const tplId = db.get<{ id: string }>("SELECT id FROM ahj_form_templates LIMIT 1")?.id ?? "";
+  // Point the stored template at a source the fixture server serves, with a stale hash so
+  // the refresh takes the "changed → re-map and re-store" path (the long one).
+  const liveUrl = `http://127.0.0.1:${port}/form.pdf`;
+  db.run("UPDATE ahj_form_templates SET field_map = ? WHERE id = ?", [
+    JSON.stringify({ formName: "Formville app", sourceUrl: liveUrl, fillMode: "overlay", textFields: {}, checkboxes: {}, sourceHash: "stale-hash-forces-remap", verified: false, notes: "" }),
+    tplId,
+  ]);
+  // Simulate the operator: between the sweep's read and its write, they verify the mapping
+  // and add placement work. fetchPdf is awaited inside the refresh, so patching here — just
+  // before awaiting it — lands inside that window.
+  const operatorEdit = () => db.run("UPDATE ahj_form_templates SET field_map = ? WHERE id = ?", [
+    JSON.stringify({ formName: "Formville app", sourceUrl: liveUrl, fillMode: "overlay", textFields: { A: "project.homeownerName" }, checkboxes: {}, overlayFields: [{ page: 0, x: 10, y: 20, source: "project.homeownerName" }], verified: true, notes: "operator verified" }),
+    tplId,
+  ]);
+  const refreshPromise = refreshAhjFormTemplates(db, llm);
+  operatorEdit();
+  await refreshPromise;
+  const after = JSON.parse(db.get<{ field_map: string }>("SELECT field_map FROM ahj_form_templates WHERE id = ?", [tplId])?.field_map ?? "{}");
+  check("operator's overlay placement survives a concurrent refresh", Array.isArray(after.overlayFields) && after.overlayFields.length === 1, JSON.stringify(after.overlayFields));
+  check("refresh still demotes verified so the fill gate re-checks the new revision", after.verified === false, JSON.stringify(after.verified));
 
   server.close();
   // Close before deleting the scratch DB - Windows holds the open handle as a file lock (EBUSY).

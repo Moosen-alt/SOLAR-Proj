@@ -33,6 +33,20 @@ export interface RefreshSummary {
 }
 
 export async function refreshAhjFormTemplates(db: AppDb, llm: LLMProvider): Promise<RefreshSummary> {
+  // Apply a change to the row's CURRENT field map, not to the snapshot this sweep read
+  // minutes ago. Between the read at the top of the loop and the write below sits a fetch,
+  // sometimes an LLM re-map and a web search — a long window in which an operator can open
+  // the same template and verify or correct its mapping. Writing the stale object back
+  // silently discarded that work. Re-reading immediately before the write closes it: the
+  // sweep's own change still lands, but on top of whatever the human just did.
+  const patchFieldMap = (id: string, patch: (current: StoredFieldMap) => StoredFieldMap, touchUpdatedAt = false): void => {
+    const fresh = db.get<{ field_map: string }>("SELECT field_map FROM ahj_form_templates WHERE id = ?", [id]);
+    const current = parseJson<StoredFieldMap>(fresh?.field_map ?? "", {} as StoredFieldMap);
+    const next = patch(current);
+    if (touchUpdatedAt) db.run("UPDATE ahj_form_templates SET field_map = ?, updated_at = ? WHERE id = ?", [JSON.stringify(next), nowIso(), id]);
+    else db.run("UPDATE ahj_form_templates SET field_map = ? WHERE id = ?", [JSON.stringify(next), id]);
+  };
+
   const rows = db.query<TemplateRow>(
     "SELECT id, ahj_name, state, form_type, field_map FROM ahj_form_templates WHERE pdf_blob IS NOT NULL",
   );
@@ -70,12 +84,11 @@ export async function refreshAhjFormTemplates(db: AppDb, llm: LLMProvider): Prom
         }
       }
       if (!bytes || !recoveredUrl) {
-        const note = `Source link last failed ${nowIso()} — kept the prior stored copy. ${map.notes || ""}`.trim();
-        db.run("UPDATE ahj_form_templates SET field_map = ?, updated_at = ? WHERE id = ?", [
-          JSON.stringify({ ...map, notes: note, lastCheckedAt: nowIso() }),
-          nowIso(),
-          row.id,
-        ]);
+        patchFieldMap(row.id, (cur) => ({
+          ...cur,
+          notes: `Source link last failed ${nowIso()} — kept the prior stored copy. ${cur.notes || ""}`.trim(),
+          lastCheckedAt: nowIso(),
+        }), true);
         continue;
       }
       summary.recovered += 1;
@@ -85,10 +98,7 @@ export async function refreshAhjFormTemplates(db: AppDb, llm: LLMProvider): Prom
 
     if (map.sourceHash && sha256(bytes) === map.sourceHash) {
       summary.unchanged += 1;
-      db.run("UPDATE ahj_form_templates SET field_map = ? WHERE id = ?", [
-        JSON.stringify({ ...map, lastCheckedAt: nowIso() }),
-        row.id,
-      ]);
+      patchFieldMap(row.id, (cur) => ({ ...cur, lastCheckedAt: nowIso() }));
       continue;
     }
 
@@ -108,7 +118,17 @@ export async function refreshAhjFormTemplates(db: AppDb, llm: LLMProvider): Prom
     // must replace the old (the old revision is obsolete at the counter), but the
     // mapping work is CARRIED OVER as a starting point and demoted to unverified,
     // so the fill gate blocks real submits until a human re-checks it.
-    const wasVerified = Boolean(map.verified);
+    // Carry over from the CURRENT stored map, not the snapshot read before the fetch and
+    // the LLM re-map. An operator who verified or corrected this template while that work
+    // was in flight would otherwise have it overwritten by a minutes-old copy of itself.
+    const live = parseJson<StoredFieldMap>(
+      db.get<{ field_map: string }>("SELECT field_map FROM ahj_form_templates WHERE id = ?", [row.id])?.field_map ?? "",
+      map,
+    );
+    const wasVerified = Boolean(map.verified || live.verified);
+    if (live.verified && !map.verified) {
+      logger.warn("ahj-forms", `${row.ahj_name} (${row.state}) was verified by an operator while this refresh was running — their mapping is being carried over, not the pre-refresh copy.`);
+    }
     storeAhjFormTemplate(db, {
       ahjName: row.ahj_name,
       state: row.state,
@@ -118,11 +138,11 @@ export async function refreshAhjFormTemplates(db: AppDb, llm: LLMProvider): Prom
       map: {
         formName,
         sourceUrl: map.sourceUrl,
-        fillMode: newMap ? "acroform" : (map.fillMode || "overlay"),
-        textFields: newMap?.textFields || map.textFields || {},
-        checkboxes: newMap?.checkboxes || map.checkboxes || {},
-        overlayFields: map.overlayFields,
-        signatureFields: map.signatureFields,
+        fillMode: newMap ? "acroform" : (live.fillMode || "overlay"),
+        textFields: newMap?.textFields || live.textFields || {},
+        checkboxes: newMap?.checkboxes || live.checkboxes || {},
+        overlayFields: live.overlayFields,
+        signatureFields: live.signatureFields,
         verified: false,
         notes: `Refreshed ${nowIso()} — the AHJ revised this form.` +
           (wasVerified ? ` The PREVIOUS mapping was human-verified and has been carried over as a starting point, but the revision may have moved fields — RE-VERIFY before any real submit.` :

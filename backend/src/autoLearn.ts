@@ -319,6 +319,47 @@ export async function autoLearnPortal(
   const scopeType = input.scope === "utility" ? "utility" : "ahj";
   const portalUrl = (input.portalUrl || "").trim();
   if (!portalUrl) throw new HttpError(400, "portalUrl is required to learn a portal.");
+
+  // ONE LIVE LEARN PER PORTAL RECIPE. Recipes are shared across tenants on purpose — an AHJ
+  // quirk learned once helps everyone — so two clients filing with the same AHJ can trigger
+  // two learns of the SAME recipe at once. They use different browser profiles, so the
+  // profile queue does not separate them: both would wipe the recipe, both would save, and
+  // whichever finished last would silently discard the other's work.
+  //
+  // The lease is held only for the life of an in-process run, so a learn killed by a crash
+  // leaves nothing behind — the next attempt proceeds, and startPortalRecording's snapshot
+  // still protects the previous working steps. That keeps an operator retrying a cancelled
+  // learn unblocked, which a database-status lock would not.
+  const leaseKey = [
+    scopeType,
+    (project.state || "").trim().toLowerCase(),
+    scopeType === "utility" ? (project.utility || "").trim().toLowerCase() : (project.ahj || "").trim().toLowerCase(),
+    (input.discipline || "").trim().toLowerCase(),
+  ].join("|");
+  if (activeLearnKeys.has(leaseKey)) {
+    throw new HttpError(409,
+      "A learn for this portal is already running. Recipes are shared between clients, so a second "
+      + "learn would overwrite the first one's work. Wait for it to finish, then retry.");
+  }
+  activeLearnKeys.add(leaseKey);
+  try {
+    return await autoLearnPortalInner(db, projectId, input, project, scopeType, portalUrl);
+  } finally {
+    activeLearnKeys.delete(leaseKey);
+  }
+}
+
+/** Recipe keys with a learn running in THIS process right now (see autoLearnPortal). */
+const activeLearnKeys = new Set<string>();
+
+async function autoLearnPortalInner(
+  db: AppDb,
+  projectId: string,
+  input: Parameters<typeof autoLearnPortal>[2],
+  project: ProjectRecord,
+  scopeType: "ahj" | "utility",
+  portalUrl: string,
+): Promise<AutoLearnResult> {
   if (scopeType === "ahj" && !(project.ahj || "").trim()) throw new HttpError(400, "Project has no AHJ to key the recipe on.");
   if (scopeType === "utility" && !(project.utility || "").trim()) throw new HttpError(400, "Project has no utility to key the recipe on.");
 
