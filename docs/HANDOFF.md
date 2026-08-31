@@ -152,6 +152,22 @@ Still open, in order:
 
 ## Open issues / next work (priority order)
 
+**Scaling to a team (5-20 concurrent portal runs) — plan in `docs/SCALE_DEPLOYMENT.md`.**
+A six-part audit (2026-08-31) found the concurrency hazards are almost all CROSS-PROCESS, so
+with employees on the dashboard and all automation in the one server process they never arm.
+The real limit is much smaller: `drainPendingJobs` is a SERIAL drain (one job at a time), so
+step one is a bounded worker pool inside the single process. Parallelism then arms four
+things that must ship with it: a per-`(clientId, portalType)` queue (the Chromium profile is
+a single-holder OS lock), an orphan-browser reaper (match `chrome-headless-shell.exe`, not
+just `chrome.exe`), a run-level watchdog (a learn hung 13+ min silently on 2026-08-31), and
+backups of `portal-profiles/` (NOT currently backed up — those directories are the live
+portal logins). Two races fire even single-process because they span an `await`: recipe
+recording's wipe/verify window, and the AHJ form-template refresh discarding an operator's
+`map.verified` edit. `SESSION_ENCRYPTION_KEY` doubles as the cookie secret and has no rekey
+tool — rotating it is unrecoverable. Postgres is NOT the blocker (better-sqlite3 sits behind
+one wrapper file, SQL is near-dialect-free); the expensive part would be going async.
+
+
 **Multi-state operator portal logins imported 2026-08-31 (`import:portal-processes`).**
 A solar company hands over one "Permit Processes" workbook per engagement: a sheet per
 state listing every AHJ permit portal, its software, the login, security-question
