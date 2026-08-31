@@ -66,6 +66,13 @@ for (const [url, shouldBlock, why] of [
   ["https://www.ameren.com/illinois/company/environment-and-sustainability/renewables", true, "Ameren's own domain (marketing page shape)"],
   // Utah (next market): PacifiCorp trades as Rocky Mountain Power there.
   ["https://www.rockymountainpower.net/savings-energy-choices/customer-generation.html", true, "Rocky Mountain Power = PacifiCorp's Utah brand"],
+  // PA/NY/NJ utility interconnection portals + domains from the operator permit workbook.
+  ["https://peco.connectthegrid.com/applications", true, "PECO on the ConnectTheGrid interconnection platform"],
+  ["https://dlc-customer-owned-generation.customerapplication.com/", true, "Duquesne Light interconnection-application SaaS"],
+  ["https://www.pplelectric.com/pes/work-order-list", true, "PPL Electric's own domain"],
+  ["https://www.coned.com/en/save-money/using-distributed-generation", true, "Con Edison's own domain"],
+  // A NY city permit portal that merely lives on a *.buffalony.gov host must still pass.
+  ["https://epermits.buffalony.gov/submit-record", false, "Buffalo's ePermits is an AHJ portal"],
   // Chicago's permit portal must NOT be blocked — it is the AHJ entry for the whole city.
   ["https://ipi.cityofchicago.org", false, "Chicago Express Permit Program is an AHJ portal"],
   ["https://aca-prod.accela.com/Evanston/default.aspx", false, "Evanston Accela is an AHJ portal"],

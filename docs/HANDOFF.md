@@ -152,6 +152,39 @@ Still open, in order:
 
 ## Open issues / next work (priority order)
 
+**Multi-state operator portal logins imported 2026-08-31 (`import:portal-processes`).**
+A solar company hands over one "Permit Processes" workbook per engagement: a sheet per
+state listing every AHJ permit portal, its software, the login, security-question
+answers, and whether the portal emails a one-time code. Built `npm run
+import:portal-processes -- <file.xlsx> [--client=<id>] [--dry-run]`
+(`backend/src/portalProcessImport.ts` = the pure extractor, unit-tested; the CLI loads
+`dotenv` because credential storage needs `SESSION_ENCRYPTION_KEY`). It scans every row
+(the sheets have NO consistent schema), pulls URL + platform (inferred from host) +
+login + password + security answers + an MFA-email-code marker, and emits two things,
+kept strictly apart: (1) an **encrypted credential** via `createPortalCredential` —
+extended so security answers ride in the encrypted envelope, never the LLM-visible
+`notes`; (2) a **seeded AHJ knowledge row** (platform, MFA marker, contact — NO secrets).
+First real import of Infinity Solar USA's workbook: **81 credentials under
+`tml-international-llc`** (dba now set to "Infinity Solar USA") across Accela (12),
+OpenGov (8), SmartGov (6), EnerGov (5), Citizenserve/BS&A (3 each), eTRAKiT, DC Access,
+Momentum, Cloudpermit… and **87 AHJ knowledge rows across 20 states** (MD/FL/WA/OR
+heaviest). Verified: creds decrypt and resolve via `getDecryptedCredentialByUrl`,
+security answers round-trip. `UTILITY_PLATFORM_HOSTS` gained the PA/NY/NJ utility
+domains + ConnectTheGrid/customerapplication.com interconnection platforms found in the
+workbook (pinned in `portalUrlScope.test.ts`).
+- **9 portals are email-code MFA** ("they send a code") — flagged HUMAN-CAPTURE in the
+  KB. We can't read `permit@infinitysolarusa.com` during automation *yet*: a Gmail OAuth
+  pipeline (`gmail.ts`) and an IMAP poller (`emailPoller.ts`, "central TML inbox") exist
+  but aren't wired to this address — wiring one would let the bot fetch login codes and
+  unblock those portals. Until then they stop at the code prompt.
+- **6 credentials defaulted the username** to `permit@infinitysolarusa.com` (password
+  present in the sheet, no explicit user) — correct for this operator but re-verify if a
+  login fails.
+- These are AHJ **permit** portals on platform families we mostly have NOT learned yet
+  (EnerGov CSS, ViewPoint/OpenGov, SmartGov, Citizenserve, BS&A, eTRAKiT…). Reaching a
+  review page on each needs a learn on a real in-jurisdiction project — see the reachability
+  sweep notes appended after the live run.
+
 **Illinois market entry — researched + KB-seeded 2026-08-30, waiting on logins.**
 Deep research (7 agents, verifier-checked) is written up in `docs/IL_ONBOARDING.md`;
 41 KB rows seeded through the sanctioned import helpers (all `seeded`, sourceLabel

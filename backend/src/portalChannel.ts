@@ -252,8 +252,14 @@ export function disciplineConflictsWithTrack(
 const UTILITY_PLATFORM_HOSTS = [
   // Interconnection platforms.
   "powerclerk.com",
-  // ComEd's Intellio Connect (West Monroe) lives on the utility's own subdomain —
-  // comed.com below covers it; other Intellio tenants get their utility domain added here.
+  // ConnectTheGrid / Intellio Connect (West Monroe) — ComEd runs it at interconnect.comed.com
+  // (covered by comed.com below) and PECO at peco.connectthegrid.com. It is a utility
+  // interconnection platform, so it belongs here alongside powerclerk.com.
+  "connectthegrid.com",
+  // customerapplication.com is an interconnection-application SaaS; Duquesne Light's tenant
+  // is dlc-customer-owned-generation.customerapplication.com. The whole vendor domain is
+  // interconnection-only, so a permit track must never land on it.
+  "customerapplication.com",
   // Utility-owned domains whose solar/net-metering pages keep landing on AHJ rows.
   "portlandgeneral.com",
   "pacificpower.net",
@@ -276,6 +282,13 @@ const UTILITY_PLATFORM_HOSTS = [
   "exeloncorp.com",
   // Utah (next market): Rocky Mountain Power is PacifiCorp's brand there.
   "rockymountainpower.net",
+  // From the operator's multi-state permit workbook (2026-08-31): PA + NY utility domains
+  // whose interconnection/net-metering pages sit next to AHJ rows in the same sheet.
+  "pplelectric.com",   // PPL Electric (PA)
+  "peco.com",          // PECO (PA)
+  "coned.com",         // Con Edison (NY)
+  "psegliny.com",      // PSEG Long Island (NY)
+  "pseg.com",          // PSE&G (NJ)
 ];
 export function isUtilityPlatformUrl(url: string | null | undefined): boolean {
   const u = (url || "").toLowerCase();

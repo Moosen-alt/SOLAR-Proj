@@ -44,7 +44,7 @@ export function listPortalCredentials(db: AppDb, clientId: string): PortalCreden
 export function createPortalCredential(
   db: AppDb,
   clientId: string,
-  payload: { portalType?: string; portalUrl?: string; username?: string; password?: string; notes?: string },
+  payload: { portalType?: string; portalUrl?: string; username?: string; password?: string; notes?: string; securityAnswers?: string },
 ): PortalCredentialView {
   const client = db.get<Row>("SELECT id FROM clients WHERE id = ?", [clientId]);
   if (!client) throw new HttpError(404, "Client not found.");
@@ -52,8 +52,14 @@ export function createPortalCredential(
   const password = s(payload.password);
   if (!username || !password) throw new HttpError(400, "username and password are required.");
   // Store the secret only as an encrypted blob; keep a non-secret username reference
-  // for display/audit.
-  const encrypted = encryptStorageState({ username, password });
+  // for display/audit. Security-question answers (portals challenge them on a new device)
+  // ride ALONG in the encrypted envelope — never in the plaintext notes column, which is
+  // LLM-visible via knowledgeResearchHint. Additive: the field is absent on older rows and
+  // decrypt tolerates it.
+  const securityAnswers = s(payload.securityAnswers).trim();
+  const secret: { username: string; password: string; securityAnswers?: string } = { username, password };
+  if (securityAnswers) secret.securityAnswers = securityAnswers;
+  const encrypted = encryptStorageState(secret);
   const credId = id();
   const now = nowIso();
   db.run(
