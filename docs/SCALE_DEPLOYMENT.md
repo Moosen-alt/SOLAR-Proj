@@ -43,7 +43,7 @@ serially.
 
 | Env var | Default | Set it to |
 |---|---|---|
-| `JOB_CONCURRENCY` | `1` (serial, unchanged) | what RAM affords: ~400MB per browser, so 8 on a 16GB box |
+| `JOB_CONCURRENCY` | `1` (serial, unchanged) | what RAM affords: ~180MB per browser measured, so 20 fits in 16GB |
 | `MAX_JOBS_PER_TICK` | `5` | raise with concurrency (e.g. `20`) |
 | `PORTAL_PROFILE_WAIT_MS` | `900000` (15 min) | how long a run waits for a busy portal before failing cleanly |
 | `PORTAL_RUN_MAX_MS` | `1500000` (25 min) | hard ceiling on one portal run before its browser is force-closed |
@@ -149,17 +149,24 @@ sites. Do not start there.
 
 RAM is the constraint, and it is set by browsers, not by the app.
 
-| Concurrent runs | Chromium RAM (~400MB each) | Recommended VM |
+MEASURED, not estimated (2026-08-31, this codebase): **8 concurrent headless Chromium loaded
+with real portal pages, each taking a full-page screenshot, consumed 1,421MB — about 180MB
+per browser.** Idle on a blank page they cost ~66MB; the ~180MB figure is the one to size
+against, since it includes the heavy-JS portal DOM and the screenshot spike the learner takes
+on every page. An earlier draft of this table guessed 400MB and was conservative by more
+than 2x.
+
+| Concurrent runs | Chromium RAM (~180MB each, measured) | Recommended VM |
 |---|---|---|
-| 5 | ~2 GB | 8 GB / 4 vCPU |
-| 10 | ~4 GB | 16 GB / 8 vCPU |
-| 20 | ~8 GB | 32 GB / 8–16 vCPU |
+| 5 | ~0.9 GB | 8 GB / 4 vCPU |
+| 10 | ~1.8 GB | 8–16 GB / 8 vCPU |
+| 20 | ~3.6 GB | 16 GB / 8–16 vCPU |
 
-Leave headroom: the app, SQLite page cache, PDF rendering and the OS want several GB, and a
-full-page screenshot spikes.
+So 16 GB comfortably covers the top of the 5–20 range — 32 GB is not required. Leave the
+headroom above for the app, SQLite page cache, PDF rendering and the OS, and remember a long
+learn accumulates more than a freshly-loaded page.
 
-**Recommendation: one Hetzner CCX-series VM** (dedicated vCPU, ~16–32 GB, roughly
-$50–110/mo). Dedicated cores matter because Chromium is CPU-bursty and noisy-neighbour
+**Recommendation: one Hetzner CCX-series VM** (dedicated vCPU, 16 GB, roughly $50–70/mo). Dedicated cores matter because Chromium is CPU-bursty and noisy-neighbour
 throttling shows up as portal timeouts, which are indistinguishable from portal flakiness in
 the logs. Managed cloud (AWS/GCP) buys you nothing here while the database is a local file,
 and costs several times more for the same RAM.
