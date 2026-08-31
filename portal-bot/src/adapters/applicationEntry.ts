@@ -142,16 +142,32 @@ export function matchesModuleLabel(label: string): boolean {
 // included — behind a hamburger toggle, so a logged-in home can legitimately offer nothing
 // but "Open Navigation Menu" (measured live on Momentum). Opening it is safe: a toggle
 // reveals links, it never submits or mutates anything.
+// Deliberately NARROW: it must name itself a menu/navigation toggle. A generic
+// "[aria-controls][aria-expanded=false]" also matches every accordion on the page, and
+// clicking one on Accela mutated the home enough to break the module walk that had just
+// worked — an over-eager opener costs more than a missed menu.
 const NAV_TOGGLE_SELECTORS = [
-  "button[aria-label*='menu' i]",
-  "button[aria-label*='navigation' i]",
-  "a[aria-label*='menu' i]",
-  "[aria-controls][aria-expanded='false']",
+  "button[aria-label*='navigation menu' i]",
+  "button[aria-label*='main menu' i]",
+  "button[aria-label*='open menu' i]",
+  "button[aria-label*='toggle navigation' i]",
   ".navbar-toggler",
-  "button.hamburger, .hamburger-menu, [class*='hamburger']",
+  "button.hamburger, .hamburger-menu",
   "[class*='menu-toggle'], [id*='menu-toggle']",
 ];
 async function openCollapsedNav(page: Page): Promise<boolean> {
+  // Only when the page is genuinely SPARSE. A collapsed menu means almost nothing is on
+  // screen; a portal home that already shows a full navigation has no menu to open, and
+  // clicking a toggle there only risks covering the very tabs the module walk needs.
+  try {
+    const visibleLinks = await page.evaluate(() => {
+      const vis = (el: Element) => { const r = (el as HTMLElement).getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+      return (Array.from(document.querySelectorAll("a, button, [role=button]")) as HTMLElement[])
+        .filter(vis).filter((e) => (e.textContent || "").trim()).length;
+    });
+    if (visibleLinks > 12) return false;
+  } catch { return false; }
+
   for (const sel of NAV_TOGGLE_SELECTORS) {
     try {
       const loc = page.locator(sel).first();
@@ -168,14 +184,30 @@ export async function findApplicationEntryDeep(
   page: Page,
   opts: { maxModules?: number } = {},
 ): Promise<{ match: ApplicationEntryMatch; viaModule?: string } | null> {
+  // SETTLE FIRST. Called straight after a login, the page is often still mid-redirect: a
+  // transitional page has almost no links, which reads as "sparse home with a collapsed
+  // menu" and sends the whole search down the wrong path. Wait for the real page.
+  await page.waitForLoadState?.("networkidle", { timeout: 8000 }).catch(() => null);
+  await page.waitForTimeout?.(1200);
+
+  // The page we return to between module hops — never a login URL. Navigating a logged-in
+  // session back to Login.aspx yields a blank/redirect page and the search dead-ends there.
+  const current = typeof page.url === "function" ? page.url() : "";
+  const home = /login|sign-?in|logon/i.test(current) ? "" : current;
+
   const direct = await findApplicationEntry(page);
   if (direct) return { match: direct.match };
 
   // Nothing visible — the menu may simply be collapsed. Open it and look again before
-  // walking modules.
+  // walking modules. If that reveals nothing, RELOAD the home first: a toggle click can
+  // leave an open drawer covering the module tabs, and a stale overlay silently breaks the
+  // module walk below (observed on Accela, where the walk had just succeeded).
   if (await openCollapsedNav(page)) {
     const afterNav = await findApplicationEntry(page);
     if (afterNav) return { match: afterNav.match, viaModule: "navigation menu" };
+    if (home) {
+      try { await page.goto(home, { waitUntil: "domcontentloaded", timeout: 20000 }); await page.waitForTimeout?.(1200); } catch { /* keep going with the page as-is */ }
+    }
   }
 
   const maxModules = opts.maxModules ?? 3;
@@ -192,7 +224,6 @@ export async function findApplicationEntryDeep(
 
   const seen = new Set<string>();
   const modules = moduleLabels.filter((l) => matchesModuleLabel(l) && !seen.has(l) && seen.add(l)).slice(0, maxModules);
-  const home = typeof page.url === "function" ? page.url() : "";
   for (const label of modules) {
     try {
       await page.getByText(label, { exact: true }).first().click({ timeout: 8000 });
@@ -201,7 +232,9 @@ export async function findApplicationEntryDeep(
     } catch { continue; }
     const found = await findApplicationEntry(page);
     if (found) return { match: found.match, viaModule: label };
-    // Nothing here — go back and try the next module.
+    // Nothing here — go back and try the next module. With no safe home to return to, stop
+    // rather than wander: module tabs usually persist, but a blind retry is not worth it.
+    if (!home) break;
     try { await page.goto(home, { waitUntil: "domcontentloaded", timeout: 20000 }); await page.waitForTimeout?.(1000); } catch { break; }
   }
   return null;

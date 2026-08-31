@@ -213,7 +213,7 @@ gets. Results after the fixes below:
 
 | Portal (family) | Login | Application entry |
 |---|---|---|
-| Anne Arundel (Accela) | logged in | **"Create an Application" — one hop via Permits** |
+| Anne Arundel (Accela) | logged in | **found "Create an Application" one hop via Permits, and `--enter` lands on `CapApplyDisclaimer.aspx?module=Permits` — the real application start** |
 | Prince George's (Momentum) | logged in *(was: form not found)* | none on the dashboard (reported honestly) |
 | Gainesville (Citizenserve) | logged in *(was: no_submit_control)* | none found |
 | Lynn (SmartGov) | logged in | none on landing |
@@ -237,6 +237,12 @@ Pay Fees, Search, Renew, Upload), returning nothing rather than a least-bad clic
   The operator's own domain now wins, `.gov`/`.us` is a contact never a login, and
   re-import is an UPSERT keyed by portal URL (re-ran: 81 credentials, no duplicates, zero
   .gov logins). `updatePortalCredential` no longer discards security answers on rotation.
+- **Acting on a transitional page was its own bug.** Called straight after login, the entry
+  search ran mid-redirect: a transitional page has almost no links, which read as "sparse
+  home with a collapsed menu", and the recovery then navigated a logged-in session BACK to
+  Login.aspx and dead-ended on a blank page. `findApplicationEntryDeep` now settles first
+  and never returns to a login URL — that made the Accela hop reproducible (it had worked
+  once, then stopped). Watch for this shape anywhere the engine acts right after a nav.
 - **Still open**: EnerGov's Tyler-Identity SSO hand-off; Quincy OpenGov credential looks
   wrong/unregistered; Momentum + SmartGov + Citizenserve post-login homes surface no apply
   control (may need an account with apply rights, or a direct apply URL per tenant). AACO's
