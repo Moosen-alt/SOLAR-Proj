@@ -2651,6 +2651,11 @@ const server = app.listen(port, () => {
   // jobs. An orphan still holds its profile's OS lock, so without this the first run for
   // that client+portal fails to launch and stays failing until a human kills the process.
   // Safe here and only here: nothing of ours is in flight at startup.
+  // AWAITED, and the worker starts only after it finishes. Fire-and-forget made the comment
+  // above a lie: the scan takes seconds, the worker would already be claiming jobs, and the
+  // reaper could SIGKILL a browser this very process had just launched — killing a live
+  // portal submission and escalating it to a human for nothing. (The reaper also refuses to
+  // kill anything younger than this process, so the two guards are belt and braces.)
   void (async () => {
     try {
       const { reapOrphanedProfileBrowsers } = await import("../../portal-bot/src/browser");
@@ -2658,8 +2663,8 @@ const server = app.listen(port, () => {
       const killed = await reapOrphanedProfileBrowsers(profileBase);
       if (killed > 0) logger.warn("portal", `Reaped ${killed} orphaned portal browser(s) left by a previous run — their profiles are free again.`);
     } catch { /* cleanup is best-effort; never block startup */ }
+    startJobWorker(db);
   })();
-  startJobWorker(db);
   startBackupScheduler(db);
   startArtifactRetention();
   startMonitorScheduler(db);

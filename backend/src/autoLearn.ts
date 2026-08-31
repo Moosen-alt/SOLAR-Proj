@@ -30,7 +30,7 @@ import type { LearnPlanRequest, LearnPlanResponse } from "../../portal-bot/src/a
 import { createLLMProvider, getRecentLlmCalls } from "./llm";
 import { getDecryptedCredential, getDecryptedCredentialByUrl, getDecryptedCredentialAny, listPortalCredentials } from "./portalCredentials";
 import { learnNoteTopicsFromMisses, activeLearnedNoteTerms } from "./noteTopics";
-import { deadFieldBindings, resolveRecipeFieldValues, startPortalRecording, savePortalRecipeSteps, getPortalRecipe, convertLiteralsToBoundFields, findAnyRecipeForProject, appendHumanPatchSteps, promoteRecordingIfEligible } from "./portalRecipes";
+import { deadFieldBindings, resolveRecipeFieldValues, startPortalRecording, savePortalRecipeSteps, getPortalRecipe, convertLiteralsToBoundFields, findAnyRecipeForProject, appendHumanPatchSteps, promoteRecordingIfEligible, recipeProfileKey } from "./portalRecipes";
 import { HUMAN_SUBMIT_OBSERVED_NOTE } from "../../portal-bot/src/humanCapture";
 import { projectDocsByType } from "./projectDocuments";
 import { buildUtilityPackage } from "./docSplitter";
@@ -330,12 +330,11 @@ export async function autoLearnPortal(
   // leaves nothing behind — the next attempt proceeds, and startPortalRecording's snapshot
   // still protects the previous working steps. That keeps an operator retrying a cancelled
   // learn unblocked, which a database-status lock would not.
-  const leaseKey = [
-    scopeType,
-    (project.state || "").trim().toLowerCase(),
-    scopeType === "utility" ? (project.utility || "").trim().toLowerCase() : (project.ahj || "").trim().toLowerCase(),
-    (input.discipline || "").trim().toLowerCase(),
-  ].join("|");
+  // Key on EXACTLY what the recipe row is keyed on. A hand-rolled key here silently defeated
+  // the lease: recipeProfileKey includes the utility for an AHJ recipe and normalises the
+  // parts, so two learns that WOULD collide on one row could compute different lease keys
+  // and both proceed — the precise failure this lease exists to prevent.
+  const leaseKey = `${recipeProfileKey({ scopeType, state: project.state, ahj: project.ahj, utility: project.utility })}|${(input.discipline || "").trim().toLowerCase()}`;
   if (activeLearnKeys.has(leaseKey)) {
     throw new HttpError(409,
       "A learn for this portal is already running. Recipes are shared between clients, so a second "

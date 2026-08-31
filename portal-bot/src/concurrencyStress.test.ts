@@ -130,15 +130,28 @@ await check("waiting on a wedged profile times out cleanly instead of launching 
   }
 });
 
-// 7) ORPHAN REAPING. Launch a browser and abandon it (never close), then reap.
-await check("an abandoned browser is reaped and its profile becomes usable again", async () => {
-  const dir = profile("orphaned");
-  const abandoned = await openPortal({ userDataDir: dir, headless: true });
-  await abandoned.page.goto(URL0, { waitUntil: "domcontentloaded", timeout: 20000 });
-  // Drop the handle WITHOUT closing — exactly what a killed run leaves behind. The queue
-  // still thinks it is held, so the reaper is what has to save this.
-  const killed = await reapOrphanedProfileBrowsers(tmp);
-  assert.ok(killed >= 1, `the reaper should have killed the abandoned browser (killed=${killed})`);
+// 7) THE REAPER MUST NOT KILL LIVE WORK. This is the property that matters most: the reaper
+// SIGKILLs by profile path, and an over-eager one would kill a live submission on a
+// government portal. It therefore refuses anything younger than this process, since an
+// orphan is by definition something a PREVIOUS run left behind.
+//
+// That also means a true orphan cannot be simulated in-process — any browser this test
+// launches is younger than the test. What IS asserted here is the safety half; the reaping
+// half is exercised for real at server startup, where every one of our browsers is gone and
+// anything still holding a profile predates the boot.
+await check("the reaper refuses to kill a browser younger than this process (a live run)", async () => {
+  const dir = profile("live-run");
+  const live = await openPortal({ userDataDir: dir, headless: true });
+  try {
+    await live.page.goto(URL0, { waitUntil: "domcontentloaded", timeout: 20000 });
+    const killed = await reapOrphanedProfileBrowsers(tmp);
+    assert.equal(killed, 0, `a browser newer than this process must never be reaped (killed=${killed})`);
+    // Still alive and usable — not merely unkilled.
+    await live.page.goto(URL0, { waitUntil: "domcontentloaded", timeout: 20000 });
+    assert.ok(await live.page.title() !== undefined, "the live run's browser must still work");
+  } finally {
+    await closePortal(live).catch(() => null);
+  }
 });
 
 await check("the reaper leaves browsers OUTSIDE the profiles root alone", async () => {

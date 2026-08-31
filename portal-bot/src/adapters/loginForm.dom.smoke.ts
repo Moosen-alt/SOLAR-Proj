@@ -129,10 +129,28 @@ const SSO_HANDOFF = `<!doctype html><html><body>
   </script>
 </body></html>`;
 
+// (9) NOTHING TO GO ON. ComEd's interconnection portal (verified live) renders both login
+// inputs with no id, no name, no placeholder and no aria-label, and its labels carry
+// for="username"/"password" pointing at ids that do not exist on the page — so every
+// attribute- and label-based route finds nothing. Position is the only signal left: the
+// identifier is the visible text input immediately before the password.
+const BARE_INPUTS = `<!doctype html><html><body>
+  <h1>Sign In</h1>
+  <label for="username">Email Address</label><input type="text">
+  <label for="password">Password</label><input type="password">
+  <button id="go">Sign In</button>
+  <script>
+    document.getElementById('go').onclick = function(){
+      var i = document.querySelectorAll('input');
+      if (i[0].value && i[1].value) document.body.innerHTML='<a href="/logout">Log Out</a><h1>Dashboard</h1>';
+    };
+  </script>
+</body></html>`;
+
 const routes: Record<string, string> = {
   "/etrakit": ETRAKIT_LOGIN, "/public": PUBLIC_LANDING, "/signed-in": SIGNED_IN,
   "/two-step": TWO_STEP, "/js-submit": JS_SUBMIT, "/late-form": LATE_FORM,
-  "/hidden-duplicate": HIDDEN_DUPLICATE, "/sso-handoff": SSO_HANDOFF,
+  "/hidden-duplicate": HIDDEN_DUPLICATE, "/sso-handoff": SSO_HANDOFF, "/bare-inputs": BARE_INPUTS,
 };
 const server = http.createServer((q, r) => { r.writeHead(200, { "Content-Type": "text/html" }); r.end(routes[q.url || ""] ?? "<html><body>?</body></html>"); });
 await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
@@ -208,6 +226,12 @@ await check("a HIDDEN duplicate login (responsive markup) does not mask the visi
   assert.equal(res.status, "logged_in", `got ${res.status}: ${res.message}`);
   // The VISIBLE field is the one that got filled — not the hidden copy.
   assert.equal(await page.locator("#mu").count(), 0, "page should have advanced past the login");
+});
+
+await check("inputs with NO id/name/placeholder are found by position (ComEd shape)", async () => {
+  await page.goto(`http://127.0.0.1:${port}/bare-inputs`);
+  const res = await performLogin(page, cred);
+  assert.equal(res.status, "logged_in", `got ${res.status}: ${res.message}`);
 });
 
 await check("reveal walks to the NEXT trigger when the first one is a dead link (SSO hand-off)", async () => {

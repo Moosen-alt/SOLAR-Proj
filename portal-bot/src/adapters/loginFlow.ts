@@ -173,7 +173,7 @@ async function findInputByAdjacentLabel(page: Page, kind: "user" | "pass"): Prom
   try {
     const id = await (page as unknown as { evaluate: (fn: (k: string) => string | null, arg: string) => Promise<string | null> }).evaluate((k: string) => {
       const isVis = (el: Element) => { const r = (el as HTMLElement).getBoundingClientRect(); return r.width > 0 && r.height > 0; };
-      const re = k === "pass" ? /^\s*password\s*:?\s*$/i : /^\s*(user\s*name|username|user\s*id|email|login)\s*:?\s*$/i;
+      const re = k === "pass" ? /^\s*password\s*:?\s*$/i : /^\s*(user\s*name|username|user\s*id|e-?mail(\s*address)?|login)\s*:?\s*$/i;
       const labels = (Array.from(document.querySelectorAll("td, th, label, span, div, b, strong, p")) as HTMLElement[])
         .filter((e) => isVis(e) && re.test((e.textContent || "")) && (e.textContent || "").trim().length < 24);
       const inputs = (Array.from(document.querySelectorAll("input")) as HTMLInputElement[]).filter((e) => {
@@ -287,7 +287,40 @@ export async function loginFormPresent(page: Page): Promise<boolean> {
 // Locate the username / password field, trying the prioritized candidates first and the
 // adjacent-label scan as a last resort. One place so loginFormPresent and performLogin agree.
 async function findUsernameField(page: Page): Promise<Locator | null> {
-  return (await firstVisible(page, USERNAME_CANDIDATES)) ?? (await findInputByAdjacentLabel(page, "user"));
+  return (await firstVisible(page, USERNAME_CANDIDATES))
+    ?? (await findInputByAdjacentLabel(page, "user"))
+    ?? (await findInputBeforePassword(page));
+}
+
+// LAST RESORT, PURELY STRUCTURAL: the visible text/email input immediately BEFORE the
+// password field. Login forms put the identifier first, so position identifies it even when
+// nothing else does — and some portals give the field nothing else to go on. ComEd's
+// interconnection portal (verified live) renders both inputs with no id, no name, no
+// placeholder and no aria-label, and its <label for="username"> points at an id that does
+// not exist on the page, so every attribute- and label-based route fails.
+async function findInputBeforePassword(page: Page): Promise<Locator | null> {
+  try {
+    const idx = await (page as unknown as { evaluate: (fn: () => number) => Promise<number> }).evaluate(() => {
+      const vis = (el: Element) => { const r = (el as HTMLElement).getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+      const inputs = (Array.from(document.querySelectorAll("input")) as HTMLInputElement[]).filter(vis);
+      const pwAt = inputs.findIndex((e) => (e.getAttribute("type") || "").toLowerCase() === "password");
+      if (pwAt <= 0) return -1;
+      // Walk backwards to the nearest field a person would type an identifier into.
+      for (let i = pwAt - 1; i >= 0; i--) {
+        const t = (inputs[i].getAttribute("type") || "text").toLowerCase();
+        if (t === "text" || t === "email" || t === "tel") {
+          // Index among ALL visible inputs, so the locator below can address it.
+          return i;
+        }
+      }
+      return -1;
+    });
+    if (idx < 0) return null;
+    // Re-resolve by the same visible-input ordering the page evaluation used.
+    const all = page.locator("input:visible");
+    const loc = all.nth(idx);
+    return (await loc.count()) > 0 ? loc : null;
+  } catch { return null; }
 }
 async function findPasswordField(page: Page): Promise<Locator | null> {
   return (await firstVisible(page, PASSWORD_CANDIDATES)) ?? (await findInputByAdjacentLabel(page, "pass"));

@@ -43,15 +43,30 @@ serially.
 
 | Env var | Default | Set it to |
 |---|---|---|
-| `JOB_CONCURRENCY` | `1` (serial, unchanged) | what RAM affords: ~180MB per browser measured, so 20 fits in 16GB |
+| `JOB_CONCURRENCY` | `1` (serial, unchanged) | your concurrency target (job slots) |
+| `MAX_CONCURRENT_PORTAL_RUNS` | **`2`** | **the same number.** This is the real BROWSER ceiling — RAM is bounded by this, not by `JOB_CONCURRENCY`. Leaving it at 2 caps you at 2 live browsers no matter what else you set |
 | `MAX_JOBS_PER_TICK` | `5` | raise with concurrency (e.g. `20`) |
 | `PORTAL_PROFILE_WAIT_MS` | `900000` (15 min) | how long a run waits for a busy portal before failing cleanly |
 | `PORTAL_RUN_MAX_MS` | `1500000` (25 min) | hard ceiling on one portal run before its browser is force-closed |
 | `SCREENSHOT_KEEP` / `REPLAY_RUN_KEEP` / `PORTAL_DEBUG_KEEP` | `400` / `20` / `20` | artifact retention |
 | `AUTH_SECRET` | falls back to `SESSION_ENCRYPTION_KEY` | **set it separately** (see §1.6) |
 
+Set the two concurrency knobs to the SAME value. `JOB_CONCURRENCY` decides how many jobs are
+claimed at once; `MAX_CONCURRENT_PORTAL_RUNS` decides how many browsers may exist at once.
+Matching them also removes a head-of-line problem: a run waiting for a busy portal profile
+holds its browser slot while it waits, so with fewer slots than jobs a couple of waiters
+could stall every other client's portal work.
+
 Rotating the credential key is now possible: `npm run rekey:credentials -- --old=… --new=…`
 (dry-run first; it backs up, and refuses to write if anything fails to decrypt).
+
+### Known limitation (documented, not fixed)
+A run that waits out `PORTAL_PROFILE_WAIT_MS` fails permanently and raises a human-review
+item, because portal-effecting jobs are pinned to zero retries so a timer can never replay a
+live browser run. A profile-wait timeout is different — that run never started, so it is
+safe to retry — but distinguishing "never started" from "may have half-filed a portal form"
+needs a signal threaded through the job layer. Until then, matching the two knobs above
+makes the timeout rare.
 
 ## Phase 1 — before you deploy for a team (required)
 

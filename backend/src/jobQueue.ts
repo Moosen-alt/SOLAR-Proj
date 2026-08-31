@@ -460,13 +460,26 @@ function escalateJobFailure(db: AppDb, jobType: string, projectId: string | null
 let drainBusy = false;
 const MAX_JOBS_PER_TICK = Math.max(1, Number(process.env.MAX_JOBS_PER_TICK ?? 5));
 const JOB_CONCURRENCY = Math.max(1, Number(process.env.JOB_CONCURRENCY ?? 1));
+// A tick cannot start more jobs than its budget, so a JOB_CONCURRENCY above MAX_JOBS_PER_TICK
+// would be silently clamped — the operator sets 8 and gets 5. Raise the budget to match
+// rather than surprising them; the budget exists to bound one tick, not to cap concurrency.
+const JOBS_PER_TICK = Math.max(MAX_JOBS_PER_TICK, JOB_CONCURRENCY);
+// Longest a single drain will WAIT on in-flight jobs before returning. Jobs keep running;
+// this only stops one hung handler from holding drainBusy — and therefore the entire
+// queue — for the life of the process.
+const DRAIN_MAX_MS = Math.max(60_000, Number(process.env.DRAIN_MAX_MS ?? 10 * 60_000));
 
 export async function drainPendingJobs(db: AppDb): Promise<number> {
   if (drainBusy) return 0;
   drainBusy = true;
   let started = 0;
   let completed = 0;
-  let queueEmpty = false;
+  // How many consecutive probes came back empty. A SINGLE empty probe is not proof the
+  // queue is drained — with N calls in flight, one can lose the race for the last row and
+  // report empty while work remains. Latching on that first empty stopped the pool being
+  // refilled and stranded jobs behind a slow one, so require the queue to look empty with
+  // nothing else running before believing it.
+  let emptyProbes = 0;
   const running = new Set<Promise<void>>();
   const startOne = (): void => {
     started += 1;
@@ -475,23 +488,39 @@ export async function drainPendingJobs(db: AppDb): Promise<number> {
       // there is no await before the row is marked 'running'), so parallel callers each
       // take a DIFFERENT job — they cannot interleave mid-claim.
       const ran = await processNextJob(db);
-      if (ran) completed += 1; else queueEmpty = true;
+      if (ran) { completed += 1; emptyProbes = 0; } else { emptyProbes += 1; }
     })();
     running.add(p);
     void p.catch(() => null).finally(() => { running.delete(p); });
   };
   try {
-    while (!queueEmpty && started < MAX_JOBS_PER_TICK) {
-      while (!queueEmpty && started < MAX_JOBS_PER_TICK && running.size < JOB_CONCURRENCY) {
+    // A job whose promise never settles (a handler that hangs on a dead socket) used to
+    // hold drainBusy for the life of the process, silently stopping ALL queue processing.
+    // The drain's own tick is therefore bounded: work already started keeps running, we
+    // just stop waiting on it and let the next tick continue.
+    const deadline = Date.now() + DRAIN_MAX_MS;
+    const timeLeft = () => Math.max(0, deadline - Date.now());
+    while (started < JOBS_PER_TICK && timeLeft() > 0) {
+      while (started < JOBS_PER_TICK && running.size < JOB_CONCURRENCY && emptyProbes === 0) {
         startOne();
-        // Yield so a just-started call that found an empty queue can set queueEmpty before
-        // we start another; at worst we start one extra call that finds nothing and returns.
+        // Yield so a just-started call that found an empty queue can report it before we
+        // start another; at worst we start one extra call that finds nothing and returns.
         await Promise.resolve();
       }
-      if (!running.size) break;
-      await Promise.race([...running]).catch(() => null);
+      if (!running.size) break;              // nothing in flight and the queue read empty
+      await Promise.race([
+        Promise.race([...running]).catch(() => null),
+        new Promise((r) => setTimeout(r, Math.min(timeLeft(), 30_000))),
+      ]);
+      // A slot freed: if the last probe was empty but jobs are still running, they may
+      // enqueue follow-on work, so allow probing again rather than latching shut.
+      if (emptyProbes > 0 && running.size > 0) emptyProbes = 0;
     }
-    await Promise.all([...running].map((p) => p.catch(() => null)));
+    // Wait for what we started, but never past the deadline — see above.
+    await Promise.race([
+      Promise.all([...running].map((p) => p.catch(() => null))),
+      new Promise((r) => setTimeout(r, timeLeft())),
+    ]);
   } finally {
     drainBusy = false;
   }

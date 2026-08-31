@@ -30,7 +30,11 @@ const ENTRY_PATTERNS: RegExp[] = [
   /\bcreate an application\b/i,                        // Accela ACA
   /\bapply for (a |an )?(new )?(permit|license|application)\b/i, // OpenGov / SmartGov / Citizenserve / BS&A
   /\bstart (a |an )?(new )?(application|permit)\b/i,
-  /\bnew (permit |building )?application\b/i,
+  // "New <qualifier> Application" — the utility/interconnection phrasing. Ameren Illinois
+  // offers "New Interconnection Application" (verified live), and a fixed
+  // "new (permit|building) application" list would miss every vendor's own noun. Up to two
+  // words between, so this stays a button label rather than a sentence.
+  /\bnew\s+(?:[a-z-]+\s+){0,2}application\b/i,
   /\bsubmit (a |an )?(new )?(application|permit)\b/i,
   /\bapply online\b/i,                                  // SmartGov
   /\bcreate (a |an )?(new )?(permit|record|case)\b/i,
@@ -53,6 +57,11 @@ const EXCLUDE_PATTERNS: RegExp[] = [
   /\bcancel\b|\bwithdraw\b|\bdelete\b/i,
   /\bexisting\b|\bdraft\b/i,
   /\bregister\b|\bsign ?up\b|\bcreate an account\b/i, // account creation, not an application
+  // A PRE-application is a different, usually paid, product — an optional engineering study
+  // that does not file anything. Ameren Illinois lists "New Pre-Application" right beside
+  // the real "New Interconnection Application", so the broadened new-application pattern
+  // above must not swallow it.
+  /\bpre-?application\b/i,
 ];
 
 export function isExcludedEntryLabel(label: string): boolean {

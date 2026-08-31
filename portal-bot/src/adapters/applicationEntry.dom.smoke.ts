@@ -94,6 +94,15 @@ const PAGES: Record<string, string> = {
     <a href="/register">Create a Profile</a>
     <a href="/submit">Apply Here</a>
   </body>`,
+  // Ameren Illinois (PowerClerk), verified live: the real entry is "New Interconnection
+  // Application", sitting right next to "New Pre-Application" — a different, usually paid
+  // engineering study that files nothing and must never be picked.
+  "/utility-interconnection": `<!doctype html><body>
+    <a href="/home">Home</a>
+    <a href="/new-app">New Interconnection Application</a>
+    <a href="/new-pre">New Pre-Application</a>
+    <a href="/all">All Projects</a>
+  </body>`,
   // A mobile-first home where the whole menu — entry included — is behind a hamburger.
   // Verified live: Momentum's logged-in home offers only "Open Navigation Menu".
   "/collapsed-nav": `<!doctype html><body>
@@ -156,6 +165,9 @@ await check("a paragraph of text is never treated as a button", async () => {
 });
 
 await check("Momentum: 'Apply Here' is recognised", () => expectEntry("/apply-here", "Apply Here"));
+
+await check("Ameren IL: picks 'New Interconnection Application', never 'New Pre-Application'",
+  () => expectEntry("/utility-interconnection", "New Interconnection Application"));
 
 await check("Accela: follows ONE module hop to reach 'Create an Application'", async () => {
   await page.goto(`http://127.0.0.1:${port}/module-home`);

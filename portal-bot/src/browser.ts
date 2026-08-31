@@ -94,23 +94,49 @@ export async function reapOrphanedProfileBrowsers(profilesRoot: string): Promise
   const run = promisify(execFile);
   const needle = profilesRoot.replace(/[\\/]+$/, "");
   if (!needle) return 0;
+  // NEVER KILL A BROWSER YOUNGER THAN THIS PROCESS. An orphan is by definition something a
+  // PREVIOUS run left behind, so it must predate us. Without this the reaper is a live
+  // hazard rather than a cleanup: its process scan takes seconds (a PowerShell cold start
+  // alone is ~1s), and in that window this process can launch a real portal browser and
+  // then SIGKILL it — killing a live submission on a government portal and escalating it
+  // to a human for nothing. It also protects the outgoing instance during an overlapping
+  // restart, whose browsers are older than us but still finishing their runs… which is why
+  // the caller must ALSO await this before starting the job worker.
+  const ourStartMs = Date.now() - Math.round(process.uptime() * 1000);
   const pids: string[] = [];
   try {
     if (process.platform === "win32") {
-      // CIM gives the full command line, which is where the profile path lives.
+      // CIM gives the full command line (where the profile path lives) and the creation
+      // time. Matching is done in JS on the returned rows rather than inside a -like
+      // pattern, because a path containing PowerShell wildcard characters ([ ] * ?) would
+      // silently match nothing and turn the whole reaper into a no-op.
       const { stdout } = await run("powershell", [
         "-NoProfile", "-Command",
-        "Get-CimInstance Win32_Process | Where-Object { $_.Name -like 'chrome*' -and $_.CommandLine -like '*" +
-          needle.replace(/'/g, "''").replace(/\\/g, "\\") + "*' } | ForEach-Object { $_.ProcessId }",
-      ], { timeout: 20000 });
-      pids.push(...stdout.split(/\s+/).filter((t) => /^\d+$/.test(t)));
+        "Get-CimInstance Win32_Process | Where-Object { $_.Name -like 'chrome*' } | "
+        + "ForEach-Object { \"$($_.ProcessId)`t$($_.CreationDate.ToFileTimeUtc())`t$($_.CommandLine)\" }",
+      ], { timeout: 20000, maxBuffer: 8 * 1024 * 1024 });
+      for (const line of stdout.split("\n")) {
+        const [pid, fileTime, ...rest] = line.split("\t");
+        const cmd = rest.join("\t");
+        if (!/^\d+$/.test(pid ?? "") || !cmd.includes(needle)) continue;
+        // Windows FILETIME (100ns ticks since 1601) → epoch ms.
+        const createdMs = Number(fileTime) > 0 ? Number(BigInt(fileTime) / 10000n) - 11644473600000 : 0;
+        if (createdMs && createdMs >= ourStartMs) continue; // younger than us: not an orphan
+        pids.push(pid);
+      }
     } else {
-      const { stdout } = await run("ps", ["-eo", "pid=,args="], { timeout: 20000 });
+      // etimes = seconds the process has been alive, so the same "must predate us" rule
+      // applies without needing absolute clocks.
+      const { stdout } = await run("ps", ["-eo", "pid=,etimes=,args="], { timeout: 20000, maxBuffer: 8 * 1024 * 1024 });
       for (const line of stdout.split("\n")) {
         if (!line.includes(needle)) continue;
         if (!/chrome|chromium|headless_shell|chrome-headless-shell/i.test(line)) continue;
-        const pid = line.trim().split(/\s+/)[0];
-        if (/^\d+$/.test(pid)) pids.push(pid);
+        const parts = line.trim().split(/\s+/);
+        const pid = parts[0];
+        const ageSec = Number(parts[1]);
+        if (!/^\d+$/.test(pid)) continue;
+        if (Number.isFinite(ageSec) && ageSec * 1000 < Date.now() - ourStartMs) continue; // younger than us
+        pids.push(pid);
       }
     }
   } catch {
@@ -226,10 +252,32 @@ export async function openPortal(opts: {
       }
       throw err;
     });
-    await context.addInitScript({ content: NAME_SHIM });
-    const page = context.pages()[0] ?? (await context.newPage());
-    // Persistent context owns its own browser process; closing the context closes it.
-    return { page, context, releaseProfile };
+    // RELEASE WHEN THE BROWSER ACTUALLY GOES, whatever closes it. closePortal is not the
+    // only way a context ends: a human can close the window of a run deliberately left open
+    // at review, the browser can be OOM-killed, or it can crash. Every one of those used to
+    // leave the queue holding a profile nobody was using, and because the hold is only
+    // released by closePortal — which needs an `opened` the caller may never have received —
+    // the wedge lasted for the life of the process, failing every later run for that client
+    // and portal. Hooking the context's own close event covers all of them; release is
+    // idempotent, so closePortal calling it too is harmless.
+    try {
+      context.on("close", () => { releaseProfile(); });
+    } catch { /* a stub context in tests has no event emitter */ }
+
+    try {
+      await context.addInitScript({ content: NAME_SHIM });
+      const page = context.pages()[0] ?? (await context.newPage());
+      // Persistent context owns its own browser process; closing the context closes it.
+      return { page, context, releaseProfile };
+    } catch (err) {
+      // Setup failed AFTER a successful launch. The caller gets an exception and therefore
+      // never receives (or closes) this handle, so tear it down here — otherwise both the
+      // profile hold and the Chromium process leak, and the leaked process keeps the OS
+      // profile lock even after this Node process exits.
+      try { await context.close(); } catch { /* best effort */ }
+      releaseProfile();
+      throw err;
+    }
   }
 
   const browser = await chromium.launch({ headless, slowMo, args: CHROMIUM_ARGS, proxy: proxyOpts });
