@@ -1001,6 +1001,16 @@ async function autoLearnPortalInner(
   // PORTAL_SAVE_REVIEW_SCREENSHOT=0 to skip the write (the in-memory vision check is separately gated
   // by PORTAL_VISION_VERIFY). Default on.
   if (learn.reviewScreenshotBase64 && process.env.PORTAL_SAVE_REVIEW_SCREENSHOT !== "0") {
+  // Record WHICH application this run produced. A portal list can hold several drafts for
+  // the same customer (a learn, a replay, a demo), so without this an audit afterwards has
+  // to guess which row to open — and guessing "the first" or "the newest" opened the wrong
+  // one both times it was tried, once reporting a stale application as if it were this run's.
+  if (learn.applicationUrl) {
+    try {
+      db.run("UPDATE portal_recipes SET notes = notes || ? WHERE id = ?", [` [application:${learn.applicationUrl}]`, stub.id]);
+    } catch { /* non-fatal */ }
+  }
+
     try {
       const screenshotDir = path.join(process.cwd(), "data", "screenshots");
       fs.mkdirSync(screenshotDir, { recursive: true });

@@ -140,6 +140,11 @@ export interface LearnResult {
   missingRequiredDocs?: string[];
   /** Inline validation errors the portal raised when an advance was blocked. */
   validationBlocks?: string[];
+  /** The FULL url (query string included) of the application this run worked on, captured
+   *  where it stopped. Without it there is no way to audit the right application afterwards:
+   *  a portal list can hold several drafts for the same customer, and auditing "the first" or
+   *  "the newest" matching row picked the wrong one both times it was tried. */
+  applicationUrl?: string;
   /** Absolute path of this run's debug bundle (data/learn-runs/<runId>) — the folder the
    *  operator zips up for troubleshooting. Undefined when AUTOLEARN_RUN_DEBUG=0. */
   debugDir?: string;
@@ -3877,6 +3882,10 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       reviewScreenshotBase64,
       reachedReview,
       filledSomething,
+      // Where this run actually ended up, query string and all — the only reliable handle
+      // for auditing THIS application afterwards rather than some other draft of the same
+      // customer's that happens to sit higher in the portal's list.
+      applicationUrl: (() => { try { return typeof this.page?.url === "function" ? this.page.url() : undefined; } catch { return undefined; } })(),
       requiredFieldMisses: fillVerifyMisses,
       missingRequiredDocs,
       validationBlocks,

@@ -136,8 +136,19 @@ async function main(): Promise<void> {
     const rowArg = args.find((a) => a.startsWith("--row="));
     if (!appArg && rowArg) {
       const want = rowArg.split("=").slice(1).join("=");
-      const row = page.locator("tr").filter({ hasText: want }).first();
-      if (await row.count().catch(() => 0)) {
+      // SAY WHEN THE CHOICE IS AMBIGUOUS. Several applications can carry the same customer
+      // name — a learn, a replay and a demo all produce one — and silently auditing the
+      // first is how a stale application gets reported as if it were the new one. Report
+      // the count; --last picks the newest-appended row instead of the first.
+      const matches = page.locator("tr").filter({ hasText: want });
+      const matchCount = await matches.count().catch(() => 0);
+      const useLast = args.includes("--last");
+      if (matchCount > 1) {
+        console.log(`NOTE: ${matchCount} rows match "${want}" — auditing the ${useLast ? "LAST" : "FIRST"} one.`
+          + `${useLast ? "" : " Pass --last for the most recently created, or --app=<url> to be exact."}`);
+      }
+      const row = useLast ? matches.nth(matchCount - 1) : matches.first();
+      if (matchCount > 0) {
         // A grid row often carries no link at all: it is EXPANDABLE, and the link to the
         // application only exists once the row's chevron is opened (PowerClerk marks these
         // data-test-state="expandable"). So try a link, then expand and try again.
@@ -147,7 +158,7 @@ async function main(): Promise<void> {
           await chevron.click({ timeout: 8000 }).catch(() => null);
           await page.waitForTimeout(1800);
           // The expanded detail usually renders as the NEXT row.
-          const expanded = page.locator("tr").filter({ hasText: want }).first().locator("xpath=following-sibling::tr[1]");
+          const expanded = row.locator("xpath=following-sibling::tr[1]");
           rowLink = (await expanded.locator("a").count().catch(() => 0)) ? expanded.locator("a").first() : row.locator("a").first();
         }
         if (await rowLink.count().catch(() => 0)) {
