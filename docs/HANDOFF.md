@@ -152,6 +152,30 @@ Still open, in order:
 
 ## Open issues / next work (priority order)
 
+**Illinois is LIVE: Ameren records AND replays (2026-08-31).** Credentials for both IL
+utilities are stored encrypted under `tml-international-llc`. Ameren Illinois (PowerClerk)
+was learned end-to-end — a 61-step recipe covering terms, application level/type, applicant,
+account number, installer, generator specs (AC/DC size, inverter make/model/count,
+commissioning date), acknowledgements and the DocuSign email — and it **replays 60/61 steps
+in 149s with zero failures, stopping at review**; the skipped step is the recorded final
+submit, never clicked. Verified against the PORTAL, not the log: the account holds two
+complete Level 1 applications (Testerson/Test, 7.68 kW AC, TML INTERNATIONAL LLC, $50 fee),
+one from the learn and one from the replay.
+- The learn's own verifier could not promote the recipe because it looks for a review screen
+  to scrape and PowerClerk's project list is not shaped like one. Promotion was done only
+  after reading the portal back, recorded in the audit as such. **If a portal never yields a
+  scrapeable review screen, expect this every time** — the recipe is fine, the verifier just
+  cannot see it.
+- **ComEd (Intellio Connect) logs in but is not yet learned.** Its dashboard is icon-only
+  (Material icons, no text labels), so the text-based entry finder finds nothing — that is
+  the documented limit for an icon-only UI, and the first ComEd learn will need the planner
+  to find the way in.
+- **CLEANUP OWED on the Ameren account: 7 projects, all Unsubmitted.** Two are the real
+  learn/replay applications; the rest are empty shells, because every click of "New
+  Interconnection Application" creates a project and each diagnostic run clicked it. Worth
+  clearing by hand.
+
+
 **Scaling to a team (5-20 concurrent portal runs) — plan in `docs/SCALE_DEPLOYMENT.md`.**
 A six-part audit (2026-08-31) found the concurrency hazards are almost all CROSS-PROCESS, so
 with employees on the dashboard and all automation in the one server process they never arm.
