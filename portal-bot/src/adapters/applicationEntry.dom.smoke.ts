@@ -103,6 +103,20 @@ const PAGES: Record<string, string> = {
     <a href="/new-pre">New Pre-Application</a>
     <a href="/all">All Projects</a>
   </body>`,
+  // ComEd's shape (verified live): a floating "+" button whose only visible text is the
+  // plus sign; the name appears in aria-label, and to a person only on hover. Reading
+  // textContent made the entry unfindable, and locating it BY that text found nothing even
+  // once it was identified.
+  "/fab": `<!doctype html><body>
+    <a href="/records">My Records</a>
+    <button aria-label="New Application Button. This will open a popup drawer.">+</button>
+  </body>`,
+  // The same idea with a tooltip attribute instead of aria-label.
+  "/fab-title": `<!doctype html><body>
+    <a href="/records">Search Applications</a>
+    <button title="New Application">+</button>
+  </body>`,
+
   // A mobile-first home where the whole menu — entry included — is behind a hamburger.
   // Verified live: Momentum's logged-in home offers only "Open Navigation Menu".
   "/collapsed-nav": `<!doctype html><body>
@@ -168,6 +182,23 @@ await check("Momentum: 'Apply Here' is recognised", () => expectEntry("/apply-he
 
 await check("Ameren IL: picks 'New Interconnection Application', never 'New Pre-Application'",
   () => expectEntry("/utility-interconnection", "New Interconnection Application"));
+
+await check("ComEd: a '+' FAB named only by aria-label is found", async () => {
+  await page.goto(`http://127.0.0.1:${port}/fab`);
+  const found = await findApplicationEntry(page);
+  assert.ok(found, "the FAB should be found via its accessible name");
+  assert.match(found!.match.label, /New Application/i);
+  // And it must be CLICKABLE — locating an aria-label by visible text finds nothing.
+  await found!.locator.click({ timeout: 5000 });
+});
+
+await check("a '+' FAB named only by a tooltip is found and clickable", async () => {
+  await page.goto(`http://127.0.0.1:${port}/fab-title`);
+  const found = await findApplicationEntry(page);
+  assert.ok(found, "the FAB should be found via its title tooltip");
+  assert.equal(found!.match.label, "New Application");
+  await found!.locator.click({ timeout: 5000 });
+});
 
 await check("Accela: follows ONE module hop to reach 'Create an Application'", async () => {
   await page.goto(`http://127.0.0.1:${port}/module-home`);

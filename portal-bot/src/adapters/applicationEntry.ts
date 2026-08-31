@@ -94,20 +94,36 @@ export async function findApplicationEntry(page: Page): Promise<{ locator: Locat
   let best: { locator: Locator; match: ApplicationEntryMatch; rank: number } | null = null;
 
   for (const scope of scopes) {
-    let candidates: Array<{ label: string; href: string; index: number }> = [];
+    let candidates: Array<{ label: string; href: string; index: number; fromText: boolean }> = [];
     try {
       candidates = await (scope as Frame).evaluate(() => {
         const vis = (el: Element) => {
           const r = (el as HTMLElement).getBoundingClientRect();
           return r.width > 0 && r.height > 0;
         };
+        // THE VISIBLE TEXT IS OFTEN NOT THE NAME. Newer portals put the entry on a floating
+        // action button whose content is "+" or an icon-font ligature, with the real name in
+        // aria-label or a hover tooltip (title) — ComEd's interconnection portal is exactly
+        // this: a purple "+" that only says "New Application" once you hover it. Reading
+        // textContent alone made that button unfindable. So: use the visible text when it
+        // actually says something, otherwise fall back to the accessible name and then the
+        // tooltip. Order matters — a normal button's visible text still wins, because that
+        // is what a person reads.
+        const meaningful = (t: string): boolean => t.length >= 3 && !/^[+\-–—·•*]+$/.test(t) && !/^[a-z][a-z0-9_]{1,24}$/.test(t);
         return (Array.from(document.querySelectorAll("a, button, input[type=button], input[type=submit], [role=button]")) as HTMLElement[])
           .filter(vis)
-          .map((el, index) => ({
-            label: ((el as HTMLInputElement).value || el.textContent || el.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim(),
-            href: el.getAttribute("href") || "",
-            index,
-          }))
+          .map((el, index) => {
+            const own = ((el as HTMLInputElement).value || el.textContent || "").replace(/\s+/g, " ").trim();
+            const aria = (el.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim();
+            const title = (el.getAttribute("title") || el.getAttribute("data-tooltip") || "").replace(/\s+/g, " ").trim();
+            const useOwn = meaningful(own);
+            return {
+              label: useOwn ? own : (aria || title || own),
+              fromText: useOwn,           // how the label was derived decides how we re-find it
+              href: el.getAttribute("href") || "",
+              index,
+            };
+          })
           .filter((c) => c.label);
       });
     } catch { continue; } // cross-origin frame
@@ -115,8 +131,13 @@ export async function findApplicationEntry(page: Page): Promise<{ locator: Locat
       if (!matchesEntryLabel(c.label)) continue;
       const rank = entryRank(c.label);
       if (best && rank >= best.rank) continue;
-      // Re-locate by exact visible text within this scope — stable across the evaluate boundary.
-      const loc = (scope as Frame).getByText(c.label, { exact: true }).first();
+      // Re-locate the way the label was DERIVED. A label taken from aria-label or a tooltip
+      // is not on the page as text, so locating it by text finds nothing — which is how an
+      // icon/FAB entry stayed unclickable even once it was correctly identified.
+      const byText = (scope as Frame).getByText(c.label, { exact: true }).first();
+      const loc = c.fromText
+        ? byText
+        : (scope as Frame).locator(`[aria-label="${c.label.replace(/"/g, '\\"')}"], [title="${c.label.replace(/"/g, '\\"')}"]`).first();
       best = { locator: loc as Locator, match: { label: c.label, via: c.href ? "href" : "text", href: c.href || undefined }, rank };
     }
   }

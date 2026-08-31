@@ -16,7 +16,7 @@ import fs from "node:fs";
 process.env.AUTOPILOT_DB_PATH = process.env.AUTOPILOT_DB_PATH || "backend/data/autopilot.sqlite";
 
 interface FieldState { label: string; kind: string; required: boolean; filled: boolean; value: string }
-interface PageAudit { title: string; url: string; fields: FieldState[]; uploads: { total: number; attached: number } }
+interface PageAudit { title: string; url: string; fields: FieldState[]; uploads: { total: number; attached: number }; uploadSlots: Array<{ label: string; attached: boolean; accept: string }> }
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
@@ -72,12 +72,19 @@ async function main(): Promise<void> {
     };
     const fields: Array<{ label: string; kind: string; required: boolean; filled: boolean; value: string }> = [];
     let uploadTotal = 0; let uploadAttached = 0;
+    const uploadSlots: Array<{ label: string; attached: boolean; accept: string }> = [];
     for (const el of Array.from(document.querySelectorAll("input, select, textarea")) as HTMLElement[]) {
       const type = (el.getAttribute("type") || "").toLowerCase();
       if (type === "hidden" || type === "submit" || type === "button" || type === "image") continue;
       if (type === "file") {
         uploadTotal++;
-        if ((el as HTMLInputElement).files && (el as HTMLInputElement).files!.length > 0) uploadAttached++;
+        const attached = Boolean((el as HTMLInputElement).files && (el as HTMLInputElement).files!.length > 0);
+        if (attached) uploadAttached++;
+        // NAME the slot. A count of empty uploads tells you something is missing; the slot's
+        // own label tells you WHICH document the portal is asking for ("Data Sheet for the
+        // DC Source/PV Module", "Attach Proof of Insurance"), which is what decides whether
+        // we can produce it from the plan-set split or have to go and get it.
+        uploadSlots.push({ label: labelFor(el).slice(0, 80) || "(unlabelled upload)", attached, accept: el.getAttribute("accept") || "" });
         continue;
       }
       if (!vis(el)) continue;
@@ -96,7 +103,7 @@ async function main(): Promise<void> {
       }
       fields.push({ label: label.slice(0, 60), kind: el.tagName === "SELECT" ? "select" : (type || "text"), required: isRequired(el, label), filled, value: value.slice(0, 40) });
     }
-    return { title: document.title, url: location.href, fields, uploads: { total: uploadTotal, attached: uploadAttached } };
+    return { title: document.title, url: location.href, fields, uploads: { total: uploadTotal, attached: uploadAttached }, uploadSlots };
   });
 
   const pages: PageAudit[] = [];
@@ -218,6 +225,13 @@ async function main(): Promise<void> {
   for (const r of requiredBlank.slice(0, 30)) console.log(`     ✗ ${r}`);
   console.log(`  optional blank:       ${optionalBlank.length}`);
   console.log(`  upload slots:         ${uploadsAttached}/${uploadsTotal} attached`);
+  const slots = pages.flatMap((p) => p.uploadSlots);
+  const seenSlot = new Set<string>();
+  for (const s of slots) {
+    if (seenSlot.has(s.label)) continue;
+    seenSlot.add(s.label);
+    console.log(`     ${s.attached ? "✓" : "✗"} ${s.label}${s.accept ? `   [${s.accept.slice(0, 40)}]` : ""}`);
+  }
 
   // AN AUDIT THAT FOUND NOTHING MUST NOT REPORT "COMPLETE". The first version of this walked
   // one page, saw one field, and declared the application complete — the same falsely-green
