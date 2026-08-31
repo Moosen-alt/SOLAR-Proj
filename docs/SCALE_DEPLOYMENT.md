@@ -31,6 +31,28 @@ not a re-architecture. Postgres is a Phase 3 concern and probably never.
 
 ---
 
+## Status: Phases 1 and 2 are IMPLEMENTED (2026-08-31)
+
+Everything in Phases 1 and 2 below is built, tested and committed. Verified live against
+real portals with two simultaneous users: two runs on the SAME client+portal serialised
+(hold windows did not overlap; both logged in; no "profile is still locked" failure), and
+two runs on DIFFERENT portals overlapped by 7.7s, finishing in 9s wall clock instead of ~18s
+serially.
+
+**Turn concurrency on for the server** — it ships defaulted to today's serial behaviour:
+
+| Env var | Default | Set it to |
+|---|---|---|
+| `JOB_CONCURRENCY` | `1` (serial, unchanged) | what RAM affords: ~400MB per browser, so 8 on a 16GB box |
+| `MAX_JOBS_PER_TICK` | `5` | raise with concurrency (e.g. `20`) |
+| `PORTAL_PROFILE_WAIT_MS` | `900000` (15 min) | how long a run waits for a busy portal before failing cleanly |
+| `PORTAL_RUN_MAX_MS` | `1500000` (25 min) | hard ceiling on one portal run before its browser is force-closed |
+| `SCREENSHOT_KEEP` / `REPLAY_RUN_KEEP` / `PORTAL_DEBUG_KEEP` | `400` / `20` / `20` | artifact retention |
+| `AUTH_SECRET` | falls back to `SESSION_ENCRYPTION_KEY` | **set it separately** (see §1.6) |
+
+Rotating the credential key is now possible: `npm run rekey:credentials -- --old=… --new=…`
+(dry-run first; it backs up, and refuses to write if anything fails to decrypt).
+
 ## Phase 1 — before you deploy for a team (required)
 
 ### 1.1 Make the queue concurrent (small)
