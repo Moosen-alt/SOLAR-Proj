@@ -257,6 +257,15 @@ const POLICY_RADIO_DEFAULTS: Array<{ question: RegExp; answer: "Yes" | "No"; enf
   // REQUIRED question that blocks the page. enforce=false, so a project that genuinely is
   // one (answered by a human or by project data) is never overridden.
   { question: /public\s*school\s*project/i, answer: "No" },
+  // Illinois compensation election (Ameren's Compensation step): take kWh netting and
+  // monetise the credits. Operator-confirmed as the standing choice for residential.
+  //
+  // NOTE FOR WHOEVER TOUCHES THIS: Ameren treats the netting election as IRREVERSIBLE once
+  // the application is submitted, so this is a commercial decision encoded as a default, not
+  // a mechanical one. enforce=false, so anything already answered — by a human or from
+  // project data — always wins.
+  { question: /net\s*k?wh|kwh\s*netting|net\s*metering\s*\(k?wh\)/i, answer: "Yes" },
+  { question: /monetiz/i, answer: "Yes" },
 ];
 
 // Sensitive field labels whose literal value must NEVER be stored in a recorded step.
