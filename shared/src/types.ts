@@ -75,6 +75,10 @@ export interface ClientRecord {
   standardDisconnectModel: string;
   ccbExpiration: string;
   electricalLicenseNumber: string;
+  /** ICC/state docket number for the installer's DG certification (Illinois Part 468).
+   *  A per-installer credential like the licences beside it, required on every Illinois
+   *  interconnection application. */
+  docketNumber: string;
   // Metro/city contractor license (e.g. Portland Metro), and the supervising
   // electrician's own personal license — distinct from the company electrical
   // contractor license above. Many AHJ permit forms require all three.

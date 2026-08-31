@@ -391,6 +391,7 @@ export const RECIPE_FIELD_DESCRIPTIONS: Record<string, string> = {
   installerContactName: "Installer contact person full name",
   ccbLicenseNumber: "CCB (contractor) license number",
   electricalLicenseNumber: "Electrical contractor license number",
+  docketNumber: "ICC/state docket number for the installer's DG certification (Illinois Part 468)",
   metroCityLicenseNumber: "Metro or city business license number",
   electricalSupervisorName: "Supervising electrician full name",
   electricianLicenseNumber: "Supervising electrician license number",

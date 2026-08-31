@@ -251,6 +251,12 @@ const POLICY_RADIO_DEFAULTS: Array<{ question: RegExp; answer: "Yes" | "No"; enf
   // detail places the lockable AC disconnect within the required distance on every install.
   { question: /disconnect within 10\s*(feet|ft|')\s*of the .{0,20}meter/i, answer: "Yes" },
   { question: /disconnect.{0,60}(required distance|within the state).{0,40}meter/i, answer: "Yes" },
+  // Ameren Illinois asks every applicant whether this is a "public school project" as
+  // defined by 220 ILCS 5/16-107.6 — a statutory category that decides a different
+  // incentive path. A residential rooftop install never is one, and left unanswered it is a
+  // REQUIRED question that blocks the page. enforce=false, so a project that genuinely is
+  // one (answered by a human or by project data) is never overridden.
+  { question: /public\s*school\s*project/i, answer: "No" },
 ];
 
 // Sensitive field labels whose literal value must NEVER be stored in a recorded step.
@@ -351,6 +357,12 @@ export const UPLOAD_LABEL_PATTERNS: Array<{ re: RegExp; docType: string }> = [
   // a successful upload.
   { re: /(structural|engineer(ing|'s|s')?|\bPE\b|design)\s*(letter|certification|certificate)|letter\s*of\s*certification|structural\s*(calc|analysis|report)|wet\s*stamp|stamped\s*letter|sealed\s*letter/i, docType: "structural_letter" },
   { re: /structural|roof\s*framing|mounting|attachment\s*detail/i, docType: "structural" },
+  // SIGNAGE BEFORE INVERTER. Ameren Illinois asks for a "Picture of 5 x 7 signage, knife
+  // blade disconnect, and smart inverter" — one photo of the installed placard and gear.
+  // The inverter pattern below matches the word "inverter" in that sentence, so without
+  // this the site photo slot would receive the INVERTER DATA SHEET: an upload that looks
+  // successful and is wrong, the same failure the meter-photo note describes.
+  { re: /signage|\bsign\b.{0,20}(photo|picture)|(photo|picture).{0,30}(signage|placard|disconnect)/i, docType: "labels" },
   { re: /inverter|micro[-\s]?inverter/i, docType: "inverter_spec" },
   { re: /module|panel\s*(spec|data\s*sheet)|cut\s*sheets?/i, docType: "module_spec" },
   // Both word orders. PacifiCorp's label is "Upload a photo of meter where system will
@@ -370,6 +382,21 @@ export const UPLOAD_LABEL_PATTERNS: Array<{ re: RegExp; docType: string }> = [
 // because portal file inputs typically only accept PDFs; attaching a ZIP to an
 // "Electrical Diagram" slot silently fails or shows up in the wrong section.
 const UPLOAD_FALLBACK_DOCTYPES = ["plan_set", "sld", "site_plan", "utility_package_zip"];
+
+// SLOTS THAT MUST NEVER RECEIVE A SUBSTITUTE. The fallback above is right for a vague
+// "Attach documents" control, and wrong for a slot that names a document we simply do not
+// hold: proof of insurance, an installation invoice, a W-9, a commissioning settings photo.
+// Filing the plan set against "Attach Proof of Insurance" is not a near-miss — it is a wrong
+// document in a named slot, which reads as complete to us and as nonsense to the reviewer,
+// and it is exactly the failure the meter-photo note above records. Leave these empty so the
+// required-field sweep reports them and a human supplies the real file.
+const UPLOAD_NO_SUBSTITUTE = /insurance|invoice|\bw-?9\b|tax\s*form|voided\s*check|bank|volt\s*var|settings\s*(picture|photo|screenshot)|commissioning\s*(photo|report)|interconnection\s*agreement|signed\s*agreement/i;
+
+/** True when a slot names a document the split cannot produce, so the generic plan-set
+ *  fallback must not fire for it. */
+export function uploadForbidsSubstitute(label: string | undefined): boolean {
+  return !!label && UPLOAD_NO_SUBSTITUTE.test(label);
+}
 
 export function isPayFee(text: string | undefined): boolean {
   return !!text && PAY_FEE.test(text);
@@ -1399,6 +1426,14 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     // (e.g. the SLD) into an optional "Cut Sheets" / "Other" slot files the WRONG
     // document with the utility. The human can attach extras at review if wanted.
     if (!required) return null;
+    // A slot that NAMES a document we cannot produce (insurance, invoice, W-9, a
+    // commissioning settings photo) takes no substitute, required or not. Filing the plan
+    // set there would look complete to us and read as nonsense to the reviewer; leaving it
+    // empty lets the required-field sweep report it and a human attach the real file.
+    if (uploadForbidsSubstitute(label)) {
+      this.debug?.event({ type: "upload_no_substitute", label: (label || "").slice(0, 60) });
+      return null;
+    }
     // 1b) Specific label matched but split doc is missing → use plan_set as the best
     //     available substitute (a PDF the portal can actually accept), not a ZIP.
     if (labelMatchedDocType && fits("plan_set")) {

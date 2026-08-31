@@ -1339,6 +1339,22 @@ const VERSIONED_MIGRATIONS: VersionedMigration[] = [
       `);
     },
   },
+  {
+    version: 15,
+    name: "client_docket_number",
+    up: (db) => {
+      // Illinois requires the installer's ICC docket number (83 Ill. Adm. Code Part 468 —
+      // the Distributed Generation Installer certification) on every interconnection
+      // application: Ameren's form has a REQUIRED "Docket Number" field. It is a per-
+      // installer credential like the CCB or electrical licence beside it, not per-project,
+      // so it belongs on the client. Without it the field could not be filled from any data
+      // we hold and every Illinois learn left it blank.
+      const cols = db.query<{ name: string }>("PRAGMA table_info(clients)").map((c) => c.name);
+      if (!cols.includes("docket_number")) {
+        db.exec("ALTER TABLE clients ADD COLUMN docket_number TEXT NOT NULL DEFAULT ''");
+      }
+    },
+  },
 ];
 
 // One-time repair for the runaway-notes bug: upsertKnowledge used to merge the
