@@ -33,6 +33,7 @@
     "import:portal-processes": "tsx backend/src/importPortalProcesses.ts",
     "rekey:credentials": "tsx backend/src/rekeyCredentials.ts",
     "portal:reach": "tsx portal-bot/src/reachProbe.ts",
+    "demo:replay": "tsx portal-bot/src/demoReplay.ts",
     "review:test": "tsx backend/test/codeProfiles.test.ts && tsx backend/test/reviewerOregonGolden.test.ts && tsx backend/test/reviewPacks.test.ts && tsx backend/test/reviewApi.test.ts"
   },
   "engines": {
