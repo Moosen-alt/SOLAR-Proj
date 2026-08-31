@@ -182,8 +182,28 @@ workbook (pinned in `portalUrlScope.test.ts`).
   login fails.
 - These are AHJ **permit** portals on platform families we mostly have NOT learned yet
   (EnerGov CSS, ViewPoint/OpenGov, SmartGov, Citizenserve, BS&A, eTRAKiT…). Reaching a
-  review page on each needs a learn on a real in-jurisdiction project — see the reachability
-  sweep notes appended after the live run.
+  review page on each needs a learn on a real in-jurisdiction project.
+
+**Reachability sweep (live, 2026-08-31) → a universal login fix.** Pointed the bot's OWN
+login path (`performLogin` in `loginFlow.ts`) at real portals to find where it fails on
+unfamiliar platforms. Two results:
+- **Anne Arundel County (Accela, real credential): logged in cleanly** → reached the
+  authenticated navigator with "Create an Application" per module. Proves the whole path
+  (resolve stored cred → universal engine login → application entry) end-to-end on a real
+  portal, no planset required. A true pre-submit REVIEW page still needs a synthetic
+  in-jurisdiction project (address that passes parcel validation) — that's the next step.
+- **eTRAKiT (Shoreline): exposed a silent false-success bug, now fixed.** The engine used
+  to treat "no `type=password` field found" as `already_authenticated` and would "learn" a
+  page it was never signed in to. eTRAKiT's password box is a Telerik `type=text` RadTextBox
+  labelled only by a sibling "Password:" cell. Fixed generically (commit "Make the universal
+  login flow honest…"): password detection by attribute/label/placeholder + an adjacent-label
+  scan for table-layout ASP.NET portals; `already_authenticated` now requires a POSITIVE
+  logout signal; otherwise the new `login_form_unrecognized` status tells the caller to
+  record/learn the portal instead of proceeding. Pinned by `loginForm.dom.smoke.ts`.
+- **Do NOT bulk-drive all ~11 families' logins unattended** — they're a real company's
+  production gov accounts (lockout risk), and first login from a new machine often triggers
+  a device-verification email we can't read yet. One attempt per portal; drive the rest
+  when the operator can watch or when the inbox-code path is wired.
 
 **Illinois market entry — researched + KB-seeded 2026-08-30, waiting on logins.**
 Deep research (7 agents, verifier-checked) is written up in `docs/IL_ONBOARDING.md`;
