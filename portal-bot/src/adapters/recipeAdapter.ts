@@ -4,6 +4,11 @@ import type { PortalRecipe, ProjectRecord, RecipeSelector, RecipeStep } from "..
 import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, ok, fail, type PortalContext, type PortalStepResult } from "../adapter";
 import { openPortal } from "../browser";
 import { selectWithFallback } from "../comboboxFill";
+
+// How long the drift precheck waits for an async-rendered form to paint before concluding
+// the replay is on the wrong page. PowerClerk's Ameren form reports zero inputs for several
+// seconds after its URL loads; judging it on the first DOM read failed whole runs.
+const DRIFT_SETTLE_MS = Math.max(2000, Number(process.env.RECIPE_DRIFT_SETTLE_MS ?? 15000));
 import { detectChallengeFrame, frameSelectorFor, hasNumericValidationError, scanStatusFromBody, RETRY_BACKOFF_MS, sleep, smartWait, toBareNumber, waitForElement, waitForInteractiveControls } from "../safeAction";
 import { performLogin } from "./loginFlow";
 import { EXTRACT_SEL, extractFieldsInPage, toExtractedField, dismissPageModals, clearPageOverlays, equipmentMakeCandidates, pageFingerprintOf, collectValidationErrorsFrom, acaApplyEntryFrom } from "./autoLearnAdapter";
@@ -2322,15 +2327,30 @@ export class RecipeAdapter extends BasePortalAdapter {
       if (!this.page || typeof this.page.$$eval !== "function") return null;
       const expected = this.expectedLabelsForSegment(fromIndex);
       if (expected.length < 3) return null;
-      const raws = (await this.page.$$eval(EXTRACT_SEL, extractFieldsInPage)) as Array<{ label?: string }>;
-      const live = raws.map((r) => (r.label || "").trim().toLowerCase()).filter(Boolean);
-      const matches = (want: string): boolean => {
-        const w = want.toLowerCase();
-        return live.some((l) => l === w || (Math.min(l.length, w.length) >= 5 && (l.includes(w) || w.includes(l))));
-      };
-      const hit = expected.filter(matches).length;
-      const overlap = hit / expected.length;
-      if (overlap >= 0.34) return null;
+
+      // AN UNPAINTED PAGE IS NOT DRIFT. This read the DOM once, so a portal that renders
+      // its fields asynchronously looked identical to being on the wrong page: measured
+      // live on Ameren Illinois (PowerClerk), the form URL loads and reports ZERO visible
+      // inputs for seconds afterwards, and the replay failed the whole run at "0 of 17
+      // recorded fields" while the page it wanted was still on its way. Poll until the
+      // expected fields show up, and only call it drift when they never do. Genuine drift
+      // pays this budget once and then stops the run, which it was going to do anyway.
+      let hit = 0;
+      let overlap = 0;
+      const deadline = Date.now() + DRIFT_SETTLE_MS;
+      for (;;) {
+        const raws = (await this.page.$$eval(EXTRACT_SEL, extractFieldsInPage)) as Array<{ label?: string }>;
+        const live = raws.map((r) => (r.label || "").trim().toLowerCase()).filter(Boolean);
+        const matches = (want: string): boolean => {
+          const w = want.toLowerCase();
+          return live.some((l) => l === w || (Math.min(l.length, w.length) >= 5 && (l.includes(w) || w.includes(l))));
+        };
+        hit = expected.filter(matches).length;
+        overlap = hit / expected.length;
+        if (overlap >= 0.34) return null;
+        if (Date.now() >= deadline) break;
+        await sleep(750);
+      }
       // BELOW THIS, WE ARE NOT ON THE RECORDED PAGE — stop rather than warn.
       //
       // Stopping used to require ZERO matches, so a couple of incidental hits ("Name",
