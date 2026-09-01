@@ -244,6 +244,10 @@ const NOT_LISTED_CHECKBOX =
 //   • enforce=true: selects the policy answer even if another option is already checked, so a
 //     planner that picked the wrong option is corrected. Used for answers fixed by equipment
 //     listing (UL 1741-SB lab certification is "Yes" for standard listed residential inverters).
+// What an "Other — please specify" box gets. This product files solar permits; the work is
+// always solar, so the specify box is always the same answer.
+const OTHER_SPECIFY_VALUE = "Solar";
+
 const POLICY_RADIO_DEFAULTS: Array<{ question: RegExp; answer: "Yes" | "No"; enforce?: boolean }> = [
   { question: /do you propose to limit the export capacity/i, answer: "No" },
   // HYPHENS COUNT. Ameren Illinois asks "Is the inverter lab-certified as that term is
@@ -3765,6 +3769,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       //      portal's default selection can't stand. Only touches an UNANSWERED group; records a
       //      replayable step. Runs on real form pages only.
       if (!plan.atReview && !isDashboard && this.page) {
+        const otherFilled = await this.fillOtherSpecifyFields(steps, alreadyFilledLabels);
+        if (otherFilled > 0) await this.waitForDynamicFieldsSettle().catch(() => null);
         const policySteps = await this.applyPolicyDefaults(alreadyFilledLabels);
         for (const ps of policySteps) {
           steps.push(ps.step);
@@ -4164,6 +4170,74 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         required: true,
       },
     };
+  }
+
+  // AN "OTHER — PLEASE SPECIFY" BOX BECOMES REQUIRED THE MOMENT ITS PARENT SAYS "Other".
+  //
+  // Coos Bay's electrical application sets Category of Construction = Other, which reveals a
+  // required "* Other Category of Construction:" text box. The planner never fills it: it is
+  // not on the page when the plan is made, and nothing in the project data is named after it.
+  // The portal then refuses to advance ("Please enter a Category of Construction") and the run
+  // loops on one page until it gives up — live, pages 10 through 14 were the same page.
+  //
+  // The sweep already NOTICES the blank; noticing is not filling. This pattern ("Other …",
+  // "If other, specify", "Other (please specify)") is one of the most common on permit forms,
+  // and for this product the answer is always the same: the work is solar. Deterministic and
+  // portal-agnostic — no policy profile gate, because it is a form convention, not NEM policy.
+  private async fillOtherSpecifyFields(steps: RecipeStep[], alreadyFilledLabels: string[]): Promise<number> {
+    if (!this.page || typeof this.page.evaluate !== "function") return 0;
+    const OTHER_SPECIFY = /other\s+(category|type|description|use|construction)|please\s+specify|if\s+other|other\s*\(\s*specify/i;
+    const targets = await this.page.evaluate((src: string) => {
+      const re = new RegExp(src, "i");
+      const out: Array<{ key: string; label: string }> = [];
+      let n = 0;
+      const nodes = Array.from(document.querySelectorAll('input[type="text"], input:not([type]), textarea')) as HTMLInputElement[];
+      for (const el of nodes) {
+        if ((el.value || "").trim()) continue; // already answered — never overwrite
+        const r = el.getBoundingClientRect();
+        if (r.width < 1 || r.height < 1) continue; // hidden twin of a revealed field
+        const id = el.getAttribute("id") || "";
+        let label = id ? ((document.querySelector(`label[for="${CSS.escape(id)}"]`) as HTMLElement | null)?.innerText || "") : "";
+        if (!label) label = (el.closest("label") as HTMLElement | null)?.innerText || "";
+        if (!label) {
+          const cell = el.closest("td, div, li");
+          const prev = cell?.previousElementSibling as HTMLElement | null;
+          if (prev && (prev.innerText || "").length < 120) label = prev.innerText || "";
+        }
+        label = label.replace(/\s+/g, " ").trim();
+        if (!re.test(label)) continue;
+        // Only a REQUIRED one. An optional "other notes" box is not ours to invent an answer for.
+        const wrap = el.closest("td, div, li, fieldset") as HTMLElement | null;
+        const required = el.hasAttribute("required") || el.getAttribute("aria-required") === "true"
+          || /\*/.test(label) || /\*/.test((wrap?.innerText || "").slice(0, 100));
+        if (!required) continue;
+        const key = `os${n++}`;
+        el.setAttribute("data-al-other", key);
+        out.push({ key, label: label.slice(0, 80) });
+      }
+      return out;
+    }, OTHER_SPECIFY.source).catch(() => [] as Array<{ key: string; label: string }>);
+
+    let filled = 0;
+    for (const t of targets) {
+      if (alreadyFilledLabels.includes(t.label)) continue;
+      const css = `[data-al-other="${t.key}"]`;
+      const okFill = await this.page.locator(css).first()
+        .fill(OTHER_SPECIFY_VALUE, { timeout: 8000 }).then(() => true).catch(() => false);
+      if (!okFill) continue;
+      await this.page.locator(css).first().blur?.().catch(() => null);
+      filled++;
+      alreadyFilledLabels.push(t.label);
+      this.debug?.event({ type: "other_specify_filled", label: t.label.slice(0, 60), value: OTHER_SPECIFY_VALUE });
+      steps.push({
+        action: "fill",
+        phase: "fill",
+        selector: { css, fallbacks: [{ role: "textbox", name: t.label }] },
+        value: OTHER_SPECIFY_VALUE,
+        note: `other-specify: ${t.label}`,
+      });
+    }
+    return filled;
   }
 
   private async applyPolicyDefaults(
