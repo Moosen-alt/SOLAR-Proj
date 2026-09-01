@@ -24,7 +24,8 @@ const declaresBattery = (label: string): boolean =>
   || /^\s*(battery|energy)\s*storage\b/i.test(label);
 
 const isBatterySpec = (label: string): boolean =>
-  /\bbatter(y|ies)\b|\benergy storage\b|\bess\b|round-?trip|state of charge/i.test(label);
+  !/\bprogram\b/i.test(label)
+  && /\bbatter(y|ies)\b|\benergy storage\b|\bess\b|round-?trip|state of charge/i.test(label);
 
 check("THE REGRESSION: the checkbox that started it is refused", () => {
   assert.equal(declaresBattery("This system includes battery storage"), true);
@@ -98,6 +99,14 @@ const skipForNoBattery = (hasBattery: string, note: string): boolean => {
   if (/program\b/i.test(note)) return false;
   return /\bbatter(y|ies)\b|\benergy storage\b|\bess\b|round-?trip|state of charge/i.test(note);
 };
+
+check("LEARN: a PROGRAM question is answered, never refused as a spec", () => {
+  // PacifiCorp rejected a submission naming this field: refusing it left a REQUIRED question
+  // blank. A guard against inventing data must not become a guard against answering one.
+  const q = "Will you be participating in the Wattsmart Battery Program?";
+  assert.equal(isBatterySpec(q), false);
+  assert.equal(declaresBattery(q), false);
+});
 
 check("REPLAY: the recorded battery steps are skipped for a project with none", () => {
   for (const n of [

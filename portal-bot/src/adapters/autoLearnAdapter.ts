@@ -4633,7 +4633,15 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       }
       // And never invent the specifications of equipment that is not there. If the box got
       // ticked some other way, the fields it reveals still go unanswered rather than fabricated.
-      const isBatterySpec = /\bbatter(y|ies)\b|\benergy storage\b|\bess\b|round-?trip|state of charge/i.test(label);
+      //
+      // A PROGRAM question is not a specification. "Will you be participating in the Wattsmart
+      // Battery Program?" asks about a utility programme and is REQUIRED of every applicant,
+      // battery or not — refusing it left it blank and PacifiCorp rejected the submission for
+      // it by name. The replay guard already carried this exemption; this one did not, which
+      // is how a guard against inventing data became a guard against answering a question.
+      const isProgramQuestion = /\bprogram\b/i.test(label);
+      const isBatterySpec = !isProgramQuestion
+        && /\bbatter(y|ies)\b|\benergy storage\b|\bess\b|round-?trip|state of charge/i.test(label);
       if (isBatterySpec && field.fieldType !== "checkbox") {
         this.debug?.event({ type: "battery_spec_refused", label: label.slice(0, 70) });
         return null;

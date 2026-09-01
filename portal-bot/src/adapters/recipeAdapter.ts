@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import type { PortalRecipe, ProjectRecord, RecipeSelector, RecipeStep } from "../../../shared/src/types";
 import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, ok, fail, type PortalContext, type PortalStepResult } from "../adapter";
+import { applyFormatHint } from "../formatHint";
 import { openPortal } from "../browser";
 import { selectWithFallback } from "../comboboxFill";
 
@@ -779,11 +780,16 @@ export class RecipeAdapter extends BasePortalAdapter {
       // same recorded steps.
       if (this.arrayPass > 1 && /^array1[A-Z]/.test(step.field)) {
         const mapped = step.field.replace(/^array1/, `array${this.arrayPass}`);
-        return this.fieldValues[mapped] ?? "";
+        return applyFormatHint(this.fieldValues[mapped] ?? "", String(step.note ?? ""));
       }
-      return this.fieldValues[step.field] ?? "";
+      // RE-GROUP TO THE FORMAT THE PORTAL PRINTED. PacifiCorp labels its account field
+      // "please use this format: xxxxxxxx xxx x"; the bill prints "58103504-001 2" and we
+      // hold "58103504-0012", so the submission came back rejected with that field named.
+      // The digits were right; only the grouping was wrong, and the portal had already said
+      // what it wanted. applyFormatHint only ever re-groups the SAME characters.
+      return applyFormatHint(this.fieldValues[step.field] ?? "", String(step.note ?? ""));
     }
-    return step.value ?? "";
+    return applyFormatHint(step.value ?? "", String(step.note ?? ""));
   }
 
   /**
