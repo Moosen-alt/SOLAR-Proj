@@ -571,6 +571,14 @@ async function autoLearnPortalInner(
       // name is on it, and which discipline we are filing. Used to REFUSE another property's
       // row, not to fill anything.
       allowFinalSubmit: input.allowFinalSubmit === true,
+      // Only an explicit "no battery" arms the guard. An unknown stays the planner's call —
+      // silence about a battery is not the same as the project stating there isn't one.
+      hasBattery: (() => {
+        const raw = String((project.parserSnapshot as Record<string, unknown> | undefined)?.hasBattery ?? "").trim();
+        if (/^(no|false|none|n)$/i.test(raw)) return false;
+        if (/^(yes|true|y)$/i.test(raw)) return true;
+        return undefined;
+      })(),
       siteIdentity: {
         city: project.city,
         zip: project.zip,

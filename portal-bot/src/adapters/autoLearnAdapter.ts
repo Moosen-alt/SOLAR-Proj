@@ -1049,6 +1049,9 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   private siteIdentity: { city?: string; zip?: string; homeownerName?: string; isElectrical?: boolean } | undefined;
   // Operator delegation for the final submit, honoured only alongside PORTAL_ALLOW_FINAL_SUBMIT=1.
   private allowFinalSubmit = false;
+  // Tri-state on purpose: false means the project SAYS there is no battery (guard it),
+  // undefined means nobody knows and the planner still decides.
+  private hasBattery: boolean | undefined;
   /** True once the delegated final submit actually went through. Read by the caller. */
   finalSubmitClicked = false;
   /** The completion/receipt page as text + URL, captured while standing on it. */
@@ -1110,6 +1113,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       siteIdentity?: { city?: string; zip?: string; homeownerName?: string; isElectrical?: boolean };
       /** Operator delegation: click the recorded final submit instead of leaving it. */
       allowFinalSubmit?: boolean;
+      /** Whether the PROJECT says a battery exists. false = guard against declaring one. */
+      hasBattery?: boolean;
       /** CEC-certified manufacturer names per compact plan-set make (weekly
        *  cec_equipment sync) — appended AFTER the curated static alias table;
        *  empty map = byte-identical behavior. */
@@ -1134,6 +1139,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     this.bindableFields = new Set(options.bindableFields ?? []);
     this.siteIdentity = options.siteIdentity;
     this.allowFinalSubmit = options.allowFinalSubmit === true;
+    this.hasBattery = options.hasBattery;
     this.equipment = options.equipment ?? {};
     this.certifiedAliases = options.certifiedAliases ?? {};
     this.contactIdentity = options.contactIdentity ?? {};
@@ -4596,6 +4602,35 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     // carry; the planner has been seen ticking it anyway, and the resulting contradiction
     // (checked box, no alt email) blocks the recipe trust gate on every run.
     if (field.fieldType === "checkbox" && /alternative\s+billing/i.test(field.label || "")) return null;
+
+    // DETERMINISTIC GUARD: A SYSTEM WITHOUT A BATTERY NEVER DECLARES ONE.
+    //
+    // Live on Ivy's PacifiCorp interconnection: the project carries hasBattery = "No" and a
+    // plan set with 8 modules and 4 microinverters, and the planner ticked "This system
+    // includes battery storage" anyway. That tick reveals a block of REQUIRED battery fields,
+    // which the gap-fill then answered with textbook numbers — 13.5 kWh, 11.5 kW, 89%
+    // round-trip. Those are a Powerwall's specifications, not this customer's, and they were
+    // on their way to a utility as fact.
+    //
+    // The planner is given hasBattery and still got it wrong, so this cannot be a prompt: a
+    // declaration about what EXISTS on the roof is project data, never a judgement call.
+    // Guarded only when the project explicitly says No — unknown stays the planner's call.
+    if (this.hasBattery === false) {
+      const label = field.label || "";
+      const declaresBattery = /\b(includes?|has|with)\b[^.]{0,40}\b(batter(y|ies)|energy storage|\bess\b|storage system)\b/i.test(label)
+        || /^\s*(battery|energy)\s*storage\b/i.test(label);
+      if (field.fieldType === "checkbox" && declaresBattery) {
+        this.debug?.event({ type: "battery_declaration_refused", label: label.slice(0, 70) });
+        return null;
+      }
+      // And never invent the specifications of equipment that is not there. If the box got
+      // ticked some other way, the fields it reveals still go unanswered rather than fabricated.
+      const isBatterySpec = /\bbatter(y|ies)\b|\benergy storage\b|\bess\b|round-?trip|state of charge/i.test(label);
+      if (isBatterySpec && field.fieldType !== "checkbox") {
+        this.debug?.event({ type: "battery_spec_refused", label: label.slice(0, 70) });
+        return null;
+      }
+    }
 
     // A "false/no/off/0" value means "leave this control unselected":
     //   • checkbox → leave it unchecked (its default); record no step.
