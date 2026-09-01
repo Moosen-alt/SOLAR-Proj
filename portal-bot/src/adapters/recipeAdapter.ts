@@ -1277,7 +1277,33 @@ export class RecipeAdapter extends BasePortalAdapter {
 
   // Returns true if the step performed an action, false if it was safely skipped.
   // `pastReview` is true only in autoSubmit mode AFTER the stopForReview marker.
+  // A RECIPE IS SHARED; THE EQUIPMENT ON THE ROOF IS NOT.
+  //
+  // A recipe learned on a job WITH a battery records the whole storage section — the
+  // declaration checkbox, and specs frozen as literals. Live: the PacifiCorp NEM recipe
+  // carries 16 battery steps including `Energy Storage Capacity of Battery (kWh) = "13.5"`,
+  // and replaying it onto Christopher Ivy — 8 modules, 4 microinverters, hasBattery "No" —
+  // declared a battery he does not own and gave the utility a Powerwall's capacity as fact.
+  // Every later job under that profile would have inherited it.
+  //
+  // The learn side refuses to record this now, but recipes already recorded still exist, and
+  // a shared recipe must adapt to the project it is replaying for. Skipping (rather than
+  // failing) is right: the section is simply not part of this filing.
+  private skipForNoBattery(step: RecipeStep): boolean {
+    const raw = String(this.fieldValues.hasBattery ?? "").trim();
+    if (!/^(no|false|none|n)$/i.test(raw)) return false; // unknown or yes → replay as recorded
+    const label = `${step.note ?? ""} ${step.field ?? ""}`;
+    // "Wattsmart Battery Program?" is a PROGRAM question answered No, not a spec — answering
+    // it is correct and skipping it would leave a required question blank.
+    if (/program\b/i.test(label)) return false;
+    return /\bbatter(y|ies)\b|\benergy storage\b|\bess\b|round-?trip|state of charge/i.test(label);
+  }
+
   private async executeStep(step: RecipeStep, pastReview: boolean): Promise<boolean> {
+    if (this.skipForNoBattery(step)) {
+      this.driftWarnings.push(`skipped "${String(step.note ?? step.field ?? "battery step").slice(0, 48)}" — this project has no battery`);
+      return true; // not a failure: the section does not apply to this filing
+    }
     // `let`, not `const`: the upload branch may re-anchor to a different slot once the
     // page's real upload controls have been re-tagged (see the upload case below), and the
     // identity check below may re-anchor a step that resolved onto the wrong control.

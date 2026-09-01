@@ -88,6 +88,44 @@ check("only an explicit No arms the guard; silence leaves it to the planner", ()
   assert.equal(parseHasBattery("unknown"), undefined);
 });
 
+// ── the REPLAY side ───────────────────────────────────────────────────────────────────────
+// A recipe learned on a battery job records the whole storage section, specs frozen as
+// literals. The live PacifiCorp NEM recipe carries 16 such steps including
+// `Energy Storage Capacity of Battery (kWh) = "13.5"`, and replaying it onto a project with
+// no battery declared one and handed the utility a Powerwall's capacity as fact.
+const skipForNoBattery = (hasBattery: string, note: string): boolean => {
+  if (!/^(no|false|none|n)$/i.test(String(hasBattery ?? "").trim())) return false;
+  if (/program\b/i.test(note)) return false;
+  return /\bbatter(y|ies)\b|\benergy storage\b|\bess\b|round-?trip|state of charge/i.test(note);
+};
+
+check("REPLAY: the recorded battery steps are skipped for a project with none", () => {
+  for (const n of [
+    "This system includes battery storage",
+    "Energy Storage Capacity of Battery (kWh)",
+    "Battery Round-trip Efficiency (%)",
+    "Number of Batteries",
+    "The battery has an integrated (built-in) inverter",
+  ]) assert.equal(skipForNoBattery("No", n), true, n);
+});
+
+check("REPLAY: the Wattsmart PROGRAM question is still answered, not skipped", () => {
+  // Skipping it would leave a required question blank — it asks about a utility programme,
+  // not about equipment, and the recorded answer ("No, I will not be participating") is right.
+  assert.equal(skipForNoBattery("No", "Will you be participating in the Wattsmart Battery Program?"), false);
+});
+
+check("REPLAY: a battery project replays the section as recorded", () => {
+  assert.equal(skipForNoBattery("Yes", "Energy Storage Capacity of Battery (kWh)"), false);
+  assert.equal(skipForNoBattery("", "Energy Storage Capacity of Battery (kWh)"), false);
+});
+
+check("REPLAY: ordinary PV steps are never skipped", () => {
+  for (const n of ["Inverter Manufacturer", "upload sld: Please upload your one-line drawing", "Total AC System Size (kW)"]) {
+    assert.equal(skipForNoBattery("No", n), false, n);
+  }
+});
+
 if (failures) { console.error(`\n${failures} battery-guard check(s) FAILED.`); process.exit(1); }
 console.log("\nAll battery-guard checks passed.");
 process.exit(0);
