@@ -3884,13 +3884,19 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           // isOffLimitsButton has already refused anything pay/fee shaped, and the step is
           // recorded either way so the recipe carries it for replay.
           const delegated = this.allowFinalSubmit === true && process.env.PORTAL_ALLOW_FINAL_SUBMIT === "1";
-          steps.push({
+          // THE NOTE MUST DESCRIBE WHAT HAPPENED, NOT WHAT WAS PERMITTED. Writing "clicked on
+          // operator delegation" the moment delegation was ARMED made a recipe claim a filing
+          // that never occurred: the click timed out, no application reached the utility, and
+          // the recorded note said otherwise. A step is recorded either way, so the note is
+          // written after the attempt, from its result.
+          const submitStep: RecipeStep = {
             action: "click",
             phase: "review",
             selector: submitField.selector,
             isFinalSubmit: true,
-            note: `final submit: ${submitField.label || "submit"} (${delegated ? "clicked on operator delegation" : "recorded, NOT clicked"})`,
-          });
+            note: `final submit: ${submitField.label || "submit"} (recorded, NOT clicked)`,
+          };
+          steps.push(submitStep);
           finalSubmitRecorded = true;
 
           if (delegated) {
@@ -3907,6 +3913,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             );
             if (res.ok && !res.message) {
               this.finalSubmitClicked = true;
+              submitStep.note = `final submit: ${submitField.label || "submit"} (CLICKED on operator delegation)`;
               // The completion page is the receipt: it carries the number the portal just
               // issued, and it is the only place that number appears before the record list
               // catches up. Grab it while we are standing on it.
@@ -3916,6 +3923,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
               this.finalSubmitUrl = (() => { try { return String(this.page!.url?.() ?? ""); } catch { return ""; } })();
               this.debug?.event({ type: "final_submit_done", url: this.finalSubmitUrl.slice(0, 120) });
             } else {
+              submitStep.note = `final submit: ${submitField.label || "submit"} (delegation armed but the click did NOT go through: ${(res.message || "timed out").slice(0, 80)})`;
               this.debug?.event({ type: "final_submit_failed", why: (res.message || "click did not go through").slice(0, 160) });
             }
           }
