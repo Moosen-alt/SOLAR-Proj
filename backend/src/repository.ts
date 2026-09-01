@@ -5054,6 +5054,36 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   // operator's service fee) paid or waived before anything is staged. This bills
   // the CLIENT; the portal's own fee checkout stays human-only regardless.
   assertSubmissionPaid(db, detail.project, track);
+
+  // A TRACK THAT IS ALREADY FILED MUST NOT BE FILED AGAIN.
+  //
+  // Nothing stopped re-staging a submitted track. Re-running the structural track minutes
+  // after 187-26-000305-STR was accepted would have opened a second application against the
+  // same parcel — a duplicate record, a duplicate fee, and a jurisdiction ringing the customer
+  // to ask which one is real. Staging is otherwise safe to retry, which is exactly why this is
+  // easy to do by accident: the same command that recovers a failed run repeats a good one.
+  //
+  // Keyed on a SUBMITTED submission for this track, so retrying a failed or staged run is
+  // untouched. Withdrawing the filing (or clearing its submission row) is the deliberate act
+  // that re-opens the track.
+  if (track) {
+    const filed = db.get<Row>(
+      `SELECT permit_number, application_number, submitted_at FROM submissions
+        WHERE project_id = ? AND permit_type = ? AND status = 'submitted'
+        ORDER BY submitted_at DESC LIMIT 1`,
+      [projectId, track],
+    );
+    if (filed) {
+      const num = text(filed.permit_number) || text(filed.application_number) || "(no number captured)";
+      throw new HttpError(409,
+        `The ${track} track is already filed as ${num}`
+        + `${filed.submitted_at ? ` on ${String(filed.submitted_at).slice(0, 10)}` : ""}. `
+        + "Staging it again would open a duplicate application with the jurisdiction. "
+        + "Withdraw the existing filing first if it needs to be replaced.",
+        { track, permitNumber: num, submittedAt: filed.submitted_at ?? null });
+    }
+  }
+
   const failCount = detail.qcResults.filter((result) => result.qcStatus === "fail").length;
   // 'Background job failed' items are OPERATOR NOTIFICATIONS (escalated by the
   // job worker), not data-quality gates — counting them would let e.g. a failed
