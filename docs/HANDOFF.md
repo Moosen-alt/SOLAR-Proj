@@ -152,6 +152,44 @@ Still open, in order:
 
 ## Open issues / next work (priority order)
 
+**Illinois live status (2026-09-01) — measured, not inferred.**
+Verify with `npm run portal:audit -- <login-url> --app=<application-url>`; a learn now writes
+the application URL onto the recipe as `[application:…]`, because auditing "the newest
+matching row" twice opened the WRONG draft and reported a stale application as if it were
+the run's.
+
+*Ameren Illinois (PowerClerk)* — learn reaches the end of the wizard: 80 steps, 38 fields
+filled, 3 documents attached (0 missing). Audit of that exact application:
+**6 required still blank** — Account Number from Bill, Email, Phone, Street, the public-school
+question, Meter Number. Docket Number is FIXED (client field, migration v15) and Name /
+Company / Address now fill. Recipe stays `recording`; do not promote it (the gate now
+refuses a recipe carrying a blank-required finding, and overriding it once already produced
+a replay that faithfully reproduced an incomplete application).
+- Upload counting is UNRELIABLE and needs fixing: PowerClerk replaces a file input once a
+  file is attached, so the audit sees only the still-empty slots (9 → 6 after 3 attached)
+  and reports "0/N attached". The learn's own events are the trustworthy source today.
+- Account/Meter blank is expected in a LEARN (sensitive fields bind by name at replay, never
+  stored in a recipe) — confirm at replay, not here.
+- The public-school default did not take. POLICY_RADIO_DEFAULTS only drives RADIO groups; if
+  Ameren renders it as a select or checkbox it needs the select path instead.
+
+*ComEd (Intellio Connect)* — now fills its form for the first time: the "+" FAB, the drawer,
+the "Distributed Generation" choice, then Project Name / address / Level 1. BLOCKED on a
+decision: the drawer's only forward control is labelled **"Submit"**, and the engine strips
+any submit-shaped advance by design. **Ask the operator whether that drawer Submit CREATES
+the draft or FILES the application** — if it creates, teach the engine that a dialog Submit
+which opens a further form is an advance; if it files, ComEd stages to the drawer and hands
+off, like the DocuSign gate.
+
+*Three naming fixes came out of this and generalise beyond Illinois*: an icon ligature
+("add"), a hover tooltip ("New Application"), and a framework-generated id
+("mat-button-toggle-group-2") each hid a control's human meaning. Modern portals do this
+constantly; the extractor and the entry finder now handle all three.
+
+*Still untested*: a BATTERY project (energy-storage fields never appear on a non-battery
+job) and multi-array NEM.
+
+
 **Illinois is LIVE: Ameren records AND replays (2026-08-31).** Credentials for both IL
 utilities are stored encrypted under `tml-international-llc`. Ameren Illinois (PowerClerk)
 was learned end-to-end — a 61-step recipe covering terms, application level/type, applicant,
