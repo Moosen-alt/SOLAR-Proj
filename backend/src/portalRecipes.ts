@@ -347,7 +347,10 @@ export function deletePortalRecipe(db: AppDb, recipeId: string): { deleted: bool
 // Human-readable descriptions for every bindable field key — used by the LLM field-binding
 // classifier to understand what each key means when matching portal form values.
 export const RECIPE_FIELD_DESCRIPTIONS: Record<string, string> = {
-  homeownerName: "Property owner full name",
+  homeownerName: "Property owner full name — on a UTILITY portal this resolves to the name on the utility bill, because an interconnection is filed under the account holder",
+  ubAccountHolder: "Utility bill account holder, exactly as printed on the bill",
+  ubAccountHolderFirstName: "Utility bill account holder first name (title stripped)",
+  ubAccountHolderLastName: "Utility bill account holder last name",
   projectName: "Permit \"Project Name\" — the homeowner's name, which is how the AHJ, the inspector and the office look the job up later",
   homeownerFirstName: "Property owner first (given) name only",
   homeownerLastName: "Property owner last (family) name only",
@@ -521,13 +524,41 @@ export function resolveRecipeFieldValues(db: AppDb, project: ProjectRecord, port
     streetOnly = streetOnly.replace(new RegExp(`\\s+${esc}(\\s+[A-Za-z]{2})?(\\s+\\d{5}(-\\d{4})?)?\\s*$`, "i"), "").trim() || streetOnly;
   }
 
+  // AN INTERCONNECTION IS FILED UNDER THE NAME ON THE BILL.
+  //
+  // The permit goes under the property owner; the interconnection goes under whoever holds
+  // the utility ACCOUNT, and they are routinely different people. Live: Ivy's account reads
+  // "PROF CHRIS A IVY" where the project says "Christopher Ivy", and Marineau's account is
+  // held by CRAIG while the plan set names ANN — a joint account. Filing a NEM application
+  // under a name the utility has no account for is a rejection, or worse, a second account.
+  //
+  // Operator rule: intake keys off the project, submittal keys off the bill. So on a UTILITY
+  // portal the homeowner* bindings resolve to the account holder, which fixes recipes already
+  // recorded against homeownerName without re-recording them. ubAccountHolder* is also
+  // exposed in its own right so a fresh recording can bind to it explicitly.
+  const ubHolder = String(snapshotFlat.ubAccountHolder || "").trim();
+  // A billing name often carries a title ("PROF CHRIS A IVY"). Keep the full string for the
+  // account-name field — it should match the bill — but drop the title before splitting, or
+  // the first-name box gets "PROF".
+  const ubNameParts = ubHolder.replace(/^(mr|mrs|ms|miss|dr|prof)\.?\s+/i, "").split(/\s+/).filter(Boolean);
+  const ubFirstName = ubNameParts[0] || "";
+  const ubLastName = ubNameParts.length > 1 ? ubNameParts[ubNameParts.length - 1] : "";
+  const isUtilityPortal = /powerclerk|utility|nem|interconnect/i.test(portalType);
+  const useUbName = isUtilityPortal && ubHolder.length > 0;
+
   const projectFields: Record<string, string> = {
-    homeownerName: project.homeownerName,
+    homeownerName: useUbName ? ubHolder : project.homeownerName,
+    // The permit's "Project Name" always follows the PROJECT, never the billing name — it is
+    // how the AHJ and the inspector find the job.
     // Bound, never frozen: a recipe is shared across every project under the profile, so a
     // literal here would file every future job under the learn project's homeowner.
     projectName: project.homeownerName,
-    homeownerFirstName,
-    homeownerLastName,
+    // Always available by their own names, whichever portal this is.
+    ubAccountHolder: ubHolder,
+    ubAccountHolderFirstName: ubFirstName,
+    ubAccountHolderLastName: ubLastName,
+    homeownerFirstName: useUbName && ubFirstName ? ubFirstName : homeownerFirstName,
+    homeownerLastName: useUbName && ubLastName ? ubLastName : homeownerLastName,
     homeownerEmail: String(snapshotFlat.homeownerEmail || snapshotFlat.ownerEmail || ""),
     homeownerPhone: String(snapshotFlat.homeownerPhone || snapshotFlat.ownerPhone || ""),
     street: streetOnly || project.projectAddress,
