@@ -16,7 +16,7 @@ import fs from "node:fs";
 process.env.AUTOPILOT_DB_PATH = process.env.AUTOPILOT_DB_PATH || "backend/data/autopilot.sqlite";
 
 interface FieldState { label: string; kind: string; required: boolean; filled: boolean; value: string }
-interface PageAudit { title: string; url: string; fields: FieldState[]; uploads: { total: number; attached: number }; uploadSlots: Array<{ label: string; attached: boolean; accept: string }> }
+interface PageAudit { title: string; url: string; fields: FieldState[]; uploads: { total: number; attached: number }; uploadSlots: Array<{ label: string; attached: boolean; required: boolean; accept: string }>; attachments: Array<{ name: string; label: string }> }
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
@@ -28,6 +28,7 @@ async function main(): Promise<void> {
   const { openPortal, closePortal } = await import("./browser");
   const { performLogin } = await import("./adapters/loginFlow");
   const { dismissPageModals, clearPageOverlays } = await import("./adapters/autoLearnAdapter");
+  const { findAttachmentsInPage } = await import("./adapters/attachmentScan");
   const { openDatabase } = await import("../../backend/src/db");
   const { getDecryptedCredentialByUrl } = await import("../../backend/src/portalCredentials");
 
@@ -72,7 +73,7 @@ async function main(): Promise<void> {
     };
     const fields: Array<{ label: string; kind: string; required: boolean; filled: boolean; value: string }> = [];
     let uploadTotal = 0; let uploadAttached = 0;
-    const uploadSlots: Array<{ label: string; attached: boolean; accept: string }> = [];
+    const uploadSlots: Array<{ label: string; attached: boolean; required: boolean; accept: string }> = [];
     for (const el of Array.from(document.querySelectorAll("input, select, textarea")) as HTMLElement[]) {
       const type = (el.getAttribute("type") || "").toLowerCase();
       if (type === "hidden" || type === "submit" || type === "button" || type === "image") continue;
@@ -84,10 +85,12 @@ async function main(): Promise<void> {
         // own label tells you WHICH document the portal is asking for ("Data Sheet for the
         // DC Source/PV Module", "Attach Proof of Insurance"), which is what decides whether
         // we can produce it from the plan-set split or have to go and get it.
-        uploadSlots.push({ label: labelFor(el).slice(0, 80) || "(unlabelled upload)", attached, accept: el.getAttribute("accept") || "" });
+        const slotLabel = labelFor(el);
+        uploadSlots.push({ label: slotLabel.slice(0, 80) || "(unlabelled upload)", attached, required: isRequired(el, slotLabel), accept: el.getAttribute("accept") || "" });
         continue;
       }
       if (!vis(el)) continue;
+      if (el.hasAttribute("data-al-attach")) continue; // an attached document's name, not an answer
       const label = labelFor(el);
       let value = ""; let filled = false;
       if (el.tagName === "SELECT") {
@@ -103,8 +106,16 @@ async function main(): Promise<void> {
       }
       fields.push({ label: label.slice(0, 60), kind: el.tagName === "SELECT" ? "select" : (type || "text"), required: isRequired(el, label), filled, value: value.slice(0, 40) });
     }
-    return { title: document.title, url: location.href, fields, uploads: { total: uploadTotal, attached: uploadAttached }, uploadSlots };
+    return { title: document.title, url: location.href, fields, uploads: { total: uploadTotal, attached: uploadAttached }, uploadSlots, attachments: [] as Array<{ name: string; label: string }> };
   });
+
+  // Find the ALREADY-ATTACHED documents first: it tags them so the field pass below doesn't
+  // count a filename display as a filled form answer.
+  const auditPageWithAttachments = async (): Promise<PageAudit> => {
+    const attachments = await page.evaluate(findAttachmentsInPage).catch(() => [] as Array<{ name: string; label: string }>);
+    const audit = await auditPage();
+    return { ...audit, attachments };
+  };
 
   const pages: PageAudit[] = [];
   try {
@@ -199,12 +210,12 @@ async function main(): Promise<void> {
     const stepNav = page.locator("[id^='page-header'], [role='tab'], .stepNav a");
     const stepCount = Math.min(await stepNav.count().catch(() => 0), 12);
     console.log(`wizard steps found: ${stepCount}`);
-    if (stepCount === 0) pages.push(await auditPage());
+    if (stepCount === 0) pages.push(await auditPageWithAttachments());
     for (let i = 0; i < stepCount; i++) {
       await stepNav.nth(i).click({ timeout: 8000 }).catch(() => null);
       await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
       await page.waitForTimeout(2200); // these forms paint late
-      pages.push(await auditPage());
+      pages.push(await auditPageWithAttachments());
     }
     await page.screenshot({ path: path.join(outDir, `audit-${tag}.png`), fullPage: true }).catch(() => null);
   } catch (e) {
@@ -235,13 +246,31 @@ async function main(): Promise<void> {
   console.log(`  REQUIRED still blank: ${requiredBlank.length}`);
   for (const r of requiredBlank.slice(0, 30)) console.log(`     ✗ ${r}`);
   console.log(`  optional blank:       ${optionalBlank.length}`);
-  console.log(`  upload slots:         ${uploadsAttached}/${uploadsTotal} attached`);
+
+  // SHOW THE EVIDENCE, NOT JUST THE ARITHMETIC. Name every document found attached, and count
+  // the empty slots separately — a walk that revisits a summary page would otherwise report
+  // the same document twice, and a synthesised "3/9" hides which of the two numbers was measured.
+  const attachedNames: string[] = [];
+  const seenAttach = new Set<string>();
+  for (const a of pages.flatMap((p) => p.attachments)) {
+    if (seenAttach.has(a.name.toLowerCase())) continue;
+    seenAttach.add(a.name.toLowerCase());
+    attachedNames.push(a.name);
+  }
   const slots = pages.flatMap((p) => p.uploadSlots);
   const seenSlot = new Set<string>();
+  const emptySlots: typeof slots = [];
   for (const s of slots) {
-    if (seenSlot.has(s.label)) continue;
-    seenSlot.add(s.label);
-    console.log(`     ${s.attached ? "✓" : "✗"} ${s.label}${s.accept ? `   [${s.accept.slice(0, 40)}]` : ""}`);
+    const key = `${s.label}|${s.accept}`;
+    if (seenSlot.has(key)) continue;
+    seenSlot.add(key);
+    if (!s.attached) emptySlots.push(s);
+  }
+  const requiredEmptySlots = emptySlots.filter((s) => s.required).length;
+  console.log(`  documents attached:   ${attachedNames.length}${attachedNames.length ? ` — ${attachedNames.join(", ")}` : ""}`);
+  console.log(`  empty upload slots:   ${emptySlots.length}${requiredEmptySlots ? ` (${requiredEmptySlots} marked required)` : ""}`);
+  for (const s of emptySlots) {
+    console.log(`     ✗ ${s.required ? "[required] " : ""}${s.label}${s.accept ? `   [${s.accept.slice(0, 40)}]` : ""}`);
   }
 
   // AN AUDIT THAT FOUND NOTHING MUST NOT REPORT "COMPLETE". The first version of this walked
@@ -254,7 +283,7 @@ async function main(): Promise<void> {
     console.log(`\n  VERDICT: INCONCLUSIVE — only ${totalFields} field(s) across ${pages.length} page(s); the audit did not reach the application form.`);
     console.log("           Pass the application's own URL to audit it directly:");
     console.log("           npm run portal:audit -- <portal-login-url> --app=<application-url>");
-  } else if (requiredBlank.length > 0 || (uploadsTotal > 0 && uploadsAttached === 0)) {
+  } else if (requiredBlank.length > 0 || requiredEmptySlots > 0 || (emptySlots.length > 0 && attachedNames.length === 0)) {
     console.log(`\n  VERDICT: INCOMPLETE — do not trust this recipe until the fields above are filled.`);
   } else {
     console.log(`\n  VERDICT: COMPLETE — ${totalFields} fields checked across ${pages.length} page(s), nothing required is blank.`);

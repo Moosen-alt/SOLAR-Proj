@@ -1610,6 +1610,17 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   // only on click — attaches the matching split document, and records a replayable `upload`
   // step. Returns labels filled + the labels of REQUIRED slots we had no document for.
   // Best-effort and non-throwing: a stuck upload never aborts the learn run.
+  // The labels of the upload slots currently ON the page. Only EMPTY slots have a file
+  // input, so this set shrinks as documents attach and grows when the page reveals more —
+  // which is why the caller watches for new LABELS rather than a bigger count.
+  private async uploadSlotLabels(): Promise<string[]> {
+    if (!this.page || typeof this.page.evaluate !== "function") return [];
+    try {
+      const slots = await this.page.evaluate(tagUploadControls);
+      return Array.isArray(slots) ? slots.map((s) => (s.label || "").trim().toLowerCase()).filter(Boolean) : [];
+    } catch { return []; }
+  }
+
   private async performUploads(
     steps: RecipeStep[],
     alreadyFilledLabels: string[],
@@ -3384,6 +3395,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         this.debug?.event({ type: "upload_skipped_on_review", page: pageCount });
       } else {
         this.debug?.event({ type: "upload_phase_start", page: pageCount });
+        const seenSlotLabels = new Set<string>(await this.uploadSlotLabels());
         const up = await this.withPhaseTimeout(
           "uploads",
           150_000,
@@ -3391,6 +3403,33 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           { filled: [] as string[], missingRequired: [] as string[], attached: 0 },
         );
         this.debug?.event({ type: "upload_phase_done", page: pageCount, attached: up.attached, missing: up.missingRequired.length });
+
+        // AN UPLOAD SLOT CAN APPEAR ONLY AFTER AN ANSWER ON THE SAME PAGE. Ameren's
+        // Generator page reveals "Please attach the Data Sheet for the DC Source/PV Module"
+        // once the energy-source/equipment selects finish cascading (~600ms on PowerClerk),
+        // so a single pass ran against the pre-cascade page, attached the two slots that
+        // existed, and reported missing:0 — while the module data sheet we HAD sat
+        // unattached with nothing flagging it. This is the shape of every conditional
+        // document section (a battery job's storage attachments, a second array's specs),
+        // so wait for the page to settle and run again whenever NEW slot labels appear.
+        // New labels, not a bigger count: attaching a document REMOVES its file input, so
+        // the slot count falls even as the page reveals more.
+        for (let extraPass = 0; extraPass < 2; extraPass++) {
+          await sleep(1500);
+          const fresh = (await this.uploadSlotLabels()).filter((l) => !seenSlotLabels.has(l));
+          if (fresh.length === 0) break;
+          for (const l of fresh) seenSlotLabels.add(l);
+          this.debug?.event({ type: "upload_late_slots", page: pageCount, labels: fresh.slice(0, 6).join(" | ").slice(0, 200) });
+          const late = await this.withPhaseTimeout(
+            "uploads_late",
+            90_000,
+            () => this.performUploads(steps, alreadyFilledLabels),
+            { filled: [] as string[], missingRequired: [] as string[], attached: 0 },
+          );
+          up.attached += late.attached;
+          for (const m of late.missingRequired) if (!up.missingRequired.includes(m)) up.missingRequired.push(m);
+          this.debug?.event({ type: "upload_phase_done", page: pageCount, pass: extraPass + 2, attached: late.attached, missing: late.missingRequired.length });
+        }
         for (const m of up.missingRequired) if (!missingRequiredDocs.includes(m)) missingRequiredDocs.push(m);
         // ACA commits attachments only on the section's own Save (Continue Application
         // leaves them pending) — and each pending row needs its Description + Type first.
