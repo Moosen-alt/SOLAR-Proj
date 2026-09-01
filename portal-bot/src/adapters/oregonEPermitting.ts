@@ -62,39 +62,12 @@ function buildProjectName(project: ProjectRecord): string {
 import { parseStreetNumber, parseStreetName, parseStreetDirection } from "../addressParse";
 export { parseStreetNumber, parseStreetName, parseStreetDirection };
 
-// WHICH VERSION OF THE ADDRESS TO TRY, AND IN WHAT ORDER.
-//
-// Accela lists one street address once per issuing jurisdiction and the permit types differ
-// per row, so the order matters: a wrong pick costs a full re-search, and picking a row for
-// another property entirely is an unrecoverable mis-filing. Pure so it can be tested against
-// the real 773 Kentucky rows without a browser.
-export interface AddressVersion { index: number; text: string; score: number; ownerHit: boolean }
-export function rankAddressVersions(
-  rowTexts: string[],
-  opts: { city?: string; zip?: string; homeownerName?: string; isElectrical: boolean },
-): { ranked: AddressVersion[]; rejected: string[] } {
-  const cityUpper = (opts.city || "").toUpperCase();
-  const zip = (opts.zip || "").trim();
-  const surname = (opts.homeownerName || "").trim().split(/\s+/).pop() || "";
-  const preferred = opts.isElectrical ? /COUNTY APPLICATIONS/i : /CITY APPLICATIONS/i;
-  const ranked: AddressVersion[] = [];
-  const rejected: string[] = [];
-  for (let index = 0; index < rowTexts.length; index++) {
-    const text = (rowTexts[index] || "").replace(/\s+/g, " ").trim();
-    if (!text) continue;
-    const upper = text.toUpperCase();
-    // Only versions of THIS property are candidates — the street search is loose enough to
-    // return the same house number in four other towns.
-    if (!((cityUpper && upper.includes(cityUpper)) || (zip && text.includes(zip)))) { rejected.push(text.slice(0, 60)); continue; }
-    const ownerHit = surname.length >= 3 && upper.includes(surname.toUpperCase());
-    // Owner of record beats convention (each version can be a different parcel); DEQ ranks
-    // last because it issues onsite/septic permits, never residential structural/electrical.
-    const score = (ownerHit ? 4 : 0) + (preferred.test(text) ? 2 : 0) + (/DEQ/i.test(text) ? -3 : 0);
-    ranked.push({ index, text, score, ownerHit });
-  }
-  ranked.sort((a, b) => b.score - a.score);
-  return { ranked, rejected };
-}
+// The address-version ranking moved to ../addressVersion.ts so the AUTO-LEARN engine can use
+// it too — auto-learn outranks this adapter in the staging precedence, so discipline that
+// lives only here never runs. Re-exported: addressVersion.test.ts imports it from this path.
+import { rankAddressVersions } from "../addressVersion";
+export { rankAddressVersions };
+export type { AddressVersion } from "../addressVersion";
 
 export class OregonEPermittingAdapter extends BasePortalAdapter {
   portalName = "Oregon ePermitting (Accela ACA)";

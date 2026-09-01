@@ -1,4 +1,5 @@
 import fs from "fs";
+import { rankAddressVersions } from "../addressVersion";
 import path from "path";
 import type { Page, Frame } from "playwright";
 import type { ProjectRecord, RecipeSelector, RecipeStep, StepFingerprint } from "../../../shared/src/types";
@@ -1043,6 +1044,11 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   private policyProfile: "residential_nem" | "none";
   /** Field keys a replay can resolve; empty means "do not validate". */
   private bindableFields: Set<string>;
+  // Who and where this project is, for choosing between versions of an address on a
+  // disambiguation grid. Not fill data — identity used to REJECT another property's row.
+  private siteIdentity: { city?: string; zip?: string; homeownerName?: string; isElectrical?: boolean } | undefined;
+  // A grid is chosen once per run; re-choosing on a re-scrape would re-click the row.
+  private addressRowChosen = false;
   private equipment: Record<string, string>;
   private certifiedAliases: Record<string, string[]>;
   private contactIdentity: ContactIdentity = {};
@@ -1093,6 +1099,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
        *  filled is recorded instead, so the step still fills. Empty/omitted = no
        *  validation (byte-identical to the previous behaviour). */
       bindableFields?: string[];
+      /** City/ZIP/owner of the project, so a row for someone else's property is refused. */
+      siteIdentity?: { city?: string; zip?: string; homeownerName?: string; isElectrical?: boolean };
       /** CEC-certified manufacturer names per compact plan-set make (weekly
        *  cec_equipment sync) — appended AFTER the curated static alias table;
        *  empty map = byte-identical behavior. */
@@ -1115,6 +1123,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     this.onProgress = options.onProgress;
     this.policyProfile = options.policyProfile ?? "residential_nem";
     this.bindableFields = new Set(options.bindableFields ?? []);
+    this.siteIdentity = options.siteIdentity;
     this.equipment = options.equipment ?? {};
     this.certifiedAliases = options.certifiedAliases ?? {};
     this.contactIdentity = options.contactIdentity ?? {};
@@ -3769,6 +3778,9 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       //      portal's default selection can't stand. Only touches an UNANSWERED group; records a
       //      replayable step. Runs on real form pages only.
       if (!plan.atReview && !isDashboard && this.page) {
+        // Choose whose property this is BEFORE filling anything: on a disambiguation grid the
+        // page that follows the choice is the one the rest of this pass will fill.
+        if (await this.chooseProjectAddressRow(steps)) await sleep(1200);
         const otherFilled = await this.fillOtherSpecifyFields(steps, alreadyFilledLabels);
         if (otherFilled > 0) await this.waitForDynamicFieldsSettle().catch(() => null);
         const policySteps = await this.applyPolicyDefaults(alreadyFilledLabels);
@@ -4170,6 +4182,80 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         required: true,
       },
     };
+  }
+
+  // A DISAMBIGUATION GRID IS A CHOICE ABOUT WHOSE PROPERTY WE ARE FILING ON.
+  //
+  // Permit portals answer an address search with several rows for the same street address —
+  // one per issuing jurisdiction, each a different parcel with its own owner — and the permit
+  // types on offer differ per row. Left to the planner this is a guess, and it guessed wrong
+  // repeatedly on Coos Bay: it selected "DEQ Applications", which issues onsite/septic and
+  // nothing else, and the run then sat on "No Building services were returned for this
+  // address" re-planning the same page until it gave up.
+  //
+  // The hand-coded Accela adapter already had this discipline, but auto-learn OUTRANKS the
+  // hand-coded adapters in the staging precedence, so that code never ran. Hence here.
+  //
+  // The rejection matters more than the ordering: the street search is loose enough that
+  // "119 7th" returns four other towns, and opening an application against a stranger's house
+  // is not something a later step can undo. Rows outside this project's city/ZIP are refused
+  // outright; among this property's own versions, order is a hint (the operator's rule is that
+  // one record often carries both disciplines).
+  private async chooseProjectAddressRow(steps: RecipeStep[]): Promise<boolean> {
+    if (this.addressRowChosen || !this.siteIdentity) return false;
+    if (!this.page || typeof this.page.evaluate !== "function") return false;
+    const id = this.siteIdentity;
+    if (!id.city && !id.zip) return false; // nothing to verify identity against — don't guess
+
+    const rows = await this.page.evaluate(() => {
+      const vis = (e: Element) => { const r = (e as HTMLElement).getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+      const out: Array<{ key: string; text: string }> = [];
+      let n = 0;
+      for (const tr of Array.from(document.querySelectorAll("tr"))) {
+        if (!vis(tr)) continue;
+        const action = Array.from(tr.querySelectorAll("a, button, [role='button']"))
+          .find((a) => /^\s*select\s*$/i.test((a as HTMLElement).innerText || ""));
+        if (!action) continue;
+        const text = ((tr as HTMLElement).innerText || "").replace(/\s+/g, " ").trim();
+        if (!text || text.length > 400) continue; // the container row wrapping the whole grid
+        const key = `ar${n++}`;
+        (action as HTMLElement).setAttribute("data-al-row", key);
+        out.push({ key, text });
+      }
+      return out;
+    }).catch(() => [] as Array<{ key: string; text: string }>);
+
+    if (rows.length < 2) return false; // one row (or none) is not a choice
+
+    const { ranked, rejected } = rankAddressVersions(rows.map((r) => r.text), {
+      city: id.city, zip: id.zip, homeownerName: id.homeownerName, isElectrical: id.isElectrical === true,
+    });
+    if (ranked.length === 0) {
+      this.debug?.event({ type: "address_row_refused", why: "no result is this project's property", rejected: rejected.slice(0, 3).join(" | ").slice(0, 200) });
+      return false;
+    }
+    const best = rows[ranked[0].index];
+    if (!best) return false;
+    const css = `[data-al-row="${best.key}"]`;
+    const clicked = await this.page.locator(css).first().click({ timeout: 12000 }).then(() => true).catch(() => false);
+    if (!clicked) return false;
+    this.addressRowChosen = true;
+    await this.waitForDynamicFieldsSettle().catch(() => null);
+    this.debug?.event({
+      type: "address_row_chosen",
+      // Jurisdiction words and whether the owner matched — never the address itself.
+      jurisdiction: (ranked[0].text.match(/(CITY|COUNTY|DEQ)\s+APPLICATIONS/i) || [])[0] || "unlabelled",
+      ownerMatched: ranked[0].ownerHit,
+      considered: ranked.length,
+      rejected: rejected.length,
+    });
+    steps.push({
+      action: "click",
+      phase: "fill",
+      selector: { css, fallbacks: [{ role: "link", name: "Select" }] },
+      note: `address version: ${(ranked[0].text.match(/(CITY|COUNTY|DEQ)\s+APPLICATIONS/i) || ["this property"])[0]}`,
+    });
+    return true;
   }
 
   // AN "OTHER — PLEASE SPECIFY" BOX BECOMES REQUIRED THE MOMENT ITS PARENT SAYS "Other".

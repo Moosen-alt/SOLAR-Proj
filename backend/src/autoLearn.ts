@@ -562,6 +562,15 @@ async function autoLearnPortalInner(
       // fills "" forever. Handing the adapter the replay map stops a dead binding being
       // recorded at all, rather than catching it afterwards at the trust gate.
       bindableFields: Object.keys(resolveRecipeFieldValues(db, project, portalType)),
+      // Identity for the address-disambiguation grid: which city/ZIP this project is in, whose
+      // name is on it, and which discipline we are filing. Used to REFUSE another property's
+      // row, not to fill anything.
+      siteIdentity: {
+        city: project.city,
+        zip: project.zip,
+        homeownerName: project.homeownerName,
+        isElectrical: /elec/i.test(String(input.permitType ?? "")),
+      },
       onProgress: input.onProgress,
       onHumanStep,
     }));

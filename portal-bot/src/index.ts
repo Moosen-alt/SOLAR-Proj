@@ -506,9 +506,12 @@ export async function learnPortal(input: {
   certifiedAliases?: Record<string, string[]>;
   contactIdentity?: import("./adapters/autoLearnAdapter").ContactIdentity;
   siteContactIdentity?: import("./adapters/autoLearnAdapter").ContactIdentity;
+  /** City/ZIP/owner + discipline, so an address-disambiguation grid can refuse a row that
+   *  belongs to another property rather than guessing between them. */
+  siteIdentity?: { city?: string; zip?: string; homeownerName?: string; isElectrical?: boolean };
 }): Promise<import("./adapters/autoLearnAdapter").LearnResult> {
   const { AutoLearnAdapter } = await import("./adapters/autoLearnAdapter");
-  const adapter = new AutoLearnAdapter(input.portalName, input.planner, { maxPages: input.maxPages, docsByType: input.docsByType, uploadMode: input.uploadMode, policyProfile: input.policyProfile, bindableFields: input.bindableFields, onProgress: input.onProgress, equipment: input.equipment, certifiedAliases: input.certifiedAliases, contactIdentity: input.contactIdentity, siteContactIdentity: input.siteContactIdentity });
+  const adapter = new AutoLearnAdapter(input.portalName, input.planner, { maxPages: input.maxPages, docsByType: input.docsByType, uploadMode: input.uploadMode, policyProfile: input.policyProfile, bindableFields: input.bindableFields, onProgress: input.onProgress, equipment: input.equipment, certifiedAliases: input.certifiedAliases, contactIdentity: input.contactIdentity, siteContactIdentity: input.siteContactIdentity, siteIdentity: input.siteIdentity });
   let tmpStatePath: string | undefined;
   let leaveOpen = false;
   // A browser left open by a prior guided-manual stage holds this profile's lock — close it
