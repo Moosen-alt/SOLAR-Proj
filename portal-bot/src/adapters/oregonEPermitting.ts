@@ -68,7 +68,7 @@ export { parseStreetNumber, parseStreetName, parseStreetDirection };
 // per row, so the order matters: a wrong pick costs a full re-search, and picking a row for
 // another property entirely is an unrecoverable mis-filing. Pure so it can be tested against
 // the real 773 Kentucky rows without a browser.
-export interface AddressVersion { text: string; score: number; ownerHit: boolean }
+export interface AddressVersion { index: number; text: string; score: number; ownerHit: boolean }
 export function rankAddressVersions(
   rowTexts: string[],
   opts: { city?: string; zip?: string; homeownerName?: string; isElectrical: boolean },
@@ -79,8 +79,8 @@ export function rankAddressVersions(
   const preferred = opts.isElectrical ? /COUNTY APPLICATIONS/i : /CITY APPLICATIONS/i;
   const ranked: AddressVersion[] = [];
   const rejected: string[] = [];
-  for (const raw of rowTexts) {
-    const text = (raw || "").replace(/\s+/g, " ").trim();
+  for (let index = 0; index < rowTexts.length; index++) {
+    const text = (rowTexts[index] || "").replace(/\s+/g, " ").trim();
     if (!text) continue;
     const upper = text.toUpperCase();
     // Only versions of THIS property are candidates — the street search is loose enough to
@@ -90,7 +90,7 @@ export function rankAddressVersions(
     // Owner of record beats convention (each version can be a different parcel); DEQ ranks
     // last because it issues onsite/septic permits, never residential structural/electrical.
     const score = (ownerHit ? 4 : 0) + (preferred.test(text) ? 2 : 0) + (/DEQ/i.test(text) ? -3 : 0);
-    ranked.push({ text, score, ownerHit });
+    ranked.push({ index, text, score, ownerHit });
   }
   ranked.sort((a, b) => b.score - a.score);
   return { ranked, rejected };
@@ -245,10 +245,18 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
       for (let attempt = 0; attempt < ranked.length; attempt++) {
         const cand = ranked[attempt];
         if (attempt > 0) await runSearch(); // the grid is gone after a Select — rebuild it
-        const row = selectRows().filter({ hasText: cand.text.slice(0, 60) }).first();
+        const row = selectRows().nth(cand.index);
         if (!(await row.count().catch(() => 0))) continue;
         await row.locator('a:has-text("Select")').first().click({ timeout: 15000 }).catch(() => null);
         await this.page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
+        // THE SERVICE LIST ARRIVES ON A POSTBACK, NOT WITH THE CLICK. Reading the checkboxes
+        // immediately finds none and condemns a perfectly good version as "does not offer the
+        // permit" — live, that walked past County (which does offer it) and left the run on
+        // "No Building services were returned for this address". count() does not auto-wait,
+        // so wait for the list explicitly. Absent after this, the version genuinely has none.
+        await this.page.locator('input[type="checkbox"]').first()
+          .waitFor({ state: "visible", timeout: 12000 }).catch(() => null);
+        await this.page.waitForTimeout(800);
 
         const offered = await this.page.evaluate(() => Array.from(document.querySelectorAll('input[type="checkbox"]'))
           .map((cb) => {
