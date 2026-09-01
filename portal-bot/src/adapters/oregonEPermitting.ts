@@ -62,6 +62,40 @@ function buildProjectName(project: ProjectRecord): string {
 import { parseStreetNumber, parseStreetName, parseStreetDirection } from "../addressParse";
 export { parseStreetNumber, parseStreetName, parseStreetDirection };
 
+// WHICH VERSION OF THE ADDRESS TO TRY, AND IN WHAT ORDER.
+//
+// Accela lists one street address once per issuing jurisdiction and the permit types differ
+// per row, so the order matters: a wrong pick costs a full re-search, and picking a row for
+// another property entirely is an unrecoverable mis-filing. Pure so it can be tested against
+// the real 773 Kentucky rows without a browser.
+export interface AddressVersion { text: string; score: number; ownerHit: boolean }
+export function rankAddressVersions(
+  rowTexts: string[],
+  opts: { city?: string; zip?: string; homeownerName?: string; isElectrical: boolean },
+): { ranked: AddressVersion[]; rejected: string[] } {
+  const cityUpper = (opts.city || "").toUpperCase();
+  const zip = (opts.zip || "").trim();
+  const surname = (opts.homeownerName || "").trim().split(/\s+/).pop() || "";
+  const preferred = opts.isElectrical ? /COUNTY APPLICATIONS/i : /CITY APPLICATIONS/i;
+  const ranked: AddressVersion[] = [];
+  const rejected: string[] = [];
+  for (const raw of rowTexts) {
+    const text = (raw || "").replace(/\s+/g, " ").trim();
+    if (!text) continue;
+    const upper = text.toUpperCase();
+    // Only versions of THIS property are candidates — the street search is loose enough to
+    // return the same house number in four other towns.
+    if (!((cityUpper && upper.includes(cityUpper)) || (zip && text.includes(zip)))) { rejected.push(text.slice(0, 60)); continue; }
+    const ownerHit = surname.length >= 3 && upper.includes(surname.toUpperCase());
+    // Owner of record beats convention (each version can be a different parcel); DEQ ranks
+    // last because it issues onsite/septic permits, never residential structural/electrical.
+    const score = (ownerHit ? 4 : 0) + (preferred.test(text) ? 2 : 0) + (/DEQ/i.test(text) ? -3 : 0);
+    ranked.push({ text, score, ownerHit });
+  }
+  ranked.sort((a, b) => b.score - a.score);
+  return { ranked, rejected };
+}
+
 export class OregonEPermittingAdapter extends BasePortalAdapter {
   portalName = "Oregon ePermitting (Accela ACA)";
 
@@ -140,90 +174,82 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
       await this.clickContinueApplication(10000);
       await this.page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
 
-      // Step 1: Work-site address search. On the current WorkLocation.aspx the fields are
-      // id-only (no accessible labels): street number = ...txtStreetNo4Search_ChildControl0,
-      // street name = ...txtStreetName. Use id-suffix locators rather than role+name.
-      const streetNum = parseStreetNumber(project.projectAddress ?? "");
-      const streetName = parseStreetName(project.projectAddress ?? "");
-      await this.page.locator('input[id*="StreetNo4Search"]').first().fill(streetNum, { timeout: 10000 });
-      await this.page.locator('input[id$="txtStreetName"]').first().fill(streetName, { timeout: 10000 });
-      // Best-effort: set the street direction dropdown (separate field on Accela) to narrow
-      // the results. Non-fatal — row selection below disambiguates jurisdiction regardless.
-      const streetDir = parseStreetDirection(project.projectAddress ?? "");
-      if (streetDir) {
-        await this.page.locator('select[id$="ddlStreetDirection"]').first().selectOption(streetDir).catch(() => null);
-      }
-      // The address form's OWN search button: id ends in WorkLocationEdit_btnSearch. (Use the
-      // precise suffix — a looser match also hits the street field's "_help" anchor.)
-      await this.page.locator('a[id$="WorkLocationEdit_btnSearch"]').first().click({ timeout: 10000 });
-      await this.page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
-
-      // THE ADDRESS VERSION THAT OFFERS THE PERMIT IS THE RIGHT ONE — nothing else identifies it.
+      // Step 1: Work-site address search, then pick the right version of the address.
       //
-      // One street address is listed several times, once per issuing jurisdiction ("City
-      // Applications", "COUNTY APPLICATIONS", "DEQ Applications"), and the permit types on
-      // offer differ per row. This used to hard-filter to COUNTY for electrical and CITY for
-      // structural, which is a guess about one jurisdiction: plenty of AHJs list BOTH
-      // disciplines under a single record, and that filter then matches no row (or the wrong
-      // one) and the application is opened against the wrong parcel — a filing that cannot be
-      // taken back. Accela's own instructions state the real algorithm: "try selecting each
-      // version of your address until you find the permit type that you are looking for."
+      // One street address is listed once per issuing jurisdiction ("City Applications",
+      // "COUNTY APPLICATIONS", "DEQ Applications") and the permit types on offer differ per
+      // row — operator-confirmed: city may hold structural while county holds electrical, but
+      // either can hold BOTH, so jurisdiction alone cannot decide. Accela's own instructions
+      // give the algorithm: "try selecting each version of your address until you find the
+      // permit type that you are looking for."
       //
-      // So: try each version, and let the PERMIT TYPE decide. The city/county convention is
-      // kept only as an ordering hint, so the usual case still resolves on the first attempt.
+      // Each attempt RE-RUNS the search. Accela is ASP.NET postback: once a row is selected
+      // the results grid is gone, its row locators are stale, and goBack() does not bring it
+      // back — so a retry that relies on the back button wedges on the first wrong row (live:
+      // it selected DEQ Applications, which issues nothing, and stopped there). Re-searching
+      // and re-matching the row by its TEXT is the only stable way to try the next one.
       const isElectrical = /elec/i.test(project.permitType ?? "");
       const appTypePattern = isElectrical
         ? /Residential\s*-?\s*Electrical/i
         : /Residential\s*-?\s*Structural/i;
       const preferred = isElectrical ? /COUNTY APPLICATIONS/i : /CITY APPLICATIONS/i;
       const cityUpper = (project.city || "").toUpperCase();
+      const zip = (project.zip || "").trim();
+      const surname = (project.homeownerName || "").trim().split(/\s+/).pop() || "";
 
-      const rows = this.page.locator("tr").filter({ has: this.page.getByRole("link", { name: /^Select$/i }) });
-      const rowCount = Math.min(await rows.count().catch(() => 0), 8);
+      const selectRows = () => this.page.locator("tr").filter({ has: this.page.locator('a:has-text("Select")') });
+
+      const runSearch = async (): Promise<void> => {
+        await this.page.goto(`${BASE_URL}/Cap/CapApplyDisclaimer.aspx?module=Building`, { waitUntil: "domcontentloaded", timeout: 30000 });
+        await this.page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
+        await this.page.getByRole("checkbox", { name: /I have read and agree/i }).check({ timeout: 10000 })
+          .catch(async () => { await this.page.locator('input[id$="termAccept"]').first().check({ timeout: 8000 }); });
+        await this.clickContinueApplication(10000);
+        await this.page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
+        await this.page.locator('input[id*="StreetNo4Search"]').first().fill(streetNum, { timeout: 10000 });
+        await this.page.locator('input[id$="txtStreetName"]').first().fill(streetName, { timeout: 10000 });
+        if (streetDir) {
+          await this.page.locator('select[id$="ddlStreetDirection"]').first().selectOption(streetDir).catch(() => null);
+        }
+        await this.page.locator('a[id$="WorkLocationEdit_btnSearch"]').first().click({ timeout: 10000 });
+        await this.page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
+      };
+
+      const streetNum = parseStreetNumber(project.projectAddress ?? "");
+      const streetName = parseStreetName(project.projectAddress ?? "");
+      const streetDir = parseStreetDirection(project.projectAddress ?? "");
+      await runSearch();
+
+      const rows0 = selectRows();
+      const rowCount = Math.min(await rows0.count().catch(() => 0), 8);
       if (rowCount === 0) return fail("openSubmission: the address search returned no selectable rows.");
 
-      // ONLY VERSIONS OF *THIS* PROPERTY ARE CANDIDATES.
-      //
-      // Accela's street search is loose: searching "119 7th" returns 119 7TH E in Milton
-      // Freewater, 119 NE 78TH AVE in Portland, 119 NW 7TH ST in Corvallis... Trying every
-      // row until one offers the right permit type would happily open an application against
-      // a house in another city — the same unrecoverable mis-filing, arrived at from the
-      // other direction. So a row is a candidate only when it is THIS project's city or ZIP;
-      // if none are, stop and say so rather than guess.
-      const zip = (project.zip || "").trim();
-      const ranked: Array<{ index: number; text: string; score: number; ownerHit?: boolean }> = [];
-      const rejected: string[] = [];
+      // ONLY VERSIONS OF *THIS* PROPERTY ARE CANDIDATES. Accela's street search is loose —
+      // "119 7th" also returns Milton Freewater, Portland and Corvallis — and trying every row
+      // until one offers the permit would open an application against a house in another city.
+      const rowTexts: string[] = [];
       for (let i = 0; i < rowCount; i++) {
-        const text = ((await rows.nth(i).innerText().catch(() => "")) || "").replace(/\s+/g, " ").trim();
-        const upper = text.toUpperCase();
-        const sameCity = Boolean(cityUpper) && upper.includes(cityUpper);
-        const sameZip = Boolean(zip) && text.includes(zip);
-        if (!sameCity && !sameZip) { rejected.push(text.slice(0, 60)); continue; }
-        // THE OWNER COLUMN IS THE STRONGEST SIGNAL THERE IS. Each version of an address can
-        // be a DIFFERENT PARCEL with a different owner of record — live at 773 Kentucky the
-        // three rows carried three owners and three parcel numbers, none of them the
-        // customer. Prefer the row whose owner matches the homeowner; a surname hit outranks
-        // the city/county convention, because filing against a neighbour's parcel is the
-        // failure that convention cannot see.
-        const surname = (project.homeownerName || "").trim().split(/\s+/).pop() || "";
-        const ownerHit = surname.length >= 3 && upper.includes(surname.toUpperCase());
-        ranked.push({ index: i, text, score: (ownerHit ? 4 : 0) + (preferred.test(text) ? 1 : 0), ownerHit });
+        rowTexts.push(((await rows0.nth(i).innerText().catch(() => "")) || ""));
       }
-      ranked.sort((a, b) => b.score - a.score);
+      const { ranked, rejected } = rankAddressVersions(rowTexts, {
+        city: project.city, zip, homeownerName: project.homeownerName, isElectrical,
+      });
       if (ranked.length === 0) {
         return fail(`openSubmission: none of the ${rowCount} address result(s) are in `
           + `${project.city || "(no city)"} ${zip}. Refusing to open an application against another property. `
           + `Rows seen: ${rejected.slice(0, 4).join(" | ")}`);
       }
 
-      let chosen: { text: string; offered: string[] } | null = null;
-      let chosenIndex = -1;
+      let chosen: { text: string; offered: string[]; ownerHit: boolean } | null = null;
       const offeredSeen: string[] = [];
-      for (const cand of ranked) {
-        await rows.nth(cand.index).getByRole("link", { name: /^Select$/i }).first().click({ timeout: 15000 }).catch(() => null);
+      for (let attempt = 0; attempt < ranked.length; attempt++) {
+        const cand = ranked[attempt];
+        if (attempt > 0) await runSearch(); // the grid is gone after a Select — rebuild it
+        const row = selectRows().filter({ hasText: cand.text.slice(0, 60) }).first();
+        if (!(await row.count().catch(() => 0))) continue;
+        await row.locator('a:has-text("Select")').first().click({ timeout: 15000 }).catch(() => null);
         await this.page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
 
-        // What does THIS version actually offer?
         const offered = await this.page.evaluate(() => Array.from(document.querySelectorAll('input[type="checkbox"]'))
           .map((cb) => {
             const id = cb.getAttribute("id") || "";
@@ -237,15 +263,11 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
         const match = this.page.getByRole("checkbox", { name: appTypePattern });
         if ((await match.count().catch(() => 0)) > 0) {
           await match.first().check({ timeout: 10000 });
-          chosen = { text: cand.text, offered };
-          chosenIndex = cand.index;
+          chosen = { text: cand.text, offered, ownerHit: cand.ownerHit };
           break;
         }
-        // Wrong version — go back to the results and try the next one. NEVER fall back to
-        // "check the first checkbox": that is how a Commercial or Mechanical permit gets
-        // filed under a residential solar job.
-        await this.page.goBack({ timeout: 15000 }).catch(() => null);
-        await this.page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
+        // Wrong version. NEVER fall back to "check the first checkbox" — that is how a
+        // Commercial or Mechanical permit gets filed under a residential solar job.
       }
 
       if (!chosen) {
@@ -268,7 +290,7 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
         // False here means we filed against a parcel whose owner of record is NOT the
         // homeowner. Legitimate for a recent sale or a renter, and a wrong-parcel filing
         // otherwise — either way a human must see it, so it rides out on the step result.
-        ownerOfRecordMatched: ranked.find((r) => r.index === chosenIndex)?.ownerHit === true,
+        ownerOfRecordMatched: chosen.ownerHit,
       });
     } catch (err) {
       return fail(`openSubmission failed: ${err instanceof Error ? err.message : String(err)}`);
