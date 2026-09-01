@@ -5647,6 +5647,10 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
           // The recipe key's discipline for this track - MUST be the same value the
           // lookup above asked for, or the learned recipe is never found again.
           discipline: trackDiscipline,
+          // The self-seed IS this track's staging run when no trusted recipe exists yet, so the
+          // operator's delegated submit has to reach it here too — otherwise the only portals it
+          // can never file on are precisely the ones with no recipe.
+          allowFinalSubmit: allowFinalSubmit === true,
           project: stagedProject,
           // Match the hand-coded/replay adapters' headed setting so the self-seed opens a visible
           // browser locally and leaves it open at review for the human (headless on a server).

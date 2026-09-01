@@ -509,9 +509,12 @@ export async function learnPortal(input: {
   /** City/ZIP/owner + discipline, so an address-disambiguation grid can refuse a row that
    *  belongs to another property rather than guessing between them. */
   siteIdentity?: { city?: string; zip?: string; homeownerName?: string; isElectrical?: boolean };
+  /** Operator delegation: click the recorded final submit rather than leaving it for a human.
+   *  Honoured only alongside PORTAL_ALLOW_FINAL_SUBMIT=1, checked at the click itself. */
+  allowFinalSubmit?: boolean;
 }): Promise<import("./adapters/autoLearnAdapter").LearnResult> {
   const { AutoLearnAdapter } = await import("./adapters/autoLearnAdapter");
-  const adapter = new AutoLearnAdapter(input.portalName, input.planner, { maxPages: input.maxPages, docsByType: input.docsByType, uploadMode: input.uploadMode, policyProfile: input.policyProfile, bindableFields: input.bindableFields, onProgress: input.onProgress, equipment: input.equipment, certifiedAliases: input.certifiedAliases, contactIdentity: input.contactIdentity, siteContactIdentity: input.siteContactIdentity, siteIdentity: input.siteIdentity });
+  const adapter = new AutoLearnAdapter(input.portalName, input.planner, { maxPages: input.maxPages, docsByType: input.docsByType, uploadMode: input.uploadMode, policyProfile: input.policyProfile, bindableFields: input.bindableFields, onProgress: input.onProgress, equipment: input.equipment, certifiedAliases: input.certifiedAliases, contactIdentity: input.contactIdentity, siteContactIdentity: input.siteContactIdentity, siteIdentity: input.siteIdentity, allowFinalSubmit: input.allowFinalSubmit });
   let tmpStatePath: string | undefined;
   let leaveOpen = false;
   // A browser left open by a prior guided-manual stage holds this profile's lock — close it

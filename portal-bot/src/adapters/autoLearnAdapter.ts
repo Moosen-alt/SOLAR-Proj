@@ -1047,6 +1047,13 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   // Who and where this project is, for choosing between versions of an address on a
   // disambiguation grid. Not fill data — identity used to REJECT another property's row.
   private siteIdentity: { city?: string; zip?: string; homeownerName?: string; isElectrical?: boolean } | undefined;
+  // Operator delegation for the final submit, honoured only alongside PORTAL_ALLOW_FINAL_SUBMIT=1.
+  private allowFinalSubmit = false;
+  /** True once the delegated final submit actually went through. Read by the caller. */
+  finalSubmitClicked = false;
+  /** The completion/receipt page as text + URL, captured while standing on it. */
+  finalSubmitPageText = "";
+  finalSubmitUrl = "";
   // A grid is chosen once per run; re-choosing on a re-scrape would re-click the row.
   private addressRowChosen = false;
   private equipment: Record<string, string>;
@@ -1101,6 +1108,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       bindableFields?: string[];
       /** City/ZIP/owner of the project, so a row for someone else's property is refused. */
       siteIdentity?: { city?: string; zip?: string; homeownerName?: string; isElectrical?: boolean };
+      /** Operator delegation: click the recorded final submit instead of leaving it. */
+      allowFinalSubmit?: boolean;
       /** CEC-certified manufacturer names per compact plan-set make (weekly
        *  cec_equipment sync) — appended AFTER the curated static alias table;
        *  empty map = byte-identical behavior. */
@@ -1124,6 +1133,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     this.policyProfile = options.policyProfile ?? "residential_nem";
     this.bindableFields = new Set(options.bindableFields ?? []);
     this.siteIdentity = options.siteIdentity;
+    this.allowFinalSubmit = options.allowFinalSubmit === true;
     this.equipment = options.equipment ?? {};
     this.certifiedAliases = options.certifiedAliases ?? {};
     this.contactIdentity = options.contactIdentity ?? {};
@@ -3851,18 +3861,58 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         }
       }
 
-      // e) Record the final submit (if any) — NEVER click it. Reject pay/fee buttons.
+      // e) Record the final submit (if any). Clicked ONLY on the operator's explicit
+      //    delegation; otherwise recorded and left for a human. Pay/fee buttons rejected.
       if (typeof plan.finalSubmitSelectorIndex === "number") {
         const submitField = fields[plan.finalSubmitSelectorIndex];
         if (submitField && !this.isOffLimitsButton(submitField)) {
+          // THE DELEGATED CLICK LIVES HERE BECAUSE THIS IS THE PATH THAT RUNS.
+          //
+          // runAdapter has the same gate, but auto-learn does not go through runAdapter --
+          // the staging precedence puts AutoLearnAdapter ahead of the hand-coded adapters and
+          // calls autoLearnPortal directly, so a delegation wired only into runAdapter never
+          // fires. Live: a structural application reached Step 3 Review, correctly filled,
+          // and stopped there with finalSubmitClicked=false.
+          //
+          // Both switches must still agree (the per-run flag AND PORTAL_ALLOW_FINAL_SUBMIT=1),
+          // isOffLimitsButton has already refused anything pay/fee shaped, and the step is
+          // recorded either way so the recipe carries it for replay.
+          const delegated = this.allowFinalSubmit === true && process.env.PORTAL_ALLOW_FINAL_SUBMIT === "1";
           steps.push({
             action: "click",
             phase: "review",
             selector: submitField.selector,
             isFinalSubmit: true,
-            note: `final submit: ${submitField.label || "submit"} (recorded, NOT clicked)`,
+            note: `final submit: ${submitField.label || "submit"} (${delegated ? "clicked on operator delegation" : "recorded, NOT clicked"})`,
           });
           finalSubmitRecorded = true;
+
+          if (delegated) {
+            this.debug?.event({ type: "final_submit_delegated", label: (submitField.label || "").slice(0, 60) });
+            const res = await safeAction(
+              "final submit",
+              async () => {
+                const loc = await this.locator(submitField.selector);
+                await loc.click({ timeout: 20000 });
+                await this.page!.waitForLoadState?.("networkidle", { timeout: 30000 }).catch(() => null);
+                await smartWait(this.page!, 4000);
+              },
+              { required: false },
+            );
+            if (res.ok && !res.message) {
+              this.finalSubmitClicked = true;
+              // The completion page is the receipt: it carries the number the portal just
+              // issued, and it is the only place that number appears before the record list
+              // catches up. Grab it while we are standing on it.
+              this.finalSubmitPageText = String(
+                (await this.page!.locator("body").innerText().catch(() => "")) ?? "",
+              ).replace(/\s+/g, " ").trim().slice(0, 4000);
+              this.finalSubmitUrl = (() => { try { return String(this.page!.url?.() ?? ""); } catch { return ""; } })();
+              this.debug?.event({ type: "final_submit_done", url: this.finalSubmitUrl.slice(0, 120) });
+            } else {
+              this.debug?.event({ type: "final_submit_failed", why: (res.message || "click did not go through").slice(0, 160) });
+            }
+          }
         }
       }
 

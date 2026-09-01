@@ -296,6 +296,11 @@ export async function autoLearnPortal(
     /** Recipe discipline for THIS stage's track (recipeDisciplineForTrack). Authoritative
      *  over permitType — it is the same value the recipe lookup keys on. */
     discipline?: string;
+    /** Operator delegation: click the recorded final submit at review rather than leaving it.
+     *  Honoured only alongside PORTAL_ALLOW_FINAL_SUBMIT=1, checked at the click itself. The
+     *  self-seed IS the staging run for a portal with no trusted recipe yet, so without this a
+     *  delegated submit would be impossible on exactly the portals that need it most. */
+    allowFinalSubmit?: boolean;
     // Optional pre-resolved project record. The staging self-seed path passes its
     // client-contractor *overlaid* stagedProject (authoritative CCB#/installer identity) so the
     // learner fills the same data the hand-coded adapters would. When omitted (the manual
@@ -565,6 +570,7 @@ async function autoLearnPortalInner(
       // Identity for the address-disambiguation grid: which city/ZIP this project is in, whose
       // name is on it, and which discipline we are filing. Used to REFUSE another property's
       // row, not to fill anything.
+      allowFinalSubmit: input.allowFinalSubmit === true,
       siteIdentity: {
         city: project.city,
         zip: project.zip,

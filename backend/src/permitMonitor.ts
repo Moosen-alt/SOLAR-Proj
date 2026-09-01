@@ -32,8 +32,30 @@ function clean(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
 
+// A PORTAL THAT STATES THE STATUS OUTRIGHT HAS ALREADY ANSWERED THE QUESTION.
+//
+// The patterns below scan whatever text the fetcher scraped, which on a record page is the
+// whole page — headings, help text and all. Accela prints an "Additional Information" section
+// on every record, and correctionPattern matches that phrase, so a permit that had just been
+// filed ("Record Status: App Submitted") classified as correction_flagged at 0.9: a false
+// alarm to the client, a review item that then BLOCKS staging of the project's other tracks,
+// and it would have happened on every Accela filing we ever made. Measured live on
+// 187-26-000305-STR.
+//
+// So when the page states the status in a labelled field, classify on THAT and let the
+// page-wide scan stay the fallback for portals that only render prose.
+const STATUS_LINE = /\b(?:record|permit|application)\s+status\s*:?\s*([A-Za-z][A-Za-z /&-]{2,40}?)\s*(?:expiration|expires|date|record|permit|application|$)/i;
+
+export function extractStatedStatus(rawStatusText: string): string {
+  const m = clean(rawStatusText).match(STATUS_LINE);
+  return m ? m[1].trim().replace(/\s+/g, " ") : "";
+}
+
 export function classifyPermitStatusText(rawStatusText: string): PermitStatusClassification {
-  const text = clean(rawStatusText);
+  const stated = extractStatedStatus(rawStatusText);
+  // Keep the full text when the portal states nothing — that is the old behaviour, and the
+  // only behaviour available for portals that render status as prose.
+  const text = stated || clean(rawStatusText);
   const lower = text.toLowerCase();
 
   if (!text) {
