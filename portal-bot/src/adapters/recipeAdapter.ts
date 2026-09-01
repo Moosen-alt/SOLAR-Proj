@@ -3,6 +3,8 @@ import path from "path";
 import type { PortalRecipe, ProjectRecord, RecipeSelector, RecipeStep } from "../../../shared/src/types";
 import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, ok, fail, type PortalContext, type PortalStepResult } from "../adapter";
 import { applyFormatHint } from "../formatHint";
+import { imageToPdfBytes, pdfNameFor, shouldConvertToPdf } from "../imageToPdf";
+import { fileTypeAllowed } from "./autoLearnAdapter";
 import { openPortal } from "../browser";
 import { selectWithFallback } from "../comboboxFill";
 
@@ -1608,7 +1610,18 @@ export class RecipeAdapter extends BasePortalAdapter {
         if (!filePath) return false;
         // Attach under a CLEAN filename: stored files carry a UUID prefix for on-disk
         // uniqueness that must not leak into what the portal reviewer sees.
-        const file = (() => {
+        // The slot may refuse the image but take a PDF — PacifiCorp asks for a photo of the
+        // meter and accepts only .docx/.pdf. Read the live control's own accept list rather
+        // than trusting what it declared when this was recorded.
+        const liveAccept = await this.page.evaluate((sel: string) => {
+          const el = sel ? document.querySelector(sel) : null;
+          const input = el && (el as HTMLElement).tagName === "INPUT" ? el : el?.querySelector('input[type="file"]');
+          return (input?.getAttribute("accept") || "");
+        }, step.selector?.css ?? "").catch(() => "");
+        const pdfBuf = shouldConvertToPdf(filePath, liveAccept, fileTypeAllowed(filePath, liveAccept))
+          ? await imageToPdfBytes(filePath).catch(() => null)
+          : null;
+        const file = pdfBuf ? { name: pdfNameFor(path.basename(filePath).replace(/^[0-9a-f-]{36}-/i, "")), mimeType: "application/pdf", buffer: pdfBuf } : (() => {
           const base = path.basename(filePath);
           const clean = base.replace(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-/i, "");
           try {

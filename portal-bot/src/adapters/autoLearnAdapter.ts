@@ -1,5 +1,6 @@
 import fs from "fs";
 import { rankAddressVersions } from "../addressVersion";
+import { imageToPdfBytes, pdfNameFor, shouldConvertToPdf } from "../imageToPdf";
 import path from "path";
 import type { Page, Frame } from "playwright";
 import type { ProjectRecord, RecipeSelector, RecipeStep, StepFingerprint } from "../../../shared/src/types";
@@ -1520,9 +1521,12 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     // A candidate must fit the size cap AND be a type this control accepts. Folding the type
     // test into fits() means every fallback tier below inherits it — including the
     // last-resort tiers, which are exactly the ones that used to file a ZIP into a PDF slot.
+    // A slot that refuses the image but takes a PDF is still fillable — the photo just has to
+    // travel as a PDF. PacifiCorp asks for a photo of the meter and accepts only .docx/.pdf.
     const fits = (docType: string) => Boolean(this.docsByType[docType])
       && this.fileFits(this.docsByType[docType], cap)
-      && fileTypeAllowed(this.docsByType[docType], accept);
+      && (fileTypeAllowed(this.docsByType[docType], accept)
+        || shouldConvertToPdf(this.docsByType[docType], accept, false));
     // Combined mode (Accela / Oregon ePermitting): attach the SINGLE full plan-set PDF to
     // every upload control regardless of label — the AHJ wants all plan pages as one PDF.
     // fits() applies here too so an explicit PORTAL_UPLOAD_MAX_MB override is honored
@@ -1760,9 +1764,25 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       // UUID for on-disk uniqueness (e.g. "7fd69186-…-Javier_…_SLD_one-line.pdf"), but that
       // prefix must not leak into what the utility/AHJ reviewer sees. Read the bytes and
       // attach as a payload named without the UUID prefix.
+      // WRAP A PHOTO THE SLOT WILL NOT TAKE AS AN IMAGE. Only the container changes: one
+      // page, the photograph at its own size. Done here rather than at resolve time so the
+      // recorded docType still says meter_photo — what was sent is still the meter photo.
+      const needsPdf = shouldConvertToPdf(resolved.file, slot.accept || "", fileTypeAllowed(resolved.file, slot.accept || ""));
+      const converted = needsPdf
+        ? await imageToPdfBytes(resolved.file).then((buf) => ({ buf })).catch((e) => {
+            this.debug?.event({ type: "image_to_pdf_failed", why: String(e).slice(0, 120) });
+            return null;
+          })
+        : null;
+      if (converted) {
+        this.debug?.event({ type: "image_to_pdf", docType: resolved.docType, accept: (slot.accept || "").slice(0, 60) });
+      }
       const uploadPayload = (() => {
         const base = path.basename(resolved.file);
         const clean = base.replace(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-/i, "");
+        if (converted) {
+          return { name: pdfNameFor(clean || base), mimeType: "application/pdf", buffer: converted.buf };
+        }
         try {
           const buffer = fs.readFileSync(resolved.file);
           const ext = path.extname(clean).toLowerCase();
