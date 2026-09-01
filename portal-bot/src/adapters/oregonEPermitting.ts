@@ -158,41 +158,105 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
       await this.page.locator('a[id$="WorkLocationEdit_btnSearch"]').first().click({ timeout: 10000 });
       await this.page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
 
-      // The results grid lists the SAME street address under multiple jurisdictions:
-      //   CITY APPLICATIONS  → structural permits (Building Dept)
-      //   COUNTY APPLICATIONS → electrical permits (Yamhill County / state electrical)
-      // Select the row that matches the permit type. Default to structural if unspecified.
+      // THE ADDRESS VERSION THAT OFFERS THE PERMIT IS THE RIGHT ONE — nothing else identifies it.
+      //
+      // One street address is listed several times, once per issuing jurisdiction ("City
+      // Applications", "COUNTY APPLICATIONS", "DEQ Applications"), and the permit types on
+      // offer differ per row. This used to hard-filter to COUNTY for electrical and CITY for
+      // structural, which is a guess about one jurisdiction: plenty of AHJs list BOTH
+      // disciplines under a single record, and that filter then matches no row (or the wrong
+      // one) and the application is opened against the wrong parcel — a filing that cannot be
+      // taken back. Accela's own instructions state the real algorithm: "try selecting each
+      // version of your address until you find the permit type that you are looking for."
+      //
+      // So: try each version, and let the PERMIT TYPE decide. The city/county convention is
+      // kept only as an ordering hint, so the usual case still resolves on the first attempt.
       const isElectrical = /elec/i.test(project.permitType ?? "");
-      const jurisdictionPattern = isElectrical ? /COUNTY APPLICATIONS/i : /CITY APPLICATIONS/i;
-      const cityUpper = (project.city || "").toUpperCase();
-      const jurisdictionRow = this.page.locator("tr", { hasText: jurisdictionPattern }).filter({ hasText: cityUpper });
-      const selectLink = (await jurisdictionRow.count()) > 0
-        ? jurisdictionRow.getByRole("link", { name: /^Select$/i }).first()
-        : this.page.getByRole("link", { name: /^Select$/i }).first();
-      await selectLink.click({ timeout: 15000 });
-      await this.page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
-
-      // Choose application type matching the permit discipline. The selector tries the most
-      // specific match first (e.g. "Residential – Electrical Comprehensive") then falls back
-      // to a broader pattern. Both structural and electrical tracks use a single checkbox.
       const appTypePattern = isElectrical
         ? /Residential\s*-?\s*Electrical/i
         : /Residential\s*-?\s*Structural/i;
-      const appTypeCheckbox = this.page.getByRole("checkbox", { name: appTypePattern });
-      if ((await appTypeCheckbox.count().catch(() => 0)) > 0) {
-        await appTypeCheckbox.first().check({ timeout: 10000 });
-      } else {
-        // Fallback: check the first available checkbox (only one option on the page)
-        await this.page.locator('input[type="checkbox"]').first().check({ timeout: 8000 });
+      const preferred = isElectrical ? /COUNTY APPLICATIONS/i : /CITY APPLICATIONS/i;
+      const cityUpper = (project.city || "").toUpperCase();
+
+      const rows = this.page.locator("tr").filter({ has: this.page.getByRole("link", { name: /^Select$/i }) });
+      const rowCount = Math.min(await rows.count().catch(() => 0), 8);
+      if (rowCount === 0) return fail("openSubmission: the address search returned no selectable rows.");
+
+      // ONLY VERSIONS OF *THIS* PROPERTY ARE CANDIDATES.
+      //
+      // Accela's street search is loose: searching "119 7th" returns 119 7TH E in Milton
+      // Freewater, 119 NE 78TH AVE in Portland, 119 NW 7TH ST in Corvallis... Trying every
+      // row until one offers the right permit type would happily open an application against
+      // a house in another city — the same unrecoverable mis-filing, arrived at from the
+      // other direction. So a row is a candidate only when it is THIS project's city or ZIP;
+      // if none are, stop and say so rather than guess.
+      const zip = (project.zip || "").trim();
+      const ranked: Array<{ index: number; text: string; score: number }> = [];
+      const rejected: string[] = [];
+      for (let i = 0; i < rowCount; i++) {
+        const text = ((await rows.nth(i).innerText().catch(() => "")) || "").replace(/\s+/g, " ").trim();
+        const upper = text.toUpperCase();
+        const sameCity = Boolean(cityUpper) && upper.includes(cityUpper);
+        const sameZip = Boolean(zip) && text.includes(zip);
+        if (!sameCity && !sameZip) { rejected.push(text.slice(0, 60)); continue; }
+        // Ordering only, among rows already known to be this property: the usual
+        // city/county convention resolves on the first try, but is never a filter.
+        ranked.push({ index: i, text, score: preferred.test(text) ? 1 : 0 });
+      }
+      ranked.sort((a, b) => b.score - a.score);
+      if (ranked.length === 0) {
+        return fail(`openSubmission: none of the ${rowCount} address result(s) are in `
+          + `${project.city || "(no city)"} ${zip}. Refusing to open an application against another property. `
+          + `Rows seen: ${rejected.slice(0, 4).join(" | ")}`);
+      }
+
+      let chosen: { text: string; offered: string[] } | null = null;
+      const offeredSeen: string[] = [];
+      for (const cand of ranked) {
+        await rows.nth(cand.index).getByRole("link", { name: /^Select$/i }).first().click({ timeout: 15000 }).catch(() => null);
+        await this.page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
+
+        // What does THIS version actually offer?
+        const offered = await this.page.evaluate(() => Array.from(document.querySelectorAll('input[type="checkbox"]'))
+          .map((cb) => {
+            const id = cb.getAttribute("id") || "";
+            const lab = id ? document.querySelector(`label[for="${id.replace(/"/g, '\\"')}"]`) : null;
+            return ((lab as HTMLElement | null)?.innerText || (cb.closest("label") as HTMLElement | null)?.innerText || "")
+              .replace(/\s+/g, " ").trim();
+          })
+          .filter((t) => t.length > 0)).catch(() => [] as string[]);
+        for (const o of offered) if (!offeredSeen.includes(o)) offeredSeen.push(o);
+
+        const match = this.page.getByRole("checkbox", { name: appTypePattern });
+        if ((await match.count().catch(() => 0)) > 0) {
+          await match.first().check({ timeout: 10000 });
+          chosen = { text: cand.text, offered };
+          break;
+        }
+        // Wrong version — go back to the results and try the next one. NEVER fall back to
+        // "check the first checkbox": that is how a Commercial or Mechanical permit gets
+        // filed under a residential solar job.
+        await this.page.goBack({ timeout: 15000 }).catch(() => null);
+        await this.page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
+      }
+
+      if (!chosen) {
+        return fail(`openSubmission: none of the ${rowCount} address version(s) offered a `
+          + `"${isElectrical ? "Residential - Electrical" : "Residential - Structural"}" permit. `
+          + `Types seen: ${offeredSeen.slice(0, 10).join("; ") || "(none)"}.`);
       }
       await this.clickContinueApplication(10000);
 
       // PII redaction: do NOT return the street number/name/full address — only a
       // boolean confirming the address search resolved, plus the permit discipline chosen.
-      return ok(`Application opened (${isElectrical ? "electrical/county" : "structural/city"}) and address confirmed.`, {
+      return ok(`Application opened (${isElectrical ? "electrical" : "structural"}) and address confirmed.`, {
         projectId: project.id,
         addressResolved: Boolean(streetNum || streetName),
         permitDiscipline: isElectrical ? "electrical" : "structural",
+        // Which address version won, and how many were tried before it — the audit trail for
+        // "did we file against the right parcel?". Jurisdiction words only, never the address.
+        addressVersionsTried: ranked.length,
+        jurisdictionChosen: (chosen.text.match(/(CITY|COUNTY|DEQ)\s+APPLICATIONS/i) || [])[0] || "unlabelled",
       });
     } catch (err) {
       return fail(`openSubmission failed: ${err instanceof Error ? err.message : String(err)}`);
