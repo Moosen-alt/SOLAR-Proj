@@ -348,6 +348,7 @@ export function deletePortalRecipe(db: AppDb, recipeId: string): { deleted: bool
 // classifier to understand what each key means when matching portal form values.
 export const RECIPE_FIELD_DESCRIPTIONS: Record<string, string> = {
   homeownerName: "Property owner full name",
+  projectName: "Permit \"Project Name\" — the homeowner's name, which is how the AHJ, the inspector and the office look the job up later",
   homeownerFirstName: "Property owner first (given) name only",
   homeownerLastName: "Property owner last (family) name only",
   homeownerEmail: "Property owner / homeowner email address",
@@ -522,6 +523,9 @@ export function resolveRecipeFieldValues(db: AppDb, project: ProjectRecord, port
 
   const projectFields: Record<string, string> = {
     homeownerName: project.homeownerName,
+    // Bound, never frozen: a recipe is shared across every project under the profile, so a
+    // literal here would file every future job under the learn project's homeowner.
+    projectName: project.homeownerName,
     homeownerFirstName,
     homeownerLastName,
     homeownerEmail: String(snapshotFlat.homeownerEmail || snapshotFlat.ownerEmail || ""),

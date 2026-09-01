@@ -610,7 +610,8 @@ export async function processNextJob(db: AppDb): Promise<boolean> {
       const { prepareSubmission } = await import("./repository");
       const track = (job.payload.track as string | undefined) || undefined;
       const autoSubmit = job.payload.autoSubmit === true;
-      const detail = await prepareSubmission(db, String(job.projectId), track as never, autoSubmit);
+      const allowFinalSubmit = job.payload.allowFinalSubmit === true;
+      const detail = await prepareSubmission(db, String(job.projectId), track as never, autoSubmit, allowFinalSubmit);
       const run = detail.portalRuns?.[0];
       // Carry the run's failure text so the dashboard toast can say WHY, not just "failed".
       result = { status: run?.status ?? null, pauseReason: run?.pauseReason ?? null, message: run?.errorMessage || null };

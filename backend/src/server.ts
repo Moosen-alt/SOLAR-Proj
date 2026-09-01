@@ -2269,11 +2269,22 @@ app.post("/api/projects/:id/prepare-submission", (req, res) => {
   // Hybrid: operator-approved auto-submit. Only honored backend-side when the resolved
   // recipe is trusted (auto_submit_enabled); otherwise it falls back to guided-manual.
   const autoSubmit = req.body?.autoSubmit === true || String(req.body?.autoSubmit) === "true";
+  // Operator-delegated final submit — the CRM's "Submit" button for a hand-coded adapter.
+  // Recorded in the audit trail BEFORE the run, with the approver's identity, exactly as
+  // autopilot/approve does: a filing must always be attributable to a person.
+  const allowFinalSubmit = req.body?.allowFinalSubmit === true || String(req.body?.allowFinalSubmit) === "true";
+  if (allowFinalSubmit) {
+    const approver = currentUser(db, req);
+    if (AUTH_ENABLED && !approver) throw new HttpError(401, "Sign in to authorize a final submit.");
+    addAuditLog(db, projectId, "human",
+      AUTH_ENABLED ? (approver?.name || "authenticated user") : (String(req.body?.approverName || "").trim() || "dashboard"),
+      "portal.final_submit_authorized", { track: track ?? "permit" });
+  }
   // Staging runs OFF the request path as a background job: a live portal pass can take
   // many seconds (sometimes minutes), which would otherwise hang or time out the HTTP
   // request. Enqueue + kick the worker, return 202 with the jobId; the client polls
   // /api/jobs/:id and refetches the project once it's done. SSE still fires on completion.
-  const job = enqueueJob(db, "prepare_submission", { track, autoSubmit }, { projectId, priority: 7, maxRetries: 0 });
+  const job = enqueueJob(db, "prepare_submission", { track, autoSubmit, allowFinalSubmit }, { projectId, priority: 7, maxRetries: 0 });
   processNextJob(db)
     .then(() => {
       // Check the JOB first: a staging-gate 409 (QC/docs/CCB/permit-path/host conflict)

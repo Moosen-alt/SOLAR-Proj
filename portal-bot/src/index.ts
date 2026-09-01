@@ -204,6 +204,15 @@ interface StageOptions {
   // portal, the recipe adapter may replay through the final application submit
   // (never fee payment). Default false = guided-manual (stop at review).
   autoSubmit?: boolean;
+  // OPERATOR-DELEGATED FINAL SUBMIT. Distinct from autoSubmit, which is the RecipeAdapter
+  // replaying a TRUSTED recipe through its own recorded submit step. This is the operator
+  // saying "file it now, on my behalf" for a HAND-CODED adapter — the equivalent of them
+  // clicking Submit in the CRM — and it is honoured only when the caller ALSO sets
+  // PORTAL_ALLOW_FINAL_SUBMIT=1, so it can never be reached by a stray request body.
+  // Fee payment is untouched by this: the adapter still refuses to pay and pauses instead.
+  allowFinalSubmit?: boolean;
+  // Who authorised it, for the audit row. Never a body-supplied name when auth is on.
+  finalSubmitAuthorizedBy?: string;
   // LLM-assisted gap-fill: an injectable planner + the project's secret-free field values.
   // When both are present, hand-coded adapters fill any required field their fixed selectors
   // missed, from real project data only. Resolved server-side; secrets already stripped.
@@ -358,12 +367,29 @@ async function runAdapter(
     const uploadResult = fillResult.ok ? await adapter.uploadFiles(project, files) : fillResult;
     const reviewResult = await adapter.stopAtReview(project, options.reviewerReport);
 
-    const steps = [loginResult, openResult, fillResult, uploadResult, reviewResult];
+    // The delegated submit, once the application is staged cleanly at review. Two independent
+    // switches must agree — the per-run flag and the environment — because this is the one
+    // action in the system that cannot be undone. The adapter's own submitFromReview still
+    // owns the safety it always had: it refuses to submit if it is not on the review page,
+    // and it PAUSES rather than pay when the portal puts a fee gate before the submit.
+    const submitAllowed = options.allowFinalSubmit === true && process.env.PORTAL_ALLOW_FINAL_SUBMIT === "1";
+    let submitResult: import("./adapter").PortalStepResult | null = null;
+    if (submitAllowed && reviewResult.ok && typeof adapter.submitFromReview === "function") {
+      submitResult = await adapter.submitFromReview(project);
+    } else if (options.allowFinalSubmit === true && !submitAllowed) {
+      submitResult = {
+        ok: false,
+        message: "Final submit was requested but PORTAL_ALLOW_FINAL_SUBMIT=1 is not set — staged to review only.",
+      };
+    }
+
+    const steps = [loginResult, openResult, fillResult, uploadResult, reviewResult, ...(submitResult ? [submitResult] : [])];
     // The adapter reports whether it actually clicked the allowlisted final submit.
     // Default false; only the RecipeAdapter sets it true on a clean autoSubmit click.
     const finalSubmitClicked =
-      reviewResult.ok && (reviewResult.data?.finalSubmitClicked === true
-        || (adapter as { finalSubmitClicked?: boolean }).finalSubmitClicked === true);
+      (submitResult?.ok === true && submitResult.data?.finalSubmitClicked !== false)
+      || (reviewResult.ok && (reviewResult.data?.finalSubmitClicked === true
+        || (adapter as { finalSubmitClicked?: boolean }).finalSubmitClicked === true));
     // ok: every step must have succeeded AND the review screen must have been reached.
     const ok = steps.every((s) => s.ok);
     // Surface a permit/record number + record link captured off the completion page

@@ -5047,7 +5047,7 @@ function validatePortalFields(
   return missing;
 }
 
-export async function prepareSubmission(db: AppDb, projectId: string, track?: SubmittalTrackType, autoSubmit?: boolean): Promise<ProjectDetail> {
+export async function prepareSubmission(db: AppDb, projectId: string, track?: SubmittalTrackType, autoSubmit?: boolean, allowFinalSubmit?: boolean): Promise<ProjectDetail> {
   const detail = getProjectDetail(db, projectId);
   // PAYMENT GATE (first — the payment screen sits at the beginning of the flow):
   // a per-submission client must have this track's quote (real permit fees + the
@@ -5424,6 +5424,10 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
     credential,
     userDataDir,
     autoSubmit: resolvedAutoSubmit,
+    // Operator-delegated submit for the HAND-CODED adapters (Accela/PowerClerk), which the
+    // trusted-recipe autoSubmit path above does not cover. Still double-gated: runAdapter
+    // also requires PORTAL_ALLOW_FINAL_SUBMIT=1, and the adapter still refuses to pay a fee.
+    allowFinalSubmit: allowFinalSubmit === true,
     gapFillPlanner,
     gapFillFields,
     // Track-scoped portal URL so multi-tenant platform adapters (PowerClerk hosts PGE

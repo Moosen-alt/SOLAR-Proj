@@ -206,6 +206,13 @@ export function buildPortalPlanner(
   // Provide today's date so the planner can compute time-relative values
   // (e.g. estimated commissioning date = today + 28 days).
   projectFields["todayDate"] = new Date().toISOString().slice(0, 10);
+  // A PERMIT'S "Project Name" IS THE HOMEOWNER'S NAME — operator policy, because that is how
+  // the AHJ, the inspector and the office all look the job up afterwards. Left to its own
+  // devices the planner writes a description ("Residential Solar PV Installation", live on
+  // Coos Bay 194-26-001471-ELEC), which reads fine and is useless for finding the record.
+  // Supplied as its own field so the planner has an exact value to bind rather than a rule to
+  // remember, and so a recipe records it bound to projectName instead of a frozen literal.
+  if (project.homeownerName) projectFields["projectName"] = project.homeownerName;
   // COMPACT DESIGN DIGEST. The long parser/plan-set text blobs are excluded from
   // fieldValues (they cost ~40k tokens per LLM call), but a handful of the portal's
   // JUDGMENT questions (disconnect-within-10ft, meter on pole, battery/backup mode,

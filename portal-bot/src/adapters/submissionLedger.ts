@@ -171,7 +171,10 @@ export function cleanRecordLink(raw: string): string {
     // back with Accela's "An error has occurred. We are experiencing technical difficulties",
     // so a permit that was already ISSUED tracked as "needs human review".
     // publicPermitStatus.fetchAccelaStatus says the same thing at its Strategy 1.
-    const KEEP = /^(capid|capid1|capid2|capid3|module|tabname|agencycode|id|recordid|permitnumber|applicationid|appid|caseid|number)$/i;
+    // IsToShowInspection is the inspections view toggle Accela puts on the record link the
+    // operator actually copies out of the browser. Inspections are the phase AFTER issuance,
+    // so it is worth carrying rather than filtering away.
+    const KEEP = /^(capid|capid1|capid2|capid3|module|tabname|agencycode|istoshowinspection|id|recordid|permitnumber|applicationid|appid|caseid|number)$/i;
     const kept = new URLSearchParams();
     u.searchParams.forEach((v, k) => { if (KEEP.test(k)) kept.append(k, v); });
     const q = kept.toString();
