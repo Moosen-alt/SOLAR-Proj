@@ -634,7 +634,18 @@ export function extractFieldsInPage(els: Element[]): RawField[] {
       const tv = el.getAttribute(attr);
       if (tv) { testCss = `[${attr}="${tv}"]`; testHint = tv.replace(/[-_]+/g, " ").trim(); break; }
     }
-    const rawLabel = labelFor(el);
+    let rawLabel = labelFor(el);
+    // A FRAMEWORK-GENERATED ID IS NOT A LABEL. Angular Material (and CDK/Ionic) name their
+    // generated wrappers "mat-button-toggle-group-2", "cdk-overlay-4" — ids that look like
+    // labels to any label-shaped lookup but tell a planner nothing. ComEd's new-application
+    // drawer offers exactly two choices, "Distributed Generation" and "Distributed Generation
+    // Rebates", and the learn clicked one blind as "mat-button-toggle-group-2" because that
+    // was the only name it had. When the label is one of these, use the control's own visible
+    // text instead — which is what a person reads.
+    if (/^(mat|cdk|ng|ion|p|v)-[a-z-]*\d+$/i.test(rawLabel.trim())) {
+      const ownText = (el.textContent || "").replace(/\s+/g, " ").trim();
+      if (ownText && ownText.length <= 80) rawLabel = ownText;
+    }
     // A generic prompt ("Please select…", "Qty") on a widget that carries a data-test identity is
     // less useful to the planner than the identity itself (which disambiguates e.g. the inverter
     // Qty from a PV-array Qty) — prefer the test hint in that case; otherwise keep the real label.

@@ -32,6 +32,10 @@ const PAGE = `<!doctype html><html><body>
   <button aria-label="submit-form-btn">Continue Application</button>
   <!-- No aria-label at all: the visible text is all there is. -->
   <button>Save Draft</button>
+  <!-- Angular Material's generated wrapper id looks like a label but says nothing. ComEd's
+       new-application drawer is exactly this: the choice a person reads as "Distributed
+       Generation" was clicked blind as "mat-button-toggle-group-2". -->
+  <mat-button-toggle-group id="mat-button-toggle-group-2" aria-label="mat-button-toggle-group-2" role="button">Distributed Generation</mat-button-toggle-group>
 </body></html>`;
 
 const server = http.createServer((_q, r) => { r.writeHead(200, { "Content-Type": "text/html" }); r.end(PAGE); });
@@ -66,6 +70,12 @@ check("an ordinary button keeps its VISIBLE text (a human reads that, not the ar
 check("a button with no aria-label is unaffected",
   Boolean(textOf(/Save Draft/i)),
   JSON.stringify(buttons.map((b) => b.text)));
+
+// A custom element is classified "other", not "button", so this looks across ALL fields.
+const allNames = fields.map((f) => f.text || f.label || "");
+check("a framework-generated id is replaced by the control's visible text",
+  allNames.some((n) => /Distributed Generation/i.test(n)) && !allNames.some((n) => /^mat-button-toggle-group/.test(n)),
+  JSON.stringify(allNames));
 
 await browser.close();
 await new Promise<void>((r) => server.close(() => r()));
