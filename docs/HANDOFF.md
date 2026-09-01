@@ -153,38 +153,59 @@ Still open, in order:
 ## Open issues / next work (priority order)
 
 **Illinois live status (2026-09-01) — measured, not inferred.**
-Verify with `npm run portal:audit -- <login-url> --app=<application-url>`; a learn now writes
-the application URL onto the recipe as `[application:…]`, because auditing "the newest
-matching row" twice opened the WRONG draft and reported a stale application as if it were
-the run's.
+Verify with `npm run portal:audit -- <login-url> --app=<application-url>`; a learn writes the
+application URL onto the recipe as `[application:...]`, because auditing "the newest matching
+row" twice opened the WRONG draft and reported a stale application as the run's.
 
-*Ameren Illinois (PowerClerk)* — learn reaches the end of the wizard: 80 steps, 38 fields
-filled, 3 documents attached (0 missing). Audit of that exact application:
-**6 required still blank** — Account Number from Bill, Email, Phone, Street, the public-school
-question, Meter Number. Docket Number is FIXED (client field, migration v15) and Name /
-Company / Address now fill. Recipe stays `recording`; do not promote it (the gate now
-refuses a recipe carrying a blank-required finding, and overriding it once already produced
-a replay that faithfully reproduced an incomplete application).
-- Upload counting is UNRELIABLE and needs fixing: PowerClerk replaces a file input once a
-  file is attached, so the audit sees only the still-empty slots (9 → 6 after 3 attached)
-  and reports "0/N attached". The learn's own events are the trustworthy source today.
-- Account/Meter blank is expected in a LEARN (sensitive fields bind by name at replay, never
-  stored in a recipe) — confirm at replay, not here.
-- The public-school default did not take. POLICY_RADIO_DEFAULTS only drives RADIO groups; if
-  Ameren renders it as a select or checkbox it needs the select path instead.
+*Ameren Illinois (PowerClerk)* — audited state of the learned application:
+**35 fields filled, 4 documents attached, 6 required fields still blank** (Account Number from
+Bill, Email, Phone, Street, the public-school question, Meter Number). Docket Number is FIXED
+(client field, migration v15) and the Electrical Contractor name/company/address now fill.
+Recipe stays `recording`; do not promote it — the gate refuses a recipe carrying a
+blank-required finding, and overriding it once produced a replay that faithfully reproduced an
+incomplete application.
+- Blank Account/Meter is EXPECTED in a learn: sensitive fields bind by name at replay and are
+  never stored in a recipe. Confirm those at replay, not here.
+- The public-school default did not take. POLICY_RADIO_DEFAULTS drives RADIO groups only; if
+  Ameren renders that question as a select or checkbox it needs the select path instead. This
+  is the next thing to fix.
+- The 5 remaining empty upload slots are all correctly empty: Volt Var Settings Picture,
+  Installation Invoice and Proof of Insurance are documents we do not hold (and
+  `uploadForbidsSubstitute` refuses to put a substitute in them), and "Additional
+  Documents"/"Additional Attachment Field" are generic catch-alls.
 
-*ComEd (Intellio Connect)* — now fills its form for the first time: the "+" FAB, the drawer,
-the "Distributed Generation" choice, then Project Name / address / Level 1. BLOCKED on a
-decision: the drawer's only forward control is labelled **"Submit"**, and the engine strips
-any submit-shaped advance by design. **Ask the operator whether that drawer Submit CREATES
-the draft or FILES the application** — if it creates, teach the engine that a dialog Submit
-which opens a further form is an advance; if it files, ComEd stages to the drawer and hands
-off, like the DocuSign gate.
+*ComEd (Intellio Connect / ConnectTheGrid)* — **still creates nothing.** The list reads "No
+applications were found" after every run, confirming the operator's observation that no draft
+is being saved. Measured cause: the "+" FAB opens a New Application drawer that contains ZERO
+input fields — it is purely a type picker (Distributed Generation / Distributed Generation
+Rebates) whose only forward control is labelled **Submit**. The planner will never nominate a
+submit-shaped control (rule 1), so the run reaches the drawer and stops with no advance.
+- `clickCreateDialogAdvance` now supplies that advance under a five-part conjunction (overlay
+  only, entry-originated, create-intent heading, no filing/certification language, never
+  pay/fee), recorded as a plain advance and never `isFinalSubmit`. Pinned by
+  `createDialog.dom.smoke.ts`, and it fires correctly on the REAL drawer (verified: the
+  detector returns `Submit`).
+- **NOT yet proven end-to-end**: clicking that Submit on the live portal was blocked as an
+  outward-facing action, so nobody has yet observed what it produces. A drawer with no inputs
+  cannot file an application, but the confirming evidence is one click away: run
+  `npx tsx probe-comed-drawer.tmp.ts --submit` (needs operator approval) and check whether the
+  list gains a row and the real application form opens. Do that before trusting a ComEd learn.
+- Separately, the ComEd planner is unreliable on the list page — across two runs it chose to
+  navigate rather than fill, returning `fills=0`, and once "produced no actionable plan". The
+  drawer fix does not address that.
 
 *Three naming fixes came out of this and generalise beyond Illinois*: an icon ligature
 ("add"), a hover tooltip ("New Application"), and a framework-generated id
-("mat-button-toggle-group-2") each hid a control's human meaning. Modern portals do this
-constantly; the extractor and the entry finder now handle all three.
+("mat-button-toggle-group-2") each hid a control's human meaning.
+
+*Upload counting was wrong and is now fixed*: PowerClerk removes the file input once a file is
+attached, so counting `input[type=file]` counted only the slots still waiting and reported
+"0/6 attached" on a form holding 3 documents. `attachmentScan.ts` finds the attachment itself,
+keyed on the REMOVE control (a blank-template download link also sits inside upload UI, so
+proximity to upload UI proves nothing). That, in turn, exposed a real miss: Ameren reveals the
+PV-module data sheet slot only after the equipment selects cascade, so the single upload pass
+ran too early. The learn now re-runs the pass whenever new slot LABELS appear — new labels,
+not a bigger count, since attaching a file removes its input.
 
 *Still untested*: a BATTERY project (energy-storage fields never appear on a non-battery
 job) and multi-array NEM.

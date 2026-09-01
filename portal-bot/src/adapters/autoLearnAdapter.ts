@@ -3863,7 +3863,9 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         continue;
       }
 
-      // No advance + not at review → nothing more we can do.
+      // No advance + not at review → nothing more we can do, UNLESS a create dialog is
+      // waiting on its own Submit (see clickCreateDialogAdvance).
+      if (await this.clickCreateDialogAdvance(steps)) continue;
       break;
     }
 
@@ -4677,6 +4679,96 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   }
 
   // A button is off-limits if its label/selector text matches a pay/fee/checkout keyword.
+  // A CREATE DIALOG'S "SUBMIT" CREATES THE RECORD — IT DOES NOT FILE THE APPLICATION.
+  //
+  // ComEd's ConnectTheGrid opens a "New Application" drawer whose only forward control is
+  // labelled "Submit": pick Distributed Generation, name the project, Submit, and the real
+  // application form opens. The planner will never nominate a submit-shaped control (rightly
+  // — rule 1 is that automation never files), so the run filled the drawer and then stopped
+  // with no advance at all, which is why ComEd's list still reads "No applications were
+  // found" after every run. Nothing had ever been created to save.
+  //
+  // The exception is deliberately a conjunction, because getting it wrong means filing an
+  // application with a utility. All of these must hold:
+  //   - the control is inside a VISIBLE OVERLAY, never the main document (a real final
+  //     submit lives on the page/review screen, not in a creation drawer);
+  //   - the dialog is ENTRY-ORIGINATED — we opened it during the start-an-application pass;
+  //   - its heading reads as create-intent ("New Application", "Start Request");
+  //   - it carries NO filing language: no certification, no "by submitting", no terms gate,
+  //     none of the review markers that mark a real submit screen;
+  //   - it is not a pay/fee control, which stays absolute.
+  // Recorded as a plain advance (never isFinalSubmit) so replay performs it, and the caller's
+  // page fingerprint still decides whether it actually moved.
+  private createDialogSubmits = 0;
+
+  private async clickCreateDialogAdvance(steps: RecipeStep[]): Promise<boolean> {
+    if (this.createDialogSubmits >= 2) return false;
+    if (this.entryLabelsClicked.size === 0) return false; // not entry-originated
+    if (!this.page || typeof this.page.evaluate !== "function") return false;
+
+    const found = await this.page.evaluate(() => {
+      const CREATE_HEADING = /\b(new|create|start|begin|add)\b[\s\S]{0,40}\b(application|project|request|submittal|interconnection)\b/i;
+      const SUBMIT_SHAPED = /^(submit|create|start|begin|add|ok)$/i;
+      // NO trailing \b: these are STEMS. "certif" inside \b(...)\b cannot match "certify",
+      // so a drawer gated on "I certify under penalty of perjury" read as safe to click.
+      const FILING_LANGUAGE = /by submitting|cannot be (edited|changed|modified)|certif|affirm|under penalt|perjur|final submi|review (and|&) submit|terms and conditions|accept the terms/i;
+      const panels = Array.from(document.querySelectorAll(
+        "[role='dialog'], mat-dialog-container, .cdk-overlay-pane, .mat-drawer, .modal, [aria-modal='true']"));
+      for (const p of panels) {
+        const r = (p as HTMLElement).getBoundingClientRect();
+        if (r.width < 40 || r.height < 40) continue; // not actually open
+        const text = ((p as HTMLElement).innerText || "").replace(/\s+/g, " ").trim();
+        if (!text || !CREATE_HEADING.test(text.slice(0, 200))) continue;
+        if (FILING_LANGUAGE.test(text)) return { blocked: "the dialog carries filing/certification language" };
+        for (const b of Array.from(p.querySelectorAll("button, [role='button'], input[type='submit']"))) {
+          if ((b as HTMLButtonElement).disabled) continue;
+          const br = (b as HTMLElement).getBoundingClientRect();
+          if (br.width < 1 || br.height < 1) continue;
+          const t = `${(b as HTMLElement).innerText || (b as HTMLInputElement).value || ""} ${b.getAttribute("aria-label") || ""}`
+            .replace(/\s+/g, " ").trim();
+          if (SUBMIT_SHAPED.test(t)) return { name: t };
+        }
+      }
+      return null;
+    }).catch(() => null) as { name?: string; blocked?: string } | null;
+
+    if (!found) return false;
+    if (found.blocked || !found.name) {
+      this.debug?.event({ type: "create_dialog_refused", why: found.blocked || "no submit-shaped control" });
+      return false;
+    }
+    if (isPayFee(found.name)) {
+      this.debug?.event({ type: "create_dialog_refused", why: `pay/fee control ("${found.name}")` });
+      return false;
+    }
+
+    const dlg = this.page.locator(
+      "[role='dialog'], mat-dialog-container, .cdk-overlay-pane, .mat-drawer, .modal, [aria-modal='true']").first();
+    const btn = dlg.getByRole("button", { name: found.name, exact: true }).first();
+    if (!(await btn.count().catch(() => 0))) return false;
+
+    const beforeFp = await this.pageFingerprint();
+    const clicked = await btn.click({ timeout: 8000 }).then(() => true).catch(() => false);
+    if (!clicked) return false;
+    this.createDialogSubmits++;
+    await this.waitForDynamicFieldsSettle().catch(() => null);
+    await smartWait(this.page, 2500);
+    const afterFp = await this.pageFingerprint();
+    if (afterFp === beforeFp) {
+      // It refused (a required choice left unmade, say). Don't record a step that does nothing.
+      this.debug?.event({ type: "create_dialog_submit", name: found.name, moved: false });
+      return false;
+    }
+    this.debug?.event({ type: "create_dialog_submit", name: found.name, moved: true });
+    steps.push({
+      action: "click",
+      phase: "fill",
+      selector: { role: "button", name: found.name, exact: true },
+      note: `create application: ${found.name} (creates the record, does NOT file)`,
+    });
+    return true;
+  }
+
   private isOffLimitsButton(field: ExtractedField): boolean {
     const sel = field.selector;
     return isPayFee(field.label) || isPayFee(sel?.name) || isPayFee(sel?.text)
