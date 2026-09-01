@@ -412,6 +412,52 @@ export const UPLOAD_LABEL_PATTERNS: Array<{ re: RegExp; docType: string }> = [
 // "Electrical Diagram" slot silently fails or shows up in the wrong section.
 const UPLOAD_FALLBACK_DOCTYPES = ["plan_set", "sld", "site_plan", "utility_package_zip"];
 
+// A SLOT'S `accept` LIST IS A PROMISE ABOUT WHAT THE REVIEWER WILL BE ABLE TO OPEN.
+//
+// Nothing used to check it: fileFits() weighed SIZE only, so any document could land in any
+// control. The fallback chain ends in "utility_package_zip", so a generic "Attach documents"
+// slot that accepts only .pdf was handed a ZIP — and the utility reviewer who clicked the
+// attachment downloaded a file that would not open as a PDF. A meter photo (.jpg) into a
+// PDF-only slot fails the same way. The upload "succeeded" every time, which is why this
+// survived: the failure is only visible to whoever downloads it at the other end.
+//
+// An absent accept list means the portal declares no restriction — allow everything, which
+// is the old behaviour and must stay, or slots with no accept would stop being filled.
+export function fileTypeAllowed(filePath: string, accept: string): boolean {
+  const list = (accept || "").trim();
+  if (!list) return true;
+  const ext = (filePath.match(/\.[A-Za-z0-9]+$/) || [""])[0].toLowerCase();
+  if (!ext) return false;
+  // Extension -> the MIME types a portal might name it by.
+  const MIME: Record<string, string[]> = {
+    ".pdf": ["application/pdf"],
+    ".png": ["image/png"],
+    ".jpg": ["image/jpeg"], ".jpeg": ["image/jpeg"],
+    ".gif": ["image/gif"], ".webp": ["image/webp"], ".bmp": ["image/bmp"],
+    ".heic": ["image/heic"], ".tif": ["image/tiff"], ".tiff": ["image/tiff"],
+    ".zip": ["application/zip", "application/x-zip-compressed"],
+    ".doc": ["application/msword"],
+    ".docx": ["application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+    ".xls": ["application/vnd.ms-excel"],
+    ".xlsx": ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
+    ".csv": ["text/csv"],
+  };
+  const mimes = MIME[ext] ?? [];
+  for (const raw of list.split(",")) {
+    const token = raw.trim().toLowerCase();
+    if (!token) continue;
+    if (token === "*" || token === "*/*") return true;
+    if (token.startsWith(".")) { if (token === ext) return true; continue; }
+    if (token.endsWith("/*")) { // "image/*"
+      const family = token.slice(0, -2);
+      if (mimes.some((m) => m.startsWith(`${family}/`))) return true;
+      continue;
+    }
+    if (mimes.includes(token)) return true;
+  }
+  return false;
+}
+
 // SLOTS THAT MUST NEVER RECEIVE A SUBSTITUTE. The fallback above is right for a vague
 // "Attach documents" control, and wrong for a slot that names a document we simply do not
 // hold: proof of insurance, an installation invoice, a W-9, a commissioning settings photo.
@@ -825,6 +871,9 @@ export interface UploadSlot {
   kind: "input" | "browse";
   /** True when the field is marked required (asterisk / required attr / aria-required). */
   required: boolean;
+  /** The control's own `accept` list, verbatim (".docx, .xlsx, .pdf" or "application/pdf").
+   *  Empty when the portal declares none, which means "anything". */
+  accept: string;
 }
 
 // Serializable in-page detector for document-upload controls. Runs via page.evaluate.
@@ -907,7 +956,7 @@ export function tagUploadControls(): UploadSlot[] {
   for (const el of fileInputs) {
     const key = `f${n++}`;
     el.setAttribute("data-al-upl", key);
-    slots.push({ key, label: deriveLabel(el), kind: "input", required: isRequired(el) });
+    slots.push({ key, label: deriveLabel(el), kind: "input", required: isRequired(el), accept: el.getAttribute("accept") || "" });
   }
 
   // 2) Browse/Upload/Choose-File triggers whose real input is created dynamically — these
@@ -934,7 +983,10 @@ export function tagUploadControls(): UploadSlot[] {
     if (container && container.querySelector('input[type="file"]')) continue;
     const key = `b${n++}`;
     el.setAttribute("data-al-upl", key);
-    slots.push({ key, label: deriveLabel(el), kind: "browse", required: isRequired(el) });
+    // A browse TRIGGER has no accept of its own; borrow one from a file input in the same
+    // container if the portal put it there, else leave it open.
+    const nearInput = container ? container.querySelector('input[type="file"]') : null;
+    slots.push({ key, label: deriveLabel(el), kind: "browse", required: isRequired(el), accept: nearInput ? (nearInput.getAttribute("accept") || "") : "" });
   }
 
   return slots;
@@ -1433,10 +1485,15 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     return size < 0 || size <= cap;
   }
 
-  private resolveUpload(field: ExtractedField, required = true): { docType: string; file: string } | null {
+  private resolveUpload(field: ExtractedField, required = true, accept = ""): { docType: string; file: string } | null {
     const label = field.label || "";
     const cap = this.uploadMaxBytes();
-    const fits = (docType: string) => this.docsByType[docType] && this.fileFits(this.docsByType[docType], cap);
+    // A candidate must fit the size cap AND be a type this control accepts. Folding the type
+    // test into fits() means every fallback tier below inherits it — including the
+    // last-resort tiers, which are exactly the ones that used to file a ZIP into a PDF slot.
+    const fits = (docType: string) => Boolean(this.docsByType[docType])
+      && this.fileFits(this.docsByType[docType], cap)
+      && fileTypeAllowed(this.docsByType[docType], accept);
     // Combined mode (Accela / Oregon ePermitting): attach the SINGLE full plan-set PDF to
     // every upload control regardless of label — the AHJ wants all plan pages as one PDF.
     // fits() applies here too so an explicit PORTAL_UPLOAD_MAX_MB override is honored
@@ -1514,8 +1571,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   }
 
   // Resolve a docType for an upload control by its label only (no ExtractedField wrapper).
-  private resolveUploadByLabel(label: string, required = true): { docType: string; file: string } | null {
-    return this.resolveUpload({ selector: {}, label, fieldType: "file" }, required);
+  private resolveUploadByLabel(label: string, required = true, accept = ""): { docType: string; file: string } | null {
+    return this.resolveUpload({ selector: {}, label, fieldType: "file" }, required, accept);
   }
 
   // Capture a full-page PNG of the current page as base64 for VISION-ASSISTED PLANNING, so the
@@ -1647,7 +1704,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     let pathKey = "";
     try { pathKey = new URL(String(this.page.url?.() ?? "")).pathname.toLowerCase(); } catch { pathKey = ""; }
     for (const slot of slots) {
-      const resolved = this.resolveUploadByLabel(slot.label, !!slot.required);
+      const resolved = this.resolveUploadByLabel(slot.label, !!slot.required, slot.accept || "");
       if (!resolved) {
         // No document for this control — never fake it. Report it if the portal requires it.
         if (slot.required) missingRequired.push(slot.label || "Required document");
