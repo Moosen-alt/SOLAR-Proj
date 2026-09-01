@@ -191,7 +191,7 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
       // other direction. So a row is a candidate only when it is THIS project's city or ZIP;
       // if none are, stop and say so rather than guess.
       const zip = (project.zip || "").trim();
-      const ranked: Array<{ index: number; text: string; score: number }> = [];
+      const ranked: Array<{ index: number; text: string; score: number; ownerHit?: boolean }> = [];
       const rejected: string[] = [];
       for (let i = 0; i < rowCount; i++) {
         const text = ((await rows.nth(i).innerText().catch(() => "")) || "").replace(/\s+/g, " ").trim();
@@ -199,9 +199,15 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
         const sameCity = Boolean(cityUpper) && upper.includes(cityUpper);
         const sameZip = Boolean(zip) && text.includes(zip);
         if (!sameCity && !sameZip) { rejected.push(text.slice(0, 60)); continue; }
-        // Ordering only, among rows already known to be this property: the usual
-        // city/county convention resolves on the first try, but is never a filter.
-        ranked.push({ index: i, text, score: preferred.test(text) ? 1 : 0 });
+        // THE OWNER COLUMN IS THE STRONGEST SIGNAL THERE IS. Each version of an address can
+        // be a DIFFERENT PARCEL with a different owner of record — live at 773 Kentucky the
+        // three rows carried three owners and three parcel numbers, none of them the
+        // customer. Prefer the row whose owner matches the homeowner; a surname hit outranks
+        // the city/county convention, because filing against a neighbour's parcel is the
+        // failure that convention cannot see.
+        const surname = (project.homeownerName || "").trim().split(/\s+/).pop() || "";
+        const ownerHit = surname.length >= 3 && upper.includes(surname.toUpperCase());
+        ranked.push({ index: i, text, score: (ownerHit ? 4 : 0) + (preferred.test(text) ? 1 : 0), ownerHit });
       }
       ranked.sort((a, b) => b.score - a.score);
       if (ranked.length === 0) {
@@ -211,6 +217,7 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
       }
 
       let chosen: { text: string; offered: string[] } | null = null;
+      let chosenIndex = -1;
       const offeredSeen: string[] = [];
       for (const cand of ranked) {
         await rows.nth(cand.index).getByRole("link", { name: /^Select$/i }).first().click({ timeout: 15000 }).catch(() => null);
@@ -231,6 +238,7 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
         if ((await match.count().catch(() => 0)) > 0) {
           await match.first().check({ timeout: 10000 });
           chosen = { text: cand.text, offered };
+          chosenIndex = cand.index;
           break;
         }
         // Wrong version — go back to the results and try the next one. NEVER fall back to
@@ -257,6 +265,10 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
         // "did we file against the right parcel?". Jurisdiction words only, never the address.
         addressVersionsTried: ranked.length,
         jurisdictionChosen: (chosen.text.match(/(CITY|COUNTY|DEQ)\s+APPLICATIONS/i) || [])[0] || "unlabelled",
+        // False here means we filed against a parcel whose owner of record is NOT the
+        // homeowner. Legitimate for a recent sale or a renter, and a wrong-parcel filing
+        // otherwise — either way a human must see it, so it rides out on the step result.
+        ownerOfRecordMatched: ranked.find((r) => r.index === chosenIndex)?.ownerHit === true,
       });
     } catch (err) {
       return fail(`openSubmission failed: ${err instanceof Error ? err.message : String(err)}`);
