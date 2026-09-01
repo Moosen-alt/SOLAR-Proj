@@ -225,8 +225,21 @@ async function main(): Promise<void> {
   }
 
   // ── the verdict ────────────────────────────────────────────────────────────────────────
+  // NOT EVERY EMPTY REQUIRED CONTROL IS A GAP, and an audit that says so cries wolf until
+  // nobody reads it. Three kinds are correct as they stand:
+  //
+  //  - An identifier (account/meter number) is DELIBERATELY blank after a learn. Sensitive
+  //    fields are never stored in a recipe; the step binds by name and fills at replay.
+  //  - An unticked checkbox is an ANSWER when the box asserts a fact ("This is a public
+  //    school project"). We are not a public school, so unticked is the right answer — but
+  //    an acknowledgment/certification gate genuinely must be ticked, so those still count.
+  //  - Everything else is a real blank.
+  const BINDS_AT_REPLAY = /\b(account\s*(number|no|#)|acct|meter\s*(number|no|#)|ssn|social security|tax\s*id|ein)\b/i;
+  const MUST_BE_TICKED = /\b(agree|accept|acknowledg|certif|consent|authoriz|confirm|terms|attest)\w*/i;
   const seen = new Set<string>();
   const requiredBlank: string[] = [];
+  const bindsAtReplay: string[] = [];
+  const uncheckedAnswers: string[] = [];
   const optionalBlank: string[] = [];
   let filled = 0; let uploadsTotal = 0; let uploadsAttached = 0;
   for (const p of pages) {
@@ -236,7 +249,10 @@ async function main(): Promise<void> {
       if (!f.label || seen.has(key)) continue;
       seen.add(key);
       if (f.filled) { filled++; continue; }
-      (f.required ? requiredBlank : optionalBlank).push(f.label);
+      if (!f.required) { optionalBlank.push(f.label); continue; }
+      if (BINDS_AT_REPLAY.test(f.label)) { bindsAtReplay.push(f.label); continue; }
+      if (f.kind === "checkbox" && !MUST_BE_TICKED.test(f.label)) { uncheckedAnswers.push(f.label); continue; }
+      requiredBlank.push(f.label);
     }
   }
   console.log(`\n${"═".repeat(70)}`);
@@ -245,6 +261,14 @@ async function main(): Promise<void> {
   console.log(`  filled fields:        ${filled}`);
   console.log(`  REQUIRED still blank: ${requiredBlank.length}`);
   for (const r of requiredBlank.slice(0, 30)) console.log(`     ✗ ${r}`);
+  if (bindsAtReplay.length) {
+    console.log(`  binds at replay:      ${bindsAtReplay.length} (blank here ON PURPOSE — never stored in a recipe)`);
+    for (const b of bindsAtReplay) console.log(`     · ${b}`);
+  }
+  if (uncheckedAnswers.length) {
+    console.log(`  unticked (an answer): ${uncheckedAnswers.length} — a factual checkbox left off says "no"`);
+    for (const u of uncheckedAnswers) console.log(`     · ${u}`);
+  }
   console.log(`  optional blank:       ${optionalBlank.length}`);
 
   // SHOW THE EVIDENCE, NOT JUST THE ARITHMETIC. Name every document found attached, and count

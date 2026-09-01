@@ -158,21 +158,34 @@ application URL onto the recipe as `[application:...]`, because auditing "the ne
 row" twice opened the WRONG draft and reported a stale application as the run's.
 
 *Ameren Illinois (PowerClerk)* — audited state of the learned application:
-**35 fields filled, 4 documents attached, 6 required fields still blank** (Account Number from
-Bill, Email, Phone, Street, the public-school question, Meter Number). Docket Number is FIXED
-(client field, migration v15) and the Electrical Contractor name/company/address now fill.
-Recipe stays `recording`; do not promote it — the gate refuses a recipe carrying a
-blank-required finding, and overriding it once produced a replay that faithfully reproduced an
-incomplete application.
-- Blank Account/Meter is EXPECTED in a learn: sensitive fields bind by name at replay and are
-  never stored in a recipe. Confirm those at replay, not here.
-- The public-school default did not take. POLICY_RADIO_DEFAULTS drives RADIO groups only; if
-  Ameren renders that question as a select or checkbox it needs the select path instead. This
-  is the next thing to fix.
-- The 5 remaining empty upload slots are all correctly empty: Volt Var Settings Picture,
-  Installation Invoice and Proof of Insurance are documents we do not hold (and
-  `uploadForbidsSubstitute` refuses to put a substitute in them), and "Additional
-  Documents"/"Additional Attachment Field" are generic catch-alls.
+**35 fields filled, 4 documents attached, and only 3 genuinely-blank required fields**
+(Email, Phone, Street). The audit now separates the three kinds of empty-but-required control,
+because lumping them together cried wolf — it reported "6 required blank" when half were
+correct as they stood:
+- **binds at replay (2)**: Account Number from Bill, Meter Number. Blank ON PURPOSE. Sensitive
+  fields are never stored in a recipe; `applyFill` types nothing and records a bound step that
+  resolves at replay. Confirm these at replay, never in a learn audit.
+- **unticked is the answer (1)**: "This is a public school project" is a CHECKBOX, not a radio
+  (which is also why POLICY_RADIO_DEFAULTS never fired on it). We are not a public school, so
+  leaving it off is the right answer. Only acknowledgment/certification boxes must be ticked.
+- **really blank (3)**: Email and Phone had no source — the `projects` table has no email or
+  phone column and the parser snapshot carried neither, so `homeownerEmail`/`homeownerPhone`
+  resolved to "". Test values are now in both IL test projects' `parser_json`. Do NOT "fix"
+  this by falling back to the installer's contact: the APPLICANT is the customer, and
+  substituting the solar company there would file real applications under the wrong person.
+- **Street is the one real engine gap left.** `street` resolves fine ("800 E Monroe St"), yet
+  Ameren's step-1 applicant address (`address-line1-element`) stays empty — a second address
+  block beyond the Distributed Generation Facility Address that was already fixed. Start here.
+
+Docket Number is FIXED (client field, migration v15) and the Electrical Contractor
+name/company/address now fill. Recipe stays `recording`; do not promote it — the gate refuses
+a recipe carrying a blank-required finding, and overriding it once produced a replay that
+faithfully reproduced an incomplete application.
+
+The 5 remaining empty upload slots are all correctly empty: Volt Var Settings Picture,
+Installation Invoice and Proof of Insurance are documents we do not hold (and
+`uploadForbidsSubstitute` refuses to put a substitute in them), and "Additional
+Documents"/"Additional Attachment Field" are generic catch-alls.
 
 *ComEd (Intellio Connect / ConnectTheGrid)* — **still creates nothing.** The list reads "No
 applications were found" after every run, confirming the operator's observation that no draft
