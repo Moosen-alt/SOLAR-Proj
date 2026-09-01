@@ -987,6 +987,10 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   /** Record-type categories already expanded this run, so a category that reveals nothing
    *  useful is not retried. */
   private readonly acaTypeCategoriesTried = new Set<string>();
+
+  /** Entry controls already clicked this run. An entry that opens a drawer in place leaves
+   *  the page looking unchanged, which otherwise invites clicking it again. */
+  private readonly entryLabelsClicked = new Set<string>();
   // Equipment fields whose select verification failed for EVERY candidate this
   // run — retrying them each rescan pass just burns waitForOptionReady caps.
   private equipmentFillFailed = new Set<string>();
@@ -2898,6 +2902,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             steps,
             reviewScreen: { fields: [], bodyTextSnippet: "" },
             finalSubmitRecorded,
+            applicationUrl: (() => { try { return typeof this.page?.url === "function" ? this.page.url() : undefined; } catch { return undefined; } })(),
             pageCount,
             pauseReason: "mfa_captcha",
             message: `Stopped: ${challenge}. A human must complete the MFA/CAPTCHA. The recipe was recorded up to this page.`,
@@ -3042,6 +3047,14 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       if (!applicationStarted && !reviewSignals && entryPasses < ENTRY_PASS_MAX && this.page) {
         entryPasses++;
         const entered = await enterApplicationFlow(this.page).catch(() => null);
+        // Clicking the SAME entry control twice never helps. ComEd's entry opens a drawer in
+        // place rather than navigating, so the page still looks like a dashboard afterwards
+        // and the pass fired again on the identical button — recorded twice in the recipe.
+        if (entered?.ok && entered.label && this.entryLabelsClicked.has(entered.label)) {
+          this.debug?.event({ type: "application_entry_repeat_ignored", label: entered.label.slice(0, 60) });
+        } else if (entered?.ok && entered.label) {
+          this.entryLabelsClicked.add(entered.label);
+        }
         this.debug?.event({ type: "application_entry_pass", page: pageCount, ok: Boolean(entered?.ok), label: entered?.label ?? null });
         if (entered?.ok) {
           // Record it the way replay will need it: click the control by its visible text.
@@ -3745,6 +3758,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             steps,
             reviewScreen: { fields: [], bodyTextSnippet: "" },
             finalSubmitRecorded,
+            applicationUrl: (() => { try { return typeof this.page?.url === "function" ? this.page.url() : undefined; } catch { return undefined; } })(),
             pageCount,
             pauseReason: null,
             message: `Stopped: the planner returned a pay/fee control ("${advanceField.label}") as the advance button. Never automated. The recipe was recorded up to this page; a human must continue.`,
