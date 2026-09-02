@@ -162,7 +162,11 @@ const CHROMIUM_ARGS = [
   "--disable-background-timer-throttling",
   "--disable-backgrounding-occluded-windows",
   "--disable-renderer-backgrounding",
-  "--disable-features=TranslateUI",
+  // TranslateUI plus the address/password "save?" bubbles: Chrome's own save-address popup
+  // paints over PowerClerk's equipment selects mid-fill (operator screenshot: the "Save
+  // address?" bubble on top of the inverter dropdown while its model went unfilled).
+  "--disable-features=TranslateUI,AutofillAddressProfileSavePrompt,AutofillServerCommunication",
+  "--disable-save-password-bubble",
   "--disable-ipc-flooding-protection",
 ];
 

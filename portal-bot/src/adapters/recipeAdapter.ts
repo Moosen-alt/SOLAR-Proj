@@ -198,7 +198,7 @@ export class RecipeAdapter extends BasePortalAdapter {
   async stopAtReview(): Promise<PortalStepResult> {
     if (this.finalSubmitClicked) {
       return ok(
-        `${this.portalName}: approved auto-submit clicked the recorded final application submit and the portal accepted it. No fee payment was automated.`,
+        `${this.portalName}: approved auto-submit clicked the recorded final submit; no rejection banner or challenge appeared afterwards. CONFIRM the filing exists on the portal (list/record number) — a clean click is evidence, not proof. No fee payment was automated.`,
         { finalSubmitClicked: true },
       );
     }
@@ -1090,10 +1090,34 @@ export class RecipeAdapter extends BasePortalAdapter {
       const fb = sel.label ? sel : sel.fallbacks?.find((f2) => f2.label);
       return { ...s, selector: { label: fb?.label ?? this.stepLabel(s), nth: fb?.nth, exact: fb?.exact } };
     };
+    // A BARE "Model" LABEL MATCHES BOTH SIDES. PowerClerk's spec block carries the inverter's
+    // Model and, nested inside it, the PV array's Model — same label, no qualifier. .first()
+    // lands on whichever renders first, and when that is the ARRAY's (filled) select, the
+    // INVERTER's empty one reads as held and is never repaired. Live: replay shipped page 7
+    // with "This field is required" under the inverter Qty while the check reported nothing
+    // empty. So when several controls match the label, the check reads the EMPTY one — an
+    // empty peer is precisely the control this verification exists to catch.
+    const emptyIndexFor = new Map<string, number>();
     const displayed = async (s: RecipeStep): Promise<string | null> => {
       const loc = await this.resolveLocator(labelOnly(s).selector).catch(() => null);
-      if (!loc || !(await loc.count?.().catch(() => 0))) return null;
-      return await loc.first().evaluate((el: Element) => {
+      const n = loc ? await loc.count?.().catch(() => 0) : 0;
+      if (!loc || !n) return null;
+      let target = loc.first();
+      if (n > 1) {
+        for (let k = 0; k < Math.min(n, 6); k++) {
+          const v = await loc.nth(k).evaluate((el: Element) => {
+            if ((el.tagName || "").toLowerCase() !== "select") return "";
+            const sl = el as HTMLSelectElement;
+            return (sl.options[sl.selectedIndex]?.textContent || "").trim();
+          }).catch(() => "");
+          if (!v || /^(please\s+)?select\.{0,3}$/i.test(v) || /^--/.test(v)) {
+            target = loc.nth(k);
+            emptyIndexFor.set(String(s.field), k);
+            break;
+          }
+        }
+      }
+      return await target.evaluate((el: Element) => {
         const tag = (el.tagName || "").toLowerCase();
         if (tag === "select") {
           const sl = el as HTMLSelectElement;
@@ -1125,7 +1149,15 @@ export class RecipeAdapter extends BasePortalAdapter {
         ? `equipment select "${this.stepLabel(s)}" (${s.field}) — its make is set, retrying the cascade child`
         : `equipment select "${this.stepLabel(s)}" (${s.field}) lost its fill to a re-render — re-running it`);
       const hadLanded = this.landedSelectFields.has(String(s.field));
-      await this.executeStep(labelOnly(s), false).catch(() => false);
+      // Aim the re-run at the EMPTY control the check just found — the label matches the
+      // filled peer too, and refilling that one would both miss the gap and risk clobbering
+      // a correct answer with a value from the other side's list.
+      const retryStep = ((): RecipeStep => {
+        const base = labelOnly(s);
+        const k = emptyIndexFor.get(String(s.field));
+        return k === undefined ? base : { ...base, selector: { ...base.selector, nth: k } };
+      })();
+      await this.executeStep(retryStep, false).catch(() => false);
       const after = await displayed(s);
       if (empty(after)) {
         // Say what actually happened: a landed pick that vanished is "did not hold";
@@ -1366,6 +1398,61 @@ export class RecipeAdapter extends BasePortalAdapter {
       this.driftWarnings.push(`attached ${hit.docType} to "${label.slice(0, 44)}" — a slot the recipe has no step for`);
     }
     return filled;
+  }
+
+  // FIX WHAT THE REJECTION BANNER NAMES, THEN SUBMIT AGAIN.
+  //
+  // The banner's field list carries per-page links. Each linked page gets the same two
+  // passes replay already trusts — gap-fill (fills required empties from real project data)
+  // and the unrecorded-upload sweep — then the wizard returns to its last page and Submit is
+  // clicked once more. Two rounds at most: a banner that will not shrink is a data problem,
+  // and the human gets it in the portal's own words rather than a third identical attempt.
+  private async repairFromRejectionBanner(): Promise<boolean> {
+    if (!this.page || typeof this.page.evaluate !== "function") return false;
+    for (let round = 0; round < 2; round++) {
+      // The links INSIDE the banner ("Page 3", "Page 7"), deduplicated by their text.
+      const banner = this.page.locator("div, section").filter({ hasText: /unable to submit|fix the errors below|missing required fields/i }).last();
+      const links = banner.locator("a");
+      const n = Math.min(await links.count().catch(() => 0), 8);
+      if (n === 0) return round > 0;
+      const seen = new Set<string>();
+      for (let k = 0; k < n; k++) {
+        const label = ((await links.nth(k).innerText().catch(() => "")) || "").trim();
+        if (!label || seen.has(label)) continue;
+        seen.add(label);
+        // Re-locate by text each time — the banner re-renders after every navigation.
+        const link = this.page.locator("a").filter({ hasText: new RegExp(`^\\s*${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*$`) }).last();
+        if (!(await link.count().catch(() => 0))) continue;
+        await link.click({ timeout: 8000 }).catch(() => null);
+        await smartWait(this.page, 2500);
+        this.driftWarnings.push(`submit rejected — repairing "${label}"`);
+        await this.runGapFill(this.page).catch(() => null);
+        await this.sweepUnrecordedUploads().catch(() => 0);
+      }
+      // Back to the last wizard page, where the Submit button lives.
+      const tabs = this.page.locator("[id^='page-header'], [role='tab'], .stepNav a");
+      const tabCount = await tabs.count().catch(() => 0);
+      if (tabCount > 0) {
+        await tabs.nth(tabCount - 1).click({ timeout: 8000 }).catch(() => null);
+        await smartWait(this.page, 2500);
+      }
+      const submit = this.page.getByRole("button", { name: /^\s*Submit\s*$/i })
+        .or(this.page.locator('input[type="submit"][value*="Submit" i]')).last();
+      if (!(await submit.count().catch(() => 0))) return round > 0;
+      await submit.click({ timeout: 10000 }).catch(() => null);
+      await smartWait(this.page, 4000);
+      const still = await this.page.evaluate(() => {
+        const vis = (e: Element) => { const r = (e as HTMLElement).getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+        for (const el of Array.from(document.querySelectorAll("div, section, [role='alert']"))) {
+          if (!vis(el)) continue;
+          const t = ((el as HTMLElement).innerText || "").replace(/\s+/g, " ").trim();
+          if (t && t.length <= 1500 && /unable to submit|fix the errors below|missing required fields/i.test(t)) return true;
+        }
+        return false;
+      }).catch(() => false);
+      if (!still) return true;
+    }
+    return true; // rounds exhausted — caller re-reads the banner and reports honestly
   }
 
   private async executeStep(step: RecipeStep, pastReview: boolean): Promise<boolean> {
@@ -1778,6 +1865,51 @@ export class RecipeAdapter extends BasePortalAdapter {
       const postChallenge = await detectChallengeFrame(this.page);
       if (postChallenge) {
         throw new Error(`Final submit triggered a challenge after the click (${postChallenge}); pausing for human verification.`);
+      }
+      // A CLICK THAT LANDED IS NOT A FILING THAT WAS ACCEPTED. PowerClerk answers a submit
+      // with missing fields by staying on the page and painting "Unable to Submit Form" with
+      // the fields listed — no error thrown, no challenge, click "successful". This run then
+      // reported "the portal accepted it" while the utility's project list gained nothing;
+      // the operator called it what it was. So read the page: a visible rejection banner
+      // means the submit FAILED, reported with the portal's own list of what is missing.
+      const rejection = typeof this.page.evaluate !== "function" ? "" : await this.page.evaluate(() => {
+        const vis = (e: Element) => { const r = (e as HTMLElement).getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+        for (const el of Array.from(document.querySelectorAll("div, section, [role='alert']"))) {
+          if (!vis(el)) continue;
+          const t = ((el as HTMLElement).innerText || "").replace(/\s+/g, " ").trim();
+          if (!t || t.length > 1500) continue;
+          if (/unable to submit|could not (be )?submit|fix the errors below|missing required fields|validation failure/i.test(t)) {
+            return t.slice(0, 600);
+          }
+        }
+        return "";
+      }).catch(() => "");
+      if (rejection) {
+        // THE BANNER IS A WORK LIST, NOT JUST A VERDICT. PacifiCorp's "Unable to Submit
+        // Form" names each missing field WITH A LINK to its page ("Page 3", "Page 7"). The
+        // operator's instruction: read the errors, go and fix them, submit again. So each
+        // named page gets a gap-fill pass and an upload sweep (the real data is present at
+        // replay — a field can be blank here only because a reveal hid it from the recording),
+        // then Submit is clicked again. Bounded, and anything still missing after the last
+        // round is reported in the portal's own words.
+        const repaired = await this.repairFromRejectionBanner();
+        if (repaired) {
+          const again = typeof this.page.evaluate !== "function" ? "" : await this.page.evaluate(() => {
+            const vis = (e: Element) => { const r = (e as HTMLElement).getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+            for (const el of Array.from(document.querySelectorAll("div, section, [role='alert']"))) {
+              if (!vis(el)) continue;
+              const t = ((el as HTMLElement).innerText || "").replace(/\s+/g, " ").trim();
+              if (t && t.length <= 1500 && /unable to submit|could not (be )?submit|fix the errors below|missing required fields|validation failure/i.test(t)) return t.slice(0, 600);
+            }
+            return "";
+          }).catch(() => "");
+          if (!again) {
+            this.finalSubmitClicked = true;
+            return true;
+          }
+          throw new Error(`The portal still refused after repair: ${again.slice(0, 350)}`);
+        }
+        throw new Error(`The portal REFUSED the submission: ${rejection.slice(0, 400)}`);
       }
       this.finalSubmitClicked = true;
       return true;
