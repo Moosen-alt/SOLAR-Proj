@@ -347,7 +347,7 @@ export function deletePortalRecipe(db: AppDb, recipeId: string): { deleted: bool
 // Human-readable descriptions for every bindable field key — used by the LLM field-binding
 // classifier to understand what each key means when matching portal form values.
 export const RECIPE_FIELD_DESCRIPTIONS: Record<string, string> = {
-  homeownerName: "Property owner full name — on a UTILITY portal this resolves to the name on the utility bill, because an interconnection is filed under the account holder",
+  homeownerName: "Property owner full name (the person who owns the house) — NOT the utility account holder, which is ubAccountHolder",
   ubAccountHolder: "Utility bill account holder, exactly as printed on the bill",
   ubAccountHolderFirstName: "Utility bill account holder first name (title stripped)",
   ubAccountHolderLastName: "Utility bill account holder last name",
@@ -543,11 +543,19 @@ export function resolveRecipeFieldValues(db: AppDb, project: ProjectRecord, port
   const ubNameParts = ubHolder.replace(/^(mr|mrs|ms|miss|dr|prof)\.?\s+/i, "").split(/\s+/).filter(Boolean);
   const ubFirstName = ubNameParts[0] || "";
   const ubLastName = ubNameParts.length > 1 ? ubNameParts[ubNameParts.length - 1] : "";
-  const isUtilityPortal = /powerclerk|utility|nem|interconnect/i.test(portalType);
-  const useUbName = isUtilityPortal && ubHolder.length > 0;
-
+  // TWO ROLES, TWO FIELDS — DO NOT COLLAPSE THEM.
+  //
+  // A first cut made homeownerName resolve to the account holder on any utility portal. That
+  // is wrong wherever the form asks for BOTH, and PacifiCorp's does: page 3 is "Customer
+  // Information" (the account holder) and page 4 is "Property Owner Information" (the person
+  // who owns the house). Overriding homeownerName would have put PROF CHRIS A IVY into the
+  // property-owner block, which is a different assertion about a different person.
+  //
+  // So homeowner* stays the property owner, always and on every portal, and the account
+  // holder has its own name. A recording binds the customer block to ubAccountHolder* and the
+  // owner block to homeowner*, which is what the form is actually asking for.
   const projectFields: Record<string, string> = {
-    homeownerName: useUbName ? ubHolder : project.homeownerName,
+    homeownerName: project.homeownerName,
     // The permit's "Project Name" always follows the PROJECT, never the billing name — it is
     // how the AHJ and the inspector find the job.
     // Bound, never frozen: a recipe is shared across every project under the profile, so a
@@ -557,8 +565,8 @@ export function resolveRecipeFieldValues(db: AppDb, project: ProjectRecord, port
     ubAccountHolder: ubHolder,
     ubAccountHolderFirstName: ubFirstName,
     ubAccountHolderLastName: ubLastName,
-    homeownerFirstName: useUbName && ubFirstName ? ubFirstName : homeownerFirstName,
-    homeownerLastName: useUbName && ubLastName ? ubLastName : homeownerLastName,
+    homeownerFirstName,
+    homeownerLastName,
     homeownerEmail: String(snapshotFlat.homeownerEmail || snapshotFlat.ownerEmail || ""),
     homeownerPhone: String(snapshotFlat.homeownerPhone || snapshotFlat.ownerPhone || ""),
     street: streetOnly || project.projectAddress,

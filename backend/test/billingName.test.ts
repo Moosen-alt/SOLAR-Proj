@@ -1,13 +1,17 @@
-// AN INTERCONNECTION IS FILED UNDER THE NAME ON THE BILL.
+// TWO ROLES, TWO FIELDS.
 //
 // The permit goes under the property owner; the interconnection goes under whoever holds the
-// utility ACCOUNT, and they are routinely different people. Live: Ivy's account reads
-// "PROF CHRIS A IVY" where the project says "Christopher Ivy", and Marineau's account is held
-// by CRAIG while the plan set names ANN — a joint account. Filing a NEM application under a
-// name the utility has no account for is a rejection, or worse a second account opened in the
-// wrong person's name.
+// utility ACCOUNT, and they are routinely different people. Ivy's account reads
+// "PROF CHRIS A IVY" where the project says "Christopher Ivy". Marineau's is worse: the
+// account is held by CRAIG while the plan set names ANN — a joint account — so a NEM
+// application under "Ann Marineau" is one Pacific Power has no account for.
 //
-// Operator rule: intake keys off the project, submittal keys off the bill.
+// A first cut fixed that by making homeownerName resolve to the account holder on any utility
+// portal. That is wrong wherever the form asks for BOTH, and PacifiCorp's does: page 3 is
+// "Customer Information" (the account holder) and page 4 is "Property Owner Information".
+// Overriding homeownerName would have put PROF CHRIS A IVY into the property-owner block — a
+// different assertion about a different person. So the roles stay separate and a recording
+// binds each block to the right one.
 //   npx tsx backend/test/billingName.test.ts
 import assert from "node:assert/strict";
 
@@ -17,55 +21,56 @@ const check = (label: string, fn: () => void): void => {
   catch (err) { failures++; console.error(`  FAIL - ${label}\n         ${err instanceof Error ? err.message : String(err)}`); }
 };
 
-// The resolution as portalRecipes applies it.
-const resolve = (portalType: string, projectOwner: string, ubHolder: string) => {
+// The resolution as portalRecipes builds it.
+const resolve = (projectOwner: string, ubHolder: string) => {
   const holder = String(ubHolder || "").trim();
   const parts = holder.replace(/^(mr|mrs|ms|miss|dr|prof)\.?\s+/i, "").split(/\s+/).filter(Boolean);
-  const ubFirst = parts[0] || "";
-  const ubLast = parts.length > 1 ? parts[parts.length - 1] : "";
-  const projParts = projectOwner.trim().split(/\s+/);
-  const useUb = /powerclerk|utility|nem|interconnect/i.test(portalType) && holder.length > 0;
+  const owner = projectOwner.trim().split(/\s+/);
   return {
-    homeownerName: useUb ? holder : projectOwner,
-    homeownerFirstName: useUb && ubFirst ? ubFirst : (projParts[0] || ""),
-    homeownerLastName: useUb && ubLast ? ubLast : projParts.slice(1).join(" "),
-    projectName: projectOwner,
+    homeownerName: projectOwner,
+    homeownerFirstName: owner[0] || "",
+    homeownerLastName: owner.slice(1).join(" "),
     ubAccountHolder: holder,
+    ubAccountHolderFirstName: parts[0] || "",
+    ubAccountHolderLastName: parts.length > 1 ? parts[parts.length - 1] : "",
+    projectName: projectOwner,
   };
 };
 
-check("THE REGRESSION: a joint account files under the ACCOUNT HOLDER, not the plan set", () => {
-  const nem = resolve("powerclerk", "Ann Marineau", "Craig Marineau");
-  assert.equal(nem.homeownerName, "Craig Marineau");
-  assert.equal(nem.homeownerFirstName, "Craig");
+check("THE REGRESSION: the two roles never collapse into one name", () => {
+  const f = resolve("Ann Marineau", "Craig Marineau");
+  assert.equal(f.homeownerName, "Ann Marineau", "property owner is the project's homeowner");
+  assert.equal(f.ubAccountHolder, "Craig Marineau", "the account is Craig's");
+  assert.notEqual(f.homeownerName, f.ubAccountHolder);
 });
 
-check("the permit still goes under the property owner", () => {
-  const permit = resolve("accela", "Ann Marineau", "Craig Marineau");
-  assert.equal(permit.homeownerName, "Ann Marineau");
+check("a joint account exposes the holder for the customer block", () => {
+  const f = resolve("Ann Marineau", "Craig Marineau");
+  assert.equal(f.ubAccountHolderFirstName, "Craig");
+  assert.equal(f.ubAccountHolderLastName, "Marineau");
 });
 
 check("a billing title is kept in the account name but not in the first-name box", () => {
-  const nem = resolve("powerclerk", "Christopher Ivy", "PROF CHRIS A IVY");
-  // The account name should match the bill exactly — the utility matches on it.
-  assert.equal(nem.homeownerName, "PROF CHRIS A IVY");
+  const f = resolve("Christopher Ivy", "PROF CHRIS A IVY");
+  // The utility matches on the account name, so it must match the bill exactly.
+  assert.equal(f.ubAccountHolder, "PROF CHRIS A IVY");
   // ...but "PROF" is not a first name.
-  assert.equal(nem.homeownerFirstName, "CHRIS");
-  assert.equal(nem.homeownerLastName, "IVY");
+  assert.equal(f.ubAccountHolderFirstName, "CHRIS");
+  assert.equal(f.ubAccountHolderLastName, "IVY");
+  // And the property owner is untouched by any of it.
+  assert.equal(f.homeownerName, "Christopher Ivy");
 });
 
-check("Project Name always follows the PROJECT, on either portal", () => {
-  assert.equal(resolve("powerclerk", "Ann Marineau", "Craig Marineau").projectName, "Ann Marineau");
-  assert.equal(resolve("accela", "Ann Marineau", "Craig Marineau").projectName, "Ann Marineau");
+check("Project Name follows the PROJECT — it is how the inspector finds the job", () => {
+  assert.equal(resolve("Ann Marineau", "Craig Marineau").projectName, "Ann Marineau");
 });
 
-check("no bill on file falls back to the project owner rather than filing blank", () => {
-  const nem = resolve("powerclerk", "Christopher Ivy", "");
-  assert.equal(nem.homeownerName, "Christopher Ivy");
-});
-
-check("the account holder is available by its own name on either portal", () => {
-  assert.equal(resolve("accela", "Ann Marineau", "Craig Marineau").ubAccountHolder, "Craig Marineau");
+check("no bill on file leaves the account holder empty rather than guessing", () => {
+  const f = resolve("Christopher Ivy", "");
+  assert.equal(f.ubAccountHolder, "");
+  // Guessing the account holder from the project would file under a name the utility may
+  // have no account for — the very failure this exists to prevent.
+  assert.equal(f.homeownerName, "Christopher Ivy");
 });
 
 if (failures) { console.error(`\n${failures} billing-name check(s) FAILED.`); process.exit(1); }
