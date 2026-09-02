@@ -147,6 +147,25 @@ run("a FAILED run does not count as staged — that track is retried", () => {
   assert.equal(trackAlreadyStaged(db, "p-failed", "electrical" as never), false);
 });
 
+// ── the staging gate: agent suggestions advise, human items gate ─────────────────────
+// Live failure this pins: every failed run's triage filed a pending "Run triage"
+// suggestion, and that suggestion blocked the retry it was meant to help — twice in one
+// afternoon, both times asking for data already on the record.
+{
+  const { isAdvisoryReviewItem } = await import("../src/repository");
+  run("a Run triage suggestion never gates staging", () => {
+    assert.equal(isAdvisoryReviewItem("Run triage"), true);
+  });
+  run("a Background job failed notification never gates staging", () => {
+    assert.equal(isAdvisoryReviewItem("Background job failed"), true);
+  });
+  run("a parser-flagged human item still gates", () => {
+    assert.equal(isAdvisoryReviewItem("Low confidence"), false);
+    assert.equal(isAdvisoryReviewItem("Value mismatch"), false);
+    assert.equal(isAdvisoryReviewItem(""), false);
+  });
+}
+
 // Best-effort teardown: the instant-kicked worker may still hold the handle briefly.
 try { db.close(); } catch { /* worker mid-claim - the hard exit below ends it */ }
 try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* leave to OS */ }

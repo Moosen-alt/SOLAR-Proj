@@ -4468,6 +4468,17 @@ export function setCorrectionsSlaDays(db: AppDb, correctionId: string, slaDays: 
   );
 }
 
+// A review item that ADVISES rather than GATES. 'Background job failed' is an operator
+// notification from the job worker; 'Run triage' is an unreviewed suggestion from the
+// automated triage of a failed run. Counting either against the staging gate builds a
+// feedback loop that live-locked a project twice in one afternoon: run fails → triage files
+// a suggestion → the pending suggestion gates the RETRY it was supposed to help → the
+// retry's failure files another. Both times the "missing" data was already on the record.
+// Agent proposals advise; only a human's own pending items gate.
+export function isAdvisoryReviewItem(issueType: string): boolean {
+  return issueType === "Background job failed" || issueType === "Run triage";
+}
+
 export function createPermitCheckTarget(
   db: AppDb,
   projectId: string,
@@ -5088,7 +5099,15 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   // 'Background job failed' items are OPERATOR NOTIFICATIONS (escalated by the
   // job worker), not data-quality gates — counting them would let e.g. a failed
   // advisory job hard-block staging of an otherwise-clean project.
-  const pendingCount = detail.humanReviewItems.filter((item) => item.status === "pending" && item.fieldName !== "correction" && item.issueType !== "Background job failed").length;
+  //
+  // 'Run triage' items are in the same family: SUGGESTIONS from the automated triage of a
+  // failed run, unreviewed by any human. Counting them builds a feedback loop that live-
+  // locked a project twice in one afternoon: run fails → triage files a suggestion →
+  // the pending suggestion gates the RETRY the triage was supposed to help → the retry's
+  // failure files another. Both times the "missing" data (customer + installer emails) was
+  // already on the record. Agent proposals advise; they do not gate — a human's own pending
+  // items still do.
+  const pendingCount = detail.humanReviewItems.filter((item) => item.status === "pending" && item.fieldName !== "correction" && !isAdvisoryReviewItem(item.issueType)).length;
   const reviewerReport = buildReviewerReportFor(db, detail.project);
   const reviewerBlockers = reviewerReport.findings.filter((finding) => finding.severity === "blocker");
   const historicalReport = buildHistoricalFailureReport(db, projectId);
