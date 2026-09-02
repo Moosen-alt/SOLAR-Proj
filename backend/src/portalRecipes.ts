@@ -352,6 +352,8 @@ export const RECIPE_FIELD_DESCRIPTIONS: Record<string, string> = {
   wattsmartBatteryProgram: "Yes/No for the utility battery programme — Yes only when the project has storage",
   ubAccountHolderFirstName: "Utility bill account holder first name (title stripped)",
   ubAccountHolderLastName: "Utility bill account holder last name",
+  ubAccountHolderEmail: "Account holder email (falls back to the homeowner's)",
+  ubAccountHolderPhone: "Account holder phone (falls back to the homeowner's)",
   projectName: "Permit \"Project Name\" — the homeowner's name, which is how the AHJ, the inspector and the office look the job up later",
   homeownerFirstName: "Property owner first (given) name only",
   homeownerLastName: "Property owner last (family) name only",
@@ -570,6 +572,11 @@ export function resolveRecipeFieldValues(db: AppDb, project: ProjectRecord, port
     wattsmartBatteryProgram: /^(yes|true|y)$/i.test(String(snapshotFlat.hasBattery ?? "").trim()) ? "Yes" : "No",
     ubAccountHolderFirstName: ubFirstName,
     ubAccountHolderLastName: ubLastName,
+    // The account holder's own contact details when the bill carries them; otherwise the
+    // homeowner's, which is who the utility would reach about this address anyway. Never
+    // blank — an empty required contact field fails the submission outright.
+    ubAccountHolderEmail: String(snapshotFlat.ubAccountHolderEmail || snapshotFlat.homeownerEmail || ""),
+    ubAccountHolderPhone: String(snapshotFlat.ubAccountHolderPhone || snapshotFlat.homeownerPhone || ""),
     homeownerFirstName,
     homeownerLastName,
     homeownerEmail: String(snapshotFlat.homeownerEmail || snapshotFlat.ownerEmail || ""),
