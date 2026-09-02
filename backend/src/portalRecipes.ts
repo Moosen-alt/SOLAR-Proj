@@ -348,7 +348,8 @@ export function deletePortalRecipe(db: AppDb, recipeId: string): { deleted: bool
 // classifier to understand what each key means when matching portal form values.
 export const RECIPE_FIELD_DESCRIPTIONS: Record<string, string> = {
   homeownerName: "Property owner full name (the person who owns the house) — NOT the utility account holder, which is ubAccountHolder",
-  ubAccountHolder: "Utility bill account holder, exactly as printed on the bill",
+  ubAccountHolder: "Utility bill account holder, exactly as printed on the bill — this is the CUSTOMER on an interconnection application",
+  wattsmartBatteryProgram: "Yes/No for the utility battery programme — Yes only when the project has storage",
   ubAccountHolderFirstName: "Utility bill account holder first name (title stripped)",
   ubAccountHolderLastName: "Utility bill account holder last name",
   projectName: "Permit \"Project Name\" — the homeowner's name, which is how the AHJ, the inspector and the office look the job up later",
@@ -563,6 +564,10 @@ export function resolveRecipeFieldValues(db: AppDb, project: ProjectRecord, port
     projectName: project.homeownerName,
     // Always available by their own names, whichever portal this is.
     ubAccountHolder: ubHolder,
+    // Operator policy: participate in the utility's battery programme only when the job
+    // actually has storage. Answering yes on a PV-only system invites battery requirements
+    // for equipment that is not there.
+    wattsmartBatteryProgram: /^(yes|true|y)$/i.test(String(snapshotFlat.hasBattery ?? "").trim()) ? "Yes" : "No",
     ubAccountHolderFirstName: ubFirstName,
     ubAccountHolderLastName: ubLastName,
     homeownerFirstName,
