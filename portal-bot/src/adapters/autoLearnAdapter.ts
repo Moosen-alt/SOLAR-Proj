@@ -1723,11 +1723,33 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     let attached = 0;
     if (!this.page || typeof this.page.evaluate !== "function") return { filled, missingRequired, attached };
 
-    let slots: UploadSlot[] = [];
-    try {
-      slots = await this.page.evaluate(tagUploadControls);
-    } catch { return { filled, missingRequired, attached }; }
-    if (!Array.isArray(slots) || slots.length === 0) return { filled, missingRequired, attached };
+    // "NO UPLOAD SLOTS" ONLY MEANS SOMETHING ONCE THE PAGE HAS SETTLED.
+    //
+    // PowerClerk paints its controls late. Measured on Ivy's PacifiCorp NEM: the upload phase
+    // returned zero slots in TEN MILLISECONDS on every page including the one that carries
+    // "Upload a photo of meter where system will be interconnected" — a slot a probe finds
+    // reliably on the same application seconds later. The utility then rejected the filing for
+    // that exact field. An empty first look is indistinguishable from a page that has no
+    // uploads, which is why this went unnoticed through five runs.
+    //
+    // So an empty result is re-checked after a settle. A page that genuinely has no uploads
+    // pays one wait; a page whose controls are still arriving gets seen.
+    const tagSlots = async (): Promise<UploadSlot[]> => {
+      try {
+        const s = await this.page!.evaluate(tagUploadControls);
+        return Array.isArray(s) ? s : [];
+      } catch { return []; }
+    };
+    let slots: UploadSlot[] = await tagSlots();
+    if (slots.length === 0) {
+      await this.waitForDynamicFieldsSettle().catch(() => null);
+      await sleep(1500);
+      slots = await tagSlots();
+      if (slots.length > 0) {
+        this.debug?.event({ type: "upload_slots_late", count: slots.length, labels: slots.map((s) => s.label).join(" | ").slice(0, 160) });
+      }
+    }
+    if (slots.length === 0) return { filled, missingRequired, attached };
 
     // Attach keys already used THIS RUN. Per-visit scoping is not enough: Accela serves
     // every wizard step from the same CapEdit.aspx and the loop re-enters it many times,
