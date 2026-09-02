@@ -1564,12 +1564,33 @@ export class RecipeAdapter extends BasePortalAdapter {
         // which the inverter Model had nothing valid to cascade from. The step's own field
         // name says which side it belongs to; when the label matches several controls, use
         // it — inverter is the outer (first) pair, module/array the inner (later) one.
-        if (step.field && /^(inverter|module|pvMicro|array\d*Module)/i.test(step.field) && scoped) {
+        if (scoped) {
+          // AN INVISIBLE CONTROL IS NEVER THE ONE THE USER SEES. The recorded primary is a
+          // volatile per-render id; on a fresh project #pcInputBase55 resolved to a HIDDEN
+          // combobox input whose nearby list was the ENERGY SOURCE options ("Solar PV",
+          // "Wind", "Hydro") — its label also reads "Model", so the identity check passed,
+          // the model rules rightly refused those options, and the real visible Model select
+          // sat untouched. So: among everything the selector matches, only VISIBLE controls
+          // are candidates, and when several remain, the step's field name picks the side —
+          // inverter is the outer (first) pair, module/array the inner (later) one.
           const nMatches = await scoped.count?.().catch(() => 0);
-          if (nMatches > 1) {
-            const wantsInverter = /^inverter/i.test(step.field);
-            scoped = wantsInverter ? scoped.first() : scoped.nth(nMatches - 1);
-            this.driftWarnings.push(`"${this.stepLabel(step)}" matches ${nMatches} controls — took the ${wantsInverter ? "inverter (first)" : "array (last)"} one for ${step.field}`);
+          const canProbe = typeof scoped.nth === "function"
+            && typeof scoped.first?.().isVisible === "function"; // test fakes have neither
+          if (nMatches >= 1 && canProbe) {
+            const visible: number[] = [];
+            for (let k = 0; k < Math.min(nMatches, 8); k++) {
+              if (await scoped.nth(k).isVisible().catch(() => false)) visible.push(k);
+            }
+            if (visible.length >= 1) {
+              const firstVisible = visible[0];
+              const wantsArray = Boolean(step.field) && /^(module|pvMicro|array\d*Module)/i.test(String(step.field));
+              const pick = wantsArray ? visible[visible.length - 1] : firstVisible;
+              const firstIsVisible = await scoped.first().isVisible().catch(() => false);
+              if (pick !== 0 || !firstIsVisible) {
+                this.driftWarnings.push(`"${this.stepLabel(step)}" — ${nMatches} match(es), ${visible.length} visible; took visible #${pick}${step.field ? ` for ${step.field}` : ""}`);
+                scoped = scoped.nth(pick);
+              }
+            }
           }
         }
         await waitForElement(scoped);
