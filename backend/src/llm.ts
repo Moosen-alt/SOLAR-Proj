@@ -502,7 +502,14 @@ export class ClaudeLLMProvider implements LLMProvider {
     // autopilot jobs are enqueued with maxRetries:0, so a 529 burst that
     // outlasts two quick retries would otherwise permanently fail a run
     // mid-flight and discard all page progress.
-    this.client = new Anthropic({ apiKey, maxRetries: 5 });
+    //
+    // timeout 4min (SDK default 10min): a live NEM learn sat NINE MINUTES on one stalled
+    // planner call with the browser open on a half-filled page and not a single log line —
+    // to the operator, indistinguishable from a hang (and the last such "hang" got the
+    // window closed by hand, killing the run at page 9). The heaviest legitimate planner
+    // calls finish in well under two minutes; four bounds the stall while retries recover
+    // it, and instrument() logs the ✗ so the wait is at least visible.
+    this.client = new Anthropic({ apiKey, maxRetries: 5, timeout: 240000 });
   }
 
   // ---------------------------------------------------------------------------
