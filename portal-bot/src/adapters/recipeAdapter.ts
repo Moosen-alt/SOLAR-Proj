@@ -4,7 +4,7 @@ import type { PortalRecipe, ProjectRecord, RecipeSelector, RecipeStep } from "..
 import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, ok, fail, type PortalContext, type PortalStepResult } from "../adapter";
 import { applyFormatHint } from "../formatHint";
 import { imageToPdfBytes, pdfNameFor, shouldConvertToPdf } from "../imageToPdf";
-import { fileTypeAllowed } from "./autoLearnAdapter";
+import { fileTypeAllowed, UPLOAD_LABEL_PATTERNS, uploadForbidsSubstitute } from "./autoLearnAdapter";
 import { openPortal } from "../browser";
 import { selectWithFallback } from "../comboboxFill";
 
@@ -364,6 +364,12 @@ export class RecipeAdapter extends BasePortalAdapter {
       prevStep = { i: stepIdx, action: String(step?.action ?? ""), note: String(step?.note ?? "").slice(0, 52) };
       // Guided-manual: stop at review. autoSubmit (trusted, approved): proceed past
       // the review marker to replay ONLY allowlisted final-submit steps.
+      // Sweep before leaving a page (an advancing click) and before review: those are the
+      // moments when whatever the page reveals is finally all present.
+      if (step.action === "click" || step.action === "stopForReview") {
+        await this.sweepUnrecordedUploads().catch(() => 0);
+      }
+
       if (step.action === "stopForReview") {
         if (!this.options.autoSubmit) {
           // Gap-fill the LAST data section once more before review: it is not followed by an
@@ -1305,6 +1311,61 @@ export class RecipeAdapter extends BasePortalAdapter {
     // it is correct and skipping it would leave a required question blank.
     if (/program\b/i.test(label)) return false;
     return /\bbatter(y|ies)\b|\benergy storage\b|\bess\b|round-?trip|state of charge/i.test(label);
+  }
+
+  // A SLOT THAT ONLY EXISTS AT REPLAY CAN ONLY BE FILLED AT REPLAY.
+  //
+  // PacifiCorp reveals "Upload a photo of meter where system will be interconnected" once the
+  // meter number is entered — and a LEARN never enters one, because the meter number is
+  // sensitive and is recorded as a binding with an empty literal. So the slot is not on the
+  // page while the recipe is being written, no upload step is ever recorded for it, and the
+  // utility rejects the filing naming that field. Five learns could not have fixed this: the
+  // recording is made under precisely the conditions that hide the control.
+  //
+  // Replay is the first time the meter number is real, so it is the first time the slot
+  // exists. This sweeps whatever upload controls are actually on the page and fills the ones
+  // the recipe has no step for. Conservative on purpose: only a slot whose LABEL names a
+  // document we hold, never a substitute, and never a slot that forbids one.
+  private readonly sweptUploadLabels = new Set<string>();
+
+  private async sweepUnrecordedUploads(): Promise<number> {
+    if (!this.page || typeof this.page.evaluate !== "function") return 0;
+    const slots = await this.page.evaluate(tagUploadControls).catch(() => []) as Array<
+      { key: string; label: string; kind: string; required: boolean; accept: string }>;
+    if (!Array.isArray(slots) || slots.length === 0) return 0;
+    let filled = 0;
+    for (const slot of slots) {
+      const label = String(slot.label || "");
+      const key = label.trim().toLowerCase();
+      if (!key || this.sweptUploadLabels.has(key)) continue;
+      if (uploadForbidsSubstitute(label)) continue;
+      // Only a slot that NAMES its document. A generic "attach files" control at replay is
+      // not ours to guess at — the recipe would have recorded it if it mattered.
+      const hit = UPLOAD_LABEL_PATTERNS.find((p) => p.re.test(label));
+      if (!hit) continue;
+      const file = this.docsByType[hit.docType];
+      if (!file) continue;
+      const accept = slot.accept || "";
+      const allowed = fileTypeAllowed(file, accept);
+      const pdf = shouldConvertToPdf(file, accept, allowed) ? await imageToPdfBytes(file).catch(() => null) : null;
+      if (!allowed && !pdf) continue;
+      const payload = pdf
+        ? { name: pdfNameFor(path.basename(file).replace(/^[0-9a-f-]{36}-/i, "")), mimeType: "application/pdf", buffer: pdf }
+        : file;
+      const loc = await this.resolveLocator({ css: `[data-al-upl="${slot.key}"]` });
+      if (!loc) continue;
+      const ok = slot.kind === "browse"
+        ? await Promise.all([
+            this.page.waitForEvent("filechooser", { timeout: 8000 }),
+            loc.click({ timeout: 6000 }),
+          ]).then(([chooser]: [{ setFiles: (f: unknown) => Promise<void> }, unknown]) => chooser.setFiles(payload)).then(() => true).catch(() => false)
+        : await loc.setInputFiles(payload).then(() => true).catch(() => false);
+      if (!ok) continue;
+      this.sweptUploadLabels.add(key);
+      filled++;
+      this.driftWarnings.push(`attached ${hit.docType} to "${label.slice(0, 44)}" — a slot the recipe has no step for`);
+    }
+    return filled;
   }
 
   private async executeStep(step: RecipeStep, pastReview: boolean): Promise<boolean> {
