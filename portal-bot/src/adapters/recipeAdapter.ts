@@ -382,6 +382,8 @@ export class RecipeAdapter extends BasePortalAdapter {
         continue;
       }
 
+      // Never advance while the portal is still saving — the commit signal is exact.
+      if (step.action === "click") await this.waitForAutosaveCommitted();
       // PERSIST SETTLE before an advancing click. PowerClerk autosaves each page (~3s) and
       // only commits fields on blur; advancing too soon saves a BLANK draft. If the prior
       // steps filled fields, wait for the autosave to settle before this click.
@@ -1455,6 +1457,28 @@ export class RecipeAdapter extends BasePortalAdapter {
     return true; // rounds exhausted — caller re-reads the banner and reports honestly
   }
 
+  // A VALUE IS NOT COMMITTED UNTIL THE PORTAL SAYS "Saved". PowerClerk autosaves per field
+  // and re-renders from the SERVER's state: advance while "Saving..." is still up and the
+  // re-render restores the old (empty) value. The operator watched exactly that — the
+  // inverter manufacturer went in, then vanished — and the final screenshot caught the page
+  // mid-"Saving...". The learn engine waits for the save indicator; replay never did. The
+  // indicator is the platform's own commit signal (data-test-role project-save-state →
+  // save-state-saved), so waiting on it is exact, not a guessed sleep. No indicator on the
+  // page = nothing to wait for = zero cost on every other portal.
+  private async waitForAutosaveCommitted(): Promise<void> {
+    if (!this.page || typeof this.page.locator !== "function") return;
+    const state = this.page.locator("[data-test-role='project-save-state']");
+    if (typeof state?.evaluate !== "function") return; // test fakes — nothing to wait on
+    if (!(await state.count?.().catch(() => 0))) return;
+    for (let i = 0; i < 20; i++) {
+      const saved = await state.evaluate((el: Element) =>
+        Boolean(el.querySelector("[data-test-role='save-state-saved']")) || /saved/i.test((el as HTMLElement).innerText || ""),
+      ).catch(() => true);
+      if (saved) return;
+      await sleep(400);
+    }
+  }
+
   private async executeStep(step: RecipeStep, pastReview: boolean): Promise<boolean> {
     if (this.skipForNoBattery(step)) {
       this.driftWarnings.push(`skipped "${String(step.note ?? step.field ?? "battery step").slice(0, 48)}" — this project has no battery`);
@@ -1705,6 +1729,10 @@ export class RecipeAdapter extends BasePortalAdapter {
             await scoped.blur({ timeout: 2000 });
           } catch { /* commit is best-effort — never fail a landed select over it */ }
         }
+        // The blur STARTS the autosave; the next step must not run until it FINISHES, or the
+        // server re-render restores the old value ("Saving..." caught on the final screenshot,
+        // the inverter manufacturer empty again after every pass).
+        if (selected) await this.waitForAutosaveCommitted();
         // Propagate the miss: a select that landed NOTHING must not report success.
         return selected;
       }
