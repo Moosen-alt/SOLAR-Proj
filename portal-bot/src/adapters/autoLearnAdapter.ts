@@ -2264,11 +2264,32 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     const rowText = isElectrical ? "COUNTY APPLICATIONS" : "CITY APPLICATIONS";
     const cityUpper = (project.city || "").toUpperCase();
     let selected = false;
+    // A FRESH SEARCH IS A FRESH GRID. The ranked chooser latches so it picks once per grid;
+    // a recovery re-entry re-runs this search and lands back on the county's default row,
+    // and a latch held from the previous grid then leaves it there.
+    this.addressRowChosen = false;
+    // RANKED FIRST — owner, city/ZIP and discipline together, recorded as a data-al-row
+    // marker that replay re-ranks against ITS project's grid.
+    //
+    // The selector this replaced could not see the row it was aiming at. ACA nests the
+    // results grid inside an outer layout table, so tr:has-text("CITY APPLICATIONS") matches
+    // BOTH the city's row and the wrapper row containing the whole grid — and the wrapper
+    // comes first in document order, so .first() took the wrapper and its first "Select"
+    // link, which belongs to the COUNTY row. Live on Marineau's structural filing: the pass
+    // reported picking the city row while the page went on showing Coos County's services
+    // (Commercial - Electrical, Residential - Electrical), the city's structural type was
+    // never on offer, and the run spent twelve pages being refused.
+    if (await this.chooseProjectAddressRow(steps)) {
+      selected = true;
+      await page.waitForLoadState?.("networkidle", { timeout: 15000 }).catch(() => null);
+    }
     const selectLinks = scope.getByRole("link", { name: /^Select$/i });
-    if (await selectLinks.count().catch(() => 0)) {
+    if (!selected && await selectLinks.count().catch(() => 0)) {
       let rows = scope.locator("tr", { hasText: new RegExp(rowText, "i") });
       if (cityUpper) rows = rows.filter({ hasText: cityUpper });
-      const rowLink = rows.getByRole("link", { name: /^Select$/i }).first();
+      // Innermost match only: a row whose text runs past a few hundred characters is the
+      // wrapper around the whole grid, not one address version.
+      const rowLink = await this.leafRowSelectLink(rows) ?? rows.getByRole("link", { name: /^Select$/i }).first();
       const link = (await rowLink.count().catch(() => 0)) ? rowLink : selectLinks.first();
       // Verified action → recorded step: a swallowed click failure recorded anyway
       // leaves a duplicate pair once the planner retakes the page.
@@ -2277,7 +2298,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       // resolves to .first() at replay and silently files under the wrong jurisdiction.
       steps.push({ action: "click", phase: "fill", selector: { css: `tr:has-text("${rowText}") a:has-text("Select")`, fallbacks: [{ role: "link", name: "Select", exact: true }], ...inFrame }, note: `work location: select ${isElectrical ? "county/electrical" : "city/structural"} address row` });
       selected = true;
-    } else {
+    } else if (!selected) {
       const pick = scope.locator("table input[type='radio'], table input[type='checkbox']").first();
       if (await pick.count().catch(() => 0)) {
         if (!(await pick.check().then(() => true).catch(() => false))) return bail("address result radio check failed");
@@ -2308,6 +2329,21 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       }
     }
     return true;
+  }
+
+  // The "Select" link of the first LEAF row among a set of matching <tr>s. ACA nests its
+  // results grid inside an outer layout table, so a text match on a row also matches the
+  // wrapper containing every row — and the wrapper comes first in document order, so a bare
+  // .first() reaches for one address version and clicks whichever row happens to lead the
+  // grid. A leaf row offers exactly ONE Select; the wrapper offers one per address.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async leafRowSelectLink(rows: any): Promise<any | null> {
+    const n = await rows.count?.().catch(() => 0) ?? 0;
+    for (let i = 0; i < Math.min(n, 8); i++) {
+      const links = rows.nth(i).getByRole("link", { name: /^Select$/i });
+      if (await links.count().catch(() => 0) === 1) return links.first();
+    }
+    return null;
   }
 
   // First VISIBLE match for a css selector. ASP.NET pages carry hidden inputs whose ids
@@ -4331,11 +4367,16 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       let n = 0;
       for (const tr of Array.from(document.querySelectorAll("tr"))) {
         if (!vis(tr)) continue;
-        const action = Array.from(tr.querySelectorAll("a, button, [role='button']"))
-          .find((a) => /^\s*select\s*$/i.test((a as HTMLElement).innerText || ""));
-        if (!action) continue;
+        const actions = Array.from(tr.querySelectorAll("a, button, [role='button']"))
+          .filter((a) => /^\s*select\s*$/i.test((a as HTMLElement).innerText || ""));
+        // ONE action means one address version. None means this row is not a result; SEVERAL
+        // means it is the wrapper <tr> that ACA's outer layout table puts around the whole
+        // grid — counting its actions identifies it exactly, where a text-length cap only
+        // guesses (and a short grid slips straight through).
+        if (actions.length !== 1) continue;
+        const action = actions[0];
         const text = ((tr as HTMLElement).innerText || "").replace(/\s+/g, " ").trim();
-        if (!text || text.length > 400) continue; // the container row wrapping the whole grid
+        if (!text || text.length > 400) continue; // belt-and-braces on the same wrapper
         const key = `ar${n++}`;
         (action as HTMLElement).setAttribute("data-al-row", key);
         out.push({ key, text });
