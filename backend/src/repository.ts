@@ -5743,6 +5743,17 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   const capturedPermitNumber = autoSubmitted ? String((result as Record<string, unknown>).capturedPermitNumber || "").trim() : "";
   const capturedConfirmation = autoSubmitted ? String((result as Record<string, unknown>).capturedConfirmationNumber || "").trim() : "";
   const capturedRecordLink = autoSubmitted ? String((result as Record<string, unknown>).capturedRecordLink || "").trim() : "";
+  // WHERE THE EVIDENCE LIVES. Captured on EVERY outcome, not just a successful one: a run
+  // that was refused is exactly when someone needs to see the page. evidenceDir is the
+  // folder of page shots; outcomeShotPath is the single picture of how the filing ended
+  // (the completion page and its record number, or the refusal).
+  const evidenceDir = String((result as Record<string, unknown>).evidenceDir
+    ?? (result as Record<string, unknown>).debugDir ?? "").trim();
+  const outcomeShotPath = String((result as Record<string, unknown>).outcomeShotPath ?? "").trim();
+  const runSeconds = (() => {
+    const started = Date.parse(ts);
+    return Number.isFinite(started) ? Math.max(0, Math.round((Date.now() - started) / 1000)) : 0;
+  })();
   const runStatus = pauseReason ? "paused_for_human" : autoSubmitted ? "submitted" : adapterFailed ? "failed" : "awaiting_human_submit";
   // SELF-HEAL: a failed/paused STAGING run produces the same debug bundle the
   // learn path already triages automatically — enqueue the triage agent here
@@ -5791,7 +5802,9 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
         (id, project_id, portal_profile_id, run_type, status, started_at, finished_at, error_message,
          human_action_required, screenshots_path, logs_path, result_json, pause_reason, permit_type)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [runId, projectId, safePortalProfileId, "prepare_submit", runStatus, ts, nowIso(), failureMessage, 1, "",
+      [runId, projectId, safePortalProfileId, "prepare_submit", runStatus, ts, nowIso(), failureMessage, 1,
+        // A FILE, never a folder: /portal-runs/:id/review-screenshot sendFile()s this column.
+        outcomeShotPath,
         // logs_path: the learn-run debug bundle folder (set by the self-seed path) — links a
         // failed/paused run straight to its forensic artifacts under data/learn-runs/.
         String((result as Record<string, unknown>).debugDir ?? ""),
@@ -5817,9 +5830,15 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
         capturedConfirmation,
         autoSubmitted ? ts : null,
         autoSubmitted ? "automation (operator-approved auto-submit)" : "",
-        "",
+        evidenceDir,
         autoSubmitted
+          // WHAT WAS FILED, WHEN, AND WHERE THE PROOF IS — on the record itself, so a
+          // completed run can be verified without reading a log. The elapsed time is the
+          // measured cost of one replay: what a filing takes when nobody has to watch it.
           ? `${trackLabelText}${portalLabel} submitted via approved auto-submit (application submit only; no fee payment).`
+            + `${capturedPermitNumber ? ` Record ${capturedPermitNumber}.` : ""}`
+            + ` Confirmed ${nowIso()}${runSeconds ? ` after ${runSeconds}s` : ""}.`
+            + `${outcomeShotPath ? ` Completion page: ${outcomeShotPath}` : ""}`
           : pauseReason
             ? `${trackLabelText}${portalLabel} run PAUSED for a human at a ${pauseReason} challenge — nothing was staged. Complete the challenge in the open browser, then re-stage.`
             : adapterFailed

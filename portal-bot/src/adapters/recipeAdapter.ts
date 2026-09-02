@@ -112,6 +112,9 @@ export class RecipeAdapter extends BasePortalAdapter {
    *  installer's block; a required meter-photo upload left blank) were both caught by a
    *  human looking at the portal, not by anything the run reported. */
   private pageShotDir = "";
+  /** The one shot that says how the filing ended — the completion page with its record
+   *  number, or the portal's refusal. Reported so the submission record can point at it. */
+  private outcomeShotPath = "";
   private pageShotCount = 0;
   private arrayPass = 1;
   /** Bounds of the recorded array block — the span of steps bound to array1*. -1 when the
@@ -681,7 +684,7 @@ export class RecipeAdapter extends BasePortalAdapter {
         const context = failureContext || await this.captureFailureContext(step, stepIdx);
         trace.push({ i: stepIdx, action: step.action, note: String(step.note ?? "").slice(0, 52), outcome: "FAILED", page: await currentPageLabel() });
         closePrevStepTiming();
-        return fail(`Recipe step failed (${step.action}${step.note ? ` — ${step.note}` : ""}): ${lastErr instanceof Error ? lastErr.message : String(lastErr)}${context}`, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, failedStepIndex: stepIdx, trace, slowSteps, requiredStillEmpty: this.requiredStillEmpty, pageShotDir: this.pageShotDir });
+        return fail(`Recipe step failed (${step.action}${step.note ? ` — ${step.note}` : ""}): ${lastErr instanceof Error ? lastErr.message : String(lastErr)}${context}`, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, failedStepIndex: stepIdx, trace, slowSteps, requiredStillEmpty: this.requiredStillEmpty, pageShotDir: this.pageShotDir, outcomeShotPath: this.outcomeShotPath });
       }
       // Remember whether this step entered data, so the next advancing click waits for the
       // portal's autosave to commit (prevents blank-draft saves on PowerClerk).
@@ -730,7 +733,7 @@ export class RecipeAdapter extends BasePortalAdapter {
           // is the whole question. Capture it like any other failure.
           const driftContext = await this.captureFailureContext(step, stepIdx);
           closePrevStepTiming();
-          return fail(`${driftFail}${driftContext}`, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, failedStepIndex: stepIdx, trace, slowSteps, requiredStillEmpty: this.requiredStillEmpty, pageShotDir: this.pageShotDir });
+          return fail(`${driftFail}${driftContext}`, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, failedStepIndex: stepIdx, trace, slowSteps, requiredStillEmpty: this.requiredStillEmpty, pageShotDir: this.pageShotDir, outcomeShotPath: this.outcomeShotPath });
         }
       }
 
@@ -783,11 +786,11 @@ export class RecipeAdapter extends BasePortalAdapter {
         recordLink: capture.data?.recordLink || "",
         // What the LLM gap-fill added (and what it left blank for lack of real data) — same key
         // the hand-coded adapters surface, so the operator/UI sees a uniform report.
-        gapFill: this.gapFillReport, healedSteps: this.healedSteps, slowSteps, requiredStillEmpty: this.requiredStillEmpty, pageShotDir: this.pageShotDir,
+        gapFill: this.gapFillReport, healedSteps: this.healedSteps, slowSteps, requiredStillEmpty: this.requiredStillEmpty, pageShotDir: this.pageShotDir, outcomeShotPath: this.outcomeShotPath,
       });
     }
     closePrevStepTiming();
-    return ok(`Replayed ${executed} recorded step(s); stopped at review.`, { executed, skipped, finalSubmitClicked: false, gapFill: this.gapFillReport, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, slowSteps, requiredStillEmpty: this.requiredStillEmpty, pageShotDir: this.pageShotDir });
+    return ok(`Replayed ${executed} recorded step(s); stopped at review.`, { executed, skipped, finalSubmitClicked: false, gapFill: this.gapFillReport, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, slowSteps, requiredStillEmpty: this.requiredStillEmpty, pageShotDir: this.pageShotDir, outcomeShotPath: this.outcomeShotPath });
   }
 
   private resolveValue(step: RecipeStep): string {
@@ -2148,6 +2151,7 @@ export class RecipeAdapter extends BasePortalAdapter {
         }).catch(() => "");
       }
       if (!rejection && !accepted) {
+        await this.capturePageShot("UNCONFIRMED", true);
         throw new Error("After the submit click the page neither confirmed nor rejected the filing — stopping for a human. A quiet page is not an accepted application.");
       }
 
@@ -2177,14 +2181,25 @@ export class RecipeAdapter extends BasePortalAdapter {
               if (/thank you.{0,200}(submitted|received)|has been (successfully )?submitted|application (number|id)\s*[:#]/is.test(body)) return true;
               return !/EditProject/i.test(location.href);
             }).catch(() => false);
-            if (!ok2) throw new Error("Repair cleared the banner but the page never confirmed the filing — stopping for a human.");
+            if (!ok2) {
+              await this.capturePageShot("UNCONFIRMED after repair", true);
+              throw new Error("Repair cleared the banner but the page never confirmed the filing — stopping for a human.");
+            }
+            await this.capturePageShot("SUBMITTED", true);
             this.finalSubmitClicked = true;
             return true;
           }
+          await this.capturePageShot("REFUSED after repair", true);
           throw new Error(`The portal still refused after repair: ${again.slice(0, 350)}`);
         }
+        await this.capturePageShot("REFUSED", true);
         throw new Error(`The portal REFUSED the submission: ${rejection.slice(0, 400)}`);
       }
+      // THE VERIFICATION SHOT. Until now the run photographed every page on the way in and
+      // nothing on the way out, so the one page an operator actually wants to see after
+      // clicking Submit — the completion page carrying the record number — was the only page
+      // never captured.
+      await this.capturePageShot("SUBMITTED", true);
       this.finalSubmitClicked = true;
       return true;
     }
@@ -2350,9 +2365,12 @@ export class RecipeAdapter extends BasePortalAdapter {
    * One screenshot per completed wizard page, so a run can be reviewed by eye afterwards
    * instead of only when it fails. Capped, so a recipe that loops cannot fill the disk.
    */
-  private async capturePageShot(label: string): Promise<void> {
+  private async capturePageShot(label: string, force = false): Promise<void> {
     if (!this.page || typeof this.page.screenshot !== "function") return;
-    if (this.pageShotCount >= 40) return;
+    // The OUTCOME shot is never dropped for the cap. It is the one picture that says what
+    // happened to the filing — the record number on the completion page, or the portal's
+    // refusal — and it is taken at the end of a long run, exactly where the cap bites.
+    if (!force && this.pageShotCount >= 40) return;
     try {
       if (!this.pageShotDir) {
         const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
@@ -2366,8 +2384,10 @@ export class RecipeAdapter extends BasePortalAdapter {
       }
       this.pageShotCount++;
       const safe = String(label || "page").replace(/[^a-zA-Z0-9]+/g, "_").slice(0, 40) || "page";
-      const n = String(this.pageShotCount).padStart(3, "0");
-      await this.page.screenshot({ path: path.join(this.pageShotDir, "p" + n + "-" + safe + ".png"), fullPage: true });
+      // The outcome sorts last in the folder and is the file the submission record points at.
+      const name = force ? `zzz-outcome-${safe}.png` : `p${String(this.pageShotCount).padStart(3, "0")}-${safe}.png`;
+      await this.page.screenshot({ path: path.join(this.pageShotDir, name), fullPage: true });
+      if (force) this.outcomeShotPath = path.join(this.pageShotDir, name);
     } catch { /* best-effort: never fail a replay over a screenshot */ }
   }
 

@@ -395,6 +395,12 @@ async function runAdapter(
     // Surface a permit/record number + record link captured off the completion page
     // after an authorized final submit, so the backend can store them automatically.
     const captured = steps.map((s) => s.data).find((d) => d && (d.permitNumber || d.recordLink));
+    // WHERE THE EVIDENCE OF THIS RUN LIVES. The replay photographs each finished page and,
+    // now, the outcome — so an operator can see the completion page and its record number
+    // rather than take the run's word for it. Reported here so the submission record can
+    // point at the folder, and at the one shot that shows how the filing ended.
+    const evidenceDir = steps.map((s) => String(s?.data?.pageShotDir ?? "")).filter(Boolean).pop() ?? "";
+    const outcomeShotPath = steps.map((s) => String(s?.data?.outcomeShotPath ?? "")).filter(Boolean).pop() ?? "";
 
     // Leave the browser OPEN for the human ONLY when: this is a guided-manual run (no
     // autosubmit), it's headed (the human is watching), it staged cleanly to review, and we
@@ -413,6 +419,8 @@ async function runAdapter(
       capturedPermitNumber: captured?.permitNumber || "",
       capturedConfirmationNumber: captured?.confirmationNumber || "",
       capturedRecordLink: captured?.recordLink || "",
+      evidenceDir,
+      outcomeShotPath,
       pauseReason: reviewResult.pauseReason ?? null,
       internalFinalReviewPacketRequired: true,
       reviewerBlockerCount: options.reviewerReport?.findings.filter((f) => f.severity === "blocker").length ?? 0,
