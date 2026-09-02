@@ -637,7 +637,12 @@ export class RecipeAdapter extends BasePortalAdapter {
           }
         }
       }
-      if (!succeeded && !step.isFinalSubmit && this.arrayPass === 1 && process.env.RECIPE_SELF_HEAL !== "off") {
+      // NEVER HEAL A PERMIT TYPE. Heal re-anchors a missed step onto the best label match on
+      // the page, and "Residential - Electrical" scores high against "Residential -
+      // Mechanical" — the same wrong permit the guard above just refused, arriving through a
+      // second door, and this one PATCHES THE RECIPE with it. If the type isn't offered, the
+      // answer is a different jurisdiction, not a different permit.
+      if (!succeeded && !step.isFinalSubmit && !this.isRecordTypeStep(step) && this.arrayPass === 1 && process.env.RECIPE_SELF_HEAL !== "off") {
         // arrayPass === 1: heal re-anchors BY LABEL against the whole page with no row
         // concept, and a repeat-pass step's labels are bare copies ("Manufacturer") of
         // controls in OTHER sections — a heal here would write array N's value into the
@@ -1542,10 +1547,69 @@ export class RecipeAdapter extends BasePortalAdapter {
     return true;
   }
 
+  // WHICH PERMIT WE ARE APPLYING FOR IS NEVER CHOSEN BY ARRAY INDEX.
+  //
+  // The record-type checkbox is recorded with the label AND a positional fallback
+  // (cbListServices_1). The offered list differs per jurisdiction: Coos Bay's CITY record has
+  // no "Residential - Electrical" at all, so on Marineau the label matched nothing, the
+  // positional fallback fired, and index 1 on that list is "Residential - Mechanical". A
+  // MECHANICAL permit was filed and issued on a solar job at 1780 Ocean Blvd, fees paid.
+  //
+  // The label is the only thing that identifies a permit type. If the recorded type is not on
+  // offer, that is a real answer — this jurisdiction files this discipline somewhere else —
+  // and it must stop, not approximate. The hand-coded Accela adapter learned this same lesson
+  // earlier; the replay path kept the fallback.
+  private isRecordTypeStep(step: RecipeStep): boolean {
+    const s = `${step.selector?.label ?? ""} ${step.note ?? ""}`;
+    return step.action === "check"
+      && (/cbListServices/i.test(step.selector?.fallbacks?.map((f) => f.css ?? "").join(" ") ?? "")
+        || /^(residential|commercial)\s*-\s*/i.test(s.trim()));
+  }
+
+  // The list this jurisdiction actually offers — for the error, so a human reads "the city has
+  // no Electrical" instead of "step 12 failed" and knows to file that discipline with the county.
+  private async readOfferedRecordTypes(): Promise<string[]> {
+    if (typeof this.page.evaluate !== "function") return [];
+    return this.page.evaluate(() =>
+      Array.from(document.querySelectorAll('input[type="checkbox"]')).map((cb) => {
+        const id = cb.getAttribute("id") || "";
+        const lab = id ? document.querySelector(`label[for="${id.replace(/"/g, '\\"')}"]`) : null;
+        return ((lab as HTMLElement | null)?.innerText || "").replace(/\s+/g, " ").trim();
+      }).filter(Boolean).slice(0, 10)).catch(() => [] as string[]);
+  }
+
   private async executeStep(step: RecipeStep, pastReview: boolean): Promise<boolean> {
     // A recorded learn-time row tag can only be honoured by redoing the choice it stood for.
     if (step.selector?.css?.includes("data-al-row")) {
       return this.pickAddressVersionLive(step);
+    }
+    if (this.isRecordTypeStep(step)) {
+      const wanted = String(step.selector?.label || step.note || "").trim();
+      // Exact first. "Residential - Structural" must not resolve through a substring onto
+      // "Residential - Structural - Demolition": one unambiguous name, or nothing.
+      const exact = this.page.getByRole("checkbox", { name: wanted, exact: true });
+      const exactCount = await exact.count().catch(() => 0);
+      if (exactCount === 1) {
+        await exact.first().check({ timeout: 10000 });
+        this.driftWarnings.push(`record type "${wanted}" selected by label (positional fallback refused)`);
+        return true;
+      }
+      const loose = this.page.getByRole("checkbox", { name: wanted, exact: false });
+      const looseCount = exactCount > 1 ? exactCount : await loose.count().catch(() => 0);
+      if (looseCount === 1) {
+        await loose.first().check({ timeout: 10000 });
+        this.driftWarnings.push(`record type "${wanted}" selected by label (positional fallback refused)`);
+        return true;
+      }
+      const offered = await this.readOfferedRecordTypes();
+      throw new Error(
+        looseCount === 0
+          ? `Record type "${wanted}" is not offered here — refusing to pick another permit type. `
+            + `This jurisdiction offers: ${offered.join("; ") || "(none read)"}. `
+            + "A permit type chosen by position files the wrong permit (live: a Residential Mechanical permit on a solar job)."
+          : `Record type "${wanted}" matches ${looseCount} of the types offered here — refusing to guess which permit to file. `
+            + `This jurisdiction offers: ${offered.join("; ") || "(none read)"}.`,
+      );
     }
     if (this.skipForNoBattery(step)) {
       this.driftWarnings.push(`skipped "${String(step.note ?? step.field ?? "battery step").slice(0, 48)}" — this project has no battery`);

@@ -1390,6 +1390,110 @@ async function testAcaWorkLocationAndRecordTypeDeterministic() {
   assert.equal(plannerCalls, 1, "planner consulted only on the review page");
 }
 
+// RECORD TYPE IS NOT A PLANNER CHOICE.
+//
+// Live on Ann Marineau's STRUCTURAL learn at Coos Bay: the planner ticked a record-type box
+// and it went into the recipe as "Residential - Electrical" over control cbListServices_1.
+// The city's list has no Electrical — that discipline files with the COUNTY — and index 1
+// there is Residential - Mechanical. A Residential MECHANICAL permit was filed on a solar job
+// at 1780 Ocean Blvd and issued, fees paid. The run's own audit caught it only after the
+// fact: "Fee schedule is Residential Mechanical, but the project is a roof-mounted solar PV
+// system". The discipline is on the request, so a planner pick that contradicts it is refused
+// outright: nothing checked, nothing recorded, nothing for a recipe to inherit.
+async function testRecordTypeNotAPlannerChoice() {
+  const log: ActionLog = { clicks: [], fills: [], selects: [], checks: [] };
+  let calls = 0;
+  // The planner does exactly what it did live: ticks the record type it is shown.
+  const planner: LearnPlanner = async (): Promise<LearnPlanResponse> => {
+    calls++;
+    if (calls === 1) return { fills: [{ selectorIndex: 0, value: "true", field: "" }], atReview: false, advanceSelectorIndex: 1 };
+    return { fills: [], atReview: true };
+  };
+  const adapter = new AutoLearnAdapter("Oregon ePermitting", planner);
+  // A STRUCTURAL filing. The city offers no electrical type at all.
+  const project = { permitType: "structural", projectAddress: "1780 Ocean Blvd SE, Coos Bay, OR, 97420", city: "Coos Bay" } as ProjectRecord;
+  withFakePage(
+    adapter,
+    makeFakePage(
+      {
+        pages: [
+          {
+            url: "https://aca-oregon.accela.com/oregon/Cap/CapType.aspx",
+            title: "Select a Record Type",
+            body: "Select a Record Type",
+            rawFields: [
+              { label: "Residential - Mechanical", fieldType: "checkbox", id: "cbListServices_1" },
+              { label: "Continue Application", fieldType: "button", role: "button", text: "Continue Application" },
+            ],
+          },
+          {
+            url: "https://aca-oregon.accela.com/oregon/Cap/CapConfirm.aspx",
+            title: "Review",
+            body: "Step 3: Review. Please review all information.",
+            rawFields: [{ label: "Continue Application", fieldType: "button", role: "button", text: "Continue Application" }],
+            reviewPairs: [{ label: "Address", value: "1780 Ocean Blvd" }],
+          },
+        ],
+      },
+      log,
+    ),
+  );
+
+  const result = await adapter.learn(fakeContext, project);
+  assert.deepEqual(log.checks, [], "a mechanical permit is never ticked on a structural filing");
+  assert.ok(
+    !result.steps.some((s) => /mechanical/i.test(`${s.note ?? ""} ${s.selector?.label ?? ""}`)),
+    `no mechanical record type may reach the recipe: ${JSON.stringify(result.steps.map((s) => s.note))}`,
+  );
+}
+
+// ...and the SAME page on the discipline it belongs to is filed normally: the guard refuses a
+// contradiction, it does not refuse record types.
+async function testRecordTypeMatchingDisciplineIsAllowed() {
+  const log: ActionLog = { clicks: [], fills: [], selects: [], checks: [] };
+  let calls = 0;
+  const planner: LearnPlanner = async (): Promise<LearnPlanResponse> => {
+    calls++;
+    if (calls === 1) return { fills: [{ selectorIndex: 0, value: "true", field: "" }], atReview: false, advanceSelectorIndex: 1 };
+    return { fills: [], atReview: true };
+  };
+  const adapter = new AutoLearnAdapter("Oregon ePermitting", planner);
+  const project = { permitType: "structural", projectAddress: "1780 Ocean Blvd SE, Coos Bay, OR, 97420", city: "Coos Bay" } as ProjectRecord;
+  withFakePage(
+    adapter,
+    makeFakePage(
+      {
+        pages: [
+          {
+            url: "https://aca-oregon.accela.com/oregon/Cap/CapType.aspx",
+            title: "Select a Record Type",
+            body: "Select a Record Type",
+            rawFields: [
+              { label: "Residential - Structural", fieldType: "checkbox", id: "cbListServices_2" },
+              { label: "Continue Application", fieldType: "button", role: "button", text: "Continue Application" },
+            ],
+          },
+          {
+            url: "https://aca-oregon.accela.com/oregon/Cap/CapConfirm.aspx",
+            title: "Review",
+            body: "Step 3: Review. Please review all information.",
+            rawFields: [{ label: "Continue Application", fieldType: "button", role: "button", text: "Continue Application" }],
+            reviewPairs: [{ label: "Address", value: "1780 Ocean Blvd" }],
+          },
+        ],
+      },
+      log,
+    ),
+  );
+
+  const result = await adapter.learn(fakeContext, project);
+  assert.ok(log.checks.length > 0, "the structural type IS checked on a structural filing");
+  assert.ok(
+    result.steps.some((s) => /structural/i.test(`${s.note ?? ""} ${s.selector?.label ?? ""}`)),
+    "and it is recorded for replay",
+  );
+}
+
 // ACA WRONG-MODULE GUARD: CapHome's "Applications & Permits" list + General Search is
 // the records/search module, NOT the Apply wizard — the live runs drifted there and the
 // planner then operated on the operator's REAL filings. The learner must leave
@@ -1866,6 +1970,8 @@ const tests: Array<[string, () => Promise<void>]> = [
   ["fields are extracted, filled, and recorded as steps", testFieldsExtractedFilledRecorded],
   ["RADIO REGRESSION: radio selected via check(), false radio/checkbox skipped", testRadioSelectedViaCheck],
   ["NOT-LISTED GUARD: 'equipment not listed' checkbox refused, dropdown still selected", testNotListedCheckboxRefused],
+  ["RECORD TYPE: a planner pick that contradicts the filing's discipline is refused", testRecordTypeNotAPlannerChoice],
+  ["RECORD TYPE: the matching discipline's type is still checked and recorded", testRecordTypeMatchingDisciplineIsAllowed],
   ["VALIDATION GUARD: blocked advance is detected and surfaced", testValidationGuardBlockedAdvance],
   ["a click that opens the form in a NEW TAB is adopted (PowerClerk)", testNewTabPopupAdopted],
   ["final submit is recorded isFinalSubmit:true and NEVER clicked", testFinalSubmitRecordedNeverClicked],

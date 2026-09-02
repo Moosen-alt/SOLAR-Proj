@@ -1,0 +1,88 @@
+// WHICH PERMIT WE APPLY FOR IS NEVER CHOSEN BY ARRAY INDEX.
+//
+// The record-type checkbox is recorded with its label AND a positional fallback
+// (cbListServices_1). The offered list differs per jurisdiction: Coos Bay's CITY record has
+// no "Residential - Electrical" at all — that lives on the COUNTY record. On Marineau the
+// label matched nothing, the positional fallback fired, and index 1 on the city list is
+// "Residential - Mechanical". A MECHANICAL permit was filed and ISSUED on a solar job at
+// 1780 Ocean Blvd, and its fees were paid.
+//
+// The label is the only thing that identifies a permit type. If the recorded type is not on
+// offer, that is information — this jurisdiction files this discipline elsewhere — and the
+// run must stop rather than approximate.
+//   npx tsx portal-bot/src/adapters/recordType.test.ts
+import assert from "node:assert/strict";
+
+let failures = 0;
+const check = (label: string, fn: () => void): void => {
+  try { fn(); console.log(`  ok   - ${label}`); }
+  catch (err) { failures++; console.error(`  FAIL - ${label}\n         ${err instanceof Error ? err.message : String(err)}`); }
+};
+
+// The detector as executeStep applies it.
+const isRecordTypeStep = (step: { action: string; selector?: { label?: string; fallbacks?: Array<{ css?: string }> }; note?: string }): boolean => {
+  const s = `${step.selector?.label ?? ""} ${step.note ?? ""}`;
+  return step.action === "check"
+    && (/cbListServices/i.test(step.selector?.fallbacks?.map((f) => f.css ?? "").join(" ") ?? "")
+      || /^(residential|commercial)\s*-\s*/i.test(s.trim()));
+};
+
+check("THE REGRESSION: the step that filed a mechanical permit is recognised", () => {
+  assert.equal(isRecordTypeStep({
+    action: "check",
+    selector: { label: "Residential - Electrical", fallbacks: [{ css: "#ctl00_PlaceHolderMain_WorkLocationEdit_ucAddressList_serviceControl_rptAgency_ctl00_cbListServices_1" }] },
+    note: "Residential - Electrical",
+  }), true);
+});
+
+check("its structural twin is recognised too", () => {
+  assert.equal(isRecordTypeStep({ action: "check", selector: { label: "Residential - Structural" }, note: "record type: Residential - Structural" }), true);
+  assert.equal(isRecordTypeStep({ action: "check", selector: { label: "Commercial - Mechanical" }, note: "" }), true);
+});
+
+check("an ordinary checkbox is NOT treated as a record type", () => {
+  for (const note of [
+    "I have read and agree to the terms",
+    "This system includes battery storage",
+    "Is the inverter lab-certified?",
+    "accela: accept entry terms",
+  ]) {
+    assert.equal(isRecordTypeStep({ action: "check", selector: { label: note }, note }), false, note);
+  }
+});
+
+check("a non-check action is never a record-type step", () => {
+  assert.equal(isRecordTypeStep({ action: "click", selector: { label: "Residential - Structural" }, note: "" }), false);
+});
+
+// The rule the guard enforces, stated as data: a list that lacks the wanted type must not
+// yield a pick. This is the whole bug in one assertion.
+const pickByLabel = (offered: string[], wanted: string): string | null =>
+  offered.find((o) => o.toLowerCase().includes(wanted.toLowerCase())) ?? null;
+
+const COOS_BAY_CITY = [
+  "Residential - Manufactured Dwelling Placement",
+  "Residential - Mechanical",
+  "Residential - Structural",
+  "Commercial - Structural",
+  "Commercial - Mechanical",
+];
+const COOS_COUNTY = ["Commercial - Electrical", "Residential - Electrical"];
+
+check("Electrical on the CITY list yields NOTHING — never index 1 (Mechanical)", () => {
+  assert.equal(pickByLabel(COOS_BAY_CITY, "Residential - Electrical"), null);
+  // The bug in one line: the positional fallback would have returned this.
+  assert.equal(COOS_BAY_CITY[1], "Residential - Mechanical");
+});
+
+check("Electrical resolves on the COUNTY list, where it is actually offered", () => {
+  assert.equal(pickByLabel(COOS_COUNTY, "Residential - Electrical"), "Residential - Electrical");
+});
+
+check("Structural resolves on the CITY list", () => {
+  assert.equal(pickByLabel(COOS_BAY_CITY, "Residential - Structural"), "Residential - Structural");
+});
+
+if (failures) { console.error(`\n${failures} record-type check(s) FAILED.`); process.exit(1); }
+console.log("\nAll record-type checks passed.");
+process.exit(0);

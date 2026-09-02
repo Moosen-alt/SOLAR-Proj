@@ -626,7 +626,142 @@ async function testDriftNoEvalSilent() {
   assert.equal(log.fills.length, 2, "fills ran normally");
 }
 
+// RECORD TYPE: the permit we apply for is chosen by an unambiguous LABEL or not at all.
+//
+// Live failure this pins: the recipe carried label "Residential - Electrical" plus the
+// positional fallback cbListServices_1. Coos Bay's CITY record offers no Electrical at all —
+// that discipline files with the COUNTY — so the label matched nothing, the fallback fired,
+// and index 1 on the city list is "Residential - Mechanical". A mechanical permit was filed
+// and ISSUED on a solar job at 1780 Ocean Blvd, with its fees paid.
+//
+// A page that offers a given list of record types, as Accela renders them: checkboxes whose
+// accessible name is the type. `exact` is honoured so the ambiguity case is real.
+function makeRecordTypePage(offered: string[], log: ActionLog) {
+  const page: any = makeFakePage({ log });
+  const norm = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
+  page.checked = [] as string[];
+  page.evaluate = async () => offered;
+  const boxFor = (hits: string[], key: string): any => {
+    const loc: any = {
+      first: () => loc,
+      nth: () => loc,
+      count: async () => hits.length,
+      isVisible: async () => hits.length > 0,
+      getAttribute: async () => null,
+      evaluate: async () => "",
+      check: async () => {
+        if (!hits.length) throw new Error(`TimeoutError: locator ${key} not found`);
+        page.checked.push(hits[0]);
+        log.checks++;
+      },
+      click: async () => { log.clicks.push(key); },
+      fill: async () => undefined,
+      waitFor: async () => { if (!hits.length) throw new Error(`TimeoutError: locator ${key} not found`); },
+      evaluateAll: async () => [],
+    };
+    return loc;
+  };
+  // The positional fallback the recipe recorded, resolving the way the live portal did:
+  // cbListServices_1 is whatever this jurisdiction happens to list second. Modelled so that
+  // if the label guard is ever removed, these tests report the real-world outcome —
+  // "Residential - Mechanical" checked — instead of an unrelated fake-page error.
+  page.locator = (css: string) => {
+    const m = /cbListServices_(\d+)/.exec(css);
+    const at = m ? offered[Number(m[1])] : undefined;
+    return boxFor(at ? [at] : [], `css:${css}`);
+  };
+  page.getByLabel = (label: string) => boxFor(offered.filter((t) => norm(t) === norm(String(label))), `label:${label}`);
+  page.getByRole = (role: string, o?: { name?: string; exact?: boolean }) => {
+    const want = norm(o?.name ?? "");
+    const hits = role !== "checkbox" || !want
+      ? []
+      : offered.filter((t) => (o?.exact ? norm(t) === want : norm(t).includes(want)));
+    return boxFor(hits, `role:${role}:${o?.name ?? ""}`);
+  };
+  return page;
+}
+
+// The step exactly as the recipe recorded it, positional fallback and all.
+const electricalRecordTypeStep: RecipeStep = {
+  action: "check",
+  selector: {
+    label: "Residential - Electrical",
+    fallbacks: [{ css: "#ctl00_PlaceHolderMain_WorkLocationEdit_ucAddressList_serviceControl_rptAgency_ctl00_cbListServices_1" }],
+  },
+  note: "Residential - Electrical",
+};
+
+const COOS_BAY_CITY = [
+  "Residential - Manufactured Dwelling Placement",
+  "Residential - Mechanical",
+  "Residential - Structural",
+  "Commercial - Mechanical",
+];
+
+async function testRecordTypeNotOfferedRefusesToFile() {
+  const log: ActionLog = { clicks: [], fills: [], gotos: [], checks: 0 };
+  const adapter = new RecipeAdapter(baseRecipe([electricalRecordTypeStep]), {}, {});
+  const page = makeRecordTypePage(COOS_BAY_CITY, log);
+  withFakePage(adapter, page);
+  const result = await adapter.fillApplication(fakeProject);
+
+  assert.equal(result.ok, false, "an unofferable permit type must fail the run, not proceed");
+  assert.equal(log.checks, 0, "NOTHING may be checked when the recorded type is absent");
+  assert.deepEqual(page.checked, [], "above all, never Residential - Mechanical");
+  assert.match(String(result.message), /not offered/i);
+  // The message must name what this jurisdiction DOES offer, so a human reads
+  // "the city has no electrical" and files it with the county instead.
+  assert.match(String(result.message), /Residential - Mechanical/);
+}
+
+async function testRecordTypeOfferedIsCheckedByLabel() {
+  const log: ActionLog = { clicks: [], fills: [], gotos: [], checks: 0 };
+  const structural: RecipeStep = { ...electricalRecordTypeStep, selector: { ...electricalRecordTypeStep.selector, label: "Residential - Structural" }, note: "Residential - Structural" };
+  const adapter = new RecipeAdapter(baseRecipe([structural]), {}, {});
+  const page = makeRecordTypePage(COOS_BAY_CITY, log);
+  withFakePage(adapter, page);
+  const result = await adapter.fillApplication(fakeProject);
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(page.checked, ["Residential - Structural"], "the offered type is checked by its own name");
+}
+
+async function testRecordTypeAmbiguousRefusesToGuess() {
+  const log: ActionLog = { clicks: [], fills: [], gotos: [], checks: 0 };
+  const structural: RecipeStep = { ...electricalRecordTypeStep, selector: { label: "Residential - Structural" }, note: "Residential - Structural" };
+  const adapter = new RecipeAdapter(baseRecipe([structural]), {}, {});
+  // A jurisdiction that splits the discipline in two. "Residential - Structural" is a
+  // substring of both, and a demolition permit is not the one we came to file.
+  const page = makeRecordTypePage(["Residential - Structural - New", "Residential - Structural - Demolition"], log);
+  withFakePage(adapter, page);
+  const result = await adapter.fillApplication(fakeProject);
+
+  assert.equal(result.ok, false, "two candidate permit types is a question for a human");
+  assert.deepEqual(page.checked, [], "must not take whichever came first");
+  assert.match(String(result.message), /matches 2/i);
+}
+
+async function testRecordTypeIsNeverSelfHealed() {
+  const log: ActionLog = { clicks: [], fills: [], gotos: [], checks: 0 };
+  const adapter = new RecipeAdapter(baseRecipe([electricalRecordTypeStep]), {}, {});
+  // rawFields present → the self-heal path is live on this fake. Heal re-anchors by label
+  // similarity, and "Residential - Mechanical" is the nearest label to the one we want; if
+  // heal ran here it would check it AND patch the recipe to point at it forever.
+  const page = makeRecordTypePage(COOS_BAY_CITY, log);
+  page.$$eval = async () => COOS_BAY_CITY.map((label, i) => ({ label, fieldType: "checkbox", id: `cbListServices_${i}` }));
+  withFakePage(adapter, page);
+  const result = await adapter.fillApplication(fakeProject);
+
+  assert.equal(result.ok, false);
+  assert.deepEqual(page.checked, [], "self-heal must not reintroduce the wrong permit type");
+  assert.equal(((result.data?.healedSteps as unknown[]) ?? []).length, 0, "and must not patch the recipe with it");
+}
+
 const tests: Array<[string, () => Promise<void>]> = [
+  ["RECORD TYPE: a type this jurisdiction does not offer refuses to file", testRecordTypeNotOfferedRefusesToFile],
+  ["RECORD TYPE: an offered type is checked by its own label", testRecordTypeOfferedIsCheckedByLabel],
+  ["RECORD TYPE: two matching types is a refusal, not a coin flip", testRecordTypeAmbiguousRefusesToGuess],
+  ["RECORD TYPE: self-heal never re-anchors a permit type", testRecordTypeIsNeverSelfHealed],
   ["DRIFT: zero overlap on data segment fails fast as needs_rerecord message", testDriftZeroOverlapFailsFast],
   ["DRIFT: partial overlap annotates driftWarnings and continues", testDriftPartialOverlapWarnsAndContinues],
   ["DRIFT: sparse segment (<3 labels) is never prechecked", testDriftSparseSegmentSkipped],

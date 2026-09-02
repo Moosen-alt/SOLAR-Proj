@@ -238,6 +238,12 @@ function safeHostPath(url: string): string {
 const NOT_LISTED_CHECKBOX =
   /\b(proposed\s+\w+\s+equipment\s+is\s+not\s+listed|equipment\s+is\s+not\s+listed|not\s+in\s+the\s+list|enter\s+(equipment\s+)?manually|manual\s+entry)\b/i;
 
+// An Accela RECORD TYPE — the checkbox that decides which permit is being applied for
+// ("Residential - Electrical", "Commercial - Mechanical"). Which one is right is the
+// discipline on the request, so the planner never gets to choose it; see the guard in
+// applyFill and accelaRecordTypePass, which picks it deterministically.
+const RECORD_TYPE_LABEL = /^\s*(residential|commercial)\s*[-–—]\s*\S/i;
+
 // PGE/PowerClerk Yes/No POLICY questions whose answer is fixed for standard residential NEM.
 // Mirrors the knowledge-base seed. A deterministic pass applies the policy answer so the portal
 // default — or a wrong planner pick — can't stand.
@@ -1053,6 +1059,9 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   // Tri-state on purpose: false means the project SAYS there is no battery (guard it),
   // undefined means nobody knows and the planner still decides.
   private hasBattery: boolean | undefined;
+  /** The permit discipline this run is filing ("electrical", "structural", …). Empty when
+   *  the caller didn't say — the record-type guard then only checks label-vs-control. */
+  private permitDiscipline = "";
   /** True once the delegated final submit actually went through. Read by the caller. */
   finalSubmitClicked = false;
   /** The completion/receipt page as text + URL, captured while standing on it. */
@@ -2008,6 +2017,9 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     await this.debug?.startTrace(this.page);
     let result: LearnResult | null = null;
     try {
+      // What discipline this run is filing. Held on the instance so the fill guard can refuse
+      // a record type that contradicts it — the planner sees one page at a time and does not.
+      this.permitDiscipline = String(project.permitType ?? "");
       result = await this.learnImpl(context, project);
       return result;
     } catch (err) {
@@ -4411,7 +4423,11 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     }, OTHER_SPECIFY.source).catch(() => [] as Array<{ key: string; label: string }>);
 
     let filled = 0;
-    for (const t of targets) {
+    // Whatever comes back from a page's evaluate() is the PAGE's word, not ours — a portal that
+    // returns a shape we didn't ask for must cost us this one convenience, not the whole learn.
+    const wellFormed = (Array.isArray(targets) ? targets : [])
+      .filter((t) => t && typeof t.key === "string" && typeof t.label === "string");
+    for (const t of wellFormed) {
       if (alreadyFilledLabels.includes(t.label)) continue;
       const css = `[data-al-other="${t.key}"]`;
       const okFill = await this.page.locator(css).first()
@@ -4645,6 +4661,39 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     // unlisted plain-text. The planner is told to skip it but has been seen checking it anyway,
     // so refuse here regardless of the requested value — record no step, leave it unchecked.
     if (field.fieldType === "checkbox" && NOT_LISTED_CHECKBOX.test(field.label || "")) return null;
+
+    // DETERMINISTIC GUARD: WHICH PERMIT WE APPLY FOR IS NOT A PLANNER CHOICE.
+    //
+    // Live on Ann Marineau's STRUCTURAL learn at Coos Bay: the planner ticked a record-type
+    // box and the step went into the recipe as label "Residential - Electrical" over control
+    // cbListServices_1. The city's list has no Electrical — that discipline files with the
+    // county — and index 1 there is Residential - Mechanical. A Residential MECHANICAL permit
+    // was filed on a solar job at 1780 Ocean Blvd and issued, fees paid. The run's own audit
+    // caught it only afterwards, in a note: "Fee schedule is Residential Mechanical, but the
+    // project is a roof-mounted solar PV system".
+    //
+    // Record type is project data, not a judgement call: the discipline is on the request. So
+    // the deterministic pass (accelaRecordTypePass) owns this control, and a planner pick that
+    // contradicts the discipline is refused — nothing checked, nothing recorded, so no recipe
+    // can inherit it. A solar/PV-specific type is always allowed: that IS the right answer
+    // wherever an AHJ offers one.
+    if (isCheckable && RECORD_TYPE_LABEL.test(field.label || "") && this.permitDiscipline) {
+      const label = field.label || "";
+      const wantElectrical = /elec/i.test(this.permitDiscipline);
+      const isSolarType = /solar|photovoltaic|\bpv\b/i.test(label);
+      const matchesDiscipline = wantElectrical
+        ? /electrical/i.test(label)
+        : /structural|building/i.test(label);
+      if (!isSolarType && !matchesDiscipline) {
+        this.debug?.event({
+          type: "record_type_refused",
+          label: label.slice(0, 70),
+          discipline: this.permitDiscipline,
+          why: "the offered type is a different permit discipline than this filing",
+        });
+        return null;
+      }
+    }
 
     // DETERMINISTIC GUARD: never check an "Alternative Billing Contact"-style checkbox.
     // Unchecked routes the portal's invoice to the installer email on file — the correct
