@@ -221,7 +221,10 @@ export class RecipeAdapter extends BasePortalAdapter {
       const accela = bodyText.match(/\b\d{2,4}-\d{2}-\d{4,7}-?[A-Z]{0,4}\b/);
       // Generic confirmation/record number fallback (avoid pure phone/zip).
       const generic = bodyText.match(/\b(?:record|permit|application|confirmation)\s*(?:no\.?|number|#)?\s*[:#]?\s*([A-Z0-9][A-Z0-9-]{5,})\b/i);
-      const permitNumber = (accela?.[0] || generic?.[1] || "").trim();
+      // PowerClerk assigns APP-###### and shows it in the View/Edit heading. The operator
+      // navigates by the LandingPage?ProjectId link, so that is what capture must keep.
+      const pcApp = bodyText.match(/APP-\d{4,8}/);
+      const permitNumber = (accela?.[0] || pcApp?.[0] || generic?.[1] || "").trim();
       // Accela record suffix encodes the discipline: -STR (structural), -ELE (electrical), etc.
       const discipline = permitNumber.match(/-([A-Z]{2,4})$/)?.[1] ?? null;
       // Keep origin+path only — completion-page URLs can embed session-scoped query tokens
@@ -229,7 +232,17 @@ export class RecipeAdapter extends BasePortalAdapter {
       // result and won't work when clicked later anyway.
       const rawUrl = typeof this.page.url === "function" ? String(this.page.url() ?? "") : "";
       let recordLink = rawUrl;
-      try { const u = new URL(rawUrl); recordLink = u.origin + u.pathname; } catch { /* keep raw */ }
+      try {
+        const u = new URL(rawUrl);
+        // ProjectId/ProgramId identify the record, not the session — dropping them made the
+        // stored link useless (a bare /MvcProjects/EditProject reaches nothing). Same rule
+        // as cleanRecordLink: keep identifiers, drop everything else.
+        const KEEP = /^(projectid|programid|formid|capid1|capid2|capid3|module|tabname|agencycode|id|recordid)$/i;
+        const kept = new URLSearchParams();
+        u.searchParams.forEach((v, k) => { if (KEEP.test(k)) kept.append(k, v); });
+        const q = kept.toString();
+        recordLink = u.origin + u.pathname + (q ? `?${q}` : "");
+      } catch { /* keep raw */ }
       const submitted = /successfully submitted|application has been submitted|record (number|#)/i.test(bodyText);
       if (permitNumber || submitted) {
         return ok(`Captured submission confirmation${permitNumber ? `: ${permitNumber}` : ""}.`, {
@@ -1997,6 +2010,12 @@ export class RecipeAdapter extends BasePortalAdapter {
         accepted = typeof this.page.evaluate !== "function" ? false : await this.page.evaluate(() => {
           const body = (document.body.innerText || "").slice(0, 4000);
           if (/thank you.{0,200}(submitted|received)|has been (successfully )?submitted|application (number|id)\s*[:#]/is.test(body)) return true;
+          // PowerClerk's accepted state, measured on the first real filing: the wizard
+          // becomes "View/Edit: APP-111652" with "Application Submitted", and the URL flips
+          // to LandingPage?ProjectId=... Two runs filed successfully while this poll called
+          // them "quiet" for lack of exactly these signals — which produced the duplicate.
+          if (/View\/Edit:\s*APP-\d+|application submitted|project number:\s*APP-\d+/i.test(body)) return true;
+          if (/LandingPage/i.test(location.href)) return true;
           return !/EditProject/i.test(location.href); // left the wizard entirely
         }).catch(() => false);
         if (accepted) break;
