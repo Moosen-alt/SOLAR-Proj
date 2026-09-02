@@ -2728,25 +2728,44 @@ export class RecipeAdapter extends BasePortalAdapter {
     return /manufacturer|\bmake\b/i.test(`${step.selector?.label ?? ""} ${step.note ?? ""}`);
   }
 
+  // A SELECTOR LEVEL WHOSE EVERY MATCH IS INVISIBLE HAS NOT FOUND THE CONTROL.
+  //
+  // The recorded primary is routinely a per-render id, and on a fresh project that id can
+  // belong to a HIDDEN twin whose label reads the same. Live on Marineau's NEM replay: the
+  // inverter Model step's primary #pcInputBase55 uniquely matched the invisible combobox
+  // whose option list is the ENERGY SOURCE values, resolveLocator settled for it because
+  // count() > 0, the label fallback that resolves to the real visible Model box was never
+  // consulted, the model rules rightly refused "Solar PV/Wind/Hydro" as models, and the
+  // cascade never completed — PowerClerk then took the manufacturer back too. A match that
+  // cannot be seen does not end the search; only when NO level yields a visible control does
+  // the first non-empty level stand, so the familiar failure is preserved.
   private async resolveLocator(sel?: RecipeSelector) {
     const primary = this.locator(sel);
     if (!sel || !sel.fallbacks?.length || !primary) return this.preferVisible(primary, sel);
-    try {
-      if (await primary.count() > 0) return this.preferVisible(primary, sel);
-    } catch {
-      // count() can throw on a malformed primary — fall through to fallbacks.
-    }
-    for (const fb of sel.fallbacks) {
-      // Ignore a fallback's own nested fallbacks (one level deep).
-      const loc = this.locator({ ...fb, fallbacks: undefined });
-      if (!loc) continue;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let firstNonEmpty: { loc: any; from?: RecipeSelector } | null = null;
+    const levels = [{ loc: primary, from: sel }, ...sel.fallbacks.map((fb) => ({ loc: this.locator({ ...fb, fallbacks: undefined }), from: fb as RecipeSelector }))];
+    for (const level of levels) {
+      if (!level.loc) continue;
       try {
-        if (await loc.count() > 0) return this.preferVisible(loc, fb);
-      } catch {
-        // Try the next fallback.
+        if (await level.loc.count() === 0) continue;
+      } catch { continue; } // count() can throw on a malformed selector — try the next level.
+      if (!firstNonEmpty) firstNonEmpty = level;
+      const picked = await this.preferVisible(level.loc, level.from);
+      // On a probeable page, take this level only if what it picked is actually VISIBLE;
+      // a test fake without isVisible keeps the pre-existing first-non-empty behaviour.
+      const canProbe = typeof picked?.isVisible === "function";
+      if (!canProbe || await picked.isVisible().catch(() => false)) {
+        // Worth a warning only when an EARLIER matching level was passed over as hidden.
+        if (level !== firstNonEmpty) {
+          this.driftWarnings.push(`"${this.stepLabel({ selector: sel } as RecipeStep)}" — recorded selector matched only hidden control(s); resolved via a fallback to a visible one`);
+        }
+        return picked;
       }
     }
-    return primary;
+    // Nothing visible at any level: the first level that matched at all keeps the familiar
+    // failure shape (identity check / skip reporting sees the same control it always did).
+    return firstNonEmpty ? this.preferVisible(firstNonEmpty.loc, firstNonEmpty.from) : primary;
   }
 
   /**

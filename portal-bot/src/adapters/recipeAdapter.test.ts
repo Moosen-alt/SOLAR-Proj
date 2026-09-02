@@ -801,7 +801,51 @@ async function testDisabledNamesakeSkipped() {
   assert.deepEqual(clicked, ["real-apply"], "the ENABLED namesake was clicked, never the disabled pill");
 }
 
+// A SELECTOR LEVEL WHOSE EVERY MATCH IS INVISIBLE HAS NOT FOUND THE CONTROL.
+//
+// Live on Marineau's NEM replay: the inverter Model step's recorded primary #pcInputBase55
+// uniquely matched PowerClerk's HIDDEN combobox whose label also reads "Model" but whose
+// option list is the ENERGY SOURCE values. resolveLocator settled for it (count > 0), the
+// label fallback pointing at the real visible Model box was never consulted, the model rules
+// rightly refused "Solar PV/Wind/Hydro" as models, and the cascade never completed —
+// PowerClerk then took the manufacturer back too, and the replay looped on a page it could
+// never finish. An invisible-only match must fall through to the next selector level.
+async function testHiddenPrimaryFallsThroughToVisibleFallback() {
+  const log: ActionLog = { clicks: [], fills: [], gotos: [], checks: 0 };
+  const adapter = new RecipeAdapter(baseRecipe([
+    { action: "fill", selector: { css: "#pcInputBase55", fallbacks: [{ label: "Model" }] }, field: "inverterModel", note: "Model" },
+  ]), { inverterModel: "DS3-L" }, {});
+  const page: any = makeFakePage({ log });
+  const mk = (visible: boolean, key: string): any => {
+    const loc: any = {
+      first: () => loc, nth: () => loc,
+      count: async () => 1,
+      isVisible: async () => visible,
+      fill: async (v: string) => {
+        if (!visible) throw new Error("TimeoutError: element is not visible");
+        log.fills.push({ key, value: v });
+      },
+      blur: async () => undefined,
+      waitFor: async () => { if (!visible) throw new Error("TimeoutError: hidden"); },
+      evaluateAll: async () => [],
+    };
+    return loc;
+  };
+  page.locator = (css: string) => (css === "#pcInputBase55" ? mk(false, "ghost") : mk(false, `css:${css}`));
+  page.getByLabel = (label: string) => (label === "Model" ? mk(true, "real-model") : mk(false, `label:${label}`));
+  withFakePage(adapter, page);
+
+  const result = await adapter.fillApplication(fakeProject);
+  assert.equal(result.ok, true, `run should complete (${result.message || ""})`);
+  assert.deepEqual(log.fills.map((f) => f.key), ["real-model"], "the VISIBLE fallback got the value; the hidden ghost got nothing");
+  assert.ok(
+    (result.data?.driftWarnings as string[] | undefined)?.some((w) => /hidden control/.test(w)),
+    "and the pass-over is reported as drift",
+  );
+}
+
 const tests: Array<[string, () => Promise<void>]> = [
+  ["RESOLVE: a hidden-only primary falls through to the visible fallback", testHiddenPrimaryFallsThroughToVisibleFallback],
   ["CLICK: a disabled namesake ahead of the real control is skipped", testDisabledNamesakeSkipped],
   ["RECORD TYPE: a type this jurisdiction does not offer refuses to file", testRecordTypeNotOfferedRefusesToFile],
   ["RECORD TYPE: an offered type is checked by its own label", testRecordTypeOfferedIsCheckedByLabel],
