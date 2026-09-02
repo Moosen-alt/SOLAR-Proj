@@ -2098,8 +2098,28 @@ export class RecipeAdapter extends BasePortalAdapter {
       // A page we cannot READ (test fakes) can't be polled for evidence either way; the
       // pre-verification contract applies there. Every production page can be read.
       let accepted = typeof this.page.evaluate !== "function";
+      // A PAGE THAT SAYS IT IS STILL PROCESSING HAS NOT ANSWERED. Marineau's NEM submit was
+      // accepted (APP-111667) seconds AFTER this poll gave up: the outcome shot caught
+      // "Processing Submit..." mid-spin, the six looks expired against a page that was
+      // neither quiet nor decided, and a real filing was reported as unconfirmed — the
+      // operator then has to probe the account to learn what happened. Ticks spent watching
+      // a visible processing indicator don't count against the evidence budget; the spinner
+      // wait has its own generous bound so a genuinely wedged page still stops for a human.
+      let processingTicks = 0;
       for (let poll = 0; poll < 6 && !rejection && !accepted; poll++) {
         await smartWait(this.page, 2500);
+        if (typeof this.page.evaluate === "function" && processingTicks < 36) { // ~90s of spinner grace
+          const processing = await this.page.evaluate(() => {
+            const vis = (e: Element) => { const r = (e as HTMLElement).getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+            for (const el of Array.from(document.querySelectorAll("div, span, [role='status']"))) {
+              if (!vis(el)) continue;
+              const t = ((el as HTMLElement).innerText || "").replace(/\s+/g, " ").trim();
+              if (t && t.length < 60 && /^(processing|submitting|saving)\b/i.test(t)) return true;
+            }
+            return false;
+          }).catch(() => false);
+          if (processing === true) { processingTicks++; poll--; continue; }
+        }
         // A CONFIRM MODAL BETWEEN THE CLICK AND THE FILING. PowerClerk's Vue wizard can answer
         // Submit with its own dialog (ai-screen-multi-page-progression-warning — "you have
         // unvisited pages", with an OK) — the page then just sits there: no banner, no
