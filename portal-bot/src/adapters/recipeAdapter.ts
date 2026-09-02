@@ -3,6 +3,7 @@ import path from "path";
 import type { PortalRecipe, ProjectRecord, RecipeSelector, RecipeStep } from "../../../shared/src/types";
 import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, ok, fail, type PortalContext, type PortalStepResult } from "../adapter";
 import { applyFormatHint } from "../formatHint";
+import { rankAddressVersions } from "../addressVersion";
 import { imageToPdfBytes, pdfNameFor, shouldConvertToPdf } from "../imageToPdf";
 import { fileTypeAllowed, UPLOAD_LABEL_PATTERNS, uploadForbidsSubstitute } from "./autoLearnAdapter";
 import { openPortal } from "../browser";
@@ -1492,7 +1493,60 @@ export class RecipeAdapter extends BasePortalAdapter {
     }
   }
 
+  // data-al-row IS A LEARN-TIME TAG, NOT A SELECTOR. chooseProjectAddressRow stamps it while
+  // ranking the address grid, so the recipe records [data-al-row="ar1"] — an attribute that
+  // exists only in the run that wrote it. On replay nothing stamps it and the click waits 30s
+  // for an element that will never appear (measured on Marineau's structural). The recorded
+  // step is still meaningful, though: it says "pick this project's version of the address".
+  // So re-run the ranking against the live grid, which is the right answer anyway — the row
+  // order and the parcels differ per address, and ar1 on Ivy means nothing at Marineau's.
+  private async pickAddressVersionLive(step: RecipeStep): Promise<boolean> {
+    if (!this.page || typeof this.page.evaluate !== "function") return false;
+    const rows = await this.page.evaluate(() => {
+      const vis = (e: Element) => { const r = (e as HTMLElement).getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+      const out: Array<{ key: string; text: string }> = [];
+      let n = 0;
+      for (const tr of Array.from(document.querySelectorAll("tr"))) {
+        if (!vis(tr)) continue;
+        const action = Array.from(tr.querySelectorAll("a, button, [role='button']"))
+          .find((a) => /^\s*select\s*$/i.test((a as HTMLElement).innerText || ""));
+        if (!action) continue;
+        const text = ((tr as HTMLElement).innerText || "").replace(/\s+/g, " ").trim();
+        if (!text || text.length > 400) continue;
+        const key = `rr${n++}`;
+        (action as HTMLElement).setAttribute("data-al-row", key);
+        out.push({ key, text });
+      }
+      return out;
+    }).catch(() => [] as Array<{ key: string; text: string }>);
+    if (rows.length === 0) return false;
+
+    const wantsElectrical = /elec/i.test(String(this.fieldValues.permitType ?? ""))
+      || /elec/i.test(String(step.note ?? ""));
+    const { ranked, rejected } = rankAddressVersions(rows.map((r: { key: string; text: string }) => r.text), {
+      city: this.fieldValues.city,
+      zip: this.fieldValues.zip,
+      homeownerName: this.fieldValues.homeownerName,
+      isElectrical: wantsElectrical,
+    });
+    if (ranked.length === 0) {
+      this.driftWarnings.push(`address grid: none of ${rows.length} result(s) are in ${this.fieldValues.city ?? "(no city)"} ${this.fieldValues.zip ?? ""} — refusing to open an application against another property`);
+      return false;
+    }
+    const best = rows[ranked[0].index];
+    const okClick = await this.page.locator(`[data-al-row="${best.key}"]`).first()
+      .click({ timeout: 12000 }).then(() => true).catch(() => false);
+    if (!okClick) return false;
+    await smartWait(this.page, 2500);
+    this.driftWarnings.push(`address version re-ranked live: ${(ranked[0].text.match(/(CITY|COUNTY|DEQ)\s+APPLICATIONS/i) || ["this property"])[0]}${rejected.length ? `, ${rejected.length} other propert${rejected.length === 1 ? "y" : "ies"} rejected` : ""}`);
+    return true;
+  }
+
   private async executeStep(step: RecipeStep, pastReview: boolean): Promise<boolean> {
+    // A recorded learn-time row tag can only be honoured by redoing the choice it stood for.
+    if (step.selector?.css?.includes("data-al-row")) {
+      return this.pickAddressVersionLive(step);
+    }
     if (this.skipForNoBattery(step)) {
       this.driftWarnings.push(`skipped "${String(step.note ?? step.field ?? "battery step").slice(0, 48)}" — this project has no battery`);
       return true; // not a failure: the section does not apply to this filing
