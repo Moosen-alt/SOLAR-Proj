@@ -3903,7 +3903,10 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         // page that follows the choice is the one the rest of this pass will fill.
         if (await this.chooseProjectAddressRow(steps)) await sleep(1200);
         const otherFilled = await this.fillOtherSpecifyFields(steps, alreadyFilledLabels);
-        if (otherFilled > 0) await this.waitForDynamicFieldsSettle().catch(() => null);
+        // A required contact email the planner left blank, answered from the section it sits in.
+        const emailsFilled = await this.fillSectionEmails(steps, alreadyFilledLabels);
+        if (emailsFilled > 0) pageFillCount += emailsFilled;
+        if (otherFilled > 0 || emailsFilled > 0) await this.waitForDynamicFieldsSettle().catch(() => null);
         const policySteps = await this.applyPolicyDefaults(alreadyFilledLabels);
         for (const ps of policySteps) {
           steps.push(ps.step);
@@ -4470,6 +4473,92 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   // "If other, specify", "Other (please specify)") is one of the most common on permit forms,
   // and for this product the answer is always the same: the work is solar. Deterministic and
   // portal-agnostic — no policy profile gate, because it is a form convention, not NEM policy.
+  // A REQUIRED "Email" BOX IS ANSWERED BY THE SECTION IT SITS IN, NOT BY ITS LABEL.
+  //
+  // Live on Marineau's PacifiCorp interconnection: page 3 "Customer Information" and page 5
+  // "Installer Information" each render a bare, required `Email *`, and the planner left both
+  // blank — the same failure shape as PowerClerk's bare "Manufacturer"/"Model", where the role
+  // comes from the SECTION and four characters of label cannot carry it. Page 4 "Property
+  // Owner Information" then mirrored the customer block read-only, so one blank showed up as
+  // two, and the portal refuses the filing over a field whose value we hold all along.
+  //
+  // So: match on the SECTION HEADING above the control, and fill from the identity that
+  // heading names. Only a REQUIRED, still-EMPTY, visible box — never an overwrite, never a
+  // guess when the heading is unrecognised.
+  private async fillSectionEmails(steps: RecipeStep[], alreadyFilledLabels: string[]): Promise<number> {
+    if (!this.page || typeof this.page.evaluate !== "function") return 0;
+    const owner = String(this.siteContactIdentity?.email || "").trim();
+    const installer = String(this.contactIdentity?.email || "").trim();
+    if (!owner && !installer) return 0;
+
+    const targets = await this.page.evaluate(() => {
+      const out: Array<{ key: string; heading: string; label: string }> = [];
+      let n = 0;
+      const nodes = Array.from(document.querySelectorAll('input[type="email"], input[type="text"], input:not([type])')) as HTMLInputElement[];
+      for (const el of nodes) {
+        if ((el.value || "").trim()) continue;          // answered already — never overwrite
+        if (el.disabled || el.readOnly) continue;       // a mirrored block is not ours to fill
+        const r = el.getBoundingClientRect();
+        if (r.width < 1 || r.height < 1) continue;
+        const id = el.getAttribute("id") || "";
+        let label = id ? ((document.querySelector(`label[for="${CSS.escape(id)}"]`) as HTMLElement | null)?.innerText || "") : "";
+        if (!label) label = (el.closest("label") as HTMLElement | null)?.innerText || "";
+        if (!label) label = el.getAttribute("placeholder") || "";
+        label = label.replace(/\s+/g, " ").trim();
+        if (!/^\*?\s*e-?mail\b/i.test(label)) continue;
+        // REQUIRED only: the portal's own asterisk, or the attribute.
+        const wrap = el.closest("td, div, li, fieldset") as HTMLElement | null;
+        const required = el.hasAttribute("required") || el.getAttribute("aria-required") === "true"
+          || /\*/.test(label) || /\*/.test((wrap?.innerText || "").slice(0, 120));
+        if (!required) continue;
+        // The nearest heading ABOVE this control — the section that says whose email this is.
+        let heading = "";
+        for (let node: Element | null = el; node && !heading; node = node.parentElement) {
+          let sib: Element | null = node.previousElementSibling;
+          for (; sib && !heading; sib = sib.previousElementSibling) {
+            const t = ((sib as HTMLElement).innerText || "").replace(/\s+/g, " ").trim();
+            if (t && t.length < 80 && /information|contact|details/i.test(t)) heading = t;
+          }
+        }
+        out.push({ key: `em${n++}`, heading, label });
+        el.setAttribute("data-al-email", `em${n - 1}`);
+      }
+      return out;
+    }).catch(() => [] as Array<{ key: string; heading: string; label: string }>);
+
+    let filled = 0;
+    for (const t of (Array.isArray(targets) ? targets : [])) {
+      if (!t || typeof t.key !== "string") continue;
+      const h = String(t.heading || "");
+      // Customer / account holder and property owner are both the homeowner's address on a
+      // residential job; installer is the filing contractor. An unrecognised heading is left
+      // alone — a wrong email on an interconnection is worse than a blank one a human fills.
+      const value = /installer|contractor/i.test(h) ? installer
+        : /customer|property owner|applicant|generation system owner|site/i.test(h) ? owner
+        : "";
+      if (!value) {
+        this.debug?.event({ type: "section_email_skipped", heading: h.slice(0, 60), why: h ? "heading not recognised" : "no section heading found" });
+        continue;
+      }
+      const css = `[data-al-email="${t.key}"]`;
+      const ok = await this.page.locator(css).first().fill(value, { timeout: 8000 }).then(() => true).catch(() => false);
+      if (!ok) continue;
+      await this.page.locator(css).first().blur?.().catch(() => null);
+      filled++;
+      alreadyFilledLabels.push(t.label);
+      this.debug?.event({ type: "section_email_filled", heading: h.slice(0, 60), role: /installer|contractor/i.test(h) ? "installer" : "owner" });
+      steps.push({
+        action: "fill",
+        phase: "fill",
+        selector: { css, fallbacks: [{ role: "textbox", name: t.label }] },
+        // BOUND, never literal: recipes are shared, so a replay must use ITS project's email.
+        field: /installer|contractor/i.test(h) ? "installerEmail" : "homeownerEmail",
+        note: `section email: ${h.slice(0, 40) || "contact"}`,
+      });
+    }
+    return filled;
+  }
+
   private async fillOtherSpecifyFields(steps: RecipeStep[], alreadyFilledLabels: string[]): Promise<number> {
     if (!this.page || typeof this.page.evaluate !== "function") return 0;
     const OTHER_SPECIFY = /other\s+(category|type|description|use|construction)|please\s+specify|if\s+other|other\s*\(\s*specify/i;
