@@ -203,6 +203,33 @@ async function main(): Promise<void> {
     check("planner fields drop alias secret keys", !("acctNum" in projectFields) && !("meterNo" in projectFields) && !("customerSsn" in projectFields) && !("existingNemAgreementNumber" in projectFields), Object.keys(projectFields).join(","));
     check("planner fields drop canonical secret keys", !("accountNumber" in projectFields) && !("meterNumber" in projectFields));
     check("planner fields contain no secret VALUES anywhere", !blob.includes("ACCT-000111222") && !blob.includes("MTR-999888") && !blob.includes("123-45-6789") && !blob.includes("NEM-778899"), blob.slice(0, 300));
+
+    // WHO HOLDS THE ACCOUNT IS IDENTITY, NOT A SECRET. "ubAccountHolderEmail" matches the
+    // broad account regex, and treating it as a secret poisoned the VALUE set with the
+    // homeowner's email, phone, and surname — which the value filter then erased under
+    // EVERY key. Live on Marineau's NEM: two learns in a row left the required Email boxes
+    // blank because homeownerEmail had been silently deleted as "a secret". The identity
+    // must survive; the account NUMBER must still be stripped from the very same project.
+    const jointProject = {
+      ...(secretProject as Record<string, unknown>),
+      id: "p-joint",
+      parserSnapshot: {
+        homeownerEmail: "ann@example.com", homeownerPhone: "(541) 404-7973",
+        ubAccountHolder: "Craig Test", ubAccountHolderLastName: "Test",
+        ubAccountHolderEmail: "ann@example.com", ubAccountHolderPhone: "(541) 404-7973",
+        acctNum: "ACCT-000111222",
+      },
+    } as never;
+    const joint = buildPortalPlanner(db, jointProject, { portalType: "powerclerk", scopeType: "utility" }).projectFields;
+    check("THE REGRESSION: the homeowner's email survives sharing a value with ubAccountHolderEmail",
+      joint.homeownerEmail === "ann@example.com", JSON.stringify({ homeownerEmail: joint.homeownerEmail }));
+    check("the phone and surname survive the same collision",
+      joint.homeownerPhone === "(541) 404-7973" && joint.homeownerLastName === "Test",
+      JSON.stringify({ phone: joint.homeownerPhone, last: joint.homeownerLastName }));
+    check("ubAccountHolder identity fields reach the planner as bindable identity",
+      joint.ubAccountHolderEmail === "ann@example.com" && !!joint.ubAccountHolder);
+    check("...while the account NUMBER from the same project is still stripped everywhere",
+      !JSON.stringify(joint).includes("ACCT-000111222"), JSON.stringify(joint).slice(0, 200));
   } catch (err) {
     check("buildPortalPlanner secret-strip testable", false, String(err));
   }

@@ -188,6 +188,15 @@ export function buildPortalPlanner(
   // (b) VALUE filter — any value that string-equals a known secret (after trim) is
   //     dropped regardless of what key it arrived under.
   const sensitiveKey = /acc(oun)?t|meter|ssn|social|passw|agreement\s*num|application\s*num|agreementnumber|applicationnumber/i;
+  // WHO HOLDS THE ACCOUNT IS IDENTITY, NOT A SECRET. The ubAccountHolder* keys carry the
+  // billing contact's name/email/phone — the very values PowerClerk's Customer Information
+  // page asks for — and "AccountHolder" matches the broad account regex. Treating them as
+  // secrets poisoned the VALUE set with the homeowner's email, phone, and surname, which the
+  // value filter then erased under EVERY key: live on Marineau's NEM, two learns in a row
+  // left the required Email boxes blank because homeownerEmail had been silently deleted as
+  // "a secret". The account NUMBER stays under its own keys and stays stripped.
+  const identityKey = /^ubAccountHolder/i;
+  const isSecretKey = (k: string) => sensitiveKey.test(k) && !identityKey.test(k);
   const secretValues = new Set<string>();
   const addSecret = (v: unknown) => {
     const s = v == null ? "" : String(v).trim();
@@ -196,10 +205,10 @@ export function buildPortalPlanner(
   addSecret(project.accountNumber);
   addSecret(project.meterNumber);
   for (const [k, v] of Object.entries(fieldValues)) {
-    if (sensitiveKey.test(k)) addSecret(v);
+    if (isSecretKey(k)) addSecret(v);
   }
   for (const [k, v] of Object.entries(fieldValues)) {
-    if (sensitiveKey.test(k)) continue;
+    if (isSecretKey(k)) continue;
     if (v && secretValues.has(String(v).trim())) continue;
     if (v) projectFields[k] = v;
   }

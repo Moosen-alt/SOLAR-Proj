@@ -4537,7 +4537,15 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         : /customer|property owner|applicant|generation system owner|site/i.test(h) ? owner
         : "";
       if (!value) {
-        this.debug?.event({ type: "section_email_skipped", heading: h.slice(0, 60), why: h ? "heading not recognised" : "no section heading found" });
+        // Say WHICH absence this is: a recognised section whose identity carries no email is
+        // a data gap upstream, not a heading-matching miss — the first live skip event
+        // blamed the heading and sent the diagnosis the wrong way.
+        const recognised = /installer|contractor|customer|property owner|applicant|generation system owner|site/i.test(h);
+        this.debug?.event({
+          type: "section_email_skipped",
+          heading: h.slice(0, 60),
+          why: !h ? "no section heading found" : recognised ? "identity carries no email for this section" : "heading not recognised",
+        });
         continue;
       }
       const css = `[data-al-email="${t.key}"]`;
