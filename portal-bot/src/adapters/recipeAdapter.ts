@@ -1531,6 +1531,23 @@ export class RecipeAdapter extends BasePortalAdapter {
       case "select": {
         const v = this.resolveValue(step);
         if (!v) return false;
+        // TWO "Manufacturer" SELECTS, ONE LABEL — THE FIELD NAME CARRIES THE SIDE.
+        //
+        // PowerClerk's spec block renders the INVERTER's Manufacturer/Model and, nested
+        // inside it, the PV ARRAY's — identical bare labels. A label-resolved step lands on
+        // whichever comes first, so the module step overwrote the inverter's pick: the
+        // operator watched "AP Systems" go in and be replaced by "Znshine PV-Tech", after
+        // which the inverter Model had nothing valid to cascade from. The step's own field
+        // name says which side it belongs to; when the label matches several controls, use
+        // it — inverter is the outer (first) pair, module/array the inner (later) one.
+        if (step.field && /^(inverter|module|pvMicro|array\d*Module)/i.test(step.field) && scoped) {
+          const nMatches = await scoped.count?.().catch(() => 0);
+          if (nMatches > 1) {
+            const wantsInverter = /^inverter/i.test(step.field);
+            scoped = wantsInverter ? scoped.first() : scoped.nth(nMatches - 1);
+            this.driftWarnings.push(`"${this.stepLabel(step)}" matches ${nMatches} controls — took the ${wantsInverter ? "inverter (first)" : "array (last)"} one for ${step.field}`);
+          }
+        }
         await waitForElement(scoped);
         // Native <select> first; fall back to the custom-combobox interaction for styled
         // div dropdowns (PowerClerk "Please select...", select2, ExtJS) selectOption can't drive.
@@ -1872,7 +1889,7 @@ export class RecipeAdapter extends BasePortalAdapter {
       // reported "the portal accepted it" while the utility's project list gained nothing;
       // the operator called it what it was. So read the page: a visible rejection banner
       // means the submit FAILED, reported with the portal's own list of what is missing.
-      const rejection = typeof this.page.evaluate !== "function" ? "" : await this.page.evaluate(() => {
+      let rejection = typeof this.page.evaluate !== "function" ? "" : await this.page.evaluate(() => {
         const vis = (e: Element) => { const r = (e as HTMLElement).getBoundingClientRect(); return r.width > 0 && r.height > 0; };
         for (const el of Array.from(document.querySelectorAll("div, section, [role='alert']"))) {
           if (!vis(el)) continue;
@@ -1884,6 +1901,36 @@ export class RecipeAdapter extends BasePortalAdapter {
         }
         return "";
       }).catch(() => "");
+      // THE BANNER CAN ARRIVE AFTER OUR FIRST LOOK. PacifiCorp validates server-side; a 3s
+      // wait read a clean page, success was claimed, and the utility's list gained nothing —
+      // twice. Poll: either a rejection appears, or positive evidence of acceptance does
+      // (the URL leaves the wizard, or the page says submitted/thank you). Only one of those
+      // two outcomes lets us say anything; a quiet page proves neither.
+      // A page we cannot READ (test fakes) can't be polled for evidence either way; the
+      // pre-verification contract applies there. Every production page can be read.
+      let accepted = typeof this.page.evaluate !== "function";
+      for (let poll = 0; poll < 6 && !rejection && !accepted; poll++) {
+        await smartWait(this.page, 2500);
+        accepted = typeof this.page.evaluate !== "function" ? false : await this.page.evaluate(() => {
+          const body = (document.body.innerText || "").slice(0, 4000);
+          if (/thank you.{0,200}(submitted|received)|has been (successfully )?submitted|application (number|id)\s*[:#]/is.test(body)) return true;
+          return !/EditProject/i.test(location.href); // left the wizard entirely
+        }).catch(() => false);
+        if (accepted) break;
+        rejection = typeof this.page.evaluate !== "function" ? "" : await this.page.evaluate(() => {
+          const vis = (e: Element) => { const r = (e as HTMLElement).getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+          for (const el of Array.from(document.querySelectorAll("div, section, [role='alert']"))) {
+            if (!vis(el)) continue;
+            const t = ((el as HTMLElement).innerText || "").replace(/\s+/g, " ").trim();
+            if (t && t.length <= 1500 && /unable to submit|could not (be )?submit|fix the errors below|missing required fields|validation failure/i.test(t)) return t.slice(0, 600);
+          }
+          return "";
+        }).catch(() => "");
+      }
+      if (!rejection && !accepted) {
+        throw new Error("After the submit click the page neither confirmed nor rejected the filing — stopping for a human. A quiet page is not an accepted application.");
+      }
+
       if (rejection) {
         // THE BANNER IS A WORK LIST, NOT JUST A VERDICT. PacifiCorp's "Unable to Submit
         // Form" names each missing field WITH A LINK to its page ("Page 3", "Page 7"). The
@@ -1904,6 +1951,13 @@ export class RecipeAdapter extends BasePortalAdapter {
             return "";
           }).catch(() => "");
           if (!again) {
+            // Repair round: same rule — only positive evidence counts.
+            const ok2 = typeof this.page.evaluate !== "function" ? false : await this.page.evaluate(() => {
+              const body = (document.body.innerText || "").slice(0, 4000);
+              if (/thank you.{0,200}(submitted|received)|has been (successfully )?submitted|application (number|id)\s*[:#]/is.test(body)) return true;
+              return !/EditProject/i.test(location.href);
+            }).catch(() => false);
+            if (!ok2) throw new Error("Repair cleared the banner but the page never confirmed the filing — stopping for a human.");
             this.finalSubmitClicked = true;
             return true;
           }
