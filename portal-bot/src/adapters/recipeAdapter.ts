@@ -1939,6 +1939,40 @@ export class RecipeAdapter extends BasePortalAdapter {
       let accepted = typeof this.page.evaluate !== "function";
       for (let poll = 0; poll < 6 && !rejection && !accepted; poll++) {
         await smartWait(this.page, 2500);
+        // A CONFIRM MODAL BETWEEN THE CLICK AND THE FILING. PowerClerk's Vue wizard can answer
+        // Submit with its own dialog (ai-screen-multi-page-progression-warning — "you have
+        // unvisited pages", with an OK) — the page then just sits there: no banner, no
+        // confirmation, a quiet timeout. The modal's OK is part of the submit the operator
+        // already authorised. A dialog mentioning payment is NOT — fees stay human, always.
+        if (typeof this.page.evaluate === "function") {
+          const modal = await this.page.evaluate(() => {
+            const vis = (e: Element) => { const r = (e as HTMLElement).getBoundingClientRect(); return r.width > 2 && r.height > 2; };
+            const panels = Array.from(document.querySelectorAll(
+              "[data-test-role='ai-screen-multi-page-progression-warning'], [data-test-role='ai-screen-nav-warning'], [role='dialog'], .modal.show, .modal[style*='display: block']"));
+            for (const p of panels) {
+              if (!vis(p)) continue;
+              const text = ((p as HTMLElement).innerText || "").replace(/\s+/g, " ").trim();
+              if (/pay|fee|payment|checkout/i.test(text)) return { blocked: text.slice(0, 160) };
+              const btns = Array.from(p.querySelectorAll("button, a, [role='button']"));
+              for (const b of btns) {
+                const t = ((b as HTMLElement).innerText || "").replace(/\s+/g, " ").trim();
+                if (/^(ok|yes|confirm|continue|submit|proceed)$/i.test(t)) {
+                  (b as HTMLElement).setAttribute("data-al-modal-ok", "1");
+                  return { ok: t, text: text.slice(0, 120) };
+                }
+              }
+            }
+            return null;
+          }).catch(() => null) as { ok?: string; text?: string; blocked?: string } | null;
+          if (modal?.blocked) {
+            throw new Error(`The submit raised a payment dialog — fees are never automated. (${modal.blocked.slice(0, 120)})`);
+          }
+          if (modal?.ok) {
+            this.driftWarnings.push(`submit confirm dialog ("${(modal.text || "").slice(0, 60)}") — clicked ${modal.ok}`);
+            await this.page.locator("[data-al-modal-ok='1']").first().click({ timeout: 5000 }).catch(() => null);
+            await smartWait(this.page, 2500);
+          }
+        }
         accepted = typeof this.page.evaluate !== "function" ? false : await this.page.evaluate(() => {
           const body = (document.body.innerText || "").slice(0, 4000);
           if (/thank you.{0,200}(submitted|received)|has been (successfully )?submitted|application (number|id)\s*[:#]/is.test(body)) return true;
