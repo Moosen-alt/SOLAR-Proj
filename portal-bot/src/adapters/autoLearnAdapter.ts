@@ -2983,6 +2983,13 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       //     retry below still recovers a genuine miss).
       await waitForInteractiveControls(this.page);
 
+      // a4) And wait out any visible loading mask. ACA postbacks paint "Please wait..." while
+      //     the partial render is in flight; extraction that runs behind it reads the page as
+      //     it WAS. Live: the city's record types were mid-render behind that overlay, the
+      //     extraction missed all seven, and the planner was handed a page whose answer
+      //     wasn't in it. waitForDynamicFieldsSettle carries the overlay wait.
+      await this.waitForDynamicFieldsSettle().catch(() => null);
+
       // b) Extract fields + candidate buttons + nav links on the current page. Retry while
       //    EMPTY — right after a login redirect / SPA navigation the page can be mid-render
       //    (0 elements); scraping then would wrongly look like an empty page and stop the run.
@@ -3488,6 +3495,14 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         if (navRevisit) {
           this.debug?.event({ type: "navigate_revisit_rejected", page: pageCount, label: (navField?.label || "").slice(0, 60) });
           if (process.env.AUTOLEARN_DEBUG === "1") console.error(`[learn] rejected navigate to an already-visited path (p${pageCount}).`);
+        } else if (navField && this.addressRowChosen && /^\s*select\s*$/i.test(navField.label || "")) {
+          // THE ADDRESS VERSION IS ALREADY CHOSEN — the ranked chooser picked this project's
+          // row (owner + city + discipline). A bare row "Select" clicked after that RE-SELECTS
+          // a jurisdiction and wipes the services panel: live on Marineau's structural learn,
+          // the city's 7 services (Residential - Structural among them) were on screen when
+          // the planner clicked a "Select" and replaced them with the county's electrical-only
+          // list. The grid belongs to the chooser; the planner never re-picks it.
+          this.debug?.event({ type: "address_reselect_refused", page: pageCount, label: (navField.label || "").slice(0, 40) });
         } else if (navField && this.acaApplicantFilled && CONTACT_CONTROL.test(navField.label || "")) {
           // The applicant contact is already filled with the FILING CONTRACTOR's identity.
           // Re-opening that section is how the planner overwrote it with the homeowner's
@@ -4219,6 +4234,32 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     if (!this.page) { await sleep(1200); return; }
     if (typeof this.page.waitForLoadState === "function") {
       await this.page.waitForLoadState("networkidle", { timeout: 6000 }).catch(() => null);
+    }
+    // A VISIBLE LOADING MASK MEANS THE PAGE IS STILL BECOMING WHAT IT WILL BE. ACA's ASP.NET
+    // postbacks paint a "Please wait..." overlay while the partial render is in flight, and it
+    // outlives networkidle. Live on Marineau's structural learn: the city row's services —
+    // "City of Coos Bay (7 services found)", Residential - Structural among them — were mid-
+    // render behind that overlay when extraction ran, so the record-type pass saw none of
+    // them and the planner was handed a page without its own answer on it. Extraction must
+    // not read a page that says it is not finished. Portal-agnostic (text + the common mask
+    // classes), bounded, and never throws.
+    if (typeof this.page.evaluate === "function") {
+      for (let i = 0; i < 40; i++) { // ~10s cap
+        const busy = await this.page.evaluate(() => {
+          const vis = (e: Element) => { const r = (e as HTMLElement).getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+          for (const el of Array.from(document.querySelectorAll("div, span, [role='status'], [aria-busy='true']"))) {
+            if (!vis(el)) continue;
+            const t = ((el as HTMLElement).innerText || "").replace(/\s+/g, " ").trim();
+            if (t && t.length < 60 && /^(please wait|loading|processing)(\s|\.|…|$)/i.test(t)) return true;
+          }
+          return false;
+        }).catch(() => false);
+        // Strict true only: a test fake's evaluate() answers every call with its own shape
+        // (an empty array is truthy), and anything but a positive "the mask is up" must not
+        // hold extraction hostage.
+        if (busy !== true) break;
+        await sleep(250);
+      }
     }
     let last = -1;
     let stable = 0;

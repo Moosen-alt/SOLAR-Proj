@@ -223,6 +223,30 @@ await check("deep search still refuses a portal that only offers real-filing con
   assert.equal(deep, null, `must not pick ${deep?.match.label}`);
 });
 
+// A DISABLED NAMESAKE IS NEVER THE ENTRY. Live on Marineau's electrical replay: Oregon
+// ePermitting's landing page carries a DISABLED decorative "Apply" nav pill, headless layout
+// put it first in DOM order, getByText("Apply").first() resolved onto it, and the click
+// waited its full 30s on a button that can never be clicked — while the real Apply link sat
+// enabled right below. The replay must take the first VISIBLE + ENABLED namesake.
+await check("a disabled 'Apply' pill ahead of the real link is skipped, not waited on", async () => {
+  await page.setContent(`<!doctype html><body>
+    <button disabled type="text" class="dropbtn1" onclick="alert('nope')">Apply</button>
+    <a href="#real" id="real-apply" onclick="document.title='ENTERED'">Apply</a>
+  </body>`);
+  const matches = page.getByText("Apply");
+  assert.ok(await matches.count() > 1, "both namesakes match — that's the premise");
+  // The rule preferActionableNamesake applies: first visible AND enabled match wins.
+  let pick = matches.first();
+  if (!(await pick.isVisible() && await pick.isEnabled().catch(() => true))) {
+    for (let k = 1; k < await matches.count(); k++) {
+      const c = matches.nth(k);
+      if (await c.isVisible() && await c.isEnabled().catch(() => true)) { pick = c; break; }
+    }
+  }
+  await pick.click({ timeout: 3000 });
+  assert.equal(await page.title(), "ENTERED", "the ENABLED link was the one clicked");
+});
+
 await browser.close();
 await new Promise<void>((r) => server.close(() => r()));
 if (failures) { console.error(`\n${failures} applicationEntry.dom.smoke check(s) FAILED.`); process.exit(1); }

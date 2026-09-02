@@ -684,7 +684,13 @@ export class RecipeAdapter extends BasePortalAdapter {
         const context = failureContext || await this.captureFailureContext(step, stepIdx);
         trace.push({ i: stepIdx, action: step.action, note: String(step.note ?? "").slice(0, 52), outcome: "FAILED", page: await currentPageLabel() });
         closePrevStepTiming();
-        return fail(`Recipe step failed (${step.action}${step.note ? ` — ${step.note}` : ""}): ${lastErr instanceof Error ? lastErr.message : String(lastErr)}${context}`, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, failedStepIndex: stepIdx, trace, slowSteps, requiredStillEmpty: this.requiredStillEmpty, pageShotDir: this.pageShotDir, outcomeShotPath: this.outcomeShotPath });
+        // WHY did the control disappear? A step timeout on a page the portal has replaced
+        // with "Session Ended" is not a selector problem, and reporting it as one sends the
+        // operator chasing drift. Live: a NEM replay's "meter number" fill timed out because
+        // the operator logged in concurrently and PowerClerk — one session per account —
+        // killed the bot's. Name the real event when the page itself announces it.
+        const ended = await this.sessionEndedBanner();
+        return fail(`${ended ? `THE PORTAL ENDED THIS SESSION mid-run ("${ended}") — commonly a concurrent login with the same account (some portals allow exactly one session per user). The step failure below is the symptom, not the cause. ` : ""}Recipe step failed (${step.action}${step.note ? ` — ${step.note}` : ""}): ${lastErr instanceof Error ? lastErr.message : String(lastErr)}${context}`, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, failedStepIndex: stepIdx, trace, slowSteps, requiredStillEmpty: this.requiredStillEmpty, pageShotDir: this.pageShotDir, outcomeShotPath: this.outcomeShotPath });
       }
       // Remember whether this step entered data, so the next advancing click waits for the
       // portal's autosave to commit (prevents blank-draft saves on PowerClerk).
@@ -2222,6 +2228,21 @@ export class RecipeAdapter extends BasePortalAdapter {
     return true;
   }
 
+  /** The page's own words when it has thrown the user out — "Session Ended", "logged out",
+   *  "session expired" as a prominent heading — or "" when it hasn't. Best-effort. */
+  private async sessionEndedBanner(): Promise<string> {
+    if (!this.page || typeof this.page.evaluate !== "function") return "";
+    return this.page.evaluate(() => {
+      const vis = (e: Element) => { const r = (e as HTMLElement).getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+      for (const el of Array.from(document.querySelectorAll("h1, h2, h3, [role='heading']"))) {
+        if (!vis(el)) continue;
+        const t = ((el as HTMLElement).innerText || "").replace(/\s+/g, " ").trim();
+        if (t && t.length < 80 && /session\s+(ended|expired|timed?\s*out)|signed\s+out|logged\s+out/i.test(t)) return t;
+      }
+      return "";
+    }).catch(() => "");
+  }
+
   /**
    * WHICH page this is, not whether anything on it changed. The learner's pageFingerprint
    * includes document.body.innerText.length, which is right for its purpose but wrong here:
@@ -2342,11 +2363,23 @@ export class RecipeAdapter extends BasePortalAdapter {
     try {
       const n = await loc.count();
       if (n <= 1) return collapse();
+      // VISIBLE AND ENABLED beats merely visible. Oregon ePermitting's landing page carries a
+      // DISABLED decorative "Apply" nav pill; headless layout put it first in DOM order, this
+      // returned it as "the visible match", and the click waited its full timeout on a button
+      // that can never be clicked — while the real Apply link sat enabled right below. A
+      // disabled control is no more the one the user acted on than a hidden one is. The first
+      // visible-but-disabled match is kept only as the last resort, so when NOTHING is
+      // enabled the failure stays the familiar one.
+      let disabledFallback: any = null;
       for (let i = 0; i < Math.min(n, 12); i++) {
         const c = loc.nth(i);
         if (typeof c.isVisible !== "function") return collapse();
-        if (await c.isVisible().catch(() => false)) return c;
+        if (!(await c.isVisible().catch(() => false))) continue;
+        const enabled = typeof c.isEnabled === "function" ? await c.isEnabled().catch(() => true) : true;
+        if (enabled) return c;
+        if (!disabledFallback) disabledFallback = c;
       }
+      if (disabledFallback) return disabledFallback;
     } catch { /* fall through */ }
     // Nothing visible: keep the recorded behaviour so the failure is the familiar one.
     return collapse();

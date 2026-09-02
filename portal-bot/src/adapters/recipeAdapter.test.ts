@@ -757,7 +757,52 @@ async function testRecordTypeIsNeverSelfHealed() {
   assert.equal(((result.data?.healedSteps as unknown[]) ?? []).length, 0, "and must not patch the recipe with it");
 }
 
+// A DISABLED NAMESAKE IS NEVER THE ONE THE USER CLICKED.
+//
+// Live on Marineau's electrical replay: Oregon ePermitting's landing page carries a DISABLED
+// decorative "Apply" nav pill, headless layout put it first in DOM order, the recorded step
+// resolved onto it, and the click waited its full 30s on a button that can never be clicked —
+// while the real Apply link sat enabled right below. Among namesakes, the first VISIBLE and
+// ENABLED control is the click target.
+async function testDisabledNamesakeSkipped() {
+  const log: ActionLog = { clicks: [], fills: [], gotos: [], checks: 0 };
+  const adapter = new RecipeAdapter(baseRecipe([
+    { action: "click", selector: { role: "link", name: "Apply" }, note: "application entry: Apply" },
+  ]), {}, {});
+  const page: any = makeFakePage({ log });
+  const clicked: string[] = [];
+  const namesakes = (states: Array<{ visible: boolean; enabled: boolean; id: string }>) => {
+    const at = (i: number): any => ({
+      isVisible: async () => states[i].visible,
+      isEnabled: async () => states[i].enabled,
+      click: async () => {
+        if (!states[i].enabled) throw new Error("TimeoutError: element is not enabled");
+        clicked.push(states[i].id);
+      },
+      waitFor: async () => undefined,
+      count: async () => 1,
+      first: () => at(i),
+      nth: (k: number) => at(k),
+      evaluateAll: async () => [],
+    });
+    return { ...at(0), count: async () => states.length, nth: (k: number) => at(k), first: () => at(0) };
+  };
+  page.getByRole = (role: string, o?: { name?: string }) =>
+    o?.name === "Apply"
+      ? namesakes([
+          { visible: true, enabled: false, id: "disabled-pill" },
+          { visible: true, enabled: true, id: "real-apply" },
+        ])
+      : { count: async () => 0, first: () => ({ isVisible: async () => false }), nth: () => ({}), waitFor: async () => { throw new Error("TimeoutError"); }, click: async () => { throw new Error("TimeoutError"); }, evaluateAll: async () => [] };
+  withFakePage(adapter, page);
+
+  const result = await adapter.fillApplication(fakeProject);
+  assert.equal(result.ok, true, `run should complete (${result.message || ""})`);
+  assert.deepEqual(clicked, ["real-apply"], "the ENABLED namesake was clicked, never the disabled pill");
+}
+
 const tests: Array<[string, () => Promise<void>]> = [
+  ["CLICK: a disabled namesake ahead of the real control is skipped", testDisabledNamesakeSkipped],
   ["RECORD TYPE: a type this jurisdiction does not offer refuses to file", testRecordTypeNotOfferedRefusesToFile],
   ["RECORD TYPE: an offered type is checked by its own label", testRecordTypeOfferedIsCheckedByLabel],
   ["RECORD TYPE: two matching types is a refusal, not a coin flip", testRecordTypeAmbiguousRefusesToGuess],
