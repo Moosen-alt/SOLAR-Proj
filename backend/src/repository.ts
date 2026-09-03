@@ -542,6 +542,25 @@ export function updateProject(db: AppDb, projectId: string, payload: ParserPaylo
   delete (existingSnapshot as Record<string, unknown>)["hasExistingSystem"];
   delete (existingSnapshot as Record<string, unknown>)["hasBattery"];
   const mergedSnapshot: ParserPayload = { ...existingSnapshot, ...payload };
+  // WHICH PORTAL THIS FILES ON IS NOT A SIDE EFFECT OF AN EDIT.
+  //
+  // normalizeProject re-derives every column from the snapshot, so a project whose stored
+  // columns and snapshot disagree silently adopts the SNAPSHOT's identity on ANY update.
+  // Live: adding plan-evidence text to an Illinois / Commonwealth Edison project re-pointed
+  // it to Oregon / City Of Salem / PGE — the fixture's snapshot carried a copy-pasted PGE
+  // identity — and the very next staging run opened PGE's REAL portal with Illinois data on
+  // it. Its sibling il-test-ameren showed the same split (columns IL/Ameren, snapshot
+  // OR/PGE), so this was one edit away from happening twice.
+  //
+  // State, AHJ and utility decide WHICH PORTAL a filing goes to — the one thing this
+  // codebase is most careful about everywhere else. They change only when the caller says
+  // so. Settled BEFORE normalising, so the columns, the normalised record and the persisted
+  // snapshot all agree afterwards and the next edit starts from a consistent project.
+  const identityGiven = (k: string): boolean =>
+    Object.prototype.hasOwnProperty.call(payload, k) && String((payload as Record<string, unknown>)[k] ?? "").trim() !== "";
+  if (!identityGiven("state")) mergedSnapshot.state = existing.state;
+  if (!identityGiven("ahj")) mergedSnapshot.ahj = existing.ahj;
+  if (!identityGiven("utility")) mergedSnapshot.utility = existing.utility;
   const project = normalizeProject(projectId, mergedSnapshot, existing.status, existing.createdAt);
   // Preserve the client link unless the payload explicitly changes it.
   const clientId = (payload.clientId ?? payload.client_id ?? existing.clientId) as string | null;
