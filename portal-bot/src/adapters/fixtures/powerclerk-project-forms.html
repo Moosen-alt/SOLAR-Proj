@@ -1,0 +1,96 @@
+<!--
+  PacifiCorp PowerClerk project landing page — the "Current Forms" / "Previously Submitted
+  Forms" lists, as served for APP-111681.
+
+  Card/table/button structure and class names were read off the live DOM while logged in
+  (div.card.mb-2 > .card-header, table.table.table-hover.table-sm > tbody > tr, and
+  button.form-action-button.btn-secondary.btn-sm.pc-btn-min-width-8spacer.btn.shadow-none).
+  Session ids and query strings are deliberately absent — hrefs are inert.
+
+  Two states are represented, because the dangerous one is the SECOND:
+    #suspended  — the filing is suspended. Current Forms offers the correction form AND the
+                  cancellation form, adjacent, with identical Begin buttons.
+    #submitted  — the correction has been sent. It has moved to Previously Submitted with a
+                  View button, and the ONLY openable form left is the cancellation form.
+-->
+<div id="suspended">
+  <div class="card mb-2">
+    <div class="card-header">Current Forms</div>
+    <div class="card-body capsule-body capsule-table-container">
+      <table class="table table-hover table-sm">
+        <thead><tr><th>Form Name</th><th>Form Status</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>PP - Cancellation Form
+              <button type="button" class="form-action-button btn-secondary btn-sm pc-btn-min-width-8spacer btn shadow-none" style="height:26px;width:70px">Begin</button>
+            </td>
+            <td>New Form<br>Became available on 9/3/2026 at 8:31 AM</td>
+          </tr>
+          <tr>
+            <td>PP - Suspended - Changes Needed From Customer
+              <button type="button" class="form-action-button btn-secondary btn-sm pc-btn-min-width-8spacer btn shadow-none" style="height:26px;width:70px">Begin</button>
+            </td>
+            <td>New Form<br>Became available on 9/3/2026 at 8:31 AM</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div class="card mb-2">
+    <div class="card-header">Previously Submitted Forms</div>
+    <div class="card-body capsule-body capsule-table-container">
+      <table class="table table-hover table-sm">
+        <thead><tr><th>Form Name</th><th>Form Status</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>Pacific Power Customer Generation Application
+              <button type="button" class="form-action-button btn-secondary btn-sm pc-btn-min-width-8spacer btn shadow-none" style="height:26px;width:70px">View</button>
+            </td>
+            <td>Submitted<br>Last submitted on 9/2/2026 at 5:42 PM</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div id="submitted">
+  <div class="card mb-2">
+    <div class="card-header">Current Forms</div>
+    <div class="card-body capsule-body capsule-table-container">
+      <table class="table table-hover table-sm">
+        <thead><tr><th>Form Name</th><th>Form Status</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>PP - Cancellation Form
+              <button type="button" class="form-action-button btn-secondary btn-sm pc-btn-min-width-8spacer btn shadow-none" style="height:26px;width:70px">Begin</button>
+            </td>
+            <td>New Form<br>Became available on 9/3/2026 at 10:28 AM</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div class="card mb-2">
+    <div class="card-header">Previously Submitted Forms</div>
+    <div class="card-body capsule-body capsule-table-container">
+      <table class="table table-hover table-sm">
+        <thead><tr><th>Form Name</th><th>Form Status</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>PP - Suspended - Changes Needed From Customer
+              <button type="button" class="form-action-button btn-secondary btn-sm pc-btn-min-width-8spacer btn shadow-none" style="height:26px;width:70px">View</button>
+            </td>
+            <td>Submitted<br>Last submitted on 9/3/2026 at 10:28 AM</td>
+          </tr>
+          <tr>
+            <td>Pacific Power Customer Generation Application
+              <button type="button" class="form-action-button btn-secondary btn-sm pc-btn-min-width-8spacer btn shadow-none" style="height:26px;width:70px">View</button>
+            </td>
+            <td>Submitted<br>Last submitted on 9/2/2026 at 5:42 PM</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>

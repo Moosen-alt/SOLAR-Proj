@@ -1787,7 +1787,23 @@ export interface UtilityResearchResult {
 
 /** Which phase of the bot run a recorded step belongs to. The replay runner drives
  *  login → open → fill → upload → review; steps are grouped by phase. */
-export type RecipePhase = "open" | "fill" | "upload" | "review";
+/**
+ * Where a step sits in a portal run.
+ *
+ * `correct` is the way back into a filing that has ALREADY been submitted. A utility that
+ * suspends an application does not want it re-filed — it exposes a named form on the
+ * project's landing page that reopens the original wizard with the reviewer's notes beside
+ * the offending fields (PacifiCorp: "PP - Suspended - Changes Needed From Customer"; PGE:
+ * the same shape plus per-correction confirmation checkboxes). Submitting that form replaces
+ * the filing rather than creating a second one.
+ *
+ * It is a phase of its own rather than more `open` steps because the two must never be
+ * confused: `open` starts a NEW application and is barred from touching existing records,
+ * while `correct` deliberately reaches into one — under the naming guard in
+ * adapters/correctionForm.ts, since the control beside the correction form cancels the
+ * customer's interconnection.
+ */
+export type RecipePhase = "open" | "fill" | "upload" | "review" | "correct";
 
 export type RecipeAction =
   | "goto"
