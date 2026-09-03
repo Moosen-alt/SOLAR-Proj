@@ -78,6 +78,20 @@ export function stageForStatus(status: ProjectStatus): ProjectStage {
   return STAGE_BY_KEY[key] ?? PROJECT_STAGES[0];
 }
 
+/**
+ * Does this project need a HUMAN before it can move? Drives the red board chip and the
+ * stage overlay — a display signal only; nothing gates on it.
+ *
+ * `blocked` is the explicit form. A correction is the other form of the same fact: an AHJ
+ * or utility has stopped the filing and only a person can restart it. That case was
+ * invisible — PacifiCorp suspended David Simmons' interconnection (APP-111681) with a
+ * ten-business-day withdrawal clock, and because the status was correction_triaged rather
+ * than "blocked" the board card showed no chip at all. The most urgent state in the system
+ * looked identical to a project ticking along.
+ *
+ * Deliberately not "any non-terminal status": these two mean an outside party has ALREADY
+ * bounced the filing, which is exactly what an operator scanning the board needs to see.
+ */
 export function isBlockedStatus(status: ProjectStatus): boolean {
-  return status === "blocked";
+  return status === "blocked" || status === "correction_received" || status === "correction_triaged";
 }
