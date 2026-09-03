@@ -388,6 +388,9 @@ export interface PermitStatusCheck {
   id: string;
   projectId: string;
   targetId: string | null;
+  /** The lane of the target this check descends from ("permit" | "nem"), joined from
+   *  permit_check_targets. Empty for legacy checks recorded before targets were typed. */
+  targetType?: string;
   source: PermitCheckSource;
   rawStatusText: string;
   statusLabel: string;

@@ -284,6 +284,7 @@ function mapPermitStatusCheck(row: Row): PermitStatusCheck {
     id: text(row.id),
     projectId: text(row.project_id),
     targetId: row.target_id == null ? null : text(row.target_id),
+    targetType: text(row.target_type),
     source: text(row.source) as PermitCheckSource,
     rawStatusText: text(row.raw_status_text),
     statusLabel: text(row.status_label),
@@ -752,7 +753,7 @@ export function getProjectList(
   const emailsByProject = new Map<string, ReturnType<typeof mapEmailProjectMatch>[]>();
   if (pageIds.length) {
     const placeholders = pageIds.map(() => "?").join(",");
-    for (const r of db.query<Row>(`SELECT * FROM permit_status_checks WHERE project_id IN (${placeholders}) ORDER BY created_at DESC`, pageIds)) {
+    for (const r of db.query<Row>(`SELECT c.*, t.target_type FROM permit_status_checks c LEFT JOIN permit_check_targets t ON t.id = c.target_id WHERE c.project_id IN (${placeholders}) ORDER BY c.created_at DESC`, pageIds)) {
       const pid = text(r.project_id);
       const arr = checksByProject.get(pid) ?? [];
       if (arr.length < 50) { arr.push(mapPermitStatusCheck(r)); checksByProject.set(pid, arr); }
@@ -820,7 +821,7 @@ export function getProjectDetail(db: AppDb, projectId: string): ProjectDetail {
       .query<Row>("SELECT * FROM permit_check_targets WHERE project_id = ? ORDER BY active DESC, created_at DESC", [projectId])
       .map(mapPermitTarget),
     permitStatusChecks: db
-      .query<Row>("SELECT * FROM permit_status_checks WHERE project_id = ? ORDER BY created_at DESC LIMIT 50", [projectId])
+      .query<Row>("SELECT c.*, t.target_type FROM permit_status_checks c LEFT JOIN permit_check_targets t ON t.id = c.target_id WHERE c.project_id = ? ORDER BY c.created_at DESC LIMIT 50", [projectId])
       .map(mapPermitStatusCheck),
     emailProjectMatches: db
       .query<Row>("SELECT * FROM email_project_matches WHERE project_id = ? ORDER BY created_at DESC LIMIT 50", [projectId])
@@ -2376,6 +2377,15 @@ function renderProcessMapText(report: Omit<ProjectProcessMap, "reportText">): st
 }
 
 function hasNemSignal(check: PermitStatusCheck | EmailProjectMatch): boolean {
+  // A CHECK KNOWS ITS LANE — the target it descends from is typed "permit" | "nem". The
+  // text heuristic below predates typed targets, and it misfiled a status check by the
+  // WORDS on the page: Marineau's issued ELECTRICAL permit page mentions "utility", the
+  // regex called it a NEM check, the NEM lane showed "Permit issued", and — because
+  // "issued" sits in the NEM-approved outcome list — the dashboard badged two live
+  // interconnection applications "NEM approved" that PacifiCorp still lists as
+  // submitted/under review. The type is authoritative; the sniff survives only for
+  // legacy rows recorded before targets carried one.
+  if (!("emailBucket" in check) && check.targetType) return check.targetType === "nem";
   const value = "emailBucket" in check
     ? `${check.emailBucket} ${check.workflow} ${check.subject}`
     : `${check.statusLabel} ${check.rawStatusText} ${check.message}`;
@@ -2383,6 +2393,8 @@ function hasNemSignal(check: PermitStatusCheck | EmailProjectMatch): boolean {
 }
 
 function hasPermitSignal(check: PermitStatusCheck | EmailProjectMatch): boolean {
+  // Same rule as hasNemSignal: the target's own type is authoritative for a status check.
+  if (!("emailBucket" in check) && check.targetType) return check.targetType === "permit";
   const value = "emailBucket" in check
     ? `${check.emailBucket} ${check.workflow} ${check.subject}`
     : `${check.statusLabel} ${check.rawStatusText} ${check.message}`;
