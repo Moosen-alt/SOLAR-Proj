@@ -24,6 +24,17 @@ export interface BaselineQcResult {
 
 export const baselineRuleDefinitions: BaselineRuleDefinition[] = [
   {
+    id: "xcheck-nem-account-holder",
+    ruleType: "qc",
+    name: "Applicant vs utility account holder",
+    jurisdictionScope: "Any",
+    utilityScope: "Any interconnection portal",
+    source: "Utility interconnection practice (observed: PacifiCorp APP-111681 suspension)",
+    severity: "warning",
+    trigger: "The name on the application differs from the account holder printed on the utility bill",
+    action: "Add the applicant to the account, put the service in their name, or name the account holder on the application — before filing.",
+  },
+  {
     id: "or-nem-residential-25kw",
     ruleType: "qc",
     name: "Oregon residential NEM size screen",
@@ -184,6 +195,53 @@ function result(
   return { ruleId, ruleName, qcStatus, severity, message, fieldName };
 }
 
+/**
+ * Do two names refer to the same person (or a household that includes them)?
+ *
+ * Deliberately GENEROUS — a false alarm on "ROBERT J SMITH" vs "Bob Smith" would train
+ * operators to click past the one warning that stops a suspended application. It answers
+ * "could these be the same person / is the applicant on this account", not "are these
+ * strings equal". Only a genuine disagreement of PERSON is reported.
+ *
+ * Joint accounts are the common shape ("JOHN & JANE SMITH", "SMITH, JOHN A"), so the bill
+ * side is treated as a SET of names: agreement means the applicant appears among them.
+ */
+export function namesAgree(applicant: string, accountHolder: string): boolean {
+  const TITLES = /^(mr|mrs|ms|miss|dr|rev|sir|madam|mister)$/;
+  const SUFFIXES = /^(jr|sr|ii|iii|iv|v)$/;
+  const tokens = (s: string): string[] =>
+    String(s ?? "")
+      .toLowerCase()
+      .replace(/[.,]/g, " ")
+      .replace(/[^a-z\s&]/g, " ")
+      .split(/\s+/)
+      .filter((t) => t && !TITLES.test(t) && !SUFFIXES.test(t) && t !== "and" && t !== "&");
+
+  const a = tokens(applicant);
+  const b = tokens(accountHolder);
+  if (a.length === 0 || b.length === 0) return true; // nothing to compare — say nothing
+
+  // The account holder's surname is the last token of the LAST name on the bill; a joint
+  // account usually shares it ("JOHN & JANE SMITH"). If the applicant shares no surname
+  // with the account at all, they are plainly a different household.
+  const aLast = a[a.length - 1];
+  const bSet = new Set(b);
+  if (!bSet.has(aLast)) return false;
+
+  // Surname matches. Now the given name must also be accounted for, or this is a
+  // DIFFERENT PERSON IN THE SAME HOUSEHOLD — a spouse, which is exactly the Simmons case
+  // and exactly what the utility rejects.
+  const aGiven = a.slice(0, -1);
+  if (aGiven.length === 0) return true; // surname only — nothing more to disagree about
+
+  return aGiven.some((g) => {
+    if (bSet.has(g)) return true;
+    // Initial vs full name, in either direction: "J Smith" vs "John Smith".
+    if (g.length === 1) return b.some((t) => t.startsWith(g));
+    return b.some((t) => t.length === 1 && g.startsWith(t));
+  });
+}
+
 export function evaluateBaselineRules(payload: ParserPayload, ctx?: EffectiveCodeContext): BaselineQcResult[] {
   const out: BaselineQcResult[] = [];
   const state = str(payload, "state").toUpperCase();
@@ -336,6 +394,37 @@ export function evaluateBaselineRules(payload: ParserPayload, ctx?: EffectiveCod
         "acDiscAmps",
       ));
     }
+  }
+
+  // THE APPLICANT MUST BE ON THE UTILITY ACCOUNT.
+  // An interconnection application is filed against a SERVICE, and the utility will only
+  // accept it from someone listed on that service's account. The homeowner on the plan set
+  // and the name printed on the utility bill are two different facts, and when they
+  // disagree the application is suspended — not corrected, suspended, with a clock on it.
+  //
+  // Live: David Simmons' PacifiCorp application (APP-111681) was filed with
+  // homeownerName "David Simmons" while the bill we had already parsed read
+  // "STEPHANIE SIMMONS". PacifiCorp's reply: "David Simmons is not listed on the account.
+  // They will need to be added to the account as a co-customer or have the electric service
+  // put into their name; and/or to have the primary electric account holders name added to
+  // the application" — 10 business days to fix or the request may be withdrawn. Both names
+  // were in the payload at QC time; nothing compared them.
+  //
+  // Utility-agnostic: every interconnection portal asks who holds the account.
+  const applicantName = str(payload, "homeownerName") || str(payload, "owner");
+  const accountHolder = str(payload, "ubAccountHolder");
+  if (applicantName && accountHolder && !namesAgree(applicantName, accountHolder)) {
+    out.push(result(
+      "xcheck-nem-account-holder",
+      "Applicant vs utility account holder",
+      "warning",
+      "warning",
+      `The application names ${applicantName}, but the utility bill's account holder is ${accountHolder}. ` +
+        `An interconnection request from someone not listed on the account gets suspended. Before filing, either add ` +
+        `the applicant to the account as a co-customer, put the service in their name, or name ${accountHolder} on the ` +
+        `application as the account holder.`,
+      "ubAccountHolder",
+    ));
   }
 
   if (isOregon && screenDcKw != null && screenDcKw > 25) {
