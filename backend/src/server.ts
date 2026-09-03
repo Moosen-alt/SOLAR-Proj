@@ -10,6 +10,7 @@ import { openDatabase } from "./db";
 import { HttpError } from "./httpError";
 import { parseJson } from "./json";
 import { collectDiagnostics, logErrorBlock, logger, requestLogger, startupBanner } from "./logger";
+import { checkConcurrencyConfig, readConcurrencyConfig } from "./concurrencyConfig";
 import { findLearnedProfileForProject, saveVerifiedAhjProfile, saveVerifiedUtilityProfile } from "./knowledgeBase";
 import {
   listPortalRecipes,
@@ -2657,6 +2658,12 @@ const server = app.listen(port, () => {
   // reverse proxy / firewall), or binding to loopback only.
   if (!AUTH_ENABLED) {
     logger.warn("security", "AUTH_ENABLED is off and the server listens on all interfaces — anyone who can reach this port has full access to customer data and the approve/credential endpoints. Set AUTH_ENABLED=true (with ADMIN_EMAIL/ADMIN_PASSWORD) before exposing it beyond localhost.");
+  }
+  // Do the concurrency numbers agree? Raising JOB_CONCURRENCY without raising the profile
+  // wait arms a permanent-failure mode that no test catches and no portal reports (see
+  // concurrencyConfig.ts). Stated at boot, while an operator is still looking.
+  for (const warning of checkConcurrencyConfig(readConcurrencyConfig())) {
+    logger.warn("concurrency", warning.message);
   }
   // Clear browsers orphaned by a previous crash/deploy BEFORE the worker starts claiming
   // jobs. An orphan still holds its profile's OS lock, so without this the first run for

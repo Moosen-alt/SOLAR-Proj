@@ -70,8 +70,20 @@ Worked example for a **556 projects/month** target, from real run data rather th
 | At `JOB_CONCURRENCY=4` | **~2.3 h/day**, leaving headroom for retries |
 
 Set on this deployment: `JOB_CONCURRENCY=4`, `MAX_CONCURRENT_PORTAL_RUNS=4` (matched, per
-above), `MAX_JOBS_PER_TICK=20`. Four live Chromium instances is roughly 2 GB — size this
-against the box, not against the job count.
+above), `MAX_JOBS_PER_TICK=20`, `PORTAL_PROFILE_WAIT_MS=5400000`. Four live Chromium
+instances is roughly 2 GB — size this against the box, not against the job count.
+
+**The profile wait must outlast the queue behind it.** This is the trap in the "known
+limitation" above, and raising concurrency arms it. Filings for the same client+portal
+serialise, so with N job slots the last one can wait `(N-1) × PORTAL_RUN_MAX_MS` — at 4 slots
+and a 25-minute ceiling that is **75 minutes against the default 15-minute give-up**. A run
+that gives up fails PERMANENTLY (portal jobs are pinned to zero retries) and raises a
+human-review item for a filing that never started. Note this bites at **any** concurrency
+above 1, not just 4: even 2 slots can wait 25 minutes.
+
+The server now states the arithmetic at boot and warns when the numbers disagree
+(`backend/src/concurrencyConfig.ts`, pinned by `backend/test/concurrencyConfig.test.ts`).
+Three ways to satisfy it — raise the wait, lower the run ceiling, or lower concurrency.
 
 Two facts worth carrying into any capacity plan:
 
