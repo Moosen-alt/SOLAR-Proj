@@ -135,6 +135,56 @@ export class LearnRunDebug {
     } catch { /* never throws */ }
   }
 
+  /** CAPTURE THE PAGE ITSELF, NOT JUST A PICTURE OF IT.
+   *
+   *  A learn run is the one time we are legitimately standing on every page of a portal, so
+   *  it is the right moment to keep a copy. These files become the offline REPLICA
+   *  (portal-bot/src/replica) that recipes are regression-tested against — real portal DOM,
+   *  no government server, no credentials, no chance of filing something real.
+   *
+   *  Mining the Playwright trace for the same thing works only partly: later snapshots of a
+   *  frame are stored as diffs against earlier ones, so a single-page-app wizard (PowerClerk
+   *  renders all nine steps at one URL) loses most of its steps to back-references that
+   *  cannot be resolved without reimplementing an internal format. Captured here the page is
+   *  whole, every time.
+   *
+   *  Values are NOT captured: the page is stripped of what was typed into it before it is
+   *  written, because a live learn carries the homeowner's name, address, account and meter
+   *  numbers. A replica is a blank form — which is both the privacy-safe artifact and the
+   *  useful one, since the point is to fill it again from a recipe. */
+  async capturePageHtml(page: unknown, label: string): Promise<void> {
+    if (flagOff("AUTOLEARN_PAGE_CAPTURE")) return;
+    const p = page as (Page & { evaluate?: (fn: unknown) => Promise<unknown> }) | null;
+    if (!p || typeof p.evaluate !== "function") return;
+    try {
+      const captured = await p.evaluate(() => {
+        // Clone so the live page the learner is still working on is never modified.
+        const doc = document.documentElement.cloneNode(true) as HTMLElement;
+        for (const el of Array.from(doc.querySelectorAll("script, noscript"))) el.remove();
+        // Drop everything the operator's data went into.
+        for (const el of Array.from(doc.querySelectorAll("input, textarea"))) {
+          el.removeAttribute("value");
+          el.removeAttribute("checked");
+          (el as HTMLInputElement).value = "";
+        }
+        for (const el of Array.from(doc.querySelectorAll("option"))) el.removeAttribute("selected");
+        return {
+          url: location.href,
+          title: document.title,
+          // The step name an SPA shows, so one URL's many pages stay distinguishable.
+          heading: (document.querySelector("h1, h2, legend, [aria-current='step']") as HTMLElement | null)?.innerText?.replace(/\s+/g, " ").trim().slice(0, 60) ?? "",
+          html: `<!doctype html><html>${doc.innerHTML}</html>`,
+        };
+      });
+      const c = captured as { url?: string; title?: string; heading?: string; html?: string };
+      if (!c?.html || c.html.length < 500) return;
+      const safe = label.replace(/[^a-z0-9_-]/gi, "_").slice(0, 60);
+      fs.writeFileSync(path.join(this.dir, `page-${safe}.json`), JSON.stringify({
+        url: c.url ?? "", title: c.title ?? "", heading: c.heading ?? "", html: c.html,
+      }));
+    } catch { /* capture is best-effort — never disturb a live learn */ }
+  }
+
   /** Start a Playwright trace (DOM snapshots + actions + network timing) on the
    *  page's context. Called AFTER login so credentials never enter the trace.
    *  Skipped for test fakes and when AUTOLEARN_TRACE=0. */

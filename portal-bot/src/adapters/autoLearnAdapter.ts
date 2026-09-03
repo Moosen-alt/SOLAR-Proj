@@ -2942,6 +2942,9 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     // PNGs alone can be disabled with AUTOLEARN_DEBUG_SCREENSHOTS=0 (sidecars still written).
     const saveDebugShot = async (label: string) => {
       await this.debug?.screenshot(this.page, label);
+      // And keep the page's own markup, blanked of the operator's data — this is what the
+      // offline portal replica is built from (see learnDebug.capturePageHtml).
+      await this.debug?.capturePageHtml(this.page, label);
     };
 
     // Required fields that did NOT hold their value after filling (portal silently dropped them).
