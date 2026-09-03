@@ -4454,10 +4454,30 @@ export function resolveCorrection(
     "SELECT id FROM corrections WHERE project_id = ? AND closed_at IS NULL LIMIT 1", [projectId],
   );
   if (inCorrectionState && !stillOpen) {
-    db.run("UPDATE projects SET status = 'parsed', current_stage = ?, updated_at = ? WHERE id = ?", [
-      "Correction resolved — ready to re-stage.", ts, projectId,
-    ]);
-    addAuditLog(db, projectId, "system", "correction", "correction.project_restageable", { correctionId });
+    // WHERE IT GOES BACK TO DEPENDS ON WHETHER IT IS STILL FILED.
+    // "Ready to re-stage" assumes the fix happens HERE and the application is sent
+    // afterwards. But a suspended filing is usually corrected IN the portal — the utility
+    // reopens the original application, the operator edits it and resubmits, and the filing
+    // never stopped existing. Releasing that project to `parsed` announces work that is
+    // already done and invites a re-stage that prepareSubmission will refuse anyway with a
+    // 409. Live on PacifiCorp APP-111681: corrected and resubmitted in PowerClerk, and the
+    // status had to be put back by hand.
+    // A filing that is still submitted returns to `submitted`; only a project with nothing
+    // on file goes back to re-stage.
+    const filed = db.get<Row>(
+      "SELECT id FROM submissions WHERE project_id = ? AND status = 'submitted' LIMIT 1", [projectId],
+    );
+    if (filed) {
+      db.run("UPDATE projects SET status = 'submitted', current_stage = ?, updated_at = ? WHERE id = ?", [
+        "Correction resolved — resubmitted, awaiting review.", ts, projectId,
+      ]);
+      addAuditLog(db, projectId, "system", "correction", "correction.project_still_filed", { correctionId });
+    } else {
+      db.run("UPDATE projects SET status = 'parsed', current_stage = ?, updated_at = ? WHERE id = ?", [
+        "Correction resolved — ready to re-stage.", ts, projectId,
+      ]);
+      addAuditLog(db, projectId, "system", "correction", "correction.project_restageable", { correctionId });
+    }
   }
   touchProjectMetrics(db, projectId);
   return mapCorrection(db.get<Row>("SELECT * FROM corrections WHERE id = ?", [correctionId])!);

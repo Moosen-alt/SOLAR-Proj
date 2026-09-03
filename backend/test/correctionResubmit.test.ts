@@ -67,6 +67,33 @@ assert.equal(
 );
 ok("the project is released only when the last open correction closes");
 
+// 3b) A STILL-FILED project goes back to "submitted", not "ready to re-stage".
+//     "Ready to re-stage" assumes the fix happens here and the application is sent
+//     afterwards. A suspended filing is usually corrected IN the portal — the utility
+//     reopens the original application, the operator edits and resubmits, and the filing
+//     never stopped existing. Announcing "ready to re-stage" there invites a re-stage that
+//     prepareSubmission refuses with a 409 anyway. Live: PacifiCorp APP-111681 was corrected
+//     and resubmitted in PowerClerk, and its status had to be put back by hand.
+const filedProject = createProject(db, {
+  owner: "Filed Owner", address: "2 Filed Way", city: "Coos Bay", state: "OR", zip: "97420",
+  ahj: "City of Coos Bay", utility: "Pacific Power", dcKw: "7.2",
+});
+const filedId = filedProject.project.id;
+db.run(
+  `INSERT INTO submissions (id, project_id, submission_type, status, application_number, permit_type, created_at)
+   VALUES ('sub-filed', ?, 'nem', 'submitted', 'APP-111681', 'nem', ?)`,
+  [filedId, new Date().toISOString()],
+);
+const filedCorrection = addManualCorrection(db, filedId, "Provide a photo of the face of the meter; the image received is an electric bill.");
+assert.equal(filedCorrection.project.status, "correction_triaged");
+resolveCorrection(db, filedCorrection.corrections[0].id, { resubmitted: true });
+const filedRow = db.get<{ status?: string; current_stage?: string }>(
+  "SELECT status, current_stage FROM projects WHERE id = ?", [filedId],
+);
+assert.equal(filedRow?.status, "submitted", "a project whose filing is still submitted must not be sent back to re-stage");
+assert.match(String(filedRow?.current_stage), /resubmitted/i);
+ok("a correction closed on a STILL-FILED project returns it to submitted, not re-stage");
+
 // 4) Pause pinning: a HISTORICAL pause_reason on the latest run must not pin the
 //    autopilot panel at "paused for human" once the run isn't paused any more.
 const now = new Date().toISOString();
