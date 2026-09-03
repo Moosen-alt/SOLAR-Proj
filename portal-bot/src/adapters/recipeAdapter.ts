@@ -2108,7 +2108,7 @@ export class RecipeAdapter extends BasePortalAdapter {
       let processingTicks = 0;
       for (let poll = 0; poll < 6 && !rejection && !accepted; poll++) {
         await smartWait(this.page, 2500);
-        if (typeof this.page.evaluate === "function" && processingTicks < 36) { // ~90s of spinner grace
+        if (typeof this.page.evaluate === "function" && processingTicks < 120) { // ~5min of spinner grace — PacifiCorp outlasted 90s twice
           const processing = await this.page.evaluate(() => {
             const vis = (e: Element) => { const r = (e as HTMLElement).getBoundingClientRect(); return r.width > 0 && r.height > 0; };
             for (const el of Array.from(document.querySelectorAll("div, span, [role='status']"))) {

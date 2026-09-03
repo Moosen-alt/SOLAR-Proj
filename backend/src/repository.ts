@@ -6049,22 +6049,38 @@ export function captureConfirmation(
     // stamped with a permit number (and vice-versa). Legacy runs with no permit_type
     // fall back to the project-wide update (old behavior) so they still capture.
     const scopeByType = Boolean(runPermitType);
-    db.run(
-      `UPDATE submissions
-       SET status = ?, application_number = ?, permit_number = ?, confirmation_number = ?, submitted_at = ?, submitted_by = ?, notes = ?
-       WHERE project_id = ? AND status = 'awaiting_human_submit'${scopeByType ? " AND permit_type = ?" : ""}`,
-      [
-        "submitted",
-        input.applicationNumber || "",
-        input.permitNumber || "",
-        input.confirmationNumber || "",
-        ts,
-        input.submittedBy || "human",
-        input.notes || "Captured after human completed final portal submit.",
-        projectId,
-        ...(scopeByType ? [runPermitType] : []),
-      ],
+    // The row that best represents this filing. Prefer the awaiting-human rows (the normal
+    // capture case) — but a run whose acceptance poll expired against a slow portal records
+    // its submission as FAILED, and both live PacifiCorp filings tonight did exactly that:
+    // the application existed on the account while the only row for the filing run said
+    // failed, and the confirmation then stamped an OLDER staging row instead. When nothing
+    // is awaiting, the newest failed/paused row of the track is the filing being confirmed.
+    const awaiting = db.query<Row>(
+      `SELECT id FROM submissions WHERE project_id = ? AND status = 'awaiting_human_submit'${scopeByType ? " AND permit_type = ?" : ""}`,
+      [projectId, ...(scopeByType ? [runPermitType] : [])],
     );
+    const fallback = awaiting.length ? [] : db.query<Row>(
+      `SELECT id FROM submissions WHERE project_id = ? AND status IN ('failed', 'paused_for_human')${scopeByType ? " AND permit_type = ?" : ""}
+       ORDER BY created_at DESC LIMIT 1`,
+      [projectId, ...(scopeByType ? [runPermitType] : [])],
+    );
+    for (const row of [...awaiting, ...fallback]) {
+      db.run(
+        `UPDATE submissions
+         SET status = ?, application_number = ?, permit_number = ?, confirmation_number = ?, submitted_at = ?, submitted_by = ?, notes = ?
+         WHERE id = ?`,
+        [
+          "submitted",
+          input.applicationNumber || "",
+          input.permitNumber || "",
+          input.confirmationNumber || "",
+          ts,
+          input.submittedBy || "human",
+          input.notes || "Captured after human completed final portal submit.",
+          text(row.id),
+        ],
+      );
+    }
     // Only advance the whole-project status to "submitted" when there are no OTHER
     // tracks still awaiting a human submit — otherwise a single-track confirmation would
     // mark the entire project submitted while the other filing is still pending. While
