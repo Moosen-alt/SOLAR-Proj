@@ -800,7 +800,19 @@ export function resolveRecipeFieldValues(db: AppDb, project: ProjectRecord, port
   // read — so it gave up exactly where the equipment matters. Empty when the CEC list is
   // unsynced or the choice is ambiguous, leaving the plan-set value to be used unchanged.
   const certifiedModels = certifiedModelFields(db, snapshotFlat, equipment);
-  return { ...snapshotFlat, ...equipment, ...existingSys, ...projectFields, ...overlay, ...installerSplit, ...certifiedModels };
+  const merged = { ...snapshotFlat, ...equipment, ...existingSys, ...projectFields, ...overlay, ...installerSplit, ...certifiedModels };
+  // A WHOLE-PHONE VALUE IS TYPED INTO A MASKED BOX VERBATIM. A number stored E.164
+  // ("+15414042243") fed to a "(###) ###-####" mask keeps its first ten digits —
+  // "(154) 140-4224" — and drops the last one: a valid-looking phone belonging to nobody,
+  // live on Simmons's NEM. The segment keys already strip the country code (phoneSegmentKeys);
+  // the whole-number keys get the same treatment, formatted the way US portals render it.
+  // Anything that isn't a clean 10-digit US number is left untouched — never fabricate.
+  for (const [k, v] of Object.entries(merged)) {
+    if (!/phone$/i.test(k) || !v) continue;
+    const digits = String(v).replace(/\D/g, "").replace(/^1(?=\d{10}$)/, "");
+    if (digits.length === 10) merged[k] = `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
+  }
+  return merged;
 }
 
 // ---------------------------------------------------------------------------

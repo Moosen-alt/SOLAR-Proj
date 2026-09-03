@@ -225,6 +225,19 @@ export function resolvePermitPath(project: ProjectRecord): PermitPathResolution 
   if (deadLoad != null && deadLoad > 4.5) screenFailures.push(`PV dead load ${deadLoad} psf > 4.5 psf prescriptive limit`);
   if (spacing != null && spacing > 24) screenFailures.push(`rafter spacing ${spacing} in > 24 in prescriptive limit`);
   if (wind && !/\b(B|C)\b/i.test(wind)) screenFailures.push(`wind exposure "${wind}" outside prescriptive B/C`);
+  // ULTIMATE WIND SPEED, not just exposure. A COASTAL site routinely parses as exposure C —
+  // inside the B/C allowance — while its design wind speed sits in the special wind region
+  // above the prescriptive tables' cap (120 mph Vult at exposure C, 135 at B: the same
+  // numbers the criterion rows answer from). Without this line, a coastal plan set that
+  // happens to carry a stamp recommendation of "none needed" would clear the screen on
+  // exposure alone and route prescriptive where the tables do not apply. Both live Coos Bay
+  // projects routed engineered only because their title blocks lacked a seal — the screen
+  // itself was blind to the coast.
+  const windSpeed = num(project, "windSpeed");
+  const speedCap = /\bB\b/i.test(wind) ? OREGON_PRESCRIPTIVE_DEFAULTS.maxWindSpeedMphExpB : OREGON_PRESCRIPTIVE_DEFAULTS.maxWindSpeedMphExpC;
+  if (windSpeed != null && windSpeed > speedCap) {
+    screenFailures.push(`ultimate design wind speed ${windSpeed} mph > ${speedCap} mph prescriptive cap${wind ? ` at exposure ${wind.toUpperCase()}` : ""}`);
+  }
   if (screenFailures.length) {
     basis.push(`Structural prescriptive screen failed: ${screenFailures.join("; ")}.`);
     return finalize("engineered", "structural-screen");
