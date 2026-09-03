@@ -80,7 +80,7 @@ export function buildReviewerReport(
 
   addCoreProjectFindings(project, findings);
   addSubmittalDataFindings(project, findings);
-  findings.push(...evaluateDesignCodeFindings(project, profile, opts.codeContext));
+  findings.push(...evaluateDesignCodeFindings(project, profile, opts.codeContext, opts.uploadedDocTypes ?? []));
   addPlanSetFindings(project, findings);
   addUtilityFindings(project, findings);
   addProfileFindings(project, profile, findings, opts.uploadedDocTypes ?? []);

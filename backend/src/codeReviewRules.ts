@@ -197,9 +197,25 @@ function finding(input: {
   };
 }
 
-export function evaluateDesignCodeFindings(project: ProjectRecord, profile: AhjProcessProfile | null, ctx?: EffectiveCodeContext): ReviewerFinding[] {
+/**
+ * Documents that ARE the stamped engineering. `structural` is deliberately absent: that is
+ * the framing sheet out of the plan set, which is what a design HAS while still owing the
+ * jurisdiction a sealed calculation. Bren Trask's Portland package carried `structural` and
+ * a plan set naming a Vector Structural Engineering review block, and Portland still
+ * demanded calculations — because none had been attached.
+ */
+const STAMPED_ENGINEERING_DOC_TYPES = ["structural_letter", "stamped_plans", "engineering_letter"];
+
+export function evaluateDesignCodeFindings(
+  project: ProjectRecord,
+  profile: AhjProcessProfile | null,
+  ctx?: EffectiveCodeContext,
+  uploadedDocTypes: string[] = [],
+): ReviewerFinding[] {
   const out: ReviewerFinding[] = [];
   const all = designText(project);
+  // A STAMP IS A DOCUMENT, NOT A SENTENCE ABOUT ONE.
+  const hasStampedEngineering = uploadedDocTypes.some((t) => STAMPED_ENGINEERING_DOC_TYPES.includes(String(t)));
   const roofMounted = !isGroundMount(project, all);
   const oregon = isOregon(project, profile);
   const prescriptive = /prescriptive/i.test(str(project, "permitPath"));
@@ -292,7 +308,44 @@ export function evaluateDesignCodeFindings(project: ProjectRecord, profile: AhjP
 
   const rafterSpacing = num(project, ["roofRafterSpacing", "rafterSpacing"]);
   const rafterSpan = num(project, ["roofRafterSpan", "rafterSpan"]);
-  if (roofMounted && prescriptiveScreening && !hasAny(all, [/engineer/i, /stamped structural/i, /structural letter/i]) && (rafterSpacing == null || rafterSpan == null)) {
+
+  // THE DESIGN LEANS ON ENGINEERING IT HAS NOT ATTACHED.
+  //
+  // Portland bounced Bren Trask (26-033226-000-00-RS) on the roof: "Roof is overspanned. In
+  // the prescriptive span tables, 2x4 rafters can span roughly half the distance that is
+  // shown in the drawings... Unsupported intermediate brace or collar tie do not alter span
+  // length of rafter. Please provide engineering calculations to show that roof structure is
+  // adequate to support proposed system."
+  //
+  // Everything needed to see that coming was on file. permitPath was "engineered", the plan
+  // set named a Vector Structural Engineering review block, the framing sheets showed 2x4
+  // rafters at 24" o.c. — and no sealed calculation was ever attached. A design that
+  // declares itself engineered owes the jurisdiction the stamp; strict AHJs (Portland
+  // emphatically, and it is not alone) will not approve on the reference alone.
+  //
+  // Worse, that same reference used to SILENCE the span warning below, because the old
+  // suppression matched the word "engineer" anywhere in the design text. A plan set that
+  // merely mentioned engineering muted the one check that would have caught the overspan.
+  const claimsEngineered = /engineer/i.test(str(project, "permitPath"))
+    || hasAny(all, [/stamped structural/i, /structural letter/i, /sealed by/i, /\bP\.?E\.?\b/, /engineering (calc|letter|review|analysis)/i]);
+  if (roofMounted && claimsEngineered && !hasStampedEngineering) {
+    out.push(finding({
+      id: "city.struct.stamped-engineering-missing",
+      // The design DEPENDS on it when it declares the engineered path — that is a blocker,
+      // not a note. A passing reference in an otherwise prescriptive package is a warning.
+      severity: /engineer/i.test(str(project, "permitPath")) ? "blocker" : "warning",
+      category: "structural",
+      title: "Engineered design with no stamped calculation attached",
+      message: "The design relies on structural engineering, but no stamped/sealed engineering document is in the package.",
+      cityFeedback: "Provide the wet- or digitally-stamped structural calculations or engineer's letter covering rafter size, spacing, clear span, and the PV attachment/point loads for this roof.",
+      designTeamAction: "Obtain the sealed calculation package from the engineer of record before submittal — a review-block reference on the plan set is not the stamp, and strict jurisdictions (Portland among them) will issue a correction for it.",
+      evidenceNeeded: ["Stamped/sealed structural calculation or engineer's letter", "Rafter size, spacing and clear span used in the calculation", "PV dead load and attachment point loads"],
+      codeReferences: [...oregonWorksheetRefs, roofLoadsRef],
+    }));
+  }
+
+  // Suppression now requires the DOCUMENT, not a mention of one — see above.
+  if (roofMounted && prescriptiveScreening && !hasStampedEngineering && (rafterSpacing == null || rafterSpan == null)) {
     out.push(finding({
       id: "city.struct.span-table-incomplete",
       severity: screeningSeverity,
