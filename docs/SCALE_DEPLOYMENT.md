@@ -57,6 +57,34 @@ Matching them also removes a head-of-line problem: a run waiting for a busy port
 holds its browser slot while it waits, so with fewer slots than jobs a couple of waiters
 could stall every other client's portal work.
 
+### Sizing it from measured runs (2026-09-02)
+
+Worked example for a **556 projects/month** target, from real run data rather than estimates:
+
+| Input | Measured |
+|---|---|
+| Projects per business day | 556 ÷ ~21.5 = **~26** |
+| Portal runs per day | ~26 × 3 tracks (structural + electrical + NEM) = **~78** |
+| Wall clock per staging run | median **6.2 min** (n=56 runs since Sep 1; staging rows 6–7.5 min) |
+| Browser time per day | 78 × ~7 min ≈ **9.1 h** |
+| At `JOB_CONCURRENCY=4` | **~2.3 h/day**, leaving headroom for retries |
+
+Set on this deployment: `JOB_CONCURRENCY=4`, `MAX_CONCURRENT_PORTAL_RUNS=4` (matched, per
+above), `MAX_JOBS_PER_TICK=20`. Four live Chromium instances is roughly 2 GB — size this
+against the box, not against the job count.
+
+Two facts worth carrying into any capacity plan:
+
+- **Replay is free; learning is not.** Measured across 20 replay runs: **zero** LLM calls.
+  A learn run averages 14.9 calls / ~110k in / ~8.8k out ≈ **$0.77**. Throughput and cost at
+  scale are therefore governed by the replay hit rate, not by volume — a portal whose recipe
+  keeps going stale costs both the money and roughly double the wall clock.
+- **Per-client portal lanes are the hard ceiling.** Runs sharing a client+portalType profile
+  serialise (`browser.ts` profile queue), which is exactly right — PowerClerk permits one
+  session per account and kills the older one. So a single installer's NEM filings cannot be
+  parallelised: 26 NEMs/day ≈ 3 h of serial lane time. Concurrency buys throughput ACROSS
+  clients and portals, never within one lane.
+
 Rotating the credential key is now possible: `npm run rekey:credentials -- --old=… --new=…`
 (dry-run first; it backs up, and refuses to write if anything fails to decrypt).
 
