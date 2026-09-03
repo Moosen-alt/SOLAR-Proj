@@ -186,6 +186,10 @@ export const ahjFormRegistry: AhjFormDefinition[] = [
       { source: "client.electricalSupervisorName", page: 0, x: 93, y: 225, maxWidth: 150 },
       // Print name under electrician sig (from stored electrician signature, fallback to supervisor name)
       { source: "computed.electricianSignerName", page: 0, x: 93, y: 212, maxWidth: 150 },
+      // "License no" sits on the electrician's PRINT NAME row — it wants the supervising
+      // electrician's own licence, and a filled form came back with TODAY'S DATE in it
+      // because the signature placement below was writing its date at these coordinates.
+      { source: "client.electricianLicenseNumber", page: 0, x: 292, y: 212, maxWidth: 90 },
       // Printed name under the Authorized signature (operator who signs).
       { source: "computed.applicantSignerName", page: 0, x: 108, y: 189, maxWidth: 150 },
       // Applicant / Contact Person = our (submitter) info
@@ -224,7 +228,8 @@ export const ahjFormRegistry: AhjFormDefinition[] = [
         x: 138,
         y: 197,
         width: 150,
-        height: 22,
+        // Same row pitch as the electrician line above — keep the ink inside its own row.
+        height: 12,
         label: "Authorized signature",
         dateX: 292,
         dateY: 189,
@@ -239,11 +244,14 @@ export const ahjFormRegistry: AhjFormDefinition[] = [
         x: 93,
         y: 237,
         width: 150,
-        height: 22,
+        // Rows on this form are ~13-17pt apart. At 22 the ink (plus SIGNATURE_LIFT)
+        // spanned nearly two rows and collided with the line above — visible on a filled
+        // form as the electrician's signature sitting across the row above its own.
+        height: 12,
         label: "Supervising electrician signature",
-        dateX: 292,
-        dateY: 225,
-        dateSize: 9,
+        // NO DATE. The supervising-electrician row carries "Print name" and "License no",
+        // not a date line; writing one here put today's date in the LICENCE NUMBER field
+        // on a filed application. The licence itself is mapped in overlayFields above.
       },
     ],
     notes: [
