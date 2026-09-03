@@ -1069,6 +1069,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   finalSubmitUrl = "";
   // A grid is chosen once per run; re-choosing on a re-scrape would re-click the row.
   private addressRowChosen = false;
+  /** One programme choice per run — a drawer re-opened later must not re-pick. */
+  private programChosen = false;
   private equipment: Record<string, string>;
   private certifiedAliases: Record<string, string[]>;
   private contactIdentity: ContactIdentity = {};
@@ -2827,6 +2829,98 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   // Record-type selection: prefer a solar/PV-specific type when the AHJ offers one,
   // else the discipline's residential type (electrical vs structural — same mapping the
   // hand-coded adapter live-verified: county rows file electrical, city structural).
+  // AN ENTRY THAT OPENS A DRAWER MAY ASK WHICH PROGRAMME FIRST.
+  //
+  // ComEd's Intellio Connect has no "new application" page: a text-less floating action
+  // button (identifiable only by aria-label "New Application Button. This will open a popup
+  // drawer.") slides a drawer in place. The drawer's first screen is not a form — it is a
+  // CHOICE between "Distributed Generation" and "Distributed Generation Rebates" — and the
+  // fields appear only after one is picked. A live learn clicked the button, watched the page
+  // grow by 32 KB, then reported "found nothing fillable on 3 pages" while standing on the
+  // choice with no steps recorded.
+  //
+  // Which programme is not a judgement call: an interconnection application is not a rebate
+  // application, and picking the rebate would file the wrong thing entirely — the same class
+  // of error as choosing a permit type by array index. So: prefer an explicitly
+  // interconnection/generation-flavoured option, never take a rebate/incentive one, and when
+  // nothing matches, leave the drawer alone and say what was offered rather than guessing.
+  private async chooseApplicationProgram(steps: RecipeStep[]): Promise<boolean> {
+    if (!this.page || typeof this.page.evaluate !== "function") return false;
+    if (this.programChosen) return false;
+
+    const options = await this.page.evaluate(() => {
+      const vis = (e: Element): boolean => { const r = (e as HTMLElement).getBoundingClientRect(); return r.width > 2 && r.height > 2; };
+      // A drawer/dialog/panel that the entry click revealed. Kept broad: the point is the
+      // choice controls inside it, not one vendor's class names.
+      const panels = Array.from(document.querySelectorAll(
+        "mat-drawer, mat-sidenav, [role='dialog'], .mat-drawer, .mat-sidenav, .new-application, .modal.show, [class*='drawer']"))
+        .filter(vis);
+      const scope: ParentNode = panels.length ? panels[panels.length - 1] : document;
+      const out: Array<{ key: string; label: string }> = [];
+      let n = 0;
+      const controls = Array.from(scope.querySelectorAll(
+        "mat-button-toggle, [role='radio'], input[type='radio'], button, a[role='button'], .mat-button-toggle"));
+      for (const el of controls) {
+        if (!vis(el)) continue;
+        const label = ((el as HTMLElement).innerText || el.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim();
+        if (!label || label.length > 60) continue;
+        // A toggle and the <button> inside it both match; keep the OUTER one only, so the
+        // offered list reads like what a person sees rather than each option twice.
+        if (out.some((o) => o.label === label)) continue;
+        const key = `ap${n++}`;
+        (el as HTMLElement).setAttribute("data-al-prog", key);
+        out.push({ key, label });
+      }
+      return out;
+    }).catch(() => [] as Array<{ key: string; label: string }>);
+
+    const list = (Array.isArray(options) ? options : []).filter((o) => o && typeof o.label === "string");
+    if (list.length < 2) return false; // not a choice screen
+
+    // A rebate/incentive/enrolment programme is never the interconnection application.
+    const EXCLUDE = /rebate|incentive|enroll|enrol|renew|amend|withdraw|cancel|close|back|help/i;
+    const PREFER: RegExp[] = [
+      /interconnect|net.?meter|\bnem\b/i,
+      /solar|photovoltaic|\bpv\b/i,
+      /distributed generation|\bdg\b/i,
+      /generation/i,
+    ];
+    const eligible = list.filter((o) => !EXCLUDE.test(o.label));
+    let picked: { key: string; label: string } | undefined;
+    for (const re of PREFER) {
+      picked = eligible.find((o) => re.test(o.label));
+      if (picked) break;
+    }
+    if (!picked) {
+      this.debug?.event({
+        type: "application_program_unmatched",
+        offered: list.map((o) => o.label).slice(0, 6).join(" | ").slice(0, 200),
+        why: "no option reads as an interconnection/generation application",
+      });
+      return false;
+    }
+
+    const css = `[data-al-prog="${picked.key}"]`;
+    const ok = await this.page.locator(css).first().click({ timeout: 10000 }).then(() => true).catch(() => false);
+    if (!ok) return false;
+    this.programChosen = true;
+    await this.waitForDynamicFieldsSettle().catch(() => null);
+    this.debug?.event({
+      type: "application_program_chosen",
+      label: picked.label.slice(0, 60),
+      offered: list.map((o) => o.label).slice(0, 6).join(" | ").slice(0, 160),
+    });
+    steps.push({
+      action: "click",
+      phase: "open",
+      // Recorded BY LABEL: the data-al-prog tag is a learn-time marker, and a programme
+      // chosen by position is the mechanical-permit mistake in another costume.
+      selector: { text: picked.label, fallbacks: [{ role: "button", name: picked.label }, { role: "radio", name: picked.label }] },
+      note: `application program: ${picked.label}`,
+    });
+    return true;
+  }
+
   private async accelaRecordTypePass(project: ProjectRecord, fields: ExtractedField[], steps: RecipeStep[]): Promise<boolean> {
     const page = this.page;
     if (!page) return false;
@@ -3274,6 +3368,10 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           });
           await this.page.waitForLoadState?.("networkidle", { timeout: 15000 }).catch(() => null);
           await this.page.waitForTimeout?.(1200).catch(() => null);
+          // The entry may have opened a DRAWER that asks which programme to apply under
+          // before it will show a single field. Answer it, or the run reports "nothing
+          // fillable" while standing on the choice (live: ComEd, three pages, no steps).
+          await this.chooseApplicationProgram(steps);
           continue;
         }
       }
