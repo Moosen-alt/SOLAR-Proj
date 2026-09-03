@@ -539,7 +539,18 @@ export function resolveRecipeFieldValues(db: AppDb, project: ProjectRecord, port
   // portal the homeowner* bindings resolve to the account holder, which fixes recipes already
   // recorded against homeownerName without re-recording them. ubAccountHolder* is also
   // exposed in its own right so a fresh recording can bind to it explicitly.
-  const ubHolder = String(snapshotFlat.ubAccountHolder || "").trim();
+  // FALL BACK TO THE HOMEOWNER WHEN NO BILL WAS PARSED — the same rule the account holder's
+  // email and phone already follow, and for the same reason: a blank required field fails
+  // the submission outright. Without this, ubAccountHolder* is only safe to bind on projects
+  // that happen to have a readable bill, so a recording binds the customer block to
+  // homeowner* instead "to be safe" — and then a filing names the wrong person the moment
+  // the account holder is not the homeowner. That is exactly what happened on PacifiCorp
+  // APP-111681, where the customer block was bound to homeownerFirstName/LastName and the
+  // application went out as David Simmons against Stephanie Simmons' account.
+  // With the fallback the keys are always populated, so the customer block can be bound to
+  // the account holder unconditionally: identical output when the holder IS the homeowner,
+  // correct output when they differ.
+  const ubHolder = String(snapshotFlat.ubAccountHolder || "").trim() || String(project.homeownerName || "").trim();
   // A billing name often carries a title ("PROF CHRIS A IVY"). Keep the full string for the
   // account-name field — it should match the bill — but drop the title before splitting, or
   // the first-name box gets "PROF".
