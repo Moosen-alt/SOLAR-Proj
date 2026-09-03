@@ -6,18 +6,24 @@
 // but a CHOICE: "Distributed Generation" or "Distributed Generation Rebates". Fields appear
 // only after one is picked.
 //
-// A live learn clicked the button, watched the page grow by 32 KB (the drawer opening), then
-// reported "found nothing fillable on 3 page(s)" while standing on the choice with no steps
-// recorded. This pins the rule that fixes it — and the fixture below is the REAL markup,
-// lifted from that run's own page capture.
-//
 // Which programme is not a judgement call: an interconnection application is not a rebate
-// application. Picking the rebate would file the wrong thing — the mechanical-permit mistake
+// application. Picking the rebate would file the wrong thing — the wrong-permit-type mistake
 // in another costume — so a rebate option is never eligible and an unrecognised drawer is
 // left alone rather than guessed at.
+//
+// THE FIXTURE IS THE PORTAL'S OWN MARKUP (fixtures/comed-drawer.html, lifted from the learn
+// run's page capture). An earlier version of this test hand-wrote an approximation with one
+// drawer and no header: it PASSED while the live run failed, because the real page carries
+// ~80 elements matching [class*='drawer'] and a header category-switcher whose label is the
+// SAME TEXT as the real option. Both traps are in the fixture now, and this test drives the
+// same module the adapter does rather than a copy of its logic.
 //   npx tsx portal-bot/src/adapters/programDrawer.dom.smoke.ts
+import fs from "node:fs";
 import http from "node:http";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
+import { chooseProgram, offeredLabels, programSelector, scanProgramGroups } from "./applicationProgram";
 
 let failures = 0;
 const check = (label: string, ok: boolean, detail = ""): void => {
@@ -25,8 +31,21 @@ const check = (label: string, ok: boolean, detail = ""): void => {
   else { failures++; console.error(`  FAIL - ${label} ${detail}`); }
 };
 
-// The page-side scan + choice, mirroring chooseApplicationProgram.
-const scanProgram = (): Array<{ key: string; label: string }> => {
+const here = path.dirname(fileURLToPath(import.meta.url));
+const COMED = fs.readFileSync(path.join(here, "fixtures", "comed-drawer.html"), "utf8");
+
+// A portal whose drawer offers nothing that reads as an interconnection application.
+const UNKNOWN = `<!doctype html><html><body>
+  <mat-drawer class="mat-drawer mat-drawer-opened" style="width:420px;height:400px">
+    <h2>New Request</h2>
+    <button type="button" style="height:40px;width:280px">Tree Trimming Request</button>
+    <button type="button" style="height:40px;width:280px">Streetlight Outage</button>
+  </mat-drawer>
+</body></html>`;
+
+// THE OLD SCAN, verbatim in shape: one flat option list scoped to "the last visible panel",
+// with a document fallback. Kept here only to prove this test reproduces the live failure.
+const oldScan = (): Array<{ key: string; label: string }> => {
   const vis = (e: Element): boolean => { const r = (e as HTMLElement).getBoundingClientRect(); return r.width > 2 && r.height > 2; };
   const panels = Array.from(document.querySelectorAll(
     "mat-drawer, mat-sidenav, [role='dialog'], .mat-drawer, .mat-sidenav, .new-application, .modal.show, [class*='drawer']"))
@@ -40,45 +59,10 @@ const scanProgram = (): Array<{ key: string; label: string }> => {
     const label = ((el as HTMLElement).innerText || el.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim();
     if (!label || label.length > 60) continue;
     if (out.some((o) => o.label === label)) continue;
-    const key = `ap${n++}`;
-    (el as HTMLElement).setAttribute("data-al-prog", key);
-    out.push({ key, label });
+    out.push({ key: `old${n++}`, label });
   }
   return out;
 };
-
-const EXCLUDE = /rebate|incentive|enroll|enrol|renew|amend|withdraw|cancel|close|back|help/i;
-const PREFER: RegExp[] = [/interconnect|net.?meter|\bnem\b/i, /solar|photovoltaic|\bpv\b/i, /distributed generation|\bdg\b/i, /generation/i];
-const choose = (list: Array<{ key: string; label: string }>): { key: string; label: string } | undefined => {
-  if (list.length < 2) return undefined;
-  const eligible = list.filter((o) => !EXCLUDE.test(o.label));
-  for (const re of PREFER) { const hit = eligible.find((o) => re.test(o.label)); if (hit) return hit; }
-  return undefined;
-};
-
-// ComEd's real drawer, as captured: an Angular Material toggle group inside the drawer,
-// with Cancel/submit beside it and unrelated chrome outside it.
-const COMED = `<!doctype html><html><body>
-  <div class="header"><button class="application-category-button"><span>Distributed Generation</span></button></div>
-  <mat-drawer class="mat-drawer mat-drawer-opened new-application" style="width:420px;height:600px">
-    <h2>New Application</h2>
-    <mat-button-toggle-group style="display:block">
-      <mat-button-toggle style="display:block;height:40px"><button type="button" class="mat-button-toggle-button" style="height:40px;width:300px">Distributed Generation</button></mat-button-toggle>
-      <mat-button-toggle style="display:block;height:40px"><button type="button" class="mat-button-toggle-button" style="height:40px;width:300px">Distributed Generation Rebates</button></mat-button-toggle>
-    </mat-button-toggle-group>
-    <button type="button" style="height:30px;width:90px">Cancel</button>
-    <button type="submit" style="height:30px;width:90px">Next</button>
-  </mat-drawer>
-</body></html>`;
-
-// A portal whose drawer offers nothing that reads as an interconnection application.
-const UNKNOWN = `<!doctype html><html><body>
-  <mat-drawer class="mat-drawer mat-drawer-opened" style="width:420px;height:400px">
-    <h2>New Request</h2>
-    <button type="button" style="height:40px;width:280px">Tree Trimming Request</button>
-    <button type="button" style="height:40px;width:280px">Streetlight Outage</button>
-  </mat-drawer>
-</body></html>`;
 
 const server = http.createServer((req, res) => {
   res.writeHead(200, { "content-type": "text/html" });
@@ -89,47 +73,79 @@ const port = (server.address() as { port: number }).port;
 
 const browser = await chromium.launch();
 const context = await browser.newContext();
+// tsx/esbuild wraps named functions with __name(); without this shim every page.evaluate
+// throws ReferenceError and the caller's .catch turns it into "found nothing".
 await context.addInitScript("globalThis.__name = globalThis.__name || function (fn) { return fn; };");
 const page = await context.newPage();
 
 // ---- ComEd's real drawer ----
 await page.goto(`http://127.0.0.1:${port}/comed`);
-const found = await page.evaluate(scanProgram);
-console.log(`   drawer offers: ${JSON.stringify(found.map((f) => f.label))}`);
 
-check("the drawer's options are found (scoped to the drawer, not the whole page)",
-  found.some((f) => f.label === "Distributed Generation") && found.some((f) => f.label === "Distributed Generation Rebates"),
-  JSON.stringify(found.map((f) => f.label)));
+// 1. The regression, reproduced against the portal's own markup.
+const old = await page.evaluate(oldScan);
+check("THE REGRESSION: the old last-visible-panel scan finds no choice on the REAL page",
+  old.length < 2,
+  `old scan returned ${JSON.stringify(old.map((o) => o.label))} — expected fewer than 2`);
 
-const pick = choose(found);
-check("THE REGRESSION: the interconnection programme is chosen, not the rebate",
+// 2. The new scan, scoped by tightest grouping.
+const groups = await page.evaluate(scanProgramGroups);
+console.log(`   groups offering >=2 options: ${groups.length} (areas ${groups.map((g) => g.area).join(", ")})`);
+console.log(`   offered: ${JSON.stringify(offeredLabels(groups))}`);
+
+check("the drawer's two programmes are found",
+  offeredLabels(groups).includes("Distributed Generation") && offeredLabels(groups).includes("Distributed Generation Rebates"),
+  JSON.stringify(offeredLabels(groups)));
+
+const pick = chooseProgram(groups);
+check("the interconnection programme is chosen, not the rebate",
   pick?.label === "Distributed Generation", `picked ${JSON.stringify(pick?.label)}`);
 
 check("the REBATE programme is never eligible — it would file the wrong thing entirely",
-  !EXCLUDE.test("Distributed Generation") && EXCLUDE.test("Distributed Generation Rebates"));
+  !PROGRAM_EXCLUDE_TEST("Distributed Generation") && PROGRAM_EXCLUDE_TEST("Distributed Generation Rebates"));
+function PROGRAM_EXCLUDE_TEST(s: string): boolean {
+  return /rebate|incentive|enroll|enrol|renew|amend|withdraw|cancel|close|back|help/i.test(s);
+}
 
-check("Cancel is never chosen even though it sits in the same drawer",
-  pick?.label !== "Cancel");
+// 3. The header trap: same text, different element. It must never be what we click.
+const sel = pick ? programSelector(pick) : null;
+check("THE REPLAY TRAP: the choice is recorded by ROLE, not by bare text",
+  sel?.role === "radio" && sel?.name === "Distributed Generation",
+  `selector was ${JSON.stringify(sel)} — bare text also matches the header category switcher`);
 
-// The choice is clickable through the tag the pass sets.
+const headerCount = await page.locator(".application-category-button").count();
+const radioCount = await page.getByRole("radio", { name: "Distributed Generation", exact: true }).count();
+check("the header category-switcher carries the SAME label (so the trap is real)", headerCount > 0);
+check("...and the role-scoped selector resolves to exactly one control — the drawer's",
+  radioCount === 1, `role=radio name="Distributed Generation" matched ${radioCount}`);
+
+// 4. The tagged element is clickable, and clicking it hits the drawer, not the header.
 if (pick) {
   const clicked = await page.locator(`[data-al-prog="${pick.key}"]`).first().click({ timeout: 5000 }).then(() => true).catch(() => false);
   check("the chosen option is reachable by its learn-time tag", clicked);
+  const inDrawer = await page.locator(`[data-al-prog="${pick.key}"]`).first()
+    .evaluate((el) => !!el.closest("[class*='drawer'], mat-button-toggle-group")).catch(() => false);
+  check("the tagged element lives inside the drawer, not in the page header", inDrawer === true);
 }
 
 // ---- an unrecognised drawer ----
 await page.goto(`http://127.0.0.1:${port}/unknown`);
-const unknown = await page.evaluate(scanProgram);
+const unknownGroups = await page.evaluate(scanProgramGroups);
 check("a drawer offering nothing interconnection-shaped is refused, not guessed",
-  choose(unknown) === undefined, JSON.stringify(unknown.map((u) => u.label)));
+  chooseProgram(unknownGroups) === undefined, JSON.stringify(offeredLabels(unknownGroups)));
+check("...and the refusal can name what WAS offered, so it stays diagnosable",
+  offeredLabels(unknownGroups).length >= 2, JSON.stringify(offeredLabels(unknownGroups)));
 
-// ---- a page with no drawer at all ----
-await page.setContent(`<!doctype html><body><h1>Dashboard</h1><button style="height:30px;width:80px">Only One</button></body>`);
-check("a page that is not a choice screen produces no pick",
-  choose(await page.evaluate(scanProgram)) === undefined);
+// ---- a page with no drawer at all: no document fallback ----
+await page.setContent(`<!doctype html><body><h1>Dashboard</h1>
+  <button style="height:30px;width:120px">Distributed Generation</button>
+  <button style="height:30px;width:120px">Something Else</button></body>`);
+const bare = await page.evaluate(scanProgramGroups);
+check("a page with no revealed panel yields NO pick — never a document-wide guess",
+  chooseProgram(bare) === undefined,
+  `picked ${JSON.stringify(chooseProgram(bare)?.label)} from a page with no drawer`);
 
 await browser.close();
 await new Promise<void>((r) => server.close(() => r()));
 if (failures) { console.error(`\n${failures} program-drawer check(s) FAILED.`); process.exit(1); }
-console.log("\nAll program-drawer checks passed (real Chromium, ComEd's captured markup).");
+console.log("\nAll program-drawer checks passed (real Chromium, ComEd's own captured markup).");
 process.exit(0);

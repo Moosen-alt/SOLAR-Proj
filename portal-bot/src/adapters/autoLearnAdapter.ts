@@ -10,7 +10,8 @@ import { selectWithFallback } from "../comboboxFill";
 import { detectChallengeFrame, frameSelectorFor, readbackMatches, redactStatusText, safeAction, sleep, smartWait, waitForElement, waitForInteractiveControls } from "../safeAction";
 import { scrapeReviewScreen as scrapeReviewScreenShared } from "../reviewScreenScraper";
 import { performLogin } from "./loginFlow";
-import { enterApplicationFlow, isExcludedEntryLabel } from "./applicationEntry";
+import { enterApplicationFlow, isExcludedEntryLabel, normalizeEntryLabel } from "./applicationEntry";
+import { chooseProgram, offeredLabels, programSelector, scanProgramGroups, type ProgramGroup } from "./applicationProgram";
 import { parseStreetName, parseStreetNumber } from "../addressParse";
 import { portalUploadCapBytes } from "../uploadCap";
 import { LearnRunDebug } from "../learnDebug";
@@ -1086,6 +1087,11 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   /** Entry controls already clicked this run. An entry that opens a drawer in place leaves
    *  the page looking unchanged, which otherwise invites clicking it again. */
   private readonly entryLabelsClicked = new Set<string>();
+  /** `pathname::label` for every navigate/entry control clicked this run. Re-clicking the
+   *  SAME control while still on the SAME page is a loop by definition — it cannot be
+   *  forward progress. Keyed by path so a label that legitimately recurs on a LATER page
+   *  ("Continue" on a multi-step wizard) is still allowed. */
+  private readonly navClicksByPath = new Set<string>();
   // Equipment fields whose select verification failed for EVERY candidate this
   // run — retrying them each rescan pass just burns waitForOptionReady caps.
   private equipmentFillFailed = new Set<string>();
@@ -2844,57 +2850,34 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   // of error as choosing a permit type by array index. So: prefer an explicitly
   // interconnection/generation-flavoured option, never take a rebate/incentive one, and when
   // nothing matches, leave the drawer alone and say what was offered rather than guessing.
+  /**
+   * Key for "this control, on this page". Keyed by PATHNAME rather than the whole URL so a
+   * query string or fragment that changes as a wizard advances doesn't disguise a re-click,
+   * and so a label that legitimately recurs on a genuinely different page stays allowed.
+   */
+  private navClickKey(pageUrl: string, label: string): string {
+    let pathname = String(pageUrl ?? "").toLowerCase();
+    try { pathname = new URL(pageUrl).pathname.toLowerCase(); } catch { /* not a URL — compare as given */ }
+    return `${pathname}::${normalizeEntryLabel(label)}`;
+  }
+
   private async chooseApplicationProgram(steps: RecipeStep[]): Promise<boolean> {
     if (!this.page || typeof this.page.evaluate !== "function") return false;
     if (this.programChosen) return false;
 
-    const options = await this.page.evaluate(() => {
-      const vis = (e: Element): boolean => { const r = (e as HTMLElement).getBoundingClientRect(); return r.width > 2 && r.height > 2; };
-      // A drawer/dialog/panel that the entry click revealed. Kept broad: the point is the
-      // choice controls inside it, not one vendor's class names.
-      const panels = Array.from(document.querySelectorAll(
-        "mat-drawer, mat-sidenav, [role='dialog'], .mat-drawer, .mat-sidenav, .new-application, .modal.show, [class*='drawer']"))
-        .filter(vis);
-      const scope: ParentNode = panels.length ? panels[panels.length - 1] : document;
-      const out: Array<{ key: string; label: string }> = [];
-      let n = 0;
-      const controls = Array.from(scope.querySelectorAll(
-        "mat-button-toggle, [role='radio'], input[type='radio'], button, a[role='button'], .mat-button-toggle"));
-      for (const el of controls) {
-        if (!vis(el)) continue;
-        const label = ((el as HTMLElement).innerText || el.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim();
-        if (!label || label.length > 60) continue;
-        // A toggle and the <button> inside it both match; keep the OUTER one only, so the
-        // offered list reads like what a person sees rather than each option twice.
-        if (out.some((o) => o.label === label)) continue;
-        const key = `ap${n++}`;
-        (el as HTMLElement).setAttribute("data-al-prog", key);
-        out.push({ key, label });
-      }
-      return out;
-    }).catch(() => [] as Array<{ key: string; label: string }>);
+    // The scan/ranking live in applicationProgram.ts so the smoke test drives THIS code
+    // rather than a copy of it. Scoped by the tightest grouping that offers a real choice —
+    // never document-wide, which on ComEd's own page finds the header's category switcher
+    // (same label, opens a menu instead of an application).
+    const groups = await this.page.evaluate(scanProgramGroups).catch(() => [] as ProgramGroup[]);
+    const list = Array.isArray(groups) ? groups : [];
+    if (list.length === 0) return false; // no revealed panel offering a choice
 
-    const list = (Array.isArray(options) ? options : []).filter((o) => o && typeof o.label === "string");
-    if (list.length < 2) return false; // not a choice screen
-
-    // A rebate/incentive/enrolment programme is never the interconnection application.
-    const EXCLUDE = /rebate|incentive|enroll|enrol|renew|amend|withdraw|cancel|close|back|help/i;
-    const PREFER: RegExp[] = [
-      /interconnect|net.?meter|\bnem\b/i,
-      /solar|photovoltaic|\bpv\b/i,
-      /distributed generation|\bdg\b/i,
-      /generation/i,
-    ];
-    const eligible = list.filter((o) => !EXCLUDE.test(o.label));
-    let picked: { key: string; label: string } | undefined;
-    for (const re of PREFER) {
-      picked = eligible.find((o) => re.test(o.label));
-      if (picked) break;
-    }
+    const picked = chooseProgram(list);
     if (!picked) {
       this.debug?.event({
         type: "application_program_unmatched",
-        offered: list.map((o) => o.label).slice(0, 6).join(" | ").slice(0, 200),
+        offered: offeredLabels(list).slice(0, 8).join(" | ").slice(0, 200),
         why: "no option reads as an interconnection/generation application",
       });
       return false;
@@ -2908,14 +2891,15 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     this.debug?.event({
       type: "application_program_chosen",
       label: picked.label.slice(0, 60),
-      offered: list.map((o) => o.label).slice(0, 6).join(" | ").slice(0, 160),
+      offered: offeredLabels(list).slice(0, 8).join(" | ").slice(0, 160),
     });
     steps.push({
       action: "click",
       phase: "open",
-      // Recorded BY LABEL: the data-al-prog tag is a learn-time marker, and a programme
-      // chosen by position is the mechanical-permit mistake in another costume.
-      selector: { text: picked.label, fallbacks: [{ role: "button", name: picked.label }, { role: "radio", name: picked.label }] },
+      // Recorded BY LABEL and scoped BY ROLE: the data-al-prog tag is a learn-time marker,
+      // a programme chosen by position is the wrong-permit-type mistake in another costume,
+      // and a BARE text match collides with the header switcher at replay time.
+      selector: programSelector(picked),
       note: `application program: ${picked.label}`,
     });
     return true;
@@ -2996,6 +2980,10 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     // times) so the model can pick a different, forward-progress action and heal itself.
     const recentFingerprints: string[] = [];
     let recoveryAttempts = 0;
+    // A directive raised by THIS iteration for the NEXT planner call. The stuck/cycle
+    // detector only speaks after a fingerprint repeats twice, which is 2-3 planner calls of
+    // a 6-page budget; a refusal already knows what went wrong, so it says so immediately.
+    let pendingHint = "";
     const MAX_RECOVERY = 3;
     // Validation blockers: collected when an advance click fails to move the page forward
     // (portal blocked the step due to required-field errors). Injected into the recovery hint
@@ -3152,7 +3140,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       //     application it already began. The consecutive guard alone misses this.
       // On either, instead of bailing we re-plan THIS iteration with a loop-aware recovery
       // directive (capped at MAX_RECOVERY) so the model can choose a different action and heal.
-      let recoveryHint = "";
+      let recoveryHint = pendingHint;
+      pendingHint = "";
       const loopFp = await this.pageFingerprint();
       const consecutiveStuck = !!loopFp && loopFp === lastLoopFp;
       const cycling = !!loopFp && !consecutiveStuck && recentFingerprints.includes(loopFp);
@@ -3177,7 +3166,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           ? ` The portal BLOCKED the advance with these validation errors — fix these specific fields before advancing again: ${lastValidationErrors.slice(0, 10).join(" | ")}.`
           : "";
         recoveryHint =
-          `${problem} Recent steps: ${pageTrace.slice(-4).join("  ->  ") || "(none)"}.${validationLine} ` +
+          `${recoveryHint ? `${recoveryHint} ` : ""}${problem} Recent steps: ${pageTrace.slice(-4).join("  ->  ") || "(none)"}.${validationLine} ` +
           `Do NOT repeat the action that caused this. In particular, do NOT click a navigation link that RESTARTS the flow ` +
           `(e.g. "Building Dept Application", "New Application", "Start Application") if the application is already begun. ` +
           `Choose a DIFFERENT action that makes FORWARD progress on THIS page: fill the remaining required fields, ` +
@@ -3348,14 +3337,20 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       const applicationStarted = steps.some((st) => st.action === "fill" || st.action === "select" || st.action === "check");
       if (!applicationStarted && !reviewSignals && entryPasses < ENTRY_PASS_MAX && this.page) {
         entryPasses++;
-        const entered = await enterApplicationFlow(this.page).catch(() => null);
         // Clicking the SAME entry control twice never helps. ComEd's entry opens a drawer in
         // place rather than navigating, so the page still looks like a dashboard afterwards
-        // and the pass fired again on the identical button — recorded twice in the recipe.
-        if (entered?.ok && entered.label && this.entryLabelsClicked.has(entered.label)) {
-          this.debug?.event({ type: "application_entry_repeat_ignored", label: entered.label.slice(0, 60) });
+        // and the pass finds the identical button again — the second click TOGGLES the
+        // drawer shut and the step lands in the recipe twice. The finder refuses it outright
+        // now, so no click happens and nothing is recorded.
+        const entered = await enterApplicationFlow(this.page, { skipLabels: this.entryLabelsClicked }).catch(() => null);
+        if (entered?.alreadyClicked) {
+          this.debug?.event({ type: "application_entry_repeat_ignored", label: (entered.label || "").slice(0, 60) });
         } else if (entered?.ok && entered.label) {
-          this.entryLabelsClicked.add(entered.label);
+          this.entryLabelsClicked.add(normalizeEntryLabel(entered.label));
+          // Also barred from the PLANNER's navigate path: the entry pass and the planner are
+          // separate doors to the same button, and the planner walked through its one after
+          // the entry pass had already used the other.
+          this.navClicksByPath.add(this.navClickKey(url, entered.label));
         }
         this.debug?.event({ type: "application_entry_pass", page: pageCount, ok: Boolean(entered?.ok), label: entered?.label ?? null });
         if (entered?.ok) {
@@ -3368,12 +3363,21 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           });
           await this.page.waitForLoadState?.("networkidle", { timeout: 15000 }).catch(() => null);
           await this.page.waitForTimeout?.(1200).catch(() => null);
-          // The entry may have opened a DRAWER that asks which programme to apply under
-          // before it will show a single field. Answer it, or the run reports "nothing
-          // fillable" while standing on the choice (live: ComEd, three pages, no steps).
-          await this.chooseApplicationProgram(steps);
-          continue;
         }
+
+        // The entry may have opened a DRAWER that asks which programme to apply under before
+        // it will show a single field. Answer it, or the run reports "nothing fillable" while
+        // standing on the choice (live: ComEd, six pages, no steps recorded).
+        //
+        // Attempted on EVERY iteration once an entry click has landed — not just the one that
+        // opened the drawer. When the repeat guard above refuses a second entry click, the
+        // drawer is sitting open and unanswered, and a choice-only pass tied to `entered.ok`
+        // would never get its second chance. Gated on an entry having happened so it cannot
+        // fire on a pre-entry dashboard's unrelated radios.
+        const programJustChosen = this.entryLabelsClicked.size > 0 && !this.programChosen
+          ? await this.chooseApplicationProgram(steps)
+          : false;
+        if (entered?.ok || programJustChosen) continue;
       }
 
       // c) Ask the planner what to do on this page. Attach a screenshot so it can SEE the
@@ -3593,9 +3597,25 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             navRevisit = visitedPaths.has(target);
           } catch { /* non-URL href — leave allowed */ }
         }
+        // RE-CLICK GUARD: the same control, on the same page, a second time. That is a loop
+        // by definition — it cannot be forward progress. The href-based revisit check above
+        // misses it entirely on a single-page app: ComEd's entry is an href-less <button>,
+        // its URL never changes, and nothing had been filled yet, so the planner clicked
+        // "New Application" again with the drawer's form already on screen — closing it and
+        // throwing away 28 fillable fields, twice, until the page budget ran out.
+        const navLabelRaw = (navField?.label || "").replace(/\s+/g, " ").trim();
+        const navLoopKey = navLabelRaw ? this.navClickKey(url, navLabelRaw) : "";
+        const navLoop = !!navLoopKey && this.navClicksByPath.has(navLoopKey);
         if (navRevisit) {
           this.debug?.event({ type: "navigate_revisit_rejected", page: pageCount, label: (navField?.label || "").slice(0, 60) });
           if (process.env.AUTOLEARN_DEBUG === "1") console.error(`[learn] rejected navigate to an already-visited path (p${pageCount}).`);
+        } else if (navLoop) {
+          this.debug?.event({ type: "navigate_reclick_rejected", page: pageCount, label: navLabelRaw.slice(0, 60) });
+          pendingHint =
+            `You already clicked "${navLabelRaw.slice(0, 60)}" on THIS page earlier in this run, and it was refused this time. ` +
+            `It does not make forward progress — it re-opens or resets what is already open. ` +
+            `Work with the form that is on the page NOW: fill its required fields, or click its Continue/Next button.`;
+          if (process.env.AUTOLEARN_DEBUG === "1") console.error(`[learn] rejected a re-click of "${navLabelRaw}" (p${pageCount}).`);
         } else if (navField && this.addressRowChosen && /^\s*select\s*$/i.test(navField.label || "")) {
           // THE ADDRESS VERSION IS ALREADY CHOSEN — the ranked chooser picked this project's
           // row (owner + city + discipline). A bare row "Select" clicked after that RE-SELECTS
@@ -3617,6 +3637,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           this.debug?.event({ type: "navigate_offlimits_rejected", page: pageCount, label: (navField.label || "").slice(0, 60), dashboard: isDashboard });
         } else if (navField) {
           navCount++;
+          if (navLoopKey) this.navClicksByPath.add(navLoopKey);
           steps.push({
             action: "click",
             phase: "open",

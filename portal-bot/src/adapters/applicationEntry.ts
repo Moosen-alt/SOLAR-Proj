@@ -275,9 +275,25 @@ export async function findApplicationEntryDeep(
  * anything — starting an application is a navigation, and the caller (learn loop / probe)
  * takes it from there.
  */
+/** Whitespace-collapsed, case-insensitive form used to compare entry labels across passes. */
+export function normalizeEntryLabel(label: string): string {
+  return String(label ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
 export async function enterApplicationFlow(
   page: Page,
-): Promise<{ ok: boolean; message: string; url: string; label?: string; viaModule?: string }> {
+  opts: {
+    /**
+     * Labels already clicked this run. A portal whose entry opens a DRAWER IN PLACE still
+     * looks like a dashboard afterwards, so this pass finds the same control again and
+     * clicks it — which TOGGLES the drawer shut (or resets it), throwing away the form that
+     * was already open, and records the click a second time so every future replay resets
+     * the drawer too. Checked BEFORE the click, not after: the previous guard ran on the
+     * result and the damage was already done.
+     */
+    skipLabels?: Iterable<string>;
+  } = {},
+): Promise<{ ok: boolean; message: string; url: string; label?: string; viaModule?: string; alreadyClicked?: boolean }> {
   // DEEP by design. Accela's logged-in home offers only module tabs — the entry is one hop
   // inside Permits — so a shallow look finds nothing and the caller falls through to the LLM
   // planner, which is exactly the path that drifted into the records module on a live run.
@@ -292,6 +308,16 @@ export async function enterApplicationFlow(
     return { ok: false, message: `Found "${deep.match.label}" but it was gone when the click was attempted.`, url: typeof page.url === "function" ? page.url() : "", label: deep.match.label };
   }
   const before = typeof page.url === "function" ? page.url() : "";
+  const skip = new Set(Array.from(opts.skipLabels ?? [], normalizeEntryLabel));
+  if (skip.has(normalizeEntryLabel(found.match.label))) {
+    return {
+      ok: false,
+      alreadyClicked: true,
+      message: `Already entered the application flow via "${found.match.label}" — not clicking it again.`,
+      url: before,
+      label: found.match.label,
+    };
+  }
   try {
     await found.locator.click({ timeout: 10000 });
     await page.waitForLoadState?.("networkidle", { timeout: 15000 }).catch(() => null);
