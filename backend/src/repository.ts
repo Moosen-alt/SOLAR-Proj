@@ -104,7 +104,7 @@ import {
   type ClassifiedMboxMessage,
 } from "./knowledgeBase";
 import { compactAlnum, existingSystemFromSnapshot, fieldAliases, normalizeProject, normalizeTokens } from "./normalize";
-import { classifyPermitStatusText, nextCheckIso } from "./permitMonitor";
+import { classifyPermitStatusText, isAuthWallText, nextCheckIso } from "./permitMonitor";
 import { evidenceForTopic, evidenceLines, type EvidenceTopic } from "./projectEvidence";
 import { runQcForProject } from "./qc";
 import { loadStoredTemplates, formAllowedForPath } from "./ahjForms";
@@ -4914,7 +4914,7 @@ export async function runDuePermitChecks(
           credential,
           userDataDir,
         }).catch(() => null);
-        if (scraped) {
+        if (scraped && !isAuthWallText(scraped)) {
           rawStatusText = scraped;
           source = "portal";
         }
@@ -4946,7 +4946,7 @@ export async function runDuePermitChecks(
         // multi-tenant platform adapter checks status on the RIGHT subdomain.
         loginUrl: text(target.portal_url) || undefined,
       }).catch(() => null);
-      if (scraped) {
+      if (scraped && !isAuthWallText(scraped)) {
         rawStatusText = scraped;
         source = "portal";
       }
@@ -4960,18 +4960,42 @@ export async function runDuePermitChecks(
       const appNums = [text(target.application_number), text(target.permit_number)].filter(Boolean);
       if (checkUrl) {
         const publicText = await publicPermitStatusCheck(checkUrl, appNums).catch(() => null);
-        if (publicText && publicText.length > 40) {
+        if (publicText && publicText.length > 40 && !isAuthWallText(publicText)) {
           rawStatusText = publicText;
           source = "public_url";
         }
       }
     }
-    // Nothing checkable (no recipe, no profile, no URL → source stays "mock") in LIVE
-    // mode: SKIP rather than record. Recording would classify the honest "no status
-    // available" text as needs_human_review and stomp the project's current_stage on
-    // every poll, burying real review items in noise. Offline dev keeps the mock flow.
-    if (source === "mock" && !rawStatusText && !isAutoSeedDisabled()) {
-      logger.info("monitor", `skipping status check — no portal URL/recipe to check for target ${text(target.id)}`, { projectId });
+    // A CHECK THAT READ NOTHING IS NOT A STATUS. Two ways a sweep gathers no evidence: it
+    // had nothing to check at all (source stays "mock"), or it had a URL that could not be
+    // read — a PowerClerk project page is behind a login, so an anonymous fetch returns
+    // nothing usable. Recording either as a status classifies the honest "no status
+    // available" text as needs_human_review, which on a target we ALREADY know the status of
+    // is a downgrade: one sweep turned three verified "In review" NEM rows into "Needs human
+    // review" and stomped each project's current_stage with it.
+    //
+    // So: skip whenever no text was gathered — but ALWAYS reschedule. The old skip `continue`d
+    // without touching next_check_at, leaving an unreadable target permanently due and
+    // re-attempted on every single sweep (live: Ivy's NEM, still due from a poll an hour
+    // earlier). A never-checked target is the one exception: recording the honest "manual
+    // check required" is how the operator learns the link needs a login.
+    const gatheredNothing = !rawStatusText && !isAutoSeedDisabled();
+    const alreadyKnown = Boolean(text(target.latest_outcome));
+    if (gatheredNothing && (source === "mock" || alreadyKnown)) {
+      const days = Math.max(1, Math.floor(Number(target.check_frequency_days || 7)));
+      db.run("UPDATE permit_check_targets SET last_checked_at = ?, next_check_at = ?, updated_at = ? WHERE id = ?", [
+        now,
+        new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString(),
+        now,
+        text(target.id),
+      ]);
+      logger.info(
+        "monitor",
+        alreadyKnown
+          ? `status unreadable this sweep — keeping the known status for target ${text(target.id)}`
+          : `skipping status check — no portal URL/recipe to check for target ${text(target.id)}`,
+        { projectId },
+      );
       continue;
     }
     const detail = await recordPermitStatusCheck(db, projectId, {

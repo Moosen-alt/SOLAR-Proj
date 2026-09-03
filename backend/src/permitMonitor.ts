@@ -51,6 +51,23 @@ export function extractStatedStatus(rawStatusText: string): string {
   return m ? m[1].trim().replace(/\s+/g, " ") : "";
 }
 
+// A LOGIN PAGE IS NOT A STATUS. A status check whose session has lapsed lands on the
+// portal's sign-in screen, and that page's text scrapes like any other: the monitor recorded
+// "PowerClerk Log In Username: Password: ..." as the status of three live interconnection
+// applications and classified all three as needs_human_review, overwriting statuses that had
+// been verified minutes earlier. The scrape succeeded; it just wasn't looking at the record.
+// Portal-agnostic — every vendor's login page carries these same words.
+export function isAuthWallText(rawStatusText: string): boolean {
+  const t = String(rawStatusText || "").replace(/\s+/g, " ").trim().toLowerCase();
+  if (!t || t.length > 1200) return false; // a real record page is longer and richer
+  const saysLogin = /\b(log ?in|sign ?in|logon)\b/.test(t);
+  const asksCredentials = /\busername\b|\bpassword\b|\bemail address\b.*\bpassword\b/.test(t);
+  const offersRecovery = /forgot password|register a new account|reset your password|create an account/.test(t);
+  // Two independent signals, so a record page that merely says "Log In" in a nav bar and
+  // happens to be short is never mistaken for the wall itself.
+  return [saysLogin, asksCredentials, offersRecovery].filter(Boolean).length >= 2;
+}
+
 export function classifyPermitStatusText(rawStatusText: string): PermitStatusClassification {
   const stated = extractStatedStatus(rawStatusText);
   // Keep the full text when the portal states nothing — that is the old behaviour, and the

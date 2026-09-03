@@ -8,7 +8,7 @@
 // project's other tracks. It would have happened on every Accela filing.
 //   npx tsx backend/test/permitStatusLine.test.ts
 import assert from "node:assert/strict";
-import { classifyPermitStatusText, extractStatedStatus } from "../src/permitMonitor";
+import { classifyPermitStatusText, extractStatedStatus, isAuthWallText } from "../src/permitMonitor";
 
 let failures = 0;
 const check = (label: string, fn: () => void): void => {
@@ -50,6 +50,36 @@ check("a portal with no status field still falls back to scanning the prose", ()
 
 check("empty text is still an explicit needs-review, not a silent pass", () => {
   assert.equal(classifyPermitStatusText("").outcome, "needs_human_review");
+});
+
+// A LOGIN PAGE IS NOT A STATUS.
+//
+// Live: three interconnection applications, each verified minutes earlier, were all
+// downgraded to needs_human_review when the monitor's authenticated scrape landed on
+// PowerClerk's sign-in screen and recorded THAT page's text as the record's status. The
+// scrape succeeded; it just wasn't looking at the record.
+const POWERCLERK_LOGIN = "‌ PowerClerk Log In Username: Password: Log In Forgot Password? Register a new account Sign in with PacifiCorp SSO © 2026 Clean Power Research, L.L.C. Terms of Use | Privacy Policy";
+
+check("THE REGRESSION: PowerClerk's login page is recognised as an auth wall", () => {
+  assert.equal(isAuthWallText(POWERCLERK_LOGIN), true);
+  // …and it classifies as needs-review, which is exactly why recording it was a downgrade.
+  assert.equal(classifyPermitStatusText(POWERCLERK_LOGIN).outcome, "needs_human_review");
+});
+
+check("a generic vendor sign-in page is caught too", () => {
+  assert.equal(isAuthWallText("Sign In Email Address Password Forgot password? Create an account"), true);
+});
+
+check("a real record page is never mistaken for one", () => {
+  assert.equal(isAuthWallText("Record Status: Permit Issued. Record 194-26-001482-ELEC. Residential Electrical. Expiration Date: 03/01/2027."), false);
+});
+
+check("...nor is a status page whose nav merely says Log In", () => {
+  assert.equal(isAuthWallText("Home Projects Tools Log In View/Edit: APP-111667 Application Received Current Status Status marked as PP - Application Submitted on 9/2/2026 at 1:54 PM Project Owner"), false);
+});
+
+check("empty text is not an auth wall — it is simply nothing", () => {
+  assert.equal(isAuthWallText(""), false);
 });
 
 if (failures) { console.error(`\n${failures} permit-status check(s) FAILED.`); process.exit(1); }
