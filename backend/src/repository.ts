@@ -62,6 +62,7 @@ import { touchProjectMetrics } from "./kpi";
 import fs from "node:fs";
 import path from "node:path";
 import { checkStatusWithAdapter, stageWithAccela, stageWithMockPortal, stageWithPowerClerk, stageWithRecipe } from "../../portal-bot/src/index";
+import { resolveHeadless } from "../../portal-bot/src/browser";
 import { findCompleteRecipeForProject, findAnyRecipeForProject, resolveRecipeFieldValues, markPortalRecipeForRerecord, getPortalRecipe, savePortalRecipeSteps } from "./portalRecipes";
 import { notifyClientOfStatusChange, shouldNotifyClient } from "./clientNotifier";
 import { detectPlatform, publicPermitStatusCheck } from "./publicPermitStatus";
@@ -5492,7 +5493,15 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
 
   const stageOptions = {
     encryptedStorageStatePath: portalProfile?.encrypted_storage_state ?? undefined,
-    headless: false,
+    // HEADED IS A DESKTOP CHOICE, NOT A STAGING CONSTANT. This was hardcoded false, which
+    // forced a HEADED browser on every staging run regardless of PORTAL_HEADLESS — and the
+    // learn then left that browser open at review for a human who, on a headless server,
+    // does not exist. The invisible browser held the client+portal lane until the run
+    // ceiling or a reaper: live in the scale test, the third project of a lane queued for
+    // the full profile wait behind a review page nobody would ever see. resolveHeadless
+    // reads PORTAL_HEADLESS (an operator desktop sets false and keeps the watch-and-verify
+    // flow, review browser left open; a server defaults true and every browser closes).
+    headless: resolveHeadless(undefined),
     reviewerReport,
     credential,
     userDataDir,
