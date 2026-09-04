@@ -11,13 +11,18 @@
 </head>
 <body>
   <header class="topbar">
-    <div>
+    <div class="masthead">
       <h1>Solar Submission Autopilot</h1>
       <p class="tagline">Permit &amp; NEM submission operations</p>
       <p id="serviceStatus" class="conn-status conn-status--checking">Connecting…</p>
     </div>
+    <!-- Ordered by what the control does, not by when it was added: create,
+         then places to go, then the two buttons that actually go and drive live
+         portals, then utilities. The dividers and the `runs` class carry that
+         grouping in the styling — see "LOOKING vs DOING" in styles.css. -->
     <nav class="actions">
       <a class="button primary" href="/new-project"><i data-lucide="plus"></i><span>New project</span></a>
+      <span class="actions-divider"></span>
       <a class="button secondary" href="/fill-form"><i data-lucide="file-pen-line"></i><span>Fill a form</span></a>
       <a class="button secondary" href="/parser"><i data-lucide="file-scan"></i><span>Parser</span></a>
       <button id="openCustomersBtn" class="secondary"><i data-lucide="contact"></i><span>Leads</span></button>
@@ -25,12 +30,17 @@
       <button id="openUsersBtn" class="secondary"><i data-lucide="users"></i><span>Team</span></button>
       <button id="openKpiBtn" class="secondary"><i data-lucide="bar-chart-2"></i><span>KPIs</span></button>
       <button id="openKnowledgeBtn" class="secondary"><i data-lucide="brain"></i><span>Knowledge</span></button>
-      <button id="runPermitMonitorBtn" class="secondary"><i data-lucide="radar"></i><span>Permit Checks</span></button>
-      <button id="runNemMonitorBtn" class="secondary"><i data-lucide="zap"></i><span>NEM Checks</span></button>
+      <span class="actions-divider"></span>
+      <button id="runPermitMonitorBtn" class="secondary runs"><i data-lucide="radar"></i><span>Permit checks</span></button>
+      <button id="runNemMonitorBtn" class="secondary runs"><i data-lucide="zap"></i><span>NEM checks</span></button>
+      <span class="actions-divider"></span>
       <button id="refreshBtn" class="secondary"><i data-lucide="refresh-cw"></i><span>Refresh</span></button>
-      <button id="notifBadgeBtn" class="secondary" title="Notifications" style="position:relative;display:none">
+      <!-- The inline display:none must stay inline: bumpNotifBadge reveals the bell
+           with `btn.style.display = ""`, which only unhides it if the hiding rule
+           is the inline one. Moving it to the class would hide the bell forever. -->
+      <button id="notifBadgeBtn" class="secondary notif-btn" title="Notifications" style="display:none">
         <i data-lucide="bell"></i>
-        <span id="notifBadge" style="position:absolute;top:4px;right:4px;min-width:16px;height:16px;border-radius:8px;background:var(--danger);color:#fff;font-size:10px;font-weight:700;line-height:16px;text-align:center;padding:0 3px;pointer-events:none">0</span>
+        <span id="notifBadge" class="notif-badge">0</span>
       </button>
     </nav>
   </header>
