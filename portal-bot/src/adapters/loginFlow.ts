@@ -116,6 +116,12 @@ const REVEAL_TRIGGERS: RecipeSelector[] = [
   { role: "link", name: "Login" },
   { role: "link", name: "Log In" },
   { role: "link", name: "Sign In" },
+  // "Logon" is not "Log In". Bonney Lake WA offers exactly that word and nothing else, and
+  // the run reported the login unrecognised while standing next to it. ASP.NET municipal
+  // sites use it constantly.
+  { role: "link", name: "Logon" },
+  { role: "link", name: "Log On" },
+  { role: "button", name: "Logon" },
   { role: "link", name: "My Account" }, // some portals hide the form behind "My Account"
   { role: "button", name: "Login" },
   { role: "button", name: "Log In" },
@@ -663,6 +669,21 @@ export async function performLogin(
         }
       }
 
+      // AN ERROR PAGE IS NOT A LOGIN WE FAILED TO RECOGNISE.
+      //
+      // Baltimore County answers with a CloudFront block — title "ERROR: The request could
+      // not be satisfied", body "403 ERROR ... Request blocked." — and the run reported
+      // "the portal's login form was not recognised", owner ENGINE. There is no login form
+      // on that page because there is no page: we were refused at the door.
+      //
+      // It matters twice over. The scorer already knows a WAF block is the portal's, and
+      // looksBotBlocked already retries such a run with a real window — but both read the
+      // MESSAGE, and the 403 was only ever in the page. Naming it here is what connects the
+      // evidence to the machinery that was built for it.
+      const errorPage = await detectErrorPage(page);
+      if (errorPage) {
+        return { ok: false, status: "login_form_unrecognized", message: `The portal did not serve a usable page: ${errorPage}` };
+      }
       return {
         ok: false,
         status: onLoginUrl ? "still_on_login" : "login_form_unrecognized",
@@ -1125,6 +1146,41 @@ export async function clickLoginContinuation(page: Page): Promise<string> {
     await page.locator("[data-al-continue]").first().click({ timeout: 4000 });
     await smartWait(page, 4000);
     return marked;
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * IS THIS AN ERROR OR BLOCK PAGE RATHER THAN A PORTAL?
+ *
+ * Baltimore County's stored URL answers with a CloudFront refusal — title "ERROR: The
+ * request could not be satisfied", body "403 ERROR ... Request blocked." The run reported
+ * "the portal's login form was not recognised" and the benchmark filed it under ENGINE.
+ * There was no login form because there was no page.
+ *
+ * The scorer already treats a WAF block as the portal's problem, and looksBotBlocked
+ * already retries such a run with a real window. Both read the run's MESSAGE, and the 403
+ * lived only in the page — so naming it here is what connects evidence already on screen to
+ * machinery already written for it.
+ *
+ * Deliberately anchored on the TITLE and the first stretch of body text: a permit portal
+ * whose page happens to contain the word "error" further down is not a blocked request.
+ */
+export async function detectErrorPage(page: Page): Promise<string> {
+  try {
+    return await (page as unknown as { evaluate: (fn: () => string) => Promise<string> }).evaluate(() => {
+      const BLOCK = /request could not be satisfied|\b403\b|\b404\b|\b50[0-9]\b|access denied|forbidden|request blocked|service unavailable|temporarily unavailable|under maintenance|site maintenance|page not found|bad gateway/i;
+      const title = (document.title || "").replace(/\s+/g, " ").trim();
+      const head = ((document.body?.innerText || "").replace(/\s+/g, " ").trim()).slice(0, 260);
+      // A real portal has controls. A block page is prose and nothing else — requiring both
+      // the wording AND an absence of form controls keeps this off a working page that
+      // merely mentions an error.
+      const controls = document.querySelectorAll("input, select, textarea, button").length;
+      if (!BLOCK.test(title) && !BLOCK.test(head)) return "";
+      if (controls > 6) return "";
+      return `${title || "(untitled)"} — ${head.slice(0, 120)}`;
+    });
   } catch {
     return "";
   }

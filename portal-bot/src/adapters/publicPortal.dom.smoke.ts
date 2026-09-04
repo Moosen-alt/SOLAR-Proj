@@ -39,7 +39,7 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
-import { clickLoginContinuation, followForwardingInterstitial, lastRevealTrail, markDescribedLoginControl, publicApplicationEntry, revealLoginForm } from "./loginFlow";
+import { clickLoginContinuation, detectErrorPage, followForwardingInterstitial, lastRevealTrail, markDescribedLoginControl, publicApplicationEntry, revealLoginForm } from "./loginFlow";
 
 let failures = 0;
 const check = (label: string, ok: boolean, detail = ""): void => {
@@ -426,6 +426,46 @@ check("a dialog with no dialog-ish container is left alone",
      <p>You are being redirected to the login page.</p>
      <button style="width:90px;height:30px">Continue</button></body></html>`)) === "");
 await continuationPage.close();
+
+// ---------------------------------------------------------------------------
+// AN ERROR PAGE IS NOT A LOGIN WE FAILED TO RECOGNISE.
+//
+// Baltimore County's stored URL answers with a CloudFront refusal — title "ERROR: The
+// request could not be satisfied", body "403 ERROR ... Request blocked." The run reported
+// the login unrecognised and the benchmark filed it under ENGINE. There was no login form
+// because there was no page.
+//
+// The scorer already treats a WAF block as the portal's, and looksBotBlocked already
+// retries such a run headed — both read the MESSAGE, and the 403 lived only in the page.
+// ---------------------------------------------------------------------------
+PAGES.cloudfront = `<!doctype html><html><head><title>ERROR: The request could not be satisfied</title></head>
+  <body><h1>403 ERROR</h1><p>The request could not be satisfied. Request blocked. We can't connect
+  to the server for this app or website at this time.</p></body></html>`;
+PAGES.maintenance = `<!doctype html><html><head><title>Site Maintenance</title></head>
+  <body><p>This site is temporarily unavailable while we perform scheduled maintenance.</p></body></html>`;
+// A WORKING portal that merely mentions an error must not be mistaken for one.
+PAGES.workingWithErrorText = `<!doctype html><html><head><title>Permit Portal</title></head><body>
+  <p>If you see an error, call us.</p>
+  <form>${["Name","Address","City","Zip","Phone","Email","Parcel"].map((f) => `<label>${f}<input style="width:120px;height:20px" /></label>`).join("")}
+  <button style="width:90px;height:24px">Continue</button></form></body></html>`;
+
+const errOn = async (key: string): Promise<string> => {
+  await page.goto(`http://127.0.0.1:${port}/${key}`, { waitUntil: "domcontentloaded" });
+  await page.waitForTimeout(80);
+  return detectErrorPage(page);
+};
+
+check("THE REGRESSION: a CloudFront 403 block is named as an error page",
+  /403|could not be satisfied/i.test(await errOn("cloudfront")));
+check("...so the message carries what the scorer and the headed retry both look for",
+  /request could not be satisfied/i.test(await errOn("cloudfront")),
+  "looksBotBlocked and the WAF branch of the scorer read exactly this wording");
+check("a maintenance page counts too", !!(await errOn("maintenance")));
+
+check("a WORKING portal that merely mentions an error is not one",
+  (await errOn("workingWithErrorText")) === "",
+  "it has a form; a block page is prose and nothing else");
+check("an ordinary page is not an error page", (await errOn("landing")) === "");
 
 await browser.close();
 server.close();
