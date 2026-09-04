@@ -295,6 +295,37 @@ export function buildPortalPlanner(
  * Learn an AHJ or utility portal autonomously for a project, record a recipe, verify
  * the fill, and promote the recipe to "complete" only when the verification passes.
  */
+/**
+ * ONE BROWSER PROFILE PER PORTAL, NOT ONE PER SCOPE.
+ *
+ * portalType here is the literal string "AHJ" or "utility", so every jurisdiction a client
+ * ever learns shared a single Chrome profile — eleven portals on eight platforms in the
+ * 2026-09-04 sweep, all pouring cookies, localStorage, service workers and consent choices
+ * into the same 412 MB directory. For a tool whose whole promise is "point it at any portal
+ * and it works", the last portal it visited should not be able to change what the next one
+ * renders, and Washington County's Accela — whose login form is detectable in 1.2 seconds
+ * from a clean context — was reported "login form was not recognised" in that sweep.
+ *
+ * It also forced every learn through one profile lease, so portals queued behind each other
+ * for no reason.
+ *
+ * Keyed on the portal HOST: unique, stable across the query strings and deep paths that
+ * differ between one project and the next, and legible in a directory listing. The
+ * hand-coded staging adapters keep their own named profiles (powerclerk_*, oregon_*) and
+ * are untouched by this — only auto-learn used the generic name.
+ *
+ * Exported for the unit test.
+ */
+export function learnProfileName(portalType: string, portalUrl: string): string {
+  let host = "";
+  try { host = new URL(portalUrl).hostname.toLowerCase(); } catch { host = ""; }
+  // A portal we cannot parse a host from keeps the old shared profile rather than landing
+  // everything unparseable in one bucket named after the empty string.
+  if (!host) return portalType;
+  const slug = host.replace(/^www\d*\./, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60);
+  return `${portalType.toLowerCase()}-${slug || "portal"}`;
+}
+
 export async function autoLearnPortal(
   db: AppDb,
   projectId: string,
@@ -406,7 +437,9 @@ async function autoLearnPortalInner(
       ?? undefined
     : undefined;
   const profileBase = process.env.PORTAL_PROFILES_DIR || path.join(process.cwd(), "portal-profiles");
-  const userDataDir = project.clientId ? path.join(profileBase, project.clientId, portalType) : path.join(profileBase, portalType);
+  const userDataDir = project.clientId
+    ? path.join(profileBase, project.clientId, learnProfileName(portalType, portalUrl))
+    : path.join(profileBase, learnProfileName(portalType, portalUrl));
 
   // Assemble the upload-ready document set so the learner can attach the right split
   // document at each portal upload control. Split the plan set into typed sheets first

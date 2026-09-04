@@ -354,6 +354,22 @@ export async function revealLoginForm(page: Page): Promise<boolean> {
     return false;
   }
 
+  // A HAND-OFF THAT STALLED. Before the described-control pass, take any "click here if
+  // you are not forwarded" escape hatch: Tyler's SSO stub offers one and never forwards on
+  // its own, so the run stalls on a page that has no fields to find.
+  const forwardKey = "forwarding-interstitial";
+  if (!tried.has(forwardKey)) {
+    const forwarded = await followForwardingInterstitial(page);
+    if (forwarded) {
+      tried.add(forwardKey);
+      if (await loginFormPresent(page)) return true;
+      // New page, new controls — the worded triggers have never seen them.
+      tried.clear();
+      tried.add(forwardKey);
+      return false;
+    }
+  }
+
   // LAST: a control that is a login without SAYING so — an icon-only dropdown toggle named
   // only by its tooltip, or by the menu it opens. See markDescribedLoginControl. Tried
   // after every worded trigger, so a portal with a plain "Log In" link never reaches here.
@@ -791,6 +807,64 @@ export async function markDescribedLoginControl(page: Page): Promise<string> {
       }
       return "";
     });
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * A PAGE THAT PROMISES TO FORWARD YOU, AND DOESN'T.
+ *
+ * Wilsonville (Tyler EnerGov) hands off to an identity provider through a stub page whose
+ * entire content is "Click here if you are not forwarded within 10 seconds." Waited out to
+ * 16 seconds, it never forwards — the automatic hop depends on something that does not
+ * happen in our session — so the run sat on a page with no fields at all and reported
+ * "the portal's login form was not recognised". It had been offered the way through in
+ * plain words and did not take it.
+ *
+ * This idiom is not Tyler's: SAML and OAuth hand-offs, session bounces and "please wait"
+ * pages all ship the same manual escape hatch for exactly this case. Clicking it is what a
+ * person does without thinking.
+ *
+ * Narrow by construction — it matches the FORWARDING SENTENCE, not the word "click", and
+ * never a control that also reads as a submit, a payment or a final action. Returns what it
+ * clicked, or "".
+ *
+ * Exported for the DOM smoke.
+ */
+export async function followForwardingInterstitial(page: Page): Promise<string> {
+  try {
+    const marked = await (page as unknown as { evaluate: (fn: () => string) => Promise<string> }).evaluate(() => {
+      // "if you are not forwarded/redirected", "click here to continue", "press here if
+      // the page does not load" — the sentence, not the verb.
+      const FORWARD = /(not (being )?(automatically )?(forwarded|redirected|transferred))|((forwarded|redirected)\b[^.]{0,30}\bwithin\b)|(click (here )?to continue)|(continue to (the )?(login|sign[\s-]?in|site|portal))|(if .{0,30}(page|browser) does ?n[o']t (load|redirect|forward))/i;
+      // Anything that could COMMIT something is never a "continue" link.
+      const NEVER = /\bsubmit\b|\bpay\b|\bpayment\b|\bdelete\b|\bcancel\b|\bwithdraw\b|\bsign out\b|\blog ?out\b/i;
+      const vis = (el: Element): boolean => {
+        const r = (el as HTMLElement).getBoundingClientRect();
+        const st = getComputedStyle(el as HTMLElement);
+        return r.width > 2 && r.height > 2 && st.visibility !== "hidden" && st.display !== "none";
+      };
+      document.querySelectorAll("[data-al-forward]").forEach((n) => n.removeAttribute("data-al-forward"));
+      for (const el of Array.from(document.querySelectorAll("a, button, [role=button], [role=link]"))) {
+        if (!vis(el)) continue;
+        const text = ((el as HTMLElement).innerText || el.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim();
+        if (!text || text.length > 120) continue;
+        if (NEVER.test(text)) continue;
+        // The sentence may be on the link itself, or the link may be the bare "here" inside
+        // it — so check the containing block too, but only a small one.
+        const parentText = (el.parentElement?.innerText || "").replace(/\s+/g, " ").trim();
+        const hay = `${text} ${parentText.length <= 200 ? parentText : ""}`;
+        if (!FORWARD.test(hay)) continue;
+        el.setAttribute("data-al-forward", "1");
+        return text.slice(0, 80);
+      }
+      return "";
+    });
+    if (!marked) return "";
+    await page.locator("[data-al-forward]").first().click({ timeout: 5000 });
+    await smartWait(page, 4000);
+    return marked;
   } catch {
     return "";
   }

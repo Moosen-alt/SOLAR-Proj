@@ -39,7 +39,7 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
-import { markDescribedLoginControl, publicApplicationEntry } from "./loginFlow";
+import { followForwardingInterstitial, markDescribedLoginControl, publicApplicationEntry } from "./loginFlow";
 
 let failures = 0;
 const check = (label: string, ok: boolean, detail = ""): void => {
@@ -205,6 +205,52 @@ check("a control that SAYS what it is belongs to the worded triggers, not this p
 
 check("Accela's page offers no icon-only login — its worded link is the way in",
   (await markOn("accela")) === "");
+
+// ---------------------------------------------------------------------------
+// A HAND-OFF THAT PROMISES TO FORWARD YOU, AND DOESN'T.
+//
+// Wilsonville (Tyler EnerGov) sends "Login or Register" to an SSO stub whose whole content
+// is "Click here if you are not forwarded within 10 seconds." Waited out to 16 seconds it
+// never forwards, so the run sat on a page with no fields and called the login
+// unrecognised — having been handed the way through in plain words.
+// ---------------------------------------------------------------------------
+PAGES.tylerSso = `<!doctype html><html><body>
+   <p>Please wait. <a href="/sso-target" style="width:60px;height:20px">Click here</a> if you are not forwarded within 10 seconds.</p>
+   </body></html>`;
+PAGES.ssoTarget = `<!doctype html><html><body><form>
+   <input name="user" style="width:120px;height:20px" />
+   <input type="password" style="width:120px;height:20px" /></form></body></html>`;
+
+await page.goto(`http://127.0.0.1:${port}/tylerSso`, { waitUntil: "domcontentloaded" });
+await page.waitForTimeout(150);
+const forwarded = await followForwardingInterstitial(page);
+check("THE REGRESSION: the 'click here if you are not forwarded' escape hatch is taken",
+  !!forwarded, "the stub was left sitting there");
+console.log(`   clicked: ${JSON.stringify(forwarded)}`);
+
+const followOn = async (key: string): Promise<string> => {
+  await page.goto(`http://127.0.0.1:${port}/${key}`, { waitUntil: "domcontentloaded" });
+  await page.waitForTimeout(150);
+  return followForwardingInterstitial(page);
+};
+
+PAGES.commitPage = `<!doctype html><html><body>
+   <p>Review your application. <button style="width:90px;height:24px">Submit</button> to continue.</p>
+   </body></html>`;
+check("NEVER a submit, whatever the surrounding sentence says",
+  (await followOn("commitPage")) === "",
+  "a 'to continue' sentence must not turn a Submit button into a navigation link");
+
+PAGES.payPage = `<!doctype html><html><body>
+   <p>Click here to continue. <button style="width:90px;height:24px">Pay fees</button></p></body></html>`;
+check("NEVER a payment control, however it is worded", (await followOn("payPage")) === "");
+
+PAGES.ordinary = `<!doctype html><html><body>
+   <a href="/apply" style="width:90px;height:20px">Click here to apply</a></body></html>`;
+check("an ordinary 'click here' is not a forwarding stub — it matches the SENTENCE, not the verb",
+  (await followOn("ordinary")) === "");
+
+check("a real portal page offers no forwarding hatch to click", (await followOn("accela")) === "");
 
 await browser.close();
 server.close();
