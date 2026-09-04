@@ -684,6 +684,13 @@ export async function performLogin(
       if (errorPage) {
         return { ok: false, status: "login_form_unrecognized", message: `The portal did not serve a usable page: ${errorPage}` };
       }
+      // LAST, once everything else has declined: is the stored URL even pointing at a
+      // portal? See looksNotLikeAPortal. A newsletter signup has no login form to find, and
+      // calling that a detector failure sends the next day's work at the wrong thing.
+      const notAPortal = await looksNotLikeAPortal(page);
+      if (notAPortal) {
+        return { ok: false, status: "no_credential", message: `The stored portal URL for this jurisdiction appears to be wrong: it lands on ${notAPortal}. Correct the URL on the client's portal login, then retry.` };
+      }
       return {
         ok: false,
         status: onLoginUrl ? "still_on_login" : "login_form_unrecognized",
@@ -1185,6 +1192,53 @@ export async function detectErrorPage(page: Page): Promise<string> {
       if (!BLOCK.test(title) && !BLOCK.test(head)) return "";
       if (controls > 6) return "";
       return `${title || "(untitled)"} — ${head.slice(0, 120)}`;
+    });
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * IS THIS A PERMIT PORTAL AT ALL, OR JUST A PAGE THE URL POINTS AT?
+ *
+ * Bulk-reading the fleet's login-failure captures found several stored URLs that do not
+ * reach a portal:
+ *
+ *   Miramar FL     public.govdelivery.com/accounts/FLMIRAMAR/subscribers/  a newsletter signup
+ *   Las Cruces NM  /directories-resources/permits-licenses-and-...          a directory page
+ *   Gilbert AZ     /f/permitext                                             a permit EXTENSION form
+ *
+ * Every one of them was scored "the portal's login form was not recognised", owner ENGINE.
+ * There is no login form on a newsletter signup page, and no amount of detector work will
+ * conjure one. It is stored operator data pointing somewhere wrong, and naming it as such
+ * turns a mysterious engine failure into a one-line fix somebody can actually make.
+ *
+ * DELIBERATELY LAST AND DELIBERATELY TIMID. It runs only after the login detector, the
+ * public-application check and the error-page check have all declined, so a real portal has
+ * had every chance to identify itself. It requires the page to show NO permit vocabulary at
+ * all — not merely little — because a portal that mentions permits once is still a portal,
+ * and a false accusation here sends someone to edit a URL that was correct.
+ */
+export async function looksNotLikeAPortal(page: Page): Promise<string> {
+  try {
+    return await (page as unknown as { evaluate: (fn: () => string) => Promise<string> }).evaluate(() => {
+      const text = ((document.body?.innerText || "") + " " + document.title).replace(/\s+/g, " ").trim();
+      if (!text || text.length < 40) return "";
+      // Any of these and it is plausibly a portal; say nothing.
+      const PORTAL = /\bpermit|\blicen[cs]e|\bapplication\b|\binspection|\bplan review\b|\bcontractor\b|\bparcel\b|\bzoning\b|\bbuilding department\b/i;
+      if (PORTAL.test(text)) return "";
+      // And it must positively read as something else, rather than merely being terse.
+      const NOT_PORTAL: Array<[RegExp, string]> = [
+        [/\bsubscribe\b|\bsubscriber\b|\bnewsletter\b|\bmailing list\b|email updates/i, "a newsletter or subscription signup"],
+        [/\bdirectory\b|\bindex of\b|\bsite ?map\b/i, "a directory or index page"],
+        [/\bcontact us\b|\bstaff directory\b|\bphone directory\b/i, "a contact page"],
+        [/\bnews\b|\bpress release|\bcalendar of events\b/i, "a news or events page"],
+        [/\bpay (your )?(water|utility|tax|bill)\b/i, "a utility or tax payment page"],
+      ];
+      for (const [re, what] of NOT_PORTAL) {
+        if (re.test(text)) return `${what} — the stored URL does not reach a permit portal (${(document.title || "").slice(0, 50)})`;
+      }
+      return "";
     });
   } catch {
     return "";

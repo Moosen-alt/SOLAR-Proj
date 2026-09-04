@@ -39,7 +39,7 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
-import { clickLoginContinuation, detectErrorPage, followForwardingInterstitial, lastRevealTrail, markDescribedLoginControl, publicApplicationEntry, revealLoginForm } from "./loginFlow";
+import { clickLoginContinuation, detectErrorPage, looksNotLikeAPortal, followForwardingInterstitial, lastRevealTrail, markDescribedLoginControl, publicApplicationEntry, revealLoginForm } from "./loginFlow";
 
 let failures = 0;
 const check = (label: string, ok: boolean, detail = ""): void => {
@@ -477,6 +477,51 @@ check("THE REGRESSION: a Cloudflare interstitial is named, not read as a missing
 check("...and the message carries wording looksBotBlocked already knows",
   /cloudflare|checking your browser/i.test(await errOn("cloudflareChallenge")),
   "that predicate has known the word all along; nothing ever handed it one");
+
+// ---------------------------------------------------------------------------
+// IS THIS A PERMIT PORTAL AT ALL, OR JUST A PAGE THE URL POINTS AT?
+//
+// Bulk-reading the fleet's captures found stored URLs that never reach a portal:
+//   Miramar FL     public.govdelivery.com/.../subscribers/   a newsletter signup
+//   Las Cruces NM  /directories-resources/permits-...        a directory page
+// Both scored "login form was not recognised", owner ENGINE. There is no login form on a
+// newsletter signup, and no detector work will conjure one.
+//
+// The refusals are the whole safety property: a false accusation sends somebody to edit a
+// URL that was correct, so it must stay silent on anything that mentions permits at all.
+// ---------------------------------------------------------------------------
+PAGES.newsletter = `<!doctype html><html><head><title>City of Miramar, Florida</title></head><body>
+  <h1>Email Updates</h1><p>Subscribe to our newsletter to receive news and announcements.</p>
+  <input type="email" style="width:160px;height:20px" /><button style="width:80px;height:24px">Subscribe</button>
+  </body></html>`;
+PAGES.directory = `<!doctype html><html><head><title>Departments</title></head><body>
+  <h1>Staff Directory</h1><p>Contact us using the phone directory below.</p>
+  <ul><li>Finance</li><li>Public Works</li></ul></body></html>`;
+// A REAL portal, terse, with only a login. Must never be accused.
+PAGES.terseRealPortal = `<!doctype html><html><head><title>Permit Portal</title></head><body>
+  <p>Sign in to manage your permit applications.</p>
+  <a href="/login" style="display:block;width:90px;height:22px">Log In</a></body></html>`;
+// A real portal that ALSO has a newsletter box — the nasty overlap.
+PAGES.portalWithNewsletter = `<!doctype html><html><head><title>City Services</title></head><body>
+  <h1>Building Permits</h1><p>Apply for a permit or subscribe to our newsletter.</p>
+  <input type="email" style="width:160px;height:20px" /></body></html>`;
+
+const portalOn = async (key: string): Promise<string> => {
+  await page.goto(`http://127.0.0.1:${port}/${key}`, { waitUntil: "domcontentloaded" });
+  await page.waitForTimeout(80);
+  return looksNotLikeAPortal(page);
+};
+
+check("THE REGRESSION: a newsletter signup is named as a wrong stored URL",
+  /newsletter|subscription/i.test(await portalOn("newsletter")));
+check("a staff directory is named too", /directory|contact/i.test(await portalOn("directory")));
+
+check("a terse REAL portal is never accused", (await portalOn("terseRealPortal")) === "",
+  "it says permit; that is enough to be left alone");
+check("a portal that ALSO offers a newsletter is left alone",
+  (await portalOn("portalWithNewsletter")) === "",
+  "permit vocabulary present means portal, whatever else is on the page");
+check("an ordinary landing page is not accused", (await portalOn("landing")) === "");
 
 await browser.close();
 server.close();
