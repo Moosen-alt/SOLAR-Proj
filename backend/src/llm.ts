@@ -493,6 +493,29 @@ function resolveInverterOffline(input: { inverterModel: string; inverterQty?: nu
 // Claude provider
 // ---------------------------------------------------------------------------
 
+/**
+ * Backoff schedule for a transient upstream failure. Four attempts in total, spread over
+ * roughly twenty seconds — long enough to ride out an overload burst, short enough that a
+ * portal budget is not spent waiting.
+ */
+const TRANSIENT_RETRY_DELAYS_MS = [1_000, 4_000, 15_000];
+
+/**
+ * Is this a failure a retry can fix? Deliberately conservative: a malformed request or a bad
+ * key fails the same way every time, and retrying it burns a portal's budget to arrive at
+ * the same answer three times more slowly.
+ */
+export function isTransientLlmError(err: unknown): boolean {
+  const status = Number((err as { status?: unknown })?.status ?? 0);
+  if (status === 408 || status === 409 || status === 429 || status >= 500) return true;
+  const m = String((err as Error)?.message || err || "");
+  // Checked FIRST and deliberately: a request that is wrong is wrong however long you wait,
+  // and its message often carries a number that would otherwise read as a server error
+  // ("max_tokens 500000 exceeds the limit").
+  if (/\bapi_?key\b|unauthorized|authentication|invalid_request|permission|not_found/i.test(m)) return false;
+  return /overloaded|rate.?limit|\b429\b|\b5\d\d\b|timeout|timed out|ECONNRESET|ETIMEDOUT|EPIPE|socket hang up|network|fetch failed|stream (error|ended)/i.test(m);
+}
+
 export class ClaudeLLMProvider implements LLMProvider {
   private client: Anthropic;
 
@@ -530,13 +553,44 @@ export class ClaudeLLMProvider implements LLMProvider {
     const at = Date.now();
     logger.debug("llm", `→ ${label}`, { model: MODEL, ...meta });
     let msg: Anthropic.Message;
-    try {
-      msg = await exec();
-    } catch (err) {
+    // A TRANSIENT FAILURE INSIDE A STREAM DOES NOT REACH THE SDK'S RETRY.
+    //
+    // The client is built with maxRetries:5 and the SDK does retry 429/5xx — but only when
+    // the REQUEST fails. Every call here is a .stream(), so the HTTP request succeeds and an
+    // overload arrives later as an event inside the stream. The SDK has nothing left to
+    // retry, and this wrapper had nothing either.
+    //
+    // Measured cost, on the final sweep of 2026-09-04: Gilbert's single planner call came
+    // back {"type":"overloaded_error","message":"Overloaded"} after 1455ms, the run recorded
+    // zero fills on a form whose eight fields it had already extracted, and the portal
+    // dropped two rungs. One transient upstream blip, one portal lost, and nothing in the
+    // scorecard to say it was not the engine's fault — it looked exactly like a regression
+    // from that day's work, which is the expensive way to be wrong.
+    //
+    // Bounded and narrow: only the errors a retry can actually fix, never a bad request or
+    // an auth failure, and logged each time so a run that survived a burst says so.
+    let lastErr: unknown;
+    for (let attempt = 0; attempt <= TRANSIENT_RETRY_DELAYS_MS.length; attempt++) {
+      try {
+        msg = await exec();
+        if (attempt > 0) logger.info("llm", `✓ ${label} recovered after ${attempt} retry(ies)`, { ...meta });
+        lastErr = undefined;
+        break;
+      } catch (err) {
+        lastErr = err;
+        if (attempt >= TRANSIENT_RETRY_DELAYS_MS.length || !isTransientLlmError(err)) break;
+        const wait = TRANSIENT_RETRY_DELAYS_MS[attempt];
+        logger.warn("llm", `↻ ${label} transient failure — retrying in ${wait}ms`, { ...meta, attempt: attempt + 1, err: errMsg(err) });
+        await new Promise((r) => setTimeout(r, wait));
+      }
+    }
+    if (lastErr) {
+      const err = lastErr;
       logger.error("llm", `✗ ${label} failed`, { ms: `${Math.round(performance.now() - t0)}ms`, ...meta, err: errMsg(err) });
       recordLlmCall({ at, label, ms: Math.round(performance.now() - t0), error: errMsg(err) });
       throw err;
     }
+    msg = msg!;
     const ms = Math.round(performance.now() - t0);
     const u = msg.usage as
       | { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number }
