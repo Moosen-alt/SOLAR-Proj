@@ -118,6 +118,10 @@ const REVEAL_TRIGGERS: RecipeSelector[] = [
   { role: "link", name: "My Account" }, // some portals hide the form behind "My Account"
   { role: "button", name: "Login" },
   { role: "button", name: "Log In" },
+  // "Sign In" existed as a LINK but not as a BUTTON, so a portal rendering it as a button
+  // was never revealed — an asymmetry with no reason behind it, found while sweeping the
+  // reveal list against live portals.
+  { role: "button", name: "Sign In" },
   { role: "button", name: "My Account" },
   // SSO HAND-OFF. Some portals' login page holds no fields at all — only a button that
   // hands off to an identity provider ("Login using Secure Portal" on OpenGov, verified

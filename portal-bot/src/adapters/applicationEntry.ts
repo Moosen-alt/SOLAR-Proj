@@ -62,6 +62,13 @@ const EXCLUDE_PATTERNS: RegExp[] = [
   // the real "New Interconnection Application", so the broadened new-application pattern
   // above must not swallow it.
   /\bpre-?application\b/i,
+  // A DOCUMENT *ABOUT* APPLYING IS NOT THE WAY TO APPLY. Found by sweeping the engine's own
+  // finder across 66 live portals: Lynnwood's SmartGov portal offers "Permit Application
+  // Checklist" — a PDF — and it matched /\bpermit application\b/ exactly, so the entry pass
+  // would have opened a handout instead of starting an application, then reported that it
+  // had entered the flow. Every portal publishes this class of link beside the real one.
+  /\bchecklist\b|\binstructions?\b|\bguide(lines?)?\b|\bhandout\b|\bbrochure\b/i,
+  /\bsample\b|\bexample\b|\btemplate\b|\bfaq\b|\btutorial\b|\brequirements?\b/i,
 ];
 
 export function isExcludedEntryLabel(label: string): boolean {

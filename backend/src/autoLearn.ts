@@ -28,7 +28,7 @@ import { resolveHeadless } from "../../portal-bot/src/browser";
 import { compareReviewFields } from "../../portal-bot/src/reviewScreenScraper";
 import type { LearnPlanRequest, LearnPlanResponse } from "../../portal-bot/src/adapters/autoLearnAdapter";
 import { createLLMProvider, getRecentLlmCalls } from "./llm";
-import { getDecryptedCredential, getDecryptedCredentialByUrl, getDecryptedCredentialAny, listPortalCredentials, nearestStoredLogins } from "./portalCredentials";
+import { getDecryptedCredential, getDecryptedCredentialByUrl, getDecryptedCredentialAny, listPortalCredentials, nearestStoredLogins, recordLoginOutcome } from "./portalCredentials";
 import { learnNoteTopicsFromMisses, activeLearnedNoteTerms } from "./noteTopics";
 import { deadFieldBindings, resolveRecipeFieldValues, startPortalRecording, savePortalRecipeSteps, getPortalRecipe, convertLiteralsToBoundFields, findAnyRecipeForProject, appendHumanPatchSteps, promoteRecordingIfEligible, recipeProfileKey } from "./portalRecipes";
 import { HUMAN_SUBMIT_OBSERVED_NOTE } from "../../portal-bot/src/humanCapture";
@@ -607,6 +607,23 @@ async function autoLearnPortalInner(
   // Pacific Power's PowerClerk — same platform, different tenant host, correctly
   // refused). Name what IS stored so the operator adds the right login instead of
   // hunting a phantom bug.
+  // LOGIN HEALTH. A stored credential the portal refused is a fact worth keeping — otherwise
+  // it dies with the run and the next person to touch that jurisdiction rediscovers it. Both
+  // outcomes are recorded, because a success is what clears a stale mark. Diagnostic only:
+  // never allowed to affect the run.
+  if (credential && project.clientId) {
+    try {
+      const msg = String(learn.message || "");
+      const rejected = /still on the login form|username\/password was likely rejected|login failed/i.test(msg);
+      const reachedPortal = learn.ok || learn.pageCount > 0 || /review|advance|fill/i.test(msg);
+      if (rejected) {
+        recordLoginOutcome(db, project.clientId, portalUrl, { ok: false, note: msg.slice(0, 240) });
+      } else if (reachedPortal) {
+        recordLoginOutcome(db, project.clientId, portalUrl, { ok: true, note: "login accepted" });
+      }
+    } catch { /* diagnostic only */ }
+  }
+
   if (!credential && project.clientId && /no stored credential/i.test(String(learn.message || ""))) {
     try {
       const targetHost = (() => { try { return new URL(portalUrl).hostname.toLowerCase(); } catch { return String(portalUrl || "").toLowerCase(); } })();

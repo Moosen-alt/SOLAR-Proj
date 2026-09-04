@@ -247,6 +247,37 @@ await check("a disabled 'Apply' pill ahead of the real link is skipped, not wait
   assert.equal(await page.title(), "ENTERED", "the ENABLED link was the one clicked");
 });
 
+// A DOCUMENT *ABOUT* APPLYING IS NOT THE WAY TO APPLY.
+//
+// Found by running this finder against 66 live portals: Lynnwood's SmartGov portal offers
+// "Permit Application Checklist" — a PDF — and it matched /permit application/ exactly,
+// so the entry pass would have opened a handout, then reported that it had entered the
+// application flow. Every portal publishes this class of link beside the real one.
+check("a checklist/instructions document is never mistaken for the way in", () => {
+  const documents = [
+    "Permit Application Checklist",
+    "Solar Permit Application Instructions",
+    "Permit Application Guide",
+    "Sample Permit Application",
+    "Permit Application Requirements",
+    "Application FAQ",
+    "New Application Tutorial",
+  ];
+  for (const doc of documents) {
+    assert.equal(isExcludedEntryLabel(doc), true, `should exclude: ${doc}`);
+    assert.equal(matchesEntryLabel(doc), false, `should not match: ${doc}`);
+  }
+});
+
+check("...and the real entry controls beside them still match", () => {
+  // The exclusion must not cost us the genuine labels seen live during the same sweep.
+  for (const good of ["Apply", "Apply for a Permit", "Apply Here", "Click to Apply Online",
+                      "Submit an Application/Request", "Create an Application",
+                      "New Interconnection Application"]) {
+    assert.equal(matchesEntryLabel(good), true, `should match: ${good}`);
+  }
+});
+
 await browser.close();
 await new Promise<void>((r) => server.close(() => r()));
 if (failures) { console.error(`\n${failures} applicationEntry.dom.smoke check(s) FAILED.`); process.exit(1); }

@@ -1355,6 +1355,32 @@ const VERSIONED_MIGRATIONS: VersionedMigration[] = [
       }
     },
   },
+  {
+    version: 16,
+    name: "credential_login_health",
+    up: (db) => {
+      // A STALE LOGIN LOOKS EXACTLY LIKE A BROKEN BOT. When a stored credential is rejected
+      // the run stops with "still on the login form after submitting" — accurate, but the
+      // knowledge dies with the run, so the next person to touch that jurisdiction rediscovers
+      // it from scratch. Live: an OpenGov login for Newberg OR was refused, and nothing on the
+      // credential recorded that. A service bureau holding 80+ logins across jurisdictions it
+      // touches a few times a year will always have some that have rotated or expired; which
+      // ones is a fact worth keeping.
+      //
+      // Recorded per credential, and deliberately BOTH outcomes: a success clears the flag, so
+      // a login fixed by the operator stops nagging without anyone editing state by hand.
+      const cols = db.query<{ name: string }>("PRAGMA table_info(portal_credentials)").map((c) => c.name);
+      if (!cols.includes("last_login_ok_at")) {
+        db.exec("ALTER TABLE portal_credentials ADD COLUMN last_login_ok_at TEXT");
+      }
+      if (!cols.includes("last_login_failed_at")) {
+        db.exec("ALTER TABLE portal_credentials ADD COLUMN last_login_failed_at TEXT");
+      }
+      if (!cols.includes("last_login_note")) {
+        db.exec("ALTER TABLE portal_credentials ADD COLUMN last_login_note TEXT NOT NULL DEFAULT ''");
+      }
+    },
+  },
 ];
 
 // One-time repair for the runaway-notes bug: upsertKnowledge used to merge the

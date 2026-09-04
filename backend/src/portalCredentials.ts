@@ -19,6 +19,14 @@ export interface PortalCredentialView {
   notes: string;
   createdAt: string;
   updatedAt: string;
+  /** Last time this login was accepted by its portal (ISO), if ever. */
+  lastLoginOkAt?: string;
+  /** Last time the portal REJECTED it (ISO). Set only when we got as far as submitting. */
+  lastLoginFailedAt?: string;
+  /** What the portal did, in the engine's words. */
+  lastLoginNote?: string;
+  /** The operator-facing verdict: a login the portal refused more recently than it accepted. */
+  stale: boolean;
 }
 
 function mapView(row: Row): PortalCredentialView {
@@ -32,6 +40,12 @@ function mapView(row: Row): PortalCredentialView {
     notes: s(row.notes),
     createdAt: s(row.created_at),
     updatedAt: s(row.updated_at),
+    lastLoginOkAt: s(row.last_login_ok_at) || undefined,
+    lastLoginFailedAt: s(row.last_login_failed_at) || undefined,
+    lastLoginNote: s(row.last_login_note) || undefined,
+    // Refused more recently than it was accepted — or refused and never accepted at all.
+    // A login that later succeeds stops being stale without anyone editing anything.
+    stale: Boolean(s(row.last_login_failed_at)) && s(row.last_login_failed_at) > s(row.last_login_ok_at),
   };
 }
 
@@ -292,4 +306,57 @@ export function nearestStoredLogins(
     .sort((a, b) => b.score - a.score)
     .slice(0, limit)
     .map((c) => c.label);
+}
+
+// ---------------------------------------------------------------------------
+// LOGIN HEALTH — remember which stored logins the portal actually accepted.
+//
+// A stale credential is indistinguishable from a broken bot from the outside: the run
+// stops with "still on the login form after submitting", which is accurate and then
+// forgotten. A service bureau holding 80+ logins for jurisdictions it touches a few times
+// a year will always have some that have rotated; which ones is worth keeping.
+//
+// Matched by HOST, the same way the credential was chosen in the first place, so the note
+// lands on the row that was actually tried.
+// ---------------------------------------------------------------------------
+export function recordLoginOutcome(
+  db: AppDb,
+  clientId: string,
+  portalUrl: string,
+  outcome: { ok: boolean; note?: string },
+): boolean {
+  if (!clientId || !portalUrl) return false;
+  let targetHost = "";
+  try { targetHost = new URL(portalUrl).hostname.toLowerCase(); } catch { return false; }
+  const rows = db.query<Row>(
+    "SELECT id, portal_url FROM portal_credentials WHERE client_id = ? ORDER BY updated_at DESC", [clientId],
+  );
+  const now = nowIso();
+  for (const row of rows) {
+    const stored = s(row.portal_url);
+    if (!stored) continue;
+    let storedHost = "";
+    try { storedHost = new URL(stored).hostname.toLowerCase(); } catch { continue; }
+    if (!hostsMatch(targetHost, storedHost)) continue;
+    // Both outcomes are recorded. Only writing failures would leave a credential marked
+    // stale forever after one bad night; a success is what clears it.
+    if (outcome.ok) {
+      db.run(
+        "UPDATE portal_credentials SET last_login_ok_at = ?, last_login_note = ?, updated_at = ? WHERE id = ?",
+        [now, s(outcome.note).slice(0, 300), now, s(row.id)],
+      );
+    } else {
+      db.run(
+        "UPDATE portal_credentials SET last_login_failed_at = ?, last_login_note = ?, updated_at = ? WHERE id = ?",
+        [now, s(outcome.note).slice(0, 300), now, s(row.id)],
+      );
+    }
+    return true;
+  }
+  return false;
+}
+
+/** Logins the portal refused more recently than it accepted them — the refresh list. */
+export function listStaleCredentials(db: AppDb, clientId: string): PortalCredentialView[] {
+  return listPortalCredentials(db, clientId).filter((c) => c.stale);
 }
