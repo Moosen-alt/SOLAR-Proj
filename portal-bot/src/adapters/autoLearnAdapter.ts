@@ -5720,6 +5720,15 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       await l.evaluate((el: Element) => el.setAttribute("data-al-hidden-target", "1"));
       const plan = await this.page.evaluate(planHiddenReveal);
       if (!plan?.opener) {
+        // SAY THAT WE LOOKED. Returning quietly here made "no opener exists" identical to
+        // "no reveal was attempted" in the run log — momentum's bundle showed three
+        // hidden_field_skipped lines and no way to tell which. That ambiguity is the thing
+        // this whole day kept costing live runs to resolve.
+        this.debug?.event({
+          type: "hidden_field_no_opener",
+          label: (field.label || "").slice(0, 60),
+          why: plan?.why || "not concealed by any ancestor we recognise",
+        });
         await l.evaluate((el: Element) => el.removeAttribute("data-al-hidden-target")).catch(() => {});
         return false;
       }
