@@ -29,6 +29,7 @@ export type LoginStatus =
   | "no_username_field" // a password field exists but no username field could be found
   | "no_submit_control" // fields filled but no login button/link could be found
   | "login_form_unrecognized" // no login form found, but NO proof of a session either — do not proceed as logged in
+  | "no_login_required" // the page IS the application form: a public submission portal with no account at all
   | "error";
 
 export interface LoginResult {
@@ -435,6 +436,32 @@ export async function performLogin(
       }
       const url = (typeof page.url === "function" ? page.url() : "").toLowerCase();
       const onLoginUrl = /login|sign-?in|account\/(login|signin)|logon/.test(url);
+
+      // SOME PORTALS HAVE NO ACCOUNTS AT ALL.
+      //
+      // Not every jurisdiction runs a permitting SYSTEM; plenty publish a submission FORM.
+      // Gilbert, AZ serves its permit request at gilbertaz.seamlessdocs.com — eight visible
+      // fields (Permit Number, Located at, Email, Phone, First/Last Name), no password field
+      // anywhere, and nothing to log into. The engine looked for a login, failed to find one,
+      // and reported the portal unrecognisable — refusing to fill a form that was sitting
+      // open in front of it.
+      //
+      // This is NOT the eTRAKiT-style false success the branch below guards against. That
+      // danger is a LOGGED-OUT landing page being mistaken for a session; the tell is that
+      // such a page offers navigation and a search box, not an application. So the bar is a
+      // real application-shaped form: several fillable inputs that are not search boxes, on a
+      // page that is not itself a login URL. Anything less still fails honestly.
+      if (!onLoginUrl) {
+        const publicForm = await applicationShapedForm(page);
+        if (publicForm) {
+          return {
+            ok: true,
+            status: "no_login_required",
+            message: `No login exists on this portal — it publishes the application directly (${publicForm} fillable field(s)). Proceeding without signing in.`,
+          };
+        }
+      }
+
       return {
         ok: false,
         status: onLoginUrl ? "still_on_login" : "login_form_unrecognized",
@@ -522,5 +549,51 @@ export async function performLogin(
     };
   } catch (err) {
     return { ok: false, status: "error", message: `Login failed: ${err instanceof Error ? err.message : String(err)}` };
+  }
+}
+
+/**
+ * Is this page an APPLICATION, rather than a logged-out landing page?
+ *
+ * The distinction matters because the engine deliberately refuses to proceed when it cannot
+ * prove a session — that guard turned a silent false success on eTRAKiT-style public landings
+ * into an honest failure, and it must keep doing so. But some jurisdictions genuinely have no
+ * accounts: Gilbert, AZ publishes its permit request as a plain form with eight fields and no
+ * password anywhere. Failing there refuses to fill a form sitting open in front of us.
+ *
+ * A landing page offers navigation and a search box. An application offers fields a person
+ * types their project into. So: count the inputs that are actually part of a form and are not
+ * search/filter boxes, and require several of them. Returns the count when the page looks like
+ * an application, 0 otherwise.
+ */
+async function applicationShapedForm(page: Page): Promise<number> {
+  try {
+    return await (page as unknown as { evaluate: (fn: () => number) => Promise<number> }).evaluate(() => {
+      const vis = (el: Element): boolean => {
+        const r = (el as HTMLElement).getBoundingClientRect();
+        return r.width > 2 && r.height > 2;
+      };
+      const SEARCHY = /search|filter|lookup|look up|find\b|query|keyword|zip|postal/i;
+      const fields = (Array.from(document.querySelectorAll("input, select, textarea")) as HTMLElement[])
+        .filter(vis)
+        .filter((el) => {
+          const type = ((el as HTMLInputElement).type || "").toLowerCase();
+          // Only fields a person fills in with project data.
+          if (["hidden", "submit", "button", "reset", "image", "search"].includes(type)) return false;
+          const hay = [
+            (el as HTMLInputElement).name,
+            el.id,
+            (el as HTMLInputElement).placeholder,
+            el.getAttribute("aria-label"),
+          ].filter(Boolean).join(" ");
+          return !SEARCHY.test(hay);
+        });
+      // A login form is two fields; a search bar is one. An application is several, and a
+      // password field anywhere means this is a login page, not a public form.
+      if (document.querySelector("input[type=password]")) return 0;
+      return fields.length >= 4 ? fields.length : 0;
+    });
+  } catch {
+    return 0;
   }
 }

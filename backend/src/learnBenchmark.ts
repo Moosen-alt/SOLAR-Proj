@@ -94,6 +94,11 @@ export function scoreLearnOutcome(outcome: LearnOutcome): LearnScore {
   if (loginStatus === "logged_in" || loginStatus === "already_authenticated") {
     return { rung: "authenticated", index: 2, reason: "signed in, but no way into an application was found", owner: "engine" };
   }
+  if (loginStatus === "no_login_required") {
+    // A public submission form: there is no account to sign in to, so being past "login" is
+    // not an achievement and not a failure. Scored level with authenticated.
+    return { rung: "authenticated", index: 2, reason: "no login exists on this portal; the application is published directly", owner: "engine" };
+  }
   if (loginStatus === "no_credential") {
     return { rung: "login_failed", index: 1, reason: "a login page was reached but no credential is stored for this portal", owner: "credential" };
   }
@@ -103,8 +108,22 @@ export function scoreLearnOutcome(outcome: LearnOutcome): LearnScore {
   if (loginStatus === "mfa_captcha" || /mfa|captcha/i.test(msg)) {
     return { rung: "login_failed", index: 1, reason: "stopped at an MFA/CAPTCHA challenge, which a human must clear", owner: "portal" };
   }
+  // A PORTAL THAT NEVER ANSWERED IS NOT A DETECTOR BUG.
+  //
+  // The first baseline scored three portals as "the login form was not recognised", owner
+  // engine — and probing them found one timed out, one returned 403 to a headless browser,
+  // and one has no login at all. Only the third was ours. A benchmark that blames the engine
+  // for a dead host sends the next day's work in the wrong direction, so network and
+  // refusal failures are separated out before the login branches below.
+  if (/ERR_TIMED_OUT|ERR_NAME_NOT_RESOLVED|ERR_CONNECTION|ERR_ABORTED|ERR_CERT|net::|ETIMEDOUT|ENOTFOUND|navigation timeout/i.test(msg)) {
+    return { rung: "unreachable", index: 0, reason: "the portal did not respond", owner: "portal" };
+  }
+  if (/\b403\b|forbidden|access denied|request could not be satisfied|are you a robot|unusual traffic/i.test(msg)) {
+    return { rung: "unreachable", index: 0, reason: "the portal refused an automated browser (WAF/bot block)", owner: "portal" };
+  }
   if (loginStatus === "login_form_unrecognized" || /could not find a login form/i.test(msg)) {
-    // Reached the site but could not see its login: that is ours, not the operator's.
+    // Reached the site and it served a page, but no login was recognisable. Ours — unless
+    // the page turns out to need no login at all, which the engine handles separately.
     return { rung: "login_failed", index: 1, reason: "the portal's login form was not recognised", owner: "engine" };
   }
   if (login) {

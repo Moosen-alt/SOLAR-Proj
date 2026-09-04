@@ -1978,7 +1978,10 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       const result = await performLogin(this.page, context.credential);
       // Status + redacted message only — performLogin never returns credentials.
       this.debug?.event({ type: "login", status: result.status, startUrl: context.startUrl ? safeHostPath(context.startUrl) : null });
-      if (result.status === "logged_in" || result.status === "already_authenticated") {
+      if (result.status === "logged_in" || result.status === "already_authenticated" || result.status === "no_login_required") {
+        // no_login_required: the jurisdiction publishes its application directly, with no
+        // account to sign in to. Proceeding is the correct outcome, not a fallback — the
+        // form is already in front of us.
         return { ok: true, message: `Opened ${this.portalName} for autonomous learning. ${result.message}` };
       }
       if (result.status === "mfa_captcha") {

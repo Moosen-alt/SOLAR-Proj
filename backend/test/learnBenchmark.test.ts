@@ -106,6 +106,41 @@ check("reached_review: the top rung, and nobody owes anything", () => {
 });
 
 // ---------------------------------------------------------------------------
+// A BENCHMARK THAT BLAMES THE ENGINE FOR A DEAD HOST SENDS THE NEXT DAY'S WORK ASTRAY.
+//
+// The first baseline scored three portals "the login form was not recognised", owner engine.
+// Probing them found one timed out, one returned 403 to a headless browser, and one has no
+// login at all. Only the third was ours — a 3-in-5 "engine problem" that was really 1-in-5.
+// ---------------------------------------------------------------------------
+check("a portal that never responded is the PORTAL's problem", () => {
+  const s = scoreLearnOutcome({ status: "failed", message: "page.goto: net::ERR_TIMED_OUT at https://www4.citizenserve.com/..." });
+  assert.equal(s.rung, "unreachable");
+  assert.equal(s.owner, "portal", "a dead host must not be counted as a detector defect");
+});
+
+check("a WAF/bot block is the PORTAL's problem too", () => {
+  const s = scoreLearnOutcome({ status: "failed", message: "403 Forbidden" });
+  assert.equal(s.rung, "unreachable");
+  assert.equal(s.owner, "portal");
+});
+
+check("...but a page we DID receive and could not read stays ours", () => {
+  const s = scoreLearnOutcome({
+    status: "failed",
+    message: "Could not find a login form or any signed-in signal on this portal",
+    events: [{ type: "login", status: "login_form_unrecognized" }],
+  });
+  assert.equal(s.owner, "engine");
+});
+
+check("a portal with NO LOGIN is not a login failure", () => {
+  // Gilbert, AZ publishes its permit request as a plain form: eight fields, no password.
+  const s = scoreLearnOutcome({ events: [{ type: "login", status: "no_login_required" }] });
+  assert.equal(s.rung, "authenticated");
+  assert.ok(/no login exists/i.test(s.reason));
+});
+
+// ---------------------------------------------------------------------------
 // The ladder must stay ordered and honest.
 // ---------------------------------------------------------------------------
 check("the rungs are strictly ordered, worst to best", () => {
