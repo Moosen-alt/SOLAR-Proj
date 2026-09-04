@@ -62,6 +62,21 @@ const EXCLUDE_PATTERNS: RegExp[] = [
   // the real "New Interconnection Application", so the broadened new-application pattern
   // above must not swallow it.
   /\bpre-?application\b/i,
+  // LEGAL AND CONSENT PAGES ARE NEVER PART OF AN APPLICATION, AND EVERY PORTAL HAS THEM.
+  //
+  // Des Moines WA (PermitTrax) logged in, found and clicked the right entry — the run's own
+  // event says application_entry_pass ok:true, label "Click to Apply Online" — and then
+  // spent every remaining page on /citizen/CookiePolicy/, twice, before its budget ran out.
+  // Nothing in the exclusion list stopped it, because "Cookie Policy" reads like an
+  // ordinary link, and a consent banner puts one in front of the content on first visit.
+  //
+  // These sit in the footer of essentially every government portal, so this is worth
+  // exactly one line and saves a page of budget on all of them.
+  // Note what is NOT here: bare "terms" (a Short Terms Rental permit is a real permit) and
+  // bare "consent" (an Owner Consent Form is a real document). Only the banner's own
+  // phrasings, which is all that was ever wandered into.
+  /\bcookie\b|\bprivacy\b|\bterms of (use|service)\b|\bdisclaimer\b|\baccessibility\b|\bcopyright\b|\bsite ?map\b/i,
+  /\bconsent (preferences|settings)\b|\bmanage consent\b|\bmanage preferences\b/i,
   // A DOCUMENT *ABOUT* APPLYING IS NOT THE WAY TO APPLY. Found by sweeping the engine's own
   // finder across 66 live portals: Lynnwood's SmartGov portal offers "Permit Application
   // Checklist" — a PDF — and it matched /\bpermit application\b/ exactly, so the entry pass
