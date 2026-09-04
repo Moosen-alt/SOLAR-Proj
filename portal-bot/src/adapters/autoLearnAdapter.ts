@@ -3019,7 +3019,16 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     // The category is named by the record type's own leading words, so the control to open
     // is the checkbox whose label is a prefix of it ("Residential" for "Residential Solar").
     // Only a genuine prefix qualifies, so this can never tick an unrelated category.
-    if (!(await loc.isVisible().catch(() => false))) {
+    // typeof-guarded like every other isVisible call in this file: a stub locator has no
+    // such method, and calling it bare threw "loc.isVisible is not a function" — which the
+    // enclosing try turned into a silent "record type not handled" rather than an error.
+    // Absent the method, assume visible: that is the behaviour from before this category
+    // pass existed, so a stub falls through to it rather than into a path meant for a
+    // collapsed Accela category.
+    const chosenVisible = typeof loc.isVisible === "function"
+      ? await loc.isVisible().catch(() => false)
+      : true;
+    if (!chosenVisible) {
       const wanted = String(chosen.label || "").trim().toLowerCase();
       const category = fields.find((f) => {
         if (f.fieldType !== "checkbox" || f === chosen) return false;
