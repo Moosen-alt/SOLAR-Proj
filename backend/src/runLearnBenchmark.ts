@@ -56,7 +56,11 @@ async function main(): Promise<void> {
   const db = await openDatabase();
   const limit = Number(arg("limit") || 0);
   const hostFilter = (arg("host") || "").toLowerCase().split(",").map((s) => s.trim()).filter(Boolean);
-  const concurrency = Math.max(1, Math.min(4, Number(arg("concurrency") || 2)));
+  // SEQUENTIAL BY DEFAULT. Learns serialise on a per-recipe lease and share a browser-profile
+  // queue, so parallelism mostly buys portals waiting in line — and the wall-clock cap counts
+  // that waiting, which turned five portals into "timed out" when they had barely started.
+  // The measurement is worth more than the wall clock.
+  const concurrency = Math.max(1, Math.min(4, Number(arg("concurrency") || 1)));
   // One portal must not be able to eat an hour. Momentum ran 19 minutes and Accela 18 before
   // giving up, and a full sweep of 70 at that rate is a day. A capped portal scores on what
   // it reached, which is exactly what the ladder is for.
@@ -97,7 +101,18 @@ async function main(): Promise<void> {
         owner: `Benchmark ${loc.city}`, homeownerName: `Benchmark ${loc.city}`,
         homeownerEmail: "permit@infinitysolarusa.com", homeownerPhone: "(503) 555-0142",
         street: loc.street, city: loc.city, state: t.state, zip: loc.zip,
-        ahj: `City of ${loc.city}`, utility: loc.utility, clientId: CLIENT,
+        // A SYNTHETIC JURISDICTION PER PORTAL, AND NEVER A REAL ONE.
+        //
+        // Recipes are keyed on (scope, state, ahj, utility). Naming the benchmark project
+        // after a real city did two bad things at once. Portals sharing a state computed the
+        // SAME key, so the concurrent-learn lease refused four of twelve outright and the
+        // rest would have overwritten each other's recipe run sequentially. And far worse, a
+        // benchmark project called "City of Salem" on PGE keys to the same row a real Salem
+        // filing uses — a measurement run could quietly clobber a production recipe.
+        //
+        // The host is unique and unmistakably not a jurisdiction, so each portal gets its own
+        // isolated row and nothing the benchmark writes can collide with real work.
+        ahj: `Benchmark ${t.host}`, utility: loc.utility, clientId: CLIENT,
         dcKw: "7.2", acKw: "6.4", moduleQty: "18", moduleWattage: "400",
         permitPath: "prescriptive", framingType: "rafter", roofRafterSpacing: "24",
         roofRafterSpan: "11.5", snow: "25", deadLoad: "3.0", wind: "B",
