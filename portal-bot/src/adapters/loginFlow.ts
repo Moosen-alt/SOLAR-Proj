@@ -418,7 +418,13 @@ export async function revealLoginForm(page: Page): Promise<boolean> {
       await smartWait(page, 3000);
       clickedOne = true;
     } catch (err) {
-      trail.push(`click-failed ${key} #${ti}: ${String((err as Error)?.message || err).replace(/\s+/g, " ").slice(0, 140)}`);
+      // KEEP THE TAIL, NOT THE HEAD. Playwright leads with an echo of the selector and puts
+      // the actionability verdict last — "element is not visible", "intercepts pointer
+      // events", "element is outside of the viewport". Truncating from the front spent the
+      // whole budget re-printing a selector already named two words earlier, and left the
+      // one useful clause off the end. Cost a live run to learn.
+      const why = String((err as Error)?.message || err).replace(/\s+/g, " ");
+      trail.push(`click-failed ${key} #${ti}: ${why.length > 200 ? `...${why.slice(-200)}` : why}`);
       continue; // this match refused — try the next MATCH before giving up on the candidate
     }
     if (await loginFormPresent(page)) { trail.push(`clicked ${key} #${ti} -> form appeared`); return true; }
