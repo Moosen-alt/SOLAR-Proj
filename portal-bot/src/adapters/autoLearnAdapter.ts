@@ -1968,8 +1968,35 @@ export class AutoLearnAdapter extends BasePortalAdapter {
 
       // Navigate to the portal entry URL so the learn loop starts on the application page.
       if (context.startUrl) {
-        await this.page.goto(context.startUrl, { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => null);
+        // A FAILED NAVIGATION MUST NOT BE REPORTED AS A LOGIN PROBLEM.
+        //
+        // This swallowed the error and carried on, so a host that never answered was judged
+        // by whatever was on the blank page — always "could not find a login form", which
+        // reads as a detector defect. Live: www4.citizenserve.com timed out and
+        // www.gosolarapp.org returned 403, and the benchmark scored both as engine failures.
+        // Two of five portals mis-blamed is enough to send a day's work the wrong way.
+        //
+        // The catch stays, because a slow single-page portal routinely misses
+        // domcontentloaded and then renders perfectly well. So the error is only fatal when
+        // the page really is empty — nothing to read and nothing to click.
+        let navError = "";
+        await this.page.goto(context.startUrl, { waitUntil: "domcontentloaded", timeout: 30000 })
+          .catch((err: unknown) => { navError = String((err as Error)?.message || err).slice(0, 200); return null; });
         await smartWait(this.page);
+        if (navError) {
+          const landed = await this.page.evaluate(() => ({
+            url: location.href,
+            text: (document.body?.innerText || "").trim().length,
+            controls: document.querySelectorAll("input, button, a, select, textarea").length,
+          })).catch(() => null);
+          const blank = !landed || landed.url === "about:blank" || (landed.text < 40 && landed.controls < 3);
+          if (blank) {
+            this.debug?.event({ type: "navigation_failed", startUrl: safeHostPath(context.startUrl), error: navError.slice(0, 120) });
+            return { ok: false, message: `${this.portalName} did not load: ${navError}` };
+          }
+          // Rendered anyway — note it and carry on rather than discarding a usable page.
+          this.debug?.event({ type: "navigation_error_recovered", startUrl: safeHostPath(context.startUrl), error: navError.slice(0, 120) });
+        }
       }
 
       // Log in via the shared, portal-agnostic login flow. It detects/reveals the login
@@ -2960,6 +2987,42 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     if (!chosen) { this.debug?.event({ type: "record_type_bail", why: "no candidate matched the solar/discipline preference" }); return false; }
     const loc = await this.locator(chosen.selector);
     if (!loc) return false;
+
+    // THE RECORD TYPE IS INSIDE A CATEGORY THAT HAS TO BE OPENED FIRST.
+    //
+    // Accela's CapType page lists CATEGORY checkboxes (Administration, Residential,
+    // Building Project, Non-Residential) above the record-type radios, and a type stays
+    // collapsed until its category is ticked. Live on aca-prod/CHINO: "Residential Solar"
+    // was extracted and then reported hidden_field_skipped, check() failed with
+    // "record-type check/click failed", and the portal answered every advance with "You
+    // have not selected a record type." — four times, through two recovery attempts.
+    //
+    // The category is named by the record type's own leading words, so the control to open
+    // is the checkbox whose label is a prefix of it ("Residential" for "Residential Solar").
+    // Only a genuine prefix qualifies, so this can never tick an unrelated category.
+    if (!(await loc.isVisible().catch(() => false))) {
+      const wanted = String(chosen.label || "").trim().toLowerCase();
+      const category = fields.find((f) => {
+        if (f.fieldType !== "checkbox" || f === chosen) return false;
+        const cat = String(f.label || "").trim().toLowerCase();
+        return cat.length >= 4 && wanted.startsWith(cat) && wanted.length > cat.length;
+      });
+      if (category) {
+        const catLoc = await this.locator(category.selector);
+        const opened = catLoc
+          ? await catLoc.check({ timeout: 8000 }).then(() => true)
+            .catch(async () => catLoc.click({ timeout: 6000 }).then(() => true).catch(() => false))
+          : false;
+        if (opened) {
+          steps.push({ action: "check", phase: "fill", selector: category.selector, note: `record type category: ${(category.label || "").slice(0, 50)}` });
+          await this.page?.waitForTimeout?.(1200).catch(() => null);
+          this.debug?.event({ type: "record_type_category_opened", category: String(category.label || "").slice(0, 40), forType: String(chosen.label || "").slice(0, 40) });
+        }
+      } else {
+        this.debug?.event({ type: "record_type_hidden_no_category", label: String(chosen.label || "").slice(0, 40) });
+      }
+    }
+
     // Verified action → recorded step (an unverified push here duplicates the pair once
     // the planner retakes the page, and the duplicate corrupts every future replay).
     const checkOk = await loc.check({ timeout: 10000 }).then(() => true)

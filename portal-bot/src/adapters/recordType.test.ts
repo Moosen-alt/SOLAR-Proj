@@ -83,6 +83,47 @@ check("Structural resolves on the CITY list", () => {
   assert.equal(pickByLabel(COOS_BAY_CITY, "Residential - Structural"), "Residential - Structural");
 });
 
+// ---------------------------------------------------------------------------
+// A RECORD TYPE INSIDE A CLOSED CATEGORY IS NOT AN ABSENT RECORD TYPE.
+//
+// Accela's CapType page lists CATEGORY checkboxes above the record-type radios, and a type
+// stays collapsed until its category is ticked. Live on aca-prod/CHINO the learn extracted
+// "Residential Solar", reported it hidden, failed to check it, and the portal answered every
+// advance with "You have not selected a record type." — four times, through two recovery
+// attempts, then gave up.
+//
+// The category to open is named by the record type's own leading words. This pins that rule,
+// and pins that it stays narrow: only a genuine prefix may be ticked, or the pass would open
+// unrelated categories on a page where several are offered.
+// ---------------------------------------------------------------------------
+const categoryFor = (wantedLabel: string, checkboxes: string[]): string | undefined => {
+  const wanted = wantedLabel.trim().toLowerCase();
+  return checkboxes.find((c) => {
+    const cat = c.trim().toLowerCase();
+    return cat.length >= 4 && wanted.startsWith(cat) && wanted.length > cat.length;
+  });
+};
+// The real category list from that page.
+const CHINO_CATEGORIES = ["Administration", "Residential", "Building Project", "Non-Residential"];
+check("THE REGRESSION: 'Residential Solar' opens the 'Residential' category", () => {
+  assert.equal(categoryFor("Residential Solar", CHINO_CATEGORIES), "Residential");
+});
+check("a non-residential type opens ITS category, not Residential", () => {
+  // "Non-Residential Electrical" must not match "Residential" — it does not start with it.
+  assert.equal(categoryFor("Non-Residential Electrical", CHINO_CATEGORIES), "Non-Residential");
+});
+check("an unrelated category is never opened", () => {
+  assert.equal(categoryFor("Residential Solar", ["Administration", "Building Project"]), undefined);
+});
+check("a category is only a prefix, never an equal or a substring elsewhere", () => {
+  // Equal is not a category-of-itself, and a word appearing mid-label does not qualify.
+  assert.equal(categoryFor("Residential", CHINO_CATEGORIES), undefined);
+  assert.equal(categoryFor("Solar Residential Array", CHINO_CATEGORIES), undefined);
+});
+check("a too-short category label cannot match by accident", () => {
+  assert.equal(categoryFor("Residential Solar", ["Res"]), undefined);
+});
+
 if (failures) { console.error(`\n${failures} record-type check(s) FAILED.`); process.exit(1); }
 console.log("\nAll record-type checks passed.");
 process.exit(0);
