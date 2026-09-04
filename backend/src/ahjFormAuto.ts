@@ -164,6 +164,15 @@ export function storeAhjFormTemplate(
 ): string {
   const now = nowIso();
   const blob = Buffer.from(input.bytes);
+  // THE FORM'S OWN NAME DECIDES WHAT IT IS. Callers pass a formType they inferred from the
+  // context that sent them looking, which is often the generic "permit_application" — so
+  // Coos Bay's "Building Permit Application.pdf" was stored as permit_application. That
+  // matters because the portal-side upload sweep resolves an Accela slot labelled "Building
+  // Permit Application" to docType building_application, looks for a file under that key,
+  // finds nothing, and skips the slot in silence. The filled application existed on disk the
+  // whole time. classifyFormType returns the caller's value when the name says nothing, so a
+  // specific name wins and a generic caller is still respected.
+  input.formType = classifyFormType(input.filename || "", input.formType);
   // Stamp the content hash + check time so the periodic refresh can tell when the
   // AHJ has revised the form at its source URL. A fresh (re)mapping is always
   // UNVERIFIED — the operator must preview and verify before a real submit.
