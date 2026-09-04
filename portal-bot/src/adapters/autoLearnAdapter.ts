@@ -3749,7 +3749,19 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       // c3) DASHBOARD NAVIGATION — click a link/button to get from the portal home to the
       //     actual application form. Recorded as a click step (phase:"open") then loop again.
       if (typeof plan.navigateSelectorIndex === "number") {
-        const navField = fields[plan.navigateSelectorIndex];
+        let navField = fields[plan.navigateSelectorIndex];
+        // A LIST WHERE EVERY CONTROL SAYS THE SAME WORD — see rowChooser.ts. The planner has
+        // nothing to choose BY on such a page: Des Moines offers twelve buttons all reading
+        // "SELECT" and the meaning is in the row beside each one.
+        //
+        // The pick REPLACES the planner's target and then goes through the ordinary navigate
+        // path below. An earlier version clicked it here instead, and reimplementing a
+        // fraction of that path cost two live runs: first a flat 1200ms wait where the real
+        // path does a networkidle race, then a missing waitAfterClick — which is what adopts
+        // a new tab. PermitTrax picked the right row both times and the walk ended anyway,
+        // still looking at the dashboard. Do not duplicate the path; feed it.
+        const rowPick = await this.chooseRowTarget();
+        if (rowPick) navField = rowPick;
         // NO-REVISIT GUARD: once any fill has been recorded, a NAVIGATE whose target
         // pathname was already walked this run would RESTART the wizard (live Salem/Accela:
         // CapHome → back to the Apply disclaimer → address → CapHome, burning page budget).
@@ -3799,13 +3811,6 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           // let the next pass try again — a live run drifted into Accela's records module
           // exactly this way.
           this.debug?.event({ type: "navigate_offlimits_rejected", page: pageCount, label: (navField.label || "").slice(0, 60), dashboard: isDashboard });
-        } else if (navField && await this.tryRowChooser(pageCount, steps)) {
-          // A LIST WHERE EVERY BUTTON SAYS THE SAME WORD was answered by reading the rows —
-          // see rowChooser.ts. Handled before the planner's pick is honoured, because on
-          // such a page the planner has nothing to choose BY: twelve controls all reading
-          // "SELECT" look identical to it, and Des Moines wandered for three runs on
-          // exactly that.
-          navCount++;
         } else if (navField) {
           // WHAT IT DECIDED TO CLICK, not only what it refused.
           //
@@ -5821,38 +5826,31 @@ export class AutoLearnAdapter extends BasePortalAdapter {
    * contradict the filing, and a recognised match. Anything else is not this pass's
    * business — picking the wrong row files the wrong permit.
    */
-  private async tryRowChooser(pageCount: number, steps: RecipeStep[]): Promise<boolean> {
-    if (!this.page || typeof this.page.evaluate !== "function") return false;
+  /**
+   * On a page whose controls are all identically labelled, pick the row that matches the
+   * filing and return it AS A NAVIGATE TARGET for the ordinary navigate path to click.
+   *
+   * It only chooses. Clicking belongs to the path that already knows how to wait for a
+   * postback, adopt a popup and verify the page actually moved.
+   */
+  private async chooseRowTarget(): Promise<ExtractedField | null> {
+    if (!this.page || typeof this.page.evaluate !== "function") return null;
     try {
       const rows = await this.page.evaluate(scanRowChoices);
-      if (!rows?.length) return false;
+      if (!rows?.length) return null;
       const pick = chooseRow(rows, this.permitDiscipline);
       if (!pick) {
-        this.debug?.event({ type: "row_chooser_refused", page: pageCount, rows: rows.length, why: "no row matched the filing without contradicting it" });
-        return false;
+        this.debug?.event({ type: "row_chooser_refused", rows: rows.length, why: "no row matched the filing without contradicting it" });
+        return null;
       }
-      this.debug?.event({ type: "row_chooser_picked", page: pageCount, rows: rows.length, control: pick.control, text: pick.text.slice(0, 110) });
-      steps.push({
-        action: "click",
-        phase: "open",
+      this.debug?.event({ type: "row_chooser_picked", rows: rows.length, control: pick.control, text: pick.text.slice(0, 110) });
+      return {
+        label: pick.text.slice(0, 80),
+        fieldType: "button",
         selector: { css: `[data-al-row="${pick.key}"]` },
-        note: `choose permit type by row: ${pick.text.slice(0, 80)}`,
-      });
-      await this.page.locator(`[data-al-row="${pick.key}"]`).first().click({ timeout: 5000 });
-      // THE SAME SETTLE THE ORDINARY NAVIGATE USES, and for the same reason. A flat 1200ms
-      // was not enough: the live run picked the right row — row_chooser_picked, "05)
-      // RESIDENTIAL ROOFTOP PHOTOVOLTAIC PERMIT" — and then reported "nothing fillable on 2
-      // page(s)", because the form arrives by AJAX and the next extraction read the page as
-      // it was before the click. Choosing correctly and then looking too early is its own
-      // way of learning nothing.
-      await Promise.race([
-        this.page.waitForLoadState?.("networkidle", { timeout: 6000 }).catch(() => null),
-        sleep(3000),
-      ]);
-      await this.clearOverlays();
-      return true;
+      } as ExtractedField;
     } catch {
-      return false;
+      return null;
     }
   }
 
