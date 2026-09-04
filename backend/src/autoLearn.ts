@@ -33,6 +33,7 @@ import { learnNoteTopicsFromMisses, activeLearnedNoteTerms } from "./noteTopics"
 import { deadFieldBindings, resolveRecipeFieldValues, startPortalRecording, savePortalRecipeSteps, getPortalRecipe, convertLiteralsToBoundFields, findAnyRecipeForProject, appendHumanPatchSteps, promoteRecordingIfEligible, recipeProfileKey } from "./portalRecipes";
 import { HUMAN_SUBMIT_OBSERVED_NOTE } from "../../portal-bot/src/humanCapture";
 import { projectDocsByType } from "./projectDocuments";
+import { logger } from "./logger";
 import { buildUtilityPackage } from "./docSplitter";
 import { addAuditLog } from "./audit";
 import { HttpError } from "./httpError";
@@ -475,9 +476,22 @@ async function autoLearnPortalInner(
     } catch { /* capture merge is best-effort — never disturb the operator's session */ }
   };
 
+  // A PORTAL THAT REFUSES ROBOTS MAY STILL ACCEPT A REAL WINDOW.
+  //
+  // Several jurisdictions front their portal with a WAF that serves 403 / "Access Denied" to
+  // a headless browser and the ordinary site to a headed one — measured on gosolarapp.org
+  // and two other AZ/CA hosts. That is not a portal we cannot learn; it is a browser posture
+  // it will not talk to. So a run blocked that way is retried ONCE with a real window.
+  //
+  // Only for a bot block: a genuine 403 from an auth failure, a dead host, or any other
+  // error retries nothing. And only where a display exists — set PORTAL_HEADED_RETRY=0 on a
+  // server, where a headed launch cannot work and the retry would just cost time.
+  let headlessForAttempt = input.headless;
+  let headedRetryUsed = false;
   let learn;
-  try {
-    learn = await browserLimiter(() => learnPortal({
+  // Named so the headed retry below can re-run the IDENTICAL learn; headlessForAttempt is
+  // read when the options are built, so flipping it and calling again is all that differs.
+  const runLearn = () => learnPortal({
       portalName: scopeType === "utility" ? project.utility : project.ahj,
       portalUrl,
       project,
@@ -559,7 +573,7 @@ async function autoLearnPortalInner(
             ? ""
             : "Fixed"),
       },
-      headless: input.headless,
+      headless: headlessForAttempt,
       // AHJ portals (Accela / Oregon ePermitting) require one combined plan-set PDF per
       // upload control; utility portals (PowerClerk) want the split sheets per slot.
       uploadMode: scopeType === "ahj" ? "combined" : "split",
@@ -596,9 +610,29 @@ async function autoLearnPortalInner(
       },
       onProgress: input.onProgress,
       onHumanStep,
-    }));
+    });
+  try {
+    learn = await browserLimiter(runLearn);
   } catch (err) {
     throw new HttpError(502, `Portal learn failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  // The headed retry described above. Re-runs the identical learn with a real window when —
+  // and only when — the failure looks like a bot block.
+  if (!headedRetryUsed && looksBotBlocked(String(learn?.message || "")) && resolveHeadless(headlessForAttempt)
+      && process.env.PORTAL_HEADED_RETRY !== "0") {
+    headedRetryUsed = true;
+    headlessForAttempt = false;
+    logger.info("auto-learn", "portal refused a headless browser — retrying with a real window", { portal: portalUrl });
+    try {
+      const retried = await browserLimiter(runLearn);
+      // Keep the retry only if it actually got further; a second refusal should not erase
+      // the first result's diagnostics.
+      if (retried && (retried.ok || (retried.pageCount ?? 0) > (learn?.pageCount ?? 0))) {
+        learn = retried;
+        learn.message = `${learn.message} (succeeded on a headed retry — this portal refuses headless browsers)`;
+      }
+    } catch { /* the headless result stands */ }
   }
 
   // NEAR-MISS credential diagnosis. "No stored credential was found" is technically
@@ -1140,4 +1174,29 @@ async function autoLearnPortalInner(
         ? " The browser is open at the review screen — any field you fill or fix by hand there is recorded into the recipe automatically (patch-by-demonstration)."
         : ""),
   });
+}
+
+/**
+ * Did this run fail because the portal refuses automated browsers, rather than because the
+ * portal is broken or the credential is wrong?
+ *
+ * Several jurisdictions front their permitting portal with a WAF that serves 403 / "Access
+ * Denied" to a headless browser and the ordinary site to a headed one — measured on
+ * gosolarapp.org and two other AZ/CA hosts during the portal sweep. Deliberately narrow: an
+ * ordinary auth 403, a dead host, or a timeout must NOT trigger a retry, because a second
+ * attempt would cost minutes and change nothing.
+ */
+export function looksBotBlocked(message: string): boolean {
+  const m = String(message || "");
+  if (!m) return false;
+  // A refusal aimed at the CLIENT, not at the credential.
+  // Interstitials phrase this as a question ("are you a robot?") and as an instruction
+  // ("verify you are human"), so match the noun rather than one sentence shape. CAPTCHA is
+  // deliberately absent: an MFA challenge also says captcha and pauses for a human instead.
+  const refusal = /\b403\b|forbidden|access denied|request could not be satisfied|\brobot\b|verify you are (a )?human|unusual traffic|bot detection|cloudflare|perimeterx|akamai|incapsula/i.test(m);
+  if (!refusal) return false;
+  // An authentication failure also says 403 on some portals; that is a credential problem
+  // and a headed window will not fix it.
+  if (/credential|username|password|sign ?in failed|login failed|not authorized to|permission/i.test(m)) return false;
+  return true;
 }
