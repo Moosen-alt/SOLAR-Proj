@@ -425,6 +425,25 @@ export async function revealLoginForm(page: Page): Promise<boolean> {
       // one useful clause off the end. Cost a live run to learn.
       const why = String((err as Error)?.message || err).replace(/\s+/g, " ");
       trail.push(`click-failed ${key} #${ti}: ${why.length > 200 ? `...${why.slice(-200)}` : why}`);
+      // COVERED, NOT MISSING. A modal backdrop or consent overlay above the control is a
+      // different problem from a control we cannot find, and it is the commoner one on a
+      // portal that greets you with a dialog. Neutralise what is on top and try once more.
+      if (/intercepts pointer events|element is not (visible|stable)/i.test(why)) {
+        const cleared = await neutralizeOverlayOver(page, trigger);
+        if (cleared) {
+          trail.push(`neutralised overlay: ${cleared}`);
+          try {
+            await trigger.click({ timeout: 3000 });
+            await smartWait(page, 3000);
+            clickedOne = true;
+            if (await loginFormPresent(page)) { trail.push(`clicked ${key} #${ti} after clearing -> form appeared`); return true; }
+            trail.push(`clicked ${key} #${ti} after clearing -> no form`);
+            continue;
+          } catch (err2) {
+            trail.push(`still blocked after clearing: ${String((err2 as Error)?.message || err2).replace(/\s+/g, " ").slice(-120)}`);
+          }
+        }
+      }
       continue; // this match refused — try the next MATCH before giving up on the candidate
     }
     if (await loginFormPresent(page)) { trail.push(`clicked ${key} #${ti} -> form appeared`); return true; }
@@ -952,6 +971,64 @@ export async function followForwardingInterstitial(page: Page): Promise<string> 
     await page.locator("[data-al-forward]").first().click({ timeout: 5000 });
     await smartWait(page, 4000);
     return marked;
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * SOMETHING IS SITTING ON TOP OF THE LOGIN CONTROL.
+ *
+ * Wilsonville (Tyler EnerGov) failed as "the portal's login form was not recognised" three
+ * runs in a row. Its reveal trail, once it kept the useful end of the error, said exactly
+ * what was wrong:
+ *
+ *   <div class="modal fade ng-isolate-scope in"
+ *        ng-style="{'z-index': 1050 + index*10, display: 'block'}"> subtree intercepts
+ *        pointer events
+ *
+ * An Angular modal backdrop over the login link. Not a detection failure at all — the
+ * control was found every time and could not be reached.
+ *
+ * The adapter already solves this for the page walk (neutralizeInterceptor), but the login
+ * flow runs before any of that and had no equivalent. It cannot import the adapter's copy
+ * either: the adapter imports this module, so that way is a cycle. Hence a small local one.
+ *
+ * pointer-events:none rather than removal — the overlay stays on the page, exactly as the
+ * adapter's version does, so nothing about the portal's own state is destroyed. Best-effort
+ * and non-throwing; returns what it neutralised, for the trail.
+ */
+async function neutralizeOverlayOver(page: Page, loc: Locator): Promise<string> {
+  try {
+    const box = await (loc as unknown as { boundingBox?: () => Promise<{ x: number; y: number; width: number; height: number } | null> })
+      .boundingBox?.().catch(() => null);
+    if (!box || box.width < 1 || box.height < 1) return "";
+    const x = box.x + box.width / 2;
+    const y = box.y + box.height / 2;
+    return await (page as unknown as { evaluate: (fn: (p: { x: number; y: number }) => string, arg: { x: number; y: number }) => Promise<string> })
+      .evaluate((p) => {
+        const hit = document.elementFromPoint(p.x, p.y);
+        if (!hit) return "";
+        const neutralised: string[] = [];
+        let node: Element | null = hit;
+        // Walk up from whatever is actually under the cursor. Anything POSITIONED or
+        // stacked above the flow, and big enough to be a cover rather than a control, is
+        // an interceptor. Bounded so a deep tree cannot spin.
+        for (let depth = 0; node && depth < 8; depth++) {
+          const el = node as HTMLElement;
+          const st = getComputedStyle(el);
+          const z = Number(st.zIndex) || 0;
+          const r = el.getBoundingClientRect();
+          const positioned = st.position === "fixed" || st.position === "absolute" || st.position === "sticky";
+          const large = r.width * r.height > 40000;
+          if ((positioned || z > 0) && large && el.tagName !== "BODY" && el.tagName !== "HTML") {
+            el.style.pointerEvents = "none";
+            neutralised.push(`${el.tagName.toLowerCase()}.${(el.className || "").toString().split(/\s+/)[0] || "-"}`);
+          }
+          node = el.parentElement;
+        }
+        return neutralised.slice(0, 3).join(", ");
+      }, { x, y });
   } catch {
     return "";
   }

@@ -293,6 +293,42 @@ check("THE REGRESSION: a candidate is not abandoned on its first unclickable mat
   revealed === true || trail.some((t) => /#1/.test(t)),
   "only match #0 was ever tried");
 
+// ---------------------------------------------------------------------------
+// COVERED IS NOT MISSING.
+//
+// Wilsonville failed as "the portal's login form was not recognised" three runs running.
+// The control was found every time; an Angular modal backdrop was on top of it:
+//
+//   <div class="modal fade ng-isolate-scope in"
+//        ng-style="{'z-index': 1050 + index*10, display: 'block'}"> subtree intercepts
+//        pointer events
+//
+// A portal that greets you with a dialog is the common case, not the exotic one, and the
+// login flow runs before any of the page walk's overlay handling.
+// ---------------------------------------------------------------------------
+PAGES.modalOverLogin = `<!doctype html><html><body>
+   <a id="login-link" href="/signin" style="position:relative;display:block;width:200px;height:40px"
+      onclick="document.getElementById('lf').style.display='block';return false">Sign In</a>
+   <div class="modal fade in" style="position:fixed;inset:0;z-index:1050;background:rgba(0,0,0,.2)"></div>
+   <form id="lf" style="display:none">
+     <input name="user" style="width:120px;height:20px" />
+     <input type="password" style="width:120px;height:20px" />
+   </form></body></html>`;
+
+await page.goto(`http://127.0.0.1:${port}/modalOverLogin`, { waitUntil: "domcontentloaded" });
+await page.waitForTimeout(150);
+const gotIn = await revealLoginForm(page);
+const modalTrail = lastRevealTrail(page);
+console.log(`   trail: ${JSON.stringify(modalTrail.filter((t) => !/no-match/.test(t)))}`);
+check("THE REGRESSION: a modal backdrop over the login is cleared and the click retried",
+  gotIn === true, "the login stayed unreachable behind the overlay");
+check("...and the trail says an overlay was neutralised, not that nothing was found",
+  modalTrail.some((t) => /neutralised overlay/.test(t)));
+
+// The overlay is disabled, never deleted — the portal's own state is left intact.
+check("the overlay is still in the page, only made click-through",
+  await page.locator(".modal").count() === 1);
+
 await browser.close();
 server.close();
 if (failures) { console.error(`\n${failures} public-portal check(s) FAILED.`); process.exit(1); }
