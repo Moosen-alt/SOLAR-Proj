@@ -1634,6 +1634,34 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     if (process.env.PORTAL_VISION_PLAN === "0" || process.env.PORTAL_VISION_PLAN === "false") return undefined;
     if (!this.page || typeof this.page.screenshot !== "function") return undefined;
     try {
+      // A FULL-PAGE SHOT OF A LONG PAGE IS NOT A USABLE IMAGE.
+      //
+      // The vision API refuses any image over 8000px on a side. Prince George's County's
+      // Momentum dashboard renders 800 x 22148 — nearly three times the limit — so the
+      // planner call failed outright with a 400 and the page was planned with NO vision at
+      // all. The learn then reported "nothing fillable", which reads as a portal the engine
+      // cannot handle rather than an image it never managed to send. Any long application
+      // form hits this; it is not a Momentum quirk.
+      //
+      // So: clip to a tall-but-legal window rather than send nothing. The top of a portal
+      // page is where the form and its controls live; the 22,000px below it is a paginated
+      // records table the planner has no use for. A clipped screenshot beats no screenshot,
+      // and both beat a failed request.
+      const MAX_EDGE = 7800; // a little under the 8000 limit, for device-pixel rounding
+      const dims = await this.page.evaluate(() => ({
+        w: Math.max(document.documentElement?.scrollWidth || 0, window.innerWidth || 0),
+        h: Math.max(document.documentElement?.scrollHeight || 0, window.innerHeight || 0),
+      })).catch(() => null);
+      const tooTall = !!dims && dims.h > MAX_EDGE;
+      const tooWide = !!dims && dims.w > MAX_EDGE;
+      if (tooTall || tooWide) {
+        const buf = await this.page.screenshot({
+          type: "png",
+          clip: { x: 0, y: 0, width: Math.min(dims!.w, MAX_EDGE), height: Math.min(dims!.h, MAX_EDGE) },
+        });
+        this.debug?.event({ type: "plan_screenshot_clipped", pageSize: `${dims!.w}x${dims!.h}`, clippedTo: `${Math.min(dims!.w, MAX_EDGE)}x${Math.min(dims!.h, MAX_EDGE)}` });
+        return Buffer.from(buf as Buffer).toString("base64");
+      }
       const buf = await this.page.screenshot({ type: "png", fullPage: true });
       return Buffer.from(buf as Buffer).toString("base64");
     } catch {

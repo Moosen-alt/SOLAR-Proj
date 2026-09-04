@@ -193,18 +193,18 @@ const NAV_TOGGLE_SELECTORS = [
   "[class*='menu-toggle'], [id*='menu-toggle']",
 ];
 async function openCollapsedNav(page: Page): Promise<boolean> {
-  // Only when the page is genuinely SPARSE. A collapsed menu means almost nothing is on
-  // screen; a portal home that already shows a full navigation has no menu to open, and
-  // clicking a toggle there only risks covering the very tabs the module walk needs.
-  try {
-    const visibleLinks = await page.evaluate(() => {
-      const vis = (el: Element) => { const r = (el as HTMLElement).getBoundingClientRect(); return r.width > 0 && r.height > 0; };
-      return (Array.from(document.querySelectorAll("a, button, [role=button]")) as HTMLElement[])
-        .filter(vis).filter((e) => (e.textContent || "").trim()).length;
-    });
-    if (visibleLinks > 12) return false;
-  } catch { return false; }
-
+  // A PAGE CAN BE BUSY AND STILL HAVE ITS NAV SHUT.
+  //
+  // This used to refuse unless the page was SPARSE (>12 visible links → give up), reasoning
+  // that a portal already showing a full navigation has no menu to open. That conflates two
+  // independent things. Prince George's County (Momentum/CIVICS) shows a records table of
+  // 131 buttons and 33 links WITH the primary nav collapsed: the "Apply Here" link exists in
+  // the DOM, inside a shut sidebar, at zero size. The gate saw a busy page, declined to
+  // open anything, and the learn reported the portal had no way in.
+  //
+  // Nothing needs protecting by this point: openCollapsedNav is only reached after the
+  // direct search has already failed, so there is no entry control to accidentally cover.
+  // And the caller reloads home when the toggle reveals nothing, which undoes a stray click.
   for (const sel of NAV_TOGGLE_SELECTORS) {
     try {
       const loc = page.locator(sel).first();
@@ -216,6 +216,19 @@ async function openCollapsedNav(page: Page): Promise<boolean> {
   }
   return false;
 }
+
+/**
+ * How long the LEARN will keep looking for the way into an application before giving up.
+ *
+ * Generous on purpose. A learn runs once per portal and every replay afterwards follows the
+ * recorded steps, so this budget is spent exactly once and never again — while giving up
+ * early costs a person sitting down to record the portal by hand. Live on Prince George's
+ * County (Momentum/CIVICS) the dashboard's "Apply Here" painted several seconds after the
+ * search had already concluded there was none.
+ *
+ * This cannot slow a replay: recipeAdapter never calls the entry finder.
+ */
+const ENTRY_SETTLE_MS = Math.max(0, Number(process.env.ENTRY_SETTLE_MS ?? 30000));
 
 export async function findApplicationEntryDeep(
   page: Page,
@@ -232,7 +245,25 @@ export async function findApplicationEntryDeep(
   const current = typeof page.url === "function" ? page.url() : "";
   const home = /login|sign-?in|logon/i.test(current) ? "" : current;
 
-  const direct = await findApplicationEntry(page);
+  // LOOK MORE THAN ONCE. A single read decides the whole search, and on a client-rendered
+  // dashboard the nav is routinely painted after the wait above has expired — networkidle
+  // never settles on a portal that polls, so the 8s cap is spent and the DOM is read while
+  // the shell is still filling in.
+  //
+  // Live on Prince George's County (Momentum/CIVICS): logged in at 5.3s, this search
+  // concluded "no entry control" at ~14.5s, and the page capture written at 20.0s contains
+  // <a>Apply Here</a>, visible, 144x84. The finder was right about the DOM it was shown and
+  // wrong about when to look. Same shape as the login form's settle budget, same cure.
+  // The budget is deliberately generous. A learn runs ONCE per portal and every replay
+  // afterwards is free, so seconds here are the cheapest thing in the system — while giving
+  // up early costs a human sitting down to record the portal by hand. Patience is worth
+  // more than speed on a first run.
+  const directDeadline = Date.now() + ENTRY_SETTLE_MS;
+  let direct = await findApplicationEntry(page);
+  while (!direct && Date.now() < directDeadline) {
+    await page.waitForTimeout?.(1500);
+    direct = await findApplicationEntry(page);
+  }
   if (direct) return { match: direct.match };
 
   // Nothing visible — the menu may simply be collapsed. Open it and look again before
