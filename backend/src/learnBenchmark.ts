@@ -94,7 +94,45 @@ export function isMeasured(score: Pick<LearnScore, "reason" | "measured">): bool
  * Evidence order is deliberate: the RUN'S OWN EVENTS beat the summary message, because a
  * message is prose assembled at the end while events are recorded as they happen.
  */
+/**
+ * A HUMAN CHALLENGE IS NOT AN ENGINE DEFECT — AT ANY STAGE.
+ *
+ * The scorer knew this at the login step (`mfa_captcha` -> owner portal) and nowhere else.
+ * Star ID (iWorq) walked to its "Solar Permit or Panel Application" — the right form, on a
+ * portal that needs no account — and stopped on `challenge_stop: challenge frame detected
+ * (recaptcha)`. That is the engine doing exactly what the safety rules require: automation
+ * never solves a CAPTCHA, a person does. It was scored owner ENGINE, which reads as a
+ * defect to fix and sends the next day's work at a wall that is meant to be there.
+ *
+ * The rung is unchanged — a run keeps whatever it reached — but the owner and the reason
+ * become the truth: a person has to clear this.
+ */
+function challengeStopped(outcome: LearnOutcome): string {
+  for (const e of outcome.events ?? []) {
+    if (e?.type === "challenge_stop") return String((e as { detail?: unknown }).detail || "a human challenge");
+  }
+  if (/challenge frame detected|recaptcha|captcha|hcaptcha|cloudflare turnstile/i.test(String(outcome.message || ""))) {
+    return "a CAPTCHA/challenge";
+  }
+  return "";
+}
+
 export function scoreLearnOutcome(outcome: LearnOutcome): LearnScore {
+  const score = scoreLearnOutcomeInner(outcome);
+  const challenge = challengeStopped(outcome);
+  // Applied last, so it re-attributes whatever rung was reached rather than replacing it.
+  // The login-stage branch already says "portal"; this catches the rest of the walk.
+  if (challenge && score.owner !== "credential" && score.owner !== "none") {
+    return {
+      ...score,
+      owner: "portal",
+      reason: `${score.reason} — then stopped at ${challenge}, which a human must clear (automation never solves one)`,
+    };
+  }
+  return score;
+}
+
+function scoreLearnOutcomeInner(outcome: LearnOutcome): LearnScore {
   const msg = String(outcome.message || "");
   const login = evt(outcome, "login");
   const entry = evt(outcome, "application_entry_pass");

@@ -307,6 +307,60 @@ check("an OLD scorecard without the field still reads sensibly", () => {
 });
 
 // ---------------------------------------------------------------------------
+// A HUMAN CHALLENGE IS NOT AN ENGINE DEFECT, AT ANY STAGE OF THE WALK.
+//
+// The scorer knew this at the login step and nowhere else. Star ID (iWorq) walked to its
+// "Solar Permit or Panel Application" — the right form, on a portal needing no account —
+// and stopped on "challenge frame detected (recaptcha)". That is the engine obeying the
+// rule that automation never solves a CAPTCHA. Scoring it owner ENGINE reads as a defect to
+// fix and sends the next day's work at a wall that is supposed to be there.
+// ---------------------------------------------------------------------------
+check("THE REGRESSION: a reCAPTCHA mid-walk is the PORTAL's, not ours", () => {
+  const s = scoreLearnOutcome({
+    status: "failed", pageCount: 2, steps: 2, substantiveSteps: 0,
+    events: [
+      { type: "login", status: "no_login_required" },
+      { type: "challenge_stop", detail: "challenge frame detected (recaptcha)" } as never,
+    ],
+  });
+  assert.equal(s.owner, "portal");
+  assert.match(s.reason, /human must clear/);
+});
+
+check("...and the rung it reached is KEPT, not replaced", () => {
+  // Re-attribution, not demotion: the run still got where it got.
+  const s = scoreLearnOutcome({
+    pageCount: 6, substantiveSteps: 4,
+    events: [{ type: "challenge_stop", detail: "recaptcha" } as never],
+  });
+  assert.equal(s.rung, "recorded_steps");
+  assert.equal(s.owner, "portal");
+});
+
+check("...and a run that reached REVIEW is not re-blamed on a challenge", () => {
+  const s = scoreLearnOutcome({
+    reachedReview: true, pageCount: 9, substantiveSteps: 40,
+    events: [{ type: "challenge_stop", detail: "recaptcha" } as never],
+  });
+  assert.equal(s.owner, "none", "it finished; nobody owes anything");
+});
+
+check("a refused password is still the OPERATOR's, challenge or not", () => {
+  const s = scoreLearnOutcome({
+    events: [
+      { type: "login", status: "still_on_login" },
+      { type: "challenge_stop", detail: "recaptcha" } as never,
+    ],
+  });
+  assert.equal(s.owner, "credential", "the password is the thing to fix");
+});
+
+check("no challenge, no re-attribution", () => {
+  const s = scoreLearnOutcome({ pageCount: 4, steps: 5, substantiveSteps: 0 });
+  assert.equal(s.owner, "engine");
+});
+
+// ---------------------------------------------------------------------------
 // The ladder must stay ordered and honest.
 // ---------------------------------------------------------------------------
 check("the rungs are strictly ordered, worst to best", () => {

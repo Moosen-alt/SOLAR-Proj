@@ -366,7 +366,17 @@ export async function revealLoginForm(page: Page): Promise<boolean> {
     if (!trigger) { trail.push(`no-match ${key}`); continue; }
     tried.add(key);
     try {
-      await trigger.click();
+      // TIME-BOXED, BECAUSE THE BUDGET AROUND THIS IS SECONDS.
+      //
+      // A bare click() takes Playwright's 30s default. Wilsonville's reveal trail shows one
+      // href-matched candidate eating exactly that — "click-failed ...: locator.click:
+      // Timeout 30000ms exceeded" — inside a reveal loop whose whole settle budget is 4 to
+      // 8 seconds. One control that will not accept a click starved every trigger after it,
+      // and the run reported "the portal's login form was not recognised" having never
+      // reached the trigger that would have worked. The 39.8s run was one wait.
+      //
+      // A control that does not take a click in three seconds is not going to.
+      await trigger.click({ timeout: 3000 });
       await smartWait(page, 3000);
     } catch (err) {
       trail.push(`click-failed ${key}: ${String((err as Error)?.message || err).slice(0, 60)}`);
