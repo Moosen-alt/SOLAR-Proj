@@ -227,7 +227,12 @@ export class RecipeAdapter extends BasePortalAdapter {
       const generic = bodyText.match(/\b(?:record|permit|application|confirmation)\s*(?:no\.?|number|#)?\s*[:#]?\s*([A-Z0-9][A-Z0-9-]{5,})\b/i);
       // PowerClerk assigns APP-###### and shows it in the View/Edit heading. The operator
       // navigates by the LandingPage?ProjectId link, so that is what capture must keep.
-      const pcApp = bodyText.match(/APP-\d{4,8}/);
+      // The word boundaries here were literal BACKSPACE characters, not \b — written through
+      // a heredoc in an earlier session, where \b is a real escape. The file typechecked and
+      // the regex could never match anything, so a PowerClerk filing APP-###### was never read
+      // out of the page and capture fell through to the generic pattern. Found by sweeping
+      // every source file for control characters after making the same mistake three times.
+      const pcApp = bodyText.match(/\bAPP-\d{4,8}\b/);
       const permitNumber = (accela?.[0] || pcApp?.[0] || generic?.[1] || "").trim();
       // Accela record suffix encodes the discipline: -STR (structural), -ELE (electrical), etc.
       const discipline = permitNumber.match(/-([A-Z]{2,4})$/)?.[1] ?? null;

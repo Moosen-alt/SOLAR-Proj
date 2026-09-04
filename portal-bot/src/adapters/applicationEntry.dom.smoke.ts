@@ -250,7 +250,7 @@ await check("a disabled 'Apply' pill ahead of the real link is skipped, not wait
 // A DOCUMENT *ABOUT* APPLYING IS NOT THE WAY TO APPLY.
 //
 // Found by running this finder against 66 live portals: Lynnwood's SmartGov portal offers
-// "Permit Application Checklist" — a PDF — and it matched /permit application/ exactly,
+// "Permit Application Checklist" — a PDF — and it matched /\bpermit application\b/ exactly,
 // so the entry pass would have opened a handout, then reported that it had entered the
 // application flow. Every portal publishes this class of link beside the real one.
 await check("a checklist/instructions document is never mistaken for the way in", async () => {
