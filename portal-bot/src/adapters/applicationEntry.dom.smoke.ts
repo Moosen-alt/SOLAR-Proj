@@ -253,7 +253,7 @@ await check("a disabled 'Apply' pill ahead of the real link is skipped, not wait
 // "Permit Application Checklist" — a PDF — and it matched /permit application/ exactly,
 // so the entry pass would have opened a handout, then reported that it had entered the
 // application flow. Every portal publishes this class of link beside the real one.
-check("a checklist/instructions document is never mistaken for the way in", () => {
+await check("a checklist/instructions document is never mistaken for the way in", async () => {
   const documents = [
     "Permit Application Checklist",
     "Solar Permit Application Instructions",
@@ -269,7 +269,7 @@ check("a checklist/instructions document is never mistaken for the way in", () =
   }
 });
 
-check("...and the real entry controls beside them still match", () => {
+await check("...and the real entry controls beside them still match", async () => {
   // The exclusion must not cost us the genuine labels seen live during the same sweep.
   for (const good of ["Apply", "Apply for a Permit", "Apply Here", "Click to Apply Online",
                       "Submit an Application/Request", "Create an Application",
