@@ -131,8 +131,35 @@ export function scanProgramGroups(): ProgramGroup[] {
   return groups;
 }
 
-/** A rebate/incentive/enrolment programme is never the interconnection application. */
-export const PROGRAM_EXCLUDE = /rebate|incentive|enroll|enrol|renew|amend|withdraw|cancel|close|back|help/i;
+/**
+ * A rebate/incentive/enrolment programme is never the interconnection application.
+ *
+ * EVERY TERM IS ANCHORED ON WORD BOUNDARIES, and that is the whole point of this comment.
+ * The list was written as bare substrings, which quietly refused the likeliest name a
+ * solar programme can have:
+ *
+ *   "Renewable Energy Interconnection"  matched `renew`   -> EXCLUDED
+ *   "Renewable Energy Systems"          matched `renew`   -> EXCLUDED
+ *   "Solar Photovoltaic - Renewable"    matched `renew`   -> EXCLUDED
+ *   "Backflow Prevention"               matched `back`    -> EXCLUDED
+ *   "Enclosed Structure Permit"         matched `close`   -> EXCLUDED
+ *   "Closed Loop Geothermal"            matched `close`   -> EXCLUDED
+ *
+ * On any portal calling its programme "Renewable Energy …" — which is what a great many
+ * utilities call exactly the thing we are filing — the chooser found NO eligible option
+ * and the learn could not enter the application at all. An exclusion list that rejects the
+ * target is worse than no exclusion list, because it fails in the direction that looks
+ * like a portal problem.
+ *
+ * "renew" must therefore match Renew and Renewal and never Renewable.
+ *
+ * "close" is narrower still: the ACTION, never the adjective. "Close Out Permit" is a
+ * lifecycle transaction and excluded; "Closed Loop Geothermal" is the name of a thing you
+ * can apply for and is not. Bare "Closed" as a programme option does not occur — you do
+ * not start a closed application — so nothing is lost by requiring the verb.
+ */
+export const PROGRAM_EXCLUDE =
+  /\brebate|\bincentive|\benrol{1,2}(ment)?\b|\brenew(al|als|ing)?\b|\bamend|\bwithdraw|\bcancel|\bclose\b|\bclosing\b|close[\s-]?out|\bback\b|\bhelp/i;
 
 /** Most specific reading of "this is the interconnection application" first. */
 export const PROGRAM_PREFER: RegExp[] = [
