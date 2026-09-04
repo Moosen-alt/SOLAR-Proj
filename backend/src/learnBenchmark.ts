@@ -21,7 +21,7 @@
 // runs only when a person asks for it.
 // ---------------------------------------------------------------------------
 
-import { isHarnessAbort } from "./runAbort";
+import { isHarnessAbort, looksBotBlocked } from "./runAbort";
 
 /** How far a learn got, worst to best. Index is the score. */
 export const LEARN_RUNGS = [
@@ -252,7 +252,12 @@ function scoreLearnOutcomeInner(outcome: LearnOutcome): LearnScore {
   if (/ERR_TIMED_OUT|ERR_NAME_NOT_RESOLVED|ERR_CONNECTION|ERR_ABORTED|ERR_CERT|net::|ETIMEDOUT|ENOTFOUND|navigation timeout/i.test(msg)) {
     return { rung: "unreachable", index: 0, reason: "the portal did not respond", owner: "portal" };
   }
-  if (/\b403\b|forbidden|access denied|request could not be satisfied|are you a robot|unusual traffic/i.test(msg)) {
+  // THE SHARED PREDICATE — see runAbort.ts. This branch carried its own narrower copy that
+  // had never been given the word "cloudflare", so Canton TX's "Attention Required! |
+  // Cloudflare" was named by the login flow, would have been retried with a real window by
+  // looksBotBlocked, and was still scored owner ENGINE here. Three vocabularies for one
+  // concept, disagreeing.
+  if (looksBotBlocked(msg)) {
     return { rung: "unreachable", index: 0, reason: "the portal refused an automated browser (WAF/bot block)", owner: "portal" };
   }
   if (loginStatus === "login_form_unrecognized" || /could not find a login form/i.test(msg)) {

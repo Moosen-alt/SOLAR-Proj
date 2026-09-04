@@ -38,6 +38,7 @@ import { buildUtilityPackage } from "./docSplitter";
 import { addAuditLog } from "./audit";
 import { HttpError } from "./httpError";
 import { formPurposeMismatch } from "./formPurpose";
+import { looksBotBlocked } from "./runAbort";
 import { id } from "./ids";
 import { knowledgeProfileKey, findKnowledgeForLearn } from "./knowledgeBase";
 import { getCodeProfile } from "./codeProfiles";
@@ -1267,17 +1268,4 @@ async function autoLearnPortalInner(
  * ordinary auth 403, a dead host, or a timeout must NOT trigger a retry, because a second
  * attempt would cost minutes and change nothing.
  */
-export function looksBotBlocked(message: string): boolean {
-  const m = String(message || "");
-  if (!m) return false;
-  // A refusal aimed at the CLIENT, not at the credential.
-  // Interstitials phrase this as a question ("are you a robot?") and as an instruction
-  // ("verify you are human"), so match the noun rather than one sentence shape. CAPTCHA is
-  // deliberately absent: an MFA challenge also says captcha and pauses for a human instead.
-  const refusal = /\b403\b|forbidden|access denied|request could not be satisfied|\brobot\b|verify you are (a )?human|unusual traffic|bot detection|cloudflare|perimeterx|akamai|incapsula/i.test(m);
-  if (!refusal) return false;
-  // An authentication failure also says 403 on some portals; that is a credential problem
-  // and a headed window will not fix it.
-  if (/credential|username|password|sign ?in failed|login failed|not authorized to|permission/i.test(m)) return false;
-  return true;
-}
+export { looksBotBlocked } from "./runAbort";

@@ -40,3 +40,28 @@ export function isHarnessAbort(message: unknown): boolean {
   const m = String(message ?? "");
   return m.length > 0 && HARNESS_ABORT.test(m);
 }
+
+/**
+ * ONE VOCABULARY FOR "THE PORTAL REFUSED THE ROBOT", because there were three and they drifted.
+ *
+ * Canton TX serves a page titled "Attention Required! | Cloudflare" — "Sorry, you have been
+ * blocked". The login flow's detector named it; the headed retry would have acted on it; and
+ * the BENCHMARK still scored it owner ENGINE, because its own WAF regex had never been given
+ * the word "cloudflare". Detected by one, actionable by a second, mis-attributed by a third.
+ *
+ * That is the third time today a concept lived in more than one place and the copies
+ * disagreed. A shared predicate is the only version of this that stays true.
+ */
+const BOT_BLOCK =
+  /\b403\b|forbidden|access denied|request could not be satisfied|request blocked|you have been blocked|attention required|checking your browser|\brobot\b|verify you are (a )?human|unusual traffic|bot detection|security service to protect|cloudflare|perimeterx|akamai|incapsula|\bray id\b/i;
+
+/** Refusals aimed at the CLIENT — a WAF or bot wall, not a rejected account. */
+export function looksBotBlocked(message: string): boolean {
+  const m = String(message ?? "");
+  if (!m) return false;
+  if (!BOT_BLOCK.test(m)) return false;
+  // A refusal that names the ACCOUNT is an authorisation failure, and a real window will be
+  // refused exactly the same way. Checked second so it always wins.
+  if (/credential|username|password|sign ?in failed|login failed|not authorized to|permission/i.test(m)) return false;
+  return true;
+}
