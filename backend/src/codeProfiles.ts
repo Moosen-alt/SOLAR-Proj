@@ -280,6 +280,11 @@ export function seedReferenceCodeProfiles(db: AppDb): void {
 // and a human verifies when convenient. Dedupe: never enqueue when the layer's
 // row already exists or a research job for it is already pending/running.
 export function ensureCodeProfilesResearched(db: AppDb, state: string, ahj: string): number {
+  // The learn benchmark creates a throwaway project per portal, each in a different city, so
+  // every run would enqueue jurisdiction research for jurisdictions nobody is filing in —
+  // minutes of web-search LLM calls that say nothing about whether the PORTAL can be learned.
+  // The benchmark is meant to be run often, so it opts out.
+  if (process.env.SKIP_CODE_RESEARCH === "1") return 0;
   const st = (state || "").trim();
   if (!st) return 0;
   const layers: Array<{ state: string; ahj: string }> = [{ state: st, ahj: "" }];

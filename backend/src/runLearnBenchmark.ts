@@ -8,6 +8,10 @@
 // forms; it never submits (the learn stops at review by design), and it deletes the
 // throwaway project it creates for each portal. Not wired into any test chain.
 import "dotenv/config";
+// A benchmark measures the PORTAL, not the jurisdiction. Without this every throwaway
+// project would enqueue code research for a city nobody is filing in.
+process.env.SKIP_CODE_RESEARCH = "1";
+process.env.AUTOPILOT_AUTO_START = "0";
 import fs from "node:fs";
 import path from "node:path";
 import { openDatabase } from "./db";
