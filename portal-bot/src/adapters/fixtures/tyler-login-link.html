@@ -1,0 +1,570 @@
+<!doctype html>
+<html data-ng-app="app.main" lang="en" style="" class="js flexbox flexboxlegacy canvas canvastext webgl no-touch geolocation postmessage no-websqldatabase indexeddb hashchange history draganddrop websockets rgba hsla multiplebgs backgroundsize borderimage borderradius boxshadow textshadow opacity cssanimations csscolumns cssgradients cssreflections csstransforms csstransforms3d csstransitions fontface generatedcontent video audio localstorage sessionstorage webworkers no-applicationcache svg inlinesvg smil svgclippaths k-webkit k-webkit149 ng-scope"><head>
+    <link id="faviconLink" rel="icon" type="image/*" sizes="16x16" href="https://cdn.forge.tylertech.com/v1/images/branding/tyler/talking-t-logo.svg">
+    <meta charset="utf-8">
+    <meta name="description" content="Citizen Self Service website">
+    <meta id="isTylerIdEnabled" value="true">
+    <!--Disable edge formatting for phone numbers this should be handled per case basis-->
+    <meta name="format-detection" content="telephone=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <title>Wilsonville, OR</title>
+    
+    
+    
+    
+    
+    
+
+    <!-- Telerik Kendo Grid theme stylesheet-->
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
+
+
+
+    <!-- Telerik Kendo UI -->
+    
+    
+
+    
+    
+    
+
+
+
+    
+    
+    
+</head>
+
+<body data-ng-controller="shellController as vm" ng-class="{'overflow-hidden':vm.isiFrameViewer}" class="ng-scope">
+    <div id="overlay" aria-label="Processing" tabindex="0" ng-show="vm.showProcessing()" aria-hidden="true" style="opacity: 0.4; position: fixed; top: 0px; left: 0px; background-color: black; width: 100%; height: 100%; z-index: 1030;" class="ng-hide"></div>
+
+
+
+    <div id="wrapper" data-nosnippet="">
+
+        <div id="page-content-wrapper" class="container-fluid" is_iframe="false">
+            <div class="aboveBodyContent">
+                <div id="sidebar-wrapper">
+                    <div tyler-main-menu-sidebar="" data-vm="vm" data-menu-items="vm.menuItems" class="ng-isolate-scope">
+    <div>
+        <div class="navbar mainMenu" role="navigation">
+            <div id="sidebarMenu" class="pull-left"><ul class="mainMenuNav-ul navbar-nav navbar-left" role="list"><li tyler-menu-item="" tabindex="-1" ng-class="{  mainMenuNavActive: vm.activeState(menuItem)==='active', mainMenuNavActiveDisabled: vm.activeState(menuItem)==='active-disabled' }" role="listitem" tyler-custom-main-menu-nav="" class="ng-scope"><a target="_blank" tabindex="0" class="mainMenuNav-a ng-binding" ng-href="https://www.wilsonvilleoregon.gov/comm-dev/page/online-portal-help" id="link-Menu-Help" href="https://www.wilsonvilleoregon.gov/comm-dev/page/online-portal-help">Help</a></li><li tyler-menu-item="" tabindex="-1" class="mainMenuNav-li ng-scope mainMenuNavActive" ng-class="{  mainMenuNavActive: vm.activeState(menuItem)==='active', mainMenuNavActiveDisabled: vm.activeState(menuItem)==='active-disabled' }" ng-click="vm.navigate(menuItem)" role="listitem" tyler-main-menu-nav="" style=""><a tabindex="0" class="mainMenuNav-a ng-binding" data-no-click="" href="/apps/selfservice/home#/home" id="link-Menu-Home">Home</a></li><li tyler-menu-item="" tabindex="-1" class="mainMenuNav-li ng-scope" ng-class="{  mainMenuNavActive: vm.activeState(menuItem)==='active', mainMenuNavActiveDisabled: vm.activeState(menuItem)==='active-disabled' }" ng-click="vm.navigate(menuItem)" role="listitem" tyler-main-menu-nav=""><a tabindex="0" class="mainMenuNav-a ng-binding" data-no-click="" href="/apps/selfservice/home#/applicationAssistant" id="link-Menu-Apply">Apply</a></li><li tyler-menu-item="" tabindex="-1" ng-class="{  mainMenuNavActive: vm.activeState(menuItem)==='active', mainMenuNavActiveDisabled: vm.activeState(menuItem)==='active-disabled' }" role="listitem" tyler-custom-main-menu-nav="" class="ng-scope"><a target="_blank" tabindex="0" class="mainMenuNav-a ng-binding" ng-href="https://www.wilsonvilleoregon.gov/forms" id="link-Menu-PermitAttachments" href="https://www.wilsonvilleoregon.gov/forms">Permit Attachments</a></li><li tyler-menu-item="" tabindex="-1" ng-class="{  mainMenuNavActive: vm.activeState(menuItem)==='active', mainMenuNavActiveDisabled: vm.activeState(menuItem)==='active-disabled' }" role="listitem" tyler-custom-main-menu-nav="" class="ng-scope"><a target="_blank" tabindex="0" class="mainMenuNav-a ng-binding" ng-href="https://www.wilsonvilleoregon.gov/comm-dev/page/payment-options" id="link-Menu-PaymentOptions" href="https://www.wilsonvilleoregon.gov/comm-dev/page/payment-options">Payment Options</a></li><li tyler-menu-item="" tabindex="-1" class="mainMenuNav-li ng-scope" ng-class="{  mainMenuNavActive: vm.activeState(menuItem)==='active', mainMenuNavActiveDisabled: vm.activeState(menuItem)==='active-disabled' }" ng-click="vm.navigate(menuItem)" role="listitem" tyler-main-menu-nav=""><a tabindex="0" class="mainMenuNav-a ng-binding" data-no-click="" href="/apps/selfservice/home#/map" id="link-Menu-Map">Map</a></li><li tyler-menu-item="" tabindex="-1" class="mainMenuNav-li ng-scope" ng-class="{  mainMenuNavActive: vm.activeState(menuItem)==='active', mainMenuNavActiveDisabled: vm.activeState(menuItem)==='active-disabled' }" ng-click="vm.navigate(menuItem)" role="listitem" tyler-main-menu-nav=""><a tabindex="0" class="mainMenuNav-a ng-binding" data-no-click="" href="/apps/selfservice/home#/estimate" id="link-Menu-FeeEstimator">Fee Estimator</a></li><li tyler-menu-item="" tabindex="-1" class="mainMenuNav-li ng-scope" ng-class="{  mainMenuNavActive: vm.activeState(menuItem)==='active', mainMenuNavActiveDisabled: vm.activeState(menuItem)==='active-disabled' }" ng-click="vm.navigate(menuItem)" role="listitem" tyler-main-menu-nav=""><a tabindex="0" class="mainMenuNav-a ng-binding" data-no-click="" href="/apps/selfservice/home#/payinvoice" id="link-Menu-PayInvoices">Pay Invoices</a></li><li tyler-menu-item="" tabindex="-1" class="mainMenuNav-li ng-scope" ng-class="{  mainMenuNavActive: vm.activeState(menuItem)==='active', mainMenuNavActiveDisabled: vm.activeState(menuItem)==='active-disabled' }" ng-click="vm.navigate(menuItem)" role="listitem" tyler-main-menu-search=""><a id="link-Menu-Search" class="mainMenuNav-a ng-binding" data-no-click="" href="/apps/selfservice/home#/search">Search   <span class="fa fa-search"></span></a></li><li tyler-menu-item="" tabindex="-1" class="mainMenuNav-li ng-scope" ng-class="{  mainMenuNavActive: vm.activeState(menuItem)==='active', mainMenuNavActiveDisabled: vm.activeState(menuItem)==='active-disabled' }" ng-click="vm.navigate(menuItem)" role="listitem" tyler-main-menu-news-calendar=""><a id="link-Menu-Calendar" class="mainMenuNav-a ng-binding" data-no-click="" href="/apps/selfservice/home#/calendar/Index">Calendar   <span role="img" aria-roledescription="icon" id="calendarSpan" aria-label="Total number of events for today 0" class="badge badge-important jscalendarSpan">0</span></a></li></ul></div>
+            <ul class="mainMenuNav-ul navbar-nav navbar-left">
+                <li role="presentation" class="divider mainMenuDivider"></li>
+
+                <!-- ngIf: !vm.userService.isUserLoggedIn --><li class="mainMenuNav-li ng-scope" ng-if="!vm.userService.isUserLoggedIn">
+                    <a class="mainMenuNav-a dropdown-toggle ng-binding" data-toggle="dropdown" href="">
+                        
+                        <span class="fa fa-caret-down"></span>
+                    </a>
+
+                    <div dropdown-menu="" class="dropdown-menu mainMenuDropdownContent" role="menu" aria-labelledby="dropdownMenu">
+                        <div class="mainMenuDropdowContentInner subMenuWrapper">
+                            <div class="subMenuContent">
+                                <ul class="subMenu">
+                                    <li tyler-menu-item="" class="subMenuItemLink">
+                                        <a class="subMenu-li-a" href="" ng-click="vm.login()">Log In</a>
+                                    </li>
+                                    <li tyler-menu-item="" class="subMenuItemLink">
+                                        <a class="subMenu-li-a" href="" ng-click="vm.register()">Register</a>
+                                    </li>
+                                </ul>
+                            </div>
+
+                        </div>
+                    </div>
+                </li><!-- end ngIf: !vm.userService.isUserLoggedIn -->
+
+                <!-- ngIf: vm.userService.isUserLoggedIn -->
+
+                <!-- ngIf: vm.userService.isUserLoggedIn -->
+
+                <!-- ngIf: vm.isGoogleTranslateEnabled && !vm.showGoogleTranslate -->
+
+                <li ng-show="vm.userService.isUserLoggedIn" aria-hidden="true" class="ng-hide">
+                    <ul class="mainMenuNav-ul">
+                        <li tyler-menu-item="" class="mainMenuNav-li">
+                            <a class="mainMenuNav-a" href="" ng-click="vm.logout()"><span class="fa fa-times"></span>   Log Out</a>
+                        </li>
+                    </ul>
+                </li>
+
+                <li class="mainMenuNav-a">
+                    <div data-ng-show="vm.cultures.length &gt; 1" aria-hidden="true" class="ng-hide">
+                        <select aria-label="Select Language" data-ng-model="vm.culture" ng-change="vm.selectCulture()" ng-options="item.CultureName as item.LanguageCountry for item in vm.cultures" class="ng-pristine ng-untouched ng-valid ng-not-empty" aria-invalid="false"><!-- ngIf: false --><option label="English (United States)" value="string:en-US" selected="selected">English (United States)</option></select>
+                    </div>
+                </li>
+
+            </ul>
+        </div>
+    </div>
+</div>
+                </div>
+
+                <div class="row appHeader">
+                    <div role="banner">
+                        <div class="appHeaderLeft">
+                            <!-- ngIf: vm.hasLoadedSelectedTenantCulture && vm.showTenantHeader() --><h1 class="ng-scope"><img alt="" src="https://www.ci.wilsonville.or.us/sites/all/themes/aha_compass/logo.png" style="height:148px; width:350px"></h1><!-- end ngIf: vm.hasLoadedSelectedTenantCulture && vm.showTenantHeader() -->
+                            <!-- ngIf: vm.hasLoadedSelectedTenantCulture && !vm.showTenantHeader() -->
+                        </div>
+
+                        <div class="appHeaderRight pull-right">
+                            <div class="row">
+                                <!--Greeting Message-->
+                                <div role="region" aria-label="'s user settings, shopping cart, and language select" class="welcomeGreetings">
+                                    <!-- ngIf: !true -->
+                                    <!-- ngIf: !true && !vm.userService.isUserLoggedIn && vm.removeRegistrationInFeeEstimator -->
+                                    <!--Display this button group if the user is not logged in-->
+                                    <div class="btn-group ng-hide" ng-show="(!vm.userService.isUserLoggedIn &amp;&amp; !vm.removeRegistrationInFeeEstimator &amp;&amp; !true)" aria-hidden="true">
+                                        <a id="link-Greetings" class="btn dropdown-toggle welcomeGreetings-standardsize ng-binding" ng-class="isExpanded" ng-init="isExpanded = false" ng-click="isExpanded = !isExpanded" data-toggle="dropdown" aria-expanded="false" role="button" aria-label="Guest dropdown menu to login or register" href="">
+                                            
+                                            <span class="caret"></span>
+                                        </a>
+                                        <ul class="dropdown-menu">
+                                            <li>
+                                                <a id="link-LoginUnderGreetings" href="" ng-click="vm.login()">Log In</a>
+                                            </li>
+                                            <li>
+                                                <a href="" ng-click="vm.register()">Register</a>
+                                            </li>
+
+                                        </ul>
+                                    </div>
+                                    <!-- ngIf: true --><div ng-if="true" class="btn-group ng-scope">
+                                        <!-- ngIf: (!vm.hideLoginOrRegisterLink && (!vm.userService.isUserLoggedIn && !vm.userService.isUserPartialLoggedIn) && !vm.removeRegistrationInFeeEstimator && !vm.showCancelRegistrationLink() && !vm.showCompleteRegistrationLink()) --><div class="btn-group ng-scope" ng-if="(!vm.hideLoginOrRegisterLink &amp;&amp; (!vm.userService.isUserLoggedIn &amp;&amp; !vm.userService.isUserPartialLoggedIn) &amp;&amp; !vm.removeRegistrationInFeeEstimator &amp;&amp; !vm.showCancelRegistrationLink() &amp;&amp; !vm.showCompleteRegistrationLink())">
+                                            <a id="link-LoginUnderGreetings" href="" ng-click="vm.login()">Login or Register</a>
+                                        </div><!-- end ngIf: (!vm.hideLoginOrRegisterLink && (!vm.userService.isUserLoggedIn && !vm.userService.isUserPartialLoggedIn) && !vm.removeRegistrationInFeeEstimator && !vm.showCancelRegistrationLink() && !vm.showCompleteRegistrationLink()) -->
+                                        <!-- ngIf: (!vm.removeRegistrationInFeeEstimator && vm.showCompleteRegistrationLink()) -->
+                                        <!-- ngIf: (!vm.removeRegistrationInFeeEstimator && vm.showCancelRegistrationLink()) -->
+                                    </div><!-- end ngIf: true -->
+                                    <!--Display this button group if the user is logged in-->
+                                    <div class="btn-group ng-hide" ng-show="vm.userService.isUserLoggedIn &amp;&amp; !vm.userService.isUserPartialLoggedIn" aria-hidden="true">
+                                        <a id="link-Greetings" ng-class="isExpanded" ng-init="isExpanded = false" ng-click="isExpanded = !isExpanded" class="btn dropdown-toggle welcomeGreetings-standardsize ng-binding" role="button" aria-expanded="false" data-toggle="dropdown" href="" aria-label="User dropdown menu to update profile, view invoices, or logout" title="">
+                                            
+                                            <span class="caret"></span>
+                                        </a>
+                                        <ul class="dropdown-menu user-profile-menu">
+                                            <li>
+                                                <a id="link-MyAccountUnderGreetings" href="" ng-click="vm.manageMyUser()">My Account</a>
+                                            </li>
+                                            <li class="menu-indent">
+                                                <a id="link-PersonalInfo" href="" ng-click="vm.managePersonalInformation()">Personal Info</a>
+                                            </li>
+                                            <li class="menu-indent">
+                                                <a id="link-Addresses" href="" ng-click="vm.manageAddresses()">Addresses</a>
+                                            </li>
+                                            <li class="menu-indent">
+                                                <a id="link-MyInvoice" href="" ng-click="vm.manageInvoices()">My Invoices</a>
+                                            </li>
+                                            <!-- ngIf: !vm.hideMyBusinesses --><li class="menu-indent ng-scope" ng-if="!vm.hideMyBusinesses">
+                                                <a id="link-MyBusinessesUnderGreetings" href="" ng-click="vm.manageMyBusinesses()">My Businesses</a>
+                                            </li><!-- end ngIf: !vm.hideMyBusinesses -->
+                                            <hr class="margin-top-five margin-sm-bottom">
+                                            <li>
+                                                <a id="link-SavedWork" href="" ng-click="vm.manageSavedWork()">Saved Work</a>
+                                            </li>
+                                            <li>
+                                                <a id="link-ContactManager" href="" ng-click="vm.manageContactManager()">Contact Manager</a>
+                                            </li>
+                                            <hr class="margin-top-five margin-sm-bottom">
+                                            <li>
+                                                <a id="link-LogoutUnderGreetings" href="" ng-click="vm.logout()">Log Out</a>
+                                            </li>
+                                        </ul>
+                                    </div>
+
+                                    <!--Display this button group if the user is partially logged in-->
+                                    <div class="btn-group ng-hide" ng-show="!vm.userService.isUserLoggedIn &amp;&amp; vm.userService.isUserPartialLoggedIn" aria-hidden="true">
+                                        <a id="link-Greetings" ng-class="isExpanded" ng-init="isExpanded = false" ng-click="isExpanded = !isExpanded" class="btn dropdown-toggle welcomeGreetings-standardsize ng-binding" role="button" aria-expanded="false" data-toggle="dropdown" href="" aria-label="User dropdown menu to update profile, view invoices, or logout" title="">
+                                            
+                                            <span class="caret"></span>
+                                        </a>
+                                        <ul class="dropdown-menu">
+                                            <li>
+                                                <a id="link-LogoutUnderGreetings" href="" ng-click="vm.logout()">Log Out</a>
+                                            </li>
+                                        </ul>
+                                    </div>
+                                    <!--Display the shopping cart if the user is logged in-->
+                                    <div class="btn-group">
+                                        <!-- ngIf: vm.userService.isUserLoggedIn -->
+                                        <!-- ngIf: vm.userService.isUserLoggedIn -->
+                                        <!-- ngIf: vm.isGoogleTranslateEnabled -->
+                                    </div>
+                                </div>
+
+                                <div class="languageSettings ng-hide" data-ng-show="vm.cultures.length &gt; 1" aria-hidden="true">
+                                    <select aria-label="Select Language" data-ng-model="vm.culture" ng-change="vm.selectCulture()" ng-options="item.CultureName as item.LanguageCountry for item in vm.cultures" class="ng-pristine ng-untouched ng-valid ng-not-empty" aria-invalid="false"><!-- ngIf: false --><option label="English (United States)" value="string:en-US" selected="selected">English (United States)</option></select>
+                                </div>
+                            </div>
+
+                            <div class="row">
+                                <!-- ngIf: vm.showGoogleTranslate -->
+                            </div>
+                        </div>
+                    </div>
+                    <a href="" id="skip-to-content" ng-click="vm.skipToMainContent()" style="position: absolute;">Skip To Main Content</a>
+                </div>
+
+                <div class="row mainMenuRow navbar-header">
+                    <button id="menu-toggle" type="button" class="col-sm-3 navbar-toggle mainMenuToggle" ng-class="isExpanded" ng-init="isExpanded = false" ng-click="isExpanded = !isExpanded" data-toggle="toggled" data-target="#wrapper" tabindex="0" aria-expanded="false" aria-label="Main Menu">
+                        <span class="fa fa-bars"></span>
+                    </button>
+                    <div class="col-sm-9 mainMenuTitle"><span ng-bind="vm.tenant" class="ng-binding">Wilsonville, OR</span></div>
+                </div>
+
+                <div id="main-menu-content-wrapper" tyler-main-menu="" data-vm="vm" data-menu-items="vm.menuItems" class="ng-isolate-scope">
+    <div class="row mainMenuRow">
+        <div class="mainMenuWrapper">
+            <div id="main-menu" class="navbar mainMenu" role="navigation">
+                <div id="mainMenuLeft" class="center-align-menu"><ul class="mainMenuNav-ul navbar-nav navbar-left" role="list"><li tyler-menu-item="" tabindex="-1" ng-class="{  mainMenuNavActive: vm.activeState(menuItem)==='active', mainMenuNavActiveDisabled: vm.activeState(menuItem)==='active-disabled' }" role="listitem" tyler-custom-main-menu-nav="" class="ng-scope"><a target="_blank" tabindex="0" class="mainMenuNav-a ng-binding" ng-href="https://www.wilsonvilleoregon.gov/comm-dev/page/online-portal-help" id="default-main-menu-item" name="menu-1" href="https://www.wilsonvilleoregon.gov/comm-dev/page/online-portal-help">Help</a></li><li tyler-menu-item="" tabindex="-1" class="mainMenuNav-li ng-scope mainMenuNavActive" ng-class="{  mainMenuNavActive: vm.activeState(menuItem)==='active', mainMenuNavActiveDisabled: vm.activeState(menuItem)==='active-disabled' }" ng-click="vm.navigate(menuItem)" role="listitem" tyler-main-menu-nav="" style=""><a tabindex="0" class="mainMenuNav-a ng-binding" data-no-click="" href="/apps/selfservice/home#/home" id="link-Menu-Home" name="menu-2">Home</a></li><li tyler-menu-item="" tabindex="-1" class="mainMenuNav-li ng-scope" ng-class="{  mainMenuNavActive: vm.activeState(menuItem)==='active', mainMenuNavActiveDisabled: vm.activeState(menuItem)==='active-disabled' }" ng-click="vm.navigate(menuItem)" role="listitem" tyler-main-menu-nav=""><a tabindex="0" class="mainMenuNav-a ng-binding" data-no-click="" href="/apps/selfservice/home#/applicationAssistant" id="link-Menu-Apply" name="menu-3">Apply</a></li><li tyler-menu-item="" tabindex="-1" ng-class="{  mainMenuNavActive: vm.activeState(menuItem)==='active', mainMenuNavActiveDisabled: vm.activeState(menuItem)==='active-disabled' }" role="listitem" tyler-custom-main-menu-nav="" class="ng-scope"><a target="_blank" tabindex="0" class="mainMenuNav-a ng-binding" ng-href="https://www.wilsonvilleoregon.gov/forms" id="link-Menu-PermitAttachments" name="menu-4" href="https://www.wilsonvilleoregon.gov/forms">Permit Attachments</a></li><li tyler-menu-item="" tabindex="-1" ng-class="{  mainMenuNavActive: vm.activeState(menuItem)==='active', mainMenuNavActiveDisabled: vm.activeState(menuItem)==='active-disabled' }" role="listitem" tyler-custom-main-menu-nav="" class="ng-scope"><a target="_blank" tabindex="0" class="mainMenuNav-a ng-binding" ng-href="https://www.wilsonvilleoregon.gov/comm-dev/page/payment-options" id="link-Menu-PaymentOptions" name="menu-5" href="https://www.wilsonvilleoregon.gov/comm-dev/page/payment-options">Payment Options</a></li><li tyler-menu-item="" tabindex="-1" class="mainMenuNav-li ng-scope" ng-class="{  mainMenuNavActive: vm.activeState(menuItem)==='active', mainMenuNavActiveDisabled: vm.activeState(menuItem)==='active-disabled' }" ng-click="vm.navigate(menuItem)" role="listitem" tyler-main-menu-nav=""><a tabindex="0" class="mainMenuNav-a ng-binding" data-no-click="" href="/apps/selfservice/home#/map" id="link-Menu-Map" name="menu-6">Map</a></li><li tyler-menu-item="" tabindex="-1" class="mainMenuNav-li ng-scope" ng-class="{  mainMenuNavActive: vm.activeState(menuItem)==='active', mainMenuNavActiveDisabled: vm.activeState(menuItem)==='active-disabled' }" ng-click="vm.navigate(menuItem)" role="listitem" tyler-main-menu-nav=""><a tabindex="0" class="mainMenuNav-a ng-binding" data-no-click="" href="/apps/selfservice/home#/estimate" id="link-Menu-FeeEstimator" name="menu-7">Fee Estimator</a></li><li tyler-menu-item="" tabindex="-1" class="mainMenuNav-li ng-scope" ng-class="{  mainMenuNavActive: vm.activeState(menuItem)==='active', mainMenuNavActiveDisabled: vm.activeState(menuItem)==='active-disabled' }" ng-click="vm.navigate(menuItem)" role="listitem" tyler-main-menu-nav=""><a tabindex="0" class="mainMenuNav-a ng-binding" data-no-click="" href="/apps/selfservice/home#/payinvoice" id="link-Menu-PayInvoices" name="menu-8">Pay Invoices</a></li><li tyler-menu-item="" tabindex="-1" class="mainMenuNav-li ng-scope" ng-class="{  mainMenuNavActive: vm.activeState(menuItem)==='active', mainMenuNavActiveDisabled: vm.activeState(menuItem)==='active-disabled' }" ng-click="vm.navigate(menuItem)" role="listitem" tyler-main-menu-search=""><a id="link-Menu-Search" class="mainMenuNav-a ng-binding" data-no-click="" href="/apps/selfservice/home#/search" name="menu-9" tabindex="0">Search   <span class="fa fa-search"></span></a></li><li tyler-menu-item="" tabindex="-1" class="mainMenuNav-li ng-scope" ng-class="{  mainMenuNavActive: vm.activeState(menuItem)==='active', mainMenuNavActiveDisabled: vm.activeState(menuItem)==='active-disabled' }" ng-click="vm.navigate(menuItem)" role="listitem" tyler-main-menu-news-calendar=""><a id="link-Menu-Calendar" class="mainMenuNav-a ng-binding" data-no-click="" href="/apps/selfservice/home#/calendar/Index" name="menu-10" tabindex="0">Calendar   <span role="img" aria-roledescription="icon" id="calendarSpan" aria-label="Total number of events for today 0" class="badge badge-important jscalendarSpan">0</span></a></li></ul></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+                
+<div id="notificationCarousel" ng-show="vm.notifications.length" aria-hidden="true" class="ng-hide">
+    <div class="row">
+        <div class="col-xs-2 col-sm-1"></div>
+        <div class="col-xs-8 col-sm-10">
+            <div class="carousel-inner carousel slide ng-isolate-scope" id="Carousel" notificationcarousel="" data-ride="carousel" data-interval="vm.carouselInterval">
+                <!-- ngRepeat: notification in vm.notifications -->
+            </div>
+        </div>
+        <div class="col-xs-2 col-sm-1">
+            <div id="carouselButtons" ng-show="vm.notifications.length &gt; 1" aria-hidden="true" class="ng-hide">
+                <span class="carousel-control" data-target="#Carousel" ng-click="vm.playPrevious()" tabindex="0" aria-label="Select Notification Options Previous" role="button">
+                    <span class="fa fa-chevron-left"></span>
+                </span>
+                <span id="playButton" class="middle carousel-control" tabindex="0" ng-click="vm.toggleCarousel()" aria-label="Pause" role="button">
+                    <span id="carouselIcon" class="fa fa-pause"></span>
+                </span>
+                <span class="right carousel-control" data-target="#Carousel" ng-click="vm.playNext()" tabindex="0" aria-label="Next" role="button">
+                    <span class="fa fa-chevron-right"></span>
+                </span>
+            </div>
+        </div>
+    </div>
+</div>
+            </div>
+            <!-- Begin page content -->
+            <div ng-class="{'container': !vm.isContainerFluid &amp;&amp; !vm.isApplicationMapViewer}" id="pageContainer" class="">
+                <div>
+                    <div id="bodyDiv" role="main" ng-class="{'padding-bottom-zero': vm.isMapViewer || vm.isiFrameViewer}">
+                        <div id="bodyContainer">
+                            <!-- ngView: --><div id="bodyView" data-ng-view="" class="ng-scope" style="">
+<div id="main-content" tabindex="-1" role="region" aria-label="Welcome to the Home Page – Self Service Public Site" class="ng-scope">
+    <!-- ngIf: vm.hasLoadedSelectedTenantCulture && vm.showTenantBody() -->
+    <!-- ngIf: vm.hasLoadedSelectedTenantCulture && !vm.showTenantBody() --><div ng-if="vm.hasLoadedSelectedTenantCulture &amp;&amp; !vm.showTenantBody()" class="ng-scope" style="">
+        <div ng-init="vm.init()" ng-style="{'background-image':'url('+vm.tileDetails.TenantTileLayout.BackgroundImageURL+')','background-color':vm.tileDetails.TenantTileLayout.BackgroundColor}" class="welcome-page-image row card-div adjustments" style="text-align: center; min-height: 587px; background-image: url(&quot;https://www.ci.wilsonville.or.us/sites/default/files/fileattachments/community_development/page/122061/background-image.jpg&quot;); background-color: rgb(6, 123, 130);">
+
+            <div ng-class="(vm.tileDetails.TenantTileLayout.HeaderText.length !== 0)? 'welcome-text-div' : 'welcome-text-div-no-text'" class="welcome-text-div">
+                <h1 class="welcome-header ng-binding" id="focusTextLabel" ng-style="{color:vm.tileDetails.TenantTileLayout.HeaderTextColor,
+                    '-webkit-text-stroke-width':(vm.tileDetails.TenantTileLayout.ShowHeaderShadow == true) ? '1px':'0px',
+                    '-webkit-text-stroke-color':vm.tileDetails.TenantTileLayout.HeaderShadowColor }" style="color: rgb(246, 238, 238); -webkit-text-stroke: 1px rgb(0, 0, 0);" role="document">
+                    Welcome to Wilsonville's Online Permitting &amp; Licensing Portal
+                </h1>
+            </div>
+            <!-- ngIf: vm.tileDetails.TenantTileLayout.ShowSubHeader --><h3 id="welcome-sub-header" class="sub-header-box ng-scope" role="document" menu-tab-index="2" ng-if="vm.tileDetails.TenantTileLayout.ShowSubHeader" style="">
+                <h3 style="text-align: center; text-shadow: rgb(51, 51, 51) 0px 0px 0px !important;" class="ng-scope"><span style="font-size: 18pt;"><span style="color: rgb(255, 0, 0); text-decoration: inherit;">City of Wilsonville offices will be closed Monday, September 7th in observance of Labor Day.</span></span></h3>
+            </h3><!-- end ngIf: vm.tileDetails.TenantTileLayout.ShowSubHeader -->
+            <div id="main-content-body" class="welcome-tile-div">
+                <!-- ngRepeat: rows in vm.getNumberArray(vm.selectedLayout.RowCount) track by $index --><div ng-repeat="rows in vm.getNumberArray(vm.selectedLayout.RowCount) track by $index" class="row welcome-card-div ng-scope">
+                    <!-- ngRepeat: cols in vm.getNumberArray(vm.selectedLayout.ColumnCount) track by $index --><div class="card-container padding ng-scope col-sm-3" ng-class="vm.getTileLayoutClass(vm.selectedLayout.ColumnCount)" ng-repeat="cols in vm.getNumberArray(vm.selectedLayout.ColumnCount) track by $index" style="">
+                        <a class="wecome-tile-anchor" target="_self" role="link" href="https://cityofwilsonvilleor-energovweb.tylerhost.net/apps/selfservice#/login">
+                            <md-card class="card-container _md welcome-card-size-small" ng-class="vm.isTwoByTwo()? 'welcome-card-size':'welcome-card-size-small'" role="document">
+                                <md-card-content class="card-contant-small" id="LoginorRegister">
+                                    <div class="welcome-icon">
+                                        <span class="fa fa-stack fa-lg">
+                                            <i class="fa fa-circle fa-stack-2x fa-color-welcome"></i>
+                                            <i ng-class="vm.getClassName(vm.tileDetails.TenantTiles[$parent.$index*vm.selectedLayout.ColumnCount + $index].TileIconId)" class="fa-stack-1x fa-inverse fas fa-users" style=""></i>
+                                        </span>
+                                    </div>
+                                    <div id="card-title" class="row col-sm-12 welcome-tile-name">
+                                        <b role="document" class="ng-binding">
+                                            Login or Register
+                                        </b>
+                                    </div>
+                                    <div id="card-description" class="welcome-description">
+                                        <span role="document" title="Login to an existing or create a new account. You can also find help if you forgot your login information." ng-class="vm.isTwoByTwo()? 'block-with-text-max-height':'block-with-text-max-height-small'" class="tile-desc-span ng-binding block-with-text-max-height-small">
+                                            Login to an existing or create a new account. You can also find help if you forgot your login information.
+                                        </span>
+                                    </div>
+                                </md-card-content>
+
+                            </md-card>
+                        </a>
+                    </div><!-- end ngRepeat: cols in vm.getNumberArray(vm.selectedLayout.ColumnCount) track by $index --><div class="card-container padding ng-scope col-sm-3" ng-class="vm.getTileLayoutClass(vm.selectedLayout.ColumnCount)" ng-repeat="cols in vm.getNumberArray(vm.selectedLayout.ColumnCount) track by $index" style="">
+                        <a class="wecome-tile-anchor" href="https://cityofwilsonvilleor-energovweb.tylerhost.net/apps/selfservice#/applicationAssistant" target="_blank" role="link">
+                            <md-card class="card-container _md welcome-card-size-small" ng-class="vm.isTwoByTwo()? 'welcome-card-size':'welcome-card-size-small'" role="document">
+                                <md-card-content class="card-contant-small" id="Apply">
+                                    <div class="welcome-icon">
+                                        <span class="fa fa-stack fa-lg">
+                                            <i class="fa fa-circle fa-stack-2x fa-color-welcome"></i>
+                                            <i ng-class="vm.getClassName(vm.tileDetails.TenantTiles[$parent.$index*vm.selectedLayout.ColumnCount + $index].TileIconId)" class="fa-stack-1x fa-inverse fas fa-clipboard-check"></i>
+                                        </span>
+                                    </div>
+                                    <div id="card-title" class="row col-sm-12 welcome-tile-name">
+                                        <b role="document" class="ng-binding">
+                                            Apply
+                                        </b>
+                                    </div>
+                                    <div id="card-description" class="welcome-description">
+                                        <span role="document" title="This tool can be used to apply for a permit, plan or license." ng-class="vm.isTwoByTwo()? 'block-with-text-max-height':'block-with-text-max-height-small'" class="tile-desc-span ng-binding block-with-text-max-height-small">
+                                            This tool can be used to apply for a permit, plan or license.
+                                        </span>
+                                    </div>
+                                </md-card-content>
+
+                            </md-card>
+                        </a>
+                    </div><!-- end ngRepeat: cols in vm.getNumberArray(vm.selectedLayout.ColumnCount) track by $index --><div class="card-container padding ng-scope col-sm-3" ng-class="vm.getTileLayoutClass(vm.selectedLayout.ColumnCount)" ng-repeat="cols in vm.getNumberArray(vm.selectedLayout.ColumnCount) track by $index">
+                        <a class="wecome-tile-anchor" href="https://cityofwilsonvilleor-energovweb.tylerhost.net/apps/selfservice#/payinvoice" target="_blank" role="link">
+                            <md-card class="card-container _md welcome-card-size-small" ng-class="vm.isTwoByTwo()? 'welcome-card-size':'welcome-card-size-small'" role="document">
+                                <md-card-content class="card-contant-small" id="PayInvoice">
+                                    <div class="welcome-icon">
+                                        <span class="fa fa-stack fa-lg">
+                                            <i class="fa fa-circle fa-stack-2x fa-color-welcome"></i>
+                                            <i ng-class="vm.getClassName(vm.tileDetails.TenantTiles[$parent.$index*vm.selectedLayout.ColumnCount + $index].TileIconId)" class="fa-stack-1x fa-inverse fas fa-dollar-sign"></i>
+                                        </span>
+                                    </div>
+                                    <div id="card-title" class="row col-sm-12 welcome-tile-name">
+                                        <b role="document" class="ng-binding">
+                                            Pay Invoice
+                                        </b>
+                                    </div>
+                                    <div id="card-description" class="welcome-description">
+                                        <span role="document" title="Use this tool to pay for individual invoices.  An invoice number is required." ng-class="vm.isTwoByTwo()? 'block-with-text-max-height':'block-with-text-max-height-small'" class="tile-desc-span ng-binding block-with-text-max-height-small">
+                                            Use this tool to pay for individual invoices.  An invoice number is required.
+                                        </span>
+                                    </div>
+                                </md-card-content>
+
+                            </md-card>
+                        </a>
+                    </div><!-- end ngRepeat: cols in vm.getNumberArray(vm.selectedLayout.ColumnCount) track by $index --><div class="card-container padding ng-scope col-sm-3" ng-class="vm.getTileLayoutClass(vm.selectedLayout.ColumnCount)" ng-repeat="cols in vm.getNumberArray(vm.selectedLayout.ColumnCount) track by $index">
+                        <a class="wecome-tile-anchor" href="https://cityofwilsonvilleor-energovweb.tylerhost.net/apps/selfservice#/energovinspection/myremaininginspections" target="_blank" role="link">
+                            <md-card class="card-container _md welcome-card-size-small" ng-class="vm.isTwoByTwo()? 'welcome-card-size':'welcome-card-size-small'" role="document">
+                                <md-card-content class="card-contant-small" id="RequestInspection">
+                                    <div class="welcome-icon">
+                                        <span class="fa fa-stack fa-lg">
+                                            <i class="fa fa-circle fa-stack-2x fa-color-welcome"></i>
+                                            <i ng-class="vm.getClassName(vm.tileDetails.TenantTiles[$parent.$index*vm.selectedLayout.ColumnCount + $index].TileIconId)" class="fa-stack-1x fa-inverse fas fa-calendar-plus"></i>
+                                        </span>
+                                    </div>
+                                    <div id="card-title" class="row col-sm-12 welcome-tile-name">
+                                        <b role="document" class="ng-binding">
+                                            Request Inspection
+                                        </b>
+                                    </div>
+                                    <div id="card-description" class="welcome-description">
+                                        <span role="document" title="*NOTE: AM/PM inspection request are not guaranteed and are based solely on inspector availability.  " ng-class="vm.isTwoByTwo()? 'block-with-text-max-height':'block-with-text-max-height-small'" class="tile-desc-span ng-binding block-with-text-max-height-small">
+                                            *NOTE: AM/PM inspection request are not guaranteed and are based solely on inspector availability.  
+                                        </span>
+                                    </div>
+                                </md-card-content>
+
+                            </md-card>
+                        </a>
+                    </div><!-- end ngRepeat: cols in vm.getNumberArray(vm.selectedLayout.ColumnCount) track by $index -->
+                </div><!-- end ngRepeat: rows in vm.getNumberArray(vm.selectedLayout.RowCount) track by $index --><div ng-repeat="rows in vm.getNumberArray(vm.selectedLayout.RowCount) track by $index" class="row welcome-card-div ng-scope" style="">
+                    <!-- ngRepeat: cols in vm.getNumberArray(vm.selectedLayout.ColumnCount) track by $index --><div class="card-container padding ng-scope col-sm-3" ng-class="vm.getTileLayoutClass(vm.selectedLayout.ColumnCount)" ng-repeat="cols in vm.getNumberArray(vm.selectedLayout.ColumnCount) track by $index">
+                        <a class="wecome-tile-anchor" href="https://cityofwilsonvilleor-energovweb.tylerhost.net/apps/selfservice#/search" target="_blank" role="link">
+                            <md-card class="card-container _md welcome-card-size-small" ng-class="vm.isTwoByTwo()? 'welcome-card-size':'welcome-card-size-small'" role="document">
+                                <md-card-content class="card-contant-small" id="SearchPublicRecords">
+                                    <div class="welcome-icon">
+                                        <span class="fa fa-stack fa-lg">
+                                            <i class="fa fa-circle fa-stack-2x fa-color-welcome"></i>
+                                            <i ng-class="vm.getClassName(vm.tileDetails.TenantTiles[$parent.$index*vm.selectedLayout.ColumnCount + $index].TileIconId)" class="fa-stack-1x fa-inverse fas fa-search"></i>
+                                        </span>
+                                    </div>
+                                    <div id="card-title" class="row col-sm-12 welcome-tile-name">
+                                        <b role="document" class="ng-binding">
+                                            Search Public Records
+                                        </b>
+                                    </div>
+                                    <div id="card-description" class="welcome-description">
+                                        <span role="document" title="This tool can be used to search for existing permits, plans, inspections, code cases, requests and licenses." ng-class="vm.isTwoByTwo()? 'block-with-text-max-height':'block-with-text-max-height-small'" class="tile-desc-span ng-binding block-with-text-max-height-small">
+                                            This tool can be used to search for existing permits, plans, inspections, code cases, requests and licenses.
+                                        </span>
+                                    </div>
+                                </md-card-content>
+
+                            </md-card>
+                        </a>
+                    </div><!-- end ngRepeat: cols in vm.getNumberArray(vm.selectedLayout.ColumnCount) track by $index --><div class="card-container padding ng-scope col-sm-3" ng-class="vm.getTileLayoutClass(vm.selectedLayout.ColumnCount)" ng-repeat="cols in vm.getNumberArray(vm.selectedLayout.ColumnCount) track by $index">
+                        <a class="wecome-tile-anchor" href="https://cityofwilsonvilleor-energovweb.tylerhost.net/apps/selfservice#/map" target="_blank" role="link">
+                            <md-card class="card-container _md welcome-card-size-small" ng-class="vm.isTwoByTwo()? 'welcome-card-size':'welcome-card-size-small'" role="document">
+                                <md-card-content class="card-contant-small" id="Map">
+                                    <div class="welcome-icon">
+                                        <span class="fa fa-stack fa-lg">
+                                            <i class="fa fa-circle fa-stack-2x fa-color-welcome"></i>
+                                            <i ng-class="vm.getClassName(vm.tileDetails.TenantTiles[$parent.$index*vm.selectedLayout.ColumnCount + $index].TileIconId)" class="fa-stack-1x fa-inverse fas fa-map-marker-alt"></i>
+                                        </span>
+                                    </div>
+                                    <div id="card-title" class="row col-sm-12 welcome-tile-name">
+                                        <b role="document" class="ng-binding">
+                                            Map
+                                        </b>
+                                    </div>
+                                    <div id="card-description" class="welcome-description">
+                                        <span role="document" title="Explore the map to see the activity occurring in your neighborhood." ng-class="vm.isTwoByTwo()? 'block-with-text-max-height':'block-with-text-max-height-small'" class="tile-desc-span ng-binding block-with-text-max-height-small">
+                                            Explore the map to see the activity occurring in your neighborhood.
+                                        </span>
+                                    </div>
+                                </md-card-content>
+
+                            </md-card>
+                        </a>
+                    </div><!-- end ngRepeat: cols in vm.getNumberArray(vm.selectedLayout.ColumnCount) track by $index --><div class="card-container padding ng-scope col-sm-3" ng-class="vm.getTileLayoutClass(vm.selectedLayout.ColumnCount)" ng-repeat="cols in vm.getNumberArray(vm.selectedLayout.ColumnCount) track by $index">
+                        <a class="wecome-tile-anchor" href="https://www.ci.wilsonville.or.us/forms" target="_blank" role="link">
+                            <md-card class="card-container _md welcome-card-size-small" ng-class="vm.isTwoByTwo()? 'welcome-card-size':'welcome-card-size-small'" role="document">
+                                <md-card-content class="card-contant-small" id="Applications,Forms,&amp;SupplementalInformation">
+                                    <div class="welcome-icon">
+                                        <span class="fa fa-stack fa-lg">
+                                            <i class="fa fa-circle fa-stack-2x fa-color-welcome"></i>
+                                            <i ng-class="vm.getClassName(vm.tileDetails.TenantTiles[$parent.$index*vm.selectedLayout.ColumnCount + $index].TileIconId)" class="fa-stack-1x fa-inverse fas fa-file"></i>
+                                        </span>
+                                    </div>
+                                    <div id="card-title" class="row col-sm-12 welcome-tile-name">
+                                        <b role="document" class="ng-binding">
+                                            Applications, Forms, &amp; Supplemental Information 
+                                        </b>
+                                    </div>
+                                    <div id="card-description" class="welcome-description">
+                                        <span role="document" title="Applications, Forms, and Supplemental Information used to submit with permit applications." ng-class="vm.isTwoByTwo()? 'block-with-text-max-height':'block-with-text-max-height-small'" class="tile-desc-span ng-binding block-with-text-max-height-small">
+                                            Applications, Forms, and Supplemental Information used to submit with permit applications.
+                                        </span>
+                                    </div>
+                                </md-card-content>
+
+                            </md-card>
+                        </a>
+                    </div><!-- end ngRepeat: cols in vm.getNumberArray(vm.selectedLayout.ColumnCount) track by $index --><div class="card-container padding ng-scope col-sm-3" ng-class="vm.getTileLayoutClass(vm.selectedLayout.ColumnCount)" ng-repeat="cols in vm.getNumberArray(vm.selectedLayout.ColumnCount) track by $index">
+                        <a class="wecome-tile-anchor" href="https://www.ci.wilsonville.or.us/comm-dev" target="_blank" role="link">
+                            <md-card class="card-container _md welcome-card-size-small" ng-class="vm.isTwoByTwo()? 'welcome-card-size':'welcome-card-size-small'" role="document">
+                                <md-card-content class="card-contant-small" id="SystemDevelopmentFees&amp;Information">
+                                    <div class="welcome-icon">
+                                        <span class="fa fa-stack fa-lg">
+                                            <i class="fa fa-circle fa-stack-2x fa-color-welcome"></i>
+                                            <i ng-class="vm.getClassName(vm.tileDetails.TenantTiles[$parent.$index*vm.selectedLayout.ColumnCount + $index].TileIconId)" class="fa-stack-1x fa-inverse fas fa-dollar-sign"></i>
+                                        </span>
+                                    </div>
+                                    <div id="card-title" class="row col-sm-12 welcome-tile-name">
+                                        <b role="document" class="ng-binding">
+                                            System Development Fees &amp; Information
+                                        </b>
+                                    </div>
+                                    <div id="card-description" class="welcome-description">
+                                        <span role="document" title="System Development Fees &amp; Information" ng-class="vm.isTwoByTwo()? 'block-with-text-max-height':'block-with-text-max-height-small'" class="tile-desc-span ng-binding block-with-text-max-height-small">
+                                            System Development Fees &amp; Information
+                                        </span>
+                                    </div>
+                                </md-card-content>
+
+                            </md-card>
+                        </a>
+                    </div><!-- end ngRepeat: cols in vm.getNumberArray(vm.selectedLayout.ColumnCount) track by $index -->
+                </div><!-- end ngRepeat: rows in vm.getNumberArray(vm.selectedLayout.RowCount) track by $index -->
+            </div>
+        </div>
+    </div><!-- end ngIf: vm.hasLoadedSelectedTenantCulture && !vm.showTenantBody() -->
+</div></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="push" ng-class="{'removeElement': vm.isMapViewer|| vm.isiFrameViewer}">
+            
+            <!-- ngIf: vm.hasLoadedSelectedTenantCulture && vm.showTenantFooter() --><footer id="footer-content-wrapper" ng-if="vm.hasLoadedSelectedTenantCulture &amp;&amp; vm.showTenantFooter()" ng-class="{'removeElement': vm.isMapViewer}" class="ng-scope" style="">
+                <div tabindex="-1" class="ng-scope"><p><span style="font-family:verdana,geneva,sans-serif"><strong>&nbsp; &nbsp; &nbsp;<span style="font-size:8px">&nbsp;&nbsp;</span></strong></span></p><table align="center" cellpadding=".5" cellspacing=".5" class="e-rte-table">
+	<tbody>
+		<tr>
+			<td style="text-align:center"><span style="font-family:verdana,geneva,sans-serif; font-size:16px"><strong><a href="https://www.ci.wilsonville.or.us/"><u>Wilsonville City Hall</u></a></strong></span><br>
+			<span style="font-family:verdana,geneva,sans-serif; font-size:16px">29799 SW Town Center Loop E<br>
+			Wilsonville, OR 97070</span></td>
+		</tr>
+	</tbody>
+</table><hr><table align="center" cellpadding="1" cellspacing="1" class="e-rte-table" style="width: 658px; height: 156px;">
+	<tbody>
+		<tr style="height: 85.8974%;">
+			<td style="width: 5.16717%;">&nbsp;<span style="font-size:12px">&nbsp;&nbsp; &nbsp; &nbsp; &nbsp;&nbsp;</span></td>
+			<td style="width: 20.5167%;" class=""><span style="font-size:12px"><strong><span style="font-family:verdana,geneva,sans-serif"><a href="https://www.ci.wilsonville.or.us/building" target="_blank" aria-label="Open in new window">Building</a><br>
+			<a href="https://www.ci.wilsonville.or.us/finance/page/business-license" target="_blank" aria-label="Open in new window">Business Licensing</a><br>
+			<a href="https://www.ci.wilsonville.or.us/engineering" target="_blank" aria-label="Open in new window">Engineering</a><br>
+			<a href="https://www.ci.wilsonville.or.us/planning" target="_blank" aria-label="Open in new window">Planning</a></span></strong></span></td>
+			<td style="width: 10.1824%;" class=""><span style="font-size:12px"><span style="font-family:verdana,geneva,sans-serif">&nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp;</span></span></td>
+			<td class="" style="width: 37.0821%;"><span style="font-size:12px"><span style="font-family: Verdana, Geneva, sans-serif;"><a href="mailto:permits@wilsonvilleoregon.gov">p</a></span><span style="font-family: Verdana, Geneva, sans-serif;"><a href="mailto:permits@wilsonvilleoregon.gov">ermits@wilsonvilleoregon.gov</a></span><span style="font-family: Verdana, Geneva, sans-serif;"><br></span><a href="mailto:licenses@wilsonvilleoregon.gov"><span style="font-family: Verdana, Geneva, sans-serif;">licenses@wilsonvilleoregon.gov</span></a><span style="font-family: Verdana, Geneva, sans-serif;"><br></span>
+			<a href="mailto:pwpermits@wilsonvilleoregon.gov"><span style="font-family: Verdana, Geneva, sans-serif;">pwpermits@wilsonvilleoregon.gov</span></a><span style="font-family: Verdana, Geneva, sans-serif;"><br></span>
+			<a href="mailto:planningpermits@wilsonvilleoregon.gov"><span style="font-family: Verdana, Geneva, sans-serif;">planningpermits@wilsonvilleoregon.gov</span></a></span></td>
+			<td style="width: 10.4863%;" class=""><span style="font-size:12px"><span style="font-family:verdana,geneva,sans-serif">&nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp;</span></span></td>
+			<td style="width: 15.6535%;"><span style="font-size:12px"><span style="font-family:verdana,geneva,sans-serif">(503) 682-4960</span></span><br>
+			<span style="font-family:verdana,geneva,sans-serif; font-size:12px">(503) 570-1518<br>
+			(503) 682-4960<br>
+			(503) 682-4960</span></td>
+		</tr>
+		<tr style="height: 12.1795%;">
+			<td style="width: 5.16717%;">&nbsp;</td>
+			<td style="width: 20.5167%;">&nbsp;</td>
+			<td style="width: 10.1824%;">&nbsp;</td>
+			<td style="width: 37.0821%;"><span style="font-size:10px"><strong><a href="https://www.ci.wilsonville.or.us/administration/page/privacy-policy-and-disclaimer">Privacy Policy &amp; Disclaimer</a>&nbsp;</strong></span></td>
+			<td style="width: 10.4863%;" class="">&nbsp;</td>
+			<td style="width: 15.6535%;">&nbsp;</td>
+		</tr>
+	</tbody>
+</table><p><br></p></div>
+
+            </footer><!-- end ngIf: vm.hasLoadedSelectedTenantCulture && vm.showTenantFooter() -->
+            
+            <!-- ngIf: vm.hasLoadedSelectedTenantCulture && !vm.showTenantFooter() -->
+        </div>
+    </div>
+    <div id="diagnostic-errors-container" class="hidden"></div>
+
+
+
+
+
+
+
+
+
+
+
+
+
+<!--  Load software package bundles -->
+
+
+
+
+
+
+
+
+
+
+<!-- Google Analytics -->
+
+<!-- End Google Analytics -->
+
+
+</body></html>

@@ -353,6 +353,31 @@ export async function revealLoginForm(page: Page): Promise<boolean> {
     // Clicked something that didn't produce a form; the next call tries the next trigger.
     return false;
   }
+
+  // LAST: a control that is a login without SAYING so — an icon-only dropdown toggle named
+  // only by its tooltip, or by the menu it opens. See markDescribedLoginControl. Tried
+  // after every worded trigger, so a portal with a plain "Log In" link never reaches here.
+  const describedKey = "described-login-control";
+  if (!tried.has(describedKey)) {
+    const described = await markDescribedLoginControl(page);
+    if (described) {
+      tried.add(describedKey);
+      try {
+        await page.locator("[data-al-login-reveal]").first().click({ timeout: 5000 });
+        await smartWait(page, 3000);
+      } catch {
+        return false;
+      }
+      // The toggle usually only OPENS a menu; the sign-in item inside it is a second click,
+      // and that item DOES say what it is. So hand the worded triggers a fresh pass — the
+      // menu's contents are controls they have never seen, and the whole reason they were
+      // marked "tried" was that those controls did not exist a moment ago.
+      if (await loginFormPresent(page)) return true;
+      tried.clear();
+      tried.add(describedKey);
+      return false;
+    }
+  }
   return false;
 }
 
@@ -458,6 +483,32 @@ export async function performLogin(
             ok: true,
             status: "no_login_required",
             message: `No login exists on this portal — it publishes the application directly (${publicForm} fillable field(s)). Proceeding without signing in.`,
+          };
+        }
+        // A PUBLIC PORTAL'S FRONT DOOR IS OFTEN A MENU, NOT A FORM.
+        //
+        // applicationShapedForm asks whether the application is on THIS page, which is how
+        // Gilbert works. Two portals in the 2026-09-04 baseline are public in exactly the
+        // same sense but arrange it differently: Star ID (iWorq) lists its applications as
+        // links — "Electrical", "Plumbing", "Ada County Residential Building" — and Des
+        // Moines WA (PermitTrax) offers "CLICK TO APPLY ONLINE". Neither page holds a
+        // single input, so both were scored "the portal's login form was not recognised",
+        // as though we had failed to find something that does not exist.
+        //
+        // The guard this sits inside is load-bearing: refusing to proceed without proof of
+        // a session is what turned silent false successes on logged-out landing pages into
+        // honest failures. So the discriminator is not "does it look public" — it is
+        // whether there is ANYWHERE TO LOG IN. If a portal offers no password field and no
+        // sign-in or register control anywhere, there is no session to prove, and treating
+        // its open door as a locked one is the error. Washington County (Accela) and
+        // Wilsonville (Tyler) both fail this test on their "Login" links, which is right:
+        // they do have accounts, and their real defect is elsewhere.
+        const publicEntry = await publicApplicationEntry(page);
+        if (publicEntry) {
+          return {
+            ok: true,
+            status: "no_login_required",
+            message: `No login exists on this portal — no password field and no sign-in control anywhere, and it lists its applications directly (${publicEntry}). Proceeding without signing in.`,
           };
         }
       }
@@ -595,5 +646,152 @@ async function applicationShapedForm(page: Page): Promise<number> {
     });
   } catch {
     return 0;
+  }
+}
+
+/**
+ * Is this a portal with NO ACCOUNTS AT ALL, whose front door is a menu of applications?
+ *
+ * The sibling of applicationShapedForm, for portals that put the application one click away
+ * instead of on the landing page. Returns a short description of the evidence, or "".
+ *
+ * THE TEST IS THE ABSENCE OF A LOGIN, NOT THE PRESENCE OF LINKS. Every permit portal has
+ * links reading "apply"; only a public one has nowhere to sign in. Requiring both — no
+ * password field, no sign-in/register control ANYWHERE, and several application entries —
+ * is what keeps this from turning a logged-out Accela landing page into a false success,
+ * which is the exact failure the surrounding guard exists to prevent.
+ *
+ * Exported for the DOM smoke, which drives it against markup lifted from the real portals.
+ */
+export async function publicApplicationEntry(page: Page): Promise<string> {
+  try {
+    return await (page as unknown as { evaluate: (fn: () => string) => Promise<string> }).evaluate(() => {
+      const vis = (el: Element): boolean => {
+        const r = (el as HTMLElement).getBoundingClientRect();
+        const st = getComputedStyle(el as HTMLElement);
+        return r.width > 2 && r.height > 2 && st.visibility !== "hidden" && st.display !== "none";
+      };
+      // 1) Any password field at all — visible or not — means accounts exist here.
+      if (document.querySelector("input[type=password]")) return "";
+
+      const controls = Array.from(document.querySelectorAll(
+        "a, button, input[type=button], input[type=submit], [role=button], [role=link]",
+      ));
+
+      // 2) Any sign-in affordance means accounts exist, even when the form is elsewhere.
+      //    Checked against text, id and href, because portals hide it in all three.
+      //    "Log out"/"sign out" is deliberately NOT a login affordance — a page offering it
+      //    is already signed in, which is a different branch's business.
+      const LOGIN_WORD = /\blog[\s-]?in\b|\blogin\b|\bsign[\s-]?in\b|\bsignin\b|\bregister\b|\bcreate an account\b|\bmy account\b/i;
+      const LOGOUT_WORD = /\blog[\s-]?out\b|\blogout\b|\bsign[\s-]?out\b|\bsignout\b/i;
+      for (const el of controls) {
+        const hay = [
+          (el as HTMLElement).innerText || "",
+          el.getAttribute("aria-label") || "",
+          el.id || "",
+          (el as HTMLAnchorElement).href || "",
+          (el as HTMLInputElement).value || "",
+        ].join(" ");
+        if (LOGOUT_WORD.test(hay)) continue;
+        if (LOGIN_WORD.test(hay)) return "";
+      }
+
+      // 3) Now the positive evidence: entries that read as "start an application".
+      const APPLY = /\bapply\b|\bapplication\b|\bnew permit\b|\bnew request\b|\bsubmit a\b|\brequest a\b|\bstart\b/i;
+      const entries = new Set<string>();
+      for (const el of controls) {
+        if (!vis(el)) continue;
+        const text = ((el as HTMLElement).innerText || el.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim();
+        const href = (el as HTMLAnchorElement).href || "";
+        // Either the wording says apply, or the URL does (iWorq's per-permit links read
+        // "Electrical" and "Plumbing" — only their /new-permit/ href says what they are).
+        if (!APPLY.test(text) && !/new-permit|new-application|newpermit|applyonline|apply-online/i.test(href)) continue;
+        if (!text || text.length > 80) continue;
+        entries.add(text.toLowerCase());
+      }
+      if (entries.size < 2) return "";
+      return `${entries.size} application entries, e.g. ${Array.from(entries).slice(0, 3).map((s) => `"${s.slice(0, 40)}"`).join(", ")}`;
+    });
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * A CONTROL'S IDENTITY CAN LIVE OUTSIDE ITS TEXT.
+ *
+ * Every REVEAL_TRIGGER above finds the login control by what it SAYS. Des Moines WA
+ * (PermitTrax) has no such control: its sign-in is a Bootstrap dropdown whose toggle is a
+ * bare icon — `<button class="dropdown-toggle"><i class="bi-person-circle"></i></button>`
+ * — with no text, no aria-label and no login token in its id. The words SIGN IN and
+ * REGISTER exist only inside the closed `<ul class="dropdown-menu">` it opens, and the
+ * only thing naming the toggle is a tooltip: "Click to Sign In / Register a New Account".
+ *
+ * That portal was scored "the portal's login form was not recognised" — the engine's
+ * fault, correctly, and this is the fault. It is the same shape as an application category
+ * hidden in a closed fieldset or a radio with no innerText: PRESENT BUT SHUT. So look for
+ * a control described as a login by anything OTHER than its own text — tooltip, title,
+ * aria-label, a neighbouring <label>, or the contents of the menu it opens.
+ *
+ * Deliberately narrow. It considers only controls with no meaningful text of their own,
+ * because a control that says what it is has already been handled above, and widening this
+ * is how a reveal pass starts clicking things it shouldn't. Sign-out is always excluded.
+ *
+ * Tags the winner with data-al-login-reveal and returns true. Exported for the DOM smoke.
+ */
+export async function markDescribedLoginControl(page: Page): Promise<string> {
+  try {
+    return await (page as unknown as { evaluate: (fn: () => string) => Promise<string> }).evaluate(() => {
+      const LOGIN = /\blog[\s-]?in\b|\blogin\b|\bsign[\s-]?in\b|\bsignin\b|\bregister\b|\bmy account\b|\bnew account\b/i;
+      const LOGOUT = /\blog[\s-]?out\b|\blogout\b|\bsign[\s-]?out\b|\bsignout\b/i;
+      const vis = (el: Element): boolean => {
+        const r = (el as HTMLElement).getBoundingClientRect();
+        const st = getComputedStyle(el as HTMLElement);
+        return r.width > 2 && r.height > 2 && st.visibility !== "hidden" && st.display !== "none";
+      };
+      document.querySelectorAll("[data-al-login-reveal]").forEach((n) => n.removeAttribute("data-al-login-reveal"));
+
+      const controls = Array.from(document.querySelectorAll("button, a, [role=button]")).filter(vis);
+      for (const el of controls) {
+        const own = ((el as HTMLElement).innerText || "").replace(/\s+/g, " ").trim();
+        // Already-worded controls are REVEAL_TRIGGERS' business, not this pass's.
+        if (own.length > 3) continue;
+
+        // Everything that describes this control without being its text.
+        const described: string[] = [
+          el.getAttribute("title") || "",
+          el.getAttribute("data-bs-title") || "",
+          el.getAttribute("data-original-title") || "",
+          el.getAttribute("aria-label") || "",
+        ];
+        const describedBy = el.getAttribute("aria-describedby") || el.getAttribute("aria-labelledby") || "";
+        for (const id of describedBy.split(/\s+/).filter(Boolean)) {
+          described.push(document.getElementById(id)?.textContent || "");
+        }
+        // A <label> sitting beside it, which is how PermitTrax names its dropdown.
+        const parent = el.parentElement;
+        if (parent) {
+          for (const lab of Array.from(parent.querySelectorAll("label"))) described.push(lab.textContent || "");
+          const prev = parent.previousElementSibling;
+          if (prev?.tagName === "LABEL") described.push(prev.textContent || "");
+        }
+        // And the menu this control opens: aria-controls, or a dropdown-menu beside it.
+        const controlsId = el.getAttribute("aria-controls");
+        if (controlsId) described.push(document.getElementById(controlsId)?.textContent || "");
+        const menu = parent?.querySelector(".dropdown-menu, [role=menu], ul");
+        if (menu) described.push(menu.textContent || "");
+
+        const hay = described.join(" ").replace(/\s+/g, " ").trim();
+        if (!hay || !LOGIN.test(hay)) continue;
+        // A menu holding BOTH is a session menu; only skip when sign-out is all there is.
+        if (LOGOUT.test(hay) && !LOGIN.test(hay.replace(LOGOUT, ""))) continue;
+
+        el.setAttribute("data-al-login-reveal", "1");
+        return hay.slice(0, 90);
+      }
+      return "";
+    });
+  } catch {
+    return "";
   }
 }
