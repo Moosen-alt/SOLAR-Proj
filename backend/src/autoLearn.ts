@@ -322,6 +322,10 @@ export async function autoLearnPortal(
     headless?: boolean;
     // Optional live-progress sink (drives the UI progress bar). Non-PII signals only.
     onProgress?: import("../../portal-bot/src/adapters/autoLearnAdapter").LearnProgressFn;
+    /** Wall-clock cap on the page walk. The run stops ITSELF at the deadline and returns
+     *  a real result; without it, a caller that gives up simply loses sight of a run that
+     *  keeps going. Omit for no cap (the default for operator-initiated learns). */
+    budgetMs?: number;
   },
 ): Promise<AutoLearnResult> {
   const projectRow = db.get<Record<string, unknown>>("SELECT * FROM projects WHERE id = ?", [projectId]);
@@ -498,6 +502,10 @@ async function autoLearnPortalInner(
       planner,
       credential,
       userDataDir,
+      // A caller that stops WAITING for this run does not stop the run; it walks on,
+      // holding a browser profile and spending LLM calls where nobody is looking. The
+      // budget is handed down so the walk can end itself and still report what it reached.
+      budgetMs: input.budgetMs,
       docsByType,
       // Contractor contact identity for the deterministic ACA "Add New" contact pass
       // (Accela permit portals). buildPortalPlanner already split installerContactName

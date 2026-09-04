@@ -95,7 +95,14 @@ export function scoreLearnOutcome(outcome: LearnOutcome): LearnScore {
     return { rung: "recorded_steps", index: 5, reason: `recorded ${steps} step(s) across ${pages} page(s) but never reached review`, owner: "engine" };
   }
   if (pages > 0) {
-    return { rung: "reached_form", index: 4, reason: `walked ${pages} page(s) but recorded no steps — nothing fillable was identified`, owner: "engine" };
+    // Two very different jobs land on this rung, and the reason is the actionable half.
+    // "Our filler found nothing on a page it reached" is a planner gap; "the clock ran out
+    // mid-walk" is a budget question. Reading the second as the first sends a day's work
+    // at the wrong problem.
+    const reason = String(outcome.status) === "timeout"
+      ? `walked ${pages} page(s) and was cut off before a recipe was saved — it needs more time, not more detection`
+      : `walked ${pages} page(s) but recorded no steps — nothing fillable was identified`;
+    return { rung: "reached_form", index: 4, reason, owner: "engine" };
   }
 
   // Below the form, the events decide. An entry that was found and followed is real progress
@@ -118,14 +125,22 @@ export function scoreLearnOutcome(outcome: LearnOutcome): LearnScore {
     };
   }
 
+  const loginStatus = String(login?.status || "");
+
   // A CAP IS NOT A VERDICT. A portal stopped by the benchmark's own time limit is scored on
   // what it actually reached (handled above by pages/steps/entry), never as a portal failure
   // — otherwise the harness would blame portals for its own impatience.
-  if (String(outcome.status) === "timeout") {
+  //
+  // AND IT MUST BE ASKED LAST AMONG THE LOW RUNGS. This branch used to sit above the login
+  // checks, so it answered for every capped run before anything else got a look — and once
+  // capped runs began carrying their event log, bsaonline's "mfa_captcha" would have been
+  // filed as "stopped before reaching a login" when the bundle plainly says a human
+  // challenge stopped it. A cap explains why a run ENDED; it never overrides what the run
+  // had already established.
+  if (String(outcome.status) === "timeout" && !loginStatus) {
     return { rung: "unreachable", index: 0, reason: "stopped by the benchmark time cap before reaching a login", owner: "engine" };
   }
 
-  const loginStatus = String(login?.status || "");
   if (loginStatus === "logged_in" || loginStatus === "already_authenticated") {
     return { rung: "authenticated", index: 2, reason: "signed in, but no way into an application was found", owner: "engine" };
   }

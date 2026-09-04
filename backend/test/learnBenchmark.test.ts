@@ -140,6 +140,34 @@ check("a portal with NO LOGIN is not a login failure", () => {
   assert.ok(/no login exists/i.test(s.reason));
 });
 
+// A CAP EXPLAINS WHY A RUN ENDED. IT NEVER OVERRIDES WHAT THE RUN ESTABLISHED.
+//
+// The baseline of 2026-09-04 scored four portals "stopped by the benchmark time cap
+// before reaching a login". Their bundles said otherwise: momentum logged in and walked
+// 9 pages, smartgov 2, cloudpermit 8, and bsaonline was stopped by an MFA challenge.
+// Four rows of index 0 for runs that had got real distance — the mean read 0.82 when the
+// evidence on disk says 2.0.
+check("THE REGRESSION: a capped run that LOGGED IN and walked pages scores on that", () => {
+  const s = scoreLearnOutcome({
+    status: "timeout", pageCount: 9,
+    message: "benchmark cap",
+    events: [{ type: "login", status: "logged_in" }, { type: "application_entry_pass", ok: true }],
+  });
+  assert.equal(s.rung, "reached_form");
+  assert.equal(s.index, 4, "nine pages of evidence must outrank the reason the clock ran out");
+});
+
+check("...and a capped run stopped by MFA is the PORTAL's, not 'never reached a login'", () => {
+  // bsaonline, verbatim from its bundle: login status mfa_captcha, zero pages.
+  const s = scoreLearnOutcome({
+    status: "timeout", pageCount: 0,
+    message: "benchmark cap: the learn exceeded 400s on this portal",
+    events: [{ type: "login", status: "mfa_captcha" }],
+  });
+  assert.equal(s.rung, "login_failed");
+  assert.equal(s.owner, "portal", "a human challenge is not an engine defect and not a cap");
+});
+
 check("a benchmark TIME CAP is scored on what was reached, not as a portal failure", () => {
   // A capped run that had already walked pages keeps that credit — the harness must never
   // blame a portal for its own impatience.

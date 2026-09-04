@@ -489,6 +489,8 @@ export async function learnPortal(input: {
   encryptedStorageStatePath?: string;
   headless?: boolean;
   maxPages?: number;
+  /** Wall-clock cap for the page walk; the run stops itself rather than being abandoned. */
+  budgetMs?: number;
   // docType → upload-ready file path (from the doc-splitting tools). Lets the learner
   // attach the right split document at each portal upload control while learning.
   docsByType?: Record<string, string>;
@@ -524,7 +526,7 @@ export async function learnPortal(input: {
   hasBattery?: boolean;
 }): Promise<import("./adapters/autoLearnAdapter").LearnResult> {
   const { AutoLearnAdapter } = await import("./adapters/autoLearnAdapter");
-  const adapter = new AutoLearnAdapter(input.portalName, input.planner, { maxPages: input.maxPages, docsByType: input.docsByType, uploadMode: input.uploadMode, policyProfile: input.policyProfile, bindableFields: input.bindableFields, onProgress: input.onProgress, equipment: input.equipment, certifiedAliases: input.certifiedAliases, contactIdentity: input.contactIdentity, siteContactIdentity: input.siteContactIdentity, siteIdentity: input.siteIdentity, allowFinalSubmit: input.allowFinalSubmit, hasBattery: input.hasBattery });
+  const adapter = new AutoLearnAdapter(input.portalName, input.planner, { maxPages: input.maxPages, budgetMs: input.budgetMs, docsByType: input.docsByType, uploadMode: input.uploadMode, policyProfile: input.policyProfile, bindableFields: input.bindableFields, onProgress: input.onProgress, equipment: input.equipment, certifiedAliases: input.certifiedAliases, contactIdentity: input.contactIdentity, siteContactIdentity: input.siteContactIdentity, siteIdentity: input.siteIdentity, allowFinalSubmit: input.allowFinalSubmit, hasBattery: input.hasBattery });
   let tmpStatePath: string | undefined;
   let leaveOpen = false;
   // A browser left open by a prior guided-manual stage holds this profile's lock — close it

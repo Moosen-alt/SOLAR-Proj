@@ -1022,6 +1022,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   portalName: string;
   private page: Page | null = null;
   private maxPages: number;
+  /** Wall-clock deadline (epoch ms) after which the page walk stops itself. See budgetMs. */
+  private deadlineAt = 0;
   // docType → absolute file path of the upload-ready document (from the doc-splitting
   // tools). Used to attach the right split document at each portal upload control.
   private docsByType: Record<string, string>;
@@ -1101,6 +1103,20 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     private planner: LearnPlanner,
     private options: {
       maxPages?: number;
+      /**
+       * WALL-CLOCK BUDGET FOR THE PAGE WALK, IN MILLISECONDS.
+       *
+       * A caller that gives up on the promise does NOT stop this run: it keeps walking
+       * pages, holding a browser profile and spending LLM calls, invisible to whoever
+       * stopped waiting. Measured on 2026-09-04 — a benchmark capped at 400s left one
+       * portal running 1220s, straight through the next two portals' turns, and all
+       * three then "timed out". One abandoned run cost three measurements.
+       *
+       * So the budget belongs INSIDE the walk. On expiry the loop breaks like any other
+       * exit: the recipe, the page count and the debug bundle are all real and the
+       * caller gets a result describing how far it actually got, rather than silence.
+       */
+      budgetMs?: number;
       autoSubmit?: false;
       docsByType?: Record<string, string>;
       uploadMode?: "split" | "combined";
@@ -1167,6 +1183,9 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     // capped out mid-form. The stuck-page guard + review detection bound the loop, so a
     // higher cap can't run away; it just allows long wizards to reach review.
     this.maxPages = options.maxPages ?? 18;
+    // 0 = no deadline (the default everywhere except the benchmark and any caller that
+    // must bound its own wall clock).
+    this.deadlineAt = options.budgetMs && options.budgetMs > 0 ? Date.now() + options.budgetMs : 0;
     this.docsByType = options.docsByType ?? {};
     this.uploadMode = options.uploadMode ?? "split";
     this.debug = LearnRunDebug.start(portalName, { maxPages: this.maxPages, uploadMode: this.uploadMode });
@@ -3142,6 +3161,16 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     const visitedPaths = new Set<string>();
 
     for (let pageIdx = 0; pageIdx < this.maxPages; pageIdx++) {
+      // OUT OF TIME — STOP OURSELVES RATHER THAN BE ABANDONED.
+      //
+      // Checked between pages, never mid-page: a page half-filled and then torn down is
+      // the one state worth avoiding, and the portal is mid-transaction until this page
+      // settles. Breaking here leaves the run finalising normally, so the caller learns
+      // what was reached instead of inferring it from a corpse.
+      if (this.deadlineAt && Date.now() >= this.deadlineAt && pageIdx > 0) {
+        this.debug?.event({ type: "budget_exhausted", page: pageIdx + 1, pagesWalked: pageCount });
+        break;
+      }
       pageCount++;
       // Reset per-page label tracking so the planner sees a clean slate on each page —
       // PowerClerk reuses field labels ("Name", "Email", "Phone") across wizard steps and

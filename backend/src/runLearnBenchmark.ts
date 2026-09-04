@@ -23,6 +23,11 @@ import { listPortalCredentials } from "./portalCredentials";
 import { scoreLearnOutcome, summarize, compareRuns, type BenchmarkRow } from "./learnBenchmark";
 
 const OUT_DIR = path.resolve(process.cwd(), "data", "learn-benchmark");
+// The learn stops itself at budgetMs; the walk checks its deadline BETWEEN pages, so a run
+// legitimately overruns by the length of its last page (uploads and slow postbacks can be a
+// couple of minutes). This slack keeps the outer backstop from firing on an orderly finish —
+// when it does fire, the run really is wedged.
+const BACKSTOP_SLACK_MS = 180_000;
 const CLIENT = process.env.BENCHMARK_CLIENT_ID || "tml-international-llc";
 
 const arg = (name: string): string | undefined => {
@@ -119,15 +124,26 @@ async function main(): Promise<void> {
       } as never).project.id;
       pid = created;
       const started = Date.now();
-      // Capped: a portal that will not finish still scores on how far it got.
+      // THE CAP IS INSIDE THE RUN, NOT AROUND IT.
+      //
+      // This used to be a bare Promise.race, and a race only stops the WAITING. The learn
+      // walked on: capped at 400s, momentum ran 1220s — straight through the next two
+      // portals' turns, holding a browser profile and spending LLM calls where nothing was
+      // watching. All three then "timed out". One abandoned run cost three measurements,
+      // and the scorecard blamed the portals.
+      //
+      // budgetMs lets the walk end itself, so a capped portal still returns a real result:
+      // pages, steps and debug bundle intact, scored on what it actually reached. The race
+      // survives only as a backstop with slack — if it ever fires now, the run is wedged,
+      // which is a harness abort and is scored as "not measured" rather than as a verdict.
       const res = await Promise.race([
         autoLearnPortal(db, pid, {
           scope: "ahj", portalUrl: t.url, createdBy: "learn-benchmark",
-          permitType: "electrical", headless: true,
+          permitType: "electrical", headless: true, budgetMs: portalTimeoutMs,
         }).catch((e: unknown) => ({ status: "threw", message: String((e as Error)?.message || e) })),
         new Promise((resolve) => setTimeout(
-          () => resolve({ status: "timeout", message: `benchmark cap: the learn exceeded ${Math.round(portalTimeoutMs / 1000)}s on this portal` }),
-          portalTimeoutMs,
+          () => resolve({ status: "timeout", message: `benchmark backstop: the learn was still running ${Math.round((portalTimeoutMs + BACKSTOP_SLACK_MS) / 1000)}s after start — target closed, treat as wedged` }),
+          portalTimeoutMs + BACKSTOP_SLACK_MS,
         )),
       ]);
       const r = res as Record<string, unknown>;
