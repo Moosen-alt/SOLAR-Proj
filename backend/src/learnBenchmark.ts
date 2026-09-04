@@ -54,10 +54,42 @@ export interface LearnScore {
   /** Why this rung and not the next — the actionable half. */
   reason: string;
   /** Who has to do something about it. */
-  owner: "engine" | "credential" | "portal" | "none";
+  owner: "engine" | "credential" | "portal" | "harness" | "none";
+  /**
+   * False when the run never became a measurement of the portal at all — see
+   * HARNESS_ABORT. Absent means measured; old scorecards on disk predate the field.
+   */
+  measured?: boolean;
 }
 
+/**
+ * THE RUN DIED FOR REASONS THAT HAVE NOTHING TO DO WITH THE PORTAL.
+ *
+ * Two of these were sitting in real scorecards, both attributed to the PORTAL:
+ *
+ *   "browserType.launchPersistentContext: Target page, context or browser has been closed"
+ *       — eight rows of one 11-portal run. The browser went away when the run was
+ *         killed; every one of those portals was recorded as unreachable.
+ *   "A learn for this portal is already running"
+ *       — four rows of a 12-portal run. That is our own concurrency lease refusing
+ *         to start, blamed on the jurisdiction it refused.
+ *
+ * Twelve rows of "the portal is broken" that were nothing of the kind. The ladder was
+ * built to stop exactly this mistake pointing at the engine; it was making the same
+ * mistake pointing at portals. A non-measurement is not a zero — it is an absence, and
+ * it must be excluded from the average rather than dragging it down.
+ */
+const HARNESS_ABORT =
+  /target (page|browser)?,? ?(context|browser)? ?(has been|was) closed|browser has been closed|already running|launchpersistentcontext|browser ?type\.|session closed|target closed|ECONNRESET|worker exited|SIGINT|SIGTERM/i;
+
 const evt = (o: LearnOutcome, type: string) => (o.events ?? []).find((e) => e?.type === type);
+
+/** Whether a score represents a real attempt at the portal. Old rows on disk carry no
+ *  `measured` flag, so their reason text is the only evidence — read it too. */
+export function isMeasured(score: Pick<LearnScore, "reason" | "measured">): boolean {
+  if (score.measured === false) return false;
+  return !HARNESS_ABORT.test(String(score.reason || ""));
+}
 
 /**
  * Score one learn. Pure, so the ladder can be tested without touching a portal — which
@@ -88,6 +120,20 @@ export function scoreLearnOutcome(outcome: LearnOutcome): LearnScore {
   // even when the page after it defeated the planner.
   if (entry?.ok) {
     return { rung: "entered_application", index: 3, reason: "followed the application entry, but no page was planned", owner: "engine" };
+  }
+
+  // A DEAD HARNESS IS NOT A VERDICT EITHER — and unlike the cap below, it is not even a
+  // slow engine. Nothing was learned about this portal, so it is marked unmeasured and
+  // kept out of the average rather than counted as a zero. Placed after the progress
+  // rungs above so a run that died holding real steps still keeps that credit.
+  if (HARNESS_ABORT.test(msg)) {
+    return {
+      rung: "unreachable",
+      index: 0,
+      reason: `not measured — the run was cut short by the harness, not the portal: ${msg.slice(0, 110)}`,
+      owner: "harness",
+      measured: false,
+    };
   }
 
   // A CAP IS NOT A VERDICT. A portal stopped by the benchmark's own time limit is scored on
@@ -142,7 +188,12 @@ export function scoreLearnOutcome(outcome: LearnOutcome): LearnScore {
 export interface BenchmarkRow { portal: string; platform: string; score: LearnScore }
 
 export interface BenchmarkSummary {
+  /** Every row attempted, measured or not. */
   total: number;
+  /** Rows that actually became a measurement of a portal. The denominator. */
+  measured: number;
+  /** Rows the harness aborted before they could measure anything. */
+  notMeasured: number;
   /** The headline: portals that produced a usable recipe (rung >= recorded_steps). */
   usableRecipes: number;
   usablePct: number;
@@ -159,18 +210,26 @@ export function summarize(rows: BenchmarkRow[]): BenchmarkSummary {
   for (const r of LEARN_RUNGS) byRung[r] = 0;
   let sum = 0;
   let usable = 0;
+  let measured = 0;
   for (const row of rows) {
     byRung[row.score.rung] = (byRung[row.score.rung] ?? 0) + 1;
     byOwner[row.score.owner] = (byOwner[row.score.owner] ?? 0) + 1;
+    // A run the harness killed says nothing about the portal, so it is neither a
+    // success nor a failure — it is not in the sample. Counting it as a zero is how
+    // an 11-portal run reported "9% usable, mean 0.55" when only three portals had
+    // actually been tried.
+    if (!isMeasured(row.score)) continue;
+    measured++;
     sum += row.score.index;
     if (row.score.index >= 5) usable++;
   }
-  const total = rows.length;
   return {
-    total,
+    total: rows.length,
+    measured,
+    notMeasured: rows.length - measured,
     usableRecipes: usable,
-    usablePct: total ? Math.round((usable / total) * 1000) / 10 : 0,
-    meanIndex: total ? Math.round((sum / total) * 100) / 100 : 0,
+    usablePct: measured ? Math.round((usable / measured) * 1000) / 10 : 0,
+    meanIndex: measured ? Math.round((sum / measured) * 100) / 100 : 0,
     byRung,
     byOwner,
   };
@@ -192,6 +251,11 @@ export function compareRuns(
   for (const row of current) {
     const was = before.get(row.portal);
     if (!was) continue;
+    // NEITHER SIDE MAY BE A NON-MEASUREMENT. A killed run stored eight portals at
+    // index 0; comparing the next real run against those would announce eight
+    // "improvements" that are only the difference between measuring and not. The same
+    // in reverse would cry regression the next time a run is interrupted.
+    if (!isMeasured(was) || !isMeasured(row.score)) continue;
     if (row.score.index < was.index) regressed.push({ portal: row.portal, from: was.rung, to: row.score.rung });
     else if (row.score.index > was.index) improved.push({ portal: row.portal, from: was.rung, to: row.score.rung });
     else unchanged++;

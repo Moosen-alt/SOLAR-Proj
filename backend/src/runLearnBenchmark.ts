@@ -169,7 +169,11 @@ async function main(): Promise<void> {
   const summary = summarize(rows);
   console.log(`\n================ SCORECARD ================`);
   console.log(`portals              : ${summary.total}`);
-  console.log(`usable recipes       : ${summary.usableRecipes}  (${summary.usablePct}%)`);
+  // Say the sample size out loud. A run that was interrupted, or whose portals were
+  // refused by the concurrency lease, has a headline computed over fewer portals than
+  // it attempted — and a percentage that hides that is worse than no percentage.
+  console.log(`measured             : ${summary.measured}${summary.notMeasured ? `   (${summary.notMeasured} NOT measured — harness aborted, excluded from the figures below)` : ""}`);
+  console.log(`usable recipes       : ${summary.usableRecipes}  (${summary.usablePct}% of measured)`);
   console.log(`mean rung (0-6)      : ${summary.meanIndex}`);
   console.log(`\nby rung:`);
   for (const [rung, n] of Object.entries(summary.byRung)) if (n) console.log(`   ${String(n).padStart(3)}  ${rung}`);

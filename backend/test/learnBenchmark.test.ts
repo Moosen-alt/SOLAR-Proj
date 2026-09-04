@@ -12,7 +12,7 @@
 //
 // Browser-free. Run: tsx backend/test/learnBenchmark.test.ts
 import assert from "node:assert/strict";
-import { LEARN_RUNGS, compareRuns, scoreLearnOutcome, summarize, type BenchmarkRow } from "../src/learnBenchmark";
+import { LEARN_RUNGS, compareRuns, isMeasured, scoreLearnOutcome, summarize, type BenchmarkRow } from "../src/learnBenchmark";
 
 let failures = 0;
 const check = (label: string, fn: () => void): void => {
@@ -148,6 +148,80 @@ check("a benchmark TIME CAP is scored on what was reached, not as a portal failu
   // And one capped before it got anywhere is ours, not the portal's.
   const nothing = scoreLearnOutcome({ status: "timeout", message: "benchmark cap: the learn exceeded 480s on this portal" });
   assert.equal(nothing.owner, "engine");
+});
+
+// ---------------------------------------------------------------------------
+// A RUN THE HARNESS KILLED IS NOT A MEASUREMENT OF THE PORTAL.
+//
+// Both of these were sitting in real scorecards, scored 0 and attributed to the PORTAL.
+// The 11-portal run reported "1 usable, mean 0.55" when eight of its rows were its own
+// browser dying; the 12-portal run before it blamed four jurisdictions for our
+// concurrency lease. Twelve rows of "the portal is broken" that were nothing of the kind.
+// ---------------------------------------------------------------------------
+check("THE REGRESSION: a dead browser is the harness's, not the portal's", () => {
+  // Verbatim from data/learn-benchmark/2026-09-04T06-37-14.json, eight times over.
+  const s = scoreLearnOutcome({
+    status: "threw",
+    message: "Auto-learn login failed: browserType.launchPersistentContext: Target page, context or browser has been closed",
+  });
+  assert.equal(s.owner, "harness", "this was our browser going away, not a portal refusing");
+  assert.equal(s.measured, false);
+  assert.equal(isMeasured(s), false);
+});
+
+check("...and so is our own concurrency lease refusing to start", () => {
+  const s = scoreLearnOutcome({ status: "failed", message: "A learn for this portal is already running. Recipes are shared between clients." });
+  assert.equal(s.owner, "harness");
+  assert.equal(isMeasured(s), false);
+});
+
+check("a run that died holding real progress KEEPS that progress", () => {
+  // The credit is earned before the browser goes away; only a run that reached nothing
+  // becomes a non-measurement.
+  const s = scoreLearnOutcome({ pageCount: 3, steps: 12, message: "Target page, context or browser has been closed" });
+  assert.equal(s.rung, "recorded_steps");
+  assert.equal(isMeasured(s), true);
+});
+
+check("an unmeasured row is EXCLUDED from the headline, not counted as a zero", () => {
+  const mixed: BenchmarkRow[] = [
+    { portal: "real1", platform: "X", score: scoreLearnOutcome({ pageCount: 9, steps: 75, reachedReview: true }) },
+    { portal: "real2", platform: "Y", score: scoreLearnOutcome({ pageCount: 2, steps: 10 }) },
+    { portal: "dead", platform: "Z", score: scoreLearnOutcome({ message: "browserType.launchPersistentContext: Target page, context or browser has been closed" }) },
+  ];
+  const s = summarize(mixed);
+  assert.equal(s.total, 3, "every attempted portal is still reported");
+  assert.equal(s.measured, 2);
+  assert.equal(s.notMeasured, 1);
+  // 2 of 2, not 2 of 3. Averaging in a portal nobody tried is how 3 real results
+  // turned into "9% usable".
+  assert.equal(s.usablePct, 100);
+  assert.equal(s.meanIndex, 5.5);
+});
+
+check("PHANTOM IMPROVEMENTS: a real run is not compared against a killed one", () => {
+  // latest.json held eight portals at index 0 purely because the run was interrupted.
+  // Without this, the next honest run announces eight wins it did not earn.
+  const killed: BenchmarkRow[] = [{ portal: "a", platform: "X", score: scoreLearnOutcome({ message: "browserType.launchPersistentContext: Target page, context or browser has been closed" }) }];
+  const real: BenchmarkRow[] = [{ portal: "a", platform: "X", score: scoreLearnOutcome({ pageCount: 4 }) }];
+  const diff = compareRuns(killed, real);
+  assert.equal(diff.improved.length, 0, "climbing out of a non-measurement is not an improvement");
+  assert.equal(diff.regressed.length, 0);
+});
+
+check("...and being interrupted is never reported as a regression", () => {
+  const real: BenchmarkRow[] = [{ portal: "a", platform: "X", score: scoreLearnOutcome({ pageCount: 9, steps: 75, reachedReview: true }) }];
+  const killed: BenchmarkRow[] = [{ portal: "a", platform: "X", score: scoreLearnOutcome({ message: "Target page, context or browser has been closed" }) }];
+  assert.equal(compareRuns(real, killed).regressed.length, 0);
+});
+
+check("OLD SCORECARDS ON DISK are read correctly though they predate the flag", () => {
+  // The poisoned rows were written before `measured` existed, so their reason text is
+  // the only evidence there is. compareRuns has to read it, or the file keeps lying.
+  assert.equal(isMeasured({ reason: "Could not learn the portal automatically: Auto-learn login failed: browserType.launchPersistentContext: Target page, context or browser has been closed" }), false);
+  assert.equal(isMeasured({ reason: "A learn for this portal is already running. Recipes are shared" }), false);
+  assert.equal(isMeasured({ reason: "the portal's login form was not recognised" }), true);
+  assert.equal(isMeasured({ reason: "the portal did not respond" }), true, "a genuinely dead host IS a measurement");
 });
 
 // ---------------------------------------------------------------------------
