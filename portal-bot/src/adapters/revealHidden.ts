@@ -109,3 +109,47 @@ export function planHiddenReveal(): HiddenRevealPlan {
 
   return { opener: "", why };
 }
+
+/**
+ * THE INPUT IS HIDDEN ON PURPOSE AND THE LABEL IS ITS HANDLE.
+ *
+ * A different shape from a closed container, and the commoner one. Momentum's record-type
+ * gate is a plain visible fieldset:
+ *
+ *   <fieldset><legend>Pick a record type.</legend>
+ *     <input id="radio-license" class="input-radio" type="radio" name="radio-options">
+ *     <label for="radio-license">Licenses &amp; Permits</label>
+ *
+ * Nothing conceals it. The NATIVE input is styled out of sight — the universal way to draw
+ * a custom radio or checkbox — and the label is what a person clicks. isVisible() is false,
+ * so the run skipped the gate on three consecutive pages, clicked advance, and never moved.
+ * planHiddenReveal found no opener because there is no closed container to open.
+ *
+ * Tags the visible label as `data-al-reveal` and returns its text. Restricted to radios and
+ * checkboxes: those are the controls this styling trick applies to, and a hidden text input
+ * with a visible label is a genuinely different situation that should still be skipped.
+ */
+export function planLabelProxy(): string {
+  const target = document.querySelector("[data-al-hidden-target]") as HTMLInputElement | null;
+  if (!target) return "";
+  const type = (target.type || "").toLowerCase();
+  if (type !== "radio" && type !== "checkbox") return "";
+  document.querySelectorAll("[data-al-reveal]").forEach((n) => n.removeAttribute("data-al-reveal"));
+
+  const visible = (el: Element | null): boolean => {
+    if (!el) return false;
+    const r = (el as HTMLElement).getBoundingClientRect();
+    const st = getComputedStyle(el as HTMLElement);
+    return r.width > 2 && r.height > 2 && st.visibility !== "hidden" && st.display !== "none";
+  };
+
+  // The explicit association first — it is the one the browser itself uses.
+  const byFor = target.id ? document.querySelector(`label[for="${CSS.escape(target.id)}"]`) : null;
+  const wrapping = target.closest("label");
+  for (const label of [byFor, wrapping]) {
+    if (!visible(label)) continue;
+    label!.setAttribute("data-al-reveal", "1");
+    return ((label as HTMLElement).innerText || "").replace(/\s+/g, " ").trim().slice(0, 60);
+  }
+  return "";
+}

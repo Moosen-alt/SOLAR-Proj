@@ -21,7 +21,7 @@
 //   npx tsx portal-bot/src/adapters/revealHidden.dom.smoke.ts
 import http from "node:http";
 import { chromium } from "playwright";
-import { planHiddenReveal } from "./revealHidden";
+import { planHiddenReveal, planLabelProxy } from "./revealHidden";
 
 let failures = 0;
 const check = (label: string, ok: boolean, detail = ""): void => {
@@ -103,6 +103,58 @@ check("...though it still reports WHY it was invisible", dead.why !== "", JSON.s
 
 const vis = await planOn("visible");
 check("a visible field is not a reveal candidate at all", vis.opener === "" && vis.why === "");
+
+// ---------------------------------------------------------------------------
+// THE INPUT IS HIDDEN ON PURPOSE AND THE LABEL IS ITS HANDLE.
+//
+// Momentum's record-type gate, from its own captured markup — nothing is closed at all:
+//
+//   <fieldset><legend>Pick a record type.</legend>
+//     <input id="radio-license" class="input-radio" type="radio" name="radio-options">
+//     <label for="radio-license">Licenses &amp; Permits</label>
+//
+// The NATIVE input is styled out of sight, which is the universal way to draw a custom
+// radio, and the label is what a person clicks. planHiddenReveal correctly found no opener
+// because there is no container to open — a different shape needing a different answer.
+// ---------------------------------------------------------------------------
+PAGES.styledRadio = `<!doctype html><html><body>
+  <fieldset><legend>Pick a record type.</legend>
+    <input id="radio-license" type="radio" name="radio-options" data-al-hidden-target="1"
+           style="position:absolute;opacity:0;width:1px;height:1px" />
+    <label for="radio-license" style="display:inline-block;width:180px;height:24px">Licenses &amp; Permits</label>
+  </fieldset></body></html>`;
+PAGES.wrappingLabel = `<!doctype html><html><body>
+  <label style="display:inline-block;width:180px;height:24px">
+    <input type="checkbox" data-al-hidden-target="1" style="position:absolute;opacity:0;width:1px;height:1px" />
+    I agree</label></body></html>`;
+PAGES.hiddenText = `<!doctype html><html><body>
+  <input type="text" id="t" data-al-hidden-target="1" style="display:none" />
+  <label for="t" style="display:inline-block;width:120px;height:20px">Permit Number</label></body></html>`;
+PAGES.noLabel = `<!doctype html><html><body>
+  <input type="radio" id="r" data-al-hidden-target="1" style="display:none" /></body></html>`;
+
+const proxyOn = async (key: string): Promise<string> => {
+  await page.goto(`http://127.0.0.1:${port}/${key}`, { waitUntil: "domcontentloaded" });
+  await page.waitForTimeout(80);
+  return page.evaluate(planLabelProxy);
+};
+
+const styled = await proxyOn("styledRadio");
+check("THE REGRESSION: Momentum's styled radio is reached through its label",
+  styled === "Licenses & Permits", `got ${JSON.stringify(styled)}`);
+
+check("...and clicking what it tagged actually checks the radio", await (async () => {
+  await page.locator("[data-al-reveal]").first().click();
+  return page.locator("#radio-license").isChecked();
+})());
+
+check("a WRAPPING label works too — not every portal uses for=", (await proxyOn("wrappingLabel")) === "I agree");
+
+// The refusals.
+check("a hidden TEXT input is not label-proxied — that is a different situation",
+  (await proxyOn("hiddenText")) === "",
+  "only radios and checkboxes are drawn this way");
+check("a hidden radio with no visible label stays skipped", (await proxyOn("noLabel")) === "");
 
 await browser.close();
 server.close();

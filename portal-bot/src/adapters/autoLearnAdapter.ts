@@ -12,7 +12,7 @@ import { scrapeReviewScreen as scrapeReviewScreenShared } from "../reviewScreenS
 import { performLogin, lastRevealTrail } from "./loginFlow";
 import { enterApplicationFlow, isExcludedEntryLabel, normalizeEntryLabel } from "./applicationEntry";
 import { chooseProgram, offeredLabels, programSelector, scanProgramGroups, type ProgramGroup } from "./applicationProgram";
-import { planHiddenReveal } from "./revealHidden";
+import { planHiddenReveal, planLabelProxy } from "./revealHidden";
 import { parseStreetName, parseStreetNumber } from "../addressParse";
 import { portalUploadCapBytes } from "../uploadCap";
 import { LearnRunDebug } from "../learnDebug";
@@ -5718,6 +5718,22 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       const l = loc as { evaluate?: (fn: (el: Element) => void) => Promise<void>; isVisible?: () => Promise<boolean> };
       if (typeof l.evaluate !== "function") return false;
       await l.evaluate((el: Element) => el.setAttribute("data-al-hidden-target", "1"));
+      // A VISUALLY-HIDDEN RADIO/CHECKBOX IS NOT A CLOSED CONTAINER — its label is the
+      // handle, and clicking that is exactly what a person does. Tried first because it is
+      // the commoner shape and needs nothing opened.
+      const labelText = await this.page.evaluate(planLabelProxy);
+      if (labelText) {
+        await this.page.locator("[data-al-reveal]").first().click({ timeout: 3000 });
+        await sleep(400);
+        const checked = await (l as { evaluate?: (fn: (el: Element) => boolean) => Promise<boolean> })
+          .evaluate!((el: Element) => (el as HTMLInputElement).checked === true).catch(() => false);
+        this.debug?.event({
+          type: checked ? "hidden_field_clicked_via_label" : "hidden_field_label_click_no_effect",
+          label: (field.label || "").slice(0, 60), via: labelText,
+        });
+        await l.evaluate((el: Element) => el.removeAttribute("data-al-hidden-target")).catch(() => {});
+        if (checked) return true;
+      }
       const plan = await this.page.evaluate(planHiddenReveal);
       if (!plan?.opener) {
         // SAY THAT WE LOOKED. Returning quietly here made "no opener exists" identical to
