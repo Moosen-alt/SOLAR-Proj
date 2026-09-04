@@ -158,8 +158,30 @@ export class LearnRunDebug {
     if (!p || typeof p.evaluate !== "function") return;
     try {
       const captured = await p.evaluate(() => {
+        // WHAT WAS VISIBLE, NOT JUST WHAT WAS THERE.
+        //
+        // A capture records structure, and structure cannot answer the question a capture is
+        // usually opened to answer: why was that field skipped. Twice on 2026-09-04 a
+        // captured page showed a control sitting in plain markup — Momentum's record-type
+        // radio inside a normal <fieldset>, Wilsonville's login link — and reading it as
+        // "visible, therefore reachable" was wrong both times. Momentum's was inside a div
+        // the CSS had hidden; Wilsonville's was under a modal. Each cost a live run to
+        // establish what the capture had been standing next to all along.
+        //
+        // So visibility is computed HERE, where it can be, and written onto the element.
+        // Marked on the live DOM and removed again in the same synchronous block, so the
+        // page the learner is still working on is unchanged by the time anything else runs.
+        const hiddenNow: Element[] = [];
+        for (const el of Array.from(document.querySelectorAll("body *"))) {
+          const st = getComputedStyle(el as HTMLElement);
+          const r = (el as HTMLElement).getBoundingClientRect();
+          const invisible = st.display === "none" || st.visibility === "hidden"
+            || Number(st.opacity) === 0 || r.width < 2 || r.height < 2;
+          if (invisible) { el.setAttribute("data-al-invisible", "1"); hiddenNow.push(el); }
+        }
         // Clone so the live page the learner is still working on is never modified.
         const doc = document.documentElement.cloneNode(true) as HTMLElement;
+        for (const el of hiddenNow) el.removeAttribute("data-al-invisible");
         for (const el of Array.from(doc.querySelectorAll("script, noscript"))) el.remove();
         // Drop everything the operator's data went into.
         for (const el of Array.from(doc.querySelectorAll("input, textarea"))) {
