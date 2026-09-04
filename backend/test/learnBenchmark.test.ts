@@ -355,6 +355,17 @@ check("a refused password is still the OPERATOR's, challenge or not", () => {
   assert.equal(s.owner, "credential", "the password is the thing to fix");
 });
 
+check("A CONSENT WALL is the portal's too — accepting cookies is not automation's call", () => {
+  // Des Moines picked the right permit type and was redirected to its cookie policy anyway.
+  const s = scoreLearnOutcome({
+    status: "failed", pageCount: 2,
+    message: "This portal will not start an application until its cookie consent is answered.",
+    events: [{ type: "login", status: "logged_in" }, { type: "consent_wall" } as never],
+  });
+  assert.equal(s.owner, "portal");
+  assert.match(s.reason, /consent wall|human must clear/i);
+});
+
 check("no challenge, no re-attribution", () => {
   const s = scoreLearnOutcome({ pageCount: 4, steps: 5, substantiveSteps: 0 });
   assert.equal(s.owner, "engine");

@@ -20,7 +20,7 @@
 //   npx tsx portal-bot/src/adapters/consentBanner.dom.smoke.ts
 import http from "node:http";
 import { chromium } from "playwright";
-import { planConsentDismissal } from "./consentBanner";
+import { looksLikeConsentWall, planConsentDismissal } from "./consentBanner";
 
 let failures = 0;
 const check = (label: string, ok: boolean, detail = ""): void => {
@@ -100,6 +100,34 @@ check("...and 'Got it' alone is an acceptance too, so it is also refused",
 check("an ordinary dialog with no consent wording is not touched",
   (await planOn("ordinaryDialog")).clicked === "");
 check("a page with no banner yields nothing", (await planOn("none")).how === "");
+
+// ---------------------------------------------------------------------------
+// A CONSENT WALL: the portal will not proceed until the question is answered.
+//
+// Des Moines answers a click on ANY permit type by serving its cookie policy. The row
+// picked was verifiably correct — "05) RESIDENTIAL ROOFTOP PHOTOVOLTAIC PERMIT" is in the
+// run log — and the portal bounced it anyway. Three runs were spent re-reading that page
+// before anything noticed the bounce was the answer, not a mis-pick.
+// ---------------------------------------------------------------------------
+check("THE REGRESSION: an application click that lands on the cookie policy is a wall",
+  looksLikeConsentWall(
+    "https://desmoines-wa.permittrax.com/citizen/Home/DESMON_L/PBPW",
+    "https://desmoines-wa.permittrax.com/citizen/CookiePolicy/DESMON_L/PBPW",
+  ));
+
+check("...and a privacy or consent landing counts the same way",
+  looksLikeConsentWall("https://x.gov/apply", "https://x.gov/privacy-policy")
+  && looksLikeConsentWall("https://x.gov/apply", "https://x.gov/consent"));
+
+check("an ordinary navigation is not a wall",
+  !looksLikeConsentWall("https://x.gov/home", "https://x.gov/apply/electrical"));
+
+check("staying on the SAME cookie page is not a fresh bounce",
+  !looksLikeConsentWall("https://x.gov/CookiePolicy", "https://x.gov/CookiePolicy"),
+  "otherwise every page after the first bounce reports the wall again");
+
+check("leaving a cookie page for a real one is not a wall",
+  !looksLikeConsentWall("https://x.gov/CookiePolicy", "https://x.gov/apply"));
 
 await browser.close();
 server.close();

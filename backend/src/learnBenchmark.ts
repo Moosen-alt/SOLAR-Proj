@@ -110,6 +110,15 @@ export function isMeasured(score: Pick<LearnScore, "reason" | "measured">): bool
 function challengeStopped(outcome: LearnOutcome): string {
   for (const e of outcome.events ?? []) {
     if (e?.type === "challenge_stop") return String((e as { detail?: unknown }).detail || "a human challenge");
+    // A CONSENT WALL IS A HUMAN DECISION TOO. Des Moines will not start an application
+    // until its cookie consent is answered — the engine picked the right permit type and
+    // the portal redirected it to the cookie policy regardless. Accepting non-essential
+    // cookies for the operator is not automation's call, so this ends the run the same way
+    // a CAPTCHA does, and belongs to the same owner: not us.
+    if (e?.type === "consent_wall") return "a cookie-consent wall the portal will not pass without an answer";
+  }
+  if (/cookie consent is answered|consent wall/i.test(String(outcome.message || ""))) {
+    return "a cookie-consent wall the portal will not pass without an answer";
   }
   if (/challenge frame detected|recaptcha|captcha|hcaptcha|cloudflare turnstile/i.test(String(outcome.message || ""))) {
     return "a CAPTCHA/challenge";

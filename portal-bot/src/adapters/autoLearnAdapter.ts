@@ -13,7 +13,7 @@ import { performLogin, lastRevealTrail } from "./loginFlow";
 import { enterApplicationFlow, isExcludedEntryLabel, normalizeEntryLabel } from "./applicationEntry";
 import { chooseProgram, offeredLabels, programSelector, scanProgramGroups, type ProgramGroup } from "./applicationProgram";
 import { planHiddenReveal, planLabelProxy } from "./revealHidden";
-import { planConsentDismissal } from "./consentBanner";
+import { looksLikeConsentWall, planConsentDismissal } from "./consentBanner";
 import { chooseRow, scanRowChoices } from "./rowChooser";
 import { parseStreetName, parseStreetNumber } from "../addressParse";
 import { portalUploadCapBytes } from "../uploadCap";
@@ -3880,6 +3880,26 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           );
           if (!res.ok) {
             return fail(steps, this.portalName, `Failed to click navigation link "${navField.label}" on page ${pageCount}: ${res.message ?? "unknown"}`);
+          }
+          // A CONSENT WALL, NAMED RATHER THAN WANDERED INTO.
+          //
+          // Des Moines answers a click on ANY permit type by serving its cookie policy — the
+          // row picked was verifiably correct ("05) RESIDENTIAL ROOFTOP PHOTOVOLTAIC
+          // PERMIT") and the portal bounced it anyway, because its Termly consent decision
+          // has not been made and the application flow is gated behind it. Three runs were
+          // spent re-reading that policy page.
+          //
+          // Accepting non-essential cookies on the operator's behalf to get a filing done is
+          // not a decision automation should take, so the run stops and says so — the same
+          // treatment a CAPTCHA gets, and for the same reason.
+          const navAfterUrl = typeof this.page.url === "function" ? String(this.page.url() ?? "") : "";
+          if (looksLikeConsentWall(navBeforeUrl, navAfterUrl)) {
+            this.debug?.event({ type: "consent_wall", from: safeHostPath(navBeforeUrl), to: safeHostPath(navAfterUrl), via: (navField.label || "").slice(0, 70) });
+            return fail(
+              steps,
+              this.portalName,
+              `This portal will not start an application until its cookie consent is answered: clicking "${(navField.label || "the application entry").slice(0, 60)}" was redirected to its cookie policy. A person must make that choice — automation never accepts non-essential cookies on the operator's behalf.`,
+            );
           }
           continue; // re-enter the loop on the new page
         }
