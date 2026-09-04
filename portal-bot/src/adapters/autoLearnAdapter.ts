@@ -13,6 +13,7 @@ import { performLogin, lastRevealTrail } from "./loginFlow";
 import { enterApplicationFlow, isExcludedEntryLabel, normalizeEntryLabel } from "./applicationEntry";
 import { chooseProgram, offeredLabels, programSelector, scanProgramGroups, type ProgramGroup } from "./applicationProgram";
 import { planHiddenReveal, planLabelProxy } from "./revealHidden";
+import { planConsentDismissal } from "./consentBanner";
 import { parseStreetName, parseStreetNumber } from "../addressParse";
 import { portalUploadCapBytes } from "../uploadCap";
 import { LearnRunDebug } from "../learnDebug";
@@ -3218,6 +3219,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       //     extracting fields, so overlays can't intercept the actions we take this page.
       await this.dismissModals();
       await this.clearOverlays();
+      await this.declineConsentBanner();
 
       // a3) Section render-readiness: wait until the SPA has MOUNTED an interactive control
       //     before scraping/filling. PGE PowerClerk (and other Vue/React wizards) render the
@@ -5775,6 +5777,31 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       return now;
     } catch {
       return false;
+    }
+  }
+
+  /**
+   * Decline the cookie/consent banner if one is up. See consentBanner.ts for why this
+   * declines rather than accepts, and why it does nothing at all when "Accept" is the only
+   * way through.
+   *
+   * Runs each page because a single-page portal can raise the banner late, and because
+   * every portal now has its own fresh profile, so every visit is a first visit.
+   */
+  private async declineConsentBanner(): Promise<void> {
+    if (!this.page || typeof this.page.evaluate !== "function") return;
+    try {
+      const outcome = await this.page.evaluate(planConsentDismissal);
+      if (!outcome?.how) return;
+      if (outcome.how === "accept-only-refused") {
+        this.debug?.event({ type: "consent_banner_left_standing", why: "the only control offered was an acceptance; consenting is the operator's to give" });
+        return;
+      }
+      await this.page.locator("[data-al-consent]").first().click({ timeout: 3000 });
+      await sleep(400);
+      this.debug?.event({ type: "consent_banner_dismissed", how: outcome.how, control: outcome.clicked });
+    } catch {
+      /* a banner we could not dismiss is the overlay neutraliser's problem, not an error */
     }
   }
 
