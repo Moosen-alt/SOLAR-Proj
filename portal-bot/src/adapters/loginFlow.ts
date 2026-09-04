@@ -429,6 +429,18 @@ export async function revealLoginForm(page: Page): Promise<boolean> {
       // different problem from a control we cannot find, and it is the commoner one on a
       // portal that greets you with a dialog. Neutralise what is on top and try once more.
       if (/intercepts pointer events|element is not (visible|stable)/i.test(why)) {
+        // READ THE DIALOG BEFORE DISABLING IT. What is in the way is quite often the next
+        // step — Wilsonville's "You are being redirected to Tyler Identity login... Continue"
+        // — and neutralising it disables the control that carries the flow forward.
+        const continued = await clickLoginContinuation(page);
+        if (continued) {
+          trail.push(`continued through dialog: ${continued.slice(0, 90)}`);
+          clickedOne = true;
+          if (await loginFormPresent(page)) { trail.push("dialog continuation -> form appeared"); return true; }
+          tried.clear();
+          tried.add(key);
+          return false;
+        }
         const cleared = await neutralizeOverlayOver(page, trigger);
         if (cleared) {
           trail.push(`neutralised overlay: ${cleared}`);
@@ -1049,6 +1061,70 @@ async function neutralizeOverlayOver(page: Page, loc: Locator): Promise<string> 
         }
         return neutralised.slice(0, 3).join(", ");
       }, { x, y });
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * A DIALOG IN THE WAY MAY BE THE NEXT STEP, NOT AN OBSTRUCTION.
+ *
+ * Wilsonville cost five live runs before its captured page gave the answer away. The modal
+ * that kept intercepting the login click was not a cover at all:
+ *
+ *   "You are being redirected to Tyler Identity login page for authorization purposes.
+ *    Once authenticated, you will be logged into CSS."
+ *   <button id="modalOkBtn" ng-click="ok()">Continue</button>
+ *
+ * The login click had worked on every one of those runs. It opened a confirmation dialog
+ * with a Continue button, and the engine spent its budget trying to click THROUGH the thing
+ * it was supposed to press — the capture shows pointer-events:none set on the very dialog
+ * that held the way forward.
+ *
+ * So an intercepting overlay gets read before it gets neutralised. Deliberately narrow:
+ *
+ *   - the dialog must SAY it is a continuation to a login or authorisation, so an arbitrary
+ *     announcement or a survey prompt is not "continued" into;
+ *   - it must NOT be a cookie or consent dialog. Those are a decision about the user's
+ *     privacy, not a step in a filing, and pressing their affirmative button is exactly the
+ *     wrong default;
+ *   - the button must be a plain affirmative — Continue, OK, Proceed — never Accept, which
+ *     is consent wording, and never anything that reads as filing or paying.
+ */
+export async function clickLoginContinuation(page: Page): Promise<string> {
+  try {
+    const marked = await (page as unknown as { evaluate: (fn: () => string) => Promise<string> }).evaluate(() => {
+      const CONTINUATION = /redirect|being taken|authoriz|authentic|continue to (the )?(login|sign)|identity (provider|login)|you will be logged/i;
+      const CONSENT = /\bcookie|\bconsent\b|\btracking\b|privacy preferences|we use .{0,20}cookies/i;
+      const AFFIRM = /^(continue|ok|okay|proceed|next)$/i;
+      const vis = (el: Element): boolean => {
+        const r = (el as HTMLElement).getBoundingClientRect();
+        const st = getComputedStyle(el as HTMLElement);
+        return r.width > 2 && r.height > 2 && st.visibility !== "hidden" && st.display !== "none";
+      };
+      document.querySelectorAll("[data-al-continue]").forEach((n) => n.removeAttribute("data-al-continue"));
+      const dialogs = Array.from(document.querySelectorAll(
+        "[role=dialog], [role=alertdialog], .modal, .modal-dialog, .modal-content, .mat-dialog-container, .cdk-overlay-pane",
+      )).filter(vis);
+      for (const dlg of dialogs) {
+        const text = ((dlg as HTMLElement).innerText || "").replace(/\s+/g, " ").trim();
+        if (!text || !CONTINUATION.test(text)) continue;
+        if (CONSENT.test(text)) continue;
+        for (const btn of Array.from(dlg.querySelectorAll("button, a, [role=button], input[type=button], input[type=submit]"))) {
+          if (!vis(btn)) continue;
+          const label = ((btn as HTMLElement).innerText || (btn as HTMLInputElement).value || btn.getAttribute("aria-label") || "")
+            .replace(/\s+/g, " ").trim();
+          if (!AFFIRM.test(label)) continue;
+          btn.setAttribute("data-al-continue", "1");
+          return `${label} — ${text.slice(0, 90)}`;
+        }
+      }
+      return "";
+    });
+    if (!marked) return "";
+    await page.locator("[data-al-continue]").first().click({ timeout: 4000 });
+    await smartWait(page, 4000);
+    return marked;
   } catch {
     return "";
   }

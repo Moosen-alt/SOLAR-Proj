@@ -39,7 +39,7 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
-import { followForwardingInterstitial, lastRevealTrail, markDescribedLoginControl, publicApplicationEntry, revealLoginForm } from "./loginFlow";
+import { clickLoginContinuation, followForwardingInterstitial, lastRevealTrail, markDescribedLoginControl, publicApplicationEntry, revealLoginForm } from "./loginFlow";
 
 let failures = 0;
 const check = (label: string, ok: boolean, detail = ""): void => {
@@ -363,6 +363,69 @@ check("THE REGRESSION: a modal that re-asserts itself still does not hide the lo
 check("...reached by dispatching the click, after the polite routes failed",
   stubbornTrail.some((t) => /dispatched click/.test(t)));
 await stubbornPage.close();
+
+// ---------------------------------------------------------------------------
+// A DIALOG IN THE WAY MAY BE THE NEXT STEP.
+//
+// Wilsonville cost five live runs before its captured page gave this up. The modal that
+// kept intercepting the login click was never a cover:
+//
+//   "You are being redirected to Tyler Identity login page for authorization purposes.
+//    Once authenticated, you will be logged into CSS."   [Continue]
+//
+// The login click had worked every time. The engine spent its budget trying to click
+// THROUGH the thing it was meant to press, and the capture shows pointer-events:none set on
+// the dialog holding the way forward.
+// ---------------------------------------------------------------------------
+const continuationPage = await context.newPage();
+const onPage = async (html: string): Promise<string> => {
+  PAGES.contTest = html;
+  await continuationPage.goto(`http://127.0.0.1:${port}/contTest`, { waitUntil: "domcontentloaded" });
+  await continuationPage.waitForTimeout(150);
+  return clickLoginContinuation(continuationPage);
+};
+
+const tylerModal = await onPage(`<!doctype html><html><body>
+  <div class="modal" style="position:fixed;inset:0;z-index:1050;background:#fff">
+    <div class="modal-content" style="width:400px;height:200px">
+      You are being redirected to Tyler Identity login page for authorization purposes.
+      Once authenticated, you will be logged into CSS.
+      <button id="modalOkBtn" style="width:90px;height:30px">Continue</button>
+      <button id="modalCancelBtn" style="width:90px;height:30px">Cancel</button>
+    </div></div></body></html>`);
+check("THE REGRESSION: Tyler's redirect confirmation is continued through", !!tylerModal, `got ${JSON.stringify(tylerModal)}`);
+check("...by pressing Continue, never Cancel", /^Continue/.test(tylerModal), tylerModal);
+
+// --- the refusals, which are most of the value ---
+check("a COOKIE dialog is never continued through — that is a privacy decision, not a step",
+  (await onPage(`<!doctype html><html><body>
+     <div class="modal" style="position:fixed;inset:0;z-index:1050;background:#fff">
+       <div class="modal-content" style="width:400px;height:150px">
+         We use cookies. By continuing you consent to tracking. You will be redirected.
+         <button style="width:90px;height:30px">Continue</button>
+       </div></div></body></html>`)) === "");
+
+check("an unrelated announcement is not continued through",
+  (await onPage(`<!doctype html><html><body>
+     <div class="modal" style="position:fixed;inset:0;z-index:1050;background:#fff">
+       <div class="modal-content" style="width:400px;height:150px">
+         Our offices are closed on Monday for the holiday.
+         <button style="width:90px;height:30px">OK</button>
+       </div></div></body></html>`)) === "");
+
+check("'Accept' is not an affirmative here — it is consent wording",
+  (await onPage(`<!doctype html><html><body>
+     <div class="modal" style="position:fixed;inset:0;z-index:1050;background:#fff">
+       <div class="modal-content" style="width:400px;height:150px">
+         You are being redirected for authorization purposes.
+         <button style="width:90px;height:30px">Accept</button>
+       </div></div></body></html>`)) === "");
+
+check("a dialog with no dialog-ish container is left alone",
+  (await onPage(`<!doctype html><html><body>
+     <p>You are being redirected to the login page.</p>
+     <button style="width:90px;height:30px">Continue</button></body></html>`)) === "");
+await continuationPage.close();
 
 await browser.close();
 server.close();
