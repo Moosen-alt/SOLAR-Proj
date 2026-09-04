@@ -3,6 +3,8 @@
 //   npm run learn:benchmark                  -- every portal with a stored credential
 //   npm run learn:benchmark -- --limit 6     -- the first 6
 //   npm run learn:benchmark -- --host opengov,smartgov
+//   npm run learn:benchmark -- --concurrency 3 --portal-timeout 420
+//   npm run learn:benchmark -- --include-stale      (default: SKIPPED, see below)
 //
 // DRIVES LIVE GOVERNMENT PORTALS. It logs in with stored credentials and walks application
 // forms; it never submits (the learn stops at review by design), and it deletes the
@@ -54,6 +56,16 @@ async function main(): Promise<void> {
   const db = await openDatabase();
   const limit = Number(arg("limit") || 0);
   const hostFilter = (arg("host") || "").toLowerCase().split(",").map((s) => s.trim()).filter(Boolean);
+  const concurrency = Math.max(1, Math.min(4, Number(arg("concurrency") || 2)));
+  // One portal must not be able to eat an hour. Momentum ran 19 minutes and Accela 18 before
+  // giving up, and a full sweep of 70 at that rate is a day. A capped portal scores on what
+  // it reached, which is exactly what the ladder is for.
+  const portalTimeoutMs = Math.max(60, Number(arg("portal-timeout") || 480)) * 1000;
+  // NEVER RE-TRY A LOGIN THE PORTAL HAS ALREADY REFUSED, unless asked. Seventy portals means
+  // seventy login attempts, and the ones we know are stale would be attempts against real
+  // accounts this business depends on — repeated failures lock people out. The credential
+  // health flag exists precisely so the benchmark can decline to bang on a locked door.
+  const includeStale = process.argv.includes("--include-stale");
 
   const seen = new Set<string>();
   const targets = listPortalCredentials(db, CLIENT)
@@ -68,13 +80,15 @@ async function main(): Promise<void> {
     .filter((t): t is NonNullable<typeof t> => !!t)
     .filter((t) => !seen.has(t.host) && seen.add(t.host))
     .filter((t) => !hostFilter.length || hostFilter.some((h) => t.host.includes(h) || t.platform.toLowerCase().includes(h)))
-    .filter((t) => CITY_BY_STATE[t.state]);
+    .filter((t) => CITY_BY_STATE[t.state])
+    .filter((t) => includeStale || !t.stale);
 
   const chosen = limit > 0 ? targets.slice(0, limit) : targets;
   console.log(`learn benchmark: ${chosen.length} portal(s)\n`);
 
   const rows: BenchmarkRow[] = [];
-  for (const [i, t] of chosen.entries()) {
+  let cursor = 0;
+  const runOne = async (t: typeof chosen[number], i: number): Promise<void> => {
     const loc = CITY_BY_STATE[t.state];
     let pid = "";
     let outcome: Record<string, unknown> = {};
@@ -90,10 +104,17 @@ async function main(): Promise<void> {
       } as never).project.id;
       pid = created;
       const started = Date.now();
-      const res = await autoLearnPortal(db, pid, {
-        scope: "ahj", portalUrl: t.url, createdBy: "learn-benchmark",
-        permitType: "electrical", headless: true,
-      }).catch((e: unknown) => ({ status: "threw", message: String((e as Error)?.message || e) }));
+      // Capped: a portal that will not finish still scores on how far it got.
+      const res = await Promise.race([
+        autoLearnPortal(db, pid, {
+          scope: "ahj", portalUrl: t.url, createdBy: "learn-benchmark",
+          permitType: "electrical", headless: true,
+        }).catch((e: unknown) => ({ status: "threw", message: String((e as Error)?.message || e) })),
+        new Promise((resolve) => setTimeout(
+          () => resolve({ status: "timeout", message: `benchmark cap: the learn exceeded ${Math.round(portalTimeoutMs / 1000)}s on this portal` }),
+          portalTimeoutMs,
+        )),
+      ]);
       const r = res as Record<string, unknown>;
       // Read the run's own event log — it beats the summary prose for scoring.
       let events: Array<{ type?: string; status?: string; ok?: boolean }> = [];
@@ -120,7 +141,15 @@ async function main(): Promise<void> {
     rows.push({ portal: t.host, platform: t.platform, score });
     console.log(`${String(i + 1).padStart(2)}/${chosen.length} ${score.index} ${score.rung.padEnd(20)} ${t.host}`);
     console.log(`      ${score.reason.slice(0, 150)}`);
-  }
+  };
+
+  await Promise.all(Array.from({ length: concurrency }, async () => {
+    for (;;) {
+      const i = cursor++;
+      if (i >= chosen.length) break;
+      await runOne(chosen[i], i);
+    }
+  }));
 
   const summary = summarize(rows);
   console.log(`\n================ SCORECARD ================`);

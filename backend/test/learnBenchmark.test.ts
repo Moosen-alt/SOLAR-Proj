@@ -140,6 +140,16 @@ check("a portal with NO LOGIN is not a login failure", () => {
   assert.ok(/no login exists/i.test(s.reason));
 });
 
+check("a benchmark TIME CAP is scored on what was reached, not as a portal failure", () => {
+  // A capped run that had already walked pages keeps that credit — the harness must never
+  // blame a portal for its own impatience.
+  const partial = scoreLearnOutcome({ status: "timeout", pageCount: 6, steps: 3, message: "benchmark cap: the learn exceeded 480s on this portal" });
+  assert.equal(partial.rung, "recorded_steps");
+  // And one capped before it got anywhere is ours, not the portal's.
+  const nothing = scoreLearnOutcome({ status: "timeout", message: "benchmark cap: the learn exceeded 480s on this portal" });
+  assert.equal(nothing.owner, "engine");
+});
+
 // ---------------------------------------------------------------------------
 // The ladder must stay ordered and honest.
 // ---------------------------------------------------------------------------

@@ -90,6 +90,13 @@ export function scoreLearnOutcome(outcome: LearnOutcome): LearnScore {
     return { rung: "entered_application", index: 3, reason: "followed the application entry, but no page was planned", owner: "engine" };
   }
 
+  // A CAP IS NOT A VERDICT. A portal stopped by the benchmark's own time limit is scored on
+  // what it actually reached (handled above by pages/steps/entry), never as a portal failure
+  // — otherwise the harness would blame portals for its own impatience.
+  if (String(outcome.status) === "timeout") {
+    return { rung: "unreachable", index: 0, reason: "stopped by the benchmark time cap before reaching a login", owner: "engine" };
+  }
+
   const loginStatus = String(login?.status || "");
   if (loginStatus === "logged_in" || loginStatus === "already_authenticated") {
     return { rung: "authenticated", index: 2, reason: "signed in, but no way into an application was found", owner: "engine" };
