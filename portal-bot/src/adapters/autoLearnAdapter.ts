@@ -14,6 +14,7 @@ import { enterApplicationFlow, isExcludedEntryLabel, normalizeEntryLabel } from 
 import { chooseProgram, offeredLabels, programSelector, scanProgramGroups, type ProgramGroup } from "./applicationProgram";
 import { planHiddenReveal, planLabelProxy } from "./revealHidden";
 import { planConsentDismissal } from "./consentBanner";
+import { chooseRow, scanRowChoices } from "./rowChooser";
 import { parseStreetName, parseStreetNumber } from "../addressParse";
 import { portalUploadCapBytes } from "../uploadCap";
 import { LearnRunDebug } from "../learnDebug";
@@ -3798,6 +3799,13 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           // let the next pass try again — a live run drifted into Accela's records module
           // exactly this way.
           this.debug?.event({ type: "navigate_offlimits_rejected", page: pageCount, label: (navField.label || "").slice(0, 60), dashboard: isDashboard });
+        } else if (navField && await this.tryRowChooser(pageCount, steps)) {
+          // A LIST WHERE EVERY BUTTON SAYS THE SAME WORD was answered by reading the rows —
+          // see rowChooser.ts. Handled before the planner's pick is honoured, because on
+          // such a page the planner has nothing to choose BY: twelve controls all reading
+          // "SELECT" look identical to it, and Des Moines wandered for three runs on
+          // exactly that.
+          navCount++;
         } else if (navField) {
           // WHAT IT DECIDED TO CLICK, not only what it refused.
           //
@@ -5802,6 +5810,39 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       this.debug?.event({ type: "consent_banner_dismissed", how: outcome.how, control: outcome.clicked });
     } catch {
       /* a banner we could not dismiss is the overlay neutraliser's problem, not an error */
+    }
+  }
+
+  /**
+   * Answer a chooser whose controls are all identically labelled by reading the ROW each
+   * one sits in. Returns true when it clicked one; false leaves the planner's pick alone.
+   *
+   * Deliberately conservative: three or more identical controls, a row that does not
+   * contradict the filing, and a recognised match. Anything else is not this pass's
+   * business — picking the wrong row files the wrong permit.
+   */
+  private async tryRowChooser(pageCount: number, steps: RecipeStep[]): Promise<boolean> {
+    if (!this.page || typeof this.page.evaluate !== "function") return false;
+    try {
+      const rows = await this.page.evaluate(scanRowChoices);
+      if (!rows?.length) return false;
+      const pick = chooseRow(rows, this.permitDiscipline);
+      if (!pick) {
+        this.debug?.event({ type: "row_chooser_refused", page: pageCount, rows: rows.length, why: "no row matched the filing without contradicting it" });
+        return false;
+      }
+      this.debug?.event({ type: "row_chooser_picked", page: pageCount, rows: rows.length, control: pick.control, text: pick.text.slice(0, 110) });
+      steps.push({
+        action: "click",
+        phase: "open",
+        selector: { css: `[data-al-row="${pick.key}"]` },
+        note: `choose permit type by row: ${pick.text.slice(0, 80)}`,
+      });
+      await this.page.locator(`[data-al-row="${pick.key}"]`).first().click({ timeout: 5000 });
+      await sleep(1200);
+      return true;
+    } catch {
+      return false;
     }
   }
 
