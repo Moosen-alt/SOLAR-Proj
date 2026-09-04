@@ -212,8 +212,19 @@ async function main(): Promise<void> {
   const payload = { at: new Date().toISOString(), summary, rows };
   fs.writeFileSync(path.join(OUT_DIR, `${stamp}.json`), JSON.stringify(payload, null, 2));
 
+  // A FILTERED RUN IS A DIAGNOSTIC, NOT A BASELINE.
+  //
+  // latest.json is what the next sweep compares against, and --host is how one portal gets
+  // re-run while chasing one bug. Re-running Wilsonville alone to read its reveal trail
+  // overwrote an eleven-portal baseline with a one-row card. The next sweep would then have
+  // found every other portal "absent from the previous run" and reported no regression it
+  // could possibly have caught.
+  //
+  // The timestamped card is written either way, so no measurement is lost. Only the
+  // BASELINE pointer is reserved for a run that measured everything it was offered.
+  const isDiagnostic = hostFilter.length > 0 || limit > 0;
   const latestPath = path.join(OUT_DIR, "latest.json");
-  if (fs.existsSync(latestPath)) {
+  if (!isDiagnostic && fs.existsSync(latestPath)) {
     try {
       const prev = JSON.parse(fs.readFileSync(latestPath, "utf8")) as { rows: BenchmarkRow[] };
       const diff = compareRuns(prev.rows || [], rows);
@@ -222,7 +233,11 @@ async function main(): Promise<void> {
       for (const r of diff.improved) console.log(`   improved   ${r.portal}: ${r.from} -> ${r.to}`);
     } catch { /* first comparable run */ }
   }
-  fs.writeFileSync(latestPath, JSON.stringify(payload, null, 2));
+  if (isDiagnostic) {
+    console.log(`\nfiltered run (${chosen.length} portal(s)) — latest.json left alone so the baseline survives.`);
+  } else {
+    fs.writeFileSync(latestPath, JSON.stringify(payload, null, 2));
+  }
   console.log(`\nscorecard written to ${path.join(OUT_DIR, `${stamp}.json`)}`);
 }
 
