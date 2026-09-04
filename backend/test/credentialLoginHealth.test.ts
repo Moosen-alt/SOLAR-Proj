@@ -93,6 +93,55 @@ check("...and a fresh refusal after that success marks it stale again", () => {
 // ---------------------------------------------------------------------------
 // Matching is by host, exactly as the credential was chosen in the first place.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// THE EXPENSIVE MISTAKE: A DEAD BROWSER IS NOT A REFUSED PASSWORD.
+//
+// A killed benchmark run reported "browserType.launchPersistentContext: Target page,
+// context or browser has been closed" for every portal still in flight, and that text
+// was written here as a login failure against six real, working credentials. The
+// benchmark honours this flag precisely so it will not bang on locked doors — so those
+// six were then skipped by every later run. A twelve-portal baseline quietly selected
+// five, and Accela, SmartGov, Tyler EnerGov, eTRAKiT, Cloudpermit and PermitTrax had
+// been retired from the measurement by a browser that died.
+//
+// The whole value of the flag is that it means something. A verdict about a password
+// can only come from a run that got an answer.
+// ---------------------------------------------------------------------------
+check("THE REGRESSION: our own browser dying never marks a credential stale", () => {
+  recordLoginOutcome(db, CLIENT, COOSBAY, { ok: true, note: "login accepted" });
+  const hit = recordLoginOutcome(db, CLIENT, COOSBAY, {
+    ok: false,
+    note: "Auto-learn login failed: browserType.launchPersistentContext: Target page, context or browser has been closed",
+  });
+  assert.equal(hit, false, "the outcome should have been declined, not recorded");
+  assert.equal(byUrl(COOSBAY).stale, false, "a working credential must survive an interrupted run");
+});
+
+check("...and neither does our own concurrency lease refusing to start", () => {
+  recordLoginOutcome(db, CLIENT, COOSBAY, { ok: false, note: "A learn for this portal is already running." });
+  assert.equal(byUrl(COOSBAY).stale, false);
+});
+
+check("...and the row is left EXACTLY as it was, note and timestamps included", () => {
+  // Declining must not half-write. A blanked note would lose the last real verdict.
+  assert.match(String(byUrl(COOSBAY).lastLoginNote), /login accepted/i);
+  assert.ok(byUrl(COOSBAY).lastLoginOkAt);
+  assert.equal(byUrl(COOSBAY).lastLoginFailedAt, undefined);
+});
+
+check("a genuine refusal is still recorded — the guard is narrow", () => {
+  const hit = recordLoginOutcome(db, CLIENT, COOSBAY, { ok: false, note: "Still on the login form after submitting." });
+  assert.equal(hit, true);
+  assert.equal(byUrl(COOSBAY).stale, true);
+  recordLoginOutcome(db, CLIENT, COOSBAY, { ok: true, note: "back to normal" });
+});
+
+check("a SUCCESS is recorded even if the run later died — it happened before the death", () => {
+  const hit = recordLoginOutcome(db, CLIENT, COOSBAY, { ok: true, note: "logged in; target closed later" });
+  assert.equal(hit, true, "the guard applies to failures only");
+  assert.equal(byUrl(COOSBAY).stale, false);
+});
+
 check("an outcome for a portal we hold no login for lands nowhere", () => {
   const hit = recordLoginOutcome(db, CLIENT, "https://devhub.portlandoregon.gov/", { ok: false, note: "no credential" });
   assert.equal(hit, false, "there is no Portland credential to mark");

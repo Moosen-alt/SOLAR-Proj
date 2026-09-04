@@ -4,6 +4,7 @@ import { HttpError } from "./httpError";
 import { id } from "./ids";
 import { nowIso } from "./time";
 import { text as s } from "./json";
+import { isHarnessAbort } from "./runAbort";
 
 type Row = Record<string, unknown>;
 
@@ -326,6 +327,20 @@ export function recordLoginOutcome(
   outcome: { ok: boolean; note?: string },
 ): boolean {
   if (!clientId || !portalUrl) return false;
+  // A DEAD BROWSER IS NOT A REFUSED PASSWORD.
+  //
+  // This is the expensive half of the mistake. A killed benchmark run reported
+  // "browserType.launchPersistentContext: Target page, context or browser has been closed"
+  // for every portal still in flight, and that text was written here as a login failure
+  // against six real, working credentials — Accela, SmartGov, Tyler EnerGov, eTRAKiT,
+  // Cloudpermit, PermitTrax. The stale flag is honoured by the benchmark precisely so it
+  // will not bang on locked doors, so those six were then skipped by every later run: a
+  // twelve-portal baseline quietly selected five, and the interesting platforms had been
+  // retired by a browser that died.
+  //
+  // Marking a credential is a claim about the PORTAL's answer. When the run never got an
+  // answer, the honest record is no record at all — leave the row exactly as it was.
+  if (!outcome.ok && isHarnessAbort(outcome.note)) return false;
   let targetHost = "";
   try { targetHost = new URL(portalUrl).hostname.toLowerCase(); } catch { return false; }
   const rows = db.query<Row>(

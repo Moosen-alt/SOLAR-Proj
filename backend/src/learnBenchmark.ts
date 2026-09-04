@@ -21,6 +21,8 @@
 // runs only when a person asks for it.
 // ---------------------------------------------------------------------------
 
+import { isHarnessAbort } from "./runAbort";
+
 /** How far a learn got, worst to best. Index is the score. */
 export const LEARN_RUNGS = [
   "unreachable",          // the portal never loaded
@@ -62,37 +64,13 @@ export interface LearnScore {
   measured?: boolean;
 }
 
-/**
- * THE RUN DIED FOR REASONS THAT HAVE NOTHING TO DO WITH THE PORTAL.
- *
- * Two of these were sitting in real scorecards, both attributed to the PORTAL:
- *
- *   "browserType.launchPersistentContext: Target page, context or browser has been closed"
- *       — eight rows of one 11-portal run. The browser went away when the run was
- *         killed; every one of those portals was recorded as unreachable.
- *   "A learn for this portal is already running"
- *       — four rows of a 12-portal run. That is our own concurrency lease refusing
- *         to start, blamed on the jurisdiction it refused.
- *
- * Twelve rows of "the portal is broken" that were nothing of the kind. The ladder was
- * built to stop exactly this mistake pointing at the engine; it was making the same
- * mistake pointing at portals. A non-measurement is not a zero — it is an absence, and
- * it must be excluded from the average rather than dragging it down.
- */
-// NOT ECONNRESET. A reset socket is very often the PORTAL dropping us, which is a real
-// measurement and belongs at unreachable/portal — filing it here would hide a genuine
-// finding behind "not measured", the same error this whole guard exists to correct.
-// Every token below is something only our own side can do.
-const HARNESS_ABORT =
-  /target (page|browser)?,? ?(context|browser)? ?(has been|was) closed|browser has been closed|already running|launchpersistentcontext|browser ?type\.|session closed|target closed|worker exited|SIGINT|SIGTERM/i;
-
 const evt = (o: LearnOutcome, type: string) => (o.events ?? []).find((e) => e?.type === type);
 
 /** Whether a score represents a real attempt at the portal. Old rows on disk carry no
  *  `measured` flag, so their reason text is the only evidence — read it too. */
 export function isMeasured(score: Pick<LearnScore, "reason" | "measured">): boolean {
   if (score.measured === false) return false;
-  return !HARNESS_ABORT.test(String(score.reason || ""));
+  return !isHarnessAbort(score.reason);
 }
 
 /**
@@ -130,7 +108,7 @@ export function scoreLearnOutcome(outcome: LearnOutcome): LearnScore {
   // slow engine. Nothing was learned about this portal, so it is marked unmeasured and
   // kept out of the average rather than counted as a zero. Placed after the progress
   // rungs above so a run that died holding real steps still keeps that credit.
-  if (HARNESS_ABORT.test(msg)) {
+  if (isHarnessAbort(msg)) {
     return {
       rung: "unreachable",
       index: 0,
