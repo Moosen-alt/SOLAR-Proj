@@ -207,6 +207,36 @@ export async function buildFieldMapForPdf(
   return { textFields: mapped.textFields, checkboxes: mapped.checkboxes, notes: mapped.notes, fieldCount: inspected.fields.length };
 }
 
+/** The tallest a signature box may be. Signature rules on real permit forms sit 9-20pt
+ *  apart — measured on Portland's electrical application, whose tightest is 9pt. */
+export const MAX_SIGNATURE_BOX_PT = 30;
+/** Below this a signature is a smudge regardless of the row. */
+export const MIN_SIGNATURE_BOX_PT = 8;
+
+/**
+ * Convert a vision-reported signature area to a PDF-point box.
+ *
+ * `ny` is the BOTTOM-left corner measured from the TOP of the page — the prompt says so in
+ * as many words — so flipping it (`(1 - ny) * pageHeight`) already gives the box's bottom in
+ * PDF coordinates, which is exactly what pdf-lib's drawImage anchors on.
+ *
+ * It used to subtract the box height as well, on the stated reasoning that this made the
+ * image "sit just above the printed line". Subtracting moves ink DOWN, so every vision-mapped
+ * signature landed a full box-height BELOW its own rule — roughly 26pt of ink hanging under
+ * the line, spanning two rows on a normal form. It went unnoticed because the one form anyone
+ * had inspected closely, Portland's, is hand-tuned in the registry and never passes through
+ * this conversion.
+ *
+ * The height is clamped because heightFrac defaults to 0.04, or 32pt on US Letter — taller
+ * than any signature row on a permit form.
+ */
+export function visionSignatureBox(ny: number, heightFrac: number, pageHeight: number): { y: number; height: number } {
+  const raw = Number.isFinite(heightFrac) ? heightFrac * pageHeight : 0;
+  const height = Math.max(MIN_SIGNATURE_BOX_PT, Math.min(MAX_SIGNATURE_BOX_PT, Math.round(raw)));
+  const y = Math.round((1 - ny) * pageHeight);
+  return { y, height };
+}
+
 // Vision-map a FLAT (non-AcroForm) PDF: render each page to an image, ask the
 // vision model where each value goes, and convert the normalized coordinates to
 // PDF-point overlay placements (bottom-left origin) that fillLoadedForm draws.
@@ -272,17 +302,15 @@ export async function buildOverlayMapForPdf(
   });
   const signatureFields: SignaturePlacement[] = mapped.signatures.map((sg) => {
     const sz = pageSizes[sg.page] || pageSizes[0];
-    const h = Math.round(sg.heightFrac * sz.h);
+    const box = visionSignatureBox(sg.ny, sg.heightFrac, sz.h);
     const hasDate = sg.dateNx != null && sg.dateNy != null;
     return {
       role: sg.role,
       page: sg.page,
       x: Math.round(sg.nx * sz.w),
-      // ny marks the bottom-left corner from the top; flip and subtract the box
-      // height so the image sits just above the printed line.
-      y: Math.round((1 - sg.ny) * sz.h - h),
+      y: box.y,
       width: Math.round(sg.widthFrac * sz.w),
-      height: h,
+      height: box.height,
       label: sg.label,
       ...(hasDate ? { dateX: Math.round(sg.dateNx! * sz.w), dateY: Math.round((1 - sg.dateNy!) * sz.h), dateSize: 9 } : {}),
     };

@@ -108,7 +108,7 @@ import { compactAlnum, existingSystemFromSnapshot, fieldAliases, normalizeProjec
 import { classifyPermitStatusText, isAuthWallText, nextCheckIso } from "./permitMonitor";
 import { evidenceForTopic, evidenceLines, type EvidenceTopic } from "./projectEvidence";
 import { runQcForProject } from "./qc";
-import { loadStoredTemplates, formAllowedForPath } from "./ahjForms";
+import { loadStoredTemplates, formAllowedForPath, filledFormsByDocType } from "./ahjForms";
 import { resolvePermitPath } from "./permitPath";
 import { buildReviewerReport, renderReviewerReportHtml } from "./reviewerEngine";
 import { resolveEffectiveCodeContext, ensureCodeProfilesResearched } from "./codeProfiles";
@@ -5260,7 +5260,15 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   const ts = nowIso();
   // Prefer the backend-split/uploaded document set (the real upload-ready files, named
   // so the adapters classify them by keyword); fall back to snapshot file paths.
-  const docsByType = projectDocsByType(db, detail.project.id);
+  // The filled AHJ application counts as one of the documents. It is written to
+  // backend/data/filled/<projectId>/ rather than the document store, so it has no
+  // project_documents row and projectDocsByType cannot see it — it has to be merged in the
+  // same way the auto-learn path does (autoLearn.ts). Without this the filled form attaches
+  // on the LEARN run and then silently stops attaching on every replay afterwards, which is
+  // the worst shape of regression: it appears only once a portal has been learned, which is
+  // exactly when the operator stops watching. Uploaded documents win on a key collision —
+  // an operator who uploaded their own version meant to use it.
+  const docsByType = { ...filledFormsByDocType(db, detail.project.id), ...projectDocsByType(db, detail.project.id) };
   const packagedFiles = Object.values(docsByType);
   const files = packagedFiles.length > 0 ? packagedFiles : filesFromProject(detail.project.parserSnapshot);
 

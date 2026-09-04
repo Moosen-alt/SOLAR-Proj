@@ -183,13 +183,17 @@ export const ahjFormRegistry: AhjFormDefinition[] = [
       { source: "client.ccbLicenseNumber", page: 0, x: 267, y: 275, maxWidth: 90 },
       // Supervising electrician — name typed from client profile (supervisor field).
       // If an electrician signature image is stored, it is stamped via signatureFields below.
+      // ONE printed name on the electrician's "Print name:" row. There used to be a second
+      // overlay (computed.electricianSignerName) at y=212, which resolves to the same person
+      // — a filled form showed "Charles Bitton" twice, once beside the label and once in the
+      // blank strip beneath it. The form's own text layer puts "Print name:" at y=224.7, so
+      // 225 is the row and 212 is dead space.
       { source: "client.electricalSupervisorName", page: 0, x: 93, y: 225, maxWidth: 150 },
-      // Print name under electrician sig (from stored electrician signature, fallback to supervisor name)
-      { source: "computed.electricianSignerName", page: 0, x: 93, y: 212, maxWidth: 150 },
-      // "License no" sits on the electrician's PRINT NAME row — it wants the supervising
-      // electrician's own licence, and a filled form came back with TODAY'S DATE in it
-      // because the signature placement below was writing its date at these coordinates.
-      { source: "client.electricianLicenseNumber", page: 0, x: 292, y: 212, maxWidth: 90 },
+      // "License no" is the RIGHT-HAND label on that same Print name row — the text layer
+      // puts it at x=256.4, y=224.7. It was at y=212, one row low, so the licence number
+      // floated in the gap instead of sitting beside its label. (It also once carried
+      // today's DATE, from a signature placement writing its date at these coordinates.)
+      { source: "client.electricianLicenseNumber", page: 0, x: 306, y: 225, maxWidth: 76 },
       // Printed name under the Authorized signature (operator who signs).
       { source: "computed.applicantSignerName", page: 0, x: 108, y: 189, maxWidth: 150 },
       // Applicant / Contact Person = our (submitter) info
@@ -225,11 +229,14 @@ export const ahjFormRegistry: AhjFormDefinition[] = [
       {
         role: "applicant",
         page: 0,
+        // "Authorized signature:" sits at y=204.3 in the form's text layer, with the
+        // Print name row above it at 224.7 — twenty points, so this line can carry a
+        // fuller signature than the electrician's.
         x: 138,
-        y: 197,
+        y: 204,
         width: 150,
-        // Same row pitch as the electrician line above — keep the ink inside its own row.
-        height: 12,
+        // Lift included, per the renderer's envelope rule.
+        height: 16,
         label: "Authorized signature",
         dateX: 292,
         dateY: 189,
@@ -241,13 +248,18 @@ export const ahjFormRegistry: AhjFormDefinition[] = [
         // Stamped only when an electrician signature image has been stored.
         role: "electrician",
         page: 0,
-        x: 93,
-        y: 237,
+        // The form's own text layer puts "Signature, required:" at y=239.7 and the
+        // "Supervising electrician" label directly above it at y=248.7 — nine points of
+        // room, the tightest signature row on the sheet. Anchored on the rule itself.
+        // Clear of the "Signature, required:" label, which runs to about x=106.
+        x: 115,
+        y: 239,
         width: 150,
-        // Rows on this form are ~13-17pt apart. At 22 the ink (plus SIGNATURE_LIFT)
-        // spanned nearly two rows and collided with the line above — visible on a filled
-        // form as the electrician's signature sitting across the row above its own.
-        height: 12,
+        // The whole 9pt gap, lift included: height is the row's budget, and the renderer
+        // now fits the lift INSIDE it. At the old 12 (plus a 6pt lift added on top) the ink
+        // reached 18pt and landed on the "Supervising electrician" label instead of the
+        // rule — visible on Bren Trask's filled application.
+        height: 9,
         label: "Supervising electrician signature",
         // NO DATE. The supervising-electrician row carries "Print name" and "License no",
         // not a date line; writing one here put today's date in the LICENCE NUMBER field
@@ -506,6 +518,52 @@ function projectOrgId(db: AppDb, projectId: string): string {
 // Stamp the operator's stored signature image(s) onto the form at the detected
 // signature placements. Each role uses its default signature; an unmatched role
 // falls back to the applicant signature. Returns how many were drawn.
+/** How far above its anchor a signature is lifted so it rests ON the rule, not under it. */
+const SIGNATURE_LIFT = 6;
+
+/**
+ * Crop a signature image to its ink, so the placement box is spent on signature rather than
+ * on the blank border around it. Best-effort: any failure returns the original bytes, since
+ * a form with a slightly small signature beats a form with none.
+ */
+async function trimSignatureMargins(bytes: Uint8Array, mime: string): Promise<{ bytes: Uint8Array; mime: string }> {
+  try {
+    const { createCanvas, loadImage } = await import("@napi-rs/canvas");
+    const img = await loadImage(Buffer.from(bytes));
+    const w = img.width, h = img.height;
+    if (!w || !h || w * h > 8_000_000) return { bytes, mime };
+    const probe = createCanvas(w, h);
+    const pctx = probe.getContext("2d");
+    pctx.drawImage(img, 0, 0);
+    const data = pctx.getImageData(0, 0, w, h).data;
+    let minX = w, minY = h, maxX = -1, maxY = -1;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = (y * w + x) * 4;
+        // Ink is opaque AND dark. Alpha alone would keep a white-filled background;
+        // darkness alone would keep a transparent-but-dark antialias halo.
+        if (data[i + 3] <= 24 || (data[i] + data[i + 1] + data[i + 2]) / 3 >= 200) continue;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+    if (maxX < 0 || maxY < 0) return { bytes, mime };           // no ink found — leave it alone
+    const pad = 2;                                               // keep a hair of breathing room
+    const sx = Math.max(0, minX - pad), sy = Math.max(0, minY - pad);
+    const sw = Math.min(w - sx, maxX - minX + 1 + pad * 2);
+    const sh = Math.min(h - sy, maxY - minY + 1 + pad * 2);
+    if (sw <= 0 || sh <= 0 || (sw === w && sh === h)) return { bytes, mime };
+    const out = createCanvas(sw, sh);
+    out.getContext("2d").drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+    // Always PNG out: the crop preserves transparency, which a JPEG round-trip would fill.
+    return { bytes: new Uint8Array(out.toBuffer("image/png")), mime: "image/png" };
+  } catch {
+    return { bytes, mime };
+  }
+}
+
 async function drawSignatures(doc: PDFDocument, def: AhjFormDefinition, ctx: FillContext): Promise<number> {
   const placements = def.signatureFields ?? [];
   const sigs = ctx.signatures ?? {};
@@ -518,7 +576,14 @@ async function drawSignatures(doc: PDFDocument, def: AhjFormDefinition, ctx: Fil
     // sign that in person. Only fall back to the applicant signature for other
     // operator-signable roles.
     if (pl.role === "owner") continue;
-    const sig = sigs[pl.role] || sigs.applicant;
+    // ONE PERSON'S SIGNATURE IS NEVER ANOTHER PERSON'S.
+    // This used to fall back to the applicant's image for any unmatched role, which on the
+    // Portland electrical form would draw the applicant's signature on the line reading
+    // "Supervising electrician / Signature, required:" — directly above that electrician's
+    // printed name and licence number. That is a misattributed signature on a filed permit
+    // application, which is a different kind of wrong from a blank line. A missing signature
+    // leaves the line empty for a human to sign, which is the correct outcome.
+    const sig = sigs[pl.role];
     if (!sig) continue;
     const page = pages[pl.page];
     if (!page) continue;
@@ -527,21 +592,31 @@ async function drawSignatures(doc: PDFDocument, def: AhjFormDefinition, ctx: Fil
     if (!Number.isFinite(pl.x) || !Number.isFinite(pl.y)) continue;
     let img;
     try {
-      img = sig.mime.includes("jpeg") ? await doc.embedJpg(sig.bytes) : await doc.embedPng(sig.bytes);
+      // TRIM THE EMPTY MARGIN FIRST. A captured signature PNG is mostly blank canvas — the
+      // operator's stored images measured 57% and 68% empty. Scaling the whole canvas into
+      // a short row makes the ink shrink to a smudge: at 12pt tall an 820x200 image drew
+      // 49pt wide, a third of its 150pt box, because the transparent border ate the budget.
+      // Cropping to the ink first yields ~45% more visible signature at the SAME row height
+      // (49pt -> 70pt), which is the whole difference between a signature and a mark.
+      const cropped = await trimSignatureMargins(sig.bytes, sig.mime);
+      img = cropped.mime.includes("jpeg") ? await doc.embedJpg(cropped.bytes) : await doc.embedPng(cropped.bytes);
     } catch {
       continue;
     }
     // Fit within the placement box, preserving aspect ratio.
     const boxW = Number.isFinite(pl.width) && pl.width > 0 ? pl.width : 130;
     const boxH = Number.isFinite(pl.height) && pl.height > 0 ? pl.height : 34;
-    const scale = Math.min(boxW / img.width, boxH / img.height) || 1;
-    // Sit the signature ON the line, not on the label under it. Vision detections
-    // anchor at the label's baseline, which put the ink overlapping "SIGNATURE
-    // OWNER / AUTHORIZED AGENT" on real forms (Coos Bay building permit +
-    // acknowledgement page, live-tested) — lift the image so its bottom rests
-    // just above the rule line the way a pen signature would.
-    const SIGNATURE_LIFT = 6;
-    page.drawImage(img, { x: pl.x, y: pl.y + SIGNATURE_LIFT, width: img.width * scale, height: img.height * scale });
+
+    // HEIGHT IS THE ROW'S BUDGET, NOT THE INK'S. The lift used to be added ON TOP of a
+    // full-height image, so a 12pt placement actually reached 18pt and crossed the line
+    // above it. Measured on the Portland electrical form, whose rules sit 9pt apart at the
+    // supervising-electrician row: the signature landed on the label instead of the rule.
+    // Everything now fits inside boxH — the lift is taken OUT of the budget, so a
+    // placement's height is the space it really occupies.
+    const lift = Math.min(SIGNATURE_LIFT, Math.max(0, boxH * 0.25));
+    const inkBudgetH = Math.max(1, boxH - lift);
+    const scale = Math.min(boxW / img.width, inkBudgetH / img.height) || 1;
+    page.drawImage(img, { x: pl.x, y: pl.y + lift, width: img.width * scale, height: img.height * scale });
     drawn += 1;
     // The operator signs today — write today's date on the adjacent date line.
     if (pl.dateX != null && pl.dateY != null && Number.isFinite(pl.dateX) && Number.isFinite(pl.dateY)) {
