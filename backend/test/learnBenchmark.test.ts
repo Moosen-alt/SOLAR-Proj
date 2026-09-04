@@ -215,6 +215,15 @@ check("...and being interrupted is never reported as a regression", () => {
   assert.equal(compareRuns(real, killed).regressed.length, 0);
 });
 
+check("a RESET SOCKET stays a real result — it is usually the portal dropping us", () => {
+  // The tempting token to add to the harness list, and the wrong one: filing this as
+  // "not measured" would hide a genuine portal finding behind the guard built to stop
+  // exactly that kind of misattribution.
+  const s = scoreLearnOutcome({ status: "threw", message: "page.goto: net::ERR_CONNECTION_RESET at https://example.gov/" });
+  assert.equal(s.owner, "portal");
+  assert.equal(isMeasured(s), true);
+});
+
 check("OLD SCORECARDS ON DISK are read correctly though they predate the flag", () => {
   // The poisoned rows were written before `measured` existed, so their reason text is
   // the only evidence there is. compareRuns has to read it, or the file keeps lying.

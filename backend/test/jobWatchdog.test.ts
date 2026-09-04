@@ -16,6 +16,16 @@ import path from "node:path";
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "job-watchdog-test-"));
 process.env.AUTOPILOT_DB_PATH = path.join(tmpDir, "test.sqlite");
 process.env.SEED_TEST_INSTALLER = "false";
+// THIS TEST WAS SILENTLY SWALLOWING THE REST OF THE SUITE.
+//
+// Importing jobQueue starts the real job worker, which polls every 5s forever — so the
+// process never exited, and `backend:test:unit` (a single `&&` chain) hung here with about
+// thirty tests after it never running. Two wedged copies were found still polling.
+//
+// It was also a race, not only a hang: the live worker was picking up this test's own
+// fixture rows and running them mid-assertion ("mbox_import failed … projectId=proj-orphan"
+// in the log). The watchdog is called directly below; no worker is wanted.
+process.env.AUTOPILOT_AUTO_START = "0";
 
 const { openDatabase } = await import("../src/db");
 const { enqueueJob, getJob, recoverOrphanedJobs } = await import("../src/jobQueue");
@@ -91,3 +101,6 @@ assert.equal(ordinary.maxRetries, 3, "non-portal jobs keep their requested budge
 ok("portal-effecting jobs are pinned to maxRetries 0 at enqueue");
 
 console.log(`\njobWatchdog: all ${passed} checks passed`);
+// Every other test in the chain ends this way. Belt and braces alongside the
+// AUTO_START guard above: a stray timer must not be able to hold the suite open again.
+process.exit(0);

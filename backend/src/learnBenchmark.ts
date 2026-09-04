@@ -79,8 +79,12 @@ export interface LearnScore {
  * mistake pointing at portals. A non-measurement is not a zero — it is an absence, and
  * it must be excluded from the average rather than dragging it down.
  */
+// NOT ECONNRESET. A reset socket is very often the PORTAL dropping us, which is a real
+// measurement and belongs at unreachable/portal — filing it here would hide a genuine
+// finding behind "not measured", the same error this whole guard exists to correct.
+// Every token below is something only our own side can do.
 const HARNESS_ABORT =
-  /target (page|browser)?,? ?(context|browser)? ?(has been|was) closed|browser has been closed|already running|launchpersistentcontext|browser ?type\.|session closed|target closed|ECONNRESET|worker exited|SIGINT|SIGTERM/i;
+  /target (page|browser)?,? ?(context|browser)? ?(has been|was) closed|browser has been closed|already running|launchpersistentcontext|browser ?type\.|session closed|target closed|worker exited|SIGINT|SIGTERM/i;
 
 const evt = (o: LearnOutcome, type: string) => (o.events ?? []).find((e) => e?.type === type);
 
