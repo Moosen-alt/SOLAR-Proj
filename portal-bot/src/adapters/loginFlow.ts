@@ -855,6 +855,10 @@ export async function followForwardingInterstitial(page: Page): Promise<string> 
         // it — so check the containing block too, but only a small one.
         const parentText = (el.parentElement?.innerText || "").replace(/\s+/g, " ").trim();
         const hay = `${text} ${parentText.length <= 200 ? parentText : ""}`;
+        // The NEVER-list is checked against the SENTENCE too, not just the link. A bare
+        // "here" inside "click here to pay your fees" would otherwise pass, because the
+        // link's own two words say nothing dangerous.
+        if (NEVER.test(hay)) continue;
         if (!FORWARD.test(hay)) continue;
         el.setAttribute("data-al-forward", "1");
         return text.slice(0, 80);

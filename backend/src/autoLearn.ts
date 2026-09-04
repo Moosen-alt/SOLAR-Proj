@@ -526,6 +526,16 @@ async function autoLearnPortalInner(
   let headlessForAttempt = input.headless;
   let headedRetryUsed = false;
   let learn;
+  // THE BUDGET IS FOR THE PORTAL, NOT FOR EACH ATTEMPT.
+  //
+  // The headed retry below re-runs the identical learn, and a fresh adapter would take a
+  // fresh deadline — so a capped portal that retries could run to twice its budget. The
+  // benchmark's outer backstop fires at budget + 180s, i.e. in the MIDDLE of that retry,
+  // and its message says "target closed", so isHarnessAbort would score the row "not
+  // measured" and leave a headed browser running. That would blind the sweep to exactly
+  // the WAF-fronted portals this retry exists to reach.
+  const budgetStartedAt = Date.now();
+  let budgetForAttempt = input.budgetMs;
   // Named so the headed retry below can re-run the IDENTICAL learn; headlessForAttempt is
   // read when the options are built, so flipping it and calling again is all that differs.
   const runLearn = () => learnPortal({
@@ -538,7 +548,7 @@ async function autoLearnPortalInner(
       // A caller that stops WAITING for this run does not stop the run; it walks on,
       // holding a browser profile and spending LLM calls where nobody is looking. The
       // budget is handed down so the walk can end itself and still report what it reached.
-      budgetMs: input.budgetMs,
+      budgetMs: budgetForAttempt,
       docsByType,
       // Contractor contact identity for the deterministic ACA "Add New" contact pass
       // (Accela permit portals). buildPortalPlanner already split installerContactName
@@ -664,6 +674,16 @@ async function autoLearnPortalInner(
       && process.env.PORTAL_HEADED_RETRY !== "0") {
     headedRetryUsed = true;
     headlessForAttempt = false;
+    if (input.budgetMs) {
+      const left = input.budgetMs - (Date.now() - budgetStartedAt);
+      // Under a minute buys nothing but a browser that will be cut off mid-page.
+      if (left < 60_000) {
+        logger.info("auto-learn", "portal refused a headless browser, but too little budget remains to retry headed", { portal: portalUrl });
+        headlessForAttempt = true;
+      }
+      budgetForAttempt = Math.max(60_000, left);
+    }
+    if (!headlessForAttempt) {
     logger.info("auto-learn", "portal refused a headless browser — retrying with a real window", { portal: portalUrl });
     try {
       const retried = await browserLimiter(runLearn);
@@ -674,6 +694,7 @@ async function autoLearnPortalInner(
         learn.message = `${learn.message} (succeeded on a headed retry — this portal refuses headless browsers)`;
       }
     } catch { /* the headless result stands */ }
+    }
   }
 
   // NEAR-MISS credential diagnosis. "No stored credential was found" is technically

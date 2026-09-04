@@ -245,6 +245,13 @@ PAGES.payPage = `<!doctype html><html><body>
    <p>Click here to continue. <button style="width:90px;height:24px">Pay fees</button></p></body></html>`;
 check("NEVER a payment control, however it is worded", (await followOn("payPage")) === "");
 
+PAGES.barePayLink = `<!doctype html><html><body>
+   <p>Click <a href="/pay" style="width:30px;height:20px">here</a> to continue to payment if you are not forwarded.</p>
+   </body></html>`;
+check("...and the sentence is judged, not only the link — a bare 'here' can hide a payment",
+  (await followOn("barePayLink")) === "",
+  "the link says 'here'; only its sentence says 'payment'");
+
 PAGES.ordinary = `<!doctype html><html><body>
    <a href="/apply" style="width:90px;height:20px">Click here to apply</a></body></html>`;
 check("an ordinary 'click here' is not a forwarding stub — it matches the SENTENCE, not the verb",
