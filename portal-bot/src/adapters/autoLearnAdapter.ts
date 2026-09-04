@@ -5839,7 +5839,17 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         note: `choose permit type by row: ${pick.text.slice(0, 80)}`,
       });
       await this.page.locator(`[data-al-row="${pick.key}"]`).first().click({ timeout: 5000 });
-      await sleep(1200);
+      // THE SAME SETTLE THE ORDINARY NAVIGATE USES, and for the same reason. A flat 1200ms
+      // was not enough: the live run picked the right row — row_chooser_picked, "05)
+      // RESIDENTIAL ROOFTOP PHOTOVOLTAIC PERMIT" — and then reported "nothing fillable on 2
+      // page(s)", because the form arrives by AJAX and the next extraction read the page as
+      // it was before the click. Choosing correctly and then looking too early is its own
+      // way of learning nothing.
+      await Promise.race([
+        this.page.waitForLoadState?.("networkidle", { timeout: 6000 }).catch(() => null),
+        sleep(3000),
+      ]);
+      await this.clearOverlays();
       return true;
     } catch {
       return false;
