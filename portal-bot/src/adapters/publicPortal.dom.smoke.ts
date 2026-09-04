@@ -467,6 +467,17 @@ check("a WORKING portal that merely mentions an error is not one",
   "it has a form; a block page is prose and nothing else");
 check("an ordinary page is not an error page", (await errOn("landing")) === "");
 
+// Cloudflare speaks a different dialect and says none of the usual words. Canton TX serves
+// exactly this, and the run reported an unrecognised login.
+PAGES.cloudflareChallenge = `<!doctype html><html><head><title>Attention Required! | Cloudflare</title></head>
+  <body><h1>Please enable cookies.</h1><p>Checking your browser before accessing the site.
+  Ray ID: 8f2a1c9d</p></body></html>`;
+check("THE REGRESSION: a Cloudflare interstitial is named, not read as a missing login",
+  /attention required|cloudflare/i.test(await errOn("cloudflareChallenge")));
+check("...and the message carries wording looksBotBlocked already knows",
+  /cloudflare|checking your browser/i.test(await errOn("cloudflareChallenge")),
+  "that predicate has known the word all along; nothing ever handed it one");
+
 await browser.close();
 server.close();
 if (failures) { console.error(`\n${failures} public-portal check(s) FAILED.`); process.exit(1); }

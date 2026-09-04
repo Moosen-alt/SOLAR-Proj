@@ -1170,7 +1170,12 @@ export async function clickLoginContinuation(page: Page): Promise<string> {
 export async function detectErrorPage(page: Page): Promise<string> {
   try {
     return await (page as unknown as { evaluate: (fn: () => string) => Promise<string> }).evaluate(() => {
-      const BLOCK = /request could not be satisfied|\b403\b|\b404\b|\b50[0-9]\b|access denied|forbidden|request blocked|service unavailable|temporarily unavailable|under maintenance|site maintenance|page not found|bad gateway/i;
+      // Cloudflare's interstitial says none of the usual words. Canton TX serves
+      // "Attention Required! | Cloudflare" and the run called it an unrecognised login —
+      // the same miss as Baltimore County's 403, in a different dialect. looksBotBlocked
+      // already knows the word "cloudflare"; it never saw it, because the challenge lives
+      // in the page and the scorer reads the message.
+      const BLOCK = /request could not be satisfied|\b403\b|\b404\b|\b50[0-9]\b|access denied|forbidden|request blocked|service unavailable|temporarily unavailable|under maintenance|site maintenance|page not found|bad gateway|attention required|checking your browser|cloudflare|ddos protection|\bray id\b|verify you are (a )?human|enable javascript and cookies/i;
       const title = (document.title || "").replace(/\s+/g, " ").trim();
       const head = ((document.body?.innerText || "").replace(/\s+/g, " ").trim()).slice(0, 260);
       // A real portal has controls. A block page is prose and nothing else — requiring both
