@@ -2024,6 +2024,23 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       const result = await performLogin(this.page, context.credential);
       // Status + redacted message only — performLogin never returns credentials.
       this.debug?.event({ type: "login", status: result.status, startUrl: context.startUrl ? safeHostPath(context.startUrl) : null });
+      // A LOGIN FAILURE MUST LEAVE BEHIND THE PAGE IT FAILED ON.
+      //
+      // The 2026-09-04 baseline reported four portals as "the portal's login form was not
+      // recognised" and their bundles held nothing but that sentence — no markup, no
+      // screenshot, nothing to argue with. Diagnosing them meant driving all four live
+      // again, and the answers were not one bug but four: one portal had no login at all,
+      // one hid it in a closed dropdown behind an icon, one served an SSO stub that never
+      // forwarded, and one was probably a contaminated browser profile.
+      //
+      // Every one of those was legible in the page itself. Capturing it turns the next such
+      // failure into an offline read of a fixture instead of a live sweep, and the captures
+      // become the fixtures the DOM smokes run against. Best-effort and non-throwing: a
+      // diagnostic must never be able to change the outcome it is diagnosing.
+      if (result.status !== "logged_in" && result.status !== "already_authenticated" && result.status !== "no_login_required") {
+        await this.debug?.capturePageHtml(this.page, `login-${result.status}`).catch(() => {});
+        await this.debug?.screenshot(this.page, `login-${result.status}`).catch(() => {});
+      }
       if (result.status === "logged_in" || result.status === "already_authenticated" || result.status === "no_login_required") {
         // no_login_required: the jurisdiction publishes its application directly, with no
         // account to sign in to. Proceeding is the correct outcome, not a fallback — the
