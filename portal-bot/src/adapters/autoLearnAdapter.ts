@@ -3797,6 +3797,20 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           // exactly this way.
           this.debug?.event({ type: "navigate_offlimits_rejected", page: pageCount, label: (navField.label || "").slice(0, 60), dashboard: isDashboard });
         } else if (navField) {
+          // WHAT IT DECIDED TO CLICK, not only what it refused.
+          //
+          // Every refusal above records a reason and a label; the ACCEPTED navigate recorded
+          // neither, so a run that walked somewhere useless left no note of what it followed.
+          // Des Moines (PermitTrax) reached /citizen/CookiePolicy/ twice AFTER the legal-page
+          // exclusion shipped, and the bundle could not say which control took it there —
+          // the fifth time today an artifact could not answer the question it existed for.
+          this.debug?.event({
+            type: "navigate_chosen",
+            page: pageCount,
+            label: (navField.label || "").slice(0, 60),
+            dashboard: isDashboard,
+            href: String((navField.selector as { href?: unknown } | undefined)?.href ?? "").slice(0, 90),
+          });
           navCount++;
           if (navLoopKey) this.navClicksByPath.add(navLoopKey);
           steps.push({
