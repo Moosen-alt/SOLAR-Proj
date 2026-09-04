@@ -12,6 +12,7 @@ import { scrapeReviewScreen as scrapeReviewScreenShared } from "../reviewScreenS
 import { performLogin, lastRevealTrail } from "./loginFlow";
 import { enterApplicationFlow, isExcludedEntryLabel, normalizeEntryLabel } from "./applicationEntry";
 import { chooseProgram, offeredLabels, programSelector, scanProgramGroups, type ProgramGroup } from "./applicationProgram";
+import { planHiddenReveal } from "./revealHidden";
 import { parseStreetName, parseStreetNumber } from "../addressParse";
 import { portalUploadCapBytes } from "../uploadCap";
 import { LearnRunDebug } from "../learnDebug";
@@ -5234,8 +5235,15 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         // nothing, because the field is optional so the failure was swallowed. A visibility
         // probe costs ~5ms. isVisible, NOT isEditable: a hidden input is still "editable".
         if (typeof loc.isVisible === "function" && !(await loc.isVisible().catch(() => true))) {
-          this.debug?.event({ type: "hidden_field_skipped", label: (field.label || "").slice(0, 60) });
-          throw new Error("control is not visible (hidden field)");
+          // INVISIBLE USUALLY MEANS NOBODY HAS OPENED THIS YET — see revealHidden.ts.
+          // Momentum skipped "Licenses & Permits" as hidden on three consecutive pages,
+          // clicked advance each time, and never moved: the field it would not fill was the
+          // gate. Try once to open whatever is holding it shut before giving up.
+          const revealed = await this.tryRevealHidden(loc, field);
+          if (!revealed) {
+            this.debug?.event({ type: "hidden_field_skipped", label: (field.label || "").slice(0, 60) });
+            throw new Error("control is not visible (hidden field)");
+          }
         }
         if (action === "select") {
           // A dependent/cascading <select> may still be disabled or have an empty option list
@@ -5699,6 +5707,38 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   // Bootstrap/Vue popovers + their close buttons, cookie banners, generic close buttons.
   // Loops up to 3 times (back-to-back modals) and falls back to Escape for popovers with no
   // matched button. Best-effort: never throws.
+  /**
+   * One attempt to open the container concealing a required control, then re-check. Returns
+   * true only when the control is genuinely visible afterwards — a reveal that does not
+   * reveal is a failure, and the field is skipped exactly as it was before.
+   */
+  private async tryRevealHidden(loc: unknown, field: ExtractedField): Promise<boolean> {
+    if (!this.page || typeof this.page.evaluate !== "function") return false;
+    try {
+      const l = loc as { evaluate?: (fn: (el: Element) => void) => Promise<void>; isVisible?: () => Promise<boolean> };
+      if (typeof l.evaluate !== "function") return false;
+      await l.evaluate((el: Element) => el.setAttribute("data-al-hidden-target", "1"));
+      const plan = await this.page.evaluate(planHiddenReveal);
+      if (!plan?.opener) {
+        await l.evaluate((el: Element) => el.removeAttribute("data-al-hidden-target")).catch(() => {});
+        return false;
+      }
+      await this.page.locator("[data-al-reveal]").first().click({ timeout: 3000 });
+      await sleep(500);
+      const now = typeof l.isVisible === "function" ? await l.isVisible().catch(() => false) : false;
+      this.debug?.event({
+        type: now ? "hidden_field_revealed" : "hidden_field_reveal_failed",
+        label: (field.label || "").slice(0, 60),
+        why: plan.why,
+        opener: plan.opener,
+      });
+      await l.evaluate((el: Element) => el.removeAttribute("data-al-hidden-target")).catch(() => {});
+      return now;
+    } catch {
+      return false;
+    }
+  }
+
   private async dismissModals(): Promise<void> {
     await dismissPageModals(this.page);
   }
