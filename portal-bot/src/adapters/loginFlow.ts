@@ -441,6 +441,26 @@ export async function revealLoginForm(page: Page): Promise<boolean> {
             continue;
           } catch (err2) {
             trail.push(`still blocked after clearing: ${String((err2 as Error)?.message || err2).replace(/\s+/g, " ").slice(-120)}`);
+            // LAST RESORT: dispatch the click on the element itself.
+            //
+            // Wilsonville re-asserts its modal as fast as it is neutralised — Angular
+            // re-renders the backdrop — so hit-testing can never succeed no matter how many
+            // times the cover is disabled. A DOM click fires the element's own handler
+            // (ng-click, onclick, an anchor's default) without asking what is on top.
+            //
+            // Deliberately confined to the LOGIN REVEAL and to a control already resolved by
+            // login-specific selectors, after a real click has failed on interception. It is
+            // never used on a form control, an advance, or anything that files: bypassing
+            // hit-testing is exactly the sort of thing that must not become a general habit,
+            // because elsewhere "something is covering it" is information worth respecting.
+            const dispatched = await (trigger as unknown as { evaluate: (fn: (el: Element) => boolean) => Promise<boolean> })
+              .evaluate((el) => { (el as HTMLElement).click(); return true; }).catch(() => false);
+            if (dispatched) {
+              await smartWait(page, 3000);
+              clickedOne = true;
+              if (await loginFormPresent(page)) { trail.push(`dispatched click on ${key} #${ti} -> form appeared`); return true; }
+              trail.push(`dispatched click on ${key} #${ti} -> no form`);
+            }
           }
         }
       }

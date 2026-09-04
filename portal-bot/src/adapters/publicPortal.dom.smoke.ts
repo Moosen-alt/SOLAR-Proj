@@ -329,6 +329,41 @@ check("...and the trail says an overlay was neutralised, not that nothing was fo
 check("the overlay is still in the page, only made click-through",
   await page.locator(".modal").count() === 1);
 
+// A modal that RE-ASSERTS itself as fast as it is neutralised — Wilsonville's Angular
+// backdrop re-renders, so hit-testing can never succeed however many times the cover is
+// disabled. The DOM dispatch fires the element's own handler without asking what is on top.
+PAGES.stubbornModal = `<!doctype html><html><body>
+   <a id="login-link" href="#" style="position:relative;display:block;width:200px;height:40px"
+      onclick="document.getElementById('lf2').style.display='block';return false">Sign In</a>
+   <div id="cover" class="modal" style="position:fixed;inset:0;z-index:1050;background:rgba(0,0,0,.2)"></div>
+   <form id="lf2" style="display:none">
+     <input name="user" style="width:120px;height:20px" />
+     <input type="password" style="width:120px;height:20px" />
+   </form>
+   <script>
+     // Put the cover back the instant anything disables it.
+     new MutationObserver(() => {
+       const c = document.getElementById('cover');
+       if (c && c.style.pointerEvents === 'none') c.style.pointerEvents = 'auto';
+     }).observe(document.getElementById('cover'), { attributes: true });
+   <\/script></body></html>`;
+
+// A FRESH PAGE, deliberately: revealLoginForm remembers which triggers it has already
+// tried, keyed per Page and kept across navigations so a run cannot loop on one control.
+// Reusing this file's shared page would arrive with every candidate already marked tried
+// and the check would pass or fail for reasons that have nothing to do with the overlay.
+const stubbornPage = await context.newPage();
+await stubbornPage.goto(`http://127.0.0.1:${port}/stubbornModal`, { waitUntil: "domcontentloaded" });
+await stubbornPage.waitForTimeout(200);
+const stubbornIn = await revealLoginForm(stubbornPage);
+const stubbornTrail = lastRevealTrail(stubbornPage);
+console.log(`   trail: ${JSON.stringify(stubbornTrail.filter((t) => !/no-match/.test(t)))}`);
+check("THE REGRESSION: a modal that re-asserts itself still does not hide the login",
+  stubbornIn === true, "the reveal gave up against a self-restoring overlay");
+check("...reached by dispatching the click, after the polite routes failed",
+  stubbornTrail.some((t) => /dispatched click/.test(t)));
+await stubbornPage.close();
+
 await browser.close();
 server.close();
 if (failures) { console.error(`\n${failures} public-portal check(s) FAILED.`); process.exit(1); }
