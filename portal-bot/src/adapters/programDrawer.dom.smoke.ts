@@ -23,7 +23,7 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
-import { chooseProgram, offeredLabels, programSelector, scanProgramGroups } from "./applicationProgram";
+import { PROGRAM_PREFER, chooseProgram, offeredLabels, programSelector, scanProgramGroups } from "./applicationProgram";
 
 let failures = 0;
 const check = (label: string, ok: boolean, detail = ""): void => {
@@ -33,6 +33,7 @@ const check = (label: string, ok: boolean, detail = ""): void => {
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const COMED = fs.readFileSync(path.join(here, "fixtures", "comed-drawer.html"), "utf8");
+const MOMENTUM = fs.readFileSync(path.join(here, "fixtures", "momentum-record-type.html"), "utf8");
 
 // A portal whose drawer offers nothing that reads as an interconnection application.
 const UNKNOWN = `<!doctype html><html><body>
@@ -66,7 +67,10 @@ const oldScan = (): Array<{ key: string; label: string }> => {
 
 const server = http.createServer((req, res) => {
   res.writeHead(200, { "content-type": "text/html" });
-  res.end((req.url || "").includes("unknown") ? UNKNOWN : COMED);
+  const u = req.url || "";
+  if (u.includes("unknown")) return res.end(UNKNOWN);
+  if (u.includes("momentum")) return res.end(MOMENTUM);
+  return res.end(COMED);
 });
 await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
 const port = (server.address() as { port: number }).port;
@@ -143,6 +147,36 @@ const bare = await page.evaluate(scanProgramGroups);
 check("a page with no revealed panel yields NO pick — never a document-wide guess",
   chooseProgram(bare) === undefined,
   `picked ${JSON.stringify(chooseProgram(bare)?.label)} from a page with no drawer`);
+
+// ---------------------------------------------------------------------------
+// A CHOICE IS NOT ALWAYS IN A DRAWER, AND A RADIO HAS NO innerText.
+//
+// Prince George's County (Momentum/CIVICS) asks which kind of thing you are applying for on
+// a PLAIN PAGE: <fieldset><legend>Pick a record type.</legend> with two radios whose names
+// live in sibling <label for=...> elements. A live learn reached that page and clicked
+// "Save & Continue" nine times against a gate it never answered, because scoping only to
+// revealed panels made the fieldset invisible and reading innerText off an <input> returned
+// "" for both options. Fixture is that page's own markup.
+// ---------------------------------------------------------------------------
+await page.goto(`http://127.0.0.1:${port}/momentum`);
+const momentum = await page.evaluate(scanProgramGroups);
+console.log(`   momentum offers: ${JSON.stringify(offeredLabels(momentum))}`);
+
+check("THE LABEL: a radio's name is read from its sibling <label for=...>",
+  offeredLabels(momentum).includes("City Requests") && offeredLabels(momentum).includes("Licenses & Permits"),
+  JSON.stringify(offeredLabels(momentum)));
+
+check("THE TRACK: a permit run picks 'Licenses & Permits', not 'City Requests'",
+  chooseProgram(momentum, "electrical")?.label === "Licenses & Permits",
+  `picked ${JSON.stringify(chooseProgram(momentum, "electrical")?.label)}`);
+
+check("...and a structural run picks the same permit category",
+  chooseProgram(momentum, "structural")?.label === "Licenses & Permits");
+
+check("the interconnection vocabulary alone would have refused this page",
+  // PROGRAM_PREFER holds only utility words; neither option matches any of them. That is
+  // why the chooser has to know which track it is on rather than one fixed list.
+  !PROGRAM_PREFER.some((re) => re.test("Licenses & Permits") || re.test("City Requests")));
 
 await browser.close();
 await new Promise<void>((r) => server.close(() => r()));

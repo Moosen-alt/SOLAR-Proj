@@ -2908,7 +2908,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     const list = Array.isArray(groups) ? groups : [];
     if (list.length === 0) return false; // no revealed panel offering a choice
 
-    const picked = chooseProgram(list);
+    const picked = chooseProgram(list, this.permitDiscipline);
     if (!picked) {
       this.debug?.event({
         type: "application_program_unmatched",

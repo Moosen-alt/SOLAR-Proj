@@ -1,0 +1,33 @@
+<!--
+  Prince George's County (Momentum/CIVICS) /submit-record — the record-type gate, lifted
+  verbatim from the learn run's own page capture (2026-09-04, run 6sl0). The learn reached
+  this page and then clicked "Save & Continue" nine times without answering it.
+
+  Two things about this markup defeated the chooser: the choice is on a PLAIN PAGE in a
+  <fieldset> rather than a revealed drawer, and each option's name lives in a SIBLING
+  <label for=...> — an <input> has no innerText, so the scan read an empty label and skipped
+  both radios.
+-->
+<div class="wizard-step" style="width:900px">
+  <h3>Submit a New Application</h3>
+  <form>
+    <fieldset class="form-group record-select-radio" style="display:block;width:600px;height:120px">
+      <legend class="legend-label scr">Pick a record type.</legend>
+      <div class="field-row record-select-radio">
+        <div class="field record-select-radio" style="display:block;height:40px;width:400px">
+          <input id="radio-request" class="input-radio" type="radio" name="radio-options" value="" style="width:16px;height:16px">
+          <label for="radio-request" style="display:inline-block;width:300px;height:20px">City Requests</label>
+        </div>
+        <div class="field record-select-radio" style="display:block;height:40px;width:400px">
+          <input id="radio-license" class="input-radio" type="radio" name="radio-options" value="" style="width:16px;height:16px">
+          <label for="radio-license" style="display:inline-block;width:300px;height:20px">Licenses &amp; Permits</label>
+        </div>
+      </div>
+    </fieldset>
+  </form>
+  <div class="actions" style="height:40px">
+    <button type="button" style="height:30px;width:90px">Cancel</button>
+    <button type="button" style="height:30px;width:90px">Back</button>
+    <button type="button" style="height:30px;width:140px">Save &amp; Continue</button>
+  </div>
+</div>

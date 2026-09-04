@@ -61,6 +61,11 @@ export function scanProgramGroups(): ProgramGroup[] {
     "mat-button-toggle-group",
     "[role='radiogroup']",
     "[role='listbox']",
+    // A CHOICE IS NOT ALWAYS IN A DRAWER. Prince George's County (Momentum) asks which kind
+    // of thing you are applying for on a PLAIN PAGE: <fieldset><legend>Pick a record
+    // type.</legend> with two radios. Scoping only to revealed panels made that invisible,
+    // and the learn clicked "Save & Continue" nine times against a gate it never answered.
+    "fieldset",
     "mat-drawer",
     "mat-sidenav",
     "mat-dialog-container",
@@ -87,9 +92,25 @@ export function scanProgramGroups(): ProgramGroup[] {
     const options: ProgramOption[] = [];
     for (const el of Array.from(panel.querySelectorAll(CONTROL))) {
       if (!vis(el)) continue;
-      const label = ((el as HTMLElement).innerText || el.getAttribute("aria-label") || "")
-        .replace(/\s+/g, " ")
-        .trim();
+      // AN <input> HAS NO innerText. A radio's name lives in its <label for=...>, which is a
+      // SIBLING, not a descendant — so reading innerText returned "" and every radio-based
+      // chooser was skipped silently. Momentum's is exactly this shape. Resolve the label
+      // the way a browser's accessibility tree does: explicit label, wrapping label,
+      // aria-label, aria-labelledby, then the control's own text.
+      const labelFor = el.id ? document.querySelector(`label[for="${CSS.escape(el.id)}"]`) : null;
+      const wrapping = el.closest("label");
+      const labelledBy = (el.getAttribute("aria-labelledby") || "")
+        .split(/\s+/).filter(Boolean)
+        .map((id) => document.getElementById(id)?.textContent || "")
+        .join(" ");
+      const label = (
+        (el as HTMLElement).innerText ||
+        (labelFor as HTMLElement | null)?.innerText ||
+        (wrapping && wrapping !== el ? (wrapping as HTMLElement).innerText : "") ||
+        el.getAttribute("aria-label") ||
+        labelledBy ||
+        ""
+      ).replace(/\s+/g, " ").trim();
       if (!label || label.length > 60) continue;
       // A toggle and the <button> inside it both match; keep the OUTER one, so the offered
       // list reads like what a person sees rather than each option twice.
@@ -126,11 +147,40 @@ export const PROGRAM_PREFER: RegExp[] = [
  * Returns undefined when nothing reads as an interconnection/generation application —
  * an unrecognised drawer is left alone, never guessed at.
  */
-export function chooseProgram(groups: ProgramGroup[]): ProgramOption | undefined {
+/**
+ * What an AHJ calls the thing you are applying for. The utility list above is useless on a
+ * permit portal: Prince George's County offers "City Requests" and "Licenses & Permits", and
+ * a chooser that only knows interconnection words refuses both — correctly by its own rules,
+ * and uselessly for the run it is on.
+ */
+export const PROGRAM_PREFER_PERMIT: RegExp[] = [
+  /licen[cs]e.{0,4}(and|&|\/).{0,4}permit|permit.{0,4}(and|&|\/).{0,4}licen[cs]e/i,
+  /\bbuilding\b|\bconstruction\b|\btrade\b|\belectrical\b/i,
+  /\bpermit(s)?\b/i,
+  /\blicen[cs]e(s)?\b/i,
+];
+
+/**
+ * Picks the programme from the scanned groups, tightest qualifying container first.
+ *
+ * `discipline` is the track this run is on (the project's permitType — "electrical",
+ * "structural", or empty for a utility run). It decides which VOCABULARY leads: an
+ * interconnection application and a building permit are different questions, and a chooser
+ * that knows only one of them refuses the other. Both lists are still tried, so a portal
+ * that words things unusually is not lost — only the ORDER changes.
+ *
+ * Returns undefined when nothing reads as something we came here to apply for; an
+ * unrecognised choice is left alone rather than guessed at.
+ */
+export function chooseProgram(groups: ProgramGroup[], discipline?: string): ProgramOption | undefined {
+  const permitTrack = /elec|struct|build|permit|mech|plumb/i.test(String(discipline || ""));
+  const lists = permitTrack
+    ? [...PROGRAM_PREFER_PERMIT, ...PROGRAM_PREFER]
+    : [...PROGRAM_PREFER, ...PROGRAM_PREFER_PERMIT];
   const ranked = (Array.isArray(groups) ? groups.slice() : []).sort((a, b) => a.area - b.area);
   for (const group of ranked) {
     const eligible = (group.options || []).filter((o) => o && typeof o.label === "string" && !PROGRAM_EXCLUDE.test(o.label));
-    for (const re of PROGRAM_PREFER) {
+    for (const re of lists) {
       const hit = eligible.find((o) => re.test(o.label));
       if (hit) return hit;
     }
