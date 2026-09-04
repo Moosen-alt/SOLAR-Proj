@@ -39,7 +39,7 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
-import { followForwardingInterstitial, markDescribedLoginControl, publicApplicationEntry } from "./loginFlow";
+import { followForwardingInterstitial, lastRevealTrail, markDescribedLoginControl, publicApplicationEntry, revealLoginForm } from "./loginFlow";
 
 let failures = 0;
 const check = (label: string, ok: boolean, detail = ""): void => {
@@ -258,6 +258,40 @@ check("an ordinary 'click here' is not a forwarding stub — it matches the SENT
   (await followOn("ordinary")) === "");
 
 check("a real portal page offers no forwarding hatch to click", (await followOn("accela")) === "");
+
+// ---------------------------------------------------------------------------
+// THE SAME CONTROL, THREE TIMES OVER.
+//
+// Wilsonville's login is <a id="link-LoginUnderGreetings" href="" ng-click="vm.login()">
+// and that id appears three times in its DOM: inside a closed dropdown-menu, inside an
+// ng-if block, and in a welcome tile. The href/id candidate matched, the FIRST visible
+// match refused the click, and the whole candidate was abandoned — the run reported the
+// login unrecognised while a working copy sat two matches away.
+//
+// Duplicate ids and repeated controls are ordinary in server-rendered and Angular portals.
+// ---------------------------------------------------------------------------
+PAGES.dupControls = `<!doctype html><html><body>
+   <!-- First visible match: covered by an overlay, so a real click times out. -->
+   <div style="position:relative;width:200px;height:40px">
+     <a id="dup-login-a" href="/x" style="display:block;width:200px;height:40px">Members Area</a>
+     <div style="position:absolute;inset:0;background:rgba(0,0,0,.01)"></div>
+   </div>
+   <!-- Second match: the one that works. -->
+   <a id="dup-login-b" href="/signin" style="display:block;width:200px;height:40px"
+      onclick="document.getElementById('f').style.display='block';return false">Members Area</a>
+   <form id="f" style="display:none">
+     <input name="user" style="width:120px;height:20px" />
+     <input type="password" style="width:120px;height:20px" />
+   </form></body></html>`;
+
+await page.goto(`http://127.0.0.1:${port}/dupControls`, { waitUntil: "domcontentloaded" });
+await page.waitForTimeout(150);
+const revealed = await revealLoginForm(page);
+const trail = lastRevealTrail(page);
+console.log(`   trail: ${JSON.stringify(trail)}`);
+check("THE REGRESSION: a candidate is not abandoned on its first unclickable match",
+  revealed === true || trail.some((t) => /#1/.test(t)),
+  "only match #0 was ever tried");
 
 await browser.close();
 server.close();

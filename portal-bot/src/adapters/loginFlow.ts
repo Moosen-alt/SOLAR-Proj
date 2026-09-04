@@ -235,6 +235,30 @@ export function buildLocator(pageOrFrame: Page | Frame, sel: RecipeSelector): Lo
 // Momentum: two password inputs, one visible, engine reported none). So when a candidate
 // resolves to several elements, scan them and take the first VISIBLE one.
 const MAX_CANDIDATE_SCAN = 10;
+/**
+ * Every visible match of ONE selector, across the main document and every frame, up to a
+ * cap. firstVisible answers "is there one"; this answers "which ones", which is what a
+ * reveal pass needs when a portal renders the same control more than once — see the note in
+ * revealLoginForm about duplicate ids.
+ */
+async function visibleMatches(page: Page, sel: RecipeSelector, max: number): Promise<Locator[]> {
+  const out: Locator[] = [];
+  const scopes: Array<Page | Frame> = typeof page.frames === "function" ? page.frames() : [page];
+  for (const scope of scopes) {
+    try {
+      const all = buildLocatorAll(scope, sel);
+      if (!all) continue;
+      const total = await all.count();
+      for (let i = 0; i < Math.min(total, MAX_CANDIDATE_SCAN) && out.length < max; i++) {
+        const nth = all.nth(i);
+        if (await nth.isVisible().catch(() => false)) out.push(nth);
+      }
+    } catch { /* malformed selector or cross-origin frame */ }
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
 async function firstVisible(page: Page, candidates: RecipeSelector[]): Promise<Locator | null> {
   const scopes: Array<Page | Frame> = typeof page.frames === "function" ? page.frames() : [page];
   for (const sel of candidates) {
@@ -362,9 +386,23 @@ export async function revealLoginForm(page: Page): Promise<boolean> {
   for (const sel of REVEAL_TRIGGERS) {
     const key = triggerKey(sel);
     if (tried.has(key)) continue;
-    const trigger = await firstVisible(page, [sel]);
-    if (!trigger) { trail.push(`no-match ${key}`); continue; }
+    // EVERY VISIBLE MATCH, NOT JUST THE FIRST.
+    //
+    // Wilsonville's login is <a id="link-LoginUnderGreetings" href="" ng-click="vm.login()">
+    // and that id appears THREE times in its DOM — once inside a closed dropdown-menu, once
+    // in an ng-if block, once in a welcome tile. The href/id CSS candidate matched, the
+    // first visible match refused the click, and the whole candidate was abandoned: the run
+    // reported "the portal's login form was not recognised" while the control that works sat
+    // two matches away.
+    //
+    // Duplicate ids and repeated controls are ordinary in server-rendered and Angular
+    // portals. A candidate is exhausted only when every visible match has refused.
+    const triggers = await visibleMatches(page, sel, 4);
+    if (!triggers.length) { trail.push(`no-match ${key}`); continue; }
     tried.add(key);
+    let clickedOne = false;
+    for (let ti = 0; ti < triggers.length; ti++) {
+    const trigger = triggers[ti];
     try {
       // TIME-BOXED, BECAUSE THE BUDGET AROUND THIS IS SECONDS.
       //
@@ -378,14 +416,17 @@ export async function revealLoginForm(page: Page): Promise<boolean> {
       // A control that does not take a click in three seconds is not going to.
       await trigger.click({ timeout: 3000 });
       await smartWait(page, 3000);
+      clickedOne = true;
     } catch (err) {
-      trail.push(`click-failed ${key}: ${String((err as Error)?.message || err).slice(0, 60)}`);
-      continue; // this control wasn't clickable — try the next kind
+      trail.push(`click-failed ${key} #${ti}: ${String((err as Error)?.message || err).replace(/\s+/g, " ").slice(0, 140)}`);
+      continue; // this match refused — try the next MATCH before giving up on the candidate
     }
-    if (await loginFormPresent(page)) { trail.push(`clicked ${key} -> form appeared`); return true; }
-    trail.push(`clicked ${key} -> no form`);
-    // Clicked something that didn't produce a form; the next call tries the next trigger.
-    return false;
+    if (await loginFormPresent(page)) { trail.push(`clicked ${key} #${ti} -> form appeared`); return true; }
+    trail.push(`clicked ${key} #${ti} -> no form`);
+    }
+    // Every visible match of this candidate has been tried. If one of them actually took a
+    // click, hand back so the caller can re-look; the page may have changed under us.
+    if (clickedOne) return false;
   }
 
   // A HAND-OFF THAT STALLED. Before the described-control pass, take any "click here if
