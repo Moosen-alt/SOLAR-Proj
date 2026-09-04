@@ -223,6 +223,17 @@ function scoreLearnOutcomeInner(outcome: LearnOutcome): LearnScore {
     return { rung: "authenticated", index: 2, reason: "no login exists on this portal; the application is published directly", owner: "engine" };
   }
   if (loginStatus === "no_credential") {
+    // A SPECIFIC DIAGNOSIS MUST SURVIVE THE SCORER. The login flow reports a stored URL that
+    // lands somewhere that is not a portal — a newsletter signup, a directory — under this
+    // status, because the fix is the same kind of thing: stored data an operator edits. But
+    // the generic wording here overwrote it, and "no credential is stored" sends someone
+    // hunting for a password that exists, on a URL that does not reach a portal.
+    //
+    // Verified live on Miramar FL, whose URL lands on a GovDelivery mailing-list page.
+    const msg2 = String(outcome.message || "");
+    if (/stored portal URL .{0,40}appears to be wrong|does not reach a permit portal/i.test(msg2)) {
+      return { rung: "login_failed", index: 1, reason: msg2.slice(0, 180), owner: "credential" };
+    }
     return { rung: "login_failed", index: 1, reason: "a login page was reached but no credential is stored for this portal", owner: "credential" };
   }
   if (loginStatus === "still_on_login" || /still on the login form|likely rejected/i.test(msg)) {

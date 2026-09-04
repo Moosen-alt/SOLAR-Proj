@@ -40,6 +40,19 @@ check("login_failed / credential: a refused password is the OPERATOR's to fix", 
   assert.equal(s.owner, "credential", "a stale password is not an engine defect");
 });
 
+check("A WRONG STORED URL keeps its own diagnosis instead of a generic one", () => {
+  // Miramar FL's stored URL lands on a GovDelivery newsletter page. Reporting "no
+  // credential is stored" sends someone hunting for a password that exists.
+  const s = scoreLearnOutcome({
+    status: "failed",
+    message: "The stored portal URL for this jurisdiction appears to be wrong: it lands on a newsletter or subscription signup — the stored URL does not reach a permit portal (City of Miramar, Florida). Correct the URL on the client's portal login, then retry.",
+    events: [{ type: "login", status: "no_credential" }],
+  });
+  assert.equal(s.owner, "credential");
+  assert.match(s.reason, /newsletter|does not reach a permit portal/i);
+  assert.doesNotMatch(s.reason, /no credential is stored/i);
+});
+
 check("login_failed / credential: no stored login at all", () => {
   // City of Portland DevHub — no credential exists for that host.
   const s = scoreLearnOutcome({ status: "failed", events: [{ type: "login", status: "no_credential" }] });
