@@ -133,6 +133,39 @@ PAGES.hiddenText = `<!doctype html><html><body>
 PAGES.noLabel = `<!doctype html><html><body>
   <input type="radio" id="r" data-al-hidden-target="1" style="display:none" /></body></html>`;
 
+// ---------------------------------------------------------------------------
+// THE OUTERMOST HIDDEN ANCESTOR, NOT THE NEAREST.
+//
+// Momentum's annotated capture, reading outward from the radio:
+//
+//   HIDDEN div.field record-select-radio   <- nearest. Nothing opens this.
+//   HIDDEN fieldset.record-select-radio
+//   HIDDEN form
+//   HIDDEN div.choose-type
+//   HIDDEN section                         <- the boundary. THIS is what is closed.
+//   shown  div
+//   shown  div.step1.step-div
+//
+// The first version stopped at the nearest and hunted an opener for an inner wrapper, which
+// is why it reported "no opener" on a page whose real container might well have one. A
+// control that opens something is associated with the hidden/visible BOUNDARY, never with a
+// div three levels inside it.
+// ---------------------------------------------------------------------------
+PAGES.nestedHidden = `<!doctype html><html><body>
+  <div><button aria-controls="sect" style="width:150px;height:24px">Show step</button>
+    <section id="sect" style="display:none">
+      <div class="choose-type"><form><fieldset>
+        <div class="field"><input id="gate" type="radio" data-al-hidden-target="1" /></div>
+      </fieldset></form></div>
+    </section></div></body></html>`;
+
+const nested = await planOn("nestedHidden");
+check("THE REGRESSION: the climb reaches the OUTERMOST hidden ancestor, not the first",
+  /aria-controls/.test(nested.opener), JSON.stringify(nested));
+check("...and names that container, so the log points at the right element",
+  /section/.test(nested.why), nested.why);
+console.log(`   ${nested.opener} | ${nested.why}`);
+
 const proxyOn = async (key: string): Promise<string> => {
   await page.goto(`http://127.0.0.1:${port}/${key}`, { waitUntil: "domcontentloaded" });
   await page.waitForTimeout(80);

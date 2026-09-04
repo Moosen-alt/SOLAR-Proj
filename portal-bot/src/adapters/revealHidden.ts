@@ -53,13 +53,38 @@ export function planHiddenReveal(): HiddenRevealPlan {
     return r.width < 2 || r.height < 2;
   };
 
-  // Walk up to the nearest ancestor that is actually the thing hiding it.
-  let container: Element | null = target.parentElement;
+  // THE OUTERMOST HIDDEN ANCESTOR, NOT THE NEAREST.
+  //
+  // The first version stopped at the nearest concealed ancestor, which on any real portal is
+  // an inner wrapper that nothing opens. Momentum's annotated capture shows why — reading
+  // outward from the radio:
+  //
+  //   HIDDEN div.field record-select-radio     <- the nearest. Nothing opens this.
+  //   HIDDEN fieldset.record-select-radio
+  //   HIDDEN form
+  //   HIDDEN div.choose-type
+  //   HIDDEN section                           <- the boundary. THIS is what is closed.
+  //   shown  div
+  //   shown  div.step1.step-div
+  //
+  // A control that opens something is associated with the boundary between hidden and
+  // visible, never with a div three levels inside it. Climbing to the last hidden ancestor
+  // before the first visible parent is what "the container that is closed" actually means.
+  let container: Element | null = null;
   let why = "";
-  for (let depth = 0; container && depth < 10; depth++) {
-    if (container.tagName === "DETAILS" && !(container as HTMLDetailsElement).open) { why = "inside a closed <details>"; break; }
-    if (concealed(container)) { why = `inside a hidden <${container.tagName.toLowerCase()}>`; break; }
-    container = container.parentElement;
+  let node: Element | null = target.parentElement;
+  for (let depth = 0; node && depth < 12; depth++) {
+    if (node.tagName === "DETAILS" && !(node as HTMLDetailsElement).open) {
+      // A closed <details> is unambiguous and owns its own opener; stop climbing at it.
+      container = node;
+      why = "inside a closed <details>";
+      break;
+    }
+    if (concealed(node)) {
+      container = node;
+      why = `inside a hidden <${node.tagName.toLowerCase()}${node.className ? `.${String(node.className).split(/\s+/)[0]}` : ""}>`;
+    }
+    node = node.parentElement;
   }
   if (!container || !why) return none;
 
