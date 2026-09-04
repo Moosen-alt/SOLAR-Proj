@@ -37,6 +37,7 @@ import { logger } from "./logger";
 import { buildUtilityPackage } from "./docSplitter";
 import { addAuditLog } from "./audit";
 import { HttpError } from "./httpError";
+import { formPurposeMismatch } from "./formPurpose";
 import { id } from "./ids";
 import { knowledgeProfileKey, findKnowledgeForLearn } from "./knowledgeBase";
 import { getCodeProfile } from "./codeProfiles";
@@ -1028,8 +1029,26 @@ async function autoLearnPortalInner(
     );
   }
 
+  // WAS THIS EVEN THE RIGHT FORM?
+  //
+  // Everything above measures how WELL the run filled the form it reached. Nothing asked
+  // whether it was the right form. Gilbert, AZ was the only portal of eleven to reach a
+  // review screen in the 2026-09-04 baseline — top rung — on a page titled "Neumo: Permit
+  // Extension Request", from the stored URL .../f/permitext. A permit extension, filled
+  // perfectly, scored 6 of 6.
+  //
+  // A trusted recipe replays unattended on every future project in its jurisdiction, so a
+  // trusted recipe for a permit extension files permit extensions for real customers. The
+  // run's own evidence is enough to catch it: what the form called itself, and where it was.
+  const gotoUrls = (learn.steps ?? []).filter((st) => st.action === "goto").map((st) => String(st.value || ""));
+  const purpose = formPurposeMismatch(
+    [learn.portalName, learn.reviewScreen?.bodyTextSnippet],
+    [portalUrl, ...gotoUrls],
+  );
+  if (purpose.mismatch) verification.issues.push(purpose.reason);
+
   let trusted = verification.accurate && !textContradicts && !hasHardBlockers && ambiguousLiterals.length === 0 && !tooThin
-    && deadBindings.length === 0;
+    && deadBindings.length === 0 && !purpose.mismatch;
   if (hasHardBlockers) {
     if (requiredMisses.length) verification.issues.push(`Required field(s) left blank/unselected — fill before trusting: ${requiredMisses.slice(0, 12).join(", ")}${requiredMisses.length > 12 ? ", …" : ""}.`);
     if (docMisses.length) verification.issues.push(`Required document(s) not attached: ${docMisses.slice(0, 8).join(", ")}.`);
