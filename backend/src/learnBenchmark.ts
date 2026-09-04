@@ -40,13 +40,27 @@ export interface LearnOutcome {
   /** autoLearnPortal's status: complete | failed | paused | ... */
   status?: string;
   pageCount?: number;
-  /** Steps on the resulting recipe. */
+  /** Steps on the resulting recipe, of every kind including goto and click. */
   steps?: number;
+  /**
+   * Steps that actually PUT DATA INTO THE FORM — fill, select, check.
+   *
+   * The rung above reached_form is called "recorded_steps" and the headline counts it as a
+   * usable recipe. Counting raw steps made that claim for navigation: of six "usable"
+   * recipes in the 2026-09-04 re-sweep, three held a goto and some clicks and nothing else
+   * — momentum 5 steps / 0 fills, permittrax 4 / 0, iWorq 2 / 0. Momentum's own run said
+   * "found nothing fillable on 4 page(s); no steps recorded" while the scorecard called it
+   * a usable recipe.
+   *
+   * A recipe that fills nothing replays to a blank application. Same rule the trust gate in
+   * autoLearn already applies to promotion, so the two agree on what a recipe IS.
+   */
+  substantiveSteps?: number;
   message?: string;
   /** Whether the run reached the portal's review screen. */
   reachedReview?: boolean;
   /** Parsed events.jsonl from the run's debug bundle, if available. */
-  events?: Array<{ type?: string; status?: string; ok?: boolean }>;
+  events?: Array<{ type?: string; status?: string; ok?: boolean; trace?: string }>;
 }
 
 export interface LearnScore {
@@ -86,15 +100,27 @@ export function scoreLearnOutcome(outcome: LearnOutcome): LearnScore {
   const entry = evt(outcome, "application_entry_pass");
   const pages = Number(outcome.pageCount ?? 0);
   const steps = Number(outcome.steps ?? 0);
+  // Navigation is not a recipe: see substantiveSteps. Falls back to the raw count only when
+  // the caller could not tell them apart, so an old scorecard still reads sensibly.
+  const substantive = Number(outcome.substantiveSteps ?? outcome.steps ?? 0);
 
   // Top rung first: reaching review is the goal and outranks everything below it.
   if (outcome.reachedReview || /reached (the )?review/i.test(msg)) {
     return { rung: "reached_review", index: 6, reason: "reached the portal's review screen", owner: "none" };
   }
-  if (steps > 0 && pages > 0) {
-    return { rung: "recorded_steps", index: 5, reason: `recorded ${steps} step(s) across ${pages} page(s) but never reached review`, owner: "engine" };
+  if (substantive > 0 && pages > 0) {
+    return { rung: "recorded_steps", index: 5, reason: `recorded ${substantive} field fill(s) across ${pages} page(s) but never reached review`, owner: "engine" };
   }
   if (pages > 0) {
+    // Walked and clicked, but put no data into anything. This is the case that used to be
+    // promoted to "usable recipe" on the strength of a goto and four clicks.
+    if (steps > 0) {
+      return {
+        rung: "reached_form", index: 4,
+        reason: `walked ${pages} page(s) and recorded ${steps} navigation step(s) but filled NO fields — a recipe that fills nothing replays to a blank application`,
+        owner: "engine",
+      };
+    }
     // Two very different jobs land on this rung, and the reason is the actionable half.
     // "Our filler found nothing on a page it reached" is a planner gap; "the clock ran out
     // mid-walk" is a budget question. Reading the second as the first sends a day's work
@@ -180,6 +206,30 @@ export function scoreLearnOutcome(outcome: LearnOutcome): LearnScore {
     return { rung: "login_failed", index: 1, reason: `login ended as "${loginStatus || "unknown"}"`, owner: "engine" };
   }
   return { rung: "unreachable", index: 0, reason: msg.slice(0, 160) || "the portal never loaded", owner: "portal" };
+}
+
+/**
+ * DID THE RUN REACH A REVIEW SCREEN? ONE ANSWER, FROM THE RUN'S OWN TRACE.
+ *
+ * There were two readings of this and they disagreed, which the benchmark caught by
+ * reporting a regression that had not happened. The live runner tested the summary MESSAGE
+ * with a regex; rescoreBenchmark read `review=true` out of the page traces. Gilbert's run
+ * was identical on both days — trace says review=true, one page, ten steps — and scored 6
+ * from the bundle and 5 from the message, so a rescored card and a fresh card could never
+ * be compared without a phantom in the diff.
+ *
+ * The trace wins: it is recorded by the walk at the moment it judged the page, while the
+ * message is prose assembled at the end. Both callers use this now, so the two paths cannot
+ * drift apart again.
+ */
+export function reachedReviewFromEvents(
+  events: Array<{ type?: string; trace?: string }> | undefined,
+  message?: string,
+): boolean {
+  for (const e of events ?? []) {
+    if (e?.type === "page" && /review=true/.test(String(e.trace || ""))) return true;
+  }
+  return /reached (the )?review|awaiting human/i.test(String(message || ""));
 }
 
 export interface BenchmarkRow { portal: string; platform: string; score: LearnScore }

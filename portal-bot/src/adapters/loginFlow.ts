@@ -333,7 +333,29 @@ async function findPasswordField(page: Page): Promise<Locator | null> {
 
 // If no login form is visible, click a "Log In" trigger to reveal one (Accela pattern).
 // Returns true if a form became present after revealing.
+/**
+ * WHAT THE LAST REVEAL PASS ACTUALLY TRIED.
+ *
+ * Wilsonville failed as "login form was not recognised" and its bundle held exactly one
+ * event: the verdict. The captured page proved the control was in the DOM —
+ * `<a id="link-LoginUnderGreetings" href="" ng-click="vm.login()">Login or Register</a>` —
+ * and I still could not tell whether the reveal never matched it, matched and could not
+ * click it, or clicked it and got no form. Three different bugs, one indistinguishable
+ * symptom, and no way to choose between them without driving the portal again.
+ *
+ * So the pass leaves a trail. Read by the adapter into the run's event log; last-write-wins
+ * per page, which is all a diagnosis needs.
+ */
+const revealTrail = new WeakMap<object, string[]>();
+
+/** The trail from the most recent revealLoginForm on this page, oldest first. */
+export function lastRevealTrail(page: Page): string[] {
+  return revealTrail.get(page as unknown as object) ?? [];
+}
+
 export async function revealLoginForm(page: Page): Promise<boolean> {
+  const trail: string[] = [];
+  revealTrail.set(page as unknown as object, trail);
   if (await loginFormPresent(page)) return true;
   let tried = triedTriggers.get(page as unknown as object);
   if (!tried) { tried = new Set<string>(); triedTriggers.set(page as unknown as object, tried); }
@@ -341,15 +363,17 @@ export async function revealLoginForm(page: Page): Promise<boolean> {
     const key = triggerKey(sel);
     if (tried.has(key)) continue;
     const trigger = await firstVisible(page, [sel]);
-    if (!trigger) continue;
+    if (!trigger) { trail.push(`no-match ${key}`); continue; }
     tried.add(key);
     try {
       await trigger.click();
       await smartWait(page, 3000);
-    } catch {
+    } catch (err) {
+      trail.push(`click-failed ${key}: ${String((err as Error)?.message || err).slice(0, 60)}`);
       continue; // this control wasn't clickable — try the next kind
     }
-    if (await loginFormPresent(page)) return true;
+    if (await loginFormPresent(page)) { trail.push(`clicked ${key} -> form appeared`); return true; }
+    trail.push(`clicked ${key} -> no form`);
     // Clicked something that didn't produce a form; the next call tries the next trigger.
     return false;
   }
@@ -360,6 +384,7 @@ export async function revealLoginForm(page: Page): Promise<boolean> {
   const forwardKey = "forwarding-interstitial";
   if (!tried.has(forwardKey)) {
     const forwarded = await followForwardingInterstitial(page);
+    trail.push(forwarded ? `forwarding-interstitial clicked ${JSON.stringify(forwarded)}` : "no forwarding interstitial");
     if (forwarded) {
       tried.add(forwardKey);
       if (await loginFormPresent(page)) return true;
@@ -376,6 +401,7 @@ export async function revealLoginForm(page: Page): Promise<boolean> {
   const describedKey = "described-login-control";
   if (!tried.has(describedKey)) {
     const described = await markDescribedLoginControl(page);
+    trail.push(described ? `described-control found: ${described.slice(0, 60)}` : "no described login control");
     if (described) {
       tried.add(describedKey);
       try {

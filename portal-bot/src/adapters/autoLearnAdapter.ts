@@ -9,7 +9,7 @@ import { openPortal } from "../browser";
 import { selectWithFallback } from "../comboboxFill";
 import { detectChallengeFrame, frameSelectorFor, readbackMatches, redactStatusText, safeAction, sleep, smartWait, waitForElement, waitForInteractiveControls } from "../safeAction";
 import { scrapeReviewScreen as scrapeReviewScreenShared } from "../reviewScreenScraper";
-import { performLogin } from "./loginFlow";
+import { performLogin, lastRevealTrail } from "./loginFlow";
 import { enterApplicationFlow, isExcludedEntryLabel, normalizeEntryLabel } from "./applicationEntry";
 import { chooseProgram, offeredLabels, programSelector, scanProgramGroups, type ProgramGroup } from "./applicationProgram";
 import { parseStreetName, parseStreetNumber } from "../addressParse";
@@ -2038,6 +2038,10 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       // become the fixtures the DOM smokes run against. Best-effort and non-throwing: a
       // diagnostic must never be able to change the outcome it is diagnosing.
       if (result.status !== "logged_in" && result.status !== "already_authenticated" && result.status !== "no_login_required") {
+        // WHAT WAS TRIED, not only what happened. Wilsonville's bundle held the verdict and
+        // nothing else, and the captured page proved its login control was present — leaving
+        // three different bugs behind one indistinguishable symptom.
+        this.debug?.event({ type: "login_reveal_trail", steps: lastRevealTrail(this.page).slice(0, 20) });
         await this.debug?.capturePageHtml(this.page, `login-${result.status}`).catch(() => {});
         await this.debug?.screenshot(this.page, `login-${result.status}`).catch(() => {});
       }

@@ -20,7 +20,7 @@ import { openDatabase } from "./db";
 import { createProject, deleteProject } from "./repository";
 import { autoLearnPortal } from "./autoLearn";
 import { listPortalCredentials } from "./portalCredentials";
-import { scoreLearnOutcome, summarize, compareRuns, type BenchmarkRow } from "./learnBenchmark";
+import { reachedReviewFromEvents, scoreLearnOutcome, summarize, compareRuns, type BenchmarkRow } from "./learnBenchmark";
 
 const OUT_DIR = path.resolve(process.cwd(), "data", "learn-benchmark");
 // The learn stops itself at budgetMs; the walk checks its deadline BETWEEN pages, so a run
@@ -148,7 +148,7 @@ async function main(): Promise<void> {
       ]);
       const r = res as Record<string, unknown>;
       // Read the run's own event log — it beats the summary prose for scoring.
-      let events: Array<{ type?: string; status?: string; ok?: boolean }> = [];
+      let events: Array<{ type?: string; status?: string; ok?: boolean; trace?: string }> = [];
       const dir = String(r.debugDir || "");
       if (dir) {
         try {
@@ -156,10 +156,21 @@ async function main(): Promise<void> {
             .map((l) => { try { return JSON.parse(l); } catch { return {}; } });
         } catch { /* bundle optional */ }
       }
+      const recipeSteps = ((r.recipe as { steps?: unknown[] } | undefined)?.steps ?? []) as unknown[];
       outcome = {
         status: r.status, pageCount: r.pageCount, message: r.message,
-        steps: (r.recipe as { steps?: unknown[] } | undefined)?.steps?.length ?? 0,
-        reachedReview: /reached (the )?review|awaiting human/i.test(String(r.message || "")),
+        steps: recipeSteps.length,
+        // fill/select/check only — a goto and four clicks is navigation, not a recipe.
+        // Same rule autoLearn's trust gate uses, so the benchmark and the promotion
+        // decision cannot disagree about what a recipe is.
+        substantiveSteps: recipeSteps.filter((st) => {
+          const a = String((st as { action?: unknown }).action ?? "");
+          return a === "fill" || a === "select" || a === "check";
+        }).length,
+        // The run's own page trace, not a regex over the closing prose — see
+        // reachedReviewFromEvents. These two readings disagreed and the benchmark reported
+        // the difference as a regression.
+        reachedReview: reachedReviewFromEvents(events, String(r.message || "")),
         events, seconds: Math.round((Date.now() - started) / 1000),
       };
     } catch (e) {

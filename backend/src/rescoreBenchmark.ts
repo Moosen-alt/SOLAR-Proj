@@ -18,7 +18,7 @@
 // ---------------------------------------------------------------------------
 import fs from "node:fs";
 import path from "node:path";
-import { scoreLearnOutcome, summarize, type BenchmarkRow, type LearnOutcome } from "./learnBenchmark";
+import { reachedReviewFromEvents, scoreLearnOutcome, summarize, type BenchmarkRow, type LearnOutcome } from "./learnBenchmark";
 
 const RUNS_DIR = path.resolve(process.cwd(), "data", "learn-runs");
 const OUT_DIR = path.resolve(process.cwd(), "data", "learn-benchmark");
@@ -65,7 +65,7 @@ export function outcomeFromBundle(dir: string): LearnOutcome | null {
 
   const pageEvents = events.filter((e) => e.type === "page");
   // Each page event carries the walk's own trace line: `p3 "Title" [url] ... fills=2 ...`.
-  const reachedReview = pageEvents.some((e) => /review=true/.test(String(e.trace || "")));
+  const reachedReview = reachedReviewFromEvents(events, String(result?.message ?? ""));
 
   // STEPS ONLY COUNT IF A RECIPE WAS ACTUALLY SAVED.
   //
@@ -79,11 +79,26 @@ export function outcomeFromBundle(dir: string): LearnOutcome | null {
   // An unfinished run has no result.json. Its pages are real and it keeps that credit
   // (reached_form); its steps are zero, because there is no recipe.
   const steps = result ? Number((result.recipe as { steps?: unknown[] } | undefined)?.steps?.length ?? 0) : 0;
+  // The walk's own per-page `fills=N` counter is the only record of substantive work a
+  // bundle keeps, and it is the right one: it counts data going into the form.
+  //
+  // IT COUNTS ATTEMPTS, NOT WHAT SURVIVED. Momentum's traces read fills=1 on three pages
+  // while the recipe it saved holds a goto and four clicks and no fill at all — the fills
+  // were refused downstream (unbindable field, required-blank, policy guard) and never
+  // became steps. So the run's own closing verdict vetoes the counter when it says plainly
+  // that nothing was recorded. A live run scores from the persisted recipe and is always
+  // the authority; this path is for reading a bundle after the fact, and it must not claim
+  // more than the bundle can prove.
+  const saidNothingRecorded = /no steps recorded|nothing fillable/i.test(String(result?.message ?? ""));
+  const substantiveSteps = result && !saidNothingRecorded
+    ? pageEvents.reduce((n, e) => n + Number(/fills=(\d+)/.exec(String(e.trace || ""))?.[1] ?? 0), 0)
+    : 0;
 
   return {
     status: result ? String(result.status ?? "failed") : "timeout",
     pageCount: Number(result?.pageCount ?? pageEvents.length),
     steps,
+    substantiveSteps,
     message: String(result?.message ?? ""),
     reachedReview,
     events,

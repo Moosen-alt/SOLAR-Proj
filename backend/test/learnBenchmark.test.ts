@@ -262,6 +262,51 @@ check("OLD SCORECARDS ON DISK are read correctly though they predate the flag", 
 });
 
 // ---------------------------------------------------------------------------
+// NAVIGATION IS NOT A RECIPE.
+//
+// "recorded_steps" is the rung the headline counts as a usable recipe. Counting raw steps
+// made that claim for pure navigation: of six "usable" recipes in the 2026-09-04 re-sweep,
+// three held a goto and some clicks and nothing else — momentum 5 steps / 0 fills,
+// permittrax 4 / 0, iWorq 2 / 0. Momentum's own result.json said "found nothing fillable on
+// 4 page(s); no steps recorded" while the scorecard called it a usable recipe and the
+// headline read 54.5%.
+//
+// A recipe that fills nothing replays to a blank application.
+// ---------------------------------------------------------------------------
+check("THE REGRESSION: a goto and four clicks is not a usable recipe", () => {
+  // momentum, verbatim: {"goto":1,"click":4}, four pages walked.
+  const s = scoreLearnOutcome({ status: "failed", pageCount: 4, steps: 5, substantiveSteps: 0 });
+  assert.equal(s.rung, "reached_form", "no field was filled, so nothing replayable exists");
+  assert.equal(s.index, 4);
+  assert.match(s.reason, /filled NO fields/);
+});
+
+check("...and it says so in a way that names the problem", () => {
+  const s = scoreLearnOutcome({ pageCount: 4, steps: 5, substantiveSteps: 0 });
+  assert.match(s.reason, /replays to a blank application/);
+});
+
+check("a recipe with real fills IS usable, and is counted on those", () => {
+  // cloudpermit: {"goto":1,"fill":2,"click":7} — ten steps, two of them substantive.
+  const s = scoreLearnOutcome({ pageCount: 8, steps: 10, substantiveSteps: 2 });
+  assert.equal(s.rung, "recorded_steps");
+  assert.match(s.reason, /2 field fill\(s\)/, "the number reported is the one that matters");
+});
+
+check("selects and checkboxes count as filling, not as navigation", () => {
+  // smartgov: {"goto":1,"click":3,"select":1,"check":1} — a dropdown and a tickbox are data.
+  const s = scoreLearnOutcome({ pageCount: 4, steps: 6, substantiveSteps: 2 });
+  assert.equal(s.rung, "recorded_steps");
+});
+
+check("an OLD scorecard without the field still reads sensibly", () => {
+  // Pre-dating substantiveSteps: fall back to the raw count rather than scoring every
+  // historical row as a navigation-only run.
+  const s = scoreLearnOutcome({ pageCount: 2, steps: 10 });
+  assert.equal(s.rung, "recorded_steps");
+});
+
+// ---------------------------------------------------------------------------
 // The ladder must stay ordered and honest.
 // ---------------------------------------------------------------------------
 check("the rungs are strictly ordered, worst to best", () => {
