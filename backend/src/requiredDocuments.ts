@@ -33,6 +33,7 @@ import { projectDocsByType } from "./projectDocuments";
 import { resolvePermitPath, resolveStampRequirement, hasStampedStructuralEvidence } from "./permitPath";
 import { resolveEffectiveCodeContext } from "./codeProfiles";
 import { findAhjProcessProfile } from "./processProfiles";
+import { findKnowledgeForLearn } from "./knowledgeBase";
 
 export interface RequiredDocItem {
   /** project_documents.doc_type this maps to (or a synthetic key for path docs). */
@@ -185,7 +186,19 @@ export function documentInventory(db: AppDb, project: ProjectRecord): DocumentIn
   try {
     processProfileRequiresStamp = Boolean(findAhjProcessProfile(project)?.requiresStructuralStamp);
   } catch { /* profile optional */ }
-  const required = requiredDocuments(project, { stampThresholdKwDc, jurisdictionLabel, processProfileRequiresStamp });
+  // What THIS jurisdiction asks for beyond the universal set — the filled application
+  // and/or checklist some AHJs want attached alongside the plan set. Learned data, so
+  // advisory and never fatal to the inventory.
+  let kbItems: RequiredDocItem[] = [];
+  try {
+    const kb = findKnowledgeForLearn(db, { state: project.state, ahj: project.ahj, utility: project.utility });
+    const reqs = kb.ahj?.requiredDocuments ?? [];
+    if (reqs.length) {
+      const baseline = new Set(requiredDocuments(project, { stampThresholdKwDc, jurisdictionLabel, processProfileRequiresStamp }).map((i) => i.docType));
+      kbItems = kbApplicationDocItems(reqs, baseline);
+    }
+  } catch { /* KB optional */ }
+  const required = [...requiredDocuments(project, { stampThresholdKwDc, jurisdictionLabel, processProfileRequiresStamp }), ...kbItems];
   const presence: DocPresence[] = required.map((item) => {
     const p = present(item.docType, project, docsByType);
     // HONESTY CHECK on the sealed letter: presence only proves a FILE is in the
@@ -218,4 +231,76 @@ export function documentInventory(db: AppDb, project: ProjectRecord): DocumentIn
     missingBlocking: presence.filter((p) => !p.present && p.blocking),
     missingAdvisory: presence.filter((p) => !p.present && !p.blocking),
   };
+}
+
+// ---------------------------------------------------------------------------
+// JURISDICTION-SPECIFIC APPLICATION DOCUMENTS, FROM THE KB
+//
+// The baseline above is the universal set — plan set, site plan, SLD, specs. What it
+// cannot know is that Coos Bay's Accela config also wants a building permit application
+// and a solar prescriptive checklist attached, while Portland wants its worksheet
+// transcribed into DevHub and explicitly not uploaded.
+//
+// The KB already records exactly that, per profile, in required_documents: for
+// or|city of coos bay|pacific power it lists "Building/structural permit application",
+// "Solar prescriptive checklist" and "Renewable Energy (electrical) permit application".
+// Nothing read it — the only consumer matched /checklist|worksheet/ to decide which BLANK
+// form to go find. So the system knew what the jurisdiction wanted, filled the form, and
+// never told anyone it was supposed to go up with the submittal. docSplitter's own comment
+// anticipated this: "eventually this can be driven by the learned KB requiredDocuments".
+//
+// Scope is deliberately narrow: only the APPLICATION/CHECKLIST family, which is the part
+// the baseline lacks and the part the portal upload sweep can actually attach. Everything
+// else a KB list mentions (plan set, site plan, meter photo, post-install sign-off) is
+// either already baseline or belongs to another lane, and surfacing it here would be noise.
+//
+// Advisory, never blocking: KB rows are learned, they vary in quality, and a wrong blocker
+// would stop a filing that is genuinely complete. The operator decides.
+// ---------------------------------------------------------------------------
+
+/** KB requirement prose -> the docType that holds it. Ordered: specific before generic.
+ *  This vocabulary must agree with the portal-side UPLOAD_LABEL_PATTERNS, or a document is
+ *  demanded here under a name no upload slot will ever match — asserted in
+ *  backend/test/filledFormUpload.test.ts. */
+export const KB_APPLICATION_DOC_PATTERNS: Array<{ re: RegExp; docType: string; label: string }> = [
+  // "Electrical" and "application" are often several words apart — Portland's form is the
+  // "Electrical Renewable Energy Permit Application", which an adjacency-only pattern reads
+  // as a generic application.
+  { re: /electrical[\w\s/&()-]{0,40}application|renewable\s*energy[\w\s/&()-]{0,20}electrical/i, docType: "electrical_application", label: "Electrical permit application (filled)" },
+  { re: /(building|structural)\s*(permit\s*)?application/i, docType: "building_application", label: "Building / structural permit application (filled)" },
+  { re: /checklist|worksheet|eligibilit/i, docType: "solar_checklist", label: "Solar prescriptive checklist (filled)" },
+  { re: /(solar|permit|completed|signed)\s*application|application\s*(form|packet)/i, docType: "permit_application", label: "Permit application (filled)" },
+];
+
+/**
+ * Map a KB profile's required-documents prose to the application/checklist documents this
+ * jurisdiction expects attached. `alreadyRequired` suppresses anything the baseline covers.
+ */
+export function kbApplicationDocItems(requirements: string[], alreadyRequired: Set<string> = new Set()): RequiredDocItem[] {
+  const seen = new Set<string>();
+  const out: RequiredDocItem[] = [];
+  for (const raw of requirements || []) {
+    const text = String(raw || "").trim();
+    if (!text) continue;
+    // A REBATE APPLICATION IS NOT THE FILING. Sweeping the mapper across all 461 KB
+    // profiles turned up "Illinois Distributed Generation Rebate Application (Rider CGR)",
+    // which happens not to match the patterns below only because "Rebate" sits between the
+    // words they look for. That is luck, not a rule — and treating an incentive application
+    // as the permit application is the same mistake as picking the rebate programme in
+    // ComEd's drawer, where it is guarded explicitly. Guard it here too.
+    if (/rebate|incentive|enroll|enrolment|enrollment/i.test(text)) continue;
+    const hit = KB_APPLICATION_DOC_PATTERNS.find((p) => p.re.test(text));
+    if (!hit || seen.has(hit.docType) || alreadyRequired.has(hit.docType)) continue;
+    seen.add(hit.docType);
+    out.push({
+      docType: hit.docType,
+      label: hit.label,
+      // The jurisdiction's own words, so the operator can judge the claim rather than
+      // trusting a classification.
+      why: `This jurisdiction's requirements list names it: "${text.slice(0, 140)}".`,
+      lane: "permit",
+      blocking: false,
+    });
+  }
+  return out;
 }
