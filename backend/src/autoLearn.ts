@@ -28,7 +28,7 @@ import { resolveHeadless } from "../../portal-bot/src/browser";
 import { compareReviewFields } from "../../portal-bot/src/reviewScreenScraper";
 import type { LearnPlanRequest, LearnPlanResponse } from "../../portal-bot/src/adapters/autoLearnAdapter";
 import { createLLMProvider, getRecentLlmCalls } from "./llm";
-import { getDecryptedCredential, getDecryptedCredentialByUrl, getDecryptedCredentialAny, listPortalCredentials } from "./portalCredentials";
+import { getDecryptedCredential, getDecryptedCredentialByUrl, getDecryptedCredentialAny, listPortalCredentials, nearestStoredLogins } from "./portalCredentials";
 import { learnNoteTopicsFromMisses, activeLearnedNoteTerms } from "./noteTopics";
 import { deadFieldBindings, resolveRecipeFieldValues, startPortalRecording, savePortalRecipeSteps, getPortalRecipe, convertLiteralsToBoundFields, findAnyRecipeForProject, appendHumanPatchSteps, promoteRecordingIfEligible, recipeProfileKey } from "./portalRecipes";
 import { HUMAN_SUBMIT_OBSERVED_NOTE } from "../../portal-bot/src/humanCapture";
@@ -609,11 +609,17 @@ async function autoLearnPortalInner(
   // hunting a phantom bug.
   if (!credential && project.clientId && /no stored credential/i.test(String(learn.message || ""))) {
     try {
-      const stored = listPortalCredentials(db, project.clientId)
-        .map((c) => c.portalUrl ? `${c.portalType} (${new URL(c.portalUrl).hostname})` : c.portalType)
-        .filter(Boolean);
+      const targetHost = (() => { try { return new URL(portalUrl).hostname.toLowerCase(); } catch { return String(portalUrl || "").toLowerCase(); } })();
+      const stored = listPortalCredentials(db, project.clientId);
       if (stored.length) {
-        learn.message += ` Note: this client HAS ${stored.length} stored login(s) — ${stored.join(", ")} — but none match this portal's address (${(() => { try { return new URL(portalUrl).hostname; } catch { return portalUrl; } })()}). Utilities on the same platform (e.g. PowerClerk) still use separate per-utility hosts and accounts, so add a login for THIS portal.`;
+        // LIST THE NEAR MISSES, NOT THE WHOLE BOOK. A service bureau holds a login per
+        // jurisdiction — this client has 83 — and dumping all of them produced a 4,700
+        // character wall that buried the one fact that mattered.
+        const near = nearestStoredLogins(stored, portalUrl, project.ahj);
+        const nearNote = near.length
+          ? ` The closest stored login(s) are ${near.join(", ")} — check whether one of those is actually the same system before adding a new one.`
+          : " None of them look related to this portal.";
+        learn.message += ` Note: this client has ${stored.length} stored login(s), but none for ${targetHost}.${nearNote} Jurisdictions and utilities on a shared platform still use separate hosts and accounts, so a login for THIS portal has to be added.`;
       }
     } catch { /* diagnostic only */ }
   }

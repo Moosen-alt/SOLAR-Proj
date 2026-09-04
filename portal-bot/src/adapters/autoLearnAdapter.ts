@@ -1957,7 +1957,14 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         return { ok: false, message: result.message, pauseReason: "mfa_captcha" };
       }
       if (result.status === "no_credential") {
-        return { ok: false, message: `${this.portalName} is showing a login page but no stored credential was found for this client/portal. Add the portal username + password under the client's logins, then retry. (Or run \`npm run portal:login\` once to establish a persistent session.)` };
+        // NAME THE PORTAL IT NEEDED. "No credential for this client/portal" sent an operator
+        // hunting a phantom bug: the client had 83 stored logins including one for Oregon
+        // ePermitting, and the message never said the page in front of it was City of
+        // Portland's own DevHub — a different system needing its own account. Which host was
+        // asked for is the whole answer, so it goes in the message.
+        const host = context.startUrl ? safeHostPath(context.startUrl).split("/")[0] : "";
+        const at = host ? ` at ${host}` : "";
+        return { ok: false, message: `${this.portalName}${at} is showing a login page but no stored credential was found for THIS portal. Add the username + password for ${host || "this portal"} under the client's logins, then retry. A login saved for a different portal is never reused — jurisdictions on the same platform still use separate hosts and accounts. (Or run \`npm run portal:login\` once to establish a persistent session.)` };
       }
       // still_on_login / no_username_field / no_submit_control / error
       return { ok: false, message: `${this.portalName}: ${result.message}` };

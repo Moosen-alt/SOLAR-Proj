@@ -231,3 +231,65 @@ export function getDecryptedCredentialAny(
     return { username: s(dec.username), password: s(dec.password) };
   } catch { return null; }
 }
+
+// ---------------------------------------------------------------------------
+// WHICH OF THE CLIENT'S LOGINS LOOKS LIKE THE ONE WE NEEDED?
+//
+// A refusal has to name the portal it wanted. "No stored credential for this client/portal"
+// sent an operator hunting a bug that did not exist: the client held 83 logins including one
+// for Oregon ePermitting, the page in front of the bot was City of Portland's own DevHub,
+// and the message named neither. The first version of the fix then listed all 83 — a 4,700
+// character wall that buried the single fact that mattered.
+//
+// So: name the host that was needed, and offer only the logins that plausibly ARE it.
+// Scoring on shared host labels catches same-system-different-subdomain; scoring on the
+// jurisdiction's own name catches the genuinely dangerous lookalikes — Portland, Maine is
+// not Portland, Oregon, and a tired operator at 6pm will absolutely try that login.
+// ---------------------------------------------------------------------------
+
+/** Host labels that identify nothing on their own. */
+const GENERIC_HOST_LABELS = new Set(["www", "com", "gov", "org", "net", "portal", "permits", "permitting", "online", "citizen", "public"]);
+
+/** AHJ words that match every municipal host ever registered, so they name nothing. */
+const GENERIC_AHJ_WORDS = new Set([
+  "city", "county", "town", "village", "borough", "township", "district",
+  "department", "building", "unincorporated", "the", "and", "of",
+]);
+
+function hostLabels(host: string): string[] {
+  return host.toLowerCase().split(".").filter((p) => p.length > 3 && !GENERIC_HOST_LABELS.has(p));
+}
+
+/**
+ * Ranks a client's stored logins by how likely each is to be the one the caller wanted.
+ * Returns display labels, most plausible first, and an empty array when nothing relates —
+ * which is itself the answer worth reporting.
+ */
+export function nearestStoredLogins(
+  stored: Array<{ portalType?: string; portalUrl?: string | null }>,
+  targetUrlOrHost: string,
+  ahj?: string,
+  limit = 4,
+): string[] {
+  const targetHost = (() => {
+    try { return new URL(targetUrlOrHost).hostname.toLowerCase(); } catch { return String(targetUrlOrHost || "").toLowerCase(); }
+  })();
+  const targetLabels = new Set(hostLabels(targetHost));
+  const ahjWords = String(ahj || "").toLowerCase().split(/\W+/).filter((w) => w.length > 3 && !GENERIC_AHJ_WORDS.has(w));
+
+  return (stored || [])
+    .map((c) => {
+      const host = (() => {
+        try { return c.portalUrl ? new URL(c.portalUrl).hostname.toLowerCase() : ""; } catch { return ""; }
+      })();
+      const type = String(c.portalType || "").toLowerCase();
+      let score = 0;
+      for (const label of hostLabels(host)) if (targetLabels.has(label)) score += 2;
+      for (const word of ahjWords) if (host.includes(word) || type.includes(word)) score += 1;
+      return { label: host ? `${c.portalType} (${host})` : String(c.portalType || ""), score };
+    })
+    .filter((c) => c.score > 0 && c.label)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+    .map((c) => c.label);
+}

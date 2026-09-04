@@ -455,7 +455,7 @@ app.delete("/api/clients/:id/logo", (req, res) => {
 app.post("/api/projects/:id/client", (req, res) => {
   const clientId = req.body?.clientId === null ? null : String(req.body?.clientId || "").trim() || null;
   const assigned = assignProjectClient(db, String(req.params.id), clientId);
-  maybeResumeAutopilot(db, String(req.params.id)); // a client assignment clears needsClient/CCB blockers
+  maybeResumeAutopilot(db, String(req.params.id), "a client was assigned to the project"); // clears needsClient/CCB blockers
   res.json(assigned);
 });
 
@@ -1294,7 +1294,7 @@ app.post("/api/corrections/:id/apply", (req, res) => {
 // records that the corrected package was resubmitted, completing cycle-time KPIs.
 app.post("/api/corrections/:id/resolve", (req, res) => {
   const correction = resolveCorrection(db, String(req.params.id), { resubmitted: Boolean(req.body?.resubmitted) });
-  maybeResumeAutopilot(db, correction.projectId); // closing the last correction makes the project re-stageable
+  maybeResumeAutopilot(db, correction.projectId, "a correction was resolved"); // closing the last correction makes the project re-stageable
   res.json(correction);
 });
 
@@ -1719,7 +1719,7 @@ app.post(
     const docType = String(req.query.docType || req.headers["x-doc-type"] || "").trim();
     const contentType = String(req.headers["content-type"] || "application/octet-stream");
     const saved = saveProjectDocument(db, String(req.params.id), { filename, docType, contentType, buffer: req.body, source: "upload" });
-    maybeResumeAutopilot(db, String(req.params.id)); // a new document may clear a missing-document blocker
+    maybeResumeAutopilot(db, String(req.params.id), "a document was uploaded"); // may clear a missing-document blocker
     res.status(201).json(saved);
   },
 );
@@ -2235,7 +2235,7 @@ app.post("/api/projects/:id/payment/mark-paid", asyncHandler(async (req, res) =>
   addAuditLog(db, detail.project.id, "human", "operator", "payment.marked_paid", {
     track: quote.track, totalUsd: quote.totalUsd, reference: quote.payment?.paymentReference || "",
   });
-  maybeResumeAutopilot(db, detail.project.id); // payment clears the 402 gate
+  maybeResumeAutopilot(db, detail.project.id, "a fee payment was recorded"); // clears the 402 gate
   res.json({ quote });
 }));
 
@@ -2244,7 +2244,7 @@ app.post("/api/projects/:id/payment/waive", asyncHandler(async (req, res) => {
   const detail = getProjectDetail(db, String(req.params.id));
   const quote = waiveSubmissionPayment(db, detail.project, String(req.body?.track || ""));
   addAuditLog(db, detail.project.id, "human", "operator", "payment.waived", { track: quote.track });
-  maybeResumeAutopilot(db, detail.project.id); // waiver clears the 402 gate
+  maybeResumeAutopilot(db, detail.project.id, "a fee was waived"); // clears the 402 gate
   res.json({ quote });
 }));
 
@@ -2396,7 +2396,7 @@ app.post("/api/projects/:id/human-verify", (req, res) => {
     fieldValue: req.body?.fieldValue,
     notes: req.body?.notes,
   });
-  maybeResumeAutopilot(db, String(req.params.id)); // clearing review items may unblock QC
+  maybeResumeAutopilot(db, String(req.params.id), "a human review item was verified"); // may unblock QC
   res.json(verifyResult);
 });
 

@@ -300,7 +300,7 @@ export function getAutopilotState(db: AppDb, projectId: string): AutopilotState 
 // re-evaluates every gate and simply re-blocks. It can NEVER cross the human
 // approval gate: awaiting_human_submit is not in PRE_STAGE_STATUSES, and
 // approval still requires the explicit POST /autopilot/approve.
-export function maybeResumeAutopilot(db: AppDb, projectId: string): void {
+export function maybeResumeAutopilot(db: AppDb, projectId: string, trigger = "a blocker-clearing change"): void {
   try {
     if (process.env.AUTOPILOT_AUTO_START === "0") return;
     const project = db.get<Row>("SELECT status FROM projects WHERE id = ?", [projectId]);
@@ -333,8 +333,19 @@ export function maybeResumeAutopilot(db: AppDb, projectId: string): void {
       .then(({ enqueueJob }) => {
         // maxRetries 0: staging drives a live portal and is not idempotent —
         // recovery happens through THIS event-driven resume path, never a timer.
-        enqueueJob(db, "autopilot", track ? { track } : {}, { projectId, priority: 6, maxRetries: 0 });
-        logger.info("autopilot", "auto-resume enqueued (blocker-clearing event)", { project: projectId });
+        enqueueJob(db, "autopilot", track ? { track, resumeTrigger: trigger } : { resumeTrigger: trigger }, { projectId, priority: 6, maxRetries: 0 });
+        logger.info("autopilot", `auto-resume enqueued (${trigger})`, { project: projectId });
+        // SAY WHY IT STARTED. This resume is correct — it only ever relaunches a run the
+        // operator started that then blocked on a gate, and it can never cross the approval
+        // gate. But it left no trace an operator could read, so the first time it fired the
+        // report was "I never clicked the autopilot button", and it took a code read to
+        // explain a run that was working as designed. An unexplained autonomous run is
+        // indistinguishable from a bug; the audit trail now names the trigger.
+        addAuditLog(db, projectId, "system", "autopilot", "autopilot.auto_resumed", {
+          trigger,
+          because: "an earlier autopilot run stopped on a gate, and this change may have cleared it",
+          track: track ?? null,
+        });
       })
       .catch(() => null);
   } catch { /* auto-resume is best-effort — never break the clearing action */ }

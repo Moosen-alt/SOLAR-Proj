@@ -145,7 +145,7 @@ export function submitIntakeRequest(
   // completion: this endpoint is public (token-auth only), so repeat posts to
   // the same link must not keep triggering automation runs.
   if (firstCompletion) {
-    void import("./autopilot").then(({ maybeResumeAutopilot }) => maybeResumeAutopilot(db, row.project_id)).catch(() => null);
+    void import("./autopilot").then(({ maybeResumeAutopilot }) => maybeResumeAutopilot(db, row.project_id, "an intake request was submitted")).catch(() => null);
   }
   return { ok: true, projectId: row.project_id };
 }
