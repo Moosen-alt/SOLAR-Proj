@@ -2586,6 +2586,95 @@ ${body.slice(0, 4000)}`);
   // recipeReplay.dom.smoke.ts. Explicit nth stays exactly as recorded.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   /**
+   * A control whose menu is CLOSED, opened and picked from.
+   *
+   * Oregon ePermitting's entry point is a CSS hover menu: the trigger is
+   * `<button class="dropbtn1" disabled>` — disabled ON PURPOSE, because the menu opens on
+   * hover, not click — and the real destinations live in a sibling `.dropdown-content` that
+   * is display:none until then. So the recorded "Apply" matched a control that can never be
+   * clicked, and the items behind it ("Building Dept Application", "Onsite/Septic
+   * Application") contain no "Apply" for a name search to find. Every layer answered
+   * correctly and the filing still could not start.
+   *
+   * This is the "present but shut" pattern one level up: not a concealed field but a
+   * concealed MENU. Hover the trigger, then choose among what appears — by the recipe's own
+   * discipline when there are several, because "Building Dept Application" versus
+   * "Onsite/Septic Application" is a question about the permit, not about the DOM.
+   *
+   * Refuses to guess: with several plausible items and nothing to separate them it returns
+   * null and lists what it saw, which is a better failure than filing under the wrong module.
+   */
+  private async revealMenuAndPick(want: string, hint: string): Promise<unknown | null> {
+    if (!this.page || typeof this.page.evaluate !== "function") return null;
+    // 1) Find a trigger matching the recorded name that owns hidden links, and tag it.
+    const armed = await this.page.evaluate((needle: string) => {
+      const norm = (t: string): string => t.replace(/\s+/g, " ").trim();
+      const strip = (t: string): string => norm(t).replace(/^[a-z][a-z_]{2,}(?=[A-Z])/, "");
+      const wants = needle.toLowerCase();
+      const triggers = Array.from(document.querySelectorAll("button, a, [role=button], summary")) as HTMLElement[];
+      for (const t of triggers) {
+        const label = strip(t.innerText || t.getAttribute("aria-label") || "");
+        if (!label || !label.toLowerCase().includes(wants)) continue;
+        // Its menu: the nearest ancestor that also holds links this trigger does not.
+        let box: HTMLElement | null = t.parentElement;
+        for (let up = 0; box && up < 3; up++, box = box.parentElement) {
+          const links = Array.from(box.querySelectorAll("a[href]")).filter((a) => !t.contains(a));
+          if (!links.length) continue;
+          const hidden = links.filter((a) => {
+            const r = a.getBoundingClientRect();
+            return r.width < 4 || r.height < 4 || getComputedStyle(a as HTMLElement).display === "none";
+          });
+          if (!hidden.length) continue;
+          document.querySelectorAll("[data-rc-trigger]").forEach((e) => e.removeAttribute("data-rc-trigger"));
+          document.querySelectorAll("[data-rc-menu]").forEach((e) => e.removeAttribute("data-rc-menu"));
+          t.setAttribute("data-rc-trigger", "1");
+          box.setAttribute("data-rc-menu", "1");
+          return true;
+        }
+      }
+      return false;
+    }, want).catch(() => false);
+    if (!armed) return null;
+
+    // 2) Open it the way a person would. Hover first — these menus are CSS-driven and the
+    //    trigger is often deliberately unclickable; click only as a second attempt.
+    const trigger = this.page.locator("[data-rc-trigger='1']").first();
+    await trigger.hover({ timeout: 4000 }).catch(() => null);
+    await this.page.waitForTimeout?.(250).catch(() => null);
+
+    // 3) Pick from what is now showing.
+    const picked = await this.page.evaluate((wantHint: string) => {
+      const box = document.querySelector("[data-rc-menu='1']");
+      if (!box) return "none";
+      const shown = (Array.from(box.querySelectorAll("a[href]")) as HTMLElement[]).filter((a) => {
+        const r = a.getBoundingClientRect();
+        return r.width > 4 && r.height > 4 && getComputedStyle(a).display !== "none";
+      });
+      if (!shown.length) return "none";
+      let chosen: HTMLElement | null = shown.length === 1 ? shown[0] : null;
+      if (!chosen && wantHint) {
+        const words = wantHint.toLowerCase().split(/[^a-z]+/).filter((w) => w.length > 3);
+        const hits = shown.filter((a) => words.some((w) => (a.innerText || "").toLowerCase().includes(w)));
+        if (hits.length === 1) chosen = hits[0];
+      }
+      if (!chosen) return `ambiguous: ${shown.map((a) => JSON.stringify((a.innerText || "").trim().slice(0, 40))).join(", ")}`;
+      document.querySelectorAll("[data-rc-name-hit]").forEach((e) => e.removeAttribute("data-rc-name-hit"));
+      chosen.setAttribute("data-rc-name-hit", "1");
+      return "ok";
+    }, hint).catch(() => "none") as string;
+
+    if (picked === "ok") {
+      this.driftWarnings.push(`"${want.slice(0, 30)}" is a closed menu — opened it and chose the entry matching ${JSON.stringify(hint.slice(0, 30))}`);
+      return this.page.locator("[data-rc-name-hit='1']").first();
+    }
+    if (picked.startsWith("ambiguous")) {
+      // REFUSE TO GUESS. Filing under the wrong module is worse than not filing.
+      this.driftWarnings.push(`"${want.slice(0, 30)}" opened a menu but nothing identified which entry this recipe wants — ${picked.slice(0, 160)}`);
+    }
+    return null;
+  }
+
+  /**
    * Find a visible, ENABLED clickable whose name contains `want`, ignoring icon-font noise.
    *
    * Tags the winner with a data attribute and returns a locator for it, because there is no
@@ -3132,7 +3221,9 @@ ${body.slice(0, 4000)}`);
     // portals, so this is a fleet-wide shape rather than one portal's quirk.
     const want = String(sel.name || sel.text || "").trim();
     if (want) {
-      const rescued = await this.findEnabledControlByName(want);
+      const rescued = await this.findEnabledControlByName(want)
+        // Nothing enabled and visible carries this name — it may be behind a closed menu.
+        ?? await this.revealMenuAndPick(want, `${this.recipe.discipline ?? ""} ${this.recipe.ahj ?? ""} building electrical permit`);
       if (rescued) {
         this.driftWarnings.push(
           `"${want.slice(0, 40)}" matched no usable control by selector — found an enabled one by name instead (icon-font ligatures pollute accessible names)`,
