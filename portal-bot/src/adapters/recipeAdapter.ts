@@ -123,6 +123,9 @@ export class RecipeAdapter extends BasePortalAdapter {
    *  "a photo of the meter where the system will be interconnected", which is never in a
    *  plan set, so no recipe step exists for it and no QC rule looks for it. */
   private requiredStillEmpty: string[] = [];
+  /** Why each selector level was accepted or rejected, for the step currently resolving.
+   *  Reported only when a step fails — see the note in resolveLocator. */
+  private resolveTrail: string[] = [];
   /** Steps that had NOTHING TO TYPE — the project carried no value for the field.
    *
    *  Not the same failure as a fill that did not land, and until now indistinguishable:
@@ -2100,6 +2103,14 @@ ${body.slice(0, 4000)}`);
               ? `select "${String(step.note ?? step.field ?? "")}" landed nothing and NO option list was open — the widget never opened (wanted ${JSON.stringify(v.slice(0, 40))}; resolved ${resolved})`
               : `select "${String(step.note ?? step.field ?? "")}" landed nothing though ${seen.count} option(s) were showing — wanted ${JSON.stringify(v.slice(0, 40))}, resolved ${resolved}, list offers ${seen.sample.map((o) => JSON.stringify(o)).join(", ")}`,
           );
+          // HOW THAT CONTROL WAS CHOSEN. The line above says WHICH control the step landed
+          // on; this says which candidates were considered and why each was taken or passed
+          // over. Four fixes at PGE's "Model" were shipped without it, each answering a
+          // question about a branch that was never entered, and four live runs went into
+          // discovering that. Only emitted on a miss.
+          if (this.resolveTrail.length) {
+            this.driftWarnings.push(`  ...how it resolved: ${this.resolveTrail.join(" | ").slice(0, 400)}`);
+          }
         }
         // COMMIT WHAT LANDED. PowerClerk autosaves per field on blur — the fill path has
         // always blurred for exactly this reason (and so does the learner after a model
@@ -2607,6 +2618,20 @@ ${body.slice(0, 4000)}`);
   // its full 30s before FAILING THE WHOLE REPLAY — verified in real Chromium by
   // recipeReplay.dom.smoke.ts. Explicit nth stays exactly as recorded.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  /** A selector in one short phrase, for the resolution trail. */
+  private describeSelector(sel?: RecipeSelector): string {
+    if (!sel) return "(none)";
+    const bits = [
+      sel.css ? `css:${String(sel.css).slice(0, 40)}` : "",
+      sel.label ? `label:${JSON.stringify(String(sel.label).slice(0, 30))}` : "",
+      sel.role ? `role:${sel.role}` : "",
+      sel.name ? `name:${JSON.stringify(String(sel.name).slice(0, 30))}` : "",
+      sel.text ? `text:${JSON.stringify(String(sel.text).slice(0, 30))}` : "",
+      sel.nth != null ? `nth:${sel.nth}` : "",
+    ].filter(Boolean);
+    return bits.join(" ") || "(empty)";
+  }
+
   /**
    * Visible in the sense a PERSON means, not merely in Playwright's sense.
    *
@@ -3279,6 +3304,7 @@ ${body.slice(0, 4000)}`);
     // still tried first and still wins when it is right; when it lands on something hidden or
     // disabled, the label alone plus visibility is better evidence than a position captured
     // against a page that has since re-rendered.
+    this.resolveTrail = [];
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const levels: Array<{ loc: any; from?: RecipeSelector }> = [{ loc: primary, from: sel }];
     for (const fb of sel.fallbacks ?? []) {
@@ -3287,7 +3313,9 @@ ${body.slice(0, 4000)}`);
         levels.push({ loc: this.locator({ ...fb, nth: undefined, fallbacks: undefined }), from: { ...fb, nth: undefined } as RecipeSelector });
       }
     }
+    let levelIdx = -1;
     for (const level of levels) {
+      levelIdx++;
       if (!level.loc) continue;
       try {
         if (await level.loc.count() === 0) continue;
@@ -3310,10 +3338,26 @@ ${body.slice(0, 4000)}`);
       // recorded `role=link name="Apply"` fallback matches by substring. Rejecting the
       // disabled level is all it takes to reach it.
       const canProbe = typeof picked?.isVisible === "function";
-      const usable = canProbe
-        ? (await this.isTrulyVisible(picked))
-          && (typeof picked.isEnabled === "function" ? await picked.isEnabled().catch(() => true) : true)
-        : false;
+      const vis = canProbe ? await this.isTrulyVisible(picked) : null;
+      const enab = canProbe && typeof picked.isEnabled === "function"
+        ? await picked.isEnabled().catch(() => true) : null;
+      const usable = canProbe ? (vis === true && enab !== false) : false;
+      // NARRATE THE DECISION, NOT JUST THE OUTCOME.
+      //
+      // Four fixes were shipped at PGE's "Model" step and its failure line never changed —
+      // same resolved control, same count — because each one was answering a question about
+      // a branch that was never taken. Four live runs went into learning that, and none of
+      // them could have told us: the report said WHICH control was chosen and never WHY, or
+      // which levels were considered and rejected first.
+      //
+      // One line per level turns "why did the fallback not fire" from a live-run guess into
+      // a sentence on the scorecard. Kept only for steps that end up failing (the trail is
+      // discarded on success), so a healthy run pays nothing for it.
+      this.resolveTrail.push(
+        `level ${levelIdx} ${this.describeSelector(level.from)} -> count ${await level.loc.count?.().catch(() => -1) ?? -1}`
+        + `, visible=${vis === null ? "n/a" : vis}, enabled=${enab === null ? "n/a" : enab}`
+        + `, ${(!canProbe || usable) ? "ACCEPTED" : "rejected"}`,
+      );
       if (!canProbe || usable) {
         // Worth a warning only when an EARLIER matching level was passed over as hidden.
         if (level !== firstNonEmpty) {
