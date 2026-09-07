@@ -3351,6 +3351,24 @@ ${body.slice(0, 4000)}`);
    */
   private async captureFailureContext(step: RecipeStep, stepIdx: number): Promise<string> {
     if (!this.page) return "";
+    // KEEP THE PAGE, NOT JUST A DESCRIPTION OF IT.
+    //
+    // A failing step already saves a screenshot and a list of visible control labels, and
+    // that was enough to see THAT Oregon ePermitting's "Apply" was unreachable but never
+    // enough to see WHY: five live runs went into narrowing it — a disabled namesake, an
+    // icon ligature in the accessible name, and a control that is none of anchor, button or
+    // ARIA role. Every one of those questions is answerable from the markup in seconds and
+    // from a screenshot never. The HTML costs nothing to keep and turns the next portal
+    // puzzle from a sequence of live runs into a file someone reads once.
+    try {
+      const dir = this.pageShotDir || path.join(process.cwd(), "data", "replay-failures");
+      fs.mkdirSync(dir, { recursive: true });
+      const safe = String(step.note ?? step.action).replace(/[^a-z0-9]+/gi, "-").slice(0, 40);
+      fs.writeFileSync(
+        path.join(dir, `step${String(stepIdx).padStart(3, "0")}-${safe}.html`),
+        await this.page.content(),
+      );
+    } catch { /* diagnostics must never change the outcome */ }
     const parts: string[] = [];
     try {
       const url = typeof this.page.url === "function" ? String(this.page.url()) : "";
