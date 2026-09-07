@@ -182,9 +182,16 @@ export function scoreReplayOutcome(outcome: ReplayOutcome): ReplayScore {
     ].filter(Boolean);
     // Whoever can actually fix it: a recipe that no longer lands its values, or a project
     // that was never given them. Only when the ONLY gaps are missing values is it data.
-    const owner = (failedSteps.length || healed || drift.length || blanks.length > missingData.length)
-      ? "recipe" as const
-      : "data" as const;
+    // A RECIPE THAT LANDED EVERYTHING IT WAS GIVEN HAS NOT DRIFTED.
+    //
+    // The first honest run: 81 of 98 steps executed, ZERO healed, ZERO failed to land, and
+    // every skip a value the project did not carry. It still read `owner: recipe`, because
+    // this counted blanks and drift warnings — but a blank the recipe was never given a
+    // value for, and a "Calculate left the page unchanged" caused by the empty rows above
+    // it, are both the same missing data seen further downstream. Blaming the recipe there
+    // sends someone to re-record a working one. The warnings stay in the reason either way;
+    // only the name on the verdict changes.
+    const owner = (failedSteps.length || healed) ? "recipe" as const : "data" as const;
     return { rung: "replayed_with_gaps", index: 3, owner, reason: parts.join("; ") };
   }
 

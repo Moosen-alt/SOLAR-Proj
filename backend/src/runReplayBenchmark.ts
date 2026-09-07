@@ -44,6 +44,30 @@ const BENCH = {
   dcKw: "7.2", acKw: "6.4", moduleQty: "18", moduleWattage: "400",
   permitPath: "prescriptive", framingType: "rafter", roofRafterSpacing: "24",
   roofRafterSpan: "11.5", snow: "25", deadLoad: "3.0", wind: "B",
+
+  // A THIN FIXTURE MEASURES THE FIXTURE, NOT THE RECIPE.
+  //
+  // The first honest run scored `replayed_with_gaps` with EIGHT skipped steps and zero
+  // recipe failures: every one was a value this project did not carry. An interconnection
+  // form asks for the utility account and meter, the export capacity, and the electrical
+  // service — none of which a bare address and a kW figure supply — so the equipment page
+  // could not complete, Calculate had nothing to total, and the portal flagged the array
+  // rows. The recipe was blameless and the benchmark could not have reached its top rung
+  // no matter how good the recipe was.
+  //
+  // These are DELIBERATELY OBVIOUS FAKES on a draft named "ZZ Replay Benchmark" that is
+  // never submitted. `account`/`meter` are the payload keys normalizeProject reads, and the
+  // whole payload becomes the design snapshot, which is where `phase` and `voltage` are
+  // looked up from.
+  account: "00000000 000 0", meter: "ZZ00000000", exportKw: "6.4",
+  phase: "Single Phase", voltage: "240",
+  energySource: "Solar", generationTechnology: "Photovoltaic",
+
+  // NOT FAKED: the one-line drawing and site plan. Those steps will keep reporting "no
+  // value in the project", and that is the right outcome — uploading junk documents to a
+  // live utility portal is worse than leaving a draft incomplete. Document upload is
+  // therefore the one part of a filing this benchmark does not measure; the scorer already
+  // attributes it to data rather than to the recipe.
 };
 
 async function main(): Promise<void> {
