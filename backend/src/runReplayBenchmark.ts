@@ -23,6 +23,7 @@ import { createProject, deleteProject } from "./repository";
 import { getDecryptedCredential, getDecryptedCredentialAny, getDecryptedCredentialByUrl, listPortalCredentials } from "./portalCredentials";
 import { mergeStepReport, scoreReplayOutcome, summarizeReplay, type ReplayRow } from "./replayBenchmark";
 import { getPortalRecipe, resolveRecipeFieldValues } from "./portalRecipes";
+import { writeBenchmarkPlaceholderDoc } from "./benchmarkPlaceholderDoc";
 import type { ProjectRecord } from "../../shared/src/types";
 
 const OUT_DIR = path.resolve(process.cwd(), "data", "replay-benchmark");
@@ -96,11 +97,10 @@ const BENCH = {
   // tiebreak in portalRecipes describes. Supplying only `voltage` left the second one blank.
   serviceVoltage: "240",
 
-  // NOT FAKED: the one-line drawing and site plan. Those steps will keep reporting "no
-  // value in the project", and that is the right outcome — uploading junk documents to a
-  // live utility portal is worse than leaving a draft incomplete. Document upload is
-  // therefore the one part of a filing this benchmark does not measure; the scorer already
-  // attributes it to data rather than to the recipe.
+  // Documents are supplied too, but not from here: every upload slot the recipe asks for
+  // gets a generated page headed "NOT A REAL DOCUMENT" (benchmarkPlaceholderDoc). Leaving
+  // them blank kept the upload path unmeasured and held every run below the rung that means
+  // a complete filing.
 };
 
 async function main(): Promise<void> {
@@ -199,7 +199,25 @@ async function main(): Promise<void> {
         ?? getDecryptedCredentialAny(db, CLIENT, String(recipe.portalUrl || c.url))
         ?? undefined;
       if (!credential) throw new Error(`no decryptable credential for ${c.host || c.key}`);
-      const res = await stageWithRecipe(recipe, project, fieldValues, {}, [], {
+      // EVERY DOCUMENT SLOT THIS RECIPE ASKS FOR, filled with a page that says what it is.
+      //
+      // Leaving these blank left the upload path unmeasured and capped every run below the
+      // rung that means "a whole filing". Read from the recipe's own upload steps rather
+      // than a hardcoded list, so a portal asking for something we have not seen before is
+      // covered too. See benchmarkPlaceholderDoc for why the page looks the way it does.
+      const docsByType: Record<string, string> = {};
+      for (const st of recipe.steps ?? []) {
+        const docType = String((st as { docType?: unknown }).docType ?? "");
+        if (String(st.action) !== "upload" || !docType || docsByType[docType]) continue;
+        docsByType[docType] = await writeBenchmarkPlaceholderDoc(
+          String(st.note ?? docType).replace(/^upload\s+\S+:\s*/i, "").slice(0, 60) || docType,
+          new Date().toISOString(),
+        );
+      }
+      if (Object.keys(docsByType).length) {
+        console.log(`      attaching ${Object.keys(docsByType).length} clearly-marked placeholder document(s): ${Object.keys(docsByType).join(", ")}`);
+      }
+      const res = await stageWithRecipe(recipe, project, fieldValues, docsByType, [], {
         headless: true, credential, userDataDir,
       });
       // THE FAILURE TEXT LIVES ON THE FAILING STEP, NOT ON result.message. HANDOFF already
