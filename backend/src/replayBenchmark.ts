@@ -168,11 +168,17 @@ export function scoreReplayOutcome(outcome: ReplayOutcome): ReplayScore {
   const fieldsSeen = Number(outcome.reviewFieldsSeen ?? 0);
 
   // Anything less than a whole run is a gap, however tidy the summary reads.
-  if (blanks.length || skipped.length || healed || drift.length) {
+  const realSkips = skipped.filter((sName) => !/final submit|isFinalSubmit|NOT clicked/i.test(String(sName)));
+  if (blanks.length || realSkips.length || healed || drift.length) {
     // Separate the two kinds of gap before naming anyone: steps that had nothing to type,
     // and steps that tried and did not land.
-    const failedSteps = skipped.filter((sName) => !unresolvedSet.has(String(sName)));
-    const missingData = skipped.filter((sName) => unresolvedSet.has(String(sName)));
+    // THE FINAL SUBMIT IS SUPPOSED TO BE SKIPPED. Automation never clicks it — that is the
+    // system's first hard safety rule — so the recipe records it and replay declines it,
+    // every single run. Counting that as a step that "did not land" scored the safety rule
+    // as a defect and pushed the owner to `recipe` on a run where nothing had gone wrong.
+    const isDeclinedSubmit = (n: string): boolean => /final submit|isFinalSubmit|NOT clicked/i.test(n);
+    const failedSteps = skipped.filter((sName) => !unresolvedSet.has(String(sName)) && !isDeclinedSubmit(String(sName)));
+    const missingData = skipped.filter((sName) => unresolvedSet.has(String(sName)) && !isDeclinedSubmit(String(sName)));
     const parts = [
       blanks.length ? `${blanks.length} required field(s) left blank (${blanks.slice(0, 3).join(", ")})` : "",
       failedSteps.length ? `${failedSteps.length} step(s) did not land (${failedSteps.slice(0, 3).join(", ").slice(0, 90)})` : "",

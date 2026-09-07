@@ -74,6 +74,28 @@ check("skipped steps count as a gap", () => {
   assert.equal(s.rung, "replayed_with_gaps");
 });
 
+check("THE SAFETY RULE IS NOT A DEFECT: the declined final submit is not a failed step", () => {
+  // Automation never clicks final submit — the system's first hard rule. The recipe records
+  // it, replay declines it, and it lands in `skipped` on EVERY run. Scoring that as a step
+  // that "did not land" made the safety rule look like recipe drift, and on a live run where
+  // nothing else had gone wrong it was the single thing pushing the owner to `recipe`.
+  const s = scoreReplayOutcome({
+    ok: true, executed: 97, recorded: 98, reviewFieldsSeen: 18, reviewMismatches: [],
+    skipped: ["final submit: Submit (recorded, NOT clicked)"],
+  });
+  assert.equal(s.rung, "verified_accurate", `a clean verified run was demoted by the safety rule: ${s.reason}`);
+});
+
+check("...and it does not flip the owner on an otherwise data-only run", () => {
+  const s = scoreReplayOutcome({
+    ok: true, executed: 90, recorded: 98,
+    skipped: ["upload sld: one-line drawing", "final submit: Submit (recorded, NOT clicked)"],
+    unresolvedFields: ["upload sld: one-line drawing"],
+  });
+  assert.equal(s.owner, "data");
+  assert.doesNotMatch(s.reason, /did not land/);
+});
+
 check("a step with NO VALUE to type is a data gap, not a drifted recipe", () => {
   // A live run reported eight skipped steps, of which four were things the throwaway project
   // never had: an account number, a meter number, and two plan-set documents. Blaming the

@@ -63,6 +63,15 @@ const BENCH = {
   phase: "Single Phase", voltage: "240",
   energySource: "Solar", generationTechnology: "Photovoltaic",
 
+  // REAL, CEC-LISTED EQUIPMENT — not invented strings. A utility portal builds its
+  // manufacturer and model dropdowns from the same CEC list this database mirrors, so a
+  // made-up model would be a select that can never land, and the benchmark would be
+  // measuring its own fixture again. These are looked up from `cec_equipment` and resolve
+  // through certifiedModelFields the way a real project's do.
+  moduleMake: "Qcells North America", moduleModel: "Q.PEAK DUO BLK ML-G10 400",
+  inverterMake: "Enphase Energy, Inc.", inverterModel: "IQ8PLUS-72-2-US {240V}",
+  inverterQuantity: "18", tilt: "22", azimuth: "180",
+
   // NOT FAKED: the one-line drawing and site plan. Those steps will keep reporting "no
   // value in the project", and that is the right outcome — uploading junk documents to a
   // live utility portal is worse than leaving a draft incomplete. Document upload is
@@ -207,12 +216,12 @@ async function main(): Promise<void> {
         reviewFieldsSeen: Number(o.reviewFieldsSeen ?? 0),
         healed: ((o.healedSteps as unknown[]) ?? []).length,
         blanks: ((o.requiredStillEmpty as unknown[]) ?? []).length,
-        blankNames: ((o.requiredStillEmpty as string[]) ?? []).slice(0, 8),
-        driftWarnings: ((o.driftWarnings as string[]) ?? []).slice(0, 6),
+        blankNames: ((o.requiredStillEmpty as string[]) ?? []).slice(0, 30),
+        driftWarnings: ((o.driftWarnings as string[]) ?? []).slice(0, 30),
         // A step that "did not take" is recorded as SKIPPED, and the count alone sends
         // someone back to the portal to find out which. Name them.
-        skippedNames: ((o.skipped as string[]) ?? []).slice(0, 8),
-        unresolvedFields: ((o.unresolvedFields as string[]) ?? []).slice(0, 8),
+        skippedNames: ((o.skipped as string[]) ?? []).slice(0, 30),
+        unresolvedFields: ((o.unresolvedFields as string[]) ?? []).slice(0, 30),
       },
     });
     console.log(`${String(i + 1).padStart(2)}/${chosen.length} ${score.index} ${score.rung.padEnd(20)} ${c.key.slice(0, 44)}`);
