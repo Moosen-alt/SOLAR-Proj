@@ -1815,7 +1815,15 @@ ${body.slice(0, 4000)}`);
     // floor under every path, including the ones that do not. The choice is the same one a
     // person makes — the first that is visible and enabled — and it is made HERE rather than
     // left to Playwright, which would only refuse.
-    scoped = await this.narrowToOne(scoped, step);
+    // NOT FOR CHECK/UNCHECK. A styled checkbox or switch keeps its real <input> visually
+    // hidden behind a span, and the check branch below handles that on purpose: it measures
+    // whether the input is visible and passes `force` when it is not. Narrowing to the first
+    // VISIBLE match hands that branch a different element, `force` switches off, and the
+    // click lands on the decoration — "Clicking the checkbox did not change its state".
+    // Ameren went from 73 of 75 steps to 2 on exactly that, one commit after this was added.
+    if (step.action !== "check" && step.action !== "uncheck") {
+      scoped = await this.narrowToOne(scoped, step);
+    }
     // IS THIS THE CONTROL WE RECORDED? Portal field ids are routinely per-form-instance
     // (PowerClerk's "AWQBPS8U00XGInput"), so on a NEW project the same id is a DIFFERENT
     // question. Measured live: a step recorded for "Description of Service:" resolved to
