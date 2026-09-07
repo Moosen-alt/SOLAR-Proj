@@ -209,6 +209,36 @@ resolved by its own. No re-record needed; the recipes were fine.
   at that phantom. A diagnostic that names a different element than the one used is worse than
   none, because it is believed.
 
+**POWERCLERK NAMES ITS CONTROLS — USE THAT (2026-09-07).** The page a select-miss saves
+carries 91 `data-test-role` attributes, including exactly the disambiguators a day was spent
+inventing substitutes for:
+
+```
+inverter-model-select          pv-array-model-select
+inverter-manufacturer-select   pv-array-manufacturer-select
+inverter-quantity              pv-array-quantity
+add-array-btn  add-inverter-btn  delete-array  inverter-div  pv-array-div
+```
+
+Stable across renders and unambiguous about side — everything `#pcInputBase34` and a bare
+label of "Model" are not. Replay now tries them first when a control is out of reach, matching
+the tokens of the step's FIELD name against `data-test-role`/`data-testid`/`data-test-id`, so
+any portal shipping such hooks benefits: `inverterModel` becomes `["inverter","model"]`, which
+matches `inverter-model-select` and cannot match `pv-array-model-select`. **Confirmed live.**
+
+Worth doing on the LEARN side too: recording these as the primary selector would make new
+recipes immune to the volatile-id rot that produced most of this session's replay failures.
+
+**PGE's `Schedule` was a fixture guess.** Its own dropdown offers exactly `"Select..."` and
+`"7"` — PGE's residential rate schedule is Schedule 7, so `"Residential"` could never land.
+Visible only once the option sample was scoped to the control instead of the whole page.
+PGE is now **65/68, one blank** (Energy Storage, correctly skipped — no battery).
+
+**Still open on PGE:** the inverter `Model` resolves correctly by test hook and still lands
+nothing, because the markup shows its container carrying `style="display: none;"` — the block
+is not rendered at that moment. That is a page-flow question (does it need the Add Inverter
+step first?), not a resolution one, and the saved page is the place to answer it.
+
 **A THIRD DIAGNOSTIC WAS LYING, in the very layer named as next to investigate.**
 `visibleOptionSample()` queried the WHOLE DOCUMENT — every `[role=option]`, every
 `select option`, anywhere on the page. So a miss on PGE's inverter Model reported
