@@ -20,10 +20,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { openDatabase } from "./db";
 import { createProject, deleteProject } from "./repository";
-import { listPortalCredentials } from "./portalCredentials";
+import { getDecryptedCredential, getDecryptedCredentialAny, getDecryptedCredentialByUrl, listPortalCredentials } from "./portalCredentials";
 import { scoreReplayOutcome, summarizeReplay, type ReplayRow } from "./replayBenchmark";
-import { resolveRecipeFieldValues } from "./portalRecipes";
-import type { PortalRecipe, ProjectRecord } from "../../shared/src/types";
+import { getPortalRecipe, resolveRecipeFieldValues } from "./portalRecipes";
+import type { ProjectRecord } from "../../shared/src/types";
 
 const OUT_DIR = path.resolve(process.cwd(), "data", "replay-benchmark");
 const CLIENT = process.env.BENCHMARK_CLIENT_ID || "tml-international-llc";
@@ -113,12 +113,45 @@ async function main(): Promise<void> {
     let outcome: Record<string, unknown> = {};
     try {
       const scopeType = /powerclerk|nem|interconnect/i.test(c.key) ? "utility" : "ahj";
-      pid = createProject(db, { ...BENCH, ahj: "Salem", utility: "Pacific Power", clientId: CLIENT } as never).project.id;
-      const project = db.get<Record<string, unknown>>("SELECT * FROM projects WHERE id = ?", [pid]) as unknown as ProjectRecord;
-      const recipe = { ...(c.row as unknown as PortalRecipe), steps: JSON.parse(String(c.row.steps_json || "[]")) };
-      const fieldValues = resolveRecipeFieldValues(db, project, scopeType === "utility" ? "utility" : "AHJ");
-      const res = await stageWithRecipe(recipe, project, fieldValues, {}, [], { headless: true });
-      outcome = { ...res, recorded: c.steps };
+      // createProject RETURNS the mapped ProjectRecord. Re-reading the row with raw SQL
+      // handed the adapter snake_case columns — the same mistake as the recipe below, made
+      // twice in one function. mapProject is not exported, so the returned object IS the
+      // accessor.
+      const created = createProject(db, { ...BENCH, ahj: "Salem", utility: "Pacific Power", clientId: CLIENT } as never);
+      pid = created.project.id;
+      const project = created.project as unknown as ProjectRecord;
+      // USE THE ACCESSOR, NOT THE RAW ROW. Spreading the DB row gave the adapter
+      // snake_case keys (steps_json, profile_key, portal_url) with `steps` bolted on, so it
+      // had no portalUrl, no loginStep, no scopeType — and returned ok:false with an EMPTY
+      // message before opening a browser. Scored as "the recipe no longer matches the
+      // portal", which was one report away from sending someone to chase a drift that did
+      // not exist.
+      const recipe = getPortalRecipe(db, String(c.row.id));
+      if (!recipe) throw new Error(`recipe ${String(c.row.id)} could not be loaded`);
+      const portalType = scopeType === "utility" ? "utility" : "AHJ";
+      const fieldValues = resolveRecipeFieldValues(db, project, portalType);
+      // THE OPTIONS PRODUCTION PASSES, not a bare { headless }. Without `credential` the
+      // adapter reached the login page and reported "no stored credential was found for
+      // this client/portal" — while the dry run listed that very credential as ok, because
+      // the dry run reads the credential TABLE and the run needs it DECRYPTED and handed in.
+      // Mirrors repository.ts: exact portalType first, then by URL, then any for this client.
+      const profileBase = process.env.PORTAL_PROFILES_DIR || path.join(process.cwd(), "portal-profiles");
+      const userDataDir = path.join(profileBase, CLIENT, portalType);
+      const credential = getDecryptedCredential(db, CLIENT, portalType)
+        ?? getDecryptedCredentialByUrl(db, CLIENT, String(recipe.portalUrl || c.url))
+        ?? getDecryptedCredentialAny(db, CLIENT, String(recipe.portalUrl || c.url))
+        ?? undefined;
+      if (!credential) throw new Error(`no decryptable credential for ${c.host || c.key}`);
+      const res = await stageWithRecipe(recipe, project, fieldValues, {}, [], {
+        headless: true, credential, userDataDir,
+      });
+      // THE FAILURE TEXT LIVES ON THE FAILING STEP, NOT ON result.message. HANDOFF already
+      // records this trap — it is what made the stale-recipe flag dead code in repository.ts
+      // once before — and this harness walked straight into it, reporting a silent failure
+      // for three runs while the reason sat one level down in `steps`.
+      const steps = (res as { steps?: Array<{ ok?: boolean; message?: string }> }).steps ?? [];
+      const stepMsg = steps.find((st) => st && st.ok === false)?.message ?? "";
+      outcome = { ...res, recorded: c.steps, message: String((res as { message?: unknown }).message || stepMsg) };
     } catch (e) {
       outcome = { ok: false, message: String((e as Error)?.message || e), recorded: c.steps };
     } finally {
@@ -126,7 +159,19 @@ async function main(): Promise<void> {
     }
 
     const score = scoreReplayOutcome(outcome as never);
-    rows.push({ portal: c.host || c.key, profileKey: c.key, score });
+    const o = outcome as Record<string, unknown>;
+    rows.push({
+      portal: c.host || c.key, profileKey: c.key, score,
+      // The numbers behind the verdict, so a scorecard row can be argued with offline.
+      detail: {
+        executed: Number(o.executed ?? 0), recorded: c.steps,
+        reviewFieldsSeen: Number(o.reviewFieldsSeen ?? 0),
+        healed: ((o.healedSteps as unknown[]) ?? []).length,
+        blanks: ((o.requiredStillEmpty as unknown[]) ?? []).length,
+        blankNames: ((o.requiredStillEmpty as string[]) ?? []).slice(0, 8),
+        driftWarnings: ((o.driftWarnings as string[]) ?? []).slice(0, 6),
+      },
+    });
     console.log(`${String(i + 1).padStart(2)}/${chosen.length} ${score.index} ${score.rung.padEnd(20)} ${c.key.slice(0, 44)}`);
     console.log(`      ${score.reason.slice(0, 160)}`);
   }

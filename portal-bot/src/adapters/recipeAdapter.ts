@@ -7,6 +7,7 @@ import { rankAddressVersions } from "../addressVersion";
 import { imageToPdfBytes, pdfNameFor, shouldConvertToPdf } from "../imageToPdf";
 import { fileTypeAllowed, UPLOAD_LABEL_PATTERNS, uploadForbidsSubstitute } from "./autoLearnAdapter";
 import { compareReviewFields, scrapeReviewScreen as scrapeReviewScreenShared, type ReviewMismatch } from "../reviewScreenScraper";
+import { sweepEmptyRequiredControls } from "../requiredControlSweep";
 import { openPortal } from "../browser";
 import { selectWithFallback } from "../comboboxFill";
 
@@ -312,6 +313,27 @@ export class RecipeAdapter extends BasePortalAdapter {
     try {
       const fields = await scrapeReviewScreenShared(this.page);
       const body = String(await this.page.locator("body").innerText().catch(() => ""));
+      // A REVIEW SCREEN WE COULD NOT READ MUST LEAVE ITS PAGE BEHIND.
+      //
+      // The first live replay benchmark scored PacifiCorp `replayed_clean` — 98 steps, no
+      // blanks — and UNVERIFIED, because this scrape returned zero fields. That is the right
+      // verdict and a useless one on its own: it says the check failed without saying what
+      // the page looked like, which is another live run's worth of guessing. The scraper is
+      // proven against definition lists, two-column tables and read-only inputs; whatever
+      // PowerClerk renders is a fourth shape, and the only way to add it is to have it.
+      if (!fields.length) {
+        try {
+          const dir = this.pageShotDir || path.join(process.cwd(), "data", "replay-review-misses");
+          fs.mkdirSync(dir, { recursive: true });
+          const stamp = String(Date.now());
+          const html = await this.page.content();
+          fs.writeFileSync(path.join(dir, `review-unreadable-${stamp}.html`), html);
+          fs.writeFileSync(path.join(dir, `review-unreadable-${stamp}.txt`), `url: ${String(this.page.url?.() ?? "")}
+
+${body.slice(0, 4000)}`);
+          await this.page.screenshot({ path: path.join(dir, `review-unreadable-${stamp}.png`), fullPage: true }).catch(() => {});
+        } catch { /* diagnostics must never change the outcome */ }
+      }
       const mismatches = compareReviewFields(fields, project, body);
       if (!mismatches.length) {
         return { summary: ` Review screen checked against the project: ${fields.length} field(s), no mismatch.`, fieldsSeen: fields.length, mismatches };
@@ -852,6 +874,15 @@ export class RecipeAdapter extends BasePortalAdapter {
     // selector writing the homeowner's name into a contractor field, or a value that failed
     // to commit, produced a clean success. The only thing standing between that and a wrong
     // filing was a person noticing by eye.
+    // SWEEP THE PAGE THE RUN ACTUALLY ENDS ON. The blank sweep above is attached to
+    // ADVANCING clicks, which means the one page it never covers is the last one — the
+    // page the run stops on and hands to a human. A live PacifiCorp replay ended on an
+    // equipment page with an empty required model select and an empty required
+    // "Total System Export (kW)", both flagged in red by the portal, and reported
+    // `requiredStillEmpty: []` because no advancing click ever followed them.
+    for (const label of await this.emptyRequiredControls()) {
+      if (!this.requiredStillEmpty.includes(label)) this.requiredStillEmpty.push(label);
+    }
     const review = await this.verifyReviewScreen(project);
     return ok(
       `Replayed ${executed} recorded step(s); stopped at review.${review.summary}`,
@@ -2510,85 +2541,23 @@ export class RecipeAdapter extends BasePortalAdapter {
     } catch { /* best-effort: never fail a replay over a screenshot */ }
   }
 
+  /**
+   * Required controls still empty on this page.
+   *
+   * The logic moved to requiredControlSweep.ts so it could be TESTED. It could not be,
+   * living here as a private method, and it was wrong: a live PacifiCorp replay scored
+   * "nothing was left blank" on a page showing "This field is required." under an empty
+   * module select and an empty "Total System Export (kW) *". See that module for both
+   * misses; the smoke reproduces the page.
+   */
   private async emptyRequiredControls(): Promise<string[]> {
-    if (!this.page || typeof this.page.evaluate !== "function") return [];
-    return await this.page.evaluate(() => {
-      const out: string[] = [];
-      const els = Array.from(document.querySelectorAll("input, select, textarea")) as HTMLElement[];
-      for (const el of els) {
-        const r = el.getBoundingClientRect();
-        if (!r || (r.width === 0 && r.height === 0)) continue;
-        const type = (el.getAttribute("type") || "").toLowerCase();
-        if (type === "hidden" || type === "submit" || type === "button" || type === "checkbox" || type === "radio") continue;
-        const id = el.getAttribute("id") || "";
-        const lbl = id ? document.querySelector(`label[for="${CSS.escape(id)}"]`) : null;
-        const labelText = ((lbl && (lbl as HTMLElement).textContent) || "").replace(/\s+/g, " ").trim();
-        // A PORTAL CAN MARK "REQUIRED" WITH A MESSAGE, NOT AN ATTRIBUTE. PacifiCorp
-        // renders a red "This field is required." beside the control and carries neither
-        // the attribute nor an asterisk in the label — so a blank REQUIRED inverter
-        // manufacturer went unreported on a run that ended ok:true, and the operator found
-        // it by looking at the portal. A visible complaint in the control's own container
-        // is the requirement marker, plainly.
-        // A bare div ancestor is the whole PAGE on some layouts, which made every control
-        // inherit one control's complaint. Bound it: the container must own exactly ONE
-        // form control, or the message is not about this control.
-        const container = el.closest('[class*="form-group"], [class*="field"], [class*="row"], li, tr, dd, p');
-        const ownsOne = !!container && container.querySelectorAll("input, select, textarea").length === 1;
-        const complaint = ownsOne
-          && /this field is required|required field|cannot be (blank|empty)|please (select|enter)/i
-            .test((container as HTMLElement).innerText || "");
-        const required = el.hasAttribute("required")
-          || el.getAttribute("aria-required") === "true"
-          || /\*/.test(labelText)
-          || complaint;
-        if (!required) continue;
-        // "Filled" must mean filled: a native select sitting on its placeholder option
-        // reports that option's text as .value, and a custom COMBOBOX is an input whose
-        // .value IS the placeholder ("Please select...") — both read as non-empty and
-        // made this sweep bless unanswered controls.
-        const raw = ((el as HTMLInputElement).value || "").trim();
-        const shown = (el.tagName || "").toLowerCase() === "select"
-          ? ((((el as HTMLSelectElement).options[(el as HTMLSelectElement).selectedIndex] || {}).textContent) || "").trim()
-          : raw;
-        const sitsOnPlaceholder = /^(please\s+)?select\.{0,3}$/i.test(shown) || /^--/.test(shown);
-        if (raw && !sitsOnPlaceholder) continue;
-        const name = labelText
-          || el.getAttribute("aria-label")
-          || el.getAttribute("placeholder")
-          || el.getAttribute("name")
-          || "(unlabelled control)";
-        const clean = name.replace(/\s*\*\s*$/, "").trim().slice(0, 70);
-        if (clean && !out.includes(clean)) out.push(clean);
-      }
-      // UNANSWERED REQUIRED RADIO GROUPS. Radios are skipped above (a single unchecked
-      // radio is not a blank), but a GROUP where nothing is checked is exactly a blank —
-      // and PGE's required "disconnect within 10 feet" pair sat unanswered while this
-      // sweep reported a clean page. Conservative: only groups whose shared container
-      // carries a required marker (asterisk or a visible complaint), keyed by name attr
-      // or the per-render id prefix PowerClerk uses.
-      const radios = (Array.from(document.querySelectorAll("input[type=radio]")) as HTMLInputElement[])
-        .filter((el) => { const r = el.getBoundingClientRect(); return (r.width > 0 && r.height > 0) || !!el.closest("label"); });
-      const groups = new Map<string, HTMLInputElement[]>();
-      for (const r of radios) {
-        const key = r.getAttribute("name") || (r.getAttribute("id") || "").replace(/_\d+$/, "");
-        if (!key) continue;
-        (groups.get(key) ?? groups.set(key, []).get(key)!).push(r);
-      }
-      for (const [, members] of groups) {
-        if (members.length < 2 || members.some((r) => r.checked)) continue;
-        // The group's shared container: the closest ancestor of the first radio that
-        // contains every member.
-        let cont: HTMLElement | null = members[0].parentElement;
-        while (cont && cont !== document.body && !members.every((r) => cont!.contains(r))) cont = cont.parentElement;
-        if (!cont || cont === document.body) continue;
-        const text = (cont.innerText || "").replace(/\s+/g, " ").trim();
-        const requiredish = /\*/.test(text.slice(0, 200)) || /this field is required|required field|please (select|choose)/i.test(text);
-        if (!requiredish) continue;
-        const q = text.replace(/\s*\*\s*/g, " ").trim().slice(0, 70);
-        if (q && !out.includes(q)) out.push(q);
-      }
-      return out.slice(0, 12);
-    }).catch(() => [] as string[]) as string[];
+    if (!this.page) return [];
+    const found = await sweepEmptyRequiredControls(this.page);
+    // Carry WHY a field counted as required into the operator's report: "the portal itself
+    // flagged this" and "the label has an asterisk" warrant different amounts of trust.
+    return found.map((f) => (f.why === "complaint" || f.why === "unattributed-complaint"
+      ? `${f.name} — the portal flagged this field`
+      : f.name));
   }
 
   /** Nothing here to fill: no visible required control is empty. A page like ACA's
@@ -2596,25 +2565,16 @@ export class RecipeAdapter extends BasePortalAdapter {
    *  Continue — is safe to click through; a page with an empty required field is not,
    *  because clicking past it files an incomplete application. */
   private async pageIsPassThrough(): Promise<boolean> {
-    if (!this.page || typeof this.page.evaluate !== "function") return false;
-    return await this.page.evaluate(() => {
-      const els = Array.from(document.querySelectorAll("input, select, textarea")) as HTMLElement[];
-      for (const el of els) {
-        const r = el.getBoundingClientRect();
-        if (!r || (r.width === 0 && r.height === 0)) continue;
-        const type = (el.getAttribute("type") || "").toLowerCase();
-        if (type === "hidden" || type === "submit" || type === "button" || type === "checkbox" || type === "radio") continue;
-        const id = el.getAttribute("id") || "";
-        const lbl = id ? document.querySelector(`label[for="${CSS.escape(id)}"]`) : null;
-        const required = el.hasAttribute("required")
-          || el.getAttribute("aria-required") === "true"
-          || /\*/.test((lbl && (lbl as HTMLElement).textContent) || "");
-        if (!required) continue;
-        const value = (el as HTMLInputElement).value || "";
-        if (!value.trim()) return false; // something here needs data
-      }
-      return true;
-    }).catch(() => false) as boolean;
+    if (!this.page) return false;
+    // ONE ANSWER TO "IS ANYTHING UNFILLED", NOT TWO. This asked the question with its own
+    // narrower copy of the logic: requiredness from `label[for]` asterisks only, and
+    // emptiness from `.value`, which reads a select resting on "Please select..." as
+    // answered. Both are the misses that let a live PacifiCorp replay report a clean run
+    // on a page the portal was refusing — and this caller is the more dangerous of the
+    // two, because a wrong "yes" here CLICKS PAST the page, which is how an incomplete
+    // application gets filed. The shared sweep is stricter, and strict is the safe
+    // direction: the cost of a false "not pass-through" is that replay stops.
+    return (await sweepEmptyRequiredControls(this.page)).length === 0;
   }
 
   /** Are most of these recorded labels on the page right now? Used to spot an advance the

@@ -157,6 +157,39 @@ Still open, in order:
 
 ## Open issues / next work (priority order)
 
+**"Replayed clean" was not evidence of anything (2026-09-07) — the sweep that finds blanks was blind.**
+The first live replay benchmark scored PacifiCorp **`replayed_clean` — "every recorded step ran
+and nothing was left blank"** — and the screenshot it saved of that page shows the portal
+refusing the filing in red. Two required fields empty: the PV-array module select
+("This field is required.") and "Total System Export (kW) *". The verdict was false, and it was
+false in the direction that matters — it would have handed a reviewer an incomplete application
+carrying a clean bill of health.
+
+Three causes, all now fixed and all *general*, not PacifiCorp's:
+- **A complaint in a row holding more than one control was discarded.** Attribution required a
+  container with exactly ONE control (a bound added for a real reason: a bare div ancestor is
+  the whole page on some layouts). "Qty [18] [Please select…]" is every equipment row there is.
+  Now attributed by proximity — and **to the EMPTY control**, because "this field is required"
+  cannot refer to a field that has a value. Pure proximity gave it to the filled Qty and the
+  message evaporated; that is the bug, exactly.
+- **An asterisk outside `<label for>` was invisible.** Requiredness read only `label[for=id]`,
+  so a caption rendered as a plain div carried no requirement. Now reads wrapping labels,
+  `aria-labelledby`, `aria-label`, and a single-control container's own text.
+- **The page the run ENDS on was never swept.** The sweep is attached to *advancing* clicks, so
+  the last page — the one handed to a human — was the one page never checked.
+- **Floor under all three:** a visible complaint that cannot be attributed is reported anyway.
+  Attribution is heuristic; the portal refusing the filing is not.
+
+The logic moved out of `recipeAdapter` (private, untestable — which is why it stayed wrong) into
+`portal-bot/src/requiredControlSweep.ts`, with `requiredSweep.dom.smoke.ts` driving that page's
+real shapes in both directions. The false-positive cases carry equal weight: a sweep that cries
+blank on a filled page teaches the operator to click past the warning.
+
+**Replay verification writes its evidence down.** A review screen the scraper cannot read now
+saves page HTML, text and a full-page screenshot to `data/replay-review-misses/` — the first
+unreadable one cost a live run to diagnose and told us nothing about the markup.
+
+
 **Illinois live status (2026-09-01) — measured, not inferred.**
 Verify with `npm run portal:audit -- <login-url> --app=<application-url>`; a learn writes the
 application URL onto the recipe as `[application:...]`, because auditing "the newest matching

@@ -74,6 +74,33 @@ check("skipped steps count as a gap", () => {
   assert.equal(s.rung, "replayed_with_gaps");
 });
 
+check("THE REGRESSION: replay's OWN warnings are not allowed to be ignored", () => {
+  // `driftWarnings` was declared on the outcome interface and never read, so the adapter
+  // could report "held-check could read only 1 of 2 array row(s) — verify the arrays by eye
+  // before submit" and the run still scored clean. The adapter pays to produce that warning
+  // on the assumption someone acts on it.
+  const s = scoreReplayOutcome({
+    ok: true, executed: 98, recorded: 98, reviewFieldsSeen: 20, reviewMismatches: [],
+    driftWarnings: ["held-check could read only 1 of 2 array row(s) — verify the arrays by eye before submit"],
+  });
+  assert.equal(s.rung, "replayed_with_gaps");
+  assert.match(s.reason, /held-check|replay warned/);
+});
+
+check("the live PacifiCorp page: a portal-flagged blank cannot score clean", () => {
+  // The run this benchmark scored `replayed_clean` on 2026-09-07. The portal was showing
+  // "This field is required." under an empty module select and an empty required
+  // "Total System Export (kW)"; the sweep that should have found them was blind, so the
+  // scorer was handed an empty list and believed it. With the sweep fixed the evidence
+  // arrives, and the verdict has to move.
+  const s = scoreReplayOutcome({
+    ok: true, executed: 98, recorded: 98, reviewFieldsSeen: 0,
+    requiredStillEmpty: ["Model — the portal flagged this field", "Total System Export (kW)"],
+  });
+  assert.equal(s.index, 3);
+  assert.match(s.reason, /Total System Export/);
+});
+
 // ---------------------------------------------------------------------------
 // Failure, and whose it is. The owner split is what makes the number actionable.
 // ---------------------------------------------------------------------------
@@ -98,6 +125,25 @@ check("a CAPTCHA is the PORTAL's — automation never solves one", () => {
 check("a dead host and a WAF block are both the portal's", () => {
   assert.equal(scoreReplayOutcome({ ok: false, message: "page.goto: net::ERR_TIMED_OUT" }).owner, "portal");
   assert.equal(scoreReplayOutcome({ ok: false, message: "Attention Required! | Cloudflare" }).owner, "portal");
+});
+
+check("THE REGRESSION: a silent failure with zero steps is the HARNESS, not the recipe", () => {
+  // The first live run of this benchmark returned exactly this — ok:false, executed 0,
+  // message "" — and was scored "the recipe no longer matches the portal", owner RECIPE.
+  // The recipe was fine. The harness had handed the adapter a raw snake_case DB row, so it
+  // bailed before opening a browser. That verdict was one report away from sending someone
+  // to chase a drift that did not exist.
+  const s = scoreReplayOutcome({ ok: false, executed: 0, recorded: 98, message: "" });
+  assert.equal(s.owner, "harness");
+  assert.equal(s.measured, false);
+  assert.match(s.reason, /harness fault, not the recipe/);
+});
+
+check("...but a failure that SAYS something, at step zero, is still the recipe's", () => {
+  // The distinction is whether we learned anything, not how far it got. A recipe whose very
+  // first selector is gone has genuinely drifted.
+  const s = scoreReplayOutcome({ ok: false, executed: 0, recorded: 98, message: "Recipe step failed (goto): net::ERR_ABORTED" });
+  assert.notEqual(s.owner, "harness");
 });
 
 check("a run OUR harness killed is not a measurement of the recipe", () => {

@@ -1,0 +1,150 @@
+// THE PAGE THE BENCHMARK CALLED CLEAN.
+//
+// The first live replay benchmark scored PacifiCorp `replayed_clean` — "every recorded step
+// ran and nothing was left blank" — and the screenshot it saved of that very page shows the
+// portal refusing the filing in red: an empty required PV-array model select reading
+// "This field is required.", and an empty required "Total System Export (kW) *". Two blanks,
+// both stated on screen, both invisible to the sweep whose entire job is to find them.
+//
+// The shapes below are that page, reduced. They are not PacifiCorp-specific: a quantity
+// beside a model select is the ordinary form of every equipment row, and a caption rendered
+// outside a <label> is the ordinary form of half the forms on the web.
+//
+// The negative cases carry equal weight. A sweep that cries blank on a correctly filled page
+// teaches the operator to click past the warning, and then it protects nobody.
+//   npx tsx portal-bot/src/requiredSweep.dom.smoke.ts
+import http from "node:http";
+import { chromium } from "playwright";
+import { sweepEmptyRequiredControls } from "./requiredControlSweep";
+
+let failures = 0;
+const check = (label: string, ok: boolean, detail = ""): void => {
+  if (ok) console.log(`  ok   - ${label}`);
+  else { failures++; console.error(`  FAIL - ${label}\n         ${detail}`); }
+};
+
+const shell = (body: string): string =>
+  `<!doctype html><html><head><style>
+     body{font:14px sans-serif;padding:20px} .row{display:flex;gap:8px;align-items:center}
+     .err{color:#c00;display:block} .form-group{margin:18px 0}
+   </style></head><body>${body}</body></html>`;
+
+const PAGES: Record<string, string> = {
+  // ---- the live miss, shape 1: a complaint in a row that holds TWO controls ----------
+  arrayRow: shell(`
+    <div class="form-group">
+      <div class="row">
+        <span>Qty</span><input name="qty" value="18" />
+        <select name="module"><option>Please select...</option><option>REC400AA</option></select>
+      </div>
+      <span class="err">This field is required.</span>
+    </div>`),
+
+  // ---- the live miss, shape 2: an asterisk rendered OUTSIDE a <label for> ------------
+  captionAsterisk: shell(`
+    <div class="form-group">
+      <div>Total System Export (kW) *</div>
+      <input name="export" value="" />
+    </div>`),
+
+  // ---- both together, as the portal actually served them -----------------------------
+  pacificorp: shell(`
+    <div class="form-group">
+      <div class="row">
+        <span>Qty</span><input name="qty" value="18" />
+        <select name="module"><option>Please select...</option></select>
+      </div>
+      <span class="err">This field is required.</span>
+    </div>
+    <div class="form-group"><div>Total System Export (kW) *</div><input name="export" value="" /></div>
+    <div class="form-group"><div>Does The Generation System Size Exceed The Limit?</div><span>false</span></div>`),
+
+  // ---- NEGATIVE: the same page, correctly filled. Must be silent. --------------------
+  filled: shell(`
+    <div class="form-group">
+      <div class="row">
+        <span>Qty</span><input name="qty" value="18" />
+        <select name="module"><option>Please select...</option><option selected>REC400AA</option></select>
+      </div>
+    </div>
+    <div class="form-group"><div>Total System Export (kW) *</div><input name="export" value="6.4" /></div>`),
+
+  // ---- NEGATIVE: the bug the old single-control bound was defending against ----------
+  // One complaint, a page full of filled fields. It must claim the ONE field it sits under,
+  // not every control on the page.
+  oneComplaintManyFields: shell(`
+    <div class="form-group"><label for="a">Applicant *</label><input id="a" value="Wynema Wright" /></div>
+    <div class="form-group"><label for="b">Street *</label><input id="b" value="1075 Flanagan Ave" /></div>
+    <div class="form-group"><label for="c">City *</label><input id="c" value="Coos Bay" /></div>
+    <div class="form-group"><label for="d">Meter number *</label><input id="d" value="" />
+      <span class="err">This field is required.</span></div>`),
+
+  // ---- a complaint no control can own must still be reported -------------------------
+  orphanComplaint: shell(`
+    <div class="err">Please select at least one option before continuing.</div>
+    <div style="height:600px"></div>
+    <div class="form-group"><label for="z">Notes</label><input id="z" value="ok" /></div>`),
+};
+
+const server = http.createServer((req, res) => {
+  res.writeHead(200, { "content-type": "text/html" });
+  res.end(PAGES[(req.url || "").replace(/^\/|\?.*$/g, "")] ?? shell("none"));
+});
+await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+const port = (server.address() as { port: number }).port;
+
+const browser = await chromium.launch();
+const context = await browser.newContext();
+// tsx/esbuild wraps named functions with __name(); without this every page.evaluate throws
+// and the .catch turns a crash into "found nothing" — which is this sweep's failure mode.
+await context.addInitScript("globalThis.__name = globalThis.__name || function (fn) { return fn; };");
+const page = await context.newPage();
+
+const sweep = async (key: string) => {
+  await page.goto(`http://127.0.0.1:${port}/${key}`, { waitUntil: "domcontentloaded" });
+  await page.waitForTimeout(60);
+  return await sweepEmptyRequiredControls(page);
+};
+
+// ---------------------------------------------------------------------------
+// The two live misses.
+// ---------------------------------------------------------------------------
+const row = await sweep("arrayRow");
+check("THE LIVE MISS: an empty select in a two-control row, flagged by the portal, is caught",
+  row.length > 0, `sweep returned nothing; the portal said "This field is required."`);
+check("...and it names the SELECT, not the filled quantity beside it",
+  row.length > 0 && !row.some((r) => /^qty$/i.test(r.name)) && !!row.length,
+  JSON.stringify(row));
+
+const cap = await sweep("captionAsterisk");
+check("THE LIVE MISS: a required asterisk outside a <label for> is honoured",
+  cap.length === 1, JSON.stringify(cap));
+check("...and the field is named from the caption a human reads",
+  cap.some((r) => /total system export/i.test(r.name)), JSON.stringify(cap));
+
+const pc = await sweep("pacificorp");
+check("the page the benchmark called CLEAN reports both blanks",
+  pc.length >= 2, `${pc.length} found: ${JSON.stringify(pc)}`);
+console.log(`   would have reported: ${JSON.stringify(pc.map((r) => `${r.name} [${r.why}]`))}`);
+
+// ---------------------------------------------------------------------------
+// The expensive direction: false alarms train people to ignore the alarm.
+// ---------------------------------------------------------------------------
+const ok = await sweep("filled");
+check("a correctly filled page reports NOTHING", ok.length === 0, JSON.stringify(ok));
+
+const many = await sweep("oneComplaintManyFields");
+check("one complaint claims ONE field, not the whole page",
+  many.length === 1, `${many.length} reported: ${JSON.stringify(many)}`);
+check("...and it is the field the message sits under",
+  many.some((r) => /meter/i.test(r.name)), JSON.stringify(many));
+
+const orphan = await sweep("orphanComplaint");
+check("a complaint no field can own is still reported, not dropped",
+  orphan.some((r) => r.why === "unattributed-complaint"), JSON.stringify(orphan));
+
+await browser.close();
+server.close();
+if (failures) { console.error(`\n${failures} required-sweep check(s) FAILED.`); process.exit(1); }
+console.log("\nAll required-sweep checks passed.");
+process.exit(0);

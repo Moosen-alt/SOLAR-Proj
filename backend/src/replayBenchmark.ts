@@ -102,8 +102,23 @@ export function scoreReplayOutcome(outcome: ReplayOutcome): ReplayScore {
     return { rung: "login_failed", index: 1, owner: "credential", reason: "no credential is stored for this portal" };
   }
 
+
   const executed = Number(outcome.executed ?? 0);
   const recorded = Number(outcome.recorded ?? 0);
+
+  // A FAILURE THAT SAYS NOTHING IS NOT EVIDENCE ABOUT THE RECIPE.
+  //
+  // The first live run of this benchmark returned ok:false, executed 0, message "" — and was
+  // scored "the recipe no longer matches the portal", owner RECIPE. The recipe was fine; the
+  // harness had handed the adapter a malformed object and it bailed before opening a
+  // browser. A verdict about a recipe requires the replay to have REACHED the recipe, and
+  // zero steps with nothing to say is the signature of something failing upstream of it.
+  if (outcome.ok === false && executed === 0 && !msg.trim()) {
+    return {
+      rung: "unreachable", index: 0, owner: "harness", measured: false,
+      reason: "not measured — replay failed before executing any step and reported no reason, which is a harness fault, not the recipe's",
+    };
+  }
 
   // Replay aborted part-way. This is the drift case the benchmark exists to catch: the
   // recipe no longer matches the portal.
@@ -118,15 +133,22 @@ export function scoreReplayOutcome(outcome: ReplayOutcome): ReplayScore {
   const blanks = outcome.requiredStillEmpty ?? [];
   const skipped = outcome.skipped ?? [];
   const healed = (outcome.healedSteps ?? []).length;
+  // THE ADAPTER'S OWN WARNINGS WERE DECLARED AND THEN IGNORED. `driftWarnings` sat in this
+  // interface unread, so replay could say "held-check could read only 1 of 2 array rows —
+  // verify the arrays by eye before submit" and still score a clean run. A warning we asked
+  // for, received, and dropped is worse than one we never collected: the adapter pays to
+  // produce it on the assumption that someone acts on it.
+  const drift = outcome.driftWarnings ?? [];
   const mismatches = outcome.reviewMismatches ?? [];
   const fieldsSeen = Number(outcome.reviewFieldsSeen ?? 0);
 
   // Anything less than a whole run is a gap, however tidy the summary reads.
-  if (blanks.length || skipped.length || healed) {
+  if (blanks.length || skipped.length || healed || drift.length) {
     const parts = [
       blanks.length ? `${blanks.length} required field(s) left blank (${blanks.slice(0, 3).join(", ")})` : "",
       skipped.length ? `${skipped.length} step(s) skipped` : "",
       healed ? `${healed} selector(s) had to be re-anchored — the recipe is drifting` : "",
+      drift.length ? `replay warned: ${drift.slice(0, 2).join("; ").slice(0, 150)}` : "",
     ].filter(Boolean);
     return { rung: "replayed_with_gaps", index: 3, owner: "recipe", reason: parts.join("; ") };
   }
@@ -153,7 +175,17 @@ export function scoreReplayOutcome(outcome: ReplayOutcome): ReplayScore {
   };
 }
 
-export interface ReplayRow { portal: string; profileKey: string; score: ReplayScore }
+export interface ReplayRow {
+  portal: string;
+  profileKey: string;
+  score: ReplayScore;
+  /** Carried onto the scorecard so a row can be argued with without re-running it. */
+  detail?: {
+    executed?: number; recorded?: number; reviewFieldsSeen?: number; healed?: number; blanks?: number;
+    /** WHICH fields, not just how many — a count sends someone back to the portal to look. */
+    blankNames?: string[]; driftWarnings?: string[];
+  };
+}
 
 export interface ReplaySummary {
   total: number;
