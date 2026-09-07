@@ -2608,6 +2608,36 @@ ${body.slice(0, 4000)}`);
   // recipeReplay.dom.smoke.ts. Explicit nth stays exactly as recorded.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   /**
+   * Visible in the sense a PERSON means, not merely in Playwright's sense.
+   *
+   * The two differ, and the difference cost three fixes that never ran. Playwright counts an
+   * `opacity: 0` control and a 1x1 control as VISIBLE — reasonably, since both can receive
+   * events — while the diagnostic a human reads computes visibility from the box and the
+   * computed style and calls them hidden. `visibilityAgreement.dom.smoke.ts` proves the
+   * divergence on exactly those two shapes.
+   *
+   * Both are how a portal hides a native input behind a styled widget, and both are what
+   * PowerClerk's `#pcInputBase34` "Model" combobox is. So the acceptance test kept saying
+   * yes to a control the report was calling hidden, level 0 was accepted every run, and the
+   * enabled check, the no-fallback fall-through and the unpinned ordinal twin were all
+   * unreachable code for that step.
+   *
+   * The gate and the report must answer the same question. This is that question.
+   */
+  private async isTrulyVisible(loc: { evaluate?: (fn: unknown) => Promise<boolean>; isVisible?: () => Promise<boolean> } | null | undefined): Promise<boolean> {
+    if (!loc) return false;
+    if (typeof loc.evaluate !== "function") {
+      return typeof loc.isVisible === "function" ? await loc.isVisible().catch(() => false) : false;
+    }
+    return await loc.evaluate((el: Element) => {
+      const r = el.getBoundingClientRect();
+      const cs = getComputedStyle(el as HTMLElement);
+      return r.width > 2 && r.height > 2
+        && cs.visibility !== "hidden" && cs.display !== "none" && Number(cs.opacity) !== 0;
+    }).catch(() => false) as boolean;
+  }
+
+  /**
    * Reduce a locator to exactly one element, choosing the way a person would.
    *
    * Silent when there is nothing to choose (0 or 1 match), which is the common case.
@@ -3281,7 +3311,7 @@ ${body.slice(0, 4000)}`);
       // disabled level is all it takes to reach it.
       const canProbe = typeof picked?.isVisible === "function";
       const usable = canProbe
-        ? (await picked.isVisible().catch(() => false))
+        ? (await this.isTrulyVisible(picked))
           && (typeof picked.isEnabled === "function" ? await picked.isEnabled().catch(() => true) : true)
         : false;
       if (!canProbe || usable) {
