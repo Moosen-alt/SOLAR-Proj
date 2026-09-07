@@ -209,6 +209,20 @@ resolved by its own. No re-record needed; the recipes were fine.
   at that phantom. A diagnostic that names a different element than the one used is worse than
   none, because it is believed.
 
+**A THIRD DIAGNOSTIC WAS LYING, in the very layer named as next to investigate.**
+`visibleOptionSample()` queried the WHOLE DOCUMENT — every `[role=option]`, every
+`select option`, anywhere on the page. So a miss on PGE's inverter Model reported
+`13 option(s) were showing, list offers "a. Solar", "b. Wind", "c. Hydro"`, which are Energy
+Source values from a different widget entirely, and read as though the Model dropdown held
+them. It now samples the control's OWN options — a native select's, or the listbox a combobox
+owns via `aria-controls`/`aria-owns` — and when it cannot tie a list to the control it says
+so in those words rather than quietly showing the page's.
+
+Three diagnostics, all describing something other than the thing being acted on:
+`looksOutOfReach` (asked Playwright), `describeResolved` (re-resolved the selector), and this
+one (sampled the page). Between them they cost most of a day and four fixes aimed at a
+phantom. **When a failure line will not change across several fixes, suspect the line.**
+
 **Still open on PGE:** `Model` resolves correctly by section now and the select still lands
 nothing against 13 options. That is the option-matching layer, not resolution — a different
 question, and the next one to instrument. `Schedule` remains bare-label ambiguity with no

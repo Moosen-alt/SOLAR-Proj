@@ -1359,9 +1359,47 @@ ${body.slice(0, 4000)}`);
   /** What option rows are on screen right now, for diagnosing a select that landed
    *  nothing: zero means the widget never opened; a populated list means the value simply
    *  is not offered (or is spelled differently). */
-  private async visibleOptionSample(): Promise<{ count: number; sample: string[] }> {
-    if (!this.page || typeof this.page.evaluate !== "function") return { count: 0, sample: [] };
-    return await this.page.evaluate(() => {
+  /**
+   * The options belonging to THIS control, not to whatever is open on the page.
+   *
+   * This sampled the whole document — every `[role=option]`, every `select option`, anywhere.
+   * So a miss on PGE's inverter "Model" reported `13 option(s) were showing, list offers
+   * "a. Solar", "b. Wind", "c. Hydro"`, which are Energy Source values from an entirely
+   * different widget, and the report read as though the Model dropdown contained them. It is
+   * the same class of mistake describeResolved was making one function away: describing
+   * something other than the thing being acted on, in a line that then gets believed.
+   *
+   * Given the control, sample from it: a native select's own options, or the listbox a
+   * combobox owns via aria-controls/aria-owns, or the nearest open list inside its container.
+   * Page-wide is kept only as the last resort, and says so.
+   */
+  private async visibleOptionSample(loc?: unknown): Promise<{ count: number; sample: string[]; scoped: boolean }> {
+    if (!this.page || typeof this.page.evaluate !== "function") return { count: 0, sample: [], scoped: false };
+    const own = loc as { evaluate?: (fn: unknown) => Promise<{ count: number; sample: string[] } | null> } | undefined;
+    if (own && typeof own.evaluate === "function") {
+      const scopedRes = await own.evaluate((el: Element) => {
+        const textOf = (o: Element): string => (( o as HTMLElement).innerText || o.textContent || "").trim();
+        const vis = (o: Element): boolean => {
+          const r = o.getBoundingClientRect();
+          return (r.width > 0 && r.height > 0) || (o.tagName || "").toLowerCase() === "option";
+        };
+        if ((el.tagName || "").toLowerCase() === "select") {
+          const t = Array.from((el as HTMLSelectElement).options).map(textOf).filter(Boolean);
+          return { count: t.length, sample: t.slice(0, 6) };
+        }
+        const owns = el.getAttribute("aria-controls") || el.getAttribute("aria-owns") || "";
+        const list = owns ? document.getElementById(owns) : null;
+        const box = list
+          || el.closest('[class*="dropdown"], [class*="select"], [class*="combobox"], [role="combobox"]')
+          || el.parentElement;
+        if (!box) return null;
+        const rows = Array.from(box.querySelectorAll('[role=option], .dropdown-item, .v-list-item, li[class*="option"], li[class*="item"], option'))
+          .filter(vis).map(textOf).filter(Boolean);
+        return rows.length ? { count: rows.length, sample: rows.slice(0, 6) } : null;
+      }).catch(() => null);
+      if (scopedRes && scopedRes.count) return { ...scopedRes, scoped: true };
+    }
+    const wide = await this.page.evaluate(() => {
       const rows = Array.from(document.querySelectorAll(
         '[role=option], .dropdown-item, .v-list-item, li[class*="option"], li[class*="item"], select option',
       )) as HTMLElement[];
@@ -1374,6 +1412,7 @@ ${body.slice(0, 4000)}`);
         .filter(Boolean);
       return { count: texts.length, sample: texts.slice(0, 6) };
     }).catch(() => ({ count: 0, sample: [] as string[] })) as { count: number; sample: string[] };
+    return { ...wide, scoped: false };
   }
 
   private async optionsLookUnloaded(loc: any): Promise<boolean> {
@@ -2107,12 +2146,12 @@ ${body.slice(0, 4000)}`);
         // after 26 seconds each, on a control the diagnostic showed as visible=false — and
         // there was no way to tell which of the two had happened. Only paid for on a miss.
         if (!selected) {
-          const seen = await this.visibleOptionSample();
+          const seen = await this.visibleOptionSample(scoped);
           const resolved = await this.describeResolved(step, scoped);
           this.driftWarnings.push(
             seen.count === 0
               ? `select "${String(step.note ?? step.field ?? "")}" landed nothing and NO option list was open — the widget never opened (wanted ${JSON.stringify(v.slice(0, 40))}; resolved ${resolved})`
-              : `select "${String(step.note ?? step.field ?? "")}" landed nothing though ${seen.count} option(s) were showing — wanted ${JSON.stringify(v.slice(0, 40))}, resolved ${resolved}, list offers ${seen.sample.map((o) => JSON.stringify(o)).join(", ")}`,
+              : `select "${String(step.note ?? step.field ?? "")}" landed nothing though ${seen.count} option(s) were showing — wanted ${JSON.stringify(v.slice(0, 40))}, resolved ${resolved}, ${seen.scoped ? "ITS OWN list offers" : "no list could be tied to this control; the PAGE shows"} ${seen.sample.map((o) => JSON.stringify(o)).join(", ")}`,
           );
           // HOW THAT CONTROL WAS CHOSEN. The line above says WHICH control the step landed
           // on; this says which candidates were considered and why each was taken or passed
