@@ -3235,10 +3235,28 @@ ${body.slice(0, 4000)}`);
     if (!sel || !primary) return this.preferVisible(primary, sel);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let firstNonEmpty: { loc: any; from?: RecipeSelector } | null = null;
-    const levels = [
-      { loc: primary, from: sel },
-      ...(sel.fallbacks ?? []).map((fb) => ({ loc: this.locator({ ...fb, fallbacks: undefined }), from: fb as RecipeSelector })),
-    ];
+    // A RECORDED ORDINAL IS A GUESS ABOUT PAGE STRUCTURE, AND STRUCTURE MOVES.
+    //
+    // PGE's inverter Model is `{css:"#pcInputBase34", fallbacks:[{label:"Model", nth:0}]}`.
+    // The id is a per-render token that now points at a HIDDEN combobox, and the fallback is
+    // pinned to `nth:0` — which preferVisible honours untouched, by design, because an
+    // explicit ordinal is an instruction. On this project the first "Model" on the page is
+    // that same hidden control, so both levels resolve to something unusable and the select
+    // branch's side-picker — which knows perfectly well that `inverterModel` wants the outer
+    // pair — never receives a set to choose from.
+    //
+    // So every ordinal level gets an unpinned twin queued directly after it. The recording is
+    // still tried first and still wins when it is right; when it lands on something hidden or
+    // disabled, the label alone plus visibility is better evidence than a position captured
+    // against a page that has since re-rendered.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const levels: Array<{ loc: any; from?: RecipeSelector }> = [{ loc: primary, from: sel }];
+    for (const fb of sel.fallbacks ?? []) {
+      levels.push({ loc: this.locator({ ...fb, fallbacks: undefined }), from: fb as RecipeSelector });
+      if (fb.nth != null) {
+        levels.push({ loc: this.locator({ ...fb, nth: undefined, fallbacks: undefined }), from: { ...fb, nth: undefined } as RecipeSelector });
+      }
+    }
     for (const level of levels) {
       if (!level.loc) continue;
       try {

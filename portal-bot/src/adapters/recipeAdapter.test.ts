@@ -810,6 +810,60 @@ async function testDisabledNamesakeSkipped() {
 // rightly refused "Solar PV/Wind/Hydro" as models, and the cascade never completed —
 // PowerClerk then took the manufacturer back too, and the replay looped on a page it could
 // never finish. An invisible-only match must fall through to the next selector level.
+// A RECORDED ORDINAL IS A GUESS ABOUT PAGE STRUCTURE, AND STRUCTURE MOVES.
+//
+// PGE's inverter Model is `{css:"#pcInputBase34", fallbacks:[{label:"Model", nth:0}]}`. The
+// id is a per-render token that now points at a hidden combobox, and the fallback is pinned
+// to nth:0 — which preferVisible honours untouched, because an explicit ordinal is an
+// instruction. On this project the first "Model" is that same hidden control, so both levels
+// resolve to something unusable and the select branch's side-picker, which knows that
+// inverterModel wants the outer pair, never gets a set to choose from.
+//
+// The recording is still tried first. This is the safety net for when it lands on a page
+// that has since re-rendered.
+async function testOrdinalFallbackRetriesUnpinned() {
+  const log: ActionLog = { clicks: [], fills: [], gotos: [], checks: 0 };
+  const adapter = new RecipeAdapter(baseRecipe([
+    { action: "fill", selector: { css: "#ghost", fallbacks: [{ label: "Model", nth: 0 }] }, field: "inverterModel", note: "Model" },
+  ]), { inverterModel: "IQ8PLUS-72-2-US" }, {});
+  const page: any = makeFakePage({ log });
+  const mk = (visible: boolean, key: string): any => {
+    const loc: any = {
+      first: () => loc, nth: () => loc,
+      count: async () => 1,
+      isVisible: async () => visible,
+      isEnabled: async () => true,
+      waitFor: async () => { if (!visible) throw new Error("TimeoutError: hidden"); },
+      fill: async (v: string) => {
+        if (!visible) throw new Error("TimeoutError: element is not visible");
+        log.fills.push({ key, value: v });
+      },
+      blur: async () => undefined,
+      inputValue: async () => "IQ8PLUS-72-2-US",
+      evaluateAll: async () => [],
+    };
+    return loc;
+  };
+  // The volatile id now points at a hidden combobox.
+  page.locator = (css: string) => (css === "#ghost" ? mk(false, "ghost") : mk(false, `css:${css}`));
+  // getByLabel("Model") pinned to nth 0 is that same hidden control; unpinned it is the real,
+  // visible select. The fake distinguishes them by whether an ordinal was requested.
+  page.getByLabel = (label: string, opts?: unknown) => {
+    if (label !== "Model") return mk(false, `label:${label}`);
+    const pinned = mk(false, "hidden-nth0");
+    const free = mk(true, "real-model");
+    // `nth` is applied by the adapter's locator builder; model it by returning the pinned
+    // control only when the caller asks for a position.
+    return { ...free, nth: (i: number) => (i === 0 ? pinned : free), __opts: opts };
+  };
+  withFakePage(adapter, page);
+
+  const result = await adapter.fillApplication(fakeProject);
+  assert.equal(result.ok, true, `run should complete (${result.message || ""})`);
+  assert.deepEqual(log.fills.map((f) => f.key), ["real-model"],
+    `the unpinned retry should reach the visible Model; got ${JSON.stringify(log.fills.map((f) => f.key))}`);
+}
+
 // THE LIVE FAILURE THAT KILLED BOTH COOS BAY RECIPES AT STEP 1.
 //
 // Oregon ePermitting's dashboard carries exactly ONE node whose text is "Apply": a disabled
@@ -898,6 +952,7 @@ async function testHiddenPrimaryFallsThroughToVisibleFallback() {
 const tests: Array<[string, () => Promise<void>]> = [
   ["RESOLVE: a hidden-only primary falls through to the visible fallback", testHiddenPrimaryFallsThroughToVisibleFallback],
   ["RESOLVE: a visible-but-DISABLED primary falls through too", testDisabledOnlyPrimaryFallsThroughToFallback],
+  ["RESOLVE: an ordinal fallback that lands on a hidden control retries unpinned", testOrdinalFallbackRetriesUnpinned],
   ["CLICK: a disabled namesake ahead of the real control is skipped", testDisabledNamesakeSkipped],
   ["RECORD TYPE: a type this jurisdiction does not offer refuses to file", testRecordTypeNotOfferedRefusesToFile],
   ["RECORD TYPE: an offered type is checked by its own label", testRecordTypeOfferedIsCheckedByLabel],
