@@ -185,7 +185,25 @@ The logic moved out of `recipeAdapter` (private, untestable — which is why it 
 real shapes in both directions. The false-positive cases carry equal weight: a sweep that cries
 blank on a filled page teaches the operator to click past the warning.
 
-**NEXT TASK, FULLY DIAGNOSED — Coos Bay's "Apply" is behind a closed menu (2026-09-07).**
+**COOS BAY: 1 → 4 → 7 of 49 steps in one session, every fix an engine invariant (2026-09-07).**
+Six live runs to find the first blocker; after that a failing step keeps the page HTML and
+each further blocker was diagnosed offline in seconds. In order:
+
+1. **The entry was a closed menu.** Fixed — see below.
+2. **A selector that names four things.** `input[id*='StreetNo4Search']` matches the street
+   box, its hidden watermark state, and a range's "Street Number To". Playwright refuses a
+   multi-match action as a "strict mode violation", which reads like drift and is not. Replay
+   now picks the first visible+enabled itself, at the action site.
+3. **NEXT, and it is the FIXTURE, not the engine.** Step 8 waits for "Continue Application";
+   the captured page shows `<div id="divContinueButton" style="display: none;"></div>` and an
+   empty "Available Service Group". Accela only reveals Continue once the address search
+   returns a match — and the benchmark files **1847 Liberty St SE, Salem** into **Coos Bay's**
+   portal. A Salem address has no parcel there, so the search returns nothing and the flow
+   cannot proceed. The AHJ recipes need an address inside their own jurisdiction; the fixture
+   currently hardcodes one for every portal. Needs a real Coos Bay address from the operator —
+   do not invent one, an unmatched address fails identically.
+
+**FIXED — Coos Bay's "Apply" was behind a closed menu (2026-09-07).**
 Both Coos Bay recipes die on step 1, a 30s timeout on `click — application entry: Apply`.
 Five live runs narrowed it; the sixth captured the page, and the answer is a grep:
 
