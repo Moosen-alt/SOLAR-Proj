@@ -185,6 +185,35 @@ The logic moved out of `recipeAdapter` (private, untestable — which is why it 
 real shapes in both directions. The false-positive cases carry equal weight: a sweep that cries
 blank on a filled page teaches the operator to click past the warning.
 
+**CORRECTION — THE DISAMBIGUATOR WAS IN THE RECIPE ALL ALONG (2026-09-07).**
+An earlier note below says the information needed to tell PowerClerk's two "Model" selects
+apart is not in the recipe. **That was wrong.** The learner records it on every such step:
+
+```
+inverterModel  fingerprint: { ariaLabel: "Model", section: "Inverter Clone System" }
+moduleModel    fingerprint: { ariaLabel: "Model", section: "PV ArrayDelete Array" }
+```
+
+Written every time and read never — the duplicate-label selector rebuild constructs a fresh
+object around the element id and drops the section. Replay now consults it when what it
+resolved is unusable, using the learner's own section algorithm, and it **fires live**:
+`"Model" resolved by SECTION "Inverter Clone System"`, with the array's Model separately
+resolved by its own. No re-record needed; the recipes were fine.
+
+**Two diagnostics were lying, and between them they cost most of a day:**
+- `looksOutOfReach` asked Playwright, which calls an `opacity:0` control VISIBLE. Every rescue
+  hanging off it stayed asleep. The acceptance gate had been corrected for exactly this one
+  commit earlier — fixing one and not its sibling moved the blind spot rather than closing it.
+- `describeResolved` **re-resolved the selector** instead of reporting the control acted on, so
+  a step driven against the right control still printed the stale one. Four fixes were aimed
+  at that phantom. A diagnostic that names a different element than the one used is worse than
+  none, because it is believed.
+
+**Still open on PGE:** `Model` resolves correctly by section now and the select still lands
+nothing against 13 options. That is the option-matching layer, not resolution — a different
+question, and the next one to instrument. `Schedule` remains bare-label ambiguity with no
+section recorded.
+
 **STOP RULE OBSERVED ON THE `Model` STEP (2026-09-07).** Four fixes were shipped at PGE's
 inverter `Model` — an enabled check, a no-fallback fall-through, an unpinned ordinal twin, and
 a corrected visibility gate — and the diagnostic never moved once:

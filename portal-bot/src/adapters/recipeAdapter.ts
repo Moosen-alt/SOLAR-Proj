@@ -2108,7 +2108,7 @@ ${body.slice(0, 4000)}`);
         // there was no way to tell which of the two had happened. Only paid for on a miss.
         if (!selected) {
           const seen = await this.visibleOptionSample();
-          const resolved = await this.describeResolved(step);
+          const resolved = await this.describeResolved(step, scoped);
           this.driftWarnings.push(
             seen.count === 0
               ? `select "${String(step.note ?? step.field ?? "")}" landed nothing and NO option list was open — the widget never opened (wanted ${JSON.stringify(v.slice(0, 40))}; resolved ${resolved})`
@@ -3500,9 +3500,24 @@ ${body.slice(0, 4000)}`);
    * control is missing" from "the control is there but it is the wrong one" from "the
    * control is right but its option list has not loaded".
    */
-  private async describeResolved(step: RecipeStep): Promise<string> {
+  /**
+   * Describe the control a step ACTED ON — not a fresh re-resolution of its selector.
+   *
+   * This used to re-run resolveLocator and report whatever that returned, which is a
+   * different element as soon as any rescue fires: the section match, the closed-menu
+   * reveal and the name recovery all happen in executeStep, downstream of resolution. So a
+   * step could be driven against the right control while its failure line named the stale
+   * one, and PGE's "Model" reported `<input id="pcInputBase34" visible=false>` on runs where
+   * it had in fact resolved by section to something else entirely.
+   *
+   * Four fixes were aimed at that phantom. A diagnostic that describes a different element
+   * than the one acted on is worse than none, because it is believed.
+   */
+  private async describeResolved(step: RecipeStep, actual?: unknown): Promise<string> {
     try {
-      const loc = await this.resolveLocator(step.selector);
+      const loc = (actual as { count?: unknown } | undefined)?.count
+        ? actual as never
+        : await this.resolveLocator(step.selector);
       const n = await loc?.count?.().catch(() => 0);
       if (!n) return "no element matched";
       return await loc.first().evaluate((el: Element) => {
