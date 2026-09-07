@@ -149,9 +149,24 @@ async function main(): Promise<void> {
       // records this trap — it is what made the stale-recipe flag dead code in repository.ts
       // once before — and this harness walked straight into it, reporting a silent failure
       // for three runs while the reason sat one level down in `steps`.
-      const steps = (res as { steps?: Array<{ ok?: boolean; message?: string }> }).steps ?? [];
+      const steps = (res as { steps?: Array<{ ok?: boolean; message?: string; data?: Record<string, unknown> }> }).steps ?? [];
       const stepMsg = steps.find((st) => st && st.ok === false)?.message ?? "";
-      outcome = { ...res, recorded: c.steps, message: String((res as { message?: unknown }).message || stepMsg) };
+      // ...AND SO DOES EVERYTHING ELSE. `ok(message, data)` puts the run's whole report —
+      // executed, skipped, requiredStillEmpty, driftWarnings, reviewFieldsSeen — inside the
+      // STEP's `data`, not on the top-level result. Reading the top level returned zero for
+      // every one of them, so a live run that filled eight pages scored "executed: 0, no
+      // blanks, no warnings, review unreadable" and the benchmark called it clean. Every
+      // signal this harness was built to collect was being read from the wrong level, which
+      // is the same mistake as the message above, one field over.
+      const merged: Record<string, unknown> = {};
+      for (const st of steps) {
+        for (const [k, v] of Object.entries(st?.data ?? {})) {
+          if (v === undefined || v === null) continue;
+          if (Array.isArray(v) && !v.length && Array.isArray(merged[k])) continue; // don't blank a real list
+          merged[k] = v;
+        }
+      }
+      outcome = { ...res, ...merged, recorded: c.steps, message: String((res as { message?: unknown }).message || stepMsg) };
     } catch (e) {
       outcome = { ok: false, message: String((e as Error)?.message || e), recorded: c.steps };
     } finally {

@@ -74,6 +74,22 @@ check("skipped steps count as a gap", () => {
   assert.equal(s.rung, "replayed_with_gaps");
 });
 
+check("THE REGRESSION: a 'successful' run that executed NOTHING is not clean", () => {
+  // A live replay filled eight pages of PacifiCorp and reported executed:0, because the
+  // harness read the adapter's report from the wrong level (`ok(msg, data)` puts it on the
+  // STEP). This scorer only asked "ok, and nothing flagged?" — so "nothing happened" and
+  // "everything happened correctly" produced the same number, 4.
+  const s = scoreReplayOutcome({ ok: true, executed: 0, recorded: 98, reviewFieldsSeen: 0 });
+  assert.equal(s.owner, "harness");
+  assert.equal(s.measured, false);
+  assert.match(s.reason, /executed 0 of 98/);
+});
+
+check("...but a recipe with no recorded steps is not accused of that", () => {
+  const s = scoreReplayOutcome({ ok: true, executed: 0, recorded: 0, reviewFieldsSeen: 4, reviewMismatches: [] });
+  assert.notEqual(s.owner, "harness");
+});
+
 check("THE REGRESSION: replay's OWN warnings are not allowed to be ignored", () => {
   // `driftWarnings` was declared on the outcome interface and never read, so the adapter
   // could report "held-check could read only 1 of 2 array row(s) — verify the arrays by eye

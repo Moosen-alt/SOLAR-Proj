@@ -130,6 +130,20 @@ export function scoreReplayOutcome(outcome: ReplayOutcome): ReplayScore {
     };
   }
 
+  // A RUN THAT EXECUTED NOTHING IS NOT A CLEAN RUN, WHATEVER IT REPORTS.
+  //
+  // The mirror of the harness guard above, and it caught a real one: a live replay that
+  // filled eight pages of PacifiCorp reported `executed: 0` — because the harness was
+  // reading the adapter's report from the wrong level — and this scorer, which only ever
+  // asked "ok, and nothing flagged?", promoted it to `replayed_clean`. "Nothing happened"
+  // and "everything happened correctly" produced the same number. They must not.
+  if (outcome.ok === true && recorded > 0 && executed === 0) {
+    return {
+      rung: "unreachable", index: 0, owner: "harness", measured: false,
+      reason: `not measured — replay reported success having executed 0 of ${recorded} recorded step(s), which is a harness or reporting fault, not a filing`,
+    };
+  }
+
   const blanks = outcome.requiredStillEmpty ?? [];
   const skipped = outcome.skipped ?? [];
   const healed = (outcome.healedSteps ?? []).length;
