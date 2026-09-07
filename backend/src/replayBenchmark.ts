@@ -36,6 +36,14 @@ export const REPLAY_RUNGS = [
 
 export type ReplayRung = typeof REPLAY_RUNGS[number];
 
+/**
+ * How many project values must be FOUND on the review screen before a filing counts as
+ * verified. Three is the smallest number that cannot be met by coincidence: the checks are
+ * homeowner name, site address, system size, account and meter, and a page echoing three of
+ * those is showing this project rather than a template.
+ */
+export const MIN_CONFIRMED_FIELDS = 3;
+
 export interface ReplayOutcome {
   ok?: boolean;
   message?: string;
@@ -54,6 +62,8 @@ export interface ReplayOutcome {
   unresolvedFields?: string[];
   /** Review-screen check (cfdcca5). fieldsSeen 0 means the screen could not be read. */
   reviewFieldsSeen?: number;
+  /** Project values actually FOUND on that screen. Reading a page is not checking it. */
+  reviewFieldsConfirmed?: number;
   reviewMismatches?: Array<{ field: string; expected: string; found: string }>;
   pauseReason?: string | null;
 }
@@ -234,6 +244,20 @@ export function scoreReplayOutcome(outcome: ReplayOutcome): ReplayScore {
       reason: `every recorded step ran and nothing was left blank, but the review screen could not be read — the filing is UNVERIFIED`,
     };
   }
+  // READING A REVIEW SCREEN IS NOT CHECKING IT.
+  //
+  // Every comparison returns early when the project has no value to check with, so a page of
+  // boilerplate against a sparse project yields zero mismatches having established nothing —
+  // and this rung would have called that verified. A live run sat one fixture fix away from
+  // exactly that: reviewFieldsSeen 4, zero mismatches, nothing confirmed. Same principle as
+  // the unreadable case directly above, reached from the other side.
+  const confirmed = Number(outcome.reviewFieldsConfirmed ?? 0);
+  if (confirmed < MIN_CONFIRMED_FIELDS && !mismatches.length) {
+    return {
+      rung: "replayed_clean", index: 4, owner: "engine",
+      reason: `every recorded step ran and nothing was left blank, and the review screen was read (${fieldsSeen} field(s)) — but only ${confirmed} project value(s) could be confirmed on it, which is too few to call the filing verified`,
+    };
+  }
   if (mismatches.length) {
     const named = mismatches.slice(0, 3).map((m) => `${m.field} shows "${String(m.found).slice(0, 30)}"`).join(", ");
     return {
@@ -244,7 +268,7 @@ export function scoreReplayOutcome(outcome: ReplayOutcome): ReplayScore {
 
   return {
     rung: "verified_accurate", index: 5, owner: "none",
-    reason: `replayed ${executed} step(s) clean and the review screen matches the project across ${fieldsSeen} field(s)`,
+    reason: `replayed ${executed} step(s) clean; the review screen shows ${fieldsSeen} field(s) and ${confirmed} project value(s) were confirmed present with no mismatch`,
   };
 }
 

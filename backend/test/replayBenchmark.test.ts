@@ -26,10 +26,32 @@ const check = (label: string, fn: () => void): void => {
 // The top rung, and everything that must fall short of it.
 // ---------------------------------------------------------------------------
 check("verified_accurate: ran clean AND the review screen matches the project", () => {
-  const s = scoreReplayOutcome({ ok: true, executed: 98, recorded: 98, reviewFieldsSeen: 22, reviewMismatches: [] });
+  const s = scoreReplayOutcome({ ok: true, executed: 98, recorded: 98, reviewFieldsSeen: 22, reviewFieldsConfirmed: 4, reviewMismatches: [] });
   assert.equal(s.rung, "verified_accurate");
   assert.equal(s.index, 5);
   assert.equal(s.owner, "none");
+});
+
+check("THE REGRESSION: a review screen READ but never CHECKED is not verified", () => {
+  // Zero mismatches is not evidence. Every comparison returns early when the project has no
+  // value to check with, so a page of boilerplate against a sparse project complains about
+  // nothing while establishing nothing. A live run sat one fixture fix from claiming the top
+  // rung on four fields: reviewFieldsSeen 4, zero mismatches, nothing confirmed.
+  const s = scoreReplayOutcome({
+    ok: true, executed: 98, recorded: 98,
+    reviewFieldsSeen: 4, reviewFieldsConfirmed: 0, reviewMismatches: [],
+  });
+  assert.equal(s.rung, "replayed_clean");
+  assert.equal(s.index, 4, "a filing nothing was confirmed on cannot hold the top rung");
+  assert.match(s.reason, /too few to call the filing verified/);
+});
+
+check("...and one confirmed field is still too few to be coincidence-proof", () => {
+  const s = scoreReplayOutcome({
+    ok: true, executed: 98, recorded: 98,
+    reviewFieldsSeen: 30, reviewFieldsConfirmed: 1, reviewMismatches: [],
+  });
+  assert.equal(s.index, 4);
 });
 
 check("THE REGRESSION: a clean run whose review screen was NEVER READ is not verified", () => {
@@ -80,7 +102,7 @@ check("THE SAFETY RULE IS NOT A DEFECT: the declined final submit is not a faile
   // that "did not land" made the safety rule look like recipe drift, and on a live run where
   // nothing else had gone wrong it was the single thing pushing the owner to `recipe`.
   const s = scoreReplayOutcome({
-    ok: true, executed: 97, recorded: 98, reviewFieldsSeen: 18, reviewMismatches: [],
+    ok: true, executed: 97, recorded: 98, reviewFieldsSeen: 18, reviewFieldsConfirmed: 4, reviewMismatches: [],
     skipped: ["final submit: Submit (recorded, NOT clicked)"],
   });
   assert.equal(s.rung, "verified_accurate", `a clean verified run was demoted by the safety rule: ${s.reason}`);
@@ -143,7 +165,7 @@ check("THE REGRESSION: replay's OWN warnings are not allowed to be ignored", () 
   // before submit" and the run still scored clean. The adapter pays to produce that warning
   // on the assumption someone acts on it.
   const s = scoreReplayOutcome({
-    ok: true, executed: 98, recorded: 98, reviewFieldsSeen: 20, reviewMismatches: [],
+    ok: true, executed: 98, recorded: 98, reviewFieldsSeen: 20, reviewFieldsConfirmed: 4, reviewMismatches: [],
     driftWarnings: ["held-check could read only 1 of 2 array row(s) — verify the arrays by eye before submit"],
   });
   assert.equal(s.rung, "replayed_with_gaps");
@@ -224,7 +246,7 @@ check("the rungs are strictly ordered, worst to best", () => {
 
 check("the headline counts only VERIFIED replays, not clean ones", () => {
   const rows: ReplayRow[] = [
-    { portal: "a", profileKey: "k1", score: scoreReplayOutcome({ ok: true, executed: 9, recorded: 9, reviewFieldsSeen: 12, reviewMismatches: [] }) },
+    { portal: "a", profileKey: "k1", score: scoreReplayOutcome({ ok: true, executed: 9, recorded: 9, reviewFieldsSeen: 12, reviewFieldsConfirmed: 4, reviewMismatches: [] }) },
     { portal: "b", profileKey: "k2", score: scoreReplayOutcome({ ok: true, executed: 9, recorded: 9, reviewFieldsSeen: 0 }) },
     { portal: "c", profileKey: "k3", score: scoreReplayOutcome({ ok: false, message: "Recipe step failed (fill)" }) },
     { portal: "d", profileKey: "k4", score: scoreReplayOutcome({ ok: false, message: "Target page, context or browser has been closed" }) },
@@ -238,7 +260,7 @@ check("the headline counts only VERIFIED replays, not clean ones", () => {
 
 check("...and the harness death is excluded from the mean too", () => {
   const rows: ReplayRow[] = [
-    { portal: "a", profileKey: "k", score: scoreReplayOutcome({ ok: true, executed: 9, recorded: 9, reviewFieldsSeen: 5, reviewMismatches: [] }) },
+    { portal: "a", profileKey: "k", score: scoreReplayOutcome({ ok: true, executed: 9, recorded: 9, reviewFieldsSeen: 5, reviewFieldsConfirmed: 3, reviewMismatches: [] }) },
     { portal: "b", profileKey: "k", score: scoreReplayOutcome({ ok: false, message: "Target closed" }) },
   ];
   assert.equal(summarizeReplay(rows).meanIndex, 5);

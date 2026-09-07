@@ -59,7 +59,7 @@ async function main(): Promise<void> {
   // ---------------------------------------------------------------------------
   // The top bar, and everything that must fall short of it.
   // ---------------------------------------------------------------------------
-  addRun({ executed: 98, requiredStillEmpty: [], skipped: [], driftWarnings: [], reviewFieldsSeen: 20, reviewMismatches: [] });
+  addRun({ executed: 98, requiredStillEmpty: [], skipped: [], driftWarnings: [], reviewFieldsSeen: 20, reviewFieldsConfirmed: 4, reviewMismatches: [] });
   let q = getStagingQuality(db, window);
   check("a clean, review-verified run counts as verified", q.verified === 1 && q.clean === 1, JSON.stringify(q));
 
@@ -68,10 +68,17 @@ async function main(): Promise<void> {
   check("THE REGRESSION: clean but never verified is CLEAN, not VERIFIED",
     q.clean === 2 && q.verified === 1, `clean=${q.clean} verified=${q.verified}`);
 
-  addRun({ executed: 98, requiredStillEmpty: [], skipped: [], driftWarnings: [], reviewFieldsSeen: 12, reviewMismatches: [{ field: "homeownerName", expected: "a", found: "b" }] });
+  // Reading a review screen is not checking it — the benchmark's bar, held here too.
+  addRun({ executed: 98, requiredStillEmpty: [], skipped: [], driftWarnings: [], reviewFieldsSeen: 9, reviewFieldsConfirmed: 1, reviewMismatches: [] });
+  q = getStagingQuality(db, window);
+  check("THE REGRESSION: a review screen READ but barely CHECKED is clean, not verified",
+    q.clean === 3 && q.verified === 1,
+    `one confirmed field is not a verified filing: clean=${q.clean} verified=${q.verified}`);
+
+  addRun({ executed: 98, requiredStillEmpty: [], skipped: [], driftWarnings: [], reviewFieldsSeen: 12, reviewFieldsConfirmed: 2, reviewMismatches: [{ field: "homeownerName", expected: "a", found: "b" }] });
   q = getStagingQuality(db, window);
   check("...and a run the review screen CONTRADICTS is neither verified NOR clean",
-    q.verified === 1 && q.clean === 2,
+    q.verified === 1 && q.clean === 3,
     `it ran without a stumble and the portal says it is wrong: verified=${q.verified} clean=${q.clean}`);
   check("...and that contradiction counts as work left for a person",
     q.neededHuman === 1, `neededHuman=${q.neededHuman}`);
@@ -89,14 +96,14 @@ async function main(): Promise<void> {
   addRun({ executed: 98, requiredStillEmpty: [], skipped: [], driftWarnings: ["select \"Model\" landed nothing though 49 options were showing"] });
   q = getStagingQuality(db, window);
   check("a drift warning stops a run being clean, even with nothing blank",
-    q.clean === 2, `clean=${q.clean}`);
+    q.clean === 3, `clean=${q.clean}`);
   check("...and the portal is named so drift can be chased to its recipe",
     q.driftingPortals.some((d) => d.portal === "PowerClerk"), JSON.stringify(q.driftingPortals));
 
   // ---------------------------------------------------------------------------
   // The two rules this session paid for.
   // ---------------------------------------------------------------------------
-  addRun({ executed: 97, requiredStillEmpty: [], skipped: ["final submit: Submit (recorded, NOT clicked)"], driftWarnings: [], reviewFieldsSeen: 15, reviewMismatches: [] });
+  addRun({ executed: 97, requiredStillEmpty: [], skipped: ["final submit: Submit (recorded, NOT clicked)"], driftWarnings: [], reviewFieldsSeen: 15, reviewFieldsConfirmed: 4, reviewMismatches: [] });
   q = getStagingQuality(db, window);
   check("THE SAFETY RULE IS NOT A DEFECT: the declined final submit still counts as verified",
     q.verified === 2, `automation never clicks submit; that must not read as a failed step (verified=${q.verified})`);

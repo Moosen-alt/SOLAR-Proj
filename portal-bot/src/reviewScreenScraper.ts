@@ -139,12 +139,36 @@ function norm(v: unknown): string {
 // field's keywords — so an expected value appearing in some unrelated field (e.g. a street
 // name that also occurs in an installer field) cannot mask a real mismatch. When no field
 // label matches, it falls back to the whole page so a totally-absent value is still caught.
-export function compareReviewFields(
+/** What a review-screen comparison actually established — not just what it complained about. */
+export interface ReviewComparison {
+  mismatches: ReviewMismatch[];
+  /** Checks that had enough project data to run at all. */
+  compared: number;
+  /** Checks that ran AND found their value on the page. The only real evidence here. */
+  confirmed: number;
+}
+
+/**
+ * Compare a review screen against the project, and SAY HOW MUCH IT CONFIRMED.
+ *
+ * The mismatch list alone cannot carry that. Every check below returns early when the
+ * project has no value to check — no account number, a name too short to match — so a page
+ * showing four lines of boilerplate against a sparse project produces zero mismatches while
+ * establishing precisely nothing. Read as "no mismatches, therefore verified", that is the
+ * same error this whole ladder exists to refuse, arrived at from the other side: not "we
+ * could not read the page" but "we read it and never checked anything".
+ *
+ * A live run made this concrete — reviewFieldsSeen: 4, zero mismatches — and one fixture fix
+ * away it would have claimed the top rung on four fields of boilerplate.
+ */
+export function reviewComparison(
   reviewFields: ReviewField[],
   project: ProjectRecord,
   bodyText = "",
-): ReviewMismatch[] {
+): ReviewComparison {
   const mismatches: ReviewMismatch[] = [];
+  let compared = 0;
+  let confirmed = 0;
 
   // The review page's full rendered text, normalized. Used as a last-resort haystack so a
   // value shown as plain read-only text (not in a structured field we recognized) still
@@ -156,11 +180,15 @@ export function compareReviewFields(
   // as one honest signal instead of emitting a phantom mismatch for every checked field
   // (which is what made a readable-but-unscraped page look like a blank application).
   if (reviewFields.length === 0 && body.length < 8) {
-    return [{
-      field: "reviewScreen",
-      expected: "(review fields)",
-      found: "(review screen could not be read — verify every field manually before submit)",
-    }];
+    return {
+      mismatches: [{
+        field: "reviewScreen",
+        expected: "(review fields)",
+        found: "(review screen could not be read — verify every field manually before submit)",
+      }],
+      compared: 0,
+      confirmed: 0,
+    };
   }
 
   // Pick the review fields whose (normalized) label contains one of the keywords. Falls
@@ -192,9 +220,10 @@ export function compareReviewFields(
     const firstWord = e.split(" ")[0];
     if (firstWord.length < 3) return; // too short to match reliably
     const scope = scopeFor(labelKeywords);
+    compared++;
     if (!present(scope, firstWord)) {
       mismatches.push({ field: fieldName, expected: String(expected ?? "").slice(0, 60), found: summarize(scope) });
-    }
+    } else confirmed++;
   };
 
   // Digit check: the significant digit run of the expected value must appear among the
@@ -209,13 +238,14 @@ export function compareReviewFields(
     const needle = opts.last4 ? digits.slice(-4) : digits;
     const scope = scopeFor(labelKeywords);
     const scopeDigits = scope.map((f) => f.value).join(" ").replace(/\D/g, "");
+    compared++;
     if (!scopeDigits.includes(needle) && !(bodyDigits.length > 0 && bodyDigits.includes(needle))) {
       mismatches.push({
         field: fieldName,
         expected: opts.last4 ? `…${needle}` : String(expected ?? "").slice(0, 60),
         found: opts.last4 ? "(digits not found on review page)" : summarize(scope),
       });
-    }
+    } else confirmed++;
   };
 
   checkText("homeownerName", project.homeownerName, ["name", "owner", "applicant", "customer", "contact"]);
@@ -224,5 +254,20 @@ export function compareReviewFields(
   checkDigits("accountNumber", project.accountNumber, ["account"], { last4: true });
   checkDigits("meterNumber", project.meterNumber, ["meter"], { last4: true });
 
-  return mismatches;
+  return { mismatches, compared, confirmed };
+}
+
+/**
+ * Just the mismatches, for the callers that only ever wanted those.
+ *
+ * Kept so the learn adapter's four call sites are untouched — but note that an empty list
+ * from this function is NOT evidence of a verified filing. Anything gating a decision on
+ * "it matched" must use reviewComparison and look at `confirmed`.
+ */
+export function compareReviewFields(
+  reviewFields: ReviewField[],
+  project: ProjectRecord,
+  bodyText = "",
+): ReviewMismatch[] {
+  return reviewComparison(reviewFields, project, bodyText).mismatches;
 }

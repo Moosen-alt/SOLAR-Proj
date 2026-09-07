@@ -1,6 +1,6 @@
 import { DEFAULT_ORG_ID } from "./db";
 import type { AppDb, SqlParam } from "./db";
-import { mergeStepReport } from "./replayBenchmark";
+import { mergeStepReport, MIN_CONFIRMED_FIELDS } from "./replayBenchmark";
 
 type Row = Record<string, SqlParam>;
 
@@ -355,6 +355,8 @@ export function getStagingQuality(
     const drift = (rep.driftWarnings as string[] | undefined) ?? [];
     const healed = ((rep.healedSteps as unknown[] | undefined) ?? []).length;
     const fieldsSeen = Number(rep.reviewFieldsSeen ?? 0);
+    // Reading the page is not checking it — the benchmark's own bar, so the two agree.
+    const confirmedFields = Number(rep.reviewFieldsConfirmed ?? 0);
     const mismatches = ((rep.reviewMismatches as unknown[] | undefined) ?? []).length;
 
     blanksTotal += blanks.length;
@@ -377,7 +379,7 @@ export function getStagingQuality(
     const isClean = !blanks.length && !failed.length && !drift.length && !healed && !mismatches;
     if (isClean) clean++;
     // The top bar, same as the benchmark's: clean AND the portal's own review screen agreed.
-    if (isClean && fieldsSeen > 0) verified++;
+    if (isClean && fieldsSeen > 0 && confirmedFields >= MIN_CONFIRMED_FIELDS) verified++;
     if (blanks.length || failed.length || mismatches) neededHuman++;
   }
 

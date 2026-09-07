@@ -6,7 +6,7 @@ import { applyFormatHint } from "../formatHint";
 import { rankAddressVersions } from "../addressVersion";
 import { imageToPdfBytes, pdfNameFor, shouldConvertToPdf } from "../imageToPdf";
 import { fileTypeAllowed, UPLOAD_LABEL_PATTERNS, uploadForbidsSubstitute } from "./autoLearnAdapter";
-import { compareReviewFields, scrapeReviewScreen as scrapeReviewScreenShared, type ReviewMismatch } from "../reviewScreenScraper";
+import { reviewComparison, scrapeReviewScreen as scrapeReviewScreenShared, type ReviewMismatch } from "../reviewScreenScraper";
 import { sweepEmptyRequiredControls } from "../requiredControlSweep";
 import { openPortal } from "../browser";
 import { selectWithFallback } from "../comboboxFill";
@@ -316,8 +316,8 @@ export class RecipeAdapter extends BasePortalAdapter {
    */
   private async verifyReviewScreen(
     project?: ProjectRecord,
-  ): Promise<{ summary: string; fieldsSeen: number; mismatches: ReviewMismatch[] }> {
-    const none = { summary: "", fieldsSeen: 0, mismatches: [] as ReviewMismatch[] };
+  ): Promise<{ summary: string; fieldsSeen: number; confirmed: number; mismatches: ReviewMismatch[] }> {
+    const none = { summary: "", fieldsSeen: 0, confirmed: 0, mismatches: [] as ReviewMismatch[] };
     if (!this.page || !project) return none;
     try {
       const fields = await scrapeReviewScreenShared(this.page);
@@ -343,9 +343,15 @@ ${body.slice(0, 4000)}`);
           await this.page.screenshot({ path: path.join(dir, `review-unreadable-${stamp}.png`), fullPage: true }).catch(() => {});
         } catch { /* diagnostics must never change the outcome */ }
       }
-      const mismatches = compareReviewFields(fields, project, body);
+      const cmp = reviewComparison(fields, project, body);
+      const mismatches = cmp.mismatches;
       if (!mismatches.length) {
-        return { summary: ` Review screen checked against the project: ${fields.length} field(s), no mismatch.`, fieldsSeen: fields.length, mismatches };
+        // SAY WHAT WAS CONFIRMED, NOT JUST THAT NOTHING COMPLAINED. Zero mismatches on a page
+        // where nothing could be compared is not a verified filing.
+        return {
+          summary: ` Review screen checked against the project: ${fields.length} field(s) read, ${cmp.confirmed} project value(s) confirmed present, no mismatch.`,
+          fieldsSeen: fields.length, confirmed: cmp.confirmed, mismatches,
+        };
       }
       const named = mismatches.slice(0, 4)
         .map((m) => `${m.field}: shows "${String(m.found).slice(0, 40)}", expected "${String(m.expected).slice(0, 40)}"`)
@@ -353,6 +359,7 @@ ${body.slice(0, 4000)}`);
       return {
         summary: ` VERIFY BEFORE SUBMITTING — the review screen does not match the project on ${mismatches.length} field(s): ${named}${mismatches.length > 4 ? ", …" : ""}.`,
         fieldsSeen: fields.length,
+        confirmed: cmp.confirmed,
         mismatches,
       };
     } catch {
@@ -900,7 +907,7 @@ ${body.slice(0, 4000)}`);
         healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, slowSteps,
         requiredStillEmpty: this.requiredStillEmpty, unresolvedFields: this.unresolvedFields, pageShotDir: this.pageShotDir,
         outcomeShotPath: this.outcomeShotPath,
-        reviewFieldsSeen: review.fieldsSeen, reviewMismatches: review.mismatches,
+        reviewFieldsSeen: review.fieldsSeen, reviewFieldsConfirmed: review.confirmed, reviewMismatches: review.mismatches,
       },
     );
   }

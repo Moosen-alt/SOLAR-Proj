@@ -68,9 +68,21 @@ const BENCH = {
   // made-up model would be a select that can never land, and the benchmark would be
   // measuring its own fixture again. These are looked up from `cec_equipment` and resolve
   // through certifiedModelFields the way a real project's do.
-  moduleMake: "Qcells North America", moduleModel: "Q.PEAK DUO BLK ML-G10 400",
-  inverterMake: "Enphase Energy, Inc.", inverterModel: "IQ8PLUS-72-2-US {240V}",
-  inverterQuantity: "18", tilt: "22", azimuth: "180",
+  // EXACT KEYS, NOT ALIASES. The snapshot is read by exact key (`snapshotFlat[k]`), so the
+  // alias names in the field-hint map do not stand in for one another: a run carrying only
+  // `inverterMake` left the recipe's `inverterManufacturer` step with nothing to select, and
+  // the portal then flagged the array row it was never given. Both spellings, deliberately.
+  moduleMake: "Qcells North America", moduleManufacturer: "Qcells North America",
+  moduleModel: "Q.PEAK DUO BLK ML-G10 400",
+  inverterMake: "Enphase Energy, Inc.", inverterManufacturer: "Enphase Energy, Inc.",
+  inverterModel: "IQ8PLUS-72-2-US {240V}",
+  inverterQuantity: "1", inverterQty: "1",
+  array1ModuleQuantity: "18",
+  tilt: "22", azimuth: "180",
+  // "Installation Voltage" binds `voltage`; "Electrical SERVICE Voltage" binds
+  // `serviceVoltage` — the two are told apart by the extra token, which is exactly what the
+  // tiebreak in portalRecipes describes. Supplying only `voltage` left the second one blank.
+  serviceVoltage: "240",
 
   // NOT FAKED: the one-line drawing and site plan. Those steps will keep reporting "no
   // value in the project", and that is the right outcome — uploading junk documents to a
