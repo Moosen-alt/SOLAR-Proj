@@ -3222,10 +3222,23 @@ ${body.slice(0, 4000)}`);
   // the first non-empty level stand, so the familiar failure is preserved.
   private async resolveLocator(sel?: RecipeSelector) {
     const primary = this.locator(sel);
-    if (!sel || !sel.fallbacks?.length || !primary) return this.preferVisible(primary, sel);
+    // A SELECTOR WITH NO FALLBACKS STILL DESERVES THE USABILITY CHECKS.
+    //
+    // This returned the primary's best match immediately, skipping the visible-AND-enabled
+    // test and both recoveries below — so a recipe step recorded WITHOUT fallbacks could
+    // resolve an invisible control and act on it with nothing raised. That is exactly what
+    // PacifiCorp's and PGE's inverter "Model" step did, on both portals, run after run:
+    // `resolved <input id="pcInputBase34" label="Model" visible=false>` while 13 real options
+    // were on screen. Having no fallbacks is a reason to try HARDER to rescue the step, not
+    // a reason to skip the rescue. Falling through with an empty fallback list costs one
+    // extra visibility probe on the happy path and nothing else.
+    if (!sel || !primary) return this.preferVisible(primary, sel);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let firstNonEmpty: { loc: any; from?: RecipeSelector } | null = null;
-    const levels = [{ loc: primary, from: sel }, ...sel.fallbacks.map((fb) => ({ loc: this.locator({ ...fb, fallbacks: undefined }), from: fb as RecipeSelector }))];
+    const levels = [
+      { loc: primary, from: sel },
+      ...(sel.fallbacks ?? []).map((fb) => ({ loc: this.locator({ ...fb, fallbacks: undefined }), from: fb as RecipeSelector })),
+    ];
     for (const level of levels) {
       if (!level.loc) continue;
       try {

@@ -96,6 +96,12 @@ const BENCH = {
   // `serviceVoltage` — the two are told apart by the extra token, which is exactly what the
   // tiebreak in portalRecipes describes. Supplying only `voltage` left the second one blank.
   serviceVoltage: "240",
+  // PGE asks two more the other portals do not, and a value it never receives is a gap it
+  // reports forever. `mainServiceRating` is the panel's amperage — 200A is the ordinary
+  // residential service — and `pgeSchedule` is the rate schedule a net-metered residential
+  // customer files under. Named exactly as the recipe binds them; the snapshot is read by
+  // exact key and an alias does not stand in.
+  mainServiceRating: "200", pgeSchedule: "Residential",
 
   // Documents are supplied too, but not from here: every upload slot the recipe asks for
   // gets a generated page headed "NOT A REAL DOCUMENT" (benchmarkPlaceholderDoc). Leaving
