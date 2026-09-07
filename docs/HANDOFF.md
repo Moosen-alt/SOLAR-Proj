@@ -185,6 +185,28 @@ The logic moved out of `recipeAdapter` (private, untestable — which is why it 
 real shapes in both directions. The false-positive cases carry equal weight: a sweep that cries
 blank on a filled page teaches the operator to click past the warning.
 
+**TOP REMAINING REPLAY DEFECT — PacifiCorp's spec-page selects have no `section` (2026-09-07).**
+After the fixture was filled out, the live run reached 92 of 98 steps with zero healed
+selectors and zero steps that failed to land except one, and the drift warning names it
+exactly:
+
+```
+select "Model" landed nothing though 49 option(s) were showing
+  wanted   "IQ8PLUS-72-2-US {240V}"
+  resolved <input id="pcInputBase55" label="Model" visible=false>
+  list offers "Select...", "Solar PV", "Solar PV and Battery", "Wind", "Hydro", "Battery Only"
+```
+
+It resolved an **invisible** control and read the **Energy Source** list. This is the hazard
+CLAUDE.md already documents — PowerClerk's spec-page labels are bare "Manufacturer"/"Model"
+and the side comes from `field.section` — and steps 85/86/88/89 on this recipe carry **no
+section at all**, so the bare label resolves ambiguously. Fixing it means either re-recording
+with section captured, or inferring the section at replay from the surrounding block. Do not
+re-record blindly: the rest of the recipe is demonstrably healthy.
+
+Also still open on this portal: `click "compute totals: Calculate" left the page unchanged`,
+which is downstream of the array rows the Model miss leaves incomplete.
+
 **Automation quality is now a KPI, computed from runs that already happened (2026-09-07).**
 Every existing KPI is a business outcome — cycle days, corrections, SLA. None of them notices
 a filing staged with three required boxes empty, because a person quietly fills them in and
