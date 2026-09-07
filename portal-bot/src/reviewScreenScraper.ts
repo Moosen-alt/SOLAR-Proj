@@ -236,6 +236,12 @@ export function reviewComparison(
     const digits = String(expected ?? "").replace(/\D/g, "");
     if (digits.length < (opts.last4 ? 4 : 2)) return;
     const needle = opts.last4 ? digits.slice(-4) : digits;
+    // A NEEDLE OF ALL ONE DIGIT PROVES NOTHING. bodyDigits is every digit on the page with
+    // the separators stripped and run together, so "0000" turns up in a price, a timestamp,
+    // or two adjacent numbers colliding — it would "confirm" an account number that was
+    // never rendered. Real accounts do end 0000; for those the honest answer is that we
+    // could not distinguish, which is what NOT counting it as compared says.
+    if (/^(\d)\1+$/.test(needle)) return;
     const scope = scopeFor(labelKeywords);
     const scopeDigits = scope.map((f) => f.value).join(" ").replace(/\D/g, "");
     compared++;

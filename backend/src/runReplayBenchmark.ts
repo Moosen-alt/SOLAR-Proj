@@ -35,12 +35,23 @@ const arg = (name: string): string | undefined => {
 
 // The project a replay fills with. Deliberately recognisable in a portal's draft list, so a
 // human pruning drafts can tell a benchmark run from a real filing at a glance.
+// THE FIXTURE'S VALUES ARE THE EVIDENCE — so they must not be findable by accident.
+//
+// verified_accurate requires three project values CONFIRMED on the review screen, and that
+// bar is only as strong as the needles. The first draft of this fixture defeated it four
+// ways at once: "ZZ" is two characters, so the name check silently never ran; the street
+// number 555 also appears in the phone, so the address "confirmed" against the phone; and
+// an account and meter of all zeroes reduce to "0000", which turns up in any run of digits
+// on the page. Three confirmations, none of them real.
 const BENCH = {
-  owner: "ZZ Replay Benchmark",
-  homeownerName: "ZZ Replay Benchmark",
+  owner: "ZZTest Replay Benchmark",
+  // Still sorts under ZZ in a portal's draft list, still obviously a benchmark — and now
+  // long enough that the name check actually runs, with a needle nothing else supplies.
+  homeownerName: "ZZTest Replay Benchmark",
   homeownerEmail: "permit@infinitysolarusa.com",
   homeownerPhone: "(503) 555-0142",
-  street: "555 Liberty St SE", city: "Salem", state: "OR", zip: "97301",
+  // A street number that does not collide with the phone's 555.
+  street: "1847 Liberty St SE", city: "Salem", state: "OR", zip: "97301",
   dcKw: "7.2", acKw: "6.4", moduleQty: "18", moduleWattage: "400",
   permitPath: "prescriptive", framingType: "rafter", roofRafterSpacing: "24",
   roofRafterSpan: "11.5", snow: "25", deadLoad: "3.0", wind: "B",
@@ -59,7 +70,8 @@ const BENCH = {
   // never submitted. `account`/`meter` are the payload keys normalizeProject reads, and the
   // whole payload becomes the design snapshot, which is where `phase` and `voltage` are
   // looked up from.
-  account: "00000000 000 0", meter: "ZZ00000000", exportKw: "6.4",
+  // Distinctive digits, not runs of zeroes — see the note above the fixture.
+  account: "84739218 306 4", meter: "ZZ84920175", exportKw: "6.4",
   phase: "Single Phase", voltage: "240",
   energySource: "Solar", generationTechnology: "Photovoltaic",
 

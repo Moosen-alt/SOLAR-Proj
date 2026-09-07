@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { compareReviewFields, type ReviewField } from "./reviewScreenScraper";
+import { compareReviewFields, reviewComparison, type ReviewField } from "./reviewScreenScraper";
 import type { ProjectRecord } from "../../shared/src/types";
 
 // Browser-free tests for compareReviewFields — the deterministic review-screen check that
@@ -89,6 +89,48 @@ function run() {
     const m = compareReviewFields(fields, project, "Applicant Testy McTestface Address 1420 Marigold Street Size 3.21 kW");
     assert.ok(m.some((x) => x.field === "systemSizeDcKw"), `wrong system size should be flagged, got ${JSON.stringify(m)}`);
     console.log("  ✅ wrong value flagged (fallback does not mask it)");
+  }
+
+  // 6) ZERO MISMATCHES IS NOT EVIDENCE. Every check returns early when the project has no
+  //    value to check with, so a page of boilerplate complains about nothing while
+  //    establishing nothing — and the replay ladder's top rung used to accept exactly that.
+  {
+    const sparse = { homeownerName: "", projectAddress: "", systemSizeDcKw: null, accountNumber: "", meterNumber: "" } as unknown as ProjectRecord;
+    const fields: ReviewField[] = [
+      { label: "Level 2 Application?", value: "false" },
+      { label: "Does The Generation System Size Exceed The Limit?", value: "false" },
+    ];
+    const c = reviewComparison(fields, sparse, "Level 2 Application? false");
+    assert.equal(c.mismatches.length, 0, "nothing to compare should not manufacture mismatches");
+    assert.equal(c.confirmed, 0, `nothing was confirmed, but it reported ${c.confirmed}`);
+    console.log("  ✅ a page nothing could be checked against confirms 0");
+  }
+
+  // 7) A NEEDLE OF ALL ONE DIGIT CANNOT CONFIRM ANYTHING. bodyDigits is every digit on the
+  //    page run together, so "0000" turns up in a price, a timestamp, or two adjacent
+  //    numbers colliding. The benchmark fixture once carried an all-zero account AND meter,
+  //    which would have supplied two of the three confirmations the top rung requires —
+  //    from a page that never showed either value.
+  {
+    const zeros = {
+      homeownerName: "", projectAddress: "", systemSizeDcKw: null,
+      accountNumber: "00000000 000 0", meterNumber: "ZZ00000000",
+    } as unknown as ProjectRecord;
+    const c = reviewComparison([{ label: "Fee", value: "$0.00" }], zeros, "Fee $0.00 filed 2026-10-01");
+    assert.equal(c.confirmed, 0, `an all-zero needle confirmed ${c.confirmed} field(s) against a page showing neither`);
+    assert.equal(c.compared, 0, "an un-evidentiary needle must not even count as compared");
+    console.log("  ✅ an all-one-digit needle confirms nothing");
+  }
+
+  // ...but a distinctive account number IS confirmable, so the guard has not gone blind.
+  {
+    const real = {
+      homeownerName: "", projectAddress: "", systemSizeDcKw: null,
+      accountNumber: "84739218 306 4", meterNumber: "",
+    } as unknown as ProjectRecord;
+    const c = reviewComparison([{ label: "Account Number", value: "…3064" }], real, "Account Number …3064");
+    assert.equal(c.confirmed, 1, `a distinctive account should confirm; got ${JSON.stringify(c)}`);
+    console.log("  ✅ a distinctive account number still confirms");
   }
 
   console.log("\n✅ ALL PASS: review-screen comparison tests");

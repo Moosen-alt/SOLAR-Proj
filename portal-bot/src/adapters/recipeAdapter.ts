@@ -596,7 +596,7 @@ ${body.slice(0, 4000)}`);
         try {
           const done = await this.executeStep(step, pastReview);
           if (done) executed++;
-          else skipped.push(step.note || step.action);
+          else skipped.push(String(step.note || step.action).slice(0, 70));
           // The held-check distinguishes LANDED-THEN-LOST from NEVER-LANDED: only a
           // select that reported success is a candidate for "a re-render took it back".
           if (done && step.action === "select" && recordedStep?.field) this.landedSelectFields.add(String(recordedStep.field));
@@ -750,7 +750,7 @@ ${body.slice(0, 4000)}`);
             const healedStep: RecipeStep = { ...step, selector: { ...healedSelector, fallbacks: [...(step.selector ? [step.selector] : []), ...(healedSelector.fallbacks ?? [])] } };
             const done = await this.executeStep(healedStep, pastReview);
             if (done) executed++;
-            else skipped.push(step.note || step.action);
+            else skipped.push(String(step.note || step.action).slice(0, 70));
             this.healedSteps.push({ note: step.note || step.action, action: step.action, selector: healedSelector });
             succeeded = true;
           } catch { /* healed selector didn't take either — fail below as before */ }
