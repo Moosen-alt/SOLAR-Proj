@@ -810,6 +810,57 @@ async function testDisabledNamesakeSkipped() {
 // rightly refused "Solar PV/Wind/Hydro" as models, and the cascade never completed —
 // PowerClerk then took the manufacturer back too, and the replay looped on a page it could
 // never finish. An invisible-only match must fall through to the next selector level.
+// THE LIVE FAILURE THAT KILLED BOTH COOS BAY RECIPES AT STEP 1.
+//
+// Oregon ePermitting's dashboard carries exactly ONE node whose text is "Apply": a disabled
+// decorative pill (`<button disabled class="dropbtn1" onclick="alert('Button was
+// clicked!')">`). A single match, so preferVisible — which does prefer an enabled control —
+// never got to choose between candidates; and the level was VISIBLE, which was the only
+// thing resolution asked before accepting it. The click then waited out its full 30 seconds
+// on a button that can never be clicked.
+//
+// The real control was one fallback down and enabled. Rejecting the disabled level is all it
+// takes to reach it: a disabled control is no more the one the operator used than a hidden
+// one is.
+async function testDisabledOnlyPrimaryFallsThroughToFallback() {
+  const log: ActionLog = { clicks: [], fills: [], gotos: [], checks: 0 };
+  const adapter = new RecipeAdapter(baseRecipe([
+    { action: "click", selector: { text: "Apply", fallbacks: [{ role: "link", name: "Apply" }] }, note: "application entry: Apply" },
+  ]), {}, {});
+  const page: any = makeFakePage({ log });
+  const clicked: string[] = [];
+  const mk = (visible: boolean, enabled: boolean, id: string): any => {
+    const loc: any = {
+      first: () => loc, nth: () => loc,
+      count: async () => 1,
+      isVisible: async () => visible,
+      isEnabled: async () => enabled,
+      waitFor: async () => { if (!visible) throw new Error("TimeoutError: hidden"); },
+      click: async () => {
+        if (!enabled) throw new Error("TimeoutError: element is not enabled");
+        clicked.push(id);
+      },
+      evaluateAll: async () => [],
+    };
+    return loc;
+  };
+  // The decorative pill: present, visible, and permanently disabled.
+  page.getByText = () => mk(true, false, "disabled-pill");
+  // The real one, whose accessible name carries the icon ligature ("check_circleApply") and
+  // which a role+name fallback matches by substring.
+  page.getByRole = (role: string, o?: { name?: string }) =>
+    (role === "link" && o?.name === "Apply" ? mk(true, true, "real-apply") : mk(false, false, "other"));
+  withFakePage(adapter, page);
+
+  const result = await adapter.fillApplication(fakeProject);
+  assert.deepEqual(clicked, ["real-apply"],
+    `the disabled pill must be passed over for the enabled control (clicked ${JSON.stringify(clicked)})`);
+  assert.ok(
+    (result.data?.driftWarnings as string[] | undefined)?.some((w) => /hidden or disabled control/.test(w)),
+    "and the pass-over is reported as drift",
+  );
+}
+
 async function testHiddenPrimaryFallsThroughToVisibleFallback() {
   const log: ActionLog = { clicks: [], fills: [], gotos: [], checks: 0 };
   const adapter = new RecipeAdapter(baseRecipe([
@@ -839,13 +890,14 @@ async function testHiddenPrimaryFallsThroughToVisibleFallback() {
   assert.equal(result.ok, true, `run should complete (${result.message || ""})`);
   assert.deepEqual(log.fills.map((f) => f.key), ["real-model"], "the VISIBLE fallback got the value; the hidden ghost got nothing");
   assert.ok(
-    (result.data?.driftWarnings as string[] | undefined)?.some((w) => /hidden control/.test(w)),
+    (result.data?.driftWarnings as string[] | undefined)?.some((w) => /hidden or disabled control/.test(w)),
     "and the pass-over is reported as drift",
   );
 }
 
 const tests: Array<[string, () => Promise<void>]> = [
   ["RESOLVE: a hidden-only primary falls through to the visible fallback", testHiddenPrimaryFallsThroughToVisibleFallback],
+  ["RESOLVE: a visible-but-DISABLED primary falls through too", testDisabledOnlyPrimaryFallsThroughToFallback],
   ["CLICK: a disabled namesake ahead of the real control is skipped", testDisabledNamesakeSkipped],
   ["RECORD TYPE: a type this jurisdiction does not offer refuses to file", testRecordTypeNotOfferedRefusesToFile],
   ["RECORD TYPE: an offered type is checked by its own label", testRecordTypeOfferedIsCheckedByLabel],

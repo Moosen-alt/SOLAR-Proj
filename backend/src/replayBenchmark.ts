@@ -295,6 +295,8 @@ export interface ReplayRow {
     healed?: number; blanks?: number;
     /** WHICH fields, not just how many — a count sends someone back to the portal to look. */
     blankNames?: string[]; driftWarnings?: string[]; skippedNames?: string[]; unresolvedFields?: string[];
+    /** The failure text in full — the scorer's reason truncates it where it matters. */
+    message?: string;
   };
 }
 

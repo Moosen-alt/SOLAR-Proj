@@ -3039,11 +3039,28 @@ ${body.slice(0, 4000)}`);
       const picked = await this.preferVisible(level.loc, level.from);
       // On a probeable page, take this level only if what it picked is actually VISIBLE;
       // a test fake without isVisible keeps the pre-existing first-non-empty behaviour.
+      // VISIBLE IS NOT ENOUGH TO ACCEPT A LEVEL — IT MUST ALSO BE ENABLED.
+      //
+      // preferVisible already prefers an enabled match, but only when a level matches SEVERAL
+      // elements. Oregon ePermitting's dashboard carries exactly one node whose text is
+      // "Apply": a disabled decorative pill (`<button disabled class="dropbtn1"
+      // onclick="alert('Button was clicked!')">`). One match, so preferVisible collapsed to
+      // it; visible, so this accepted it; and the click then waited out its full 30 seconds
+      // on a control that can never be clicked. Both Coos Bay recipes died there, at step 1.
+      //
+      // The real control was one fallback away and enabled — its accessible name is
+      // "check_circleApply", the Material-icon ligature glued to the label, which the
+      // recorded `role=link name="Apply"` fallback matches by substring. Rejecting the
+      // disabled level is all it takes to reach it.
       const canProbe = typeof picked?.isVisible === "function";
-      if (!canProbe || await picked.isVisible().catch(() => false)) {
+      const usable = canProbe
+        ? (await picked.isVisible().catch(() => false))
+          && (typeof picked.isEnabled === "function" ? await picked.isEnabled().catch(() => true) : true)
+        : false;
+      if (!canProbe || usable) {
         // Worth a warning only when an EARLIER matching level was passed over as hidden.
         if (level !== firstNonEmpty) {
-          this.driftWarnings.push(`"${this.stepLabel({ selector: sel } as RecipeStep)}" — recorded selector matched only hidden control(s); resolved via a fallback to a visible one`);
+          this.driftWarnings.push(`"${this.stepLabel({ selector: sel } as RecipeStep)}" — recorded selector matched only hidden or disabled control(s); resolved via a fallback to a usable one`);
         }
         return picked;
       }

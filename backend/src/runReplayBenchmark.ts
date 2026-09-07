@@ -251,6 +251,11 @@ async function main(): Promise<void> {
         // A step that "did not take" is recorded as SKIPPED, and the count alone sends
         // someone back to the portal to find out which. Name them.
         skippedNames: ((o.skipped as string[]) ?? []).slice(0, 30),
+        // THE WHOLE FAILURE TEXT, not the scorer's 120-character summary. Playwright puts
+        // the answer in the call log tail — "waiting for element to be visible", "element is
+        // outside of the viewport", "intercepts pointer events" — and the summary cuts it
+        // off at exactly the word that matters, which cost a live run to discover twice.
+        message: String(o.message ?? "").slice(0, 1200),
         unresolvedFields: ((o.unresolvedFields as string[]) ?? []).slice(0, 30),
       },
     });
