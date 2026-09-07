@@ -223,6 +223,9 @@ async function main(): Promise<void> {
       detail: {
         executed: Number(o.executed ?? 0), recorded: c.steps,
         reviewFieldsSeen: Number(o.reviewFieldsSeen ?? 0),
+        // Fields READ vs project values CONFIRMED — the second is the one the top rung turns
+        // on, and the scorecard was only carrying the first.
+        reviewFieldsConfirmed: Number(o.reviewFieldsConfirmed ?? 0),
         healed: ((o.healedSteps as unknown[]) ?? []).length,
         blanks: ((o.requiredStillEmpty as unknown[]) ?? []).length,
         blankNames: ((o.requiredStillEmpty as string[]) ?? []).slice(0, 30),

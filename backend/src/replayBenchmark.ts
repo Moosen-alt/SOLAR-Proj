@@ -278,7 +278,8 @@ export interface ReplayRow {
   score: ReplayScore;
   /** Carried onto the scorecard so a row can be argued with without re-running it. */
   detail?: {
-    executed?: number; recorded?: number; reviewFieldsSeen?: number; healed?: number; blanks?: number;
+    executed?: number; recorded?: number; reviewFieldsSeen?: number; reviewFieldsConfirmed?: number;
+    healed?: number; blanks?: number;
     /** WHICH fields, not just how many — a count sends someone back to the portal to look. */
     blankNames?: string[]; driftWarnings?: string[]; skippedNames?: string[]; unresolvedFields?: string[];
   };
