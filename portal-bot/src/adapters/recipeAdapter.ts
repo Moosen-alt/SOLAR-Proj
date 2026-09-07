@@ -1802,6 +1802,20 @@ ${body.slice(0, 4000)}`);
     if (await this.looksOutOfReach(scoped) || await this.overlayShadowsTarget(scoped)) {
       if (await this.dismissStaleOverlays()) scoped = await this.resolveLocator(step.selector);
     }
+    // NEVER ACT ON AN AMBIGUOUS LOCATOR.
+    //
+    // Playwright refuses a fill or click whose locator matches more than one element, and it
+    // refuses it as a "strict mode violation" — which reads like a selector that has drifted
+    // and is nothing of the kind. Accela renders one logical field as several inputs sharing
+    // an id fragment: `input[id*='StreetNo4Search']` matches the street-number box, its
+    // hidden watermark state, and the "Street Number To" of a range. The recorded selector
+    // is perfectly good and names four things.
+    //
+    // preferVisible already chooses among candidates on the paths that reach it; this is the
+    // floor under every path, including the ones that do not. The choice is the same one a
+    // person makes — the first that is visible and enabled — and it is made HERE rather than
+    // left to Playwright, which would only refuse.
+    scoped = await this.narrowToOne(scoped, step);
     // IS THIS THE CONTROL WE RECORDED? Portal field ids are routinely per-form-instance
     // (PowerClerk's "AWQBPS8U00XGInput"), so on a NEW project the same id is a DIFFERENT
     // question. Measured live: a step recorded for "Description of Service:" resolved to
@@ -2585,6 +2599,34 @@ ${body.slice(0, 4000)}`);
   // its full 30s before FAILING THE WHOLE REPLAY — verified in real Chromium by
   // recipeReplay.dom.smoke.ts. Explicit nth stays exactly as recorded.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  /**
+   * Reduce a locator to exactly one element, choosing the way a person would.
+   *
+   * Silent when there is nothing to choose (0 or 1 match), which is the common case.
+   */
+  private async narrowToOne(
+    scoped: { count?: () => Promise<number>; nth?: (i: number) => unknown; first?: () => unknown } | null | undefined,
+    step: RecipeStep,
+  ): Promise<never> {
+    if (!scoped || typeof scoped.count !== "function" || typeof scoped.nth !== "function") return scoped as never;
+    let n = 0;
+    try { n = await scoped.count(); } catch { return scoped as never; }
+    if (n <= 1) return scoped as never;
+    for (let i = 0; i < Math.min(n, 12); i++) {
+      const c = scoped.nth(i) as { isVisible?: () => Promise<boolean>; isEnabled?: () => Promise<boolean> };
+      if (typeof c.isVisible !== "function") break;
+      if (!(await c.isVisible().catch(() => false))) continue;
+      const enabled = typeof c.isEnabled === "function" ? await c.isEnabled().catch(() => true) : true;
+      if (!enabled) continue;
+      this.driftWarnings.push(
+        `"${String(step.note ?? step.action).slice(0, 44)}" matched ${n} elements — used the first visible, enabled one (a recorded selector naming several controls is not drift, but verify it)`,
+      );
+      return c as never;
+    }
+    // Nothing visible and enabled among them: keep the familiar first-match failure shape.
+    return (typeof scoped.first === "function" ? scoped.first() : scoped) as never;
+  }
+
   /**
    * A control whose menu is CLOSED, opened and picked from.
    *
