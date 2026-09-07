@@ -657,8 +657,29 @@ ${body.slice(0, 4000)}`);
             }
           }
           await sleep(RETRY_BACKOFF_MS[attempt]);
-          // Reload on timeout retries to recover from stale page state.
-          await this.page.reload({ waitUntil: "networkidle", timeout: 15000 }).catch(() => null);
+          // A LOGIN REDIRECT CAN STEAL THE PAGE THE RECIPE STARTED FROM, AND RELOADING
+          // WHEREVER WE LANDED CANNOT GET IT BACK.
+          //
+          // Both Coos Bay recipes died on their FIRST real step — `click application entry:
+          // Apply`, a 30s timeout — and the failure screenshot shows why: Oregon
+          // ePermitting's home dashboard, logged in, with no Apply control on it. The
+          // recipe's goto had gone to the entry URL and the authenticated session bounced
+          // to Home. Reloading Home forever cannot produce an Apply link; returning to the
+          // URL the recipe recorded can.
+          //
+          // Bounded to the START of the run, because after the entry step a recipe is
+          // SUPPOSED to have navigated away and going back would undo its own progress.
+          const entryUrl = String(this.recipe.steps.find((s) => s.action === "goto")?.value || "");
+          const here = String(this.page.url?.() ?? "");
+          if (entryUrl && executed <= 1 && here && !here.startsWith(entryUrl)) {
+            this.driftWarnings.push(
+              `the session landed on ${here.slice(0, 60)} rather than the recipe's entry URL — returned there before retrying (commonly a login redirect)`,
+            );
+            await this.page.goto(entryUrl, { waitUntil: "networkidle", timeout: 20000 }).catch(() => null);
+          } else {
+            // Reload on timeout retries to recover from stale page state.
+            await this.page.reload({ waitUntil: "networkidle", timeout: 15000 }).catch(() => null);
+          }
           // A reload can bring the announcement/cookie banner straight back, and a timeout
           // is the signature of a covered target — clear both before spending the next
           // attempt. clearOverlays is the generic breaker for portals we have no selector

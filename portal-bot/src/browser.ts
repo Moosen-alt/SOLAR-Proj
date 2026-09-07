@@ -154,6 +154,21 @@ export async function reapOrphanedProfileBrowsers(profilesRoot: string): Promise
 // --no-sandbox / --disable-setuid-sandbox required for non-privileged container users.
 // Background-throttling flags keep JS timers and animations responsive even when headless.
 const CHROMIUM_ARGS = [
+  // A DESKTOP WINDOW, EXPLICITLY. `--start-maximized` does nothing headless — there is no
+  // window manager to maximize against — so with `viewport: null` every headless run drove
+  // portals at Chromium's default 800x600. A phone-shaped window.
+  //
+  // Government portals are responsive, and at 800px wide they collapse their navigation into
+  // a hamburger. Both Coos Bay recipes died on their first step, a 30s timeout looking for
+  // Accela's "Apply" link, and the failure screenshot is 800px wide with the entire nav bar
+  // folded away behind a ☰. The control was present and unreachable — the same "present but
+  // shut" family as the concealed fields, arriving through layout instead of CSS.
+  //
+  // This also silently biased the LEARN side: anything a portal hides below 800px was never
+  // seen, so recipes could be recorded around controls that a desktop operator would have
+  // used. 1600x1000 is an ordinary desktop, wide enough that no mainstream responsive
+  // breakpoint collapses, without pretending to be an ultra-wide.
+  "--window-size=1600,1000",
   "--start-maximized",
   "--disable-dev-shm-usage",
   "--no-sandbox",
