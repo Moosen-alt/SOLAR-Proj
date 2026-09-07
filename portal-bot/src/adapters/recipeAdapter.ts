@@ -1805,6 +1805,17 @@ ${body.slice(0, 4000)}`);
     if (await this.looksOutOfReach(scoped) || await this.overlayShadowsTarget(scoped)) {
       if (await this.dismissStaleOverlays()) scoped = await this.resolveLocator(step.selector);
     }
+    // THE SECTION THE LEARNER RECORDED, FINALLY USED.
+    //
+    // When what we resolved is still not something a person could act on, and the step was
+    // recorded with a section, that section is better evidence than any selector: PGE's two
+    // "Model" selects differ only by "Inverter Clone System" versus "PV ArrayDelete Array",
+    // and that string has been sitting in every such step's fingerprint since the day it was
+    // learned. Consulted last, because a working selector needs no rescue.
+    if (step.fingerprint?.section && await this.looksOutOfReach(scoped)) {
+      const bySection = await this.resolveBySection(step);
+      if (bySection) scoped = bySection as never;
+    }
     // NEVER ACT ON AN AMBIGUOUS LOCATOR.
     //
     // Playwright refuses a fill or click whose locator matches more than one element, and it
@@ -2618,6 +2629,93 @@ ${body.slice(0, 4000)}`);
   // its full 30s before FAILING THE WHOLE REPLAY — verified in real Chromium by
   // recipeReplay.dom.smoke.ts. Explicit nth stays exactly as recorded.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  /**
+   * Pick the control whose SECTION matches the one recorded for this step.
+   *
+   * The learn side already captures it. PGE's two "Model" selects record as
+   * `section: "Inverter Clone System"` and `section: "PV ArrayDelete Array"`, and PacifiCorp's
+   * as the same pair — the exact disambiguator, sitting in the step's fingerprint, written
+   * every time and read never. The selector rebuild for duplicate labels drops it (it builds
+   * a fresh selector object around the element id), so resolution has been choosing between
+   * identically-labelled controls on position and visibility alone.
+   *
+   * The section algorithm here is deliberately the SAME one the learner uses — fieldset
+   * legend, then the enclosing panel's leading heading, then the nearest heading before the
+   * field — because a section computed differently at replay would not match the string that
+   * was recorded, and a comparison that never matches is worse than no comparison.
+   */
+  private async resolveBySection(step: RecipeStep): Promise<unknown | null> {
+    if (!this.page || typeof this.page.evaluate !== "function") return null;
+    const want = String(step.fingerprint?.section ?? "").trim();
+    const label = String(step.fingerprint?.ariaLabel ?? step.selector?.label ?? "").trim();
+    if (!want || !label) return null;
+    const found = await this.page.evaluate((arg: { want: string; label: string }) => {
+      const clean = (t: string | null | undefined): string => (t || "").replace(/\s+/g, " ").trim().slice(0, 80);
+      const norm = (t: string): string => clean(t).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+      const sectionOf = (el: Element): string => {
+        const fs = el.closest("fieldset");
+        const legend = fs ? fs.querySelector("legend") : null;
+        if (legend && clean(legend.textContent)) return clean(legend.textContent);
+        const container = el.closest('section, [class*="panel"], [class*="card"], [class*="section"], [class*="form-section"], [class*="block"], [role="group"], [role="region"]');
+        if (container) {
+          const h = container.querySelector('legend, h1, h2, h3, h4, h5, h6, .panel-title, .card-title, .card-header, .section-title, .panel-heading');
+          if (h && clean(h.textContent)) return clean(h.textContent);
+        }
+        let node: Element | null = el;
+        for (let hops = 0; node && hops < 6; hops++) {
+          let sib: Element | null = node.previousElementSibling;
+          while (sib) {
+            if (/^(H[1-6]|LEGEND)$/.test(sib.tagName) && clean(sib.textContent)) return clean(sib.textContent);
+            const inner = sib.querySelector ? sib.querySelector("h1, h2, h3, h4, h5, h6, legend") : null;
+            if (inner && clean(inner.textContent)) return clean(inner.textContent);
+            sib = sib.previousElementSibling;
+          }
+          node = node.parentElement;
+        }
+        return "";
+      };
+      const labelOf = (el: Element): string => {
+        const id = el.getAttribute("id");
+        const forLbl = id ? document.querySelector(`label[for="${CSS.escape(id)}"]`) : null;
+        return clean(
+          el.getAttribute("aria-label")
+          || (forLbl ? forLbl.textContent : "")
+          || (el.closest("label") ? (el.closest("label") as HTMLElement).textContent : "")
+          || el.getAttribute("placeholder")
+          || "",
+        );
+      };
+      const wantS = norm(arg.want), wantL = norm(arg.label);
+      let best: HTMLElement | null = null;
+      let bestScore = -1;
+      for (const el of Array.from(document.querySelectorAll("input, select, textarea")) as HTMLElement[]) {
+        const l = norm(labelOf(el));
+        if (!l || (l !== wantL && !l.includes(wantL) && !wantL.includes(l))) continue;
+        const sec = norm(sectionOf(el));
+        if (!sec) continue;
+        // Exact section beats a containment match; a visible control beats a concealed one.
+        const r = el.getBoundingClientRect();
+        const cs = getComputedStyle(el);
+        const shown = r.width > 2 && r.height > 2 && cs.visibility !== "hidden" && cs.display !== "none" && Number(cs.opacity) !== 0;
+        let score = -1;
+        if (sec === wantS) score = 4;
+        else if (sec.includes(wantS) || wantS.includes(sec)) score = 2;
+        if (score < 0) continue;
+        if (shown) score += 1;
+        if (score > bestScore) { bestScore = score; best = el; }
+      }
+      if (!best) return "";
+      document.querySelectorAll("[data-rc-section-hit]").forEach((e) => e.removeAttribute("data-rc-section-hit"));
+      best.setAttribute("data-rc-section-hit", "1");
+      return sectionOf(best);
+    }, { want, label }).catch(() => "") as string;
+    if (!found) return null;
+    this.driftWarnings.push(
+      `"${String(step.note ?? step.field ?? label).slice(0, 36)}" resolved by SECTION ${JSON.stringify(want.slice(0, 34))} rather than by its recorded selector`,
+    );
+    return this.page.locator("[data-rc-section-hit='1']").first();
+  }
+
   /** A selector in one short phrase, for the resolution trail. */
   private describeSelector(sel?: RecipeSelector): string {
     if (!sel) return "(none)";
@@ -2922,7 +3020,12 @@ ${body.slice(0, 4000)}`);
       if (await scoped.count() === 0) return true;
       const first = scoped.first?.();
       if (!first || typeof first.isVisible !== "function") return false;
-      return !(await first.isVisible());
+      // THE SAME MEASURE THE GATE USES. This asked Playwright, which counts an opacity:0 or
+      // 1x1 control as visible — so a concealed native input behind a styled widget read as
+      // perfectly reachable, and every rescue hanging off this predicate stayed asleep. The
+      // acceptance test was corrected for exactly this; leaving its sibling on the other
+      // measure just moved the blind spot rather than closing it.
+      return !(await this.isTrulyVisible(first as never));
     } catch { return false; }
   }
 
