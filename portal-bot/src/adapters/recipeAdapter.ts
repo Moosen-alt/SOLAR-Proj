@@ -2585,6 +2585,63 @@ ${body.slice(0, 4000)}`);
   // its full 30s before FAILING THE WHOLE REPLAY — verified in real Chromium by
   // recipeReplay.dom.smoke.ts. Explicit nth stays exactly as recorded.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  /**
+   * Find a visible, ENABLED clickable whose name contains `want`, ignoring icon-font noise.
+   *
+   * Tags the winner with a data attribute and returns a locator for it, because there is no
+   * other way to hand a specific in-page element back to Playwright from an evaluate.
+   * Conservative on purpose: enabled and visible only, shortest match wins (so "Apply" does
+   * not pick "Apply for a Licence" over "Apply"), and nothing is returned when the match is
+   * ambiguous in size.
+   */
+  private async findEnabledControlByName(want: string): Promise<unknown | null> {
+    if (!this.page || typeof this.page.evaluate !== "function") return null;
+    const found = await this.page.evaluate((needle: string) => {
+      const norm = (t: string): string => t.replace(/\s+/g, " ").trim();
+      // Icon ligatures sit immediately before the real label with no separator and are
+      // always lowercase words: "check_circleApply" -> "Apply", "eventSchedule" -> "Schedule".
+      const strip = (t: string): string => norm(t).replace(/^[a-z][a-z_]{2,}(?=[A-Z])/, "");
+      const wants = needle.toLowerCase();
+      let best: HTMLElement | null = null;
+      let bestLen = Infinity;
+      const els = Array.from(document.querySelectorAll(
+        "a, button, input[type=submit], input[type=button], [role=button], [role=link]",
+      )) as HTMLElement[];
+      for (const el of els) {
+        const r = el.getBoundingClientRect();
+        if (r.width < 4 || r.height < 4) continue;
+        const cs = getComputedStyle(el);
+        if (cs.visibility === "hidden" || cs.display === "none") continue;
+        if ((el as HTMLButtonElement).disabled) continue;
+        if (el.getAttribute("aria-disabled") === "true") continue;
+        const label = strip(
+          el.innerText || el.getAttribute("value") || el.getAttribute("aria-label") || el.getAttribute("title") || "",
+        );
+        if (!label) continue;
+        if (!label.toLowerCase().includes(wants)) continue;
+        if (label.length < bestLen) { best = el; bestLen = label.length; }
+      }
+      if (!best) return false;
+      document.querySelectorAll("[data-rc-name-hit]").forEach((e) => e.removeAttribute("data-rc-name-hit"));
+      best.setAttribute("data-rc-name-hit", "1");
+      return true;
+    }, want).catch((err: unknown) => {
+      // DO NOT SWALLOW THIS. A recovery that fails silently is indistinguishable from a page
+      // that genuinely had no match, and this whole session has been about that difference.
+      // The evaluate can throw for reasons worth knowing — a navigation mid-read, a CSP, the
+      // __name shim missing on a fresh document — and each needs a different fix.
+      this.driftWarnings.push(
+        `the name-based control recovery could not run: ${err instanceof Error ? err.message.slice(0, 90) : String(err).slice(0, 90)}`,
+      );
+      return false;
+    });
+    if (!found) {
+      this.driftWarnings.push(`no enabled control on this page has a name containing "${want.slice(0, 40)}"`);
+      return null;
+    }
+    return this.page.locator("[data-rc-name-hit='1']").first();
+  }
+
   private async preferVisible(loc: any, sel?: RecipeSelector): Promise<any> {
     if (!loc || typeof loc.count !== "function" || sel?.nth != null) return loc;
     const collapse = () => (typeof loc.first === "function" ? loc.first() : loc);
@@ -3063,6 +3120,24 @@ ${body.slice(0, 4000)}`);
           this.driftWarnings.push(`"${this.stepLabel({ selector: sel } as RecipeStep)}" — recorded selector matched only hidden or disabled control(s); resolved via a fallback to a usable one`);
         }
         return picked;
+      }
+    }
+    // NOTHING USABLE AT ANY LEVEL — TRY THE CONTROL'S NAME, WITH ICON NOISE REMOVED.
+    //
+    // Icon fonts inject their ligature text into an element's accessible name: Oregon
+    // ePermitting's Apply link reads "check_circleApply", Search reads "searchSearch",
+    // Schedule reads "eventSchedule". A recorded name of "Apply" matches none of them by
+    // role+name, so every fallback missed and replay was left holding a disabled decorative
+    // pill that happened to carry the same word. Material Icons are used across government
+    // portals, so this is a fleet-wide shape rather than one portal's quirk.
+    const want = String(sel.name || sel.text || "").trim();
+    if (want) {
+      const rescued = await this.findEnabledControlByName(want);
+      if (rescued) {
+        this.driftWarnings.push(
+          `"${want.slice(0, 40)}" matched no usable control by selector — found an enabled one by name instead (icon-font ligatures pollute accessible names)`,
+        );
+        return rescued;
       }
     }
     // Nothing visible at any level: the first level that matched at all keeps the familiar
