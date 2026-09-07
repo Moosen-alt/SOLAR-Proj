@@ -185,6 +185,27 @@ The logic moved out of `recipeAdapter` (private, untestable — which is why it 
 real shapes in both directions. The false-positive cases carry equal weight: a sweep that cries
 blank on a filled page teaches the operator to click past the warning.
 
+**STOP RULE OBSERVED ON THE `Model` STEP (2026-09-07).** Four fixes were shipped at PGE's
+inverter `Model` — an enabled check, a no-fallback fall-through, an unpinned ordinal twin, and
+a corrected visibility gate — and the diagnostic never moved once:
+`resolved <input id="pcInputBase34" label="Model" visible=false>`, 64/68 every time.
+
+The fourth found a REAL bug worth keeping: Playwright counts `opacity:0` and `1x1` controls as
+visible while our own diagnostic calls them hidden, so the acceptance gate had been saying yes
+to controls its own report called concealed — which made the three earlier rescues unreachable
+code in general. `visibilityAgreement.dom.smoke.ts` proves the divergence and now locks it.
+It was not this step's cause.
+
+**An identical failure signature after four different fixes means the fixes are not on the
+executed path.** Do not ship a fifth variant. Instrument the decision instead: add a per-level
+line to `resolveLocator` — `level N <selector> -> count, visible, enabled, accepted/rejected` —
+and read it from one scorecard. That converts the question from a guess into a sentence, and
+it is the move that cracked Coos Bay in one run after six of guessing.
+
+The likeliest answer remains the one below: `#pcInputBase34` is a volatile per-render id whose
+label is the BARE, repeated "Model", and the step carries no `section`. The information needed
+to choose correctly is not in the recipe.
+
 **THE LAST REPLAY DEFECT IS RECIPE QUALITY, NOT THE ENGINE (2026-09-07).** PGE and PacifiCorp
 both fail their inverter `Model` step, and PGE also fails `Schedule`. The warnings name the
 cause exactly, and it is the same on both:
