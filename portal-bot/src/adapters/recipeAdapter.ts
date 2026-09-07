@@ -90,6 +90,21 @@ const IDENTITY_STOPWORDS = new Set([
   "required", "optional",
 ]);
 
+// The SHAPES an open popup takes, never a portal's class names — the portal this has to
+// work on is the one nobody has opened yet. Shared by the "is anything open" probe and the
+// "is my target inside it" test so the two cannot disagree.
+const OPEN_POPUP_SELECTOR = [
+  '[role="listbox"]',
+  '[aria-expanded="true"][role="combobox"]',
+  '[class*="dropdown"][class*="open"]',
+  '[class*="dropdown-menu"][class*="show"]',
+  '[class*="select2-container--open"]',
+  '[class*="datepicker"]',
+  '[class*="date-picker"]',
+  '[class*="calendar"][class*="open"]',
+  '[class*="ui-datepicker"]',
+].join(", ");
+
 export class RecipeAdapter extends BasePortalAdapter {
   portalName: string;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1737,10 +1752,35 @@ ${body.slice(0, 4000)}`);
       this.driftWarnings.push(`skipped "${String(step.note ?? step.field ?? "battery step").slice(0, 48)}" — this project has no battery`);
       return true; // not a failure: the section does not apply to this filing
     }
+    // A POPUP LEFT OPEN BY THE LAST STEP MUST NOT SHADOW THIS ONE.
+    //
+    // Replay had no Escape anywhere in it; the learner has nine. Same asymmetry that
+    // produced the modal, validation-scrape and review-screen bugs before it, and it cost a
+    // live PacifiCorp filing its inverter model. The step reported:
+    //
+    //   select "Model" landed nothing though 49 option(s) were showing
+    //     resolved <input id="pcInputBase55" label="Model" visible=false>
+    //     list offers "Select...", "Solar PV", "Wind", "Hydro", "Battery Only"
+    //
+    // Those are Energy Source options. An earlier widget's list was still open, covering the
+    // Model control — so resolution found nothing visible and fell through to a hidden node,
+    // and the option scan read the wrong list entirely. CLAUDE.md already records the same
+    // hazard for date inputs ("pop a picker that must be Escape-dismissed"); replay never
+    // dismissed those either, so every replayed date left an overlay on the next control.
+    //
+    // ONLY WHEN THE CONTROL IS ACTUALLY OUT OF REACH, never pre-emptively. Dismissing before
+    // every step would close a list the CURRENT step needs — a recipe is free to record
+    // "open the dropdown" and "choose the option" as two steps, and blanket Escapes would
+    // break exactly that. Resolving first makes the guard self-limiting: if the target were
+    // inside the open popup it would resolve visible, and nothing is dismissed.
+    //
     // `let`, not `const`: the upload branch may re-anchor to a different slot once the
     // page's real upload controls have been re-tagged (see the upload case below), and the
     // identity check below may re-anchor a step that resolved onto the wrong control.
     let scoped = await this.resolveLocator(step.selector);
+    if (await this.looksOutOfReach(scoped) || await this.overlayShadowsTarget(scoped)) {
+      if (await this.dismissStaleOverlays()) scoped = await this.resolveLocator(step.selector);
+    }
     // IS THIS THE CONTROL WE RECORDED? Portal field ids are routinely per-form-instance
     // (PowerClerk's "AWQBPS8U00XGInput"), so on a NEW project the same id is a DIFFERENT
     // question. Measured live: a step recorded for "Description of Service:" resolved to
@@ -2589,6 +2629,97 @@ ${body.slice(0, 4000)}`);
       await this.page.screenshot({ path: path.join(this.pageShotDir, name), fullPage: true });
       if (force) this.outcomeShotPath = path.join(this.pageShotDir, name);
     } catch { /* best-effort: never fail a replay over a screenshot */ }
+  }
+
+  /**
+   * Close any dropdown list, date picker or popover a previous step left open.
+   *
+   * Portal-agnostic on purpose: it looks for the SHAPES an open popup takes (an expanded
+   * combobox, a shown menu, a visible listbox, a calendar) rather than any portal's class
+   * names, because the portal this has to work on is the one nobody has opened yet.
+   *
+   * Called only when a step's control could not be reached, so the happy path pays nothing
+   * and a popup the current step legitimately opened is never closed underneath it.
+   * Returns whether anything was actually dismissed, so the caller knows to resolve again.
+   */
+  private async looksOutOfReach(
+    scoped: { count?: () => Promise<number>; first?: () => { isVisible?: () => Promise<boolean> } } | null | undefined,
+  ): Promise<boolean> {
+    if (!scoped || typeof scoped.count !== "function") return false; // test fakes: unchanged behaviour
+    try {
+      if (await scoped.count() === 0) return true;
+      const first = scoped.first?.();
+      if (!first || typeof first.isVisible !== "function") return false;
+      return !(await first.isVisible());
+    } catch { return false; }
+  }
+
+  /**
+   * Is a popup open that the target is NOT part of?
+   *
+   * The distinction that keeps this safe. A recipe may record "open the dropdown" and
+   * "choose the option" as two steps, and the option lives INSIDE the open list — dismissing
+   * there would break the very interaction being replayed. A control that is merely COVERED
+   * by someone else's list is the opposite case, and it is the one that cost a live filing
+   * its inverter model. Containment tells them apart exactly; visibility does not, because
+   * an occluded input is still visible by CSS.
+   */
+  private async overlayShadowsTarget(
+    scoped: { first?: () => { evaluate?: (fn: unknown, arg: unknown) => Promise<boolean> } } | null | undefined,
+  ): Promise<boolean> {
+    const first = scoped?.first?.();
+    if (!first || typeof first.evaluate !== "function") return false;
+    return await first.evaluate((el: Element, sel: string) => {
+      const open = Array.from(document.querySelectorAll(sel)).filter((o) => {
+        const r = o.getBoundingClientRect();
+        if (r.width < 8 || r.height < 8) return false;
+        const cs = getComputedStyle(o as HTMLElement);
+        return cs.visibility !== "hidden" && cs.display !== "none" && Number(cs.opacity) !== 0;
+      });
+      if (!open.length) return false;
+      return !open.some((o) => o.contains(el));
+    }, OPEN_POPUP_SELECTOR).catch(() => false) as boolean;
+  }
+
+  private async dismissStaleOverlays(): Promise<boolean> {
+    if (!this.page || typeof this.page.evaluate !== "function") return false;
+    const OPEN = OPEN_POPUP_SELECTOR;
+    const countOpen = async (): Promise<number> => {
+      if (!this.page || typeof this.page.evaluate !== "function") return 0;
+      return await this.page.evaluate((sel: string) => {
+        let n = 0;
+        for (const el of Array.from(document.querySelectorAll(sel))) {
+          const r = el.getBoundingClientRect();
+          if (r.width < 8 || r.height < 8) continue;
+          const cs = getComputedStyle(el as HTMLElement);
+          if (cs.visibility === "hidden" || cs.display === "none" || Number(cs.opacity) === 0) continue;
+          n++;
+        }
+        return n;
+      }, OPEN).catch(() => 0) as number;
+    };
+    try {
+      if (!(await countOpen())) return false;
+      // Page-level Escape, never an element refocus — refocusing a combobox is how these
+      // widgets OPEN, so "closing" one that way reopens it over the next control.
+      for (let i = 0; i < 2; i++) {
+        const kb = (this.page as { keyboard?: { press?: (k: string) => Promise<void> } }).keyboard;
+        if (!kb?.press) return false;
+        await kb.press("Escape").catch(() => null);
+        await this.page.waitForTimeout?.(120).catch(() => null);
+        if (!(await countOpen())) {
+          this.driftWarnings.push(
+            "a control was unreachable until a dropdown or date picker left open by an earlier step was dismissed",
+          );
+          return true;
+        }
+      }
+      // Still open after two attempts: say so rather than drive a shadowed control silently.
+      this.driftWarnings.push(
+        "a dropdown or date picker stayed open after two Escapes — the next control may have been driven while covered; verify it by eye",
+      );
+      return false;
+    } catch { return false; /* a diagnostic must never fail a run */ }
   }
 
   /** Record a step that had no value in the project to give it. */
