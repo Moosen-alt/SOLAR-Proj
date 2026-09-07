@@ -185,7 +185,16 @@ The logic moved out of `recipeAdapter` (private, untestable — which is why it 
 real shapes in both directions. The false-positive cases carry equal weight: a sweep that cries
 blank on a filled page teaches the operator to click past the warning.
 
-**TOP REMAINING REPLAY DEFECT — PacifiCorp's spec-page selects have no `section` (2026-09-07).**
+**FIXED — a popup left open by one step shadowed the next (2026-09-07).** Replay contained no
+`Escape` at all; the learner contains nine. The Model select below resolved an *invisible*
+control and read the Energy Source list because an earlier widget's list was still open over
+it. `dismissStaleOverlays()` now fires when a control is out of reach **or** an open popup does
+not CONTAIN the target — containment, not visibility, because an occluded input is still
+visible by CSS, and because a recipe may legitimately record "open the dropdown" then "choose
+the option" with the option inside the list. `staleOverlay.dom.smoke.ts` drives both
+directions and was confirmed to fail without the guard.
+
+**PREVIOUS DIAGNOSIS (kept — the section gap is real, but was not the whole story).**
 After the fixture was filled out, the live run reached 92 of 98 steps with zero healed
 selectors and zero steps that failed to land except one, and the drift warning names it
 exactly:
