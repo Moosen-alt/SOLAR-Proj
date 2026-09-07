@@ -6,6 +6,7 @@ import { applyFormatHint } from "../formatHint";
 import { rankAddressVersions } from "../addressVersion";
 import { imageToPdfBytes, pdfNameFor, shouldConvertToPdf } from "../imageToPdf";
 import { fileTypeAllowed, UPLOAD_LABEL_PATTERNS, uploadForbidsSubstitute } from "./autoLearnAdapter";
+import { compareReviewFields, scrapeReviewScreen as scrapeReviewScreenShared, type ReviewMismatch } from "../reviewScreenScraper";
 import { openPortal } from "../browser";
 import { selectWithFallback } from "../comboboxFill";
 
@@ -193,8 +194,11 @@ export class RecipeAdapter extends BasePortalAdapter {
   async openSubmission(_project: ProjectRecord): Promise<PortalStepResult> {
     return ok("Recipe replay runs as a single ordered sequence; see fill step.");
   }
-  async fillApplication(_project: ProjectRecord): Promise<PortalStepResult> {
-    return this.runAll();
+  async fillApplication(project: ProjectRecord): Promise<PortalStepResult> {
+    // The project is what the review screen gets checked AGAINST — see verifyReviewScreen.
+    // This parameter was received and discarded, which is precisely why replay never
+    // verified its own work.
+    return this.runAll(project);
   }
   async uploadFiles(_project: ProjectRecord, _files: string[]): Promise<PortalStepResult> {
     return ok("Uploads are replayed inline within the recorded sequence.");
@@ -286,7 +290,46 @@ export class RecipeAdapter extends BasePortalAdapter {
   // permanently at the first stopForReview marker so we never proceed to the final submit.
   // In autoSubmit mode it may proceed past the marker but only to perform explicitly
   // allowlisted (isFinalSubmit) steps — everything else past the marker is hard-blocked.
-  private async runAll(): Promise<PortalStepResult> {
+  /**
+   * CHECK THE REVIEW SCREEN AGAINST THE PROJECT, the way the learn does.
+   *
+   * scrapeReviewScreen and compareReviewFields are shared utilities whose own comment says
+   * "the same logic serves all adapters" — and the replay adapter had never called either.
+   * The learn verified once, at record time; every replay after it reported success on the
+   * strength of that one check.
+   *
+   * ADVISORY, NOT A GATE. A mismatch here does not fail the run: this scraper reads
+   * label/value pairs off pages it has never seen, and a false failure that blocks a correct
+   * filing is worse than a warning a person reads. What it does is put the discrepancy in
+   * front of the human who performs the submit, which is the moment it can still be acted on.
+   * Non-throwing: a review screen it cannot read reports that, and nothing else changes.
+   */
+  private async verifyReviewScreen(
+    project?: ProjectRecord,
+  ): Promise<{ summary: string; fieldsSeen: number; mismatches: ReviewMismatch[] }> {
+    const none = { summary: "", fieldsSeen: 0, mismatches: [] as ReviewMismatch[] };
+    if (!this.page || !project) return none;
+    try {
+      const fields = await scrapeReviewScreenShared(this.page);
+      const body = String(await this.page.locator("body").innerText().catch(() => ""));
+      const mismatches = compareReviewFields(fields, project, body);
+      if (!mismatches.length) {
+        return { summary: ` Review screen checked against the project: ${fields.length} field(s), no mismatch.`, fieldsSeen: fields.length, mismatches };
+      }
+      const named = mismatches.slice(0, 4)
+        .map((m) => `${m.field}: shows "${String(m.found).slice(0, 40)}", expected "${String(m.expected).slice(0, 40)}"`)
+        .join("; ");
+      return {
+        summary: ` VERIFY BEFORE SUBMITTING — the review screen does not match the project on ${mismatches.length} field(s): ${named}${mismatches.length > 4 ? ", …" : ""}.`,
+        fieldsSeen: fields.length,
+        mismatches,
+      };
+    } catch {
+      return none;
+    }
+  }
+
+  private async runAll(project?: ProjectRecord): Promise<PortalStepResult> {
     if (!this.page) return fail("Recipe replay has no open page.");
     let executed = 0;
     const skipped: string[] = [];
@@ -801,7 +844,25 @@ export class RecipeAdapter extends BasePortalAdapter {
       });
     }
     closePrevStepTiming();
-    return ok(`Replayed ${executed} recorded step(s); stopped at review.`, { executed, skipped, finalSubmitClicked: false, gapFill: this.gapFillReport, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, slowSteps, requiredStillEmpty: this.requiredStillEmpty, pageShotDir: this.pageShotDir, outcomeShotPath: this.outcomeShotPath });
+    // READ BACK WHAT THE PORTAL NOW SHOWS. Until this existed, a replay reported
+    // "Replayed 98 recorded step(s)" without once looking at the result — the LEARN verified
+    // its review screen against project data (that is what earns a recipe its trust) and the
+    // REPLAY, which runs on every subsequent filing, never did. A recipe verified once in
+    // August then replayed forever on the strength of that single check, so a drifted
+    // selector writing the homeowner's name into a contractor field, or a value that failed
+    // to commit, produced a clean success. The only thing standing between that and a wrong
+    // filing was a person noticing by eye.
+    const review = await this.verifyReviewScreen(project);
+    return ok(
+      `Replayed ${executed} recorded step(s); stopped at review.${review.summary}`,
+      {
+        executed, skipped, finalSubmitClicked: false, gapFill: this.gapFillReport,
+        healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, slowSteps,
+        requiredStillEmpty: this.requiredStillEmpty, pageShotDir: this.pageShotDir,
+        outcomeShotPath: this.outcomeShotPath,
+        reviewFieldsSeen: review.fieldsSeen, reviewMismatches: review.mismatches,
+      },
+    );
   }
 
   private resolveValue(step: RecipeStep): string {
