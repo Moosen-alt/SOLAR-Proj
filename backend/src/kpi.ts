@@ -1,7 +1,42 @@
 import { DEFAULT_ORG_ID } from "./db";
 import type { AppDb, SqlParam } from "./db";
+import { mergeStepReport } from "./replayBenchmark";
 
 type Row = Record<string, SqlParam>;
+
+/**
+ * HOW WELL THE AUTOMATION IS ACTUALLY FILING — measured on real production runs.
+ *
+ * Every other number here is about the business: how long a permit took, how many
+ * corrections came back. None of them say whether the robot did its job, and the two are
+ * not the same question. A filing staged with three blank required fields still reaches
+ * handoff on time, because a human quietly filled them in — the cost lands on a person's
+ * afternoon and shows up nowhere.
+ *
+ * These come from `portal_runs.result_json`, which has always stored the whole run report
+ * (the replay's blanks, drift warnings and review-screen check), so this is computed from
+ * history rather than requiring new instrumentation — the numbers below are real for runs
+ * that already happened. Same definitions as the replay benchmark, via the same reader, so
+ * a lab score and a production score cannot mean different things.
+ */
+export interface StagingQuality {
+  runs: number;
+  /** Runs whose report could be read at all. */
+  measured: number;
+  /** Nothing blank, nothing that failed to land, no drift warnings. */
+  clean: number;
+  cleanRate: number;
+  /** Clean AND the portal's own review screen agreed with the project. */
+  verified: number;
+  verifiedRate: number;
+  /** Runs that handed a person something to finish. */
+  neededHuman: number;
+  avgBlanksPerRun: number;
+  /** The fields most often left blank — what to fix first, in order. */
+  topGaps: Array<{ field: string; runs: number }>;
+  /** Portals whose replays are drifting: re-anchored selectors, values not holding. */
+  driftingPortals: Array<{ portal: string; runs: number }>;
+}
 
 export interface KpiReport {
   period: { start: string; end: string };
@@ -16,6 +51,8 @@ export interface KpiReport {
   overdueCorrections: number;
   slaBreachRate: number;
   throughputPerWeek: number;         // handoffs per week in period
+  /** How well the automation filled, not just how fast the business moved. */
+  stagingQuality: StagingQuality;
   byUser: Array<{
     userId: string;
     userName: string;
@@ -269,6 +306,95 @@ export function getKpiReport(
       ? Math.round((totalSlaBreaches / allCorrections.length) * 100)
       : 0,
     throughputPerWeek: Math.round((handoffCount / periodDays) * 7 * 10) / 10,
+    stagingQuality: getStagingQuality(db, { start, end, orgId }),
     byUser,
+  };
+}
+
+/**
+ * Staging quality over a period, read back out of the runs we already recorded.
+ *
+ * Deliberately CONSERVATIVE about what counts as measured: a run whose result_json cannot
+ * be parsed, or that carries no replay report at all (a learn run, an adapter that never
+ * reached the form), is excluded rather than counted as clean. A quality metric that scores
+ * "we could not tell" as "fine" is the same failure the replay benchmark was built to stop
+ * — it reported a filing the portal was refusing as `replayed_clean` for three runs.
+ */
+export function getStagingQuality(
+  db: AppDb,
+  opts: { start: string; end: string; orgId?: string | null },
+): StagingQuality {
+  const orgId = opts.orgId === null ? null : (opts.orgId || DEFAULT_ORG_ID);
+  const rows = db.query<Row>(
+    `SELECT r.result_json AS rj
+       FROM portal_runs r
+       JOIN projects p ON p.id = r.project_id${orgId ? " AND p.org_id = ?" : ""}
+      WHERE r.run_type = 'prepare_submit'
+        AND r.started_at >= ? AND r.started_at <= ?`,
+    [...(orgId ? [orgId] : []), opts.start, opts.end + "T23:59:59"],
+  );
+
+  const gapCounts = new Map<string, number>();
+  const driftCounts = new Map<string, number>();
+  let measured = 0, clean = 0, verified = 0, neededHuman = 0, blanksTotal = 0;
+
+  for (const row of rows) {
+    let parsed: unknown;
+    try { parsed = JSON.parse(String(row.rj || "{}")); } catch { continue; }
+    const rep = mergeStepReport(parsed);
+    // No replay report on this run — a learn, or an adapter that never reached the form.
+    // Not evidence of quality either way.
+    if (rep.executed === undefined && rep.requiredStillEmpty === undefined) continue;
+    measured++;
+
+    const blanks = (rep.requiredStillEmpty as string[] | undefined) ?? [];
+    const unresolved = new Set(((rep.unresolvedFields as string[] | undefined) ?? []).map(String));
+    const skipped = ((rep.skipped as string[] | undefined) ?? [])
+      .filter((s) => !/final submit|NOT clicked/i.test(String(s)));   // declining submit is the rule, not a fault
+    const failed = skipped.filter((s) => !unresolved.has(String(s)));
+    const drift = (rep.driftWarnings as string[] | undefined) ?? [];
+    const healed = ((rep.healedSteps as unknown[] | undefined) ?? []).length;
+    const fieldsSeen = Number(rep.reviewFieldsSeen ?? 0);
+    const mismatches = ((rep.reviewMismatches as unknown[] | undefined) ?? []).length;
+
+    blanksTotal += blanks.length;
+    for (const b of blanks.slice(0, 12)) {
+      const key = String(b).replace(/ — the portal flagged this field$/, "").slice(0, 60);
+      if (key) gapCounts.set(key, (gapCounts.get(key) ?? 0) + 1);
+    }
+    if (drift.length || healed) {
+      const portal = String((rep.portalName as string) || "unknown").slice(0, 40);
+      driftCounts.set(portal, (driftCounts.get(portal) ?? 0) + 1);
+    }
+
+    // A FILING THE PORTAL'S OWN REVIEW SCREEN CONTRADICTS IS NOT CLEAN.
+    //
+    // It ran without a stumble and it is still wrong — the live shape of this was a
+    // PowerClerk filing where every step executed, nothing was blank, and the preparer
+    // block held the homeowner's name instead of the contractor's. The replay benchmark
+    // says DO NOT SUBMIT about that run; a headline number that called it clean would be
+    // saying the opposite thing about the same filing.
+    const isClean = !blanks.length && !failed.length && !drift.length && !healed && !mismatches;
+    if (isClean) clean++;
+    // The top bar, same as the benchmark's: clean AND the portal's own review screen agreed.
+    if (isClean && fieldsSeen > 0) verified++;
+    if (blanks.length || failed.length || mismatches) neededHuman++;
+  }
+
+  const pct = (n: number): number => (measured ? Math.round((n / measured) * 1000) / 10 : 0);
+  const top = (m: Map<string, number>, k: string): Array<{ [key: string]: string | number }> =>
+    [...m.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([name, n]) => ({ [k]: name, runs: n }));
+
+  return {
+    runs: rows.length,
+    measured,
+    clean,
+    cleanRate: pct(clean),
+    verified,
+    verifiedRate: pct(verified),
+    neededHuman,
+    avgBlanksPerRun: measured ? Math.round((blanksTotal / measured) * 10) / 10 : 0,
+    topGaps: top(gapCounts, "field") as Array<{ field: string; runs: number }>,
+    driftingPortals: top(driftCounts, "portal") as Array<{ portal: string; runs: number }>,
   };
 }

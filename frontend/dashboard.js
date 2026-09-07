@@ -5514,6 +5514,70 @@ async function loadKpi() {
   }
 }
 
+
+// HOW WELL THE ROBOT FILLED, not just how fast the business moved.
+//
+// Every other KPI on this page is a business outcome: cycle days, corrections, SLA. None of
+// them notice a filing staged with three required boxes empty, because a person quietly
+// filled them in and the permit still landed on time. That cost is real and it was invisible
+// — the operator found PacifiCorp's missing meter photo by looking at the live portal, not
+// from anything the run reported.
+//
+// Computed from portal_runs.result_json, which has always carried the whole run report, so
+// these numbers cover runs that already happened rather than starting from today.
+function renderStagingQuality(q) {
+  if (!q || !q.runs) return "";
+  const unmeasured = q.runs - q.measured;
+  const gaps = (q.topGaps || []).slice(0, 6);
+  const drift = (q.driftingPortals || []).slice(0, 4);
+  return `
+    <h3 style="margin-top:24px">Automation quality <span class="muted" style="font-weight:400">— how the filings were staged</span></h3>
+    <div class="kpi-grid">
+      <div class="kpi-card ${q.cleanRate < 60 ? "kpi-warn" : ""}">
+        <div class="kpi-value">${q.cleanRate}%</div>
+        <div class="kpi-label">Staged clean</div>
+      </div>
+      <div class="kpi-card ${q.verifiedRate < 50 ? "kpi-warn" : ""}">
+        <div class="kpi-value">${q.verifiedRate}%</div>
+        <div class="kpi-label">Verified against the portal's review screen</div>
+      </div>
+      <div class="kpi-card ${q.neededHuman > 0 ? "kpi-warn" : ""}">
+        <div class="kpi-value">${q.neededHuman}</div>
+        <div class="kpi-label">Runs that left work for a person</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-value">${q.avgBlanksPerRun}</div>
+        <div class="kpi-label">Avg required fields left blank</div>
+      </div>
+    </div>
+    <p class="muted" style="margin-top:6px">
+      ${q.measured} of ${q.runs} staging run(s) carried a report this can read${unmeasured > 0
+        ? ` — ${unmeasured} did not and are excluded rather than counted as clean`
+        : ""}.
+    </p>
+    ${gaps.length ? `
+      <h4 style="margin-top:16px">Most frequently left blank</h4>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Field</th><th>Runs</th></tr></thead>
+          <tbody>
+            ${gaps.map((g) => `<tr><td>${esc(g.field)}</td><td>${g.runs}</td></tr>`).join("")}
+          </tbody>
+        </table>
+      </div>` : ""}
+    ${drift.length ? `
+      <h4 style="margin-top:16px">Portals whose recipes are drifting</h4>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Portal</th><th>Runs with drift</th></tr></thead>
+          <tbody>
+            ${drift.map((d) => `<tr><td>${esc(d.portal)}</td><td>${d.runs}</td></tr>`).join("")}
+          </tbody>
+        </table>
+      </div>` : ""}
+  `;
+}
+
 function renderKpi(kpi) {
   const body = $("kpiBody");
   body.innerHTML = `
@@ -5560,6 +5624,8 @@ function renderKpi(kpi) {
         <div class="kpi-label">SLA Breach Rate</div>
       </div>
     </div>
+
+    ${renderStagingQuality(kpi.stagingQuality)}
 
     ${kpi.byUser.length > 0 ? `
     <h3 style="margin-top:24px">Per Operator</h3>

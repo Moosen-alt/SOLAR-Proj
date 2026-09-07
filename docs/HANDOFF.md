@@ -185,6 +185,31 @@ The logic moved out of `recipeAdapter` (private, untestable — which is why it 
 real shapes in both directions. The false-positive cases carry equal weight: a sweep that cries
 blank on a filled page teaches the operator to click past the warning.
 
+**Automation quality is now a KPI, computed from runs that already happened (2026-09-07).**
+Every existing KPI is a business outcome — cycle days, corrections, SLA. None of them notices
+a filing staged with three required boxes empty, because a person quietly fills them in and
+the permit still lands on time. That cost was invisible: PacifiCorp's missing meter photo was
+found by an operator looking at the live portal, not by anything the run reported.
+
+No new instrumentation was needed. `portal_runs.result_json` has always stored the whole run
+result, and the replay report lives in `steps[].data` inside it, so `getStagingQuality()` reads
+history. On the current database, over 94 staging runs:
+
+| | |
+|---|---|
+| staged clean | **22.6%** (7 of 31 readable runs) |
+| verified against the portal's review screen | 0% — the check only landed today, so no historical run carries it |
+| runs that left work for a person | 18 |
+| avg required fields left blank | 1.4 |
+| most frequent gaps | Name ×6, Address ×6, Email ×6, AC-disconnect question ×4, Battery fields ×3 |
+| drifting recipes | Pacific Power ×13, Coos Bay ×4, PGE ×5 |
+
+63 of the 94 runs carry no readable report and are **excluded rather than counted as clean** —
+the same rule as the replay ladder, for the same reason. `mergeStepReport` is shared with the
+benchmark so a lab score and a production score cannot come to mean different things, and a
+filing the review screen CONTRADICTS is not clean here either: the benchmark says DO NOT SUBMIT
+about that run, and a headline calling it clean would contradict it about the same filing.
+
 **Read the adapter's report off the STEP, not the result (2026-09-07) — harness trap #5.**
 `ok(message, data)` returns `{ok, message, data}`, and `runAdapter` hands back
 `{ok, …, steps}`. So `executed`, `skipped`, `requiredStillEmpty`, `driftWarnings`,

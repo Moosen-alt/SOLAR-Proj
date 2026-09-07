@@ -21,7 +21,7 @@ import path from "node:path";
 import { openDatabase } from "./db";
 import { createProject, deleteProject } from "./repository";
 import { getDecryptedCredential, getDecryptedCredentialAny, getDecryptedCredentialByUrl, listPortalCredentials } from "./portalCredentials";
-import { scoreReplayOutcome, summarizeReplay, type ReplayRow } from "./replayBenchmark";
+import { mergeStepReport, scoreReplayOutcome, summarizeReplay, type ReplayRow } from "./replayBenchmark";
 import { getPortalRecipe, resolveRecipeFieldValues } from "./portalRecipes";
 import type { ProjectRecord } from "../../shared/src/types";
 
@@ -182,24 +182,9 @@ async function main(): Promise<void> {
       // records this trap — it is what made the stale-recipe flag dead code in repository.ts
       // once before — and this harness walked straight into it, reporting a silent failure
       // for three runs while the reason sat one level down in `steps`.
-      const steps = (res as { steps?: Array<{ ok?: boolean; message?: string; data?: Record<string, unknown> }> }).steps ?? [];
-      const stepMsg = steps.find((st) => st && st.ok === false)?.message ?? "";
-      // ...AND SO DOES EVERYTHING ELSE. `ok(message, data)` puts the run's whole report —
-      // executed, skipped, requiredStillEmpty, driftWarnings, reviewFieldsSeen — inside the
-      // STEP's `data`, not on the top-level result. Reading the top level returned zero for
-      // every one of them, so a live run that filled eight pages scored "executed: 0, no
-      // blanks, no warnings, review unreadable" and the benchmark called it clean. Every
-      // signal this harness was built to collect was being read from the wrong level, which
-      // is the same mistake as the message above, one field over.
-      const merged: Record<string, unknown> = {};
-      for (const st of steps) {
-        for (const [k, v] of Object.entries(st?.data ?? {})) {
-          if (v === undefined || v === null) continue;
-          if (Array.isArray(v) && !v.length && Array.isArray(merged[k])) continue; // don't blank a real list
-          merged[k] = v;
-        }
-      }
-      outcome = { ...res, ...merged, recorded: c.steps, message: String((res as { message?: unknown }).message || stepMsg) };
+      // The report lives on the STEP, not the result — see mergeStepReport, which the
+      // production KPI uses too so the two cannot drift apart on what a run "said".
+      outcome = { ...mergeStepReport(res), recorded: c.steps };
     } catch (e) {
       outcome = { ok: false, message: String((e as Error)?.message || e), recorded: c.steps };
     } finally {

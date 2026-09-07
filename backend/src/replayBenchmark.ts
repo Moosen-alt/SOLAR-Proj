@@ -58,6 +58,31 @@ export interface ReplayOutcome {
   pauseReason?: string | null;
 }
 
+/**
+ * Pull a replay's report out of a portal-run result.
+ *
+ * `ok(message, data)` puts the whole report — executed, skipped, requiredStillEmpty,
+ * driftWarnings, reviewFieldsSeen — inside the STEP's `data`, never on the top-level
+ * result. Reading the top level returns zero for every one of them, which is exactly what
+ * made a live run that filled eight pages score "executed: 0" and still read as clean.
+ *
+ * Shared so the benchmark and the production KPI cannot drift apart on what a run "said".
+ */
+export function mergeStepReport(result: unknown): Record<string, unknown> {
+  const res = (result ?? {}) as { steps?: Array<{ ok?: boolean; message?: string; data?: Record<string, unknown> }> };
+  const merged: Record<string, unknown> = {};
+  for (const st of res.steps ?? []) {
+    for (const [k, v] of Object.entries(st?.data ?? {})) {
+      if (v === undefined || v === null) continue;
+      if (Array.isArray(v) && !v.length && Array.isArray(merged[k])) continue; // don't blank a real list
+      merged[k] = v;
+    }
+  }
+  const stepMsg = (res.steps ?? []).find((st) => st && st.ok === false)?.message ?? "";
+  const top = (result ?? {}) as Record<string, unknown>;
+  return { ...top, ...merged, message: String(top.message || stepMsg) };
+}
+
 export interface ReplayScore {
   rung: ReplayRung;
   index: number;
