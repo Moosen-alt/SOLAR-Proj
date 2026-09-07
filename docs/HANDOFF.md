@@ -185,6 +185,26 @@ The logic moved out of `recipeAdapter` (private, untestable — which is why it 
 real shapes in both directions. The false-positive cases carry equal weight: a sweep that cries
 blank on a filled page teaches the operator to click past the warning.
 
+**REPLAY FLEET — measured after the day's fixes (2026-09-07, second full sweep).**
+
+| portal | rung | executed | blanks | owner | what is left |
+|---|---|---|---|---|---|
+| PacifiCorp (PowerClerk) | 3 | **97/98** | **0** | recipe | only warnings: an upload slot re-anchored, a popup that would not close, `Calculate` inert |
+| Ameren (PowerClerk) | 3 | 73/75 | 7 | **data** | project has no Email/Phone/Street for this filing |
+| PGE (PowerClerk) | 3 | 63/68 | 3 | recipe | `Model` and one policy default do not land |
+| Coos Bay ×2 (Accela) | 2 | 4/49, 4/62 | 0 | recipe | blocked on the FIXTURE's address — see below |
+
+PacifiCorp files essentially completely: 97 of 98 steps, nothing required left blank, the
+one unexecuted step being the final submit automation must never click. It is held at rung 3
+by warnings it is right to raise, and it cannot reach rung 5 while the review screen reads
+4 fields and confirms 0 — the run is not reaching a summary page.
+
+**A regression this session, found and fixed:** the multi-match narrowing took Ameren from
+73 steps to 2. Its terms control is `<input role="switch">`, a styled toggle whose real input
+is hidden behind a span, and the check branch already handled that with `force`. Narrowing to
+the first VISIBLE match defeated it. `check`/`uncheck` now keep the locator they were given.
+A general fix walking into the one place that was specific for a reason.
+
 **COOS BAY: 1 → 4 → 7 of 49 steps in one session, every fix an engine invariant (2026-09-07).**
 Six live runs to find the first blocker; after that a failing step keeps the page HTML and
 each further blocker was diagnosed offline in seconds. In order:
