@@ -50,6 +50,8 @@ export interface ReplayOutcome {
   /** Selectors replay had to re-anchor. Not a failure, but a recipe that is drifting. */
   healedSteps?: unknown[];
   driftWarnings?: string[];
+  /** Steps that had NOTHING TO TYPE — the project carried no value. A data gap, not drift. */
+  unresolvedFields?: string[];
   /** Review-screen check (cfdcca5). fieldsSeen 0 means the screen could not be read. */
   reviewFieldsSeen?: number;
   reviewMismatches?: Array<{ field: string; expected: string; found: string }>;
@@ -60,7 +62,7 @@ export interface ReplayScore {
   rung: ReplayRung;
   index: number;
   reason: string;
-  owner: "engine" | "credential" | "portal" | "recipe" | "harness" | "none";
+  owner: "engine" | "credential" | "portal" | "recipe" | "harness" | "data" | "none";
   /** False when the run never became a measurement of the recipe — see runAbort. */
   measured?: boolean;
 }
@@ -153,18 +155,37 @@ export function scoreReplayOutcome(outcome: ReplayOutcome): ReplayScore {
   // for, received, and dropped is worse than one we never collected: the adapter pays to
   // produce it on the assumption that someone acts on it.
   const drift = outcome.driftWarnings ?? [];
+  // A STEP WITH NO VALUE TO TYPE IS NOT A DRIFTED RECIPE.
+  //
+  // Both used to return false and land in `skipped`, so a run reported eight skipped steps
+  // of which four were things the throwaway project never had — an account number, a meter
+  // number, and two plan-set documents — and the verdict blamed the recipe. That sends
+  // someone to re-record a recipe that is working. The gap is real and still demotes the
+  // run; only the name on it changes.
+  const unresolved = outcome.unresolvedFields ?? [];
+  const unresolvedSet = new Set(unresolved.map((u) => String(u)));
   const mismatches = outcome.reviewMismatches ?? [];
   const fieldsSeen = Number(outcome.reviewFieldsSeen ?? 0);
 
   // Anything less than a whole run is a gap, however tidy the summary reads.
   if (blanks.length || skipped.length || healed || drift.length) {
+    // Separate the two kinds of gap before naming anyone: steps that had nothing to type,
+    // and steps that tried and did not land.
+    const failedSteps = skipped.filter((sName) => !unresolvedSet.has(String(sName)));
+    const missingData = skipped.filter((sName) => unresolvedSet.has(String(sName)));
     const parts = [
       blanks.length ? `${blanks.length} required field(s) left blank (${blanks.slice(0, 3).join(", ")})` : "",
-      skipped.length ? `${skipped.length} step(s) skipped` : "",
+      failedSteps.length ? `${failedSteps.length} step(s) did not land (${failedSteps.slice(0, 3).join(", ").slice(0, 90)})` : "",
+      missingData.length ? `${missingData.length} step(s) had NO VALUE in the project to enter (${missingData.slice(0, 3).join(", ").slice(0, 90)})` : "",
       healed ? `${healed} selector(s) had to be re-anchored — the recipe is drifting` : "",
       drift.length ? `replay warned: ${drift.slice(0, 2).join("; ").slice(0, 150)}` : "",
     ].filter(Boolean);
-    return { rung: "replayed_with_gaps", index: 3, owner: "recipe", reason: parts.join("; ") };
+    // Whoever can actually fix it: a recipe that no longer lands its values, or a project
+    // that was never given them. Only when the ONLY gaps are missing values is it data.
+    const owner = (failedSteps.length || healed || drift.length || blanks.length > missingData.length)
+      ? "recipe" as const
+      : "data" as const;
+    return { rung: "replayed_with_gaps", index: 3, owner, reason: parts.join("; ") };
   }
 
   // Clean, but unverified. An unreadable review screen cannot promote a run: "we could not
@@ -197,7 +218,7 @@ export interface ReplayRow {
   detail?: {
     executed?: number; recorded?: number; reviewFieldsSeen?: number; healed?: number; blanks?: number;
     /** WHICH fields, not just how many — a count sends someone back to the portal to look. */
-    blankNames?: string[]; driftWarnings?: string[]; skippedNames?: string[];
+    blankNames?: string[]; driftWarnings?: string[]; skippedNames?: string[]; unresolvedFields?: string[];
   };
 }
 

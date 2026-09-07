@@ -108,6 +108,15 @@ export class RecipeAdapter extends BasePortalAdapter {
    *  "a photo of the meter where the system will be interconnected", which is never in a
    *  plan set, so no recipe step exists for it and no QC rule looks for it. */
   private requiredStillEmpty: string[] = [];
+  /** Steps that had NOTHING TO TYPE — the project carried no value for the field.
+   *
+   *  Not the same failure as a fill that did not land, and until now indistinguishable:
+   *  both returned false and landed in `skipped`. A live benchmark run reported eight
+   *  skipped steps of which two were sensitive fields the throwaway project simply did not
+   *  have (account number, meter number) and two were documents it was never given — read
+   *  as recipe drift, which is the wrong person to send to fix it. A missing value is a
+   *  DATA gap: real, worth reporting, and owned by whoever fills the project in. */
+  private unresolvedFields: string[] = [];
   /** Where this run's page screenshots go, and how many were written. Replay only ever
    *  photographed FAILURES, so every page that filled "successfully" was invisible — and
    *  the two worst bugs of this session (the homeowner's details written into the
@@ -760,7 +769,7 @@ ${body.slice(0, 4000)}`);
         // the operator logged in concurrently and PowerClerk — one session per account —
         // killed the bot's. Name the real event when the page itself announces it.
         const ended = await this.sessionEndedBanner();
-        return fail(`${ended ? `THE PORTAL ENDED THIS SESSION mid-run ("${ended}") — commonly a concurrent login with the same account (some portals allow exactly one session per user). The step failure below is the symptom, not the cause. ` : ""}Recipe step failed (${step.action}${step.note ? ` — ${step.note}` : ""}): ${lastErr instanceof Error ? lastErr.message : String(lastErr)}${context}`, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, failedStepIndex: stepIdx, trace, slowSteps, requiredStillEmpty: this.requiredStillEmpty, pageShotDir: this.pageShotDir, outcomeShotPath: this.outcomeShotPath });
+        return fail(`${ended ? `THE PORTAL ENDED THIS SESSION mid-run ("${ended}") — commonly a concurrent login with the same account (some portals allow exactly one session per user). The step failure below is the symptom, not the cause. ` : ""}Recipe step failed (${step.action}${step.note ? ` — ${step.note}` : ""}): ${lastErr instanceof Error ? lastErr.message : String(lastErr)}${context}`, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, failedStepIndex: stepIdx, trace, slowSteps, requiredStillEmpty: this.requiredStillEmpty, unresolvedFields: this.unresolvedFields, pageShotDir: this.pageShotDir, outcomeShotPath: this.outcomeShotPath });
       }
       // Remember whether this step entered data, so the next advancing click waits for the
       // portal's autosave to commit (prevents blank-draft saves on PowerClerk).
@@ -809,7 +818,7 @@ ${body.slice(0, 4000)}`);
           // is the whole question. Capture it like any other failure.
           const driftContext = await this.captureFailureContext(step, stepIdx);
           closePrevStepTiming();
-          return fail(`${driftFail}${driftContext}`, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, failedStepIndex: stepIdx, trace, slowSteps, requiredStillEmpty: this.requiredStillEmpty, pageShotDir: this.pageShotDir, outcomeShotPath: this.outcomeShotPath });
+          return fail(`${driftFail}${driftContext}`, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, failedStepIndex: stepIdx, trace, slowSteps, requiredStillEmpty: this.requiredStillEmpty, unresolvedFields: this.unresolvedFields, pageShotDir: this.pageShotDir, outcomeShotPath: this.outcomeShotPath });
         }
       }
 
@@ -862,7 +871,7 @@ ${body.slice(0, 4000)}`);
         recordLink: capture.data?.recordLink || "",
         // What the LLM gap-fill added (and what it left blank for lack of real data) — same key
         // the hand-coded adapters surface, so the operator/UI sees a uniform report.
-        gapFill: this.gapFillReport, healedSteps: this.healedSteps, slowSteps, requiredStillEmpty: this.requiredStillEmpty, pageShotDir: this.pageShotDir, outcomeShotPath: this.outcomeShotPath,
+        gapFill: this.gapFillReport, healedSteps: this.healedSteps, slowSteps, requiredStillEmpty: this.requiredStillEmpty, unresolvedFields: this.unresolvedFields, pageShotDir: this.pageShotDir, outcomeShotPath: this.outcomeShotPath,
       });
     }
     closePrevStepTiming();
@@ -889,7 +898,7 @@ ${body.slice(0, 4000)}`);
       {
         executed, skipped, finalSubmitClicked: false, gapFill: this.gapFillReport,
         healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, slowSteps,
-        requiredStillEmpty: this.requiredStillEmpty, pageShotDir: this.pageShotDir,
+        requiredStillEmpty: this.requiredStillEmpty, unresolvedFields: this.unresolvedFields, pageShotDir: this.pageShotDir,
         outcomeShotPath: this.outcomeShotPath,
         reviewFieldsSeen: review.fieldsSeen, reviewMismatches: review.mismatches,
       },
@@ -1752,7 +1761,7 @@ ${body.slice(0, 4000)}`);
         return this.executeClick(step, scoped, pastReview);
       case "fill": {
         const v = this.resolveValue(step);
-        if (!v) return false;
+        if (!v) { this.noteUnresolved(step); return false; }
         await waitForElement(scoped);
         // MASKED CONTROLS (Accela phone / zip): they keep their validation state from KEY
         // events, so .fill() - which assigns .value and fires input+change - leaves the box
@@ -1825,7 +1834,7 @@ ${body.slice(0, 4000)}`);
       }
       case "select": {
         const v = this.resolveValue(step);
-        if (!v) return false;
+        if (!v) { this.noteUnresolved(step); return false; }
         // TWO "Manufacturer" SELECTS, ONE LABEL — THE FIELD NAME CARRIES THE SIDE.
         //
         // PowerClerk's spec block renders the INVERTER's Manufacturer/Model and, nested
@@ -2092,7 +2101,7 @@ ${body.slice(0, 4000)}`);
         return true;
       case "upload": {
         const filePath = step.docType ? this.docsByType[step.docType] : undefined;
-        if (!filePath) return false;
+        if (!filePath) { this.noteUnresolved(step); return false; }
         // Attach under a CLEAN filename: stored files carry a UUID prefix for on-disk
         // uniqueness that must not leak into what the portal reviewer sees.
         // The slot may refuse the image but take a PDF — PacifiCorp asks for a photo of the
@@ -2573,6 +2582,12 @@ ${body.slice(0, 4000)}`);
       await this.page.screenshot({ path: path.join(this.pageShotDir, name), fullPage: true });
       if (force) this.outcomeShotPath = path.join(this.pageShotDir, name);
     } catch { /* best-effort: never fail a replay over a screenshot */ }
+  }
+
+  /** Record a step that had no value in the project to give it. */
+  private noteUnresolved(step: RecipeStep): void {
+    const name = String(step.note || step.field || step.action).slice(0, 70);
+    if (name && !this.unresolvedFields.includes(name)) this.unresolvedFields.push(name);
   }
 
   /**

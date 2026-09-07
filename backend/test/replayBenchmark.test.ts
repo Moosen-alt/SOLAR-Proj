@@ -74,6 +74,31 @@ check("skipped steps count as a gap", () => {
   assert.equal(s.rung, "replayed_with_gaps");
 });
 
+check("a step with NO VALUE to type is a data gap, not a drifted recipe", () => {
+  // A live run reported eight skipped steps, of which four were things the throwaway project
+  // never had: an account number, a meter number, and two plan-set documents. Blaming the
+  // recipe sends someone to re-record one that is working perfectly.
+  const s = scoreReplayOutcome({
+    ok: true, executed: 90, recorded: 98,
+    skipped: ["Customer's account number", "upload sld: one-line drawing"],
+    unresolvedFields: ["Customer's account number", "upload sld: one-line drawing"],
+  });
+  assert.equal(s.rung, "replayed_with_gaps");
+  assert.equal(s.owner, "data", "nothing here is the recipe's fault");
+  assert.match(s.reason, /NO VALUE in the project/);
+});
+
+check("...but a step that TRIED and did not land is still the recipe's", () => {
+  const s = scoreReplayOutcome({
+    ok: true, executed: 90, recorded: 98,
+    skipped: ["Total System Export (kW)", "Customer's account number"],
+    unresolvedFields: ["Customer's account number"],
+  });
+  assert.equal(s.owner, "recipe");
+  assert.match(s.reason, /did not land.*Total System Export/s);
+  assert.match(s.reason, /NO VALUE in the project/, "and the data gap is still named");
+});
+
 check("THE REGRESSION: a 'successful' run that executed NOTHING is not clean", () => {
   // A live replay filled eight pages of PacifiCorp and reported executed:0, because the
   // harness read the adapter's report from the wrong level (`ok(msg, data)` puts it on the

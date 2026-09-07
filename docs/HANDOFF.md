@@ -185,6 +185,25 @@ The logic moved out of `recipeAdapter` (private, untestable — which is why it 
 real shapes in both directions. The false-positive cases carry equal weight: a sweep that cries
 blank on a filled page teaches the operator to click past the warning.
 
+**Read the adapter's report off the STEP, not the result (2026-09-07) — harness trap #5.**
+`ok(message, data)` returns `{ok, message, data}`, and `runAdapter` hands back
+`{ok, …, steps}`. So `executed`, `skipped`, `requiredStillEmpty`, `driftWarnings`,
+`reviewFieldsSeen` and `reviewMismatches` all live in **`steps[].data`**. `runReplayBenchmark`
+read them off the top-level result and got zero for every one — a live run that filled eight
+pages of PacifiCorp scored "executed: 0, no blanks, no warnings, review unreadable" and the
+benchmark called it clean. Same mistake as the already-documented "failure message lives on
+the failing step", one field over.
+
+That makes five harness bugs in this one runner (raw DB row instead of `getPortalRecipe`;
+re-queried project instead of `createProject().project`; bare `{headless}` with no credential
+or userDataDir; message read off the result; report read off the result). **Every one
+presented as a portal or recipe defect, and every one was ours.** When a replay verdict looks
+like the recipe has rotted, suspect the harness first — the recipe has been fine all along.
+
+The scorer now refuses that shape too: `ok:true` with `executed: 0` against a recipe that has
+steps is `measured: false`, the mirror of the existing silent-failure guard. "Nothing happened"
+and "everything happened correctly" were both scoring 4.
+
 **Typing was not saving, and a fill could not tell the difference (2026-09-07).**
 `case "fill"` returned `true` the moment `.fill()` resolved — success meant "we typed", never
 "it stuck" — and it walked away from the autosave its own blur had just started. Two lines
