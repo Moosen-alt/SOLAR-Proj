@@ -185,6 +185,35 @@ The logic moved out of `recipeAdapter` (private, untestable — which is why it 
 real shapes in both directions. The false-positive cases carry equal weight: a sweep that cries
 blank on a filled page teaches the operator to click past the warning.
 
+**NEXT TASK, FULLY DIAGNOSED — Coos Bay's "Apply" is behind a closed menu (2026-09-07).**
+Both Coos Bay recipes die on step 1, a 30s timeout on `click — application entry: Apply`.
+Five live runs narrowed it; the sixth captured the page, and the answer is a grep:
+
+```html
+<a href="/OREGON/Cap/CapApplyDisclaimer.aspx?module=Building">Apply for Building Permit</a>
+```
+
+The recipe records a click on **"Apply"**. The real control reads **"Apply for Building
+Permit"** and sits inside a dropdown whose trigger is `<button disabled class="dropbtn1">`
+carrying the bare word "Apply" — so every selector level lands on the disabled trigger, and
+the name-based recovery correctly reports "no enabled control … containing Apply" because the
+menu item is hidden until the menu opens. **Present but shut**, exactly as
+`revealHidden.ts` was built for, one level up: the container is a menu rather than a field.
+
+The fix is to let the recovery consider hidden candidates and reveal them — open the menu
+whose trigger matches, then click the item — rather than requiring visibility up front. It
+needs no live run to build: `data/replay-failures/step001-application-entry-Apply.html` is the
+page. Do NOT re-record these recipes; the rest of both is untested but unimplicated.
+
+Landed on the way, all verified and all general:
+- **Visible is not enough to accept a selector level — it must be ENABLED.** One match plus
+  visible was accepted, so replay spent 30s on a button that can never be clicked.
+- **Icon ligatures pollute accessible names.** Material Icons render as text, so this portal's
+  links read "check_circleApply", "searchSearch", "eventSchedule". Name matching now strips a
+  lowercase ligature run glued to a capitalised label.
+- **A failing step now keeps the page HTML**, not just a screenshot and a label list. That is
+  what turned this from live runs into a grep.
+
 **FIXED — a popup left open by one step shadowed the next (2026-09-07).** Replay contained no
 `Escape` at all; the learner contains nine. The Model select below resolved an *invisible*
 control and read the Energy Source list because an earlier widget's list was still open over
