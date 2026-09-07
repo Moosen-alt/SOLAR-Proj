@@ -57,6 +57,13 @@ export async function sweepEmptyRequiredControls(page: Page): Promise<EmptyRequi
     // must LOOK like errors — an alert role, an error-ish class, or red text — to count.
     const HARD = /this field is required|required field|field is (mandatory|required)|must be (provided|entered|selected)|cannot be (blank|empty)|is required\b/i;
     const SOFT = /please (select|enter|choose|provide|complete)/i;
+    // A LEGEND IS NOT A COMPLAINT. Nearly every form carries one — "All Information
+    // indicated with a red * (asterisk) is required" — and it matches `is required` exactly
+    // as a real validation message does, while referring to no field at all. Ameren's live
+    // run reported that sentence as a blank required field: a fabricated gap, on a page that
+    // may have been complete. Legends describe the form's notation; complaints name a
+    // failure. The tell is the notation talk.
+    const LEGEND = /asterisk|marked with|indicated (with|by)|denotes?\s|all information|all fields|fields? marked|red \*|\*\s*=|means required/i;
     const COMPLAINT = new RegExp(`${HARD.source}|${SOFT.source}`, "i");
     const PLACEHOLDER = /^(please\s+)?(select|choose)\b\.{0,3}$/i;
     const out: Array<{ name: string; why: string }> = [];
@@ -85,6 +92,7 @@ export async function sweepEmptyRequiredControls(page: Page): Promise<EmptyRequi
       .filter((el) => {
         const own = (el.innerText || "").replace(/\s+/g, " ").trim();
         if (!own || own.length > 120 || !COMPLAINT.test(own)) return false;
+        if (LEGEND.test(own)) return false;
         if (Array.from(el.children).some((c) => COMPLAINT.test(((c as HTMLElement).innerText || "")))) return false;
         if (!visible(el)) return false;
         if (HARD.test(own)) return true;

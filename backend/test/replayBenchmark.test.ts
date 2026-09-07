@@ -196,6 +196,20 @@ check("a replay that aborts part-way is the RECIPE's problem, and says where", (
   assert.match(s.reason, /41 of 98/);
 });
 
+check("THE REGRESSION: a portal that ends the session mid-run is not recipe drift", () => {
+  // PowerClerk allows one session per user and ends the older one when a second login
+  // appears — so a back-to-back sweep can kill its own run, and so can a human logging in to
+  // look at something. The adapter says exactly this; the scorer used to answer "the recipe
+  // no longer matches the portal" and blame the recipe for being interrupted.
+  const s = scoreReplayOutcome({
+    ok: false, executed: 55, recorded: 98,
+    message: 'THE PORTAL ENDED THIS SESSION mid-run ("Session Ended") — commonly a concurrent login with the same account. Recipe step failed (click)',
+  });
+  assert.equal(s.owner, "portal");
+  assert.equal(s.measured, false, "an interrupted run says nothing about the recipe");
+  assert.doesNotMatch(s.reason, /no longer matches/);
+});
+
 check("a refused password is the OPERATOR's, not the recipe's", () => {
   const s = scoreReplayOutcome({ ok: false, message: "Still on the login form after submitting — the stored username/password was likely rejected." });
   assert.equal(s.owner, "credential");

@@ -157,6 +157,19 @@ export function scoreReplayOutcome(outcome: ReplayOutcome): ReplayScore {
     };
   }
 
+  // THE PORTAL HUNG UP ON US. Some portals (PowerClerk among them) allow exactly one
+  // session per user and end the older one when a second login appears — so a sweep that
+  // runs back-to-back against the same account can kill its own run, and a human logging in
+  // to check on things will do it too. The adapter detects this and says so in as many
+  // words; scoring it as "the recipe no longer matches the portal" blames the recipe for
+  // being interrupted, and the step failure it reports is the symptom, not the cause.
+  if (/ended this session|session ended|session (has )?(expired|timed out)|logged out|concurrent (login|session)/i.test(msg)) {
+    return {
+      rung: "login_failed", index: 1, owner: "portal", measured: false,
+      reason: `not measured — the portal ended the session mid-run (commonly a second login on the same account): ${msg.slice(0, 100)}`,
+    };
+  }
+
   // Replay aborted part-way. This is the drift case the benchmark exists to catch: the
   // recipe no longer matches the portal.
   if (outcome.ok === false) {

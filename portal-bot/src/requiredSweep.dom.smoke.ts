@@ -91,6 +91,22 @@ const PAGES: Record<string, string> = {
     </div>
     <div class="form-group"><label for="q">System size (kW) *</label><input id="q" value="7.2" /></div>`),
 
+  // ---- NEGATIVE: A LEGEND IS NOT A COMPLAINT -----------------------------------------
+  // Ameren's live run reported this sentence as a blank required field. Nearly every form
+  // carries one, it matches "is required" exactly as a validation message does, and it
+  // refers to no field at all — a fabricated gap on a page that may have been complete.
+  legend: shell(`
+    <p class="err">All Information indicated with a red * (asterisk) is required.</p>
+    <div class="form-group"><label for="e">Email *</label><input id="e" value="permit@example.com" /></div>
+    <div class="form-group"><label for="p">Phone *</label><input id="p" value="(503) 555-0142" /></div>`),
+
+  // ...but a real complaint on the SAME page is still caught, so the exclusion is not a mute.
+  legendPlusRealComplaint: shell(`
+    <p class="err">All fields marked with an asterisk are required.</p>
+    <div class="form-group"><label for="e2">Email *</label><input id="e2" value="permit@example.com" /></div>
+    <div class="form-group"><label for="p2">Meter number *</label><input id="p2" value="" />
+      <span class="err">This field is required.</span></div>`),
+
   // ---- a complaint no control can own must still be reported -------------------------
   orphanComplaint: shell(`
     <div class="err">Please select at least one option before continuing.</div>
@@ -154,6 +170,16 @@ check("...and it is the field the message sits under",
 const instr = await sweep("instructions");
 check("INSTRUCTIONAL 'please select all that apply' is not treated as a complaint",
   instr.length === 0, `false blanks manufactured: ${JSON.stringify(instr)}`);
+
+const legend = await sweep("legend");
+check("THE LIVE FALSE POSITIVE: a form's asterisk LEGEND is not a blank field",
+  legend.length === 0, `fabricated ${legend.length} gap(s): ${JSON.stringify(legend)}`);
+
+const both = await sweep("legendPlusRealComplaint");
+check("...and a real complaint on the same page is still caught",
+  both.some((r) => /meter/i.test(r.name)), JSON.stringify(both));
+check("...without the legend adding a second, phantom entry",
+  both.length === 1, JSON.stringify(both));
 
 const orphan = await sweep("orphanComplaint");
 check("a complaint no field can own is still reported, not dropped",
