@@ -101,6 +101,10 @@ const BENCH = {
   // residential service — and `pgeSchedule` is the rate schedule a net-metered residential
   // customer files under. Named exactly as the recipe binds them; the snapshot is read by
   // exact key and an alias does not stand in.
+  // mainServiceRating lands. pgeSchedule is a GUESS and unverified: the Schedule step
+  // resolves the wrong control entirely (a two-option contact-role dropdown), so the portal
+  // has never shown us its real rate-schedule options. Left in place because a value is
+  // needed to exercise the step at all — do not treat "Residential" as correct.
   mainServiceRating: "200", pgeSchedule: "Residential",
 
   // Documents are supplied too, but not from here: every upload slot the recipe asks for

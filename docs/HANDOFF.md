@@ -185,6 +185,31 @@ The logic moved out of `recipeAdapter` (private, untestable — which is why it 
 real shapes in both directions. The false-positive cases carry equal weight: a sweep that cries
 blank on a filled page teaches the operator to click past the warning.
 
+**THE LAST REPLAY DEFECT IS RECIPE QUALITY, NOT THE ENGINE (2026-09-07).** PGE and PacifiCorp
+both fail their inverter `Model` step, and PGE also fails `Schedule`. The warnings name the
+cause exactly, and it is the same on both:
+
+```
+select "Schedule" -> resolved <select label="Schedule" options=2 visible=true>
+                     list offers "New Contact", "Preparer", "Applicant (PGE Customer)"...
+select "Model"    -> resolved <input  label="Model"    visible=false>
+                     list offers "Select...", "a. Solar", "b. Wind", "c. Hydro"...
+```
+
+Neither resolved the control it wanted: one landed on a contact-role dropdown, the other on
+an invisible node while an Energy Source list was open. These are PowerClerk spec-page
+controls whose labels are BARE and repeated — "Manufacturer", "Model", "Schedule" appear
+several times per page — and CLAUDE.md already records that the side comes from
+`field.section`. **These recorded steps carry no section**, so no amount of resolution
+cleverness can pick correctly among identical labels; the information simply is not in the
+recipe.
+
+The fix is on the LEARN side — capture `section` when recording a spec-page control — plus a
+re-record of the affected recipes. Everything reachable without that has now been done:
+resolution rejects hidden and disabled matches, narrows multi-matches, opens closed menus,
+strips icon ligatures, and dismisses stale popups. Do not re-record blindly to chase this:
+the rest of these recipes is demonstrably healthy (PacifiCorp 97/98, nothing blank).
+
 **REPLAY FLEET — measured after the day's fixes (2026-09-07, second full sweep).**
 
 | portal | rung | executed | blanks | owner | what is left |
