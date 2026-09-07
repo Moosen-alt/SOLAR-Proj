@@ -170,6 +170,9 @@ async function main(): Promise<void> {
         blanks: ((o.requiredStillEmpty as unknown[]) ?? []).length,
         blankNames: ((o.requiredStillEmpty as string[]) ?? []).slice(0, 8),
         driftWarnings: ((o.driftWarnings as string[]) ?? []).slice(0, 6),
+        // A step that "did not take" is recorded as SKIPPED, and the count alone sends
+        // someone back to the portal to find out which. Name them.
+        skippedNames: ((o.skipped as string[]) ?? []).slice(0, 8),
       },
     });
     console.log(`${String(i + 1).padStart(2)}/${chosen.length} ${score.index} ${score.rung.padEnd(20)} ${c.key.slice(0, 44)}`);

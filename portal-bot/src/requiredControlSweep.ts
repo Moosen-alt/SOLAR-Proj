@@ -47,7 +47,17 @@ export interface EmptyRequired {
 export async function sweepEmptyRequiredControls(page: Page): Promise<EmptyRequired[]> {
   if (!page || typeof page.evaluate !== "function") return [];
   return await page.evaluate(() => {
-    const COMPLAINT = /this field is required|required field|field is mandatory|cannot be (blank|empty)|please (select|enter|choose)|is required\b/i;
+    // TWO GRADES OF COMPLAINT, BECAUSE ONE OF THEM IS ALSO ORDINARY PROSE.
+    //
+    // "This field is required" is a portal refusing a filing. "Please select an option" is
+    // equally often the INSTRUCTION above a group — and portals are full of instructions.
+    // Treating the second as evidence manufactures blanks on correct pages, and this sweep
+    // now gates two things that must not be jammed: a benchmark verdict, and
+    // pageIsPassThrough, which decides whether replay may click on. So the soft phrasings
+    // must LOOK like errors — an alert role, an error-ish class, or red text — to count.
+    const HARD = /this field is required|required field|field is (mandatory|required)|must be (provided|entered|selected)|cannot be (blank|empty)|is required\b/i;
+    const SOFT = /please (select|enter|choose|provide|complete)/i;
+    const COMPLAINT = new RegExp(`${HARD.source}|${SOFT.source}`, "i");
     const PLACEHOLDER = /^(please\s+)?(select|choose)\b\.{0,3}$/i;
     const out: Array<{ name: string; why: string }> = [];
     const push = (name: string, why: string): void => {
@@ -76,7 +86,15 @@ export async function sweepEmptyRequiredControls(page: Page): Promise<EmptyRequi
         const own = (el.innerText || "").replace(/\s+/g, " ").trim();
         if (!own || own.length > 120 || !COMPLAINT.test(own)) return false;
         if (Array.from(el.children).some((c) => COMPLAINT.test(((c as HTMLElement).innerText || "")))) return false;
-        return visible(el);
+        if (!visible(el)) return false;
+        if (HARD.test(own)) return true;
+        // Soft phrasing: only an element DRESSED as an error counts. Anything else is the
+        // page telling a person what to do, not evidence that they failed to do it.
+        const marks = `${el.className || ""} ${el.id || ""} ${el.getAttribute("role") || ""} ${el.getAttribute("aria-live") || ""}`;
+        if (/error|invalid|danger|warning|alert|validation|required/i.test(marks)) return true;
+        const rgb = (getComputedStyle(el).color || "").match(/\d+/g) || [];
+        const r = Number(rgb[0] || 0), g = Number(rgb[1] || 0), b = Number(rgb[2] || 0);
+        return r > 110 && r > g * 1.6 && r > b * 1.6;
       });
 
     // IS THIS CONTROL ANSWERED? Needed before attribution, not after — see below.

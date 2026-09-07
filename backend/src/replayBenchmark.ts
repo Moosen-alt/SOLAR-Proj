@@ -183,7 +183,7 @@ export interface ReplayRow {
   detail?: {
     executed?: number; recorded?: number; reviewFieldsSeen?: number; healed?: number; blanks?: number;
     /** WHICH fields, not just how many — a count sends someone back to the portal to look. */
-    blankNames?: string[]; driftWarnings?: string[];
+    blankNames?: string[]; driftWarnings?: string[]; skippedNames?: string[];
   };
 }
 

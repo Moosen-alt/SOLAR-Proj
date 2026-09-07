@@ -185,6 +185,30 @@ The logic moved out of `recipeAdapter` (private, untestable — which is why it 
 real shapes in both directions. The false-positive cases carry equal weight: a sweep that cries
 blank on a filled page teaches the operator to click past the warning.
 
+**Typing was not saving, and a fill could not tell the difference (2026-09-07).**
+`case "fill"` returned `true` the moment `.fill()` resolved — success meant "we typed", never
+"it stuck" — and it walked away from the autosave its own blur had just started. Two lines
+below, `case "select"` does the opposite: it waits for that autosave and returns its honest
+result, with a comment explaining that skipping the wait lets a server re-render restore the
+old value. Same file, same page, opposite discipline. That asymmetry is why replay reported
+success on PacifiCorp's "Total System Export (kW)" while the portal's own screenshot shows the
+box empty with a required error beneath it.
+
+Fills now wait for the autosave, read the value back, retry once, and return **false** on a
+genuine miss — which lands the step in `skipped`, visible to the operator and a gap to the
+benchmark, instead of a clean run over a lost value. `fillHeld` is deliberately lenient,
+because the false-miss direction is the expensive one: a phone becoming "(503) 555-0142", a
+decimal padded 7.2 → 7.20, and a date reordered 2026-10-01 → 10/01/2026 are all rewrites, not
+losses. `fillHeld.dom.smoke.ts` drives one wiped field against three reformatting ones and
+asserts **exactly one** report.
+
+**Instructional text is not a validation error.** The complaint floor above initially matched
+`please (select|enter|choose)`, which is as often the caption above a checkbox group as it is a
+refusal — and a false entry there both demotes a benchmark run and blocks `pageIsPassThrough`,
+stopping a working replay. Soft phrasings now need an error signal (alert role, error-ish
+class, or red text); hard ones ("required", "cannot be blank") stand alone. The negative case
+failed before the fix, so the risk was live rather than theoretical.
+
 **Replay verification writes its evidence down.** A review screen the scraper cannot read now
 saves page HTML, text and a full-page screenshot to `data/replay-review-misses/` — the first
 unreadable one cost a live run to diagnose and told us nothing about the markup.

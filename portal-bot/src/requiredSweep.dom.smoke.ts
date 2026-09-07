@@ -79,6 +79,18 @@ const PAGES: Record<string, string> = {
     <div class="form-group"><label for="d">Meter number *</label><input id="d" value="" />
       <span class="err">This field is required.</span></div>`),
 
+  // ---- NEGATIVE: INSTRUCTIONS ARE NOT ERRORS -----------------------------------------
+  // "Please select all that apply" is the caption above a checkbox group, not a complaint.
+  // Checkboxes are excluded from the controls list, so this is exactly the shape that lands
+  // in the unattributable bucket — and reporting it would demote a correct run AND stop
+  // replay clicking on, because pageIsPassThrough shares this sweep.
+  instructions: shell(`
+    <div class="form-group"><p>Please select all that apply to this installation:</p>
+      <label><input type="checkbox" checked /> Battery storage</label>
+      <label><input type="checkbox" /> Generator</label>
+    </div>
+    <div class="form-group"><label for="q">System size (kW) *</label><input id="q" value="7.2" /></div>`),
+
   // ---- a complaint no control can own must still be reported -------------------------
   orphanComplaint: shell(`
     <div class="err">Please select at least one option before continuing.</div>
@@ -138,6 +150,10 @@ check("one complaint claims ONE field, not the whole page",
   many.length === 1, `${many.length} reported: ${JSON.stringify(many)}`);
 check("...and it is the field the message sits under",
   many.some((r) => /meter/i.test(r.name)), JSON.stringify(many));
+
+const instr = await sweep("instructions");
+check("INSTRUCTIONAL 'please select all that apply' is not treated as a complaint",
+  instr.length === 0, `false blanks manufactured: ${JSON.stringify(instr)}`);
 
 const orphan = await sweep("orphanComplaint");
 check("a complaint no field can own is still reported, not dropped",

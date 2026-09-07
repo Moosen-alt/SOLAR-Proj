@@ -1787,6 +1787,40 @@ ${body.slice(0, 4000)}`);
             if (typeof scoped!.blur === "function") await scoped!.blur().catch(() => {});
           }
         }
+        // READ IT BACK, BECAUSE TYPING IS NOT SAVING.
+        //
+        // This returned true the moment .fill() resolved — success meant "we typed", never
+        // "it stuck". Two lines below, the SELECT path does the opposite: it waits for the
+        // autosave to finish and returns `selected` honestly, with a comment explaining
+        // that skipping the wait lets a server re-render restore the old value. Fill both
+        // started that autosave and walked away from it.
+        //
+        // A live PacifiCorp replay reported success on "Total System Export (kW)" and the
+        // portal's own screenshot shows the box empty with a required error under it. On
+        // that evidence a fill's return value said nothing at all.
+        //
+        // A miss returns false, which lands the step in `skipped` — visible to the operator
+        // and a gap to the benchmark, rather than a clean run over a lost value.
+        await this.waitForAutosaveCommitted();
+        if (!(await this.fillHeld(scoped, v))) {
+          // ONE RETRY, BY THE SAME ROUTE AS THE FIRST ATTEMPT. A masked control keeps its
+          // validation state from KEY events, so retrying it with .fill() would fail the
+          // way the first attempt was written to avoid — and report a miss caused by the
+          // retry rather than by the portal.
+          if (maskedStep && typeof scoped!.pressSequentially === "function") {
+            if (typeof scoped!.focus === "function") await scoped!.focus().catch(() => null);
+            await scoped!.fill("").catch(() => null);
+            await scoped!.pressSequentially(v, { delay: 35 }).catch(() => null);
+          } else {
+            await scoped!.fill(v, { timeout: FILL_TIMEOUT_MS }).catch(() => null);
+          }
+          if (typeof scoped!.blur === "function") await scoped!.blur().catch(() => {});
+          await this.waitForAutosaveCommitted();
+          if (!(await this.fillHeld(scoped, v))) {
+            this.driftWarnings.push(`"${String(step.note ?? step.action).slice(0, 48)}" did not hold the value it was given — the portal shows something else`);
+            return false;
+          }
+        }
         return true;
       }
       case "select": {
@@ -2539,6 +2573,37 @@ ${body.slice(0, 4000)}`);
       await this.page.screenshot({ path: path.join(this.pageShotDir, name), fullPage: true });
       if (force) this.outcomeShotPath = path.join(this.pageShotDir, name);
     } catch { /* best-effort: never fail a replay over a screenshot */ }
+  }
+
+  /**
+   * Did the control keep what we gave it?
+   *
+   * DELIBERATELY LENIENT, because portals reformat what you type and a FALSE miss is the
+   * expensive direction: it costs a retry, a drift warning, and a demoted benchmark run on
+   * a filing that was actually correct. A phone becomes "(503) 555-0142", a decimal field
+   * turns 7.2 into 7.20, and a date input rewrites 2026-10-01 as 10/01/2026 — none of those
+   * are failures. Only an empty box, or a value sharing nothing with what we typed, is.
+   */
+  private async fillHeld(
+    scoped: { inputValue?: (opts?: { timeout?: number }) => Promise<string> } | null | undefined,
+    expected: string,
+  ): Promise<boolean> {
+    if (!scoped || typeof scoped.inputValue !== "function") return true; // nothing to read (test fakes)
+    const shown = String(await scoped.inputValue({ timeout: 2000 }).catch(() => "__unreadable__"));
+    if (shown === "__unreadable__") return true; // an unreadable control is not evidence of a miss
+    const want = String(expected ?? "").trim();
+    if (!want) return true;
+    if (!shown.trim()) return false; // the one unambiguous failure: we typed, the box is empty
+    const norm = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const a = norm(shown), b = norm(want);
+    if (a === b) return true;
+    const na = Number(shown.replace(/[^0-9.-]/g, "")), nb = Number(want.replace(/[^0-9.-]/g, ""));
+    if (Number.isFinite(na) && Number.isFinite(nb) && na === nb && a && b) return true;
+    if (a.includes(b) || b.includes(a)) return true;
+    // A date input reorders its parts rather than losing them: 2026-10-01 → 10/01/2026.
+    const parts = (s: string): string => (s.match(/\d+/g) ?? []).map((n) => String(Number(n))).sort().join("-");
+    if (parts(shown) && parts(shown) === parts(want)) return true;
+    return false;
   }
 
   /**
