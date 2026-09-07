@@ -105,7 +105,10 @@ const BENCH = {
   // resolves the wrong control entirely (a two-option contact-role dropdown), so the portal
   // has never shown us its real rate-schedule options. Left in place because a value is
   // needed to exercise the step at all — do not treat "Residential" as correct.
-  mainServiceRating: "200", pgeSchedule: "Residential",
+  // "7" is PGE's residential rate schedule, and the portal's own dropdown offers exactly
+  // "Select..." and "7" — read off the live control once the option sample was scoped to it
+  // instead of to the whole page. The earlier "Residential" was a guess that could never land.
+  mainServiceRating: "200", pgeSchedule: "7",
 
   // Documents are supplied too, but not from here: every upload slot the recipe asks for
   // gets a generated page headed "NOT A REAL DOCUMENT" (benchmarkPlaceholderDoc). Leaving

@@ -1851,9 +1851,15 @@ ${body.slice(0, 4000)}`);
     // "Model" selects differ only by "Inverter Clone System" versus "PV ArrayDelete Array",
     // and that string has been sitting in every such step's fingerprint since the day it was
     // learned. Consulted last, because a working selector needs no rescue.
-    if (step.fingerprint?.section && await this.looksOutOfReach(scoped)) {
-      const bySection = await this.resolveBySection(step);
-      if (bySection) scoped = bySection as never;
+    if (await this.looksOutOfReach(scoped)) {
+      // THE PORTAL'S OWN NAME FOR THE CONTROL FIRST. A test hook is stable across renders and
+      // says which side it belongs to; a recorded id is neither.
+      const byHook = await this.resolveByTestHook(step);
+      if (byHook) scoped = byHook as never;
+      else if (step.fingerprint?.section) {
+        const bySection = await this.resolveBySection(step);
+        if (bySection) scoped = bySection as never;
+      }
     }
     // NEVER ACT ON AN AMBIGUOUS LOCATOR.
     //
@@ -2679,6 +2685,59 @@ ${body.slice(0, 4000)}`);
   // its full 30s before FAILING THE WHOLE REPLAY — verified in real Chromium by
   // recipeReplay.dom.smoke.ts. Explicit nth stays exactly as recorded.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  /**
+   * Resolve by the portal's OWN stable test hook, derived from the step's field name.
+   *
+   * PowerClerk publishes 91 `data-test-role` attributes on its equipment page, among them
+   * `inverter-model-select`, `pv-array-model-select`, `inverter-manufacturer-select`,
+   * `pv-array-manufacturer-select`, `inverter-quantity`, `pv-array-quantity`. They are stable
+   * across renders and unambiguous about side — everything `#pcInputBase34` and a bare label
+   * of "Model" are not. A whole day went into disambiguating two identically-labelled
+   * selects that the portal had been naming distinctly the entire time.
+   *
+   * Generic on purpose: it matches the tokens of the step's FIELD name against
+   * data-test-role / data-testid / data-test-id, so any portal that ships such hooks gets the
+   * benefit. `inverterModel` becomes ["inverter","model"], which matches
+   * `inverter-model-select` and cannot match `pv-array-model-select`. Every token must
+   * appear, so a partial overlap never wins.
+   */
+  private async resolveByTestHook(step: RecipeStep): Promise<unknown | null> {
+    if (!this.page || typeof this.page.evaluate !== "function") return null;
+    const field = String(step.field ?? "");
+    if (!field) return null;
+    // inverterModel -> inverter model ; array1ModuleQuantity -> array module quantity
+    const tokens = field
+      .replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase()
+      .replace(/[^a-z ]+/g, " ").split(/\s+/)
+      .map((t) => (t === "module" ? "array" : t === "pv" ? "array" : t))
+      .filter((t) => t.length > 2 && !["the", "certified", "make"].includes(t));
+    if (tokens.length < 2) return null;
+    const found = await this.page.evaluate((toks: string[]) => {
+      let best: HTMLElement | null = null;
+      let bestLen = Infinity;
+      for (const el of Array.from(document.querySelectorAll("[data-test-role], [data-testid], [data-test-id]")) as HTMLElement[]) {
+        const hook = (el.getAttribute("data-test-role") || el.getAttribute("data-testid") || el.getAttribute("data-test-id") || "")
+          .toLowerCase().replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/[^a-z]+/g, " ");
+        if (!hook) continue;
+        if (!toks.every((t) => hook.includes(t))) continue;
+        // The control itself, or the nearest one this hook wraps.
+        const ctl = (el.matches("input, select, textarea") ? el : el.querySelector("input, select, textarea")) as HTMLElement | null;
+        if (!ctl) continue;
+        if (hook.length < bestLen) { bestLen = hook.length; best = ctl; }
+      }
+      if (!best) return "";
+      document.querySelectorAll("[data-rc-hook-hit]").forEach((e) => e.removeAttribute("data-rc-hook-hit"));
+      best.setAttribute("data-rc-hook-hit", "1");
+      return best.closest("[data-test-role], [data-testid], [data-test-id]")?.getAttribute("data-test-role")
+        || best.getAttribute("data-test-role") || "hook";
+    }, tokens).catch(() => "") as string;
+    if (!found) return null;
+    this.driftWarnings.push(
+      `"${String(step.note ?? field).slice(0, 34)}" resolved by the portal's own test hook ${JSON.stringify(found.slice(0, 40))} — stabler than the recorded id`,
+    );
+    return this.page.locator("[data-rc-hook-hit='1']").first();
+  }
+
   /**
    * Pick the control whose SECTION matches the one recorded for this step.
    *
