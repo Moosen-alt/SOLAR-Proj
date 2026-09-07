@@ -2161,6 +2161,17 @@ ${body.slice(0, 4000)}`);
           if (this.resolveTrail.length) {
             this.driftWarnings.push(`  ...how it resolved: ${this.resolveTrail.join(" | ").slice(0, 400)}`);
           }
+          // KEEP THE PAGE ON A MISS, NOT ONLY ON A FAILURE. A select that lands nothing does
+          // not throw — it returns false and the run carries on — so the page it happened on
+          // was never saved, and answering "what does that dropdown actually contain" cost a
+          // live run every time. Capturing here makes the equipment page readable offline the
+          // way the failure captures already made Accela's readable.
+          try {
+            const dir = this.pageShotDir || path.join(process.cwd(), "data", "replay-failures");
+            fs.mkdirSync(dir, { recursive: true });
+            const safe = String(step.note ?? step.field ?? "select").replace(/[^a-z0-9]+/gi, "-").slice(0, 40);
+            fs.writeFileSync(path.join(dir, `miss-${safe}-${String(Date.now())}.html`), await this.page.content());
+          } catch { /* diagnostics never change the outcome */ }
         }
         // COMMIT WHAT LANDED. PowerClerk autosaves per field on blur — the fill path has
         // always blurred for exactly this reason (and so does the learner after a model
