@@ -80,18 +80,21 @@ const adapter = new RecipeAdapter(recipe, {}, {}, { autoSubmit: false });
 (adapter as unknown as { page: unknown }).page = page;
 
 const res = await adapter.fillApplication({} as never);
-const data = (res as unknown as { data?: { driftWarnings?: string[]; skipped?: string[] } }).data ?? {};
+const data = (res as unknown as { data?: { driftWarnings?: string[]; agingNotes?: string[]; skipped?: string[] } }).data ?? {};
 const applied = await page.evaluate(() => (window as unknown as { __applied?: boolean }).__applied === true);
 console.log(`   drift: ${JSON.stringify((data.driftWarnings ?? []).slice(0, 2))}`);
+console.log(`   aging: ${JSON.stringify((data.agingNotes ?? []).slice(0, 2))}`);
 
 check("THE REGRESSION: the icon-prefixed control is clicked, not the disabled namesake", () => {
   assert.equal(applied, true,
     "replay clicked the disabled pill (or nothing) instead of the real Apply link");
 });
 
+// Finding the control by its accessible name after the recorded selector missed is a
+// SUCCESSFUL recovery: the click landed and the recipe is aging. Reported, not blocking.
 check("...and the recovery says why, so the recipe can be re-recorded properly", () => {
-  assert.ok((data.driftWarnings ?? []).some((w) => /by name|ligature/i.test(w)),
-    JSON.stringify(data.driftWarnings));
+  assert.ok([...(data.driftWarnings ?? []), ...(data.agingNotes ?? [])].some((w) => /by name|ligature/i.test(w)),
+    `drift=${JSON.stringify(data.driftWarnings)} aging=${JSON.stringify(data.agingNotes)}`);
 });
 
 check("the step is not reported as skipped", () => {
