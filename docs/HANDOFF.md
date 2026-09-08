@@ -68,9 +68,9 @@ One build, three attempts per recipe, interleaved. `data/replay-benchmark/2026-0
 |---|---|---|
 | PacifiCorp NEM | **3/3 (100%)** | — byte-identical every run, 47 values verified against 31 required |
 | PGE NEM | 0/3 | deterministic: "Model" select does not land; one policy-default step |
-| Ameren NEM | 0/3 | styled Terms checkbox (FIXED); 5 blanks in a section the recipe never recorded |
+| Ameren NEM | 0/3 | first-run stop at the Terms checkbox (gone: 73/75 live); 5 blanks in a section the recipe never recorded |
 | Coos Bay structural | 0/3 | a step clicks record number `187-26-000309-STR` from its own learn session |
-| Coos Bay electrical | 0/3 | attachment upload stalls, so the portal blocks Continue (FIXED) |
+| Coos Bay electrical | 0/3 | attachment upload stalls, so the portal blocks Continue (wait added, NOT live-confirmed — see below) |
 | **fleet** | **3/15 = 20%** | |
 
 **Read that 20% as a FLOOR.** Production (`repository.ts`) hands every staging run an LLM
@@ -104,6 +104,20 @@ the run reported "the portal did not advance". The learn side had waited for thi
 finish"); replay waited for nothing. Its fixture ALSO had to be slowed to 7.5s before it
 could fail without the fix, because the first version finished inside waits the adapter
 already performs.
+
+### The Coos Bay upload wait is fixture-proven, NOT live-proven — next lead
+
+The post-fix pilot still failed (46 of 62) and `waitForUploadAccepted` **fired no warning**,
+which means it found no progress indicator and returned. The wait is proven by its fixture
+and the live evidence is currently against it having engaged at all. Do not read it as fixed.
+
+**Named next step, not yet checked:** the learn side's own comment records that Accela
+renders the attachment grid in a CHILD IFRAME (`iframeAttachmentList` →
+`FileUpload/AttachmentsList.aspx`) — and it had to read the grid through
+`frameLocator` for exactly that reason. `waitForUploadAccepted` evaluates the MAIN frame
+only. If Accela's progress indicator lives in that iframe, the wait can never see it on the
+one portal it was written for, which is precisely the silence the pilot showed. Check that
+before changing anything else about the upload path.
 
 ### Filing defects found by reading the scorecard, not by guessing
 
