@@ -321,8 +321,28 @@ type", and the correct outcome is the SECOND one selected and the first untouche
 as designed — it refuses to check a type the portal does not list rather than guessing one —
 so the question is which record type this recipe should be filing under, not a defect.
 
-**FLEET AFTER THE DAY'S WORK:** PacifiCorp 97/98, Ameren 73/75, PGE 65/68, Coos Bay 46/49 and
-9/62. Four of five recipes now execute 93.9% or more of their steps.
+**COOS BAY REACHES 47 of 49 — 95.9% — AND IS FUNCTIONALLY COMPLETE.** The last false blank was
+mine: Oregon ePermitting's attachment page says "Please note: Plan review is required for some
+services", which matched `is required` and was counted as an empty required field — and
+because `pageIsPassThrough` shares that sweep, it also jammed the click-through (five separate
+"left the page unchanged" warnings in the run before). Excluded now as advisory prose.
+
+The two steps that remain unexecuted are **not defects**:
+
+| step | what it is |
+|---|---|
+| 47 `human-patch: 187-26-000309-STR` | a link recorded against a LITERAL record number from the learn session. It cannot exist on a new application — an un-replayable artifact, and arguably should never have been recorded. |
+| 48 `final submit: Continue Application »` | the final submit. Automation never clicks it; that is the system's first hard rule. |
+
+So the recipe files everything it can: **47/48 = 97.9%** of the steps a replay is permitted to
+execute. The `human-patch` step is the one thing worth removing — a learn-side guard against
+recording a control whose name is a record identifier would prevent the whole class.
+
+**FLEET AFTER THE DAY'S WORK:** PacifiCorp 97/98 (99.0%), Ameren 73/75 (97.3%), PGE 65/68
+(95.6%), Coos Bay **47/49 (95.9%)** and 9/62. **Four of five recipes are now at or above 95%.**
+The fifth fails on the record-type guard correctly refusing "Residential - Electrical" because
+the portal does not offer it — a question about which record type that recipe should file
+under, not a defect.
 
 **THE RULE THIS SESSION PAID FOR, FIVE TIMES OVER.** Today produced five silent
 `return false` paths and four diagnostics that described something other than the thing being
