@@ -44,6 +44,25 @@ const arg = (name: string): string | undefined => {
 
 // A plausible local address per state keeps the run about the ENGINE rather than about
 // address validation. It is still a throwaway project, deleted after each portal.
+// ...EXCEPT WHERE THE PORTAL VALIDATES THE ADDRESS AGAINST ITS OWN PARCEL DATABASE, WHICH
+// MOST PERMIT PORTALS DO. A state-level address is not local enough for those: it is filed
+// in the wrong city and the portal correctly finds nothing.
+//
+// Measured on City of Miami's iBuild portal. The FL fixture is "400 S Orange Ave, Orlando" —
+// 200 miles from Miami — so the property search ran on "Orange", returned no rows, and the
+// walk re-planned that same page seven times until the budget died. The row read "recorded
+// steps, never reached review" and looked like an engine defect; the engine did exactly the
+// right thing with an address that cannot exist there.
+//
+// The REPLAY benchmark already learned this lesson and keys its addresses per AHJ. This is
+// the same idea for learn, by portal host: a real parcel in the jurisdiction that portal
+// actually serves. Anything not listed falls back to the state address, which is fine for a
+// portal that does not check.
+const ADDRESS_BY_HOST: Record<string, { city: string; zip: string; street: string }> = {
+  // Miami City Hall — a real, unmistakable City of Miami parcel.
+  "apps.miami.gov": { city: "Miami", zip: "33133", street: "3500 Pan American Dr" },
+};
+
 const CITY_BY_STATE: Record<string, { city: string; zip: string; street: string; utility: string }> = {
   OR: { city: "Salem", zip: "97301", street: "555 Liberty St SE", utility: "Portland General Electric" },
   WA: { city: "Everett", zip: "98201", street: "2930 Wetmore Ave", utility: "Puget Sound Energy" },
@@ -105,7 +124,11 @@ async function main(): Promise<void> {
   const rows: BenchmarkRow[] = [];
   let cursor = 0;
   const runOne = async (t: typeof chosen[number], i: number): Promise<void> => {
-    const loc = CITY_BY_STATE[t.state];
+    // Per-host first (a portal that checks its parcel database needs a parcel IT has), then
+    // the state default. Utility comes from the state either way.
+    const stateLoc = CITY_BY_STATE[t.state];
+    const hostLoc = ADDRESS_BY_HOST[String(t.host || "").toLowerCase()];
+    const loc = hostLoc ? { ...stateLoc, ...hostLoc } : stateLoc;
     let pid = "";
     let outcome: Record<string, unknown> = {};
     try {
