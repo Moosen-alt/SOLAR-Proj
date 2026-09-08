@@ -260,6 +260,28 @@ export function reviewComparison(
   checkDigits("accountNumber", project.accountNumber, ["account"], { last4: true });
   checkDigits("meterNumber", project.meterNumber, ["meter"], { last4: true });
 
+  // NOT A REVIEW SCREEN IS NOT A WRONG APPLICATION.
+  //
+  // Live on PacifiCorp: the run ends on the Aggregation page — the last INPUT page, which
+  // shows an aggregation choice, a yes/no and a certification box, and none of the values
+  // entered eight pages earlier. Every check above then failed to find its value, and the
+  // scope fallback dressed the failures in whatever text was on screen, so the verdict read
+  // `homeownerName shows "No; checked"` and blamed the recipe with DO NOT SUBMIT. There was
+  // nothing wrong with the filing: 97 of 98 steps, zero blanks, 47 values verified.
+  //
+  // If NOT ONE of the project's values is anywhere on this page, the two explanations are
+  // "this is not a review screen" and "every single field is wrong" — and we cannot tell
+  // them apart from here. The honest report for that is the one this codebase already
+  // insists on everywhere else: WE COULD NOT CHECK. That scores clean-but-unverified, which
+  // is exactly what it is, rather than a mismatch that sends someone hunting a defect that
+  // is not there.
+  //
+  // A page where even ONE value was confirmed IS a review screen, and there the mismatches
+  // are real and still reported — which is the direction that has to keep working.
+  if (confirmed === 0 && compared > 0) {
+    return { mismatches: [], compared, confirmed: 0 };
+  }
+
   return { mismatches, compared, confirmed };
 }
 

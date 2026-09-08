@@ -133,6 +133,43 @@ function run() {
     console.log("  ✅ a distinctive account number still confirms");
   }
 
+  // ---------------------------------------------------------------------------
+  // NOT A REVIEW SCREEN IS NOT A WRONG APPLICATION.
+  //
+  // Live on PacifiCorp: the run ends on the Aggregation page — the last INPUT page, showing
+  // an aggregation choice, a yes/no and a certification box, and none of the values entered
+  // eight pages earlier. Every check failed to find its value and the scope fallback dressed
+  // those failures in whatever text was on screen, producing `homeownerName shows "No;
+  // checked"` and a DO NOT SUBMIT against a filing with zero blanks and 47 verified values.
+  // ---------------------------------------------------------------------------
+  {
+    const aggregationPage = [
+      { label: "Please make your selection regarding meter aggregation below", value: "No Aggregation" },
+      { label: "Will the output of this generation system serve more than one customer?", value: "No" },
+      { label: "I certify I am the property owner", value: "checked" },
+    ];
+    const c = reviewComparison(aggregationPage, project, "Meter Aggregation No Aggregation Will the output serve more than one customer? No I certify checked");
+    assert.equal(c.mismatches.length, 0,
+      `a page holding none of the project's values reported ${c.mismatches.length} mismatch(es): ${JSON.stringify(c.mismatches)}`);
+    assert.equal(c.confirmed, 0, "and it must not claim to have confirmed anything either");
+    console.log("  ✅ a page that is not a review screen reports UNVERIFIED, not mismatched");
+  }
+
+  // THE DIRECTION THAT MUST KEEP WORKING. One value found makes this a review screen, and a
+  // genuinely wrong field on it is still reported — otherwise the guard has bought silence.
+  {
+    const realReview = [
+      { label: "Customer Name", value: "Testy McTestface" },
+      { label: "Service Address", value: "77 Wrong Avenue" },
+      { label: "System Size (kW)", value: "9.89" },
+    ];
+    const c = reviewComparison(realReview, project, "Customer Name Testy McTestface Service Address 77 Wrong Avenue System Size 9.89");
+    assert.ok(c.confirmed >= 1, `a real review screen confirmed nothing: ${JSON.stringify(c)}`);
+    assert.ok(c.mismatches.some((m) => m.field === "projectAddress"),
+      `the wrong address was not reported: ${JSON.stringify(c.mismatches)}`);
+    console.log("  ✅ a REAL review screen still reports a genuinely wrong field");
+  }
+
   console.log("\n✅ ALL PASS: review-screen comparison tests");
 }
 
