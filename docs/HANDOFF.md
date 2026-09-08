@@ -268,11 +268,21 @@ session most of its hours.
   `{attachment, document}` — and every id on that page contains `Attachment_24Edit`, which
   means "attachment" agrees with everything and only "document" discriminates.
 
-**NOT ESTABLISHED:** why a candidate-scoring scan inserted ahead of that fallback still left
-the first control selected. It should have scored `ddlDocType` at 2 against
-`ddlAlsoAttachTo` at 1. It reported nothing either way, so the scan itself needs a diagnostic
-line before the next attempt — the rule at the top of this file, applied to the fix rather
-than to the failure.
+**THE DECISIVE DATUM, and start here:** a candidate-scoring scan was inserted at the top of
+`reanchorIfWrongControl` **carrying its own drift line that fires unconditionally** — before
+any decision, before any early return of its own. It printed **nothing**, on a step where
+`select` is in `IDENTITY_CHECKED`, `recorded` is non-empty, the locator matches 2, and
+`scoped.first` is a function.
+
+So the premise was wrong: **that function is not reached for this step at all**, or `scoped`
+arrives already collapsed to one element. Both attempts reasoned about the function's
+internals; neither checked whether execution gets there. **Put a log at the CALL SITE first**
+(`if (IDENTITY_CHECKED.has(step.action))` in executeStep) and confirm entry and
+`await scoped.count()` before touching anything inside. Two attempts were spent debugging a
+body that may never run — which is the same mistake as the four lying diagnostics above, made
+against my own fix instead of against the engine.
+
+Reverted both times; the tree is green and nothing half-finished is in it.
 
 A working fix therefore needs the candidate scan to run BEFORE the compaction fallback and to
 score by how many recorded words each candidate answers, not by first agreement — every id on
