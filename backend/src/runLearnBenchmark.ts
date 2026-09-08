@@ -140,6 +140,10 @@ async function main(): Promise<void> {
         autoLearnPortal(db, pid, {
           scope: "ahj", portalUrl: t.url, createdBy: "learn-benchmark",
           permitType: "electrical", headless: true, budgetMs: portalTimeoutMs,
+          // The operator has authorised accepting a cookie banner that offers nothing else.
+          // Declining is still tried first, every time; this governs only the residual, and
+          // it never applies to a CAPTCHA.
+          allowConsentAccept: true,
         }).catch((e: unknown) => ({ status: "threw", message: String((e as Error)?.message || e) })),
         new Promise((resolve) => setTimeout(
           () => resolve({ status: "timeout", message: `benchmark backstop: the learn was still running ${Math.round((portalTimeoutMs + BACKSTOP_SLACK_MS) / 1000)}s after start — target closed, treat as wedged` }),

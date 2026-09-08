@@ -96,7 +96,7 @@ check("the fixture reproduces the wall: the apply link bounces to the cookie pol
 
 // ---- what the adapter now does -------------------------------------------------
 const outcome = await page.evaluate(planConsentDismissal);
-if (outcome?.how && outcome.how !== "accept-only-refused") {
+if (outcome?.how && outcome.how !== "accept-only") {
   await page.locator("[data-al-consent]").first().click({ timeout: 3000 }).catch(() => null);
 }
 await page.goto(before);

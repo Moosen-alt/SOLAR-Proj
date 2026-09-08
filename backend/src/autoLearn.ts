@@ -357,6 +357,9 @@ export async function autoLearnPortal(
     // setting (headed locally) so it matches the hand-coded/replay adapters and leaves the browser
     // open at review; when omitted, resolveHeadless falls back to PORTAL_HEADLESS / server default.
     headless?: boolean;
+    /** Accept a cookie banner that offers nothing but an acceptance. Declining is always
+     *  tried first; this governs only the residual, and never a CAPTCHA. */
+    allowConsentAccept?: boolean;
     // Optional live-progress sink (drives the UI progress bar). Non-PII signals only.
     onProgress?: import("../../portal-bot/src/adapters/autoLearnAdapter").LearnProgressFn;
     /** Wall-clock cap on the page walk. The run stops ITSELF at the deadline and returns
@@ -650,7 +653,7 @@ async function autoLearnPortalInner(
       // Identity for the address-disambiguation grid: which city/ZIP this project is in, whose
       // name is on it, and which discipline we are filing. Used to REFUSE another property's
       // row, not to fill anything.
-      allowFinalSubmit: input.allowFinalSubmit === true,
+      allowFinalSubmit: input.allowFinalSubmit === true, allowConsentAccept: input.allowConsentAccept,
       // Only an explicit "no battery" arms the guard. An unknown stays the planner's call —
       // silence about a battery is not the same as the project stating there isn't one.
       hasBattery: (() => {

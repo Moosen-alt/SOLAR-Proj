@@ -33,7 +33,8 @@
 export interface ConsentOutcome {
   /** The control that was tagged, or "" when nothing was clicked. */
   clicked: string;
-  /** "declined" | "closed" | "accept-only-refused" | "" */
+  /** "declined" | "closed" | "accept-only" | "" — "accept-only" means the banner offered
+   *  nothing but an acceptance; the control is tagged and the CALLER decides whether to click. */
   how: string;
 }
 
@@ -100,9 +101,21 @@ export function planConsentDismissal(): ConsentOutcome {
       const hit = controls.find((c) => pattern.test(c.label));
       if (hit) { hit.el.setAttribute("data-al-consent", "1"); return { clicked: hit.label, how: "closed" }; }
     }
-    // Only an affirmative on offer. Consenting on the operator's behalf is not ours to do.
-    if (controls.some((c) => ACCEPT.test(c.label))) {
-      return { clicked: "", how: "accept-only-refused" };
+    // ONLY AN AFFIRMATIVE ON OFFER — TAGGED, NOT CLICKED HERE.
+    //
+    // Declining is always preferred and is tried first, above: Reject / Decline /
+    // Necessary-only, then a Close that consents to nothing. This branch is the residual —
+    // a banner whose only control is an acceptance, which is a real pattern and which no
+    // amount of engine work gets past.
+    //
+    // The control is tagged so a CALLER may click it, and the outcome still says
+    // "accept-only" so a caller that must not consent can refuse by simply not clicking.
+    // The decision stays with the caller, where it belongs, instead of being settled here
+    // for every portal at once.
+    const affirmative = controls.find((c) => ACCEPT.test(c.label));
+    if (affirmative) {
+      affirmative.el.setAttribute("data-al-consent", "1");
+      return { clicked: affirmative.label, how: "accept-only" };
     }
   }
   return none;

@@ -90,12 +90,16 @@ check("with no decline offered, Close is taken — it consents to nothing",
 
 // --- the refusals, which are the substance ---
 const acceptOnly = await planOn("acceptOnly");
-check("ACCEPT-ONLY: nothing is clicked — consenting is the operator's to give",
-  acceptOnly.clicked === "" && acceptOnly.how === "accept-only-refused", JSON.stringify(acceptOnly));
+check("ACCEPT-ONLY is reported as accept-only, never as a decline or a close",
+  acceptOnly.how === "accept-only", JSON.stringify(acceptOnly));
 
+// THE INVARIANT THAT STILL MATTERS. The planner no longer decides whether to consent — it
+// tags the control and names the situation, and the caller chooses. What it must NEVER do is
+// pass an acceptance off as a decline: "accept-only" is the caller's signal that consenting
+// is the only way through, and a caller that must not consent refuses by not clicking.
 const gotIt = await planOn("gotItOnly");
-check("...and 'Got it' alone is an acceptance too, so it is also refused",
-  gotIt.clicked === "", JSON.stringify(gotIt));
+check("...and 'Got it' alone is an acceptance too, named as such and never as a decline",
+  gotIt.how === "accept-only", JSON.stringify(gotIt));
 
 check("an ordinary dialog with no consent wording is not touched",
   (await planOn("ordinaryDialog")).clicked === "");

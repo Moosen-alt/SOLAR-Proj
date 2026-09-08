@@ -1031,6 +1031,11 @@ function fail(steps: RecipeStep[], portalName: string, message: string, pauseRea
 export class AutoLearnAdapter extends BasePortalAdapter {
   portalName: string;
   private page: Page | null = null;
+  /** Accept a cookie banner that offers NOTHING BUT an acceptance. Declining is always tried
+   *  first; this only governs the residual. Off unless the operator turns it on, because
+   *  consenting on their behalf is theirs to authorise — and it never applies to a CAPTCHA,
+   *  which is refused whatever this says. */
+  private allowConsentAccept: boolean;
   private maxPages: number;
   /** Wall-clock deadline (epoch ms) after which the page walk stops itself. See budgetMs. */
   private deadlineAt = 0;
@@ -1113,6 +1118,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     private planner: LearnPlanner,
     private options: {
       maxPages?: number;
+      /** See allowConsentAccept: accept a cookie banner offering nothing but an acceptance. */
+      allowConsentAccept?: boolean;
       /**
        * WALL-CLOCK BUDGET FOR THE PAGE WALK, IN MILLISECONDS.
        *
@@ -1193,6 +1200,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     // capped out mid-form. The stuck-page guard + review detection bound the loop, so a
     // higher cap can't run away; it just allows long wizards to reach review.
     this.maxPages = options.maxPages ?? 18;
+    this.allowConsentAccept = options.allowConsentAccept ?? process.env.PORTAL_ACCEPT_COOKIE_BANNER === "1";
     // 0 = no deadline (the default everywhere except the benchmark and any caller that
     // must bound its own wall clock).
     this.deadlineAt = options.budgetMs && options.budgetMs > 0 ? Date.now() + options.budgetMs : 0;
@@ -5923,8 +5931,23 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     try {
       const outcome = await this.page.evaluate(planConsentDismissal);
       if (!outcome?.how) return;
-      if (outcome.how === "accept-only-refused") {
-        this.debug?.event({ type: "consent_banner_left_standing", why: "the only control offered was an acceptance; consenting is the operator's to give" });
+      if (outcome.how === "accept-only") {
+        // DECLINE FIRST, ALWAYS. This is the residual: a banner whose only control is an
+        // acceptance. Leaving it standing was the safe default and it is what blocked two
+        // portals from ever reaching a form — the operator has since said to accept when it
+        // is the thing in the way, so this accepts ONLY here, only when no decline, no
+        // necessary-only and no close was offered, and it records that it did.
+        //
+        // Narrow on purpose. This is a cookie banner, not a terms-of-service agreement and
+        // not a CAPTCHA: the planner requires the banner's own wording (cookies / consent /
+        // tracking / privacy preferences) before anything here runs at all.
+        if (!this.allowConsentAccept) {
+          this.debug?.event({ type: "consent_banner_left_standing", why: "the only control offered was an acceptance and accepting is not enabled for this run" });
+          return;
+        }
+        await this.page.locator("[data-al-consent]").first().click({ timeout: 3000 }).catch(() => null);
+        await sleep(400);
+        this.debug?.event({ type: "consent_banner_accepted", control: outcome.clicked, why: "no decline, necessary-only or close was offered and the banner was blocking" });
         return;
       }
       await this.page.locator("[data-al-consent]").first().click({ timeout: 3000 });
