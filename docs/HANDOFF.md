@@ -60,6 +60,46 @@ question (values, option counts, row counts). A swallowed click still blocks, an
 when the snapshot could not be taken the message says so rather than claiming a
 comparison that never ran.
 
+## Fleet re-measure after the fixes (2026-09-08, `16-18-52.json`)
+
+| | first run | after fixes |
+|---|---|---|
+| ACCESS | 42.1% (24/57) | 40.4% (23/57) — portal-side variance, MFA/CAPTCHA 7 -> 10 |
+| usable recipe, given access | 58.3% | **60.9%** |
+| **reached REVIEW, given access** | 8.3% | **8.7%** |
+
+`2 improved, 1 REGRESSED, 54 unchanged`. Both improvements are the consent fix
+(lakestevens and desmoines, entered_application -> reached_form) — exactly the two it was
+written for. The regression is mapsonline (reached_form -> login_failed) and is portal-side:
+nothing in this session touches login detection.
+
+**The accept-when-blocking cookie path is NOT in these numbers** — it was committed after the
+run started. Untested live.
+
+### Why the review bar does not move: the planner returns no advance
+
+Twelve portals record fills and never reach review, and with the page trace now stored on the
+row the cause is the same for all of them — a filled page, and `adv=-`:
+
+```
+interconnect.comed  p2 "ConnectTheGrid" /applications  fields=55(fill=28,btn=27) plan:nav=- adv=- fills=7
+cityofboston        p12 .../Intake/SiteLocation        (13 pages walked, 24 fills)
+baltimorecounty     p8  cityworkspro/PLLPortal/        fields=14(fill=7,btn=7)   plan:nav=- adv=- fills=1
+```
+
+The walk stops on a page it has just completed while that page still shows dozens of buttons.
+`clickFallbackAdvance` now takes a plain Next/Continue/Proceed as a last resort, and refuses
+Accela's "Continue Application" along with every submit — that button is the page advance on
+every page but the last, where it FILES. Losing a page we do not learn is recoverable;
+clicking a submit is not.
+
+Two other things the traces show, worth knowing before the next attempt:
+
+- **`us.cloudpermit.com` ends on its own login page at p7** — the session is being lost
+  mid-walk, which is a different problem from anything above.
+- **`gilbertaz.seamlessdocs.com` is filling "Permit Extension Request"** — a permit
+  EXTENSION form, not a new permit. It scores 8 fills and is learning the wrong thing.
+
 ## Consent-wall pilot (2026-09-08) — moved two portals, and named the residual
 
 `data/learn-benchmark/2026-09-08T15-42-22.json`, three portals.
