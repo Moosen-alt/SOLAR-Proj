@@ -272,7 +272,23 @@ export function scoreReplayOutcome(outcome: ReplayOutcome): ReplayScore {
     // it, are both the same missing data seen further downstream. Blaming the recipe there
     // sends someone to re-record a working one. The warnings stay in the reason either way;
     // only the name on the verdict changes.
-    const owner = (failedSteps.length || healed) ? "recipe" as const : "data" as const;
+    // ...BUT A BLANK THE PROJECT COULD HAVE FILLED IS NOT MISSING DATA.
+    //
+    // The rule above reads every blank as a downstream symptom of absent project data, and
+    // that is right for a field nobody gave us a value for. It is wrong for a field we HAVE
+    // the value for and simply never wrote: live on Ameren Illinois, Name, Company, Address,
+    // Email and Phone came back blank on all three attempts — all five present in the
+    // project — and the verdict said `data`, pointing the operator at their own record when
+    // the recipe has no steps for that section at all. "Who can act" is the column somebody
+    // reads before deciding what to do, so it has to name the person who can.
+    const unresolvedNorm = new Set(unresolved.map((u) => String(u).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()));
+    const unexplainedBlanks = blanks.filter((b) => {
+      const n = String(b).replace(/ — the portal flagged this field$/, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+      if (!n) return false;
+      for (const u of unresolvedNorm) if (u && (u === n || u.includes(n) || n.includes(u))) return false;
+      return true;
+    });
+    const owner = (failedSteps.length || healed || unexplainedBlanks.length) ? "recipe" as const : "data" as const;
     return { rung: "replayed_with_gaps", index: 3, owner, reason: parts.join("; ") };
   }
 
@@ -326,6 +342,10 @@ export function scoreReplayOutcome(outcome: ReplayOutcome): ReplayScore {
 export interface ReplayRow {
   portal: string;
   profileKey: string;
+  /** The RECIPE, not just the profile: two recipes can share a profileKey (Coos Bay files a
+   *  structural permit and an electrical one against the same jurisdiction), and pooling them
+   *  averages two different defects into one row nobody can act on. */
+  recipeLabel?: string;
   /** WHICH ATTEMPT, when the same recipe is replayed more than once. A single run answers
    *  "can this recipe work"; only repeated runs answer the operator's actual question,
    *  which is "if I point it at this portal, how often does it just work". */
@@ -408,7 +428,7 @@ export interface PortalReliability {
 export function summarizeReliability(rows: ReplayRow[]): PortalReliability[] {
   const byKey = new Map<string, ReplayRow[]>();
   for (const r of rows) {
-    const k = r.profileKey || r.portal || "unknown";
+    const k = r.recipeLabel || r.profileKey || r.portal || "unknown";
     if (!byKey.has(k)) byKey.set(k, []);
     (byKey.get(k) as ReplayRow[]).push(r);
   }

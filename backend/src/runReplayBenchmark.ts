@@ -22,6 +22,7 @@ import { openDatabase } from "./db";
 import { createProject, deleteProject } from "./repository";
 import { getDecryptedCredential, getDecryptedCredentialAny, getDecryptedCredentialByUrl, listPortalCredentials } from "./portalCredentials";
 import { mergeStepReport, scoreReplayOutcome, summarizeReplay, summarizeReliability, type ReplayRow, type PortalReliability } from "./replayBenchmark";
+import { buildPortalPlanner } from "./autoLearn";
 import { getPortalRecipe, resolveRecipeFieldValues } from "./portalRecipes";
 import { writeBenchmarkPlaceholderDoc } from "./benchmarkPlaceholderDoc";
 import type { ProjectRecord } from "../../shared/src/types";
@@ -177,7 +178,13 @@ async function main(): Promise<void> {
       const url = String((steps.find((s) => s.action === "goto") as { value?: unknown } | undefined)?.value || "");
       let host = ""; try { host = new URL(url).hostname.toLowerCase(); } catch { /* none */ }
       const cred = creds.find((c) => { try { return new URL(c.portalUrl).hostname.toLowerCase() === host; } catch { return false; } });
-      return { row: r, key, steps: steps.length, fills, url, host, cred };
+      // TWO RECIPES CAN SHARE A PROFILE KEY. Coos Bay files a structural permit and an
+      // electrical one against the same jurisdiction and utility, so grouping reliability by
+      // profileKey alone reported them as a single 0/6 — two different recipes with two
+      // different defects, averaged into one row nobody could act on.
+      const discipline = String(r.discipline || "").trim();
+      const label = discipline ? `${key} [${discipline}]` : `${key} [${steps.length} steps]`;
+      return { row: r, key, label, steps: steps.length, fills, url, host, cred };
     })
     .filter((c) => c.fills >= 5)                       // a recipe that fills nothing is not one
     .filter((c) => !/benchmark/i.test(c.key))          // never the throwaway rows
@@ -214,6 +221,7 @@ async function main(): Promise<void> {
   // portal's attempts across the whole sweep, which is closer to what "shoot it at a portal
   // at some random moment" actually means. It also leaves the longest possible gap between
   // two visits to the same account, which matters where a portal allows one session at a time.
+  const withGapFill = process.argv.includes("--gap-fill");
   const repeat = Math.max(1, Number(arg("repeat") || 1));
   const chosen: Array<(typeof picked)[number] & { attempt: number }> = [];
   for (let round = 1; round <= repeat; round++) {
@@ -229,6 +237,9 @@ async function main(): Promise<void> {
   }
 
   console.log(`\nLIVE. Each replay fills a real form and leaves a DRAFT named "${BENCH.homeownerName}".`);
+  console.log(withGapFill
+    ? "GAP-FILL ON — measuring what production does: recipe steps PLUS LLM fills for required fields the recipe never recorded."
+    : "GAP-FILL OFF — measuring RECIPE-ONLY replay. Production runs WITH a planner, so this number is a FLOOR, not what an operator gets. Use --gap-fill to measure that.");
   console.log(`Replay stops at the review marker; nothing is submitted and no fee is paid.\n`);
 
   const { stageWithRecipe } = await import("../../portal-bot/src/index");
@@ -313,8 +324,29 @@ async function main(): Promise<void> {
       if (Object.keys(docsByType).length) {
         console.log(`      attaching ${Object.keys(docsByType).length} clearly-marked placeholder document(s): ${Object.keys(docsByType).join(", ")}`);
       }
+      // GAP-FILL IS OFF HERE UNLESS ASKED FOR, AND THAT CHANGES WHAT THE NUMBER MEANS.
+      //
+      // Production (repository.ts) builds a planner and hands it to every staging run, so
+      // replay there fills required fields the recipe never recorded. This harness passed
+      // no planner, so it has been measuring RECIPE-ONLY replay and reporting it as though
+      // it were what an operator gets. Ameren's five blanks are exactly the difference: a
+      // section the recipe has no steps for, which production would fill and the lab
+      // cannot. A configuration the number does not disclose is the same defect as a score
+      // with no denominator — so it is disclosed, and --gap-fill measures the other one.
+      let planner: Awaited<ReturnType<typeof buildPortalPlanner>> | undefined;
+      if (withGapFill) {
+        try {
+          const isNem = /powerclerk|nem|interconnect/i.test(c.key);
+          planner = buildPortalPlanner(db, project, {
+            portalType: isNem ? "powerclerk" : "accela",
+            scopeType: isNem ? "utility" : "ahj",
+            permitType: isNem ? undefined : (/electric/i.test(c.key) ? "electrical" : "structural"),
+          } as never);
+        } catch { planner = undefined; }
+      }
       const res = await stageWithRecipe(recipe, project, fieldValues, docsByType, [], {
         headless: true, credential, userDataDir,
+        ...(planner ? { gapFillPlanner: planner.planner, gapFillFields: planner.projectFields } : {}),
       });
       // THE FAILURE TEXT LIVES ON THE FAILING STEP, NOT ON result.message. HANDOFF already
       // records this trap — it is what made the stale-recipe flag dead code in repository.ts
@@ -332,7 +364,7 @@ async function main(): Promise<void> {
     const score = scoreReplayOutcome(outcome as never);
     const o = outcome as Record<string, unknown>;
     rows.push({
-      portal: c.host || c.key, profileKey: c.key, attempt: c.attempt, score,
+      portal: c.host || c.key, profileKey: c.key, recipeLabel: c.label, attempt: c.attempt, score,
       // The numbers behind the verdict, so a scorecard row can be argued with offline.
       detail: {
         executed: Number(o.executed ?? 0), recorded: c.steps,

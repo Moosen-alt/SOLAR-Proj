@@ -77,6 +77,26 @@ check("the worst portal sorts first, because a fleet average hides it", () => {
   assert.equal(rel[0].profileKey, "bad", `sorted best-first: ${rel.map((r) => r.profileKey).join(",")}`);
 });
 
+// TWO RECIPES, ONE PROFILE KEY. Coos Bay files a structural permit and an electrical one
+// against the same jurisdiction and utility. Pooled, they reported a single 0/6 — two
+// different recipes with two different defects averaged into one row nobody can act on.
+check("recipes sharing a profile key are reported separately", () => {
+  const withLabel = (label: string, index: number, rung: string, owner: string): ReplayRow =>
+    ({ portal: "aca", profileKey: "or|city of coos bay|pacific power", recipeLabel: label,
+       score: { rung, index, owner, reason: "" } } as unknown as ReplayRow);
+  const rel = summarizeReliability([
+    withLabel("coos bay [structural]", 2, "steps_failed", "recipe"),
+    withLabel("coos bay [structural]", 2, "steps_failed", "recipe"),
+    withLabel("coos bay [electrical]", 5, "verified_accurate", "none"),
+    withLabel("coos bay [electrical]", 5, "verified_accurate", "none"),
+  ]);
+  assert.equal(rel.length, 2, `pooled into ${rel.length} row(s): ${JSON.stringify(rel.map((r) => r.profileKey))}`);
+  const bad = rel.find((r) => /structural/.test(r.profileKey));
+  const good = rel.find((r) => /electrical/.test(r.profileKey));
+  assert.equal(bad?.pct, 0, "the broken recipe was averaged upward by its healthy sibling");
+  assert.equal(good?.pct, 100, "the healthy recipe was dragged down by its broken sibling");
+});
+
 check("no rows is 0%, not a division by zero reported as NaN%", () => {
   assert.deepEqual(summarizeReliability([]), []);
 });

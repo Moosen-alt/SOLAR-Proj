@@ -281,6 +281,36 @@ check("...and the harness death is excluded from the mean too", () => {
 });
 
 // ---------------------------------------------------------------------------
+// "WHO CAN ACT" HAS TO NAME SOMEBODY WHO CAN.
+//
+// A blank is a data gap only when nobody gave us the value. Live on Ameren Illinois: Name,
+// Company, Address, Email and Phone came back blank on all three attempts — every one of
+// them present in the project — and the verdict read `data`, pointing the operator at their
+// own record when the recipe has no steps for that section at all.
+// ---------------------------------------------------------------------------
+check("a blank the PROJECT HAS a value for is the recipe's gap, not the data's", () => {
+  const s = scoreReplayOutcome({
+    ok: true, executed: 70, recorded: 75,
+    requiredStillEmpty: ["Name", "Company", "Address"],
+    skipped: [], unresolvedFields: [], reviewFieldsSeen: 0,
+  } as never);
+  assert.equal(s.owner, "recipe",
+    `five fields the project carries came back blank and the verdict blamed the data: ${s.reason}`);
+});
+
+check("...but a blank nobody gave us a value for is still DATA", () => {
+  const s = scoreReplayOutcome({
+    ok: true, executed: 70, recorded: 75,
+    requiredStillEmpty: ["Please specify the size of the facility address' breaker panel: (A)"],
+    skipped: ["Please specify the size of the facility address' breaker panel: (A)"],
+    unresolvedFields: ["Please specify the size of the facility address' breaker panel: (A)"],
+    reviewFieldsSeen: 0,
+  } as never);
+  assert.equal(s.owner, "data",
+    `a field the project genuinely lacks was blamed on the recipe: ${s.reason}`);
+});
+
+// ---------------------------------------------------------------------------
 // THE SPLIT, AND THE DIRECTION IT FAILS IN.
 //
 // driftWarnings was one list carrying four meanings -- a real defect, a human-must-look, a
