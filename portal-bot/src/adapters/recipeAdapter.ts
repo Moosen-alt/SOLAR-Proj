@@ -161,6 +161,9 @@ export class RecipeAdapter extends BasePortalAdapter {
    *  "is everything this permit needs present". Paired with requiredStillEmpty. */
   /** Set when replay reached a payment card field and stopped there. Reported so the
    *  scorecard can tell "we stopped where we must" from "the recipe fell over". */
+  /** The page identity the last gap-fill ran against, so the end-of-run pass can tell a page
+   *  that still needs one from a page that has just had one. */
+  private gapFilledPage = "";
   private stoppedAtPayment = false;
   private requiredFieldsSeen: string[] = [];
   private fieldsVerified: string[] = [];
@@ -562,6 +565,7 @@ ${body.slice(0, 4000)}`);
           skipped.push(`payment: ${String(rest.note ?? rest.field ?? rest.action).slice(0, 44)} (recorded, NOT entered)`);
         }
         await this.runGapFill(this.page);
+        this.gapFilledPage = await this.pageIdentity().catch(() => "");
         break;
       }
 
@@ -571,6 +575,7 @@ ${body.slice(0, 4000)}`);
           // advancing click, so any required field the recipe missed (selector drift / a newly
           // added field) would otherwise reach review blank. No-op when gap-fill is not enabled.
           await this.runGapFill(this.page);
+          this.gapFilledPage = await this.pageIdentity().catch(() => "");
           break;
         }
         pastReview = true;
@@ -594,6 +599,7 @@ ${body.slice(0, 4000)}`);
         // the persist-settle so the LLM reads a stable page; the advancing click that follows is
         // the commit window for the gap-filled values. No-op when gap-fill is not enabled.
         await this.runGapFill(this.page);
+        this.gapFilledPage = await this.pageIdentity().catch(() => "");
         prevWasInput = false;
       }
 
@@ -1054,6 +1060,30 @@ ${body.slice(0, 4000)}`);
     // ever followed them. Five required fields, on the page a person is asked to check.
     // Nothing here clicks; it only re-fills values the run already decided.
     await this.reassertBlanksOnce(false);
+    // AND GAP-FILL IT, for the same reason and in the right order. Re-asserting can only put
+    // back a value the recipe already knows how to write; it cannot fill a required field the
+    // recipe has no step for at all. Live on Ameren Illinois: Name, Company, Address, Email
+    // and Phone came back blank on all three attempts, and the notes show the re-assert
+    // working perfectly on the pages BEFORE this one — those five belong to a section the
+    // recipe never recorded, which is precisely what gap-fill exists to cover.
+    //
+    // Every other page in the run gets this before its advancing click. The last page got
+    // neither pass, and it is the one a person is handed. Re-assert first (cheap, exact),
+    // gap-fill second (fills what remains from real project data), then sweep and report.
+    // ...but ONLY IF THIS PAGE HAS NOT JUST HAD ONE. Gap-fill costs an LLM call, and both
+    // paths that end a run (the review halt, and the payment stop) already gap-fill the page
+    // they stop on. Firing again on the same page would buy nothing and pay twice; the case
+    // this is here for is the OTHER ending — a run that simply reaches its last recorded step
+    // on a page no advancing click ever followed, which is where Ameren's five blanks live.
+    // The condition is deliberately the strict one: run only when the page can be identified
+    // AND differs from the one last gap-filled. "I could not tell" is not a reason to spend
+    // an LLM call — and on a page whose identity cannot even be read, a planner would have
+    // nothing coherent to read either.
+    const endPage = await this.pageIdentity().catch(() => "");
+    if (endPage && endPage !== this.gapFilledPage) {
+      await this.runGapFill(this.page).catch(() => null);
+      this.gapFilledPage = endPage;
+    }
     for (const label of await this.emptyRequiredControls()) {
       if (!this.requiredStillEmpty.includes(label)) this.requiredStillEmpty.push(label);
     }

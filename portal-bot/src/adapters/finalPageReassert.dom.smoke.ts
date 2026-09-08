@@ -64,6 +64,11 @@ const page = await context.newPage();
 await page.goto(url);
 const adapter = new RecipeAdapter(recipe, {}, {}, { autoSubmit: false });
 (adapter as unknown as { page: unknown }).page = page;
+// Count gap-fill offers without a live planner. Re-asserting can only restore a value the
+// recipe already knows how to write; a required field the recipe has NO step for is what
+// gap-fill is for, and on Ameren those were five of them on the final page.
+let gapFillCalls = 0;
+(adapter as unknown as { runGapFill: (p: unknown) => Promise<void> }).runGapFill = async () => { gapFillCalls += 1; };
 const res = await adapter.fillApplication({} as never);
 const data = (res as unknown as { data?: { requiredStillEmpty?: string[]; agingNotes?: string[] } }).data ?? {};
 const name = await page.locator("#nm").inputValue().catch(() => "");
@@ -83,6 +88,10 @@ check("...so the run does not report it as still empty",
 
 check("...and it SAYS it re-asserted, because a value that needs re-asserting is a quirk worth knowing",
   (data.agingNotes ?? []).some((w) => /re-asserted/i.test(w)), JSON.stringify(data.agingNotes));
+
+check("...and GAP-FILL is offered the last page too, for fields the recipe never recorded",
+  gapFillCalls === 1,
+  `gap-fill ran ${gapFillCalls} time(s) on a run that ended on a page it had never filled`);
 
 await browser.close();
 server.close();
