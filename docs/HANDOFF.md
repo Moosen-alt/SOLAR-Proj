@@ -105,14 +105,18 @@ reason is not login detection: **the stored URL is a city information page, not 
 One resolved to Facebook. Found by reading each jurisdiction's own site for the link it
 tells applicants to use.
 
-| stored URL (wrong) | what it actually is | the real portal | platform |
+**Every row below was opened in a real browser (read-only, no credentials) and reports what
+the page actually is.** That check earned its keep immediately: the first Akron candidate,
+taken from a search result, returned "Page Can Not Be Found".
+
+| stored URL (wrong) | what it actually is | the real portal (VERIFIED) | evidence |
 |---|---|---|---|
-| `www.cityofsacramento.gov` | department page | `https://aca-prod.accela.com/SACRAMENTO/Default.aspx` | Accela |
-| `snohomishcountywa.gov` | **redirects to facebook.com** | `https://pdspermitportal.snoco.org/pdsportal/app/landing` | PDS Permit Portal |
-| `www.akronohio.gov` | plans/permits info page | `https://akronco2.portal.iworq.net/portalhome/akronco2` | iWorQ |
-| `www.sandiego.gov` | solar-permit info page | `http://aca.accela.com/SANDIEGO` | Accela |
-| `www.lascruces.gov` | directory page | `https://aca-prod.accela.com/lascruces/Default.aspx` | Accela |
-| `www.miami.gov` | "Get a Permit to Install Solar Panels" | `http://apps.miamigov.com/iBuildPortal/` | iBuild |
+| `www.cityofsacramento.gov` | department page | `https://aca-prod.accela.com/SACRAMENTO/Default.aspx` | 200, title "Accela Citizen Access", 11 inputs |
+| `snohomishcountywa.gov` | **redirects to facebook.com** | `https://pdspermitportal.snoco.org/pdsportal/app/landing` | renders "PDS Permit Portal" with a login — note the SPA answers 404 on the route while serving the app, so a plain fetcher calls it dead |
+| `www.akronohio.gov` | plans/permits info page | `https://agis.akronohio.gov/CityworksPA/template/login.aspx` | 200, title "Public App", login form — Cityworks, NOT the iWorQ URL a search suggested |
+| `www.sandiego.gov` | solar-permit info page | `https://aca-prod.accela.com/sandiego/Default.aspx` | 200, Accela, login AND apply present — canonical host is aca-prod, not aca |
+| `www.lascruces.gov` | directory page | `https://aca-prod.accela.com/lascruces/Default.aspx` | 200, Accela, login |
+| `www.miami.gov` | "Get a Permit to Install Solar Panels" | `https://apps.miami.gov/iBuildPortal/` | 200, redirects to its Account/LogOn — host is apps.miami.gov, NOT apps.miamigov.com |
 
 Still unresolved: `www.palmbayfl.gov` (the city points applicants at
 `palmbayflorida.org/building`, which fronts an iMS portal whose direct URL is not published),
