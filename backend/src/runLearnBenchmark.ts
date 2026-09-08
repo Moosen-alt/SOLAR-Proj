@@ -19,7 +19,7 @@ import path from "node:path";
 import { openDatabase } from "./db";
 import { createProject, deleteProject } from "./repository";
 import { autoLearnPortal } from "./autoLearn";
-import { listPortalCredentials } from "./portalCredentials";
+import { listPortalCredentials, listStaleCredentials } from "./portalCredentials";
 import { reachedReviewFromEvents, scoreLearnOutcome, summarize, compareRuns, type BenchmarkRow } from "./learnBenchmark";
 
 const OUT_DIR = path.resolve(process.cwd(), "data", "learn-benchmark");
@@ -234,6 +234,32 @@ async function main(): Promise<void> {
   for (const [rung, n] of Object.entries(summary.byRung)) if (n) console.log(`   ${String(n).padStart(3)}  ${rung}`);
   console.log(`\nwho can act:`);
   for (const [owner, n] of Object.entries(summary.byOwner)) console.log(`   ${String(n).padStart(3)}  ${owner}`);
+
+  // CREDENTIALS NEEDING A HUMAN — THE LIST THIS TOOL HAS ALWAYS COMPUTED AND NEVER SHOWN.
+  //
+  // A refused credential sets a stale flag, and the sweep HONOURS that flag by skipping the
+  // portal — correctly, so it does not bang on a locked door. The consequence nobody sees is
+  // that the portal then leaves the fleet permanently: it is not learned, not measured, and
+  // not reported. Nine rows are in that state today and access cannot rise past 73.7% until
+  // a person edits them.
+  //
+  // So the run ends by naming them, with the portal's OWN wording. "password expired",
+  // "account locked" and "user not found" need three different human actions, and one bucket
+  // called "credential refused" hides which is which.
+  {
+    const needsHuman = listStaleCredentials(db, CLIENT);
+    if (needsHuman.length) {
+      console.log(`\nCREDENTIALS NEEDING A HUMAN (${needsHuman.length}) — these portals are SKIPPED until fixed:`);
+      for (const c of needsHuman) {
+        let host = c.portalUrl;
+        try { host = new URL(c.portalUrl).hostname; } catch { /* keep the raw string */ }
+        const lastOk = c.lastLoginOkAt ? String(c.lastLoginOkAt).slice(0, 10) : "never";
+        console.log(`   ${host.slice(0, 44).padEnd(46)} user=${String(c.usernameReference ?? "?").slice(0, 24).padEnd(26)} lastOK=${lastOk}`);
+        console.log(`      portal said: ${String(c.lastLoginNote ?? "(nothing recorded)").slice(0, 110)}`);
+      }
+      console.log(`   Fix these and re-run a single host to clear the flag: npm run learn:benchmark -- --host <host>`);
+    }
+  }
 
   fs.mkdirSync(OUT_DIR, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);

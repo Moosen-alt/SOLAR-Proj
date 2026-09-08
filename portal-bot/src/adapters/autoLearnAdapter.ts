@@ -193,6 +193,11 @@ const PAY_FEE = /\b(pay fee|pay now|submit & pay|submit and pay|make payment|con
 // "Continue Application" on Step 3: Review is the submit gate — it advances on input
 // pages but submits on the review page). The structural guard below treats them as the
 // final submit (recorded, never clicked) whenever the page has no fillable inputs.
+/** How many times the walk may see the SAME page signature before it stops and says so.
+ *  Three allows a legitimate re-render plus one retry; Miami's Property Search was walked
+ *  SEVEN times, which bought nothing and spent the whole budget. */
+const REPEAT_PAGE_LIMIT = 3;
+
 const SUBMIT_INTENT = /\b(continue application|submit application|file application|submit|finish|finalize|confirm submission|place order|complete submission)\b/i;
 
 // Controls that act on an EXISTING portal record (the operator's real filings) — never
@@ -3219,6 +3224,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     // counts + classification + the planner's decision). Surfaced in the result message
     // and logs so a "nothing fillable" run is debuggable WITHOUT re-running blind.
     const pageTrace: string[] = [];
+    /** How many times each page signature has been walked. See the repeat-stop below. */
+    const repeatPageCounts = new Map<string, number>();
     // Did we ever reach a page with editable fields? Distinguishes "wandered through
     // dashboards/links and never found a form" from "found a form but couldn't finish".
     let everFoundFillable = false;
@@ -3794,6 +3801,34 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         );
         // Same breadcrumb into the run bundle's timeline (redacted, host+path only).
         this.debug?.event({ type: "page", trace: pageTrace[pageTrace.length - 1], recovery: recoveryHint ? true : undefined });
+
+        // THE SAME PAGE, OVER AND OVER, UNTIL THE BUDGET DIES.
+        //
+        // Miami's iBuildPortal — a portal reached for the FIRST TIME today after its stored
+        // URL was corrected — walked Home, Legal Agreement, then Property Search seven times.
+        // Pages 3 through 9 are byte-identical in the trace: same path, same 69 fields, an
+        // advance planned every time, and nothing moving. Ten pages of budget bought three
+        // distinct pages. Boston did it eight times and Baltimore four.
+        //
+        // A walk that cannot tell it is standing still cannot stop, and cannot say why. This
+        // does both: after REPEAT_PAGE_LIMIT visits to the same signature it stops and names
+        // the page, which is a run an operator can act on rather than a budget timeout.
+        //
+        // The signature deliberately EXCLUDES body text — an inline validation message
+        // changes that on every attempt, which would make a stuck page look like progress.
+        {
+          const sig = `${hostPath}|${fields.length}|${fillCount}|${btnCount}`;
+          repeatPageCounts.set(sig, (repeatPageCounts.get(sig) ?? 0) + 1);
+          const seen = repeatPageCounts.get(sig) ?? 1;
+          if (seen > REPEAT_PAGE_LIMIT) {
+            this.debug?.event({ type: "page_repeat_stop", page: pageCount, seen, sig: sig.slice(0, 90) });
+            return fail(
+              steps,
+              this.portalName,
+              `The walk stopped making progress: "${(redactStatusText(pageTitle) || hostPath).slice(0, 60)}" was reached ${seen} times with the same controls and the page never moved. Recorded ${steps.filter((st) => ["fill", "select", "check"].includes(String(st.action))).length} field(s) before that. The advance on this page is not advancing — a person should check what it wants.`,
+            );
+          }
+        }
 
         // Live progress for the UI — a short, non-PII description of this page. The
         // review phase is driven by the planner's atReview (or a structural review page),
