@@ -105,6 +105,11 @@ const OPEN_POPUP_SELECTOR = [
   '[class*="ui-datepicker"]',
 ].join(", ");
 
+/** The one warning in this file that is a SUSPICION rather than an observation, kept as a
+ *  constant because the end of the run has to be able to find it again and take it back. */
+const COVERED_CONTROL_WARNING =
+  "a dropdown or date picker stayed open after two Escapes — the next control may have been driven while covered; verify it by eye";
+
 export class RecipeAdapter extends BasePortalAdapter {
   portalName: string;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1004,6 +1009,8 @@ ${body.slice(0, 4000)}`);
       // The operator authorized the final submit — grab the permit number + record link
       // off the completion page so they're captured automatically.
       const capture = await this.captureSubmissionConfirmation();
+      // AFTER every measurement this path will ever collect, never before one. See below.
+      this.dischargeCoveredWarning();
       return ok(`Replayed ${executed} recorded step(s) and clicked the approved final submit.`, {
         executed, skipped, finalSubmitClicked: true,
         permitNumber: capture.data?.permitNumber || "",
@@ -1032,6 +1039,12 @@ ${body.slice(0, 4000)}`);
     for (const label of await this.emptyRequiredControls()) {
       if (!this.requiredStillEmpty.includes(label)) this.requiredStillEmpty.push(label);
     }
+    // ONLY NOW. The sweep directly above is the last thing that can add a blank, and a
+    // discharge that ran before it would be deciding on evidence that had not finished
+    // arriving — reading requiredStillEmpty as empty a moment before the final page filled
+    // it in. An earlier draft of this call sat above that loop and would have withdrawn the
+    // warning on exactly the page the warning was about.
+    this.dischargeCoveredWarning();
     const review = await this.verifyReviewScreen(project);
     return ok(
       `Replayed ${executed} recorded step(s); stopped at review.${review.summary}`,
@@ -2734,6 +2747,8 @@ ${body.slice(0, 4000)}`);
     // identity-free, so a page that never moved satisfies it instantly.
     const beforeUrl = typeof this.page.url === "function" ? String(this.page.url() ?? "") : "";
     const beforeFp = await this.pageIdentity();
+    // Values too, not just identity — so a click that computed a total can prove it did.
+    const beforeEffect = await this.pageEffect();
 
     await waitForElement(scoped);
     await scoped!.click();
@@ -2741,7 +2756,7 @@ ${body.slice(0, 4000)}`);
     // interactive control to mount before the next fill so we never type onto an unmounted page
     // (best-effort; never skips — the retry/reload loop still recovers a genuine miss).
     await waitForInteractiveControls(this.page);
-    await this.assertAdvanced(step, beforeUrl, beforeFp);
+    await this.assertAdvanced(step, beforeUrl, beforeFp, beforeEffect);
     return true;
   }
 
@@ -2802,7 +2817,43 @@ ${body.slice(0, 4000)}`);
    * a fresh learn. A goto/navigation click legitimately changes the URL, which counts as
    * moving; only a click that changes NOTHING is a block.
    */
-  private async assertAdvanced(step: RecipeStep, beforeUrl: string, beforeFp: string): Promise<void> {
+  /** WHAT THE CLICK ACTUALLY DID, when it did not move the page.
+   *
+   *  pageIdentity answers "are we still on the same page" and deliberately ignores values,
+   *  which is right for that question and useless for this one. "Calculate" fills a total,
+   *  "Add Array" appends a row, "Add Contact" opens a sub-form -- all leave the identity
+   *  untouched, and all plainly DID something. Without a way to see that, the engine could
+   *  only say "in-page action, or an advance that silently did nothing" and leave the
+   *  operator to guess which. That sentence fired on four of five portals and was the single
+   *  biggest reason otherwise-correct filings could not score clean.
+   *
+   *  This is the cheap second look: control count, option count, and the values themselves.
+   *  A real in-page action moves at least one of them; a click that was swallowed moves
+   *  none. */
+  private async pageEffect(): Promise<string> {
+    if (!this.page || typeof this.page.evaluate !== "function") return "";
+    return await this.page.evaluate(() => {
+      const els = Array.from(document.querySelectorAll("input, select, textarea")) as HTMLElement[];
+      let vals = "";
+      let options = 0;
+      let shown = 0;
+      for (const el of els) {
+        const r = el.getBoundingClientRect();
+        if (!r || (r.width === 0 && r.height === 0)) continue;
+        shown++;
+        const t = (el as HTMLInputElement).type;
+        if (t === "checkbox" || t === "radio") vals += (el as HTMLInputElement).checked ? "1" : "0";
+        else vals += String((el as HTMLInputElement).value ?? "").slice(0, 24);
+        vals += ";";
+        if (el.tagName === "SELECT") options += (el as HTMLSelectElement).options.length;
+      }
+      // Rows and list items move when a portal appends an array or a contact.
+      const rows = document.querySelectorAll("tr, li, [role='row']").length;
+      return `${shown}|${options}|${rows}|${vals.slice(0, 4000)}`;
+    }).catch(() => "") as Promise<string>;
+  }
+
+  private async assertAdvanced(step: RecipeStep, beforeUrl: string, beforeFp: string, beforeEffect = ""): Promise<void> {
     // No identity means a mock/no-DOM page (the unit-test doubles) — assert nothing.
     if (!beforeFp) return;
     const moved = async (): Promise<boolean> => {
@@ -2834,7 +2885,17 @@ ${body.slice(0, 4000)}`);
     // move the page is too strong and broke the Accela replay smoke outright.
     const isAdvance = /^advance\b/i.test(String(step.note ?? "").trim());
     if (!blockers.length && !isAdvance) {
-      this.driftWarnings.push(`click "${String(step.note ?? "click").slice(0, 44)}" left the page unchanged (in-page action, or an advance that silently did nothing)`);
+      // ASK THE SECOND QUESTION BEFORE GIVING UP ON THE ANSWER. The page did not move; did
+      // anything happen at all? A total that filled, a row that appeared, an option list that
+      // grew — any of those settles it as the in-page action the recorder said it was, and
+      // there is nothing for a person to check. Only when NOTHING moved is this still the
+      // open question it used to always be, and only then does it block a clean score.
+      const afterEffect = beforeEffect ? await this.pageEffect() : "";
+      if (afterEffect && afterEffect !== beforeEffect) {
+        this.agingNotes.push(`click "${String(step.note ?? "click").slice(0, 44)}" acted on the page without advancing it — the in-page action the recipe recorded`);
+        return;
+      }
+      this.driftWarnings.push(`click "${String(step.note ?? "click").slice(0, 44)}" changed nothing on the page — no value, row or option moved, so it was either a no-op control or an advance the portal silently refused`);
       return;
     }
 
@@ -3476,10 +3537,29 @@ ${body.slice(0, 4000)}`);
           return true;
         }
       }
-      // Still open after two attempts: say so rather than drive a shadowed control silently.
-      this.driftWarnings.push(
-        "a dropdown or date picker stayed open after two Escapes — the next control may have been driven while covered; verify it by eye",
-      );
+      // THIRD ATTEMPT, AND NOT ANOTHER ESCAPE. A widget that ignored two Escapes will ignore a
+      // third; what it usually has not been given is a reason to lose focus. These pickers
+      // anchor to the focused input and close when it blurs, so blur first, then Escape once
+      // more against the page. Still never a click — a blind click to dismiss an overlay is
+      // how automation presses something it cannot see.
+      const blurred = await this.page.evaluate(() => {
+        const el = document.activeElement as HTMLElement | null;
+        if (el && typeof el.blur === "function") { el.blur(); return true; }
+        return false;
+      }).catch(() => false);
+      if (blurred) {
+        const kb2 = (this.page as { keyboard?: { press?: (k: string) => Promise<void> } }).keyboard;
+        await kb2?.press?.("Escape").catch(() => null);
+        await this.page.waitForTimeout?.(120).catch(() => null);
+        if (!(await countOpen())) {
+          this.agingNotes.push("a dropdown or date picker ignored Escape and closed when the field it was anchored to lost focus");
+          return true;
+        }
+      }
+      // Still open: say so rather than drive a shadowed control silently. This is a SUSPICION
+      // about values — "the next control may have been driven while covered" — and the run
+      // ends holding a direct measurement of exactly that. See dischargeCoveredWarning.
+      this.driftWarnings.push(COVERED_CONTROL_WARNING);
       return false;
     } catch { return false; /* a diagnostic must never fail a run */ }
   }
@@ -3536,6 +3616,29 @@ ${body.slice(0, 4000)}`);
    *  already filled from the account. That is precisely the page whose required fields count,
    *  and routing it through here is what keeps a clean run from printing "verified 47,
    *  required 0" — a sentence that cannot be told apart from never having looked. */
+  /** A MEASUREMENT BEATS A SUSPICION.
+   *
+   *  The covered-control warning says the next control MAY have been driven while an overlay
+   *  sat over it. That is a guess about whether values landed — and by the end of the run we
+   *  no longer have to guess: every fill reads its value back, every select reports whether
+   *  it took, every advancing click now reports whether anything moved, and the required
+   *  sweep says what the portal still wants. If all four of those came back clean, the thing
+   *  the warning was worried about did not happen.
+   *
+   *  So it is withdrawn — into agingNotes, not deleted, because the portal quirk is real and
+   *  the operator should still know the picker fought us. If ANY value failed to verify the
+   *  warning stands, which is the direction that matters: the discharge is evidence, never
+   *  optimism. */
+  private dischargeCoveredWarning(): void {
+    const i = this.driftWarnings.indexOf(COVERED_CONTROL_WARNING);
+    if (i < 0) return;
+    if (this.fieldsUnverified.length || this.requiredStillEmpty.length) return;
+    this.driftWarnings.splice(i, 1);
+    this.agingNotes.push(
+      `a dropdown or date picker stayed open despite Escape and a blur — but every one of ${this.fieldsVerified.length} value(s) read back correctly and the portal flagged nothing empty, so nothing was driven while covered`,
+    );
+  }
+
   private async sweepRequired(): Promise<{ empty: EmptyRequired[]; requiredSeen: string[] }> {
     if (!this.page) return { empty: [], requiredSeen: [] };
     const found = await sweepEmptyRequiredControls(this.page);

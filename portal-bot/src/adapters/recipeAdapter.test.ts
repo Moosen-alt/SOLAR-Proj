@@ -949,6 +949,48 @@ async function testHiddenPrimaryFallsThroughToVisibleFallback() {
   );
 }
 
+// ---------------------------------------------------------------------------
+// A MEASUREMENT BEATS A SUSPICION -- BUT ONLY WHEN THE MEASUREMENT IS CLEAN.
+//
+// "A dropdown or date picker stayed open after two Escapes -- the next control may have been
+// driven while covered" is the only warning in the adapter that is a guess rather than an
+// observation, and it blocked a clean score on PacifiCorp every run. By the end of a run the
+// guess is answerable: every fill reads its value back and the required sweep says what the
+// portal still wants. If both are clean, the thing it feared did not happen.
+//
+// The direction that matters is the refusal. These two tests exist so that a future change
+// cannot quietly make the discharge unconditional.
+// ---------------------------------------------------------------------------
+const COVERED = "a dropdown or date picker stayed open after two Escapes — the next control may have been driven while covered; verify it by eye";
+
+const dischargeWith = (fieldsUnverified: string[], requiredStillEmpty: string[]): { drift: string[]; aging: string[] } => {
+  const a = Object.create(RecipeAdapter.prototype) as Record<string, unknown>;
+  a.driftWarnings = [COVERED];
+  a.agingNotes = [];
+  a.fieldsVerified = ["Meter", "Model", "kW AC"];
+  a.fieldsUnverified = fieldsUnverified;
+  a.requiredStillEmpty = requiredStillEmpty;
+  (a as { dischargeCoveredWarning: () => void }).dischargeCoveredWarning();
+  return { drift: a.driftWarnings as string[], aging: a.agingNotes as string[] };
+};
+
+async function testCoveredWarningDischargedByCleanReadback(): Promise<void> {
+  const r = dischargeWith([], []);
+  assert.ok(!r.drift.includes(COVERED),
+    "every value read back and nothing was left blank, yet the suspicion still blocked the run");
+  assert.ok(r.aging.some((w) => /nothing was driven while covered/i.test(w)),
+    `the withdrawal was not recorded anywhere: ${JSON.stringify(r.aging)}`);
+}
+
+async function testCoveredWarningStandsWhenAValueDidNotHold(): Promise<void> {
+  const unverified = dischargeWith(["Model"], []);
+  assert.ok(unverified.drift.includes(COVERED),
+    "a value that would not read back is exactly what this warning predicts — it must not be withdrawn");
+  const blank = dischargeWith([], ["Total System Export (kW)"]);
+  assert.ok(blank.drift.includes(COVERED),
+    "the portal still wants a required field, and the warning was withdrawn anyway");
+}
+
 const tests: Array<[string, () => Promise<void>]> = [
   ["RESOLVE: a hidden-only primary falls through to the visible fallback", testHiddenPrimaryFallsThroughToVisibleFallback],
   ["RESOLVE: a visible-but-DISABLED primary falls through too", testDisabledOnlyPrimaryFallsThroughToFallback],
@@ -985,6 +1027,8 @@ const tests: Array<[string, () => Promise<void>]> = [
   ["Gap B: gap-fill runs before the guided-manual review halt", testGapFillRunsBeforeGuidedManualReview],
   ["Gap B: gapFill report is surfaced in the stop-at-review result", testGapFillReportInStopAtReviewResult],
   ["Gap B: gapFill report is surfaced in the final-submit result", testGapFillReportInFinalSubmitResult],
+  ["COVERED CONTROL: a clean readback withdraws the suspicion", testCoveredWarningDischargedByCleanReadback],
+  ["COVERED CONTROL: THE FAIL-SAFE — an unverified value keeps it standing", testCoveredWarningStandsWhenAValueDidNotHold],
 ];
 
 let failures = 0;
