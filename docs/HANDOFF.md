@@ -328,15 +328,23 @@ enabled `ctl00_PlaceHolderMain_actionBarBottom_btnSave` sits on the same page. A
 dialog's Save only once the attachment's metadata is complete, so the upload is never
 committed and Continue is correctly refused.
 
-Two candidates, and the saved page distinguishes them — do that before changing anything:
-- the recipe's Save step (`{role:"link",name:"Save"}`) resolves to the PAGE-level Save rather
-  than the dialog's, which would save a draft and leave the attachment uncommitted; or
-- the dialog's own required metadata (document type) is genuinely unset, keeping Save disabled.
+**Narrowed further, from the same page.** The document-type control is NOT an editable
+`<select>` there: 14 `ddlDocType` id references and **no `<select>` element at all**, where an
+earlier capture of that step showed a real `<select name="...ddlDocType" onchange=...>`. So at
+the moment Continue is clicked the attachment's editor row is **not in an editable state** —
+which is exactly why its Save is disabled, and why filling the document type cannot be the
+missing action.
 
-The file itself IS uploaded — "ZZTEST"/".pdf" appear in the page — so this is about the
-dialog's completion, not the upload. Note the enabled-control preference added today would
-steer a `name:"Save"` lookup AWAY from the disabled dialog button and toward the page-level
-one, which is correct in general and possibly wrong here: that is the first thing to check.
+The file IS uploaded ("ZZTEST"/".pdf" appear), so the upload succeeded and the row never
+entered — or has already left — edit mode. The question is therefore about SEQUENCE, not about
+any one control: what puts that row into edit mode, and did the recipe's steps run before it
+was ready or after it closed? Compare the earlier capture (editor open, real select present)
+with this one (closed) to find which step moves between the two.
+
+Ruled out: "the document type is unset so Save stays disabled" — there is no control to set.
+Still open: whether the recipe's Save step resolves to the page-level Save rather than the
+dialog's, since the enabled-control preference added today would steer a `name:"Save"` lookup
+away from the disabled dialog button. Correct in general; worth confirming here.
 
 **COOS BAY REACHES 47 of 49 — 95.9% — AND IS FUNCTIONALLY COMPLETE.** The last false blank was
 mine: Oregon ePermitting's attachment page says "Please note: Plan review is required for some
