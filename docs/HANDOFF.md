@@ -68,7 +68,7 @@ One build, three attempts per recipe, interleaved. `data/replay-benchmark/2026-0
 |---|---|---|
 | PacifiCorp NEM | **3/3 (100%)** | — byte-identical every run, 47 values verified against 31 required |
 | PGE NEM | 0/3 | deterministic: "Model" select does not land; one policy-default step |
-| Ameren NEM | 0/3 | first-run stop at the Terms checkbox (gone: 73/75 live); 5 blanks in a section the recipe never recorded |
+| Ameren NEM | 0/3 | first-run stop at the Terms checkbox (gone: 73/75 live); 5 blanks the portal CLEARS on re-render — diagnosed, needs a re-record (see below) |
 | Coos Bay structural | 0/3 | a step clicks record number `187-26-000309-STR` from its own learn session |
 | Coos Bay electrical | 0/3 | attachment upload stalls, so the portal blocks Continue (wait added, NOT live-confirmed — see below) |
 | **fleet** | **3/15 = 20%** | |
@@ -104,6 +104,31 @@ the run reported "the portal did not advance". The learn side had waited for thi
 finish"); replay waited for nothing. Its fixture ALSO had to be slowed to 7.5s before it
 could fail without the fix, because the first version finished inside waits the adapter
 already performs.
+
+### Ameren's five blanks: diagnosed, and NOT an engine defect
+
+Chased to the end with instruments added for the purpose (the page stamp on every blank, and
+the gap-fill report on the scorecard). What is now established, live:
+
+- The blanks are all on ONE page: `Name / Company / Address / Email / Phone
+  [Interconnection Application]` — the first page of the form.
+- **Gap-fill FILLED Email and Phone** (it targets required-EMPTY controls) and the sweep a
+  moment later reported those same controls empty. So it is not a twin contact block that
+  nobody filled — it is the block we DO fill, being cleared.
+- Sixteen re-assert attempts across two passes, plus gap-fill, all cleared. The run now says
+  so in the operator's terms: *"5 required field(s) would not stay filled on this page after
+  two passes — the portal clears them on re-render; they need entering by hand before
+  submit."*
+
+The remaining question is WHY PowerClerk clears it, and the likely answer is a commit ritual
+the recipe never recorded: these blocks are usually driven by a contact-type choice or an
+Add/Save that promotes a template into a real contact, and typing into the inline template
+is discarded. **That is a re-record, not an engine change.** Do not spend more engine passes
+on it — the engine has now said everything it can see.
+
+Cap raised from 3 to `REASSERT_MAX_FIELDS` (8) along the way, because three was chosen when
+the case in hand had one field and this block has five: two were never even attempted while
+the run reported all five blank.
 
 ### The Coos Bay upload wait is fixture-proven, NOT live-proven — next lead
 
