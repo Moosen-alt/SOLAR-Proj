@@ -2953,6 +2953,44 @@ ${body.slice(0, 4000)}`);
       return scoped as never;
     }
     if (n <= 1) return scoped as never;
+    // THE STEP SAYS WHICH CONTROL IT WANTS — READ IT BEFORE TAKING THE FIRST ONE.
+    //
+    // A recipe can record a selector as bare as `{css: "select"}`, and Coos Bay's attachment
+    // step does exactly that on a page carrying `ddlDocType` AND `ddlAlsoAttachTo`. Taking
+    // the first visible match is a coin toss between "Document Type" and "Also Attach To",
+    // and a wrong pick files the plan set under the wrong heading with nothing reported.
+    //
+    // The step's own note — "attachment: document type" — names it, and portals name their
+    // controls too: doctype, docType, ddlDocType. Matching the note's words against each
+    // candidate's id and name settles it, and it generalises to every bare selector a learn
+    // ever records. Falls through to the first visible when nothing matches, unchanged.
+    const words = String(step.note ?? step.field ?? "")
+      .replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase()
+      .split(/[^a-z]+/).filter((w) => w.length > 3 && !["attachment", "select", "field", "type"].includes(w));
+    if (words.length) {
+      for (let i = 0; i < Math.min(n, 12); i++) {
+        const c = scoped.nth(i) as { evaluate?: (fn: unknown, arg: unknown) => Promise<boolean>; isVisible?: () => Promise<boolean> };
+        if (typeof c.evaluate !== "function" || typeof c.isVisible !== "function") break;
+        if (!(await c.isVisible().catch(() => false))) continue;
+        const named = await c.evaluate((el: Element, ws: string[]) => {
+          // PORTALS ABBREVIATE. The step says "document type"; the control is `ddlDocType`,
+          // which camel-splits to "ddl doc type" — and "doc" does not CONTAIN "document".
+          // Matching on a shared prefix of at least three characters bridges the ordinary
+          // abbreviations (doc/document, desc/description, qty/quantity) without letting
+          // two unrelated words collide.
+          const tokens = `${el.getAttribute("id") || ""} ${el.getAttribute("name") || ""}`
+            .replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().split(/[^a-z]+/).filter(Boolean);
+          return ws.every((w) => tokens.some((t) => t.length >= 3
+            && (t === w || w.startsWith(t) || t.startsWith(w))));
+        }, words).catch(() => false);
+        if (named) {
+          this.driftWarnings.push(
+            `"${String(step.note ?? step.action).slice(0, 40)}" matched ${n} controls — chose the one whose own id/name says ${JSON.stringify(words.join(" "))}`,
+          );
+          return c as never;
+        }
+      }
+    }
     for (let i = 0; i < Math.min(n, 12); i++) {
       const c = scoped.nth(i) as { isVisible?: () => Promise<boolean>; isEnabled?: () => Promise<boolean> };
       if (typeof c.isVisible !== "function") break;

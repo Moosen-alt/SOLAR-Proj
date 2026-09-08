@@ -239,6 +239,24 @@ readable from `data/replay-runs/2026-09-08T01-17-24-pacific-power/step046-advanc
 A `data-test-role`-style selector here would end the ambiguity outright, which is what the
 learn-side change now records for newly-learned recipes.
 
+**AND THE PRECISE REASON IT IS STILL AMBIGUOUS, measured rather than guessed.** `narrowToOne`
+now prefers the candidate whose own id/name matches the step's words — "attachment: document
+type" against `ddlDocType`, bridging abbreviations like doc/document — but on this step it
+never runs. The resolution trail says why:
+
+```
+level 0 css:select -> count 2, visible=true, enabled=true, ACCEPTED     <- two matches
+(no narrowing line at all)                                             <- so it saw ONE
+```
+
+Between them sits `reanchorIfWrongControl`, which the identity check runs for select and fill
+steps: it re-anchors to a SINGLE control — the first — so narrowing arrives with nothing left
+to choose. **The word preference has to move into the re-anchor's own pick**, not sit after it.
+A smoke written against the post-narrowing path passes its behavioural assertions and never
+exercises the code, which is why it is not in the tree: the scenario is here instead. Two
+selects, `ddlAlsoAttachTo` first and `ddlDocType` second, a step noted "attachment: document
+type", and the correct outcome is the SECOND one selected and the first untouched.
+
 **The 62-step Coos Bay recipe is now 9/62** (was 4), and fails somewhere genuinely different:
 `Record type "Residential - Electrical" is not offered`. That is the record-type guard working
 as designed — it refuses to check a type the portal does not list rather than guessing one —
