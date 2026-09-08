@@ -3761,9 +3761,33 @@ ${body.slice(0, 4000)}`);
       // recorded `role=link name="Apply"` fallback matches by substring. Rejecting the
       // disabled level is all it takes to reach it.
       const canProbe = typeof picked?.isVisible === "function";
-      const vis = canProbe ? await this.isTrulyVisible(picked) : null;
-      const enab = canProbe && typeof picked.isEnabled === "function"
+      let vis = canProbe ? await this.isTrulyVisible(picked) : null;
+      let enab = canProbe && typeof picked.isEnabled === "function"
         ? await picked.isEnabled().catch(() => true) : null;
+      // A DISABLED CONTROL MAY BE BUSY RATHER THAN DECORATIVE, and the difference is time.
+      //
+      // Oregon ePermitting's nav "Apply" is a `disabled` pill that never enables — the case
+      // that made resolution reject disabled matches and look elsewhere. But the SAME portal
+      // disables its attachment dialog's Save while the upload is in flight, and rejecting
+      // THAT one sends the click to the page-level Save instead, which saves a draft and
+      // leaves the attachment uncommitted. The recipe then walks into a Continue the portal
+      // refuses, three steps later, with nothing on the page to explain it.
+      //
+      // Waiting separates them with no portal knowledge at all: a busy control enables within
+      // a second or two, a decorative one never does. Paid only when the RECORDED selector
+      // resolves to something visible-but-disabled, so the happy path never waits.
+      if (vis === true && enab === false && level === levels[0] && typeof picked.isEnabled === "function") {
+        for (let waited = 0; waited < 4000 && enab === false; waited += 500) {
+          await this.page?.waitForTimeout?.(500).catch(() => null);
+          enab = await picked.isEnabled().catch(() => false);
+        }
+        if (enab === true) {
+          this.driftWarnings.push(
+            `"${this.stepLabel({ selector: sel } as RecipeStep)}" was disabled when reached and enabled itself moments later — the portal was still working, so replay waited rather than resolving elsewhere`,
+          );
+          vis = await this.isTrulyVisible(picked);
+        }
+      }
       const usable = canProbe ? (vis === true && enab !== false) : false;
       // NARRATE THE DECISION, NOT JUST THE OUTCOME.
       //
