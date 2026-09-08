@@ -338,11 +338,29 @@ So the recipe files everything it can: **47/48 = 97.9%** of the steps a replay i
 execute. The `human-patch` step is the one thing worth removing — a learn-side guard against
 recording a control whose name is a record identifier would prevent the whole class.
 
+**THE FIFTH RECIPE WAS FILING IN THE WRONG JURISDICTION.** Oregon ePermitting lists an address
+under several VERSIONS — City Applications, County Applications — and which record types are
+offered depends on the one chosen. Coos Bay's structural recipe ranks to City and finds
+"Residential - Structural"; its electrical sibling wants "Residential - Electrical", which the
+City version does not list at all (verified from the saved record-type page: seven types
+offered, none electrical). Oregon issues electrical permits at COUNTY level.
+
+Both ranked identically because the ranker's electrical test read `fieldValues.permitType`
+(unset on the benchmark project) and the step note (which says only "address version") —
+never `recipe.discipline`, the field the learn stored for exactly this purpose:
+
+```
+49-step  discipline "structural"  -> address version: City Applications
+62-step  discipline "electrical"  -> address version: COUNTY APPLICATIONS
+```
+
+**9/62 -> 15/62**, past the record-type wall. It now stops at a refused advance with two blanks,
+which is the same well-posed shape its sibling is in.
+
 **FLEET AFTER THE DAY'S WORK:** PacifiCorp 97/98 (99.0%), Ameren 73/75 (97.3%), PGE 65/68
-(95.6%), Coos Bay **47/49 (95.9%)** and 9/62. **Four of five recipes are now at or above 95%.**
-The fifth fails on the record-type guard correctly refusing "Residential - Electrical" because
-the portal does not offer it — a question about which record type that recipe should file
-under, not a defect.
+(95.6%), Coos Bay 46–47/49 (~95%) and 15/62. Four of five recipes at or about 95%; the fifth
+moved from dead-at-step-1 to a third of the way through, and its remaining blocker is an
+advance the portal refuses with two named blanks — read them from the saved page.
 
 **THE RULE THIS SESSION PAID FOR, FIVE TIMES OVER.** Today produced five silent
 `return false` paths and four diagnostics that described something other than the thing being
