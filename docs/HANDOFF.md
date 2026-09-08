@@ -60,6 +60,44 @@ question (values, option counts, row counts). A swallowed click still blocks, an
 when the snapshot could not be taken the message says so rather than claiming a
 comparison that never ran.
 
+## Consent-wall pilot (2026-09-08) — moved two portals, and named the residual
+
+`data/learn-benchmark/2026-09-08T15-42-22.json`, three portals.
+
+| portal | before | after |
+|---|---|---|
+| desmoines-wa.permittrax.com | entered_application (3) | **reached_form (4)** |
+| apps.lakestevenswa.gov | entered_application (3) | **reached_form (4)** |
+| cantonoh.portal.iworq.net | reached_form (4) | reached_form (4) |
+
+Declining clears the FIRST wall and the walk continues. Both still terminate at a consent
+wall later in the flow — most likely an Accept-only banner, which the pass refuses by design
+(it clicks Reject / Decline / Necessary-only, or a Close that consents to nothing, and never
+Accept). Whether to accept non-essential cookies on the operator's behalf is the operator's
+decision, not the engine's; it is the one thing standing between these two and the form.
+
+### What the stored page trace immediately showed
+
+The trace is on the scorecard row now, and the first run with it answered the question that
+twelve portals could not be asked before:
+
+```
+desmoines  p2 "Citizens Connect by Bitco" [/citizen/Home/DESMON_L/PBPW] dashboard fields=27(fill=0,btn=27) plan:nav=...
+desmoines  p3 "Citizens Connect by Bitco" [/citizen/Home/DESMON_L/PBPW] form      fields=29(fill=6,btn=23) plan:nav=17  fills=0
+```
+
+Two things worth acting on:
+
+1. **p2 and p3 share a URL.** These are SPAs that swap content in place, so page identity
+   cannot be read from the address — anything keyed on URL sees one page where there are two.
+2. **The page offers 6 fillable fields and the planner returned 17 navigation candidates and
+   ZERO fills.** On a permit-type chooser that may be correct, but it is the signature of the
+   whole `reached_form, filled NOTHING` cohort (8 portals in the fleet run) and it is now
+   reproducible from a stored row rather than a live re-run.
+
+`maxPages` is 18 and these walked 3-4, so the page budget is NOT the limit. They stop because
+of the wall, not because they ran out of room.
+
 ## Corrected portal URLs (researched 2026-09-08) — OPS WORK LIST
 
 Several portals score `login_failed: the portal's login form was not recognised`, and the
