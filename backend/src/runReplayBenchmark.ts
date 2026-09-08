@@ -21,7 +21,7 @@ import path from "node:path";
 import { openDatabase } from "./db";
 import { createProject, deleteProject } from "./repository";
 import { getDecryptedCredential, getDecryptedCredentialAny, getDecryptedCredentialByUrl, listPortalCredentials } from "./portalCredentials";
-import { mergeStepReport, scoreReplayOutcome, summarizeReplay, type ReplayRow } from "./replayBenchmark";
+import { mergeStepReport, scoreReplayOutcome, summarizeReplay, summarizeReliability, type ReplayRow, type PortalReliability } from "./replayBenchmark";
 import { getPortalRecipe, resolveRecipeFieldValues } from "./portalRecipes";
 import { writeBenchmarkPlaceholderDoc } from "./benchmarkPlaceholderDoc";
 import type { ProjectRecord } from "../../shared/src/types";
@@ -200,8 +200,26 @@ async function main(): Promise<void> {
     for (const c of skipped) console.log(`   ${c.key.slice(0, 60)}`);
   }
 
-  const chosen = limit > 0 ? runnable.slice(0, limit) : runnable;
-  console.log(`\nrunnable: ${chosen.length}`);
+  const picked = limit > 0 ? runnable.slice(0, limit) : runnable;
+
+  // REPEAT, ROUND-ROBIN. Two reasons the attempts interleave instead of clustering.
+  //
+  // The operator's question is not "can this recipe work" -- one run answers that -- it is
+  // "if I point it at this portal, how often does it just work". That is a rate, and a rate
+  // needs repeated trials.
+  //
+  // And they must be SPREAD. Running a portal's four attempts back to back samples one
+  // four-minute window: a portal having a bad morning scores 0/4 and a portal having a good
+  // one scores 4/4, and neither number is about the recipe. Interleaving spaces each
+  // portal's attempts across the whole sweep, which is closer to what "shoot it at a portal
+  // at some random moment" actually means. It also leaves the longest possible gap between
+  // two visits to the same account, which matters where a portal allows one session at a time.
+  const repeat = Math.max(1, Number(arg("repeat") || 1));
+  const chosen: Array<(typeof picked)[number] & { attempt: number }> = [];
+  for (let round = 1; round <= repeat; round++) {
+    for (const c of picked) chosen.push({ ...c, attempt: round });
+  }
+  console.log(`\nrunnable: ${picked.length}${repeat > 1 ? ` x ${repeat} attempts = ${chosen.length} runs, interleaved` : ""}`);
 
   if (dryRun) {
     console.log(`\nDRY RUN — no browser opened, no portal touched, no draft created.`);
@@ -314,7 +332,7 @@ async function main(): Promise<void> {
     const score = scoreReplayOutcome(outcome as never);
     const o = outcome as Record<string, unknown>;
     rows.push({
-      portal: c.host || c.key, profileKey: c.key, score,
+      portal: c.host || c.key, profileKey: c.key, attempt: c.attempt, score,
       // The numbers behind the verdict, so a scorecard row can be argued with offline.
       detail: {
         executed: Number(o.executed ?? 0), recorded: c.steps,
@@ -344,7 +362,7 @@ async function main(): Promise<void> {
         requiredFieldNames: ((o.requiredFieldsSeen as string[]) ?? []).slice(0, 60),
       },
     });
-    console.log(`${String(i + 1).padStart(2)}/${chosen.length} ${score.index} ${score.rung.padEnd(20)} ${c.key.slice(0, 44)}`);
+    console.log(`${String(i + 1).padStart(2)}/${chosen.length} ${score.index} ${score.rung.padEnd(20)} ${repeat > 1 ? `[try ${c.attempt}/${repeat}] ` : ""}${c.key.slice(0, 44)}`);
     console.log(`      ${score.reason.slice(0, 160)}`);
     const ver = ((outcome as Record<string, unknown>).fieldsVerified as string[] | undefined)?.length ?? 0;
     const unver = ((outcome as Record<string, unknown>).fieldsUnverified as string[] | undefined) ?? [];
@@ -354,6 +372,28 @@ async function main(): Promise<void> {
       // Read this line with the one above it. "verified 47, required 47" is a finished
       // filing; "verified 47, required 0" means we never asked the portal what it wanted.
       console.log(`      REQUIRED FIELDS THE PORTAL ASKED FOR: ${req.length}`);
+    }
+  }
+
+  // THE RELIABILITY TABLE. Printed above the scorecard because when an operator asks
+  // "will this work on that portal", this is the answer and the scorecard is the footnote.
+  if (repeat > 1) {
+    const rel: PortalReliability[] = summarizeReliability(rows);
+    console.log(`\n============ PER-PORTAL RELIABILITY (${repeat} attempts each) ============`);
+    console.log(`clean = the run reached a staged filing a human can check (rung 4 or 5).\n`);
+    for (const r of rel) {
+      console.log(`   ${String(r.clean)}/${String(r.attempts)}  ${String(r.pct).padStart(5)}%  ${r.profileKey.slice(0, 44)}`);
+      // A portal that was down is still a portal you could not file on today, so it counts
+      // against the rate -- but the operator needs to know it was not the recipe.
+      for (const iss of r.issues) console.log(`            ${iss.n} x ${iss.rung} (${iss.owner})`);
+    }
+    const att = rel.reduce((n: number, r: PortalReliability) => n + r.attempts, 0);
+    const cl = rel.reduce((n: number, r: PortalReliability) => n + r.clean, 0);
+    console.log(`\n   FLEET: ${cl}/${att} = ${att ? Math.round((cl / att) * 1000) / 10 : 0}% of runs reached a staged filing`);
+    const worst = rel[0];
+    if (worst && worst.pct < 95) {
+      console.log(`   The weakest portal is ${worst.profileKey.slice(0, 44)} at ${worst.pct}% -- a fleet average`);
+      console.log(`   above 95% does not mean every portal is above 95%, and an operator meets ONE portal.`);
     }
   }
 

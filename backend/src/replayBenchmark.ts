@@ -288,6 +288,10 @@ export function scoreReplayOutcome(outcome: ReplayOutcome): ReplayScore {
 export interface ReplayRow {
   portal: string;
   profileKey: string;
+  /** WHICH ATTEMPT, when the same recipe is replayed more than once. A single run answers
+   *  "can this recipe work"; only repeated runs answer the operator's actual question,
+   *  which is "if I point it at this portal, how often does it just work". */
+  attempt?: number;
   score: ReplayScore;
   /** Carried onto the scorecard so a row can be argued with without re-running it. */
   detail?: {
@@ -343,4 +347,51 @@ export function summarizeReplay(rows: ReplayRow[]): ReplaySummary {
     byRung,
     byOwner,
   };
+}
+
+/** k-of-N per portal. A mean rung across one run each is a statement about a build; this is
+ *  a statement about a PORTAL, which is what an operator is really asking when they say
+ *  "95% of the time it won't have an issue".
+ *
+ *  "Clean" is rung >= 4 (replayed_clean or verified_accurate): the run reached a staged
+ *  filing a human can check. Anything below that is an issue the operator would have felt,
+ *  so it counts against the portal EVEN WHEN THE FAULT IS NOT OURS — a portal that is down
+ *  is still a portal you cannot file on today. The owners are carried alongside so the
+ *  number can be read correctly rather than just read. */
+export interface PortalReliability {
+  profileKey: string;
+  attempts: number;
+  clean: number;
+  pct: number;
+  /** Why the non-clean attempts were non-clean, most common first. */
+  issues: Array<{ rung: string; owner: string; n: number }>;
+}
+
+export function summarizeReliability(rows: ReplayRow[]): PortalReliability[] {
+  const byKey = new Map<string, ReplayRow[]>();
+  for (const r of rows) {
+    const k = r.profileKey || r.portal || "unknown";
+    if (!byKey.has(k)) byKey.set(k, []);
+    (byKey.get(k) as ReplayRow[]).push(r);
+  }
+  const out: PortalReliability[] = [];
+  for (const [profileKey, group] of byKey) {
+    const clean = group.filter((r) => r.score.index >= 4).length;
+    const tally = new Map<string, { rung: string; owner: string; n: number }>();
+    for (const r of group) {
+      if (r.score.index >= 4) continue;
+      const k = `${r.score.rung}|${r.score.owner}`;
+      const cur = tally.get(k) ?? { rung: r.score.rung, owner: r.score.owner, n: 0 };
+      cur.n += 1;
+      tally.set(k, cur);
+    }
+    out.push({
+      profileKey,
+      attempts: group.length,
+      clean,
+      pct: group.length ? Math.round((clean / group.length) * 1000) / 10 : 0,
+      issues: [...tally.values()].sort((a, b) => b.n - a.n),
+    });
+  }
+  return out.sort((a, b) => a.pct - b.pct);
 }
