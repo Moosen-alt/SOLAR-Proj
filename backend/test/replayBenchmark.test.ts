@@ -14,7 +14,7 @@
 //
 // Browser-free. Run: tsx backend/test/replayBenchmark.test.ts
 import assert from "node:assert/strict";
-import { REPLAY_RUNGS, scoreReplayOutcome, summarizeReplay, type ReplayRow } from "../src/replayBenchmark";
+import { REPLAY_RUNGS, mergeStepReport, scoreReplayOutcome, summarizeReplay, type ReplayRow } from "../src/replayBenchmark";
 
 let failures = 0;
 const check = (label: string, fn: () => void): void => {
@@ -278,6 +278,42 @@ check("...and the harness death is excluded from the mean too", () => {
     { portal: "b", profileKey: "k", score: scoreReplayOutcome({ ok: false, message: "Target closed" }) },
   ];
   assert.equal(summarizeReplay(rows).meanIndex, 5);
+});
+
+// ---------------------------------------------------------------------------
+// THE HOP THAT SILENTLY DROPS THINGS. The adapter puts its run report in steps[].data, not
+// on the top-level result, and every consumer -- benchmark and KPI both -- reads it back
+// through here. A key that does not survive this trip does not error: it arrives as
+// undefined, is coerced to zero or an empty list, and reports as a clean, empty, perfect
+// nothing. That is how the fleet score came to be assembled from numbers nobody had
+// checked reached the other side.
+// ---------------------------------------------------------------------------
+check("a new report key survives the trip from steps[].data", () => {
+  const merged = mergeStepReport({
+    ok: true,
+    steps: [{ ok: true, message: "Replayed", data: { requiredFieldsSeen: ["Meter", "Model"], fieldsVerified: ["a"] } }],
+  });
+  assert.deepEqual(merged.requiredFieldsSeen, ["Meter", "Model"]);
+  assert.deepEqual(merged.fieldsVerified, ["a"]);
+});
+
+check("a later empty list does not blank a real one collected earlier", () => {
+  const merged = mergeStepReport({
+    steps: [
+      { ok: true, data: { requiredFieldsSeen: ["Meter"] } },
+      { ok: true, data: { requiredFieldsSeen: [] } },
+    ],
+  });
+  assert.deepEqual(merged.requiredFieldsSeen, ["Meter"],
+    "a step that saw nothing erased what an earlier step did see");
+});
+
+check("steps[].data beats a stale top-level value of the same name", () => {
+  const merged = mergeStepReport({
+    requiredFieldsSeen: [],
+    steps: [{ ok: true, data: { requiredFieldsSeen: ["Meter"] } }],
+  });
+  assert.deepEqual(merged.requiredFieldsSeen, ["Meter"]);
 });
 
 if (failures) { console.error(`\n${failures} replay-benchmark check(s) FAILED.`); process.exit(1); }
