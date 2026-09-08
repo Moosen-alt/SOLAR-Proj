@@ -251,7 +251,23 @@ level 0 css:select -> count 2, visible=true, enabled=true, ACCEPTED     <- two m
 
 Between them sits `reanchorIfWrongControl`, which the identity check runs for select and fill
 steps: it re-anchors to a SINGLE control — the first — so narrowing arrives with nothing left
-to choose. **The word preference has to move into the re-anchor's own pick**, not sit after it.
+to choose. **The word preference has to move into the re-anchor's own pick**, not sit after it — and an
+attempt at that found a THIRD mechanism in the way, which is why it is not landed:
+
+`reanchorIfWrongControl` compares the recorded label with the FIRST match's label, and when
+they share no whole word it falls back to a COMPACTED substring test. Recorded "attachment:
+document type" compacts to `attachmentdocumenttype`, the first control's label "Also Attach
+To" yields the word `attach`, and `attachmentdocumenttype`.includes(`attach`) is TRUE — so the
+wrong control is ACCEPTED as a match and nothing downstream gets a say. That compaction test
+exists for a good reason (ACA's "E-mail:" tokenizes to `mail` against a recorded `email`), so
+it cannot simply be removed.
+
+A working fix therefore needs the candidate scan to run BEFORE the compaction fallback and to
+score by how many recorded words each candidate answers, not by first agreement — every id on
+that page contains `Attachment_24Edit`, so weak agreement is universal there. Scenario for the
+smoke: two selects, `ddlAlsoAttachTo` first and `ddlDocType` second, step noted "attachment:
+document type"; correct outcome is the SECOND selected and the first untouched, with the
+existing skip-rather-than-guess behaviour preserved when a note agrees with nothing.
 A smoke written against the post-narrowing path passes its behavioural assertions and never
 exercises the code, which is why it is not in the tree: the scenario is here instead. Two
 selects, `ddlAlsoAttachTo` first and `ddlDocType` second, a step noted "attachment: document
