@@ -413,7 +413,7 @@ async function main(): Promise<void> {
   const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
   fs.writeFileSync(path.join(OUT_DIR, `${stamp}.json`), JSON.stringify({ at: new Date().toISOString(), summary, rows }, null, 2));
   console.log(`\nscorecard written to ${path.join(OUT_DIR, `${stamp}.json`)}`);
-  console.log(`\nDRAFTS TO DISCARD: one per portal above, named "${BENCH.homeownerName}".`);
+  console.log(`\nDRAFTS TO DISCARD: ${chosen.length} draft(s) named "${BENCH.homeownerName}" — ${repeat > 1 ? `${repeat} on each of ${picked.length} portal(s)` : "one per portal above"}.`);
 }
 
 main().then(() => process.exit(0)).catch((e) => { console.error(e); process.exit(1); });

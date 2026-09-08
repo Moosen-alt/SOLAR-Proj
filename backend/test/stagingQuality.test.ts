@@ -141,13 +141,22 @@ async function main(): Promise<void> {
     check("...and the required fields it saw reach the report",
       withDenom.avgRequiredPerRun > 0, `avgRequiredPerRun=${withDenom.avgRequiredPerRun}`);
 
+    // A run from BEFORE the field existed carries no key at all. That is an old build, not
+    // a blind check, and the day this shipped it would otherwise have flagged the entire
+    // back catalogue at once.
     addRun({ executed: 40, requiredStillEmpty: [], skipped: [], driftWarnings: [] });
+    const legacy = getStagingQuality(db, window);
+    check("a run predating the field is NOT flagged blind — absent is not zero",
+      legacy.blindClean === withDenom.blindClean,
+      `blindClean moved from ${withDenom.blindClean} to ${legacy.blindClean} on a legacy run`);
+
+    addRun({ executed: 40, requiredStillEmpty: [], skipped: [], driftWarnings: [], requiredFieldsSeen: [] });
     const blind = getStagingQuality(db, window);
-    check("THE UNFALSIFIABLE SCORE: a clean run that saw NO required field is flagged blind",
-      blind.blindClean === withDenom.blindClean + 1,
-      `blindClean=${blind.blindClean}, was ${withDenom.blindClean}`);
+    check("THE UNFALSIFIABLE SCORE: a run that LOOKED and saw no required field is flagged blind",
+      blind.blindClean === legacy.blindClean + 1,
+      `blindClean=${blind.blindClean}, was ${legacy.blindClean}`);
     check("...and it still counts as clean, because it is not a failure",
-      blind.clean === withDenom.clean + 1, `clean=${blind.clean} was ${withDenom.clean}`);
+      blind.clean === legacy.clean + 1, `clean=${blind.clean} was ${legacy.clean}`);
   }
 
   const empty = getStagingQuality(db, { start: "2025-01-01", end: "2025-12-31", orgId: null });

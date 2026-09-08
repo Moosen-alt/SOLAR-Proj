@@ -385,7 +385,12 @@ export function getStagingQuality(
     // block held the homeowner's name instead of the contractor's. The replay benchmark
     // says DO NOT SUBMIT about that run; a headline number that called it clean would be
     // saying the opposite thing about the same filing.
-    const requiredSeen = ((rep.requiredFieldsSeen as string[] | undefined) ?? []).length;
+    // ABSENT IS NOT ZERO. Every run staged before this field existed carries no
+    // requiredFieldsSeen at all, and treating that as "saw nothing" would flag the entire
+    // back catalogue as unfalsifiable on the day the feature shipped — the same mistake as
+    // counting an unreadable run as clean, pointing the other way. Absence means old build.
+    const sawRequired = Array.isArray(rep.requiredFieldsSeen);
+    const requiredSeen = sawRequired ? (rep.requiredFieldsSeen as string[]).length : 0;
     requiredTotal += requiredSeen;
 
     const isClean = !blanks.length && !failed.length && !drift.length && !healed && !mismatches;
@@ -393,7 +398,7 @@ export function getStagingQuality(
     // A clean run that never saw a required control did not prove the filing is complete;
     // it proved only that it found nothing to object to, which is also what a run that never
     // looked reports. Counted separately so the clean rate can be read honestly.
-    if (isClean && requiredSeen === 0) blindClean++;
+    if (isClean && sawRequired && requiredSeen === 0) blindClean++;
     // The top bar, same as the benchmark's: clean AND the portal's own review screen agreed.
     if (isClean && fieldsSeen > 0 && confirmedFields >= MIN_CONFIRMED_FIELDS) verified++;
     if (blanks.length || failed.length || mismatches) neededHuman++;
