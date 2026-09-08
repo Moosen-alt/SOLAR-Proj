@@ -15,7 +15,7 @@ import { chooseProgram, offeredLabels, programSelector, scanProgramGroups, type 
 import { planHiddenReveal, planLabelProxy } from "./revealHidden";
 import { looksLikeConsentWall, planConsentDismissal } from "./consentBanner";
 import { chooseRow, scanRowChoices } from "./rowChooser";
-import { parseStreetName, parseStreetNumber } from "../addressParse";
+import { parseStreetName, parseStreetNumber, parseStreetLine, correctTruncatedAddressFill, isSplitAddressForm } from "../addressParse";
 import { portalUploadCapBytes } from "../uploadCap";
 import { LearnRunDebug } from "../learnDebug";
 import { armHumanCaptureOnPage } from "../humanCapture";
@@ -4210,6 +4210,41 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           // walks on and the portal shows an application with no documents attached.
           const warn = "Attachments were uploaded but the portal's Save did not confirm them — re-attach and click Save by hand before submitting.";
           if (!missingRequiredDocs.includes(warn)) missingRequiredDocs.push(warn);
+        }
+      }
+
+      // c4b) A COMBINED ADDRESS BOX GETS THE WHOLE STREET LINE.
+      //
+      // The planner's value dictionary offers `street` (whole) alongside `streetNumber`,
+      // `streetNameCore` and `streetNameSearchPortion` — keys written for Accela's SPLIT
+      // work-location form, where dropping the suffix is required. Nothing tells it which
+      // one a single search box wants. Miami's iBuild searched "3500 Pan American", then
+      // "Pan American", for a property its own database holds as "3500 PAN AMERICAN DR";
+      // both came back "Property Address not found." The whole line finds it first try
+      // (browser-verified against the live portal).
+      //
+      // Deterministic, not a prompt tweak: the planner had the right key available and did
+      // not pick it, twice, on the same page.
+      const splitAddressForm = isSplitAddressForm(fields.filter((f) => f.fieldType !== "button").map((f) => f.label));
+      if (splitAddressForm) {
+        this.debug?.event({ type: "address_split_form", page: pageCount });
+      } else {
+        const fullStreetLine = parseStreetLine(String(_project.projectAddress ?? ""), _project.city || undefined);
+        for (const fillReq of plan.fills ?? []) {
+          const corrected = correctTruncatedAddressFill(
+            { value: fillReq.value, field: fillReq.field },
+            { fullStreetLine, projectAddress: String(_project.projectAddress ?? ""), splitForm: false },
+          );
+          if (!corrected) continue;
+          this.debug?.event({
+            type: "address_fill_expanded",
+            page: pageCount,
+            from: String(fillReq.value ?? "").slice(0, 60),
+            fromField: fillReq.field,
+            to: corrected.value.slice(0, 60),
+          });
+          fillReq.value = corrected.value;
+          fillReq.field = corrected.field;
         }
       }
 

@@ -8,7 +8,7 @@ import { asJson, bool, parseJson, text as s } from "./json";
 import { knowledgeProfileKey, knowledgeNameMatchScore } from "./knowledgeBase";
 import { certifiedModelFor } from "./cecEquipment";
 import { nowIso } from "./time";
-import { parseStreetNumber, parseStreetName } from "../../portal-bot/src/addressParse";
+import { parseStreetNumber, parseStreetName, parseStreetLine } from "../../portal-bot/src/addressParse";
 
 type Row = Record<string, unknown>;
 
@@ -521,11 +521,9 @@ export function resolveRecipeFieldValues(db: AppDb, project: ProjectRecord, port
   // Comma-delimited addresses split cleanly; a comma-LESS parsed address ("7307 SW Arranmore
   // Way Portland OR 97223" — common from OCR) would leak city/state/zip into the street
   // field, so also strip a trailing "<city> [ST [zip]]" tail when it matches the project.
-  let streetOnly = (project.projectAddress || "").split(",")[0].trim();
-  if (streetOnly && project.city) {
-    const esc = project.city.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    streetOnly = streetOnly.replace(new RegExp(`\\s+${esc}(\\s+[A-Za-z]{2})?(\\s+\\d{5}(-\\d{4})?)?\\s*$`, "i"), "").trim() || streetOnly;
-  }
+  // The whole street line, city/state/zip removed — shared with the learn adapter, which
+  // needs the identical value to correct a planner fill that truncated it.
+  const streetOnly = parseStreetLine(project.projectAddress || "", project.city || undefined);
 
   // AN INTERCONNECTION IS FILED UNDER THE NAME ON THE BILL.
   //
