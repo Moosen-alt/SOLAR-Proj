@@ -4549,6 +4549,14 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       // No advance + not at review → nothing more we can do, UNLESS a create dialog is
       // waiting on its own Submit (see clickCreateDialogAdvance).
       if (await this.clickCreateDialogAdvance(steps)) continue;
+      // ...OR THE NEXT BUTTON IS SITTING RIGHT THERE AND THE PLANNER DID NOT NAME IT.
+      //
+      // Twelve portals in the 59-portal benchmark recorded fills and never reached review,
+      // and their stored traces all end the same way: a filled page, and `adv=-`. The walk
+      // stops on a page it has just completed while the page still shows dozens of buttons
+      // — ComEd ended on a form with 27 of them, Boston on one with 96. Whatever the planner
+      // was doing, "no advance" was not true of the page.
+      if (await this.clickFallbackAdvance(steps, fields)) continue;
       break;
     }
 
@@ -5732,6 +5740,62 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   // Recorded as a plain advance (never isFinalSubmit) so replay performs it, and the caller's
   // page fingerprint still decides whether it actually moved.
   private createDialogSubmits = 0;
+
+  /** THE NEXT BUTTON THE PLANNER DID NOT NAME.
+   *
+   *  Used only as a last resort: the page is not review, the planner offered no advance,
+   *  and the create-dialog path found nothing. Curated wording rather than a guess, and
+   *  deliberately NARROWER than the planner is allowed to be:
+   *
+   *    - never anything matching SUBMIT_INTENT. That excludes "Submit", "Finish",
+   *      "Finalize" AND Accela's "Continue Application", which is the page advance on
+   *      every page but the last, where it FILES. Losing a legitimate advance is a page we
+   *      do not learn; clicking a submit is a filing nobody authorised, and only one of
+   *      those is recoverable.
+   *    - never a pay/fee control, via the same isOffLimitsButton the planner path uses.
+   *    - only when this page actually took a value. A page we filled nothing on is a page
+   *      we have no business advancing past. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async clickFallbackAdvance(steps: RecipeStep[], fields: any[]): Promise<boolean> {
+    if (!this.page || !Array.isArray(fields) || !fields.length) return false;
+    const filledHere = steps.some((st) => st.phase === "fill" && ["fill", "select", "check"].includes(String(st.action)));
+    if (!filledHere) return false;
+    const ADVANCE_ONLY = /^\s*(next|continue|proceed|save (and|&) (continue|next)|save & next|next step|go to next)\b/i;
+    const candidate = fields.find((f: { label?: string; kind?: string }) => {
+      const label = String(f?.label ?? "").trim();
+      if (!label || label.length > 40) return false;
+      if (!ADVANCE_ONLY.test(label)) return false;
+      if (SUBMIT_INTENT.test(label)) return false;
+      return !this.isOffLimitsButton(f as never);
+    });
+    if (!candidate) return false;
+    const beforeUrl = typeof this.page.url === "function" ? String(this.page.url() ?? "") : "";
+    const beforeFp = await this.pageFingerprint();
+    const tabsBefore = this.tabCount();
+    steps.push({
+      action: "click",
+      phase: "fill",
+      selector: candidate.selector,
+      note: `advance: ${candidate.label || "next"}`,
+    });
+    const res = await safeAction("fallback-advance", async () => {
+      const loc = await this.locator(candidate.selector);
+      if (!loc) throw new Error("fallback advance selector unresolved");
+      await this.clickResilient(loc);
+      await this.waitAfterClick(beforeUrl, beforeFp, tabsBefore);
+    }, { required: false });
+    if (!res.ok) { steps.pop(); return false; }
+    const movedUrl = typeof this.page.url === "function" ? String(this.page.url() ?? "") : "";
+    const movedFp = await this.pageFingerprint();
+    if (movedUrl === beforeUrl && movedFp === beforeFp) {
+      // It did nothing. Recording a click that does not move the page teaches replay a lie.
+      steps.pop();
+      this.debug?.event({ type: "fallback_advance_did_nothing", label: String(candidate.label ?? "").slice(0, 40) });
+      return false;
+    }
+    this.debug?.event({ type: "fallback_advance", label: String(candidate.label ?? "").slice(0, 40) });
+    return true;
+  }
 
   private async clickCreateDialogAdvance(steps: RecipeStep[]): Promise<boolean> {
     if (this.createDialogSubmits >= 2) return false;
