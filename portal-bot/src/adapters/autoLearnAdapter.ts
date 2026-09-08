@@ -3979,6 +3979,22 @@ export class AutoLearnAdapter extends BasePortalAdapter {
                 `This portal will not start an application until its cookie consent is answered, and declining did not clear it: clicking "${(navField.label || "the application entry").slice(0, 60)}" is still redirected to its cookie policy. A person must make that choice — automation declines non-essential cookies but never accepts them on the operator's behalf.`,
               );
             }
+            // TWO THINGS THE FIRST DRAFT OF THIS GOT WRONG, both of them silent.
+            //
+            // The bounced click is ALREADY IN THE RECIPE by the time we get here — it is
+            // pushed before the wall is detected, exactly as the validation-block path
+            // discovered and already handles by popping it. Leaving it in records a click
+            // that lands on a cookie policy, and replay runs on a fresh per-portal profile,
+            // so it would bounce there too, where nothing knows how to go back.
+            if (steps.length && String(steps[steps.length - 1].note ?? "").startsWith("navigate to application:")) {
+              steps.pop();
+              navCount = Math.max(0, navCount - 1);
+            }
+            // And the click was registered in the loop-guard the moment it was made, so the
+            // "try it once more" this comment promised could never happen: the guard exists
+            // to refuse a second click on the same control. Clearing the wall is precisely
+            // the case where a second click is the right thing, so the key comes back out.
+            if (navLoopKey) this.navClicksByPath.delete(navLoopKey);
             this.debug?.event({ type: "consent_wall_cleared", by: "declined" });
           }
           continue; // re-enter the loop on the new page
