@@ -157,6 +157,40 @@ Still open, in order:
 
 ## Open issues / next work (priority order)
 
+**READ THIS FIRST — A REGRESSION I INTRODUCED TODAY AND DID NOT FIND (2026-09-07).**
+
+Ameren went from **73/75 to 2/75**, and I failed twice to restore it. Do not repeat those two
+guesses; bisect instead.
+
+**The honest fleet number is 263/352 = 74.7%**, from a SINGLE sweep on ONE build. Earlier in
+this file you will find 94.9% — that figure was assembled from each recipe's BEST run across
+different builds and **was never a measurement**. The operator's framing is the right one: "if
+I shoot it at a portal, 95% of the time it has no issue with that portal" is a RELIABILITY
+rate — same build, same portal, many attempts — and nothing here measures it yet. Any future
+claim must come from one frozen build, and ideally from repeated runs.
+
+**What the instrument says about Ameren:**
+```
+locator resolved to <input required type="checkbox" role="checkbox"
+                     id="461GUH42AKWPInput" class="form-check-input">
+locator.check: Clicking the checkbox did not change its state
+```
+The CORRECT control is resolved. The click simply does not toggle it. So this is **not** a
+resolution problem, and both of my attempts (excluding check/uncheck from the name-scoring
+hint, then from the out-of-reach rescues) were aimed at the wrong layer. They are principled
+in themselves and are kept, but they are not this bug.
+
+**Bisect it.** Ameren was 73/75 at `31ca1f5` ("Narrowing a locator broke the one branch built
+to handle hidden inputs") and 2/75 by the frozen sweep. Every candidate in between touches how
+a control is chosen or driven: `isTrulyVisible`, the busy-control wait, the preferVisible name
+hint, the re-assert pass, the section/test-hook rescues. One live Ameren run per commit answers
+it; guessing has now cost two.
+
+Also note the drift line on that run: `click "application entry: New Interconnection Appli"
+left the page unchanged` — the step BEFORE the checkbox did not advance. Per this file's own
+rule, suspect the step before the one that failed.
+
+
 **"Replayed clean" was not evidence of anything (2026-09-07) — the sweep that finds blanks was blind.**
 The first live replay benchmark scored PacifiCorp **`replayed_clean` — "every recorded step ran
 and nothing was left blank"** — and the screenshot it saved of that page shows the portal
