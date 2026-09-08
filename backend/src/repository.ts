@@ -418,6 +418,31 @@ function mapAudit(row: Row): AuditLog {
   };
 }
 
+// ONE BROWSER PROFILE PER PORTAL, NOT PER PORTAL TYPE.
+//
+// Profiles were scoped `profileBase/clientId/portalType`, so EVERY utility portal for a client
+// shared one session store. PowerClerk allows one session per account, so a filing to Ameren
+// that followed one to PacifiCorp inherited PacifiCorp's login and drove Ameren's form against
+// the wrong account's state: measured on the replay benchmark, Ameren scored 2 of 75 steps
+// that way and 73 of 75 with its own profile. The fleet figure moved 74.7% -> 95.2% on the
+// same build from this alone. Identical inputs, different outcome depending on what ran
+// before — which is the "it just has an issue with that portal sometimes" an operator sees.
+//
+// The host is the natural key: it is what the session actually belongs to.
+//
+// MIGRATION: the first run against each portal after this change starts from an EMPTY profile
+// and must log in again. That is deliberate — copying the old shared profile forward would
+// carry the very cookies this separates. A portal with MFA will pause for a human on that
+// first run, which is the designed behaviour, not a failure.
+function portalProfileDir(profileBase: string, clientId: string | null, portalType: string, portalUrl?: string): string {
+  let host = "";
+  try { host = portalUrl ? new URL(portalUrl).hostname.toLowerCase().replace(/[^a-z0-9.-]+/g, "_") : ""; }
+  catch { host = ""; }
+  const parts = clientId ? [profileBase, clientId, portalType] : [profileBase, portalType];
+  if (host) parts.push(host);
+  return path.join(...parts);
+}
+
 export function createProject(db: AppDb, payload: ParserPayload, orgId: string = DEFAULT_ORG_ID): ProjectDetail {
   const project = normalizeProject(id(), payload);
   db.transaction(() => {
@@ -4951,7 +4976,7 @@ export async function runDuePermitChecks(
         // Same credential/profile conventions as the learner/replay: portalType key is
         // "utility" | "AHJ", persistent per-client browser profile carries the session.
         const recipePortalType = scopeType === "utility" ? "utility" : "AHJ";
-        const userDataDir = clientId ? path.join(profileBase, clientId, recipePortalType) : path.join(profileBase, recipePortalType);
+        const userDataDir = portalProfileDir(profileBase, clientId ?? null, recipePortalType, recipe.portalUrl);
         const credential = clientId
           ? (getDecryptedCredential(db, clientId, recipePortalType)
               ?? getDecryptedCredentialByUrl(db, clientId, recipe.portalUrl)
@@ -4979,9 +5004,7 @@ export async function runDuePermitChecks(
       [portalType],
     );
     if (portalProfile?.encrypted_storage_state) {
-      const userDataDir = clientId
-        ? path.join(profileBase, clientId, portalType)
-        : path.join(profileBase, portalType);
+      const userDataDir = portalProfileDir(profileBase, clientId ?? null, portalType, text(target.portal_url));
       const credential = clientId
         ? (getDecryptedCredential(db, clientId, portalType)
             ?? (text(target.portal_url) ? getDecryptedCredentialByUrl(db, clientId, text(target.portal_url)) : null)

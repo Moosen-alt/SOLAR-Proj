@@ -196,12 +196,17 @@ allows one session per account — so Ameren's terms checkbox is driven against 
 logged-in state and never toggles. **This is the "it just has an issue with that portal
 sometimes" symptom, and it is contamination rather than a portal defect.**
 
-**Production is scoped the same way**, so a real Ameren filing that follows a PacifiCorp one
-inherits the identical collision. I did NOT change it: per-portal profiles force fresh logins
-wherever a profile currently carries a session, which can trip MFA on portals that then demand
-a code. That is a decision about live credentials, not a silent refactor. **It is the single
-highest-value fix outstanding**, and it is what stands between the current numbers and a
-trustworthy reliability figure.
+**FIXED IN PRODUCTION TOO** (`portalProfileDir` in repository.ts, used at both staging sites).
+Profiles are now keyed by HOST — what the session actually belongs to — so a real Ameren filing
+that follows a PacifiCorp one no longer inherits its login.
+
+**OPERATOR: THE FIRST RUN AGAINST EACH PORTAL AFTER THIS WILL LOG IN AGAIN.** That is
+deliberate. Copying the old shared profile forward would carry exactly the cookies this
+separates. A portal with MFA will pause for a human on that first run — the designed behaviour,
+not a failure — and every run after it uses that portal's own stored session as before.
+Reversible by restoring the old two-segment path if it causes trouble.
+
+Verified against the change: full backend suite (260 checks) and `npm run smoke`.
 
 **Any reliability claim must come from repeated runs of ONE build, and until production
 profiles are scoped per portal, sequential runs are not independent measurements.**
