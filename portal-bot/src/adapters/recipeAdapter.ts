@@ -17,7 +17,7 @@ import { selectWithFallback } from "../comboboxFill";
 const DRIFT_SETTLE_MS = Math.max(2000, Number(process.env.RECIPE_DRIFT_SETTLE_MS ?? 15000));
 import { detectChallengeFrame, frameSelectorFor, hasNumericValidationError, scanStatusFromBody, RETRY_BACKOFF_MS, sleep, smartWait, toBareNumber, waitForElement, waitForInteractiveControls } from "../safeAction";
 import { performLogin } from "./loginFlow";
-import { EXTRACT_SEL, extractFieldsInPage, toExtractedField, dismissPageModals, clearPageOverlays, equipmentMakeCandidates, pageFingerprintOf, collectValidationErrorsFrom, acaApplyEntryFrom } from "./autoLearnAdapter";
+import { EXTRACT_SEL, extractFieldsInPage, toExtractedField, dismissPageModals, clearPageOverlays, equipmentMakeCandidates, pageFingerprintOf, collectValidationErrorsFrom, acaApplyEntryFrom, advanceSignatureOf } from "./autoLearnAdapter";
 import { tagUploadControls } from "./autoLearnAdapter";
 
 // RecipeAdapter — replays a recorded portal recipe (see portal_recipes / the recorder).
@@ -862,7 +862,10 @@ ${body.slice(0, 4000)}`);
       // normalised, because a portal writes "SE" where a plan set writes "Southeast" (and
       // "St"/"Street", "Ave"/"Avenue"). Exact-normalised first, and only a UNIQUE match is
       // clicked — several candidate rows means a human should choose, not us.
-      if (!succeeded && /work location:.*address row/i.test(String(step.note ?? ""))) {
+      // "work location: … address row" is Accela's wording; "address row:" is what the
+      // generic results-row pass records on any portal. Both mean the same thing: find the
+      // row for THIS project's address, not the one the recipe was learned on.
+      if (!succeeded && /(work location:.*address row|address row:)/i.test(String(step.note ?? ""))) {
         const num = String(this.fieldValues.streetNumber ?? "").trim();
         const street = String(this.fieldValues.street ?? "").trim();
         if (num && street) {
@@ -4216,15 +4219,25 @@ ${body.slice(0, 4000)}`);
       }
       for (let i = 0; i < rows.length; i++) {
         const tr = rows[i];
-        if (!tr.querySelector("a")) continue; // only rows offering a Select link
+        // NOT "only rows with a Select link" — that is Accela's shape. Miami's grid binds
+        // its handler in script and the row carries no <a> at all, so requiring one found
+        // nothing on every portal that is not Accela. Skip headers instead.
+        if (tr.closest("thead")) continue;
+        if (tr.querySelector("th") && !tr.querySelector("td")) continue;
+        // Same trap as markAddressRow: tr.textContent fuses adjacent cells, so a row reading
+        // "3500 PAN AMERICAN DR" then "CITY OF MIAMI" becomes "...DRCITY OF MIAMI" and the
+        // street type disappears. Join the cells.
+        const cellText = Array.from(tr.querySelectorAll("td, th"))
+          .map((c) => (c.textContent || "").replace(/\s+/g, " ").trim())
+          .filter((t) => t.length > 0).join(" ") || (tr.textContent || "");
         const words: string[] = [];
-        for (const raw of (tr.textContent || "").toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/)) {
+        for (const raw of cellText.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/)) {
           if (!raw) continue;
           words.push(DIRECTIONS[raw] || TYPES[raw] || raw);
         }
         let all = true;
         for (const w of wantWords) if (words.indexOf(w) < 0) { all = false; break; }
-        if (all) hits.push({ idx: i, text: (tr.textContent || "").replace(/\s+/g, " ").trim().slice(0, 90) });
+        if (all) hits.push({ idx: i, text: cellText.replace(/\s+/g, " ").trim().slice(0, 90) });
       }
       if (!hits.length) return "";
       let chosen = hits[0];
@@ -4240,10 +4253,29 @@ ${body.slice(0, 4000)}`);
       return chosen.text;
     }, { num: streetNumber, street, prefer }).catch(() => "") as string;
     if (!id) return "";
-    const link = this.page.locator('tr[data-replay-addr="1"]').locator("a:has-text('Select')").first();
-    if (!(await link.count().catch(() => 0))) return "";
-    await link.click({ timeout: 8000 }).catch(() => null);
-    return id;
+    // What in the row takes the click, widest-first: Accela's "Select" link, then any link
+    // or button in the row, then the row itself for a grid that binds its handler in script.
+    const row = this.page.locator('tr[data-replay-addr="1"]');
+    // A CLICK THAT LANDS IS NOT A CLICK THAT WORKED. Playwright happily clicks a plain <td>,
+    // so the widened candidate list would report success on any grid whose row is inert.
+    // Every candidate is judged on whether the page moved, not on whether the click threw.
+    const beforeUrl = typeof this.page.url === "function" ? String(this.page.url() ?? "") : "";
+    const beforeSig = await advanceSignatureOf(this.page).catch(() => "");
+    for (const cand of [
+      row.locator("a:has-text('Select')").first(),
+      row.locator("a[href], button, input[type='submit'], input[type='button'], [role='button']").first(),
+      row.locator("td").first(),
+      row.first(),
+    ]) {
+      if (!(await cand.count().catch(() => 0))) continue;
+      if (!(await cand.click({ timeout: 8000 }).then(() => true).catch(() => false))) continue;
+      await this.page.waitForLoadState?.("networkidle", { timeout: 12000 }).catch(() => null);
+      await this.page.waitForTimeout?.(900).catch(() => null);
+      const afterUrl = typeof this.page.url === "function" ? String(this.page.url() ?? "") : "";
+      const afterSig = await advanceSignatureOf(this.page).catch(() => "");
+      if ((afterUrl && afterUrl !== beforeUrl) || (beforeSig && afterSig && afterSig !== beforeSig)) return id;
+    }
+    return "";
   }
 
   /** Is this locator a native <select>, whose options can actually be read? */

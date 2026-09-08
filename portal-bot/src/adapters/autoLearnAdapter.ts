@@ -14,7 +14,7 @@ import { enterApplicationFlow, isExcludedEntryLabel, normalizeEntryLabel, choose
 import { chooseProgram, offeredLabels, programSelector, scanProgramGroups, type ProgramGroup } from "./applicationProgram";
 import { planHiddenReveal, planLabelProxy } from "./revealHidden";
 import { looksLikeConsentWall, planConsentDismissal } from "./consentBanner";
-import { chooseRow, scanRowChoices } from "./rowChooser";
+import { chooseRow, scanRowChoices, markAddressRow, type AddressRowPick } from "./rowChooser";
 import { parseStreetName, parseStreetNumber, parseStreetLine, correctTruncatedAddressFill, isSplitAddressForm } from "../addressParse";
 import { portalUploadCapBytes } from "../uploadCap";
 import { LearnRunDebug } from "../learnDebug";
@@ -4661,6 +4661,10 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           const label = String(advanceField.label ?? "").slice(0, 60);
           if (label && deadAdvances.get(deadKey)?.has(label)) {
             this.debug?.event({ type: "advance_skipped_dead", page: pageCount, label });
+            // A search that returned results is answered by clicking a result — try that
+            // BEFORE hunting for another button, because on a results page there usually
+            // isn't one. See clickMatchingResultRow.
+            if (await this.clickMatchingResultRow(_project, steps)) continue;
             if (await this.clickFallbackAdvance(steps, fields)) continue;
             if (await this.pressEnterInLastFilledField(steps, fields)) continue;
             break;
@@ -4767,6 +4771,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       if (await this.clickFallbackAdvance(steps, fields)) continue;
       // A search page's control is often an icon with no name; Enter is what a person presses.
       if (await this.pressEnterInLastFilledField(steps, fields)) continue;
+      // …and once the search has answered, the answer is the row.
+      if (await this.clickMatchingResultRow(_project, steps)) continue;
       break;
     }
 
@@ -5999,6 +6005,61 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       note: `submit by Enter: ${String(lastFill.note ?? "search").slice(0, 44)}`,
     });
     this.debug?.event({ type: "enter_submit", note: String(lastFill.note ?? "").slice(0, 40) });
+    return true;
+  }
+
+  /** THE SEARCH ANSWERED, AND THE ANSWER IS A ROW.
+   *
+   *  Miami's Property Search finds the parcel and renders one result row whose only
+   *  clickable thing is a <td> the portal underlined and coloured blue. No link, no button,
+   *  no onclick attribute — a grid handler bound in script. EXTRACT_SEL cannot see it, so
+   *  the planner is never offered it and picks the nearest submit-shaped thing instead: one
+   *  of two display:none <input type=submit id="btnSubmit">, which does nothing, four times.
+   *
+   *  Runs only as a fallback, after an advance has already proven dead or none was offered.
+   *  The row must contain every word of this project's address — matching by property, not
+   *  by position — and more than one surviving row is a refusal, because clicking the wrong
+   *  one files against the wrong parcel.
+   *
+   *  Recorded with a bound note rather than a frozen selector: a recipe is shared across
+   *  projects, and replay re-runs the same match against ITS project's address. */
+  private async clickMatchingResultRow(project: ProjectRecord, steps: RecipeStep[]): Promise<boolean> {
+    if (!this.page || typeof this.page.evaluate !== "function") return false;
+    const want = parseStreetLine(String(project.projectAddress ?? ""), project.city || undefined);
+    if (!want || want.split(/\s+/).length < 2) return false;
+    const beforeSig = await advanceSignatureOf(this.page);
+    const beforeUrl = typeof this.page.url === "function" ? String(this.page.url() ?? "") : "";
+    const beforeFp = await this.pageFingerprint();
+    const pick = await this.page.evaluate(markAddressRow, { want }).catch(() => null) as AddressRowPick | null;
+    if (!pick) return false;
+    const target = this.page.locator('[data-al-rowpick="1"]').first();
+    if (!(await target.count().catch(() => 0))) return false;
+    const clicked = await this.clickResilient(target).then(() => true).catch(() => false);
+    if (!clicked) {
+      this.debug?.event({ type: "result_row_click_failed", via: pick.via, text: pick.text.slice(0, 60) });
+      return false;
+    }
+    await this.waitAfterClick(beforeUrl, beforeFp, this.tabCount()).catch(() => null);
+    const afterSig = await advanceSignatureOf(this.page);
+    const afterUrl = typeof this.page.url === "function" ? String(this.page.url() ?? "") : "";
+    const moved = (afterUrl && afterUrl !== beforeUrl) || (!!beforeSig && !!afterSig && afterSig !== beforeSig);
+    if (!moved) {
+      // Say which of the two it was. "The row was not there" and "the row was there and the
+      // click did nothing" are different defects and have looked identical in every run.
+      this.debug?.event({ type: "result_row_did_nothing", via: pick.via, text: pick.text.slice(0, 60) });
+      return false;
+    }
+    steps.push({
+      action: "click",
+      phase: "fill",
+      // The marker attribute exists only for the click that just happened; the note is what
+      // replay reads, and pickAddressRow re-derives the row from the replay project's own
+      // address. Recording the literal row text would file every future job against this
+      // project's parcel.
+      selector: { css: "tr, [role='row'], li" },
+      note: `address row: pick the search result matching this project's address (learned on "${pick.text.slice(0, 40)}")`,
+    });
+    this.debug?.event({ type: "result_row_clicked", via: pick.via, matched: pick.matched, text: pick.text.slice(0, 60) });
     return true;
   }
 
