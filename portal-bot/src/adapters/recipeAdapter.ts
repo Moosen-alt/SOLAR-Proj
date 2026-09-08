@@ -2865,7 +2865,16 @@ ${body.slice(0, 4000)}`);
       }
       // Rows and list items move when a portal appends an array or a contact.
       const rows = document.querySelectorAll("tr, li, [role='row']").length;
-      return `${shown}|${options}|${rows}|${vals.slice(0, 4000)}`;
+      // AND THE TEXT, because a computed total is usually not in an input at all. PowerClerk
+      // renders "compute totals: Calculate" into read-only markup, so measuring only form
+      // values reported that click as having done NOTHING — a specific finding, made with an
+      // instrument that could not have seen the thing it was looking for. A hash rather than
+      // the text itself: this is compared, never read, and a page of text is not worth
+      // carrying across the boundary on every click.
+      const text = (document.body?.innerText || "").replace(/\s+/g, " ");
+      let h = 0;
+      for (let i = 0; i < text.length; i++) { h = ((h << 5) - h + text.charCodeAt(i)) | 0; }
+      return `${shown}|${options}|${rows}|${text.length}:${h}|${vals.slice(0, 4000)}`;
     }).catch(() => "") as Promise<string>;
   }
 
