@@ -1962,7 +1962,16 @@ ${body.slice(0, 4000)}`);
     const nameHint = (step.action === "check" || step.action === "uncheck")
       ? "" : String(step.note ?? step.field ?? "");
     let scoped = await this.resolveLocator(step.selector, nameHint);
-    if (await this.looksOutOfReach(scoped) || await this.overlayShadowsTarget(scoped)) {
+    // A HIDDEN INPUT IS THE NORMAL STATE FOR A STYLED CHECKBOX, NOT A PROBLEM TO SOLVE.
+    //
+    // The third door onto the same regression. `isTrulyVisible` correctly calls an opacity:0
+    // control hidden — which is exactly what a rounded-pill switch's real <input> is — so
+    // `looksOutOfReach` becomes true for every styled checkbox and fires the rescues below,
+    // swapping the control out from under a branch that was built to drive the hidden one
+    // with `force`. Ameren went 73/75 -> 2/75 three separate ways today: narrowToOne, then
+    // the name hint, then this. check/uncheck keep whatever they resolved.
+    const isToggle = step.action === "check" || step.action === "uncheck";
+    if (!isToggle && (await this.looksOutOfReach(scoped) || await this.overlayShadowsTarget(scoped))) {
       if (await this.dismissStaleOverlays()) scoped = await this.resolveLocator(step.selector);
     }
     // THE SECTION THE LEARNER RECORDED, FINALLY USED.
@@ -1972,7 +1981,7 @@ ${body.slice(0, 4000)}`);
     // "Model" selects differ only by "Inverter Clone System" versus "PV ArrayDelete Array",
     // and that string has been sitting in every such step's fingerprint since the day it was
     // learned. Consulted last, because a working selector needs no rescue.
-    if (await this.looksOutOfReach(scoped)) {
+    if (!isToggle && await this.looksOutOfReach(scoped)) {
       // THE PORTAL'S OWN NAME FOR THE CONTROL FIRST. A test hook is stable across renders and
       // says which side it belongs to; a recorded id is neither.
       const byHook = await this.resolveByTestHook(step);
