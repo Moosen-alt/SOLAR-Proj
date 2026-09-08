@@ -60,6 +60,49 @@ question (values, option counts, row counts). A swallowed click still blocks, an
 when the snapshot could not be taken the message says so rather than claiming a
 comparison that never ran.
 
+### Filing defects found by reading the scorecard, not by guessing
+
+Every one of these was sitting in `detail.blankNames` / `detail.message` in a stored
+scorecard the whole time.
+
+- **PGE left "Energy Storage" blank.** The no-battery rule skipped the whole storage
+  section — including the QUESTION asking whether there is a battery. Not having one is
+  the answer, and it is "No". Replaying the recorded "Yes" is worse and has happened
+  live: a PacifiCorp filing once declared a 13.5 kWh Powerwall on a job with no storage.
+  The split is between the QUESTION and the SPECS, by shape not by portal: a spec asks
+  for a number, a make, a model or a rating; a declaration is a bare storage noun, and a
+  checkbox is always a declaration.
+- **Ameren left Name, Company, Address, Email, Phone blank.** The re-assert that repairs
+  re-rendered fields hangs off the ADVANCING click, so the one page it never reached was
+  the last one — the page a human is handed. It is now one shared method, and it FILLS
+  ONLY: it never clicks, which is what makes it safe there.
+- **Coos Bay electrical "failed" at the fee page.** Its recipe carries the card fields of
+  the human who learned it. Replay now stops AT the first card field in every mode and
+  reports a staged filing awaiting payment — the same handoff the final submit gets, one
+  boundary earlier. `PAYMENT_FIELD` is deliberately narrow: its own smoke immediately
+  caught "Contractor Licence Expiration Date". A card is the one thing that splits its
+  expiry into a MONTH and a YEAR.
+- **Coos Bay structural is genuinely broken** and left failing on purpose: a step clicks a
+  link named `187-26-000309-STR`, a record number from its own learn session that cannot
+  exist in a new filing. It needs re-recording; no code change is the honest answer.
+
+### "The review screen disagrees" when there was no review screen
+
+PacifiCorp ends on the Aggregation page — the last INPUT page. Every check failed to find
+its value, the scope fallback dressed those failures in whatever text was on screen, and
+the verdict read `homeownerName shows "No; checked"` with DO NOT SUBMIT, against a filing
+with zero blanks and 47 verified values.
+
+Two signals now gate it, because the first one alone swallowed the catch that matters
+most (a real review screen showing the WRONG name confirms nothing either, and the DOM
+smoke caught that within one run). Mismatches are suppressed only when nothing matched
+AND every scraped pair came from a control someone could still type into — the scraper's
+own founding premise: **a true review page has no fillable inputs.**
+
+Consequence to expect: a portal with no review screen cannot reach rung 5, so SUBMITTABLE
+reads 0 for it forever. That is not failure; `fieldsVerified` against `requiredFieldsSeen`
+is the substitute evidence.
+
 ### The rules this session kept re-learning
 
 - When a failure line does not change across several fixes, **suspect the line**.
