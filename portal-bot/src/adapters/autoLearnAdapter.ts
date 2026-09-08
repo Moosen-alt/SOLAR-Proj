@@ -1020,14 +1020,28 @@ export function tagUploadControls(): UploadSlot[] {
   return slots;
 }
 
-function fail(steps: RecipeStep[], portalName: string, message: string, pauseReason: string | null = null): LearnResult {
+/** @param pagesWalked HOW FAR THE WALK ACTUALLY GOT. This was hardcoded to 0, so every failed
+ *  learn reported zero pages however far it had walked — and scoreLearnOutcome picks the rung
+ *  FROM pageCount, so a run that reached a form and then failed was scored "authenticated, no
+ *  way into an application was found". Measured: Miami walked seven pages, hit the repeat-page
+ *  stop, and its row said 0 pages and no way in. The row described a run that never happened.
+ *
+ *  Every in-walk failure passes its real count now; the paths that genuinely have not started
+ *  a walk keep the 0 default. */
+function fail(
+  steps: RecipeStep[],
+  portalName: string,
+  message: string,
+  pauseReason: string | null = null,
+  pagesWalked = 0,
+): LearnResult {
   return {
     ok: false,
     portalName,
     steps,
     reviewScreen: { fields: [], bodyTextSnippet: "" },
     finalSubmitRecorded: steps.some((s) => s.isFinalSubmit === true),
-    pageCount: 0,
+    pageCount: pagesWalked,
     pauseReason,
     message,
   };
@@ -3339,7 +3353,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         const rawBody = await this.page.locator("body").innerText().catch(() => "");
         bodyText = (redactStatusText(String(rawBody)) ?? "").slice(0, 2000);
       } catch (err) {
-        return fail(steps, this.portalName, `Failed to scrape page ${pageCount}: ${err instanceof Error ? err.message : String(err)}`);
+        return fail(steps, this.portalName, `Failed to scrape page ${pageCount}: ${err instanceof Error ? err.message : String(err)}`, null, pageCount);
       }
 
       // Debug: capture the page as-seen BEFORE any fills.
@@ -3671,7 +3685,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         plan = await this.planner({ url, pageTitle, fields, bodyText, alreadyFilledLabels, isDashboard, recoveryHint: recoveryHint || undefined, screenshotBase64: planShot });
       } catch (err) {
         this.debug?.event({ type: "planner_error", page: pageCount, message: err instanceof Error ? err.message : String(err) });
-        return fail(steps, this.portalName, `Planner failed on page ${pageCount}: ${err instanceof Error ? err.message : String(err)}`);
+        return fail(steps, this.portalName, `Planner failed on page ${pageCount}: ${err instanceof Error ? err.message : String(err)}`, null, pageCount);
       }
 
       // c2) STRUCTURAL REVIEW GUARD — the Accela "Continue Application" trap.
@@ -3826,6 +3840,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
               steps,
               this.portalName,
               `The walk stopped making progress: "${(redactStatusText(pageTitle) || hostPath).slice(0, 60)}" was reached ${seen} times with the same controls and the page never moved. Recorded ${steps.filter((st) => ["fill", "select", "check"].includes(String(st.action))).length} field(s) before that. The advance on this page is not advancing — a person should check what it wants.`,
+              null,
+              pageCount,
             );
           }
         }
@@ -4025,7 +4041,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             { required: true },
           );
           if (!res.ok) {
-            return fail(steps, this.portalName, `Failed to click navigation link "${navField.label}" on page ${pageCount}: ${res.message ?? "unknown"}`);
+            return fail(steps, this.portalName, `Failed to click navigation link "${navField.label}" on page ${pageCount}: ${res.message ?? "unknown"}`, null, pageCount);
           }
           // A CONSENT WALL, NAMED RATHER THAN WANDERED INTO.
           //
@@ -4062,6 +4078,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
                 steps,
                 this.portalName,
                 `This portal will not start an application until its cookie consent is answered, and declining did not clear it: clicking "${(navField.label || "the application entry").slice(0, 60)}" is still redirected to its cookie policy. A person must make that choice — automation declines non-essential cookies but never accepts them on the operator's behalf.`,
+                null,
+                pageCount,
               );
             }
             // TWO THINGS THE FIRST DRAFT OF THIS GOT WRONG, both of them silent.
@@ -4595,7 +4613,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           { required: true },
         );
         if (!res.ok) {
-          return fail(steps, this.portalName, `Failed to click the advance button on page ${pageCount}: ${res.message ?? "unknown"}`);
+          return fail(steps, this.portalName, `Failed to click the advance button on page ${pageCount}: ${res.message ?? "unknown"}`, null, pageCount);
         }
 
         // d5) POST-ADVANCE VALIDATION GUARD — did the page actually move forward?
