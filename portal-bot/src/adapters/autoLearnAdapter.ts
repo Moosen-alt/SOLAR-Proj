@@ -4750,6 +4750,14 @@ export class AutoLearnAdapter extends BasePortalAdapter {
               // Remove the advance step we just recorded — it didn't actually work.
               if (steps.length && steps[steps.length - 1].note?.startsWith("advance:")) steps.pop();
             }
+            // THE MOMENT WE KNOW THE PAGE DID NOT MOVE is the moment to try the results row.
+            //
+            // The first version of this only ran when the planner offered NO advance or
+            // repeated a KNOWN-DEAD one. Miami never gave it a turn: told btnSubmit was dead,
+            // the planner just named a different control that also did nothing — 43, then 54,
+            // then 56, three dead advances and three pages of budget, with the row it needed
+            // to click sitting on screen the whole time.
+            if (blockers.length === 0 && await this.clickMatchingResultRow(_project, steps)) continue;
           } else {
             lastValidationErrors = [];
           }
