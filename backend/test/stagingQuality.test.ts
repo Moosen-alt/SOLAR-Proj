@@ -124,6 +124,32 @@ async function main(): Promise<void> {
     q.cleanRate === Math.round((q.clean / q.measured) * 1000) / 10,
     `${q.cleanRate}% vs ${q.clean}/${q.measured}`);
 
+  // ---------------------------------------------------------------------------
+  // THE UNFALSIFIABLE SCORE. Two runs report zero blanks. One satisfied three required
+  // fields; the other never saw one. The clean rate cannot tell them apart, and the second
+  // is what a broken sweep looks like from the outside -- permanently, silently perfect.
+  //
+  // Asserted as DELTAS, because every absolute count above this point is load-bearing.
+  // ---------------------------------------------------------------------------
+  {
+    const before = getStagingQuality(db, window);
+    addRun({ executed: 40, requiredStillEmpty: [], skipped: [], driftWarnings: [], requiredFieldsSeen: ["Meter", "Model", "kW AC"] });
+    const withDenom = getStagingQuality(db, window);
+    check("a clean run that SAW required fields is not counted blind",
+      withDenom.blindClean === before.blindClean,
+      `blindClean moved from ${before.blindClean} to ${withDenom.blindClean} on a run with 3 required fields`);
+    check("...and the required fields it saw reach the report",
+      withDenom.avgRequiredPerRun > 0, `avgRequiredPerRun=${withDenom.avgRequiredPerRun}`);
+
+    addRun({ executed: 40, requiredStillEmpty: [], skipped: [], driftWarnings: [] });
+    const blind = getStagingQuality(db, window);
+    check("THE UNFALSIFIABLE SCORE: a clean run that saw NO required field is flagged blind",
+      blind.blindClean === withDenom.blindClean + 1,
+      `blindClean=${blind.blindClean}, was ${withDenom.blindClean}`);
+    check("...and it still counts as clean, because it is not a failure",
+      blind.clean === withDenom.clean + 1, `clean=${blind.clean} was ${withDenom.clean}`);
+  }
+
   const empty = getStagingQuality(db, { start: "2025-01-01", end: "2025-12-31", orgId: null });
   check("a period with no runs reports zeroes rather than dividing by zero",
     empty.runs === 0 && empty.cleanRate === 0 && empty.avgBlanksPerRun === 0, JSON.stringify(empty));

@@ -32,6 +32,14 @@ export interface StagingQuality {
   /** Runs that handed a person something to finish. */
   neededHuman: number;
   avgBlanksPerRun: number;
+  /** How many required fields the portals asked for, per run — the denominator under
+   *  avgBlanksPerRun. Zero blanks out of thirty required and zero blanks out of nothing
+   *  seen are the same headline and opposite facts. */
+  avgRequiredPerRun: number;
+  /** CLEAN RUNS THAT NEVER SAW A REQUIRED FIELD. Not a failure and not a success: a score
+   *  nothing can falsify. If this climbs, the sweep has stopped reaching the pages it is
+   *  meant to check and the clean rate above it is drifting loose from the portals. */
+  blindClean: number;
   /** The fields most often left blank — what to fix first, in order. */
   topGaps: Array<{ field: string; runs: number }>;
   /** Portals whose replays are drifting: re-anchored selectors, values not holding. */
@@ -337,6 +345,7 @@ export function getStagingQuality(
   const gapCounts = new Map<string, number>();
   const driftCounts = new Map<string, number>();
   let measured = 0, clean = 0, verified = 0, neededHuman = 0, blanksTotal = 0;
+  let requiredTotal = 0, blindClean = 0;
 
   for (const row of rows) {
     let parsed: unknown;
@@ -376,8 +385,15 @@ export function getStagingQuality(
     // block held the homeowner's name instead of the contractor's. The replay benchmark
     // says DO NOT SUBMIT about that run; a headline number that called it clean would be
     // saying the opposite thing about the same filing.
+    const requiredSeen = ((rep.requiredFieldsSeen as string[] | undefined) ?? []).length;
+    requiredTotal += requiredSeen;
+
     const isClean = !blanks.length && !failed.length && !drift.length && !healed && !mismatches;
     if (isClean) clean++;
+    // A clean run that never saw a required control did not prove the filing is complete;
+    // it proved only that it found nothing to object to, which is also what a run that never
+    // looked reports. Counted separately so the clean rate can be read honestly.
+    if (isClean && requiredSeen === 0) blindClean++;
     // The top bar, same as the benchmark's: clean AND the portal's own review screen agreed.
     if (isClean && fieldsSeen > 0 && confirmedFields >= MIN_CONFIRMED_FIELDS) verified++;
     if (blanks.length || failed.length || mismatches) neededHuman++;
@@ -396,6 +412,8 @@ export function getStagingQuality(
     verifiedRate: pct(verified),
     neededHuman,
     avgBlanksPerRun: measured ? Math.round((blanksTotal / measured) * 10) / 10 : 0,
+    avgRequiredPerRun: measured ? Math.round((requiredTotal / measured) * 10) / 10 : 0,
+    blindClean,
     topGaps: top(gapCounts, "field") as Array<{ field: string; runs: number }>,
     driftingPortals: top(driftCounts, "portal") as Array<{ portal: string; runs: number }>,
   };

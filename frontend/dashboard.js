@@ -5546,8 +5546,8 @@ function renderStagingQuality(q) {
         <div class="kpi-label">Runs that left work for a person</div>
       </div>
       <div class="kpi-card">
-        <div class="kpi-value">${q.avgBlanksPerRun}</div>
-        <div class="kpi-label">Avg required fields left blank</div>
+        <div class="kpi-value">${q.avgBlanksPerRun} <span class="muted" style="font-size:0.6em">of ${q.avgRequiredPerRun ?? 0}</span></div>
+        <div class="kpi-label">Avg required fields left blank, out of what the portal asked for</div>
       </div>
     </div>
     <p class="muted" style="margin-top:6px">
@@ -5555,6 +5555,13 @@ function renderStagingQuality(q) {
         ? ` — ${unmeasured} did not and are excluded rather than counted as clean`
         : ""}.
     </p>
+    ${q.blindClean > 0 ? `
+      <p class="kpi-warn" style="margin-top:6px;padding:8px;border-radius:4px">
+        ${q.blindClean} clean run(s) never saw a single required field. That is not a failure and
+        not a success — it is a score nothing can falsify, and it reads the same whether the
+        filing was complete or the check never reached the page. Treat the clean rate above as
+        covering ${q.clean - q.blindClean} run(s) until these are looked at.
+      </p>` : ""}
     ${gaps.length ? `
       <h4 style="margin-top:16px">Most frequently left blank</h4>
       <div class="table-wrap">
