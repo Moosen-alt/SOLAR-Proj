@@ -6435,9 +6435,21 @@ export async function dismissPageModals(page: any): Promise<void> {
     '#cpr-banner-dimiss-btn',
     '[id*="cpr-banner"][id*="dismiss"]',
     '[id*="cookie"] [class*="dismiss"], [class*="cookie-banner"] [aria-label="Close"]',
+    // EXACT TEXT, NOT SUBSTRING — THIS LIST CLICKED A PERMIT TYPE.
+    //
+    // `:has-text("OK")` matches any clickable whose text CONTAINS "ok", case-insensitively.
+    // On permiteyes.us's permit-type menu that is "Smoke Detector Permit" (sm-OK-e) and
+    // "Look Up Record" (LO-OK). The dismisser clicked one, the learn carried on filling
+    // whatever form it landed on, and NOTHING RECORDED THE CLICK because the dismisser is
+    // not a recording pass. That is why a nine-fill permiteyes recipe replays into a
+    // permit-type menu it has no step for: the type was never chosen by a step at all.
+    //
+    // `:text-is()` matches the element's own normalised text exactly, which is what every
+    // one of these dismissals actually is: a button whose entire label is "OK" or "Close".
+    // A dismissal button never says "Smoke Detector Permit".
     // PowerClerk "What's new?" popover
-    `${clickable}:has-text("Got it")`,
-    `${clickable}:has-text("Got It")`,
+    `${clickable}:text-is("Got it")`,
+    `${clickable}:text-is("Got It")`,
     // Bootstrap/Vue popover + modal close controls (PowerClerk uses these).
     '.popover-header button',
     '.popover .btn-close',
@@ -6451,14 +6463,14 @@ export async function dismissPageModals(page: any): Promise<void> {
     '.x-tool-close',
     '.x-window-header-right .x-tool',
     '[class*="x-window"] [class*="close"]',
-    `${clickable}:has-text("Dismiss")`,
-    `${clickable}:has-text("Close")`,
+    `${clickable}:text-is("Dismiss")`,
+    `${clickable}:text-is("Close")`,
     // Cookie consent
-    `${clickable}:has-text("Accept All")`,
-    `${clickable}:has-text("Accept")`,
-    `${clickable}:has-text("OK")`,
+    `${clickable}:text-is("Accept All")`,
+    `${clickable}:text-is("Accept")`,
+    `${clickable}:text-is("OK")`,
     // Generic "×" close
-    `${clickable}:has-text("×")`,
+    `${clickable}:text-is("×")`,
     '[role="dialog"] button',
   ];
   for (let attempt = 0; attempt < 3; attempt++) {
