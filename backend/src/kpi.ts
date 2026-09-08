@@ -374,7 +374,13 @@ export function getStagingQuality(
 
     blanksTotal += blanks.length;
     for (const b of blanks.slice(0, 12)) {
-      const key = String(b).replace(/ — the portal flagged this field$/, "").slice(0, 60);
+      // Blanks now carry the page they were found on ("Name [Contact Information]"), which is
+      // what makes a single run readable. Counting ACROSS runs wants the field alone, or one
+      // recurring gap splits into a row per page and drops out of the top list entirely.
+      const key = String(b)
+        .replace(/ — the portal flagged this field$/, "")
+        .replace(/\s*\[[^\]]{1,48}\]$/, "")
+        .slice(0, 60);
       if (key) gapCounts.set(key, (gapCounts.get(key) ?? 0) + 1);
     }
     // A recipe reaching its controls by another route IS drift worth chasing, even though it

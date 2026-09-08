@@ -357,6 +357,8 @@ export interface ReplayRow {
     healed?: number; blanks?: number;
     /** WHICH fields, not just how many — a count sends someone back to the portal to look. */
     blankNames?: string[]; driftWarnings?: string[]; agingNotes?: string[]; skippedNames?: string[]; unresolvedFields?: string[];
+    /** What the LLM gap-fill added, and what it left for lack of a value. */
+    gapFill?: unknown;
     /** Values read back from the portal after writing them, and those that would not hold. */
     fieldsVerified?: number; fieldsUnverified?: string[];
     /** THE DENOMINATOR. Every control the portal itself marked required across the run.

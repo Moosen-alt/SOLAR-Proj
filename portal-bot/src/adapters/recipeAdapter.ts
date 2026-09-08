@@ -703,8 +703,18 @@ ${body.slice(0, 4000)}`);
         // filled does not loop — and reported, because a value that needs re-asserting is a
         // portal quirk the operator should know about.
         const blanks = await this.reassertBlanksOnce(pastReview);
-        for (const label of blanks) {
-          if (!this.requiredStillEmpty.includes(label)) this.requiredStillEmpty.push(label);
+        // WHICH PAGE IT WAS BLANK ON. "Name, Company, Address, Email, Phone" told an operator
+        // five field names and nothing about where to look — and those five labels repeat
+        // across a wizard's contact blocks, so the list could not distinguish "the customer
+        // block we filled came back empty" from "there is a second block nobody recorded".
+        // Ameren's five blanks were unreadable for exactly that reason, through a full sweep
+        // and two pilots. A field name without a page is half a bug report.
+        {
+          const where = await currentPageLabel();
+          for (const label of blanks) {
+            const named = where ? `${label} [${where}]` : label;
+            if (!this.requiredStillEmpty.includes(named)) this.requiredStillEmpty.push(named);
+          }
         }
         // PHOTOGRAPH THE FINISHED PAGE. Same moment as the sweep above: everything the
         // recipe will put on this page is on it, and the next click leaves it for good.
@@ -1098,8 +1108,12 @@ ${body.slice(0, 4000)}`);
       await this.runGapFill(this.page).catch(() => null);
       this.gapFilledPage = endPage;
     }
-    for (const label of await this.emptyRequiredControls()) {
-      if (!this.requiredStillEmpty.includes(label)) this.requiredStillEmpty.push(label);
+    {
+      const where = await this.pageLabelNow();
+      for (const label of await this.emptyRequiredControls()) {
+        const named = where ? `${label} [${where}]` : label;
+        if (!this.requiredStillEmpty.includes(named)) this.requiredStillEmpty.push(named);
+      }
     }
     // ONLY NOW. The sweep directly above is the last thing that can add a blank, and a
     // discharge that ran before it would be deciding on evidence that had not finished
@@ -2132,6 +2146,16 @@ ${body.slice(0, 4000)}`);
       else if (step.fingerprint?.section) {
         const bySection = await this.resolveBySection(step);
         if (bySection) scoped = bySection as never;
+      } else {
+        // SAY WHEN THE RESCUE HAD NOTHING TO WORK WITH. PGE's inverter Model failed here on
+        // all three attempts of the sweep, and the trail said only that level 0 was rejected
+        // — leaving "the hook found nothing", "the section was missing" and "the rescue never
+        // ran" indistinguishable from each other. They need different fixes, and one of them
+        // is not a code fix at all: a step carrying no section was recorded that way.
+        this.resolveTrail.push(`  ...rescue: control out of reach, no test hook matched ${JSON.stringify(String(step.field ?? step.note ?? "").slice(0, 30))} and the step carries NO recorded section`);
+      }
+      if (byHook === null && step.fingerprint?.section && await this.looksOutOfReach(scoped)) {
+        this.resolveTrail.push(`  ...rescue: no test hook and section ${JSON.stringify(String(step.fingerprint.section).slice(0, 34))} did not resolve either — still out of reach`);
       }
     }
     // NEVER ACT ON AN AMBIGUOUS LOCATOR.
@@ -3746,6 +3770,19 @@ ${body.slice(0, 4000)}`);
    * module select and an empty "Total System Export (kW) *". See that module for both
    * misses; the smoke reproduces the page.
    */
+  /** The page a person would say they are on — the active wizard tab, else the heading. */
+  private async pageLabelNow(): Promise<string> {
+    if (typeof this.page?.evaluate !== "function") return "";
+    return await this.page.evaluate(() => {
+      const clean = (t: string | null | undefined): string => (t || "").trim().replace(/\s+/g, " ").slice(0, 48);
+      const active = document.querySelector('.nav-link.active, [aria-current="page"], [class*="active"]');
+      const fromTab = clean(active && (active as HTMLElement).innerText);
+      if (fromTab) return fromTab;
+      const h = document.querySelector("h1, h2, legend");
+      return clean(h && (h as HTMLElement).innerText);
+    }).catch(() => "") as Promise<string>;
+  }
+
   /** A FILE HANDED TO THE BROWSER IS NOT A FILE THE PORTAL HAS TAKEN.
    *
    *  setInputFiles returns the instant the input holds the file; the transfer that follows

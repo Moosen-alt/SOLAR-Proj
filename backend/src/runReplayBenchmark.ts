@@ -389,6 +389,11 @@ async function main(): Promise<void> {
         // argued with offline — the warnings that stopped blocking would simply vanish from
         // the record instead of moving to a different column.
         agingNotes: ((o.agingNotes as string[]) ?? []).slice(0, 30),
+        // WHAT GAP-FILL ACTUALLY DID. Without it, a run with --gap-fill on and required
+        // fields still blank cannot say whether the planner saw them and had no value, or
+        // never reached the page — which is exactly the question Ameren's five blanks left
+        // open after a run that spent two LLM calls on them.
+        gapFill: o.gapFill ?? null,
         // THE OPERATOR'S ACTUAL QUESTION: how many of this filing's values are verified
         // present in the portal, and which are not. Counted per field at fill time, which
         // works on every portal — a review screen does not exist on all of them.
