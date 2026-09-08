@@ -666,7 +666,12 @@ ${body.slice(0, 4000)}`);
           // sleep/reload/settle cycles proving a control absent that a single DOM read
           // settles. Only short-circuit on an explicit false; null means the page could not
           // be read, which is not evidence the control is missing.
-          if (DATA_ACTIONS.has(step.action)) {
+          // FOUR MATCHES IS PROOF THE CONTROL IS THERE. This guard asks whether the step's
+          // LABEL is on the page and stops retrying when it is not — sound for a control the
+          // portal never rendered, and exactly wrong after a strict-mode violation, which can
+          // only happen when SEVERAL of the thing matched. Coos Bay's street number was
+          // declared absent immediately after four of it were found.
+          if (DATA_ACTIONS.has(step.action) && !isAmbiguous) {
             const want = String(step.note || step.selector?.label || step.selector?.name || "").trim();
             if (want.length >= 3 && (await this.labelPresentOnPage(want)) === false) {
               this.driftWarnings.push(`"${want.slice(0, 44)}" is not on this page — stopped retrying rather than reloading (a reload sends PowerClerk back to page 1)`);
