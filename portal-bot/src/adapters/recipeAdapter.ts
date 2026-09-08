@@ -1737,7 +1737,12 @@ ${body.slice(0, 4000)}`);
       step.selector?.frame
         ? (this.page.frameLocator(frameSelectorFor(step.selector.frame)).locator("body") as never)
         : (this.page as never);
-    const rows = await evalScope.evaluate(() => {
+    // AN UNPAINTED GRID IS NOT AN EMPTY GRID — the same rule this file already applies to
+    // form fields ("a portal that renders asynchronously looked identical to being on the
+    // wrong page"). Accela draws the address results on a postback, and this scan got one
+    // look with no retry: the row it needed was in the saved page seconds later. Poll until
+    // rows appear, briefly, instead of concluding the search found nothing.
+    const scanOnce = async (): Promise<Array<{ key: string; text: string }>> => await evalScope.evaluate(() => {
       const vis = (e: Element) => { const r = (e as HTMLElement).getBoundingClientRect(); return r.width > 0 && r.height > 0; };
       const out: Array<{ key: string; text: string }> = [];
       let n = 0;
@@ -1754,6 +1759,11 @@ ${body.slice(0, 4000)}`);
       }
       return out;
     }).catch(() => [] as Array<{ key: string; text: string }>);
+    let rows = await scanOnce();
+    for (let waited = 0; rows.length === 0 && waited < 8000; waited += 800) {
+      await this.page.waitForTimeout?.(800).catch(() => null);
+      rows = await scanOnce();
+    }
     if (rows.length === 0) {
       // The fifth silent return found today. A grid with no rows and no explanation is
       // indistinguishable from a grid that was never looked at — which is exactly what had
