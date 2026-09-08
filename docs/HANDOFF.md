@@ -230,8 +230,14 @@ Coos Bay patch. In order, with what each one actually was:
 
 **VERIFIED, AND IT WAS THE LAST BLOCKER ON THAT RECIPE: 16 -> 46 of 49 (93.9%), nothing
 skipped.** The job value was the whole of it; the recipe then walked almost the entire
-application. It stops at an advance the portal refuses with one required field still blank —
-the next thing to read, from the page that run saved.
+application. It stops on the **ATTACHMENTS page**: the upload, description, document type and Save all
+execute, and the final Continue is refused with one required field still blank. That page
+carries two selects — `ddlDocType` and `ddlAlsoAttachTo` — and the recipe's document-type step
+is recorded as bare `{css: "select"}`, which matches both. Today's narrowing picks the first
+visible one; whether that is the right one, and which of the two ACA is still waiting on, is
+readable from `data/replay-runs/2026-09-08T01-17-24-pacific-power/step046-advance-Continue-Application-.html`.
+A `data-test-role`-style selector here would end the ambiguity outright, which is what the
+learn-side change now records for newly-learned recipes.
 
 **The 62-step Coos Bay recipe is now 9/62** (was 4), and fails somewhere genuinely different:
 `Record type "Residential - Electrical" is not offered`. That is the record-type guard working
