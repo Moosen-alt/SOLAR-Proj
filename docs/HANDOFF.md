@@ -291,6 +291,17 @@ alone, and a note agreeing with nothing still skips rather than guessing.
 `bareSelector.dom.smoke.ts` holds the shape. Verified: 35/35 recipe-adapter, multiArray (15),
 fillHeld, requiredBlank, sectionDisambiguation.
 
+**AND IT DID NOT MOVE COOS BAY.** Measured immediately after landing: still 46/49, one blank,
+nothing skipped, same refused advance — and the "took #N" line never fired, so the document-type
+step **is not ambiguous on the live page**. The two-select shape came from a saved page at a
+different moment; at the moment that step runs there is evidently one. The fix is a correct
+general invariant and it is not this portal's blocker.
+
+**Third wrong cause inferred for this one step** (compaction fallback, then the identity check,
+then the bare selector). The one blank on that page is the thing to identify — read
+`data/replay-runs/<latest>/step046-advance-Continue-Application-.html` and find which required
+control is empty, rather than reasoning forward from the selector again.
+
 **The lesson, third time today:** when a fix does not change the outcome, do not read its
 source again — prove it executes. Two attempts debugged a body that never ran.
 
