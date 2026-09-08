@@ -60,6 +60,25 @@ question (values, option counts, row counts). A swallowed click still blocks, an
 when the snapshot could not be taken the message says so rather than claiming a
 comparison that never ran.
 
+## Miami, page by page: what one portal cost, and what it bought (2026-09-08, late)
+
+Driving ONE newly-accessible portal toward a review screen turned up seven defects,
+every one of them generic. The value is in the list, not in Miami.
+
+| The wall | What was actually wrong | Proven |
+|---|---|---|
+| Search found nothing, 7 pages | The planner filled `3500 Pan American`, then `Pan American`, for a parcel the portal holds as `3500 PAN AMERICAN DR`. The value dictionary offers `street` (whole) beside `streetNumber`/`streetNameCore`/`streetNameSearchPortion` — keys written for Accela's SPLIT form — and nothing says which one a single box wants. | live (`address_fill_expanded`) |
+| The portal said why and nobody read it | `.validation-summary-errors` was not in the error selectors, and errors were only ever read after an advance that did NOTHING. Every Miami advance worked; the page came back saying "Property Address not found." | fixture |
+| Results row not clickable | The row's only target is a `<td>` the portal underlined. No `<a>`, no `<button>`, no onclick — a grid handler bound in script. The replay-side matcher required a `Select` link (Accela's shape). | live (`result_row_clicked`) |
+| `tr.textContent` fuses cells | The row reads `3500 PAN AMERICAN DRCITY OF MIAMI`; the street type vanishes and no address can ever match. Both matchers had this; the `<a>` requirement was hiding it. | fixture |
+| Planner offered `btnSubmit` | `<input type=submit value="Start New Application">` has no textContent, so the label fell through to `name`. Classic ASP.NET renders every button this way. Also a safety hole: a real "Submit Application" labelled `btnSubmit` matched no SUBMIT_INTENT. | live (label now in the trace) |
+| The revealed button stayed banned | "Start New Application" is display:none until a parcel is chosen. Clicked before the row it does nothing and earns a dead-advance ban; the row click then makes it the way forward. A ban is scoped to a page state that no longer exists. | code |
+| Replay could not repeat any of it | The recorded marker cannot resolve at replay (by design, so the matcher runs) — but Playwright WAITS on a selector that resolves to nothing, and the fallback was keyed on a condition a clean skip never sets. | fixture (`addressRowReplay`) |
+
+**Where Miami actually stands:** login → Start Building → Legal Agreement → Property
+Search → address found → row selected → "Start New Application" revealed. It has not
+reached a review screen. Nothing here is a claim that it has.
+
 ## The review number was fiction, both times (2026-09-08, late)
 
 **Neither portal that "reached review" reached a review screen.** Read this before
