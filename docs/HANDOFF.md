@@ -3,6 +3,73 @@
 Audience: the next model/dev session (and the operator). Read `CLAUDE.md` first
 for the hard rules; this file is the running state.
 
+## Measuring replay: what the numbers mean (2026-09-08)
+
+The operator's question is **"if I point this at portal X, how often does it just
+work"** — a rate, about a portal, from repeated trials on ONE build. Two earlier
+numbers were not that, and both read better than the truth:
+
+- **94.9% was not a measurement.** It assembled each recipe's BEST run across
+  DIFFERENT builds. No build ever behaved that way; no operator could experience it.
+- **A single frozen-build sweep gave 74.7%** — but that sweep shared one browser
+  profile across every utility portal, and PowerClerk allows one session per
+  account. Per-host profiles took the same build to 95.2% executed.
+
+`npm run replay:benchmark -- --repeat N` is the honest form: N attempts per
+portal, **round-robin** so each portal's attempts spread across the sweep instead
+of sampling one four-minute window, and reported per-portal k/N **worst-first**.
+An operator does not meet the fleet; they meet one portal, and a 95% average over
+five portals is compatible with one of them failing every other run.
+
+A portal outage counts AGAINST the rate. A portal that is down is a portal you
+cannot file on today; the `owner` column is what says it was not us.
+
+### Nothing missed, in the operator's sense
+
+"Everything the permit needs is present" now has three parts on every run:
+
+| Reported | Question it answers |
+|---|---|
+| `fieldsVerified` | of what we wrote, what read back out of the portal |
+| `requiredStillEmpty` | what the portal still wants, swept before every advancing click AND on the final page |
+| `requiredFieldsSeen` | **how many fields the portal asked for at all** |
+
+The third is the denominator, and without it "0 blanks" is the same sentence
+whether thirty required fields were satisfied or the check never reached a page.
+`blindClean` on the dashboard counts clean runs that never saw a required field:
+not a failure, not a success — a score nothing can falsify. Absent ≠ zero, so
+runs staged before the field existed are not flagged.
+
+### Warnings: one list was carrying four meanings
+
+`driftWarnings` held a real defect, a human-must-look, a correct decision
+("skipped Energy Storage, this project has no battery"), and a successful
+self-heal — and all four blocked a clean score, so a portal with one stale
+recorded id could never replay clean however correct the filing was. Split at the
+push site into `driftWarnings` (blocking) and `agingNotes` (reported, drives the
+re-record signal, does not block). **Blocking is the default**: anything
+unclassified still blocks, so a new warning meaning "this filing is wrong" fails
+closed. Re-scored over the stored sweep the split moved **zero rows** — right in
+principle, empty in effect, and worth knowing before spending a sweep on it.
+
+What it did surface is the real blocker: *"click X left the page unchanged
+(in-page action, or an advance that silently did nothing)"* on four of five
+portals — a diagnostic whose own text names two opposite outcomes and declines to
+choose. The page-identity check ignores values by design; the fix asks a second
+question (values, option counts, row counts). A swallowed click still blocks, and
+when the snapshot could not be taken the message says so rather than claiming a
+comparison that never ran.
+
+### The rules this session kept re-learning
+
+- When a failure line does not change across several fixes, **suspect the line**.
+- When a fix does not change the outcome, **prove it executes**.
+- A diagnostic that names two possible outcomes has not diagnosed anything.
+- Never claim a finding the instrument did not make (`measured` flags exist for this).
+- A test nobody runs is a comment — eleven smokes were on disk and in no chain.
+- Heredoc `\n` / `\b` corrupt silently on this machine; build backslashes with
+  `chr(92)` or use the Edit tool.
+
 ## What shipped recently (newest first)
 
 | Commit | What it is |

@@ -2895,7 +2895,15 @@ ${body.slice(0, 4000)}`);
         this.agingNotes.push(`click "${String(step.note ?? "click").slice(0, 44)}" acted on the page without advancing it — the in-page action the recipe recorded`);
         return;
       }
-      this.driftWarnings.push(`click "${String(step.note ?? "click").slice(0, 44)}" changed nothing on the page — no value, row or option moved, so it was either a no-op control or an advance the portal silently refused`);
+      // ONLY CLAIM THE FINDING WE ACTUALLY MADE. If the before-snapshot never came back —
+      // an evaluate the portal interrupted, a page mid-navigation — then nothing was
+      // compared, and saying "no value, row or option moved" would be describing a check
+      // that did not run. That is the same fault this whole change was written to remove,
+      // committed one branch further down. Unmeasured falls back to the honest ambiguity.
+      const measured = !!beforeEffect && !!afterEffect;
+      this.driftWarnings.push(measured
+        ? `click "${String(step.note ?? "click").slice(0, 44)}" changed nothing on the page — no value, row or option moved, so it was either a no-op control or an advance the portal silently refused`
+        : `click "${String(step.note ?? "click").slice(0, 44)}" left the page unchanged and the page could not be re-read to tell an in-page action from an advance that silently did nothing`);
       return;
     }
 

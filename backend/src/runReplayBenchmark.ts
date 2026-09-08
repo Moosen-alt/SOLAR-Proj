@@ -353,6 +353,10 @@ async function main(): Promise<void> {
         // off at exactly the word that matters, which cost a live run to discover twice.
         message: String(o.message ?? "").slice(0, 1200),
         unresolvedFields: ((o.unresolvedFields as string[]) ?? []).slice(0, 30),
+        // The declassified channel has to reach the scorecard too, or a row can no longer be
+        // argued with offline — the warnings that stopped blocking would simply vanish from
+        // the record instead of moving to a different column.
+        agingNotes: ((o.agingNotes as string[]) ?? []).slice(0, 30),
         // THE OPERATOR'S ACTUAL QUESTION: how many of this filing's values are verified
         // present in the portal, and which are not. Counted per field at fill time, which
         // works on every portal — a review screen does not exist on all of them.
