@@ -649,7 +649,14 @@ ${body.slice(0, 4000)}`);
       // retry and advance-guard paths, never before the first click. A live run
       // died at step 1 behind exactly that popover, announcing the homepage
       // redesign that moved the button underneath it.
-      if (step.action === "click" || step.action === "goto") {
+      // A CHECKBOX IS A CLICK. This gate listed click and goto, and an announcement modal
+      // does not care which verb we call it: it intercepts the pointer either way. Live in
+      // the reliability sweep, Ameren Illinois stopped after 2 of 75 steps because
+      // PowerClerk's "What's new?" popover — the exact overlay this line exists to clear —
+      // sat over the Terms and Conditions checkbox, and a `check` step never reached the
+      // clearing pass. It is a FIRST-RUN artifact, and per-portal browser profiles mean
+      // every portal now gets a first run.
+      if (step.action === "click" || step.action === "goto" || step.action === "check" || step.action === "uncheck") {
         await dismissPageModals(this.page).catch(() => null);
         await clearPageOverlays(this.page).catch(() => null);
       }
@@ -2535,7 +2542,26 @@ ${body.slice(0, 4000)}`);
         // A RECOVERED radio is usually exactly that hidden half (recovery only runs when
         // the recorded id was unusable) — force must follow !usable alone, or the check
         // waits out its full actionability timeout on an element that can never be visible.
-        await target!.check({ force: !usable });
+        try {
+          await target!.check({ force: !usable });
+        } catch (err) {
+          // "CLICKING THE CHECKBOX DID NOT CHANGE ITS STATE" IS NOT A MISSING CONTROL.
+          //
+          // Playwright resolved the input, forced the click, and reported the click done —
+          // and the box stayed unticked. That is the styled widget this branch already
+          // describes two comments up, seen from the other end: the real <input> is
+          // concealed under a styled span and the page's handler lives on the LABEL, so a
+          // click delivered to the input itself is delivered to something nothing listens
+          // to. Live in the reliability sweep, Ameren Illinois lost a whole run to it on
+          // step 2 of 75 — the Terms and Conditions box, on the first page of the form.
+          //
+          // So click what a person clicks. Verified by reading the state back, and it
+          // re-throws the ORIGINAL error when the label route does not work either, because
+          // a checkbox that cannot be ticked must still fail the run.
+          const viaLabel = await this.checkViaLabel(target).catch(() => false);
+          if (!viaLabel) throw err;
+          this.agingNotes.push(`"${String(step.note ?? "checkbox").slice(0, 40)}" would not tick from the input — ticked it by its label, which is how a styled checkbox is driven`);
+        }
         // Same settle for checkbox changes that may trigger form re-renders.
         await this.page.waitForLoadState("networkidle", { timeout: 3000 }).catch(() => null);
         return true;
@@ -3710,6 +3736,38 @@ ${body.slice(0, 4000)}`);
    * module select and an empty "Total System Export (kW) *". See that module for both
    * misses; the smoke reproduces the page.
    */
+  /** TICK A STYLED CHECKBOX THE WAY A PERSON DOES — BY ITS LABEL.
+   *
+   *  A portal that draws its own checkbox keeps the real <input> for form submission and
+   *  hides it under a styled span; the click handler is bound to the label. Playwright can
+   *  resolve and click that input all day and the state never moves, which is exactly what
+   *  "Clicking the checkbox did not change its state" means.
+   *
+   *  Both shapes are tried: the label that POINTS at the input (label[for]) and the label
+   *  that WRAPS it. Only a truly visible one is worth clicking — a concealed label is the
+   *  same dead end as the concealed input. Returns whether the box actually ended up
+   *  checked, read back from the control rather than assumed from the click. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async checkViaLabel(target: any): Promise<boolean> {
+    if (!this.page || !target?.first) return false;
+    const box = target.first();
+    if (await box.isChecked().catch(() => false)) return true;
+    const id = await box.getAttribute("id").catch(() => null);
+    const routes: unknown[] = [];
+    if (id) routes.push(this.page.locator(`label[for="${String(id).replace(/"/g, '\\"')}"]`));
+    if (typeof box.locator === "function") routes.push(box.locator("xpath=ancestor::label[1]"));
+    for (const r of routes) {
+      const loc = r as { count?: () => Promise<number>; first?: () => { click?: (o?: unknown) => Promise<void> } };
+      if (typeof loc.count !== "function" || !(await loc.count().catch(() => 0))) continue;
+      const one = loc.first?.();
+      if (!one?.click) continue;
+      if (!(await this.isTrulyVisible(one as never))) continue;
+      await one.click({ timeout: 6000 }).catch(() => null);
+      if (await box.isChecked().catch(() => false)) return true;
+    }
+    return false;
+  }
+
   /** THE ONLY PLACE THE SWEEP IS CALLED, so the denominator cannot leak. Both callers want
    *  the blanks; only one of them used to record what the portal ASKED for, and the one that
    *  didn't is `pageIsPassThrough` — the path a page takes when its required fields arrived
