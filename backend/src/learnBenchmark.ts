@@ -59,6 +59,18 @@ export interface LearnOutcome {
   message?: string;
   /** Whether the run reached the portal's review screen. */
   reachedReview?: boolean;
+  /**
+   * The run's OWN verifier said the page it read as review does not describe this project.
+   *
+   * Spokane County scored the top rung on 2026-09-08 with pages=1. The page the planner
+   * called review was an existing permit record — number E-B2402727, created 4/10/2024,
+   * approved, issued, closed, at an address 100 miles from the project, under another
+   * homeowner's name. The learn's verification block had already said so: accurate=false,
+   * confidence=high, both site-address lines wrong. The ladder never asked.
+   *
+   * `reachedReview` is the PLANNER'S CLAIM about a page. This is the corroboration.
+   */
+  reviewContradicted?: boolean;
   /** Parsed events.jsonl from the run's debug bundle, if available. */
   events?: Array<{ type?: string; status?: string; ok?: boolean; trace?: string }>;
 }
@@ -151,8 +163,18 @@ function scoreLearnOutcomeInner(outcome: LearnOutcome): LearnScore {
   // the caller could not tell them apart, so an old scorecard still reads sensibly.
   const substantive = Number(outcome.substantiveSteps ?? outcome.steps ?? 0);
 
-  // Top rung first: reaching review is the goal and outranks everything below it.
+  // Top rung first: reaching review is the goal and outranks everything below it — but the
+  // claim has to survive the run's own verifier. A review screen describing somebody else's
+  // closed 2024 permit is not this project's review screen, and counting it inflates the one
+  // number the product is sold on.
   if (outcome.reachedReview || /reached (the )?review/i.test(msg)) {
+    if (outcome.reviewContradicted) {
+      return {
+        rung: "recorded_steps", index: 5,
+        reason: `read a page as the review screen, but the run's own verifier says it does not describe this project (wrong address/owner/system) — the walk is looking at an existing record, not this application. ${substantive} field fill(s) across ${pages} page(s)`,
+        owner: "engine",
+      };
+    }
     return { rung: "reached_review", index: 6, reason: "reached the portal's review screen", owner: "none" };
   }
   if (substantive > 0 && pages > 0) {

@@ -110,6 +110,32 @@ check("recorded_steps: a recipe exists but review was never reached", () => {
   assert.equal(s.index, 5);
 });
 
+check("a review screen the run's own verifier rejects is NOT the top rung", () => {
+  // Spokane County, 2026-09-08: pages=1, top rung, and the page the planner called review
+  // was permit E-B2402727 - created 4/10/2024, approved, issued, closed, at an address a
+  // hundred miles from the project, under a different homeowner. The verification block on
+  // the same run already said accurate=false, confidence=high. The ladder never asked, so
+  // the headline "2 portals reached review" counted a stranger's finished permit.
+  const s = scoreLearnOutcome({
+    status: "draft", pageCount: 1, steps: 9, substantiveSteps: 3,
+    reachedReview: true, reviewContradicted: true,
+  });
+  assert.equal(s.rung, "recorded_steps");
+  assert.equal(s.index, 5);
+  assert.equal(s.owner, "engine");
+  assert.match(s.reason, /does not describe this project/i);
+});
+
+check("...and the demotion needs the verifier to actually disagree", () => {
+  // MUST EXCLUDE. An absent or passing verdict leaves the top rung alone - a gate that
+  // demotes on silence would zero the headline instead of correcting it.
+  for (const v of [undefined, false]) {
+    const s = scoreLearnOutcome({ status: "complete", pageCount: 9, steps: 75, reachedReview: true, reviewContradicted: v });
+    assert.equal(s.rung, "reached_review", `reviewContradicted=${String(v)} must stay at the top rung`);
+    assert.equal(s.index, 6);
+  }
+});
+
 check("reached_review: the top rung, and nobody owes anything", () => {
   // Ameren Illinois: 75 steps to the fee invoice.
   const s = scoreLearnOutcome({ status: "complete", pageCount: 9, steps: 75, reachedReview: true });

@@ -205,6 +205,10 @@ async function main(): Promise<void> {
         // reachedReviewFromEvents. These two readings disagreed and the benchmark reported
         // the difference as a regression.
         reachedReview: reachedReviewFromEvents(events, String(r.message || "")),
+        // …and what the run's own verifier made of that page. accurate===false is the only
+        // reading taken: the verifier is deliberately conservative, and a review it calls
+        // inaccurate is not a review this benchmark should count as the goal reached.
+        reviewContradicted: (r.verification as { accurate?: unknown } | undefined)?.accurate === false,
         // Carried so the scorecard row can hold it — see BenchmarkRow.pageTrace.
         pageTrace: r.pageTrace ?? [],
         events, seconds: Math.round((Date.now() - started) / 1000),
