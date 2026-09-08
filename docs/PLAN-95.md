@@ -232,3 +232,53 @@ Second-order risk, worth one sentence: the module-hop recording (Phase 1, item 7
 | **Sellable: per-portal k-of-N ≥95% on supported portals** | not measured | measurable, starts ~1 (PacifiCorp) | grows with ops | this is the number to sell |
 
 The honest sentence for the next HANDOFF: *engineering does not raise fleet access — 26% of it is refused by design and most of the rest is credentials and URLs. What engineering delivers is a recipe that is trustworthy when it exists, a path that is complete when it is recorded, and a per-portal reliability number that cannot flatter itself.*
+
+---
+
+## KILL TEST RESULT (2026-09-08, run twice) — the Phase 1 assumption is dead
+
+The assumption was: *"once the dismisser stops eating the permit-type menu, the planner will
+see the menu and record a navigate step."*
+
+**The dismisser fix is correct and proven.** `dismissScope.dom.smoke.ts` fails without it
+(clicks "Smoke Detector Permit") and passes with it, while still clearing a real popover. The
+root cause was `:has-text("OK")` matching sm-**OK**-e and L-**OOK**-Up-Record; every text
+dismissal is `:text-is()` now.
+
+**But the run never finishes.** Two attempts, both cut off by the harness backstop with NO
+recipe saved:
+
+| budget | backstop | planner calls | outcome |
+|---|---|---|---|
+| 480s | 660s | 3 (15s, 96s, 59s) | cut off, nothing saved |
+| 1200s | 1380s | 5 (24s, 96s, 85s, 51s, 42s) | cut off, nothing saved |
+
+With the type menu no longer clicked away, the learn now plans a page of **16.6k input tokens**
+producing **7-8k output tokens per call**. One call hit the 8192 ceiling outright:
+
+```
+WARN planPortalFields.vision hit max_tokens - output truncated, JSON likely unparseable
+     ms=95940 inTok=16621 outTok=8192 stop=max_tokens
+```
+
+The learn checks its deadline BETWEEN pages, so a single page costing minutes cannot be cut
+short, and the benchmark backstop fires mid-page.
+
+### What this changes in Phase 1
+
+A permit-type chooser is **not** a page to hand the general planner. Fifty permit types is
+fifty navigation candidates, and asking an LLM to plan them costs 90 seconds and risks a
+truncated, unparseable plan. Phase 1 gains an item, ahead of everything else in it:
+
+**1.0 — Choose the permit type without the planner.** A targeted chooser, modelled on
+`applicationEntry.ts` (curated patterns, refuses on ambiguity, never a guess), that picks the
+type matching the project's discipline: solar/photovoltaic for a NEM or combo track,
+electrical for an electrical permit, structural/building for structural. Record it as an
+ordinary step so replay reproduces it. On no match or several matches, stop and say which
+types were offered — that is a recipe a human can finish, not a wrong permit filed.
+
+This also removes the truncation risk on exactly the pages where it bites, and it is the same
+shape as the fix that already works for application entry.
+
+**Do NOT simply raise the budget.** 1380s was not enough and the next page would cost the
+same again. The page is the problem, not the clock.
