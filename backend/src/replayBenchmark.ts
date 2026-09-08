@@ -58,6 +58,8 @@ export interface ReplayOutcome {
   /** Selectors replay had to re-anchor. Not a failure, but a recipe that is drifting. */
   healedSteps?: unknown[];
   driftWarnings?: string[];
+  /** Self-heals and correct decisions: reported, but not defects in this filing. */
+  agingNotes?: string[];
   /** Steps that had NOTHING TO TYPE — the project carried no value. A data gap, not drift. */
   unresolvedFields?: string[];
   /** Review-screen check (cfdcca5). fieldsSeen 0 means the screen could not be read. */
@@ -202,7 +204,23 @@ export function scoreReplayOutcome(outcome: ReplayOutcome): ReplayScore {
   // verify the arrays by eye before submit" and still score a clean run. A warning we asked
   // for, received, and dropped is worse than one we never collected: the adapter pays to
   // produce it on the assumption that someone acts on it.
+  //
+  // AND THEN IT CARRIED FOUR MEANINGS AT ONCE. Alongside the real warnings it collected the
+  // engine's successful rescues -- "resolved by the portal's own test hook, stabler than the
+  // recorded id" -- and correct decisions like "skipped Energy Storage, this project has no
+  // battery". All of them blocked a clean score, so a portal with one stale recorded id
+  // could never replay clean however correct the filing was, and the reliability number
+  // would have counted the engine's own repairs as failures. The pilot that exposed it
+  // executed 97 of 98 steps, left nothing blank, verified 47 values against 31 required
+  // fields, and scored rung 3 on seven warnings of which five were successes.
+  //
+  // The split is at the push site, by what the message means FOR THE FILING, and blocking is
+  // the default: only driftWarnings stops a run being clean, and anything unclassified is
+  // still a driftWarning. A new warning meaning "this filing is wrong" therefore fails
+  // closed. agingNotes are reported and still drive the re-record signal -- they are a real
+  // fact about the recipe, just not a defect in today's work.
   const drift = outcome.driftWarnings ?? [];
+  const aging = outcome.agingNotes ?? [];
   // A STEP WITH NO VALUE TO TYPE IS NOT A DRIFTED RECIPE.
   //
   // Both used to return false and land in `skipped`, so a run reported eight skipped steps
@@ -249,12 +267,20 @@ export function scoreReplayOutcome(outcome: ReplayOutcome): ReplayScore {
     return { rung: "replayed_with_gaps", index: 3, owner, reason: parts.join("; ") };
   }
 
+  // A CLEAN RUN CAN STILL BE CARRYING A RE-RECORD SIGNAL, and declassifying those notes must
+  // not silently lose it. If the engine reached a control by its own route rather than by the
+  // recorded selector, the filing is fine and the RECIPE is aging -- say so on the row, so
+  // "clean" never quietly becomes "nothing to do here".
+  const agingTail = aging.length
+    ? ` — note: ${aging.length} step(s) needed a route other than the recorded one (${aging.slice(0, 2).join("; ").slice(0, 120)}); the recipe is worth re-recording`
+    : "";
+
   // Clean, but unverified. An unreadable review screen cannot promote a run: "we could not
   // check" must never score the same as "we checked and it was right".
   if (!fieldsSeen) {
     return {
       rung: "replayed_clean", index: 4, owner: "engine",
-      reason: `every recorded step ran and nothing was left blank, but the review screen could not be read — the filing is UNVERIFIED`,
+      reason: `every recorded step ran and nothing was left blank, but the review screen could not be read — the filing is UNVERIFIED${agingTail}`,
     };
   }
   // READING A REVIEW SCREEN IS NOT CHECKING IT.
@@ -268,7 +294,7 @@ export function scoreReplayOutcome(outcome: ReplayOutcome): ReplayScore {
   if (confirmed < MIN_CONFIRMED_FIELDS && !mismatches.length) {
     return {
       rung: "replayed_clean", index: 4, owner: "engine",
-      reason: `every recorded step ran and nothing was left blank, and the review screen was read (${fieldsSeen} field(s)) — but only ${confirmed} project value(s) could be confirmed on it, which is too few to call the filing verified`,
+      reason: `every recorded step ran and nothing was left blank, and the review screen was read (${fieldsSeen} field(s)) — but only ${confirmed} project value(s) could be confirmed on it, which is too few to call the filing verified${agingTail}`,
     };
   }
   if (mismatches.length) {
@@ -281,7 +307,7 @@ export function scoreReplayOutcome(outcome: ReplayOutcome): ReplayScore {
 
   return {
     rung: "verified_accurate", index: 5, owner: "none",
-    reason: `replayed ${executed} step(s) clean; the review screen shows ${fieldsSeen} field(s) and ${confirmed} project value(s) were confirmed present with no mismatch`,
+    reason: `replayed ${executed} step(s) clean; the review screen shows ${fieldsSeen} field(s) and ${confirmed} project value(s) were confirmed present with no mismatch${agingTail}`,
   };
 }
 
@@ -298,7 +324,7 @@ export interface ReplayRow {
     executed?: number; recorded?: number; reviewFieldsSeen?: number; reviewFieldsConfirmed?: number;
     healed?: number; blanks?: number;
     /** WHICH fields, not just how many — a count sends someone back to the portal to look. */
-    blankNames?: string[]; driftWarnings?: string[]; skippedNames?: string[]; unresolvedFields?: string[];
+    blankNames?: string[]; driftWarnings?: string[]; agingNotes?: string[]; skippedNames?: string[]; unresolvedFields?: string[];
     /** Values read back from the portal after writing them, and those that would not hold. */
     fieldsVerified?: number; fieldsUnverified?: string[];
     /** THE DENOMINATOR. Every control the portal itself marked required across the run.

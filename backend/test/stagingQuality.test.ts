@@ -159,6 +159,29 @@ async function main(): Promise<void> {
       blind.clean === legacy.clean + 1, `clean=${blind.clean} was ${legacy.clean}`);
   }
 
+  // ---------------------------------------------------------------------------
+  // THE SAME SPLIT AS THE BENCHMARK SCORER. A lab number and a production number that
+  // disagree about what "clean" means are two numbers nobody can put side by side.
+  // ---------------------------------------------------------------------------
+  {
+    const before = getStagingQuality(db, window);
+    addRun({ executed: 40, requiredStillEmpty: [], skipped: [], driftWarnings: [], requiredFieldsSeen: ["Meter"],
+             agingNotes: ['"Model" resolved by the portal own test hook — stabler than the recorded id'] });
+    const withAging = getStagingQuality(db, window);
+    check("a self-heal note does not stop a production run being clean either",
+      withAging.clean === before.clean + 1, `clean=${withAging.clean} was ${before.clean}`);
+    check("...but it still counts the portal as drifting, so the re-record signal survives",
+      (withAging.driftingPortals || []).length >= (before.driftingPortals || []).length,
+      JSON.stringify(withAging.driftingPortals));
+
+    addRun({ executed: 40, requiredStillEmpty: [], skipped: [], requiredFieldsSeen: ["Meter"],
+             driftWarnings: ["something nobody has triaged yet"] });
+    const withUnknown = getStagingQuality(db, window);
+    check("THE FAIL-SAFE: an unclassified warning still blocks clean in production too",
+      withUnknown.clean === withAging.clean,
+      `clean rose to ${withUnknown.clean} from ${withAging.clean} on an untriaged warning — fails OPEN`);
+  }
+
   const empty = getStagingQuality(db, { start: "2025-01-01", end: "2025-12-31", orgId: null });
   check("a period with no runs reports zeroes rather than dividing by zero",
     empty.runs === 0 && empty.cleanRate === 0 && empty.avgBlanksPerRun === 0, JSON.stringify(empty));

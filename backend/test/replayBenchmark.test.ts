@@ -281,6 +281,52 @@ check("...and the harness death is excluded from the mean too", () => {
 });
 
 // ---------------------------------------------------------------------------
+// THE SPLIT, AND THE DIRECTION IT FAILS IN.
+//
+// driftWarnings was one list carrying four meanings -- a real defect, a human-must-look, a
+// correct decision, and a successful self-heal -- and all four blocked a clean score. A
+// portal with one stale recorded id could therefore never replay clean however correct the
+// filing was, and the reliability number would have scored the engine's own repairs as
+// failures.
+//
+// What keeps that split honest is the direction it fails in. Blocking is the DEFAULT: a
+// message is benign only once someone has established it is, so a warning nobody has
+// classified still stops the run being called clean. This is the test that says so, and it
+// is also the answer to "did the scorer get tuned to flatter the number" -- it could not
+// have been, because anything new fails closed.
+// ---------------------------------------------------------------------------
+const CLEAN = { ok: true, executed: 98, recorded: 98, reviewFieldsSeen: 22, reviewFieldsConfirmed: 4, reviewMismatches: [] };
+
+check("THE FAIL-SAFE: an UNCLASSIFIED warning still blocks a clean score", () => {
+  const s = scoreReplayOutcome({ ...CLEAN, driftWarnings: ["something nobody has triaged yet"] });
+  assert.equal(s.rung, "replayed_with_gaps",
+    "a warning no one has classified was treated as benign — the split fails OPEN");
+});
+
+check("a self-heal note does NOT block, because the filing is fine", () => {
+  const s = scoreReplayOutcome({
+    ...CLEAN,
+    agingNotes: [`"Model" resolved by the portal's own test hook "inverter-model-select" — stabler than the recorded id`],
+  });
+  assert.equal(s.rung, "verified_accurate", s.reason);
+});
+
+check("...but the re-record signal survives declassification, on the row itself", () => {
+  const s = scoreReplayOutcome({ ...CLEAN, agingNotes: [`"Model" resolved by SECTION "Inverter Clone System"`] });
+  assert.match(s.reason, /re-recording|another route|route other than/i,
+    `a clean row said nothing about the aging recipe: ${s.reason}`);
+});
+
+check("one blocking warning is enough, even beside a dozen benign ones", () => {
+  const s = scoreReplayOutcome({
+    ...CLEAN,
+    agingNotes: Array.from({ length: 12 }, (_, i) => `resolved by test hook ${i}`),
+    driftWarnings: ["a dropdown or date picker stayed open after two Escapes — verify it by eye"],
+  });
+  assert.equal(s.rung, "replayed_with_gaps", s.reason);
+});
+
+// ---------------------------------------------------------------------------
 // THE HOP THAT SILENTLY DROPS THINGS. The adapter puts its run report in steps[].data, not
 // on the top-level result, and every consumer -- benchmark and KPI both -- reads it back
 // through here. A key that does not survive this trip does not error: it arrives as

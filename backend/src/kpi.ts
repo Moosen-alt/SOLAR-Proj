@@ -362,6 +362,10 @@ export function getStagingQuality(
       .filter((s) => !/final submit|NOT clicked/i.test(String(s)));   // declining submit is the rule, not a fault
     const failed = skipped.filter((s) => !unresolved.has(String(s)));
     const drift = (rep.driftWarnings as string[] | undefined) ?? [];
+    // Self-heals and correct decisions. Same split as the benchmark scorer, because a lab
+    // number and a production number that disagree about what "clean" means are two numbers
+    // nobody can use together.
+    const aging = (rep.agingNotes as string[] | undefined) ?? [];
     const healed = ((rep.healedSteps as unknown[] | undefined) ?? []).length;
     const fieldsSeen = Number(rep.reviewFieldsSeen ?? 0);
     // Reading the page is not checking it — the benchmark's own bar, so the two agree.
@@ -373,7 +377,10 @@ export function getStagingQuality(
       const key = String(b).replace(/ — the portal flagged this field$/, "").slice(0, 60);
       if (key) gapCounts.set(key, (gapCounts.get(key) ?? 0) + 1);
     }
-    if (drift.length || healed) {
+    // A recipe reaching its controls by another route IS drift worth chasing, even though it
+    // is not a defect in the filing. Declassifying it for the clean rate must not delete it
+    // from the re-record signal, which is the whole reason the note exists.
+    if (drift.length || aging.length || healed) {
       const portal = String((rep.portalName as string) || "unknown").slice(0, 40);
       driftCounts.set(portal, (driftCounts.get(portal) ?? 0) + 1);
     }

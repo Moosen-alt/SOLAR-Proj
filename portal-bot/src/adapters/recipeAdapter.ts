@@ -179,6 +179,24 @@ export class RecipeAdapter extends BasePortalAdapter {
    *  in every result payload so a run that squeaked through via heals still tells
    *  the operator the portal likely changed. */
   private driftWarnings: string[] = [];
+  /** THE ENGINE GOT THERE BY ANOTHER ROUTE AND THE FILING IS FINE.
+   *
+   *  driftWarnings was carrying four different meanings in one list -- a real defect, a
+   *  human-must-look, a correct decision ("skipped Energy Storage, this project has no
+   *  battery"), and a successful self-heal -- and every one of them blocked a clean score.
+   *  A portal where any recorded id had gone stale could therefore never replay clean, no
+   *  matter how correct the filing was, and the reliability number would have measured the
+   *  engine's own rescues as failures.
+   *
+   *  The test is what the message means FOR THIS FILING, not how alarming it sounds. If a
+   *  person would still have to open the portal and check something, it stays in
+   *  driftWarnings. If the value landed and only the RECIPE is aging, it belongs here --
+   *  still reported, still driving the re-record signal, but not a defect in today's work.
+   *
+   *  Blocking is the DEFAULT: a message is only benign once someone has established that it
+   *  is. Anything unclassified stays in driftWarnings and stops the run being called clean,
+   *  so a new warning that means "this filing is wrong" fails closed. */
+  private agingNotes: string[] = [];
   // Set true ONLY when the automation actually clicked an explicit isFinalSubmit step
   // in autoSubmit mode and the portal accepted it (no challenge / no error).
   finalSubmitClicked = false;
@@ -417,7 +435,7 @@ ${body.slice(0, 4000)}`);
     // PAGE-DRIFT PRECHECK before the first segment (see precheckPageDrift).
     {
       const driftFail = await this.precheckPageDrift(0);
-      if (driftFail) return fail(driftFail, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings });
+      if (driftFail) return fail(driftFail, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, agingNotes: this.agingNotes });
     }
     // PER-STEP TRACE. A replay that "executed 60 and skipped 5" says nothing about WHERE it
     // was when each of those happened, and a skipped step is silent by design — so a run
@@ -707,7 +725,7 @@ ${body.slice(0, 4000)}`);
           const isAmbiguous = err instanceof Error && /strict mode violation/i.test(err.message);
           if ((!isTimeout && !isAmbiguous) || attempt >= RETRY_BACKOFF_MS.length) break;
           if (isAmbiguous) {
-            this.driftWarnings.push(
+            this.agingNotes.push(
               `"${String(step.note ?? step.action).slice(0, 40)}" matched several controls by the time it was acted on — the page was still rendering; retried against the settled page`,
             );
           }
@@ -891,7 +909,7 @@ ${body.slice(0, 4000)}`);
         // the operator logged in concurrently and PowerClerk — one session per account —
         // killed the bot's. Name the real event when the page itself announces it.
         const ended = await this.sessionEndedBanner();
-        return fail(`${ended ? `THE PORTAL ENDED THIS SESSION mid-run ("${ended}") — commonly a concurrent login with the same account (some portals allow exactly one session per user). The step failure below is the symptom, not the cause. ` : ""}Recipe step failed (${step.action}${step.note ? ` — ${step.note}` : ""}): ${lastErr instanceof Error ? lastErr.message : String(lastErr)}${context}`, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, failedStepIndex: stepIdx, trace, slowSteps, requiredStillEmpty: this.requiredStillEmpty, unresolvedFields: this.unresolvedFields, fieldsVerified: this.fieldsVerified, fieldsUnverified: this.fieldsUnverified, requiredFieldsSeen: this.requiredFieldsSeen, pageShotDir: this.pageShotDir, outcomeShotPath: this.outcomeShotPath });
+        return fail(`${ended ? `THE PORTAL ENDED THIS SESSION mid-run ("${ended}") — commonly a concurrent login with the same account (some portals allow exactly one session per user). The step failure below is the symptom, not the cause. ` : ""}Recipe step failed (${step.action}${step.note ? ` — ${step.note}` : ""}): ${lastErr instanceof Error ? lastErr.message : String(lastErr)}${context}`, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, agingNotes: this.agingNotes, failedStepIndex: stepIdx, trace, slowSteps, requiredStillEmpty: this.requiredStillEmpty, unresolvedFields: this.unresolvedFields, fieldsVerified: this.fieldsVerified, fieldsUnverified: this.fieldsUnverified, requiredFieldsSeen: this.requiredFieldsSeen, pageShotDir: this.pageShotDir, outcomeShotPath: this.outcomeShotPath });
       }
       // Remember whether this step entered data, so the next advancing click waits for the
       // portal's autosave to commit (prevents blank-draft saves on PowerClerk).
@@ -940,7 +958,7 @@ ${body.slice(0, 4000)}`);
           // is the whole question. Capture it like any other failure.
           const driftContext = await this.captureFailureContext(step, stepIdx);
           closePrevStepTiming();
-          return fail(`${driftFail}${driftContext}`, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, failedStepIndex: stepIdx, trace, slowSteps, requiredStillEmpty: this.requiredStillEmpty, unresolvedFields: this.unresolvedFields, fieldsVerified: this.fieldsVerified, fieldsUnverified: this.fieldsUnverified, requiredFieldsSeen: this.requiredFieldsSeen, pageShotDir: this.pageShotDir, outcomeShotPath: this.outcomeShotPath });
+          return fail(`${driftFail}${driftContext}`, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, agingNotes: this.agingNotes, failedStepIndex: stepIdx, trace, slowSteps, requiredStillEmpty: this.requiredStillEmpty, unresolvedFields: this.unresolvedFields, fieldsVerified: this.fieldsVerified, fieldsUnverified: this.fieldsUnverified, requiredFieldsSeen: this.requiredFieldsSeen, pageShotDir: this.pageShotDir, outcomeShotPath: this.outcomeShotPath });
         }
       }
 
@@ -993,7 +1011,7 @@ ${body.slice(0, 4000)}`);
         recordLink: capture.data?.recordLink || "",
         // What the LLM gap-fill added (and what it left blank for lack of real data) — same key
         // the hand-coded adapters surface, so the operator/UI sees a uniform report.
-        gapFill: this.gapFillReport, healedSteps: this.healedSteps, slowSteps, requiredStillEmpty: this.requiredStillEmpty, unresolvedFields: this.unresolvedFields, fieldsVerified: this.fieldsVerified, fieldsUnverified: this.fieldsUnverified, requiredFieldsSeen: this.requiredFieldsSeen, pageShotDir: this.pageShotDir, outcomeShotPath: this.outcomeShotPath,
+        gapFill: this.gapFillReport, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, agingNotes: this.agingNotes, slowSteps, requiredStillEmpty: this.requiredStillEmpty, unresolvedFields: this.unresolvedFields, fieldsVerified: this.fieldsVerified, fieldsUnverified: this.fieldsUnverified, requiredFieldsSeen: this.requiredFieldsSeen, pageShotDir: this.pageShotDir, outcomeShotPath: this.outcomeShotPath,
       });
     }
     closePrevStepTiming();
@@ -1019,7 +1037,7 @@ ${body.slice(0, 4000)}`);
       `Replayed ${executed} recorded step(s); stopped at review.${review.summary}`,
       {
         executed, skipped, finalSubmitClicked: false, gapFill: this.gapFillReport,
-        healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, slowSteps,
+        healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, agingNotes: this.agingNotes, slowSteps,
         requiredStillEmpty: this.requiredStillEmpty, unresolvedFields: this.unresolvedFields, fieldsVerified: this.fieldsVerified, fieldsUnverified: this.fieldsUnverified, requiredFieldsSeen: this.requiredFieldsSeen, pageShotDir: this.pageShotDir,
         outcomeShotPath: this.outcomeShotPath,
         reviewFieldsSeen: review.fieldsSeen, reviewFieldsConfirmed: review.confirmed, reviewMismatches: review.mismatches,
@@ -1851,7 +1869,7 @@ ${body.slice(0, 4000)}`);
       isElectrical: wantsElectrical,
     });
     // How many the grid offered, always — "which row did it pick" is unanswerable otherwise.
-    this.driftWarnings.push(`address grid: ${rows.length} result(s) offered for ${String(this.fieldValues.city ?? "(no city)")} ${String(this.fieldValues.zip ?? "")}`.slice(0, 140));
+    this.agingNotes.push(`address grid: ${rows.length} result(s) offered for ${String(this.fieldValues.city ?? "(no city)")} ${String(this.fieldValues.zip ?? "")}`.slice(0, 140));
     if (ranked.length === 0) {
       this.driftWarnings.push(`address grid: none of ${rows.length} result(s) are in ${this.fieldValues.city ?? "(no city)"} ${this.fieldValues.zip ?? ""} — refusing to open an application against another property`);
       return false;
@@ -1870,7 +1888,7 @@ ${body.slice(0, 4000)}`);
       });
     if (!okClick) return false;
     await smartWait(this.page, 2500);
-    this.driftWarnings.push(`address version re-ranked live: ${(ranked[0].text.match(/(CITY|COUNTY|DEQ)\s+APPLICATIONS/i) || ["this property"])[0]}${rejected.length ? `, ${rejected.length} other propert${rejected.length === 1 ? "y" : "ies"} rejected` : ""}`);
+    this.agingNotes.push(`address version re-ranked live: ${(ranked[0].text.match(/(CITY|COUNTY|DEQ)\s+APPLICATIONS/i) || ["this property"])[0]}${rejected.length ? `, ${rejected.length} other propert${rejected.length === 1 ? "y" : "ies"} rejected` : ""}`);
     return true;
   }
 
@@ -1939,7 +1957,7 @@ ${body.slice(0, 4000)}`);
       );
     }
     if (this.skipForNoBattery(step)) {
-      this.driftWarnings.push(`skipped "${String(step.note ?? step.field ?? "battery step").slice(0, 48)}" — this project has no battery`);
+      this.agingNotes.push(`skipped "${String(step.note ?? step.field ?? "battery step").slice(0, 48)}" — this project has no battery`);
       return true; // not a failure: the section does not apply to this filing
     }
     // A POPUP LEFT OPEN BY THE LAST STEP MUST NOT SHADOW THIS ONE.
@@ -2489,7 +2507,7 @@ ${body.slice(0, 4000)}`);
             const hit = slots.find((sl) => norm(sl.label) === want)
               ?? slots.find((sl) => want.length > 6 && (norm(sl.label).includes(want) || want.includes(norm(sl.label))));
             if (hit && `[data-al-upl="${hit.key}"]` !== step.selector.css) {
-              this.driftWarnings.push(`upload "${wanted.slice(0, 48)}" moved from ${step.selector.css} to slot ${hit.key} — re-anchored by label`);
+              this.agingNotes.push(`upload "${wanted.slice(0, 48)}" moved from ${step.selector.css} to slot ${hit.key} — re-anchored by label`);
               scoped = await this.locator({ css: `[data-al-upl="${hit.key}"]` });
             }
           }
@@ -2903,7 +2921,7 @@ ${body.slice(0, 4000)}`);
         || best.getAttribute("data-test-role") || "hook";
     }, tokens).catch(() => "") as string;
     if (!found) return null;
-    this.driftWarnings.push(
+    this.agingNotes.push(
       `"${String(step.note ?? field).slice(0, 34)}" resolved by the portal's own test hook ${JSON.stringify(found.slice(0, 40))} — stabler than the recorded id`,
     );
     return this.page.locator("[data-rc-hook-hit='1']").first();
@@ -2990,7 +3008,7 @@ ${body.slice(0, 4000)}`);
       return sectionOf(best);
     }, { want, label }).catch(() => "") as string;
     if (!found) return null;
-    this.driftWarnings.push(
+    this.agingNotes.push(
       `"${String(step.note ?? step.field ?? label).slice(0, 36)}" resolved by SECTION ${JSON.stringify(want.slice(0, 34))} rather than by its recorded selector`,
     );
     return this.page.locator("[data-rc-section-hit='1']").first();
@@ -3194,7 +3212,7 @@ ${body.slice(0, 4000)}`);
     }, hint).catch(() => "none") as string;
 
     if (picked === "ok") {
-      this.driftWarnings.push(`"${want.slice(0, 30)}" is a closed menu — opened it and chose the entry matching ${JSON.stringify(hint.slice(0, 30))}`);
+      this.agingNotes.push(`"${want.slice(0, 30)}" is a closed menu — opened it and chose the entry matching ${JSON.stringify(hint.slice(0, 30))}`);
       return this.page.locator("[data-rc-name-hit='1']").first();
     }
     if (picked.startsWith("ambiguous")) {
@@ -3309,7 +3327,7 @@ ${body.slice(0, 4000)}`);
           const top = Math.max(0, ...scored.map((x) => x.score));
           const winners = scored.filter((x) => x.score === top);
           if (top > 0 && winners.length === 1 && winners[0].i > 0) {
-            this.driftWarnings.push(
+            this.agingNotes.push(
               `"${hint.slice(0, 40)}" matched ${n} controls — took #${winners[0].i}, the one this portal names for it, not the first`,
             );
             return loc.nth(winners[0].i);
@@ -3891,7 +3909,7 @@ ${body.slice(0, 4000)}`);
         // Nothing enabled and visible carries this name — it may be behind a closed menu.
         ?? await this.revealMenuAndPick(want, `${this.recipe.discipline ?? ""} ${this.recipe.ahj ?? ""} building electrical permit`);
       if (rescued) {
-        this.driftWarnings.push(
+        this.agingNotes.push(
           `"${want.slice(0, 40)}" matched no usable control by selector — found an enabled one by name instead (icon-font ligatures pollute accessible names)`,
         );
         return rescued;
