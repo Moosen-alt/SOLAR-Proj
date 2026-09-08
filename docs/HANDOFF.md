@@ -217,7 +217,25 @@ unmapped jurisdictions keep the default and report the same dead end honestly. I
 to the operator as something only they could supply — that was wrong. What was needed was an
 address that EXISTS in the parcel database, not a customer's.
 
-**Still failing at step 4** on a strict-mode violation: `input[id*='StreetNo4Search']` matches
+**COOS BAY IS NOW AT 7 of 49** (from 1 at the start of the session), and the next blocker is
+characterised. Two fixes got it past step 4:
+
+- **A strict-mode violation is a timing artefact, not a dead recipe.** The street number
+  resolved to ONE element when the step narrowed it and FOUR by the time the fill ran —
+  Accela renders that address panel asynchronously. Every narrowing branch reported nothing
+  because none of them was wrong. Ambiguity is now retryable (settling, not reloading).
+- **Four matches is proof the control is there.** The retry then died on the absence guard,
+  which stops retrying when the step's label is not on the page — sound in general, exactly
+  wrong straight after a violation that can only occur when several of the thing matched.
+
+**Next:** step 8 waits for "Continue Application". With a valid in-jurisdiction parcel the
+`divContinueButton` container **no longer carries `display:none`** — real progress — but it is
+still empty, and "Available Service Group" beside it is empty too. Accela populates both once
+an address search RESULT is selected, so the flow likely needs the result row picked before
+Continue exists. The page is saved at `data/replay-failures/step008-work-location-continue.html`;
+answer it there rather than with another run.
+
+**Superseded — was failing at step 4** on a strict-mode violation: `input[id*='StreetNo4Search']` matches
 four elements (the box, its hidden watermark state, and a range's "To"), and `narrowToOne`
 should have reduced that. It reported nothing, and the one branch through that function which
 returns silently is the "nothing was visible and enabled" fallback — now instrumented, along
