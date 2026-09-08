@@ -157,38 +157,30 @@ Still open, in order:
 
 ## Open issues / next work (priority order)
 
-**READ THIS FIRST — A REGRESSION I INTRODUCED TODAY AND DID NOT FIND (2026-09-07).**
+**FIXED — the regression, and the fourth place two visibility notions disagreed (2026-09-07).**
+Ameren is back to **73/75**. `usable` decides whether `check()` gets `force`, and it asked
+PLAYWRIGHT's `isVisible`, which counts an `opacity:0` or 1x1 control as visible. A rounded-pill
+switch's real `<input>` is exactly that: `usable` came back true, `force` was switched off, and
+`check()` issued a real click that the styled widget swallows — "Clicking the checkbox did not
+change its state". Everything else in the file had been moved onto `isTrulyVisible` earlier the
+same day for this exact divergence; this one call was missed.
 
-Ameren went from **73/75 to 2/75**, and I failed twice to restore it. Do not repeat those two
-guesses; bisect instead.
+Three wrong guesses came first, all aimed at RESOLUTION, while the instrument said plainly that
+the correct control was resolved and the click did not toggle. The rule written at the top of
+this file hours earlier is the one I failed to apply to my own regression.
 
-**The honest fleet number is 263/352 = 74.7%**, from a SINGLE sweep on ONE build. Earlier in
+**THE HEADLINE NUMBER STILL STANDS AS MEASURED, NOT ASSEMBLED.**
+
+**The last full frozen-build sweep measured 263/352 = 74.7%**, from a SINGLE sweep on ONE build. Earlier in
 this file you will find 94.9% — that figure was assembled from each recipe's BEST run across
 different builds and **was never a measurement**. The operator's framing is the right one: "if
 I shoot it at a portal, 95% of the time it has no issue with that portal" is a RELIABILITY
 rate — same build, same portal, many attempts — and nothing here measures it yet. Any future
 claim must come from one frozen build, and ideally from repeated runs.
 
-**What the instrument says about Ameren:**
-```
-locator resolved to <input required type="checkbox" role="checkbox"
-                     id="461GUH42AKWPInput" class="form-check-input">
-locator.check: Clicking the checkbox did not change its state
-```
-The CORRECT control is resolved. The click simply does not toggle it. So this is **not** a
-resolution problem, and both of my attempts (excluding check/uncheck from the name-scoring
-hint, then from the out-of-reach rescues) were aimed at the wrong layer. They are principled
-in themselves and are kept, but they are not this bug.
-
-**Bisect it.** Ameren was 73/75 at `31ca1f5` ("Narrowing a locator broke the one branch built
-to handle hidden inputs") and 2/75 by the frozen sweep. Every candidate in between touches how
-a control is chosen or driven: `isTrulyVisible`, the busy-control wait, the preferVisible name
-hint, the re-assert pass, the section/test-hook rescues. One live Ameren run per commit answers
-it; guessing has now cost two.
-
-Also note the drift line on that run: `click "application entry: New Interconnection Appli"
-left the page unchanged` — the step BEFORE the checkbox did not advance. Per this file's own
-rule, suspect the step before the one that failed.
+— taken BEFORE the Ameren fix above, so it understates the current state. **Re-run a full sweep
+on one build before quoting any fleet figure.** The 94.9% that appears later in this file was
+assembled from each recipe's best run across different builds and was never a measurement.
 
 
 **"Replayed clean" was not evidence of anything (2026-09-07) — the sweep that finds blanks was blind.**
