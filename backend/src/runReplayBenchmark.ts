@@ -159,13 +159,21 @@ function addressForRecipe(profileKey: string): { street: string; city: string; s
 async function main(): Promise<void> {
   const db = await openDatabase();
   const dryRun = process.argv.includes("--dry-run");
+  // Declared with the other argv reads, ABOVE the candidate filter that uses it.
+  const includeLearned = process.argv.includes("--include-learned");
   const keyFilter = (arg("key") || "").toLowerCase();
   const limit = Number(arg("limit") || 0);
 
   // Only COMPLETE recipes carrying real fills. A `needs_rerecord` row or one holding a goto
   // and two clicks tells us nothing about replay fidelity — it was never a recipe.
   const recipes = db.query<Record<string, unknown>>(
-    "SELECT * FROM portal_recipes WHERE status = 'complete' ORDER BY updated_at DESC", [],
+    // A recipe the learn has JUST recorded is status "recording" until something promotes it,
+    // and that is precisely the thing --include-learned exists to re-run: the loop is learn,
+    // replay, verify, and demanding "complete" first means the replay can never be the step
+    // that establishes it. Default behaviour is unchanged.
+    includeLearned
+      ? "SELECT * FROM portal_recipes WHERE status IN ('complete', 'recording') ORDER BY updated_at DESC"
+      : "SELECT * FROM portal_recipes WHERE status = 'complete' ORDER BY updated_at DESC", [],
   );
   const creds = listPortalCredentials(db, CLIENT);
 
@@ -187,7 +195,14 @@ async function main(): Promise<void> {
       return { row: r, key, label, steps: steps.length, fills, url, host, cred };
     })
     .filter((c) => c.fills >= 5)                       // a recipe that fills nothing is not one
-    .filter((c) => !/benchmark/i.test(c.key))          // never the throwaway rows
+    // THE TWO HALVES WERE NEVER CONNECTED. The learn benchmark saves what it records under a
+    // `benchmark` profile key, and this line filtered exactly those out — so a recipe the
+    // learn produced could never be replayed by the harness that measures replay, and
+    // "learn, re-run, verify" had no single command that did all three. The exclusion is
+    // right by default (those rows are throwaways and must not pollute a production sweep)
+    // and wrong as an absolute: --include-learned is how you close the loop on a portal you
+    // have just learned.
+    .filter((c) => includeLearned || !/benchmark/i.test(c.key))
     .filter((c) => !keyFilter || c.key.toLowerCase().includes(keyFilter));
 
   console.log(`complete recipes with >=5 fills: ${candidates.length}\n`);

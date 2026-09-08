@@ -30,6 +30,13 @@ const OUT_DIR = path.resolve(process.cwd(), "data", "learn-benchmark");
 const BACKSTOP_SLACK_MS = 180_000;
 const CLIENT = process.env.BENCHMARK_CLIENT_ID || "tml-international-llc";
 
+// LEARN, RE-RUN, VERIFY — IN ONE COMMAND. --self-test replays each freshly learned recipe in
+// a fresh session and refuses to call it trusted unless it reproduces. It costs a second pass
+// over the portal and leaves a second draft, which is why it is opt-in; it is also the only
+// thing that answers "can the bot actually re-run what it just learned", and the first time
+// it was run by hand the answer was no.
+if (process.argv.includes("--self-test")) process.env.PORTAL_REPLAY_SELFTEST = "1";
+
 const arg = (name: string): string | undefined => {
   const i = process.argv.indexOf(`--${name}`);
   return i >= 0 ? process.argv[i + 1] : undefined;

@@ -1076,7 +1076,18 @@ async function autoLearnPortalInner(
   // it deliberately when validating a freshly-learned recipe. Best-effort: a self-test error or a
   // non-reproduction downgrades the recipe to a draft rather than hard-failing the learn.
   const selfTestEnabled = process.env.PORTAL_REPLAY_SELFTEST === "1" || process.env.PORTAL_REPLAY_SELFTEST === "true";
-  if (trusted && selfTestEnabled) {
+  // RUN IT EVEN WHEN THE RECIPE WAS NOT GOING TO BE TRUSTED.
+  //
+  // Gating this on `trusted` meant the only recipes ever replay-tested were the ones already
+  // believed good, and the ones most in need of the test — everything recorded but unverified
+  // — skipped it silently. Live: permiteyes.us learned a nine-fill application, was saved as
+  // "recording", and replayed two steps later into a permit-type menu it had no step for. The
+  // recipe never encoded the type choice, and nothing in the learn noticed, because the one
+  // mechanism that would have noticed only runs for recipes it has already decided are fine.
+  //
+  // A recipe that fails the self-test cannot be promoted; a recipe that passes has earned
+  // something. Both are worth knowing, and only one of them was being measured.
+  if (selfTestEnabled) {
     input.onProgress?.({ phase: "verify", pageCount: learn.pageCount, maxPages: learn.pageCount, message: "Replay self-test: re-running the learned recipe in a fresh session…" });
     try {
       const { stageWithRecipe } = await import("../../portal-bot/src/index");
@@ -1088,6 +1099,7 @@ async function autoLearnPortalInner(
       const replay = await stageWithRecipe(recipeForReplay, project, replayFieldValues, docsByType, [], { headless: input.headless }) as Record<string, unknown>;
       const reproduced = replay.ok === true && !replay.pauseReason;
       if (!reproduced) {
+        // Already untrusted stays untrusted; this only ever removes trust, never grants it.
         trusted = false;
         verification.issues.push(`Replay self-test did NOT reproduce the review in a fresh session (${String(replay.message || replay.pauseReason || "recipe did not reach review on replay")}). Kept as a draft for human verification.`);
         addAuditLog(db, projectId, "system", "auto-learn", "portal.replay_selftest_failed", { scope: scopeType });
