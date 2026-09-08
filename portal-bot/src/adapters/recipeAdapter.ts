@@ -2156,11 +2156,28 @@ ${body.slice(0, 4000)}`);
     if (!isToggle && await this.looksOutOfReach(scoped)) {
       // THE PORTAL'S OWN NAME FOR THE CONTROL FIRST. A test hook is stable across renders and
       // says which side it belongs to; a recorded id is neither.
+      // A RESCUE THAT HANDS BACK AN UNUSABLE CONTROL IS NOT A RESCUE.
+      //
+      // PGE's inverter Model failed on every attempt of the sweep, and the trail said the
+      // hook had RESOLVED it — three aging notes saying so in the same run. Both were true:
+      // PowerClerk puts data-test-role on the concealed native input, so the hook found the
+      // control it names and handed back the same unreachable element the recorded id had.
+      // Success was reported, the select then had "no list could be tied to this control",
+      // and the recipe lost its Model.
+      //
+      // So each route has to clear the bar the rescue exists to clear. Otherwise the next
+      // one is tried, and when none of them produce something a person could act on, the
+      // step keeps its original resolution and SAYS the rescue came up empty.
+      const usable = async (loc: unknown): Promise<boolean> =>
+        !!loc && await this.isTrulyVisible(loc as never).catch(() => false);
       const byHook = await this.resolveByTestHook(step);
-      if (byHook) scoped = byHook as never;
+      if (await usable(byHook)) scoped = byHook as never;
       else if (step.fingerprint?.section) {
         const bySection = await this.resolveBySection(step);
-        if (bySection) scoped = bySection as never;
+        if (await usable(bySection)) scoped = bySection as never;
+        else if (bySection || byHook) {
+          this.resolveTrail.push(`  ...rescue: ${byHook ? "the test hook" : "the section"} resolved a control that is STILL concealed — the portal puts its hook on the hidden native input; kept the original`);
+        }
       } else {
         // SAY WHEN THE RESCUE HAD NOTHING TO WORK WITH. PGE's inverter Model failed here on
         // all three attempts of the sweep, and the trail said only that level 0 was rejected
@@ -4625,6 +4642,17 @@ ${body.slice(0, 4000)}`);
       if (!this.page || typeof this.page.$$eval !== "function") return null;
       const expected = this.expectedLabelsForSegment(fromIndex);
       if (expected.length < 3) return null;
+      // A PAYMENT SEGMENT IS NOT A DRIFTED PAGE. This precheck runs at the START of a
+      // segment, before the loop reaches any of its steps — so on Coos Bay electrical it
+      // fired on the section whose recorded fields are "CVV:", a month list and a year list,
+      // and reported "0 of 5 recorded fields ... the replay is not on the page the recipe
+      // expects". The replay was exactly where it should be: at the fee page, in front of a
+      // card form it must never fill. The payment boundary was one step away and never got
+      // its turn, so the run scored steps_failed against the recipe instead of stopping
+      // where the first safety rule says to stop.
+      if (expected.filter((e) => PAYMENT_FIELD.test(e)).length >= Math.max(1, Math.ceil(expected.length / 3))) {
+        return null;
+      }
 
       // AN UNPAINTED PAGE IS NOT DRIFT. This read the DOM once, so a portal that renders
       // its fields asynchronously looked identical to being on the wrong page: measured

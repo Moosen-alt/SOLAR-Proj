@@ -84,6 +84,16 @@ check("A DOLLAR AMOUNT IS NOT A CARD: the job value is still filled",
 check("A LICENCE EXPIRY IS NOT A CARD EXPIRY: it is still filled",
   licexp === "2027-04-01", `licence expiration came out ${JSON.stringify(licexp)} — the boundary fired too early`);
 
+// THE ORDERING THE LIVE RUN EXPOSED. The page-drift precheck runs at the START of a segment,
+// before the loop reaches any of its steps — so on Coos Bay electrical it fired on the section
+// whose recorded fields are "CVV:", a month list and a year list, and reported "0 of 5
+// recorded fields ... the replay is not on the page the recipe expects". The replay was
+// exactly where it should be: at the fee page, in front of a card form it must never fill.
+// The boundary was one step away and never got its turn.
+check("A PAYMENT SEGMENT IS NOT A DRIFTED PAGE: the boundary reports the stop, not a failure",
+  data.stoppedAtPayment === true && !/page drift/i.test(String((res as unknown as { message?: string }).message ?? "")),
+  `stoppedAtPayment=${String(data.stoppedAtPayment)} message=${JSON.stringify(String((res as unknown as { message?: string }).message ?? "").slice(0, 120))}`);
+
 check("A FEE SHOWN FOR INFORMATION IS NOT A PAYMENT: it is still filled",
   feeamt === "412.50", `fees due came out ${JSON.stringify(feeamt)} — the boundary fired too early`);
 
