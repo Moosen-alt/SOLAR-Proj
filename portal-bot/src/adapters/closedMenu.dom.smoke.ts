@@ -104,7 +104,7 @@ const run = async (which: string) => {
   const adapter = new RecipeAdapter(recipe, {}, {}, { autoSubmit: false });
   (adapter as unknown as { page: unknown }).page = p;
   const res = await adapter.fillApplication({} as never);
-  const data = (res as unknown as { data?: { driftWarnings?: string[]; skipped?: string[] } }).data ?? {};
+  const data = (res as unknown as { data?: { driftWarnings?: string[]; agingNotes?: string[]; skipped?: string[] } }).data ?? {};
   const picked = await p.evaluate(() => (window as unknown as { __picked?: string }).__picked ?? "");
   await p.close();
   return { res, data, picked };
@@ -116,6 +116,7 @@ const run = async (which: string) => {
 const ok = await run("building");
 console.log(`   picked: ${JSON.stringify(ok.picked)}`);
 console.log(`   drift:  ${JSON.stringify((ok.data.driftWarnings ?? []).slice(0, 2))}`);
+console.log(`   aging:  ${JSON.stringify((ok.data.agingNotes ?? []).slice(0, 2))}`);
 
 check("THE REGRESSION: the closed menu is opened and the entry is clicked", () => {
   assert.ok(ok.picked, "nothing was clicked — the menu never opened, or the disabled trigger was used again");
@@ -125,8 +126,17 @@ check("...and it picks the entry matching the recipe's discipline, not merely th
   assert.match(ok.picked, /Building/i, `picked ${JSON.stringify(ok.picked)}`);
 });
 
+// Opening a menu the recipe recorded as already-open is a SUCCESSFUL rescue: the entry was
+// picked and the filing is fine, so the note reports the recipe is aging rather than
+// blocking a clean score. Both halves are asserted — that it is said, and where.
 check("...and says what it did, so the recipe can be re-recorded against the real target", () => {
-  assert.ok((ok.data.driftWarnings ?? []).some((w) => /closed menu/i.test(w)), JSON.stringify(ok.data.driftWarnings));
+  assert.ok([...(ok.data.driftWarnings ?? []), ...(ok.data.agingNotes ?? [])].some((w) => /closed menu/i.test(w)),
+    `drift=${JSON.stringify(ok.data.driftWarnings)} aging=${JSON.stringify(ok.data.agingNotes)}`);
+});
+
+check("...and it does not block a clean score, because the entry was picked", () => {
+  assert.ok(!(ok.data.driftWarnings ?? []).some((w) => /closed menu/i.test(w)),
+    `a successful rescue is still counted as a defect: ${JSON.stringify(ok.data.driftWarnings)}`);
 });
 
 check("the step is not reported as skipped", () => {

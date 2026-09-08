@@ -88,7 +88,7 @@ const adapter = new RecipeAdapter(recipe, { inverterModel: "IQ8PLUS-72-2-US {240
 (adapter as unknown as { page: unknown }).page = page;
 
 const res = await adapter.fillApplication({} as never);
-const data = (res as unknown as { data?: { driftWarnings?: string[]; skipped?: string[] } }).data ?? {};
+const data = (res as unknown as { data?: { driftWarnings?: string[]; agingNotes?: string[]; skipped?: string[] } }).data ?? {};
 const realValue = await page.locator("#inv-model-real").inputValue().catch(() => "");
 const moduleValue = await page.locator("#mod-model").inputValue().catch(() => "");
 console.log(`   inverter Model = ${JSON.stringify(realValue)}; PV array Model = ${JSON.stringify(moduleValue)}`);
@@ -104,8 +104,16 @@ check("...and the PV ARRAY's Model is untouched, which is the whole point of the
     `the array's Model was written with the inverter's value (${JSON.stringify(moduleValue)}) — the two sections were conflated`);
 });
 
+// Resolving by the recorded SECTION means the value landed on the right control and the
+// recorded selector is stale — the recipe is aging, the filing is not defective.
 check("...and it says it resolved by section, so the stale recipe can be re-recorded", () => {
-  assert.ok((data.driftWarnings ?? []).some((w) => /by SECTION/i.test(w)), JSON.stringify(data.driftWarnings));
+  assert.ok([...(data.driftWarnings ?? []), ...(data.agingNotes ?? [])].some((w) => /by SECTION/i.test(w)),
+    `drift=${JSON.stringify(data.driftWarnings)} aging=${JSON.stringify(data.agingNotes)}`);
+});
+
+check("...and it does not block a clean score, because the value landed", () => {
+  assert.ok(!(data.driftWarnings ?? []).some((w) => /by SECTION/i.test(w)),
+    `a successful section resolve is still counted as a defect: ${JSON.stringify(data.driftWarnings)}`);
 });
 
 check("the step is not reported as a miss", () => {

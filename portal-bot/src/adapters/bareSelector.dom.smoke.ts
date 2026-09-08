@@ -63,9 +63,11 @@ const run = async (note: string, value: string) => {
   const res = await a.fillApplication({} as never);
   const docType = await p.locator("#ctl00_PlaceHolderMain_Attachment_24Edit_ddlDocType").inputValue().catch(() => "");
   const alsoAttach = await p.locator("#ctl00_PlaceHolderMain_Attachment_24Edit_ddlAlsoAttachTo").inputValue().catch(() => "");
-  const drift = (res as unknown as { data?: { driftWarnings?: string[] } }).data?.driftWarnings ?? [];
+  const d = (res as unknown as { data?: { driftWarnings?: string[]; agingNotes?: string[] } }).data ?? {};
+  const drift = d.driftWarnings ?? [];
+  const aging = d.agingNotes ?? [];
   await p.close();
-  return { docType, alsoAttach, drift };
+  return { docType, alsoAttach, drift, aging };
 };
 
 const typed = await run("attachment: document type", "Plans");
@@ -80,8 +82,18 @@ check("...and the control it was NOT asked for is untouched", () => {
     `"Also Attach To" was written with the document type (${JSON.stringify(typed.alsoAttach)})`);
 });
 
+// The message is the same; the CHANNEL changed. Resolving by the portal's own name rather
+// than by the recorded position means the value landed and the RECIPE is aging — a real
+// re-record signal, and not a defect in this filing. So it is reported in agingNotes, and
+// asserting it does NOT block is as much the point as asserting it is said at all.
 check("...and it says it went by name rather than position, so the bare recipe can be re-recorded", () => {
-  assert.ok(typed.drift.some((w) => /names for it, not the first/i.test(w)), JSON.stringify(typed.drift));
+  assert.ok([...typed.drift, ...typed.aging].some((w) => /names for it, not the first/i.test(w)),
+    `drift=${JSON.stringify(typed.drift)} aging=${JSON.stringify(typed.aging)}`);
+});
+
+check("...and that note does not block a clean score, because the value landed", () => {
+  assert.ok(!typed.drift.some((w) => /names for it, not the first/i.test(w)),
+    `a successful self-heal is still being counted as a defect: ${JSON.stringify(typed.drift)}`);
 });
 
 // The older guard, unchanged: a recorded label agreeing with NOTHING is SKIPPED rather than
