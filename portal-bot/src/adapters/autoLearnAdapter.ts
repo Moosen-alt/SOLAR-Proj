@@ -153,6 +153,10 @@ export interface LearnResult {
   missingRequiredDocs?: string[];
   /** Inline validation errors the portal raised when an advance was blocked. */
   validationBlocks?: string[];
+  /** Page-level messages the PORTAL printed during the walk, on any page, whether or not
+   *  it advanced ("Property Address not found."). Distinct from validationBlocks, which
+   *  only ever means "an advance was refused". */
+  portalNotices?: string[];
   /** The FULL url (query string included) of the application this run worked on, captured
    *  where it stopped. Without it there is no way to audit the right application afterwards:
    *  a portal list can hold several drafts for the same customer, and auditing "the first" or
@@ -1034,6 +1038,10 @@ function fail(
   message: string,
   pauseReason: string | null = null,
   pagesWalked = 0,
+  // What the portal itself printed during the walk. A failure that can quote the portal's
+  // own words ("Property Address not found.") is a failure an operator can act on; the same
+  // failure without them reads as a portal defect and gets triaged as one.
+  notices: string[] = [],
 ): LearnResult {
   return {
     ok: false,
@@ -1043,7 +1051,8 @@ function fail(
     finalSubmitRecorded: steps.some((s) => s.isFinalSubmit === true),
     pageCount: pagesWalked,
     pauseReason,
-    message,
+    message: notices.length ? `${message} 📣 The portal reported: ${notices.slice(0, 5).join(" | ")}` : message,
+    portalNotices: notices.length ? notices.slice(0, 5) : undefined,
   };
 }
 
@@ -3231,6 +3240,11 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     // and surfaced in the final message so the operator can see WHICH fields the portal rejected.
     const validationBlocks: string[] = [];
     let lastValidationErrors: string[] = [];
+    // What the PORTAL said, on any page, moved or not — a separate channel from
+    // validationBlocks on purpose. validationBlocks means "an advance was blocked"; this
+    // means "the portal printed a message at us", which is the only thing that explains a
+    // walk that keeps advancing and keeps landing back on the same page.
+    const portalNotices: string[] = [];
     // Required document-upload slots we detected but had NO matching project file for —
     // surfaced in the final message so the human can attach them before submitting.
     const missingRequiredDocs: string[] = [];
@@ -3362,7 +3376,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         const rawBody = await this.page.locator("body").innerText().catch(() => "");
         bodyText = (redactStatusText(String(rawBody)) ?? "").slice(0, 2000);
       } catch (err) {
-        return fail(steps, this.portalName, `Failed to scrape page ${pageCount}: ${err instanceof Error ? err.message : String(err)}`, null, pageCount);
+        return fail(steps, this.portalName, `Failed to scrape page ${pageCount}: ${err instanceof Error ? err.message : String(err)}`, null, pageCount, portalNotices);
       }
 
       // Debug: capture the page as-seen BEFORE any fills.
@@ -3694,7 +3708,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         plan = await this.planner({ url, pageTitle, fields, bodyText, alreadyFilledLabels, isDashboard, recoveryHint: recoveryHint || undefined, screenshotBase64: planShot });
       } catch (err) {
         this.debug?.event({ type: "planner_error", page: pageCount, message: err instanceof Error ? err.message : String(err) });
-        return fail(steps, this.portalName, `Planner failed on page ${pageCount}: ${err instanceof Error ? err.message : String(err)}`, null, pageCount);
+        return fail(steps, this.portalName, `Planner failed on page ${pageCount}: ${err instanceof Error ? err.message : String(err)}`, null, pageCount, portalNotices);
       }
 
       // c2) STRUCTURAL REVIEW GUARD — the Accela "Continue Application" trap.
@@ -3825,6 +3839,17 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         // Same breadcrumb into the run bundle's timeline (redacted, host+path only).
         this.debug?.event({ type: "page", trace: pageTrace[pageTrace.length - 1], recovery: recoveryHint ? true : undefined });
 
+        // WHAT DID THE PORTAL SAY? Read it here, on every page, before deciding anything —
+        // this is the only place that sees a page which advanced INTO an error.
+        {
+          const notices = await collectPortalNoticesFrom(this.page);
+          const fresh = notices.filter((n) => !portalNotices.includes(n));
+          if (fresh.length) {
+            for (const n of fresh) portalNotices.push(n);
+            this.debug?.event({ type: "portal_notice", page: pageCount, notices: fresh.slice(0, 5) });
+          }
+        }
+
         // THE SAME PAGE, OVER AND OVER, UNTIL THE BUDGET DIES.
         //
         // Miami's iBuildPortal — a portal reached for the FIRST TIME today after its stored
@@ -3848,9 +3873,15 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             return fail(
               steps,
               this.portalName,
-              `The walk stopped making progress: "${(redactStatusText(pageTitle) || hostPath).slice(0, 60)}" was reached ${seen} times with the same controls and the page never moved. Recorded ${steps.filter((st) => ["fill", "select", "check"].includes(String(st.action))).length} field(s) before that. The advance on this page is not advancing — a person should check what it wants.`,
+              // DO NOT NAME A CAUSE THIS CHECK CANNOT SEE. The first version of this ended
+              // "the advance on this page is not advancing" — on Miami that was flatly
+              // untrue: every advance fired a search, the URL changed each time, and the
+              // portal handed back the same page with "Property Address not found." The
+              // observation is "we keep ending up here"; the cause comes from the notices.
+              `The walk stopped making progress: "${(redactStatusText(pageTitle) || hostPath).slice(0, 60)}" was reached ${seen} times with the same controls. Recorded ${steps.filter((st) => ["fill", "select", "check"].includes(String(st.action))).length} field(s) before that. Either its advance does nothing, or it advances and the portal sends the walk straight back.`,
               null,
               pageCount,
+              portalNotices,
             );
           }
         }
@@ -4050,7 +4081,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             { required: true },
           );
           if (!res.ok) {
-            return fail(steps, this.portalName, `Failed to click navigation link "${navField.label}" on page ${pageCount}: ${res.message ?? "unknown"}`, null, pageCount);
+            return fail(steps, this.portalName, `Failed to click navigation link "${navField.label}" on page ${pageCount}: ${res.message ?? "unknown"}`, null, pageCount, portalNotices);
           }
           // A CONSENT WALL, NAMED RATHER THAN WANDERED INTO.
           //
@@ -4089,6 +4120,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
                 `This portal will not start an application until its cookie consent is answered, and declining did not clear it: clicking "${(navField.label || "the application entry").slice(0, 60)}" is still redirected to its cookie policy. A person must make that choice — automation declines non-essential cookies but never accepts them on the operator's behalf.`,
                 null,
                 pageCount,
+                portalNotices,
               );
             }
             // TWO THINGS THE FIRST DRAFT OF THIS GOT WRONG, both of them silent.
@@ -4635,7 +4667,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           { required: true },
         );
         if (!res.ok) {
-          return fail(steps, this.portalName, `Failed to click the advance button on page ${pageCount}: ${res.message ?? "unknown"}`, null, pageCount);
+          return fail(steps, this.portalName, `Failed to click the advance button on page ${pageCount}: ${res.message ?? "unknown"}`, null, pageCount, portalNotices);
         }
 
         // d5) POST-ADVANCE VALIDATION GUARD — did the page actually move forward?
@@ -4741,11 +4773,17 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     const verifyWarning = fillVerifyMisses.length > 0
       ? ` ⚠ ${fillVerifyMisses.length} required field(s) did not hold their value after filling and may be blank in the portal: ${fillVerifyMisses.slice(0, 12).join(", ")}${fillVerifyMisses.length > 12 ? ", …" : ""}. Re-check these before submit.`
       : "";
+    // The portal's own words, quoted. On a run that never reached review this is usually the
+    // ONLY line that names a cause — the trace shows the same page seven times and the
+    // validation channel is empty, because every advance "worked".
+    const noticeWarning = portalNotices.length > 0
+      ? ` 📣 The portal reported: ${portalNotices.slice(0, 5).join(" | ")}`
+      : "";
     const message = reachedReview
-      ? `${HUMAN_REVIEW_MESSAGE} Auto-learn reached the review screen after ${pageCount} page(s). Verify every field/value below before a human submits.${validationWarning}${docsWarning}${verifyWarning}`
+      ? `${HUMAN_REVIEW_MESSAGE} Auto-learn reached the review screen after ${pageCount} page(s). Verify every field/value below before a human submits.${validationWarning}${docsWarning}${verifyWarning}${noticeWarning}`
       : filledSomething
-        ? `Auto-learn filled ${pageCount} page(s) and recorded the steps, but did not reach a review screen. Page trace: ${traceLine}${validationWarning}${docsWarning}${verifyWarning}`
-        : `Auto-learn found nothing fillable on ${pageCount} page(s); no steps recorded.${nothingFillableHint} Page trace: ${traceLine}${validationWarning}${docsWarning}${verifyWarning}`;
+        ? `Auto-learn filled ${pageCount} page(s) and recorded the steps, but did not reach a review screen. Page trace: ${traceLine}${validationWarning}${docsWarning}${verifyWarning}${noticeWarning}`
+        : `Auto-learn found nothing fillable on ${pageCount} page(s); no steps recorded.${nothingFillableHint} Page trace: ${traceLine}${validationWarning}${docsWarning}${verifyWarning}${noticeWarning}`;
 
     // Capture the review page screenshot when we've reached the review screen. fullPage:true so
     // the vision verifier sees the WHOLE review — a viewport-only shot would let an off-screen
@@ -4790,6 +4828,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       requiredFieldMisses: fillVerifyMisses,
       missingRequiredDocs,
       validationBlocks,
+      portalNotices: portalNotices.length ? portalNotices.slice(0, 5) : undefined,
     };
   }
 
@@ -6882,6 +6921,13 @@ export async function collectValidationErrorsFrom(page: any): Promise<string[]> 
         '[role="alert"]:not([style*="display:none"])',
         '[aria-live="assertive"]:not([style*="display:none"])',
         '.alert-danger:not([style*="display:none"])',
+        // ASP.NET MVC's Html.ValidationSummary — the single most common error container in
+        // the fleet's legacy portals, and absent from this list until Miami's "Property
+        // Address not found." went unread for a whole walk. The empty twin that MVC always
+        // renders carries .validation-summary-valid, which the :not() excludes; the
+        // innerText length guard below drops it anyway.
+        '.validation-summary-errors',
+        '[data-valmsg-summary]:not(.validation-summary-valid)',
       ];
       for (const sel of errSels) {
         for (const el of deepQueryAll(document, sel) as HTMLElement[]) {
@@ -6902,6 +6948,54 @@ export async function collectValidationErrorsFrom(page: any): Promise<string[]> 
       }
 
       return out.slice(0, 20);
+    });
+  } catch {
+    return [];
+  }
+}
+
+// A PAGE THAT MOVED CAN STILL HAVE MOVED BACKWARDS.
+//
+// collectValidationErrorsFrom above runs in exactly one place: after an advance that did
+// NOTHING. Miami's Property Search advanced every time — the URL gained
+// ?searchFor=…&searchBy=address on each attempt — and every one of those pages came back
+// carrying "Property Address not found." in an MVC ValidationSummary. Nothing read it. The
+// run ended saying "the advance on this page is not advancing", which is the opposite of
+// what happened, and named no cause a person could act on.
+//
+// So: read the portal's OWN page-level notices on every page, whether or not it moved.
+//
+// Deliberately narrower than collectValidationErrorsFrom — SUMMARY/BANNER containers only,
+// and none of its per-field required-but-empty synthesis. A freshly rendered form is full
+// of not-yet-filled required fields; folding those in here would stamp "the portal reported"
+// onto healthy runs. This channel means one thing: the portal printed a message at us.
+export async function collectPortalNoticesFrom(page: any): Promise<string[]> {
+  if (!page || typeof page.evaluate !== "function") return [];
+  try {
+    return await page.evaluate((): string[] => {
+      const sels = [
+        ".validation-summary-errors",
+        '[data-valmsg-summary]:not(.validation-summary-valid)',
+        ".alert-danger",
+        ".alert-error",
+        '[class*="error-summary"]',
+        '[class*="errorSummary"]',
+        '[role="alert"]',
+      ];
+      const seen = new Set<string>();
+      const out: string[] = [];
+      for (const sel of sels) {
+        for (const el of Array.from(document.querySelectorAll(sel)) as HTMLElement[]) {
+          if (el.offsetParent === null) continue;
+          const t = (el.innerText || "").replace(/\s+/g, " ").trim();
+          // Long blobs are page copy that happens to sit in an alert region, not a message.
+          if (t.length < 4 || t.length > 300) continue;
+          if (seen.has(t)) continue;
+          seen.add(t);
+          out.push(t);
+        }
+      }
+      return out.slice(0, 5);
     });
   } catch {
     return [];
