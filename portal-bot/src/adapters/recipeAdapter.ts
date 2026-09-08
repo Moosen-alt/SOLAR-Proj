@@ -1728,7 +1728,16 @@ ${body.slice(0, 4000)}`);
   // order and the parcels differ per address, and ar1 on Ivy means nothing at Marineau's.
   private async pickAddressVersionLive(step: RecipeStep): Promise<boolean> {
     if (!this.page || typeof this.page.evaluate !== "function") return false;
-    const rows = await this.page.evaluate(() => {
+    // SCAN THE FRAME THE STEP LIVES IN. Accela serves its work-location panel inside a child
+    // frame — every recorded step on that page carries `frame` — while this scan ran against
+    // the MAIN document and found no rows at all. It then returned false in silence, so the
+    // step landed in `skipped` with no reason and the next step, waiting for a Continue
+    // button that only appears once a row is chosen, took the blame for it.
+    const evalScope: { evaluate: (fn: unknown) => Promise<Array<{ key: string; text: string }>> } =
+      step.selector?.frame
+        ? (this.page.frameLocator(frameSelectorFor(step.selector.frame)).locator("body") as never)
+        : (this.page as never);
+    const rows = await evalScope.evaluate(() => {
       const vis = (e: Element) => { const r = (e as HTMLElement).getBoundingClientRect(); return r.width > 0 && r.height > 0; };
       const out: Array<{ key: string; text: string }> = [];
       let n = 0;
@@ -1745,7 +1754,15 @@ ${body.slice(0, 4000)}`);
       }
       return out;
     }).catch(() => [] as Array<{ key: string; text: string }>);
-    if (rows.length === 0) return false;
+    if (rows.length === 0) {
+      // The fifth silent return found today. A grid with no rows and no explanation is
+      // indistinguishable from a grid that was never looked at — which is exactly what had
+      // happened, in the main frame instead of the child one.
+      this.driftWarnings.push(
+        `address grid: no selectable rows found${step.selector?.frame ? ` inside frame ${String(step.selector.frame).slice(0, 40)}` : " in the main document"} — the address step was skipped, so anything waiting on a chosen row will fail next`,
+      );
+      return false;
+    }
 
     const wantsElectrical = /elec/i.test(String(this.fieldValues.permitType ?? ""))
       || /elec/i.test(String(step.note ?? ""));
