@@ -1880,9 +1880,6 @@ ${body.slice(0, 4000)}`);
     // VISIBLE match hands that branch a different element, `force` switches off, and the
     // click lands on the decoration — "Clicking the checkbox did not change its state".
     // Ameren went from 73 of 75 steps to 2 on exactly that, one commit after this was added.
-    if (step.action !== "check" && step.action !== "uncheck") {
-      scoped = await this.narrowToOne(scoped, step);
-    }
     // IS THIS THE CONTROL WE RECORDED? Portal field ids are routinely per-form-instance
     // (PowerClerk's "AWQBPS8U00XGInput"), so on a NEW project the same id is a DIFFERENT
     // question. Measured live: a step recorded for "Description of Service:" resolved to
@@ -1896,6 +1893,18 @@ ${body.slice(0, 4000)}`);
       const anchored = await this.reanchorIfWrongControl(step, scoped);
       if (anchored === "abort") return false;
       if (anchored) scoped = anchored;
+    }
+    // NARROW AT THE POINT OF ACTION, because everything above can widen it again.
+    //
+    // The earlier narrowing ran before the identity check, which RE-ANCHORS by label when a
+    // recorded id turns out to point at the wrong control — and a label re-anchor is exactly
+    // the kind of locator that matches several elements. So Coos Bay's street number came
+    // back as a strict-mode violation on `input[id*='StreetNo4Search']` (4 matches: the box,
+    // its hidden watermark state, and a range's "To") after the narrowing had already
+    // happened and been undone. Narrowing once, last, is the only placement that holds
+    // against every path above it.
+    if (step.action !== "check" && step.action !== "uncheck") {
+      scoped = await this.narrowToOne(scoped, step);
     }
     switch (step.action) {
       case "goto":
