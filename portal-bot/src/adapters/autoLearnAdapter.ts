@@ -3240,6 +3240,15 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     const pageTrace: string[] = [];
     /** How many times each page signature has been walked. See the repeat-stop below. */
     const repeatPageCounts = new Map<string, number>();
+    /** Advance controls proven not to move a given page. See the advance_did_nothing event. */
+    const deadAdvances = new Map<string, Set<string>>();
+    /** The page identity the dead-advance set is keyed on: host+path plus control count, so
+     *  the same label on a different page keeps its own chance. */
+    const deadPageKey = (u: string, fieldCount: number): string => {
+      let hp = "";
+      try { const parsed = new URL(u); hp = parsed.host + parsed.pathname; } catch { hp = (u || "").slice(0, 60); }
+      return `${hp}|${fieldCount}`;
+    };
     // Did we ever reach a page with editable fields? Distinguishes "wandered through
     // dashboards/links and never found a form" from "found a form but couldn't finish".
     let everFoundFillable = false;
@@ -4578,6 +4587,17 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       if (typeof plan.advanceSelectorIndex === "number") {
         const advanceField = fields[plan.advanceSelectorIndex];
         if (!advanceField) break; // bad index — stop cleanly.
+        // Already proven not to move this page — fall through to the fallback finder, which
+        // will pick a different control rather than repeating a click that does nothing.
+        {
+          const deadKey = deadPageKey(url, fields.length);
+          const label = String(advanceField.label ?? "").slice(0, 60);
+          if (label && deadAdvances.get(deadKey)?.has(label)) {
+            this.debug?.event({ type: "advance_skipped_dead", page: pageCount, label });
+            if (await this.clickFallbackAdvance(steps, fields)) continue;
+            break;
+          }
+        }
         // SAFETY: never click/record a pay/fee/checkout button as the "advance".
         if (this.isOffLimitsButton(advanceField)) {
           return {
@@ -4625,6 +4645,25 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           const advAfterFp = await this.pageFingerprint();
           const movedForward = (advAfterUrl && advAfterUrl !== advBeforeUrl) || (!!advAfterFp && advAfterFp !== advBeforeFp);
           if (!movedForward) {
+            // A CONTROL THAT DID NOT MOVE THE PAGE MUST NOT BE CHOSEN AGAIN HERE.
+            //
+            // Miami's Property Search: the planner picked advance index 43 on page 3, page 4
+            // and page 5 — the same control, three times, and the page never moved. Boston did
+            // it eight times, Baltimore four. Stopping the loop (the repeat-page guard) stops
+            // the waste; it does not get anybody past the page. Banning the control does,
+            // because the fallback advance below then gets its turn on a DIFFERENT control —
+            // on this page the real one is an icon-only magnifier the planner never names.
+            //
+            // Scoped to THIS page signature: the same label on a later page is a different
+            // control and deserves its own chance.
+            const deadKey = deadPageKey(url, fields.length);
+            const label = String(advanceField.label ?? "").slice(0, 60);
+            if (label) {
+              const set = deadAdvances.get(deadKey) ?? new Set<string>();
+              set.add(label);
+              deadAdvances.set(deadKey, set);
+              this.debug?.event({ type: "advance_did_nothing", page: pageCount, label, deadCount: set.size });
+            }
             const blockers = await this.collectValidationErrors();
             if (blockers.length > 0) {
               this.debug?.event({ type: "validation_blocked", page: pageCount, errors: blockers.slice(0, 10) });
