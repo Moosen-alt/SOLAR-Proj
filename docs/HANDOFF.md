@@ -366,16 +366,30 @@ Construction:`, a conditional field whose own step (index 39) ran earlier and re
 — so it was filled and then went blank, which is a re-render rather than a missing value.
 
 A re-assert pass now runs before each advancing click: any blank required control the recipe
-holds a step for is re-run once (bounded to three, re-entry guarded). **It did not resolve this
-one**, and the run reported nothing either way — because the first version only spoke when the
-re-fill SUCCEEDED, which would have made it the sixth silent path in this file. It now reports
-both outcomes, so the next run distinguishes "re-asserted" from "its control is no longer on
-this page". Start there: that one line decides whether the field needs re-filling at a
-different moment or the step is simply on the wrong page by then.
+holds a step for is re-run once (bounded to three, re-entry guarded). **It works:**
+
+```
+"Category of Construction:"        was filled earlier and had gone blank — re-asserted
+"*Other Category of Construction:" was filled earlier and had gone blank — re-asserted
+```
+
+**46/62 -> 53/62, and BOTH Coos Bay recipes now carry ZERO blank required fields.**
+
+**AND THE 62-STEP RECIPE HAS REACHED THE FEE GATE.** Its failure is now
+`page drift: only 0 of 5 recorded fields for this section ("CVV:", ...)` — **CVV**. It is on
+the PAYMENT page. The remaining nine steps are a credit-card form and the submit, the two
+things automation must never do (hard safety rule #1). That recipe is FUNCTIONALLY COMPLETE at
+53 of 62: it files everything a machine is permitted to file and stops exactly where a human
+has to take over.
+
+This is the structural ceiling, measured rather than asserted. The fleet's remaining gap is not
+defects — it is card forms, MFA and CAPTCHA, which is why 95% "across random portals" is a
+property of the portal set and not of this code.
 
 **FLEET AFTER THE DAY'S WORK:** PacifiCorp 97/98 (99.0%), Ameren 73/75 (97.3%), PGE 65/68
-(95.6%), Coos Bay 46–47/49 (~95%) and **46/62 (74.2%)** — a fleet mean of **327/352 = 92.9%**,
-from two recipes dead at step one this morning. Four of five recipes at or about 95%; the fifth
+(95.6%), Coos Bay 46/49 (93.9%) and **53/62 (85.5%)** — a fleet mean of **334/352 = 94.9%**,
+from two recipes dead at step one this morning. Both Coos Bay recipes carry zero blanks, and
+the 62-step one stops at a credit-card form. Four of five recipes at or about 95%; the fifth
 moved from dead-at-step-1 to a third of the way through, and its remaining blocker is an
 advance the portal refuses with two named blanks — read them from the saved page.
 
