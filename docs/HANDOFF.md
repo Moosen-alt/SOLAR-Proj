@@ -217,7 +217,29 @@ unmapped jurisdictions keep the default and report the same dead end honestly. I
 to the operator as something only they could supply — that was wrong. What was needed was an
 address that EXISTS in the parcel database, not a customer's.
 
-**COOS BAY IS NOW AT 7 of 49** (from 1 at the start of the session), and the next blocker is
+**COOS BAY: 1 -> 16 of 49 IN ONE SESSION.** Every fix a general invariant, none of them a
+Coos Bay patch. In order, with what each one actually was:
+
+| # | looked like | actually was |
+|---|---|---|
+| 1 | the Apply link had drifted | a **closed hover menu** whose trigger is `disabled` by design |
+| 4 | a drifted street-number selector | a **strict-mode violation** — 1 match when narrowed, 4 when used; Accela paints that panel late |
+| 7 | the address step failed | the **grid was scanned once** before the postback painted it, then returned false in silence |
+| 13 | three later steps broke | **my own legend regex** — `"* indicates a required field"` read as a blank, so `pageIsPassThrough` refused a page needing only Continue |
+| 16 | the advance was refused | **no job value** — `contractAmount` unset in the fixture, reported three steps after the field that caused it |
+
+**LANDED BUT NOT VERIFIED LIVE:** the `contractAmount` fixture value (last row). One run
+confirms it.
+
+**THE RULE THIS SESSION PAID FOR, FIVE TIMES OVER.** Today produced five silent
+`return false` paths and four diagnostics that described something other than the thing being
+acted on (`looksOutOfReach` asking Playwright, `describeResolved` re-resolving the selector,
+`visibleOptionSample` scraping the page, the address grid saying nothing). **Every one made a
+working component look broken, and every fix aimed at the apparent failure was aimed at a
+phantom.** When a failure line does not change across several fixes, suspect the line. When a
+step is skipped, suspect the step BEFORE the one that failed.
+
+**Superseded — Coos Bay was at 7 of 49** (from 1 at the start of the session), and the next blocker is
 characterised. Two fixes got it past step 4:
 
 - **A strict-mode violation is a timing artefact, not a dead recipe.** The street number
