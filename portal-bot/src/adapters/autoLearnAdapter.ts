@@ -4621,6 +4621,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         });
         const advBeforeUrl = typeof this.page.url === "function" ? String(this.page.url() ?? "") : "";
         const advBeforeFp = await this.pageFingerprint();
+        const advBeforeSig = await advanceSignatureOf(this.page);
         const advTabsBefore = this.tabCount(); // capture BEFORE the click — the popup opens during it
         const res = await safeAction(
           "advance",
@@ -4643,7 +4644,12 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         {
           const advAfterUrl = typeof this.page.url === "function" ? String(this.page.url() ?? "") : "";
           const advAfterFp = await this.pageFingerprint();
-          const movedForward = (advAfterUrl && advAfterUrl !== advBeforeUrl) || (!!advAfterFp && advAfterFp !== advBeforeFp);
+          // STRUCTURE, NOT TEXT. advBeforeFp/advAfterFp include body-text length, so a page
+          // that merely re-rendered a results panel reads as advanced — see advanceSignatureOf.
+          const advAfterSig = await advanceSignatureOf(this.page);
+          const movedForward = (advAfterUrl && advAfterUrl !== advBeforeUrl)
+            || (!!advBeforeSig && !!advAfterSig && advAfterSig !== advBeforeSig)
+            || (!advBeforeSig && !!advAfterFp && advAfterFp !== advBeforeFp);
           if (!movedForward) {
             // A CONTROL THAT DID NOT MOVE THE PAGE MUST NOT BE CHOSEN AGAIN HERE.
             //
@@ -6736,6 +6742,45 @@ export function acaApplyEntryFrom(url: string): string | null {
     if (!seg) return null;
     return `${u.origin}/${seg}/Cap/CapApplyDisclaimer.aspx?module=Building`;
   } catch { return null; }
+}
+
+/** DID THE PAGE ACTUALLY ADVANCE, structurally — no body text.
+ *
+ *  pageFingerprintOf includes document.body.innerText.length, which is right for
+ *  waitAfterClick (it wants to notice ANY change, quickly) and wrong for "did this Next
+ *  work". Any inline re-render moves it: a validation banner, a spinner, a results panel.
+ *
+ *  Measured on City of Miami's iBuild Property Search. The planner chose the same advance
+ *  control on three consecutive pages; each click re-rendered the results panel, the text
+ *  length changed, and the walk concluded it had advanced. So the control was never recorded
+ *  as dead, the fallback finder never got its turn, and the run spent seven pages on one.
+ *
+ *  This looks only at structure: where we are, what can be typed into, what the step says,
+ *  how many controls are live. A page that re-renders its own panel keeps the same signature;
+ *  a page that genuinely advances does not. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function advanceSignatureOf(page: any): Promise<string> {
+  if (!page || typeof page.evaluate !== "function") return "";
+  try {
+    return await page.evaluate(() => {
+      const vis = (el: Element): boolean => {
+        const r = (el as HTMLElement).getBoundingClientRect();
+        return r.width > 2 && r.height > 2;
+      };
+      const fillable = (Array.from(document.querySelectorAll("input, select, textarea")) as HTMLElement[])
+        .filter(vis)
+        .map((el) => (el.getAttribute("name") || el.getAttribute("id") || (el as HTMLInputElement).type || "").toLowerCase())
+        .sort()
+        .join(",");
+      const buttons = (Array.from(document.querySelectorAll("button, input[type=submit], input[type=button]")) as HTMLElement[])
+        .filter((el) => vis(el) && !(el as HTMLButtonElement).disabled).length;
+      const heading = (document.querySelector("h1, h2, legend, .wizard-step.active, [aria-current='step']")?.textContent || "")
+        .replace(/\s+/g, " ").trim().slice(0, 60);
+      return `${location.pathname}|${heading}|${buttons}|${fillable.slice(0, 400)}`;
+    });
+  } catch {
+    return "";
+  }
 }
 
 export async function pageFingerprintOf(page: any): Promise<string> {
