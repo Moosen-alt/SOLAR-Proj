@@ -2355,7 +2355,15 @@ ${body.slice(0, 4000)}`);
         // while pointing at the hidden half of a styled widget — so count() was 1, recovery
         // never ran, and check() spent its full 30s before failing the whole replay.
         const present = await scoped?.count?.().catch(() => 0);
-        const usable = present ? await scoped.first().isVisible().catch(() => false) : false;
+        // THE SAME NOTION OF VISIBLE THE REST OF THIS FILE USES.
+        //
+        // `usable` decides `force` below, and it asked PLAYWRIGHT — which counts an opacity:0
+        // or 1x1 control as VISIBLE. A rounded-pill switch's real <input> is exactly that, so
+        // usable came back true, force was switched off, and check() issued a real click that
+        // the styled widget swallows: "Clicking the checkbox did not change its state", which
+        // is precisely how Ameren's terms switch failed. Everything else in this file was
+        // moved onto isTrulyVisible for this exact divergence; this call was missed.
+        const usable = present ? await this.isTrulyVisible(scoped.first()) : false;
         const recovered = usable ? null : await this.recoverVolatileIdOption(step);
         // A CONDITIONAL QUESTION THE PORTAL DID NOT ASK THIS TIME.
         //
