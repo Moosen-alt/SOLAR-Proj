@@ -320,10 +320,20 @@ async function main(): Promise<void> {
         // off at exactly the word that matters, which cost a live run to discover twice.
         message: String(o.message ?? "").slice(0, 1200),
         unresolvedFields: ((o.unresolvedFields as string[]) ?? []).slice(0, 30),
+        // THE OPERATOR'S ACTUAL QUESTION: how many of this filing's values are verified
+        // present in the portal, and which are not. Counted per field at fill time, which
+        // works on every portal — a review screen does not exist on all of them.
+        fieldsVerified: ((o.fieldsVerified as string[]) ?? []).length,
+        fieldsUnverified: ((o.fieldsUnverified as string[]) ?? []),
       },
     });
     console.log(`${String(i + 1).padStart(2)}/${chosen.length} ${score.index} ${score.rung.padEnd(20)} ${c.key.slice(0, 44)}`);
     console.log(`      ${score.reason.slice(0, 160)}`);
+    const ver = ((outcome as Record<string, unknown>).fieldsVerified as string[] | undefined)?.length ?? 0;
+    const unver = ((outcome as Record<string, unknown>).fieldsUnverified as string[] | undefined) ?? [];
+    if (ver || unver.length) {
+      console.log(`      VALUES VERIFIED IN THE PORTAL: ${ver}${unver.length ? `   NOT verified: ${unver.length} (${unver.slice(0, 3).join(", ").slice(0, 80)})` : ""}`);
+    }
   }
 
   const summary = summarizeReplay(rows);

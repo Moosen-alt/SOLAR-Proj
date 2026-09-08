@@ -123,6 +123,17 @@ export class RecipeAdapter extends BasePortalAdapter {
    *  "a photo of the meter where the system will be interconnected", which is never in a
    *  plan set, so no recipe step exists for it and no QC rule looks for it. */
   private requiredStillEmpty: string[] = [];
+  /** THE ANSWER TO "IS THE INFORMATION ACTUALLY SET" — counted, not assumed.
+   *
+   *  The review-screen check cannot answer it on every portal: PacifiCorp's run ends on a page
+   *  holding four controls, so "4 fields seen, 0 confirmed" is the scraper reading a page that
+   *  is not a summary, not a scraper that is broken. But every fill already reads its value
+   *  back (fillHeld) and every select already reports whether it landed. That per-field
+   *  evidence was being thrown away after each step. Counting it gives the operator the thing
+   *  they actually asked for: how many of this filing's values are verified present in the
+   *  portal, and which are not. */
+  private fieldsVerified: string[] = [];
+  private fieldsUnverified: string[] = [];
   /** Why each selector level was accepted or rejected, for the step currently resolving.
    *  Reported only when a step fails — see the note in resolveLocator. */
   private resolveTrail: string[] = [];
@@ -877,7 +888,7 @@ ${body.slice(0, 4000)}`);
         // the operator logged in concurrently and PowerClerk — one session per account —
         // killed the bot's. Name the real event when the page itself announces it.
         const ended = await this.sessionEndedBanner();
-        return fail(`${ended ? `THE PORTAL ENDED THIS SESSION mid-run ("${ended}") — commonly a concurrent login with the same account (some portals allow exactly one session per user). The step failure below is the symptom, not the cause. ` : ""}Recipe step failed (${step.action}${step.note ? ` — ${step.note}` : ""}): ${lastErr instanceof Error ? lastErr.message : String(lastErr)}${context}`, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, failedStepIndex: stepIdx, trace, slowSteps, requiredStillEmpty: this.requiredStillEmpty, unresolvedFields: this.unresolvedFields, pageShotDir: this.pageShotDir, outcomeShotPath: this.outcomeShotPath });
+        return fail(`${ended ? `THE PORTAL ENDED THIS SESSION mid-run ("${ended}") — commonly a concurrent login with the same account (some portals allow exactly one session per user). The step failure below is the symptom, not the cause. ` : ""}Recipe step failed (${step.action}${step.note ? ` — ${step.note}` : ""}): ${lastErr instanceof Error ? lastErr.message : String(lastErr)}${context}`, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, failedStepIndex: stepIdx, trace, slowSteps, requiredStillEmpty: this.requiredStillEmpty, unresolvedFields: this.unresolvedFields, fieldsVerified: this.fieldsVerified, fieldsUnverified: this.fieldsUnverified, pageShotDir: this.pageShotDir, outcomeShotPath: this.outcomeShotPath });
       }
       // Remember whether this step entered data, so the next advancing click waits for the
       // portal's autosave to commit (prevents blank-draft saves on PowerClerk).
@@ -926,7 +937,7 @@ ${body.slice(0, 4000)}`);
           // is the whole question. Capture it like any other failure.
           const driftContext = await this.captureFailureContext(step, stepIdx);
           closePrevStepTiming();
-          return fail(`${driftFail}${driftContext}`, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, failedStepIndex: stepIdx, trace, slowSteps, requiredStillEmpty: this.requiredStillEmpty, unresolvedFields: this.unresolvedFields, pageShotDir: this.pageShotDir, outcomeShotPath: this.outcomeShotPath });
+          return fail(`${driftFail}${driftContext}`, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, failedStepIndex: stepIdx, trace, slowSteps, requiredStillEmpty: this.requiredStillEmpty, unresolvedFields: this.unresolvedFields, fieldsVerified: this.fieldsVerified, fieldsUnverified: this.fieldsUnverified, pageShotDir: this.pageShotDir, outcomeShotPath: this.outcomeShotPath });
         }
       }
 
@@ -979,7 +990,7 @@ ${body.slice(0, 4000)}`);
         recordLink: capture.data?.recordLink || "",
         // What the LLM gap-fill added (and what it left blank for lack of real data) — same key
         // the hand-coded adapters surface, so the operator/UI sees a uniform report.
-        gapFill: this.gapFillReport, healedSteps: this.healedSteps, slowSteps, requiredStillEmpty: this.requiredStillEmpty, unresolvedFields: this.unresolvedFields, pageShotDir: this.pageShotDir, outcomeShotPath: this.outcomeShotPath,
+        gapFill: this.gapFillReport, healedSteps: this.healedSteps, slowSteps, requiredStillEmpty: this.requiredStillEmpty, unresolvedFields: this.unresolvedFields, fieldsVerified: this.fieldsVerified, fieldsUnverified: this.fieldsUnverified, pageShotDir: this.pageShotDir, outcomeShotPath: this.outcomeShotPath,
       });
     }
     closePrevStepTiming();
@@ -1006,7 +1017,7 @@ ${body.slice(0, 4000)}`);
       {
         executed, skipped, finalSubmitClicked: false, gapFill: this.gapFillReport,
         healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, slowSteps,
-        requiredStillEmpty: this.requiredStillEmpty, unresolvedFields: this.unresolvedFields, pageShotDir: this.pageShotDir,
+        requiredStillEmpty: this.requiredStillEmpty, unresolvedFields: this.unresolvedFields, fieldsVerified: this.fieldsVerified, fieldsUnverified: this.fieldsUnverified, pageShotDir: this.pageShotDir,
         outcomeShotPath: this.outcomeShotPath,
         reviewFieldsSeen: review.fieldsSeen, reviewFieldsConfirmed: review.confirmed, reviewMismatches: review.mismatches,
       },
@@ -2099,7 +2110,11 @@ ${body.slice(0, 4000)}`);
         // A miss returns false, which lands the step in `skipped` — visible to the operator
         // and a gap to the benchmark, rather than a clean run over a lost value.
         await this.waitForAutosaveCommitted();
-        if (!(await this.fillHeld(scoped, v))) {
+        const fieldName = String(step.note ?? step.field ?? step.action).slice(0, 60);
+        // ONE readback, not two: asking twice costs a round-trip and can disagree with itself.
+        const held = await this.fillHeld(scoped, v);
+        if (held && !this.fieldsVerified.includes(fieldName)) this.fieldsVerified.push(fieldName);
+        if (!held) {
           // ONE RETRY, BY THE SAME ROUTE AS THE FIRST ATTEMPT. A masked control keeps its
           // validation state from KEY events, so retrying it with .fill() would fail the
           // way the first attempt was written to avoid — and report a miss caused by the
@@ -2115,8 +2130,11 @@ ${body.slice(0, 4000)}`);
           await this.waitForAutosaveCommitted();
           if (!(await this.fillHeld(scoped, v))) {
             this.driftWarnings.push(`"${String(step.note ?? step.action).slice(0, 48)}" did not hold the value it was given — the portal shows something else`);
+            if (!this.fieldsUnverified.includes(fieldName)) this.fieldsUnverified.push(fieldName);
             return false;
           }
+          // The retry held: verified after all.
+          if (!this.fieldsVerified.includes(fieldName)) this.fieldsVerified.push(fieldName);
         }
         return true;
       }
@@ -2341,6 +2359,9 @@ ${body.slice(0, 4000)}`);
         // server re-render restores the old value ("Saving..." caught on the final screenshot,
         // the inverter manufacturer empty again after every pass).
         if (selected) await this.waitForAutosaveCommitted();
+        const selName = String(step.note ?? step.field ?? step.action).slice(0, 60);
+        if (selected) { if (!this.fieldsVerified.includes(selName)) this.fieldsVerified.push(selName); }
+        else if (!this.fieldsUnverified.includes(selName)) this.fieldsUnverified.push(selName);
         // Propagate the miss: a select that landed NOTHING must not report success.
         return selected;
       }
