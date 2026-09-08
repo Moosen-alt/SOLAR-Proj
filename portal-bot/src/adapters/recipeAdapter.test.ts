@@ -991,6 +991,54 @@ async function testCoveredWarningStandsWhenAValueDidNotHold(): Promise<void> {
     "the portal still wants a required field, and the warning was withdrawn anyway");
 }
 
+// ---------------------------------------------------------------------------
+// THE DRIFT DENOMINATOR HAS THE SAME BUG THE BLANK COUNT HAD.
+//
+// "Only 4 of 14 recorded fields found for this section — the portal may have changed" was
+// the last blocking warning standing on PGE, and several of those 14 were battery fields
+// this project was never going to fill. Where a portal renders storage controls only once
+// storage is declared, their labels are genuinely absent — so a correct filing was measured
+// against a denominator that included rows it had correctly decided to skip.
+// ---------------------------------------------------------------------------
+const segmentLabels = (hasBattery: string): string[] => {
+  const a = Object.create(RecipeAdapter.prototype) as Record<string, unknown>;
+  a.fieldValues = { hasBattery };
+  a.recipe = {
+    steps: [
+      { action: "fill", note: "System Size (kW AC)" },
+      { action: "select", note: "Energy Source" },
+      { action: "fill", note: "Energy Storage Capacity of Battery (kWh)" },
+      { action: "select", note: "Battery Manufacturer" },
+      { action: "select", note: "Wattsmart Battery Program?" },
+      { action: "click", note: "advance: Next" },
+      { action: "fill", note: "not in this segment" },
+    ],
+  };
+  return (a as { expectedLabelsForSegment: (i: number) => string[] }).expectedLabelsForSegment(0);
+};
+
+async function testDriftDenominatorExcludesStepsThisRunWillSkip(): Promise<void> {
+  const noBattery = segmentLabels("No");
+  assert.ok(!noBattery.some((l) => /Energy Storage Capacity|Battery Manufacturer/i.test(l)),
+    `battery specs counted as expected page fields on a job with no battery: ${JSON.stringify(noBattery)}`);
+  // The PROGRAM question is answered No, not skipped — it must stay in the denominator, or a
+  // page really missing it would look fine.
+  assert.ok(noBattery.some((l) => /Wattsmart Battery Program/i.test(l)),
+    `the program question is answered, not skipped, and must still be expected: ${JSON.stringify(noBattery)}`);
+  assert.ok(noBattery.some((l) => /System Size/i.test(l)), JSON.stringify(noBattery));
+  // The segment stops at the advancing click, as before.
+  assert.ok(!noBattery.some((l) => /not in this segment/i.test(l)), JSON.stringify(noBattery));
+}
+
+async function testDriftDenominatorKeepsBatteryFieldsWhenThereIsABattery(): Promise<void> {
+  const withBattery = segmentLabels("Yes");
+  assert.ok(withBattery.some((l) => /Energy Storage Capacity/i.test(l)),
+    `a job WITH a battery must still expect its storage fields: ${JSON.stringify(withBattery)}`);
+  const unknown = segmentLabels("");
+  assert.ok(unknown.some((l) => /Energy Storage Capacity/i.test(l)),
+    `unknown battery state must replay as recorded, not silently shrink the check: ${JSON.stringify(unknown)}`);
+}
+
 const tests: Array<[string, () => Promise<void>]> = [
   ["RESOLVE: a hidden-only primary falls through to the visible fallback", testHiddenPrimaryFallsThroughToVisibleFallback],
   ["RESOLVE: a visible-but-DISABLED primary falls through too", testDisabledOnlyPrimaryFallsThroughToFallback],
@@ -1029,6 +1077,8 @@ const tests: Array<[string, () => Promise<void>]> = [
   ["Gap B: gapFill report is surfaced in the final-submit result", testGapFillReportInFinalSubmitResult],
   ["COVERED CONTROL: a clean readback withdraws the suspicion", testCoveredWarningDischargedByCleanReadback],
   ["COVERED CONTROL: THE FAIL-SAFE — an unverified value keeps it standing", testCoveredWarningStandsWhenAValueDidNotHold],
+  ["PAGE DRIFT: a step this run will skip is not a missing field", testDriftDenominatorExcludesStepsThisRunWillSkip],
+  ["PAGE DRIFT: THE FAIL-SAFE — a real battery keeps its fields in the count", testDriftDenominatorKeepsBatteryFieldsWhenThereIsABattery],
 ];
 
 let failures = 0;

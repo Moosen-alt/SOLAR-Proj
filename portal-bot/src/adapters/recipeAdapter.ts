@@ -4166,6 +4166,15 @@ ${body.slice(0, 4000)}`);
       if (st.action === "click" || st.action === "goto" || st.action === "stopForReview") break;
       if (st.action !== "fill" && st.action !== "select") continue;
       if (st.optional || st.selector?.frame) continue;
+      // A STEP THIS RUN WILL NEVER EXECUTE IS NOT A MISSING FIELD.
+      //
+      // The same denominator error as counting blanks with nothing to divide by. This project
+      // has no battery, so the recipe's storage steps are skipped by design — and where the
+      // portal only renders those controls once storage is declared, their labels are
+      // genuinely not on the page. Counting them as "recorded fields not found" made a
+      // correct filing read as 4/14 and emitted "the portal may have changed; verify", which
+      // was the last blocking warning standing on PGE.
+      if (this.skipForNoBattery(st)) continue;
       const label = (st.note || st.selector?.label || st.selector?.name || st.selector?.placeholder || "")
         .replace(/^human-patch:\s*/i, "")
         .replace(/\s*—\s*SENSITIVE.*$/i, "")
