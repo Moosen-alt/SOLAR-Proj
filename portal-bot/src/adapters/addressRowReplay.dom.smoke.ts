@@ -74,12 +74,16 @@ const makeRecipe = (): PortalRecipe => ({
 } as unknown as PortalRecipe);
 
 const browser = await chromium.launch();
+// Production pages get this from openPortal (browser.ts NAME_SHIM); esbuild's keepNames
+// wraps nameable functions as __name(fn) and a raw page has no such global.
+const ctx = await browser.newContext();
+await ctx.addInitScript("globalThis.__name = globalThis.__name || function (fn) { return fn; };");
 
 // ---------------------------------------------------------------------------
 // MUST PASS — the replay project's row, chosen by its own address.
 // ---------------------------------------------------------------------------
 {
-  const page = await browser.newPage();
+  const page = await ctx.newPage();
   const adapter = new RecipeAdapter(makeRecipe(), { streetNumber: "3500", street: "3500 Pan American Dr" }, {}, { autoSubmit: false });
   (adapter as unknown as { page: unknown }).page = page;
   const result = await adapter.fillApplication({} as never);
@@ -103,7 +107,7 @@ const browser = await chromium.launch();
 // MUST EXCLUDE — an address the search did not return is not matched to some other row.
 // ---------------------------------------------------------------------------
 {
-  const page = await browser.newPage();
+  const page = await ctx.newPage();
   const adapter = new RecipeAdapter(makeRecipe(), { streetNumber: "77", street: "77 Nowhere Way" }, {}, { autoSubmit: false });
   (adapter as unknown as { page: unknown }).page = page;
   await adapter.fillApplication({} as never);

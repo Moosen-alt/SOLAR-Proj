@@ -4207,7 +4207,13 @@ ${body.slice(0, 4000)}`);
     // permit portal — and re-learning ePermitting will never fix that. Say so plainly, and
     // deliberately WITHOUT the "recipe step failed" prefix, so the backend does not flag this
     // recipe stale and queue a pointless re-learn of a portal that is working correctly.
-    if (!picked && !(await this.addressSearchHadResults())) {
+    // ...AND ONLY OREGON'S. This message names a specific statewide portal and tells the
+    // operator to go find the AHJ's own; generalised to every portal it fired on Miami, whose
+    // own portal is the one we are already standing in. Scoped to the Accela/ePermitting
+    // shape that earned it.
+    const isEPermitting = /work location/i.test(String(step.note ?? ""))
+      || /accela|epermitting/i.test(String(this.recipe.portalPlatform ?? ""));
+    if (!picked && isEPermitting && !(await this.addressSearchHadResults())) {
       throw new Error(
         `ADDRESS NOT IN OREGON EPERMITTING: the statewide portal returned no results for ${num} ${street}. `
         + `Participation is voluntary, so this almost certainly means ${this.recipe.ahj || "this jurisdiction"} runs its own permit portal. `
@@ -4286,8 +4292,16 @@ ${body.slice(0, 4000)}`);
     // A CLICK THAT LANDS IS NOT A CLICK THAT WORKED. Playwright happily clicks a plain <td>,
     // so the widened candidate list would report success on any grid whose row is inert.
     // Every candidate is judged on whether the page moved, not on whether the click threw.
+    // A SNAPSHOT THAT CANNOT THROW. advanceSignatureOf declares helpers inside the
+    // evaluate, so on a page without the __name shim it throws, the catch turns it into ""
+    // and every candidate then reads as "did not move" — the fixture caught exactly that.
+    // One arrow function, no nested declarations, nothing to shim.
+    const snap = async (): Promise<string> => await this.page.evaluate(() =>
+      `${location.href}|${(document.querySelector("h1, h2, h3")?.textContent || "").trim().slice(0, 60)}`
+      + `|${document.querySelectorAll("tr, li, option").length}|${(document.body?.innerText || "").length}`,
+    ).catch(() => "") as string;
     const beforeUrl = typeof this.page.url === "function" ? String(this.page.url() ?? "") : "";
-    const beforeSig = await advanceSignatureOf(this.page).catch(() => "");
+    const beforeSig = await snap();
     for (const cand of [
       row.locator("a:has-text('Select')").first(),
       row.locator("a[href], button, input[type='submit'], input[type='button'], [role='button']").first(),
@@ -4299,7 +4313,7 @@ ${body.slice(0, 4000)}`);
       await this.page.waitForLoadState?.("networkidle", { timeout: 12000 }).catch(() => null);
       await this.page.waitForTimeout?.(900).catch(() => null);
       const afterUrl = typeof this.page.url === "function" ? String(this.page.url() ?? "") : "";
-      const afterSig = await advanceSignatureOf(this.page).catch(() => "");
+      const afterSig = await snap();
       if ((afterUrl && afterUrl !== beforeUrl) || (beforeSig && afterSig && afterSig !== beforeSig)) return id;
     }
     return "";
