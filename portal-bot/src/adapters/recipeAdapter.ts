@@ -129,6 +129,16 @@ const OPEN_POPUP_SELECTOR = [
  *  constant because the end of the run has to be able to find it again and take it back. */
 /** How long to let a portal finish taking a file before saying it has not. Generous on
  *  purpose: a plan set is megabytes and a slow AHJ afternoon is not a defect. */
+/** How many blank fields ONE re-assert pass will try to put back. Was three, chosen when
+ *  the case in hand had one — and Ameren's contact block carries FIVE required fields, so
+ *  two of them were never attempted while the run reported all five blank. Still bounded:
+ *  a page that genuinely cannot be filled must not become a loop. */
+const REASSERT_MAX_FIELDS = 8;
+/** How many times to go round. A portal that blanks a field on re-render can blank the
+ *  re-assert too; a second pass separates "it needed saying twice" from "this block will not
+ *  hold", and the second answer is worth REPORTING rather than retrying forever. */
+const REASSERT_ROUNDS = 2;
+
 const UPLOAD_ACCEPT_MS = 30000;
 /** How long to let an upload indicator SHOW UP before concluding this portal has none. An
  *  uploader binds to the input's change event, so it is drawn after setInputFiles returns. */
@@ -3955,6 +3965,33 @@ ${body.slice(0, 4000)}`);
    *  FILLS ONLY — it never clicks, which is what makes it safe on the last page, where a
    *  click would carry a filing somewhere nobody asked for. */
   private async reassertBlanksOnce(pastReview: boolean): Promise<string[]> {
+    // ROUNDS, BECAUSE A PORTAL THAT BLANKS ON RE-RENDER CAN BLANK THE REPAIR TOO.
+    //
+    // Live on Ameren: gap-fill FILLED Email and Phone, and the sweep a moment later still
+    // found them empty on the same page — alongside seven notes saying other fields had been
+    // filled, gone blank, and been re-asserted. One pass assumes the repair sticks. A second
+    // separates "it needed saying twice" from "this block will not hold", and only the second
+    // of those is worth an operator's attention.
+    //
+    // Bounded hard and stops early on no progress, so a page that genuinely cannot be filled
+    // costs two passes, not a loop.
+    let remaining = await this.reassertPass(pastReview);
+    for (let round = 1; round < REASSERT_ROUNDS && remaining.length; round++) {
+      const before = remaining.length;
+      remaining = await this.reassertPass(pastReview);
+      if (remaining.length >= before) {
+        // No ground gained. Say so ONCE, in the terms the operator needs: this is not a
+        // value we failed to write, it is a page that will not keep it.
+        const names = remaining.slice(0, 5).map((b) => b.replace(/ — the portal flagged this field$/, "")).join(", ");
+        this.driftWarnings.push(`${remaining.length} required field(s) would not stay filled on this page after two passes (${names}) — the portal clears them on re-render; they need entering by hand before submit`);
+        break;
+      }
+    }
+    return remaining;
+  }
+
+  /** One pass of the re-assert. See reassertBlanksOnce for why there is more than one. */
+  private async reassertPass(pastReview: boolean): Promise<string[]> {
     let blanks = await this.emptyRequiredControls();
     if (blanks.length && !this.inPolicyRetry) {
       const norm = (t: string): string => t.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
@@ -3965,7 +4002,7 @@ ${body.slice(0, 4000)}`);
           const nb = norm(b.replace(/ — the portal flagged this field$/, ""));
           return nb === name || (nb.length > 6 && name.includes(nb)) || (name.length > 6 && nb.includes(name));
         });
-      }).slice(0, 3);
+      }).slice(0, REASSERT_MAX_FIELDS);
       if (refills.length) {
         this.inPolicyRetry = true;   // reuses the re-entry guard: no retry of a retry
         try {
