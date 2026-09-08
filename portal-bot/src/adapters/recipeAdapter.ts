@@ -60,6 +60,11 @@ const SUBMIT_KEYWORDS = /\b(submit|file application|finalize|finish|complete app
 // a MONTH and a YEAR -- that split, or an explicit card word, is what makes it a card.
 // "Amount" and "fees due" are project costs and never match at all. Being wrong here halts a
 // filing that could have continued, so this list only grows with evidence.
+/** An Accela-style record number: 187-26-000309-STR. The same shape the completion-page
+ *  capture already looks for, named here because a RECORDED one is a different problem: it
+ *  belongs to the application the learn session created, and can never exist again. */
+const RECORD_NUMBER = /\b\d{2,4}-\d{2}-\d{4,7}-?[A-Z]{0,4}\b/;
+
 const PAYMENT_FIELD = /\bcvv\b|\bcvc\b|\bccv\b|card ?(number|no\b|#)|cardholder|name on card|security code|credit ?card|debit ?card|(card|\bcc\b|credit|debit)[a-z ]{0,12}exp|exp(iration|\.)? ?(month|year)\b/i;
 
 function isPaymentField(step: RecipeStep): boolean {
@@ -2704,6 +2709,13 @@ ${body.slice(0, 4000)}`);
     const name = `${step.selector?.name || step.selector?.text || ""} ${step.note || ""}`.trim();
     const flaggedFinal = isFinalSubmitStep(step);
 
+    // A RECORD NUMBER FROM THE LEARN SESSION NAMES A FILING THAT IS NOT THIS ONE. Checked
+    // here, before the click is attempted, because the alternative is a 30s timeout on a
+    // link that cannot exist and a dead recipe behind it. Refuses on ambiguity; see
+    // reanchorRecordNumberLink for why several matches means STOP rather than guess.
+    const reanchored = await this.reanchorRecordNumberLink(step).catch(() => null);
+    if (reanchored) scoped = reanchored;
+
     // 1) Fee payment is NEVER automated — always blocked, even if (wrongly) flagged.
     if (PAY_FEE.test(name)) return false;
 
@@ -3881,6 +3893,49 @@ ${body.slice(0, 4000)}`);
     // the refusal surfaces pages later as an advance that "did not work" -- naming it here
     // is the difference between one line an operator can act on and a hunt through a wizard.
     this.driftWarnings.push(`the portal was still taking a document (${last}%) after ${Math.round(UPLOAD_ACCEPT_MS / 1000)}s — anything that commits it will be refused until it finishes`);
+  }
+
+  /** A RECORDED RECORD NUMBER NAMES SOMEBODY ELSE'S APPLICATION.
+   *
+   *  Coos Bay's structural recipe carries `click - human-patch: 187-26-000309-STR`: a link
+   *  named after the record the LEARN session created. That record is real, it belongs to a
+   *  filing made months ago, and it can never appear in a new run - so the step spends its
+   *  full 30s timeout and takes the recipe down with it, on all three attempts of the sweep.
+   *
+   *  The engine can do better than fail, and the safe version is narrow. The link this run
+   *  wants is the record THIS run just created. So: only when the recorded name is itself
+   *  record-shaped, only when it is genuinely absent, and only when EXACTLY ONE
+   *  record-shaped link is on the page, re-anchor to that one. Several means a records
+   *  LIST - the operator's real, already-filed applications - and there the answer is to
+   *  refuse and let the step fail, because clicking into a stranger's filing is far worse
+   *  than stopping. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async reanchorRecordNumberLink(step: RecipeStep): Promise<any | null> {
+    if (!this.page || step.action !== "click") return null;
+    const recorded = String(step.selector?.name ?? step.selector?.text ?? step.note ?? "")
+      .replace(/^human-patch:\s*/i, "").trim();
+    if (!recorded || !RECORD_NUMBER.test(recorded)) return null;
+    const links = this.page.getByRole("link");
+    const n = await links.count().catch(() => 0);
+    if (!n) return null;
+    const found: Array<{ i: number; text: string }> = [];
+    for (let i = 0; i < Math.min(n, 60); i++) {
+      const t = ((await links.nth(i).innerText().catch(() => "")) || "").trim();
+      const m = t.match(RECORD_NUMBER);
+      if (!m) continue;
+      if (m[0] === recorded) return null;              // it IS here; nothing to re-anchor
+      if (!(await this.isTrulyVisible(links.nth(i)))) continue;
+      found.push({ i, text: m[0] });
+    }
+    const distinct = [...new Set(found.map((f) => f.text))];
+    if (distinct.length !== 1) {
+      if (distinct.length > 1) {
+        this.driftWarnings.push(`the recipe clicks record "${recorded}" from its learn session, and this page offers ${distinct.length} different records - REFUSING to guess which is this filing`);
+      }
+      return null;
+    }
+    this.agingNotes.push(`the recipe clicks record "${recorded}" from its own learn session - re-anchored to "${distinct[0]}", the record this run created`);
+    return links.nth(found[0].i);
   }
 
   /** TICK A STYLED CHECKBOX THE WAY A PERSON DOES — BY ITS LABEL.
