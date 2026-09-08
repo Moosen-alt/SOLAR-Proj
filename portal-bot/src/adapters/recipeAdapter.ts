@@ -641,7 +641,21 @@ ${body.slice(0, 4000)}`);
           lastErr = err;
           if (!failureContext) failureContext = await this.captureFailureContext(step, stepIdx).catch(() => "");
           const isTimeout = err instanceof Error && /timeout|TimeoutError/i.test(err.message);
-          if (!isTimeout || attempt >= RETRY_BACKOFF_MS.length) break;
+          // A STRICT-MODE VIOLATION IS ALWAYS WORTH ONE MORE PASS, and it is not a timeout.
+          //
+          // Coos Bay's street number resolved to ONE element when the step narrowed it and to
+          // FOUR by the time the fill ran — Accela renders that address panel asynchronously,
+          // which the drift precheck already documents as reporting zero inputs for seconds.
+          // The narrowing was right for the DOM it saw and stale for the DOM it was used on.
+          // Retrying re-resolves against a settled page, where narrowing sees all four and
+          // picks one; breaking out instead turned a timing artefact into a dead recipe.
+          const isAmbiguous = err instanceof Error && /strict mode violation/i.test(err.message);
+          if ((!isTimeout && !isAmbiguous) || attempt >= RETRY_BACKOFF_MS.length) break;
+          if (isAmbiguous) {
+            this.driftWarnings.push(
+              `"${String(step.note ?? step.action).slice(0, 40)}" matched several controls by the time it was acted on — the page was still rendering; retried against the settled page`,
+            );
+          }
           // A RELOAD CANNOT CONJURE A CONTROL THE PAGE DOES NOT HAVE — and on PowerClerk it
           // costs more than time: the reload returns the wizard to its FIRST page, throwing
           // away where we are. Portals ask conditional questions ("Who will install this
@@ -672,6 +686,8 @@ ${body.slice(0, 4000)}`);
           //
           // Bounded to the START of the run, because after the entry step a recipe is
           // SUPPOSED to have navigated away and going back would undo its own progress.
+          // An ambiguity is a timing problem, not a stale-page one: settle, do not reload.
+          if (isAmbiguous) { await this.page.waitForLoadState?.("networkidle", { timeout: 8000 }).catch(() => null); continue; }
           const entryUrl = String(this.recipe.steps.find((s) => s.action === "goto")?.value || "");
           const here = String(this.page.url?.() ?? "");
           if (entryUrl && executed <= 1 && here && !here.startsWith(entryUrl)) {
