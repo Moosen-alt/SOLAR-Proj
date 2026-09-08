@@ -1,0 +1,102 @@
+// NOT HAVING A BATTERY IS AN ANSWER, NOT A REASON TO SAY NOTHING.
+//
+// A recipe learned on a job WITH storage records the whole section: the declaration that
+// asks whether there is a battery, and the specs that describe it. Replaying that onto a job
+// without one has two wrong outcomes and one right one.
+//
+//   Replay it as recorded  -> the utility is told this customer owns a Powerwall. This
+//                             actually happened on a live PacifiCorp NEM filing: 8 modules,
+//                             4 microinverters, hasBattery No, and a declared 13.5 kWh.
+//   Skip the whole section -> the portal marks "Energy Storage" required and the filing goes
+//                             in with a required field blank. This actually happened on a
+//                             live PGE replay -- it was the run's only blank.
+//   Answer the question No -> the specs are correctly left alone, and nothing is blank.
+//
+// The page below is the ordinary shape of that section on any interconnection portal: one
+// question, then the specs it governs.
+//   npx tsx portal-bot/src/adapters/batteryDeclaration.dom.smoke.ts
+import http from "node:http";
+import { chromium } from "playwright";
+import type { PortalRecipe, RecipeStep } from "../../../shared/src/types";
+import { RecipeAdapter } from "./recipeAdapter";
+import { sweepEmptyRequiredControls } from "../requiredControlSweep";
+
+let failures = 0;
+const check = (label: string, ok: boolean, detail = ""): void => {
+  if (ok) console.log(`  ok   - ${label}`);
+  else { failures++; console.error(`  FAIL - ${label}\n         ${detail}`); }
+};
+
+const PAGE = `<!doctype html><html><head><style>body{font:14px sans-serif;padding:16px}</style></head><body>
+  <h3>Energy Storage</h3>
+  <label for="ess">Energy Storage *</label>
+  <select id="ess"><option value="">Please select...</option><option>Yes</option><option>No</option></select>
+  <label for="cap">Energy Storage Capacity of Battery (kWh)</label>
+  <input id="cap" />
+  <label for="bmake">Battery Manufacturer</label>
+  <select id="bmake"><option>Select...</option><option>Tesla</option></select>
+</body></html>`;
+
+const server = http.createServer((_q, r) => { r.writeHead(200, { "Content-Type": "text/html" }); r.end(PAGE); });
+await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+const port = (server.address() as { port: number }).port;
+const url = `http://127.0.0.1:${port}/`;
+
+// Exactly what a learn on a battery job leaves behind: literals from THAT roof.
+const recipe = {
+  id: "bd1", scopeType: "utility", profileKey: "or|unknown|portland general electric", state: "OR",
+  ahj: "", utility: "Portland General Electric", portalPlatform: "powerclerk", portalUrl: url,
+  status: "complete", version: 1,
+  steps: [
+    { action: "select", phase: "fill", field: "", note: "Energy Storage", value: "Yes", selector: { css: "#ess" } },
+    { action: "fill", phase: "fill", field: "", note: "Energy Storage Capacity of Battery (kWh)", value: "13.5", selector: { css: "#cap" } },
+    { action: "select", phase: "fill", field: "", note: "Battery Manufacturer", value: "Tesla", selector: { css: "#bmake" } },
+  ] as unknown as RecipeStep[],
+  createdBy: "test", createdAt: "", updatedAt: "", notes: "", discipline: "",
+} as unknown as PortalRecipe;
+
+const run = async (hasBattery: string): Promise<{ ess: string; cap: string; make: string; blanks: string[] }> => {
+  const browser = await chromium.launch();
+  const context = await browser.newContext();
+  await context.addInitScript("globalThis.__name = globalThis.__name || function (fn) { return fn; };");
+  const page = await context.newPage();
+  await page.goto(url);
+  const a = new RecipeAdapter(recipe, { hasBattery }, {}, { autoSubmit: false });
+  (a as unknown as { page: unknown }).page = page;
+  await a.fillApplication({} as never);
+  const ess = await page.locator("#ess").inputValue().catch(() => "");
+  const cap = await page.locator("#cap").inputValue().catch(() => "");
+  const make = await page.locator("#bmake").inputValue().catch(() => "");
+  const blanks = (await sweepEmptyRequiredControls(page)).empty.map((e) => e.name);
+  await browser.close();
+  return { ess, cap, make, blanks };
+};
+
+const no = await run("No");
+console.log(`   no battery -> Energy Storage=${JSON.stringify(no.ess)} capacity=${JSON.stringify(no.cap)} make=${JSON.stringify(no.make)}`);
+console.log(`              -> still blank: ${JSON.stringify(no.blanks)}`);
+
+check("THE LIVE BLANK: the storage QUESTION is answered rather than skipped",
+  /^no$/i.test(no.ess), `Energy Storage came out ${JSON.stringify(no.ess)} — blank means the filing goes in incomplete`);
+
+check("...and it is answered NO, not replayed as the recorded Yes",
+  !/^yes$/i.test(no.ess), "the recipe declared a battery this customer does not own");
+
+check("...and the SPECS of the battery that does not exist stay empty",
+  no.cap === "" && !/tesla/i.test(no.make), `capacity=${JSON.stringify(no.cap)} make=${JSON.stringify(no.make)}`);
+
+check("...so the portal has nothing left to complain about",
+  !no.blanks.some((b) => /energy storage/i.test(b)), JSON.stringify(no.blanks));
+
+// THE FAIL-SAFE, from the other side: a job that DOES have a battery must still file one.
+const yes = await run("Yes");
+console.log(`   with battery -> Energy Storage=${JSON.stringify(yes.ess)} capacity=${JSON.stringify(yes.cap)} make=${JSON.stringify(yes.make)}`);
+
+check("A REAL BATTERY still files its declaration and its specs",
+  /^yes$/i.test(yes.ess) && yes.cap === "13.5" && /tesla/i.test(yes.make),
+  `ess=${JSON.stringify(yes.ess)} cap=${JSON.stringify(yes.cap)} make=${JSON.stringify(yes.make)}`);
+
+server.close();
+if (failures) { console.error(`\n${failures} battery-declaration check(s) FAILED.`); process.exit(1); }
+console.log("\nAll battery-declaration checks passed (real Chromium).");
+process.exit(0);

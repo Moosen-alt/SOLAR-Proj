@@ -1059,6 +1059,17 @@ ${body.slice(0, 4000)}`);
   }
 
   private resolveValue(step: RecipeStep): string {
+    // NOT HAVING A BATTERY IS AN ANSWER, AND IT IS "NO". This step is only reached now
+    // because it is the DECLARATION rather than a spec, and the recorded literal on it came
+    // from whichever roof the recipe was learned on — which had a battery, or the step would
+    // not exist. Replaying that literal would declare a battery the customer does not own,
+    // which is the failure this whole rule was written to stop: a live PacifiCorp replay
+    // once told the utility a Powerwall's capacity as fact about a job with no storage.
+    // Leaving it blank is not the alternative either — the portal marks it required, and it
+    // was this run's only blank on PGE.
+    if (this.isBatteryDeclaration(step) && /^(no|false|none|n)$/i.test(String(this.fieldValues.hasBattery ?? "").trim())) {
+      return "No";
+    }
     if (step.field) {
       // PREFER THE PORTAL'S OWN STRING for equipment models. The backend resolves
       // "<field>Certified" from the CEC list — the same list the portal builds its dropdown
@@ -1663,6 +1674,24 @@ ${body.slice(0, 4000)}`);
   // The learn side refuses to record this now, but recipes already recorded still exist, and
   // a shared recipe must adapt to the project it is replaying for. Skipping (rather than
   // failing) is right: the section is simply not part of this filing.
+  /** IS THIS THE QUESTION, OR IS IT THE SPECS?
+   *
+   *  "Energy Storage" / "Battery included?" ASK whether there is a battery — a job without
+   *  one answers No. "Battery Capacity (kWh)", "Battery Manufacturer", "Round-trip
+   *  efficiency" DESCRIBE a battery that does not exist, and those are what must be skipped
+   *  rather than filled from a recipe learned on some other roof.
+   *
+   *  Told apart by shape rather than by portal: a spec asks for a number, a make, a model or
+   *  a rating; a declaration is a bare storage noun, and a checkbox is always a declaration
+   *  because there is nothing else a checkbox could be. */
+  private isBatteryDeclaration(step: RecipeStep): boolean {
+    const label = `${step.note ?? ""} ${step.field ?? ""}`;
+    if (!/\bbatter(y|ies)\b|\benergy storage\b|\bess\b|\bstorage\b/i.test(label)) return false;
+    if (step.action === "check" || step.action === "uncheck") return true;
+    const SPEC = /capacity|kwh|kw\b|\bah\b|manufacturer|model|make|quantity|\bqty\b|\bsize\b|rating|voltage|efficiency|round-?trip|state of charge|serial|nameplate|inverter/i;
+    return !SPEC.test(label);
+  }
+
   private skipForNoBattery(step: RecipeStep): boolean {
     const raw = String(this.fieldValues.hasBattery ?? "").trim();
     if (!/^(no|false|none|n)$/i.test(raw)) return false; // unknown or yes → replay as recorded
@@ -1670,6 +1699,12 @@ ${body.slice(0, 4000)}`);
     // "Wattsmart Battery Program?" is a PROGRAM question answered No, not a spec — answering
     // it is correct and skipping it would leave a required question blank.
     if (/program\b/i.test(label)) return false;
+    // NEITHER IS THE QUESTION "IS THERE A BATTERY". Live on PGE: the recipe's "Energy Storage"
+    // step was skipped for a job with no battery, and the portal then reported "Energy
+    // Storage" as a REQUIRED FIELD LEFT BLANK — the run's only blank. Not having a battery is
+    // the answer to that question, not a reason to leave it unanswered. A declaration gets
+    // answered; only the SPECS of a battery that does not exist are skipped.
+    if (this.isBatteryDeclaration(step)) return false;
     return /\bbatter(y|ies)\b|\benergy storage\b|\bess\b|round-?trip|state of charge/i.test(label);
   }
 
