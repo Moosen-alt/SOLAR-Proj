@@ -226,10 +226,20 @@ Coos Bay patch. In order, with what each one actually was:
 | 4 | a drifted street-number selector | a **strict-mode violation** — 1 match when narrowed, 4 when used; Accela paints that panel late |
 | 7 | the address step failed | the **grid was scanned once** before the postback painted it, then returned false in silence |
 | 13 | three later steps broke | **my own legend regex** — `"* indicates a required field"` read as a blank, so `pageIsPassThrough` refused a page needing only Continue |
-| 16 | the advance was refused | **no job value** — `contractAmount` unset in the fixture, reported three steps after the field that caused it |
+| 16 | the advance was refused | **no job value** — `contractAmount` unset in the fixture, reported three steps after the field that caused it. Fixing it took the recipe to **46/49** |
 
-**LANDED BUT NOT VERIFIED LIVE:** the `contractAmount` fixture value (last row). One run
-confirms it.
+**VERIFIED, AND IT WAS THE LAST BLOCKER ON THAT RECIPE: 16 -> 46 of 49 (93.9%), nothing
+skipped.** The job value was the whole of it; the recipe then walked almost the entire
+application. It stops at an advance the portal refuses with one required field still blank —
+the next thing to read, from the page that run saved.
+
+**The 62-step Coos Bay recipe is now 9/62** (was 4), and fails somewhere genuinely different:
+`Record type "Residential - Electrical" is not offered`. That is the record-type guard working
+as designed — it refuses to check a type the portal does not list rather than guessing one —
+so the question is which record type this recipe should be filing under, not a defect.
+
+**FLEET AFTER THE DAY'S WORK:** PacifiCorp 97/98, Ameren 73/75, PGE 65/68, Coos Bay 46/49 and
+9/62. Four of five recipes now execute 93.9% or more of their steps.
 
 **THE RULE THIS SESSION PAID FOR, FIVE TIMES OVER.** Today produced five silent
 `return false` paths and four diagnostics that described something other than the thing being
