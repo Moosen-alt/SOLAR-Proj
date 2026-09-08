@@ -297,6 +297,10 @@ export interface ReplayRow {
     blankNames?: string[]; driftWarnings?: string[]; skippedNames?: string[]; unresolvedFields?: string[];
     /** Values read back from the portal after writing them, and those that would not hold. */
     fieldsVerified?: number; fieldsUnverified?: string[];
+    /** THE DENOMINATOR. Every control the portal itself marked required across the run.
+     *  "0 blanks" is the same sentence whether we satisfied thirty required fields or the
+     *  sweep never saw one; only this number separates a complete filing from a blind one. */
+    requiredFieldsSeen?: number; requiredFieldNames?: string[];
     /** The failure text in full — the scorer's reason truncates it where it matters. */
     message?: string;
   };

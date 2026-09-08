@@ -7,7 +7,7 @@ import { rankAddressVersions } from "../addressVersion";
 import { imageToPdfBytes, pdfNameFor, shouldConvertToPdf } from "../imageToPdf";
 import { fileTypeAllowed, UPLOAD_LABEL_PATTERNS, uploadForbidsSubstitute } from "./autoLearnAdapter";
 import { reviewComparison, scrapeReviewScreen as scrapeReviewScreenShared, type ReviewMismatch } from "../reviewScreenScraper";
-import { sweepEmptyRequiredControls } from "../requiredControlSweep";
+import { sweepEmptyRequiredControls, type EmptyRequired } from "../requiredControlSweep";
 import { openPortal } from "../browser";
 import { selectWithFallback } from "../comboboxFill";
 
@@ -132,6 +132,9 @@ export class RecipeAdapter extends BasePortalAdapter {
    *  evidence was being thrown away after each step. Counting it gives the operator the thing
    *  they actually asked for: how many of this filing's values are verified present in the
    *  portal, and which are not. */
+  /** Every control the portal marked REQUIRED across this run — the denominator for
+   *  "is everything this permit needs present". Paired with requiredStillEmpty. */
+  private requiredFieldsSeen: string[] = [];
   private fieldsVerified: string[] = [];
   private fieldsUnverified: string[] = [];
   /** Why each selector level was accepted or rejected, for the step currently resolving.
@@ -888,7 +891,7 @@ ${body.slice(0, 4000)}`);
         // the operator logged in concurrently and PowerClerk — one session per account —
         // killed the bot's. Name the real event when the page itself announces it.
         const ended = await this.sessionEndedBanner();
-        return fail(`${ended ? `THE PORTAL ENDED THIS SESSION mid-run ("${ended}") — commonly a concurrent login with the same account (some portals allow exactly one session per user). The step failure below is the symptom, not the cause. ` : ""}Recipe step failed (${step.action}${step.note ? ` — ${step.note}` : ""}): ${lastErr instanceof Error ? lastErr.message : String(lastErr)}${context}`, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, failedStepIndex: stepIdx, trace, slowSteps, requiredStillEmpty: this.requiredStillEmpty, unresolvedFields: this.unresolvedFields, fieldsVerified: this.fieldsVerified, fieldsUnverified: this.fieldsUnverified, pageShotDir: this.pageShotDir, outcomeShotPath: this.outcomeShotPath });
+        return fail(`${ended ? `THE PORTAL ENDED THIS SESSION mid-run ("${ended}") — commonly a concurrent login with the same account (some portals allow exactly one session per user). The step failure below is the symptom, not the cause. ` : ""}Recipe step failed (${step.action}${step.note ? ` — ${step.note}` : ""}): ${lastErr instanceof Error ? lastErr.message : String(lastErr)}${context}`, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, failedStepIndex: stepIdx, trace, slowSteps, requiredStillEmpty: this.requiredStillEmpty, unresolvedFields: this.unresolvedFields, fieldsVerified: this.fieldsVerified, fieldsUnverified: this.fieldsUnverified, requiredFieldsSeen: this.requiredFieldsSeen, pageShotDir: this.pageShotDir, outcomeShotPath: this.outcomeShotPath });
       }
       // Remember whether this step entered data, so the next advancing click waits for the
       // portal's autosave to commit (prevents blank-draft saves on PowerClerk).
@@ -937,7 +940,7 @@ ${body.slice(0, 4000)}`);
           // is the whole question. Capture it like any other failure.
           const driftContext = await this.captureFailureContext(step, stepIdx);
           closePrevStepTiming();
-          return fail(`${driftFail}${driftContext}`, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, failedStepIndex: stepIdx, trace, slowSteps, requiredStillEmpty: this.requiredStillEmpty, unresolvedFields: this.unresolvedFields, fieldsVerified: this.fieldsVerified, fieldsUnverified: this.fieldsUnverified, pageShotDir: this.pageShotDir, outcomeShotPath: this.outcomeShotPath });
+          return fail(`${driftFail}${driftContext}`, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, failedStepIndex: stepIdx, trace, slowSteps, requiredStillEmpty: this.requiredStillEmpty, unresolvedFields: this.unresolvedFields, fieldsVerified: this.fieldsVerified, fieldsUnverified: this.fieldsUnverified, requiredFieldsSeen: this.requiredFieldsSeen, pageShotDir: this.pageShotDir, outcomeShotPath: this.outcomeShotPath });
         }
       }
 
@@ -990,7 +993,7 @@ ${body.slice(0, 4000)}`);
         recordLink: capture.data?.recordLink || "",
         // What the LLM gap-fill added (and what it left blank for lack of real data) — same key
         // the hand-coded adapters surface, so the operator/UI sees a uniform report.
-        gapFill: this.gapFillReport, healedSteps: this.healedSteps, slowSteps, requiredStillEmpty: this.requiredStillEmpty, unresolvedFields: this.unresolvedFields, fieldsVerified: this.fieldsVerified, fieldsUnverified: this.fieldsUnverified, pageShotDir: this.pageShotDir, outcomeShotPath: this.outcomeShotPath,
+        gapFill: this.gapFillReport, healedSteps: this.healedSteps, slowSteps, requiredStillEmpty: this.requiredStillEmpty, unresolvedFields: this.unresolvedFields, fieldsVerified: this.fieldsVerified, fieldsUnverified: this.fieldsUnverified, requiredFieldsSeen: this.requiredFieldsSeen, pageShotDir: this.pageShotDir, outcomeShotPath: this.outcomeShotPath,
       });
     }
     closePrevStepTiming();
@@ -1017,7 +1020,7 @@ ${body.slice(0, 4000)}`);
       {
         executed, skipped, finalSubmitClicked: false, gapFill: this.gapFillReport,
         healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, slowSteps,
-        requiredStillEmpty: this.requiredStillEmpty, unresolvedFields: this.unresolvedFields, fieldsVerified: this.fieldsVerified, fieldsUnverified: this.fieldsUnverified, pageShotDir: this.pageShotDir,
+        requiredStillEmpty: this.requiredStillEmpty, unresolvedFields: this.unresolvedFields, fieldsVerified: this.fieldsVerified, fieldsUnverified: this.fieldsUnverified, requiredFieldsSeen: this.requiredFieldsSeen, pageShotDir: this.pageShotDir,
         outcomeShotPath: this.outcomeShotPath,
         reviewFieldsSeen: review.fieldsSeen, reviewFieldsConfirmed: review.confirmed, reviewMismatches: review.mismatches,
       },
@@ -3509,12 +3512,27 @@ ${body.slice(0, 4000)}`);
    * module select and an empty "Total System Export (kW) *". See that module for both
    * misses; the smoke reproduces the page.
    */
+  /** THE ONLY PLACE THE SWEEP IS CALLED, so the denominator cannot leak. Both callers want
+   *  the blanks; only one of them used to record what the portal ASKED for, and the one that
+   *  didn't is `pageIsPassThrough` — the path a page takes when its required fields arrived
+   *  already filled from the account. That is precisely the page whose required fields count,
+   *  and routing it through here is what keeps a clean run from printing "verified 47,
+   *  required 0" — a sentence that cannot be told apart from never having looked. */
+  private async sweepRequired(): Promise<{ empty: EmptyRequired[]; requiredSeen: string[] }> {
+    if (!this.page) return { empty: [], requiredSeen: [] };
+    const found = await sweepEmptyRequiredControls(this.page);
+    for (const name of found.requiredSeen) {
+      if (!this.requiredFieldsSeen.includes(name)) this.requiredFieldsSeen.push(name);
+    }
+    return found;
+  }
+
   private async emptyRequiredControls(): Promise<string[]> {
     if (!this.page) return [];
-    const found = await sweepEmptyRequiredControls(this.page);
+    const found = await this.sweepRequired();
     // Carry WHY a field counted as required into the operator's report: "the portal itself
     // flagged this" and "the label has an asterisk" warrant different amounts of trust.
-    return found.map((f) => (f.why === "complaint" || f.why === "unattributed-complaint"
+    return found.empty.map((f) => (f.why === "complaint" || f.why === "unattributed-complaint"
       ? `${f.name} — the portal flagged this field`
       : f.name));
   }
@@ -3533,7 +3551,7 @@ ${body.slice(0, 4000)}`);
     // two, because a wrong "yes" here CLICKS PAST the page, which is how an incomplete
     // application gets filed. The shared sweep is stricter, and strict is the safe
     // direction: the cost of a false "not pass-through" is that replay stops.
-    return (await sweepEmptyRequiredControls(this.page)).length === 0;
+    return (await this.sweepRequired()).empty.length === 0;
   }
 
   /** Are most of these recorded labels on the page right now? Used to spot an advance the

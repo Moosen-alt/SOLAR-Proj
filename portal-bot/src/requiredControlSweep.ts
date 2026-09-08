@@ -44,9 +44,11 @@ export interface EmptyRequired {
  * filled page trains the operator to ignore the warning, which is worse than not having
  * one. Every widening below is paired with a bound, and the smoke drives both directions.
  */
-export async function sweepEmptyRequiredControls(page: Page): Promise<EmptyRequired[]> {
-  if (!page || typeof page.evaluate !== "function") return [];
-  return await page.evaluate(() => {
+export async function sweepEmptyRequiredControls(
+  page: Page,
+): Promise<{ empty: EmptyRequired[]; requiredSeen: string[] }> {
+  if (!page || typeof page.evaluate !== "function") return { empty: [], requiredSeen: [] };
+  const swept = await page.evaluate(() => {
     // TWO GRADES OF COMPLAINT, BECAUSE ONE OF THEM IS ALSO ORDINARY PROSE.
     //
     // "This field is required" is a portal refusing a filing. "Please select an option" is
@@ -74,6 +76,7 @@ export async function sweepEmptyRequiredControls(page: Page): Promise<EmptyRequi
     const COMPLAINT = new RegExp(`${HARD.source}|${SOFT.source}`, "i");
     const PLACEHOLDER = /^(please\s+)?(select|choose)\b\.{0,3}$/i;
     const out: Array<{ name: string; why: string }> = [];
+    const requiredSeen: string[] = [];
     const push = (name: string, why: string): void => {
       const clean = String(name || "").replace(/\s*\*\s*$/, "").replace(/\s+/g, " ").trim().slice(0, 70);
       if (clean && !out.some((o) => o.name === clean)) out.push({ name: clean, why });
@@ -183,6 +186,16 @@ export async function sweepEmptyRequiredControls(page: Page): Promise<EmptyRequi
         || asterisk
         || claimed.has(el);
       if (!required) continue;
+      // EVERY REQUIRED CONTROL, not only the empty ones. "Nothing was left blank" is only
+      // half an answer: it cannot distinguish a page where twenty required fields were all
+      // filled from one where the portal asked for nothing. The operator's question — is
+      // everything this permit needs actually present — needs the denominator.
+      {
+        const seenName = (labelText
+          || (containerText && containerText.length <= 90 ? containerText : "")
+          || el.getAttribute("aria-label") || el.getAttribute("name") || "").replace(/\s*\*\s*$/, "").replace(/\s+/g, " ").trim().slice(0, 70);
+        if (seenName && !requiredSeen.includes(seenName)) requiredSeen.push(seenName);
+      }
 
       // "Filled" must mean filled. A native select resting on its placeholder reports that
       // option's text as .value, and a custom combobox is an input whose .value IS the
@@ -224,6 +237,16 @@ export async function sweepEmptyRequiredControls(page: Page): Promise<EmptyRequi
       push(text.replace(/\s*\*\s*/g, " ").trim(), "radio-group");
     }
 
-    return out.slice(0, 14);
-  }).catch(() => [] as Array<{ name: string; why: string }>) as EmptyRequired[];
+    return { empty: out.slice(0, 14), requiredSeen: requiredSeen.slice(0, 120) };
+  }).catch(() => ({ empty: [], requiredSeen: [] })) as { empty: EmptyRequired[]; requiredSeen: string[] };
+
+  // NORMALISE BEFORE RETURNING. The .catch above absorbs a page that throws, but not a page
+  // that RESOLVES with something else — a stub, a page mid-navigation, an evaluate the portal
+  // interrupted. This is a diagnostic: the worst it may ever do is report nothing. Iterating
+  // an undefined here would abort a filing that was otherwise going fine, which is the only
+  // outcome worse than a missing warning.
+  return {
+    empty: Array.isArray(swept?.empty) ? swept.empty : [],
+    requiredSeen: Array.isArray(swept?.requiredSeen) ? swept.requiredSeen : [],
+  };
 }

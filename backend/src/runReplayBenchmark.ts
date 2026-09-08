@@ -340,14 +340,20 @@ async function main(): Promise<void> {
         // works on every portal — a review screen does not exist on all of them.
         fieldsVerified: ((o.fieldsVerified as string[]) ?? []).length,
         fieldsUnverified: ((o.fieldsUnverified as string[]) ?? []),
+        requiredFieldsSeen: ((o.requiredFieldsSeen as string[]) ?? []).length,
+        requiredFieldNames: ((o.requiredFieldsSeen as string[]) ?? []).slice(0, 60),
       },
     });
     console.log(`${String(i + 1).padStart(2)}/${chosen.length} ${score.index} ${score.rung.padEnd(20)} ${c.key.slice(0, 44)}`);
     console.log(`      ${score.reason.slice(0, 160)}`);
     const ver = ((outcome as Record<string, unknown>).fieldsVerified as string[] | undefined)?.length ?? 0;
     const unver = ((outcome as Record<string, unknown>).fieldsUnverified as string[] | undefined) ?? [];
-    if (ver || unver.length) {
+    const req = ((outcome as Record<string, unknown>).requiredFieldsSeen as string[] | undefined) ?? [];
+    if (ver || unver.length || req.length) {
       console.log(`      VALUES VERIFIED IN THE PORTAL: ${ver}${unver.length ? `   NOT verified: ${unver.length} (${unver.slice(0, 3).join(", ").slice(0, 80)})` : ""}`);
+      // Read this line with the one above it. "verified 47, required 47" is a finished
+      // filing; "verified 47, required 0" means we never asked the portal what it wanted.
+      console.log(`      REQUIRED FIELDS THE PORTAL ASKED FOR: ${req.length}`);
     }
   }
 

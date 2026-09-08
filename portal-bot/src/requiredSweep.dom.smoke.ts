@@ -150,7 +150,7 @@ const page = await context.newPage();
 const sweep = async (key: string) => {
   await page.goto(`http://127.0.0.1:${port}/${key}`, { waitUntil: "domcontentloaded" });
   await page.waitForTimeout(60);
-  return await sweepEmptyRequiredControls(page);
+  return (await sweepEmptyRequiredControls(page)).empty;
 };
 
 // ---------------------------------------------------------------------------
@@ -211,6 +211,40 @@ check("THE LIVE FALSE POSITIVE: 'Please note: ... is required' is prose, not a b
 const orphan = await sweep("orphanComplaint");
 check("a complaint no field can own is still reported, not dropped",
   orphan.some((r) => r.why === "unattributed-complaint"), JSON.stringify(orphan));
+
+// ---------------------------------------------------------------------------
+// THE DENOMINATOR. "Nothing was left blank" is the same sentence whether the page had
+// twenty required fields and we filled all twenty, or whether the sweep saw nothing at
+// all and said so. Those are opposite facts. requiredSeen is what tells them apart, and
+// it is exactly the kind of value that can quietly go empty forever without one failing
+// test — a silent [] reads as a perfect score.
+// ---------------------------------------------------------------------------
+const seenOn = async (name: string): Promise<string[]> => {
+  await page.goto(`http://127.0.0.1:${port}/${name}`);
+  return (await sweepEmptyRequiredControls(page)).requiredSeen;
+};
+
+const filledSeen = await seenOn("filled");
+console.log(`   filled page: 0 blank, ${filledSeen.length} required seen -> ${JSON.stringify(filledSeen)}`);
+check("a CLEAN page still reports the required fields it satisfied",
+  filledSeen.length > 0,
+  "requiredSeen came back empty on a page with a required field — a clean score with no denominator is unfalsifiable");
+check("...and names the field the portal actually marked required",
+  filledSeen.some((n) => /Total System Export/i.test(n)), JSON.stringify(filledSeen));
+
+const blankSeen = await seenOn("pacificorp");
+check("a page with blanks counts them IN the required set, not beside it",
+  blankSeen.length >= 2, `${blankSeen.length} required seen on a page with two required controls: ${JSON.stringify(blankSeen)}`);
+
+// The legend page is the sharpest case for the whole idea. It reports ZERO blanks -- and
+// it should, both its asterisked fields are filled. Without a denominator that is
+// indistinguishable from a sweep that found nothing. With one it reads "two required
+// fields, both satisfied", which is the sentence the operator actually needs.
+const legendSeen = await seenOn("legend");
+check("a satisfied page proves it LOOKED: two asterisked fields, zero blank",
+  legendSeen.length === 2, `expected Email and Phone counted as required-and-satisfied, got ${JSON.stringify(legendSeen)}`);
+check("...and the LEGEND SENTENCE itself is not counted as a required field",
+  !legendSeen.some((n) => /asterisk|all information|is required/i.test(n)), JSON.stringify(legendSeen));
 
 await browser.close();
 server.close();
