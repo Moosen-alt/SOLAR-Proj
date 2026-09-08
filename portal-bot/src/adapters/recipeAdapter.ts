@@ -873,37 +873,8 @@ ${body.slice(0, 4000)}`);
       // "work location: … address row" is Accela's wording; "address row:" is what the
       // generic results-row pass records on any portal. Both mean the same thing: find the
       // row for THIS project's address, not the one the recipe was learned on.
-      if (!performed && /(work location:.*address row|address row:)/i.test(String(step.note ?? ""))) {
-        const num = String(this.fieldValues.streetNumber ?? "").trim();
-        const street = String(this.fieldValues.street ?? "").trim();
-        if (num && street) {
-          // ACA returns ONE ROW PER JURISDICTION for the same address — city and county
-          // both serve it. Which one is right is the discipline: a structural permit files
-          // with the CITY, an electrical one with the COUNTY, and the recorded note says
-          // which ("select city/structural address row"). Without that tiebreak the address
-          // match is ambiguous on essentially every search.
-          const wantCounty = /county|electrical/i.test(String(step.note ?? "")) && !/city/i.test(String(step.note ?? ""));
-          const picked = await this.pickAddressRow(num, street, wantCounty ? "county" : "city");
-          // AN EMPTY SEARCH IS A CONCLUSION, NOT A RETRY. Oregon ePermitting participation is
-          // VOLUNTARY: a jurisdiction that has not joined never appears in this search at all.
-          // So an address the statewide portal cannot find almost always means the AHJ runs
-          // its OWN permit portal — and re-learning ePermitting will never fix that. Say so
-          // plainly, and deliberately WITHOUT the "recipe step failed" prefix, so the backend
-          // does not flag this recipe stale and queue a pointless re-learn of a portal that
-          // is working correctly.
-          if (!picked && !(await this.addressSearchHadResults())) {
-            throw new Error(
-              `ADDRESS NOT IN OREGON EPERMITTING: the statewide portal returned no results for ${num} ${street}. `
-              + `Participation is voluntary, so this almost certainly means ${this.recipe.ahj || "this jurisdiction"} runs its own permit portal. `
-              + `Find and record that portal for this AHJ rather than re-recording this recipe.`,
-            );
-          }
-          if (picked) {
-            this.driftWarnings.push(`address row chosen by matching "${picked.slice(0, 52)}" (the recorded row label belongs to the city this recipe was learned on)`);
-            executed++;
-            succeeded = true;
-          }
-        }
+      if (!performed && /(work location:.*address row|\baddress row:)/i.test(String(step.note ?? ""))) {
+        if (await this.pickAddressRowForProject(step)) { executed++; succeeded = true; }
       }
       // ACA APPLY-FLOW RE-ENTRY. Accela Citizen Access serves one portal to many
       // jurisdictions and picks the jurisdiction from the ADDRESS SEARCH inside the Apply
@@ -2075,6 +2046,14 @@ ${body.slice(0, 4000)}`);
   }
 
   private async executeStep(step: RecipeStep, pastReview: boolean): Promise<boolean> {
+    // AN ADDRESS-ROW STEP HAS NO SELECTOR WORTH TRYING, so do not spend 30 seconds proving
+    // it. The generic pass records a marker that exists only during the learn click - by
+    // design, so the matcher gets its turn - and Playwright treats a selector that resolves
+    // to nothing as something to WAIT for: the first version burned a full click timeout
+    // and every retry (with page reloads) before the fallback below could run. Route on the
+    // note, the way the address-version tag already routes on its attribute.
+    if (/\baddress row:/i.test(String(step.note ?? ""))) return this.pickAddressRowForProject(step);
+
     // A recorded learn-time row tag can only be honoured by redoing the choice it stood for.
     // MATCH THE WHOLE ATTRIBUTE. A bare substring test also caught [data-al-resultrow="1"] —
     // the generic results-row marker — and routed it into the address-VERSION ranking, which
@@ -4207,6 +4186,42 @@ ${body.slice(0, 4000)}`);
    * Returns "" unless exactly one row matches — several candidates is a decision for the
    * human at review, not a guess that files against the wrong parcel.
    */
+  /** The address-row choice, made from THIS project's address rather than the recorded row.
+   *  Shared by the note-routed path (generic results grids, where there is no selector worth
+   *  trying) and the post-failure fallback (Accela, whose recorded "Select" link can still
+   *  work and is tried first). */
+  private async pickAddressRowForProject(step: RecipeStep): Promise<boolean> {
+    const num = String(this.fieldValues.streetNumber ?? "").trim();
+    const street = String(this.fieldValues.street ?? "").trim();
+    if (!num || !street) return false;
+    // ACA returns ONE ROW PER JURISDICTION for the same address — city and county both serve
+    // it. Which one is right is the discipline: a structural permit files with the CITY, an
+    // electrical one with the COUNTY, and the recorded note says which ("select
+    // city/structural address row"). Without that tiebreak the match is ambiguous on
+    // essentially every search.
+    const wantCounty = /county|electrical/i.test(String(step.note ?? "")) && !/city/i.test(String(step.note ?? ""));
+    const picked = await this.pickAddressRow(num, street, wantCounty ? "county" : "city");
+    // AN EMPTY SEARCH IS A CONCLUSION, NOT A RETRY. Oregon ePermitting participation is
+    // VOLUNTARY: a jurisdiction that has not joined never appears in this search at all. So
+    // an address the statewide portal cannot find almost always means the AHJ runs its OWN
+    // permit portal — and re-learning ePermitting will never fix that. Say so plainly, and
+    // deliberately WITHOUT the "recipe step failed" prefix, so the backend does not flag this
+    // recipe stale and queue a pointless re-learn of a portal that is working correctly.
+    if (!picked && !(await this.addressSearchHadResults())) {
+      throw new Error(
+        `ADDRESS NOT IN OREGON EPERMITTING: the statewide portal returned no results for ${num} ${street}. `
+        + `Participation is voluntary, so this almost certainly means ${this.recipe.ahj || "this jurisdiction"} runs its own permit portal. `
+        + `Find and record that portal for this AHJ rather than re-recording this recipe.`,
+      );
+    }
+    if (!picked) {
+      this.driftWarnings.push(`address row: no result matched ${num} ${street} — refusing to open an application against another property`);
+      return false;
+    }
+    this.driftWarnings.push(`address row chosen by matching "${picked.slice(0, 52)}" (the recorded row label belongs to the project this recipe was learned on)`);
+    return true;
+  }
+
   private async pickAddressRow(streetNumber: string, street: string, prefer: "city" | "county" = "city"): Promise<string> {
     if (!this.page || typeof this.page.evaluate !== "function") return "";
     const id = await this.page.evaluate((args: { num: string; street: string; prefer: string }) => {

@@ -4681,7 +4681,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             // A search that returned results is answered by clicking a result — try that
             // BEFORE hunting for another button, because on a results page there usually
             // isn't one. See clickMatchingResultRow.
-            if (await this.clickMatchingResultRow(_project, steps)) continue;
+            if (await this.clickMatchingResultRow(_project, steps)) { deadAdvances.delete(deadKey); continue; }
             if (await this.clickFallbackAdvance(steps, fields)) continue;
             if (await this.pressEnterInLastFilledField(steps, fields)) continue;
             break;
@@ -4774,7 +4774,16 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             // the planner just named a different control that also did nothing — 43, then 54,
             // then 56, three dead advances and three pages of budget, with the row it needed
             // to click sitting on screen the whole time.
-            if (blockers.length === 0 && await this.clickMatchingResultRow(_project, steps)) continue;
+            // A CONTROL THAT DID NOTHING WHILE IT WAS SHUT IS NOT A DEAD CONTROL.
+            // "Start New Application" is display:none on Miami's search page until a parcel
+            // is chosen. Clicked before the row, it does nothing and earns a ban; chosen
+            // after, it is the way forward. The row click just moved the page, so the state
+            // the ban was recorded against no longer exists — clear it and let the planner
+            // pick that control again.
+            if (blockers.length === 0 && await this.clickMatchingResultRow(_project, steps)) {
+              deadAdvances.delete(deadKey);
+              continue;
+            }
           } else {
             lastValidationErrors = [];
           }
@@ -4797,7 +4806,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       // A search page's control is often an icon with no name; Enter is what a person presses.
       if (await this.pressEnterInLastFilledField(steps, fields)) continue;
       // …and once the search has answered, the answer is the row.
-      if (await this.clickMatchingResultRow(_project, steps)) continue;
+      if (await this.clickMatchingResultRow(_project, steps)) { deadAdvances.delete(deadPageKey(url, fields.length)); continue; }
       break;
     }
 
