@@ -2889,7 +2889,10 @@ ${body.slice(0, 4000)}`);
   ): Promise<never> {
     if (!scoped || typeof scoped.count !== "function" || typeof scoped.nth !== "function") return scoped as never;
     let n = 0;
-    try { n = await scoped.count(); } catch { return scoped as never; }
+    try { n = await scoped.count(); } catch {
+      this.driftWarnings.push(`"${String(step.note ?? step.action).slice(0, 40)}" — could not count what its selector matched, so it was acted on unnarrowed`);
+      return scoped as never;
+    }
     if (n <= 1) return scoped as never;
     for (let i = 0; i < Math.min(n, 12); i++) {
       const c = scoped.nth(i) as { isVisible?: () => Promise<boolean>; isEnabled?: () => Promise<boolean> };
@@ -2902,7 +2905,13 @@ ${body.slice(0, 4000)}`);
       );
       return c as never;
     }
-    // Nothing visible and enabled among them: keep the familiar first-match failure shape.
+    // NOTHING VISIBLE AND ENABLED AMONG THEM — and say so. This branch returned `.first()`
+    // silently, which is the only path through this function that leaves no trace, so a
+    // strict-mode violation that survived the narrowing looked like the narrowing had never
+    // run. Every other branch here reports; this one was the blind spot.
+    this.driftWarnings.push(
+      `"${String(step.note ?? step.action).slice(0, 40)}" matched ${n} elements and NONE were visible and enabled — acted on the first, which is a guess`,
+    );
     return (typeof scoped.first === "function" ? scoped.first() : scoped) as never;
   }
 

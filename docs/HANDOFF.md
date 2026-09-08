@@ -209,6 +209,23 @@ resolved by its own. No re-record needed; the recipes were fine.
   at that phantom. A diagnostic that names a different element than the one used is worse than
   none, because it is believed.
 
+**COOS BAY NOW FILES TO ITS OWN JURISDICTION (2026-09-07).** The benchmark hardcoded one
+address for every portal, so Accela searched Coos Bay's parcel database for a SALEM address,
+found nothing, and never revealed its Continue button. `AHJ_ADDRESSES` now maps a jurisdiction
+to a **public civic address** (city halls — public record, and never a customer's home);
+unmapped jurisdictions keep the default and report the same dead end honestly. I had put this
+to the operator as something only they could supply — that was wrong. What was needed was an
+address that EXISTS in the parcel database, not a customer's.
+
+**Still failing at step 4** on a strict-mode violation: `input[id*='StreetNo4Search']` matches
+four elements (the box, its hidden watermark state, and a range's "To"), and `narrowToOne`
+should have reduced that. It reported nothing, and the one branch through that function which
+returns silently is the "nothing was visible and enabled" fallback — now instrumented, along
+with the count-failure path. **The next run says which branch it took instead of costing
+another guess.** Note the learner fills this box with `.first()` (autoLearnAdapter:2317) and
+RECORDS it without one (:2382), so the ambiguity is baked into the step; recording `.first()`
+semantics, or the `data-test-role`, would remove it at the source.
+
 **POWERCLERK NAMES ITS CONTROLS — USE THAT (2026-09-07).** The page a select-miss saves
 carries 91 `data-test-role` attributes, including exactly the disambiguators a day was spent
 inventing substitutes for:
