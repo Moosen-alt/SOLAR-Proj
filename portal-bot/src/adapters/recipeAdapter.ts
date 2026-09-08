@@ -1755,13 +1755,24 @@ ${body.slice(0, 4000)}`);
       homeownerName: this.fieldValues.homeownerName,
       isElectrical: wantsElectrical,
     });
+    // How many the grid offered, always — "which row did it pick" is unanswerable otherwise.
+    this.driftWarnings.push(`address grid: ${rows.length} result(s) offered for ${String(this.fieldValues.city ?? "(no city)")} ${String(this.fieldValues.zip ?? "")}`.slice(0, 140));
     if (ranked.length === 0) {
       this.driftWarnings.push(`address grid: none of ${rows.length} result(s) are in ${this.fieldValues.city ?? "(no city)"} ${this.fieldValues.zip ?? ""} — refusing to open an application against another property`);
       return false;
     }
     const best = rows[ranked[0].index];
     const okClick = await this.page.locator(`[data-al-row="${best.key}"]`).first()
-      .click({ timeout: 12000 }).then(() => true).catch(() => false);
+      .click({ timeout: 12000 }).then(() => true).catch((err: unknown) => {
+        // SAY WHY. This returned false in silence, so the step landed in `skipped` with no
+        // reason and the NEXT step — waiting for a Continue button that only appears once a
+        // row is chosen — took the blame. Coos Bay reported "work location: continue" timing
+        // out when the real event was one line earlier and unreported.
+        this.driftWarnings.push(
+          `address grid: found ${rows.length} result(s), chose ${JSON.stringify(String(best.text).slice(0, 60))} and could not click it — ${err instanceof Error ? err.message.slice(0, 90) : String(err).slice(0, 90)}`,
+        );
+        return false;
+      });
     if (!okClick) return false;
     await smartWait(this.page, 2500);
     this.driftWarnings.push(`address version re-ranked live: ${(ranked[0].text.match(/(CITY|COUNTY|DEQ)\s+APPLICATIONS/i) || ["this property"])[0]}${rejected.length ? `, ${rejected.length} other propert${rejected.length === 1 ? "y" : "ies"} rejected` : ""}`);
