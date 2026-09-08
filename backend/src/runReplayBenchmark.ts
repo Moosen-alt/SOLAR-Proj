@@ -114,7 +114,14 @@ const BENCH = {
   // skipped and Accela silently refused the next Continue — the refusal reported against the
   // ADVANCE, three steps after the field that caused it. A representative residential solar
   // contract value; it is a test draft that is never submitted.
-  contractAmount: "25000",
+  // TWO RECIPES, TWO NAMES FOR THE SAME THING. Coos Bay's structural recipe binds
+  // `contractAmount` for "Job Value($):" and its electrical sibling binds `jobValue`; the
+  // structural one carries a literal scope of work while the electrical one binds
+  // `description`. A learn records whatever the planner chose that day, so a fixture has to
+  // answer to every spelling or it reports gaps that are its own.
+  contractAmount: "25000", jobValue: "25000",
+  description: "Install 7.2 kW DC rooftop solar PV system: 18 modules with microinverters, "
+    + "roof-mounted on existing composition shingle, with AC disconnect at the meter.",
 
   // Documents are supplied too, but not from here: every upload slot the recipe asks for
   // gets a generated page headed "NOT A REAL DOCUMENT" (benchmarkPlaceholderDoc). Leaving
