@@ -60,6 +60,34 @@ question (values, option counts, row counts). A swallowed click still blocks, an
 when the snapshot could not be taken the message says so rather than claiming a
 comparison that never ran.
 
+## Corrected portal URLs (researched 2026-09-08) — OPS WORK LIST
+
+Several portals score `login_failed: the portal's login form was not recognised`, and the
+reason is not login detection: **the stored URL is a city information page, not a portal**.
+One resolved to Facebook. Found by reading each jurisdiction's own site for the link it
+tells applicants to use.
+
+| stored URL (wrong) | what it actually is | the real portal | platform |
+|---|---|---|---|
+| `www.cityofsacramento.gov` | department page | `https://aca-prod.accela.com/SACRAMENTO/Default.aspx` | Accela |
+| `snohomishcountywa.gov` | **redirects to facebook.com** | `https://pdspermitportal.snoco.org/pdsportal/app/landing` | PDS Permit Portal |
+| `www.akronohio.gov` | plans/permits info page | `https://akronco2.portal.iworq.net/portalhome/akronco2` | iWorQ |
+| `www.sandiego.gov` | solar-permit info page | `http://aca.accela.com/SANDIEGO` | Accela |
+| `www.lascruces.gov` | directory page | `https://aca-prod.accela.com/lascruces/Default.aspx` | Accela |
+| `www.miami.gov` | "Get a Permit to Install Solar Panels" | `http://apps.miamigov.com/iBuildPortal/` | iBuild |
+
+Still unresolved: `www.palmbayfl.gov` (the city points applicants at
+`palmbayflorida.org/building`, which fronts an iMS portal whose direct URL is not published),
+`business.ct.gov`, `permitwizard.dcra.dc.gov`, `www.miramarfl.gov`.
+
+**These are NOT applied.** Changing a stored credential's portal URL is operator data and
+touches the permit/utility scoping rule (CLAUDE.md #5 — a permit track must never resolve a
+utility URL). Apply them deliberately, one at a time, and re-run
+`npm run learn:benchmark -- --host <host>` after each to confirm the portal is reached.
+
+Note for prioritisation: three of the six are Accela, which is the platform the engine knows
+best — those are the cheapest to bring online.
+
 ## LEARN measured across 59 live portals (2026-09-08)
 
 `data/learn-benchmark/2026-09-08T14-52-38.json`. The learn half had not been measured since
