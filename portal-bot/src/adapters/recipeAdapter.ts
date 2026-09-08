@@ -127,6 +127,10 @@ const OPEN_POPUP_SELECTOR = [
 
 /** The one warning in this file that is a SUSPICION rather than an observation, kept as a
  *  constant because the end of the run has to be able to find it again and take it back. */
+/** How long to let a portal finish taking a file before saying it has not. Generous on
+ *  purpose: a plan set is megabytes and a slow AHJ afternoon is not a defect. */
+const UPLOAD_ACCEPT_MS = 30000;
+
 const COVERED_CONTROL_WARNING =
   "a dropdown or date picker stayed open after two Escapes — the next control may have been driven while covered; verify it by eye";
 
@@ -1811,6 +1815,7 @@ ${body.slice(0, 4000)}`);
           ]).then(([chooser]: [{ setFiles: (f: unknown) => Promise<void> }, unknown]) => chooser.setFiles(payload)).then(() => true).catch(() => false)
         : await loc.setInputFiles(payload).then(() => true).catch(() => false);
       if (!ok) continue;
+      await this.waitForUploadAccepted();
       this.sweptUploadLabels.add(key);
       filled++;
       this.driftWarnings.push(`attached ${hit.docType} to "${label.slice(0, 44)}" — a slot the recipe has no step for`);
@@ -2641,9 +2646,11 @@ ${body.slice(0, 4000)}`);
             scoped!.click({ timeout: 6000 }),
           ]);
           await chooser.setFiles(file);
+          await this.waitForUploadAccepted();
           return true;
         }
         await scoped!.setInputFiles(file);
+        await this.waitForUploadAccepted();
         return true;
       }
       default:
@@ -3736,6 +3743,63 @@ ${body.slice(0, 4000)}`);
    * module select and an empty "Total System Export (kW) *". See that module for both
    * misses; the smoke reproduces the page.
    */
+  /** A FILE HANDED TO THE BROWSER IS NOT A FILE THE PORTAL HAS TAKEN.
+   *
+   *  setInputFiles returns the instant the input holds the file; the transfer that follows
+   *  is the portal's own async upload, and everything the recipe does next -- the
+   *  description, the type, the Save that commits it -- happens while that is still in
+   *  flight. Live on Coos Bay: Accela's review page showed a filing that was otherwise
+   *  complete, the upload bar at 0%, Save greyed out, an empty attachment table and the
+   *  portal's own "Your documents are not yet saved" banner. Continue was refused after
+   *  that, and the run reported "the portal did not advance" -- true, and a symptom.
+   *
+   *  The learn side already waits for this ("ACA keeps the Save anchor inside a container it
+   *  reveals with JS only once the uploads finish"). Replay replays the recorded clicks and
+   *  waits for nothing. This is that wait, written portably: hold while any visible progress
+   *  indicator reads under 100%, and give up saying so rather than silently proceeding into
+   *  a Save the portal will refuse. */
+  private async waitForUploadAccepted(): Promise<void> {
+    if (!this.page || typeof this.page.evaluate !== "function") return;
+    const pending = async (): Promise<number | null> => await this.page.evaluate(() => {
+      const visible = (el: Element): boolean => {
+        const r = el.getBoundingClientRect();
+        if (r.width < 2 || r.height < 2) return false;
+        const cs = getComputedStyle(el as HTMLElement);
+        return cs.visibility !== "hidden" && cs.display !== "none" && Number(cs.opacity) !== 0;
+      };
+      let worst: number | null = null;
+      const note = (n: number): void => { if (n < 100 && (worst === null || n < worst)) worst = n; };
+      for (const el of Array.from(document.querySelectorAll("progress")) as HTMLProgressElement[]) {
+        if (!visible(el) || !(el.max > 0)) continue;
+        note(Math.round((el.value / el.max) * 100));
+      }
+      const bars = document.querySelectorAll('[role="progressbar"], .progress-bar, [class*="progress"], [class*="upload"]');
+      for (const el of Array.from(bars) as HTMLElement[]) {
+        if (!visible(el)) continue;
+        const now = Number(el.getAttribute("aria-valuenow"));
+        if (Number.isFinite(now) && now >= 0) { note(now); continue; }
+        const m = (el.innerText || "").trim().match(/^(\d{1,3})%$/);
+        if (m) note(Number(m[1]));
+      }
+      return worst;
+    }).catch(() => null) as number | null;
+
+    const first = await pending();
+    if (first === null) return;                      // nothing on this page reports progress
+    const deadline = Date.now() + UPLOAD_ACCEPT_MS;
+    let last = first;
+    while (Date.now() < deadline) {
+      await sleep(500);
+      const now = await pending();
+      if (now === null) return;                      // the indicator went away: taken
+      last = now;
+    }
+    // STILL UNFINISHED, AND SAY SO. A Save clicked over an incomplete upload is refused, and
+    // the refusal surfaces pages later as an advance that "did not work" -- naming it here
+    // is the difference between one line an operator can act on and a hunt through a wizard.
+    this.driftWarnings.push(`the portal was still taking a document (${last}%) after ${Math.round(UPLOAD_ACCEPT_MS / 1000)}s — anything that commits it will be refused until it finishes`);
+  }
+
   /** TICK A STYLED CHECKBOX THE WAY A PERSON DOES — BY ITS LABEL.
    *
    *  A portal that draws its own checkbox keeps the real <input> for form submission and
