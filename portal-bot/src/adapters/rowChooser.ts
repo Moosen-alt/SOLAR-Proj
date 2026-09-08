@@ -154,7 +154,7 @@ export interface AddressRowPick {
 }
 
 /**
- * Runs INSIDE the page. Marks the one results row matching `want` with data-al-rowpick="1"
+ * Runs INSIDE the page. Marks the one results row matching `want` with data-al-resultrow="1"
  * and returns what it found; returns null when nothing matches or the choice is ambiguous.
  *
  * `prefer` is the Accela city/county tiebreak: the same address appears once per issuing
@@ -190,7 +190,7 @@ export function markAddressRow(args: { want: string; prefer?: "city" | "county" 
   const wantWords = expand(args.want);
   if (wantWords.length < 2) return null;
 
-  document.querySelectorAll("[data-al-rowpick]").forEach((n) => n.removeAttribute("data-al-rowpick"));
+  document.querySelectorAll("[data-al-resultrow]").forEach((n) => n.removeAttribute("data-al-resultrow"));
 
   const candidates = Array.from(document.querySelectorAll("tbody tr, table tr, [role='row'], ul li, ol li"));
   const hits: Array<{ el: Element; text: string }> = [];
@@ -248,6 +248,6 @@ export function markAddressRow(args: { want: string; prefer?: "city" | "county" 
     if (cell) { target = cell; via = "cell"; }
   }
 
-  target.setAttribute("data-al-rowpick", "1");
+  target.setAttribute("data-al-resultrow", "1");
   return { text: chosen.text.slice(0, 120), via, matched: pool.length };
 }

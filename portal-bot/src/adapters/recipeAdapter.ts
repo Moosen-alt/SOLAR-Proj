@@ -743,11 +743,19 @@ ${body.slice(0, 4000)}`);
       // points at entirely the wrong problem. Capture before any reload can rewrite it.
       let failureContext = "";
       let succeeded = false;
+      // SUCCEEDED AND PERFORMED ARE NOT THE SAME THING. A step whose selector resolves to
+      // nothing returns false, is recorded as SKIPPED, and sets succeeded=true — it did not
+      // throw, so there is nothing to retry. The address-row fallback keyed on !succeeded
+      // therefore never ran for a skip, only for an exhausted timeout, which is Accela's
+      // shape and not the generic one: the generic pass records a marker selector that
+      // deliberately cannot resolve at replay, precisely so the matcher gets its turn.
+      let performed = false;
       for (let attempt = 0; attempt <= RETRY_BACKOFF_MS.length; attempt++) {
         try {
           const done = await this.executeStep(step, pastReview);
           if (done) executed++;
           else skipped.push(String(step.note || step.action).slice(0, 70));
+          performed = done;
           // The held-check distinguishes LANDED-THEN-LOST from NEVER-LANDED: only a
           // select that reported success is a candidate for "a re-render took it back".
           if (done && step.action === "select" && recordedStep?.field) this.landedSelectFields.add(String(recordedStep.field));
@@ -865,7 +873,7 @@ ${body.slice(0, 4000)}`);
       // "work location: … address row" is Accela's wording; "address row:" is what the
       // generic results-row pass records on any portal. Both mean the same thing: find the
       // row for THIS project's address, not the one the recipe was learned on.
-      if (!succeeded && /(work location:.*address row|address row:)/i.test(String(step.note ?? ""))) {
+      if (!performed && /(work location:.*address row|address row:)/i.test(String(step.note ?? ""))) {
         const num = String(this.fieldValues.streetNumber ?? "").trim();
         const street = String(this.fieldValues.street ?? "").trim();
         if (num && street) {
@@ -2068,7 +2076,11 @@ ${body.slice(0, 4000)}`);
 
   private async executeStep(step: RecipeStep, pastReview: boolean): Promise<boolean> {
     // A recorded learn-time row tag can only be honoured by redoing the choice it stood for.
-    if (step.selector?.css?.includes("data-al-row")) {
+    // MATCH THE WHOLE ATTRIBUTE. A bare substring test also caught [data-al-resultrow="1"] —
+    // the generic results-row marker — and routed it into the address-VERSION ranking, which
+    // only sees rows carrying a "Select" link. It found none, warned that the grid was empty,
+    // and the address matcher this step was written for never ran.
+    if (/data-al-row\s*=/.test(step.selector?.css ?? "")) {
       return this.pickAddressVersionLive(step);
     }
     if (this.isRecordTypeStep(step)) {

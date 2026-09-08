@@ -85,7 +85,7 @@ check("a results row with no link and no button is still found",
 check("...and the marker lands on the cell the portal styled as clickable",
   hit?.via === "cell",
   `via=${hit?.via}`);
-const markedIn = await page.locator('[data-al-rowpick="1"]').evaluate((el) => (el.closest("tr") as HTMLElement)?.id ?? "").catch(() => "?");
+const markedIn = await page.locator('[data-al-resultrow="1"]').evaluate((el) => (el.closest("tr") as HTMLElement)?.id ?? "").catch(() => "?");
 check("...inside the RIGHT row",
   markedIn === "hit",
   `the marker landed in row "${markedIn}"`);
@@ -106,7 +106,7 @@ check("an address that is not in the results is NOT matched to some other row",
 
 // The header's sort links are the only <a>s on this page. Marking one would click
 // "sort by Address" and read as a successful advance.
-const headerLink = await page.locator('thead [data-al-rowpick="1"]').count();
+const headerLink = await page.locator('thead [data-al-resultrow="1"]').count();
 check("the header row and its sort links are never the pick",
   headerLink === 0,
   `${headerLink} marker(s) landed in <thead>`);

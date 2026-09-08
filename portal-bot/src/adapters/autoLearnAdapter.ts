@@ -571,6 +571,23 @@ export function extractFieldsInPage(els: Element[]): RawField[] {
     }
     const aria = el.getAttribute("aria-label");
     if (aria) return aria.trim();
+    // A SUBMIT/BUTTON INPUT'S TEXT IS ITS VALUE. It has no textContent at all, so the
+    // fallbacks below reached `name` and labelled Miami's way forward "btnSubmit" —
+    // <input type="submit" name="btnSubmit" value="Start New Application">. The planner,
+    // offered a control called btnSubmit, went back to the Legal Agreement page instead.
+    // Classic ASP.NET renders every button this way, so this is most of the fleet.
+    //
+    // It also closes a safety hole in the other direction: a real "Submit Application"
+    // button whose label read as "btnSubmit" matched no SUBMIT_INTENT and could be clicked
+    // as an ordinary advance.
+    {
+      const t = el.tagName.toLowerCase();
+      const ty = (el.getAttribute("type") || "").toLowerCase();
+      if (t === "input" && (ty === "submit" || ty === "button" || ty === "reset")) {
+        const v = ((el as HTMLInputElement).value || el.getAttribute("value") || "").trim();
+        if (v) return v;
+      }
+    }
     const placeholder = el.getAttribute("placeholder");
     if (placeholder) return placeholder.trim();
     const name = el.getAttribute("name");
@@ -6040,7 +6057,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     const beforeFp = await this.pageFingerprint();
     const pick = await this.page.evaluate(markAddressRow, { want }).catch(() => null) as AddressRowPick | null;
     if (!pick) return false;
-    const target = this.page.locator('[data-al-rowpick="1"]').first();
+    const target = this.page.locator('[data-al-resultrow="1"]').first();
     if (!(await target.count().catch(() => 0))) return false;
     const clicked = await this.clickResilient(target).then(() => true).catch(() => false);
     if (!clicked) {
@@ -6064,7 +6081,13 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       // replay reads, and pickAddressRow re-derives the row from the replay project's own
       // address. Recording the literal row text would file every future job against this
       // project's parcel.
-      selector: { css: "tr, [role='row'], li" },
+      // A SELECTOR THAT CANNOT ACCIDENTALLY SUCCEED. Replay tries the recorded selector
+      // first and only falls back to the address matcher when it fails, so a broad
+      // "tr, [role=row], li" would resolve to the FIRST row on the page — the header, whose
+      // sort link is a real clickable — report success, and never run the matcher at all.
+      // This marker exists only during the learn click, so replay always reaches the
+      // matcher, which re-derives the row from ITS project's address.
+      selector: { css: '[data-al-resultrow="1"]' },
       note: `address row: pick the search result matching this project's address (learned on "${pick.text.slice(0, 40)}")`,
     });
     this.debug?.event({ type: "result_row_clicked", via: pick.via, matched: pick.matched, text: pick.text.slice(0, 60) });
