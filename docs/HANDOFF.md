@@ -60,6 +60,50 @@ question (values, option counts, row counts). A swallowed click still blocks, an
 when the snapshot could not be taken the message says so rather than claiming a
 comparison that never ran.
 
+## The review number was fiction, both times (2026-09-08, late)
+
+**Neither portal that "reached review" reached a review screen.** Read this before
+any number below that says otherwise.
+
+- **co-spokane-wa.smartgovcommunity.com** — pages=1, top rung. The page the planner
+  called review was an existing permit record: number E-B2402727, created 4/10/2024,
+  approved, issued, **closed**, at an address a hundred miles from the project, under
+  a different homeowner. The run's own `verification` block said so on the same run —
+  `accurate: false, confidence: high`, both site-address lines wrong, module count
+  wrong, contractor licence expired 2021. The ladder never asked.
+- **gilbertaz.seamlessdocs.com** — pages=1, 8 fills, top rung, on a form titled
+  *"Permit Extension Request"*. The stored URL was
+  `https://gilbertaz.seamlessdocs.com/f/permitext`, which Gilbert's own permits page
+  labels *"Request for Permit Extension"*. `TYPE_EXCLUDE` already refuses "extension"
+  and never got a vote, because the URL pointed straight at the form. **Noted as an
+  open operator item on 2026-09-04 and left in place for four days, inflating the
+  headline the whole time.** Corrected to the One Stop Shop self-service portal
+  (`onestopshop.gilbertaz.gov/apps/selfservice/#/home`), browser-verified read-only;
+  `last_login_ok_at` cleared, because what was verified was a public form loading.
+
+So the honest reading of every learn sweep before this: **0 portals have reached a
+review screen for the project being filed.** `reachedReview` is read off `review=true`
+in a page trace — the PLANNER'S CLAIM about a page — and nothing corroborated it. The
+ladder now requires the claim to survive the run's own verifier (`accurate === false`
+demotes to `recorded_steps` and names why). Absent or passing verdicts leave the rung
+alone; a gate that demoted on silence would zero the headline instead of correcting it.
+
+*Calibration, for whoever hits a demotion next:* `accurate === false` conflates "this
+is a different record" (Spokane) with "our review screen, some fills wrong". And the
+verifier has been wrong before — it called PGE's inverter Model a miss when the value
+had landed. Treat a demotion as a reason to read the `matches` array, not as ground
+truth. If it starts eating genuine reviews, narrow the trigger to the wrong-record
+signals (site address, record number) rather than any inaccuracy.
+
+## Fleet re-measure with honest page counts (2026-09-08, `22-37-30.json`)
+
+54 portals, 50 measured. **Access 24/50 (48%)**, usable-given-access 14/24 (58.3%),
+review-given-access reported as 2/24 (8.3%) — **and both of those two are the fiction
+above, so the real figure is 0**. `4 improved, 2 REGRESSED, 40 unchanged`; the two
+regressions are against a baseline measured with the broken page counts, so they are
+weak signal. Expect Spokane and Gilbert to show as REGRESSED on the next diff — that
+is the gate removing fiction, not portals falling.
+
 ## Fleet re-measure after the fixes (2026-09-08, `16-18-52.json`)
 
 | | first run | after fixes |
@@ -185,7 +229,7 @@ against it.
 | reached_form | 8 | walked in and filled NOTHING |
 | unreachable | 7 | WAF blocks, dead hosts, 2 harness backstops |
 | entered_application | 2 | |
-| **reached_review** | **2** | permiteyes.us, co-spokane-wa.smartgovcommunity.com |
+| **reached_review** | **2** | permiteyes.us, co-spokane-wa.smartgovcommunity.com — **neither is real**, see "The review number was fiction" above |
 
 ### The wall is login, and most of it is not ours to fix
 
