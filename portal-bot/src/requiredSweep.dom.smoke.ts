@@ -107,6 +107,16 @@ const PAGES: Record<string, string> = {
     <div class="form-group"><label for="p2">Meter number *</label><input id="p2" value="" />
       <span class="err">This field is required.</span></div>`),
 
+  // ---- NEGATIVE: THE OTHER LEGEND WORDING, which cost a live run ---------------------
+  // Oregon ePermitting's "Licensed Professional List" page carries only "* indicates a
+  // required field". The first legend guard covered "indicated with" and not "indicates a",
+  // so the sweep called it a blank, pageIsPassThrough refused to click through a page that
+  // needed nothing but Continue, and the whole Coos Bay flow stopped there.
+  legendIndicates: shell(`
+    <p><span>*</span> indicates a required field.</p>
+    <div class="form-group"><label for="lp">Licensed Professional</label>
+      <input id="lp" value="TML INTERNATIONAL" /></div>`),
+
   // ---- a complaint no control can own must still be reported -------------------------
   orphanComplaint: shell(`
     <div class="err">Please select at least one option before continuing.</div>
@@ -180,6 +190,10 @@ check("...and a real complaint on the same page is still caught",
   both.some((r) => /meter/i.test(r.name)), JSON.stringify(both));
 check("...without the legend adding a second, phantom entry",
   both.length === 1, JSON.stringify(both));
+
+const legend2 = await sweep("legendIndicates");
+check("THE LIVE FALSE POSITIVE: '* indicates a required field' is a legend, not a blank",
+  legend2.length === 0, `fabricated ${legend2.length}: ${JSON.stringify(legend2)}`);
 
 const orphan = await sweep("orphanComplaint");
 check("a complaint no field can own is still reported, not dropped",

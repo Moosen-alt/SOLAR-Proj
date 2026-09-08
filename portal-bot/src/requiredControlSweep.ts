@@ -63,7 +63,7 @@ export async function sweepEmptyRequiredControls(page: Page): Promise<EmptyRequi
     // run reported that sentence as a blank required field: a fabricated gap, on a page that
     // may have been complete. Legends describe the form's notation; complaints name a
     // failure. The tell is the notation talk.
-    const LEGEND = /asterisk|marked with|indicated (with|by)|denotes?\s|all information|all fields|fields? marked|red \*|\*\s*=|means required/i;
+    const LEGEND = /asterisk|marked with|indicat(e|es|ed|ing)|denotes?|all information|all fields|fields? marked|red \*|^\s*\*|\*\s*=|means required/i;
     const COMPLAINT = new RegExp(`${HARD.source}|${SOFT.source}`, "i");
     const PLACEHOLDER = /^(please\s+)?(select|choose)\b\.{0,3}$/i;
     const out: Array<{ name: string; why: string }> = [];
