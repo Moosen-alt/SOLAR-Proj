@@ -1774,8 +1774,21 @@ ${body.slice(0, 4000)}`);
       return false;
     }
 
+    // THE RECIPE'S OWN DISCIPLINE IS THE MOST RELIABLE SIGNAL HERE, and it was not consulted.
+    //
+    // Oregon ePermitting lists an address under several VERSIONS — "City Applications",
+    // "County Applications" — and which record types are offered depends on which one is
+    // chosen. Coos Bay's structural recipe wants "Residential - Structural" and finds it;
+    // its ELECTRICAL sibling wants "Residential - Electrical", which the version this ranks
+    // to does not offer at all, and the record-type guard then correctly refuses to file
+    // under a type the portal never listed. Both recipes ranked identically because
+    // `permitType` is unset on the project and the step note says only "address version".
+    //
+    // `recipe.discipline` is the field the learn stored for exactly this: "structural" on one
+    // and "electrical" on the other.
     const wantsElectrical = /elec/i.test(String(this.fieldValues.permitType ?? ""))
-      || /elec/i.test(String(step.note ?? ""));
+      || /elec/i.test(String(step.note ?? ""))
+      || /elec/i.test(String(this.recipe.discipline ?? ""));
     const { ranked, rejected } = rankAddressVersions(rows.map((r: { key: string; text: string }) => r.text), {
       city: this.fieldValues.city,
       zip: this.fieldValues.zip,
