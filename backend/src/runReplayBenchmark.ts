@@ -109,6 +109,12 @@ const BENCH = {
   // "Select..." and "7" — read off the live control once the option sample was scoped to it
   // instead of to the whole page. The earlier "Residential" was a guess that could never land.
   mainServiceRating: "200", pgeSchedule: "7",
+  // AN AHJ WILL NOT ADVANCE A PERMIT APPLICATION WITHOUT A JOB VALUE. Coos Bay's step 13
+  // binds `contractAmount` ("Job Value($):"), the fixture carried none, so the step was
+  // skipped and Accela silently refused the next Continue — the refusal reported against the
+  // ADVANCE, three steps after the field that caused it. A representative residential solar
+  // contract value; it is a test draft that is never submitted.
+  contractAmount: "25000",
 
   // Documents are supplied too, but not from here: every upload slot the recipe asks for
   // gets a generated page headed "NOT A REAL DOCUMENT" (benchmarkPlaceholderDoc). Leaving
