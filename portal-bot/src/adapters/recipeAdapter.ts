@@ -48,6 +48,26 @@ const SUBMIT_KEYWORDS = /\b(submit|file application|finalize|finish|complete app
 
 // A recorded step may carry an operator/recorder-set `isFinalSubmit` flag. This field
 // is not (yet) in the shared RecipeStep type, so read it structurally + type-safely.
+// CARD ENTRY IS A WALL, NOT A STEP. Hard safety rule #1: automation never pays a portal
+// fee. A recipe learned by a human who paid one carries their card fields, and replay used
+// to walk into them and fail on page drift at the fee page -- scored as a broken recipe when
+// what actually happened is the boundary working. Live: Coos Bay electrical, 53 of 62 steps,
+// stopping at CapFees.aspx with "CVV:", a month list and a year list still recorded ahead.
+//
+// Deliberately narrow, and narrowed again once its own smoke caught it. "Contractor Licence
+// Expiration Date" is on half the permit forms in this project and it is not a card, so a
+// bare "expiration date" cannot qualify. A card is the one thing that splits its expiry into
+// a MONTH and a YEAR -- that split, or an explicit card word, is what makes it a card.
+// "Amount" and "fees due" are project costs and never match at all. Being wrong here halts a
+// filing that could have continued, so this list only grows with evidence.
+const PAYMENT_FIELD = /\bcvv\b|\bcvc\b|\bccv\b|card ?(number|no\b|#)|cardholder|name on card|security code|credit ?card|debit ?card|(card|\bcc\b|credit|debit)[a-z ]{0,12}exp|exp(iration|\.)? ?(month|year)\b/i;
+
+function isPaymentField(step: RecipeStep): boolean {
+  if (step.action !== "fill" && step.action !== "select" && step.action !== "check") return false;
+  const label = `${step.note ?? ""} ${step.field ?? ""} ${step.selector?.label ?? ""} ${step.selector?.name ?? ""}`;
+  return PAYMENT_FIELD.test(label);
+}
+
 function isFinalSubmitStep(step: RecipeStep): boolean {
   return (step as { isFinalSubmit?: unknown }).isFinalSubmit === true;
 }
@@ -139,6 +159,9 @@ export class RecipeAdapter extends BasePortalAdapter {
    *  portal, and which are not. */
   /** Every control the portal marked REQUIRED across this run — the denominator for
    *  "is everything this permit needs present". Paired with requiredStillEmpty. */
+  /** Set when replay reached a payment card field and stopped there. Reported so the
+   *  scorecard can tell "we stopped where we must" from "the recipe fell over". */
+  private stoppedAtPayment = false;
   private requiredFieldsSeen: string[] = [];
   private fieldsVerified: string[] = [];
   private fieldsUnverified: string[] = [];
@@ -528,6 +551,20 @@ ${body.slice(0, 4000)}`);
         await this.sweepUnrecordedUploads().catch(() => 0);
       }
 
+      // STOP AT THE CARD, EVERY TIME, IN EVERY MODE. Not a skip: the steps after this one are
+      // the rest of the payment form, and walking through them to "see how far we get" is
+      // walking into a checkout. The filing is staged and a person pays and submits — the
+      // same handoff the final submit gets, at the boundary that comes before it.
+      if (isPaymentField(step)) {
+        this.stoppedAtPayment = true;
+        for (let k = stepIdx; k < this.recipe.steps.length; k++) {
+          const rest = this.recipe.steps[k];
+          skipped.push(`payment: ${String(rest.note ?? rest.field ?? rest.action).slice(0, 44)} (recorded, NOT entered)`);
+        }
+        await this.runGapFill(this.page);
+        break;
+      }
+
       if (step.action === "stopForReview") {
         if (!this.options.autoSubmit) {
           // Gap-fill the LAST data section once more before review: it is not followed by an
@@ -887,7 +924,7 @@ ${body.slice(0, 4000)}`);
         // the operator logged in concurrently and PowerClerk — one session per account —
         // killed the bot's. Name the real event when the page itself announces it.
         const ended = await this.sessionEndedBanner();
-        return fail(`${ended ? `THE PORTAL ENDED THIS SESSION mid-run ("${ended}") — commonly a concurrent login with the same account (some portals allow exactly one session per user). The step failure below is the symptom, not the cause. ` : ""}Recipe step failed (${step.action}${step.note ? ` — ${step.note}` : ""}): ${lastErr instanceof Error ? lastErr.message : String(lastErr)}${context}`, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, agingNotes: this.agingNotes, failedStepIndex: stepIdx, trace, slowSteps, requiredStillEmpty: this.requiredStillEmpty, unresolvedFields: this.unresolvedFields, fieldsVerified: this.fieldsVerified, fieldsUnverified: this.fieldsUnverified, requiredFieldsSeen: this.requiredFieldsSeen, pageShotDir: this.pageShotDir, outcomeShotPath: this.outcomeShotPath });
+        return fail(`${ended ? `THE PORTAL ENDED THIS SESSION mid-run ("${ended}") — commonly a concurrent login with the same account (some portals allow exactly one session per user). The step failure below is the symptom, not the cause. ` : ""}Recipe step failed (${step.action}${step.note ? ` — ${step.note}` : ""}): ${lastErr instanceof Error ? lastErr.message : String(lastErr)}${context}`, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, agingNotes: this.agingNotes, failedStepIndex: stepIdx, trace, slowSteps, requiredStillEmpty: this.requiredStillEmpty, unresolvedFields: this.unresolvedFields, fieldsVerified: this.fieldsVerified, fieldsUnverified: this.fieldsUnverified, requiredFieldsSeen: this.requiredFieldsSeen, stoppedAtPayment: this.stoppedAtPayment, pageShotDir: this.pageShotDir, outcomeShotPath: this.outcomeShotPath });
       }
       // Remember whether this step entered data, so the next advancing click waits for the
       // portal's autosave to commit (prevents blank-draft saves on PowerClerk).
@@ -936,7 +973,7 @@ ${body.slice(0, 4000)}`);
           // is the whole question. Capture it like any other failure.
           const driftContext = await this.captureFailureContext(step, stepIdx);
           closePrevStepTiming();
-          return fail(`${driftFail}${driftContext}`, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, agingNotes: this.agingNotes, failedStepIndex: stepIdx, trace, slowSteps, requiredStillEmpty: this.requiredStillEmpty, unresolvedFields: this.unresolvedFields, fieldsVerified: this.fieldsVerified, fieldsUnverified: this.fieldsUnverified, requiredFieldsSeen: this.requiredFieldsSeen, pageShotDir: this.pageShotDir, outcomeShotPath: this.outcomeShotPath });
+          return fail(`${driftFail}${driftContext}`, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, agingNotes: this.agingNotes, failedStepIndex: stepIdx, trace, slowSteps, requiredStillEmpty: this.requiredStillEmpty, unresolvedFields: this.unresolvedFields, fieldsVerified: this.fieldsVerified, fieldsUnverified: this.fieldsUnverified, requiredFieldsSeen: this.requiredFieldsSeen, stoppedAtPayment: this.stoppedAtPayment, pageShotDir: this.pageShotDir, outcomeShotPath: this.outcomeShotPath });
         }
       }
 
@@ -991,7 +1028,7 @@ ${body.slice(0, 4000)}`);
         recordLink: capture.data?.recordLink || "",
         // What the LLM gap-fill added (and what it left blank for lack of real data) — same key
         // the hand-coded adapters surface, so the operator/UI sees a uniform report.
-        gapFill: this.gapFillReport, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, agingNotes: this.agingNotes, slowSteps, requiredStillEmpty: this.requiredStillEmpty, unresolvedFields: this.unresolvedFields, fieldsVerified: this.fieldsVerified, fieldsUnverified: this.fieldsUnverified, requiredFieldsSeen: this.requiredFieldsSeen, pageShotDir: this.pageShotDir, outcomeShotPath: this.outcomeShotPath,
+        gapFill: this.gapFillReport, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, agingNotes: this.agingNotes, slowSteps, requiredStillEmpty: this.requiredStillEmpty, unresolvedFields: this.unresolvedFields, fieldsVerified: this.fieldsVerified, fieldsUnverified: this.fieldsUnverified, requiredFieldsSeen: this.requiredFieldsSeen, stoppedAtPayment: this.stoppedAtPayment, pageShotDir: this.pageShotDir, outcomeShotPath: this.outcomeShotPath,
       });
     }
     closePrevStepTiming();
@@ -1032,7 +1069,7 @@ ${body.slice(0, 4000)}`);
       {
         executed, skipped, finalSubmitClicked: false, gapFill: this.gapFillReport,
         healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, agingNotes: this.agingNotes, slowSteps,
-        requiredStillEmpty: this.requiredStillEmpty, unresolvedFields: this.unresolvedFields, fieldsVerified: this.fieldsVerified, fieldsUnverified: this.fieldsUnverified, requiredFieldsSeen: this.requiredFieldsSeen, pageShotDir: this.pageShotDir,
+        requiredStillEmpty: this.requiredStillEmpty, unresolvedFields: this.unresolvedFields, fieldsVerified: this.fieldsVerified, fieldsUnverified: this.fieldsUnverified, requiredFieldsSeen: this.requiredFieldsSeen, stoppedAtPayment: this.stoppedAtPayment, pageShotDir: this.pageShotDir,
         outcomeShotPath: this.outcomeShotPath,
         reviewFieldsSeen: review.fieldsSeen, reviewFieldsConfirmed: review.confirmed, reviewMismatches: review.mismatches,
       },

@@ -58,6 +58,8 @@ export interface ReplayOutcome {
   /** Selectors replay had to re-anchor. Not a failure, but a recipe that is drifting. */
   healedSteps?: unknown[];
   driftWarnings?: string[];
+  /** True when replay reached a payment card field and stopped there, as it must. */
+  stoppedAtPayment?: boolean;
   /** Self-heals and correct decisions: reported, but not defects in this filing. */
   agingNotes?: string[];
   /** Steps that had NOTHING TO TYPE — the project carried no value. A data gap, not drift. */
@@ -234,7 +236,14 @@ export function scoreReplayOutcome(outcome: ReplayOutcome): ReplayScore {
   const fieldsSeen = Number(outcome.reviewFieldsSeen ?? 0);
 
   // Anything less than a whole run is a gap, however tidy the summary reads.
-  const realSkips = skipped.filter((sName) => !/final submit|isFinalSubmit|NOT clicked/i.test(String(sName)));
+  // A PAYMENT STOP IS THE RULE WORKING, NOT A RUN FALLING OVER. Automation never pays a
+  // portal fee, so a recipe learned by someone who did carries card fields the replay must
+  // refuse. Counting those refusals as steps that "did not land" scored the first hard safety
+  // rule as a defect and blamed the recipe — the same mistake the declined final submit
+  // already had to be rescued from, one boundary earlier.
+  const stoppedAtPayment = outcome.stoppedAtPayment === true;
+  const isPaymentSkip = (n: string): boolean => /^payment: |NOT entered/i.test(n);
+  const realSkips = skipped.filter((sName) => !/final submit|isFinalSubmit|NOT clicked/i.test(String(sName)) && !isPaymentSkip(String(sName)));
   if (blanks.length || realSkips.length || healed || drift.length) {
     // Separate the two kinds of gap before naming anyone: steps that had nothing to type,
     // and steps that tried and did not land.
@@ -242,7 +251,7 @@ export function scoreReplayOutcome(outcome: ReplayOutcome): ReplayScore {
     // system's first hard safety rule — so the recipe records it and replay declines it,
     // every single run. Counting that as a step that "did not land" scored the safety rule
     // as a defect and pushed the owner to `recipe` on a run where nothing had gone wrong.
-    const isDeclinedSubmit = (n: string): boolean => /final submit|isFinalSubmit|NOT clicked/i.test(n);
+    const isDeclinedSubmit = (n: string): boolean => /final submit|isFinalSubmit|NOT clicked/i.test(n) || isPaymentSkip(n);
     const failedSteps = skipped.filter((sName) => !unresolvedSet.has(String(sName)) && !isDeclinedSubmit(String(sName)));
     const missingData = skipped.filter((sName) => unresolvedSet.has(String(sName)) && !isDeclinedSubmit(String(sName)));
     const parts = [
@@ -271,6 +280,9 @@ export function scoreReplayOutcome(outcome: ReplayOutcome): ReplayScore {
   // not silently lose it. If the engine reached a control by its own route rather than by the
   // recorded selector, the filing is fine and the RECIPE is aging -- say so on the row, so
   // "clean" never quietly becomes "nothing to do here".
+  const paymentTail = stoppedAtPayment
+    ? " — STOPPED AT THE PAYMENT PAGE: the filing is staged and a person pays the fee and submits (automation never pays)"
+    : "";
   const agingTail = aging.length
     ? ` — note: ${aging.length} step(s) needed a route other than the recorded one (${aging.slice(0, 2).join("; ").slice(0, 120)}); the recipe is worth re-recording`
     : "";
@@ -280,7 +292,7 @@ export function scoreReplayOutcome(outcome: ReplayOutcome): ReplayScore {
   if (!fieldsSeen) {
     return {
       rung: "replayed_clean", index: 4, owner: "engine",
-      reason: `every recorded step ran and nothing was left blank, but the review screen could not be read — the filing is UNVERIFIED${agingTail}`,
+      reason: `every recorded step ran and nothing was left blank, but the review screen could not be read — the filing is UNVERIFIED${paymentTail}${agingTail}`,
     };
   }
   // READING A REVIEW SCREEN IS NOT CHECKING IT.
@@ -294,7 +306,7 @@ export function scoreReplayOutcome(outcome: ReplayOutcome): ReplayScore {
   if (confirmed < MIN_CONFIRMED_FIELDS && !mismatches.length) {
     return {
       rung: "replayed_clean", index: 4, owner: "engine",
-      reason: `every recorded step ran and nothing was left blank, and the review screen was read (${fieldsSeen} field(s)) — but only ${confirmed} project value(s) could be confirmed on it, which is too few to call the filing verified${agingTail}`,
+      reason: `every recorded step ran and nothing was left blank, and the review screen was read (${fieldsSeen} field(s)) — but only ${confirmed} project value(s) could be confirmed on it, which is too few to call the filing verified${paymentTail}${agingTail}`,
     };
   }
   if (mismatches.length) {
@@ -307,7 +319,7 @@ export function scoreReplayOutcome(outcome: ReplayOutcome): ReplayScore {
 
   return {
     rung: "verified_accurate", index: 5, owner: "none",
-    reason: `replayed ${executed} step(s) clean; the review screen shows ${fieldsSeen} field(s) and ${confirmed} project value(s) were confirmed present with no mismatch${agingTail}`,
+    reason: `replayed ${executed} step(s) clean; the review screen shows ${fieldsSeen} field(s) and ${confirmed} project value(s) were confirmed present with no mismatch${paymentTail}${agingTail}`,
   };
 }
 
