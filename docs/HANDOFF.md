@@ -362,9 +362,16 @@ own omissions.** Supplying both: **15/62 -> 46/62.**
 
 Both Coos Bay recipes now execute 46 steps with nothing skipped and stop at the same wall — an
 advance the portal refuses. The 62-step still shows one blank, `*Other Category of
-Construction:`, a conditional field whose own step (index 39) ran earlier: the classic
-late-rendering conditional this file already handles for policy questions, and the next thing
-to apply the same treatment to.
+Construction:`, a conditional field whose own step (index 39) ran earlier and reported success
+— so it was filled and then went blank, which is a re-render rather than a missing value.
+
+A re-assert pass now runs before each advancing click: any blank required control the recipe
+holds a step for is re-run once (bounded to three, re-entry guarded). **It did not resolve this
+one**, and the run reported nothing either way — because the first version only spoke when the
+re-fill SUCCEEDED, which would have made it the sixth silent path in this file. It now reports
+both outcomes, so the next run distinguishes "re-asserted" from "its control is no longer on
+this page". Start there: that one line decides whether the field needs re-filling at a
+different moment or the step is simply on the wrong page by then.
 
 **FLEET AFTER THE DAY'S WORK:** PacifiCorp 97/98 (99.0%), Ameren 73/75 (97.3%), PGE 65/68
 (95.6%), Coos Bay 46–47/49 (~95%) and **46/62 (74.2%)** — a fleet mean of **327/352 = 92.9%**,

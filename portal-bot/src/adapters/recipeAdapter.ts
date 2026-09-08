@@ -624,11 +624,13 @@ ${body.slice(0, 4000)}`);
             try {
               for (const rs of refills) {
                 const done = await this.executeStep(rs, pastReview).catch(() => false);
-                if (done) {
-                  this.driftWarnings.push(
-                    `"${String(rs.note ?? rs.field ?? "").slice(0, 44)}" was filled earlier and had gone blank again — re-asserted before advancing (the portal re-rendered it)`,
-                  );
-                }
+                // BOTH OUTCOMES, or this becomes the sixth silent path in this file. A
+                // re-assert that fails says something different from one that was never
+                // attempted, and today proved repeatedly that the difference is the whole
+                // diagnosis.
+                this.driftWarnings.push(done
+                  ? `"${String(rs.note ?? rs.field ?? "").slice(0, 40)}" was filled earlier and had gone blank — re-asserted before advancing (the portal re-rendered it)`
+                  : `"${String(rs.note ?? rs.field ?? "").slice(0, 40)}" is blank and its recorded step could not re-fill it here — the control may no longer be on this page`);
               }
             } finally { this.inPolicyRetry = false; }
             blanks = await this.emptyRequiredControls();
