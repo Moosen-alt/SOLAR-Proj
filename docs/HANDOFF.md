@@ -354,11 +354,21 @@ never `recipe.discipline`, the field the learn stored for exactly this purpose:
 62-step  discipline "electrical"  -> address version: COUNTY APPLICATIONS
 ```
 
-**9/62 -> 15/62**, past the record-type wall. It now stops at a refused advance with two blanks,
-which is the same well-posed shape its sibling is in.
+**9/62 -> 15/62**, past the record-type wall. Then the two blanks it reported turned out to be
+the fixture's own: the structural recipe binds `contractAmount` and a literal scope of work,
+the electrical one binds `jobValue` and `description`. **A learn records whatever the planner
+chose that day, so the benchmark project has to answer to every spelling or it measures its
+own omissions.** Supplying both: **15/62 -> 46/62.**
+
+Both Coos Bay recipes now execute 46 steps with nothing skipped and stop at the same wall — an
+advance the portal refuses. The 62-step still shows one blank, `*Other Category of
+Construction:`, a conditional field whose own step (index 39) ran earlier: the classic
+late-rendering conditional this file already handles for policy questions, and the next thing
+to apply the same treatment to.
 
 **FLEET AFTER THE DAY'S WORK:** PacifiCorp 97/98 (99.0%), Ameren 73/75 (97.3%), PGE 65/68
-(95.6%), Coos Bay 46–47/49 (~95%) and 15/62. Four of five recipes at or about 95%; the fifth
+(95.6%), Coos Bay 46–47/49 (~95%) and **46/62 (74.2%)** — a fleet mean of **327/352 = 92.9%**,
+from two recipes dead at step one this morning. Four of five recipes at or about 95%; the fifth
 moved from dead-at-step-1 to a third of the way through, and its remaining blocker is an
 advance the portal refuses with two named blanks — read them from the saved page.
 
