@@ -321,6 +321,23 @@ type", and the correct outcome is the SECOND one selected and the first untouche
 as designed — it refuses to check a type the portal does not list rather than guessing one —
 so the question is which record type this recipe should be filing under, not a defect.
 
+**THE 49-STEP RECIPE'S REMAINING BLOCKER, established from the saved page.** It reaches the
+attachments page with ZERO blanks and the Continue is refused. The reason is visible in the
+markup: `ctl00_PlaceHolderMain_Attachment_24Edit_btnSave` is **DISABLED**, while a second,
+enabled `ctl00_PlaceHolderMain_actionBarBottom_btnSave` sits on the same page. ACA enables the
+dialog's Save only once the attachment's metadata is complete, so the upload is never
+committed and Continue is correctly refused.
+
+Two candidates, and the saved page distinguishes them — do that before changing anything:
+- the recipe's Save step (`{role:"link",name:"Save"}`) resolves to the PAGE-level Save rather
+  than the dialog's, which would save a draft and leave the attachment uncommitted; or
+- the dialog's own required metadata (document type) is genuinely unset, keeping Save disabled.
+
+The file itself IS uploaded — "ZZTEST"/".pdf" appear in the page — so this is about the
+dialog's completion, not the upload. Note the enabled-control preference added today would
+steer a `name:"Save"` lookup AWAY from the disabled dialog button and toward the page-level
+one, which is correct in general and possibly wrong here: that is the first thing to check.
+
 **COOS BAY REACHES 47 of 49 — 95.9% — AND IS FUNCTIONALLY COMPLETE.** The last false blank was
 mine: Oregon ePermitting's attachment page says "Please note: Plan review is required for some
 services", which matched `is required` and was counted as an empty required field — and
