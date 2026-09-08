@@ -116,6 +116,32 @@ const BENCH = {
   // a complete filing.
 };
 
+// AN AHJ PORTAL SEARCHES ITS OWN PARCEL DATABASE, so the benchmark address has to exist in
+// the jurisdiction being filed to. One hardcoded address for every portal is why both Coos Bay
+// recipes stall: Accela looks up "1847 Liberty St SE, Salem", finds no parcel in Coos Bay,
+// never populates the service group, and never reveals its Continue button — a page-flow dead
+// end that looks like a broken recipe.
+//
+// These are PUBLIC CIVIC ADDRESSES — city halls and public buildings, a matter of public
+// record — chosen precisely because a benchmark needs a parcel that exists and must not use a
+// real customer's home. The draft is named "ZZTest Replay Benchmark", is never submitted, and
+// is discarded by the operator.
+//
+// Add a row when a new AHJ portal joins the fleet; a jurisdiction with no row keeps the
+// default and will simply report the same parcel-search dead end, which is the honest outcome.
+const AHJ_ADDRESSES: Record<string, { street: string; city: string; state: string; zip: string }> = {
+  "city of coos bay": { street: "500 Central Ave", city: "Coos Bay", state: "OR", zip: "97420" },
+  "coos bay": { street: "500 Central Ave", city: "Coos Bay", state: "OR", zip: "97420" },
+  salem: { street: "555 Liberty St SE", city: "Salem", state: "OR", zip: "97301" },
+};
+
+/** The address to file with for this recipe: its own jurisdiction's, or the default. */
+function addressForRecipe(profileKey: string): { street: string; city: string; state: string; zip: string } | null {
+  const ahj = String(profileKey.split("|")[1] ?? "").trim().toLowerCase();
+  if (!ahj || ahj === "unknown") return null;   // utility portals are not parcel-scoped
+  return AHJ_ADDRESSES[ahj] ?? null;
+}
+
 async function main(): Promise<void> {
   const db = await openDatabase();
   const dryRun = process.argv.includes("--dry-run");
@@ -187,7 +213,18 @@ async function main(): Promise<void> {
       // handed the adapter snake_case columns — the same mistake as the recipe below, made
       // twice in one function. mapProject is not exported, so the returned object IS the
       // accessor.
-      const created = createProject(db, { ...BENCH, ahj: "Salem", utility: "Pacific Power", clientId: CLIENT } as never);
+      // File to a parcel that exists in THIS jurisdiction — see AHJ_ADDRESSES.
+      const jurisdictionAddress = addressForRecipe(c.key);
+      if (jurisdictionAddress) {
+        console.log(`      filing against ${jurisdictionAddress.street}, ${jurisdictionAddress.city} — this AHJ's own parcel database`);
+      }
+      const created = createProject(db, {
+        ...BENCH,
+        ...(jurisdictionAddress ?? {}),
+        ahj: jurisdictionAddress?.city ?? "Salem",
+        utility: "Pacific Power",
+        clientId: CLIENT,
+      } as never);
       pid = created.project.id;
       const project = created.project as unknown as ProjectRecord;
       // USE THE ACCESSOR, NOT THE RAW ROW. Spreading the DB row gave the adapter
