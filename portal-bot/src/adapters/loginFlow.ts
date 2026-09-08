@@ -265,7 +265,39 @@ async function visibleMatches(page: Page, sel: RecipeSelector, max: number): Pro
   return out;
 }
 
-async function firstVisible(page: Page, candidates: RecipeSelector[]): Promise<Locator | null> {
+/** CAN A PASSWORD ACTUALLY BE TYPED INTO THIS? A username/password candidate that resolves to
+ *  a <label>, a wrapper div or a heading is not a near miss — it is a login that fails with
+ *  "Element is not an <input>, <textarea>, <select> or [contenteditable]" and gets recorded as
+ *  a refused credential.
+ *
+ *  Measured live on Snohomish County's PDS portal, whose markup is as plain as it gets —
+ *  input#username_ID[name=username] and input#password_ID[name=password] — and which still
+ *  failed, because `{ label: "Username" }` is tried before the id/name selectors and matched
+ *  something that is not a field. The reliable candidate was four entries further down the
+ *  list and never got its turn. */
+async function isFillable(loc: Locator): Promise<boolean> {
+  try {
+    return await loc.evaluate((el: Element) => {
+      const tag = el.tagName.toLowerCase();
+      if (tag === "textarea" || tag === "select") return true;
+      if (tag === "input") {
+        const t = ((el as HTMLInputElement).getAttribute("type") || "text").toLowerCase();
+        return !["checkbox", "radio", "button", "submit", "reset", "file", "image", "hidden"].includes(t);
+      }
+      return (el as HTMLElement).isContentEditable === true;
+    });
+  } catch { return false; }
+}
+
+/** @param opts.fillable Require the match to be something a value can be TYPED into. Only the
+ *  username/password lookups want this: firstVisible is shared with the submit and next-step
+ *  candidates, and a Log In button is not fillable — gating those the same way makes every
+ *  login control unfindable, which is what the login smokes caught within a minute. */
+async function firstVisible(
+  page: Page,
+  candidates: RecipeSelector[],
+  opts: { fillable?: boolean } = {},
+): Promise<Locator | null> {
   const scopes: Array<Page | Frame> = typeof page.frames === "function" ? page.frames() : [page];
   for (const sel of candidates) {
     for (const scope of scopes) {
@@ -273,7 +305,8 @@ async function firstVisible(page: Page, candidates: RecipeSelector[]): Promise<L
         // An explicit nth in the selector means the caller wants exactly that element.
         if (typeof sel.nth === "number") {
           const pinned = buildLocator(scope, sel);
-          if (pinned && (await pinned.count()) > 0 && (await pinned.isVisible().catch(() => false))) return pinned;
+          if (pinned && (await pinned.count()) > 0 && (await pinned.isVisible().catch(() => false))
+              && (!opts.fillable || await isFillable(pinned))) return pinned;
           continue;
         }
         const all = buildLocatorAll(scope, sel);
@@ -281,7 +314,7 @@ async function firstVisible(page: Page, candidates: RecipeSelector[]): Promise<L
         const total = await all.count();
         for (let i = 0; i < Math.min(total, MAX_CANDIDATE_SCAN); i++) {
           const nth = all.nth(i);
-          if (await nth.isVisible().catch(() => false)) return nth;
+          if (await nth.isVisible().catch(() => false) && (!opts.fillable || await isFillable(nth))) return nth;
         }
       } catch {
         // malformed selector or cross-origin frame — try the next scope/candidate
@@ -322,7 +355,7 @@ export async function loginFormPresent(page: Page): Promise<boolean> {
 // Locate the username / password field, trying the prioritized candidates first and the
 // adjacent-label scan as a last resort. One place so loginFormPresent and performLogin agree.
 async function findUsernameField(page: Page): Promise<Locator | null> {
-  return (await firstVisible(page, USERNAME_CANDIDATES))
+  return (await firstVisible(page, USERNAME_CANDIDATES, { fillable: true }))
     ?? (await findInputByAdjacentLabel(page, "user"))
     ?? (await findInputBeforePassword(page));
 }
@@ -358,7 +391,7 @@ async function findInputBeforePassword(page: Page): Promise<Locator | null> {
   } catch { return null; }
 }
 async function findPasswordField(page: Page): Promise<Locator | null> {
-  return (await firstVisible(page, PASSWORD_CANDIDATES)) ?? (await findInputByAdjacentLabel(page, "pass"));
+  return (await firstVisible(page, PASSWORD_CANDIDATES, { fillable: true })) ?? (await findInputByAdjacentLabel(page, "pass"));
 }
 
 // If no login form is visible, click a "Log In" trigger to reveal one (Accela pattern).
@@ -580,7 +613,7 @@ export async function performLogin(
     //     adjacent-label fallback), a next-step control, AND login wording on the page/URL.
     let identifierEntered = false;
     if (!present) {
-      const idField = await firstVisible(page, USERNAME_CANDIDATES);
+      const idField = await firstVisible(page, USERNAME_CANDIDATES, { fillable: true });
       const nextCtl = idField ? await firstVisible(page, NEXT_STEP_CANDIDATES) : null;
       if (idField && nextCtl) {
         const url = (typeof page.url === "function" ? page.url() : "").toLowerCase();
