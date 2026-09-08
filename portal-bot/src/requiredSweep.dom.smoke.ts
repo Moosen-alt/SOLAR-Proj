@@ -117,6 +117,15 @@ const PAGES: Record<string, string> = {
     <div class="form-group"><label for="lp">Licensed Professional</label>
       <input id="lp" value="TML INTERNATIONAL" /></div>`),
 
+  // ---- NEGATIVE: AN ADVISORY NOTE IS PROSE ABOUT THE PROCESS -------------------------
+  // Oregon ePermitting's attachment page: "Please note: Plan review is required for some
+  // services." It matched `is required`, was counted as a blank required field, and — because
+  // pageIsPassThrough shares this sweep — also stopped replay clicking through the page.
+  advisory: shell(`
+    <p>Please note: Plan review is required for some services.</p>
+    <div class="form-group"><label for="d">Description</label>
+      <textarea id="d">Solar PV plan set</textarea></div>`),
+
   // ---- a complaint no control can own must still be reported -------------------------
   orphanComplaint: shell(`
     <div class="err">Please select at least one option before continuing.</div>
@@ -194,6 +203,10 @@ check("...without the legend adding a second, phantom entry",
 const legend2 = await sweep("legendIndicates");
 check("THE LIVE FALSE POSITIVE: '* indicates a required field' is a legend, not a blank",
   legend2.length === 0, `fabricated ${legend2.length}: ${JSON.stringify(legend2)}`);
+
+const advisory = await sweep("advisory");
+check("THE LIVE FALSE POSITIVE: 'Please note: ... is required' is prose, not a blank",
+  advisory.length === 0, `fabricated ${advisory.length}: ${JSON.stringify(advisory)}`);
 
 const orphan = await sweep("orphanComplaint");
 check("a complaint no field can own is still reported, not dropped",

@@ -63,7 +63,14 @@ export async function sweepEmptyRequiredControls(page: Page): Promise<EmptyRequi
     // run reported that sentence as a blank required field: a fabricated gap, on a page that
     // may have been complete. Legends describe the form's notation; complaints name a
     // failure. The tell is the notation talk.
-    const LEGEND = /asterisk|marked with|indicat(e|es|ed|ing)|denotes?|all information|all fields|fields? marked|red \*|^\s*\*|\*\s*=|means required/i;
+    const LEGEND = /asterisk|marked with|indicat(e|es|ed|ing)\b|denotes?\b|all information|all fields|fields? marked|red \*|^\s*\*|\*\s*=|means required/i;
+    // NOR IS AN ADVISORY NOTE A COMPLAINT. Oregon ePermitting's attachment page carries
+    // "Please note: Plan review is required for some services" — prose about the PROCESS, not
+    // about any control on the page. It matched `is required`, was reported as a blank
+    // required field, and because pageIsPassThrough shares this sweep it also stopped replay
+    // clicking through. A sentence that opens by addressing the reader is telling them
+    // something, not refusing their filing.
+    const ADVISORY = /^\s*(please note|note|notice|important|reminder|attention)\b[:,]?/i;
     const COMPLAINT = new RegExp(`${HARD.source}|${SOFT.source}`, "i");
     const PLACEHOLDER = /^(please\s+)?(select|choose)\b\.{0,3}$/i;
     const out: Array<{ name: string; why: string }> = [];
@@ -92,7 +99,7 @@ export async function sweepEmptyRequiredControls(page: Page): Promise<EmptyRequi
       .filter((el) => {
         const own = (el.innerText || "").replace(/\s+/g, " ").trim();
         if (!own || own.length > 120 || !COMPLAINT.test(own)) return false;
-        if (LEGEND.test(own)) return false;
+        if (LEGEND.test(own) || ADVISORY.test(own)) return false;
         if (Array.from(el.children).some((c) => COMPLAINT.test(((c as HTMLElement).innerText || "")))) return false;
         if (!visible(el)) return false;
         if (HARD.test(own)) return true;
