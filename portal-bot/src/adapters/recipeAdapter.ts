@@ -1899,7 +1899,7 @@ ${body.slice(0, 4000)}`);
     // `let`, not `const`: the upload branch may re-anchor to a different slot once the
     // page's real upload controls have been re-tagged (see the upload case below), and the
     // identity check below may re-anchor a step that resolved onto the wrong control.
-    let scoped = await this.resolveLocator(step.selector);
+    let scoped = await this.resolveLocator(step.selector, String(step.note ?? step.field ?? ""));
     if (await this.looksOutOfReach(scoped) || await this.overlayShadowsTarget(scoped)) {
       if (await this.dismissStaleOverlays()) scoped = await this.resolveLocator(step.selector);
     }
@@ -3158,7 +3158,7 @@ ${body.slice(0, 4000)}`);
     return this.page.locator("[data-rc-name-hit='1']").first();
   }
 
-  private async preferVisible(loc: any, sel?: RecipeSelector): Promise<any> {
+  private async preferVisible(loc: any, sel?: RecipeSelector, hint?: string): Promise<any> {
     if (!loc || typeof loc.count !== "function" || sel?.nth != null) return loc;
     const collapse = () => (typeof loc.first === "function" ? loc.first() : loc);
     try {
@@ -3171,6 +3171,48 @@ ${body.slice(0, 4000)}`);
       // disabled control is no more the one the user acted on than a hidden one is. The first
       // visible-but-disabled match is kept only as the last resort, so when NOTHING is
       // enabled the failure stays the familiar one.
+      // A STEP'S OWN WORDS BEAT ITS POSITION. `{css: "select"}` on Accela's attachment page
+      // matches `ddlAlsoAttachTo` and `ddlDocType`; taking the first visible one files the
+      // plan set under the wrong heading with nothing reported. The step is noted "attachment:
+      // document type" and the portal names its control `ddlDocType`, so the answer is on the
+      // page — it just was not reachable from here, because this collapses to ONE element
+      // before any later stage can apply it. (Measured: the identity check downstream sees
+      // count=1, which is why two earlier attempts to fix this downstream never ran at all.)
+      //
+      // Scored, not first-past-the-post: every id on that page contains `Attachment_24Edit`,
+      // so "attachment" agrees with everything and only the specific word discriminates. A
+      // tie means the words do not discriminate, and the old positional answer stands.
+      if (hint) {
+        const words = [...new Set(hint.toLowerCase().replace(/[^a-z0-9]+/g, " ").split(" ")
+          .filter((w) => w.length > 3 && !IDENTITY_STOPWORDS.has(w)))];
+        if (words.length) {
+          const scored: Array<{ i: number; score: number }> = [];
+          for (let i = 0; i < Math.min(n, 12); i++) {
+            const c = loc.nth(i);
+            if (typeof c.evaluate !== "function" || typeof c.isVisible !== "function") break;
+            if (!(await c.isVisible().catch(() => false))) continue;
+            scored.push({ i, score: await c.evaluate((el: Element, ws: string[]) => {
+              const id = el.getAttribute("id") || "";
+              const forLbl = id ? document.querySelector(`label[for="${id}"]`) : null;
+              const lbl = String((forLbl as HTMLElement | null)?.innerText
+                || (el.closest("label") as HTMLElement | null)?.innerText
+                || el.getAttribute("aria-label") || "").toLowerCase();
+              const toks = `${id} ${el.getAttribute("name") || ""}`
+                .replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().split(/[^a-z]+/).filter(Boolean);
+              return ws.filter((w) => lbl.includes(w)
+                || toks.some((t) => t.length >= 3 && (t === w || w.startsWith(t) || t.startsWith(w)))).length;
+            }, words).catch(() => 0) as number });
+          }
+          const top = Math.max(0, ...scored.map((x) => x.score));
+          const winners = scored.filter((x) => x.score === top);
+          if (top > 0 && winners.length === 1 && winners[0].i > 0) {
+            this.driftWarnings.push(
+              `"${hint.slice(0, 40)}" matched ${n} controls — took #${winners[0].i}, the one this portal names for it, not the first`,
+            );
+            return loc.nth(winners[0].i);
+          }
+        }
+      }
       let disabledFallback: any = null;
       for (let i = 0; i < Math.min(n, 12); i++) {
         const c = loc.nth(i);
@@ -3602,7 +3644,7 @@ ${body.slice(0, 4000)}`);
   // cascade never completed — PowerClerk then took the manufacturer back too. A match that
   // cannot be seen does not end the search; only when NO level yields a visible control does
   // the first non-empty level stand, so the familiar failure is preserved.
-  private async resolveLocator(sel?: RecipeSelector) {
+  private async resolveLocator(sel?: RecipeSelector, hint?: string) {
     const primary = this.locator(sel);
     // A SELECTOR WITH NO FALLBACKS STILL DESERVES THE USABILITY CHECKS.
     //
@@ -3614,7 +3656,7 @@ ${body.slice(0, 4000)}`);
     // were on screen. Having no fallbacks is a reason to try HARDER to rescue the step, not
     // a reason to skip the rescue. Falling through with an empty fallback list costs one
     // extra visibility probe on the happy path and nothing else.
-    if (!sel || !primary) return this.preferVisible(primary, sel);
+    if (!sel || !primary) return this.preferVisible(primary, sel, hint);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let firstNonEmpty: { loc: any; from?: RecipeSelector } | null = null;
     // A RECORDED ORDINAL IS A GUESS ABOUT PAGE STRUCTURE, AND STRUCTURE MOVES.
@@ -3648,7 +3690,7 @@ ${body.slice(0, 4000)}`);
         if (await level.loc.count() === 0) continue;
       } catch { continue; } // count() can throw on a malformed selector — try the next level.
       if (!firstNonEmpty) firstNonEmpty = level;
-      const picked = await this.preferVisible(level.loc, level.from);
+      const picked = await this.preferVisible(level.loc, level.from, hint);
       // On a probeable page, take this level only if what it picked is actually VISIBLE;
       // a test fake without isVisible keeps the pre-existing first-non-empty behaviour.
       // VISIBLE IS NOT ENOUGH TO ACCEPT A LEVEL — IT MUST ALSO BE ENABLED.
@@ -3715,7 +3757,7 @@ ${body.slice(0, 4000)}`);
     }
     // Nothing visible at any level: the first level that matched at all keeps the familiar
     // failure shape (identity check / skip reporting sees the same control it always did).
-    return firstNonEmpty ? this.preferVisible(firstNonEmpty.loc, firstNonEmpty.from) : primary;
+    return firstNonEmpty ? this.preferVisible(firstNonEmpty.loc, firstNonEmpty.from, hint) : primary;
   }
 
   /**
