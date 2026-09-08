@@ -595,7 +595,46 @@ ${body.slice(0, 4000)}`);
             }
           } finally { this.inPolicyRetry = false; }
         }
-        for (const label of await this.emptyRequiredControls()) {
+        // A FIELD WE FILLED THAT HAS SINCE GONE BLANK IS A RE-RENDER, NOT A MISSING VALUE.
+        //
+        // Coos Bay's electrical recipe fills "*Other Category of Construction" and reports
+        // success — nothing skipped — and the sweep at this advance finds it EMPTY. A
+        // conditional control that appears when its parent is answered is also re-created
+        // when anything re-renders it, and the value goes with it. The recorded step for it
+        // ran twenty steps earlier and cannot know.
+        //
+        // The array held-check already does this for equipment rows; this is the same idea
+        // for any control: before advancing, re-run the recorded step for anything blank that
+        // we have a step for. Bounded to three, once, so a page that genuinely cannot be
+        // filled does not loop — and reported, because a value that needs re-asserting is a
+        // portal quirk the operator should know about.
+        let blanks = await this.emptyRequiredControls();
+        if (blanks.length && !this.inPolicyRetry) {
+          const norm = (t: string): string => t.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+          const refills = this.recipe.steps.filter((rs) => {
+            if (rs.action !== "fill" && rs.action !== "select") return false;
+            const name = norm(String(rs.note ?? rs.selector?.label ?? ""));
+            return !!name && blanks.some((b) => {
+              const nb = norm(b.replace(/ — the portal flagged this field$/, ""));
+              return nb === name || (nb.length > 6 && name.includes(nb)) || (name.length > 6 && nb.includes(name));
+            });
+          }).slice(0, 3);
+          if (refills.length) {
+            this.inPolicyRetry = true;   // reuses the re-entry guard: no retry of a retry
+            try {
+              for (const rs of refills) {
+                const done = await this.executeStep(rs, pastReview).catch(() => false);
+                if (done) {
+                  this.driftWarnings.push(
+                    `"${String(rs.note ?? rs.field ?? "").slice(0, 44)}" was filled earlier and had gone blank again — re-asserted before advancing (the portal re-rendered it)`,
+                  );
+                }
+              }
+            } finally { this.inPolicyRetry = false; }
+            blanks = await this.emptyRequiredControls();
+          }
+        }
+        for (const label of blanks) {
           if (!this.requiredStillEmpty.includes(label)) this.requiredStillEmpty.push(label);
         }
         // PHOTOGRAPH THE FINISHED PAGE. Same moment as the sweep above: everything the
