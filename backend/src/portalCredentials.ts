@@ -189,6 +189,30 @@ function hostsMatch(a: string, b: string): boolean {
 
 // Match by hostname of the stored portal_url — handles the common case where the
 // operator stored the credential with a different portal_type string.
+/** WHICH STORED URLs MAY SUPPLY THE CREDENTIAL FOR THIS TARGET. Exported so the choice can be
+ *  tested for real: the decision is which ROW gets used, and a test that only watches the
+ *  decrypted output cannot see it (every row fails to decrypt in a fixture, so the answer is
+ *  null either way and the test passes without the fix).
+ *
+ *  Returns the stored URLs that are safe to use, most-specific first. Empty means REFUSE —
+ *  never fall back to a neighbour. */
+export function selectCredentialUrlsFor(targetUrl: string, storedUrls: string[]): string[] {
+  const host = (u: string): string => { try { return new URL(u).hostname.toLowerCase(); } catch { return ""; } };
+  const seg = (u: string): string => {
+    try { return (new URL(u).pathname.split("/").filter(Boolean)[0] ?? "").toLowerCase(); } catch { return ""; }
+  };
+  const targetHost = host(targetUrl);
+  if (!targetHost) return [];
+  const targetSeg = seg(targetUrl);
+  const hostMatches = storedUrls.filter((u) => u && hostsMatch(targetHost, host(u)));
+  const segMatches = hostMatches.filter((u) => seg(u) === targetSeg);
+  if (segMatches.length) return segMatches;
+  // Only when NO stored row on this host carries a jurisdiction segment does a bare host
+  // match stand on its own — that is a portal living at the host root, not an ambiguity.
+  const anySegments = hostMatches.some((u) => seg(u) !== "");
+  return (!anySegments) ? hostMatches : [];
+}
+
 export function getDecryptedCredentialByUrl(
   db: AppDb,
   clientId: string,
@@ -201,15 +225,26 @@ export function getDecryptedCredentialByUrl(
     "SELECT encrypted_secret, portal_url FROM portal_credentials WHERE client_id = ? ORDER BY updated_at DESC",
     [clientId],
   );
-  for (const row of rows) {
-    const stored = s(row.portal_url);
-    if (!stored) continue;
+  // ONE HOST, MANY JURISDICTIONS. Accela serves every city it hosts from aca-prod.accela.com
+  // and tells them apart by the FIRST PATH SEGMENT: /sandiego, /lascruces, /SACRAMENTO. Tyler,
+  // iWorQ and SmartGov do the same. Matching on host alone therefore returns whichever row was
+  // updated most recently and types one city's password into another city's login — the exact
+  // secret-spraying this file's own comment refuses to do across hosts, unguarded within one.
+  //
+  // Measured: with San Diego, Sacramento and Las Cruces all on aca-prod.accela.com, San Diego's
+  // login went from "logged in" to "still on the login form" purely because two neighbours
+  // arrived. Repeated attempts of that kind are how accounts get locked out.
+  //
+  // So: host must match, and when the target URL carries a first path segment, the stored URL
+  // must carry the SAME one. A host match with a different jurisdiction segment is not a
+  // near-miss to fall back on; it is the wrong account.
+  const usable = selectCredentialUrlsFor(portalUrl, rows.map((r) => s(r.portal_url)))
+    .map((u) => rows.find((r) => s(r.portal_url) === u))
+    .filter((r): r is Row => Boolean(r));
+  for (const row of usable) {
     try {
-      const storedHost = new URL(stored).hostname.toLowerCase();
-      if (hostsMatch(targetHost, storedHost)) {
-        const dec = decryptStorageState(s(row.encrypted_secret)) as { username?: string; password?: string };
-        return { username: s(dec.username), password: s(dec.password) };
-      }
+      const dec = decryptStorageState(s(row.encrypted_secret)) as { username?: string; password?: string };
+      return { username: s(dec.username), password: s(dec.password) };
     } catch { continue; }
   }
   return null;
