@@ -77,7 +77,35 @@ const PAGE = `<!doctype html><html><head><style>body{font:14px sans-serif;paddin
   </script>
 </body></html>`;
 
-const server = http.createServer((_q, r) => { r.writeHead(200, { "Content-Type": "text/html" }); r.end(PAGE); });
+// THE ACCELA SHAPE: the whole attachment dialog lives in a child iframe
+// (iframe[name="ACADialogFrame"]), progress bar included. A wait that evaluates the top
+// document alone is looking at a page that cannot contain the thing it waits for.
+const DIALOG = `<!doctype html><html><body style="font:14px sans-serif">
+  <div id="bar" role="progressbar" aria-valuenow="0" style="width:180px;height:14px;border:1px solid #999">0%</div>
+  <script>
+    var pct = 0;
+    var bar = document.getElementById("bar");
+    var t = setInterval(function () {
+      pct += 12;
+      if (pct > 100) pct = 100;
+      bar.setAttribute("aria-valuenow", String(pct));
+      bar.textContent = pct + "%";
+      if (pct >= 100) clearInterval(t);
+    }, 900);
+  </script>
+</body></html>`;
+
+const FRAMED = `<!doctype html><html><body style="font:14px sans-serif">
+  <h3>Attachment</h3>
+  <iframe name="ACADialogFrame" src="/dialog" style="width:400px;height:80px;border:0"></iframe>
+</body></html>`;
+
+const server = http.createServer((q, r) => {
+  r.writeHead(200, { "Content-Type": "text/html" });
+  if (q.url === "/dialog") return r.end(DIALOG);
+  if (q.url === "/framed") return r.end(FRAMED);
+  return r.end(PAGE);
+});
 await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
 const port = (server.address() as { port: number }).port;
 const url = `http://127.0.0.1:${port}/`;
@@ -116,6 +144,23 @@ check("THE LIVE STOP: Save waits until the portal has actually taken the file",
 
 check("...and the upload had reached 100% before the commit",
   String(pct) === "100", `progress was ${String(pct)}% when Save was clicked`);
+
+// ---------------------------------------------------------------------------
+// AND THE FRAME. The wait is called on the adapter, not through a recipe, because what is
+// being tested is whether it can SEE a dialog it does not own the document of.
+// ---------------------------------------------------------------------------
+const framed = await context.newPage();
+await framed.goto(`http://127.0.0.1:${port}/framed`);
+const framedAdapter = new RecipeAdapter(recipe, {}, { plan_set: file }, { autoSubmit: false });
+(framedAdapter as unknown as { page: unknown }).page = framed;
+await (framedAdapter as unknown as { waitForUploadAccepted: () => Promise<void> }).waitForUploadAccepted();
+const framedPct = await framed.frameLocator('iframe[name="ACADialogFrame"]').locator("#bar")
+  .getAttribute("aria-valuenow").catch(() => "?");
+console.log(`   progress in the dialog frame when the wait returned = ${String(framedPct)}%`);
+
+check("THE ACCELA SHAPE: progress inside a child dialog frame is waited for",
+  String(framedPct) === "100",
+  `the wait returned with the dialog frame at ${String(framedPct)}% — it never looked outside the top document`);
 
 await browser.close();
 server.close();

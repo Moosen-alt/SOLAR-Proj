@@ -3763,7 +3763,16 @@ ${body.slice(0, 4000)}`);
    *  a Save the portal will refuse. */
   private async waitForUploadAccepted(): Promise<void> {
     if (!this.page || typeof this.page.evaluate !== "function") return;
-    const pending = async (): Promise<number | null> => await this.page.evaluate(() => {
+    // EVERY FRAME, NOT JUST THE TOP ONE. Accela runs its whole attachment dialog inside
+    // iframe[name="ACADialogFrame"] — the file input, the description, the Type select, the
+    // Save anchor and the progress bar, all of it. The learn side has always reached into
+    // that frame by name; page.evaluate cannot see any of it. So this wait, written for
+    // exactly that portal, was looking at a document that could never contain the thing it
+    // was waiting for, found nothing, and returned — which is precisely the silence the
+    // post-fix pilot showed.
+    const scanIn = async (frame: { evaluate?: (fn: unknown) => Promise<unknown> }): Promise<number | null> => {
+      if (typeof frame?.evaluate !== "function") return null;
+      return await frame.evaluate(() => {
       const visible = (el: Element): boolean => {
         const r = el.getBoundingClientRect();
         if (r.width < 2 || r.height < 2) return false;
@@ -3785,7 +3794,20 @@ ${body.slice(0, 4000)}`);
         if (m) note(Number(m[1]));
       }
       return worst;
-    }).catch(() => null) as number | null;
+      }).catch(() => null) as number | null;
+    };
+
+    const pending = async (): Promise<number | null> => {
+      const frames: Array<{ evaluate?: (fn: unknown) => Promise<unknown> }> =
+        typeof this.page.frames === "function" ? this.page.frames() : [this.page];
+      let worst: number | null = null;
+      for (const f of frames.slice(0, 12)) {
+        const n = await scanIn(f);
+        if (n === null) continue;
+        if (worst === null || n < worst) worst = n;
+      }
+      return worst;
+    };
 
     // WAIT FOR THE INDICATOR TO APPEAR, NOT JUST TO EXIST. An uploader binds to the input's
     // change event, so the bar is drawn a beat AFTER setInputFiles returns — and the first
