@@ -157,6 +157,28 @@ Still open, in order:
 
 ## Open issues / next work (priority order)
 
+**MEASURED, ONE BUILD, ONE SWEEP, UNCONTAMINATED: 335/352 = 95.2%** (2026-09-08,
+`data/replay-benchmark/2026-09-08T05-20-25.json`).
+
+| recipe | executed | values verified in the portal | not verified |
+|---|---|---|---|
+| PacifiCorp | 97/98 (99.0%) | 47 | 0 |
+| Coos Bay structural | 47/49 (95.9%) | 27 | 0 |
+| Coos Bay electrical | 53/62 (85.5%) | 30 | 1 (Category of Construction) |
+| Ameren | 73/75 (97.3%) | 33 | 0 |
+| PGE | 65/68 (95.6%) | 26 | 1 (Model) |
+
+**163 values written and read back from live portals; 2 would not hold, both named.** The
+per-portal profile fix below is the ENTIRE difference: the contaminated sweep of the same build
+measured 263/352 = 74.7%, because Ameren inherited PacifiCorp's PowerClerk session and scored
+2/75 instead of 73/75.
+
+**What this number is and is not.** It is one sweep on one build — an accuracy measurement,
+honestly taken. It is NOT a reliability figure: "95% of the time it has no issue with that
+portal" needs the same build run N times per portal, which nobody has done yet. And the
+verified count proves *what was written, landed* — it does not yet prove *everything the permit
+requires is present*, which needs joining this count to the portal's own required-field set.
+
 **THE RELIABILITY BUG, AND IT REACHES PRODUCTION (2026-09-07). READ THIS FIRST.**
 
 Ameren scores **73/75 run alone and 2/75 run in a sweep, on the SAME build.** Identical
