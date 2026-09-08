@@ -329,6 +329,106 @@ export async function findApplicationEntryDeep(
  * takes it from there.
  */
 /** Whitespace-collapsed, case-insensitive form used to compare entry labels across passes. */
+/** WHICH PERMIT TO FILE, CHOSEN WITHOUT THE PLANNER.
+ *
+ *  permiteyes.us answers "New Application" with a menu of ~50 permit types. Handing that
+ *  page to the field planner cost 16.6k input tokens and 7-8k output PER CALL at 25-96
+ *  seconds each, hit the 8192-token ceiling once and came back as unparseable JSON, and two
+ *  learn runs were cut off mid-page with nothing saved. Fifty permit types is fifty
+ *  navigation candidates; an LLM is the wrong instrument for a lookup.
+ *
+ *  It is also the wrong instrument for the DECISION. Filing the wrong permit type is the
+ *  most expensive mistake this system can make — worse than filing nothing — and this
+ *  project has already shipped a Residential Mechanical permit on a solar job and learned a
+ *  Permit EXTENSION Request as if it were a new permit.
+ *
+ *  So: curated patterns keyed to the track being filed, the same shape as the application
+ *  entry finder above, and the same refusal. Nothing matches -> stop and say what was
+ *  offered. Several match -> stop and say which. A permit type is never guessed.
+ */
+export interface PermitTypeChoice {
+  /** The chosen control, ready to click. */
+  locator: Locator;
+  label: string;
+}
+
+/** What the page offered, for the message when we refuse. */
+export interface PermitTypeRefusal {
+  reason: "none" | "ambiguous";
+  offered: string[];
+  matched: string[];
+}
+
+// Keyed to the TRACK. A NEM/interconnection filing wants the solar/PV type; an electrical
+// permit wants electrical; structural wants building/structural. Deliberately not one
+// "solar-ish" regex: on an AHJ menu "Commercial Solar Permit" and "Residential Solar
+// Permit" both contain solar, and choosing between them by position is how the wrong
+// permit gets filed.
+const TYPE_PATTERNS: Record<string, RegExp[]> = {
+  solar: [/\bsolar\b/i, /photovoltaic/i, /\bpv\b/i, /net\s*-?\s*meter/i, /interconnect/i],
+  electrical: [/\belectric(al)?\b/i],
+  structural: [/\bstructural\b/i, /\bbuilding\b/i],
+};
+
+// Never a permit type for a residential rooftop solar job, however well it matches above.
+const TYPE_EXCLUDE: RegExp[] = [
+  /\bcommercial\b/i,          // the residential twin is the one we file
+  /\bpre-?application\b/i,
+  /\bextension\b/i,           // a Permit Extension Request is not a permit
+  /\brenew(al)?\b/i,
+  /\brevision\b/i,
+  /\bamend(ment)?\b/i,
+  /\binspection\b/i,
+  /\blook ?up\b|\bsearch\b/i,
+  /\bdemolition\b/i,
+  /\btemporary\b/i,
+];
+
+export function permitTypeCandidates(labels: string[], track: string): string[] {
+  const pats = TYPE_PATTERNS[track] ?? TYPE_PATTERNS.solar;
+  return labels.filter((raw) => {
+    const label = (raw || "").replace(/\s+/g, " ").trim();
+    if (!label || label.length > 80) return false;
+    if (TYPE_EXCLUDE.some((re) => re.test(label))) return false;
+    if (isExcludedEntryLabel(label)) return false;
+    return pats.some((re) => re.test(label));
+  });
+}
+
+/** Pick the permit type for this track, or refuse and say why. Never guesses. */
+export async function chooseApplicationType(
+  page: Page,
+  track: string,
+): Promise<{ ok: true; choice: PermitTypeChoice } | { ok: false; refusal: PermitTypeRefusal }> {
+  const scopes: Array<Page | Frame> = typeof page.frames === "function" ? page.frames() : [page];
+  for (const scope of scopes) {
+    let labels: string[] = [];
+    try {
+      labels = await (scope as Frame).evaluate(() => {
+        const vis = (el: Element): boolean => {
+          const r = (el as HTMLElement).getBoundingClientRect();
+          return r.width > 0 && r.height > 0;
+        };
+        return (Array.from(document.querySelectorAll("a, button, [role=button], input[type=button]")) as HTMLElement[])
+          .filter(vis)
+          .map((el) => ((el as HTMLInputElement).value || el.textContent || "").replace(/\s+/g, " ").trim())
+          .filter((t) => t.length >= 3);
+      });
+    } catch { labels = []; }
+    if (!labels.length) continue;
+
+    const matched = [...new Set(permitTypeCandidates(labels, track))];
+    if (matched.length === 1) {
+      const loc = (scope as Frame).getByRole("link", { name: matched[0], exact: true })
+        .or((scope as Frame).getByRole("button", { name: matched[0], exact: true })).first();
+      if (await loc.count().catch(() => 0)) return { ok: true, choice: { locator: loc, label: matched[0] } };
+    }
+    if (matched.length > 1) {
+      return { ok: false, refusal: { reason: "ambiguous", offered: labels.slice(0, 40), matched } };
+    }
+  }
+  return { ok: false, refusal: { reason: "none", offered: [], matched: [] } };
+}
 export function normalizeEntryLabel(label: string): string {
   return String(label ?? "").replace(/\s+/g, " ").trim().toLowerCase();
 }

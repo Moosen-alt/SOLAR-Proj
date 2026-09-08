@@ -10,7 +10,7 @@ import { selectWithFallback } from "../comboboxFill";
 import { detectChallengeFrame, frameSelectorFor, readbackMatches, redactStatusText, safeAction, sleep, smartWait, waitForElement, waitForInteractiveControls } from "../safeAction";
 import { scrapeReviewScreen as scrapeReviewScreenShared } from "../reviewScreenScraper";
 import { performLogin, lastRevealTrail } from "./loginFlow";
-import { enterApplicationFlow, isExcludedEntryLabel, normalizeEntryLabel } from "./applicationEntry";
+import { enterApplicationFlow, isExcludedEntryLabel, normalizeEntryLabel, chooseApplicationType } from "./applicationEntry";
 import { chooseProgram, offeredLabels, programSelector, scanProgramGroups, type ProgramGroup } from "./applicationProgram";
 import { planHiddenReveal, planLabelProxy } from "./revealHidden";
 import { looksLikeConsentWall, planConsentDismissal } from "./consentBanner";
@@ -3586,6 +3586,48 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           this.navClicksByPath.add(this.navClickKey(url, entered.label));
         }
         this.debug?.event({ type: "application_entry_pass", page: pageCount, ok: Boolean(entered?.ok), label: entered?.label ?? null });
+
+        // WHICH PERMIT TO FILE — A LOOKUP, NOT A PLANNER CALL.
+        //
+        // permiteyes.us answers "New Application" with a menu of ~50 permit types. Handing
+        // that page to the field planner cost 16.6k input tokens and 7-8k output per call at
+        // 25-96s each, hit the 8192-token ceiling once and returned unparseable JSON, and two
+        // learn runs were cut off mid-page having saved nothing. Fifty permit types is fifty
+        // navigation candidates; an LLM is the wrong instrument for a lookup.
+        //
+        // It is the wrong instrument for the DECISION too. Filing the wrong permit type is
+        // worse than filing nothing — this project has already put a Residential Mechanical
+        // permit on a solar job — so the chooser refuses on nothing-matched and on
+        // several-matched, and says what was offered either way. It never guesses.
+        //
+        // Recorded as an ordinary step, which is the whole point: the type choice has to be
+        // IN the recipe or replay lands on this menu with no step for it, which is exactly
+        // how permiteyes' nine-fill recipe failed at step 2 of 12.
+        if (!applicationStarted && this.page) {
+          const track = /elec/i.test(this.permitDiscipline) ? "electrical"
+            : /struct|build/i.test(this.permitDiscipline) ? "structural"
+            : "solar";
+          const picked = await chooseApplicationType(this.page, track).catch(() => null);
+          if (picked && picked.ok) {
+            const beforeTypeUrl = typeof this.page.url === "function" ? String(this.page.url() ?? "") : "";
+            const beforeTypeFp = await this.pageFingerprint();
+            const clicked = await picked.choice.locator.click({ timeout: 8000 }).then(() => true).catch(() => false);
+            if (clicked) {
+              await this.waitAfterClick(beforeTypeUrl, beforeTypeFp, this.tabCount());
+              steps.push({
+                action: "click",
+                phase: "open",
+                selector: { role: "link", name: picked.choice.label, text: picked.choice.label },
+                note: `permit type: ${picked.choice.label}`,
+              });
+              this.debug?.event({ type: "permit_type_chosen", track, label: picked.choice.label });
+            }
+          } else if (picked && !picked.ok && picked.refusal.reason === "ambiguous") {
+            // Two plausible types (roof-mount vs ground-mount is a real shape). A human picks;
+            // guessing files one of them.
+            this.debug?.event({ type: "permit_type_ambiguous", track, matched: picked.refusal.matched.slice(0, 6) });
+          }
+        }
         if (entered?.ok) {
           // Record it the way replay will need it: click the control by its visible text.
           steps.push({
