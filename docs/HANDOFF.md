@@ -157,6 +157,33 @@ Still open, in order:
 
 ## Open issues / next work (priority order)
 
+**THE RELIABILITY BUG, AND IT REACHES PRODUCTION (2026-09-07). READ THIS FIRST.**
+
+Ameren scores **73/75 run alone and 2/75 run in a sweep, on the SAME build.** Identical
+inputs, opposite outcomes, decided entirely by what ran before it.
+
+The cause is profile sharing. Every utility portal for a client uses ONE browser profile:
+
+```
+backend/src/runReplayBenchmark.ts   profileBase/CLIENT/portalType        (fixed: now per host)
+backend/src/repository.ts:4954,4983 profileBase/clientId/portalType      (PRODUCTION — unchanged)
+```
+
+PacifiCorp runs first, is also PowerClerk, and Ameren then inherits its session — PowerClerk
+allows one session per account — so Ameren's terms checkbox is driven against someone else's
+logged-in state and never toggles. **This is the "it just has an issue with that portal
+sometimes" symptom, and it is contamination rather than a portal defect.**
+
+**Production is scoped the same way**, so a real Ameren filing that follows a PacifiCorp one
+inherits the identical collision. I did NOT change it: per-portal profiles force fresh logins
+wherever a profile currently carries a session, which can trip MFA on portals that then demand
+a code. That is a decision about live credentials, not a silent refactor. **It is the single
+highest-value fix outstanding**, and it is what stands between the current numbers and a
+trustworthy reliability figure.
+
+**Any reliability claim must come from repeated runs of ONE build, and until production
+profiles are scoped per portal, sequential runs are not independent measurements.**
+
 **FIXED — the regression, and the fourth place two visibility notions disagreed (2026-09-07).**
 Ameren is back to **73/75**. `usable` decides whether `check()` gets `force`, and it asked
 PLAYWRIGHT's `isVisible`, which counts an `opacity:0` or 1x1 control as visible. A rounded-pill

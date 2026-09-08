@@ -256,7 +256,22 @@ async function main(): Promise<void> {
       // the dry run reads the credential TABLE and the run needs it DECRYPTED and handed in.
       // Mirrors repository.ts: exact portalType first, then by URL, then any for this client.
       const profileBase = process.env.PORTAL_PROFILES_DIR || path.join(process.cwd(), "portal-profiles");
-      const userDataDir = path.join(profileBase, CLIENT, portalType);
+      // ONE PROFILE PER PORTAL, NOT PER PORTAL TYPE.
+      //
+      // Sharing a profile across every utility portal is why Ameren scored 73/75 alone and
+      // 2/75 in a sweep on the SAME build: PacifiCorp runs first, is also PowerClerk, and
+      // Ameren then inherits its session — PowerClerk allows one per account — so the terms
+      // checkbox is being driven against someone else's logged-in state. Identical inputs,
+      // opposite outcomes, decided by what ran before. That is exactly the "it just has an
+      // issue with that portal sometimes" the operator described, and it is measurement
+      // contamination rather than a portal defect.
+      //
+      // NOTE: repository.ts scopes production profiles the same way
+      // (`profileBase/clientId/portalType`), so a real Ameren filing that follows a PacifiCorp
+      // one inherits the same collision. Left alone deliberately — changing it forces fresh
+      // logins on portals whose profile currently carries a session, which can trip MFA, and
+      // that is the operator's call rather than a change to make silently.
+      const userDataDir = path.join(profileBase, CLIENT, portalType, (c.host || c.key).replace(/[^a-z0-9.-]+/gi, "_"));
       const credential = getDecryptedCredential(db, CLIENT, portalType)
         ?? getDecryptedCredentialByUrl(db, CLIENT, String(recipe.portalUrl || c.url))
         ?? getDecryptedCredentialAny(db, CLIENT, String(recipe.portalUrl || c.url))
