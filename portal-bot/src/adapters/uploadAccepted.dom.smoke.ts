@@ -33,15 +33,31 @@ const check = (label: string, ok: boolean, detail = ""): void => {
 const PAGE = `<!doctype html><html><head><style>body{font:14px sans-serif;padding:16px}</style></head><body>
   <h3>Attachment</h3>
   <input id="file" type="file" />
-  <div id="bar" role="progressbar" aria-valuenow="0" style="width:200px;height:14px;border:1px solid #999">0%</div>
+  <div id="barSlot"></div>
   <label for="desc">Description</label><textarea id="desc"></textarea>
   <a id="save" href="javascript:void(0)">Save</a>
   <div id="banner"></div>
   <script>
     var done = false;
     document.getElementById("file").addEventListener("change", function () {
+      // The uploader initialises before it draws anything — a few hundred ms in which the
+      // page reports no progress at all. Asking once inside that window and concluding "this
+      // portal has no indicator" is the race; without the appearance wait, Save fires here.
+      setTimeout(startUpload, 600);
+    });
+    function startUpload() {
       var pct = 0;
-      var bar = document.getElementById("bar");
+      // THE BAR IS DRAWN AFTER THE CHANGE EVENT, which is how an uploader actually behaves —
+      // and it is what the first version of the wait missed: it asked once, saw no indicator,
+      // and returned before the portal had started. A fixture with the bar already in the
+      // markup cannot catch that, so this one creates it late, on purpose.
+      var bar = document.createElement("div");
+      bar.id = "bar";
+      bar.setAttribute("role", "progressbar");
+      bar.setAttribute("aria-valuenow", "0");
+      bar.style.cssText = "width:200px;height:14px;border:1px solid #999";
+      bar.textContent = "0%";
+      document.getElementById("barSlot").appendChild(bar);
       var t = setInterval(function () {
         pct += 20;
         bar.setAttribute("aria-valuenow", String(pct));
@@ -52,7 +68,7 @@ const PAGE = `<!doctype html><html><head><style>body{font:14px sans-serif;paddin
         // upload finishes inside those waits passes with the fix REMOVED, which is a fixture
         // that tests nothing — this one was that, first time round.
       }, 1500);
-    });
+    }
     document.getElementById("save").addEventListener("click", function () {
       document.getElementById("banner").textContent = done
         ? "Attachment saved."

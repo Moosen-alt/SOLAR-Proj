@@ -60,6 +60,51 @@ question (values, option counts, row counts). A swallowed click still blocks, an
 when the snapshot could not be taken the message says so rather than claiming a
 comparison that never ran.
 
+### The first honest reliability measurement (2026-09-08)
+
+One build, three attempts per recipe, interleaved. `data/replay-benchmark/2026-09-08T10-15-50.json`.
+
+| recipe | clean | why not |
+|---|---|---|
+| PacifiCorp NEM | **3/3 (100%)** | — byte-identical every run, 47 values verified against 31 required |
+| PGE NEM | 0/3 | deterministic: "Model" select does not land; one policy-default step |
+| Ameren NEM | 0/3 | styled Terms checkbox (FIXED); 5 blanks in a section the recipe never recorded |
+| Coos Bay structural | 0/3 | a step clicks record number `187-26-000309-STR` from its own learn session |
+| Coos Bay electrical | 0/3 | attachment upload stalls, so the portal blocks Continue (FIXED) |
+| **fleet** | **3/15 = 20%** | |
+
+**Read that 20% as a FLOOR.** Production (`repository.ts`) hands every staging run an LLM
+gap-fill planner; the benchmark passed none, so it has been measuring RECIPE-ONLY replay.
+Ameren's five blanks are exactly that difference. The run now prints which configuration it
+measured; `--gap-fill` measures the production-equivalent one.
+
+### Two live defects the sweep found, and how each was actually diagnosed
+
+**Ameren's Terms checkbox.** The screenshot showed a "What's new?" announcement modal over
+the page, and the obvious story was that it swallowed the click. A fixture built around that
+story **passed without the fix** — which is the only reason the wrong cause did not ship as
+the right one. The failure text had it all along:
+
+```
+locator.check: Clicking the checkbox did not change its state
+  - forcing action / performing click action / click action done
+```
+
+The click was delivered and the box did not move: PowerClerk draws its own checkbox, keeps
+the real input concealed for submission, and binds the handler to the LABEL. Fix: click what
+a person clicks, read the state back, re-throw the original error if the label route fails
+too.
+
+**Coos Bay's attachments.** `setInputFiles` returns when the INPUT holds the file; the
+portal's async upload is still in flight while the recipe fills the description, sets the
+type and clicks Save. Accela then showed a complete filing with the bar at 0%, Save greyed,
+an empty attachment table and "Your documents are not yet saved" — and eleven steps later
+the run reported "the portal did not advance". The learn side had waited for this all along
+("ACA keeps the Save anchor inside a container it reveals with JS only once the uploads
+finish"); replay waited for nothing. Its fixture ALSO had to be slowed to 7.5s before it
+could fail without the fix, because the first version finished inside waits the adapter
+already performs.
+
 ### Filing defects found by reading the scorecard, not by guessing
 
 Every one of these was sitting in `detail.blankNames` / `detail.message` in a stored

@@ -130,6 +130,9 @@ const OPEN_POPUP_SELECTOR = [
 /** How long to let a portal finish taking a file before saying it has not. Generous on
  *  purpose: a plan set is megabytes and a slow AHJ afternoon is not a defect. */
 const UPLOAD_ACCEPT_MS = 30000;
+/** How long to let an upload indicator SHOW UP before concluding this portal has none. An
+ *  uploader binds to the input's change event, so it is drawn after setInputFiles returns. */
+const UPLOAD_APPEAR_MS = 3000;
 
 const COVERED_CONTROL_WARNING =
   "a dropdown or date picker stayed open after two Escapes — the next control may have been driven while covered; verify it by eye";
@@ -3784,8 +3787,19 @@ ${body.slice(0, 4000)}`);
       return worst;
     }).catch(() => null) as number | null;
 
-    const first = await pending();
-    if (first === null) return;                      // nothing on this page reports progress
+    // WAIT FOR THE INDICATOR TO APPEAR, NOT JUST TO EXIST. An uploader binds to the input's
+    // change event, so the bar is drawn a beat AFTER setInputFiles returns — and the first
+    // version of this asked once, saw nothing, and returned before the portal had started.
+    // On a live Coos Bay run that produced exactly the silence it was written to remove: no
+    // wait, no warning, and the same refused Continue eleven steps later.
+    let first: number | null = null;
+    const appearBy = Date.now() + UPLOAD_APPEAR_MS;
+    for (;;) {
+      first = await pending();
+      if (first !== null) break;
+      if (Date.now() >= appearBy) return;             // nothing here reports progress at all
+      await sleep(250);
+    }
     const deadline = Date.now() + UPLOAD_ACCEPT_MS;
     let last = first;
     while (Date.now() < deadline) {
