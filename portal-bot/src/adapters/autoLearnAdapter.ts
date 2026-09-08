@@ -2021,6 +2021,31 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         await this.page.goto(context.startUrl, { waitUntil: "domcontentloaded", timeout: 30000 })
           .catch((err: unknown) => { navError = String((err as Error)?.message || err).slice(0, 200); return null; });
         await smartWait(this.page);
+
+        // A STORED URL THAT LANDS ON FACEBOOK IS NOT A PORTAL, AND LEARNING IT IS WORSE THAN
+        // FAILING. Live in the 59-portal learn benchmark: snohomishcountywa.gov redirected to
+        // www.facebook.com/SnohomishCountyWA, and the learn walked it as a permit portal --
+        // 112 form fields, 42 of them fillable, a navigation plan, and a recipe row at the
+        // end of it. Nothing about that is recoverable at replay: the recipe would drive a
+        // social network on every future filing for that jurisdiction.
+        //
+        // Named hosts only, and only the ones that cannot be a permit portal under any
+        // reading. A city that genuinely runs its permitting on some unexpected domain must
+        // still be learnable, so this refuses to guess from shape -- it refuses from a list.
+        {
+          const landedHost = await this.page.evaluate(() => location.hostname.toLowerCase()).catch(() => "");
+          const NOT_A_PORTAL = /(^|\.)(facebook|instagram|twitter|x|linkedin|youtube|tiktok|pinterest|reddit)\.com$/;
+          if (landedHost && NOT_A_PORTAL.test(landedHost)) {
+            this.debug?.event({ type: "not_a_portal", host: landedHost });
+            return {
+              ok: false,
+              steps: [],
+              pageCount: 0,
+              message: `The stored URL for this portal lands on ${landedHost}, which is a social network rather than a permitting portal. Nothing was learned; the stored portal URL needs correcting before this jurisdiction can be automated.`,
+            } as never;
+          }
+        }
+
         if (navError) {
           const landed = await this.page.evaluate(() => ({
             url: location.href,

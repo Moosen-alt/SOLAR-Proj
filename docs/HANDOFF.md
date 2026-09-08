@@ -60,6 +60,65 @@ question (values, option counts, row counts). A swallowed click still blocks, an
 when the snapshot could not be taken the message says so rather than claiming a
 comparison that never ran.
 
+## LEARN measured across 59 live portals (2026-09-08)
+
+`data/learn-benchmark/2026-09-08T14-52-38.json`. The learn half had not been measured since
+2026-09-04 (23 portals, 19% usable) and none of this session's engine work had been tested
+against it.
+
+**59 portals, 57 measured, 14 usable (24.6%), mean rung 2.42.**
+
+| rung | n | |
+|---|---|---|
+| login_failed | 28 | the wall |
+| recorded_steps | 12 | filled fields, never reached review |
+| reached_form | 8 | walked in and filled NOTHING |
+| unreachable | 7 | WAF blocks, dead hosts, 2 harness backstops |
+| entered_application | 2 | |
+| **reached_review** | **2** | permiteyes.us, co-spokane-wa.smartgovcommunity.com |
+
+### The wall is login, and most of it is not ours to fix
+
+Of the 28 login failures:
+
+| n | cause | owner |
+|---|---|---|
+| 11 | the stored credential was refused | credential |
+| **8** | **the portal's login form was not recognised** | **engine** |
+| 7 | MFA/CAPTCHA — automation never solves these | portal (correct refusal) |
+| 1 | login ended as "no_submit_control" | engine |
+| 1 | no credential stored | credential |
+
+So 9 of 28 are engine-addressable. **And several of the 8 are not login-detection failures at
+all** — `sandiego.gov`, `miami.gov`, `lascruces.gov`, `akronohio.gov` are the same
+jurisdictions this handoff already records as having a stored URL that points at a city
+INFORMATION page rather than a portal. Fixing those is a data correction (the candidate URLs
+are recorded above), not engine work.
+
+### Eight portals reached a form and filled nothing
+
+The page traces say why, and it is not the field planner refusing to fill:
+
+```
+frederickcountymd  "Lookup Record - CIVICS"      fill=99  plan:nav=11  fills=0
+peco.connectthegrid "ConnectTheGrid /applications" fill=27  plan:nav=23  fills=0
+app.communitycore  "/app/contractors/.../dashboard" fill=5 plan:nav=12  fills=0
+```
+
+The learn is standing on a LOOKUP, LIST or DASHBOARD page and planning more navigation. It
+never found the way into a NEW application. That is the applicationEntry problem, and it is
+the single biggest engine lever left on the learn side.
+
+### A stored URL that lands on Facebook is not a portal
+
+`snohomishcountywa.gov` redirected to `www.facebook.com/SnohomishCountyWA`, and the learn
+walked it as a permit portal: 112 form fields, 42 fillable, a navigation plan, and a recipe
+row at the end of it. Nothing about that is recoverable at replay — the recipe would drive a
+social network on every future filing for that jurisdiction. The learn now refuses a named
+list of social hosts and reports the stored URL as needing correction. Named hosts only: a
+city that genuinely runs permitting on an unexpected domain must still be learnable, so it
+refuses from a list rather than guessing from shape.
+
 ### The first honest reliability measurement (2026-09-08)
 
 One build, three attempts per recipe, interleaved. `data/replay-benchmark/2026-09-08T10-15-50.json`.
