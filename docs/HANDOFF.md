@@ -226,8 +226,16 @@ the tokens of the step's FIELD name against `data-test-role`/`data-testid`/`data
 any portal shipping such hooks benefits: `inverterModel` becomes `["inverter","model"]`, which
 matches `inverter-model-select` and cannot match `pv-array-model-select`. **Confirmed live.**
 
-Worth doing on the LEARN side too: recording these as the primary selector would make new
-recipes immune to the volatile-id rot that produced most of this session's replay failures.
+**DONE on the LEARN side too.** When a label is duplicated, the recorder used to pin the step
+to the first css fallback — the element id. Those are per-render tokens: `#pcInputBase34`
+pointed at a different, concealed control on the next project, and the replayed step spent
+months resolving it. It now prefers a `data-test*` hook whenever the element carries one, and
+drops the occurrence pin with it, because an ordinal recorded against one render is a guess
+about the next. **New recipes will record `[data-test-role="inverter-model-select"]` where the
+old ones recorded `#pcInputBase34`** — the volatile-id rot behind most of this session's replay
+failures cannot recur. Existing recipes are unchanged and do not need re-recording: replay
+finds the hook at run time. Verified: 32/32 auto-learn, including the PowerClerk bare-label
+case.
 
 **PGE's `Schedule` was a fixture guess.** Its own dropdown offers exactly `"Select..."` and
 `"7"` — PGE's residential rate schedule is Schedule 7, so `"Residential"` could never land.

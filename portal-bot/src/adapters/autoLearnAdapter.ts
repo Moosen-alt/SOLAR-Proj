@@ -1479,9 +1479,25 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       let target = field;
       if (dupLabel && field.selector.label) {
         const frame = field.selector.frame ? { frame: field.selector.frame } : {};
-        const cssFb = field.selector.fallbacks?.find((fb) => fb.css);
+        // A DATA-TEST HOOK BEATS A PER-RENDER ID, and this is the case that proves it.
+        //
+        // PowerClerk renders the inverter's Manufacturer/Model and the PV array's with
+        // identical bare labels, so this branch fires and pins the step to whatever css
+        // fallback comes first — which was the element id. Those ids are per-render tokens:
+        // #pcInputBase34 pointed at a different, concealed control on the next project, and
+        // the replayed step spent months resolving it. The same element carries
+        // `data-test-role="inverter-model-select"`, which is stable AND says which side it
+        // belongs to. Prefer it whenever it is there; fall back to the id only when it is not.
+        const fbs = field.selector.fallbacks ?? [];
+        const hookFb = fbs.find((fb) => typeof fb.css === "string" && /^\[data-(testid|test-role|test|cy|qa)=/.test(fb.css));
+        const cssFb = hookFb ?? fbs.find((fb) => fb.css);
+        // With a stable hook the occurrence pin is unnecessary — and harmful, because an
+        // ordinal recorded against one render is a guess about the next.
+        const labelFb = hookFb
+          ? [{ label: field.label, ...frame }]
+          : [{ label: field.label, nth: occurrence, ...frame }];
         target = cssFb?.css
-          ? { ...field, selector: { css: cssFb.css, ...frame, fallbacks: [{ label: field.label, nth: occurrence, ...frame }] } }
+          ? { ...field, selector: { css: cssFb.css, ...frame, fallbacks: labelFb } }
           : { ...field, selector: { ...field.selector, nth: occurrence } };
       }
       // Already holding one of our values (e.g. a rescan pass)? Leave it alone —
