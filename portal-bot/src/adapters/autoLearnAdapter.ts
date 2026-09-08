@@ -4595,6 +4595,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           if (label && deadAdvances.get(deadKey)?.has(label)) {
             this.debug?.event({ type: "advance_skipped_dead", page: pageCount, label });
             if (await this.clickFallbackAdvance(steps, fields)) continue;
+            if (await this.pressEnterInLastFilledField(steps, fields)) continue;
             break;
           }
         }
@@ -4697,6 +4698,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       // — ComEd ended on a form with 27 of them, Boston on one with 96. Whatever the planner
       // was doing, "no advance" was not true of the page.
       if (await this.clickFallbackAdvance(steps, fields)) continue;
+      // A search page's control is often an icon with no name; Enter is what a person presses.
+      if (await this.pressEnterInLastFilledField(steps, fields)) continue;
       break;
     }
 
@@ -5881,6 +5884,50 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   // page fingerprint still decides whether it actually moved.
   private createDialogSubmits = 0;
 
+  /** THE MOST UNIVERSAL SUBMIT ON THE WEB: ENTER, IN THE FIELD YOU JUST TYPED INTO.
+   *
+   *  A search page advances by SEARCHING, and its control is very often an icon: a bare
+   *  magnifier with no text, no value and frequently no accessible name. The planner cannot
+   *  name what has no name, and the fallback finder matches on wording, so both walk past it.
+   *
+   *  Measured on City of Miami's iBuild Property Search — a toolbar with a dropdown, a text
+   *  box and a blue magnifier. The address went in correctly and nothing ever ran the search,
+   *  so the results panel stayed on its instructions and the walk had nothing to click.
+   *
+   *  Enter costs one keypress and is what a person does. Bounded to a field this run actually
+   *  filled on THIS page, so it can never fire on a page we have not touched, and it reports
+   *  itself — a search that runs and returns nothing is a different problem from one that
+   *  never ran, and they have looked identical. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async pressEnterInLastFilledField(steps: RecipeStep[], fields: any[]): Promise<boolean> {
+    if (!this.page || !Array.isArray(fields)) return false;
+    const lastFill = [...steps].reverse().find((st) => st.phase === "fill" && String(st.action) === "fill");
+    if (!lastFill?.selector) return false;
+    const beforeSig = await advanceSignatureOf(this.page);
+    const beforeUrl = typeof this.page.url === "function" ? String(this.page.url() ?? "") : "";
+    const loc = await this.locator(lastFill.selector).catch(() => null);
+    if (!loc) return false;
+    const pressed = await loc.press("Enter").then(() => true).catch(() => false);
+    if (!pressed) return false;
+    await this.waitAfterClick(beforeUrl, await this.pageFingerprint(), this.tabCount()).catch(() => null);
+    const afterSig = await advanceSignatureOf(this.page);
+    const afterUrl = typeof this.page.url === "function" ? String(this.page.url() ?? "") : "";
+    const moved = (afterUrl && afterUrl !== beforeUrl) || (!!beforeSig && !!afterSig && afterSig !== beforeSig);
+    if (!moved) {
+      this.debug?.event({ type: "enter_submit_did_nothing", note: String(lastFill.note ?? "").slice(0, 40) });
+      return false;
+    }
+    steps.push({
+      action: "press",
+      phase: "fill",
+      selector: lastFill.selector,
+      value: "Enter",
+      note: `submit by Enter: ${String(lastFill.note ?? "search").slice(0, 44)}`,
+    });
+    this.debug?.event({ type: "enter_submit", note: String(lastFill.note ?? "").slice(0, 40) });
+    return true;
+  }
+
   /** THE NEXT BUTTON THE PLANNER DID NOT NAME.
    *
    *  Used only as a last resort: the page is not review, the planner offered no advance,
@@ -6776,7 +6823,14 @@ export async function advanceSignatureOf(page: any): Promise<string> {
         .filter((el) => vis(el) && !(el as HTMLButtonElement).disabled).length;
       const heading = (document.querySelector("h1, h2, legend, .wizard-step.active, [aria-current='step']")?.textContent || "")
         .replace(/\s+/g, " ").trim().slice(0, 60);
-      return `${location.pathname}|${heading}|${buttons}|${fillable.slice(0, 400)}`;
+      // RESULTS ARE STRUCTURE, NOT TEXT. A search that returns rows changes no heading, no
+      // button count and no field names — the first version of this signature therefore
+      // called a successful search "no movement", which is the opposite of the bug it was
+      // written to fix. Counting rows and options separates a results panel APPEARING from
+      // the same panel re-rendering its instructions.
+      const rows = (Array.from(document.querySelectorAll("tr, li, [role='row'], option")) as HTMLElement[])
+        .filter(vis).length;
+      return `${location.pathname}|${heading}|${buttons}|${rows}|${fillable.slice(0, 400)}`;
     });
   } catch {
     return "";
