@@ -645,34 +645,7 @@ ${body.slice(0, 4000)}`);
         // we have a step for. Bounded to three, once, so a page that genuinely cannot be
         // filled does not loop — and reported, because a value that needs re-asserting is a
         // portal quirk the operator should know about.
-        let blanks = await this.emptyRequiredControls();
-        if (blanks.length && !this.inPolicyRetry) {
-          const norm = (t: string): string => t.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-          const refills = this.recipe.steps.filter((rs) => {
-            if (rs.action !== "fill" && rs.action !== "select") return false;
-            const name = norm(String(rs.note ?? rs.selector?.label ?? ""));
-            return !!name && blanks.some((b) => {
-              const nb = norm(b.replace(/ — the portal flagged this field$/, ""));
-              return nb === name || (nb.length > 6 && name.includes(nb)) || (name.length > 6 && nb.includes(name));
-            });
-          }).slice(0, 3);
-          if (refills.length) {
-            this.inPolicyRetry = true;   // reuses the re-entry guard: no retry of a retry
-            try {
-              for (const rs of refills) {
-                const done = await this.executeStep(rs, pastReview).catch(() => false);
-                // BOTH OUTCOMES, or this becomes the sixth silent path in this file. A
-                // re-assert that fails says something different from one that was never
-                // attempted, and today proved repeatedly that the difference is the whole
-                // diagnosis.
-                this.driftWarnings.push(done
-                  ? `"${String(rs.note ?? rs.field ?? "").slice(0, 40)}" was filled earlier and had gone blank — re-asserted before advancing (the portal re-rendered it)`
-                  : `"${String(rs.note ?? rs.field ?? "").slice(0, 40)}" is blank and its recorded step could not re-fill it here — the control may no longer be on this page`);
-              }
-            } finally { this.inPolicyRetry = false; }
-            blanks = await this.emptyRequiredControls();
-          }
-        }
+        const blanks = await this.reassertBlanksOnce(pastReview);
         for (const label of blanks) {
           if (!this.requiredStillEmpty.includes(label)) this.requiredStillEmpty.push(label);
         }
@@ -1036,6 +1009,14 @@ ${body.slice(0, 4000)}`);
     // equipment page with an empty required model select and an empty required
     // "Total System Export (kW)", both flagged in red by the portal, and reported
     // `requiredStillEmpty: []` because no advancing click ever followed them.
+    // AND RE-ASSERT ON IT, exactly as every earlier page gets. The re-render fix above is
+    // attached to ADVANCING clicks, so the one page it never reaches is the last one — the
+    // page the run stops on and hands to a human. Live on Ameren Illinois: Name, Company,
+    // Address, Email and Phone were each filled, blanked by a re-render, re-asserted on the
+    // way out of earlier pages, and then left blank on the final page because no advance
+    // ever followed them. Five required fields, on the page a person is asked to check.
+    // Nothing here clicks; it only re-fills values the run already decided.
+    await this.reassertBlanksOnce(false);
     for (const label of await this.emptyRequiredControls()) {
       if (!this.requiredStillEmpty.includes(label)) this.requiredStillEmpty.push(label);
     }
@@ -3689,6 +3670,54 @@ ${body.slice(0, 4000)}`);
       if (!this.requiredFieldsSeen.includes(name)) this.requiredFieldsSeen.push(name);
     }
     return found;
+  }
+
+  /** A FIELD WE FILLED THAT HAS SINCE GONE BLANK IS A RE-RENDER, NOT A MISSING VALUE.
+   *
+   *  Coos Bay's electrical recipe fills "*Other Category of Construction" and reports
+   *  success — nothing skipped — and the sweep finds it EMPTY. A conditional control that
+   *  appears when its parent is answered is also re-created when anything re-renders it, and
+   *  the value goes with it. The recorded step ran twenty steps earlier and cannot know.
+   *
+   *  Re-run the recorded step for anything blank we have a step for. Bounded to three, once,
+   *  so a page that genuinely cannot be filled does not loop. Returns what is STILL blank.
+   *  FILLS ONLY — it never clicks, which is what makes it safe on the last page, where a
+   *  click would carry a filing somewhere nobody asked for. */
+  private async reassertBlanksOnce(pastReview: boolean): Promise<string[]> {
+    let blanks = await this.emptyRequiredControls();
+    if (blanks.length && !this.inPolicyRetry) {
+      const norm = (t: string): string => t.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+      const refills = this.recipe.steps.filter((rs) => {
+        if (rs.action !== "fill" && rs.action !== "select") return false;
+        const name = norm(String(rs.note ?? rs.selector?.label ?? ""));
+        return !!name && blanks.some((b) => {
+          const nb = norm(b.replace(/ — the portal flagged this field$/, ""));
+          return nb === name || (nb.length > 6 && name.includes(nb)) || (name.length > 6 && nb.includes(name));
+        });
+      }).slice(0, 3);
+      if (refills.length) {
+        this.inPolicyRetry = true;   // reuses the re-entry guard: no retry of a retry
+        try {
+          for (const rs of refills) {
+            const done = await this.executeStep(rs, pastReview).catch(() => false);
+            // BOTH OUTCOMES, or this becomes the sixth silent path in this file. A
+            // re-assert that fails says something different from one that was never
+            // attempted, and today proved repeatedly that the difference is the whole
+            // diagnosis.
+            // The two halves belong in different channels. A value re-asserted is a value
+            // present — a portal quirk worth reporting, not a defect in the filing. A
+            // re-assert that could NOT re-fill leaves the field blank, and blocks.
+            if (done) {
+              this.agingNotes.push(`"${String(rs.note ?? rs.field ?? "").slice(0, 40)}" was filled earlier and had gone blank — re-asserted (the portal re-rendered it)`);
+            } else {
+              this.driftWarnings.push(`"${String(rs.note ?? rs.field ?? "").slice(0, 40)}" is blank and its recorded step could not re-fill it here — the control may no longer be on this page`);
+            }
+          }
+        } finally { this.inPolicyRetry = false; }
+        blanks = await this.emptyRequiredControls();
+      }
+    }
+    return blanks;
   }
 
   private async emptyRequiredControls(): Promise<string[]> {
