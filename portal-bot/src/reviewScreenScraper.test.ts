@@ -143,10 +143,13 @@ function run() {
   // checked"` and a DO NOT SUBMIT against a filing with zero blanks and 47 verified values.
   // ---------------------------------------------------------------------------
   {
+    // editable: true is the point, not decoration — these are three LIVE controls on an input
+    // page. A hand-written fixture that omits the flag is treated as static markup, which is
+    // the safe default: an unknown page reports its mismatches.
     const aggregationPage = [
-      { label: "Please make your selection regarding meter aggregation below", value: "No Aggregation" },
-      { label: "Will the output of this generation system serve more than one customer?", value: "No" },
-      { label: "I certify I am the property owner", value: "checked" },
+      { label: "Please make your selection regarding meter aggregation below", value: "No Aggregation", editable: true },
+      { label: "Will the output of this generation system serve more than one customer?", value: "No", editable: true },
+      { label: "I certify I am the property owner", value: "checked", editable: true },
     ];
     const c = reviewComparison(aggregationPage, project, "Meter Aggregation No Aggregation Will the output serve more than one customer? No I certify checked");
     assert.equal(c.mismatches.length, 0,
@@ -155,13 +158,28 @@ function run() {
     console.log("  ✅ a page that is not a review screen reports UNVERIFIED, not mismatched");
   }
 
+  // THE REGRESSION THE DOM SMOKE CAUGHT. An earlier draft suppressed on "nothing confirmed"
+  // alone — and a review screen showing the WRONG name confirms nothing either, so the catch
+  // that matters most was swallowed. Static markup means it IS a review page: complain.
+  {
+    const wrongEverything = [
+      { label: "Customer Name", value: "Someone Else Entirely", editable: false },
+      { label: "Service Address", value: "77 Wrong Avenue", editable: false },
+    ];
+    const c = reviewComparison(wrongEverything, project, "Customer Name Someone Else Entirely Service Address 77 Wrong Avenue");
+    assert.equal(c.confirmed, 0, "nothing should have confirmed here");
+    assert.ok(c.mismatches.length > 0,
+      "a review screen where EVERY field is wrong reported nothing — the suppression fails open");
+    console.log("  ✅ a review screen where everything is wrong still complains");
+  }
+
   // THE DIRECTION THAT MUST KEEP WORKING. One value found makes this a review screen, and a
   // genuinely wrong field on it is still reported — otherwise the guard has bought silence.
   {
     const realReview = [
-      { label: "Customer Name", value: "Testy McTestface" },
-      { label: "Service Address", value: "77 Wrong Avenue" },
-      { label: "System Size (kW)", value: "9.89" },
+      { label: "Customer Name", value: "Testy McTestface", editable: false },
+      { label: "Service Address", value: "77 Wrong Avenue", editable: false },
+      { label: "System Size (kW)", value: "9.89", editable: false },
     ];
     const c = reviewComparison(realReview, project, "Customer Name Testy McTestface Service Address 77 Wrong Avenue System Size 9.89");
     assert.ok(c.confirmed >= 1, `a real review screen confirmed nothing: ${JSON.stringify(c)}`);

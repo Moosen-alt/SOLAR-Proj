@@ -9,6 +9,11 @@ import type { ProjectRecord } from "../../shared/src/types";
 export interface ReviewField {
   label: string;
   value: string;
+  /** True when this pair came from a control a person could still type into. The scraper's
+   *  own premise, made available to callers: a true review page has by definition no
+   *  fillable inputs — it renders what was entered as static text, or holds it in readonly
+   *  or disabled controls. A page whose every pair is EDITABLE is a form, not a summary. */
+  editable?: boolean;
 }
 
 export interface ReviewMismatch {
@@ -33,12 +38,12 @@ export async function scrapeReviewScreen(page: any): Promise<ReviewField[]> {
   if (!page) return [];
   // Broadened selector keeps using $$eval (so existing fakes/tests still drive it) while
   // letting the in-page extractor branch on the element kind.
-  const pairs: Array<{ label: string; value: string }> = await page
+  const pairs: Array<{ label: string; value: string; editable?: boolean }> = await page
     .$$eval("input, select, textarea, dl, tr", (els: Element[]) => {
       const MAX = 100;
-      const out: Array<{ label: string; value: string }> = [];
+      const out: Array<{ label: string; value: string; editable: boolean }> = [];
       const seen = new Set<string>();
-      const push = (label: string, value: string): void => {
+      const push = (label: string, value: string, editable = false): void => {
         if (out.length >= MAX) return;
         const v = (value || "").replace(/\s+/g, " ").trim();
         if (!v) return;
@@ -46,7 +51,7 @@ export async function scrapeReviewScreen(page: any): Promise<ReviewField[]> {
         const key = (l + "|" + v).toLowerCase();
         if (seen.has(key)) return;
         seen.add(key);
-        out.push({ label: l, value: v });
+        out.push({ label: l, value: v, editable });
       };
 
       function labelFor(el: Element): string {
@@ -92,7 +97,11 @@ export async function scrapeReviewScreen(page: any): Promise<ReviewField[]> {
           } else {
             value = (el as HTMLInputElement).value || "";
           }
-          push(labelFor(el), value);
+          // Readonly/disabled controls are how a review page holds its values; an ordinary
+          // enabled control is a form field somebody is still expected to fill.
+          const ro = el.hasAttribute("readonly") || el.hasAttribute("disabled")
+            || (el as HTMLInputElement).readOnly === true || (el as HTMLInputElement).disabled === true;
+          push(labelFor(el), value, !ro);
           continue;
         }
 
@@ -120,11 +129,11 @@ export async function scrapeReviewScreen(page: any): Promise<ReviewField[]> {
       }
       return out;
     })
-    .catch(() => [] as Array<{ label: string; value: string }>);
+    .catch(() => [] as Array<{ label: string; value: string; editable?: boolean }>);
 
   return pairs
     .slice(0, 100)
-    .map((p) => ({ label: p.label, value: redactStatusText(p.value) ?? "" }))
+    .map((p) => ({ label: p.label, value: redactStatusText(p.value) ?? "", editable: p.editable === true }))
     .filter((p) => p.value);
 }
 
@@ -278,7 +287,17 @@ export function reviewComparison(
   //
   // A page where even ONE value was confirmed IS a review screen, and there the mismatches
   // are real and still reported — which is the direction that has to keep working.
-  if (confirmed === 0 && compared > 0) {
+  //
+  // TWO SIGNALS, NOT ONE. An earlier draft suppressed on "nothing confirmed" alone, and that
+  // swallowed the catch that matters most: a real review screen showing the WRONG homeowner
+  // confirms nothing either, and its own smoke caught the regression immediately. The second
+  // signal is the scraper's founding premise, one file up — a true review page has no
+  // fillable inputs, because it renders what was entered rather than asking for it. So the
+  // report is "could not check" only when nothing matched AND every pair on the page came
+  // from a control somebody could still type into. PacifiCorp's Aggregation page is three
+  // live controls; a review screen is definition lists, summary rows and readonly inputs.
+  const anyStatic = reviewFields.some((f) => f.editable !== true);
+  if (confirmed === 0 && compared > 0 && reviewFields.length > 0 && !anyStatic) {
     return { mismatches: [], compared, confirmed: 0 };
   }
 
