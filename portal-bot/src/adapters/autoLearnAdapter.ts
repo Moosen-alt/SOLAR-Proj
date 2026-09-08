@@ -3152,7 +3152,20 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     // Deterministic "start an application" passes used this run (see b9). Two is enough for
     // a dashboard → apply hop plus one recovery; more would mean the portal keeps bouncing
     // us back, which the stuck/cycle guards should handle instead.
-    const ENTRY_PASS_MAX = 2;
+    // HOW MANY TIMES TO GO LOOKING FOR THE WAY IN. Two was enough for a portal whose home
+    // page carries an "Apply" tile, and not enough for one that goes home -> department ->
+    // permits -> apply. In the 59-portal learn benchmark, EIGHT portals reached a form and
+    // filled NOTHING, and their traces put them on a lookup, list or dashboard page planning
+    // more navigation: frederickcountymd sat on "Lookup Record" with 99 fillable fields it
+    // never touched, peco on /applications, communitycore on /dashboard.
+    //
+    // Raising this is safe because the gate below is already the strongest one available:
+    // the pass only runs while NOTHING has been filled. Once any value is entered it can
+    // never fire again, so this cannot restart a wizard mid-flow. Repeats are barred by
+    // entryLabelsClicked, records and payment by the finder's own exclusion list, and the
+    // page budget still bounds the walk. If we have walked five pages and filled nothing, we
+    // are lost, and another look for the way in is exactly what is wanted.
+    const ENTRY_PASS_MAX = 4;
     let entryPasses = 0;
     let acaRecordTypeHandled = false;
     // Record-type CATEGORY expansions used this run (ACA CapType tree). Two is enough for
