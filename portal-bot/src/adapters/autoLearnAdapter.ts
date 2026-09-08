@@ -138,6 +138,13 @@ export interface LearnResult {
   reachedReview?: boolean;
   /** True when at least one fill/select/check step was recorded. */
   filledSomething?: boolean;
+  /** ONE LINE PER PAGE THE WALK SAW: title, url, how many fields were fillable, what the
+   *  planner chose, how many fills landed, whether it looked like review. Printed to stdout
+   *  for years and stored nowhere — so diagnosing "recorded steps but never reached review"
+   *  across a 59-portal run meant scrolling a console log, and a benchmark that has finished
+   *  cannot be asked the question at all. Twelve portals ended in that state on 2026-09-08
+   *  and not one of them can be explained from its scorecard row. */
+  pageTrace?: string[];
   /** Labels of REQUIRED, non-sensitive fields left blank/unselected (dropped fills + untouched
    *  required fields). Surfaced structurally (not just in `message`) so the backend trust gate
    *  can refuse to promote a recipe with a known blank required field. Empty = clean. */
@@ -3949,11 +3956,30 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           const navAfterUrl = typeof this.page.url === "function" ? String(this.page.url() ?? "") : "";
           if (looksLikeConsentWall(navBeforeUrl, navAfterUrl)) {
             this.debug?.event({ type: "consent_wall", from: safeHostPath(navBeforeUrl), to: safeHostPath(navAfterUrl), via: (navField.label || "").slice(0, 70) });
-            return fail(
-              steps,
-              this.portalName,
-              `This portal will not start an application until its cookie consent is answered: clicking "${(navField.label || "the application entry").slice(0, 60)}" was redirected to its cookie policy. A person must make that choice — automation never accepts non-essential cookies on the operator's behalf.`,
-            );
+            // ANSWER IT THE PRIVACY-PRESERVING WAY, THEN CARRY ON.
+            //
+            // The old behaviour was to stop, on the grounds that consenting is the operator's
+            // decision. That is right about ACCEPTING and wrong about the wall: declining is
+            // also an answer, and it is the one that suits the operator. declineConsentBanner
+            // clicks Reject / Decline / Necessary-only, or a plain Close which consents to
+            // nothing, and it still refuses outright when Accept is the only control offered.
+            //
+            // So decline on the policy page the portal bounced us to, go back, and try the
+            // entry once more. Two portals in the 59-portal benchmark ended their run here
+            // (apps.lakestevenswa.gov, desmoines-wa.permittrax.com) having filled nothing.
+            await this.declineConsentBanner();
+            await this.page.goto(navBeforeUrl, { waitUntil: "domcontentloaded", timeout: 20000 }).catch(() => null);
+            await smartWait(this.page);
+            await this.declineConsentBanner();
+            const retryUrl = typeof this.page.url === "function" ? String(this.page.url() ?? "") : "";
+            if (looksLikeConsentWall(navBeforeUrl, retryUrl)) {
+              return fail(
+                steps,
+                this.portalName,
+                `This portal will not start an application until its cookie consent is answered, and declining did not clear it: clicking "${(navField.label || "the application entry").slice(0, 60)}" is still redirected to its cookie policy. A person must make that choice — automation declines non-essential cookies but never accepts them on the operator's behalf.`,
+              );
+            }
+            this.debug?.event({ type: "consent_wall_cleared", by: "declined" });
           }
           continue; // re-enter the loop on the new page
         }
@@ -4580,6 +4606,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       message,
       reviewScreenshotBase64,
       reachedReview,
+      pageTrace: pageTrace.slice(0, 40),
       filledSomething,
       // Where this run actually ended up, query string and all — the only reliable handle
       // for auditing THIS application afterwards rather than some other draft of the same

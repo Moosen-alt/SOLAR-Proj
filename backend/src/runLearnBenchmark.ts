@@ -171,6 +171,8 @@ async function main(): Promise<void> {
         // reachedReviewFromEvents. These two readings disagreed and the benchmark reported
         // the difference as a regression.
         reachedReview: reachedReviewFromEvents(events, String(r.message || "")),
+        // Carried so the scorecard row can hold it — see BenchmarkRow.pageTrace.
+        pageTrace: r.pageTrace ?? [],
         events, seconds: Math.round((Date.now() - started) / 1000),
       };
     } catch (e) {
@@ -180,7 +182,14 @@ async function main(): Promise<void> {
     }
 
     const score = scoreLearnOutcome(outcome);
-    rows.push({ portal: t.host, platform: t.platform, score });
+    // THE TRACE GOES IN THE ROW. A scorecard that records the verdict and not the evidence
+    // sends the next session back to the portals to re-learn what this run already saw.
+    rows.push({
+      portal: t.host, platform: t.platform, score,
+      pageTrace: ((outcome as { pageTrace?: string[] }).pageTrace ?? []).slice(0, 40),
+      pages: Number((outcome as { pageCount?: number }).pageCount ?? 0),
+      fills: Number((outcome as { substantiveSteps?: number }).substantiveSteps ?? 0),
+    });
     console.log(`${String(i + 1).padStart(2)}/${chosen.length} ${score.index} ${score.rung.padEnd(20)} ${t.host}`);
     console.log(`      ${score.reason.slice(0, 150)}`);
   };
@@ -202,6 +211,14 @@ async function main(): Promise<void> {
   console.log(`measured             : ${summary.measured}${summary.notMeasured ? `   (${summary.notMeasured} NOT measured — harness aborted, excluded from the figures below)` : ""}`);
   console.log(`usable recipes       : ${summary.usableRecipes}  (${summary.usablePct}% of measured)`);
   console.log(`mean rung (0-6)      : ${summary.meanIndex}`);
+  // TWO NUMBERS, BECAUSE THERE ARE TWO PROBLEMS AND DIFFERENT PEOPLE FIX THEM.
+  console.log(`\nACCESS (ops owns this) : ${summary.accessReached}/${summary.measured} = ${summary.accessPct}% of portals we could authenticate into`);
+  for (const [why, n] of Object.entries(summary.accessBlockers).sort((a, b) => b[1] - a[1])) {
+    console.log(`   ${String(n).padStart(3)}  ${why}`);
+  }
+  console.log(`\nAUTOMATION (engineering owns this), of the ${summary.accessReached} we got into:`);
+  console.log(`   usable recipe  : ${summary.usableGivenAccess}/${summary.accessReached} = ${summary.usableGivenAccessPct}%`);
+  console.log(`   reached REVIEW : ${summary.reviewReached}/${summary.accessReached} = ${summary.reviewGivenAccessPct}%   <- the product's own bar`);
   console.log(`\nby rung:`);
   for (const [rung, n] of Object.entries(summary.byRung)) if (n) console.log(`   ${String(n).padStart(3)}  ${rung}`);
   console.log(`\nwho can act:`);

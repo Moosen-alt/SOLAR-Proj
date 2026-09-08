@@ -52,6 +52,10 @@ export interface AutoLearnResult {
   status: "trusted" | "draft" | "paused" | "failed";
   pauseReason: string | null;
   pageCount: number;
+  /** One line per page the walk saw — carried out of the adapter so a finished benchmark can
+   *  be asked WHY a portal stopped where it did, instead of sending the next session back to
+   *  the portal to re-learn what this run already watched happen. */
+  pageTrace?: string[];
   finalSubmitRecorded: boolean;
   verification: {
     accurate: boolean;
@@ -803,7 +807,7 @@ async function autoLearnPortalInner(
       recipe: existingRecipe!,
       status, pauseReason,
       pageCount: learn.pageCount,
-      finalSubmitRecorded: learn.finalSubmitRecorded,
+      finalSubmitRecorded: learn.finalSubmitRecorded, pageTrace: learn.pageTrace ?? [],
       verification,
       message: `${why} The existing verified recipe for this portal was left untouched — delete it first if you want to force a re-learn.`,
     });
@@ -831,7 +835,7 @@ async function autoLearnPortalInner(
     savePortalRecipeSteps(db, stub.id, learn.steps, { status: "recording", notes: `Auto-learn paused: ${learn.pauseReason}. Resume manually.` });
     addAuditLog(db, projectId, "system", "auto-learn", "portal.auto_learn_paused", { scope: scopeType, pauseReason: learn.pauseReason });
     emitDone(`Learning paused on a ${learn.pauseReason} challenge.`);
-    return finalize({ recipe: getPortalRecipe(db, stub.id), status: "paused", pauseReason: learn.pauseReason, pageCount: learn.pageCount, finalSubmitRecorded: learn.finalSubmitRecorded, verification: { accurate: false, confidence: "low", matches: [], issues: [] }, message: `Learning paused on a ${learn.pauseReason} challenge — a human must complete it. The partial recipe was saved as a draft.` });
+    return finalize({ recipe: getPortalRecipe(db, stub.id), status: "paused", pauseReason: learn.pauseReason, pageCount: learn.pageCount, finalSubmitRecorded: learn.finalSubmitRecorded, pageTrace: learn.pageTrace ?? [], verification: { accurate: false, confidence: "low", matches: [], issues: [] }, message: `Learning paused on a ${learn.pauseReason} challenge — a human must complete it. The partial recipe was saved as a draft.` });
   }
 
   if (!learn.ok || !learn.steps.length) {
@@ -842,7 +846,7 @@ async function autoLearnPortalInner(
     savePortalRecipeSteps(db, stub.id, learn.steps, { status: "needs_rerecord", notes: `Auto-learn could not complete: ${learn.message}` });
     addAuditLog(db, projectId, "system", "auto-learn", "portal.auto_learn_failed", { scope: scopeType });
     emitDone("Learning failed — the portal could not be learned automatically.");
-    return finalize({ recipe: getPortalRecipe(db, stub.id), status: "failed", pauseReason: null, pageCount: learn.pageCount, finalSubmitRecorded: learn.finalSubmitRecorded, verification: { accurate: false, confidence: "low", matches: [], issues: [learn.message] }, message: `Could not learn the portal automatically: ${learn.message}. Record it manually instead.` });
+    return finalize({ recipe: getPortalRecipe(db, stub.id), status: "failed", pauseReason: null, pageCount: learn.pageCount, finalSubmitRecorded: learn.finalSubmitRecorded, pageTrace: learn.pageTrace ?? [], verification: { accurate: false, confidence: "low", matches: [], issues: [learn.message] }, message: `Could not learn the portal automatically: ${learn.message}. Record it manually instead.` });
   }
 
   // A CLEAN stage requires BOTH reaching the portal's review screen AND having filled at least one
@@ -864,7 +868,7 @@ async function autoLearnPortalInner(
     emitDone(`Learning failed — ${why}.`);
     savePortalRecipeSteps(db, stub.id, learn.steps, { status: "needs_rerecord", notes: `Auto-learn did not stage cleanly: ${why}. ${learn.message}` });
     addAuditLog(db, projectId, "system", "auto-learn", "portal.auto_learn_failed", { scope: scopeType, reason: !reachedReview ? "no_review" : "premature_review" });
-    return finalize({ recipe: getPortalRecipe(db, stub.id), status: "failed", pauseReason: null, pageCount: learn.pageCount, finalSubmitRecorded: learn.finalSubmitRecorded, verification: { accurate: false, confidence: "low", matches: [], issues: [learn.message] }, message: `Nothing was staged — ${why}. ${learn.message}` });
+    return finalize({ recipe: getPortalRecipe(db, stub.id), status: "failed", pauseReason: null, pageCount: learn.pageCount, finalSubmitRecorded: learn.finalSubmitRecorded, pageTrace: learn.pageTrace ?? [], verification: { accurate: false, confidence: "low", matches: [], issues: [learn.message] }, message: `Nothing was staged — ${why}. ${learn.message}` });
   }
 
   // VERIFY the fill against the project data before trusting the recipe.
@@ -1233,7 +1237,7 @@ async function autoLearnPortalInner(
   }
 
   addAuditLog(db, projectId, "system", "auto-learn", trusted ? "portal.auto_learned_trusted" : "portal.auto_learned_draft", {
-    scope: scopeType, pageCount: learn.pageCount, confidence: verification.overallConfidence, finalSubmitRecorded: learn.finalSubmitRecorded,
+    scope: scopeType, pageCount: learn.pageCount, confidence: verification.overallConfidence, finalSubmitRecorded: learn.finalSubmitRecorded, pageTrace: learn.pageTrace ?? [],
   });
 
   emitDone(trusted ? "Learning complete — recipe verified and trusted." : "Learning complete — recipe saved as a draft pending your verification.");
@@ -1242,7 +1246,7 @@ async function autoLearnPortalInner(
     status: trusted ? "trusted" : "draft",
     pauseReason: null,
     pageCount: learn.pageCount,
-    finalSubmitRecorded: learn.finalSubmitRecorded,
+    finalSubmitRecorded: learn.finalSubmitRecorded, pageTrace: learn.pageTrace ?? [],
     verification: {
       accurate: verification.accurate,
       confidence: verification.overallConfidence,

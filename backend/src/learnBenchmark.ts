@@ -295,7 +295,18 @@ export function reachedReviewFromEvents(
   return /reached (the )?review|awaiting human/i.test(String(message || ""));
 }
 
-export interface BenchmarkRow { portal: string; platform: string; score: LearnScore }
+export interface BenchmarkRow {
+  portal: string;
+  platform: string;
+  score: LearnScore;
+  /** ONE LINE PER PAGE THE WALK SAW. Without it a finished benchmark cannot be asked why a
+   *  portal stopped where it did: twelve portals ended at "recorded steps but never reached
+   *  review" on 2026-09-08 and not one of them could be explained from its row. */
+  pageTrace?: string[];
+  /** How far the walk got, for the rows whose reason does not carry it. */
+  pages?: number;
+  fills?: number;
+}
 
 export interface BenchmarkSummary {
   /** Every row attempted, measured or not. */
@@ -312,6 +323,31 @@ export interface BenchmarkSummary {
   byRung: Record<string, number>;
   /** Split by who can act, so the number is not read as one problem. */
   byOwner: Record<string, number>;
+
+  // ---------------------------------------------------------------------------
+  // ACCESS vs AUTOMATION. One number over the whole fleet cannot be acted on by anybody,
+  // because the fleet contains two completely different problems. Measured 2026-09-08 over
+  // 59 live portals: 11 refused credentials, 7 MFA/CAPTCHA challenges the automation is
+  // REQUIRED never to solve, 7 unreachable hosts, and several jurisdictions whose stored URL
+  // points at a city information page. None of those is an engine defect, and no amount of
+  // engine work moves them — but they dominate the headline and hide the engine's real
+  // score, which is what a team needs to know before selling the thing.
+  //
+  // So: did we get INTO the portal (ops owns the failures), and once in, did the automation
+  // produce something usable (engineering owns those).
+  // ---------------------------------------------------------------------------
+  /** Portals the run authenticated into (rung >= authenticated). */
+  accessReached: number;
+  /** accessReached as a percentage of measured — the OPS number. */
+  accessPct: number;
+  /** Of the portals we got into, how many produced a usable recipe — the ENGINE number. */
+  usableGivenAccess: number;
+  usableGivenAccessPct: number;
+  /** Of the portals we got into, how many reached the review screen: the product's own bar. */
+  reviewReached: number;
+  reviewGivenAccessPct: number;
+  /** Why access failed, so the ops list writes itself. */
+  accessBlockers: Record<string, number>;
 }
 
 export function summarize(rows: BenchmarkRow[]): BenchmarkSummary {
@@ -321,6 +357,10 @@ export function summarize(rows: BenchmarkRow[]): BenchmarkSummary {
   let sum = 0;
   let usable = 0;
   let measured = 0;
+  let accessReached = 0;
+  let usableGivenAccess = 0;
+  let reviewReached = 0;
+  const accessBlockers: Record<string, number> = {};
   for (const row of rows) {
     byRung[row.score.rung] = (byRung[row.score.rung] ?? 0) + 1;
     byOwner[row.score.owner] = (byOwner[row.score.owner] ?? 0) + 1;
@@ -332,11 +372,34 @@ export function summarize(rows: BenchmarkRow[]): BenchmarkSummary {
     measured++;
     sum += row.score.index;
     if (row.score.index >= 5) usable++;
+    if (row.score.index >= 2) {
+      accessReached++;
+      if (row.score.index >= 5) usableGivenAccess++;
+      if (row.score.index >= 6) reviewReached++;
+    } else {
+      // Name the blocker in the words whoever fixes it will use.
+      const why = (row.score.reason || "").toLowerCase();
+      const key = /refused by the portal/.test(why) ? "credential refused"
+        : /no credential/.test(why) ? "no credential stored"
+        : /mfa|captcha|challenge/.test(why) ? "MFA/CAPTCHA (never solved by design)"
+        : /not recognised/.test(why) ? "login form not recognised (engine, or a non-portal URL)"
+        : /waf|bot block|automated browser/.test(why) ? "portal blocks automation (WAF)"
+        : /did not respond|unreachable/.test(why) ? "host did not respond"
+        : "other";
+      accessBlockers[key] = (accessBlockers[key] ?? 0) + 1;
+    }
   }
   return {
     total: rows.length,
     measured,
     notMeasured: rows.length - measured,
+    accessReached,
+    accessPct: measured ? Math.round((accessReached / measured) * 1000) / 10 : 0,
+    usableGivenAccess,
+    usableGivenAccessPct: accessReached ? Math.round((usableGivenAccess / accessReached) * 1000) / 10 : 0,
+    reviewReached,
+    reviewGivenAccessPct: accessReached ? Math.round((reviewReached / accessReached) * 1000) / 10 : 0,
+    accessBlockers,
     usableRecipes: usable,
     usablePct: measured ? Math.round((usable / measured) * 1000) / 10 : 0,
     meanIndex: measured ? Math.round((sum / measured) * 100) / 100 : 0,
