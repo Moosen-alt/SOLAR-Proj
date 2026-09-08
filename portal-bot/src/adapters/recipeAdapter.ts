@@ -1953,7 +1953,15 @@ ${body.slice(0, 4000)}`);
     // `let`, not `const`: the upload branch may re-anchor to a different slot once the
     // page's real upload controls have been re-tagged (see the upload case below), and the
     // identity check below may re-anchor a step that resolved onto the wrong control.
-    let scoped = await this.resolveLocator(step.selector, String(step.note ?? step.field ?? ""));
+    // NO NAME-SCORING FOR CHECK/UNCHECK — the same exclusion narrowToOne needs, for the same
+    // reason, through a different door. A styled checkbox or switch keeps its real <input>
+    // visually hidden behind a span; the check branch measures that and passes `force`.
+    // Scoring candidates by the step's words picks a VISIBLE element instead, `force` switches
+    // off, and the click lands on the decoration. Ameren went 73/75 -> 2/75 on exactly that
+    // when narrowToOne did it, and again when this hint was added without the same guard.
+    const nameHint = (step.action === "check" || step.action === "uncheck")
+      ? "" : String(step.note ?? step.field ?? "");
+    let scoped = await this.resolveLocator(step.selector, nameHint);
     if (await this.looksOutOfReach(scoped) || await this.overlayShadowsTarget(scoped)) {
       if (await this.dismissStaleOverlays()) scoped = await this.resolveLocator(step.selector);
     }
