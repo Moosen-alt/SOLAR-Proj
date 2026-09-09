@@ -3799,7 +3799,14 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           if (opts.length) {
             f.options = opts;
             opened++;
-            this.debug?.event({ type: "dropdown_options_read", page: pageCount, label: String(f.label ?? "").slice(0, 40), count: opts.length });
+            this.debug?.event({
+              type: "dropdown_options_read",
+              page: pageCount,
+              label: String(f.label ?? "").slice(0, 40),
+              count: opts.length,
+              // The count alone cannot say whether the planner's answer was on the menu.
+              options: opts.slice(0, 12),
+            });
           }
         }
       } catch { /* best-effort — a page the planner sees without options is the status quo */ }
@@ -4060,7 +4067,14 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             // planning active)? Lets the operator confirm vision is on vs silently text-only.
             visionUsed: typeof planShot === "string" && planShot.length > 0,
             visionKb: typeof planShot === "string" ? Math.round((planShot.length * 0.75) / 1024) : 0,
-            fieldsSeen: fields.map((f, i) => ({ i, type: f.fieldType, label: (f.label || "").slice(0, 80) })),
+            // OPTIONS TOO. Without them the bundle cannot answer the one question a
+            // dropped select raises — what was this control offering, and was the planner's
+            // answer among it. Miami's Job Category took a live re-run and a database query
+            // to establish that the planner said "STAND-ALONE" and the click found no rows.
+            fieldsSeen: fields.map((f, i) => ({
+              i, type: f.fieldType, label: (f.label || "").slice(0, 80),
+              ...(f.options?.length ? { options: f.options.slice(0, 25) } : {}),
+            })),
             decisions: (plan.fills ?? []).map((fl) => {
               const f = fields[fl.selectorIndex];
               // Match what applyFill actually RECORDS, or this diagnostic lies about the

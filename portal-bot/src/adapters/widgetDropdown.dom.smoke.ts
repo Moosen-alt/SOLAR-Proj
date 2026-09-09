@@ -32,6 +32,14 @@ const check = (label: string, ok: boolean, detail = ""): void => {
 };
 
 const PAGE = `<!doctype html><html><body style="font:14px sans-serif;padding:16px">
+  <!-- The portal's GLOBAL site search, which sits on every page of Miami's iBuild and
+       carries the same attributes the combobox filler looks for in a popup's filter box.
+       Present here on purpose: a page-global fallback that types the answer into an
+       unrelated control is worse than not typing at all. -->
+  <input class="form-control k-input" id="acGlobalSearch" name="acGlobalSearch" type="text"
+         role="combobox" aria-autocomplete="list" data-role="autocomplete"
+         placeholder="Search by Address, Process Number, Permit Number or Menu Option...">
+
   <!-- Miami's markup, as captured. -->
   <div id="dvptCategory">
     <div id="dvjcCategoryleft" style="width:50%">
@@ -171,6 +179,9 @@ check("...and the widget shows it, which is what a person would check",
 check("...and the fill reports success rather than a silent miss",
   filled === true,
   "selectWithFallback returned false while the value landed, or the value never landed");
+check("...and the portal's global site search was NOT typed into",
+  (await page.locator("#acGlobalSearch").inputValue().catch(() => "")) === "",
+  "the filler fell back to a page-global search box and typed the answer into the site search");
 
 await browser.close();
 server.close();

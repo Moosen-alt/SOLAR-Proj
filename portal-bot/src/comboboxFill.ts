@@ -57,6 +57,18 @@ const OPTION_SELECTORS = [
   ".k-list-item",
 ].join(", ");
 
+// INSIDE A POPUP, A BARE <li> IS AN OPTION. Not page-wide — a page is full of list items —
+// but optionScope can resolve to the LIST ITSELF (Telerik's ul.t-list is both the popup
+// container and the list), and then every "ul… > li" rule above matches nothing. Miami's
+// Job Category was read correctly, offered to the planner correctly, answered correctly
+// with "STAND-ALONE" — and the click found no rows to click.
+const SCOPED_OPTION_SELECTORS = `${OPTION_SELECTORS}, li, [role="option"]`;
+
+/** Option rows within a scope: wider when that scope is a popup, unchanged page-wide. */
+function optionRowsIn(scope: any, page: any): any {
+  return scope.locator(scope === page ? OPTION_SELECTORS : SCOPED_OPTION_SELECTORS);
+}
+
 // Popup containers a custom combobox renders its options into. Many widgets portal
 // the popup to <body>, so a strictly loc-rooted lookup misses — instead prefer the
 // most recently opened VISIBLE listbox/menu container and fall back to page-global.
@@ -108,7 +120,7 @@ async function waitForOptions(page: any, budgetMs = 2500, ownScope?: any): Promi
     // sees the PRIOR combobox's stale hidden rows and returns early, so the cascade's real
     // (visible) options are never waited for and never picked (mirrors bestOptionMatch,
     // which already skips invisible rows).
-    const rows = scope.locator(OPTION_SELECTORS);
+    const rows = optionRowsIn(scope, page);
     const total = Math.min(await rows.count().catch(() => 0), 12);
     let anyVisible = false;
     for (let i = 0; i < total; i++) {
@@ -148,7 +160,7 @@ async function bestOptionMatch(page: any, value: string, ownScope?: any): Promis
   const wantAlpha = (want.match(/[a-z]{2,}/i)?.[0] ?? "").toLowerCase();
   const digitSigApplies = wantDigits.length >= 2 && wantAlpha.length >= 2;
   const scope = ownScope ?? await optionScope(page);
-  const rows = scope.locator(OPTION_SELECTORS);
+  const rows = optionRowsIn(scope, page);
   // ONE in-page pass over ALL rows. The old per-row isVisible()/textContent() loop was
   // capped at 40 rows for latency — but certified equipment lists run to hundreds
   // (live PGE: 225 Znshine models sorted by wattage), so the right option sat far past
@@ -228,8 +240,7 @@ export async function readClosedComboboxOptions(page: any, loc: any): Promise<st
     // Scoped to the popup, a bare <li> IS an option — and it has to be allowed, because
     // optionScope can resolve to the LIST ITSELF (Telerik's ul.t-list is both a popup
     // container and the list), where "ul.t-list > li" then matches nothing at all.
-    const texts: string[] = await scope.locator(`${OPTION_SELECTORS}, li, [role="option"]`)
-      .allInnerTexts().catch(() => [] as string[]);
+    const texts: string[] = await optionRowsIn(scope, page).allInnerTexts().catch(() => [] as string[]);
     const seen = new Set<string>();
     const out: string[] = [];
     for (const raw of texts) {
@@ -353,7 +364,23 @@ export async function fillCustomCombobox(page: any, loc: any, value: string): Pr
       search = scope === page ? null : scope.locator("input:visible").first();
     }
     if (!search || !(await search.count().catch(() => 0))) {
-      search = page.locator(SEARCH_BOX_SELECTORS).first();
+      // A FILTER BOX THAT BELONGS TO THIS WIDGET IS INSIDE THIS WIDGET.
+      //
+      // This used to fall back to the whole page. Miami's iBuild carries a global site
+      // search on every page — <input id="acGlobalSearch" role="combobox"
+      // aria-autocomplete="list"> — which matches SEARCH_BOX_SELECTORS exactly, so the
+      // answer to "Job Category" was typed into the site search instead. Typing into a
+      // control outside the widget is never right; not typing at all is, because these
+      // widgets render their full list on open and the matcher resolves without a filter.
+      const widgetRoot = loc.locator(
+        "xpath=ancestor-or-self::*[contains(@class,'dropdown') or contains(@class,'combobox')"
+        + " or contains(@class,'t-widget') or contains(@class,'k-widget') or contains(@class,'select2')"
+        + " or contains(@class,'chosen')][1]",
+      );
+      const inWidget = (await widgetRoot.count().catch(() => 0))
+        ? widgetRoot.locator(SEARCH_BOX_SELECTORS).first()
+        : null;
+      search = inWidget && (await inWidget.count().catch(() => 0)) ? inWidget : null;
     }
     if (await search.count().catch(() => 0)) {
       // Only type into an EDITABLE search box, with a SHORT timeout. PowerClerk's Vue
@@ -372,7 +399,7 @@ export async function fillCustomCombobox(page: any, loc: any, value: string): Pr
         // digit-signature pass in bestOptionMatch can discriminate from the full list.
         await page.waitForTimeout?.(700).catch(() => {});
         const filteredScope = (ownPopup && await ownPopup.isVisible().catch(() => false)) ? ownPopup : await optionScope(page);
-        const filteredRows = filteredScope.locator(OPTION_SELECTORS);
+        const filteredRows = optionRowsIn(filteredScope, page);
         let anyLeft = false;
         const nRows = Math.min(await filteredRows.count().catch(() => 0), 8);
         for (let i = 0; i < nRows; i++) {
@@ -425,7 +452,7 @@ export async function fillCustomCombobox(page: any, loc: any, value: string): Pr
 
   // 3c. Otherwise click the first visible list row containing the value text.
   try {
-    const row = (await scopeOf()).locator(OPTION_SELECTORS).filter({ hasText: new RegExp(escapeRegExp(v), "i") }).first();
+    const row = optionRowsIn(await scopeOf(), page).filter({ hasText: new RegExp(escapeRegExp(v), "i") }).first();
     if (await row.count().catch(() => 0) && (await clickOption(row))) {
       return true;
     }
@@ -440,7 +467,7 @@ export async function fillCustomCombobox(page: any, loc: any, value: string): Pr
   try {
     const lastToken = v.split(/\s+/).pop() ?? v;
     if (lastToken !== v && lastToken.length >= 1 && /\d/.test(lastToken)) {
-      const row = (await optionScope(page)).locator(OPTION_SELECTORS).filter({ hasText: new RegExp(`\\b${escapeRegExp(lastToken)}\\b`, "i") }).first();
+      const row = optionRowsIn(await optionScope(page), page).filter({ hasText: new RegExp(`\\b${escapeRegExp(lastToken)}\\b`, "i") }).first();
       if (await row.count().catch(() => 0) && (await clickOption(row))) {
         return true;
       }
@@ -466,7 +493,7 @@ export async function fillCustomCombobox(page: any, loc: any, value: string): Pr
   // silently selecting an arbitrary wrong option (live PGE: "AblyTek" instead of
   // "Znshine PV-Tech"). Options rendered + none matched = fail soft, don't guess.
   try {
-    const rows = (await scopeOf()).locator(OPTION_SELECTORS);
+    const rows = optionRowsIn(await scopeOf(), page);
     const total = Math.min(await rows.count().catch(() => 0), 8);
     for (let i = 0; i < total; i++) {
       if (await rows.nth(i).isVisible().catch(() => false)) return false; // options exist — no blind Enter
