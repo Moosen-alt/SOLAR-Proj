@@ -603,6 +603,29 @@ export function extractFieldsInPage(els: Element[]): RawField[] {
     }
     const placeholder = el.getAttribute("placeholder");
     if (placeholder) return placeholder.trim();
+    // A RADIO'S ANSWER IS THE WORD NEXT TO IT, AND ITS <label for> MAY POINT AT NOTHING.
+    //
+    // Miami's Additional Options renders each Yes/No question as two radios that share ONE
+    // id and one name, with <label for="Yes">Yes</label> and <label for="No">No</label> —
+    // `for` attributes naming ids that do not exist on the page. Every rule above therefore
+    // misses, `name` wins, and the planner is offered two identical controls both called
+    // "bolIsCityProject". It cannot answer a Yes/No question when Yes and No look the same,
+    // and the portal says "You must select one option for City Project Question".
+    //
+    // Radios and checkboxes only: for a text input the neighbouring word is a prompt, not a
+    // value, and the rules above already handle it.
+    const tag2 = el.tagName.toLowerCase();
+    const type2 = (el.getAttribute("type") || "").toLowerCase();
+    if (tag2 === "input" && (type2 === "radio" || type2 === "checkbox")) {
+      let sib: Element | null = el.previousElementSibling;
+      for (let k = 0; sib && k < 3; k++) {
+        const t = (sib.textContent || "").replace(/\s+/g, " ").trim();
+        // A short adjacent word is the choice; a sentence is the question, which belongs to
+        // sectionFor, not here.
+        if (sib.tagName === "LABEL" && t && t.length <= 40) return t;
+        sib = sib.previousElementSibling;
+      }
+    }
     const name = el.getAttribute("name");
     if (name) return name.trim();
     const text = (el.textContent || "").trim();
@@ -646,6 +669,24 @@ export function extractFieldsInPage(els: Element[]): RawField[] {
     // from the shadow host in the outer tree. Recursion depth == nesting depth (small).
     const rootNode = el.getRootNode();
     if (rootNode instanceof ShadowRoot && rootNode.host) return sectionFor(rootNode.host);
+    // 2d) THE QUESTION A CHOICE ROW IS ASKING. Miami puts it in a bare <span> at the head
+    //     of the row — "Is this request for a capital construction project for the City of
+    //     Miami? (Yes / No)" — and no heading rule can see a <span>. Without it the planner
+    //     gets three Yes/No pairs on one page with nothing to tell them apart. Restricted to
+    //     radios and checkboxes, and to text that actually reads as a question.
+    {
+      const t2 = el.tagName.toLowerCase();
+      const ty2 = (el.getAttribute("type") || "").toLowerCase();
+      if (t2 === "input" && (ty2 === "radio" || ty2 === "checkbox")) {
+        const row = el.closest("li, .form-group, [class*='form-group'], div");
+        if (row) {
+          for (const cand of Array.from(row.querySelectorAll("span, p, label, div"))) {
+            const t = clean(cand.textContent);
+            if (t.length >= 15 && /\?/.test(t)) return t;
+          }
+        }
+      }
+    }
     // 3) The active wizard-step / stepper label (page-level "which step are we on").
     const active = document.querySelector('.wizard-step.active, .step.active, [aria-current="step"], [class*="stepper"] [class*="active"], [class*="wizard"] [class*="active"]');
     if (active && clean(active.textContent)) return clean(active.textContent);
