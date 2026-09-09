@@ -482,6 +482,44 @@ export function summarize(rows: BenchmarkRow[]): BenchmarkSummary {
  * FELL a rung is the thing worth waking up for, and averaging it away is how a benchmark
  * stops being useful.
  */
+/**
+ * THE RUNG CANNOT SEE DEPTH, AND DEPTH IS WHERE THE WORK SHOWS UP.
+ *
+ * Miami went from 6 pages and 8 fills to 20 pages and 39 fills across one night's engine
+ * work — twelve distinct pages of a municipal intake instead of three — and the ladder
+ * called it recorded_steps both times. Six other portals moved the same way and every one of
+ * them was reported as "unchanged". A comparison that can only say which rung a portal is on
+ * is blind to the entire middle of the product.
+ *
+ * Pages and fills are already on every row. This says how they moved.
+ */
+export function compareDepth(
+  previous: BenchmarkRow[],
+  current: BenchmarkRow[],
+): { deeper: Array<{ portal: string; pages: [number, number]; fills: [number, number] }>; shallower: Array<{ portal: string; pages: [number, number]; fills: [number, number] }>; pageDelta: number; fillDelta: number } {
+  const before = new Map(previous.map((r) => [r.portal, r]));
+  const deeper: Array<{ portal: string; pages: [number, number]; fills: [number, number] }> = [];
+  const shallower: typeof deeper = [];
+  let pageDelta = 0;
+  let fillDelta = 0;
+  for (const row of current) {
+    const was = before.get(row.portal);
+    if (!was) continue;
+    // Same rule as compareRuns: a non-measurement is not a change in either direction.
+    if (!isMeasured(was.score) || !isMeasured(row.score)) continue;
+    const p: [number, number] = [Number(was.pages ?? 0), Number(row.pages ?? 0)];
+    const f: [number, number] = [Number(was.fills ?? 0), Number(row.fills ?? 0)];
+    pageDelta += p[1] - p[0];
+    fillDelta += f[1] - f[0];
+    if (p[1] === p[0] && f[1] === f[0]) continue;
+    // FILLS FIRST. A page walked without filling anything is navigation; the fields that
+    // landed are the thing the operator is buying.
+    if (f[1] > f[0] || (f[1] === f[0] && p[1] > p[0])) deeper.push({ portal: row.portal, pages: p, fills: f });
+    else shallower.push({ portal: row.portal, pages: p, fills: f });
+  }
+  return { deeper, shallower, pageDelta, fillDelta };
+}
+
 export function compareRuns(
   previous: BenchmarkRow[],
   current: BenchmarkRow[],

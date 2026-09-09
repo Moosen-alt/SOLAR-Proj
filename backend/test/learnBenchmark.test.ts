@@ -12,7 +12,7 @@
 //
 // Browser-free. Run: tsx backend/test/learnBenchmark.test.ts
 import assert from "node:assert/strict";
-import { LEARN_RUNGS, compareRuns, isMeasured, scoreLearnOutcome, summarize, type BenchmarkRow, markUnreachableBursts } from "../src/learnBenchmark";
+import { LEARN_RUNGS, compareRuns, isMeasured, scoreLearnOutcome, summarize, type BenchmarkRow, markUnreachableBursts, compareDepth } from "../src/learnBenchmark";
 
 let failures = 0;
 const check = (label: string, fn: () => void): void => {
@@ -108,6 +108,41 @@ check("recorded_steps: a recipe exists but review was never reached", () => {
   const s = scoreLearnOutcome({ status: "failed", pageCount: 2, steps: 10, message: "filled fields but never reached the portal's review screen" });
   assert.equal(s.rung, "recorded_steps");
   assert.equal(s.index, 5);
+});
+
+check("depth moves that the RUNG cannot see are reported", () => {
+  // Miami went 6 pages / 8 fills -> 20 / 39 in one night and the ladder called it
+  // recorded_steps both times. Six other portals moved the same way and every one was
+  // reported "unchanged", because there is no rung between recorded_steps and reached_review.
+  const row = (portal: string, pages: number, fills: number): BenchmarkRow => ({
+    portal, platform: "X", pages, fills,
+    score: { rung: "recorded_steps", index: 5, reason: "r", owner: "engine" },
+  });
+  const before = [row("miami", 6, 8), row("boston", 6, 7), row("still", 4, 4), row("lost", 8, 10)];
+  const after = [row("miami", 20, 39), row("boston", 8, 9), row("still", 4, 4), row("lost", 8, 3)];
+  const d = compareDepth(before, after);
+  assert.deepEqual(d.deeper.map((x) => x.portal), ["miami", "boston"]);
+  assert.deepEqual(d.shallower.map((x) => x.portal), ["lost"]);
+  assert.equal(d.fillDelta, (39 - 8) + (9 - 7) + 0 + (3 - 10));
+  assert.equal(d.pageDelta, (20 - 6) + (8 - 6) + 0 + 0);
+});
+
+check("...and a non-measurement is not a depth change in either direction", () => {
+  // MUST EXCLUDE. Same rule compareRuns already applies: a killed run stores zeros, and
+  // comparing against those would announce a fleet-wide collapse or recovery that is only
+  // the difference between measuring and not.
+  const measured = (portal: string, pages: number, fills: number): BenchmarkRow => ({
+    portal, platform: "X", pages, fills,
+    score: { rung: "recorded_steps", index: 5, reason: "r", owner: "engine" },
+  });
+  const killed = (portal: string): BenchmarkRow => ({
+    portal, platform: "X", pages: 0, fills: 0,
+    score: { rung: "unreachable", index: 0, reason: "not measured — harness", owner: "harness", measured: false },
+  });
+  const d = compareDepth([measured("a", 9, 12)], [killed("a")]);
+  assert.equal(d.deeper.length + d.shallower.length, 0);
+  assert.equal(d.fillDelta, 0);
+  assert.equal(d.pageDelta, 0);
 });
 
 check("a run of unreachable verdicts is the RUNNER, not that many dead hosts", () => {

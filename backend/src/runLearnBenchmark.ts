@@ -20,7 +20,7 @@ import { openDatabase } from "./db";
 import { createProject, deleteProject } from "./repository";
 import { autoLearnPortal } from "./autoLearn";
 import { listPortalCredentials, listStaleCredentials } from "./portalCredentials";
-import { reachedReviewFromEvents, scoreLearnOutcome, summarize, compareRuns, markUnreachableBursts, type BenchmarkRow } from "./learnBenchmark";
+import { reachedReviewFromEvents, scoreLearnOutcome, summarize, compareRuns, compareDepth, markUnreachableBursts, type BenchmarkRow } from "./learnBenchmark";
 
 const OUT_DIR = path.resolve(process.cwd(), "data", "learn-benchmark");
 // The learn stops itself at budgetMs; the walk checks its deadline BETWEEN pages, so a run
@@ -320,6 +320,14 @@ async function main(): Promise<void> {
       console.log(`\nvs previous run: ${diff.improved.length} improved, ${diff.regressed.length} REGRESSED, ${diff.unchanged} unchanged`);
       for (const r of diff.regressed) console.log(`   REGRESSED  ${r.portal}: ${r.from} -> ${r.to}`);
       for (const r of diff.improved) console.log(`   improved   ${r.portal}: ${r.from} -> ${r.to}`);
+      // AND HOW FAR THROUGH THE FORM, not just which rung. Six portals walked further on
+      // 2026-09-09 and every one of them was reported as "unchanged" because the ladder has
+      // no rung between "recorded steps" and "reached review".
+      const depth = compareDepth(prev.rows || [], rows);
+      console.log(`
+depth: ${depth.deeper.length} deeper, ${depth.shallower.length} shallower  (fleet ${depth.pageDelta >= 0 ? "+" : ""}${depth.pageDelta} page(s), ${depth.fillDelta >= 0 ? "+" : ""}${depth.fillDelta} field(s) filled)`);
+      for (const d of depth.deeper) console.log(`   deeper     ${d.portal}: ${d.pages[0]}->${d.pages[1]} page(s), ${d.fills[0]}->${d.fills[1]} field(s)`);
+      for (const d of depth.shallower) console.log(`   SHALLOWER  ${d.portal}: ${d.pages[0]}->${d.pages[1]} page(s), ${d.fills[0]}->${d.fills[1]} field(s)`);
     } catch { /* first comparable run */ }
   }
   if (isDiagnostic) {
