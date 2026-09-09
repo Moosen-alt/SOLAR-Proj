@@ -6,7 +6,7 @@ import type { Page, Frame } from "playwright";
 import type { ProjectRecord, RecipeSelector, RecipeStep, StepFingerprint } from "../../../shared/src/types";
 import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, type PortalContext, type PortalStepResult } from "../adapter";
 import { openPortal } from "../browser";
-import { selectWithFallback } from "../comboboxFill";
+import { selectWithFallback, readClosedComboboxOptions } from "../comboboxFill";
 import { detectChallengeFrame, frameSelectorFor, readbackMatches, redactStatusText, safeAction, sleep, smartWait, waitForElement, waitForInteractiveControls } from "../safeAction";
 import { scrapeReviewScreen as scrapeReviewScreenShared } from "../reviewScreenScraper";
 import { performLogin, lastRevealTrail } from "./loginFlow";
@@ -3777,6 +3777,32 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           : false;
         if (entered?.ok || programJustChosen) continue;
       }
+
+      // b9) AN OPTION-LESS DROPDOWN IS UNANSWERABLE. Ask it what it offers, first.
+      //
+      // A widget that renders its list only on click reaches the planner as a select with
+      // no options, so the planner has to invent a value; nothing matches it, the fill is
+      // dropped, and the portal says the field is still empty. Miami's Job Category did
+      // exactly that on three consecutive visits — its options do not exist in the DOM
+      // until the widget is opened, and the definitions printed beside it are prose.
+      //
+      // Capped and best-effort: a handful per page, each opened and shut, nothing changed.
+      try {
+        let opened = 0;
+        for (const f of fields) {
+          if (opened >= 6) break;
+          if (f.fieldType !== "select") continue;
+          if (Array.isArray(f.options) && f.options.length > 0) continue;
+          const loc = await this.locator(f.selector).catch(() => null);
+          if (!loc) continue;
+          const opts = await readClosedComboboxOptions(this.page, loc);
+          if (opts.length) {
+            f.options = opts;
+            opened++;
+            this.debug?.event({ type: "dropdown_options_read", page: pageCount, label: String(f.label ?? "").slice(0, 40), count: opts.length });
+          }
+        }
+      } catch { /* best-effort — a page the planner sees without options is the status quo */ }
 
       // c) Ask the planner what to do on this page. Attach a screenshot so it can SEE the
       //    section headings/layout (vision-assisted planning) — the reliable signal for which

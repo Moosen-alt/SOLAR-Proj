@@ -23,6 +23,7 @@
 import http from "node:http";
 import { chromium } from "playwright";
 import { EXTRACT_SEL, extractFieldsInPage } from "./autoLearnAdapter";
+import { selectWithFallback, readClosedComboboxOptions } from "../comboboxFill";
 
 let failures = 0;
 const check = (label: string, ok: boolean, detail = ""): void => {
@@ -62,6 +63,38 @@ const PAGE = `<!doctype html><html><body style="font:14px sans-serif;padding:16p
   <!-- MUST NOT CHANGE: a real, visible text input keeps being a text input. -->
   <label for="ownerName">Owner Name</label>
   <input type="text" id="ownerName" name="ownerName">
+
+  <script>
+    // Telerik's own behaviour, reproduced: the wrap opens a popup appended to <body>, and
+    // picking an item writes the id into the hidden input and the text onto the face.
+    var CATS = [["1","Addition and remodeling"],["2","Demolition"],["3","New construction"],["4","Remodeling/repairs"]];
+    // Telerik closes on Escape and toggles closed on a second click of its own wrap.
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape") { var b = document.querySelector(".t-animation-container"); if (b) b.remove(); }
+    });
+    document.querySelector("#dvjcCategoryleft .t-dropdown-wrap").addEventListener("click", function () {
+      var open = document.querySelector(".t-animation-container");
+      if (open) { open.remove(); return; }
+      var box = document.createElement("div");
+      box.className = "t-animation-container";
+      box.style.cssText = "position:absolute;top:120px;left:8px;background:#fff;border:1px solid #ccc;z-index:99";
+      var ul = document.createElement("ul");
+      ul.className = "t-list t-reset";
+      CATS.forEach(function (c) {
+        var li = document.createElement("li");
+        li.className = "t-item";
+        li.textContent = c[1];
+        li.addEventListener("click", function () {
+          document.getElementById("JobCategoryID").value = c[0];
+          document.querySelector("#dvjcCategoryleft .t-input").textContent = c[1];
+          box.remove();
+        });
+        ul.appendChild(li);
+      });
+      box.appendChild(ul);
+      document.body.appendChild(box);
+    });
+  </script>
 </body></html>`;
 
 const server = http.createServer((_q, r) => { r.writeHead(200, { "Content-Type": "text/html" }); r.end(PAGE); });
@@ -101,6 +134,43 @@ check("a hidden input in a dropdown-ish container showing NO value is not a drop
 check("a real visible text input is untouched",
   by.get("ownerName")?.fieldType === "text" && by.get("ownerName")?.label === "Owner Name",
   `got ${by.get("ownerName")?.fieldType} / ${JSON.stringify(by.get("ownerName")?.label)}`);
+
+// ---------------------------------------------------------------------------
+// AND THEN ACTUALLY FILL IT. Classifying the control correctly is half the job; the value
+// still has to land. Telerik opens on a click to the visible FACE — the hidden input has no
+// bounding box, so Playwright cannot click it — and renders its options into a body-level
+// animation container that names nothing menu, option or listbox.
+// ---------------------------------------------------------------------------
+// FIRST, ASK IT WHAT IT OFFERS. A widget that renders its list only on click reaches the
+// planner as a select with no options, so the planner has to invent a value — which is why
+// Miami's Job Category stayed empty through three visits even after it was classified
+// correctly. Nothing matched, and nothing said so.
+const offered = await readClosedComboboxOptions(page, page.locator("#JobCategoryID"));
+console.log(`   options read from the closed widget: ${JSON.stringify(offered)}`);
+check("a dropdown that renders its list only on click can still be asked what it offers",
+  offered.includes("Remodeling/repairs") && offered.length === 4,
+  `got ${JSON.stringify(offered)}`);
+check("...and the placeholder is not one of the choices",
+  !offered.some((o) => /please select/i.test(o)),
+  `got ${JSON.stringify(offered)}`);
+check("...and it is left CLOSED — an open popup covers whatever the walk clicks next",
+  (await page.locator(".t-animation-container").count()) === 0,
+  "the popup was still open after reading");
+
+const filled = await selectWithFallback(page, page.locator("#JobCategoryID"), "Remodeling/repairs");
+const landedValue = await page.locator("#JobCategoryID").inputValue().catch(() => "");
+const landedFace = (await page.locator("#dvjcCategoryleft .t-input").textContent().catch(() => "")) ?? "";
+console.log(`   fill reported ${filled}; hidden input = ${JSON.stringify(landedValue)}; face = ${JSON.stringify(landedFace)}`);
+
+check("the value lands in the hidden input the form actually posts",
+  landedValue === "4",
+  `got ${JSON.stringify(landedValue)} — the widget never opened, or the option was never clicked`);
+check("...and the widget shows it, which is what a person would check",
+  /Remodeling\/repairs/.test(landedFace),
+  `face reads ${JSON.stringify(landedFace)}`);
+check("...and the fill reports success rather than a silent miss",
+  filled === true,
+  "selectWithFallback returned false while the value landed, or the value never landed");
 
 await browser.close();
 server.close();

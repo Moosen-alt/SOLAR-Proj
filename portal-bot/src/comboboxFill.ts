@@ -180,6 +180,98 @@ async function bestOptionMatch(page: any, value: string, ownScope?: any): Promis
 }
 
 /**
+ * WHAT DOES THIS DROPDOWN OFFER? Opens a closed custom dropdown, reads its options, and
+ * closes it again.
+ *
+ * A widget that renders its list only on click gives the planner NOTHING to choose from:
+ * Miami's Job Category is a Telerik dropdown whose options do not exist in the DOM until it
+ * is opened, so the planner proposed a value out of thin air, nothing matched, the fill was
+ * silently dropped and the portal said "Please select mandatory Job Category" three visits
+ * running. The definitions printed beside it on that page are prose, not the option list.
+ *
+ * Deliberately a SEPARATE, smaller open than fillCustomCombobox's. That path is tuned
+ * against several live portals and carries an already-open toggle check, a search box, and a
+ * match cascade; duplicating twenty lines of opener here is cheaper than the risk of
+ * refactoring it, and this one has a different contract — it must always leave the widget
+ * CLOSED and change nothing.
+ */
+export async function readClosedComboboxOptions(page: any, loc: any): Promise<string[]> {
+  if (!loc) return [];
+  try {
+    if (await loc.isVisible().catch(() => false)) {
+      await loc.click({ timeout: 4000 }).catch(() => null);
+    } else {
+      // The real clickable is the widget's visible face; the input behind it has no box.
+      await loc.evaluate((el: Element) => {
+        const isVis = (n: Element) => {
+          const r = n.getBoundingClientRect();
+          const st = getComputedStyle(n as HTMLElement);
+          return r.width > 0 && r.height > 0 && st.visibility !== "hidden" && st.display !== "none";
+        };
+        let root: Element = el;
+        for (let k = 0; k < 5 && root.parentElement; k++) {
+          root = root.parentElement;
+          const cands = Array.from(root.querySelectorAll<HTMLElement>("*"))
+            .filter((n) => n !== el && n.getAttribute("role") !== "listbox" && n.getAttribute("role") !== "option" && isVis(n));
+          if (!cands.length) continue;
+          const preferred = cands.find((n) => /form-select|select|display|toggle|control|dropdown|-wrap/i.test(n.className || "") || n.getAttribute("role") === "button");
+          (preferred || cands[0]).click();
+          return;
+        }
+        (el as HTMLElement).click();
+      }).catch(() => null);
+    }
+    // Cascading widgets populate ~600ms after the opening interaction (see CLAUDE.md).
+    await page.waitForTimeout?.(700).catch(() => null);
+    const scope = await optionScope(page);
+    if (scope === page) return [];
+    // Scoped to the popup, a bare <li> IS an option — and it has to be allowed, because
+    // optionScope can resolve to the LIST ITSELF (Telerik's ul.t-list is both a popup
+    // container and the list), where "ul.t-list > li" then matches nothing at all.
+    const texts: string[] = await scope.locator(`${OPTION_SELECTORS}, li, [role="option"]`)
+      .allInnerTexts().catch(() => [] as string[]);
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const raw of texts) {
+      const t = (raw || "").replace(/\s+/g, " ").trim();
+      // Placeholders are not choices, and a paragraph is not an option.
+      if (!t || t.length > 90 || /^(please\s+)?select|^choose|^--/i.test(t)) continue;
+      if (seen.has(t)) continue;
+      seen.add(t);
+      out.push(t);
+      if (out.length >= 40) break;
+    }
+    return out;
+  } catch {
+    return [];
+  } finally {
+    // ALWAYS LEAVE IT SHUT. An open popup covers the controls the walk clicks next, and this
+    // pass exists to inform the planner, not to change the page. Escape first; a widget that
+    // ignores it closes on a second click of its own face, which is what a person does.
+    await page.keyboard?.press("Escape").catch(() => null);
+    await page.waitForTimeout?.(150).catch(() => null);
+    if ((await optionScope(page)) !== page) {
+      await loc.evaluate((el: Element) => {
+        const isVis = (n: Element) => {
+          const r = n.getBoundingClientRect();
+          const st = getComputedStyle(n as HTMLElement);
+          return r.width > 0 && r.height > 0 && st.visibility !== "hidden" && st.display !== "none";
+        };
+        let root: Element = el;
+        for (let k = 0; k < 5 && root.parentElement; k++) {
+          root = root.parentElement;
+          const face = Array.from(root.querySelectorAll<HTMLElement>("*"))
+            .filter((n) => n !== el && isVis(n))
+            .find((n) => /-wrap|display|toggle|dropdown/i.test(n.className || ""));
+          if (face) { face.click(); return; }
+        }
+      }).catch(() => null);
+      await page.waitForTimeout?.(150).catch(() => null);
+    }
+  }
+}
+
+/**
  * Fill a custom (non-native-<select>) combobox. Returns true if an option was
  * clicked, false if it fell through to Enter / could not resolve.
  */
