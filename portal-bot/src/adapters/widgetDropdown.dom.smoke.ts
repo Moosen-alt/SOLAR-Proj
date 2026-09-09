@@ -22,7 +22,7 @@
 //   npx tsx portal-bot/src/adapters/widgetDropdown.dom.smoke.ts
 import http from "node:http";
 import { chromium } from "playwright";
-import { EXTRACT_SEL, extractFieldsInPage } from "./autoLearnAdapter";
+import { EXTRACT_SEL, extractFieldsInPage, hasVisibleWidgetFaceInPage } from "./autoLearnAdapter";
 import { selectWithFallback, readClosedComboboxOptions } from "../comboboxFill";
 
 let failures = 0;
@@ -171,6 +171,29 @@ check("a real visible text input is untouched",
 // bounding box, so Playwright cannot click it — and renders its options into a body-level
 // animation container that names nothing menu, option or listbox.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// THE FILL PATH REFUSES INVISIBLE CONTROLS, AND IT IS RIGHT TO — one display:none date
+// input inside a 0x0 container once cost 137 seconds and recorded nothing. But a dropdown
+// widget's backing input is MEANT to be invisible, and Miami's Job Category was refused
+// there three visits running with "hidden_field_skipped: Job Category" — after the options
+// had been read and the planner had answered with an exact match off the menu.
+// ---------------------------------------------------------------------------
+const isWidgetBacked = async (sel: string): Promise<boolean> =>
+  await page.locator(sel).evaluate(hasVisibleWidgetFaceInPage).catch(() => false) as boolean;
+
+check("a dropdown widget's backing input is recognised despite being invisible",
+  await isWidgetBacked("#JobCategoryID"),
+  "the fill path will refuse it as a hidden field and never reach the combobox");
+check("...and so is Kendo's",
+  await isWidgetBacked("#JobSubCategoryID"),
+  "");
+check("MUST EXCLUDE: ordinary hidden form state is not widget-backed",
+  !(await isWidgetBacked("#IsMiniIntake")),
+  "the 137-second lesson has to keep applying to genuinely hidden fields");
+check("MUST EXCLUDE: a dropdown-ish container with nothing showing is not widget-backed",
+  !(await isWidgetBacked("#menuState")),
+  "");
+
 // FIRST, ASK IT WHAT IT OFFERS. A widget that renders its list only on click reaches the
 // planner as a select with no options, so the planner has to invent a value — which is why
 // Miami's Job Category stayed empty through three visits even after it was classified

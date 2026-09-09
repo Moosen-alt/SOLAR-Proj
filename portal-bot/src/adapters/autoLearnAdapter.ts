@@ -515,6 +515,19 @@ export function isSensitiveLabel(label: string): boolean {
 
 // CSS selector used in $$eval() to extract all interactive elements from the page.
 // Exported so llmGapFill.ts can reuse the same selector for consistency.
+// IS THIS ELEMENT A DROPDOWN WIDGET'S BACKING INPUT? Runs INSIDE the page.
+//
+// The same test extractFieldsInPage uses to call such an input a select — hidden, wrapped
+// in something named like a dropdown, and that wrapper showing a value. Exported because
+// the FILL path needs the same answer: for these controls "not visible" is the normal
+// state, not a reason to give up.
+export function hasVisibleWidgetFaceInPage(el: Element): boolean {
+  const wrap = el.closest('[class*="dropdown"], [class*="combobox"], [class*="t-widget"], [class*="k-widget"], [class*="select2"], [class*="chosen"]');
+  if (!wrap) return false;
+  const face = wrap.querySelector('.t-input, .k-input, [class*="-input"], [class*="dropdown-wrap"], [class*="rendered"]');
+  return !!face && (face as HTMLElement).offsetParent !== null;
+}
+
 export const EXTRACT_SEL = "input, select, textarea, button, [role=button], a[href]:not([href='#']):not([href=''])";
 
 // ---------------------------------------------------------------------------
@@ -5834,14 +5847,27 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         // nothing, because the field is optional so the failure was swallowed. A visibility
         // probe costs ~5ms. isVisible, NOT isEditable: a hidden input is still "editable".
         if (typeof loc.isVisible === "function" && !(await loc.isVisible().catch(() => true))) {
-          // INVISIBLE USUALLY MEANS NOBODY HAS OPENED THIS YET — see revealHidden.ts.
-          // Momentum skipped "Licenses & Permits" as hidden on three consecutive pages,
-          // clicked advance each time, and never moved: the field it would not fill was the
-          // gate. Try once to open whatever is holding it shut before giving up.
-          const revealed = await this.tryRevealHidden(loc, field);
-          if (!revealed) {
-            this.debug?.event({ type: "hidden_field_skipped", label: (field.label || "").slice(0, 60) });
-            throw new Error("control is not visible (hidden field)");
+          // …EXCEPT FOR A DROPDOWN WIDGET'S BACKING INPUT, WHICH IS MEANT TO BE INVISIBLE.
+          //
+          // Miami's Job Category is <input id="JobCategoryID" style="display:none"> behind a
+          // Telerik dropdown. The extractor correctly calls it a select, the option list is
+          // read, the planner answers "STAND-ALONE" — an exact match — and this gate threw
+          // before selectWithFallback ever ran, three visits in a row, logging
+          // "hidden_field_skipped: Job Category" each time. The widget's visible face is the
+          // control; selectWithFallback already knows to click it.
+          const widgetBacked = field.fieldType === "select"
+            && typeof loc.evaluate === "function"
+            && await loc.evaluate(hasVisibleWidgetFaceInPage).catch(() => false);
+          if (!widgetBacked) {
+            // INVISIBLE USUALLY MEANS NOBODY HAS OPENED THIS YET — see revealHidden.ts.
+            // Momentum skipped "Licenses & Permits" as hidden on three consecutive pages,
+            // clicked advance each time, and never moved: the field it would not fill was
+            // the gate. Try once to open whatever is holding it shut before giving up.
+            const revealed = await this.tryRevealHidden(loc, field);
+            if (!revealed) {
+              this.debug?.event({ type: "hidden_field_skipped", label: (field.label || "").slice(0, 60) });
+              throw new Error("control is not visible (hidden field)");
+            }
           }
         }
         if (action === "select") {
