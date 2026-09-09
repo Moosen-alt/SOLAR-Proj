@@ -897,7 +897,7 @@ async function autoLearnPortalInner(
     }
     if (keepDeeperDraft("learn could not complete")) {
       return preserved("failed", null, { accurate: false, confidence: "low", matches: [], issues: [learn.message] },
-        `Could not learn the portal automatically: ${learn.message}. Kept the existing draft, which got further (${existingDepth} field(s) vs ${substantive(learn.steps as Array<{ action?: unknown }>)}).`);
+        `Could not learn the portal automatically: ${learn.message} Kept the existing draft, which got further (${existingDepth} field(s) vs ${substantive(learn.steps as Array<{ action?: unknown }>)}).`);
     }
     const stub = mkStub();
     savePortalRecipeSteps(db, stub.id, learn.steps, { status: "needs_rerecord", notes: `Auto-learn could not complete: ${learn.message}` });
@@ -923,7 +923,11 @@ async function autoLearnPortalInner(
     }
     if (keepDeeperDraft(why)) {
       return preserved("failed", null, { accurate: false, confidence: "low", matches: [], issues: [learn.message] },
-        `Nothing was staged — ${why}. Kept the existing draft, which got further (${existingDepth} field(s) vs ${substantive(learn.steps as Array<{ action?: unknown }>)}).`);
+        // KEEP THE RUN'S OWN WORDS. This path returns before the message assembly, so the
+        // portal's notices, the validation blockers and the "none of what it offered fits
+        // this job" line were all dropped exactly when they were most useful — the run that
+        // got further is the one whose reasons the operator needs.
+        `Nothing was staged — ${why}. Kept the existing draft, which got further (${existingDepth} field(s) vs ${substantive(learn.steps as Array<{ action?: unknown }>)}). ${learn.message}`);
     }
     const stub = mkStub();
     emitDone(`Learning failed — ${why}.`);
