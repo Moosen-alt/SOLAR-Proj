@@ -3064,6 +3064,17 @@ export class AutoLearnAdapter extends BasePortalAdapter {
    * query string or fragment that changes as a wizard advances doesn't disguise a re-click,
    * and so a label that legitimately recurs on a genuinely different page stays allowed.
    */
+  /** Forget every "already clicked this here" record for one page. Called when something
+   *  else on the page has just worked: the guard exists to stop a control being clicked
+   *  twice in the SAME state, and the state has changed. */
+  private forgetNavClicksOn(pageUrl: string): void {
+    let pathname = String(pageUrl ?? "").toLowerCase();
+    try { pathname = new URL(pageUrl).pathname.toLowerCase(); } catch { /* compare as given */ }
+    for (const key of Array.from(this.navClicksByPath)) {
+      if (key.startsWith(`${pathname}::`)) this.navClicksByPath.delete(key);
+    }
+  }
+
   private navClickKey(pageUrl: string, label: string): string {
     let pathname = String(pageUrl ?? "").toLowerCase();
     try { pathname = new URL(pageUrl).pathname.toLowerCase(); } catch { /* not a URL — compare as given */ }
@@ -3920,7 +3931,14 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           if (seen >= 2 && !rowPickedSigs.has(sig)) {
             rowPickedSigs.add(sig);
             if (await this.clickMatchingResultRow(_project, steps)) {
+              // EVERY MEMORY OF WHAT DID NOT WORK ON THIS PAGE IS NOW OUT OF DATE, and there
+              // are two of them. The dead-advance ban is one; the nav RE-CLICK guard is the
+              // other, and on Miami it was the one that mattered: the planner clicked "Start
+              // New Application" while the parcel was unchosen and the button inert, the
+              // guard remembered it as a loop, and after the row click made that button the
+              // way forward the walk refused to click it again.
               deadAdvances.delete(deadPageKey(url, fields.length));
+              this.forgetNavClicksOn(url);
               this.debug?.event({ type: "result_row_on_repeat", page: pageCount, seen });
               continue;
             }
