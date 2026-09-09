@@ -139,6 +139,23 @@ self-test PASSED each time** (one attempt excluded as a documented harness colli
   COLUMBUS's Accela (wrong tenant, from the workbook); Miami's Job Sub-Category.
 - DESIGN (not gaps): MFA/CAPTCHA portals and final-submit stay human.
 
+## SAFETY: two paths nearly filed a live application, both now guarded (2026-09-09, night)
+
+permiteyes.us/bellingham's landing page IS the application - a 176-field single-page form.
+During learns, (1) the entry pass clicked a bare "Submit Application" as if it were the
+way in, and (2) the Enter-submit search fallback pressed Enter on the filled form - the
+form's own submit. `enter_submit` fired on the live portal tonight and the page navigated.
+
+**Account audited read-only immediately: the applications list is EMPTY.** No benchmark
+entries, nothing filed - the 60/176-filled post was rejected server-side and bounced to
+about:blank. No application was submitted by automation.
+
+Both guards are in (`a25311d`) and kill-tested together: entry refuses any
+submit/file/finish label without "new"; Enter refuses any page with more than a handful
+of fillable fields. CORRECTION to that commit's message: "with either alone it does not
+submit" was NOT tested - only both-off was. The both-off kill stands; the per-guard claim
+is retracted.
+
 ## The first pinned reliability number (2026-09-09, evening)
 
 `learn:benchmark --host amerenillinoisinterconnect --repeat 3 --self-test`, one build:
