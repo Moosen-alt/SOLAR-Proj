@@ -40,6 +40,17 @@ const PAGE = `<!doctype html><html><body style="font:14px sans-serif;padding:16p
          role="combobox" aria-autocomplete="list" data-role="autocomplete"
          placeholder="Search by Address, Process Number, Permit Number or Menu Option...">
 
+  <!-- The portal's TOP NAVIGATION, permanently on screen. Telerik renders it as
+       <ul class="t-menu">, which matches the popup-container list — so "the last visible
+       popup" answered "what does this dropdown offer?" with the site menu on two of three
+       dropdowns read on Miami's live Contact Information page. -->
+  <ul id="Menu" class="t-widget t-reset t-header t-menu">
+    <li class="t-item">Start Application</li>
+    <li class="t-item">Manage Application</li>
+    <li class="t-item">Contractor</li>
+    <li class="t-item">Inspections</li>
+  </ul>
+
   <!-- Miami's markup, as captured. -->
   <div id="dvptCategory">
     <div id="dvjcCategoryleft" style="width:50%">
@@ -58,6 +69,17 @@ const PAGE = `<!doctype html><html><body style="font:14px sans-serif;padding:16p
     <div id="subTitle">Job Sub-Category</div>
     <span class="k-widget k-dropdown"><span class="k-dropdown-wrap"><span class="k-input">Choose...</span></span>
       <input id="JobSubCategoryID" name="JobSubCategoryID" style="display:none" type="text"></span>
+  </div>
+
+  <!-- A widget whose click opens NOTHING — inert, or waiting on a cascade that has not
+       fired. This is the case that produced Miami's worst read: nothing appeared, the
+       scope fell back to "the last visible popup", and the site navigation was reported as
+       the option list. "State" and "Company" both came back offering "Start Application,
+       Manage Application, Contractor". -->
+  <div id="inertWrap">
+    <div id="inertTitle">Job Sub-Category (cascade)</div>
+    <div class="t-widget t-dropdown"><div class="t-dropdown-wrap"><span class="t-input">Choose...</span></div>
+      <input id="CascadeID" name="CascadeID" style="display:none" type="text"></div>
   </div>
 
   <!-- MUST EXCLUDE: ordinary hidden form state, no widget around it. -->
@@ -158,12 +180,22 @@ console.log(`   options read from the closed widget: ${JSON.stringify(offered)}`
 check("a dropdown that renders its list only on click can still be asked what it offers",
   offered.includes("Remodeling/repairs") && offered.length === 4,
   `got ${JSON.stringify(offered)}`);
+check("...and the site NAVIGATION is not mistaken for the menu",
+  !offered.some((o) => /Start Application|Manage Application|Inspections/i.test(o)),
+  `got ${JSON.stringify(offered)} — a popup already on screen is not the one we just opened`);
 check("...and the placeholder is not one of the choices",
   !offered.some((o) => /please select/i.test(o)),
   `got ${JSON.stringify(offered)}`);
 check("...and it is left CLOSED — an open popup covers whatever the walk clicks next",
   (await page.locator(".t-animation-container").count()) === 0,
   "the popup was still open after reading");
+
+// THE WORST READ OF ALL: nothing opened, and the site menu was reported as the answer.
+const fromInert = await readClosedComboboxOptions(page, page.locator("#CascadeID"));
+console.log(`   options read from a widget that opens nothing: ${JSON.stringify(fromInert)}`);
+check("a widget that opens nothing offers nothing — not the site navigation",
+  fromInert.length === 0,
+  `got ${JSON.stringify(fromInert)} — this is the read that told the planner "State" offers "Start Application"`);
 
 const filled = await selectWithFallback(page, page.locator("#JobCategoryID"), "Remodeling/repairs");
 const landedValue = await page.locator("#JobCategoryID").inputValue().catch(() => "");

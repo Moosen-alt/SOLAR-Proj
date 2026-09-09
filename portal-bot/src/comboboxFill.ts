@@ -72,7 +72,7 @@ function optionRowsIn(scope: any, page: any): any {
 // Popup containers a custom combobox renders its options into. Many widgets portal
 // the popup to <body>, so a strictly loc-rooted lookup misses — instead prefer the
 // most recently opened VISIBLE listbox/menu container and fall back to page-global.
-const POPUP_SELECTORS = [
+const POPUP_SELECTOR_LIST = [
   '[role="listbox"]',
   ".select2-results",
   ".chosen-results",
@@ -84,12 +84,64 @@ const POPUP_SELECTORS = [
   ".k-animation-container",
   "ul.t-list",
   "ul.k-list",
-].join(", ");
+];
+const POPUP_SELECTORS = POPUP_SELECTOR_LIST.join(", ");
+// The same list, restricted to popups that were NOT on screen before we opened this widget.
+const FRESH_POPUP_SELECTORS = POPUP_SELECTOR_LIST.map((sel) => `${sel}:not([data-al-prepopup])`).join(", ");
 
-// Scope for option/search-box lookups: the last (most recently opened) visible popup
-// container when one exists, otherwise the page. Best-effort; never throws.
+// A POPUP THAT WAS ALREADY ON SCREEN IS NOT THE ONE WE JUST OPENED.
+//
+// "The last visible popup" is a heuristic, and on Miami it reads the SITE NAVIGATION: its
+// top menu is <ul id="Menu" class="t-widget t-reset t-header t-menu">, which matches
+// ul[class*="menu"] above, is permanently visible, and answers "what does this dropdown
+// offer?" with "Start Application, Building Permit Application, Contractor…". Two of three
+// dropdowns read on Miami's Contact Information page came back with the nav menu — and a
+// FILL scoped that way clicks a nav item and navigates out of a half-filled form.
+//
+// Callers that know the moment they opened a widget stamp what was already there first;
+// after that, only an UNSTAMPED popup can be the one that just appeared. Unstamped pages
+// behave exactly as before, so every existing path is unaffected.
+export async function markExistingPopups(page: any): Promise<void> {
+  await page.evaluate((sel: string) => {
+    document.querySelectorAll("[data-al-prepopup]").forEach((n) => n.removeAttribute("data-al-prepopup"));
+    for (const el of Array.from(document.querySelectorAll(sel))) {
+      const r = (el as HTMLElement).getBoundingClientRect();
+      const st = getComputedStyle(el as HTMLElement);
+      if (r.width > 0 && r.height > 0 && st.visibility !== "hidden" && st.display !== "none") {
+        el.setAttribute("data-al-prepopup", "1");
+      }
+    }
+  }, POPUP_SELECTORS).catch(() => null);
+}
+
+/** Is a popup open that was NOT on screen when markExistingPopups last ran? The plain
+ *  "any popup visible" question cannot answer "did the widget close", because a permanently
+ *  visible site menu matches the popup list: the reader's own close-check read Miami's nav
+ *  as a still-open dropdown and clicked the widget back open. */
+async function freshPopupVisible(page: any): Promise<boolean> {
+  return (await page.locator(FRESH_POPUP_SELECTORS).locator("visible=true").count().catch(() => 0)) > 0;
+}
+
+export async function clearPopupMarks(page: any): Promise<void> {
+  await page.evaluate(() => {
+    document.querySelectorAll("[data-al-prepopup]").forEach((n) => n.removeAttribute("data-al-prepopup"));
+  }).catch(() => null);
+}
+
+// Scope for option/search-box lookups: the popup that appeared since markExistingPopups ran
+// when there is one, else the last visible popup container, else the page. Best-effort.
 async function optionScope(page: any): Promise<any> {
   try {
+    const fresh = page.locator(FRESH_POPUP_SELECTORS).locator("visible=true");
+    const fn = await fresh.count().catch(() => 0);
+    if (fn > 0) return fresh.nth(fn - 1);
+    // NOTHING APPEARED, AND THE CALLER KNOWS WHEN IT ASKED. The old fallback — "the last
+    // visible popup" — then returns whatever else is on screen, which on Miami is the site
+    // navigation: a widget that opened nothing was reported as offering "Start Application,
+    // Manage Application, Contractor". When a caller has stamped what was already there,
+    // "no fresh popup" is a complete answer and the fallback must not run. Callers that
+    // never stamp keep the old behaviour exactly.
+    if ((await page.locator("[data-al-prepopup]").count().catch(() => 0)) > 0) return page;
     const popups = page.locator(POPUP_SELECTORS).locator("visible=true");
     const n = await popups.count().catch(() => 0);
     if (n > 0) return popups.nth(n - 1);
@@ -210,6 +262,8 @@ async function bestOptionMatch(page: any, value: string, ownScope?: any): Promis
 export async function readClosedComboboxOptions(page: any, loc: any): Promise<string[]> {
   if (!loc) return [];
   try {
+    // Whatever is on screen now is not the popup we are about to open.
+    await markExistingPopups(page);
     if (await loc.isVisible().catch(() => false)) {
       await loc.click({ timeout: 4000 }).catch(() => null);
     } else {
@@ -261,7 +315,7 @@ export async function readClosedComboboxOptions(page: any, loc: any): Promise<st
     // ignores it closes on a second click of its own face, which is what a person does.
     await page.keyboard?.press("Escape").catch(() => null);
     await page.waitForTimeout?.(150).catch(() => null);
-    if ((await optionScope(page)) !== page) {
+    if (await freshPopupVisible(page)) {
       await loc.evaluate((el: Element) => {
         const isVis = (n: Element) => {
           const r = n.getBoundingClientRect();
@@ -279,6 +333,7 @@ export async function readClosedComboboxOptions(page: any, loc: any): Promise<st
       }).catch(() => null);
       await page.waitForTimeout?.(150).catch(() => null);
     }
+    await clearPopupMarks(page);
   }
 }
 
@@ -324,6 +379,9 @@ export async function fillCustomCombobox(page: any, loc: any, value: string): Pr
     return (await optionScope(page)) !== page;
   };
   const alreadyOpen = ariaOpen && await popupVisible();
+  // Same rule as the reader: a popup already on screen is not this widget's. Skipped when
+  // the widget is ALREADY open, since its own popup would then be stamped as pre-existing.
+  if (!alreadyOpen) await markExistingPopups(page);
   let openedWidget = alreadyOpen;
   if (!openedWidget && await loc.isVisible().catch(() => false)) {
     try { await loc.click({ timeout: 5000 }); openedWidget = true; } catch { /* fall through */ }
