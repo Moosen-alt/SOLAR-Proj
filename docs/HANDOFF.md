@@ -75,9 +75,30 @@ every one of them generic. The value is in the list, not in Miami.
 | The revealed button stayed banned | "Start New Application" is display:none until a parcel is chosen. Clicked before the row it does nothing and earns a dead-advance ban; the row click then makes it the way forward. A ban is scoped to a page state that no longer exists. | code |
 | Replay could not repeat any of it | The recorded marker cannot resolve at replay (by design, so the matcher runs) — but Playwright WAITS on a selector that resolves to nothing, and the fallback was keyed on a condition a clean skip never sets. | fixture (`addressRowReplay`) |
 
-**Where Miami actually stands:** login → Start Building → Legal Agreement → Property
-Search → address found → row selected → "Start New Application" revealed. It has not
-reached a review screen. Nothing here is a claim that it has.
+Two more, found after the table above was written, both the same shape — a guard
+remembering what did not work in a page state that no longer exists:
+
+| The wall | What was actually wrong | Proven |
+|---|---|---|
+| The revealed button stayed unclickable | The nav RE-CLICK guard. The planner clicked "Start New Application" while the parcel was unchosen and the button inert; the guard remembered that as a loop; after the row click made it the way forward, the walk refused to click it again. | live |
+| Job Category never fills | A Telerik dropdown: a visible `<span class="t-input">` and, behind it, `<input id="JobCategoryID" style="display:none" type="text">` holding the id the form posts. Classified text, the fill throws on a hidden input and the value drops in silence. The ARIA rule cannot help — Telerik predates ARIA. | fixture |
+
+**Where Miami actually stands (2026-09-09 01:2x):** 13 pages, 16 fills. Login → Start
+Building → Legal Agreement → Property Search → address found → row selected → Start New
+Application → **Job Location → Applicant Role → Contact Information (21 fills) → … → Job
+Category**, where it stops — and *says why*, in the portal's own words, because of the
+notice channel added earlier the same day:
+
+```
+portal_notice p10: "Please resolve the following issue(s): Please select mandatory Job Category."
+```
+
+It has not reached a review screen. Nothing here is a claim that it has.
+
+**Operator note:** these benchmark runs mint REAL DRAFT APPLICATIONS on the live Miami
+account — page 10 carried the intake number `BD26-021147-001`. They are drafts, never
+submitted (automation never clicks final submit), but they accumulate under
+permit@infinitysolarusa.com and someone should cancel them.
 
 ## The review number was fiction, both times (2026-09-08, late)
 
