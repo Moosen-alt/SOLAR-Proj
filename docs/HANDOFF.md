@@ -60,46 +60,59 @@ question (values, option counts, row counts). A swallowed click still blocks, an
 when the snapshot could not be taken the message says so rather than claiming a
 comparison that never ran.
 
-## Miami, page by page: what one portal cost, and what it bought (2026-09-08, late)
+## Miami, page by page: what one portal cost, and what it bought (2026-09-08/09)
 
-Driving ONE newly-accessible portal toward a review screen turned up seven defects,
-every one of them generic. The value is in the list, not in Miami.
+Driving ONE newly-accessible portal toward a review screen turned up sixteen defects.
+Every one is generic, every one is kill-tested, and the walk went from 6 pages / 8 fills
+to **29 fills across 18 pages, twelve distinct pages of Miami's intake**. The value is in
+the list, not in Miami.
 
-| The wall | What was actually wrong | Proven |
-|---|---|---|
-| Search found nothing, 7 pages | The planner filled `3500 Pan American`, then `Pan American`, for a parcel the portal holds as `3500 PAN AMERICAN DR`. The value dictionary offers `street` (whole) beside `streetNumber`/`streetNameCore`/`streetNameSearchPortion` — keys written for Accela's SPLIT form — and nothing says which one a single box wants. | live (`address_fill_expanded`) |
-| The portal said why and nobody read it | `.validation-summary-errors` was not in the error selectors, and errors were only ever read after an advance that did NOTHING. Every Miami advance worked; the page came back saying "Property Address not found." | fixture |
-| Results row not clickable | The row's only target is a `<td>` the portal underlined. No `<a>`, no `<button>`, no onclick — a grid handler bound in script. The replay-side matcher required a `Select` link (Accela's shape). | live (`result_row_clicked`) |
-| `tr.textContent` fuses cells | The row reads `3500 PAN AMERICAN DRCITY OF MIAMI`; the street type vanishes and no address can ever match. Both matchers had this; the `<a>` requirement was hiding it. | fixture |
-| Planner offered `btnSubmit` | `<input type=submit value="Start New Application">` has no textContent, so the label fell through to `name`. Classic ASP.NET renders every button this way. Also a safety hole: a real "Submit Application" labelled `btnSubmit` matched no SUBMIT_INTENT. | live (label now in the trace) |
-| The revealed button stayed banned | "Start New Application" is display:none until a parcel is chosen. Clicked before the row it does nothing and earns a dead-advance ban; the row click then makes it the way forward. A ban is scoped to a page state that no longer exists. | code |
-| Replay could not repeat any of it | The recorded marker cannot resolve at replay (by design, so the matcher runs) — but Playwright WAITS on a selector that resolves to nothing, and the fallback was keyed on a condition a clean skip never sets. | fixture (`addressRowReplay`) |
+| The wall | What was actually wrong |
+|---|---|
+| Search found nothing, 7 pages | The planner filled `3500 Pan American`, then `Pan American`, for a parcel the portal holds as `3500 PAN AMERICAN DR`. The value dictionary offers `street` (whole) beside `streetNumber`/`streetNameCore`/`streetNameSearchPortion` - keys written for Accela's SPLIT form - and nothing says which one a single box wants. |
+| The portal said why and nobody read it | `.validation-summary-errors` was not in the error selectors, and errors were only read after an advance that did NOTHING. Every Miami advance worked; the page came back saying "Property Address not found." |
+| Results row not clickable | The row's only target is a `<td>` the portal underlined. No `<a>`, no `<button>`, no onclick - a grid handler bound in script. The replay-side matcher required a `Select` link (Accela's shape). |
+| `tr.textContent` fuses cells | The row reads `3500 PAN AMERICAN DRCITY OF MIAMI`; the street type vanishes and no address can match. Both matchers had it; the `<a>` requirement was hiding it. |
+| Planner offered `btnSubmit` | `<input type=submit value="Start New Application">` has no textContent, so the label fell through to `name`. Classic ASP.NET renders every button this way. Also a safety hole: a real "Submit Application" labelled `btnSubmit` matched no SUBMIT_INTENT. |
+| The revealed button stayed banned | Two guards remembering what did not work in a page state that no longer exists - the dead-advance ban and the nav re-click guard. A successful row click is proof that state is gone. |
+| An advance that never returned | One advance click spent FIFTEEN MINUTES and emitted no event: safeAction retries the action, clickResilient retries four times inside it, each waiting for the element and then the network. Bounded at 90s; the abandoned click is retired by a generation counter, because on this portal it would have come back to life and clicked the very button the row click reveals. |
+| The dead-advance skip ended the run | It breaks when its fallbacks fail - but the recovery hint carrying the portal's validation errors is not built until the third visit, so breaking on the second meant the planner was never told why it was stuck. |
+| The row pass never got a turn | It hung off the ADVANCE path; told the button's real name, the planner called it a NAVIGATE. Being back on a page with the same controls says the last action failed, whichever branch took it - once per page signature. |
+| Job Category never filled | A Telerik dropdown: a visible `<span class="t-input">` and, behind it, `<input style="display:none">` holding the id the form posts. Classified text, the fill throws on a hidden input and the value drops in silence. Telerik predates ARIA, so the existing combobox rule could not see it. |
+| ...and it had no options to offer | The widget renders its list only on click, so the planner had to invent a value. `readClosedComboboxOptions` opens it, reads, and shuts it again. |
+| ...and the answer went into the site search | The combobox filler fell back to the whole PAGE for a filter box. Miami carries `<input id="acGlobalSearch" role="combobox" aria-autocomplete="list">` on every page. Confined to the widget; the Enter fall-through had the same hole one branch later. |
+| ...and the site nav was read as the options | `<ul class="t-menu">` matches the popup list and is permanently visible, so "the last visible popup" answered with "Start Application, Manage Application, Contractor". A popup already on screen is not the one we just opened - and when nothing fresh appears, "no popup" is the complete answer. |
+| ...and the fill path threw before any of it ran | `applyFill` refuses invisible controls, rightly (one hidden date input once cost 137 seconds). A dropdown widget's backing input is MEANT to be invisible. Three visits logged `hidden_field_skipped: Job Category` while everything upstream was correct. |
+| A binding key nobody defined | The planner names its own keys and invents them. `jobCategory` is not in the value dictionary, and `resolveValue` returns an empty string with no fallback - a blank required field on every replay. The literal is used only when the key is UNKNOWN; a defined-but-empty key stays blank, or a shared recipe files the learn project's homeowner. |
+| Two radios, one id | Miami's Yes/No questions are two radios sharing one id and name, with `<label for="Yes">` pointing at an id that does not exist. Six controls, three names, no way to tell Yes from No or one question from another. The choice is the adjacent word; the question is the section. |
 
-Two more, found after the table above was written, both the same shape — a guard
-remembering what did not work in a page state that no longer exists:
-
-| The wall | What was actually wrong | Proven |
-|---|---|---|
-| The revealed button stayed unclickable | The nav RE-CLICK guard. The planner clicked "Start New Application" while the parcel was unchosen and the button inert; the guard remembered that as a loop; after the row click made it the way forward, the walk refused to click it again. | live |
-| Job Category never fills | A Telerik dropdown: a visible `<span class="t-input">` and, behind it, `<input id="JobCategoryID" style="display:none" type="text">` holding the id the form posts. Classified text, the fill throws on a hidden input and the value drops in silence. The ARIA rule cannot help — Telerik predates ARIA. | fixture |
-
-**Where Miami actually stands (2026-09-09 01:2x):** 13 pages, 16 fills. Login → Start
-Building → Legal Agreement → Property Search → address found → row selected → Start New
-Application → **Job Location → Applicant Role → Contact Information (21 fills) → … → Job
-Category**, where it stops — and *says why*, in the portal's own words, because of the
-notice channel added earlier the same day:
+**Where Miami stands:** Home -> Legal Agreement -> Property Search -> Job Location ->
+Applicant Role -> Contact Information -> Job Category -> Property Type -> Job Description
+-> Job Description Details -> Project Totals -> Additional Options. Every stop since the
+notice channel landed has been named by the portal in its own words rather than guessed at:
 
 ```
-portal_notice p10: "Please resolve the following issue(s): Please select mandatory Job Category."
+portal_notice p18: "You must select one option for City Project Question
+                    You must select one option for Affordable Housing Question
+                    You must select one option for Private Provider Question"
 ```
 
-It has not reached a review screen. Nothing here is a claim that it has.
+**It has not reached a review screen.** Nothing here is a claim that it has.
 
 **Operator note:** these benchmark runs mint REAL DRAFT APPLICATIONS on the live Miami
-account — page 10 carried the intake number `BD26-021147-001`. They are drafts, never
+account - one carried the intake number `BD26-021147-001`. They are drafts, never
 submitted (automation never clicks final submit), but they accumulate under
 permit@infinitysolarusa.com and someone should cancel them.
 
+### The test chain could hang, and did
+
+`portal:test:dom` is sixty smokes joined with `&&`; `replica.dom.smoke` sat for fifty
+minutes and took the other fifty-nine with it, silently, leaving four orphaned browsers
+when it had to be killed - which is where the last round of false portal diagnoses came
+from. **`npm run portal:test:dom:each`** runs the same list, one process and one time
+budget per smoke, with `--from`/`--only` to resume. A hang is now a reported TIMEOUT on one
+row. **61/61 pass** as of 2026-09-09, including the PowerClerk and combobox suites that
+this session's comboboxFill changes could have disturbed.
 ## The review number was fiction, both times (2026-09-08, late)
 
 **Neither portal that "reached review" reached a review screen.** Read this before
