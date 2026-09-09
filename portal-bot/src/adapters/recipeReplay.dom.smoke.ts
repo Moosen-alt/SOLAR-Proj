@@ -35,6 +35,8 @@ const PAGE = `<!doctype html><html><body>
   <label>First:</label><input type="text" id="txtFirstName">
   <label>Address:</label><input type="text" id="txtAppStreetAdd1">
   <label>Zip:</label><input type="text" id="txtZip">
+  <label>Job Category:</label><input type="text" id="txtJobCategory">
+  <label>Middle Name:</label><input type="text" id="txtMiddle">
   <select id="ddlState"><option value="">--Select--</option><option value="OR">OR</option><option value="WA">WA</option></select>
   <a id="btnContinue" href="#" onclick="document.getElementById('done').textContent='ADVANCED';return false;"><span>Continue Application &raquo;</span></a>
   <a id="btnSubmit" href="#" onclick="document.getElementById('done').textContent='SUBMITTED';return false;"><span>Submit</span></a>
@@ -53,6 +55,15 @@ const steps: RecipeStep[] = [
   { action: "fill", phase: "fill", selector: { css: "input[id*='StreetAdd' i], input[id*='Address' i]" }, field: "street", value: "LEARN-TIME-STREET", note: "contact: address" },
   { action: "fill", phase: "fill", selector: { css: "#txtZip" }, field: "zip", value: "00000", note: "contact: zip" },
   { action: "select", phase: "fill", selector: { css: "#ddlState" }, field: "state", value: "WA", note: "contact: state" },
+  // THE PLANNER NAMES ITS OWN BINDING KEYS, and it invents them. Miami's Job Category came
+  // back bound to "jobCategory", which the value dictionary has never defined — so the
+  // binding resolved to "" and the recorded answer was thrown away, leaving a required
+  // field blank on every replay.
+  { action: "fill", phase: "fill", selector: { css: "#txtJobCategory" }, field: "jobCategory", value: "STAND-ALONE", note: "job category" },
+  // …and the case that must NOT change: a key the dictionary DEFINES and leaves empty for
+  // this project. Blank is the answer there, and replaying the learn project's literal
+  // would file somebody else's data.
+  { action: "fill", phase: "fill", selector: { css: "#txtMiddle" }, field: "homeownerMiddleName", value: "LEARN-TIME-MIDDLE", note: "contact: middle name" },
   { action: "click", phase: "fill", selector: { role: "link", name: "Continue Application »", exact: true, fallbacks: [{ css: "#btnContinue" }] }, note: "contacts: continue" },
   // MUST NOT be clicked: automation never files the application.
   { action: "click", phase: "review", selector: { css: "#btnSubmit" }, isFinalSubmit: true, note: "final submit: Submit (recorded, NOT clicked)" },
@@ -65,7 +76,11 @@ const recipe = {
 } as unknown as PortalRecipe;
 
 // THIS project's values — deliberately different from every recorded literal.
-const fieldValues = { homeownerFirstName: "Wynema", street: "1075 Flanagan Ave", zip: "97420", state: "OR" };
+const fieldValues = {
+  homeownerFirstName: "Wynema", street: "1075 Flanagan Ave", zip: "97420", state: "OR",
+  // Defined, and empty for this project — the discriminator for the invented-key rule.
+  homeownerMiddleName: "",
+};
 
 const browser = await chromium.launch();
 const page = await browser.newPage();
@@ -82,6 +97,8 @@ const firstName = await read("#txtFirstName");
 const street = await read("#txtAppStreetAdd1");
 const zip = await read("#txtZip");
 const state = await read("#ddlState");
+const jobCategory = await read("#txtJobCategory");
+const middle = await read("#txtMiddle");
 const done = await page.locator("#done").textContent().catch(() => "");
 
 check("replay completes against a real page", () => {
@@ -92,6 +109,16 @@ check("bound fields replay THIS project's data, never the learn-time literal", (
   assert.equal(street, "1075 Flanagan Ave", `street: got ${JSON.stringify(street)}`);
   assert.equal(zip, "97420", `zip: got ${JSON.stringify(zip)}`);
   assert.equal(state, "OR", `state select: got ${JSON.stringify(state)}`);
+});
+check("a binding key the dictionary never defined replays its recorded answer, not a blank", async () => {
+  assert.equal(jobCategory, "STAND-ALONE", `got ${JSON.stringify(jobCategory)} — a blank here is a required field the portal refuses`);
+});
+check("...and it is REPORTED, not silently substituted", () => {
+  const notes = ((result.data as { agingNotes?: string[] } | undefined)?.agingNotes ?? []);
+  assert.ok(notes.some((n) => /jobCategory/.test(n)), `expected an aging note naming the key, got ${JSON.stringify(notes)}`);
+});
+check("MUST EXCLUDE: a DEFINED key that is empty for this project stays blank", () => {
+  assert.equal(middle, "", `got ${JSON.stringify(middle)} — that is the learn project's data on somebody else's application`);
 });
 check("the recorded advance ran (link with a nested <span>, as ACA renders it)", () => {
   assert.equal(done, "ADVANCED", `expected the Continue link to fire, got ${JSON.stringify(done)}`);

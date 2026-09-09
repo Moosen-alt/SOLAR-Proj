@@ -1131,6 +1131,10 @@ ${body.slice(0, 4000)}`);
     );
   }
 
+  /** Binding keys the planner invented that the dictionary does not define — reported once
+   *  each, not once per resolveValue call (it runs in several loops). */
+  private readonly inventedBindings = new Set<string>();
+
   private resolveValue(step: RecipeStep): string {
     // NOT HAVING A BATTERY IS AN ANSWER, AND IT IS "NO". This step is only reached now
     // because it is the DECLARATION rather than a spec, and the recorded literal on it came
@@ -1168,7 +1172,30 @@ ${body.slice(0, 4000)}`);
       // hold "58103504-0012", so the submission came back rejected with that field named.
       // The digits were right; only the grouping was wrong, and the portal had already said
       // what it wanted. applyFormatHint only ever re-groups the SAME characters.
-      return applyFormatHint(this.fieldValues[step.field] ?? "", String(step.note ?? ""));
+      // A KEY NOBODY DEFINED RESOLVES TO NOTHING, AND NOTHING IS WHAT GETS FILLED.
+      //
+      // The planner names its own binding keys. Miami's Job Category came back bound to
+      // "jobCategory" — a key the value dictionary has never heard of — so this returned ""
+      // and the recorded answer, "STAND-ALONE", was thrown away. On replay that is a blank
+      // required field and a portal that refuses to advance, every time, silently.
+      //
+      // The literal is only used when the key is UNKNOWN. A key the dictionary defines and
+      // leaves empty for this project is an answer — blank — and must stay blank, or a
+      // shared recipe files the learn project's homeowner. This distinguishes "the planner
+      // invented a name" from "this project has no value for that".
+      const known = Object.prototype.hasOwnProperty.call(this.fieldValues, step.field);
+      const bound = applyFormatHint(this.fieldValues[step.field] ?? "", String(step.note ?? ""));
+      if (!known && !bound && String(step.value ?? "").trim()) {
+        const key = String(step.field);
+        if (!this.inventedBindings.has(key)) {
+          this.inventedBindings.add(key);
+          this.agingNotes.push(
+            `"${String(step.note ?? key).slice(0, 40)}" is bound to "${key}", which the value dictionary does not define — replayed the recorded answer instead of leaving it blank`,
+          );
+        }
+        return applyFormatHint(String(step.value), String(step.note ?? ""));
+      }
+      return bound;
     }
     return applyFormatHint(step.value ?? "", String(step.note ?? ""));
   }
