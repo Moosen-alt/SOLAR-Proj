@@ -113,6 +113,36 @@ from. **`npm run portal:test:dom:each`** runs the same list, one process and one
 budget per smoke, with `--from`/`--only` to resume. A hang is now a reported TIMEOUT on one
 row. **61/61 pass** as of 2026-09-09, including the PowerClerk and combobox suites that
 this session's comboboxFill changes could have disturbed.
+## The machine can fail in a way that looks like the fleet failing (2026-09-09)
+
+A sweep ended with **eleven consecutive portals** scored `unreachable - the portal did not
+respond`, all inside **eight seconds**. Every one of those hosts answered a curl a minute
+later. Counted as dead hosts it moved ACCESS from 24/50 to 15/51 and produced nine
+REGRESSED rows that were nothing of the kind.
+
+**Most likely cause: disk.** This machine sits at ~13 GB free of ~950 GB. Chromium needs
+scratch space to launch a profile, and a browser that cannot launch is indistinguishable
+from a portal that will not answer. 69 orphaned `%TEMP%\playwright*` profile directories
+were cleaned (0.6 GB); the rest of the disk is not ours. **Check free space before trusting
+a sweep**, and suspect the runner when failures arrive in a block.
+
+`markUnreachableBursts` now marks four-or-more consecutive no-response rows NOT MEASURED
+rather than blaming the portals - run order is the evidence, since portals are attempted in
+list order and share nothing else. Three neighbours failing together is still counted as
+three dead hosts: the guard has to understate, not hide a real outage. And `the portal did
+not respond` now names what the network actually did (`net::ERR_...`, `ETIMEDOUT`,
+`ENOTFOUND`), because a verdict about somebody else's server should be checkable.
+
+Two other things that sweep exposed:
+
+- **The per-portal wall clock truncates deep walks.** Miami now needs ~25 minutes for its
+  20-page intake and the default 480s cap (+180s slack) cut it off - correctly scored NOT
+  MEASURED, but it means a portal that got *better* can read as absent. Use
+  `--portal-timeout` when measuring depth.
+- **The only signal that survived**: `www.baltimorecountymd.gov` went `reached_form` ->
+  `recorded_steps`. Cityworks/ASP.NET - the family the `<input type=submit value>` label fix
+  should help. One data point, not a trend.
+
 ## The review number was fiction, both times (2026-09-08, late)
 
 **Neither portal that "reached review" reached a review screen.** Read this before
