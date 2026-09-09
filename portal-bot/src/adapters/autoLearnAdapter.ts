@@ -4522,6 +4522,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       }
 
       let pageFillCountPre = 0;
+      let answeredAnyPicker = false;
       // c4c) A CONTACT BLOCK'S SOURCE PICKER MUST BE ANSWERED BEFORE ITS FIELDS ARE TYPED.
       //
       // PowerClerk renders each contact block with a select — "Existing contact to use for
@@ -4557,6 +4558,30 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             // control. Let the rebuild finish; applyFill re-resolves each selector at fill
             // time, so a settled page is all it needs.
             await this.waitForDynamicFieldsSettle().catch(() => null);
+            answeredAnyPicker = true;
+          }
+        }
+        // ...AND THEN THE SELECTORS THE PLANNER'S FILLS POINT AT ARE STALE.
+        //
+        // The miss-split is what caught this half: answering the picker turned Ameren's
+        // Name/Company/Address from "typed but not kept" into "NEVER FILLED", because the
+        // rebuild gives every input a new render-order id and applyFill could no longer
+        // resolve them. Strictly worse than not answering it.
+        //
+        // Re-extract and adopt the fresh selectors — but ONLY when the rebuild produced the
+        // same controls in the same order, which is what a re-render of the same block looks
+        // like. Anything else and the planner's indices no longer mean what it chose, so the
+        // safe move is to leave the list alone and say so.
+        if (answeredAnyPicker) {
+          const refreshed = (await this.extractAllFrames(EXTRACT_SEL)).map(toExtractedField);
+          const sameShape = refreshed.length === fields.length
+            && refreshed.every((f, i) => String(f.label ?? "") === String(fields[i].label ?? "")
+              && f.fieldType === fields[i].fieldType);
+          if (sameShape) {
+            for (let i = 0; i < fields.length; i++) fields[i].selector = refreshed[i].selector;
+            this.debug?.event({ type: "selectors_refreshed_after_rerender", page: pageCount, count: fields.length });
+          } else {
+            this.debug?.event({ type: "rerender_changed_the_page", page: pageCount, before: fields.length, after: refreshed.length });
           }
         }
       } catch { /* best-effort — a block without a picker is the common case */ }
