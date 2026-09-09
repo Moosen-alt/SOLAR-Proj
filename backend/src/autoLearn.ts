@@ -1163,8 +1163,32 @@ async function autoLearnPortalInner(
       if (!reproduced) {
         // Already untrusted stays untrusted; this only ever removes trust, never grants it.
         trusted = false;
-        verification.issues.push(`Replay self-test did NOT reproduce the review in a fresh session (${String(replay.message || replay.pauseReason || "recipe did not reach review on replay")}). Kept as a draft for human verification.`);
-        addAuditLog(db, projectId, "system", "auto-learn", "portal.replay_selftest_failed", { scope: scopeType });
+        // SAY WHAT THE REPLAY DID, NOT JUST THAT IT FAILED.
+        //
+        // This is the single most important check in the product — can the bot re-run what
+        // it just learned — and on Ameren's first genuine review screen it reported
+        // "recipe did not reach review on replay" and nothing else, because replay.message
+        // was empty and the fallback string is all there was. Everything needed was sitting
+        // in the replay result: which steps were skipped, what drifted, where it stopped.
+        const rd = (replay.data ?? {}) as {
+          skipped?: string[]; driftWarnings?: string[]; unresolvedFields?: string[];
+          executed?: number; requiredStillEmpty?: string[]; stoppedAtPayment?: boolean;
+        };
+        const detail = [
+          String(replay.message || replay.pauseReason || "").trim(),
+          typeof rd.executed === "number" ? `${rd.executed} step(s) executed` : "",
+          rd.skipped?.length ? `SKIPPED: ${rd.skipped.slice(0, 6).join("; ")}` : "",
+          rd.unresolvedFields?.length ? `unresolved binding(s): ${rd.unresolvedFields.slice(0, 6).join(", ")}` : "",
+          rd.requiredStillEmpty?.length ? `still empty: ${rd.requiredStillEmpty.slice(0, 6).join(", ")}` : "",
+          rd.driftWarnings?.length ? `drift: ${rd.driftWarnings.slice(0, 3).join(" | ")}` : "",
+        ].filter(Boolean).join(". ");
+        verification.issues.push(`Replay self-test did NOT reproduce the review in a fresh session (${detail || "recipe did not reach review on replay, and the replay reported nothing — that is itself the defect to fix"}). Kept as a draft for human verification.`);
+        addAuditLog(db, projectId, "system", "auto-learn", "portal.replay_selftest_failed", {
+          scope: scopeType,
+          executed: rd.executed ?? null,
+          skipped: (rd.skipped ?? []).slice(0, 10),
+          unresolved: (rd.unresolvedFields ?? []).slice(0, 10),
+        });
       } else {
         addAuditLog(db, projectId, "system", "auto-learn", "portal.replay_selftest_passed", { scope: scopeType });
       }
