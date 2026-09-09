@@ -113,6 +113,47 @@ from. **`npm run portal:test:dom:each`** runs the same list, one process and one
 budget per smoke, with `--from`/`--only` to resume. A hang is now a reported TIMEOUT on one
 row. **61/61 pass** as of 2026-09-09, including the PowerClerk and combobox suites that
 this session's comboboxFill changes could have disturbed.
+## THE LOOP CLOSED: learn -> review -> replay -> review (2026-09-09, Ameren PowerClerk)
+
+```
+[self-test] ENABLED - replaying the learned recipe
+[self-test] PASSED - the recipe reproduced the review in a fresh session
+ 1/1 6 reached_review       amerenillinoisinterconnect.powerclerk.com
+   reached REVIEW : 1/1 = 100%   <- the product's own bar
+```
+
+First time the bar has been cleared on any portal, and it is the NEM side. Eight pages,
+review screen is **Step 7 Payment (final)** - the correct stopping point, since automation
+never pays. Verifier `accurate: true`, confidence medium (Utility/Program = Ameren Illinois,
+fee recipient = Installer, $50.00, "Current step: 7 Payment"), so it survived the gate that
+demoted Spokane's fiction. Reproduced across four consecutive runs.
+
+### Why it had never closed before
+
+**The self-test passed neither the credential, nor the browser profile, nor the portal's
+login URL** - the three things the LEARN is handed a few hundred lines above in the same
+function. The replay landed on a login page it could not pass, `runAdapter` returned its
+login-failure shape (`ok:false`, no message, no data), and every "replay self-test did NOT
+reproduce the review" verdict this project ever recorded was a login failure wearing a
+recipe failure's clothes. *Fresh session* means a fresh browser, not a fresh identity -
+production replay uses the same per-portal profile, so the self-test must too.
+
+Two diagnosis gaps fixed alongside it, both of which cost runs tonight:
+
+- The login-failure return carried its reason only inside `steps[0]`, which nothing reads.
+- **Audit rows for a benchmark project are deleted with the project**, so
+  `portal.replay_selftest_passed/failed` could never answer "did it even run". The run now
+  prints `[self-test] ENABLED/PASSED/FAILED/ERRORED` on stdout. Three runs were spent on
+  that question before the line existed.
+
+### What is still missing, by name
+
+Six required fields are blank on the review screen: **Street, Name, Company, Address,
+Inverter Manufacturer, Inverter Model**. So the loop closes but the application is not
+complete - "nothing missed" is not met. The first four look like one contact/installer
+block; the last two are the PowerClerk equipment cascade. That is the next piece of work,
+and the run names it every time.
+
 ## Where Miami actually stops, and why it is not an engine problem (2026-09-09)
 
 The walk now reaches **Job Description**, twelve pages in. What stops it:
