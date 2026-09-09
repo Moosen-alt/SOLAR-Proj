@@ -1158,7 +1158,25 @@ async function autoLearnPortalInner(
       const baseRecipe: PortalRecipe = stub ? getPortalRecipe(db, stub.id) : { ...existingRecipe!, portalUrl: portalUrl || existingRecipe!.portalUrl };
       const recipeForReplay: PortalRecipe = { ...baseRecipe, steps: boundSteps };
       const replayFieldValues = resolveRecipeFieldValues(db, project, portalType);
-      const replay = await stageWithRecipe(recipeForReplay, project, replayFieldValues, docsByType, [], { headless: input.headless }) as Record<string, unknown>;
+      // A REPLAY THAT CANNOT LOG IN IS NOT A TEST OF THE RECIPE.
+      //
+      // This call passed neither the credential, nor the browser profile, nor the portal's
+      // login URL — the three things the LEARN is given a few hundred lines above. So the
+      // replay landed on a login page it could not pass, runAdapter returned its
+      // login-failure shape (ok:false, no message, no data), and every "replay self-test did
+      // NOT reproduce the review" verdict this project has ever recorded was a login failure
+      // wearing a recipe failure's clothes. Ameren's first genuine review screen is what made
+      // that visible: the recipe was fine and the test never reached it.
+      //
+      // "Fresh session" means a fresh browser, not a fresh identity — production replay uses
+      // the same per-portal profile, so the self-test must too or it is testing something
+      // nobody will ever run.
+      const replay = await stageWithRecipe(recipeForReplay, project, replayFieldValues, docsByType, [], {
+        headless: input.headless,
+        credential,
+        userDataDir,
+        loginUrl: portalUrl,
+      }) as Record<string, unknown>;
       const reproduced = replay.ok === true && !replay.pauseReason;
       if (!reproduced) {
         // Already untrusted stays untrusted; this only ever removes trust, never grants it.

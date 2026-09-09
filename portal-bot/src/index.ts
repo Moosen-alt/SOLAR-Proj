@@ -352,12 +352,17 @@ async function runAdapter(
       startUrl: options.loginUrl,
     });
     if (!loginResult.ok) {
+      // SAY IT OUT LOUD. This carried the login failure only inside steps[0], which nothing
+      // reads: the replay self-test printed "recipe did not reach review on replay" for
+      // every login failure in this project's history, and a caller comparing a replay
+      // against a learn had no way to tell "the recipe is wrong" from "we never got in".
       return {
         portalName: adapter.portalName,
         ok: false,
         finalSubmitClicked: false,
         finalSubmitClickedByAutomation: false,
         pauseReason: loginResult.pauseReason ?? null,
+        message: `Login failed before the recipe ran: ${String(loginResult.message ?? loginResult.pauseReason ?? "no reason given")}`.slice(0, 300),
         steps: [loginResult],
       };
     }
