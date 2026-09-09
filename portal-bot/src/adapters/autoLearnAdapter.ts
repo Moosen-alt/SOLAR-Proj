@@ -684,6 +684,55 @@ export function extractFieldsInPage(els: Element[]): RawField[] {
       }
     }
 
+    // Set when a dropdown widget's visible caption is the only real name this control has.
+    let widgetLabel = "";
+    // A HIDDEN INPUT INSIDE A DROPDOWN WIDGET IS A DROPDOWN — no ARIA required.
+    //
+    // Miami's Job Category, the page that stops the walk with "Please select mandatory Job
+    // Category", is a Telerik dropdown: a visible <div class="t-widget t-dropdown"> showing
+    // "Please select a Job Category...", and behind it <input id="JobCategoryID"
+    // style="display:none" type="text"> holding the id the form posts. The tag check calls
+    // that a TEXT field, applyFill's fill() throws on a hidden input, and the value drops in
+    // silence — the same failure the ARIA case above was written for, on a widget family
+    // (Telerik/Kendo) that predates ARIA and is everywhere in government portals.
+    //
+    // Tightly gated so this cannot sweep up ordinary hidden state: the input must be hidden,
+    // it must sit inside something NAMED like a dropdown, and that container must be showing
+    // a value — which is what makes it a control a person can see and use.
+    if (tag === "input" && (fieldType === "text" || fieldType === "other")) {
+      const style = el.getAttribute("style") || "";
+      const hidden = /display\s*:\s*none/i.test(style) || (el as HTMLElement).offsetParent === null;
+      if (hidden) {
+        const wrap = el.closest('[class*="dropdown"], [class*="combobox"], [class*="t-widget"], [class*="k-widget"], [class*="select2"], [class*="chosen"]');
+        const face = wrap ? wrap.querySelector('.t-input, .k-input, [class*="-input"], [class*="dropdown-wrap"], [class*="rendered"]') : null;
+        if (wrap && face && (face as HTMLElement).offsetParent !== null) {
+          fieldType = "select";
+          // THE NAME ATTRIBUTE IS NOT A LABEL. Left as-is this field reaches the planner as
+          // "JobCategoryID"; the words a person reads — "*Job Category" — are in a sibling
+          // of the widget's container, which no label rule looks at. Only consulted when the
+          // label we have is the id/name, so a real label always wins.
+          const current = labelFor(el);
+          const nameOrId = (el.getAttribute("name") || el.getAttribute("id") || "").trim();
+          if (!current || current === nameOrId) {
+            let node: Element | null = wrap;
+            for (let hops = 0; node && hops < 3; hops++) {
+              let sib: Element | null = node.previousElementSibling;
+              while (sib) {
+                const t = (sib.textContent || "").replace(/\s+/g, " ").trim();
+                if (t && t.length <= 60 && !sib.querySelector("input, select, textarea")) {
+                  widgetLabel = t.replace(/^[*\s]+/, "");
+                  break;
+                }
+                sib = sib.previousElementSibling;
+              }
+              if (widgetLabel) break;
+              node = node.parentElement;
+            }
+          }
+        }
+      }
+    }
+
     // Custom (non-native-<select>) dropdowns: PowerClerk "Please select..." widgets,
     // select2 / chosen / ui-select / ExtJS comboboxes. These render as styled divs, so
     // the tag checks above miss them and the planner never sees a dropdown to fill.
@@ -745,7 +794,7 @@ export function extractFieldsInPage(els: Element[]): RawField[] {
     // less useful to the planner than the identity itself (which disambiguates e.g. the inverter
     // Qty from a PV-array Qty) — prefer the test hint in that case; otherwise keep the real label.
     const genericLabel = /^(please\s+)?select\.{0,3}$|^select$|^qty$|^\s*$/i.test(rawLabel);
-    const label = (genericLabel && testHint) ? testHint : (rawLabel || testHint || "");
+    const label = widgetLabel || ((genericLabel && testHint) ? testHint : (rawLabel || testHint || ""));
     const name = el.getAttribute("name") || undefined;
     const placeholder = el.getAttribute("placeholder") || undefined;
     const id = el.getAttribute("id") || undefined;

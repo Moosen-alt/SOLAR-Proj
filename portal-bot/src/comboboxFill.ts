@@ -46,6 +46,15 @@ const OPTION_SELECTORS = [
   'ul[class*="option"] li',
   '[class*="-option"]:not(input):not(button)',
   '[class*="option-"]:not(input):not(button)',
+  // TELERIK / KENDO. Predates ARIA, renders its popup into a body-level animation
+  // container, and names nothing "menu", "option" or "listbox" — so none of the rules above
+  // could see it. It is the dropdown of choice across government portals: Miami's iBuild
+  // stops the walk on a Telerik "Job Category" whose options live in exactly this list.
+  "ul.t-list > li",
+  ".t-animation-container li",
+  "ul.k-list > li",
+  ".k-animation-container li",
+  ".k-list-item",
 ].join(", ");
 
 // Popup containers a custom combobox renders its options into. Many widgets portal
@@ -59,6 +68,10 @@ const POPUP_SELECTORS = [
   ".x-combo-list",
   'ul[class*="menu"]',
   'ul[class*="option"]',
+  ".t-animation-container",
+  ".k-animation-container",
+  "ul.t-list",
+  "ul.k-list",
 ].join(", ");
 
 // Scope for option/search-box lookups: the last (most recently opened) visible popup
