@@ -5005,7 +5005,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         // later autosave round-trip — a one-shot mid-page verify cannot survive a portal
         // that keeps resetting. One more pass at the exit; verifyFillsLanded already
         // re-applies whatever is lost.
-        await this.verifyFillsLanded(appliedThisPage).catch(() => [] as string[]);
+        await this.verifyFillsLanded(appliedThisPage, { budgetMs: 25_000, requiredOnly: true }).catch(() => [] as string[]);
         reachedReview = true;
         break;
       }
@@ -5055,7 +5055,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         // since the mid-page verify, so the page we advance OFF carries what we typed. Then
         // give the autosave a moment — a re-typed value that has not round-tripped is lost
         // by the very click that follows (the reason the d1 settle exists).
-        await this.verifyFillsLanded(appliedThisPage).catch(() => [] as string[]);
+        await this.verifyFillsLanded(appliedThisPage, { budgetMs: 25_000, requiredOnly: true }).catch(() => [] as string[]);
         if (appliedThisPage.length > 0) {
           await this.waitForAutosaveIndicator(3000);
           await sleep(400);
@@ -6351,9 +6351,21 @@ export class AutoLearnAdapter extends BasePortalAdapter {
 
   // Read each applied fill back; re-apply once if it didn't hold; return the labels of REQUIRED
   // fields that STILL won't hold their value (the portal silently dropped them).
-  private async verifyFillsLanded(applied: AppliedFill[]): Promise<string[]> {
+  private async verifyFillsLanded(applied: AppliedFill[], opts?: { budgetMs?: number; requiredOnly?: boolean }): Promise<string[]> {
     const misses: string[] = [];
+    // A RE-ASSERT PASS IS A SAFETY NET, NOT A SECOND FILL PHASE. Unbounded, the exit pass
+    // spent FIFTEEN MINUTES on Miami's Contact Information — 21 applied fills, each
+    // re-locating, re-typing against a 5s timeout and re-reading on a page that keeps
+    // re-rendering — and ate the whole run's budget. Ameren survived it only because its
+    // pages carry fewer fills. Callers that run at a page EXIT pass a budget and ask for
+    // required fields only: those are the ones a blank actually blocks.
+    const deadline = opts?.budgetMs ? Date.now() + opts.budgetMs : Infinity;
     for (const a of applied) {
+      if (Date.now() > deadline) {
+        this.debug?.event({ type: "reassert_budget_spent", checked: applied.indexOf(a), of: applied.length });
+        break;
+      }
+      if (opts?.requiredOnly && !a.required) continue;
       // Sensitive fields (account/meter) are INTENTIONALLY left blank during a learn run — we
       // never keep their literal value; it's bound at replay from the credential/project store.
       // So they read back empty by design. Flagging that emptiness as a required-field miss would
