@@ -183,6 +183,23 @@ check("...and the portal's global site search was NOT typed into",
   (await page.locator("#acGlobalSearch").inputValue().catch(() => "")) === "",
   "the filler fell back to a page-global search box and typed the answer into the site search");
 
+// ---------------------------------------------------------------------------
+// AND WHEN NOTHING MATCHES. A fill that cannot find its option must fail QUIETLY: the
+// fall-through used to read the page-global search box and press Enter, which on this
+// portal fires the site search and navigates the walk out of a half-filled form.
+// ---------------------------------------------------------------------------
+const missed = await selectWithFallback(page, page.locator("#JobCategoryID"), "Nothing On This Menu");
+const afterMiss = await page.locator("#acGlobalSearch").inputValue().catch(() => "");
+check("a value the menu does not offer is a quiet miss, not a guess",
+  missed === false,
+  "reported success for a value that is not on the menu");
+check("...and the miss does not fire the portal's site search",
+  afterMiss === "",
+  `site search holds ${JSON.stringify(afterMiss)} — the fall-through read a box outside the widget`);
+check("...and the value that DID land is still there",
+  (await page.locator("#JobCategoryID").inputValue().catch(() => "")) === "4",
+  "the failed attempt clobbered the good value");
+
 await browser.close();
 server.close();
 console.log(failures === 0 ? "widgetDropdown.dom.smoke: PASS" : `widgetDropdown.dom.smoke: ${failures} FAILURE(S)`);

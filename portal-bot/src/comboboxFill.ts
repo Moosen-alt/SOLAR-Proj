@@ -316,6 +316,8 @@ export async function fillCustomCombobox(page: any, loc: any, value: string): Pr
   // Trust aria-expanded only when a popup is actually on screen — the attribute can be
   // STALE (left "true" after an interrupted interaction), and skipping the open-click on
   // a stale flag leaves every matcher staring at a closed widget.
+  // The filter box this widget owns, if it has one — the only box Enter may ever commit.
+  let widgetSearch: any = null;
   const ariaOpen = (await loc.getAttribute("aria-expanded").catch(() => null)) === "true";
   const popupVisible = async () => {
     if (ownPopup && await ownPopup.isVisible().catch(() => false)) return true;
@@ -360,7 +362,8 @@ export async function fillCustomCombobox(page: any, loc: any, value: string): Pr
     if (!search || !(await search.count().catch(() => 0))) {
       // The popup's filter box may carry none of the known attributes (PGE PowerClerk's
       // popper renders a bare <input> with a magnifier icon) — any visible input inside
-      // the POPUP is the search box. Page-global stays the last resort.
+      // the POPUP is the search box. The widget's own container is the last resort — never
+      // the page; see below.
       search = scope === page ? null : scope.locator("input:visible").first();
     }
     if (!search || !(await search.count().catch(() => 0))) {
@@ -382,6 +385,9 @@ export async function fillCustomCombobox(page: any, loc: any, value: string): Pr
         : null;
       search = inWidget && (await inWidget.count().catch(() => 0)) ? inWidget : null;
     }
+    // Whatever we settled on, it is now scoped to the popup or the widget — never the page.
+    // Enter may only ever commit a box this widget owns.
+    widgetSearch = search && (await search.count().catch(() => 0)) ? search : null;
     if (await search.count().catch(() => 0)) {
       // Only type into an EDITABLE search box, with a SHORT timeout. PowerClerk's Vue
       // filtered-select exposes a READONLY input[role="combobox"] as its only combobox
@@ -499,7 +505,12 @@ export async function fillCustomCombobox(page: any, loc: any, value: string): Pr
       if (await rows.nth(i).isVisible().catch(() => false)) return false; // options exist — no blind Enter
     }
   } catch { /* fall through to the free-text path */ }
-  const typed = await page.locator(SEARCH_BOX_SELECTORS).first().inputValue().catch(() => "");
+  // THE SAME INVARIANT, ONE BRANCH LATER. This read was page-global too, and a page-global
+  // read is how a failed fill ends by firing the PORTAL'S OWN SITE SEARCH: find text in
+  // #acGlobalSearch — which the portal may pre-fill, and which nothing here should be
+  // touching — and press Enter, navigating the walk out of a half-filled form. Enter is only
+  // ever for a box this widget owns.
+  const typed = widgetSearch ? await widgetSearch.inputValue().catch(() => "") : "";
   if (typed) await page.keyboard?.press("Enter").catch(() => {});
   return false;
 }
