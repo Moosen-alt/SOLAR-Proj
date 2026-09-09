@@ -382,6 +382,10 @@ export async function fillCustomCombobox(page: any, loc: any, value: string): Pr
   // Same rule as the reader: a popup already on screen is not this widget's. Skipped when
   // the widget is ALREADY open, since its own popup would then be stamped as pre-existing.
   if (!alreadyOpen) await markExistingPopups(page);
+  // ALREADY OPEN MEANS WE CANNOT STAMP — this widget's popup is on screen and would be
+  // marked as pre-existing. Clear whatever a previous fill left instead, so optionScope is
+  // not left in the "a caller stamped, so refuse the fallback" mode on a page nobody stamped.
+  else await clearPopupMarks(page);
   let openedWidget = alreadyOpen;
   if (!openedWidget && await loc.isVisible().catch(() => false)) {
     try { await loc.click({ timeout: 5000 }); openedWidget = true; } catch { /* fall through */ }
