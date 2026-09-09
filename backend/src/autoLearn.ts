@@ -30,7 +30,7 @@ import type { LearnPlanRequest, LearnPlanResponse } from "../../portal-bot/src/a
 import { createLLMProvider, getRecentLlmCalls } from "./llm";
 import { getDecryptedCredential, getDecryptedCredentialByUrl, getDecryptedCredentialAny, listPortalCredentials, nearestStoredLogins, recordLoginOutcome } from "./portalCredentials";
 import { learnNoteTopicsFromMisses, activeLearnedNoteTerms } from "./noteTopics";
-import { deadFieldBindings, resolveRecipeFieldValues, startPortalRecording, savePortalRecipeSteps, getPortalRecipe, convertLiteralsToBoundFields, findAnyRecipeForProject, appendHumanPatchSteps, promoteRecordingIfEligible, recipeProfileKey } from "./portalRecipes";
+import { RECIPE_FIELD_DESCRIPTIONS, deadFieldBindings, resolveRecipeFieldValues, startPortalRecording, savePortalRecipeSteps, getPortalRecipe, convertLiteralsToBoundFields, findAnyRecipeForProject, appendHumanPatchSteps, promoteRecordingIfEligible, recipeProfileKey } from "./portalRecipes";
 import { HUMAN_SUBMIT_OBSERVED_NOTE } from "../../portal-bot/src/humanCapture";
 import { projectDocsByType } from "./projectDocuments";
 import { logger } from "./logger";
@@ -676,7 +676,24 @@ async function autoLearnPortalInner(
       // a key that exists only in the planner's richer map (or one it invents outright)
       // fills "" forever. Handing the adapter the replay map stops a dead binding being
       // recorded at all, rather than catching it afterwards at the trust gate.
-      bindableFields: Object.keys(resolveRecipeFieldValues(db, project, portalType)),
+      // BINDABLE MEANS "A REPLAY COULD RESOLVE THIS KEY", NOT "THIS PROJECT HAS A VALUE".
+      //
+      // resolveRecipeFieldValues emits equipment keys only when the project HAS them, so a
+      // learn run against a project with no parsed plan set produces no inverterMake /
+      // inverterModel / inverterQty — and the guard then REFUSES the planner's perfectly
+      // correct binding for "Inverter Manufacturer". The recipe is recorded with no binding
+      // and no literal, and it can never fill that field again, for any future project,
+      // however complete their data. Measured on Ameren PowerClerk: three of the six blanks
+      // on its review screen were this, and the recipe would have carried the fault forever.
+      //
+      // RECIPE_FIELD_DESCRIPTIONS is the catalogue of keys the dictionary knows how to
+      // resolve. Union it with what this project actually resolved, so a key that is real
+      // but empty TODAY still binds — replay fills it for the project that has it, and the
+      // required-field sweep reports the blank rather than the recipe hiding it.
+      bindableFields: Array.from(new Set([
+        ...Object.keys(resolveRecipeFieldValues(db, project, portalType)),
+        ...Object.keys(RECIPE_FIELD_DESCRIPTIONS),
+      ])),
       // Identity for the address-disambiguation grid: which city/ZIP this project is in, whose
       // name is on it, and which discipline we are filing. Used to REFUSE another property's
       // row, not to fill anything.
