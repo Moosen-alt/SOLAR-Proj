@@ -7223,6 +7223,15 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     catch { primary = null; }
     const primaryCount = primary ? await primary.count().catch(() => 0) : 0;
     if (primaryCount === 1) return primary.first();
+    // AMONG SEVERAL MATCHES, THE ONE A PERSON CAN SEE. Miami's Contact Information renders
+    // Owner / Tenant / Contractor / Qualifier blocks with identical labels, most of them
+    // collapsed — so "the unique #id" can be a control inside a hidden section, and every
+    // fill on it burns the visibility probe, the reveal attempt and four safeAction retries.
+    // Eighteen fills at ~50s each is the sixteen minutes Contact Information cost.
+    if (primaryCount > 1) {
+      const visible = primary.locator("visible=true");
+      if ((await visible.count().catch(() => 0)) === 1) return visible.first();
+    }
     // AMBIGUOUS IS NOT RESOLVED. "count > 0" returned a label locator that matched BOTH of
     // PowerClerk's identical contact blocks; every action on it then threw a strict-mode
     // violation, applyFill swallowed the throw, and Ameren's Electrical Contractor block
@@ -7234,7 +7243,15 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       try {
         const loc = this._buildLocator(this.page, fb, { raw: true });
         const n = await loc.count().catch(() => 0);
-        if (n === 1) return loc.first();
+        if (n !== 1) continue;
+        // A unique match that nobody can see is not the control the planner meant. Prefer a
+        // visible one from the primary before settling for it.
+        if (await loc.first().isVisible().catch(() => true)) return loc.first();
+        if (primaryCount > 1) {
+          const vis = primary.locator("visible=true");
+          if ((await vis.count().catch(() => 0)) >= 1) return vis.first();
+        }
+        return loc.first();
       } catch { /* bad fallback selector — skip */ }
     }
     if (primaryCount > 1) return primary.first();

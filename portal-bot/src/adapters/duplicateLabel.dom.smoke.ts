@@ -32,6 +32,14 @@ const PAGE = `<!doctype html><html><body style="font:14px sans-serif;padding:16p
   <h3>Electrical Contractor</h3>
   <label for="pcInputBase20">Name</label><input id="pcInputBase20" type="text">
   <label for="pcInputBase21">Company</label><input id="pcInputBase21" type="text">
+  <!-- A COLLAPSED block, as Miami's Contact Information renders Owner/Tenant/Qualifier:
+       same labels again, unique ids again, and nobody can see it. A fill aimed here burns
+       the visibility probe, the reveal attempt and four retries — eighteen of those is the
+       sixteen minutes that page cost. -->
+  <div id="collapsed" style="display:none">
+    <label for="pcInputBase30">Qualifier</label><input id="pcInputBase30" type="text">
+  </div>
+  <label for="pcInputBase31">Qualifier</label><input id="pcInputBase31" type="text">
   <label for="unique1">Docket Number</label><input id="unique1" type="text">
   <button id="next">Next</button>
 </body></html>`;
@@ -48,6 +56,8 @@ const planner: LearnPlanner = async (req) => {
   const nameIdxs = req.fields.map((f, i) => ({ f, i })).filter((x) => x.f.label === "Name").map((x) => x.i);
   const companyIdxs = req.fields.map((f, i) => ({ f, i })).filter((x) => x.f.label === "Company").map((x) => x.i);
   const docket = req.fields.findIndex((f) => f.label === "Docket Number");
+  const qual = req.fields.findIndex((f) => f.label === "Qualifier");
+  if (qual >= 0) fills.push({ selectorIndex: qual, value: "Q-9" });
   if (nameIdxs.length >= 2) fills.push({ selectorIndex: nameIdxs[1], value: "Charles" });
   if (companyIdxs.length >= 2) fills.push({ selectorIndex: companyIdxs[1], value: "TML INTERNATIONAL LLC" });
   if (docket >= 0) fills.push({ selectorIndex: docket, value: "160001" });
@@ -80,6 +90,11 @@ check("a duplicated label's fill lands via its unique #id fallback",
 check("...in the block the PLANNER chose, not the first one in the DOM",
   block1Name === "",
   `block1 name=${JSON.stringify(block1Name)} — landing there files the wrong party's details`);
+const qualVisible = await page.locator("#pcInputBase31").inputValue().catch(() => "");
+const qualHidden = await page.locator("#pcInputBase30").inputValue().catch(() => "");
+check("a duplicated label prefers the VISIBLE control, not a unique hidden twin",
+  qualVisible === "Q-9" && qualHidden === "",
+  `visible=${JSON.stringify(qualVisible)} hidden=${JSON.stringify(qualHidden)} — a fill aimed at a collapsed block burns the probe, the reveal and four retries`);
 check("a unique label still resolves normally",
   docketVal === "160001",
   `docket=${JSON.stringify(docketVal)}`);
