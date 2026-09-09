@@ -1149,6 +1149,9 @@ async function autoLearnPortalInner(
   //
   // A recipe that fails the self-test cannot be promoted; a recipe that passes has earned
   // something. Both are worth knowing, and only one of them was being measured.
+  // SAY WHETHER IT RAN. Three runs were spent deciding whether a missing verdict meant the
+  // self-test failed silently or never ran at all — a question the run itself should answer.
+  console.log(`[self-test] ${selfTestEnabled ? "ENABLED — replaying the learned recipe" : "disabled (PORTAL_REPLAY_SELFTEST not set)"}`);
   if (selfTestEnabled) {
     input.onProgress?.({ phase: "verify", pageCount: learn.pageCount, maxPages: learn.pageCount, message: "Replay self-test: re-running the learned recipe in a fresh session…" });
     try {
@@ -1200,6 +1203,7 @@ async function autoLearnPortalInner(
           rd.requiredStillEmpty?.length ? `still empty: ${rd.requiredStillEmpty.slice(0, 6).join(", ")}` : "",
           rd.driftWarnings?.length ? `drift: ${rd.driftWarnings.slice(0, 3).join(" | ")}` : "",
         ].filter(Boolean).join(". ");
+        console.log(`[self-test] FAILED — ${detail || "(the replay reported nothing)"}`);
         verification.issues.push(`Replay self-test did NOT reproduce the review in a fresh session (${detail || "recipe did not reach review on replay, and the replay reported nothing — that is itself the defect to fix"}). Kept as a draft for human verification.`);
         addAuditLog(db, projectId, "system", "auto-learn", "portal.replay_selftest_failed", {
           scope: scopeType,
@@ -1208,10 +1212,12 @@ async function autoLearnPortalInner(
           unresolved: (rd.unresolvedFields ?? []).slice(0, 10),
         });
       } else {
+        console.log("[self-test] PASSED — the recipe reproduced the review in a fresh session");
         addAuditLog(db, projectId, "system", "auto-learn", "portal.replay_selftest_passed", { scope: scopeType });
       }
     } catch (err) {
       trusted = false;
+      console.log(`[self-test] ERRORED — ${err instanceof Error ? err.message : String(err)}`);
       verification.issues.push(`Replay self-test errored (${err instanceof Error ? err.message : String(err)}). Kept as a draft.`);
     }
   }
