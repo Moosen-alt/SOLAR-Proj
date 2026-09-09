@@ -113,6 +113,45 @@ from. **`npm run portal:test:dom:each`** runs the same list, one process and one
 budget per smoke, with `--from`/`--only` to resume. A hang is now a reported TIMEOUT on one
 row. **61/61 pass** as of 2026-09-09, including the PowerClerk and combobox suites that
 this session's comboboxFill changes could have disturbed.
+## Where Miami actually stops, and why it is not an engine problem (2026-09-09)
+
+The walk now reaches **Job Description**, twelve pages in. What stops it:
+
+```
+p10  Job Category      -> STAND-ALONE          (the only 6 options: ADDITION AND REMODELING,
+                                                DEMOLITION, NEW CONSTRUCTION,
+                                                REMODELING/REPAIRS, STAND-ALONE, TREE PERMIT)
+p11  Job Sub-Category  -> BUILDING ROOFING     (the ONLY option the cascade offered)
+p13  Job Description   -> FLAT ROOF, SHINGLE ROOF, under group ROOF NEW OR REPLACE
+     portal_notice: "Please select at least one work item"
+```
+
+The planner ticked neither roofing item, which is **correct** - this is a solar PV job. The
+mistake was two pages earlier: **Job Category decides which work items the portal will ever
+offer**, and STAND-ALONE leads only to roofing.
+
+**Which category a residential solar PV permit files under at Miami is operator knowledge.**
+The engine cannot derive it and must not guess - filing under the wrong category is exactly
+the class of error the record-type guard exists to prevent. What the engine now does instead
+is say what it was offered and that none of it fits:
+
+```
+🔀 "Job Description" required a choice and none of what it offered fits this job
+   (group: ROOF NEW OR REPLACE): FLAT ROOF, SHINGLE ROOF. A choice made on an EARLIER
+   page decides what these pages offer - check that one.
+```
+
+**The one fact needed to finish Miami**: which Job Category + Sub-Category a residential
+rooftop solar PV permit uses. Supply it as operator knowledge (it belongs in
+`permit_utility_knowledge` for this AHJ, seeded from research or marked mixed when a human
+confirms it) and the walk should continue into Project Totals, Additional Options and
+whatever follows.
+
+Everything upstream of that choice now works end to end: address search, results-row
+selection, the reveal of Start New Application, Job Location, Applicant Role, Contact
+Information (21 fields), Job Category as a Telerik dropdown with its options read from a
+closed widget, Property Type, and the Yes/No eligibility questions.
+
 ## Did any of it transfer? Measured (2026-09-09)
 
 A clean fleet sweep against the last clean pre-fix baseline (`2026-09-08T22-37-30.json`).
