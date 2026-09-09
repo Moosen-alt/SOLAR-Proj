@@ -3439,7 +3439,23 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     // been recorded; the advance path handles forward motion.
     const visitedPaths = new Set<string>();
 
-    for (let pageIdx = 0; pageIdx < this.maxPages; pageIdx++) {
+    // THE BUDGET IS PAGES, NOT ATTEMPTS.
+    //
+    // maxPages was spent per ITERATION, so a retry cost the same as new ground. Miami's
+    // intake is twelve distinct pages plus a review; on the 18-page default the walk spent
+    // six of them re-visiting Property Search and Job Category and ran out one page short
+    // of the end, twice, having filled 35 fields correctly. A portal that never repeats
+    // sees no change from this; a portal that does gets its full depth.
+    //
+    // The hard iteration cap stays, at twice the page budget, so a pathological loop still
+    // terminates — and the repeat-page stop (four visits to one signature) and the recovery
+    // cap bound the thrashing long before it gets there.
+    const distinctPages = new Set<string>();
+    for (let pageIdx = 0; pageIdx < this.maxPages * 2; pageIdx++) {
+      if (distinctPages.size >= this.maxPages) {
+        this.debug?.event({ type: "page_budget_spent", distinct: distinctPages.size, iterations: pageIdx });
+        break;
+      }
       // OUT OF TIME — STOP OURSELVES RATHER THAN BE ABANDONED.
       //
       // Checked between pages, never mid-page: a page half-filled and then torn down is
@@ -4032,6 +4048,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         // changes that on every attempt, which would make a stuck page look like progress.
         {
           const sig = `${hostPath}|${fields.length}|${fillCount}|${btnCount}`;
+          distinctPages.add(sig);
           repeatPageCounts.set(sig, (repeatPageCounts.get(sig) ?? 0) + 1);
           const seen = repeatPageCounts.get(sig) ?? 1;
           if (seen > REPEAT_PAGE_LIMIT) {
