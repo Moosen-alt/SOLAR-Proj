@@ -3262,6 +3262,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     // means "the portal printed a message at us", which is the only thing that explains a
     // walk that keeps advancing and keeps landing back on the same page.
     const portalNotices: string[] = [];
+    // Page signatures the results-row pass has already had its one turn on.
+    const rowPickedSigs = new Set<string>();
     // Required document-upload slots we detected but had NO matching project file for —
     // surfaced in the final message so the human can attach them before submitting.
     const missingRequiredDocs: string[] = [];
@@ -3900,6 +3902,28 @@ export class AutoLearnAdapter extends BasePortalAdapter {
               pageCount,
               portalNotices,
             );
+          }
+
+          // BACK ON THE SAME PAGE MEANS THE LAST ACTION DID NOT WORK, WHATEVER IT WAS.
+          //
+          // The results-row pass hung off the ADVANCE path, so it only ever ran when the
+          // planner called the control an advance. Told the button's real name, the planner
+          // called "Start New Application" a NAVIGATE instead — a different branch, with its
+          // own no-movement handling — and the row click never got a turn on three
+          // consecutive visits to Miami's search results. Whether the last action was an
+          // advance, a navigate or a fallback, being back on a page with the same controls
+          // says it did not work, and a results page's answer is its row.
+          // ONCE PER PAGE, THOUGH. Clicking the same row again is not progress, and the
+          // first version of this ran on EVERY repeat visit: it preempted the planner's own
+          // choice two visits running, so the control the planner had picked was never
+          // executed at all and the walk hit the repeat-stop having tried nothing new.
+          if (seen >= 2 && !rowPickedSigs.has(sig)) {
+            rowPickedSigs.add(sig);
+            if (await this.clickMatchingResultRow(_project, steps)) {
+              deadAdvances.delete(deadPageKey(url, fields.length));
+              this.debug?.event({ type: "result_row_on_repeat", page: pageCount, seen });
+              continue;
+            }
           }
         }
 
@@ -4684,7 +4708,15 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             if (await this.clickMatchingResultRow(_project, steps)) { deadAdvances.delete(deadKey); continue; }
             if (await this.clickFallbackAdvance(steps, fields)) continue;
             if (await this.pressEnterInLastFilledField(steps, fields)) continue;
-            break;
+            // AND IF NONE OF THEM MOVED IT, HAND THE PAGE BACK TO THE PLANNER — do not end
+            // the run. This branch used to `break`, which killed the walk on the SECOND
+            // visit to a blocked page: the recovery hint that carries the portal's own
+            // validation errors ("Schedule: This field is required.") is not built until the
+            // THIRD, so the planner was never told why it was stuck and the run ended saying
+            // nothing. Looping is bounded already — the repeat-page stop, the recovery cap
+            // and the page budget all still apply.
+            this.debug?.event({ type: "dead_advance_replan", page: pageCount, label });
+            continue;
           }
         }
         // SAFETY: never click/record a pay/fee/checkout button as the "advance".
@@ -4712,16 +4744,57 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         const advBeforeFp = await this.pageFingerprint();
         const advBeforeSig = await advanceSignatureOf(this.page);
         const advTabsBefore = this.tabCount(); // capture BEFORE the click — the popup opens during it
-        const res = await safeAction(
-          "advance",
-          async () => {
-            const loc = await this.locator(advanceField.selector);
-            if (!loc) throw new Error("advance selector unresolved");
-            await this.clickResilient(loc);
-            await this.waitAfterClick(advBeforeUrl, advBeforeFp, advTabsBefore);
-          },
-          { required: true },
-        );
+        // ONE ADVANCE IS ONE PAGE'S WORK, NOT A BUDGET.
+        //
+        // safeAction retries the whole action, clickResilient retries four times inside it,
+        // and each of those waits for the element and then for the network. Multiplied out,
+        // Miami's page 6 spent FIFTEEN MINUTES on a single advance click and emitted not one
+        // event — the portal cap killed the run, and the trace showed a walk that simply
+        // stopped after "upload_phase_done". A run that cannot say where its time went
+        // cannot be debugged.
+        //
+        // The bound does not cancel the click (nothing can), so it is set well above any
+        // healthy advance: it only ever fires on the pathological case, and lands the walk
+        // in the did-nothing path, which already knows what to do — ban the control, try the
+        // results row, try the fallbacks.
+        const ADVANCE_BUDGET_MS = 90_000;
+        const advStarted = Date.now();
+        // The timer is unref'd and cleared on the happy path. Armed and left running, every
+        // advance would hold the process open for 90 seconds past its own summary — which
+        // reads exactly like the hang this exists to catch.
+        let advTimer: ReturnType<typeof setTimeout> | undefined;
+        const advBudget = new Promise<{ ok: boolean; field: string; message: string; timedOut: boolean }>((resolve) => {
+          advTimer = setTimeout(
+            () => resolve({ ok: true, field: "advance", message: "advance click exceeded its budget", timedOut: true }),
+            ADVANCE_BUDGET_MS,
+          );
+          (advTimer as { unref?: () => void }).unref?.();
+        });
+        const res = await Promise.race([
+          safeAction(
+            "advance",
+            async () => {
+              const loc = await this.locator(advanceField.selector);
+              if (!loc) throw new Error("advance selector unresolved");
+              const gen = this.clickGeneration;
+              await this.clickResilient(loc);
+              if (this.clickGeneration !== gen) return; // retired mid-click; the walk owns the page
+              await this.waitAfterClick(advBeforeUrl, advBeforeFp, advTabsBefore);
+            },
+            { required: true },
+          ),
+          advBudget,
+        ]);
+        if (advTimer) clearTimeout(advTimer);
+        if ((res as { timedOut?: boolean }).timedOut) {
+          this.clickGeneration++; // retire the click still in flight before anything else
+          this.debug?.event({
+            type: "advance_timed_out",
+            page: pageCount,
+            label: String(advanceField.label ?? "").slice(0, 60),
+            ms: Date.now() - advStarted,
+          });
+        }
         if (!res.ok) {
           return fail(steps, this.portalName, `Failed to click the advance button on page ${pageCount}: ${res.message ?? "unknown"}`, null, pageCount, portalNotices);
         }
@@ -6064,7 +6137,13 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     const beforeSig = await advanceSignatureOf(this.page);
     const beforeUrl = typeof this.page.url === "function" ? String(this.page.url() ?? "") : "";
     const beforeFp = await this.pageFingerprint();
-    const pick = await this.page.evaluate(markAddressRow, { want }).catch(() => null) as AddressRowPick | null;
+    const raw = await this.page.evaluate(markAddressRow, { want }).catch(() => null) as unknown;
+    // Same rule as collectPortalNoticesFrom: a page that answers every evaluate with one
+    // canned object would otherwise have this reporting a row it never found, and clicking
+    // whatever the marker selector happened to resolve to.
+    const pick = raw && typeof raw === "object" && typeof (raw as AddressRowPick).text === "string"
+      ? raw as AddressRowPick
+      : null;
     if (!pick) return false;
     const target = this.page.locator('[data-al-resultrow="1"]').first();
     if (!(await target.count().catch(() => 0))) return false;
@@ -6475,8 +6554,17 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   // Strategy per attempt: dismiss modals → clear overlays → wait for visible → scroll into
   // view → click. Falls back to force-click (bypasses coverage check) then dispatchEvent.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  /** ABANDONING A CLICK DOES NOT STOP IT. The advance budget races safeAction against a
+   *  timer, and nothing can cancel the work that lost — clickResilient keeps waiting for its
+   *  element and clicks it whenever it finally becomes actionable. On Miami that element is
+   *  the SAME control the results-row click reveals, so the abandoned attempt would come back
+   *  to life the instant the walk moved forward, and navigate the page out from under the
+   *  next scrape. Bumping this retires every click still in flight. */
+  private clickGeneration = 0;
+
   private async clickResilient(loc: any): Promise<void> {
     const dbg = process.env.AUTOLEARN_DEBUG === "1";
+    const gen = this.clickGeneration;
     let lastErr: unknown;
     // Capture the URL + tab count BEFORE clicking. On slow ExtJS/AJAX portals (Accela) a
     // click can actually land and navigate even though Playwright reports a click timeout;
@@ -6487,6 +6575,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     const preClickUrl = (this.page && typeof this.page.url === "function") ? String(this.page.url() ?? "") : "";
     const preClickTabs = this.tabCount();
     for (let attempt = 0; attempt < 4; attempt++) {
+      if (this.clickGeneration !== gen) return; // retired — the walk has moved on without us
       // clearOverlays BEFORE dismissModals: PowerClerk's onboarding popover is removed by
       // clearOverlays, but if dismissModals runs first it clicks the popover's "Got it"
       // button, which consumes the gesture / soft-re-renders the toolbar and leaves the
@@ -6507,6 +6596,9 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         console.error(`[clickResilient] attempt ${attempt}: count=${cnt} visible=${vis}`);
       }
       try {
+        // Last check before the gesture: waitForElement above can sit for 12 seconds, ample
+        // time for the budget to expire and the walk to move on.
+        if (this.clickGeneration !== gen) return;
         // Longer timeout (8s) to survive Accela's slow AJAX actionability transition.
         await loc.click({ timeout: 8000 });
         if (dbg) console.error(`[clickResilient] attempt ${attempt}: CLICK OK`);
@@ -7108,7 +7200,11 @@ export async function collectValidationErrorsFrom(page: any): Promise<string[]> 
 export async function collectPortalNoticesFrom(page: any): Promise<string[]> {
   if (!page || typeof page.evaluate !== "function") return [];
   try {
-    return await page.evaluate((): string[] => {
+    // WHAT COMES BACK FROM A PAGE IS NOT NECESSARILY WHAT THE CODE ASKED FOR. A stubbed or
+    // instrumented page answers every evaluate with the same canned value, and this returned
+    // it verbatim: the caller's .filter then threw and took a whole learn down with
+    // "notices.filter is not a function". Trust the shape, not the call.
+    const raw = await page.evaluate((): string[] => {
       const sels = [
         ".validation-summary-errors",
         '[data-valmsg-summary]:not(.validation-summary-valid)',
@@ -7133,6 +7229,7 @@ export async function collectPortalNoticesFrom(page: any): Promise<string[]> {
       }
       return out.slice(0, 5);
     });
+    return Array.isArray(raw) ? raw.filter((n) => typeof n === "string" && n.length > 0).slice(0, 5) : [];
   } catch {
     return [];
   }
