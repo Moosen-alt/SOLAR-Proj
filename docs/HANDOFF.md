@@ -113,6 +113,27 @@ from. **`npm run portal:test:dom:each`** runs the same list, one process and one
 budget per smoke, with `--from`/`--only` to resume. A hang is now a reported TIMEOUT on one
 row. **61/61 pass** as of 2026-09-09, including the PowerClerk and combobox suites that
 this session's comboboxFill changes could have disturbed.
+## The first pinned reliability number (2026-09-09, evening)
+
+`learn:benchmark --host amerenillinoisinterconnect --repeat 3 --self-test`, one build:
+
+```
+ 1/3  reached_review   [self-test] PASSED
+ 2/3  recorded_steps   <- collided with the concurrent fleet sweep (see below)
+ 3/3  reached_review   [self-test] PASSED
+  67% raw; 2/2 = 100% excluding the harness collision
+```
+
+Attempt 2's miss is OUR harness, documented: the accessible-fleet sweep was running in a
+second process and its own Ameren attempt (15/54, scored reached_review) walked the same
+one-session-per-account PowerClerk login mid-attempt-2. One session evicted the other.
+Counting every same-build attempt today: learn+replay closed the loop on 3/3
+non-collided attempts, self-test PASSED each time.
+
+**Measurement rule learned: same-host runs must never overlap across processes.** The
+per-recipe lease serialises within one process only. Until a cross-process lease exists,
+never run two benchmarks that share a portal account at the same time.
+
 ## Reliability is now measured as a rate, not a run (2026-09-09)
 
 Three fixes this session looked right on one portal and degraded another (the equipment
