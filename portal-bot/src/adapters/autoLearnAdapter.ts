@@ -7118,7 +7118,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
 
   // Build a Playwright locator for a single selector descriptor (no fallback chain).
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private _buildLocator(page: Page, sel: RecipeSelector): any {
+  private _buildLocator(page: Page, sel: RecipeSelector, opts?: { raw?: boolean }): any {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const scope: any = sel.frame ? page.frameLocator(frameSelectorFor(sel.frame)) : page;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -7131,7 +7131,13 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     else if (sel.css) loc = scope.locator(sel.css);
     else if (sel.role) loc = scope.getByRole(sel.role);
     else throw new Error("AutoLearn selector has no usable strategy.");
-    return typeof sel.nth === "number" ? loc.nth(sel.nth) : loc.first();
+    if (typeof sel.nth === "number") return loc.nth(sel.nth);
+    // RAW mode exists for locator() below: `.first()` makes every locator count as 1, so an
+    // AMBIGUOUS strategy is indistinguishable from a resolved one — a duplicated label's
+    // fill then lands silently on the FIRST block, which on PowerClerk's identical contact
+    // blocks files the wrong party's details. The caller that wants to measure breadth asks
+    // for the raw locator; every other caller keeps the old first-match behaviour.
+    return opts?.raw ? loc : loc.first();
   }
 
   // Wait — only as long as needed — for a portal "Saving…/Processing…" indicator to clear.
@@ -7201,9 +7207,25 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     // couldn't key) makes _buildLocator THROW; catch it so a deterministic pass bails
     // gracefully instead of crashing the whole run (live: contact-dialog radio).
     let primary: any;
-    try { primary = this._buildLocator(this.page, sel); }
+    try { primary = this._buildLocator(this.page, sel, { raw: true }); }
     catch { primary = null; }
-    if (primary && (await primary.count().catch(() => 0)) > 0) return primary;
+    const primaryCount = primary ? await primary.count().catch(() => 0) : 0;
+    if (primaryCount === 1) return primary.first();
+    // AMBIGUOUS IS NOT RESOLVED. "count > 0" returned a label locator that matched BOTH of
+    // PowerClerk's identical contact blocks; every action on it then threw a strict-mode
+    // violation, applyFill swallowed the throw, and Ameren's Electrical Contractor block
+    // read "required_never_filled: Name, Company, Address" run after run — while the unique
+    // #id fallback recorded for exactly this sat unconsulted, because the ambiguous primary
+    // "resolved". A fallback that matches exactly ONE element beats a primary that matches
+    // two; a primary that matches two is still better than nothing when no fallback narrows.
+    for (const fb of sel.fallbacks ?? []) {
+      try {
+        const loc = this._buildLocator(this.page, fb, { raw: true });
+        const n = await loc.count().catch(() => 0);
+        if (n === 1) return loc.first();
+      } catch { /* bad fallback selector — skip */ }
+    }
+    if (primaryCount > 1) return primary.first();
     for (const fb of sel.fallbacks ?? []) {
       try {
         const loc = this._buildLocator(this.page, fb);
@@ -7211,7 +7233,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       } catch { /* bad fallback selector — skip */ }
     }
     // Return the primary even if empty — the caller's waitFor will surface a clear timeout.
-    return primary;
+    return primary ? primary.first() : primary;
   }
 }
 
