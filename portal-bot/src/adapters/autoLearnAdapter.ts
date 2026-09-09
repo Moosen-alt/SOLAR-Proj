@@ -617,14 +617,38 @@ export function extractFieldsInPage(els: Element[]): RawField[] {
     const tag2 = el.tagName.toLowerCase();
     const type2 = (el.getAttribute("type") || "").toLowerCase();
     if (tag2 === "input" && (type2 === "radio" || type2 === "checkbox")) {
-      let sib: Element | null = el.previousElementSibling;
-      for (let k = 0; sib && k < 3; k++) {
-        const t = (sib.textContent || "").replace(/\s+/g, " ").trim();
-        // A short adjacent word is the choice; a sentence is the question, which belongs to
-        // sectionFor, not here.
-        if (sib.tagName === "LABEL" && t && t.length <= 40) return t;
-        sib = sib.previousElementSibling;
-      }
+      // Adjacent in EITHER direction, and from the control OR its wrapper. Miami writes its
+      // Yes/No answers as a preceding <label for=...> naming an id that does not exist, and
+      // its work-item list as
+      //     <div class="chkZone"><input type="checkbox" name="chkTradeItem"></div>
+      //     <div class="Zonelbl">FLAT ROOF</div>
+      // where the words are in a FOLLOWING div, sibling of the checkbox's PARENT. Four
+      // checkboxes on that page all reached the planner as "chkTradeItem", it checked none of
+      // them, and the portal said "Please select at least one work item".
+      //
+      // A <label> wins wherever it is; otherwise any short text-only neighbour will do, as
+      // long as it holds no form control of its own (or it is the NEXT field's label, not
+      // this one's).
+      const neighbourText = (from: Element | null): string => {
+        let best = "";
+        for (const dir of ["previousElementSibling", "nextElementSibling"] as const) {
+          let sib: Element | null = from ? (from[dir] as Element | null) : null;
+          for (let k = 0; sib && k < 3; k++) {
+            const t = (sib.textContent || "").replace(/\s+/g, " ").trim();
+            const ownsControl = !!sib.querySelector("input, select, textarea");
+            if (t && t.length <= 40 && !ownsControl) {
+              if (sib.tagName === "LABEL") return t;
+              if (!best) best = t;
+            }
+            sib = sib[dir] as Element | null;
+          }
+        }
+        return best;
+      };
+      const own = neighbourText(el);
+      if (own) return own;
+      const viaWrapper = neighbourText(el.parentElement);
+      if (viaWrapper) return viaWrapper;
     }
     const name = el.getAttribute("name");
     if (name) return name.trim();
@@ -684,6 +708,22 @@ export function extractFieldsInPage(els: Element[]): RawField[] {
             const t = clean(cand.textContent);
             if (t.length >= 15 && /\?/.test(t)) return t;
           }
+        }
+        // A GROUP HEADING IS NOT ALWAYS AN <h*>. Miami's work-item list is
+        //     <div class="cldvSeparatorSNoB">ROOF NEW OR REPLACE</div><ul><li>…FLAT ROOF…
+        // so the checkboxes underneath read as bare trade names with nothing to say which
+        // trade they belong to — and for a SOLAR permit the roofing group is precisely the
+        // one not to tick. Choice controls only, and only a short text-only element with no
+        // controls of its own, which is what a heading looks like when it is a div.
+        let node: Element | null = el.closest("li, tr, .form-group") ?? el;
+        for (let hops = 0; node && hops < 4; hops++) {
+          let sib: Element | null = node.previousElementSibling;
+          while (sib) {
+            const t = clean(sib.textContent);
+            if (t.length >= 3 && t.length <= 60 && !sib.querySelector("input, select, textarea")) return t;
+            sib = sib.previousElementSibling;
+          }
+          node = node.parentElement;
         }
       }
     }

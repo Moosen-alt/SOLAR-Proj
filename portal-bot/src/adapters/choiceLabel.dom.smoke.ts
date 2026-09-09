@@ -42,6 +42,26 @@ const PAGE = `<!doctype html><html><body style="font:14px sans-serif;padding:16p
     </div></li>
   </ul>
 
+  <!-- Miami's WORK ITEM list: the words are in a FOLLOWING div, sibling of the checkbox's
+       PARENT, and the trade group is a plain <div> above the list. Four of these reached the
+       planner as "chkTradeItem", it ticked none, and the portal said "Please select at least
+       one work item". For a SOLAR permit the roofing group is the one NOT to tick, which is
+       why the group heading matters as much as the item name. -->
+  <div class="cldvSeparatorSNoB">ROOF NEW OR REPLACE</div>
+  <ul class="max-ui">
+    <li>
+      <input id="TradeItemList_0__WorkItemDescription" name="TradeItemList[0].WorkItemDescription" type="hidden" value="">
+      <div class="chkZone"><input id="chkTradeItem_367" name="chkTradeItem" class="chkSelectItem" type="checkbox" value=""></div>
+      <div class="Zonelbl">FLAT ROOF</div>
+      <input name="chkApItem" type="checkbox" style="display: none;" value="">
+    </li>
+    <li>
+      <input id="TradeItemList_1__WorkItemDescription" name="TradeItemList[1].WorkItemDescription" type="hidden" value="">
+      <div class="chkZone"><input id="chkTradeItem_523" name="chkTradeItem" class="chkSelectItem" type="checkbox" value=""></div>
+      <div class="Zonelbl">SHINGLE ROOF</div>
+    </li>
+  </ul>
+
   <!-- MUST NOT CHANGE: a properly labelled radio keeps its own label. -->
   <label for="mountRoof">Roof mount</label><input type="radio" id="mountRoof" name="mount">
 
@@ -75,6 +95,16 @@ check("...and the QUESTION is the section, so three pairs on one page are distin
 check("...and the second question carries its own",
   /affordable housing/i.test(String(housing[0]?.section ?? "")) && housing[0]?.label === "Yes",
   `got ${JSON.stringify(housing[0]?.section)} / ${JSON.stringify(housing[0]?.label)}`);
+
+// --- WORK ITEMS: the label follows the control, and the trade group is a bare div --------
+const items = raws.filter((f) => f.name === "chkTradeItem");
+console.log(`   work items: ${JSON.stringify(items.map((f) => `${f.label} @ ${f.section}`))}`);
+check("a checkbox labelled by the div AFTER it reads as the work item, not as its name",
+  items.length === 2 && items[0].label === "FLAT ROOF" && items[1].label === "SHINGLE ROOF",
+  `got ${JSON.stringify(items.map((f) => f.label))} — as "chkTradeItem" the planner ticked none of four`);
+check("...and the trade group above the list is the section",
+  /ROOF NEW OR REPLACE/i.test(String(items[0]?.section ?? "")),
+  `got ${JSON.stringify(items[0]?.section)} — for a solar permit the roofing group is the one NOT to tick`);
 
 // --- MUST NOT CHANGE ------------------------------------------------------------------
 const mount = raws.find((f) => f.id === "mountRoof");
