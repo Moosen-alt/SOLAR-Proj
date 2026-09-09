@@ -113,6 +113,50 @@ from. **`npm run portal:test:dom:each`** runs the same list, one process and one
 budget per smoke, with `--from`/`--only` to resume. A hang is now a reported TIMEOUT on one
 row. **61/61 pass** as of 2026-09-09, including the PowerClerk and combobox suites that
 this session's comboboxFill changes could have disturbed.
+## Did any of it transfer? Measured (2026-09-09)
+
+A clean fleet sweep against the last clean pre-fix baseline (`2026-09-08T22-37-30.json`).
+
+**By rung, nothing moved.**
+
+| | before | after |
+|---|---|---|
+| ACCESS | 24/50 (48%) | 22/50 (44%) |
+| usable recipes | 14 (28%) | 13 (26%) |
+| usable given access | 58.3% | 59.1% |
+| mean rung | 2.66 | 2.46 |
+| **reached REVIEW** | 2 | **0** |
+
+Five rung regressions, all accounted for: `co-spokane reached_review -> recorded_steps` is
+the review gate removing the stranger's-closed-permit fiction (intended);
+`apps.miami.gov recorded_steps -> unreachable` is the 660s cap truncating a walk that got
+three times LONGER; the other three (Accela, civicgov4, Methuen) are portal availability.
+
+**By depth, six portals moved - and the ladder could not see it.**
+
+| Portal | pages | fields filled |
+|---|---|---|
+| pdspermitportal.snoco.org | 8 -> 7 | **10 -> 17** |
+| onlinepermitsandlicenses.cityofboston.gov | 6 -> 8 | 7 -> 9 |
+| ci-edgewood-wa.smartgovcommunity.com | 4 -> 7 | 3 -> 5 |
+| planningandpermitting.frederickcountymd.gov | 3 -> 5 | 2 -> 3 |
+| www.baltimorecountymd.gov | 6 -> 6 | **0 -> 2** |
+| dilp.howardcountymd.gov | 6 -> 7 | 2 -> 2 |
+| momentum.princegeorgescountymd.gov | 3 -> 5 | 0 -> 0 |
+
+**+9 pages and +14 fields** across portals that were already accessible, none shallower.
+Baltimore County is the cleanest signal - it filled NOTHING before and fills fields now,
+and it is Cityworks/ASP.NET, the family the `<input type=submit value>` label fix targets.
+Miami in its own uncapped run went 6 pages / 8 fills -> 20 pages / 39 fills.
+
+**Every one of those portals was reported `unchanged` by the rung diff.** `compareDepth`
+now prints per-portal and fleet-total page/field movement next to it. Not having that is
+why this question needed two scorecards and a hand-written diff to answer.
+
+**The honest reading:** transfer is real but modest, and the fleet number cannot show it.
+The engine work moves portals THROUGH forms; the ladder only counts arrival at review, and
+22 of 50 portals never get past login - credentials and MFA, which no engine fix touches.
+
 ## The machine can fail in a way that looks like the fleet failing (2026-09-09)
 
 A sweep ended with **eleven consecutive portals** scored `unreachable - the portal did not
