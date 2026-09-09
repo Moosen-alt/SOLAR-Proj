@@ -280,7 +280,7 @@ export async function readClosedComboboxOptions(page: any, loc: any): Promise<st
           const cands = Array.from(root.querySelectorAll<HTMLElement>("*"))
             .filter((n) => n !== el && n.getAttribute("role") !== "listbox" && n.getAttribute("role") !== "option" && isVis(n));
           if (!cands.length) continue;
-          const preferred = cands.find((n) => /form-select|select|display|toggle|control|dropdown|-wrap/i.test(n.className || "") || n.getAttribute("role") === "button");
+          const preferred = cands.find((n) => /form-select|\bselect\b|display|toggle|control|dropdown|-wrap/i.test(n.className || "") || n.getAttribute("role") === "button");
           (preferred || cands[0]).click();
           return;
         }
@@ -300,7 +300,7 @@ export async function readClosedComboboxOptions(page: any, loc: any): Promise<st
     for (const raw of texts) {
       const t = (raw || "").replace(/\s+/g, " ").trim();
       // Placeholders are not choices, and a paragraph is not an option.
-      if (!t || t.length > 90 || /^(please\s+)?select|^choose|^--/i.test(t)) continue;
+      if (!t || t.length > 90 || /^(please\s+)?select\b|^choose\b|^--/i.test(t)) continue;
       if (seen.has(t)) continue;
       seen.add(t);
       out.push(t);
