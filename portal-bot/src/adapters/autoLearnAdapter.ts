@@ -3482,6 +3482,9 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     // Required fields that did NOT hold their value after filling (portal silently dropped them).
     // Surfaced in the final message so the operator re-checks them before a human submits.
     const fillVerifyMisses: string[] = [];
+    // The same misses, split by WHY — see the note at verifyFillsLanded's call site.
+    const missesDidNotHold: string[] = [];
+    const missesNeverFilled: string[] = [];
 
     // Pathnames already walked this run. Mid-wizard, a planner NAVIGATE back to one of
     // these RESTARTS the flow (live Salem/Accela: from CapHome it clicked a link back to
@@ -4862,7 +4865,16 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       //     its value so the operator sees exactly what to fix.
       if (appliedThisPage.length > 0) {
         const misses = await this.verifyFillsLanded(appliedThisPage);
-        for (const m of misses) if (!fillVerifyMisses.includes(m)) fillVerifyMisses.push(m);
+        for (const m of misses) {
+          if (!fillVerifyMisses.includes(m)) fillVerifyMisses.push(m);
+          // TYPED-AND-LOST AND NEVER-TYPED NEED OPPOSITE FIXES, and they were being merged
+          // into one list. Ameren's review reports Street, Name, Company, Address blank every
+          // run; whether the walk typed them and the portal took them back, or never reached
+          // them at all, decides whether the next fix is about persistence or about
+          // selectors — and the run could not say which.
+          if (!missesDidNotHold.includes(m)) missesDidNotHold.push(m);
+        }
+        if (misses.length) this.debug?.event({ type: "fills_did_not_hold", page: pageCount, labels: misses.slice(0, 8) });
       }
 
       // d4b) REQUIRED-FIELD SWEEP — before advancing, scan the live page for REQUIRED fields
@@ -4873,7 +4885,11 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       //      acknowledgment fields are excluded inside the sweep.
       if (!plan.atReview && !isDashboard && hasFillable) {
         const unfilled = await this.collectUnfilledRequired();
-        for (const m of unfilled) if (!fillVerifyMisses.includes(m)) fillVerifyMisses.push(m);
+        for (const m of unfilled) {
+          if (!fillVerifyMisses.includes(m)) fillVerifyMisses.push(m);
+          if (!missesNeverFilled.includes(m) && !missesDidNotHold.includes(m)) missesNeverFilled.push(m);
+        }
+        if (unfilled.length) this.debug?.event({ type: "required_never_filled", page: pageCount, labels: unfilled.slice(0, 8) });
         // RETRACT a provisional miss the page has since answered. The premature-atReview
         // guard sweeps before this page's fills and before applyPolicyDefaults, so a
         // question the policy pass then answers ("Do you propose to limit the export
@@ -5204,7 +5220,10 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       ? ` 📎 ${missingRequiredDocs.length} required document upload(s) had no matching project file and were left empty — attach before submit: ${missingRequiredDocs.slice(0, 8).join("; ")}.`
       : "";
     const verifyWarning = fillVerifyMisses.length > 0
-      ? ` ⚠ ${fillVerifyMisses.length} required field(s) did not hold their value after filling and may be blank in the portal: ${fillVerifyMisses.slice(0, 12).join(", ")}${fillVerifyMisses.length > 12 ? ", …" : ""}. Re-check these before submit.`
+      ? ` ⚠ ${fillVerifyMisses.length} required field(s) are blank in the portal.`
+        + (missesDidNotHold.length ? ` TYPED BUT NOT KEPT (the portal took the value back): ${missesDidNotHold.slice(0, 8).join(", ")}.` : "")
+        + (missesNeverFilled.length ? ` NEVER FILLED (nothing was typed): ${missesNeverFilled.slice(0, 8).join(", ")}.` : "")
+        + " Re-check these before submit."
       : "";
     // The portal's own words, quoted. On a run that never reached review this is usually the
     // ONLY line that names a cause — the trace shows the same page seven times and the
