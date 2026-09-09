@@ -39,7 +39,8 @@
     "replica:build": "tsx portal-bot/src/replica/buildReplicas.ts",
     "replica:serve": "tsx portal-bot/src/replica/serve.ts",
     "learn:benchmark": "tsx backend/src/runLearnBenchmark.ts",
-    "replay:benchmark": "tsx backend/src/runReplayBenchmark.ts"
+    "replay:benchmark": "tsx backend/src/runReplayBenchmark.ts",
+    "portal:test:dom:each": "tsx portal-bot/src/runDomSmokes.ts"
   },
   "engines": {
     "node": ">=20"
