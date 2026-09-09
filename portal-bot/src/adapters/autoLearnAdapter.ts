@@ -3418,6 +3418,17 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     const portalNotices: string[] = [];
     // Page signatures the results-row pass has already had its one turn on.
     const rowPickedSigs = new Set<string>();
+    // A LIST WITH NOTHING ON IT FOR THIS JOB IS A WRONG TURN UPSTREAM, NOT A STALL.
+    //
+    // Miami's Job Description offers the work items the permit covers. On a solar PV job it
+    // offered FLAT ROOF and SHINGLE ROOF under "ROOF NEW OR REPLACE" — because the Job
+    // Category chosen two pages earlier (STAND-ALONE, whose only sub-category was BUILDING
+    // ROOFING) put the application in the roofing trade. The planner correctly ticked
+    // nothing; the portal said "Please select at least one work item"; and the run reported
+    // that it never reached review, which names neither the choice nor the turn that caused
+    // it. What the operator needs to read is: here is what the page offered, none of it
+    // matches this job, and the branch was taken upstream.
+    const unmatchedChoices: string[] = [];
     // Required document-upload slots we detected but had NO matching project file for —
     // surfaced in the final message so the human can attach them before submitting.
     const missingRequiredDocs: string[] = [];
@@ -5093,6 +5104,22 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       // stops on a page it has just completed while the page still shows dozens of buttons
       // — ComEd ended on a form with 27 of them, Boston on one with 96. Whatever the planner
       // was doing, "no advance" was not true of the page.
+      // BEFORE GIVING UP ON THIS PAGE: did it ask for a choice we could not make?
+      {
+        const choices = fields.filter((f) => f.fieldType === "checkbox" || f.fieldType === "radio");
+        const filledHere = (plan.fills ?? []).length > 0;
+        if (choices.length > 0 && !filledHere) {
+          const offered = Array.from(new Set(choices
+            .map((f) => String(f.label ?? "").replace(/\s+/g, " ").trim())
+            .filter((t) => t && t.length <= 60))).slice(0, 8);
+          const group = String(choices.find((f) => f.section)?.section ?? "").slice(0, 60);
+          if (offered.length) {
+            const line = `"${(redactStatusText(pageTitle) || "this page").slice(0, 40)}" required a choice and none of what it offered fits this job${group ? ` (group: ${group})` : ""}: ${offered.join(", ")}`;
+            if (!unmatchedChoices.includes(line)) unmatchedChoices.push(line);
+            this.debug?.event({ type: "no_matching_choice", page: pageCount, group, offered });
+          }
+        }
+      }
       if (await this.clickFallbackAdvance(steps, fields)) continue;
       // A search page's control is often an icon with no name; Enter is what a person presses.
       if (await this.pressEnterInLastFilledField(steps, fields)) continue;
@@ -5142,14 +5169,19 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     // The portal's own words, quoted. On a run that never reached review this is usually the
     // ONLY line that names a cause — the trace shows the same page seven times and the
     // validation channel is empty, because every advance "worked".
+    // The portal says what is missing; this says what was on offer and why none of it fit.
+    // Together they name the upstream choice that put the application on the wrong branch.
+    const choiceWarning = unmatchedChoices.length > 0
+      ? ` 🔀 ${unmatchedChoices.slice(0, 3).join(" | ")}. A choice made on an EARLIER page decides what these pages offer — check that one.`
+      : "";
     const noticeWarning = portalNotices.length > 0
       ? ` 📣 The portal reported: ${portalNotices.slice(0, 5).join(" | ")}`
       : "";
     const message = reachedReview
-      ? `${HUMAN_REVIEW_MESSAGE} Auto-learn reached the review screen after ${pageCount} page(s). Verify every field/value below before a human submits.${validationWarning}${docsWarning}${verifyWarning}${noticeWarning}`
+      ? `${HUMAN_REVIEW_MESSAGE} Auto-learn reached the review screen after ${pageCount} page(s). Verify every field/value below before a human submits.${validationWarning}${docsWarning}${verifyWarning}${noticeWarning}${choiceWarning}`
       : filledSomething
-        ? `Auto-learn filled ${pageCount} page(s) and recorded the steps, but did not reach a review screen. Page trace: ${traceLine}${validationWarning}${docsWarning}${verifyWarning}${noticeWarning}`
-        : `Auto-learn found nothing fillable on ${pageCount} page(s); no steps recorded.${nothingFillableHint} Page trace: ${traceLine}${validationWarning}${docsWarning}${verifyWarning}${noticeWarning}`;
+        ? `Auto-learn filled ${pageCount} page(s) and recorded the steps, but did not reach a review screen. Page trace: ${traceLine}${validationWarning}${docsWarning}${verifyWarning}${noticeWarning}${choiceWarning}`
+        : `Auto-learn found nothing fillable on ${pageCount} page(s); no steps recorded.${nothingFillableHint} Page trace: ${traceLine}${validationWarning}${docsWarning}${verifyWarning}${noticeWarning}${choiceWarning}`;
 
     // Capture the review page screenshot when we've reached the review screen. fullPage:true so
     // the vision verifier sees the WHOLE review — a viewport-only shot would let an off-screen
