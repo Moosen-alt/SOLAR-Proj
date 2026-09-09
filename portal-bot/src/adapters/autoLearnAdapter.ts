@@ -4998,6 +4998,14 @@ export class AutoLearnAdapter extends BasePortalAdapter {
 
       // f) Stop at review, OR advance to the next page, OR stop (no advance).
       if (plan.atReview) {
+        // THE VALUE THAT MATTERS IS THE ONE ON THE PAGE WHEN WE LEAVE IT. Replay has had
+        // this discipline for a while (reassertBlanksOnce before every advancing click and
+        // on the final page); the learn never did. On Ameren the Electrical Contractor
+        // block was filled, VERIFIED PRESENT by verifyFillsLanded, and wiped again by a
+        // later autosave round-trip — a one-shot mid-page verify cannot survive a portal
+        // that keeps resetting. One more pass at the exit; verifyFillsLanded already
+        // re-applies whatever is lost.
+        await this.verifyFillsLanded(appliedThisPage).catch(() => [] as string[]);
         reachedReview = true;
         break;
       }
@@ -5042,6 +5050,15 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             pauseReason: null,
             message: `Stopped: the planner returned a pay/fee control ("${advanceField.label}") as the advance button. Never automated. The recipe was recorded up to this page; a human must continue.`,
           };
+        }
+        // Same exit discipline as the atReview break above: re-assert what the portal wiped
+        // since the mid-page verify, so the page we advance OFF carries what we typed. Then
+        // give the autosave a moment — a re-typed value that has not round-tripped is lost
+        // by the very click that follows (the reason the d1 settle exists).
+        await this.verifyFillsLanded(appliedThisPage).catch(() => [] as string[]);
+        if (appliedThisPage.length > 0) {
+          await this.waitForAutosaveIndicator(3000);
+          await sleep(400);
         }
         // Record the advance click, then perform it.
         steps.push({
