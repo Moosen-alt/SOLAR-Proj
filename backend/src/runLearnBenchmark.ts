@@ -20,7 +20,7 @@ import { openDatabase } from "./db";
 import { createProject, deleteProject } from "./repository";
 import { autoLearnPortal } from "./autoLearn";
 import { listPortalCredentials, listStaleCredentials } from "./portalCredentials";
-import { reachedReviewFromEvents, scoreLearnOutcome, summarize, compareRuns, compareDepth, markUnreachableBursts, type BenchmarkRow } from "./learnBenchmark";
+import { reachedReviewFromEvents, scoreLearnOutcome, summarize, compareRuns, compareDepth, markUnreachableBursts, isMeasured, type BenchmarkRow } from "./learnBenchmark";
 
 const OUT_DIR = path.resolve(process.cwd(), "data", "learn-benchmark");
 // The learn stops itself at budgetMs; the walk checks its deadline BETWEEN pages, so a run
@@ -118,8 +118,18 @@ async function main(): Promise<void> {
     .filter((t) => CITY_BY_STATE[t.state])
     .filter((t) => includeStale || !t.stale);
 
-  const chosen = limit > 0 ? targets.slice(0, limit) : targets;
-  console.log(`learn benchmark: ${chosen.length} portal(s)\n`);
+  const picked = limit > 0 ? targets.slice(0, limit) : targets;
+  // POINT-AND-SHOOT RELIABILITY IS A RATE, AND A RATE NEEDS TRIALS.
+  //
+  // "Does it work on portal X" has been answered one run at a time all session, and three
+  // separate fixes that looked right on one portal degraded another - a single run cannot
+  // tell a fix from a coin flip. --repeat N runs each portal N times, ROUND-ROBIN so a
+  // portal's attempts spread across the sweep instead of sampling one four-minute window
+  // (the discipline the replay benchmark already uses), and reports per-portal k/N
+  // worst-first. An operator does not meet the fleet; they meet one portal.
+  const repeat = Math.max(1, Math.min(10, Number(arg("repeat") || 1)));
+  const chosen = repeat > 1 ? Array.from({ length: repeat }, () => picked).flat() : picked;
+  console.log(`learn benchmark: ${picked.length} portal(s)${repeat > 1 ? ` x ${repeat} attempts = ${chosen.length} runs` : ""}\n`);
 
   const rows: BenchmarkRow[] = [];
   let cursor = 0;
@@ -271,6 +281,33 @@ async function main(): Promise<void> {
   if (burstMarked > 0) {
     console.log(`
 ⚠ ${burstMarked} row(s) reported no response back-to-back and were marked NOT MEASURED — that is the runner (browser launch, network, or disk), not that many portals. Re-run them once the machine is healthy.`);
+  }
+  // PER-PORTAL k/N, WORST FIRST. The fleet average is not what an operator experiences.
+  if (repeat > 1) {
+    const byPortal = new Map<string, BenchmarkRow[]>();
+    for (const r of rows) {
+      if (!isMeasured(r.score)) continue;
+      const list = byPortal.get(r.portal) ?? [];
+      list.push(r);
+      byPortal.set(r.portal, list);
+    }
+    const rates = Array.from(byPortal.entries())
+      .map(([portal, rs]) => ({
+        portal,
+        n: rs.length,
+        review: rs.filter((r) => r.score.rung === "reached_review").length,
+        usable: rs.filter((r) => r.score.index >= 5).length,
+      }))
+      .map((r) => ({ ...r, pct: r.n ? (r.review / r.n) * 100 : 0 }))
+      .sort((a, b) => a.pct - b.pct);
+    console.log(`\nPER-PORTAL RELIABILITY over ${repeat} attempts - worst first`);
+    console.log(`   (reached review / measured attempts; "usable" = recorded a recipe)`);
+    for (const r of rates) {
+      console.log(`   ${String(Math.round(r.pct)).padStart(3)}%  review ${r.review}/${r.n}   usable ${r.usable}/${r.n}   ${r.portal}`);
+    }
+    const totalN = rates.reduce((a, r) => a + r.n, 0);
+    const totalReview = rates.reduce((a, r) => a + r.review, 0);
+    console.log(`   ---- ${totalN ? Math.round((totalReview / totalN) * 100) : 0}% overall (${totalReview}/${totalN} measured attempts reached review)`);
   }
   const summary = summarize(rows);
   console.log(`\n================ SCORECARD ================`);
