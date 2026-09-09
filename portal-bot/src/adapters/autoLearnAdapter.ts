@@ -4548,6 +4548,12 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             steps.push(step);
             pageFillCountPre++;
             this.debug?.event({ type: "contact_source_answered", page: pageCount, label: String(f.label ?? "").slice(0, 50), chose: chosen });
+            // CHOOSING RE-RENDERS THE BLOCK. PowerClerk rebuilds the contact fields when the
+            // source changes, and their ids are render-order counters (pcInputBase15…), so a
+            // fill applied against the pre-render list lands on a detached node or the wrong
+            // control. Let the rebuild finish; applyFill re-resolves each selector at fill
+            // time, so a settled page is all it needs.
+            await this.waitForDynamicFieldsSettle().catch(() => null);
           }
         }
       } catch { /* best-effort — a block without a picker is the common case */ }
