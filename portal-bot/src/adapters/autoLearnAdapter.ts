@@ -4518,8 +4518,42 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         }
       }
 
+      let pageFillCountPre = 0;
+      // c4c) A CONTACT BLOCK'S SOURCE PICKER MUST BE ANSWERED BEFORE ITS FIELDS ARE TYPED.
+      //
+      // PowerClerk renders each contact block with a select — "Existing contact to use for
+      // this contact" — offering the contacts already on the project plus "New Contact".
+      // Left unset, the block is not in manual-entry mode, and the values typed into Name /
+      // Company / Address are discarded on the autosave round-trip. Live on Ameren: the
+      // planner filled the Electrical Contractor block correctly, the read-back re-applied
+      // once, and all three came back blank at the review screen anyway.
+      //
+      // "New Contact" is the option that means "I am about to type these", which is exactly
+      // what the walk is doing — it can never pick the wrong party, unlike copying another
+      // block's contact. Answered here, before the fills, because after them is too late.
+      try {
+        for (const f of fields) {
+          if (f.fieldType !== "select") continue;
+          if (!/existing contact|contact to use|select a contact/i.test(String(f.label ?? ""))) continue;
+          const loc = await this.locator(f.selector).catch(() => null);
+          if (!loc) continue;
+          const current = typeof loc.inputValue === "function"
+            ? String((await loc.inputValue().catch(() => "")) ?? "").trim()
+            : "";
+          if (current && !/^(please select|select|choose|--)/i.test(current)) continue;
+          const chosen = (f.options ?? []).find((o) => /new contact/i.test(String(o)));
+          if (!chosen) continue;
+          const step = await this.applyFill(f, { value: chosen, field: undefined }, false);
+          if (step) {
+            steps.push(step);
+            pageFillCountPre++;
+            this.debug?.event({ type: "contact_source_answered", page: pageCount, label: String(f.label ?? "").slice(0, 50), chose: chosen });
+          }
+        }
+      } catch { /* best-effort — a block without a picker is the common case */ }
+
       // d) Apply the fills and record each as a RecipeStep.
-      let pageFillCount = 0;
+      let pageFillCount = pageFillCountPre;
       // Fills applied this page, retained so d2 can read them back and confirm they held.
       const appliedThisPage: AppliedFill[] = [];
       for (const fillReq of plan.fills ?? []) {
