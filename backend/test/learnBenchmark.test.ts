@@ -12,7 +12,7 @@
 //
 // Browser-free. Run: tsx backend/test/learnBenchmark.test.ts
 import assert from "node:assert/strict";
-import { LEARN_RUNGS, compareRuns, isMeasured, scoreLearnOutcome, summarize, type BenchmarkRow } from "../src/learnBenchmark";
+import { LEARN_RUNGS, compareRuns, isMeasured, scoreLearnOutcome, summarize, type BenchmarkRow, markUnreachableBursts } from "../src/learnBenchmark";
 
 let failures = 0;
 const check = (label: string, fn: () => void): void => {
@@ -108,6 +108,45 @@ check("recorded_steps: a recipe exists but review was never reached", () => {
   const s = scoreLearnOutcome({ status: "failed", pageCount: 2, steps: 10, message: "filled fields but never reached the portal's review screen" });
   assert.equal(s.rung, "recorded_steps");
   assert.equal(s.index, 5);
+});
+
+check("a run of unreachable verdicts is the RUNNER, not that many dead hosts", () => {
+  // 2026-09-09: the sweep ended with eleven consecutive portals scored "unreachable - the
+  // portal did not respond", all inside eight seconds, every one of which answered a curl a
+  // minute later. Counted as dead hosts it moved ACCESS from 24/50 to 15/51 and produced
+  // nine "REGRESSED" rows that were nothing of the kind.
+  const row = (portal: string, rung: string): BenchmarkRow => ({
+    portal, platform: "X",
+    score: { rung: rung as never, index: rung === "unreachable" ? 0 : 5, reason: "the portal did not respond", owner: "portal" },
+  });
+  const rows = [
+    row("a", "recorded_steps"),
+    row("b", "unreachable"), row("c", "unreachable"), row("d", "unreachable"),
+    row("e", "unreachable"), row("f", "unreachable"),
+    row("g", "recorded_steps"),
+  ];
+  const marked = markUnreachableBursts(rows);
+  assert.equal(marked, 5);
+  for (const p of ["b", "c", "d", "e", "f"]) {
+    const r = rows.find((x) => x.portal === p);
+    assert.equal(r?.score.measured, false, `${p} should be not-measured`);
+    assert.match(String(r?.score.reason), /is the runner/i);
+  }
+  // The rows around it are untouched.
+  assert.notEqual(rows[0].score.measured, false);
+  assert.notEqual(rows[6].score.measured, false);
+});
+
+check("...and three neighbours failing together is still counted as three dead hosts", () => {
+  // MUST EXCLUDE. The guard must understate, never invent: a short run of genuinely dead
+  // hosts is ordinary, and marking it not-measured would hide real portal outages.
+  const row = (portal: string): BenchmarkRow => ({
+    portal, platform: "X",
+    score: { rung: "unreachable", index: 0, reason: "the portal did not respond", owner: "portal" },
+  });
+  const rows = [row("a"), row("b"), row("c")];
+  assert.equal(markUnreachableBursts(rows), 0);
+  for (const r of rows) assert.notEqual(r.score.measured, false);
 });
 
 check("a review screen the run's own verifier rejects is NOT the top rung", () => {

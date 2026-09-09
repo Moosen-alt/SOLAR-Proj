@@ -20,7 +20,7 @@ import { openDatabase } from "./db";
 import { createProject, deleteProject } from "./repository";
 import { autoLearnPortal } from "./autoLearn";
 import { listPortalCredentials, listStaleCredentials } from "./portalCredentials";
-import { reachedReviewFromEvents, scoreLearnOutcome, summarize, compareRuns, type BenchmarkRow } from "./learnBenchmark";
+import { reachedReviewFromEvents, scoreLearnOutcome, summarize, compareRuns, markUnreachableBursts, type BenchmarkRow } from "./learnBenchmark";
 
 const OUT_DIR = path.resolve(process.cwd(), "data", "learn-benchmark");
 // The learn stops itself at budgetMs; the walk checks its deadline BETWEEN pages, so a run
@@ -240,6 +240,14 @@ async function main(): Promise<void> {
     }
   }));
 
+  // A RUN OF UNREACHABLE VERDICTS IS A STATEMENT ABOUT THE RUNNER. Applied before the
+  // summary so the headline never counts a machine failure as dead hosts — see
+  // markUnreachableBursts for the sweep that made this necessary.
+  const burstMarked = markUnreachableBursts(rows);
+  if (burstMarked > 0) {
+    console.log(`
+⚠ ${burstMarked} row(s) reported no response back-to-back and were marked NOT MEASURED — that is the runner (browser launch, network, or disk), not that many portals. Re-run them once the machine is healthy.`);
+  }
   const summary = summarize(rows);
   console.log(`\n================ SCORECARD ================`);
   console.log(`portals              : ${summary.total}`);

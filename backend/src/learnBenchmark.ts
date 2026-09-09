@@ -272,7 +272,16 @@ function scoreLearnOutcomeInner(outcome: LearnOutcome): LearnScore {
   // for a dead host sends the next day's work in the wrong direction, so network and
   // refusal failures are separated out before the login branches below.
   if (/ERR_TIMED_OUT|ERR_NAME_NOT_RESOLVED|ERR_CONNECTION|ERR_ABORTED|ERR_CERT|net::|ETIMEDOUT|ENOTFOUND|navigation timeout/i.test(msg)) {
-    return { rung: "unreachable", index: 0, reason: "the portal did not respond", owner: "portal" };
+    // NAME THE ERROR. "The portal did not respond" is not falsifiable, and it needed to be:
+    // eleven portals in a row reported it inside eight seconds on 2026-09-09 while every one
+    // of those hosts answered a curl immediately afterwards. A verdict about somebody else's
+    // server should say what the network actually did.
+    const detail = (msg.match(/net::[A-Z_]+|ERR_[A-Z_]+|ETIMEDOUT|ENOTFOUND|navigation timeout[^.]{0,30}/i) || [])[0];
+    return {
+      rung: "unreachable", index: 0,
+      reason: detail ? `the portal did not respond (${detail})` : "the portal did not respond",
+      owner: "portal",
+    };
   }
   // THE SHARED PREDICATE — see runAbort.ts. This branch carried its own narrower copy that
   // had never been given the word "cloudflare", so Canton TX's "Attention Required! |
@@ -328,6 +337,44 @@ export interface BenchmarkRow {
   /** How far the walk got, for the rows whose reason does not carry it. */
   pages?: number;
   fills?: number;
+}
+
+/**
+ * A FLEET DOES NOT DIE IN A BLOCK.
+ *
+ * The 2026-09-09 sweep ended with ELEVEN consecutive portals scored "unreachable — the
+ * portal did not respond", all within eight seconds, all of which answered a curl a minute
+ * later. That is the machine: a browser that could not launch, a network stack that went
+ * away, a disk with nothing left to write a profile into. Scored as eleven dead hosts it
+ * moved ACCESS from 24/50 to 15/51 and produced nine "REGRESSED" rows that were nothing of
+ * the kind — the exact failure this benchmark's harness-abort machinery exists to prevent,
+ * arriving through a door it did not cover.
+ *
+ * Run order is the evidence: portals are attempted in list order and share nothing else, so
+ * a run of consecutive unreachable verdicts is a statement about the runner, not about a
+ * set of unrelated cities. Four is the threshold — three neighbours failing together is
+ * unlucky, four is a pattern, and marking them NOT MEASURED understates rather than invents.
+ */
+export function markUnreachableBursts(rows: BenchmarkRow[], minRun = 4): number {
+  let marked = 0;
+  let i = 0;
+  while (i < rows.length) {
+    if (rows[i].score.rung !== "unreachable") { i++; continue; }
+    let j = i;
+    while (j < rows.length && rows[j].score.rung === "unreachable") j++;
+    if (j - i >= minRun) {
+      for (let k = i; k < j; k++) {
+        rows[k].score = {
+          ...rows[k].score,
+          measured: false,
+          reason: `not measured — ${j - i} portals in a row reported no response, which is the runner and not ${j - i} unrelated hosts (browser launch, network, or disk). Original verdict: ${rows[k].score.reason}`,
+        };
+        marked++;
+      }
+    }
+    i = j;
+  }
+  return marked;
 }
 
 export interface BenchmarkSummary {
