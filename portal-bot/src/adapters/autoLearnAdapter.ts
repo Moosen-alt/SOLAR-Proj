@@ -7094,15 +7094,36 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         try { return !(typeof p.isClosed === "function" && p.isClosed()); } catch { return true; }
       });
       const curIdx = pages.indexOf(current); // -1 if the current tab was closed
-      // Walk newest → oldest; only adopt a tab strictly NEWER than the current one.
-      for (let i = pages.length - 1; i > curIdx; i--) {
+      // A BLANK CURRENT PAGE IS NOT A VALID ANCHOR. Bitco's "Citizens Connect" opens the
+      // application in a new tab AND leaves the dashboard tab on about:blank, so this.page
+      // sits on about:blank and the walk scrapes an empty page forever. When the current
+      // tab is blank the "strictly newer" rule is meaningless — adopt any non-blank
+      // same-host tab, newest first.
+      let curUrl = ""; try { curUrl = String(current.url?.() ?? ""); } catch { curUrl = ""; }
+      const currentIsBlank = !curUrl || curUrl === "about:blank";
+      const floor = currentIsBlank ? -1 : curIdx;
+      // Walk newest → oldest; adopt a tab NEWER than the current one (or any, if blank).
+      for (let i = pages.length - 1; i > floor; i--) {
         const p = pages[i];
         if (p === current) continue;
         let u = "";
         try { u = String(p.url?.() ?? ""); } catch { u = ""; }
+        // A FRESHLY-OPENED TAB IS about:blank FOR A MOMENT before its real navigation. The
+        // old code skipped it and moved on, so a form that opened in a new tab was missed
+        // whenever adoption raced the tab's first navigation (Bitco, and any portal whose
+        // popup redirects). Give a blank newer tab a brief chance to become the form.
+        if (u === "about:blank") {
+          for (let w = 0; w < 6 && (u === "about:blank" || !u); w++) {
+            try { await p.waitForLoadState?.("domcontentloaded", { timeout: 1500 }); } catch { /* keep polling url */ }
+            await sleep(500);
+            try { u = String(p.url?.() ?? ""); } catch { u = ""; }
+          }
+        }
         if (!u || u === "about:blank") continue;
         let host = ""; try { host = new URL(u).host; } catch { host = ""; }
-        if (currentHost && host && host !== currentHost) continue; // skip external popups
+        // Same-host filter still applies EXCEPT when our own tab is blank — then any real tab
+        // beats sitting on about:blank, and currentHost is empty anyway.
+        if (!currentIsBlank && currentHost && host && host !== currentHost) continue;
         try { await p.bringToFront?.(); } catch { /* ignore */ }
         try { await p.waitForLoadState?.("domcontentloaded", { timeout: 9000 }); } catch { /* ignore */ }
         this.page = p;

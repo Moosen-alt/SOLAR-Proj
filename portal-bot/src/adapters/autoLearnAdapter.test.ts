@@ -717,6 +717,101 @@ async function testNewTabPopupAdopted() {
   assert.ok(log.clicks.includes("role:link:Start Application"), "the dashboard nav link was clicked");
 }
 
+// 8b) BLANK-TAB ADOPTION: a new tab opens as about:blank and navigates a beat later, AND the
+// original dashboard tab is left on about:blank (Bitco "Citizens Connect" — live on Lake
+// Stevens WA: the walk scraped an empty page forever). Adoption must wait for the blank new
+// tab to become the form, and must not treat the blank current tab as a valid anchor.
+async function testBlankTabAdopted() {
+  const log: ActionLog = { clicks: [], fills: [], selects: [], checks: [] };
+  const pages: any[] = [];
+  function fakeLoc(key: string, onClick?: () => void): any {
+    const loc: any = {
+      first: () => loc, nth: () => loc, count: async () => 1, isVisible: async () => true,
+      waitFor: async () => undefined, scrollIntoViewIfNeeded: async () => undefined,
+      click: async () => { log.clicks.push(key); if (onClick) onClick(); },
+      fill: async (v: string) => { log.fills.push({ key, value: v }); },
+      selectOption: async (v: any) => { log.selects.push({ key, value: typeof v === "string" ? v : v?.label ?? "" }); },
+      check: async () => { log.checks.push(key); }, press: async () => undefined,
+      setInputFiles: async () => undefined, dispatchEvent: async () => undefined,
+      bringToFront: async () => undefined, evaluateAll: async () => [],
+    };
+    return loc;
+  }
+  // A tab whose url starts about:blank and flips to `realUrl` after `flipAfter` reads.
+  function blankThenForm(realUrl: string, flipAfter: number, opts: { title: string; body: string; fp: string; rawFields: RawFieldRow[]; reviewPairs?: Array<{ label: string; value: string }> }): any {
+    let reads = 0;
+    const page: any = {
+      url: () => { reads++; return reads > flipAfter ? realUrl : "about:blank"; },
+      title: async () => opts.title, goto: async () => undefined,
+      waitForLoadState: async () => undefined, reload: async () => undefined,
+      isClosed: () => false, bringToFront: async () => undefined,
+      keyboard: { press: async () => undefined }, frames: () => [],
+      evaluate: async () => opts.fp, screenshot: async () => Buffer.from(""),
+      getByRole: (role: string, o?: { name?: string }) => fakeLoc(`role:${role}:${o?.name ?? ""}`),
+      getByLabel: (l: string) => fakeLoc(`label:${l}`),
+      getByPlaceholder: (pl: string) => fakeLoc(`placeholder:${pl}`),
+      getByTestId: (t: string) => fakeLoc(`testId:${t}`),
+      getByText: () => ({ ...fakeLoc("text"), count: async () => 0 }),
+      locator: (css: string) => {
+        if (css === "body") return { innerText: async () => opts.body };
+        if (css === "iframe") return { evaluateAll: async () => [] };
+        return fakeLoc(`css:${css}`);
+      },
+      frameLocator: () => page,
+      $$eval: async (selector: string, _fn: any) => (selector.includes("button") ? opts.rawFields : (opts.reviewPairs ?? [])),
+    };
+    return page;
+  }
+  const formPage = blankThenForm("https://apps.lakestevenswa.gov/citizen/Home/LIVE/PERMIT/Apply", 2, {
+    title: "Application", body: "Residential building permit application form", fp: "form-fp",
+    rawFields: [{ label: "Owner Name", fieldType: "text", id: "on" }],
+    reviewPairs: [{ label: "Owner Name", value: "Jane Solar" }],
+  });
+  // The dashboard: clicking its nav opens the (initially blank) form tab AND blanks itself.
+  let dashReads = 0;
+  const dashboard: any = {
+    url: () => { dashReads++; return dashReads > 3 ? "about:blank" : "https://apps.lakestevenswa.gov/citizen/Home/LIVE/PERMIT"; },
+    title: async () => "Citizens Connect", goto: async () => undefined,
+    waitForLoadState: async () => undefined, reload: async () => undefined,
+    isClosed: () => false, bringToFront: async () => undefined,
+    keyboard: { press: async () => undefined }, frames: () => [],
+    evaluate: async () => "dash-fp", screenshot: async () => Buffer.from(""),
+    getByRole: (role: string, o?: { name?: string }) => {
+      const key = `role:${role}:${o?.name ?? ""}`;
+      return fakeLoc(key, key === "role:link:Apply" ? () => { pages.push(formPage); } : undefined);
+    },
+    getByLabel: (l: string) => fakeLoc(`label:${l}`),
+    getByPlaceholder: (pl: string) => fakeLoc(`placeholder:${pl}`),
+    getByTestId: (t: string) => fakeLoc(`testId:${t}`),
+    getByText: () => ({ ...fakeLoc("text"), count: async () => 0 }),
+    locator: (css: string) => {
+      if (css === "body") return { innerText: async () => "Select an application type" };
+      if (css === "iframe") return { evaluateAll: async () => [] };
+      return fakeLoc(`css:${css}`);
+    },
+    frameLocator: () => dashboard,
+    $$eval: async (selector: string, _fn: any) => (selector.includes("button")
+      ? [{ label: "Apply", fieldType: "button", role: "link", text: "Apply", id: "apply" }] : []),
+  };
+  pages.push(dashboard);
+
+  let call = 0;
+  const planner: LearnPlanner = async (req: LearnPlanRequest): Promise<LearnPlanResponse> => {
+    call++;
+    if (call === 1) return { fills: [], navigateSelectorIndex: 0, atReview: false };
+    assert.match(req.url, /\/Apply/, "after the nav the loop is on the form tab, not about:blank");
+    return { fills: [{ selectorIndex: 0, value: "Jane Solar", field: "homeownerName" }], atReview: true };
+  };
+
+  const adapter = new AutoLearnAdapter("Lake Stevens", planner);
+  (adapter as unknown as { page: unknown }).page = dashboard;
+  (adapter as unknown as { opened: unknown }).opened = { context: { pages: () => pages } };
+
+  const result = await adapter.learn(fakeContext, fakeProject);
+  assert.equal(result.ok, true, `should adopt the blank-then-form tab and fill (${result.message || ""})`);
+  assert.equal(log.fills.length, 1, "the form field on the adopted tab was filled, not lost to about:blank");
+}
+
 // 9) T&C PASS-THROUGH: a Terms & Conditions/billing page (no inputs + "Continue Application"
 // but NO review markers) must NOT be treated as the review screen. The loop should click
 // through it and continue to the real application form.
@@ -1974,6 +2069,7 @@ const tests: Array<[string, () => Promise<void>]> = [
   ["RECORD TYPE: the matching discipline's type is still checked and recorded", testRecordTypeMatchingDisciplineIsAllowed],
   ["VALIDATION GUARD: blocked advance is detected and surfaced", testValidationGuardBlockedAdvance],
   ["a click that opens the form in a NEW TAB is adopted (PowerClerk)", testNewTabPopupAdopted],
+  ["a form tab that opens blank then navigates is adopted (Bitco)", testBlankTabAdopted],
   ["final submit is recorded isFinalSubmit:true and NEVER clicked", testFinalSubmitRecordedNeverClicked],
   ["a pay/fee button returned by the planner is never clicked", testPayFeeButtonNeverClicked],
   ["a challenge frame stops the run with pauseReason mfa_captcha", testChallengeStopsRun],
