@@ -179,6 +179,33 @@ export function buildLearnKbContext(
 // plus the project's secret-free field values. Shared by autonomous learning AND the hybrid
 // staging gap-fill so both use identical data + safety handling. Secrets (account/meter/SSN/
 // password) are stripped here and NEVER reach the LLM — the adapter binds those deterministically.
+/** Fills, selects and checks - the steps that actually put data into a form. The only
+ *  depth measure available on both a stored draft and a fresh learn. */
+export function substantiveStepCount(steps: Array<{ action?: unknown }> | undefined): number {
+  return (steps ?? []).filter((st) => ["fill", "select", "check"].includes(String(st?.action ?? ""))).length;
+}
+
+/**
+ * DEPTH IS INFORMATION, AND A SHORTER DRAFT MUST NOT ERASE A LONGER ONE.
+ *
+ * A complete recipe is already protected. Two DRAFTS of the same portal were not ranked at
+ * all, so the last writer won - and on 2026-09-09 the last writer was a benchmark run the
+ * harness cut off at 660 seconds. It replaced Miami's 58-step, 39-fill draft, which had
+ * walked twelve pages of the intake, with the 28-step, 18-fill draft that run managed before
+ * it was killed. The good one survived only in prev_steps_json.
+ *
+ * Neither draft replays, so nothing files differently either way; what is lost is the record
+ * of how far the portal can actually be walked, which is the entire point of keeping a draft.
+ */
+export function shouldKeepDeeperDraft(
+  existingSteps: Array<{ action?: unknown }> | undefined,
+  newSteps: Array<{ action?: unknown }> | undefined,
+  opts: { protectComplete: boolean; hasExisting: boolean },
+): boolean {
+  if (opts.protectComplete || !opts.hasExisting) return false;
+  return substantiveStepCount(existingSteps) > substantiveStepCount(newSteps);
+}
+
 export function buildPortalPlanner(
   db: AppDb,
   project: ProjectRecord,
@@ -800,6 +827,29 @@ async function autoLearnPortalInner(
     discipline: learnDiscipline,
   });
   const protectComplete = existingRecipe?.status === "complete";
+  // DEPTH IS INFORMATION, AND A SHORTER DRAFT MUST NOT ERASE A LONGER ONE.
+  //
+  // protectComplete only guards a COMPLETE recipe. Two drafts of the same portal were not
+  // ranked at all, so the last writer won — and on 2026-09-09 the last writer was a
+  // benchmark run the harness cut off at 660 seconds. It replaced Miami's 58-step, 39-fill
+  // draft, which had walked twelve pages of the intake, with the 28-step, 18-fill draft that
+  // run managed before it was killed. The good one survived only in prev_steps_json.
+  //
+  // Neither draft replays (both are needs_rerecord), so nothing files differently either
+  // way; what is lost is the record of how far the portal can actually be walked, which is
+  // the whole point of keeping a draft. Substantive steps - fills, selects, checks - is the
+  // only depth measure available on both sides.
+  const existingDepth = substantiveStepCount(existingRecipe?.steps as Array<{ action?: unknown }> | undefined);
+  const substantive = substantiveStepCount;
+  const keepDeeperDraft = (why: string): boolean => {
+    const newDepth = substantiveStepCount(learn.steps as Array<{ action?: unknown }>);
+    if (!shouldKeepDeeperDraft(existingRecipe?.steps as Array<{ action?: unknown }> | undefined, learn.steps as Array<{ action?: unknown }>, { protectComplete, hasExisting: !!existingRecipe })) return false;
+    void newDepth;
+    addAuditLog(db, projectId, "system", "auto-learn", "portal.auto_learn_kept_deeper_draft", {
+      scope: scopeType, existingDepth, newDepth, reason: why,
+    });
+    return true;
+  };
   // Terminal progress signal — the LearnProgress contract includes phase "done" so the UI
   // progress bar can complete; emit it on EVERY terminal path, success or not.
   const emitDone = (message: string) => input.onProgress?.({ phase: "done", pageCount: learn.pageCount, maxPages: learn.pageCount, message });
@@ -845,6 +895,10 @@ async function autoLearnPortalInner(
     if (protectComplete) {
       return preserved("failed", null, { accurate: false, confidence: "low", matches: [], issues: [learn.message] }, `Could not learn the portal automatically: ${learn.message}.`);
     }
+    if (keepDeeperDraft("learn could not complete")) {
+      return preserved("failed", null, { accurate: false, confidence: "low", matches: [], issues: [learn.message] },
+        `Could not learn the portal automatically: ${learn.message}. Kept the existing draft, which got further (${existingDepth} field(s) vs ${substantive(learn.steps as Array<{ action?: unknown }>)}).`);
+    }
     const stub = mkStub();
     savePortalRecipeSteps(db, stub.id, learn.steps, { status: "needs_rerecord", notes: `Auto-learn could not complete: ${learn.message}` });
     addAuditLog(db, projectId, "system", "auto-learn", "portal.auto_learn_failed", { scope: scopeType });
@@ -866,6 +920,10 @@ async function autoLearnPortalInner(
       : "reached a screen treated as review but filled no fields (likely a landing/disclaimer page misread as the review screen)";
     if (protectComplete) {
       return preserved("failed", null, { accurate: false, confidence: "low", matches: [], issues: [learn.message] }, `Nothing was staged — ${why}.`);
+    }
+    if (keepDeeperDraft(why)) {
+      return preserved("failed", null, { accurate: false, confidence: "low", matches: [], issues: [learn.message] },
+        `Nothing was staged — ${why}. Kept the existing draft, which got further (${existingDepth} field(s) vs ${substantive(learn.steps as Array<{ action?: unknown }>)}).`);
     }
     const stub = mkStub();
     emitDone(`Learning failed — ${why}.`);
