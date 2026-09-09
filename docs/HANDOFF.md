@@ -113,6 +113,32 @@ from. **`npm run portal:test:dom:each`** runs the same list, one process and one
 budget per smoke, with `--from`/`--only` to resume. A hang is now a reported TIMEOUT on one
 row. **61/61 pass** as of 2026-09-09, including the PowerClerk and combobox suites that
 this session's comboboxFill changes could have disturbed.
+## Point-and-shoot, measured on the accessible fleet (2026-09-09, night)
+
+Per the operator: the 12 refused-credential portals are CALLED OUT and excluded from the
+denominator (their list prints at the end of every sweep); reliability is measured on the
+portals we can log into. Full accessible sweep, one build, single attempt each:
+
+| | |
+|---|---|
+| accessible (logged in) | **26 of 54** |
+| full loop: reached review | **1/26** (Ameren NEM, 70 fields) |
+| recorded a filling recipe | 17/26 (65%) |
+| walked but filled nothing | 9/26 |
+| vs previous run | 2 improved, **0 regressed**, fleet +21 fields deeper |
+
+Pinned repeat on the one full-loop portal: **3/3 non-collided attempts reached review,
+self-test PASSED each time** (one attempt excluded as a documented harness collision).
+
+**Where the 95% has to come from, by owner:**
+- ENGINE: the 9 zero-fill portals (varied entry-path causes: ConnectTheGrid dashboards,
+  Bitco blank page, permittrax/iworq/momentum entry) and the 16 recorded_steps portals'
+  remaining walls. Each is the Miami/Ameren treatment: drive, read the portal's own
+  notices, fix generically, kill-test.
+- OPERATOR: 12 refused credentials (printed each sweep); co-franklin-oh's URL bounces to
+  COLUMBUS's Accela (wrong tenant, from the workbook); Miami's Job Sub-Category.
+- DESIGN (not gaps): MFA/CAPTCHA portals and final-submit stay human.
+
 ## The first pinned reliability number (2026-09-09, evening)
 
 `learn:benchmark --host amerenillinoisinterconnect --repeat 3 --self-test`, one build:
