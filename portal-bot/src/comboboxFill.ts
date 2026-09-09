@@ -287,14 +287,26 @@ export async function readClosedComboboxOptions(page: any, loc: any): Promise<st
         (el as HTMLElement).click();
       }).catch(() => null);
     }
-    // Cascading widgets populate ~600ms after the opening interaction (see CLAUDE.md).
-    await page.waitForTimeout?.(700).catch(() => null);
-    const scope = await optionScope(page);
-    if (scope === page) return [];
+    // CASCADES POPULATE AFTER THE CLICK, AND NOT ON A SCHEDULE. A flat 700ms wait read
+    // Miami's Job Sub-Category as exactly one option ("BUILDING ROOFING") when the city's
+    // own instructions say the list carries an ELECTRICAL path — the read raced the cascade,
+    // and a partial list is worse than none because it tells the planner the right answer is
+    // not on the menu. Poll until two consecutive reads agree; a static list exits on its
+    // second read, a cascade gets up to ~4s to finish arriving.
+    //
     // Scoped to the popup, a bare <li> IS an option — and it has to be allowed, because
     // optionScope can resolve to the LIST ITSELF (Telerik's ul.t-list is both a popup
     // container and the list), where "ul.t-list > li" then matches nothing at all.
-    const texts: string[] = await optionRowsIn(scope, page).allInnerTexts().catch(() => [] as string[]);
+    let texts: string[] = [];
+    let prevCount = -1;
+    for (let waited = 0; waited <= 4000; waited += 500) {
+      await page.waitForTimeout?.(waited === 0 ? 700 : 500).catch(() => null);
+      const scope = await optionScope(page);
+      if (scope === page) { texts = []; break; }
+      texts = await optionRowsIn(scope, page).allInnerTexts().catch(() => [] as string[]);
+      if (texts.length > 0 && texts.length === prevCount) break;
+      prevCount = texts.length;
+    }
     const seen = new Set<string>();
     const out: string[] = [];
     for (const raw of texts) {
