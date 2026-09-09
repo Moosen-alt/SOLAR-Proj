@@ -35,7 +35,12 @@ const ENTRY_PATTERNS: RegExp[] = [
   // "new (permit|building) application" list would miss every vendor's own noun. Up to two
   // words between, so this stays a button label rather than a sentence.
   /\bnew\s+(?:[a-z-]+\s+){0,2}application\b/i,
-  /\bsubmit (a |an )?(new )?(application|permit)\b/i,
+  // REQUIRES "new". "Submit a new application" is a dashboard START control; a bare
+  // "Submit Application" is the FINAL SUBMIT on a filled form, and the entry pass runs before
+  // any fill — so on a portal whose landing page IS the form (permiteyes.us, single-page
+  // apps) the un-qualified pattern clicked the file button and submitted. Safety rule #1:
+  // automation never clicks final submit.
+  /\bsubmit (a |an )?new (application|permit)\b/i,
   /\bapply online\b/i,                                  // SmartGov
   /\bcreate (a |an )?(new )?(permit|record|case)\b/i,
   /\bpermit application\b/i,
@@ -89,6 +94,12 @@ const EXCLUDE_PATTERNS: RegExp[] = [
 export function isExcludedEntryLabel(label: string): boolean {
   const text = (label || "").replace(/\s+/g, " ").trim();
   if (!text) return true;
+  // FINAL-SUBMIT CONTROLS ARE NEVER ENTRY. "Submit Application" / "Submit" / "File" /
+  // "Finish" files the form; entering the flow never requires one. Excluded outright UNLESS
+  // the label carries "new" (an unambiguous "start a new application"), which a final-submit
+  // button never does. Safety rule #1 — the entry pass runs before any fill, so on a portal
+  // whose landing page is the form itself this is the last guard before an accidental filing.
+  if (/\b(submit|file|finish|finalize)\b/i.test(text) && !/\bnew\b/i.test(text)) return true;
   return EXCLUDE_PATTERNS.some((re) => re.test(text));
 }
 

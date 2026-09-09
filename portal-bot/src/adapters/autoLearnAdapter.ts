@@ -6464,6 +6464,18 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private async pressEnterInLastFilledField(steps: RecipeStep[], fields: any[]): Promise<boolean> {
     if (!this.page || !Array.isArray(fields)) return false;
+    // ENTER ON AN APPLICATION FORM CAN FILE IT. This fallback exists for SEARCH pages whose
+    // submit is an unnamed icon (Miami's property magnifier) — a page with one or two text
+    // boxes. On permiteyes.us the walk pressed Enter on a 176-field single-page permit
+    // application: Enter triggered the form's own submit, the page went to about:blank, and
+    // on a live application that keystroke would have FILED it. Automation never submits, so
+    // this only ever runs where a person would press Enter — a search, not an application.
+    const fillableCount = fields.filter((f: { fieldType?: string }) =>
+      f?.fieldType === "text" || f?.fieldType === "select").length;
+    if (fillableCount > 5) {
+      this.debug?.event({ type: "enter_submit_refused_not_search", fillable: fillableCount });
+      return false;
+    }
     const lastFill = [...steps].reverse().find((st) => st.phase === "fill" && String(st.action) === "fill");
     if (!lastFill?.selector) return false;
     const beforeSig = await advanceSignatureOf(this.page);
