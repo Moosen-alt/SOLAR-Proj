@@ -113,6 +113,25 @@ from. **`npm run portal:test:dom:each`** runs the same list, one process and one
 budget per smoke, with `--from`/`--only` to resume. A hang is now a reported TIMEOUT on one
 row. **61/61 pass** as of 2026-09-09, including the PowerClerk and combobox suites that
 this session's comboboxFill changes could have disturbed.
+## Reliability is now measured as a rate, not a run (2026-09-09)
+
+Three fixes this session looked right on one portal and degraded another (the equipment
+fixture, the exit re-assert, the duplicate-label preference). A single run cannot tell a fix
+from a coin flip, and the goal is a 95% RATE. `learn:benchmark --repeat N` now runs each
+portal N times round-robin and reports per-portal k/N worst-first with an overall line;
+non-measurements (harness aborts) are excluded so they never read as a portal that failed.
+
+Ameren PowerClerk (the closed NEM loop) is the acceptance test: `--repeat 3 --self-test`.
+
+### Miami permit walk: where it stands
+
+The seeded KB path fixed the wrong turn - Job Category now lands on STAND-ALONE (confirmed
+on-screen). It stops at Job Sub-Category: the live cascade under STAND-ALONE offers only
+BUILDING ROOFING, and the correct electrical/solar sub-category is operator knowledge that
+needs a real Miami permit example. Everything up to it works: address search, results-row
+click, Start New Application, Job Location, Applicant Role, Contact Information (21 fields,
+no longer stalling 16 min), Job Category as a Telerik cascade dropdown.
+
 ## THE LOOP CLOSED: learn -> review -> replay -> review (2026-09-09, Ameren PowerClerk)
 
 ```
