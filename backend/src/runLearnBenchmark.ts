@@ -148,7 +148,31 @@ async function main(): Promise<void> {
         // The host is unique and unmistakably not a jurisdiction, so each portal gets its own
         // isolated row and nothing the benchmark writes can collide with real work.
         ahj: `Benchmark ${t.host}`, utility: loc.utility, clientId: CLIENT,
-        dcKw: "7.2", acKw: "6.4", moduleQty: "18", moduleWattage: "400",
+        dcKw: "7.2", acKw: "5.22", moduleQty: "18", moduleWattage: "400",
+        // REAL EQUIPMENT, OR THE EQUIPMENT FIELDS ARE NEVER TESTED.
+        //
+        // The whole payload becomes the project's parserSnapshot, and
+        // resolveRecipeFieldValues emits equipment keys ONLY for values the project has. A
+        // benchmark project with no equipment therefore produces no inverterMake /
+        // inverterModel / inverterQty — so every portal's equipment dropdowns came back
+        // blank and the scorecard could not tell "the engine cannot fill these" from "there
+        // was nothing to fill". Ameren's review screen listed four of them as required and
+        // empty on seven consecutive runs.
+        //
+        // A real, CEC-listed pairing, internally consistent with the sizes above: 18 x 400 W
+        // modules is 7.2 kW DC, 18 microinverters at 290 W AC is 5.22 kW AC (a 1.38 DC:AC
+        // ratio, which is ordinary residential). Certified names differ from plan-set names,
+        // which is exactly what EQUIPMENT_MAKE_ALIASES and certifiedModelFor exist to bridge
+        // — so the fixture uses the names a plan set would carry, not the portal's.
+        inverterManufacturer: "Enphase", inverterModel: "IQ8PLUS-72-2-US",
+        inverterQuantity: "18", inverterWattage: "290",
+        moduleManufacturer: "Q CELLS", moduleModel: "Q.PEAK DUO BLK ML-G10+ 400",
+        mountType: "roof", racking: "IronRidge XR100", tilt: "22", azimuth: "180",
+        mainServiceRating: "200", hasBattery: "No",
+        pvArrays: [{
+          quantity: 18, moduleManufacturer: "Q CELLS", moduleModel: "Q.PEAK DUO BLK ML-G10+ 400",
+          moduleWattage: 400, tilt: 22, azimuth: 180,
+        }],
         permitPath: "prescriptive", framingType: "rafter", roofRafterSpacing: "24",
         roofRafterSpan: "11.5", snow: "25", deadLoad: "3.0", wind: "B",
       } as never).project.id;
