@@ -171,6 +171,20 @@ of fillable fields. CORRECTION to that commit's message: "with either alone it d
 submit" was NOT tested - only both-off was. The both-off kill stands; the per-guard claim
 is retracted.
 
+## CLEAN PIN: Ameren NEM 3/3, self-test passing (2026-09-09, night)
+
+Re-run with nothing else touching PowerClerk (`--repeat 3 --self-test`):
+
+```
+ 1/3  reached_review     2/3  reached_review     3/3  reached_review
+ 100%  review 3/3   usable 3/3   amerenillinoisinterconnect.powerclerk.com
+```
+
+This SUPERSEDES the 67% below, which was one attempt colliding with the concurrent fleet
+sweep on a one-session-per-account portal. Same build, same fixture, no contention: the
+learn -> review -> replay -> review loop reproduces every time on the portal where it is
+closed. Scope it honestly: this is ONE portal's repeatability, not a fleet rate.
+
 ## The first pinned reliability number (2026-09-09, evening)
 
 `learn:benchmark --host amerenillinoisinterconnect --repeat 3 --self-test`, one build:
