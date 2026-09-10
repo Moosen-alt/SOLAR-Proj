@@ -21,6 +21,7 @@ import { createProject, deleteProject } from "./repository";
 import { autoLearnPortal } from "./autoLearn";
 import { listPortalCredentials, listStaleCredentials } from "./portalCredentials";
 import { isUtilityPlatformUrl } from "./portalChannel";
+import { recordDraftTouch } from "./draftLedger";
 import { reachedReviewFromEvents, scoreLearnOutcome, summarize, compareRuns, compareDepth, markUnreachableBursts, isMeasured, type BenchmarkRow } from "./learnBenchmark";
 
 const OUT_DIR = path.resolve(process.cwd(), "data", "learn-benchmark");
@@ -102,6 +103,19 @@ async function main(): Promise<void> {
   // accounts this business depends on — repeated failures lock people out. The credential
   // health flag exists precisely so the benchmark can decline to bang on a locked door.
   const includeStale = process.argv.includes("--include-stale");
+
+  // The credential's USERNAME REFERENCE for a portal URL — the non-secret half the store
+  // keeps in the clear, so the ledger can say which account a draft sits under without ever
+  // reading an encrypted secret.
+  const allCreds = listPortalCredentials(db, CLIENT);
+  const credentialUsernameFor = (url: string): string => {
+    let host = "";
+    try { host = new URL(url).hostname.toLowerCase(); } catch { host = ""; }
+    const hit = allCreds.find((c) => {
+      try { return new URL(c.portalUrl).hostname.toLowerCase() === host; } catch { return false; }
+    });
+    return String(hit?.usernameReference ?? "");
+  };
 
   const seen = new Set<string>();
   const targets = listPortalCredentials(db, CLIENT)
@@ -201,6 +215,23 @@ async function main(): Promise<void> {
       // pages, steps and debug bundle intact, scored on what it actually reached. The race
       // survives only as a backstop with slack — if it ever fires now, the run is wedged,
       // which is a harness abort and is scored as "not measured" rather than as a verdict.
+      // WRITE IT DOWN BEFORE WE TOUCH THE PORTAL, NOT AFTER.
+      //
+      // This run is about to log into a REAL account and start a REAL application. It never
+      // submits, but the draft stays under the operator's licence and nothing deletes it. A
+      // run that dies mid-way has still created the draft, which is exactly the case worth
+      // recording - so the ledger entry goes in first. The bundles used to be the only
+      // record and they are pruned: a batch of fixture runs evicted every live-portal bundle
+      // in this repo inside an hour.
+      recordDraftTouch({
+        at: new Date().toISOString(),
+        host: t.host,
+        portalUrl: t.url,
+        account: credentialUsernameFor(t.url),
+        projectId: pid,
+        purpose: process.env.PORTAL_REPLAY_SELFTEST === "1" ? "benchmark+selftest (up to 2 drafts)" : "benchmark learn",
+        note: "learn walks to the review screen and stops; never submitted",
+      });
       const res = await Promise.race([
         autoLearnPortal(db, pid, {
           // A NEM PORTAL LEARNED AS AN AHJ IS LEARNED WRONG, AND BANKED WHERE NOBODY LOOKS.

@@ -103,3 +103,7 @@ intake/
 docs/**/*.json
 # ...but the blank template itself stays tracked. Keep this negation LAST.
 !docs/onboarding/intake-template.json
+
+# The draft ledger is an operational record of real portal drafts — keep it OUT of git
+# (it names live accounts and portal references) but never delete it.
+data/portal-drafts.jsonl
