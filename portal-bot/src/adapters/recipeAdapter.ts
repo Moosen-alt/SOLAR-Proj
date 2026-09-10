@@ -3,6 +3,38 @@ import path from "path";
 import type { PortalRecipe, ProjectRecord, RecipeSelector, RecipeStep } from "../../../shared/src/types";
 import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, ok, fail, type PortalContext, type PortalStepResult } from "../adapter";
 import { applyFormatHint } from "../formatHint";
+
+// A RECORDED ANSWER THAT DESCRIBES A PROJECT OR A PERSON BELONGS TO THAT PROJECT.
+//
+// portal_recipes are shared deliberately — across AHJs and, per CLAUDE.md's tenancy model,
+// across ORGS. So a literal frozen into a recipe is replayed for other customers of other
+// solar companies. That is fine for the portal's own vocabulary ("STAND-ALONE", "Residential")
+// and catastrophic for the learn project's homeowner, service address, account number, or an
+// installer licence belonging to a different company.
+//
+// Reproduced in crossProjectReplay.test.ts before this guard existed: "Alice Anderson" and
+// "111 First Street" typed into a second project's application, and 8000 W filed for a 6 kW
+// system, because the binder keeps any literal that does not EXACTLY match a project value.
+//
+// Deliberately LABEL-FIRST and high-precision. Blanking a portal constant would break a
+// required dropdown on every replay, so the taxonomy words below are excluded first and only
+// unmistakable per-person/per-property/per-equipment labels (plus two unambiguous value
+// shapes) return true.
+const TAXONOMY_LABEL = /\b(category|type|class|kind|purpose|scope|description|reason|status|method|discipline|jurisdiction|program|option|permit\s*type|work\s*type)\b/i;
+const PROJECT_DATA_LABEL = /\b(owner|homeowner|applicant|customer|contact|first\s*name|last\s*name|full\s*name|middle|surname|address|street|city|zip|postal|county|parcel|apn|phone|mobile|tel|fax|e-?mail|account|meter|serial|licen[sc]e|contractor|installer|company|business|ein|tax\s*id|ssn|docket|kw|kva|watt|capacity|system\s*size|quantity|qty|azimuth|tilt|manufacturer|model)\b/i;
+const UNAMBIGUOUS_PII_VALUE = /^[^@\s]+@[^@\s]+\.[a-z]{2,}$/i /* email */;
+const PHONE_VALUE = /^\+?\d[\d\s().-]{8,}$/;
+
+export function looksLikeProjectData(label: string, value: string): boolean {
+  const l = String(label ?? "");
+  const v = String(value ?? "").trim();
+  if (!v) return false;
+  // The portal's own vocabulary wins: a "Job Category" answer is the portal's word even
+  // though "category" sits near words we treat as project data elsewhere.
+  if (TAXONOMY_LABEL.test(l) && !PROJECT_DATA_LABEL.test(l)) return false;
+  if (PROJECT_DATA_LABEL.test(l)) return true;
+  return UNAMBIGUOUS_PII_VALUE.test(v) || PHONE_VALUE.test(v);
+}
 import { rankAddressVersions } from "../addressVersion";
 import { imageToPdfBytes, pdfNameFor, shouldConvertToPdf } from "../imageToPdf";
 import { fileTypeAllowed, UPLOAD_LABEL_PATTERNS, uploadForbidsSubstitute } from "./autoLearnAdapter";
@@ -1187,6 +1219,34 @@ ${body.slice(0, 4000)}`);
       const bound = applyFormatHint(this.fieldValues[step.field] ?? "", String(step.note ?? ""));
       if (!known && !bound && String(step.value ?? "").trim()) {
         const key = String(step.field);
+        // ...BUT A RECIPE IS SHARED, AND THE RECORDED ANSWER BELONGS TO THE PROJECT IT WAS
+        // LEARNED ON. The rule above asks only whether the KEY is known. When the planner
+        // invents a key ("ownerFullName") the key is unknown, so the literal replayed — and
+        // the literal was the LEARN project's homeowner. Reproduced in
+        // crossProjectReplay.test.ts: "Alice Anderson" and "111 First Street" typed into a
+        // different customer's application, and 8000 W filed for a 6 kW system.
+        //
+        // The fallback still earns its place for PORTAL VOCABULARY — Miami's Job Category
+        // "STAND-ALONE" is bound to an invented "jobCategory" key and must survive, or the
+        // required dropdown replays blank and the portal refuses to advance. So the test is
+        // not "is the key known" but "could this answer belong to a different project":
+        //   - a closed-vocabulary answer (select/check) is the PORTAL's own word, never the
+        //     customer's, so it replays;
+        //   - free text under a project-data label (owner, address, phone, email, account,
+        //     size...) is the customer's, so it is refused and left blank for the reviewer.
+        // Refusing is the safe direction: a blank required field is a visible stop, while a
+        // stale name is an invisible one that reaches a real filing.
+        const closedVocabulary = step.action === "select" || step.action === "check";
+        const labelText = `${step.selector?.label ?? ""} ${step.note ?? ""}`;
+        if (!closedVocabulary && looksLikeProjectData(labelText, String(step.value))) {
+          if (!this.inventedBindings.has(key)) {
+            this.inventedBindings.add(key);
+            this.agingNotes.push(
+              `"${String(step.note ?? key).slice(0, 40)}" is bound to "${key}", which the value dictionary does not define, and its recorded answer looks like the learn project's own data — left BLANK rather than replaying another project's value`,
+            );
+          }
+          return "";
+        }
         if (!this.inventedBindings.has(key)) {
           this.inventedBindings.add(key);
           this.agingNotes.push(
@@ -1196,6 +1256,29 @@ ${body.slice(0, 4000)}`);
         return applyFormatHint(String(step.value), String(step.note ?? ""));
       }
       return bound;
+    }
+    // AN UNBOUND LITERAL IS THE SAME HAZARD WITHOUT EVEN A KEY TO WARN US.
+    //
+    // The binder keeps any literal that does not EXACTLY match a project value as a
+    // "portal-specific literal" (portalRecipes.ts). That is how project A's 8 kW system,
+    // recorded as "8000" watts, froze and would file 8000 for a 6 kW job — and how an
+    // address written differently than the project record froze as a "constant". Because
+    // recipes are shared across orgs, an installer licence frozen this way crosses COMPANIES.
+    //
+    // Same rule as the invented-key branch above, and the same safe direction: a closed
+    // vocabulary answer is the portal's, free text under a project-data label is somebody's.
+    if (step.action !== "select" && step.action !== "check") {
+      const labelText = `${step.selector?.label ?? ""} ${step.note ?? ""}`;
+      if (looksLikeProjectData(labelText, String(step.value ?? ""))) {
+        const key = `literal:${labelText.slice(0, 40)}`;
+        if (!this.inventedBindings.has(key)) {
+          this.inventedBindings.add(key);
+          this.agingNotes.push(
+            `"${labelText.trim().slice(0, 40)}" carries a recorded literal that looks like the learn project's own data and is bound to nothing — left BLANK rather than replaying it onto this project`,
+          );
+        }
+        return "";
+      }
     }
     return applyFormatHint(step.value ?? "", String(step.note ?? ""));
   }

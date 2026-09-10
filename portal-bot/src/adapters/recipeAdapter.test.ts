@@ -471,11 +471,15 @@ async function testGapFillReportInFinalSubmitResult() {
 async function testHealPrefersFingerprintMatch() {
   const log: ActionLog = { clicks: [], fills: [], gotos: [], checks: 0 };
   const recipe = baseRecipe([
-    { action: "fill", selector: { css: "#old-gone-id" }, note: "Manufacturer", value: "AP Systems",
+    // BOUND, not a frozen literal. An equipment manufacturer is per-project data (project A
+    // is Enphase, project B is SolarEdge), so resolveValue now refuses to replay it from a
+    // recorded literal - see crossProjectReplay.test.ts. This fixture is about SELECTOR
+    // HEALING, so bind it and let healing be what is under test.
+    { action: "fill", selector: { css: "#old-gone-id" }, note: "Manufacturer", field: "inverterManufacturer",
       fingerprint: { name: "inv_mfr", section: "Inverter Information" } },
     { action: "stopForReview" },
   ]);
-  const adapter = new RecipeAdapter(recipe, {}, {});
+  const adapter = new RecipeAdapter(recipe, { inverterManufacturer: "AP Systems" }, {});
   withFakePage(adapter, makeFakePage({
     log,
     present: { "css:#old-gone-id": false, "label:Manufacturer": false }, // primary dead; label ambiguous → heal path
@@ -499,10 +503,10 @@ async function testHealPrefersFingerprintMatch() {
 async function testHealWithoutFingerprintLegacy() {
   const log: ActionLog = { clicks: [], fills: [], gotos: [], checks: 0 };
   const recipe = baseRecipe([
-    { action: "fill", selector: { css: "#old-gone-id" }, note: "Manufacturer", value: "AP Systems" },
+    { action: "fill", selector: { css: "#old-gone-id" }, note: "Manufacturer", field: "inverterManufacturer" },
     { action: "stopForReview" },
   ]);
-  const adapter = new RecipeAdapter(recipe, {}, {});
+  const adapter = new RecipeAdapter(recipe, { inverterManufacturer: "AP Systems" }, {});
   withFakePage(adapter, makeFakePage({
     log,
     present: { "css:#old-gone-id": false },
@@ -522,10 +526,10 @@ async function testHealWithoutFingerprintLegacy() {
 async function testFingerprintNeverInventsMatch() {
   const log: ActionLog = { clicks: [], fills: [], gotos: [], checks: 0 };
   const recipe = baseRecipe([
-    { action: "fill", selector: { css: "#old-gone-id" }, note: "Manufacturer", value: "X",
+    { action: "fill", selector: { css: "#old-gone-id" }, note: "Manufacturer", field: "inverterManufacturer",
       fingerprint: { name: "inv_mfr" } },
   ]);
-  const adapter = new RecipeAdapter(recipe, {}, {});
+  const adapter = new RecipeAdapter(recipe, { inverterManufacturer: "AP Systems" }, {});
   withFakePage(adapter, makeFakePage({
     log,
     present: { "css:#old-gone-id": false },
@@ -553,16 +557,25 @@ async function testFingerprintBoostUnit() {
 }
 
 // DRIFT PRECHECK -----------------------------------------------------------
+// BOUND, not frozen literals. A homeowner name and a service address under their own
+// labels are exactly what resolveValue now refuses to replay from a recording (see
+// crossProjectReplay.test.ts - a recipe is shared across AHJs and across ORGS, so a frozen
+// literal is another customer's data). These fixtures are about DRIFT DETECTION, so bind
+// them and keep drift the thing under test.
+const DRIFT_VALUES: Record<string, string> = {
+  homeownerName: "X", projectAddress: "Y", utility: "Z",
+};
+
 const threeFills: RecipeStep[] = [
-  { action: "fill", selector: { label: "Homeowner Name" }, note: "Homeowner Name", value: "X" },
-  { action: "fill", selector: { label: "Project Address" }, note: "Project Address", value: "Y" },
-  { action: "select", selector: { label: "Utility Company" }, note: "Utility Company", value: "Z" },
+  { action: "fill", selector: { label: "Homeowner Name" }, note: "Homeowner Name", field: "homeownerName" },
+  { action: "fill", selector: { label: "Project Address" }, note: "Project Address", field: "projectAddress" },
+  { action: "select", selector: { label: "Utility Company" }, note: "Utility Company", field: "utility" },
   { action: "stopForReview" },
 ];
 
 async function testDriftZeroOverlapFailsFast() {
   const log: ActionLog = { clicks: [], fills: [], gotos: [], checks: 0 };
-  const adapter = new RecipeAdapter(baseRecipe(threeFills), {}, {});
+  const adapter = new RecipeAdapter(baseRecipe(threeFills), DRIFT_VALUES, {});
   withFakePage(adapter, makeFakePage({
     log,
     rawFields: [
@@ -580,7 +593,7 @@ async function testDriftZeroOverlapFailsFast() {
 
 async function testDriftPartialOverlapWarnsAndContinues() {
   const log: ActionLog = { clicks: [], fills: [], gotos: [], checks: 0 };
-  const adapter = new RecipeAdapter(baseRecipe(threeFills), {}, {});
+  const adapter = new RecipeAdapter(baseRecipe(threeFills), DRIFT_VALUES, {});
   withFakePage(adapter, makeFakePage({
     log,
     rawFields: [
@@ -619,7 +632,7 @@ async function testDriftFrameScopedExcluded() {
 
 async function testDriftNoEvalSilent() {
   const log: ActionLog = { clicks: [], fills: [], gotos: [], checks: 0 };
-  const adapter = new RecipeAdapter(baseRecipe(threeFills), {}, {});
+  const adapter = new RecipeAdapter(baseRecipe(threeFills), DRIFT_VALUES, {});
   withFakePage(adapter, makeFakePage({ log })); // no rawFields → no $$eval on the fake
   const result = await adapter.fillApplication(fakeProject);
   assert.equal(result.ok, true, "no $$eval → precheck silently passes (legacy fakes)");
