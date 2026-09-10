@@ -20,6 +20,7 @@ import { openDatabase } from "./db";
 import { createProject, deleteProject } from "./repository";
 import { autoLearnPortal } from "./autoLearn";
 import { listPortalCredentials, listStaleCredentials } from "./portalCredentials";
+import { isUtilityPlatformUrl } from "./portalChannel";
 import { reachedReviewFromEvents, scoreLearnOutcome, summarize, compareRuns, compareDepth, markUnreachableBursts, isMeasured, type BenchmarkRow } from "./learnBenchmark";
 
 const OUT_DIR = path.resolve(process.cwd(), "data", "learn-benchmark");
@@ -202,7 +203,28 @@ async function main(): Promise<void> {
       // which is a harness abort and is scored as "not measured" rather than as a verdict.
       const res = await Promise.race([
         autoLearnPortal(db, pid, {
-          scope: "ahj", portalUrl: t.url, createdBy: "learn-benchmark",
+          // A NEM PORTAL LEARNED AS AN AHJ IS LEARNED WRONG, AND BANKED WHERE NOBODY LOOKS.
+          //
+          // This was hardcoded "ahj" for every target, including the interconnection
+          // platforms. Three things went wrong at once, and the third hid the first two:
+          //   1. The planner got AHJ-flavoured context - the fake benchmark AHJ as PRIMARY
+          //      knowledge (900 chars) with the real utility demoted to secondary (400), a
+          //      jurisdiction CODE PROFILE (wind speed, snow load, seismic, fire setbacks)
+          //      that means nothing on an interconnection form, and a jurisdictionContext
+          //      saying "permitDiscipline: electrical / targetJurisdiction (AHJ)" while the
+          //      form in front of it was a net-metering application.
+          //   2. The recipe banked under an AHJ key. A real NEM project resolves
+          //      scopeType "utility" (repository.ts:5355), so it never sees it: the verified
+          //      Ameren recipe sat at "il|benchmark amerenillinoisinterconnect powerclerk
+          //      com|ameren illinois" (v21, verified) while a real Ameren project resolved
+          //      "il|unknown|ameren illinois" (v6, "Auto-learned but NOT verified").
+          //   3. So the pinned 3/3 measured a recipe production could never use.
+          //
+          // isUtilityPlatformUrl is the SAME predicate safety rule 5 already trusts to keep
+          // a permit track off a utility portal; reusing it means the benchmark cannot drift
+          // from the rule the product enforces.
+          scope: isUtilityPlatformUrl(t.url) ? "utility" : "ahj",
+          portalUrl: t.url, createdBy: "learn-benchmark",
           permitType: "electrical", headless: true, budgetMs: portalTimeoutMs,
           // The operator has authorised accepting a cookie banner that offers nothing else.
           // Declining is still tried first, every time; this governs only the residual, and
