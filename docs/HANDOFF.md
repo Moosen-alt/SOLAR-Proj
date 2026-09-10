@@ -139,6 +139,21 @@ self-test PASSED each time** (one attempt excluded as a documented harness colli
   COLUMBUS's Accela (wrong tenant, from the workbook); Miami's Job Sub-Category.
 - DESIGN (not gaps): MFA/CAPTCHA portals and final-submit stay human.
 
+## Open, worth doing next: single-page apps should SCORE as review (not just stop safely)
+
+permiteyes.us is a single-page application: fill 176 fields, one "Submit Application", no
+Next. The safety guards now make the walk fill everything and STOP without filing - correct,
+but it scores rung 4/5, undercounting real success. A single-page portal's terminal state IS
+its review: fills complete + only-forward-control-is-final-submit = record that submit
+isFinalSubmit:true (never clicked) and classify the page as review, the same treatment
+PowerClerk's terms-gate already gets.
+
+Attempted this session and BACKED OUT deliberately: the change is sound but the fixture
+harness fought it (fills not applying in the test's second-pass planner) and it is a SCORING
+nicety, not safety - not worth forcing at 3am against a finicky test. The reframe matters
+for the fleet number: several accessible portals are single-page apps whose correct outcome
+the rung ladder currently reads as failure. Do it with a fixture that drives fills cleanly.
+
 ## SAFETY: two paths nearly filed a live application, both now guarded (2026-09-09, night)
 
 permiteyes.us/bellingham's landing page IS the application - a 176-field single-page form.
@@ -146,7 +161,7 @@ During learns, (1) the entry pass clicked a bare "Submit Application" as if it w
 way in, and (2) the Enter-submit search fallback pressed Enter on the filled form - the
 form's own submit. `enter_submit` fired on the live portal tonight and the page navigated.
 
-**Account audited read-only immediately: the applications list is EMPTY.** No benchmark
+**Account audited read-only, and the operator confirmed directly: nothing filed.** No benchmark
 entries, nothing filed - the 60/176-filled post was rejected server-side and bounced to
 about:blank. No application was submitted by automation.
 
