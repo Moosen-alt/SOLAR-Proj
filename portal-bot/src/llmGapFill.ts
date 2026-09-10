@@ -51,6 +51,45 @@ function normalize(v: string): string {
   return (v ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
+// DOES THIS ANSWER ACTUALLY COME FROM THAT PROJECT VALUE?
+//
+// The planner naming a project field was being treated as proof the planner's ANSWER was
+// that field's value. It is not: an outside review demonstrated `999` accepted against a
+// systemSizeKw of `8`, because the only test was that systemSizeKw held something non-empty.
+//
+// So the binding has to be checked, not trusted — while still allowing the REFORMATTINGS the
+// old fall-through existed for: a date written the portal's way, an account number with its
+// dashes stripped (Ameren wants 16-0001 as 160001), a size the portal wants in watts when the
+// project records kilowatts. Anything that is not a recognisable rendering of the project's
+// own value is a guess, and a guess on a live application is the failure this whole helper
+// was written to prevent.
+function tracesTo(value: string, projectValue: string): boolean {
+  const nv = normalize(value);
+  const npv = normalize(projectValue);
+  if (!nv || !npv) return false;
+  // Same text, or one is a fuller rendering of the other ("roof" -> "Roof Mounted",
+  // "No" -> "No, I do not have storage").
+  if (nv === npv || nv.includes(npv) || npv.includes(nv)) return true;
+  // Same digits, different punctuation: 16-0001 -> 160001, (555) 123-4567 -> 5551234567.
+  const dv = value.replace(/\D/g, "");
+  const dpv = projectValue.replace(/\D/g, "");
+  if (dv.length >= 4 && dv === dpv) return true;
+  // Same quantity, different unit scale: 8 kW recorded, 8000 W wanted (or the reverse).
+  const numV = Number(String(value).replace(/[^0-9.]/g, ""));
+  const numP = Number(String(projectValue).replace(/[^0-9.]/g, ""));
+  if (Number.isFinite(numV) && Number.isFinite(numP) && numV > 0 && numP > 0) {
+    for (const factor of [1, 1000, 0.001, 100, 0.01]) {
+      if (Math.abs(numV - numP * factor) < Math.max(numP * factor, numV) * 0.005) return true;
+    }
+  }
+  // Same day, written differently: 2026-09-10 -> 09/10/2026.
+  const dateV = new Date(value);
+  const dateP = new Date(projectValue);
+  if (!Number.isNaN(dateV.getTime()) && !Number.isNaN(dateP.getTime())
+    && dateV.toISOString().slice(0, 10) === dateP.toISOString().slice(0, 10)) return true;
+  return false;
+}
+
 // Is `value` grounded in real data for this field — i.e. NOT a guess? Exported for tests.
 export function isGrounded(
   field: ExtractedField,
@@ -62,25 +101,35 @@ export function isGrounded(
   if (!v) return false;
 
   // Checkbox/radio: the planner is choosing WHICH portal-provided control to toggle, so a
-  // boolean-ish value is grounded by the control's own existence on the page.
+  // boolean-ish value is grounded by the control's own existence on the page — UNLESS it
+  // named a project field, in which case the project's answer decides. "Yes" against a
+  // hasBattery of "No" declares storage the customer does not own.
   if (field.fieldType === "checkbox" || field.fieldType === "radio") {
-    return /^(true|false|yes|no|on|off|1|0)$/i.test(v);
+    if (!/^(true|false|yes|no|on|off|1|0)$/i.test(v)) return false;
+    const bound = mappedKey ? projectFields[mappedKey] : "";
+    if (bound) return tracesTo(v, bound) || boolAgrees(v, bound);
+    return true;
   }
 
-  // Select: the value must be one of the field's OWN options (the portal's fixed list).
+  // Select: the value must be one of the field's OWN options (the portal's fixed list) — and
+  // option membership proves the answer is ALLOWED by the form, never that it is TRUE for
+  // this project. When the planner named a project field, that field decides.
   if (field.fieldType === "select") {
     const opts = (field.options ?? []).map(normalize).filter(Boolean);
+    const bound = mappedKey ? projectFields[mappedKey] : "";
     if (opts.length > 0) {
       const nv = normalize(v);
-      if (opts.some((o) => o === nv || o.includes(nv) || nv.includes(o))) return true;
+      const offered = opts.some((o) => o === nv || o.includes(nv) || nv.includes(o));
+      if (!offered) return false;
+      return bound ? (tracesTo(v, bound) || boolAgrees(v, bound)) : true;
     }
-    // Custom combobox with no captured options → require a real project-field binding.
-    return Boolean(mappedKey && projectFields[mappedKey]);
+    // Custom combobox with no captured options → require a real project-field binding, and
+    // require the answer to actually be that field's value.
+    return Boolean(bound) && tracesTo(v, bound);
   }
 
-  // Free text/other: trust a planner binding to a real project field (covers reformatted
-  // values like dates), else require the value to trace to an actual project value.
-  if (mappedKey && projectFields[mappedKey]) return true;
+  // Free text/other: a planner binding is a CLAIM about where the answer came from — check it.
+  if (mappedKey && projectFields[mappedKey]) return tracesTo(v, projectFields[mappedKey]);
   const nv = normalize(v);
   if (nv.length < 2) return false;
   for (const pv of Object.values(projectFields)) {
@@ -88,6 +137,18 @@ export function isGrounded(
     if (npv.length >= 2 && (npv.includes(nv) || nv.includes(npv))) return true;
   }
   return false;
+}
+
+/** "Yes"/"true"/"1" and "No"/"false"/"0" agreeing across spellings. */
+function boolAgrees(a: string, b: string): boolean {
+  const truth = (s: string): boolean | null => {
+    const t = s.trim().toLowerCase();
+    if (/^(true|yes|on|1|y)$/.test(t)) return true;
+    if (/^(false|no|off|0|n|none)$/.test(t)) return false;
+    return null;
+  };
+  const ta = truth(a); const tb = truth(b);
+  return ta !== null && tb !== null && ta === tb;
 }
 
 // Best-effort: neutralize the transparent loading scrims / onboarding popovers that

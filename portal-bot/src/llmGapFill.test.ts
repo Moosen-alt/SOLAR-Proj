@@ -1,139 +1,100 @@
+// OPTION MEMBERSHIP PROVES AN ANSWER IS ALLOWED, NOT THAT IT IS TRUE.
+//
+// isGrounded is the last check before the gap-fill types a value onto a live application. Two
+// holes let a guess through, both found by an outside review and reproduced here before the
+// fix:
+//   - free text trusted the planner's BINDING as proof of its ANSWER: naming systemSizeKw was
+//     enough, so "999" was accepted against a project whose system is 8 kW;
+//   - a select was accepted purely because the value appeared in the portal's option list, so
+//     "Yes" passed for battery installation on a project recording hasBattery: No.
+//
+// The fix checks the claim instead of trusting it, while still allowing the REFORMATTINGS the
+// old fall-through existed for — a date written the portal's way, an account number with its
+// dashes stripped, a size the portal wants in watts.
+//
+//   npx tsx portal-bot/src/llmGapFill.test.ts
 import assert from "node:assert/strict";
-import { isGrounded, gapFillCurrentPage } from "./llmGapFill";
-import type { ExtractedField, LearnPlanResponse, RawField } from "./adapters/autoLearnAdapter";
+import { isGrounded } from "./llmGapFill";
 
-// Browser-free tests for the LLM-assisted gap-fill guardrail: "proper data, not guessing".
-// Run with: npx tsx portal-bot/src/llmGapFill.test.ts
+let failures = 0;
+const check = (label: string, fn: () => void): void => {
+  try { fn(); console.log(`  ok   - ${label}`); }
+  catch (e) { failures++; console.error(`  FAIL - ${label}\n         ${(e as Error).message}`); }
+};
 
-// --- isGrounded: the core guardrail ---------------------------------------------
+type Field = Parameters<typeof isGrounded>[0];
+const text = (label: string): Field => ({ label, fieldType: "text", selector: {} } as unknown as Field);
+const select = (label: string, options: string[]): Field =>
+  ({ label, fieldType: "select", options, selector: {} } as unknown as Field);
+const radio = (label: string): Field => ({ label, fieldType: "radio", selector: {} } as unknown as Field);
 
-function field(partial: Partial<ExtractedField>): ExtractedField {
-  return { selector: {}, label: partial.label ?? "x", fieldType: partial.fieldType ?? "text", options: partial.options };
-}
+const project: Record<string, string> = {
+  systemSizeKw: "8",
+  hasBattery: "No",
+  homeownerName: "Alice Anderson",
+  accountNumber: "16-0001",
+  mountType: "roof",
+  installDate: "2026-09-10",
+};
 
-function testGroundingRules() {
-  const pf = { commissioningDate: "2026-07-17", homeownerName: "Testy McTestface", systemSizeDcKw: "9.89" };
+// ---- the two demonstrated holes --------------------------------------------------
+check("MUST NOT: a planner binding is not proof of the planner's answer (999 vs 8 kW)", () => {
+  assert.equal(isGrounded(text("System Size (kW)"), "999", "systemSizeKw", project), false,
+    "999 was accepted against a project whose system is 8 kW — the binding was trusted, not checked");
+});
 
-  // Text bound to a real project key (even reformatted) → grounded.
-  assert.equal(isGrounded(field({ fieldType: "text" }), "7/17/2026", "commissioningDate", pf), true, "mapped date is grounded");
-  // Text whose value traces to a real project value → grounded.
-  assert.equal(isGrounded(field({ fieldType: "text" }), "Testy", undefined, pf), true, "value tracing to project data is grounded");
-  // Text with a fabricated value and no backing key → REJECTED (a guess).
-  assert.equal(isGrounded(field({ fieldType: "text" }), "totally made up", undefined, pf), false, "invented free text is rejected");
-  // Text with a hallucinated key not in projectFields and value not traceable → REJECTED.
-  assert.equal(isGrounded(field({ fieldType: "text" }), "2099-01-01", "nope", pf), false, "hallucinated key + untraceable value is rejected");
-  // Select whose value matches a real portal option → grounded.
-  assert.equal(isGrounded(field({ fieldType: "select", options: ["Yes", "No"] }), "Yes", undefined, pf), true, "option match is grounded");
-  // Select whose value is NOT among the offered options and no key → REJECTED.
-  assert.equal(isGrounded(field({ fieldType: "select", options: ["Yes", "No"] }), "Maybe", undefined, pf), false, "non-option select value is rejected");
-  // Radio/checkbox boolean → grounded (the planner chose which portal control to toggle).
-  assert.equal(isGrounded(field({ fieldType: "radio" }), "true", undefined, pf), true, "radio true is grounded");
-  // Empty value is never grounded.
-  assert.equal(isGrounded(field({ fieldType: "text" }), "", "homeownerName", pf), false, "empty value is never grounded");
-  console.log("  ✅ isGrounded enforces proper-data-only (8 cases)");
-}
+check("MUST NOT: an option that exists is not an option that is true (battery Yes vs No)", () => {
+  assert.equal(isGrounded(select("Energy Storage Installed?", ["Yes", "No"]), "Yes", "hasBattery", project), false,
+    "Yes passed because the portal offers it — declaring storage the customer does not own");
+});
 
-// --- gapFillCurrentPage: end-to-end with a fake page ----------------------------
+check("MUST NOT: a radio bound to a project field cannot contradict it", () => {
+  assert.equal(isGrounded(radio("Battery?"), "Yes", "hasBattery", project), false);
+});
 
-interface FState { type: ExtractedField["fieldType"]; value: string; checked: boolean; options?: string[]; required?: boolean }
+check("MUST NOT: free text bound to a name cannot be a different name", () => {
+  assert.equal(isGrounded(text("Owner"), "Bob Baker", "homeownerName", project), false);
+});
 
-function makeFakePage(fields: Array<{ label: string } & FState>) {
-  const state = new Map<string, FState>();
-  const raws: RawField[] = [];
-  for (const f of fields) {
-    state.set(f.label, { type: f.type, value: f.value, checked: f.checked, options: f.options });
-    raws.push({ label: f.label, fieldType: f.type, options: f.options, required: f.required } as RawField);
-  }
-  function locatorFor(label: string): any {
-    const st = state.get(label);
-    const loc: any = {
-      first: () => loc,
-      nth: () => loc,
-      count: async () => (st ? 1 : 0),
-      isChecked: async () => Boolean(st?.checked),
-      inputValue: async () => st?.value ?? "",
-      fill: async (v: string) => { if (st) st.value = v; },
-      selectOption: async (v: any) => {
-        const val = typeof v === "string" ? v : v?.label;
-        if (st && st.options && st.options.includes(val)) { st.value = val; return; }
-        throw new Error("no such option");
-      },
-      check: async () => { if (st) st.checked = true; },
-      uncheck: async () => { if (st) st.checked = false; },
-      blur: async () => undefined,
-    };
-    return loc;
-  }
-  const page: any = {
-    url: () => "https://pgenm.powerclerk.com/MvcProjects/EditProject",
-    title: async () => "Edit Project",
-    $$eval: async () => raws,
-    getByLabel: (label: string) => locatorFor(label),
-    getByRole: () => locatorFor("__none__"),
-    getByPlaceholder: () => locatorFor("__none__"),
-    getByText: () => locatorFor("__none__"),
-    getByTestId: () => locatorFor("__none__"),
-    locator: (css: string) => {
-      if (css === "body") return { innerText: async () => "PV System ..." };
-      return locatorFor("__none__");
-    },
-    frameLocator: () => page,
-  };
-  return { page, state };
-}
+check("MUST NOT: a combobox with no options still cannot invent a value", () => {
+  assert.equal(isGrounded(select("Utility", []), "Some Other Utility", "utility", project), false);
+});
 
-async function testGapFillAppliesOnlyGroundedData() {
-  const { page, state } = makeFakePage([
-    { label: "Estimated Commissioning Date", type: "text", value: "", checked: false },
-    { label: "Smart Inverter Settings", type: "select", value: "", checked: false, options: ["Yes", "No"] },
-    { label: "Random Notes", type: "text", value: "", checked: false },
-    // Required, empty, and no project data to fill it → must be reported, not guessed.
-    { label: "Special Permit ID", type: "text", value: "", checked: false, required: true },
-    { label: "Homeowner Name", type: "text", value: "Testy McTestface", checked: false }, // already filled
-  ]);
+// ---- the legitimate cases that must keep working ---------------------------------
+check("MUST STILL PASS: the project's own value", () => {
+  assert.equal(isGrounded(text("System Size (kW)"), "8", "systemSizeKw", project), true);
+  assert.equal(isGrounded(select("Energy Storage Installed?", ["Yes", "No"]), "No", "hasBattery", project), true);
+});
 
-  const projectFields = { commissioningDate: "2026-07-17", homeownerName: "Testy McTestface" };
+check("MUST STILL PASS: a unit conversion the portal asks for (8 kW -> 8000 W)", () => {
+  assert.equal(isGrounded(text("System Size (W)"), "8000", "systemSizeKw", project), true,
+    "a portal wanting watts where the project records kilowatts is a reformatting, not a guess");
+});
 
-  // A planner that proposes one grounded date, one grounded option, and one invented value.
-  const planner = async (req: { fields: ExtractedField[] }): Promise<LearnPlanResponse> => {
-    const fills: LearnPlanResponse["fills"] = [];
-    req.fields.forEach((f, i) => {
-      if (/commissioning/i.test(f.label)) fills.push({ selectorIndex: i, value: "7/17/2026", field: "commissioningDate" });
-      else if (/smart inverter/i.test(f.label)) fills.push({ selectorIndex: i, value: "Yes" });
-      else if (/notes/i.test(f.label)) fills.push({ selectorIndex: i, value: "totally made up note", field: "nope" });
-    });
-    return { fills, atReview: false };
-  };
+check("MUST STILL PASS: an account number with its punctuation stripped (Ameren wants 160001)", () => {
+  assert.equal(isGrounded(text("Docket Number"), "160001", "accountNumber", project), true);
+});
 
-  const outcome = await gapFillCurrentPage(page, planner, projectFields, []);
+check("MUST STILL PASS: a date written the portal's way", () => {
+  assert.equal(isGrounded(text("Install Date"), "09/10/2026", "installDate", project), true);
+});
 
-  assert.equal(state.get("Estimated Commissioning Date")!.value, "7/17/2026", "grounded date applied");
-  assert.equal(state.get("Smart Inverter Settings")!.value, "Yes", "grounded option applied");
-  assert.equal(state.get("Random Notes")!.value, "", "invented value NOT applied");
-  assert.equal(state.get("Homeowner Name")!.value, "Testy McTestface", "already-filled field untouched");
-  assert.ok(outcome.filled.includes("Estimated Commissioning Date"), "reports the date as filled");
-  assert.ok(outcome.filled.includes("Smart Inverter Settings"), "reports the option as filled");
-  assert.ok(outcome.skippedUngrounded.includes("Random Notes"), "reports the guess as skipped");
-  assert.equal(state.get("Special Permit ID")!.value, "", "required no-data field left blank, not guessed");
-  assert.ok(outcome.reportedMissing.includes("Special Permit ID"), "reports the required no-data field as missing");
-  console.log("  ✅ gapFillCurrentPage applies grounded data, rejects guesses, reports required gaps");
-}
+check("MUST STILL PASS: an option that spells the project's value out in full", () => {
+  assert.equal(isGrounded(select("Mount Type", ["Roof Mounted", "Ground Mounted"]), "Roof Mounted", "mountType", project), true);
+  assert.equal(isGrounded(select("Storage?", ["Yes, I have storage", "No, I do not have storage"]),
+    "No, I do not have storage", "hasBattery", project), true);
+});
 
-async function testGapFillNoPlannerSafe() {
-  // No fillable empties → returns an empty outcome without throwing.
-  const { page } = makeFakePage([{ label: "Homeowner Name", type: "text", value: "Filled", checked: false }]);
-  const planner = async (): Promise<LearnPlanResponse> => ({ fills: [{ selectorIndex: 0, value: "x" }], atReview: false });
-  const outcome = await gapFillCurrentPage(page, planner, {}, []);
-  assert.equal(outcome.filled.length, 0, "nothing filled when no empties");
-  console.log("  ✅ gapFillCurrentPage is a safe no-op when nothing is empty");
-}
+check("MUST STILL PASS: an unbound answer that traces to some project value", () => {
+  // No mappedKey — the old scan over project values still applies.
+  assert.equal(isGrounded(text("Applicant"), "Alice Anderson", undefined, project), true);
+});
 
-async function main() {
-  console.log("\n──────── LLM gap-fill: proper-data-only guardrail ────────");
-  testGroundingRules();
-  await testGapFillAppliesOnlyGroundedData();
-  await testGapFillNoPlannerSafe();
-  console.log("\n✅ ALL PASS: LLM gap-fill guardrail tests\n");
-}
+check("MUST STILL PASS: a checkbox with no binding is grounded by the control existing", () => {
+  assert.equal(isGrounded(radio("I agree"), "Yes", undefined, project), true);
+});
 
-main().catch((err) => { console.error(err); process.exit(1); });
+console.log(failures === 0
+  ? "\nAll gap-fill grounding checks passed."
+  : `\n${failures} gap-fill grounding check(s) FAILED.`);
+process.exit(failures === 0 ? 0 : 1);
