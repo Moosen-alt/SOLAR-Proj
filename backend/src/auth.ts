@@ -44,7 +44,14 @@ function verifyPassword(password: string, stored: string): boolean {
   return hash.length === expected.length && crypto.timingSafeEqual(hash, expected);
 }
 
-function setUserPassword(db: AppDb, userId: string, password: string): void {
+/**
+ * The ONE writer of users.password_hash outside the raw INSERT in seedAdminUser and
+ * POST /api/orgs/:id/users. Exported so scripts (scripts/onboard-company.ts) do not
+ * re-implement the hasher: the stored format is scrypt(password, 16-byte salt, 64) as
+ * "salthex:hashhex", and verifyPassword above is the only reader. A second, drifting
+ * copy of that format is a login that cannot log in and nothing that says why.
+ */
+export function setUserPassword(db: AppDb, userId: string, password: string): void {
   db.run("UPDATE users SET password_hash = ? WHERE id = ?", [hashPassword(password), userId]);
 }
 

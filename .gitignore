@@ -78,3 +78,28 @@ pp-diag4.png
 .ppdiag7.ts
 .ppdiag6.out
 data/portal-replicas/
+
+# Filled onboarding intake files (scripts/onboard-company.ts input). A filled intake is
+# a plaintext list of live AHJ/utility portal passwords and security answers, with no
+# encryption and no access control — it must NEVER be committed. The rule is still to keep
+# the filled copy OUTSIDE the repo (docs/ONBOARDING.md); these patterns are only the net
+# under that rule.
+# "intake/" is unanchored so it matches an ~/intake-style working folder at any depth.
+intake/
+*intake*.json
+# The two patterns above cannot see a filled copy saved under the company's OWN name
+# (cascade-ridge.json) — which is exactly the name docs/ONBOARDING.md uses in its example,
+# and the repo root and docs/ are where such a file lands by accident. So both are closed by
+# extension, not by guessing filenames: no JSON at the repo root, and no JSON under docs/.
+# Neither directory holds a tracked .json today except the three configs negated below.
+# ADDING A NEW ROOT-LEVEL OR docs/ JSON FILE? Add a negation line for it here, deliberately.
+# A silent "why won't git add my file" is the cheap failure; committing a live portal
+# password is the expensive one.
+/*.json
+!/package.json
+!/package-lock.json
+!/tsconfig.json
+!/tsconfig.*.json
+docs/**/*.json
+# ...but the blank template itself stays tracked. Keep this negation LAST.
+!docs/onboarding/intake-template.json
