@@ -1,4 +1,7 @@
 // Seed the researched Miami solar-permit path into the shared KB — as `seeded`, never
+// destroyed by a DB reset the way the rows themselves are. Run after re-provisioning:
+//   npx tsx scripts/seed-miami-kb.ts
+//
 // overwriting human-verified knowledge (upsertKnowledge's confidenceFrom handles that).
 //
 // Source: the city's own permit catalog, "Get a Permit to Install Solar Panels"
@@ -7,8 +10,8 @@
 //    select standalone, electrical permit, then 'solar panel'."
 import "dotenv/config";
 process.env.AUTOPILOT_DB_PATH = "backend/data/autopilot.sqlite";
-const { openDatabase } = await import("./backend/src/db");
-const { saveResearchedAhjProfile } = await import("./backend/src/knowledgeBase");
+const { openDatabase } = await import("../backend/src/db");
+const { saveResearchedAhjProfile } = await import("../backend/src/knowledgeBase");
 const db = await openDatabase();
 
 const research = {
