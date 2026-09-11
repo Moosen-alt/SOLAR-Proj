@@ -332,6 +332,17 @@ async function main(): Promise<void> {
     }],
     permitPath: "prescriptive", framingType: "rafter", roofRafterSpacing: "24",
     roofRafterSpan: "11.5", snow: "25", deadLoad: "3.0", wind: "B",
+    // A PERMIT APPLICATION HAS A JOB VALUE AND A DESCRIPTION, AND ACCELA REQUIRES BOTH.
+    // The second live Coos Bay run got past the parcel search (in-jurisdiction address) and
+    // then died at "Continue Application »" with two adapter blanks: `Job Value($):` and
+    // `Description of Work` — bound fields the fixture never carried, and Accela refuses to
+    // advance past a blank job value. A test project that omits what every real project has
+    // is testing a project shape that does not exist. Values are variant-distinct (no digit
+    // collisions with A or each other), and the description names the variant's own system.
+    jobValue: variantKey === "b" ? "18470" : "27390",
+    projectValuation: variantKey === "b" ? "18470" : "27390",
+    description: `Roof-mounted solar PV, ${variant.dcKw} kW DC, ${variant.moduleQty} modules, ${variant.inverterQuantity} microinverters`,
+    workDescription: `Roof-mounted solar PV, ${variant.dcKw} kW DC, ${variant.moduleQty} modules, ${variant.inverterQuantity} microinverters`,
   };
 
   if (dryRun) {
