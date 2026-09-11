@@ -276,7 +276,23 @@ async function main(): Promise<void> {
     console.log(`   ⚠ this is the recipe REAL projects get today, and its notes say it was never verified — the measurement is about it, not about any verified sibling banked under another key.`);
   }
 
-  const addr = variant.addressByState[state];
+  // A PERMIT PORTAL VALIDATES THE ADDRESS AGAINST ITS OWN PARCEL RECORDS. The first live
+  // Coos Bay run used the OR state-generic Portland address on a CITY OF COOS BAY Accela
+  // instance; the work-location search cannot resolve a Portland street to a Coos Bay
+  // parcel, so "work location: continue" timed out and the whole replay died at rung 2
+  // with only the street typed. Not recipe drift - the harness's own fixture was out of
+  // jurisdiction. Permit runs (an --ahj was named) therefore use an address INSIDE that
+  // jurisdiction; civic buildings, the same convention as the benchmark fixture (Salem's
+  // 555 Liberty St SE is City Hall). Utility runs keep the state-generic address - a NEM
+  // portal takes any in-territory service address.
+  const AHJ_ADDRESSES: Record<string, Record<string, { street: string; city: string; zip: string }>> = {
+    "city of coos bay": {
+      b: { street: "500 Central Ave", city: "Coos Bay", zip: "97420" },      // City Hall
+      c: { street: "525 Anderson Ave", city: "Coos Bay", zip: "97420" },     // the library
+    },
+  };
+  const ahjAddr = ahjArg ? AHJ_ADDRESSES[ahjArg.trim().toLowerCase()]?.[variantKey] : undefined;
+  const addr = ahjAddr ?? variant.addressByState[state];
   if (!addr) {
     console.error(`no ${variant.label}-fixture address for state ${state} — add a row to VARIANTS.${variantKey}.addressByState (a plausible in-state address that shares no digits with A's).`);
     process.exit(2);
