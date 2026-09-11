@@ -117,10 +117,42 @@ function patchCaptureScript(): void {
     return { selector: sel, label: name, fingerprint: Object.keys(fp).length ? fp : undefined };
   }
 
+  // The field's identity as a HUMAN sees it, not just as the DOM names it. The CVV that
+  // reached a shared recipe as a literal ("520") had NO matching attribute — Accela labels
+  // it with a plain <label>CVV:</label> while the input's own name/id say nothing. Reading
+  // only attributes is why the card NUMBER (autocomplete-tagged) was caught and its three
+  // neighbours (CVV, Name on Card, expiry) were not.
+  function fieldIdentity(el: HTMLInputElement): string {
+    const bits = [el.getAttribute("name"), el.getAttribute("id"), el.getAttribute("autocomplete"), el.placeholder, el.getAttribute("aria-label")];
+    const id = el.getAttribute("id");
+    if (id) {
+      try {
+        const root = (el.getRootNode ? el.getRootNode() : document) as Document;
+        const lbl = root.querySelector ? root.querySelector(`label[for="${CSS.escape(id)}"]`) : null;
+        if (lbl && lbl.textContent) bits.push(lbl.textContent);
+      } catch { /* CSS.escape absent on ancient pages — attributes still checked */ }
+    }
+    const wrap = el.closest ? el.closest("label") : null;
+    if (wrap && wrap.textContent) bits.push(wrap.textContent);
+    return bits.filter(Boolean).join(" ").toLowerCase();
+  }
+
+  // PAYMENT-CARD FIELDS ARE NEVER CAPTURED AT ALL — not even sensitively-bound. A card step
+  // in a recipe is a step with no legitimate replayer: replay must never drive a payment
+  // form (hard rule 1), and "bound at replay" still teaches replay WHERE the card fields
+  // are. The human paying the fee is the designed flow; the recipe's job ends at the fee
+  // page. A Coos Bay human-patch session proved the cost of getting this wrong: CVV "520",
+  // the cardholder's name and the expiry sat in the SHARED portal_recipes table for nine
+  // days, in a row every tenant's replay resolves.
+  function isPaymentCardField(el: HTMLInputElement): boolean {
+    const hay = fieldIdentity(el);
+    if (/^cc-/.test(el.getAttribute("autocomplete") || "")) return true;
+    return /\bcvv\b|\bcvc\b|card\s*number|name\s*on\s*card|cardholder|card\s*type|expir(y|ation)?\s*(date|month|year)?|billing\s*zip/.test(hay);
+  }
+
   function isSensitiveField(el: HTMLInputElement): boolean {
     if (el.type === "password") return true;
-    const hay = [el.getAttribute("name"), el.getAttribute("id"), el.getAttribute("autocomplete"), el.placeholder, el.getAttribute("aria-label")]
-      .filter(Boolean).join(" ").toLowerCase();
+    const hay = fieldIdentity(el);
     return /password|passcode|account\s*(no|num|#)|account number|acct|meter|ssn|social security|card\s*number|cvv|security code|mfa|otp|one.time/.test(hay);
   }
 
@@ -161,6 +193,10 @@ function patchCaptureScript(): void {
     const d = describe(el);
     if (w.__alPatchDisarmed) return;
     if (typeof w.__alPatchStep !== "function") return;
+    // Payment-card fields: refuse BEFORE any kind branches, so a card-type <select>, an
+    // expiry <select>, an autofill checkbox and the CVV <input> are all equally invisible
+    // to the recipe. The human still types them; the recording simply never sees it.
+    if (isPaymentCardField(el)) return;
     if (el.type === "file") w.__alPatchStep({ kind: "upload", ...d });
     else if (el.tagName === "SELECT") w.__alPatchStep({ kind: "select", value: el.value, ...d });
     else if (el.type === "checkbox" || el.type === "radio") {
