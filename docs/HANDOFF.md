@@ -3,6 +3,47 @@
 Audience: the next model/dev session (and the operator). Read `CLAUDE.md` first
 for the hard rules; this file is the running state.
 
+## THE FIRST CROSS-PROJECT MEASUREMENT (2026-09-11) - the B/C contract holds on Ameren NEM
+
+Learn once on project A, stage materially different projects B and C through the recipe
+PRODUCTION resolves (findCompleteRecipeForProject, after the rekey in scripts/rekey-recipe.ts
+moved verified v21 onto `il|unknown|ameren illinois`). Live runs, one session each, drafts
+ledgered ("ZZTest CrossProject Bravo"/"Charlie" - npx tsx scripts/draft-ledger.ts).
+
+```
+            B (5.67 kW, 14 mod)   C (8.91 kW, 22 mod)
+ verdict    PASS*                 PASS
+ landed     11 distinct values    11 distinct values
+ A leaked   0                     0
+ model      2 calls (gap-fill)    2 calls (same labels)
+ checked    53 confirmed fields   53
+```
+*B first read LEAKED-3; every hit was the COMPANY's own email in installerEmail-bound
+fields - correct on every filing. The sweep now classifies client-scoped values (58baa9a).
+
+Equipment mystery RESOLVED, hypothesis overturned: Ameren has NO make/model dropdowns.
+Its Generator page asks equipment TYPE (select, filled "Inverter") and takes specs as a
+FILE UPLOAD ("attach manufacturer's technical specifications"). The recipe's zero
+equipment steps is CORRECT for this portal; "9 equipment values unseen" was the harness
+expecting typed fields where the form never asks. PacifiCorp/PGE recipes carry 6/9
+equipment select steps - per-portal difference, not an engine gap.
+
+WHAT STILL SEPARATES THIS FROM A SUBMITTABLE AMEREN FILING (bounded, per the C report):
+ 1. "Community Solar / Behind the Meter" select - blank; answer is derivable (residential
+    rooftop = Behind the Meter) but no project binding exists for it yet.
+ 2. The map/location pin widget - canvas interaction, likely a human step.
+ 3. Name/Company in the "Interconnection Application" contact block - the old autosave
+    wipe; still blank on replay.
+ 4. County - the fill did not land.
+ 5. Document attachments (inverter spec sheet, one-line diagram) - the portal defers them
+    behind an acknowledgment checkbox, so the walk never recorded upload steps. The docs
+    pipeline exists; the recipe carries no upload steps to drive it.
+ 6. MFA + $50 mailed check at final submit - human by design (rule 1).
+
+A fresh learn with the 2026-09-10 engine (bundle RETAINED at
+data/learn-runs/2026-09-11_07-11-42_ameren-illinois_sjzv/) confirmed the walk sees the
+same 7 pages and correctly left the incumbent recipe in place (updated_at unchanged).
+
 ## Learn-once engine hardening + restore (2026-09-10)
 
 A run of engine fixes was lost TWICE to the machine sleeping mid-session (uncommitted
