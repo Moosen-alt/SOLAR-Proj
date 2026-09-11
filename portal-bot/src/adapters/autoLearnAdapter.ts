@@ -204,6 +204,21 @@ const REPEAT_PAGE_LIMIT = 3;
 
 const SUBMIT_INTENT = /\b(continue application|submit application|file application|submit|finish|finalize|confirm submission|place order|complete submission)\b/i;
 
+// PAGING A TABLE IS NOT ADVANCING AN APPLICATION.
+//
+// ComEd's banked recipe (interconnect.comed.com, a NEM portal) carries this as step 10:
+//   {"action":"click","selector":{"role":"button","name":"Next page"},"note":"advance: Next page"}
+// "Next page" is Angular Material's mat-paginator aria-label on the DASHBOARD BEHIND the open
+// application drawer. It passed the advance test because that regex matches /^next\b/, and the
+// did-it-move rollback never fired because the page fingerprint includes
+// document.body.innerText.length - and paging a table changes it. So the walk "advanced" over and
+// over on one screen, and the recipe now teaches replay to click a paginator.
+//
+// Matched by SHAPE, never by hostname: the words a pager uses ("Next page", "Next 10",
+// "Previous page"), which no wizard's forward control is ever called. A bare "Next", "Next Step"
+// or "Continue" is untouched - those are the real advances and must keep working.
+export const PAGINATION_CONTROL = /^\s*(next|prev|previous)\s+(page|\d+)\s*$/i;
+
 // Controls that act on an EXISTING portal record (the operator's real filings) — never
 // part of learning a NEW application. "Resume Application" reopens a draft record;
 // "Pay Fees Due" is a payment path. Off-limits for click/advance/nav alike.
@@ -6622,6 +6637,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       const label = String(f?.label ?? "").trim();
       if (!label || label.length > 40) return false;
       if (!ADVANCE_ONLY.test(label)) return false;
+      if (PAGINATION_CONTROL.test(label)) return false;
       if (SUBMIT_INTENT.test(label)) return false;
       return !this.isOffLimitsButton(f as never);
     });
