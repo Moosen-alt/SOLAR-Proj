@@ -188,6 +188,33 @@ function run() {
     console.log("  ✅ a REAL review screen still reports a genuinely wrong field");
   }
 
+  // ABSENT FROM THE REVIEW PAGE IS NOT THE REVIEW PAGE DISAGREEING.
+  //
+  // A live PacifiCorp cross-project run reported homeownerName shows "No; checked" and
+  // projectAddress shows "checked; No Aggregation; No; c". Neither is a name or an address:
+  // no review field carried a matching label, so the scope fell back to EVERY field and the
+  // summary ran unrelated values together. The finding was real (the value could not be
+  // confirmed); its DESCRIPTION was fiction - and the verdict said "DO NOT SUBMIT without
+  // checking", which sends an operator hunting for a wrong name that was never rendered.
+  {
+    const fields = [
+      { label: "Meter Mounted Device", value: "No" },
+      { label: "Acknowledgement", value: "checked" },
+    ];
+    const project = { homeownerName: "ZZTest CrossProject Bravo", projectAddress: "2419 SE Belmont St" } as never;
+    const cmp = reviewComparison(fields, project, "No checked");
+    const owner = cmp.mismatches.find((m) => m.field === "homeownerName");
+    if (owner) {
+      assert.ok(/could not confirm|no field with this label/i.test(owner.found),
+        `found reads "${owner.found}" - an operator would hunt for a wrong name that was never rendered`);
+      assert.ok(!owner.found.startsWith("No; checked"),
+        "the fallback summary is leaking unrelated field values into found");
+      console.log("  ok  an unlabelled review page says it could not confirm, not that it disagrees");
+    } else {
+      console.log("  ok  an unlabelled review page raised no phantom mismatch at all");
+    }
+  }
+
   console.log("\n✅ ALL PASS: review-screen comparison tests");
 }
 

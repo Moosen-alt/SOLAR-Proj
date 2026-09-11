@@ -201,23 +201,40 @@ export function reviewComparison(
   }
 
   // Pick the review fields whose (normalized) label contains one of the keywords. Falls
-  // back to all fields when nothing matches, so absence is still detectable.
-  const scopeFor = (labelKeywords: string[]): ReviewField[] => {
+  // back to all fields when nothing matches, so absence is still detectable — but the
+  // caller must know WHICH it got, because the two mean opposite things to a human.
+  const scopeFor = (labelKeywords: string[]): { fields: ReviewField[]; labelled: boolean } => {
     const scoped = reviewFields.filter((f) => {
       const nl = norm(f.label);
       return labelKeywords.some((k) => nl.includes(k));
     });
-    return scoped.length > 0 ? scoped : reviewFields;
+    return scoped.length > 0 ? { fields: scoped, labelled: true } : { fields: reviewFields, labelled: false };
   };
-  const summarize = (fields: ReviewField[]): string =>
-    fields.length > 0 ? fields.map((f) => f.value).join("; ").slice(0, 80) : "(not found on review page)";
+
+  // "ABSENT FROM THE REVIEW PAGE" IS NOT "THE REVIEW PAGE DISAGREES".
+  //
+  // When no review field carries a matching label, the scope falls back to EVERY field, and
+  // summarizing that produced a `found` string made of unrelated values run together. A live
+  // PacifiCorp cross-project run reported `homeownerName shows "No; checked"` and
+  // `projectAddress shows "checked; No Aggregation; No; c"` — neither is a name or an
+  // address; the review page simply had no such field. The verdict then said "DO NOT SUBMIT
+  // without checking", which would send an operator hunting for a wrong name that was never
+  // rendered. Same failure family as this repo's "one warning channel carrying four
+  // meanings": the finding was real (we could not confirm the value) and its DESCRIPTION was
+  // fiction.
+  const summarize = (scope: { fields: ReviewField[]; labelled: boolean }): string => {
+    if (!scope.labelled) {
+      return "(no field with this label on the review page, and the value is not in its text — could not confirm; not a disagreement)";
+    }
+    return scope.fields.length > 0 ? scope.fields.map((f) => f.value).join("; ").slice(0, 80) : "(not found on review page)";
+  };
 
   // A needle is present if it appears among the label-scoped structured values OR anywhere
   // in the rendered page text. The structured/scoped match keeps precision when the portal
   // exposes real fields; the body fallback rescues read-only review pages that render values
   // as static text.
-  const present = (scope: ReviewField[], needle: string): boolean => {
-    const haystack = scope.map((f) => norm(f.value)).join(" ");
+  const present = (scope: { fields: ReviewField[]; labelled: boolean }, needle: string): boolean => {
+    const haystack = scope.fields.map((f) => norm(f.value)).join(" ");
     return haystack.includes(needle) || (body.length > 0 && body.includes(needle));
   };
 
@@ -252,7 +269,7 @@ export function reviewComparison(
     // could not distinguish, which is what NOT counting it as compared says.
     if (/^(\d)\1+$/.test(needle)) return;
     const scope = scopeFor(labelKeywords);
-    const scopeDigits = scope.map((f) => f.value).join(" ").replace(/\D/g, "");
+    const scopeDigits = scope.fields.map((f) => f.value).join(" ").replace(/\D/g, "");
     compared++;
     if (!scopeDigits.includes(needle) && !(bodyDigits.length > 0 && bodyDigits.includes(needle))) {
       mismatches.push({
