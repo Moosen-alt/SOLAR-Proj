@@ -650,6 +650,34 @@ export function extractFieldsInPage(els: Element[]): RawField[] {
       const viaWrapper = neighbourText(el.parentElement);
       if (viaWrapper) return viaWrapper;
     }
+    // A BUTTON'S VISIBLE TEXT BEATS ITS name ATTRIBUTE.
+    //
+    // permiteyes.us renders its three footer controls as
+    //   <button id="submit_form" name="submit_form">Submit</button>
+    //   <button name="save_form1">Save and Exit</button>
+    //   <button name="exit_form">Exit</button>
+    // and this function returned `name` first, so they were labelled "submit_form" /
+    // "save_form1" / "exit_form". SUBMIT_INTENT.test("submit_form") is FALSE - \bsubmit\b finds
+    // no word boundary before an underscore - so a page whose only forward control was a Submit
+    // button looked like it had none. The natural experiment is INSIDE THE SAME PAGE: the one
+    // copy with an id but NO name (<button id="exit_form1">Exit</button>) was labelled "Exit"
+    // correctly, because it fell through to textContent.
+    //
+    // This is the same hazard the <input type=submit> value-beats-name fix above already covers
+    // for one element type; the comment there records a real "Submit Application" button reading
+    // as "btnSubmit" and being clicked as an ordinary advance. It costs more than submit
+    // detection: a "Next" button named next_page was labelled "next_page", so clickFallbackAdvance
+    // could not see the page's way forward either, and the walk simply stopped.
+    //
+    // <select> is deliberately excluded - its textContent is the whole option list.
+    const tag = el.tagName;
+    const roleAttr = (el.getAttribute("role") || "").toLowerCase();
+    const buttonish = tag === "BUTTON" || tag === "A" || tag === "SUMMARY"
+      || roleAttr === "button" || roleAttr === "link";
+    if (buttonish) {
+      const visible = (el.textContent || "").trim();
+      if (visible) return visible;
+    }
     const name = el.getAttribute("name");
     if (name) return name.trim();
     const text = (el.textContent || "").trim();
