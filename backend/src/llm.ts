@@ -53,7 +53,11 @@ export interface LlmCallRecord {
 const LLM_CALL_LOG_MAX = 400;
 const llmCallLog: LlmCallRecord[] = [];
 
-function recordLlmCall(rec: LlmCallRecord): void {
+// Exported for backend/test/modelCallAccounting.test.ts ONLY: the replay benchmark's
+// zero-model criterion is computed from exactly this record→query pair, so its test has
+// to drive the real surface — a mock log would prove the mock. Production writes still
+// arrive solely via instrument().
+export function recordLlmCall(rec: LlmCallRecord): void {
   llmCallLog.push(rec);
   if (llmCallLog.length > LLM_CALL_LOG_MAX) llmCallLog.splice(0, llmCallLog.length - LLM_CALL_LOG_MAX);
 }

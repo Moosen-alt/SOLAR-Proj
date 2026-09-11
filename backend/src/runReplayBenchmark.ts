@@ -3,6 +3,8 @@
 //   npm run replay:benchmark -- --dry-run          list what WOULD run, touch nothing
 //   npm run replay:benchmark -- --key "pacific power"
 //   npm run replay:benchmark -- --limit 1
+//   npm run replay:benchmark -- --expect-zero-model  a clean attempt that spent model calls
+//                                                    scores "replayed_with_model_help", not clean
 //
 // DRIVES LIVE GOVERNMENT AND UTILITY PORTALS, and unlike the learn benchmark it does so with
 // a RECIPE — meaning it fills a real application form and leaves a DRAFT on the portal. It
@@ -21,7 +23,9 @@ import path from "node:path";
 import { openDatabase } from "./db";
 import { createProject, deleteProject } from "./repository";
 import { getDecryptedCredential, getDecryptedCredentialAny, getDecryptedCredentialByUrl, listPortalCredentials } from "./portalCredentials";
-import { mergeStepReport, scoreReplayOutcome, summarizeReplay, summarizeReliability, type ReplayRow, type PortalReliability } from "./replayBenchmark";
+import { mergeStepReport, scoreReplayOutcome, summarizeReplay, summarizeReliability, type ReplayRow, type PortalReliability, type ReplayScore } from "./replayBenchmark";
+import { accountModelCalls, applyZeroModelExpectation, summarizeLabels, type ModelCallAccounting } from "./replayModelAccounting";
+import { getRecentLlmCalls } from "./llm";
 import { buildPortalPlanner } from "./autoLearn";
 import { getPortalRecipe, resolveRecipeFieldValues } from "./portalRecipes";
 import { writeBenchmarkPlaceholderDoc } from "./benchmarkPlaceholderDoc";
@@ -161,6 +165,12 @@ async function main(): Promise<void> {
   const dryRun = process.argv.includes("--dry-run");
   // Declared with the other argv reads, ABOVE the candidate filter that uses it.
   const includeLearned = process.argv.includes("--include-learned");
+  // THE ACCEPTANCE CRITERION AS A FLAG: "stage a different project using the published
+  // workflow and ZERO model calls". With this set, a clean attempt that spent model calls
+  // is re-labelled "replayed_with_model_help" (index 3, not clean) and the summary names
+  // which operations were paid for. It MEASURES, it does not forbid: the run completes,
+  // nothing hard-fails, and without the flag the same numbers are still reported.
+  const expectZeroModel = process.argv.includes("--expect-zero-model");
   const keyFilter = (arg("key") || "").toLowerCase();
   const limit = Number(arg("limit") || 0);
 
@@ -255,15 +265,39 @@ async function main(): Promise<void> {
   console.log(withGapFill
     ? "GAP-FILL ON — measuring what production does: recipe steps PLUS LLM fills for required fields the recipe never recorded."
     : "GAP-FILL OFF — measuring RECIPE-ONLY replay. Production runs WITH a planner, so this number is a FLOOR, not what an operator gets. Use --gap-fill to measure that.");
+  if (expectZeroModel) {
+    console.log("EXPECT-ZERO-MODEL ON — an attempt that spends any model call scores \"replayed_with_model_help\", not clean.");
+  }
   console.log(`Replay stops at the review marker; nothing is submitted and no fee is paid.\n`);
 
   const { stageWithRecipe } = await import("../../portal-bot/src/index");
   const rows: ReplayRow[] = [];
+  // One bill per attempt, in attempt order — feeds the accounting summary and the JSON.
+  const modelAccts: ModelCallAccounting[] = [];
 
   for (let i = 0; i < chosen.length; i++) {
     const c = chosen[i];
     let pid = "";
     let outcome: Record<string, unknown> = {};
+    // MODEL-CALL ACCOUNTING WINDOW — "replay did the heavy lifting" as a number, per
+    // attempt: every Anthropic call between this snapshot and the end of the attempt is
+    // this attempt's bill (llm.ts stamps `at` at call START, so a call is billed to the
+    // window it began in).
+    //
+    // The llm call log is MODULE-GLOBAL, so a window over it is only honest if nothing
+    // else can write into it mid-attempt. VERIFIED, two ways: this loop is strictly
+    // sequential — `await stageWithRecipe(...)` below completes before the next
+    // iteration begins, and nothing here uses Promise.all — and no background work runs
+    // in this process (AUTOPILOT_AUTO_START=0 at the top of this file, so the scheduler
+    // and job queue never start). If attempts are ever parallelised, this accounting
+    // must be scoped per attempt inside the adapter or the attempts serialized, or two
+    // attempts will read each other's calls.
+    //
+    // The snapshot sits BEFORE createProject and buildPortalPlanner on purpose: a call
+    // spent building the gap-fill planner is paid help for THIS attempt too, and the
+    // zero-model criterion is about the whole staging, not just the browser part.
+    const modelWindowStart = Date.now();
+    let modelAcct: ModelCallAccounting = accountModelCalls([]);
     try {
       const scopeType = /powerclerk|nem|interconnect/i.test(c.key) ? "utility" : "ahj";
       // createProject RETURNS the mapped ProjectRecord. Re-reading the row with raw SQL
@@ -373,10 +407,19 @@ async function main(): Promise<void> {
     } catch (e) {
       outcome = { ok: false, message: String((e as Error)?.message || e), recorded: c.steps };
     } finally {
+      // Close the accounting window FIRST — success and abort paths both land here, and
+      // an attempt that died mid-way still spent its calls. deleteProject is pure DB and
+      // makes no model calls, but closing the window before it means that can never
+      // change the number.
+      modelAcct = accountModelCalls(getRecentLlmCalls(modelWindowStart));
       if (pid) { try { deleteProject(db, pid); } catch { /* leave it */ } }
     }
 
-    const score = scoreReplayOutcome(outcome as never);
+    // The cast back to ReplayScore is deliberate and safe: "replayed_with_model_help" is
+    // a benchmark-only rung that lives OUTSIDE the shared ladder (see
+    // replayModelAccounting.ts for why), and every consumer downstream — byRung,
+    // reliability issues — keys rungs dynamically by string.
+    const score = applyZeroModelExpectation(scoreReplayOutcome(outcome as never), modelAcct, expectZeroModel) as ReplayScore;
     const o = outcome as Record<string, unknown>;
     rows.push({
       portal: c.host || c.key, profileKey: c.key, recipeLabel: c.label, attempt: c.attempt, score,
@@ -416,7 +459,13 @@ async function main(): Promise<void> {
         fieldsUnverified: ((o.fieldsUnverified as string[]) ?? []),
         requiredFieldsSeen: ((o.requiredFieldsSeen as string[]) ?? []).length,
         requiredFieldNames: ((o.requiredFieldsSeen as string[]) ?? []).slice(0, 60),
-      },
+        // THE BILL, ON THE ROW: calls, tokens, latency, and which operations. Durable in
+        // the scorecard JSON so "zero model calls" is a fact a reader can check offline,
+        // not a sentence in a terminal that scrolled away. Benchmark-only key, so the
+        // shared ReplayRow interface is not widened — same reasoning as the rung; the
+        // cast keeps the excess-property check from rejecting it.
+        model: modelAcct,
+      } as ReplayRow["detail"],
     });
     console.log(`${String(i + 1).padStart(2)}/${chosen.length} ${score.index} ${score.rung.padEnd(20)} ${repeat > 1 ? `[try ${c.attempt}/${repeat}] ` : ""}${c.key.slice(0, 44)}`);
     console.log(`      ${score.reason.slice(0, 160)}`);
@@ -428,6 +477,12 @@ async function main(): Promise<void> {
       // Read this line with the one above it. "verified 47, required 47" is a finished
       // filing; "verified 47, required 0" means we never asked the portal what it wanted.
       console.log(`      REQUIRED FIELDS THE PORTAL ASKED FOR: ${req.length}`);
+    }
+    modelAccts.push(modelAcct);
+    if (modelAcct.modelCalls > 0) {
+      console.log(`      MODEL CALLS: ${modelAcct.modelCalls} (${summarizeLabels(modelAcct.labels)}) — ${modelAcct.modelTokens.in} in / ${modelAcct.modelTokens.out} out tok, ${modelAcct.modelMs}ms`);
+    } else if (expectZeroModel) {
+      console.log(`      ZERO model calls — the recipe alone did the heavy lifting`);
     }
   }
 
@@ -465,9 +520,35 @@ async function main(): Promise<void> {
   console.log(`\nwho can act:`);
   for (const [owner, n] of Object.entries(summary.byOwner)) console.log(`   ${String(n).padStart(3)}  ${owner}`);
 
+  // MODEL-CALL ACCOUNTING — the acceptance criterion, tallied. "Replay did the heavy
+  // lifting" is only true of an attempt that spent nothing; this names the operations
+  // that were paid for so the operator can see exactly which fields still need help.
+  const zeroModelAttempts = modelAccts.filter((a) => a.modelCalls === 0).length;
+  const allLabels = modelAccts.flatMap((a) => a.labels);
+  const totalModelCalls = modelAccts.reduce((n, a) => n + a.modelCalls, 0);
+  console.log(`\n============ MODEL-CALL ACCOUNTING${expectZeroModel ? " (--expect-zero-model)" : ""} ============`);
+  console.log(`attempts with ZERO model calls : ${zeroModelAttempts}/${modelAccts.length}`);
+  console.log(`attempts that needed model help: ${modelAccts.length - zeroModelAttempts}${totalModelCalls ? `   (${totalModelCalls} call(s): ${summarizeLabels(allLabels)})` : ""}`);
+  if (expectZeroModel && totalModelCalls) {
+    console.log(`those attempts scored "replayed_with_model_help", not clean — the labels above are the fields that still need paid help.`);
+  }
+
   fs.mkdirSync(OUT_DIR, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-  fs.writeFileSync(path.join(OUT_DIR, `${stamp}.json`), JSON.stringify({ at: new Date().toISOString(), summary, rows }, null, 2));
+  const modelAccounting = {
+    expectZeroModel,
+    attempts: modelAccts.length,
+    zeroModelAttempts,
+    attemptsWithModelHelp: modelAccts.length - zeroModelAttempts,
+    totalModelCalls,
+    totalModelTokens: {
+      in: modelAccts.reduce((n, a) => n + a.modelTokens.in, 0),
+      out: modelAccts.reduce((n, a) => n + a.modelTokens.out, 0),
+    },
+    totalModelMs: modelAccts.reduce((n, a) => n + a.modelMs, 0),
+    labels: summarizeLabels(allLabels),
+  };
+  fs.writeFileSync(path.join(OUT_DIR, `${stamp}.json`), JSON.stringify({ at: new Date().toISOString(), summary, modelAccounting, rows }, null, 2));
   console.log(`\nscorecard written to ${path.join(OUT_DIR, `${stamp}.json`)}`);
   console.log(`\nDRAFTS TO DISCARD: ${chosen.length} draft(s) named "${BENCH.homeownerName}" — ${repeat > 1 ? `${repeat} on each of ${picked.length} portal(s)` : "one per portal above"}.`);
 }
