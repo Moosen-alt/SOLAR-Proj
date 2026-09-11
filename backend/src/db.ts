@@ -1381,6 +1381,25 @@ const VERSIONED_MIGRATIONS: VersionedMigration[] = [
       }
     },
   },
+  {
+    version: 17,
+    name: "project_per_job_answers",
+    up: (db) => {
+      // PER-JOB PORTAL ANSWERS. Live 2026-09-11: PacifiCorp's recipe replayed 14 frozen
+      // [select] literals — among them "Will the System be Customer-Owned or Third-Party
+      // Owned?" = "Customer-Owned", the LEARN project's financing, which would file a
+      // wrong answer silently on any third-party-owned job — and Ameren left "Community
+      // Solar / Behind the Meter" blank because no project binding existed. Same root:
+      // the portal asks a question the project record cannot answer. These columns make
+      // those answers first-class project data (fed by intake/operator, per the design:
+      // "if PGE detected, ask PGE questions") so resolveRecipeFieldValues binds them per
+      // job. Empty = unanswered; only system_configuration gets a default at resolution
+      // time, and only guarded (see resolveRecipeFieldValues).
+      addColumnIfMissing(db, "projects", "ownership_model", "TEXT NOT NULL DEFAULT ''");
+      addColumnIfMissing(db, "projects", "system_configuration", "TEXT NOT NULL DEFAULT ''");
+      addColumnIfMissing(db, "projects", "disconnect_within_10ft", "TEXT NOT NULL DEFAULT ''");
+    },
+  },
 ];
 
 // One-time repair for the runaway-notes bug: upsertKnowledge used to merge the

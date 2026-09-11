@@ -202,6 +202,22 @@ export interface ProjectRecord {
   /** Existing-system / NEM-addition disclosure (derived from the parser snapshot's
    *  existing/combined fields; intake/manual — see ExistingSystemInfo). */
   existingSystem?: ExistingSystemInfo;
+  /** PER-JOB PORTAL ANSWERS — questions portals ask that no plan set or bill carries,
+   *  proven live 2026-09-11 (PacifiCorp replayed a frozen "Customer-Owned"; Ameren left
+   *  "Community Solar / Behind the Meter" blank). Stored as project columns (db.ts
+   *  migration v17) so recipes bind them per job instead of freezing the learn
+   *  project's answer. Empty string = unanswered. Optional here because mapProject
+   *  predates them; resolveRecipeFieldValues also reads the columns directly. */
+  /** Financing: 'customer-owned' | 'third-party-owned' | 'lease' | 'ppa'.
+   *  NEVER defaulted — financing is not guessable; empty replays blank and is reported. */
+  ownershipModel?: string;
+  /** 'behind-the-meter' | 'community-solar' | 'standalone'. When empty, resolution
+   *  defaults to behind-the-meter ONLY for a project with a utility account
+   *  (see resolveRecipeFieldValues for why that is the one safe default). */
+  systemConfiguration?: string;
+  /** Site fact: is the AC disconnect within 10 feet of the utility meter — 'yes' | 'no'.
+   *  NEVER defaulted (it is measured on site, not inferable). */
+  disconnectWithin10ft?: string;
 }
 
 export interface ProjectListItem extends Omit<ProjectRecord, "parserSnapshot"> {

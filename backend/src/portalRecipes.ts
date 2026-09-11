@@ -687,6 +687,9 @@ export const RECIPE_FIELD_DESCRIPTIONS: Record<string, string> = {
   existingNemAgreementNumber: "EXISTING interconnection/NEM agreement number (sensitive — bind by name, never a literal)",
   existingNemApplicationNumber: "EXISTING interconnection application number (sensitive — bind by name, never a literal)",
   exportMode: "Export mode of the system (export / non-export-pcs / ngom)",
+  ownershipModel: "System ownership/financing: Customer-Owned, Third-Party Owned, Lease, or PPA",
+  systemConfiguration: "Behind the Meter vs Community Solar vs standalone",
+  disconnectWithin10ft: "Is the AC disconnect within 10 feet of the utility meter (yes/no)",
 };
 
 // Build the field-substitution map a recipe step's `field` resolves against at replay:
@@ -733,6 +736,40 @@ function wholeDegrees(value: unknown): unknown {
   const n = Number(String(value).trim());
   if (!Number.isFinite(n)) return value;
   return String(Math.round(n));
+}
+
+// PER-JOB PORTAL ANSWER RENDERING. The project columns store rigid slugs
+// ('customer-owned', 'behind-the-meter', 'yes'); portals list display wordings. Replay's
+// select matching — selectWithFallback's native two-pass scan and bestOptionMatch's
+// combobox scan, both in portal-bot/src/comboboxFill.ts — normalizes CASE and WHITESPACE
+// only, plus bidirectional contains: a hyphen never matches a space, so the slug
+// 'behind-the-meter' would miss the option "Behind the Meter" in every tier. The resolver
+// therefore returns the wording the live portals demonstrated (PacifiCorp's recorded
+// literals: "Customer-Owned", "Third-Party Owned"; Ameren's question: "Community Solar /
+// Behind the Meter"). An answer these maps do not know passes through VERBATIM — the
+// operator may have typed the portal's own wording — and a select value no option matches
+// fails soft and is reported, never guessed (comboboxFill refuses blind Enter while
+// options are showing).
+const OWNERSHIP_MODEL_RENDER: Record<string, string> = {
+  "customer-owned": "Customer-Owned",
+  "third-party-owned": "Third-Party Owned",
+  "lease": "Lease",
+  "leased": "Lease",
+  "ppa": "PPA",
+};
+const SYSTEM_CONFIGURATION_RENDER: Record<string, string> = {
+  "behind-the-meter": "Behind the Meter",
+  "community-solar": "Community Solar",
+  "standalone": "Standalone",
+};
+const YES_NO_ANSWER_RENDER: Record<string, string> = {
+  "yes": "Yes", "y": "Yes", "true": "Yes",
+  "no": "No", "n": "No", "false": "No",
+};
+function renderPerJobAnswer(raw: unknown, map: Record<string, string>): string {
+  const s = String(raw ?? "").trim();
+  if (!s) return "";
+  return map[s.toLowerCase().replace(/[\s_]+/g, "-")] ?? s;
 }
 
 // The model strings a portal will actually list, for this project's equipment. Kept beside
@@ -820,6 +857,50 @@ export function resolveRecipeFieldValues(db: AppDb, project: ProjectRecord, port
   const ubNameParts = ubHolder.replace(/^(mr|mrs|ms|miss|dr|prof)\.?\s+/i, "").split(/\s+/).filter(Boolean);
   const ubFirstName = ubNameParts[0] || "";
   const ubLastName = ubNameParts.length > 1 ? ubNameParts[ubNameParts.length - 1] : "";
+
+  // PER-JOB PORTAL ANSWERS (migration v17): ownership/financing, system configuration,
+  // disconnect-to-meter distance — the questions the live PacifiCorp/Ameren runs proved
+  // portals ask and the project record could not answer, so recipes froze the learn
+  // project's answer (or left the control blank). Read the COLUMNS directly: mapProject
+  // (repository.ts) predates these fields, and an answer the intake link wrote five
+  // minutes ago must reach replay either way. The in-memory record field wins when a
+  // future mapping sets it; the parser snapshot is the last fallback.
+  let answersRow: Record<string, unknown> | undefined;
+  try {
+    answersRow = db.query<Record<string, unknown>>(
+      "SELECT ownership_model, system_configuration, disconnect_within_10ft FROM projects WHERE id = ?",
+      [project.id],
+    )[0];
+  } catch { /* pre-migration DB or a project never persisted — fall through to record/snapshot */ }
+  const perJobAnswer = (recordValue: unknown, columnValue: unknown, snapshotValue: unknown): string =>
+    String(recordValue ?? "").trim() || String(columnValue ?? "").trim() || String(snapshotValue ?? "").trim();
+  // ownershipModel: NO default, ever — financing is never guessable from documents.
+  // Empty resolves to "" so replay leaves the control blank and REPORTS it: the safe
+  // direction. The frozen alternative filed "Customer-Owned" on third-party-owned jobs.
+  const ownershipModel = renderPerJobAnswer(
+    perJobAnswer(project.ownershipModel, answersRow?.ownership_model, snapshotFlat.ownershipModel),
+    OWNERSHIP_MODEL_RENDER,
+  );
+  // systemConfiguration: the ONE safe default. Every residential NEM filing in this
+  // fleet is behind-the-meter — a rooftop system on a home offsets that home's own
+  // metered load; community solar is an off-site subscription product that never enters
+  // this pipeline. The default is GUARDED on the project having a utility account (the
+  // evidence there is a meter for the system to sit behind) and is overridable per
+  // project via the column; the resolved value is visible in the staged-fill report
+  // like every other binding. A project with no account on file resolves "" — blank and
+  // reported beats a guess.
+  const hasUtilityAccount =
+    String(project.accountNumber || "").trim() !== "" || String(snapshotFlat.accountNumber || "").trim() !== "";
+  const systemConfiguration = renderPerJobAnswer(
+    perJobAnswer(project.systemConfiguration, answersRow?.system_configuration, snapshotFlat.systemConfiguration),
+    SYSTEM_CONFIGURATION_RENDER,
+  ) || (hasUtilityAccount ? "Behind the Meter" : "");
+  // disconnectWithin10ft: NO default — a site fact (PGE's distance-to-meter policy
+  // questions), measured on the roof-side of a truck roll, not inferable here.
+  const disconnectWithin10ft = renderPerJobAnswer(
+    perJobAnswer(project.disconnectWithin10ft, answersRow?.disconnect_within_10ft, snapshotFlat.disconnectWithin10ft),
+    YES_NO_ANSWER_RENDER,
+  );
   // TWO ROLES, TWO FIELDS — DO NOT COLLAPSE THEM.
   //
   // A first cut made homeownerName resolve to the account holder on any utility portal. That
@@ -938,6 +1019,13 @@ export function resolveRecipeFieldValues(db: AppDb, project: ProjectRecord, port
       || String(snapshotFlat.batteryModel ?? "").trim() !== ""
       || Number(snapshotFlat.batteryQty ?? 0) > 0
     ) ? "Solar PV and Battery" : "Solar PV",
+    // PER-JOB PORTAL ANSWERS, resolved above. ALWAYS emitted — even empty — so
+    // deadFieldBindings sees the keys as resolvable (an empty value for THIS project is
+    // fine; a key that cannot exist at all is dead) and the post-learn binder can offer
+    // them for the frozen literals the live sweep found.
+    ownershipModel,
+    systemConfiguration,
+    disconnectWithin10ft,
   };
   // EQUIPMENT BINDING (portal-agnostic). The PV module spec lives in a nested `pvArrays`
   // array in the parser snapshot, which the scalar-only flatten above drops — so the module
