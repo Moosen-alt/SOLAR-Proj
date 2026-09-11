@@ -83,7 +83,7 @@ import { createSignature, deleteSignature, getSignatureImage, listSignatures, se
 import { addAuditLog } from "./audit";
 import { buildAuthUrl, exchangeCodeForTokens, gmailStatus, pollGmail } from "./gmail";
 import { imapStatus, pollImap, upsertImapSource } from "./emailPoller";
-import { createIntakeRequest, getIntakeRequestPublic, submitIntakeRequest, portalQuestionStatus } from "./intakeRequests";
+import { answerPortalQuestions, createIntakeRequest, getIntakeRequestPublic, submitIntakeRequest, portalQuestionStatus } from "./intakeRequests";
 import { ensureHeartbeat, sseBroadcast, sseSubscribe, setSseOrgResolver } from "./events";
 import {
   addManualCorrection,
@@ -725,6 +725,13 @@ app.post("/api/projects/:id/intake-request", asyncHandler(async (req, res) => {
 // "N portal questions unanswered" blocker chip next to the readiness indicators.
 app.get("/api/projects/:id/portal-questions", asyncHandler(async (req, res) => {
   res.json(await portalQuestionStatus(db, String(req.params.id)));
+}));
+
+// The parser page is the intake surface: answers posted here get the SAME rigid validation
+// as the public token path (only open questions, only the portal's own options), written
+// through answerPortalQuestions so the snapshot and the v17 columns stay in step.
+app.post("/api/projects/:id/portal-questions", asyncHandler(async (req, res) => {
+  res.json(await answerPortalQuestions(db, String(req.params.id), (req.body ?? {}).answers ?? {}));
 }));
 
 // Public (no auth): read an intake request by token.

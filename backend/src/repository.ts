@@ -175,6 +175,14 @@ function mapProject(row: ProjectRow): ProjectRecord {
     utility: row.utility,
     accountNumber: row.account_number,
     meterNumber: row.meter_number,
+    // The v17 per-job answer columns (ownership/financing, behind-the-meter vs community
+    // solar, disconnect-within-10ft). resolveRecipeFieldValues reads the columns directly
+    // by project.id as a fallback, but the RECORD field wins when present — mapping them
+    // here is what makes an in-memory ProjectRecord self-contained instead of correct-only-
+    // when-a-DB-is-in-reach (the binding test pins record-beats-column precedence).
+    ownershipModel: (row as Record<string, unknown>).ownership_model as string || "",
+    systemConfiguration: (row as Record<string, unknown>).system_configuration as string || "",
+    disconnectWithin10ft: (row as Record<string, unknown>).disconnect_within_10ft as string || "",
     systemSizeDcKw: row.system_size_dc_kw,
     systemSizeAcKw: row.system_size_ac_kw,
     totalExportKw: row.total_export_kw,

@@ -260,6 +260,16 @@
       </div>
     </div>
     <div id="saveStatus" class="status" style="margin-top:8px"></div>
+    <!-- Portal questions: the questions THIS project's portal will ask that the plan set
+         cannot answer (ownership/financing, community solar, disconnect distance...).
+         Rendered as rigid selects of exactly the portal's options after Save — answering
+         here is what stops replay filing a frozen wrong answer or a blank. -->
+    <div id="portalQuestions" style="display:none;margin-top:12px;padding:12px;border:1px solid var(--border,#d97706);border-radius:8px">
+      <strong id="portalQuestionsTitle"></strong>
+      <div id="portalQuestionsList" style="margin-top:8px;display:grid;gap:8px"></div>
+      <button id="portalQuestionsSave" class="green" style="margin-top:8px">Save answers</button>
+      <div id="portalQuestionsStatus" class="status"></div>
+    </div>
   </div>
 
   <div class="card">
@@ -4687,6 +4697,17 @@ async function saveToSystem() {
       }
       if (statusEl) statusEl.textContent = `✅ Saved. Project ID: ${id}.${docWarn}`;
       loadSystemSelects();
+      // THE PARSER PAGE IS THE INTAKE SURFACE, so the portal's own questions are asked
+      // HERE, the moment the project exists — not discovered as a blank three days later
+      // when replay reaches a select the plan set could never answer. The backend already
+      // knows which portal this project files through and which per-job questions that
+      // portal asks (the question bank extracts them from the recipe's own steps); this
+      // renders the unanswered ones as rigid selects of exactly the portal's options and
+      // writes answers straight onto the project. Live examples this closes: PacifiCorp's
+      // "Customer-Owned or Third-Party Owned?" (the operator does lease/PPA deals, so the
+      // frozen "Customer-Owned" files a silent wrong answer) and Ameren's blank
+      // "Community Solar / Behind the Meter" select.
+      if (id && id !== '—') loadPortalQuestions(id).catch((e) => console.warn('portal questions unavailable:', e));
     } else {
       if (statusEl) statusEl.textContent = `❌ Error: ${data.error || res.statusText}`;
     }
@@ -4708,6 +4729,68 @@ async function uploadIntakeDoc(projectId, file, docType){
     body: file,
   });
   if (!res.ok) throw new Error(`upload ${docType} failed: ${res.status}`);
+}
+
+// THE PARSER PAGE IS THE INTAKE SURFACE. After a save, fetch the questions this project's
+// portal will ask that nothing parsed can answer, and render them as RIGID selects of
+// exactly the portal's own options (no free text — the portal accepts only its own
+// vocabulary, so anything else files a wrong answer silently). Everything is DOM-built,
+// never string-interpolated into innerHTML.
+async function loadPortalQuestions(projectId){
+  const panel = document.getElementById('portalQuestions');
+  const list = document.getElementById('portalQuestionsList');
+  const title = document.getElementById('portalQuestionsTitle');
+  const saveBtn = document.getElementById('portalQuestionsSave');
+  const status = document.getElementById('portalQuestionsStatus');
+  if (!panel || !list) return;
+  const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/portal-questions`);
+  if (!res.ok) return;
+  const data = await res.json().catch(() => null);
+  const questions = (data && Array.isArray(data.questions)) ? data.questions : [];
+  if (!questions.length) { panel.style.display = 'none'; return; }
+  title.textContent = `This portal will ask ${questions.length} question(s) the documents cannot answer:`;
+  list.replaceChildren();
+  const selects = [];
+  for (const q of questions) {
+    const row = document.createElement('label');
+    row.style.display = 'grid';
+    row.style.gap = '2px';
+    const cap = document.createElement('span');
+    cap.textContent = q.label + (q.portalType ? ` — ${q.portalType}` : '');
+    const sel = document.createElement('select');
+    const blank = document.createElement('option');
+    blank.value = ''; blank.textContent = '(choose…)';
+    sel.appendChild(blank);
+    for (const opt of (q.options || [])) {
+      const o = document.createElement('option');
+      o.value = opt; o.textContent = opt;
+      sel.appendChild(o);
+    }
+    sel.dataset.key = q.key;
+    row.appendChild(cap); row.appendChild(sel);
+    list.appendChild(row);
+    selects.push(sel);
+  }
+  saveBtn.onclick = async () => {
+    const answers = {};
+    for (const s of selects) if (s.value) answers[s.dataset.key] = s.value;
+    if (!Object.keys(answers).length) { status.textContent = 'Pick at least one answer first.'; return; }
+    status.textContent = 'Saving…';
+    const r = await fetch(`/api/projects/${encodeURIComponent(projectId)}/portal-questions`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ answers }),
+    });
+    const out = await r.json().catch(() => ({}));
+    if (r.ok) {
+      status.textContent = out.remaining === 0
+        ? '✅ All portal questions answered.'
+        : `✅ Saved. ${out.remaining} question(s) still open.`;
+      await loadPortalQuestions(projectId);
+    } else {
+      status.textContent = `❌ ${out.error || r.statusText}`;
+    }
+  };
+  panel.style.display = 'block';
 }
 
 async function uploadIntakeDocs(projectId){

@@ -407,6 +407,49 @@ export function submitIntakeRequest(
 /** Operator view: which portal per-job questions are still unanswered for a
  *  project, and which ones the installer explicitly wasn't sure about. Drives
  *  the dashboard's "N portal questions unanswered" blocker chip. */
+/**
+ * THE PARSER PAGE IS THE INTAKE SURFACE (operator's words), so the same rigid answers the
+ * public token accepts must also be writable from the authenticated parser flow, the moment
+ * the project is saved. Same discipline as submitIntakeRequest, revalidated against the
+ * LIVE question list rather than a stored request: only a currently-unanswered question's
+ * key is accepted, only the portal's own options are valid (no free text - anything else
+ * files a wrong answer silently), and answers land in the parser snapshot AND the v17
+ * column so resolveRecipeFieldValues sees them from either side.
+ */
+export async function answerPortalQuestions(
+  db: AppDb,
+  projectId: string,
+  answers: Record<string, string>,
+): Promise<{ written: string[]; remaining: number }> {
+  const project = getProjectDetail(db, projectId).project;
+  const unanswered = await unansweredPortalQuestions(db, project);
+  const byKey = new Map(unanswered.map((q) => [q.key, q]));
+  const payload: Record<string, string> = {};
+  const written: string[] = [];
+  for (const [key, raw] of Object.entries(answers ?? {})) {
+    const value = String(raw ?? "").trim();
+    if (!value) continue;
+    const q = byKey.get(key);
+    if (!q) throw new HttpError(400, `"${key}" is not an open portal question for this project.`);
+    if (!q.options.includes(value)) {
+      throw new HttpError(400, `"${q.label}" must be one of the portal's own options.`);
+    }
+    payload[key] = value;
+    written.push(key);
+  }
+  if (written.length === 0) throw new HttpError(400, "No values provided.");
+  updateProject(db, projectId, payload);
+  for (const [key, column] of Object.entries(PER_JOB_ANSWER_COLUMNS)) {
+    const value = payload[key];
+    if (value == null || String(value) === "") continue;
+    try {
+      db.run(`UPDATE projects SET ${column} = ?, updated_at = ? WHERE id = ?`, [String(value), nowIso(), projectId]);
+    } catch { /* pre-v17 DB - the snapshot write above already carries the answer */ }
+  }
+  const stillOpen = await unansweredPortalQuestions(db, getProjectDetail(db, projectId).project);
+  return { written, remaining: stillOpen.length };
+}
+
 export async function portalQuestionStatus(db: AppDb, projectId: string): Promise<{
   questions: Array<{ key: string; label: string; options: string[]; portalType?: string; unsure: boolean }>;
   unansweredCount: number;
