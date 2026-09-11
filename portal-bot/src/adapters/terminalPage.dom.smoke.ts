@@ -266,20 +266,28 @@ const fillingPlanner = (seen: string[][]): LearnPlanner => async (req) => {
   return { fills, atReview: false };
 };
 
-/** Run the REAL walk against one page and report what it recorded. */
+/** Run the REAL walk against one page and report what it recorded.
+ *
+ *  `armed` is reported back, and section [2] asserts it, because the delegation switch is
+ *  passed through an options object: if `allowFinalSubmit` were ever renamed or dropped from
+ *  the constructor, the hole-5 check would keep passing while testing NOTHING -- the same
+ *  passed-for-the-wrong-reason failure the hole-4 candidate rule already had in this file
+ *  before TERMINAL_VERB was widened to reach it. */
 async function walk(path: string, opts: { allowFinalSubmit?: boolean } = {}) {
   const seen: string[][] = [];
   const page = await ctx.newPage();
   await page.goto(`${base}${path}`);
   const adapter = new AutoLearnAdapter(`Terminal ${path}`, fillingPlanner(seen), {
     maxPages: 2, ...(opts.allowFinalSubmit ? { allowFinalSubmit: true } : {}),
-  } as never);
+  });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (adapter as any).page = page;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const armed = (adapter as any).allowFinalSubmit === true;
   const res = await adapter.learn({ portalUrl: `${base}${path}` } as never, PROJECT);
   const endedOn = page.url();
   await page.close();
-  return { res, endedOn, seen };
+  return { res, endedOn, seen, armed };
 }
 
 // ===========================================================================================
@@ -326,6 +334,9 @@ console.log("\n[2] hole 5: operator delegation must not reach this path");
 process.env.PORTAL_ALLOW_FINAL_SUBMIT = "1";
 const wDelegated = await walk("/single", { allowFinalSubmit: true });
 delete process.env.PORTAL_ALLOW_FINAL_SUBMIT;
+check("DELEGATION WAS ACTUALLY ARMED -- else the check below tests nothing at all",
+  wDelegated.armed === true,
+  "the adapter's allowFinalSubmit is false; the option did not reach it, so hole 5 is untested");
 check("with allowFinalSubmit AND PORTAL_ALLOW_FINAL_SUBMIT=1, the form STILL never submits",
   wDelegated.endedOn.endsWith("/single"), `ended on ${wDelegated.endedOn}`);
 check("...and the recorded note still says NOT clicked",
