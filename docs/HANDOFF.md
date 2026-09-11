@@ -3,6 +3,50 @@
 Audience: the next model/dev session (and the operator). Read `CLAUDE.md` first
 for the hard rules; this file is the running state.
 
+## Learn-once engine hardening + restore (2026-09-10)
+
+A run of engine fixes was lost TWICE to the machine sleeping mid-session (uncommitted
+work does not survive a Teleport move — it comes back clean at the last commit, in a
+`git stash` auto-stash). Everything below is now COMMITTED. If a review references a fix
+as "lost", check `git log` first — it was re-applied.
+
+Committed this session (f20a383..HEAD):
+- **Cross-project leak** (`3e42fec`): replay filed the LEARN project's homeowner/address on
+  the next project. Guarded in resolveValue + a frozen-literal path; crossProjectReplay.test.ts.
+- **Gap-fill grounding** (`f20a383`): "999" passed for an 8 kW system, "Yes" for hasBattery:No.
+  isGrounded now checks the binding, not just that the field is non-empty; llmGapFill.test.ts.
+- **Button labels** (`378f6c8`): a `name`-attributed button read as "submit_form"/"next_page",
+  blinding SUBMIT_INTENT and clickFallbackAdvance. Visible text beats name for button-ish els.
+- **Pagination guard** (`c86fc08`): ComEd banked a mat-paginator "Next page" as its advance.
+  PAGINATION_CONTROL, shape-based; paginationAdvance.test.ts.
+- **Replay pay gate** (`6e614bc`, `e105a36`): the live-replay click gate missed "Pay and Submit",
+  "Submit Payment", and bare "Pay". Renamed PAY_FEE_REPLAY_GATE; paymentGate.test.ts pins both
+  copies in parity. e105a36 also closed a LIVE clickFallbackAdvance path that would have pressed
+  "Continue and Pay" on a real portal.
+- **Active scope** (`98533a4`, `d4296e3`): the ComEd drawer harvest mixed the dialog's 28 fills
+  with the dashboard's 27 buttons. Scope the harvest to the topmost open panel; re-admit an
+  outside sticky-footer Next so a wizard's only exit is never filtered away. activeScope.dom.smoke.
+- **Terminal-page review** (`d8e950e`, `0e3a426`): a single-page application (no Next, one Submit)
+  was DISCARDED, not just unpromoted (autoLearn.ts:934). Now classified as its own review, submit
+  recorded isFinalSubmit and never clicked — behind positive-terminality guards (unfinished
+  step-of-N, disabled Next present, money wording, draft-save wording) that a prior adversarial
+  pass proved were needed. terminalPage.dom.smoke, 98 checks. NOTE: permiteyes still lands
+  "recording" not "complete" — its "* Utility Auth. No." is a hard blocker no automation can fill.
+- **Trust gate restored** (`04630b5`): a portal outage / stale credential / MFA wall no longer
+  demotes a verified recipe; savePortalRecipeSteps no longer defaults to "complete". trustGate.test.
+- **Login proof** (`04630b5`): a session is proven by a positive signed-in signal, not the absence
+  of a password field (Cloudpermit was stamped "logged in" while never authenticated).
+  loginProof.dom.smoke, 18 checks.
+- **Benchmark scope** (`07c79eb`): NEM portals were learned as AHJs and banked under a key no real
+  project resolves. isUtilityPlatformUrl now picks the scope; benchmarkScope.test.ts.
+
+STILL OPEN (not regressions, named honestly):
+- The measurement work — re-run Ameren NEM live to confirm the scope fix banks onto the
+  production key, then the cross-project B/C contract on real portals. Every draft to the ledger
+  (`npx tsx scripts/draft-ledger.ts`).
+- Accept-side misses reported by the prove agent (all fail SAFE — a missed page, never a filing):
+  "Submit for Review" / "Send Application" / "Agree and Submit" are refused as terminal submits.
+
 ## Measuring replay: what the numbers mean (2026-09-08)
 
 The operator's question is **"if I point this at portal X, how often does it just
