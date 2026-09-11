@@ -78,6 +78,12 @@ export interface ExtractedField {
    *  post-reveal re-scan — this key lets it recognize (and never re-answer) a group that
    *  already has a recorded answer, which would silently flip the selection. */
   group?: string;
+  /** True when the control cannot be operated right now — :disabled (which also covers a
+   *  control inside <fieldset disabled>), aria-disabled="true", or a `disabled` class token.
+   *  Carried because A DISABLED NEXT IS A GATE, NOT AN ABSENCE: a wizard step whose Next
+   *  unlocks on validation was read as a terminal page precisely because nothing recorded
+   *  that the Next existed. See classifyTerminalSubmitPage. */
+  disabled?: boolean;
 }
 
 export interface LearnPlanRequest {
@@ -191,7 +197,19 @@ export type LearnProgressFn = (p: LearnProgress) => void;
 // ---------------------------------------------------------------------------
 
 // ALWAYS-blocked fee-payment controls — never recorded as advance/finalSubmit, never clicked.
-const PAY_FEE = /\b(pay fee|pay now|submit & pay|submit and pay|make payment|continue to payment|pay \$|add to cart|proceed to (payment|checkout)|checkout|fee)\b/i;
+//
+// WIDENED, because the terminal-page classifier below now RECORDS a control as the end of an
+// application, and this list is the first thing standing between that rule and a payment. The
+// holes were reproduced live on synthetic markup and are the same three the replay-side twin
+// closed in 6e614bc:
+//   "Pay and Submit Application"  — "submit and pay" was listed; the REVERSE order was not.
+//   "Submit Payment"              — no bare \bpayment\b, and \bpay\b cannot match "Payment"
+//                                   (there is no word boundary before the m).
+//   "Pay Fees Due" / "Total Fees" — the bare `fee` had no plural.
+// Now at parity with PAY_FEE_REPLAY_GATE in recipeAdapter.ts, which guards a click that really
+// happens; this copy classifies controls the learn will never click, so the two stay separate
+// (see that file's comment) but must never again be separately WRONG.
+const PAY_FEE = /\b(pay\s*(and|&)\s*submit|pay fees?|pay fee|pay now|submit\s*(&|and)\s*pay|make payment|payments?|remit|invoices?|continue to payment|pay \$|add to cart|proceed to (payment|checkout)|checkout|fees? due|fees?)\b/i;
 
 // Submit-intent button labels. On a READ-ONLY review page these SUBMIT (Accela's
 // "Continue Application" on Step 3: Review is the submit gate — it advances on input
@@ -777,6 +795,273 @@ export function applyActiveScopeFilter(
 }
 
 // ---------------------------------------------------------------------------
+// A TERMINAL PAGE WHOSE ONLY FORWARD CONTROL IS A FINAL SUBMIT IS ITS OWN REVIEW.
+//
+// permiteyes.us is a 176-field SINGLE-PAGE application: no Next, no wizard, one "Submit". The
+// walk fills ~60 fields, finds no advance, and dies at the repeat-page stop, banking 65 steps
+// as needs_rerecord — which findCompleteRecipeForProject then ignores. Every portal built this
+// way is unlearnable for the same reason: the engine's only definition of "the end" was a
+// review SCREEN, and a one-page application never shows one.
+//
+// So: after every way forward has declined, ask whether the page IS the end. If it is, the
+// submit is RECORDED (isFinalSubmit:true, hard rule 1) and NEVER clicked, and the run reports
+// reachedReview so the recipe is staged instead of thrown away.
+//
+// *** THE FIVE HOLES AN ADVERSARIAL REVIEW FOUND IN THE FIRST BUILD OF THIS, CLOSED FROM THE
+// *** START. Each was reproduced live. The cost of getting this wrong is not a missed page: it
+// *** is a recipe that teaches a human (or trusted auto-submit) to click a control that saves a
+// *** draft, pays a fee, or files a half-finished application.
+//
+// HOLE 1 — it accepted ANY control containing the bare word "submit" or "finish", so a
+//   DRAFT-SAVE ended the application. Repro: "Step 2 of 4 — Equipment. Two more steps to go.",
+//   whose real advance is "Save and Proceed" (not advance-shaped, so clickFallbackAdvance
+//   declines) and whose other control is "Save and Finish Later" (matches \bfinish\b). That
+//   banked reachedReview=true with isFinalSubmit on a button that saves and exits — and
+//   promotion to 'complete' is REACHABLE from there, because a mid-wizard page clears the
+//   pageCount>=3 / substantiveFills>=5 floor and the verifier sees values that really do match
+//   the project. The answer is that ABSENCE OF AN ADVANCE IS NOT EVIDENCE OF AN END: a
+//   POSITIVE terminality signal is required, an unfinished step-of-N marker is disqualifying,
+//   and defer/draft wording is refused outright.
+//
+// HOLE 2 — a wizard step whose Next is PRESENT BUT DISABLED (the ordinary state of a gated
+//   step) was classified as review. clickFallbackAdvance selects that Next on LABEL alone,
+//   never inspects disabled state, fails actionability, pops its own step and falls straight
+//   through to here — which never noticed an advance-shaped control existed. Repro: "Step 1 of
+//   3 — Site. Next unlocks once the address is validated.", <button disabled>Next</button> +
+//   <button>Submit</button>. A page that owns a Next is a page with a next; a DISABLED one is a
+//   GATE, which is the opposite of terminality. Hence the gate rule below refuses on the
+//   PRESENCE of an advance-shaped control, enabled or not.
+//
+// HOLE 3 — PAY_FEE was the only thing between this rule and a PAYMENT recorded as the final
+//   submit, and it listed "submit and pay" but not the reverse order and had no bare
+//   \bpayment\b. "Pay and Submit Application" and "Submit Payment" both produced isFinalSubmit
+//   steps. Two layers now, because a phrase list keeps losing this race: PAY_FEE is widened
+//   (above), AND this classifier refuses any candidate that mentions money at all, regardless.
+//   A control that mentions money is never the safe thing to record as the end of a NEW
+//   application — losing a legitimate one costs a miss, not a filing.
+//
+// HOLE 4 — an advance-shaped control is never the terminal submit even when it also matches
+//   submit wording. "Continue Application" FILES on Accela's review page and is the ordinary
+//   page advance everywhere else; treating it as evidence of an end stops a six-page wizard on
+//   page two.
+//
+// HOLE 5 — the operator-delegation click branch is deliberately NOT wired into this path. An
+//   INFERENCE that a page is terminal is not authority to file it. See the call site.
+// ---------------------------------------------------------------------------
+
+/** An UNFINISHED wizard marker. "Step 2 of 4", "Step 2/4", "Page 3 of 7" — current < total
+ *  means the portal itself says there is more to come, which outranks any shape argument.
+ *  current === total is left alone: "Step 4 of 4" is legitimately the last step. Scanned with
+ *  matchAll rather than a first match, because a stray marker elsewhere in the body text must
+ *  not be allowed to stand in for the real one. */
+const STEP_OF_N = /\b(?:step|page|section)\s*(\d{1,2})\s*(?:of|\/)\s*(\d{1,2})\b/gi;
+
+/** DEFER / DRAFT wording: the control saves and leaves; it does not file. This is the whole of
+ *  hole 1 in one line — "Save and Finish Later" matches SUBMIT_INTENT's \bfinish\b. */
+const DEFER_DRAFT = /\b(later|draft|for now)\b|save\s*(and|&)\s*(exit|close|finish)/i;
+
+/** MONEY, IN ANY FORM — layer 2 of hole 3, independent of PAY_FEE on purpose. Deliberately
+ *  unbounded on the right (`\bfee` catches "Fees"/"Feedback"): over-refusing here costs one
+ *  un-learned page, under-refusing costs a payment recorded as the end of an application. */
+const MONEY_ANYWHERE = /\bpay\b|\bpaid\b|\bfee|\bpayment|\bcart|\bcheckout|\bremit|\binvoice/i;
+
+/** The verbs that END an application. Bare `file` is excluded on purpose — "Choose File" and
+ *  "Upload File" are upload controls, and counting them would refuse terminality on every page
+ *  that has an attachment slot (which permiteyes, the portal this exists for, does).
+ *
+ *  DELIBERATELY A SUPERSET OF SUBMIT_INTENT, "continue application" included. Narrowing this
+ *  to exclude the advance-shaped wording would make hole 4's guard unreachable — and a guard
+ *  nothing can reach is a guard nothing tests, which is how it comes back the next time
+ *  somebody widens this line. Everything advance-shaped is refused EXPLICITLY below instead,
+ *  twice: once at the page level (the gate) and once at the candidate level. */
+const TERMINAL_VERB =
+  /\b(submit|finali[sz]e|finish|complete)\b|\bfile\s+(a|an|the|my|your)?\s*(application|request|permit|submittal|interconnection|form|project)\b|\bconfirm submission\b|\bplace order\b|\bcontinue application\b/i;
+
+/** The nouns a terminal verb is allowed to govern, so "Submit Search", "Submit Documents" and
+ *  "Submit Feedback" stop qualifying while "Submit"/"Submit Application" keep working. */
+const APPLICATION_NOUN =
+  /\b(applications?|submissions?|submittals?|requests?|permits?|interconnections?|forms?|projects?|registrations?|filings?|packages?|packets?|enrollments?|orders?)\b/i;
+
+/** Words that carry no object of their own, so "Submit Now" is still a bare submit. */
+const SUBMIT_STOPWORD = /^(now|my|the|a|an|your|this|these|all|and|to|it|here|please)$/i;
+
+/** Advance wording ANYWHERE in a label, not just anchored at the front (ADVANCE_ONLY). This is
+ *  what disqualifies "Submit and Continue" — a control that is plainly still mid-wizard. */
+const ADVANCE_WORD_ANYWHERE = /\b(next|continue|proceed)\b/i;
+
+/** Anything shaped like a page's way FORWARD, for the "no other forward control" clause. */
+const FORWARD_SHAPED = /\b(next|continue|proceed|forward|submit|finish|finali[sz]e|complete)\b/i;
+
+/** Every distinct reason this classifier can refuse. Named so the walk emits ONE debug event
+ *  that says WHICH rule spoke (the operator can then see the gate that stopped it), and so the
+ *  fixture can disable exactly one rule at a time — a guard whose removal breaks nothing is not
+ *  a guard. */
+export type TerminalGuard =
+  | "validation" | "step" | "gate" | "advance" | "payfee" | "money" | "defer" | "noun" | "positive" | "none";
+
+export type TerminalVerdict =
+  | { terminal: true; index: number; label: string; why: string }
+  | { terminal: false; guard: TerminalGuard; reason: string };
+
+/** isOffLimitsButton at module scope, so the classifier and the click paths refuse the same
+ *  controls without the classifier needing an adapter instance. */
+function labelIsOffLimits(label: string): boolean {
+  return isPayFee(label) || EXISTING_RECORD_ACTION.test(label);
+}
+
+/** Does the terminal verb in this label govern an APPLICATION, or something else entirely?
+ *  True for "Submit", "Submit »", "Submit Now", "Submit Application", "Complete Submission".
+ *  False for "Submit Search", "Submit Documents", "Submit Feedback", "Submit Payment". */
+export function submitGovernsApplication(label: string): boolean {
+  const t = String(label ?? "").replace(/\s+/g, " ").trim();
+  if (!t) return false;
+  if (APPLICATION_NOUN.test(t)) return true;
+  // No application noun — then the verb must govern NOTHING at all. Strip the verb and any
+  // non-letters (a "»" chevron is not an object) and see what is left.
+  const rest = t
+    .replace(/\b(submit|finali[sz]e|finish|complete|file|confirm|place|save|order)\b/gi, " ")
+    .replace(/[^A-Za-z ]+/g, " ")
+    .split(/\s+/)
+    .filter((w) => w && !SUBMIT_STOPWORD.test(w));
+  return rest.length === 0;
+}
+
+/** IS THIS PAGE THE WHOLE APPLICATION? Pure, so the fixture can drive every branch from real
+ *  harvested markup, and so `without` can retire one guard at a time for the kill matrix.
+ *
+ *  `without` is a TEST-ONLY affordance and is never passed by the walk. It is a parameter
+ *  rather than an env var deliberately: an env switch that weakens a classifier which records
+ *  isFinalSubmit steps is a production hazard (the precedent, AUTOLEARN_NO_ACTIVE_SCOPE, can
+ *  only cost a page; this one could cost a filing). */
+export function classifyTerminalSubmitPage(
+  input: { fields: ExtractedField[]; bodyText: string; validationErrors?: string[] },
+  without: TerminalGuard[] = [],
+): TerminalVerdict {
+  const off = (g: TerminalGuard): boolean => without.includes(g);
+  const fields = Array.isArray(input.fields) ? input.fields : [];
+  const body = String(input.bodyText ?? "");
+  const buttons = fields.filter((f) => f?.fieldType === "button");
+  const labelOf = (f: ExtractedField): string => String(f?.label ?? "").replace(/\s+/g, " ").trim();
+
+  // 1) THE PORTAL IS COMPLAINING. A page showing a live validation error is a page that has
+  //    just refused something, not a page waiting to be filed.
+  if (!off("validation") && (input.validationErrors?.length ?? 0) > 0) {
+    return { terminal: false, guard: "validation", reason: `the page is showing a validation error: ${input.validationErrors![0].slice(0, 80)}` };
+  }
+
+  // 2) HOLE 2: the page OWNS a way forward. Enabled or not — a disabled Next is a GATE, and a
+  //    gate is the opposite of an end. Pagination and off-limits controls are not advances
+  //    (composes with PAGINATION_CONTROL, c86fc08, rather than re-deciding it).
+  //    CHECKED BEFORE THE STEP MARKER on purpose: the brief's hole-2 repro carries both
+  //    ("Step 1 of 3" AND a disabled Next), and of the two reasons only one tells an operator
+  //    what to do — the page is waiting for them to unlock something.
+  if (!off("gate")) {
+    const gate = buttons.find((f) => {
+      const t = labelOf(f);
+      if (!t || t.length > 60) return false;
+      if (PAGINATION_CONTROL.test(t)) return false;
+      if (labelIsOffLimits(t)) return false;
+      return ADVANCE_ONLY.test(t);
+    });
+    if (gate) {
+      const t = labelOf(gate);
+      return {
+        terminal: false,
+        guard: "gate",
+        reason: `the page owns an advance-shaped control ${JSON.stringify(t)}${gate.disabled ? " (DISABLED — a gate, not an absence)" : ""}`,
+      };
+    }
+  }
+
+  // 3) HOLE 1(a): the portal says there are more steps. Nothing below can outrank that.
+  if (!off("step")) {
+    for (const m of body.matchAll(STEP_OF_N)) {
+      const cur = Number(m[1]);
+      const total = Number(m[2]);
+      if (Number.isFinite(cur) && Number.isFinite(total) && total > 1 && cur < total) {
+        return { terminal: false, guard: "step", reason: `the page says "${m[0]}" — ${total - cur} step(s) still to come` };
+      }
+    }
+  }
+
+  // 4) Find the one control that could be this application's end.
+  const refusals: Array<{ guard: TerminalGuard; reason: string }> = [];
+  const note = (guard: TerminalGuard, reason: string): void => { refusals.push({ guard, reason }); };
+  let candidate: { index: number; label: string } | null = null;
+  for (let i = 0; i < fields.length && !candidate; i++) {
+    const f = fields[i];
+    if (f?.fieldType !== "button") continue;
+    const t = labelOf(f);
+    if (!t || t.length > 60) continue;
+    if (!TERMINAL_VERB.test(t)) continue;
+    // A submit nobody can press is not this page's exit.
+    if (f.disabled) { note("gate", `the only submit-shaped control ${JSON.stringify(t)} is disabled`); continue; }
+    // HOLE 4 — an advance is never the end, however it is worded.
+    if (!off("advance") && (ADVANCE_ONLY.test(t) || ADVANCE_WORD_ANYWHERE.test(t))) {
+      note("advance", `${JSON.stringify(t)} is advance-shaped — it is this page's Next on every page but the last`);
+      continue;
+    }
+    // HOLE 3, layer 1.
+    if (!off("payfee") && labelIsOffLimits(t)) { note("payfee", `${JSON.stringify(t)} is a pay/fee/record control`); continue; }
+    // HOLE 3, layer 2 — independent of the phrase list above, on purpose.
+    if (!off("money") && MONEY_ANYWHERE.test(t)) { note("money", `${JSON.stringify(t)} mentions money`); continue; }
+    // HOLE 1(c), first half.
+    if (!off("defer") && DEFER_DRAFT.test(t)) { note("defer", `${JSON.stringify(t)} saves a draft and leaves — it does not file`); continue; }
+    // HOLE 1(c), second half — the verb must govern the APPLICATION, not a search or an upload.
+    if (!off("noun") && !submitGovernsApplication(t)) {
+      note("noun", `${JSON.stringify(t)} submits something that is not the application`);
+      continue;
+    }
+    candidate = { index: i, label: t };
+  }
+  if (!candidate) {
+    // The FIRST refusal is the one reported: on a page with several submit-shaped controls it
+    // names the one nearest the top of the document, which is the one an operator will look at.
+    return refusals[0]
+      ? { terminal: false, guard: refusals[0].guard, reason: refusals[0].reason }
+      : { terminal: false, guard: "none", reason: "the page has no submit-shaped control at all" };
+  }
+
+  // 5) HOLE 1(b): a POSITIVE terminality signal, never merely the absence of an advance.
+  //    One of: the page reads as a review/attestation screen; it carries an accept-terms gate;
+  //    or the submit really is the only enabled way forward on it.
+  //    DEFER-WORDED CONTROLS DO NOT COUNT AS FORWARD CONTROLS — a draft-save is definitionally
+  //    not a way forward, and counting one would make a genuine single-page application whose
+  //    exit is "Save and Finish Later" permanently unlearnable, which is the silently-deleted
+  //    feature this file has shipped before.
+  if (!off("positive")) {
+    const reviewish = REVIEW_MARKERS.test(body);
+    const termsGate = fields.some((f) => f?.fieldType === "checkbox" && ACCEPT_TERMS.test(String(f.label ?? "")));
+    const chosen = fields[candidate.index];
+    const otherForward = buttons.filter((f) => {
+      // By IDENTITY, not by index: `buttons` is a filtered view, so its indices are not the
+      // indices into `fields` that candidate.index speaks. Comparing the two numbers excluded
+      // an arbitrary OTHER button and left the candidate itself in the "other forward" count,
+      // which refuses every genuine single-page application.
+      if (f === chosen) return false;
+      const t = labelOf(f);
+      if (!t || t.length > 60) return false;
+      if (f.disabled) return false;               // a gated control is not an enabled way forward
+      if (PAGINATION_CONTROL.test(t)) return false;
+      if (DEFER_DRAFT.test(t)) return false;
+      return FORWARD_SHAPED.test(t);
+    }).map((f) => labelOf(f));
+    if (!reviewish && !termsGate && otherForward.length > 0) {
+      return {
+        terminal: false,
+        guard: "positive",
+        reason: `no positive sign this page is the end, and it still offers ${otherForward.slice(0, 3).map((t) => JSON.stringify(t)).join(", ")}`,
+      };
+    }
+    const why = reviewish ? "the page reads as a review/attestation screen"
+      : termsGate ? "the page carries an accept-terms gate"
+        : `${JSON.stringify(candidate.label)} is the only enabled way forward on the page`;
+    return { terminal: true, index: candidate.index, label: candidate.label, why };
+  }
+  return { terminal: true, index: candidate.index, label: candidate.label, why: "positive-signal guard disabled (test)" };
+}
+
+// ---------------------------------------------------------------------------
 // The DOM extraction script — runs in the page via $$eval. Pure (no closures over
 // adapter state) so it can be serialized into the browser. Returns plain JSON.
 // ---------------------------------------------------------------------------
@@ -814,6 +1099,8 @@ export interface RawField {
   /** True when the control sits inside an aria-hidden="true" or [inert] subtree — the page
    *  itself saying nobody can reach it. Never re-admitted by the exit exemption. */
   offstage?: boolean;
+  /** True when the control is not operable right now. See ExtractedField.disabled. */
+  disabled?: boolean;
 }
 
 // Serializable extractor — derives a label and selector hints for each interactive
@@ -1237,6 +1524,18 @@ export function extractFieldsInPage(els: Element[]): RawField[] {
       ariaLabel: el.getAttribute("aria-label")?.trim() || undefined,
       inActiveScope: scopeEl ? scopeEl.contains(el) : undefined,
       offstage: scopeEl ? !!el.closest('[aria-hidden="true"], [inert]') : undefined,
+      // IS THIS CONTROL OPERABLE? :disabled is the primary test rather than the .disabled
+      // PROPERTY because the pseudo-class also catches a control inside <fieldset disabled>,
+      // which the property misses entirely — and a gated wizard step is very often a whole
+      // disabled fieldset. aria-disabled covers the div-with-role=button case (a real
+      // <button> is never what an SPA design system ships), and the class token covers
+      // Bootstrap's <a class="btn disabled">, which has no attribute at all.
+      disabled: (() => {
+        try { if (el.matches(":disabled")) return true; } catch { /* :disabled unsupported on this node */ }
+        if (el.getAttribute("aria-disabled") === "true") return true;
+        const cls = el.getAttribute("class") || "";
+        return /(^|\s)disabled(\s|$)/.test(cls) ? true : undefined;
+      })(),
     });
   }
   return out;
@@ -1316,6 +1615,9 @@ export function toExtractedField(raw: RawField): ExtractedField {
   if (raw.href) field.href = raw.href;
   if (raw.required) field.required = true;
   if (raw.section) field.section = raw.section;
+  // Carried, not derived: the terminal-page classifier counts ENABLED forward controls, and a
+  // `disabled` that stops at the RawField boundary would make every gated Next invisible to it.
+  if (raw.disabled) field.disabled = true;
   // Fingerprint: raw element attributes for replay-heal tie-breaking. Attribute
   // NAMES/labels only — never values, so nothing sensitive can land in a recipe.
   if (raw.id || raw.name || raw.placeholder || raw.ariaLabel || raw.section) {
@@ -5556,6 +5858,55 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       if (await this.pressEnterInLastFilledField(steps, fields)) continue;
       // …and once the search has answered, the answer is the row.
       if (await this.clickMatchingResultRow(_project, steps)) { deadAdvances.delete(deadPageKey(url, fields.length)); continue; }
+
+      // A TERMINAL PAGE WHOSE ONLY FORWARD CONTROL IS A FINAL SUBMIT IS ITS OWN REVIEW.
+      //
+      // Every way forward has now declined. Before giving up, ask the last question: is the
+      // page not stuck but FINISHED? permiteyes.us is a 176-field SINGLE-PAGE application —
+      // no Next, one "Submit" — and the walk filled ~60 fields, found no advance, hit the
+      // repeat-page stop and banked 65 steps as needs_rerecord, which
+      // findCompleteRecipeForProject then ignores. Every one-page portal fails the same way,
+      // because the engine's only definition of "the end" was a review SCREEN.
+      //
+      // THIS IS AN INFERENCE, NOT AN AUTHORITY (hole 5). The delegated-click branch that
+      // lives in step (e) above is deliberately NOT repeated here: there, the PLANNER named
+      // the final submit on a page it recognised as review; here, the ENGINE concluded a page
+      // is terminal from its shape. The step is recorded so a human can perform it, and
+      // nothing clicks it — ever, under any flag. Hard rule 1, and the weaker the evidence the
+      // more absolute the rule.
+      {
+        // A TERMINAL PAGE CANNOT PRECEDE THE FIRST RECORDED FILL. Same rule the entry-
+        // disclaimer guard states in section c2, for the same reason: the live Salem run
+        // stopped on page 2 and promoted an EMPTY recipe, because a page the walk typed
+        // nothing into still had a submit-shaped control on it. clickFallbackAdvance has
+        // carried this precondition ("a page we filled nothing on is a page we have no
+        // business advancing past") since it was written; recording a FILING on such a page
+        // is the same mistake with a worse ending. Terms/acknowledgment ticks do not count —
+        // an agree box is not an application.
+        const mutationsRecorded = steps.some(
+          (s) => (s.action === "fill" || s.action === "check" || s.action === "select") && !isTermsAcknowledgment(s));
+        if (!mutationsRecorded) {
+          this.debug?.event({ type: "terminal_page_refused", page: pageCount, guard: "empty", why: "nothing has been filled on this run yet" });
+          break;
+        }
+        const terminal = await this.terminalSubmitHere(pageCount);
+        if (terminal) {
+          // Same exit discipline as the atReview break: one more re-assert so the page we
+          // leave carries what we typed. A portal that autosaves and takes values back has
+          // done exactly that between the mid-page verify and here (live Ameren).
+          await this.verifyFillsLanded(appliedThisPage, { budgetMs: 25_000, requiredOnly: true }).catch(() => [] as string[]);
+          steps.push({
+            action: "click",
+            phase: "review",
+            selector: terminal.field.selector,
+            isFinalSubmit: true,
+            note: `final submit: ${terminal.label || "submit"} (recorded, NOT clicked — single-page application)`,
+          });
+          finalSubmitRecorded = true;
+          reachedReview = true;
+          break;
+        }
+      }
       break;
     }
 
@@ -7029,6 +7380,47 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       note: `create application: ${found.name} (creates the record, does NOT file)`,
     });
     return true;
+  }
+
+  /** IS THIS PAGE THE WHOLE APPLICATION? The Node half of classifyTerminalSubmitPage.
+   *
+   *  RE-HARVESTS LIVE rather than reusing the walk loop's `fields`. That census was taken
+   *  BEFORE this page's fills, and the control that must veto terminality is very often one
+   *  the fills themselves REVEAL or ENABLE — a Next that unlocks once the address validates is
+   *  precisely hole 2, and judging a post-fill page by a pre-fill census would hand that page
+   *  straight back to the classifier with no advance in it. The re-harvest goes through
+   *  extractAllFrames, so the active scope, the frame keys and the exit re-admission all
+   *  compose exactly as they do at the top of the loop.
+   *
+   *  Returns the FRESH field, so the selector recorded is the one just verified. */
+  private async terminalSubmitHere(pageCount: number): Promise<{ field: ExtractedField; label: string } | null> {
+    if (!this.page) return null;
+    let fields: ExtractedField[];
+    try {
+      fields = (await this.extractAllFrames(EXTRACT_SEL)).map(toExtractedField);
+    } catch {
+      return null; // a page mid-navigation is not a page we get to call finished
+    }
+    let bodyText = "";
+    try {
+      const rawBody = await this.page.locator("body").innerText().catch(() => "");
+      bodyText = (redactStatusText(String(rawBody)) ?? "").slice(0, 2000);
+    } catch { bodyText = ""; }
+    const validationErrors = await this.collectValidationErrors().catch(() => [] as string[]);
+    const verdict = classifyTerminalSubmitPage({ fields, bodyText, validationErrors });
+    if (!verdict.terminal) {
+      // A DISTINCT REASON, NAMED. "The walk stopped" and "the walk stopped because this page
+      // holds a DISABLED Next it is waiting for you to unlock" are different facts, and only
+      // one of them tells an operator what to do next.
+      this.debug?.event({ type: "terminal_page_refused", page: pageCount, guard: verdict.guard, why: verdict.reason.slice(0, 160) });
+      if (process.env.AUTOLEARN_DEBUG === "1") console.error(`[learn] p${pageCount} is not a terminal page (${verdict.guard}): ${verdict.reason}`);
+      return null;
+    }
+    const field = fields[verdict.index];
+    if (!field?.selector) return null;
+    this.debug?.event({ type: "terminal_page", page: pageCount, label: verdict.label.slice(0, 60), why: verdict.why.slice(0, 160) });
+    if (process.env.AUTOLEARN_DEBUG === "1") console.error(`[learn] p${pageCount} IS a terminal page — ${verdict.why}; recording ${JSON.stringify(verdict.label)} as the final submit (NOT clicked).`);
+    return { field, label: verdict.label };
   }
 
   private isOffLimitsButton(field: ExtractedField): boolean {
