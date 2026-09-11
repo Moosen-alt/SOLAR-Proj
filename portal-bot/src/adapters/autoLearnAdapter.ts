@@ -546,6 +546,225 @@ export function hasVisibleWidgetFaceInPage(el: Element): boolean {
 export const EXTRACT_SEL = "input, select, textarea, button, [role=button], a[href]:not([href='#']):not([href=''])";
 
 // ---------------------------------------------------------------------------
+// ONE ACTIVE SCOPE PER PAGE — scope the HARVEST, never the page's exits.
+//
+// ComEd (interconnect.comed.com, a NEM portal, and its platform twin
+// peco.connectthegrid.com) opens the application in a DRAWER over the dashboard and leaves
+// the dashboard mounted behind it. The walk harvested both at once; the banked census reads
+//
+//   p2 "ConnectTheGrid" [interconnect.comed.com/applications] form
+//      fields=55(fill=28,btn=27,link=6) plan:nav=- adv=- fills=7 review=false
+//   p3 "ConnectTheGrid" [interconnect.comed.com/applications] form
+//      fields=55(fill=28,btn=27,link=6) plan:nav=26 adv=- fills=0 review=false
+//
+// — the drawer's 28 fillables PLUS the dashboard's 27 buttons in ONE list. Given that list
+// the planner picked nav=26, "New Application Button. This will open a popup drawer.", and
+// RE-OPENED the drawer instead of advancing inside it, page after page. Two pages of the
+// budget bought seven fills and no review screen.
+//
+// The fix is structural and portal-agnostic: resolve ONE active scope per page (the topmost
+// open panel with a real bounding box) and harvest inside it. Nothing here names a host.
+//
+// *** THE HOLE, CLOSED FROM THE START: THE PAGE'S ONLY WAY FORWARD. ***
+// An earlier build of this dropped EVERY control outside the scope, buttons and links
+// included. A mainstream SPA wizard renders its step body in a panel and its Next in a
+// STICKY ACTION BAR outside that panel — and the scope gate below counts only FILLABLES, of
+// which an action bar has none. That wizard lost its only way forward entirely: the planner
+// never saw the footer Next (it came back inActiveScope=false), clickFallbackAdvance
+// iterated the same scoped array and never saw it either, the panel's own Submit became the
+// only forward control the engine could see, and the run banked a live "Step 2 of 5" page as
+// a review screen. A lost advance is a page nobody learns, which is the opposite of the job.
+//
+// We take OPTION (a) — exempt outside controls from the scope filter when the scope holds no
+// way forward — and NOT option (b) (require real modality before scoping at all), because
+// (b) only ever fires on aria-modal/dialog[open]/inert-background markup and the drawer that
+// produced the defect is a .mat-drawer / .cdk-overlay-pane; gating on modality would leave
+// ComEd exactly as broken as it is today, which is failing the assignment.
+//
+// (a) is NARROWED from "exempt every outside button/link" to "re-admit the outside controls
+// that are themselves SHAPED LIKE A WAY FORWARD": if the exemption re-admitted everything,
+// ComEd's 27 dashboard buttons would come straight back the moment its drawer happened to
+// carry no advance-shaped control, and the planner would pick "New Application Button"
+// again — the very defect. "Next"/"Continue"/"Submit" come back; "New Application Button"
+// does not. What we give up is a wizard whose sole footer control is an icon or a bare
+// "Save": that page stalls and banks nothing, which is recoverable. Re-banking the defect is
+// not.
+// ---------------------------------------------------------------------------
+
+/** The wording a page's WAY FORWARD takes. Hoisted out of clickFallbackAdvance so the
+ *  fallback finder and the scope exemption below cannot drift apart — they must agree on
+ *  what "an advance" is, or the exemption re-admits a control the fallback then refuses. */
+export const ADVANCE_ONLY = /^\s*(next|continue|proceed|save (and|&) (continue|next)|save & next|next step|go to next)\b/i;
+
+/** The panels a portal opens OVER the page it is on. Identical to the list
+ *  clickCreateDialogAdvance already probes — one page, one idea of what "the open panel" is.
+ *  NOTE: markActiveScopeInPage repeats this literally rather than closing over it, because
+ *  that function is serialized into the browser and a closed-over constant is a
+ *  ReferenceError there. Change one, change both. */
+export const ACTIVE_SCOPE_PANEL_SEL =
+  "[aria-modal='true'], [role='dialog'], dialog[open], mat-dialog-container, .cdk-overlay-pane, .mat-drawer, .modal";
+
+/** The transient attribute the resolver stamps on the winning panel. The harvest and the
+ *  did-it-move signature both READ it rather than each re-deciding what the scope is, so
+ *  they cannot disagree: there is one resolver and one marked element. Precedent for a
+ *  transient learn-time DOM marker: data-al-resultrow. */
+export const ACTIVE_SCOPE_CSS = '[data-al-activescope="1"]';
+
+/** Resolve and MARK the one active scope on the page. Serialized into the browser, so: no
+ *  reference to any module constant, and no named inner helper (esbuild's keepNames wraps
+ *  those as `__name(fn, "x")`, which does not exist in a raw page — see
+ *  waitForAutosaveIndicator's comment for the verified failure).
+ *
+ *  Tiers, in order:
+ *    1. the topmost OPEN panel with a real bounding box that actually holds a visible
+ *       fillable, or
+ *    2. nothing — the document, i.e. exactly today's behaviour.
+ *
+ *  The "container of the fields filled on this page" tier the brief also describes is
+ *  DELIBERATELY NOT IMPLEMENTED, and the reason is in this file: advanceSignatureOf's own
+ *  comment records that scoping out an appearing results panel was "the opposite of the bug
+ *  it was written to fix", and its two callers — pressEnterInLastFilledField and
+ *  clickMatchingResultRow — are exactly the fill-a-search-box-then-results-render-OUTSIDE-the
+ *  -form interaction, both of which throw the step away when the signature does not change.
+ *  That tier would also scope a plain single-form page to its own <form> after the first
+ *  fill, which contradicts the requirement that an ordinary page behave exactly as before.
+ *
+ *  A panel with no fillable is not a scope: a confirm dialog, a toolbar that happens to
+ *  carry class="modal", a collapsed Material drawer. A closed drawer is PRESENT BUT SHUT and
+ *  has no box — the 40px floor is the same one clickCreateDialogAdvance uses. */
+export function markActiveScopeInPage(): { marked: boolean; tag: string; fillables: number } {
+  for (const prev of Array.from(document.querySelectorAll('[data-al-activescope="1"]'))) {
+    prev.removeAttribute("data-al-activescope");
+  }
+  const panels = Array.from(document.querySelectorAll(
+    "[aria-modal='true'], [role='dialog'], dialog[open], mat-dialog-container, .cdk-overlay-pane, .mat-drawer, .modal",
+  )) as HTMLElement[];
+  let pick: HTMLElement | null = null;
+  let pickFillables = 0;
+  for (const p of panels) {
+    const r = p.getBoundingClientRect();
+    if (r.width < 40 || r.height < 40) continue; // present but shut
+    const st = window.getComputedStyle(p);
+    if (st.visibility === "hidden" || st.display === "none") continue;
+    // A panel the page itself has retired is not the active one, whatever its classes say.
+    if (p.closest('[aria-hidden="true"], [inert]')) continue;
+    let n = 0;
+    for (const f of Array.from(p.querySelectorAll("input, select, textarea")) as HTMLElement[]) {
+      const fr = f.getBoundingClientRect();
+      if (fr.width > 2 && fr.height > 2) n++;
+    }
+    if (n < 1) continue;
+    // TOPMOST = LAST IN DOM ORDER. Overlay hosts append, and a panel nested inside another
+    // panel comes after its container in document order, so "keep the last survivor" picks
+    // the innermost/newest open thing without reading z-index off a stacking context.
+    pick = p;
+    pickFillables = n;
+  }
+  if (!pick) return { marked: false, tag: "", fillables: 0 };
+  pick.setAttribute("data-al-activescope", "1");
+  return { marked: true, tag: pick.tagName.toLowerCase(), fillables: pickFillables };
+}
+
+/** THE SINGLE ENTRY POINT to the scope, for Node. Both consumers — the field harvest and
+ *  the did-it-move signature — go through here, so "the resolver and the signature's scope
+ *  move together" is true by construction rather than by convention.
+ *
+ *  AUTOLEARN_NO_ACTIVE_SCOPE=1 turns scoping off and clears any marker, which is what the
+ *  activeScope fixture's KILL TEST flips: with it set, the harvest must go back to carrying
+ *  the dashboard behind the drawer. A fixture that passes without the fix is not a test.
+ *  Never throws — a page mid-navigation falls back to the whole document, i.e. today. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function resolveActiveScope(page: any): Promise<{ marked: boolean; tag: string; fillables: number }> {
+  const none = { marked: false, tag: "", fillables: 0 };
+  if (!page || typeof page.evaluate !== "function") return none;
+  if (process.env.AUTOLEARN_NO_ACTIVE_SCOPE === "1") {
+    await page.evaluate(() => {
+      for (const p of Array.from(document.querySelectorAll('[data-al-activescope="1"]'))) {
+        p.removeAttribute("data-al-activescope");
+      }
+    }).catch(() => null);
+    return none;
+  }
+  try {
+    const r = await page.evaluate(markActiveScopeInPage) as { marked: boolean; tag: string; fillables: number } | null;
+    return r && typeof r.marked === "boolean" ? r : none;
+  } catch {
+    return none;
+  }
+}
+
+/** THE GATE: does the panel own an advance the engine is actually ALLOWED to click?
+ *  clickFallbackAdvance's own test, to the letter — and the asymmetry with
+ *  isForwardExitLabel below is the whole point. A SUBMIT is not an answer here: the
+ *  incident this closes is a panel whose only control was a Submit, where counting that
+ *  Submit as "the panel has a way forward" suppresses the exemption and hands the engine a
+ *  filing as its only move. Refusing to count it means the exemption fires and the real
+ *  Next, out in the sticky footer, comes back. */
+function isPanelAdvanceLabel(label: string | undefined): boolean {
+  const t = String(label ?? "").trim();
+  if (!t || t.length > 40) return false;
+  if (PAGINATION_CONTROL.test(t)) return false;
+  if (SUBMIT_INTENT.test(t)) return false;
+  return ADVANCE_ONLY.test(t);
+}
+
+/** RE-ADMISSION: is this label shaped like a page's WAY FORWARD at all? Union of the
+ *  advance wording and the submit wording, minus a paginator. Submits count HERE because a
+ *  review screen's Submit really is that page's exit and must be SEEN so it can be recorded
+ *  (recorded, never clicked — hard rule 1); a footer Submit filtered away is a recipe with
+ *  no final step for the human to perform. Composes with the PAGINATION_CONTROL guard
+ *  (c86fc08) rather than duplicating it: "Next page" is a table pager on somebody's
+ *  dashboard, never a wizard's exit, and must never be re-admitted. */
+export function isForwardExitLabel(label: string | undefined): boolean {
+  const t = String(label ?? "").trim();
+  if (!t || t.length > 60) return false;
+  if (PAGINATION_CONTROL.test(t)) return false;
+  return ADVANCE_ONLY.test(t) || SUBMIT_INTENT.test(t);
+}
+
+/** isOffLimitsButton's test, at the RawField level (the filter runs before the map to
+ *  ExtractedField). Keep the two in step: a control the click paths refuse must never be
+ *  re-admitted by the exemption as if it were a way forward. */
+function rawIsOffLimits(r: RawField): boolean {
+  return isPayFee(r.label) || isPayFee(r.name) || isPayFee(r.text)
+    || EXISTING_RECORD_ACTION.test(r.label || "")
+    || EXISTING_RECORD_ACTION.test(r.name || "")
+    || EXISTING_RECORD_ACTION.test(r.text || "");
+}
+
+/** Apply the resolved scope to a harvest. `scopeActive` is what markActiveScopeInPage
+ *  reported; when it is false NOTHING is filtered and an ordinary single-form page behaves
+ *  exactly as it did before this existed. Exported so the fixture can pin both directions. */
+export function applyActiveScopeFilter(
+  raws: RawField[],
+  scopeActive: boolean,
+): { fields: RawField[]; dropped: number; exempted: string[] } {
+  if (!scopeActive) return { fields: raws, dropped: 0, exempted: [] };
+  const scopeHasForward = raws.some(
+    (r) => r.inActiveScope !== false && r.fieldType === "button" && isPanelAdvanceLabel(r.label) && !rawIsOffLimits(r),
+  );
+  const exempted: string[] = [];
+  let dropped = 0;
+  // Filtered in place rather than concatenated: the planner addresses fields BY INDEX, so a
+  // re-ordered list would silently re-aim every fill it asks for.
+  const fields = raws.filter((r) => {
+    if (r.inActiveScope !== false) return true;
+    // The panel owns the FIELDS unconditionally — the whole point is that the dashboard's
+    // inputs behind an open drawer are not this page's inputs.
+    if (r.fieldType !== "button") { dropped++; return false; }
+    if (scopeHasForward) { dropped++; return false; }
+    // aria-hidden / inert is the page saying nobody can reach this. Never re-admit it —
+    // that is also where a genuinely modal portal parks its background, so real modality
+    // still wins where the portal bothers to declare it.
+    if (r.offstage) { dropped++; return false; }
+    if (!isForwardExitLabel(r.label) || rawIsOffLimits(r)) { dropped++; return false; }
+    exempted.push(String(r.label ?? "").slice(0, 40));
+    return true;
+  });
+  return { fields, dropped, exempted };
+}
+
+// ---------------------------------------------------------------------------
 // The DOM extraction script — runs in the page via $$eval. Pure (no closures over
 // adapter state) so it can be serialized into the browser. Returns plain JSON.
 // ---------------------------------------------------------------------------
@@ -575,6 +794,14 @@ export interface RawField {
   /** CSS selector built from a data-test* attribute (e.g. [data-test-role="inverter-model-select"]).
    *  Stable across sessions — captured as a high-priority replay selector for custom widgets. */
   testCss?: string;
+  /** Set ONLY when an active scope was resolved on the page (see markActiveScopeInPage).
+   *  `false` means "this control belongs to the page BEHIND the open panel" — the dashboard
+   *  under ComEd's application drawer. Left undefined when there is no panel, so a plain
+   *  page carries no scope opinion at all. */
+  inActiveScope?: boolean;
+  /** True when the control sits inside an aria-hidden="true" or [inert] subtree — the page
+   *  itself saying nobody can reach it. Never re-admitted by the exit exemption. */
+  offstage?: boolean;
 }
 
 // Serializable extractor — derives a label and selector hints for each interactive
@@ -775,6 +1002,13 @@ export function extractFieldsInPage(els: Element[]): RawField[] {
     if (active && clean(active.textContent)) return clean(active.textContent);
     return "";
   }
+
+  // THE ONE ACTIVE SCOPE, READ (not re-decided) — markActiveScopeInPage stamped it just
+  // before this ran. Null on an ordinary page and inside a child frame (the marker lives in
+  // the main document); extractAllFrames stamps frame fields from the frame ELEMENT's
+  // position instead. The literal selector is repeated here because this function is
+  // serialized into the page and cannot close over ACTIVE_SCOPE_CSS.
+  const scopeEl = document.querySelector('[data-al-activescope="1"]');
 
   const out: RawField[] = [];
   for (const el of els) {
@@ -983,7 +1217,15 @@ export function extractFieldsInPage(els: Element[]): RawField[] {
     }
     const required = (el as HTMLInputElement).required || el.getAttribute("aria-required") === "true" || requiredByAsterisk || undefined;
 
-    out.push({ label, fieldType, options, role, name, placeholder, id, text, href, required: required || undefined, section: sectionFor(el) || undefined, testCss, ariaLabel: el.getAttribute("aria-label")?.trim() || undefined });
+    out.push({
+      label, fieldType, options, role, name, placeholder, id, text, href,
+      required: required || undefined,
+      section: sectionFor(el) || undefined,
+      testCss,
+      ariaLabel: el.getAttribute("aria-label")?.trim() || undefined,
+      inActiveScope: scopeEl ? scopeEl.contains(el) : undefined,
+      offstage: scopeEl ? !!el.closest('[aria-hidden="true"], [inert]') : undefined,
+    });
   }
   return out;
 }
@@ -1965,15 +2207,34 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   // Never throws — falls back to a direct main-document scrape if frame enumeration is unavailable.
   private async extractAllFrames(extractSel: string): Promise<RawField[]> {
     if (!this.page) return [];
+    // ONE ACTIVE SCOPE PER PAGE, resolved ONCE per harvest and marked in the DOM so every
+    // reader below (and advanceSignatureOf) sees the same answer. Fails open: if the
+    // evaluate throws mid-navigation we harvest the whole document, exactly as before.
+    const scope = await resolveActiveScope(this.page);
+    const scopeActive = scope.marked;
+
     const out: RawField[] = [];
     let frames: Frame[] = [];
     try { frames = typeof this.page.frames === "function" ? this.page.frames() : []; } catch { frames = []; }
     const main = typeof this.page.mainFrame === "function" ? this.page.mainFrame() : null;
     for (const frame of frames) {
       let frameKey: string | undefined;
+      // A CHILD FRAME CANNOT SEE THE MARKER — it lives in the main document, so
+      // extractFieldsInPage running inside the frame finds no scope and stamps nothing.
+      // Decide the frame's scope membership from its <iframe> ELEMENT instead. Undefined
+      // means "no scope on this page"; true/false is stamped over the frame's fields below.
+      // Accela renders its contact/upload dialogs inside ACADialogFrame, so a frame whose
+      // element sits INSIDE the open panel must keep its fields — dropping every framed
+      // field whenever a panel is open would break that pattern outright.
+      let frameInScope: boolean | undefined;
+      let frameOffstage: boolean | undefined;
       if (main && frame !== main) {
         try {
           const el = await frame.frameElement();
+          if (scopeActive) {
+            frameInScope = await el.evaluate((n: Element) => !!n.closest('[data-al-activescope="1"]')).catch(() => true) as boolean;
+            frameOffstage = await el.evaluate((n: Element) => !!n.closest('[aria-hidden="true"], [inert]')).catch(() => false) as boolean;
+          }
           frameKey = (await el.getAttribute("name")) || (await el.getAttribute("id")) || undefined;
           if (!frameKey) {
             // No name/id — key by the src URL's pathname (query strings carry per-session
@@ -1991,7 +2252,11 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       }
       try {
         const raws = await frame.$$eval(extractSel, extractFieldsInPage);
-        for (const r of raws) { if (frameKey) r.frame = frameKey; out.push(r); }
+        for (const r of raws) {
+          if (frameKey) r.frame = frameKey;
+          if (frameInScope !== undefined) { r.inActiveScope = frameInScope; r.offstage = frameOffstage; }
+          out.push(r);
+        }
       } catch { /* detached frame — skip */ }
     }
     // Safety net: if frame enumeration yielded nothing (e.g. a fake/stub page in tests, or an
@@ -1999,7 +2264,20 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     if (!out.length) {
       try { out.push(...(await this.page.$$eval(extractSel, extractFieldsInPage))); } catch { /* ignore */ }
     }
-    return out;
+    const scoped = applyActiveScopeFilter(out, scopeActive);
+    if (scopeActive && (scoped.dropped || scoped.exempted.length)) {
+      this.debug?.event({
+        type: "active_scope",
+        panel: scope.tag,
+        fillables: scope.fillables,
+        kept: scoped.fields.length,
+        dropped: scoped.dropped,
+        // Named so a trace can show WHICH exits the panel did not own — the reviewer's
+        // vocabulary for the lost-advance bug was exactly "inActiveScope=false".
+        exempted: scoped.exempted.slice(0, 5),
+      });
+    }
+    return scoped.fields;
   }
 
   // Hard time bound for a whole PHASE. Playwright bounds individual actions, but a phase
@@ -6632,7 +6910,10 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     if (!this.page || !Array.isArray(fields) || !fields.length) return false;
     const filledHere = steps.some((st) => st.phase === "fill" && ["fill", "select", "check"].includes(String(st.action)));
     if (!filledHere) return false;
-    const ADVANCE_ONLY = /^\s*(next|continue|proceed|save (and|&) (continue|next)|save & next|next step|go to next)\b/i;
+    // ADVANCE_ONLY now lives at module scope: the active-scope exit exemption re-admits a
+    // control OUTSIDE the open panel only when it matches this, so if the two copies drifted
+    // the exemption would hand back a control this finder then refused — a page with a
+    // visible Next and no way to click it.
     const candidate = fields.find((f: { label?: string; kind?: string }) => {
       const label = String(f?.label ?? "").trim();
       if (!label || label.length > 40) return false;
@@ -7567,29 +7848,42 @@ export function acaApplyEntryFrom(url: string): string | null {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export async function advanceSignatureOf(page: any): Promise<string> {
   if (!page || typeof page.evaluate !== "function") return "";
+  // ONE ACTIVE SCOPE PER PAGE — the SAME resolver the harvest uses, run here rather than a
+  // second copy of the panel rules, so the two cannot drift: there is one function that
+  // decides what the scope is and one marked element that both of them read. Without this,
+  // ComEd's drawer advance was measured against a signature dominated by the dashboard
+  // behind it (27 buttons, a paginated table's rows), where movement inside the drawer is
+  // noise. Fails open to the whole document if the evaluate throws mid-navigation.
+  await resolveActiveScope(page);
   try {
     return await page.evaluate(() => {
       const vis = (el: Element): boolean => {
         const r = (el as HTMLElement).getBoundingClientRect();
         return r.width > 2 && r.height > 2;
       };
-      const fillable = (Array.from(document.querySelectorAll("input, select, textarea")) as HTMLElement[])
+      // Literal selector, not ACTIVE_SCOPE_CSS: this callback is serialized into the page.
+      const scopeEl = document.querySelector('[data-al-activescope="1"]');
+      const root: ParentNode = scopeEl ?? document;
+      const fillable = (Array.from(root.querySelectorAll("input, select, textarea")) as HTMLElement[])
         .filter(vis)
         .map((el) => (el.getAttribute("name") || el.getAttribute("id") || (el as HTMLInputElement).type || "").toLowerCase())
         .sort()
         .join(",");
-      const buttons = (Array.from(document.querySelectorAll("button, input[type=submit], input[type=button]")) as HTMLElement[])
+      const buttons = (Array.from(root.querySelectorAll("button, input[type=submit], input[type=button]")) as HTMLElement[])
         .filter((el) => vis(el) && !(el as HTMLButtonElement).disabled).length;
-      const heading = (document.querySelector("h1, h2, legend, .wizard-step.active, [aria-current='step']")?.textContent || "")
+      const heading = (root.querySelector("h1, h2, legend, .wizard-step.active, [aria-current='step']")?.textContent || "")
         .replace(/\s+/g, " ").trim().slice(0, 60);
       // RESULTS ARE STRUCTURE, NOT TEXT. A search that returns rows changes no heading, no
       // button count and no field names — the first version of this signature therefore
       // called a successful search "no movement", which is the opposite of the bug it was
       // written to fix. Counting rows and options separates a results panel APPEARING from
       // the same panel re-rendering its instructions.
-      const rows = (Array.from(document.querySelectorAll("tr, li, [role='row'], option")) as HTMLElement[])
+      const rows = (Array.from(root.querySelectorAll("tr, li, [role='row'], option")) as HTMLElement[])
         .filter(vis).length;
-      return `${location.pathname}|${heading}|${buttons}|${rows}|${fillable.slice(0, 400)}`;
+      // The scope flag is part of the signature: a drawer OPENING or CLOSING over an
+      // otherwise unchanged page is movement, and without this the two scopes would be
+      // compared as if they were the same measurement.
+      return `${location.pathname}|${scopeEl ? "s" : "d"}|${heading}|${buttons}|${rows}|${fillable.slice(0, 400)}`;
     });
   } catch {
     return "";
