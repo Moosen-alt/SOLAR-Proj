@@ -83,7 +83,7 @@ import { createSignature, deleteSignature, getSignatureImage, listSignatures, se
 import { addAuditLog } from "./audit";
 import { buildAuthUrl, exchangeCodeForTokens, gmailStatus, pollGmail } from "./gmail";
 import { imapStatus, pollImap, upsertImapSource } from "./emailPoller";
-import { createIntakeRequest, getIntakeRequestPublic, submitIntakeRequest } from "./intakeRequests";
+import { createIntakeRequest, getIntakeRequestPublic, submitIntakeRequest, portalQuestionStatus } from "./intakeRequests";
 import { ensureHeartbeat, sseBroadcast, sseSubscribe, setSseOrgResolver } from "./events";
 import {
   addManualCorrection,
@@ -710,7 +710,7 @@ app.delete("/api/imap/sources/:id", (req, res) => {
 // Operator: create (or reuse) a shareable intake link for a project.
 app.post("/api/projects/:id/intake-request", asyncHandler(async (req, res) => {
   const b = (req.body ?? {}) as Record<string, unknown>;
-  const result = createIntakeRequest(db, String(req.params.id), {
+  const result = await createIntakeRequest(db, String(req.params.id), {
     fields: Array.isArray(b.fields) ? (b.fields as ("jobValue" | "homeownerEmail" | "homeownerPhone")[]) : undefined,
     createdBy: typeof b.createdBy === "string" ? b.createdBy : undefined,
     expiresInDays: typeof b.expiresInDays === "number" ? b.expiresInDays : 30,
@@ -718,6 +718,13 @@ app.post("/api/projects/:id/intake-request", asyncHandler(async (req, res) => {
   // Absolute URL so the operator can copy/paste it straight into an email.
   const base = `${req.protocol}://${req.get("host")}`;
   res.json({ ...result, url: `${base}${result.path}` });
+}));
+
+// Operator: which portal per-job questions are still unanswered for this project
+// (and which the installer said "I'm not sure" about). Drives the dashboard's
+// "N portal questions unanswered" blocker chip next to the readiness indicators.
+app.get("/api/projects/:id/portal-questions", asyncHandler(async (req, res) => {
+  res.json(await portalQuestionStatus(db, String(req.params.id)));
 }));
 
 // Public (no auth): read an intake request by token.
@@ -1012,7 +1019,7 @@ app.get("/api/public/status/:token", (req, res) => {
 // Public (no auth): submit answers for an intake request.
 app.post("/api/intake/:token", asyncHandler(async (req, res) => {
   const result = submitIntakeRequest(db, String(req.params.token), (req.body ?? {}) as Record<string, unknown>);
-  sseBroadcast({ type: "intake_submitted", projectId: result.projectId, message: "Client submitted intake details — valuation/contact updated." });
+  sseBroadcast({ type: "intake_submitted", projectId: result.projectId, message: "Client submitted intake details — valuation/contact/portal answers updated." });
   res.json(result);
 }));
 

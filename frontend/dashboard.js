@@ -633,6 +633,35 @@ async function loadSubmitGate() {
   await loadProjectResource("submitGate", "submit-gate");
 }
 
+// Portal per-job questions the project record can't answer yet (financing/
+// ownership, community solar, …). Unanswered ones surface as a blocker chip so
+// the operator sees "N portal questions unanswered" BEFORE staging files a
+// frozen wrong answer silently.
+async function loadPortalQuestions() {
+  await loadProjectResource("portalQuestions", "portal-questions");
+}
+
+function renderPortalQuestionChip() {
+  const row = document.querySelector(".intake-link-row");
+  if (!row) return;
+  let chip = document.getElementById("portalQuestionsChip");
+  const pq = state.portalQuestions;
+  if (!pq || !pq.unansweredCount) { if (chip) chip.remove(); return; }
+  if (!chip) {
+    chip = document.createElement("span");
+    chip.id = "portalQuestionsChip";
+    row.appendChild(chip);
+  }
+  chip.className = "chip danger";
+  chip.style.fontSize = "12px";
+  const unsure = pq.unsureCount ? ` · installer unsure about ${pq.unsureCount}` : "";
+  // textContent/title assignments only — nothing interpolated into innerHTML.
+  chip.textContent = `⚠ ${pq.unansweredCount} portal question${pq.unansweredCount === 1 ? "" : "s"} unanswered${unsure}`;
+  chip.title = "The portal will ask these about this job and the documents don't answer them. "
+    + "Send the client intake link (button to the left) or answer in the portal at staging:\n"
+    + (pq.questions || []).map((q) => `• ${q.label}${q.unsure ? " (installer wasn't sure)" : ""}`).join("\n");
+}
+
 function renderEmailTracker() {
   const sources = state.emailTracker?.sources || [];
   const active = sources.find((source) => source.active) || sources[0];
@@ -1054,6 +1083,7 @@ async function selectProject(projectId) {
   state.submitGate = null;
   state.submittalTracks = null;
   state.paymentQuotes = null;
+  state.portalQuestions = null;
   $("emptyState").hidden = true;
   $("detailView").hidden = false;
   clearMessage();
@@ -1072,7 +1102,7 @@ async function selectProject(projectId) {
     loadOpsPlan(), loadSubmitGate(), loadRunbook(), loadHandoffPacket(),
     loadCommunicationDrafts(), loadLiveReadiness(), loadProjectTimeline(),
     loadProcessMap(), loadInstallerPacket(), loadProjectDocuments(),
-    loadSubmittalTracks(), loadPaymentQuotes(),
+    loadSubmittalTracks(), loadPaymentQuotes(), loadPortalQuestions(),
   ]);
   renderDetail();
 }
@@ -1803,6 +1833,7 @@ function renderDetail() {
   safeRender("permitForm", syncPermitForm);
   safeRender("workflow", renderWorkflow);
   safeRender("submitGate", renderSubmitGate);
+  safeRender("portalQuestions", renderPortalQuestionChip);
   safeRender("paymentPanel", renderPaymentPanel);
   safeRender("submittalTracks", renderSubmittalTracks);
   safeRender("processMap", renderProcessMap);
@@ -2374,7 +2405,9 @@ async function generateIntakeLink() {
     let copied = false;
     try { await navigator.clipboard.writeText(url); copied = true; } catch (_) { /* clipboard may be blocked */ }
     if (out) out.innerHTML = `${copied ? "✅ Copied to clipboard. " : ""}<a href="${esc(url)}" target="_blank" rel="noopener">${esc(url)}</a>`;
-    showMessage(copied ? "Intake link copied — paste it into an email to the installer." : "Intake link generated.");
+    const qCount = (res.questions || []).length;
+    const qNote = qCount ? ` It also asks the ${qCount} portal question${qCount === 1 ? "" : "s"} this project can't answer yet.` : "";
+    showMessage((copied ? "Intake link copied — paste it into an email to the installer." : "Intake link generated.") + qNote);
   } catch (e) {
     if (out) out.textContent = "Failed to generate link: " + (e.message || e);
   } finally {
