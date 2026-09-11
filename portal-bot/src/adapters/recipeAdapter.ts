@@ -72,7 +72,24 @@ import { tagUploadControls } from "./autoLearnAdapter";
 // is empty for id-based ASP.NET buttons and would let submit/pay slip through.
 
 // ALWAYS-blocked fee-payment controls (even on a trusted auto-submit portal).
-const PAY_FEE = /\b(pay fee|pay now|submit & pay|submit and pay|make payment|pay \$|add to cart|proceed to (payment|checkout)|checkout)\b/i;
+// THIS IS THE REPLAY-SIDE CLICK GATE, AND IT IS THE NARROWER OF TWO COPIES.
+//
+// autoLearnAdapter.ts carries its own PAY_FEE. This one guards an ACTION during an automated
+// replay against a live portal - line ~2848, `if (PAY_FEE_REPLAY_GATE.test(name)) return false;` - so a word
+// it fails to match is a real fee paid with the operator's money, against CLAUDE.md rule 1.
+//
+// Holes found by an adversarial review of the learn-side twin, all of which applied here too and
+// several of which were WIDER here (this copy had no bare `fee`, no `payment`, no `remit`):
+//   - "submit and pay" was listed but not the reverse order, so "Pay and Submit Application" passed
+//   - there was no bare \bpayment\b, and \bpay\b cannot match "Payment" (no boundary before the m),
+//     so "Submit Payment" passed
+//   - "Pay Fees and Submit" passed on the plural alone
+//
+// Kept as a deliberate DUPLICATE rather than shared, because the two sides must be able to differ:
+// the learn side classifies a control it will never click, this side gates a click that will
+// really happen, and this one must be allowed to stay stricter. paymentGate.test.ts pins the
+// behaviour; if you widen one copy, widen this one too and check that test.
+export const PAY_FEE_REPLAY_GATE = /\b(pay\s*(and|&)\s*submit|pay fees?|pay now|submit\s*(&|and)\s*pay|make payment|payments?|remit|invoice|pay \$|add to cart|proceed to (payment|checkout)|checkout|fees? due)\b/i;
 // Submit-ish keywords. A step matching these is HARD-BLOCKED in autoSubmit UNLESS it
 // also carries the explicit isFinalSubmit flag — we never decide "this is the submit
 // button" purely from a regex over recorded names.
@@ -2838,7 +2855,7 @@ ${body.slice(0, 4000)}`);
     if (reanchored) scoped = reanchored;
 
     // 1) Fee payment is NEVER automated — always blocked, even if (wrongly) flagged.
-    if (PAY_FEE.test(name)) return false;
+    if (PAY_FEE_REPLAY_GATE.test(name)) return false;
 
     // 2) Anything past the review marker (autoSubmit territory) is hard-blocked unless
     //    it carries the explicit isFinalSubmit allowlist flag. This catches id/css-only
