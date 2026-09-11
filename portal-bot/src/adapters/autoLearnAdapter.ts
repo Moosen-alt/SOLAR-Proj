@@ -209,7 +209,22 @@ export type LearnProgressFn = (p: LearnProgress) => void;
 // Now at parity with PAY_FEE_REPLAY_GATE in recipeAdapter.ts, which guards a click that really
 // happens; this copy classifies controls the learn will never click, so the two stay separate
 // (see that file's comment) but must never again be separately WRONG.
-const PAY_FEE = /\b(pay\s*(and|&)\s*submit|pay fees?|pay fee|pay now|submit\s*(&|and)\s*pay|make payment|payments?|remit|invoices?|continue to payment|pay \$|add to cart|proceed to (payment|checkout)|checkout|fees? due|fees?)\b/i;
+// PURCHASE-COMMIT wording added alongside MONEY_ANYWHERE (see its comment): a control that
+// COMMITS an order is a control that moves money. Narrow on purpose — `order` only counts when
+// a commit verb governs it, so "Sort Order", "Work Order" and "Order Status" still click. This
+// list BLOCKS CLICKS, so over-refusal here stalls a real page rather than costing one
+// classification, which is why it is not the blunt `\border\b` used in MONEY_ANYWHERE.
+//
+// BARE `pay` — the phrase list lost this race exactly as the comment above predicted it would.
+// Every alternative here governed an object ("pay fees", "pay now", "pay $", "pay and submit"),
+// so the plainest pay control of all went straight through BOTH copies: isPayFee("Pay"),
+// ("Pay Later"), ("Pay by Credit Card"), ("Review and Pay"), ("Confirm and Pay") were all false.
+// That is not a classification miss, it is a CLICK: "Continue and Pay" is ADVANCE_ONLY-anchored
+// on "Continue" and matches no SUBMIT_INTENT, so clickFallbackAdvance's only remaining guard was
+// isOffLimitsButton — which said false — and the learn walk would have pressed a pay control on
+// a live portal, against CLAUDE.md rule 1. `\bpay\b` cannot match "Payee"/"Payroll"/"Prepay"
+// (no boundary after "pay"), so the MUST_ALLOW list is untouched.
+const PAY_FEE = /\b(pay\s*(and|&)\s*submit|pay fees?|pay fee|pay now|submit\s*(&|and)\s*pay|make payment|payments?|remit|invoices?|continue to payment|pay \$|add to cart|proceed to (payment|checkout)|checkout|fees? due|fees?|purchases?|buy now|(place|submit|confirm|complete|finali[sz]e)\s+(the\s+|my\s+|your\s+)?order|pay)\b/i;
 
 // Submit-intent button labels. On a READ-ONLY review page these SUBMIT (Accela's
 // "Continue Application" on Step 3: Review is the submit gate — it advances on input
@@ -862,8 +877,19 @@ const DEFER_DRAFT = /\b(later|draft|for now)\b|save\s*(and|&)\s*(exit|close|fini
 
 /** MONEY, IN ANY FORM — layer 2 of hole 3, independent of PAY_FEE on purpose. Deliberately
  *  unbounded on the right (`\bfee` catches "Fees"/"Feedback"): over-refusing here costs one
- *  un-learned page, under-refusing costs a payment recorded as the end of an application. */
-const MONEY_ANYWHERE = /\bpay\b|\bpaid\b|\bfee|\bpayment|\bcart|\bcheckout|\bremit|\binvoice/i;
+ *  un-learned page, under-refusing costs a payment recorded as the end of an application.
+ *
+ *  PURCHASE-COMMIT VOCABULARY (`purchase`/`buy`/`order`) added after an adversarial probe of
+ *  this classifier: "Place Order" and "Submit Order" came back TERMINAL and were recorded
+ *  isFinalSubmit:true. Both clear every other guard — `\bplace order\b` is in TERMINAL_VERB,
+ *  "orders?" is in APPLICATION_NOUN, and neither PAY_FEE nor PAY_FEE_REPLAY_GATE mentions
+ *  "order" at all, so the replay gate answered replayGateBlocks=false. In trusted autoSubmit
+ *  that is a money-committing click reached by INFERENCE, which is hard-rule-1 territory.
+ *  Blunt (bare `\border\b`) is right HERE specifically because this regex only ever decides
+ *  whether an already-submit-shaped button is recorded as the end — a "Sort Order" header is
+ *  not a TERMINAL_VERB match and never reaches this line. The click-blocking lists below are
+ *  widened more narrowly, because there over-refusal stalls a real page. */
+const MONEY_ANYWHERE = /\bpay\b|\bpaid\b|\bfee|\bpayment|\bcart|\bcheckout|\bremit|\binvoice|\bpurchase|\bbuy\b|\border\b/i;
 
 /** The verbs that END an application. Bare `file` is excluded on purpose — "Choose File" and
  *  "Upload File" are upload controls, and counting them would refuse terminality on every page

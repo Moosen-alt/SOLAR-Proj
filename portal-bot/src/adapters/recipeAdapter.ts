@@ -89,7 +89,18 @@ import { tagUploadControls } from "./autoLearnAdapter";
 // the learn side classifies a control it will never click, this side gates a click that will
 // really happen, and this one must be allowed to stay stricter. paymentGate.test.ts pins the
 // behaviour; if you widen one copy, widen this one too and check that test.
-export const PAY_FEE_REPLAY_GATE = /\b(pay\s*(and|&)\s*submit|pay fees?|pay now|submit\s*(&|and)\s*pay|make payment|payments?|remit|invoice|pay \$|add to cart|proceed to (payment|checkout)|checkout|fees? due)\b/i;
+// PURCHASE-COMMIT wording, kept at parity with the learn-side PAY_FEE: an adversarial probe of
+// the terminal-page classifier recorded "Place Order" as isFinalSubmit:true, and THIS gate
+// answered false for it - so the one layer that stops a real click during autoSubmit was silent
+// on a control that commits an order. Narrow (a commit verb must govern "order") because this
+// list halts a replay; the blunt form lives in MONEY_ANYWHERE, which only ever classifies.
+//
+// BARE `pay`, same probe: every alternative here governed an object ("pay fees", "pay now",
+// "pay $", "pay and submit"), so "Pay", "Pay Later", "Pay by Credit Card", "Review and Pay" and
+// "Confirm and Pay" ALL passed this gate. A recorded click on one of those spends the operator's
+// money on replay, and SUBMIT_KEYWORDS does not cover them either (none say "submit"). `\bpay\b`
+// cannot match "Payee Name" - there is no word boundary after "pay" - so MUST_ALLOW is untouched.
+export const PAY_FEE_REPLAY_GATE = /\b(pay\s*(and|&)\s*submit|pay fees?|pay now|submit\s*(&|and)\s*pay|make payment|payments?|remit|invoice|pay \$|add to cart|proceed to (payment|checkout)|checkout|fees? due|purchases?|buy now|(place|submit|confirm|complete|finali[sz]e)\s+(the\s+|my\s+|your\s+)?order|pay)\b/i;
 // Submit-ish keywords. A step matching these is HARD-BLOCKED in autoSubmit UNLESS it
 // also carries the explicit isFinalSubmit flag — we never decide "this is the submit
 // button" purely from a regex over recorded names.

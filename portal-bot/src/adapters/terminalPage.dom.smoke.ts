@@ -170,6 +170,19 @@ const PAGES: Record<string, string> = {
     <button id="i4Cancel">Cancel</button>
   </body></html>`,
 
+  // "money" alone: layer 2 of hole 3, isolated from the PAY_FEE phrase list that normally
+  // shadows it. "Submit Work Order" is a TERMINAL_VERB match whose noun ("orders?") IS in
+  // APPLICATION_NOUN, and PAY_FEE deliberately requires a COMMIT VERB to govern "order"
+  // ("place/submit/confirm order"), which "Submit Work Order" is not -- so payfee declines and
+  // only MONEY_ANYWHERE's blunt \border\b is left holding it. That asymmetry is the point: the
+  // blunt form is affordable in the classifier and is NOT affordable in the click-blocking
+  // lists, where "Sort Order" and "Work Order" must stay clickable (paymentGate.test.ts).
+  "/isolate-money": `<!doctype html><html><body>${STYLE}
+    <h1>Equipment</h1>
+    ${fieldBlock("i7")}
+    <button id="i7Order">Submit Work Order</button>
+  </body></html>`,
+
   // "advance" alone: a control carrying BOTH vocabularies, anchored on the submit half. The
   // page-level gate is anchored at the START of a label (ADVANCE_ONLY) and structurally cannot
   // see this one, so only the candidate rule can refuse it.
@@ -405,11 +418,22 @@ check("the SHIPPED PAY_FEE missed 'Pay and Submit Application' (the reverse word
   !OLD_PAY_FEE.test("Pay and Submit Application"));
 check("the SHIPPED PAY_FEE missed 'Submit Payment' (no boundary before the m in Payment)",
   !OLD_PAY_FEE.test("Submit Payment"));
-for (const label of ["Pay and Submit Application", "Submit Payment", "Pay Fees Due", "Remit Payment", "Pay Invoice", "Total Fees"]) {
+for (const label of ["Pay and Submit Application", "Submit Payment", "Pay Fees Due", "Remit Payment", "Pay Invoice", "Total Fees",
+  // A SECOND ROUND OF THE SAME DEFECT, found by adversarially probing this classifier rather
+  // than by a portal failing. Every alternative in the list governed an OBJECT, so the bare
+  // verb walked through: isPayFee("Pay") was false. That is not a missed classification --
+  // "Continue and Pay" is ADVANCE_ONLY-anchored on "Continue" and matches no SUBMIT_INTENT, so
+  // isPayFee was the last guard before clickFallbackAdvance pressed it on a live portal.
+  "Pay", "Pay Later", "Pay by Credit Card", "Review and Pay", "Confirm and Pay", "Continue and Pay",
+  // ...and the purchase-commit wording, which reached isFinalSubmit:true as "Place Order".
+  "Place Order", "Submit Order", "Complete Purchase", "Buy Now"]) {
   check(`PAY_FEE now catches ${JSON.stringify(label)}`, isPayFee(label));
 }
 // MUST-ALLOW is pinned as hard as MUST-REFUSE: over-blocking halts an ordinary page.
-for (const label of ["Next", "Continue", "Submit Application", "Upload Document", "Payee Name", "Save and Continue"]) {
+// "Repay"/"Payroll" pin that bare \bpay\b needs a boundary AFTER it; "Sort Order"/"Work Order"
+// pin that this list needs a COMMIT VERB to govern "order" (unlike MONEY_ANYWHERE's blunt form).
+for (const label of ["Next", "Continue", "Submit Application", "Upload Document", "Payee Name", "Save and Continue",
+  "Repay", "Payroll", "Sort Order", "Work Order", "Order Status"]) {
   check(`PAY_FEE still allows ${JSON.stringify(label)}`, !isPayFee(label));
 }
 const wPay = await walk("/paysubmit");
@@ -475,6 +499,7 @@ const matrix: Array<{ guard: TerminalGuard; path: string; what: string }> = [
   { guard: "gate", path: "/isolate-gate", what: "a DISABLED Next beside a clean Submit" },
   { guard: "defer", path: "/isolate-defer", what: '"Finish Application Later" as the only submit-shaped control' },
   { guard: "noun", path: "/isolate-noun", what: '"Submit Documents" -- the verb governs the wrong noun' },
+  { guard: "money", path: "/isolate-money", what: '"Submit Work Order" -- money wording the PAY_FEE phrase list does not catch' },
   { guard: "advance", path: "/isolate-advance", what: '"Submit Application and Continue" -- both vocabularies, anchored on the submit half' },
   { guard: "positive", path: "/isolate-positive", what: 'a clean Submit, but "Save and Proceed" is still on offer' },
 ];
