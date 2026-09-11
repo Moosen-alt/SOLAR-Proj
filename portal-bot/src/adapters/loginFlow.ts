@@ -21,10 +21,10 @@ export interface Credential {
 }
 
 export type LoginStatus =
-  | "logged_in" // a form was filled and submitted, and the form is now gone
+  | "logged_in" // a form was filled and submitted, and the session is POSITIVELY proven (see the poll in performLogin)
   | "already_authenticated" // no login form present AND a positive authenticated signal (logout/session valid)
   | "no_credential" // a login form is present but no credential was supplied
-  | "still_on_login" // filled + submitted, but the form is still showing (bad creds)
+  | "still_on_login" // filled + submitted, and the portal is STILL showing a login page (bad creds, or an unfinished two-step)
   | "mfa_captcha" // a challenge appeared — a human must finish
   | "no_username_field" // a password field exists but no username field could be found
   | "no_submit_control" // fields filled but no login button/link could be found
@@ -163,14 +163,262 @@ const triggerKey = (sel: RecipeSelector): string => JSON.stringify(sel);
 const AUTHENTICATED_SIGNALS: RecipeSelector[] = [
   { css: 'a[href*="logout" i], a[href*="log-out" i], a[href*="logoff" i], a[href*="signout" i], a[href*="sign-out" i], a[href*="signoff" i], a[id*="logout" i], a[id*="signout" i], button[id*="logout" i], button[id*="signout" i]' },
 ];
+/**
+ * ONE LOGIN-URL TEST, USED EVERYWHERE.
+ *
+ * This predicate existed in FOUR copies. Three of them read
+ * `/login|sign-?in|account\/(login|signin)|logon/`; the success poll read a bare `/login/i`.
+ * That single disagreement is what let a submitted login "succeed" by landing on a SECOND
+ * login page: Baltimore County correctly followed www.baltimorecountymd.gov ->
+ * cityworkspro.baltimorecountymd.gov, arrived at `/auth/signin`, and the poll's `/login/i`
+ * saw a URL that had moved and did not contain the word "login" — so it reported the run
+ * logged in and the walk went off to plan fills on a sign-in form.
+ *
+ * A predicate with four spellings has four behaviours.
+ *
+ * `register` IS DELIBERATELY NOT IN HERE. It was, for exactly one commit, on the reasoning
+ * that a "create an account" page is a login page for our purposes — and that was a clean
+ * regression, because this predicate gates far more than the success poll. It is what
+ * loginWordingPresent returns true on from the URL ALONE (satisfying the two-step-login
+ * branch), and it is what sets `onLoginUrl` (suppressing the no_login_required path). Since
+ * USERNAME_CANDIDATES includes {label:"Email"} and input[type=email], and
+ * NEXT_STEP_CANDIDATES includes the catch-all button[type=submit], an ordinary ACCOUNT-LESS
+ * PUBLIC APPLICATION FORM satisfied every structural clause the moment its URL carried the
+ * word. Verified over ONE identical form — 8 fields, an Email input, a "Submit Request"
+ * button, no password field anywhere — served at two paths:
+ *     /permits/apply                      -> ok=true,  no_login_required (the walk proceeds)
+ *     /permits/register-a-solar-project   -> ok=false, no_credential
+ * So the operator was told to supply a username and password for a portal that has no
+ * accounts — and worse, WITH a credential the two-step branch would have typed the username
+ * into that Email field and clicked "Submit Request", filing a stranger's permit request.
+ * It also matched every post-login landing containing the substring — /registered/home,
+ * /RegisteredUser/Dashboard, /Account/Home?registered=true — each of which would then make
+ * the success poll unable to conclude logged_in.
+ *
+ * The real hazard `register` was added for (step 1 of a registration wizard read as a public
+ * form) is closed by isRegistrationUrl below, at the ONE site where that hazard lives.
+ *
+ * DELIBERATELY NOT widened to auth/sso/idp/oauth: real post-login URLs read
+ * `/authenticated/home` and `/sso/dashboard`, and a URL regex is only ever a cheap
+ * pre-filter here. The discriminator that carries the weight is loginPageShape.
+ */
+export function looksLikeLoginUrl(url: string): boolean {
+  return /login|sign-?in|account\/(login|signin)|logon/i.test(url || "");
+}
+
+/**
+ * IS THIS URL A "CREATE AN ACCOUNT" PAGE?
+ *
+ * Separate from looksLikeLoginUrl ON PURPOSE — see the note above for what happened when the
+ * word lived in the shared predicate. This one is consulted at exactly ONE site: the
+ * application-shaped-form wave-through in performLogin, and only in conjunction with a
+ * POSITIVE account signal on the page (accountAffordancePresent). Either half alone is wrong:
+ * a register-shaped URL alone condemns Gilbert-style public forms ("register a solar
+ * project"), and an account signal alone is on half the permit portals in the fleet.
+ *
+ * WORD-BOUNDED, because a bare `register` substring also matches "registered", and
+ * /registered/home, /RegisteredUser/Dashboard and /Account/Home?registered=true are POST-login
+ * landings — the last place we want to start doubting a session.
+ */
+export function isRegistrationUrl(url: string): boolean {
+  return /\bregist(er|ration)\b/i.test(url || "");
+}
+
+/** Does this page SAY it is a login? Title, then visible copy. Both traced Cloudpermit pages
+ *  were titled "Cloudpermit - Log In" — including the one we recorded as signed in — so the
+ *  title is checked first and is often the only thing that still says so after a re-render. */
+async function loginWordingPresent(page: Page): Promise<boolean> {
+  if (looksLikeLoginUrl(typeof page.url === "function" ? page.url() : "")) return true;
+  const title = await page.title().catch(() => "");
+  if (/log\s?-?\s?in|sign\s?-?\s?in|logon|log on/i.test(title || "")) return true;
+  return await page.getByText(/sign in|log in|password|logon/i).first().isVisible().catch(() => false);
+}
+
+/**
+ * IS THE PAGE IN FRONT OF US A LOGIN PAGE?
+ *
+ * The engine had no such question. It had only `loginFormPresent`, which asks exactly one
+ * thing — is a password field visible — and on an IDENTIFIER-FIRST login (Cloudpermit, Okta,
+ * Microsoft, essentially every SSO front door) step 1 has no password field at all. So "the
+ * password field is gone" is the NORMAL state of a login that has not happened, and the
+ * success poll was reading it as proof of a session.
+ *
+ * Cost, measured: us.cloudpermit.com/gov/login was stamped `last_login_ok_at` "login
+ * accepted" and counted in the fleet's "26 accessible", having never logged in. The recipe
+ * then bound installerEmail to `#input-email-new` — a LOGIN FIELD — because the walk was
+ * handed a login form and asked to plan fills on it. That is also how a credential ends up
+ * typed into a field the planner chose.
+ *
+ * Two ways a page says it is a login, matching the two ways portals build them:
+ *   A) STRUCTURAL — an identifier-shaped field plus either a password field or a next-step
+ *      control, on a page whose wording is about signing in. This catches the two-step page
+ *      that has no password anywhere.
+ *   B) POSITIONAL — a login/sign-in/logon URL with no signed-in signal on it. A page that
+ *      is genuinely behind the login shows a sign-out control and is excluded by that.
+ *      (NOT a register URL — see looksLikeLoginUrl for what happened when it was one.)
+ *
+ * Returns the evidence (for the run's message and the bundle), or "" when the page is not a
+ * login.
+ *
+ * EXPORTED FOR THE DOM SMOKE — NOT FOR THE WALK, WHICH NEVER CALLS IT.
+ *
+ * This comment used to claim it was "exported so the walk can refuse to hand a login page to
+ * the field planner", presented as the thing that closes the Cloudpermit hazard. No such
+ * caller exists: outside this file the only importer is loginProof.dom.smoke.ts. The hazard
+ * IS closed — but by a different mechanism, and a comment that names a guard which is not
+ * there is precisely how it reopens: the next reader deletes the real guard believing this
+ * one covers it.
+ *
+ * WHERE THE PROTECTION ACTUALLY LIVES, and what must not change:
+ *   1. performLogin refuses to return a SUCCESS status for a page it cannot prove a session
+ *      on — it returns still_on_login / login_form_unrecognized instead (step 7/8 below).
+ *   2. autoLearnAdapter.ts gates the whole walk on a three-status ALLOWLIST:
+ *          if (result.status === "logged_in" || result.status === "already_authenticated"
+ *              || result.status === "no_login_required")       // ~autoLearnAdapter.ts:2498
+ *      and returns `ok: false` for everything else (~autoLearnAdapter.ts:2518) BEFORE any
+ *      field extraction or planning happens. That allowlist is the guard. Widening it, or
+ *      turning it into a denylist ("everything except mfa_captcha"), is what would let a
+ *      login form reach the field planner again — which is how the recipe came to bind
+ *      installerEmail to `#input-email-new`, a login field.
+ * loginProof.dom.smoke.ts pins (1) end to end; routeScope-style structural tests do not pin
+ * (2), so the line above is the one to grep for before touching that status handling.
+ *
+ * NOT WIRED INTO THE WALK INSTEAD, deliberately: the walk's login call already holds this
+ * answer in performLogin's status, and a second, independently computed refusal at the top
+ * of the walk is two predicates that can disagree — the exact failure mode recorded in the
+ * looksLikeLoginUrl note above, where one predicate in four spellings had four behaviours.
+ */
+export async function loginPageShape(page: Page): Promise<string> {
+  try {
+    // A) structural.
+    const idField = await firstVisible(page, USERNAME_CANDIDATES, { fillable: true });
+    if (idField) {
+      const pwField = await firstVisible(page, PASSWORD_CANDIDATES, { fillable: true });
+      const nextCtl = pwField ? null : await firstVisible(page, NEXT_STEP_CANDIDATES);
+      if ((pwField || nextCtl) && await loginWordingPresent(page)) {
+        return pwField
+          ? "an identifier field, a password field and sign-in wording"
+          : "an identifier field, a next-step control and sign-in wording, and no password field — an identifier-first login still on step 1";
+      }
+    }
+    // B) positional.
+    const url = typeof page.url === "function" ? page.url() : "";
+    if (looksLikeLoginUrl(url) && !(await authenticatedSignalPresent(page))) {
+      let path = url;
+      try { path = new URL(url).pathname || url; } catch { /* not an absolute URL */ }
+      return `a login URL (${path.slice(0, 60)}) with no signed-in signal on the page`;
+    }
+    return "";
+  } catch {
+    return "";
+  }
+}
+
 async function authenticatedSignalPresent(page: Page): Promise<boolean> {
   if (await firstVisible(page, AUTHENTICATED_SIGNALS)) return true;
-  // Text fallback: a visible sign-out control the css selectors above missed.
+  // TEXT FALLBACK: a visible sign-out CONTROL the css selectors above missed.
+  //
+  // This was `^(log out|sign out|log off|sign off)$` — anchored to the exact phrase, on any
+  // element. Both halves of that were wrong for the commonest authenticated page in this
+  // fleet. ASP.NET portals authenticate by __doPostBack to the SAME URL and render sign-out
+  // as `<a onclick="doLogout()">Log Off Account</a>`: no logout token in href or id (so the
+  // css candidates miss it), and one word too long for the ^...$ anchor (so the fallback
+  // missed it too). With no URL move and no chrome signal, the success poll burned its whole
+  // 15s and returned still_on_login — a login that used to work, now failing.
+  //
+  // So: a BOUNDED CONTAINS (under 30 characters) rather than an exact match. Two tightenings
+  // pay for the loosening, because widening a POSITIVE session signal is the dangerous
+  // direction — a false one is banked as knowledge:
+  //   - CONTROLS ONLY (a/button/role=button/role=link/role=menuitem/input buttons/[onclick]),
+  //     never bare prose. The old version matched any element, so "…click Log Out when you
+  //     are finished" in a help paragraph would now qualify if prose were still in scope.
+  //   - instructional wording excluded: "How to log out", "Need help signing out?" are
+  //     documentation links on a PUBLIC page, and reading one as a session is the eTRAKiT
+  //     false-success this whole module exists to prevent.
   try {
-    const byText = page.getByText(/^\s*(log\s?-?\s?out|sign\s?-?\s?out|log\s?off|sign\s?off)\s*$/i).first();
-    if ((await byText.count().catch(() => 0)) > 0 && (await byText.isVisible().catch(() => false))) return true;
-  } catch { /* ignore */ }
+    return await (page as unknown as { evaluate: (fn: () => boolean) => Promise<boolean> }).evaluate(() => {
+      // NO HOISTED HELPER OF ANY KIND inside an in-page callback: the bundler's keepNames
+      // transform wraps anything it can name — `const vis = (el) => …` included — as
+      // `__name(fn, "vis")`, and `__name` does not exist in the browser. Verified in real
+      // Chromium (see autoLearnAdapter.waitForAutosaveIndicator). Everything below is inline
+      // for that reason, and the DOM smokes' __name shim would hide the break if it were not.
+      const controls = Array.from(document.querySelectorAll(
+        "a, button, [role=button], [role=link], [role=menuitem], input[type=button], input[type=submit], [onclick]",
+      ));
+      for (const el of controls) {
+        const r = (el as HTMLElement).getBoundingClientRect();
+        const st = getComputedStyle(el as HTMLElement);
+        // A sign-out hidden inside a CLOSED account dropdown is not a signal a human could
+        // see, and is not treated as one — that case is carried by submittedIdentityEchoed.
+        if (!(r.width > 2 && r.height > 2 && st.visibility !== "hidden" && st.display !== "none")) continue;
+        const text = String(
+          (el as HTMLElement).innerText
+          || (el as HTMLInputElement).value
+          || el.getAttribute("aria-label")
+          || el.getAttribute("title")
+          || "",
+        ).replace(/\s+/g, " ").trim();
+        if (!text || text.length >= 30) continue;
+        if (/\bhow\b|\bhelp\b|\bfaq\b|\?/i.test(text)) continue;
+        if (/(log|sign)\s?-?\s?(out|off)\b/i.test(text)) return true;
+      }
+      return false;
+    });
+  } catch { /* cross-origin or a page mid-navigation */ }
   return false;
+}
+
+/**
+ * THE SECOND POSITIVE SESSION SIGNAL — ONE THAT DOES NOT DEPEND ON PORTAL CHROME.
+ *
+ * The poll's rule is right and stays: a session must be PROVEN, never inferred from the
+ * absence of a password field. But as written, proof meant a visible sign-out control or a
+ * URL move, and a portal that authenticates by postback to the same URL and hides sign-out in
+ * a closed account dropdown has neither. It logged in perfectly and we reported
+ * still_on_login. ASP.NET __doPostBack logins are common in this fleet, so that costs real
+ * portals every run.
+ *
+ * The extra signal: the password field is GONE *and* the identifier we just submitted is now
+ * rendered as page TEXT. A logged-out page cannot show it — we typed it into an input, and an
+ * input's value is not innerText. ASP.NET's LoginName control renders exactly the username
+ * that was submitted, which is what makes this the natural companion to the case above.
+ *
+ * WHAT IT REFUSES, because each of these echoes the identifier while NOT being a session:
+ *   - a refusal — "We could not find an account for you@example.com", "Invalid password for…"
+ *     — which is a login page re-rendered, not a dashboard;
+ *   - an OTP / magic-link step — "We sent a code to you@example.com" — where the password
+ *     field is legitimately gone, no error word appears anywhere, and detectChallengeFrame
+ *     sees nothing because a plain code box is not a CAPTCHA iframe. Reading that as a
+ *     session is the Cloudpermit incident wearing a different hat.
+ * Any line that mentions the identifier in one of those contexts vetoes the whole signal,
+ * rather than merely being skipped: a page holding both is not one we should be guessing on.
+ *
+ * Matched by case-insensitive indexOf on the FULL submitted username, never by a regex built
+ * from it (emails carry `.` and `+`). The email LOCAL PART is deliberately not accepted —
+ * "Welcome, permit" is a much weaker coincidence than the whole address, and a false
+ * "logged in" is the failure this file is atoning for. Never logs the username.
+ */
+async function submittedIdentityEchoed(page: Page, username: string): Promise<boolean> {
+  const needle = String(username || "").trim();
+  if (needle.length < 4) return false;
+  try {
+    return await (page as unknown as { evaluate: (fn: (n: string) => boolean, arg: string) => Promise<boolean> })
+      .evaluate((n) => {
+        // Fully inline — no named helper. See the note in authenticatedSignalPresent.
+        const low = n.toLowerCase();
+        const lines = String((document.body && (document.body as HTMLElement).innerText) || "").split("\n");
+        let echoed = false;
+        for (const raw of lines) {
+          const line = raw.trim();
+          if (!line || line.toLowerCase().indexOf(low) < 0) continue;
+          if (/invalid|incorrect|not found|could ?n[o']t (find|locate)|cannot find|does ?n[o']t exist|no account|failed|unrecogni|try again|error|denied|locked|expired|\bcode\b|verif|one[\s-]?time|2fa|two[\s-]?factor|\bsent\b|check your (e-?mail|inbox|phone)/i.test(line)) return false;
+          echoed = true;
+        }
+        return echoed;
+      }, needle);
+  } catch {
+    return false;
+  }
 }
 
 // Find a login input by an ADJACENT visual label — for table-layout ASP.NET portals whose
@@ -594,8 +842,7 @@ export async function performLogin(
     //    reports networkidle, which made the engine declare the portal formless). The budget
     //    is longer on a login-looking URL, where a form is all but guaranteed to arrive.
     if (!present) {
-      const url = (typeof page.url === "function" ? page.url() : "").toLowerCase();
-      const onLoginUrl = /login|sign-?in|account\/(login|signin)|logon/.test(url);
+      const onLoginUrl = looksLikeLoginUrl(typeof page.url === "function" ? page.url() : "");
       const deadline = Date.now() + (onLoginUrl ? 8000 : 4000);
       while (!present && Date.now() < deadline) {
         await smartWait(page, 1000);
@@ -616,10 +863,7 @@ export async function performLogin(
       const idField = await firstVisible(page, USERNAME_CANDIDATES, { fillable: true });
       const nextCtl = idField ? await firstVisible(page, NEXT_STEP_CANDIDATES) : null;
       if (idField && nextCtl) {
-        const url = (typeof page.url === "function" ? page.url() : "").toLowerCase();
-        const loginish = /login|sign-?in|account\/(login|signin)|logon/.test(url)
-          || await page.getByText(/sign in|log in|password/i).first().isVisible().catch(() => false);
-        if (loginish) {
+        if (await loginWordingPresent(page)) {
           if (!credential || !credential.username || !credential.password) {
             return { ok: false, status: "no_credential", message: "This portal asks for the username first (two-step login) but no stored credential was found for this client/portal. Add the portal username + password under the client's logins, then retry." };
           }
@@ -648,8 +892,8 @@ export async function performLogin(
       if (await authenticatedSignalPresent(page)) {
         return { ok: true, status: "already_authenticated", message: "No login form present and a signed-in signal was found — using the existing session." };
       }
-      const url = (typeof page.url === "function" ? page.url() : "").toLowerCase();
-      const onLoginUrl = /login|sign-?in|account\/(login|signin)|logon/.test(url);
+      const hereUrl: string = typeof page.url === "function" ? page.url() : "";
+      const onLoginUrl = looksLikeLoginUrl(hereUrl);
 
       // SOME PORTALS HAVE NO ACCOUNTS AT ALL.
       //
@@ -668,6 +912,35 @@ export async function performLogin(
       if (!onLoginUrl) {
         const publicForm = await applicationShapedForm(page);
         if (publicForm) {
+          // IS THIS STEP 1 OF A REGISTRATION WIZARD WEARING A PUBLIC FORM'S CLOTHES?
+          //
+          // The one login-family page that passes applicationShapedForm: "create an account"
+          // step 1 asks for first name, last name, email, phone and company, and holds no
+          // password field at all — the password is chosen on step 2. Waved through as
+          // no_login_required, the walk would then plan project fills onto a signup form and
+          // bank the result as this jurisdiction's recipe.
+          //
+          // BOTH HALVES ARE REQUIRED, and that is the whole design. The previous attempt at
+          // this put `register` into looksLikeLoginUrl, where the URL alone was enough — and
+          // an ordinary account-less public form at /permits/register-a-solar-project was
+          // condemned as an unprovable login, telling the operator to supply credentials for
+          // a portal that has no accounts (see the note on looksLikeLoginUrl). Permit portals
+          // say "register a solar project" as readily as "register an account", so the URL is
+          // only ever half the evidence. The other half is a POSITIVE account signal on the
+          // page — a password field, or a sign-in / create-account control — which is exactly
+          // the test publicApplicationEntry already applies one branch below.
+          const registrationWizard = isRegistrationUrl(hereUrl) ? await accountAffordancePresent(page) : "";
+          if (registrationWizard) {
+            // login_form_unrecognized, not no_credential: accounts demonstrably exist here and
+            // we failed to reach the place they are USED. That scores owner=engine in the
+            // learn benchmark, which is the honest owner — the next day's work is "follow the
+            // account affordance to the login", not "go find a password".
+            return {
+              ok: false,
+              status: "login_form_unrecognized",
+              message: `This page is step 1 of a REGISTRATION wizard, not a public application: its URL says register and the page offers ${registrationWizard}. A password step that is not on this page means there is nothing here to prove a session with, so nothing was filled. Create the account by hand and store its username + password under the client's logins, or record this portal's login manually.`,
+            };
+          }
           return {
             ok: true,
             status: "no_login_required",
@@ -783,7 +1056,39 @@ export async function performLogin(
     //    redirect that takes several seconds, so a single short wait races the redirect and
     //    falsely reports failure. Poll up to LOGIN_RESULT_TIMEOUT_MS for one of:
     //      - a challenge appears (MFA/CAPTCHA) → stop for a human
-    //      - the login form is gone, or the URL moved off the login page → success
+    //      - a POSITIVE proof of session → success
+    //
+    // A SESSION IS PROVEN BY A POSITIVE SIGNED-IN SIGNAL, NOT BY THE ABSENCE OF A PASSWORD
+    // FIELD.
+    //
+    // This poll used to read `if (formGone || urlMoved) return logged_in`, where formGone is
+    // `!loginFormPresent(page)` and loginFormPresent asks exactly one question: is a password
+    // field visible. On an identifier-first login — Cloudpermit, Okta, Microsoft, most SSO —
+    // step 1 HAS no password field, so "the password field is gone" is the normal state of a
+    // login that has not happened.
+    //
+    // us.cloudpermit.com is the measured case. Both traced pages were titled "Cloudpermit -
+    // Log In", `portal_credentials` was stamped `last_login_ok_at` "login accepted", the
+    // portal was counted in the fleet's "26 accessible", and the walk then spent its budget
+    // planning fills on the login form — which is how the recipe came to bind installerEmail
+    // to `#input-email-new`, and how a credential ends up typed into a field the planner
+    // chose. Baltimore County is the same bug through the URL clause: it moved to a SECOND
+    // login at `/auth/signin`, which the old bare `/login/i` did not recognise as a login URL.
+    //
+    // The engine already stated the correct rule 150 lines above, in the already_authenticated
+    // path — "the mere ABSENCE of a login form is NOT proof of a session" — and
+    // authenticatedSignalPresent was already written. The poll simply never called it.
+    //
+    // So: success needs a sign-out control (a control that exists only once signed in), OR a
+    // move to a URL that is not a login URL AND a page that is not shaped like a login. Both
+    // halves of the second clause are load-bearing: the URL alone is what Baltimore beat, and
+    // the shape alone would never fire on a portal that re-renders its login in place.
+    //
+    // KNOWN AND ACCEPTED COST: a portal that logs in without moving its URL and without
+    // rendering any sign-out control now times out as still_on_login instead of being called
+    // logged_in on no evidence. That is the trade the incident demands — a false "logged in"
+    // is banked as knowledge and spends LLM budget on a login form; a false "still on login"
+    // is a line in the run log that names exactly what it could not prove.
     const deadline = Date.now() + LOGIN_RESULT_TIMEOUT_MS;
     await smartWait(page, 2000); // let the first navigation/AJAX settle
     while (Date.now() < deadline) {
@@ -791,17 +1096,57 @@ export async function performLogin(
       if (postChallenge) {
         return { ok: false, status: "mfa_captcha", message: `MFA/2FA required after login — pausing for human (${postChallenge}). Complete it in the browser window, then retry.` };
       }
+      if (await authenticatedSignalPresent(page)) {
+        return { ok: true, status: "logged_in", message: "Logged in successfully (a sign-out control is now present — a positive signed-in signal)." };
+      }
       const currentUrl: string = typeof page.url === "function" ? page.url() : "";
-      const urlMoved = currentUrl !== loginUrl && !/login/i.test(currentUrl);
-      const formGone = !(await loginFormPresent(page));
-      if (formGone || urlMoved) {
-        return { ok: true, status: "logged_in", message: "Logged in successfully." };
+      // Only a move to a non-login URL can prove anything; the shape check is the expensive
+      // half, so it is asked only once the cheap half has already agreed.
+      if (currentUrl !== loginUrl && !looksLikeLoginUrl(currentUrl) && !(await loginPageShape(page))) {
+        return { ok: true, status: "logged_in", message: "Logged in successfully (the portal moved off the login page to an application page)." };
+      }
+      // THE POSTBACK CASE: no URL move and no sign-out control we can see, because the portal
+      // authenticates in place and keeps sign-out inside a closed account menu. See
+      // submittedIdentityEchoed. The cheap half (one in-page text scan) is asked first, so a
+      // still-on-login page pays nothing for it.
+      if (await submittedIdentityEchoed(page, credential.username) && !(await loginFormPresent(page))) {
+        return { ok: true, status: "logged_in", message: "Logged in successfully (the password field is gone and the portal is now rendering the submitted account identifier as page text — a positive signed-in signal)." };
       }
       await sleep(500);
     }
 
-    // 8) Timed out with the form still showing. Say WHICH submit path was taken: with no
-    //    recognizable button, "credentials rejected" would be a misleading diagnosis.
+    // 8) Timed out with no proof of a session. Three different failures reach here and they
+    //    need three different fixes, so say which one it is.
+    const endShape = await loginPageShape(page);
+    const formStillThere = await loginFormPresent(page);
+    const endUrl: string = typeof page.url === "function" ? page.url() : "";
+    if (endUrl !== loginUrl && endShape) {
+      // A SECOND LOGIN IS NOT A LOGGED-IN PAGE. Baltimore County's run followed
+      // www.baltimorecountymd.gov -> cityworkspro.baltimorecountymd.gov — the right hop, same
+      // registrable domain, same permit track — and landed on ANOTHER login, where it clicked
+      // sign-in on an empty form and looped. Naming the hand-off is the difference between
+      // "the credential was refused" (send someone to check a password) and "the portal
+      // needs a second account" (send someone to add one).
+      return {
+        ok: false,
+        status: "still_on_login",
+        message: `The login submitted and the portal handed off to ANOTHER login page (${endShape}). No session was established. If this portal fronts a separate system, that system needs its own stored credential; otherwise record the login manually.`,
+      };
+    }
+    if (!formStillThere && endShape) {
+      // THE UNFINISHED TWO-STEP — the Cloudpermit shape. The password field is gone and we
+      // are still standing on a login page. Reusing still_on_login deliberately: the learn
+      // benchmark keys its login-failure rung on that exact status (learnBenchmark.ts), and a
+      // new status would be scored by the catch-all instead. The message carries the
+      // distinction.
+      return {
+        ok: false,
+        status: "still_on_login",
+        message: `Submitted the login but the portal is STILL showing a login page (${endShape}) and no signed-in signal appeared — an unfinished identifier-first/two-step login, not a session. Nothing was learned and no application page was reached; record this portal's login manually.`,
+      };
+    }
+    // Say WHICH submit path was taken: with no recognizable button, "credentials rejected"
+    // would be a misleading diagnosis.
     return {
       ok: false,
       status: submittedVia === "enter" ? "no_submit_control" : "still_on_login",
@@ -922,6 +1267,56 @@ export async function publicApplicationEntry(page: Page): Promise<string> {
       }
       if (entries.size < 2) return "";
       return `${entries.size} application entries, e.g. ${Array.from(entries).slice(0, 3).map((s) => `"${s.slice(0, 40)}"`).join(", ")}`;
+    });
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * DOES THIS PAGE SAY, ANYWHERE, THAT ACCOUNTS EXIST HERE?
+ *
+ * The positive half of the registration-wizard guard in performLogin. publicApplicationEntry
+ * computes the same thing inside itself, but it CONFLATES the answer with its own verdict —
+ * it returns "" both when a sign-in control exists and when there simply are not enough
+ * application entries — so it cannot be asked this question. Hence a separate, smaller scan
+ * that answers only this and returns the evidence it found.
+ *
+ * VOCABULARY IS NARROWER THAN publicApplicationEntry'S ON PURPOSE. A bare `register` is NOT
+ * an account signal here: this runs only on pages whose URL already says register, and permit
+ * portals say "Register a Solar Project" / "Register your equipment" as a matter of course.
+ * Counting that word would re-condemn the account-less public forms that the fix to
+ * looksLikeLoginUrl exists to protect. `sign up` is out for the same reason — "Sign up for
+ * email updates" sits in the footer of every municipal site in the fleet. What is left is
+ * wording that only an account system produces: somewhere to sign in, or an explicit
+ * create/my-account control. `create account` is included because publicApplicationEntry's
+ * `create an account` misses the canonical button label, which has no "an" in it.
+ *
+ * Exported for the DOM smoke.
+ */
+export async function accountAffordancePresent(page: Page): Promise<string> {
+  try {
+    return await (page as unknown as { evaluate: (fn: () => string) => Promise<string> }).evaluate(() => {
+      // Fully inline, no named helpers — see the note in authenticatedSignalPresent.
+      if (document.querySelector("input[type=password]")) return "a password field";
+      const controls = Array.from(document.querySelectorAll(
+        "a, button, input[type=button], input[type=submit], [role=button], [role=link]",
+      ));
+      for (const el of controls) {
+        const hay = [
+          (el as HTMLElement).innerText || "",
+          el.getAttribute("aria-label") || "",
+          el.id || "",
+          (el as HTMLAnchorElement).href || "",
+          (el as HTMLInputElement).value || "",
+        ].join(" ").replace(/\s+/g, " ").trim();
+        // A sign-OUT control means this page is already behind the login — a different
+        // branch's business, and never evidence for this one.
+        if (/\blog[\s-]?out\b|\blogout\b|\bsign[\s-]?out\b|\bsignout\b/i.test(hay)) continue;
+        const hit = hay.match(/\blog[\s-]?in\b|\blogin\b|\bsign[\s-]?in\b|\bsignin\b|\bcreate (an?|your) account\b|\bcreate account\b|\bnew account\b|\bmy account\b|\baccount registration\b|\bregister (for )?an account\b/i);
+        if (hit) return `a "${hit[0].slice(0, 40)}" control`;
+      }
+      return "";
     });
   } catch {
     return "";

@@ -33,7 +33,10 @@ const scope = { scopeType: "utility" as const, state: "OR", utility: "PGE" };
 
 // A proven, complete recipe exists for the portal.
 const original = startPortalRecording(db, { ...scope, portalUrl: "https://pge.example/portal" });
-savePortalRecipeSteps(db, original.id, provenSteps);
+// Status is passed EXPLICITLY: savePortalRecipeSteps no longer defaults to 'complete'
+// (that default was one of the four ways a recipe reached 'complete' without verification —
+// see trustGate.test.ts). Promotion is now always something a caller says out loud.
+savePortalRecipeSteps(db, original.id, provenSteps, { status: "complete" });
 assert.equal(getPortalRecipe(db, original.id).status, "complete");
 
 // 1) Starting a re-record wipes the live steps but keeps them recoverable.
@@ -69,7 +72,7 @@ const newSteps: RecipeStep[] = [
   { action: "fill", selector: { name: "applicant" }, field: "homeownerName", value: "Jane Doe" },
   { action: "stopForReview", selector: {} },
 ];
-savePortalRecipeSteps(db, original.id, newSteps);
+savePortalRecipeSteps(db, original.id, newSteps, { status: "complete" }); // a FINISHED re-record says so
 recoverStalePortalRecordings(db);
 const finished = getPortalRecipe(db, original.id);
 assert.equal(finished.status, "complete");

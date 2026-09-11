@@ -6,6 +6,7 @@ import { HttpError } from "./httpError";
 import { id } from "./ids";
 import { asJson, bool, parseJson, text as s } from "./json";
 import { knowledgeProfileKey, knowledgeNameMatchScore } from "./knowledgeBase";
+import { isHarnessAbort, looksBotBlocked } from "./runAbort";
 import { certifiedModelFor } from "./cecEquipment";
 import { nowIso } from "./time";
 import { parseStreetNumber, parseStreetName, parseStreetLine } from "../../portal-bot/src/addressParse";
@@ -35,6 +36,92 @@ function mapRecipe(row: Row): PortalRecipe {
     autoSubmitEnabled: bool(row.auto_submit_enabled),
     discipline: s(row.discipline),
   };
+}
+
+// ---------------------------------------------------------------------------
+// NOTES ARE THE ONLY EVIDENCE THE NEXT SESSION GETS.
+//
+// A recipe's notes column carries the failure taxonomy everything downstream reasons
+// from — "Auto-learn paused: mfa_captcha", "Auto-learn did not stage cleanly", the
+// portal's own validation text, and the "Required field(s) left blank" finding that
+// promoteRecordingIfEligible refuses to promote past. The stale-recording sweep
+// OVERWROTE that whole column with one sentence about the sweep, so the row that most
+// needed explaining reached the next session explaining nothing.
+//
+// Notes are " | "-joined SEGMENTS (CLAUDE.md). Merge by SEGMENT, never by blob, or the
+// same sentence re-appends on every sweep tick (the runaway-notes bug the KB already hit).
+// ---------------------------------------------------------------------------
+export function recipeNoteSegments(value: unknown): string[] {
+  return String(value ?? "").split(" | ").map((seg) => seg.trim()).filter(Boolean);
+}
+
+/** Append `incoming` to `existing` as segments, deduped case-insensitively, oldest first. */
+export function mergeRecipeNotes(existing: unknown, incoming: unknown, limit = 40): string {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const seg of [...recipeNoteSegments(existing), ...recipeNoteSegments(incoming)]) {
+    const key = seg.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(seg);
+    if (out.length >= limit) break;
+  }
+  return out.join(" | ");
+}
+
+/**
+ * Merge one TAGGED segment in, replacing any segment already carrying that tag.
+ *
+ * Plain segment-dedupe is not enough for a note that carries a value — "[recording
+ * interrupted — no activity since 2026-09-09T22:01Z]" is a different string on every sweep
+ * tick, so dedupe sees a new fact each time and the column grows without bound. That is the
+ * runaway-notes bug wearing a different hat; it was caught by the fixture that sweeps twice.
+ * One segment per tag: the newest statement of a fact replaces the previous one, and every
+ * OTHER segment — the paused reason, the required-blank finding, the portal's validation
+ * text — is untouched.
+ */
+export function upsertRecipeNote(existing: unknown, tag: string, segment: string, limit = 40): string {
+  const prefix = `[${tag.toLowerCase()}`;
+  const kept = recipeNoteSegments(existing).filter((seg) => !seg.toLowerCase().startsWith(prefix));
+  return mergeRecipeNotes(kept.join(" | "), segment, limit);
+}
+
+// ---------------------------------------------------------------------------
+// WHOSE STEPS ARE IN prev_steps_json?
+//
+// restoreRecipeSnapshotIfAbandoned calls them "the previous WORKING recipe" and hands
+// them back as status 'complete'. startPortalRecording, however, snapshotted the outgoing
+// steps of ANY row it reset — draft, paused, never-verified, anything. So an unproven
+// draft could be parked in a slot whose only reader treats it as proven, and a crashed
+// re-record then promoted it to a replayable recipe with nobody's verification behind it.
+//
+// It is not hypothetical: on the live DB, the Ameren Illinois NEM recipe (da3544a8) and
+// the Coos Bay structural recipe (e965c645) are both status 'complete' with notes that
+// still read "Auto-learned but NOT verified" — one of them also carrying the required-blank
+// finding — next to "[re-record abandoned — restored the previous working recipe]".
+//
+// The snapshot now says what it is. The marker is written by the same statement that
+// writes the snapshot and dropped by every statement that clears it, so it can never
+// describe a different payload than the one present. A row with NO marker (every recipe
+// learned before this change) is treated as unproven — the safe direction: its steps are
+// still restored, it just lands at needs_rerecord instead of being silently trusted.
+// ---------------------------------------------------------------------------
+const PREV_SNAPSHOT_MARKER_RE = /\s*\[prev-recipe:[^\]]*\]/gi;
+const prevSnapshotMarker = (status: string, version: number): string =>
+  `[prev-recipe: ${status === "complete" ? "proven" : `unproven ${status || "recording"}`} v${version}]`;
+/** True when this row's snapshot was taken from a recipe that had earned 'complete'. */
+export function snapshotIsProven(notes: unknown): boolean {
+  return /\[prev-recipe:\s*proven/i.test(String(notes ?? ""));
+}
+const stripPrevMarker = (notes: unknown): string => String(notes ?? "").replace(PREV_SNAPSHOT_MARKER_RE, "").trim();
+const carriedPrevMarker = (notes: unknown): string => (String(notes ?? "").match(PREV_SNAPSHOT_MARKER_RE) ?? [])[0]?.trim() ?? "";
+
+/** Fills, selects and checks — the steps that actually put data into a form, and the only
+ *  depth measure available on both a stored snapshot and a freshly-saved recording.
+ *  Deliberately duplicated from autoLearn.substantiveStepCount rather than imported:
+ *  autoLearn imports THIS module, and the reverse import would close a cycle. */
+function recipeDepth(steps: Array<{ action?: unknown }> | undefined): number {
+  return (steps ?? []).filter((st) => ["fill", "select", "check"].includes(String(st?.action ?? ""))).length;
 }
 
 // Split a US phone into the three boxes segmented portal controls use (Accela renders
@@ -183,15 +270,22 @@ export function startPortalRecording(
     // Only a non-empty step list overwrites the snapshot — re-recording twice in a
     // row must not clobber a good snapshot with the empty stub of attempt one.
     const outgoingSteps = parseJson<RecipeStep[]>(s(existing.steps_json) || "[]", []);
+    // STAMP WHAT THE SNAPSHOT IS, in the same write that takes it. Only a snapshot that
+    // is actually being REPLACED gets a new marker: when the outgoing steps are empty the
+    // snapshot is left alone (re-recording twice in a row must not clobber attempt one's
+    // good snapshot with attempt two's empty stub), so its marker must be left alone too.
+    const nextNotes = outgoingSteps.length
+      ? `${stripPrevMarker(existing.notes)} ${prevSnapshotMarker(s(existing.status), Number(existing.version ?? 1))}`.trim()
+      : s(existing.notes);
     db.run(
       `UPDATE portal_recipes SET status = 'recording', version = ?, steps_json = '[]',
          prev_steps_json = CASE WHEN ? != '' THEN ? ELSE prev_steps_json END,
          portal_platform = COALESCE(NULLIF(?, ''), portal_platform),
          portal_url = COALESCE(NULLIF(?, ''), portal_url),
-         discipline = ?, updated_at = ? WHERE id = ?`,
+         discipline = ?, notes = ?, updated_at = ? WHERE id = ?`,
       [nextVersion,
         outgoingSteps.length ? s(existing.steps_json) : "", outgoingSteps.length ? s(existing.steps_json) : "",
-        s(input.portalPlatform), s(input.portalUrl), discipline, now, s(existing.id)],
+        s(input.portalPlatform), s(input.portalUrl), discipline, nextNotes, now, s(existing.id)],
     );
     return getPortalRecipe(db, s(existing.id));
   }
@@ -208,20 +302,54 @@ export function startPortalRecording(
 // Roll an ABANDONED re-record back to the last working recipe. Called by the
 // stale-recording sweep: if the stub still holds a pre-re-record snapshot, the
 // portal gets its proven steps back as 'complete' (the bot can replay again)
-// instead of being stranded with no recipe at 'needs_rerecord'. Returns true
-// when a snapshot was restored.
-export function restoreRecipeSnapshotIfAbandoned(db: AppDb, recipeId: string): boolean {
+// instead of being stranded with no recipe at 'needs_rerecord'.
+//
+// A STALE RECORDING IS NOT EVIDENCE OF SUCCESS.
+//
+// This was the widest of the four ways round the trust gate. It restored ANY snapshot as
+// 'complete' — the one status that makes a recipe replay unattended on real filings — on
+// the strength of a run that DIED. Nothing here asked whether the steps it was promoting
+// had ever reached a review screen, filled a required field, or been looked at by a human,
+// because prev_steps_json was assumed to hold a proven recipe and (until the marker written
+// by startPortalRecording) it held whatever the last reset happened to wipe.
+//
+// What a stale recording SHOULD become, and why:
+//   - snapshot marked PROVEN (the row was 'complete' when the re-record wiped it) →
+//     'complete'. That is the case this function was built for: a portal that had a
+//     working recipe yesterday must not be left with none because a re-record crashed.
+//     Nothing is being trusted that was not already trusted.
+//   - snapshot present but UNPROVEN, or unmarked (every recipe that predates the marker) →
+//     the steps are restored, because depth is information and losing it costs the next
+//     session its map of the portal — but the status is 'needs_rerecord'. It surfaces for a
+//     human, and it does not replay. A crashed run cannot be the thing that grants trust.
+//
+// Returns which status the row landed in, or null when there was nothing to restore.
+export function restoreRecipeSnapshotIfAbandoned(db: AppDb, recipeId: string): "complete" | "needs_rerecord" | null {
   const row = db.get<Row>("SELECT * FROM portal_recipes WHERE id = ?", [recipeId]);
-  if (!row || s(row.status) !== "recording") return false;
+  if (!row || s(row.status) !== "recording") return null;
   const snapshot = parseJson<RecipeStep[]>(s(row.prev_steps_json) || "[]", []);
-  if (!snapshot.length) return false;
+  if (!snapshot.length) return null;
+  const proven = snapshotIsProven(row.notes);
+  // WHICH STEPS SURVIVE. A PROVEN snapshot always wins — it is a working recipe and the whole
+  // point of the rollback is to hand it back. An UNPROVEN one is just an older capture, and
+  // the abandoned attempt may well have got FURTHER: live, the Lynn MA row was about to have
+  // its 4-fill capture overwritten by the 3-fill snapshot underneath it. Neither replays, so
+  // the only thing at stake is how much of the portal we still have a record of — keep more.
+  const live = parseJson<RecipeStep[]>(s(row.steps_json) || "[]", []);
+  const steps = proven || recipeDepth(snapshot) >= recipeDepth(live) ? snapshot : live;
+  // The snapshot is consumed either way, so its marker goes with it — a marker that
+  // outlived its payload would describe the NEXT snapshot wrongly.
+  const base = stripPrevMarker(row.notes);
+  const note = proven
+    ? "[re-record abandoned — restored the previous working recipe]"
+    : "[re-record abandoned — the previous steps were restored, but they had never been verified, so this needs a re-record rather than a promotion]";
   db.run(
-    `UPDATE portal_recipes SET steps_json = ?, status = 'complete', structure_sig = ?, prev_steps_json = NULL,
-       notes = notes || ?, updated_at = ? WHERE id = ? AND status = 'recording'`,
-    [asJson(snapshot), recipeStructureSignature(snapshot),
-      " [re-record abandoned — restored the previous working recipe]", nowIso(), recipeId],
+    `UPDATE portal_recipes SET steps_json = ?, status = ?, structure_sig = ?, prev_steps_json = NULL,
+       notes = ?, updated_at = ? WHERE id = ? AND status = 'recording'`,
+    [asJson(steps), proven ? "complete" : "needs_rerecord", recipeStructureSignature(steps),
+      mergeRecipeNotes(base, note), nowIso(), recipeId],
   );
-  return true;
+  return proven ? "complete" : "needs_rerecord";
 }
 
 // A stable fingerprint of a recipe's STRUCTURE — the ordered shape of its steps
@@ -246,23 +374,75 @@ export function recipeStructureSignature(steps: RecipeStep[]): string {
   return (h >>> 0).toString(16).padStart(8, "0");
 }
 
-// Save the recorded steps (called by the recorder when the admin finishes). Marks the
-// recipe 'complete' so the bot will replay it. A short/empty recording stays 'recording'.
+// Save the recorded steps (called by the recorder when the admin finishes, and by every
+// auto-learn terminal path). The STATUS is the thing that decides whether a recipe replays
+// unattended on real filings, so it is only ever changed by a caller that says so.
+//
+// THE DEFAULT USED TO PROMOTE. `options.status ?? (steps.length ? "complete" : "recording")`
+// meant any caller that forgot the argument published the recipe: the PUT
+// /api/portal-recipes/:id/steps route passes `req.body?.status` straight through, so a
+// client that sent steps and no status promoted a mid-recording stub to replayable, and
+// repository.ts's self-heal writer (which only ever means "same recipe, repaired selectors")
+// relied on the recipe already being complete for its save not to change meaning.
+//
+// The safe default is the recipe's CURRENT status: saving steps is not a verdict, so on its
+// own it must move nothing in either direction. That also keeps the self-heal writer exactly
+// as correct as it was — a complete recipe stays complete — without touching that file.
+// Promotion now has three explicit doors and no accidental one: an explicit status here,
+// finishPortalRecipe (the operator's "Recording looks right"), and promoteRecordingIfEligible
+// (the submit-observed signal, which enforces its own bar).
 export function savePortalRecipeSteps(
   db: AppDb,
   recipeId: string,
   steps: RecipeStep[],
   options: { status?: PortalRecipeStatus; notes?: string } = {},
 ): PortalRecipe {
-  getPortalRecipe(db, recipeId); // 404 if missing
-  const status = options.status ?? (Array.isArray(steps) && steps.length > 0 ? "complete" : "recording");
+  const current = getPortalRecipe(db, recipeId); // 404 if missing
+  const status = options.status ?? current.status;
+
+  // DEPTH IS INFORMATION, AND A SAVE THAT HAS NOT EARNED TRUST MUST NOT SHRINK A RECIPE.
+  //
+  // startPortalRecording wipes the live steps before the new run's outcome is known and parks
+  // them in prev_steps_json. Every auto-learn terminal path then saves whatever THIS run
+  // managed, however little — and on 2026-09-09 that was a benchmark run the harness killed at
+  // 660 seconds, whose 18-fill fragment replaced Miami's 39-fill draft. autoLearn's own
+  // shouldKeepDeeperDraft guards the two failure paths and calls itself the fix, but the PAUSE
+  // path and the untrusted-success path never consulted it, and neither does the PUT route or
+  // any future caller. The invariant belongs here, where every writer passes through:
+  //
+  //   a save that is not 'complete' may never reduce the number of fills/selects/checks
+  //   the row already had.
+  //
+  // 'complete' is exempt on purpose — a verified recipe is a verdict about THESE steps, and an
+  // operator re-recording a portal that genuinely got simpler must be able to shorten it.
+  // prev_steps_json is deliberately NOT cleared here: if the snapshot was proven, the stale
+  // sweep must still be able to hand the portal back its 'complete' status.
+  const snapshot = parseJson<RecipeStep[]>(
+    s(db.get<Row>("SELECT prev_steps_json FROM portal_recipes WHERE id = ?", [recipeId])?.prev_steps_json) || "[]", []);
+  const incoming = steps ?? [];
+  const shallower = status !== "complete" && recipeDepth(snapshot) > recipeDepth(incoming);
+  const finalSteps = shallower ? snapshot : incoming;
+  const depthNote = shallower
+    ? `[kept the deeper recording: this save carried ${recipeDepth(incoming)} filled field(s), the row already had ${recipeDepth(snapshot)}]`
+    : "";
+
+  // A recording that lands 'complete' supersedes the pre-re-record snapshot, so drop it —
+  // and drop the marker describing it, which must never outlive its payload.
+  const clearsSnapshot = status === "complete";
+  // Stripped on BOTH branches: appendHumanPatchSteps rebuilds its notes FROM recipe.notes and
+  // passes them back in, so a marker left in the body would be re-appended beside itself.
+  const body = stripPrevMarker(s(options.notes).trim() || current.notes);
+  const marker = clearsSnapshot ? "" : carriedPrevMarker(current.notes);
+  // Tagged upsert, not a plain merge: the depth note carries counts, so a plain append would
+  // leave one segment per shallow save instead of one statement of the current fact.
+  const notes = [depthNote ? upsertRecipeNote(body, "kept the deeper recording", depthNote) : body, marker]
+    .filter(Boolean).join(" ").trim();
+
   db.run(
-    // A recording that lands 'complete' supersedes the pre-re-record snapshot,
-    // so drop it; anything still mid-recording keeps the rollback available.
     `UPDATE portal_recipes SET steps_json = ?, status = ?, structure_sig = ?,
        prev_steps_json = CASE WHEN ? = 'complete' THEN NULL ELSE prev_steps_json END,
-       notes = COALESCE(NULLIF(?, ''), notes), updated_at = ? WHERE id = ?`,
-    [asJson(steps ?? []), status, recipeStructureSignature(steps ?? []), status, s(options.notes), nowIso(), recipeId],
+       notes = ?, updated_at = ? WHERE id = ?`,
+    [asJson(finalSteps), status, recipeStructureSignature(finalSteps), status, notes, nowIso(), recipeId],
   );
   return getPortalRecipe(db, recipeId);
 }
@@ -275,8 +455,13 @@ export function finishPortalRecipe(db: AppDb, recipeId: string, finishedBy?: str
   const recipe = getPortalRecipe(db, recipeId);
   if (recipe.status === "complete") return recipe;
   if (!recipe.steps.length) throw new HttpError(409, "This recording has no captured steps yet — nothing to save as a replayable recipe.");
-  db.run("UPDATE portal_recipes SET status = 'complete', prev_steps_json = NULL, notes = notes || ?, updated_at = ? WHERE id = ?", [
-    ` [verified by ${finishedBy || "operator"} — promoted from recording]`, nowIso(), recipeId,
+  // The snapshot is dropped here, so its `[prev-recipe:…]` marker goes with it. Every
+  // statement that clears prev_steps_json must strip the marker, or a marker outlives its
+  // payload and describes the NEXT snapshot — the one thing that would make the stale
+  // sweep's proven/unproven judgement lie.
+  db.run("UPDATE portal_recipes SET status = 'complete', prev_steps_json = NULL, notes = ?, updated_at = ? WHERE id = ?", [
+    mergeRecipeNotes(stripPrevMarker(recipe.notes), `[verified by ${finishedBy || "operator"} — promoted from recording]`),
+    nowIso(), recipeId,
   ]);
   return getPortalRecipe(db, recipeId);
 }
@@ -332,8 +517,88 @@ export function promoteRecordingIfEligible(
   return finished;
 }
 
-export function markPortalRecipeForRerecord(db: AppDb, recipeId: string): PortalRecipe {
-  getPortalRecipe(db, recipeId);
+// ---------------------------------------------------------------------------
+// THE PORTAL BEING DOWN IS NOT THE RECIPE BEING WRONG.
+//
+// A replay that dies is demoted on the strength of one regex over the failure text
+// (repository.ts: /recipe step failed/i). But a recorded step fails for two completely
+// different families of reason, and only one of them is about the recipe:
+//
+//   ATTRIBUTABLE TO THE RECIPE — a selector no longer resolves, a control moved, a label
+//   was renamed, the page structure drifted. The recipe genuinely no longer describes the
+//   portal, and demoting it is the entire point of the check.
+//
+//   NOT ABOUT THE RECIPE — the host was unreachable or 5xx, the credential was rejected or
+//   expired, an MFA/CAPTCHA wall appeared, a WAF refused the browser, our own browser or
+//   process went away, or the account was already in session somewhere else (the portals
+//   here allow ONE session per account, and two runs against one login is a collision, not
+//   a defect — it is what produced this session's false 67% replay reading). Every one of
+//   those fails identically tomorrow-morning-fine, and every one of them would have demoted
+//   a verified recipe that was perfectly correct. For a product whose promise is "learn the
+//   portal once", losing a 60-step verified recipe because the portal was down one night is
+//   the worst outcome in the system.
+//
+// So a COMPLETE recipe is only demoted on evidence that points at the recipe. Told nothing
+// (no failureText: the operator's own "mark for re-record" button, the CLI invalidator, the
+// track/host mis-key gate) it demotes as before — a deliberate human act needs no evidence.
+//
+// The refusal only blocks the DEMOTION. repository.ts may still enqueue a re-learn off the
+// same failure; that is harmless — autoLearn's protectComplete refuses to overwrite a
+// complete recipe with an unverified pass, so the worst case is a wasted browser run.
+// ---------------------------------------------------------------------------
+const TRANSIENT_FAILURE: Array<[RegExp, string]> = [
+  // Reuses the shared vocabulary rather than growing a fourth copy of it (see runAbort.ts).
+  [/\bnet::ERR_[A-Z_]+|ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|socket hang up|dns|tunnel connection failed/i, "the portal host could not be reached"],
+  [/\b(5\d\d)\b.{0,40}(error|server|gateway|unavailable)|internal server error|bad gateway|service unavailable|gateway time-?out|under maintenance|temporarily unavailable|scheduled maintenance/i, "the portal returned a server error or maintenance page"],
+  [/still on the login form|username\/password was likely rejected|login failed|sign ?in failed|invalid (username|password|credential)|credential(s)? (rejected|expired|invalid)|password (has )?expired|account (is )?locked|no stored credential/i, "the stored login was refused — a credential problem, not a recipe problem"],
+  [/mfa|multi.?factor|one.?time (code|password)|\botp\b|captcha|recaptcha|hcaptcha|verification code|two.?factor/i, "a human challenge (MFA/CAPTCHA) blocked the run"],
+  [/already (running|logged in|signed in)|another (session|user) is|session (is )?(already )?(in use|active)|concurrent (session|login)|logged in from another|single session|session limit/i, "the account was already in session elsewhere — one-session-per-account collision"],
+  // A NAVIGATION timeout is the portal not answering. A SELECTOR/wait timeout is the page
+  // not looking the way the recipe remembers, which is exactly the drift that should demote —
+  // so it is deliberately absent from this list.
+  [/page\.goto|navigation timeout|timeout .{0,20}exceeded.{0,20}navigat|net::ERR_TIMED_OUT/i, "the page never finished loading"],
+];
+
+/**
+ * Does this failure text point at the RECIPE (so a complete recipe should be demoted), or at
+ * the run's environment (so it should not)? Exported for the fixture and for any future caller
+ * that has to make the same judgement — there must not be a second copy of this rule.
+ */
+export function replayFailureBlamesRecipe(failureText: unknown): { blamesRecipe: boolean; reason: string } {
+  const text = String(failureText ?? "").trim();
+  if (!text) return { blamesRecipe: true, reason: "" };
+  if (isHarnessAbort(text)) return { blamesRecipe: false, reason: "our own browser or process went away mid-run" };
+  if (looksBotBlocked(text)) return { blamesRecipe: false, reason: "the portal refused the automated browser (WAF/bot wall)" };
+  for (const [re, reason] of TRANSIENT_FAILURE) {
+    if (re.test(text)) return { blamesRecipe: false, reason };
+  }
+  return { blamesRecipe: true, reason: "" };
+}
+
+export function markPortalRecipeForRerecord(
+  db: AppDb,
+  recipeId: string,
+  /** The run's own failure text. Supply it whenever the demotion is being driven by a FAILED
+   *  RUN rather than by a human decision — without it a transient outage demotes a verified
+   *  recipe and the portal has to be learned all over again. */
+  opts: { failureText?: string } = {},
+): PortalRecipe {
+  const recipe = getPortalRecipe(db, recipeId);
+  if (recipe.status === "complete" && opts.failureText) {
+    const verdict = replayFailureBlamesRecipe(opts.failureText);
+    if (!verdict.blamesRecipe) {
+      const note = `[kept trusted: a replay failed, but ${verdict.reason} — that says nothing about the recipe, so it was not demoted]`;
+      db.run("UPDATE portal_recipes SET notes = ?, updated_at = ? WHERE id = ?",
+        [mergeRecipeNotes(recipe.notes, note), nowIso(), recipeId]);
+      try {
+        addAuditLog(db, null, "system", "recipe replay", "portal_recipe.demotion_refused", {
+          recipeId, profileKey: recipe.profileKey, reason: verdict.reason,
+          failureText: String(opts.failureText).slice(0, 240),
+        });
+      } catch { /* audit is best-effort */ }
+      return getPortalRecipe(db, recipeId);
+    }
+  }
   db.run("UPDATE portal_recipes SET status = 'needs_rerecord', updated_at = ? WHERE id = ?", [nowIso(), recipeId]);
   return getPortalRecipe(db, recipeId);
 }

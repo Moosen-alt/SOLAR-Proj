@@ -3,7 +3,7 @@ import { createInterface } from "node:readline";
 import type { AppDb, SqlParam } from "./db";
 import { DEFAULT_ORG_ID } from "./db";
 import { importMboxKnowledge } from "./knowledgeBase";
-import { restoreRecipeSnapshotIfAbandoned } from "./portalRecipes";
+import { restoreRecipeSnapshotIfAbandoned, upsertRecipeNote } from "./portalRecipes";
 import { runDuePermitChecks } from "./repository";
 import { scanFolder } from "./batchImport";
 import { nowIso } from "./time";
@@ -364,24 +364,41 @@ const RECIPE_RECORDING_STALE_MS = Number(process.env.RECIPE_RECORDING_STALE_MS ?
 
 export function recoverStalePortalRecordings(db: AppDb): number {
   const cutoff = new Date(Date.now() - RECIPE_RECORDING_STALE_MS).toISOString();
+  // `notes` is selected because it is MERGED below, not replaced — see the comment there.
   const stale = db.query<Row>(
-    "SELECT id, updated_at FROM portal_recipes WHERE status = 'recording' AND updated_at <= ?",
+    "SELECT id, updated_at, notes FROM portal_recipes WHERE status = 'recording' AND updated_at <= ?",
     [cutoff],
   );
   if (!stale.length) return 0;
-  let restored = 0;
+  let restoredComplete = 0;
+  let restoredForRerecord = 0;
   for (const row of stale) {
-    // An abandoned RE-record rolls back to the last working recipe (kept alongside
-    // when the re-record wiped the steps) — a proven replayable recipe beats any
-    // partial capture the abandoned attempt left behind. Only a portal with no
-    // snapshot (a first recording) is marked needs_rerecord.
-    if (restoreRecipeSnapshotIfAbandoned(db, String(row.id))) { restored++; continue; }
+    // An abandoned RE-record rolls back to the steps kept alongside when the re-record
+    // wiped them. Whether that rollback also restores 'complete' depends on whether those
+    // steps were ever PROVEN — a run that died is not evidence that its capture works.
+    // restoreRecipeSnapshotIfAbandoned owns that judgement; see the essay on it.
+    const landed = restoreRecipeSnapshotIfAbandoned(db, String(row.id));
+    if (landed === "complete") { restoredComplete++; continue; }
+    if (landed === "needs_rerecord") { restoredForRerecord++; continue; }
+    // NOTES ARE MERGED, NEVER OVERWRITTEN.
+    //
+    // This statement used to assign the notes column outright, and the column is where the
+    // whole failure taxonomy lives: "Auto-learn paused: mfa_captcha", "Auto-learn did not
+    // stage cleanly", the portal's own validation text, the required-blank finding that
+    // promoteRecordingIfEligible refuses to promote past. A sweep two hours later replaced
+    // every word of it with one sentence about the sweep — so the rows that most needed
+    // explaining ("why did this portal stop at page 2?") reached the next session saying
+    // only that a recording had been interrupted, and the evidence had to be re-gathered
+    // from the live portal. Segment-merged (CLAUDE.md) so a sweep that ticks repeatedly
+    // cannot re-append the same sentence.
     db.run(
       "UPDATE portal_recipes SET status = 'needs_rerecord', notes = ?, updated_at = ? WHERE id = ? AND status = 'recording'",
-      [`Recording was interrupted (no activity since ${String(row.updated_at)}); marked for re-record.`, nowIso(), String(row.id)],
+      [upsertRecipeNote(row.notes, "recording interrupted",
+        `[recording interrupted — no activity since ${String(row.updated_at)}; marked for re-record]`),
+        nowIso(), String(row.id)],
     );
   }
-  console.log(`[job-worker] swept ${stale.length} stale portal recording(s): ${restored} restored to their previous recipe, ${stale.length - restored} marked needs_rerecord`);
+  console.log(`[job-worker] swept ${stale.length} stale portal recording(s): ${restoredComplete} restored to their previous PROVEN recipe, ${restoredForRerecord} had unproven steps restored for re-record, ${stale.length - restoredComplete - restoredForRerecord} marked needs_rerecord`);
   return stale.length;
 }
 

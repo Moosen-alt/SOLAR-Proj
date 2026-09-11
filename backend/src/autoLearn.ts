@@ -206,6 +206,98 @@ export function shouldKeepDeeperDraft(
   return substantiveStepCount(existingSteps) > substantiveStepCount(newSteps);
 }
 
+/** Everything the trust gate is allowed to consider. One argument per condition, all of it
+ *  computed by the caller from the run's own evidence — no defaults, so a new signal cannot
+ *  be forgotten into silently passing. */
+export interface TrustGateSignals {
+  /** The learn walked to the portal's review screen (not a landing/disclaimer page). */
+  reachedReview: boolean;
+  /** At least one field was actually filled on the way there. */
+  filledSomething: boolean;
+  /** The review screen could be read at all — DOM fields, body text, or a usable screenshot. */
+  reviewReadable: boolean;
+  /** The authoritative LLM verifier (vision when usable, else text) says the fill is right. */
+  verificationAccurate: boolean;
+  /** The text verifier compared real values and said they are WRONG (not merely absent). */
+  textContradicts: boolean;
+  /** Required fields the adapter's structural sweep found blank/unselected. */
+  requiredFieldMisses: string[];
+  /** Required document upload controls left with no file. */
+  missingRequiredDocs: string[];
+  /** The portal's own validation refused an advance. */
+  validationBlocks: string[];
+  /** Recorded literals that match this project's data under MORE THAN ONE field, so they
+   *  cannot be safely auto-bound and would replay verbatim onto the next customer. */
+  ambiguousLiteralCount: number;
+  /** Steps bound to a key resolveRecipeFieldValues cannot produce — unfillable forever. */
+  deadBindings: string[];
+  /** Pages walked, and fills/selects/checks recorded — the promotion floor. */
+  pageCount: number;
+  substantiveFills: number;
+  /** The form this run filled is not the form we meant to file (permit extension, renewal…). */
+  formPurposeMismatch: boolean;
+}
+
+/**
+ * THE WHOLE BAR FOR "complete", IN ONE PLACE.
+ *
+ * This is the only thing standing between an unattended replay and a real customer's filing,
+ * and until now it did not exist as a thing you could read: the conditions were spread over a
+ * hundred and eighty lines and four early returns, so nobody could see the bar whole and four
+ * separate paths were found going round it. Written down, a recipe is trusted only when ALL
+ * of the following hold — each one is here because a live run got it wrong:
+ *
+ *   1. reachedReview        — it walked to the portal's review screen. (Without this a run that
+ *                             got lost mid-wizard reported "staged".)
+ *   2. filledSomething      — and filled something on the way. (Salem: a disclaimer page misread
+ *                             as review, promoted with an EMPTY application.)
+ *   3. reviewReadable       — and the review screen could actually be READ. "Accurate" over a
+ *                             page nobody could read is vacuous: nothing present, nothing
+ *                             contradicted, everything approved.
+ *   4. verificationAccurate — the LLM verifier (vision when it could see, else text) says the
+ *                             values match the project record.
+ *   5. !textContradicts     — and no verifier compared real values and called them WRONG.
+ *   6. no required-field miss, no missing required document, no portal validation block — the
+ *                             three structural blockers the adapter finds and the verifier
+ *                             CANNOT see, because a review summary just omits the row it never
+ *                             got. (Ameren Illinois: promoted with Email, Street, Name, Company,
+ *                             Address and Docket Number blank, and replay faithfully reproduced
+ *                             the incomplete application, reporting no failures.)
+ *   7. no ambiguous literal — a recorded value matching this project's data under more than one
+ *                             field cannot be bound, and would replay this customer's data onto
+ *                             the next one.
+ *   8. no dead binding      — a step bound to a key the resolver cannot produce fills "" forever
+ *                             and is skipped in silence. (PacifiCorp's `descriptionOfService`,
+ *                             which changed the portal's own branching two pages later.)
+ *   9. >= 3 pages and >= 5 fills — the promotion floor. A trusted recipe must have walked a
+ *                             wizard, not a page.
+ *  10. !formPurposeMismatch — and it must have been the RIGHT form. (Gilbert AZ scored 6 of 6
+ *                             filling a Permit Extension Request perfectly.)
+ *
+ * Signal 3 is the one condition here that the pre-2026-09-10 gate computed and then ignored;
+ * it is included deliberately, and it is the only change to the bar itself.
+ *
+ * Returns the blockers as well as the verdict, so a caller can TELL the operator what stopped
+ * promotion instead of leaving them to infer it. Pure — no DB, no clock, no network — so it is
+ * testable directly, which is the point: an unreachable gate is as bad as a leaky one.
+ */
+export function evaluateTrustGate(sig: TrustGateSignals): { trusted: boolean; blockers: string[] } {
+  const blockers: string[] = [];
+  if (!sig.reachedReview) blockers.push("never reached the portal's review screen");
+  if (!sig.filledSomething) blockers.push("filled no fields");
+  if (!sig.reviewReadable) blockers.push("the review screen could not be read, so the fill was never actually verified");
+  if (!sig.verificationAccurate) blockers.push("the verifier did not confirm the fill is accurate");
+  if (sig.textContradicts) blockers.push("the text verifier found values that CONTRADICT the project record");
+  if (sig.requiredFieldMisses.length) blockers.push(`required field(s) left blank: ${sig.requiredFieldMisses.slice(0, 12).join(", ")}`);
+  if (sig.missingRequiredDocs.length) blockers.push(`required document(s) not attached: ${sig.missingRequiredDocs.slice(0, 8).join(", ")}`);
+  if (sig.validationBlocks.length) blockers.push(`portal validation blocked an advance: ${sig.validationBlocks.slice(0, 8).join("; ")}`);
+  if (sig.ambiguousLiteralCount > 0) blockers.push(`${sig.ambiguousLiteralCount} recorded literal(s) could not be uniquely bound to a project field`);
+  if (sig.deadBindings.length) blockers.push(`step(s) bound to a field the resolver cannot produce: ${sig.deadBindings.slice(0, 8).join(", ")}`);
+  if (sig.pageCount < 3 || sig.substantiveFills < 5) blockers.push(`too thin to auto-trust (${sig.pageCount} page(s), ${sig.substantiveFills} recorded fill(s))`);
+  if (sig.formPurposeMismatch) blockers.push("the form this run filled is not the form this track files");
+  return { trusted: blockers.length === 0, blockers };
+}
+
 export function buildPortalPlanner(
   db: AppDb,
   project: ProjectRecord,
@@ -901,6 +993,16 @@ async function autoLearnPortalInner(
     if (protectComplete) {
       return preserved("paused", learn.pauseReason, { accurate: false, confidence: "low", matches: [], issues: [] }, `Learning paused on a ${learn.pauseReason} challenge — a human must complete it.`);
     }
+    // A PAUSE IS THE LEAST INFORMATIVE OUTCOME THERE IS, and it was the one path allowed to
+    // overwrite a deeper draft. Both failure paths below consult keepDeeperDraft; this one
+    // did not, so a run that hit an MFA wall on page one replaced whatever the last run had
+    // walked. Live: every SmartGov row in the 2026-09-09 sweep is a 2-fill "Auto-learn
+    // paused: mfa_captcha" stub sitting on top of its own predecessor. Returning here also
+    // avoids the reset entirely — no version bump, no wipe, nothing to roll back.
+    if (keepDeeperDraft(`learning paused on a ${learn.pauseReason} challenge`)) {
+      return preserved("paused", learn.pauseReason, { accurate: false, confidence: "low", matches: [], issues: [] },
+        `Learning paused on a ${learn.pauseReason} challenge — a human must complete it. Kept the existing draft, which got further (${existingDepth} field(s) vs ${substantive(learn.steps as Array<{ action?: unknown }>)}).`);
+    }
     const stub = mkStub();
     savePortalRecipeSteps(db, stub.id, learn.steps, { status: "recording", notes: `Auto-learn paused: ${learn.pauseReason}. Resume manually.` });
     addAuditLog(db, projectId, "system", "auto-learn", "portal.auto_learn_paused", { scope: scopeType, pauseReason: learn.pauseReason });
@@ -1134,8 +1236,26 @@ async function autoLearnPortalInner(
   );
   if (purpose.mismatch) verification.issues.push(purpose.reason);
 
-  let trusted = verification.accurate && !textContradicts && !hasHardBlockers && ambiguousLiterals.length === 0 && !tooThin
-    && deadBindings.length === 0 && !purpose.mismatch;
+  // THE TRUST GATE. Every condition above feeds evaluateTrustGate, which is where the bar is
+  // written down in full — read that comment before changing anything here. Nothing may grant
+  // trust past it: the code below only ever REMOVES trust (the replay self-test), never adds it.
+  const gate = evaluateTrustGate({
+    // Both are guaranteed true by the early return a hundred lines up, and are passed anyway
+    // so the gate is a total function of the run rather than of what its caller remembered.
+    reachedReview, filledSomething,
+    reviewReadable,
+    verificationAccurate: verification.accurate,
+    textContradicts,
+    requiredFieldMisses: requiredMisses,
+    missingRequiredDocs: docMisses,
+    validationBlocks,
+    ambiguousLiteralCount: ambiguousLiterals.length,
+    deadBindings,
+    pageCount: learn.pageCount ?? 0,
+    substantiveFills: substantiveSteps,
+    formPurposeMismatch: purpose.mismatch,
+  });
+  let trusted = gate.trusted;
   if (hasHardBlockers) {
     if (requiredMisses.length) verification.issues.push(`Required field(s) left blank/unselected — fill before trusting: ${requiredMisses.slice(0, 12).join(", ")}${requiredMisses.length > 12 ? ", …" : ""}.`);
     if (docMisses.length) verification.issues.push(`Required document(s) not attached: ${docMisses.slice(0, 8).join(", ")}.`);
@@ -1250,6 +1370,13 @@ async function autoLearnPortalInner(
     }, `Portal was filled and staged, but this pass did not verify cleanly (${verification.issues.slice(0, 2).join("; ") || "low confidence"}).`);
   }
   stub = stub ?? mkStub();
+  // DEPTH ON THIS PATH IS GUARDED IN THE WRITER, NOT HERE. This is the third and last place
+  // that can bury a deeper draft — a run that reached review, filled four fields and failed
+  // the trust gate lands here as "recording" and used to overwrite a 60-step draft — but the
+  // trust verdict is only final AFTER the replay self-test, which needs the stub row. Rather
+  // than reorder the run around one guard, the invariant lives in savePortalRecipeSteps: a
+  // save that is not 'complete' may not reduce the recipe's fill count. That covers this
+  // path, the pause path, both failure paths, the PUT route and anything written later.
   savePortalRecipeSteps(db, stub.id, boundSteps, {
     status: trusted ? "complete" : "recording",
     notes: trusted
@@ -1292,7 +1419,12 @@ async function autoLearnPortalInner(
           verificationAccurate: verification.accurate,
           textContradicts,
           reviewReadable,
-          note: "trusted = verificationAccurate && !textContradicts. Deterministic mismatches are warnings only.",
+          // THE BUNDLE MUST NAME WHAT STOPPED IT. This block used to describe a two-condition
+          // gate that had not been the real bar for months, so an operator reading a run's
+          // verdict.json to find out why a recipe stayed a draft was told nothing that applied.
+          // evaluateTrustGate's blockers are the actual reasons, in the gate's own words.
+          blockers: gate.blockers,
+          note: "trusted = evaluateTrustGate(...).trusted — see the full bar documented on that function in backend/src/autoLearn.ts. The replay self-test can only remove trust afterwards, never grant it. Deterministic mismatches are warnings only.",
         },
         textSignal: {
           accurate: textVerification.accurate,
