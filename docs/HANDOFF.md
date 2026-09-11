@@ -3,6 +3,46 @@
 Audience: the next model/dev session (and the operator). Read `CLAUDE.md` first
 for the hard rules; this file is the running state.
 
+## NEM CROSS-PROJECT SCOREBOARD (2026-09-11) - 3 of 3 reachable utility portals PASS
+
+Every utility portal with a working login and a complete recipe now has a LIVE
+cross-project measurement: learn once on project A, stage a materially different project
+through the recipe PRODUCTION resolves, sweep every reported fill against both projects.
+PowerClerk is one-session-per-account and PacifiCorp/PGE share one login, so these were run
+STRICTLY SEQUENTIALLY - concurrent runs are what produced this session's false 67% reading.
+
+```
+ portal            verdict  landed  A leaked  model  fields  rung
+ Ameren    (B)     PASS     11      0         2      53      3 replayed_with_gaps
+ Ameren    (C)     PASS     11      0         2      53      3 replayed_with_gaps
+ PacifiCorp(B)     PASS     15      0         1      82      4 replayed_clean
+ PGE       (B)     PASS     13      0         1      41      3 replayed_with_gaps
+```
+
+EQUIPMENT SUBSTITUTION IS PROVEN on both Oregon portals: inverterModel,
+inverterModelCertified and inverterQuantity all landed as project B's (IQ8M-72-2-US
+replacing A's IQ8PLUS-72-2-US, CEC-certified string included), and PGE also landed
+moduleModel. Ameren shows none of these because its form does NOT ask - it takes equipment
+specs as a FILE UPLOAD. Per-portal difference, not an engine gap.
+
+ZERO LEAKS ACROSS ALL FOUR RUNS. Of ~230 portal-confirmed fields swept, not one carried a
+value traceable to the learn project and not to the replay project.
+
+KNOWN LIMITS OF THIS SCOREBOARD, so nobody reads it as more than it is:
+ - FROZEN SELECT LITERALS ARE INVISIBLE TO THE SWEEP. PacifiCorp's recipe carries 14
+   unbound [select] answers ("Customer-Owned", "Residential", "Roof Mounting",
+   "No Aggregation"...). They replay because a closed-vocabulary answer is the portal's
+   word, not the customer's - but "Customer-Owned vs Third-Party Owned" is a FINANCING fact
+   that varies per job and is pinned to whatever project A was. A and B happen to agree, so
+   the tripwire sweep cannot see it. These need project bindings, not literals.
+ - Reaching review is not a submittable filing. Ameren still leaves 6 required blanks;
+   PGE left 2 steps that did not land (Model; a disconnect-distance policy question).
+ - dcKw/acKw/wattages read "unseen" on the Oregon portals: they are shown as computed
+   read-only text, not typed fields, so the readback cannot confirm them.
+
+Still unmeasured on the NEM side: ComEd (needs_rerecord, 10 steps - the drawer bug the
+2026-09-10 activeScope fix targets), PECO (login-ok, never learned), Duquesne (no login).
+
 ## THE FIRST CROSS-PROJECT MEASUREMENT (2026-09-11) - the B/C contract holds on Ameren NEM
 
 Learn once on project A, stage materially different projects B and C through the recipe
