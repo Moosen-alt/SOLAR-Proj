@@ -99,12 +99,22 @@ const PAGES: Record<string, string> = {
       <h2>Site Information</h2>
       <label for="siteAddr">Service Address</label><input id="siteAddr" name="siteAddr" type="text">
       <label for="siteCity">Service City</label><input id="siteCity" name="siteCity" type="text">
+      <!-- The next step, pre-rendered and retired. In the scope, and unreachable. The
+           retired "Next" in here must not count as "the panel owns a way forward" either,
+           or the exemption stays shut and the real footer Next is lost. -->
+      <div aria-hidden="true">
+        <label for="ghostField">Ghost Field</label><input id="ghostField" name="ghostField" type="text">
+        <button id="ghostPanelNext" onclick="location.href='/wrong'">Next</button>
+      </div>
       <button id="panelSubmit" onclick="location.href='/wrong'">Submit</button>
       <button id="panelCancel">Cancel</button>
     </div>
     <div class="footer">
       <button id="footerBack">Back</button>
       <button id="footerNext" onclick="location.href='/p2'">Next</button>
+      <!-- Outside the panel AND retired: the exemption is open on this page, and this must
+           still not come back through it. -->
+      <span aria-hidden="true"><button id="ghostContinue" onclick="location.href='/wrong'">Continue</button></span>
       <button class="mat-icon-button" aria-label="New Application Button. This will open a popup drawer.">
         <span class="material-icons">add</span></button>
       <button class="mat-icon-button" aria-label="Next page"><span class="material-icons">navigate_next</span></button>
@@ -251,7 +261,7 @@ check("the panel resolves as the active scope", h2.marked);
 check("the panel's fields survive",
   h2.labels.includes("Service Address") && h2.labels.includes("Service City"), JSON.stringify(h2.labels));
 check("THE HOLE: the footer's Next — outside the panel — is still in the harvest",
-  h2.labels.includes("Next"),
+  h2.raws.some((f) => f.id === "footerNext"),
   `labels=${JSON.stringify(h2.labels)} — a page's only way forward must never be filtered away`);
 check("...and it got there by the EXEMPTION, not by accident",
   h2.exempted.includes("Next"), JSON.stringify(h2.exempted));
@@ -263,6 +273,15 @@ check("THE NARROWING: nor the record actions behind the panel",
   !h2.labels.includes("My Records") && !h2.labels.includes("Pay Fees Due"), JSON.stringify(h2.exempted));
 check("THE NARROWING: nor a plain outside 'Back'",
   !h2.labels.includes("Back"), JSON.stringify(h2.exempted));
+check("OFFSTAGE, INSIDE the panel: an aria-hidden field is dropped from the harvest too",
+  !h2.labels.includes("Ghost Field") && !h2.raws.some((f) => f.name === "ghostField"),
+  JSON.stringify(h2.labels));
+check("OFFSTAGE, INSIDE the panel: a retired 'Next' does not count as the panel owning a way forward",
+  !h2.raws.some((f) => f.id === "ghostPanelNext") && h2.exempted.includes("Next"),
+  `exempted=${JSON.stringify(h2.exempted)} — counting it shuts the exemption and loses the real footer Next`);
+check("OFFSTAGE, OUTSIDE the panel: an aria-hidden 'Continue' is not re-admitted, exemption open or not",
+  h2.raws.filter((f) => f.label === "Continue").length === 0,
+  `exempted=${JSON.stringify(h2.exempted)} — a control the page retired is not a way forward`);
 
 const seen2: string[][] = [];
 const planner2: LearnPlanner = async (req) => {

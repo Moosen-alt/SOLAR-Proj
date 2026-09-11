@@ -740,15 +740,27 @@ export function applyActiveScopeFilter(
   scopeActive: boolean,
 ): { fields: RawField[]; dropped: number; exempted: string[] } {
   if (!scopeActive) return { fields: raws, dropped: 0, exempted: [] };
+  // A control nobody can reach is not the panel's way forward: if an offstage "Continue"
+  // counted here, the exemption would stay shut and the page would lose its real exit for
+  // the sake of a control the page itself has retired.
   const scopeHasForward = raws.some(
-    (r) => r.inActiveScope !== false && r.fieldType === "button" && isPanelAdvanceLabel(r.label) && !rawIsOffLimits(r),
+    (r) => r.inActiveScope !== false && !r.offstage
+      && r.fieldType === "button" && isPanelAdvanceLabel(r.label) && !rawIsOffLimits(r),
   );
   const exempted: string[] = [];
   let dropped = 0;
   // Filtered in place rather than concatenated: the planner addresses fields BY INDEX, so a
   // re-ordered list would silently re-aim every fill it asks for.
   const fields = raws.filter((r) => {
-    if (r.inActiveScope !== false) return true;
+    if (r.inActiveScope !== false) {
+      // aria-hidden / inert subtrees are excluded even INSIDE the scope. A panel that keeps
+      // its next step pre-rendered behind aria-hidden offers fields no person can type into;
+      // planning a fill there spends the reveal attempt and four retries on a control the
+      // page has explicitly retired, and (worse) can answer a question the operator never
+      // sees. Only applies when a scope resolved, so a plain page is untouched.
+      if (r.offstage) { dropped++; return false; }
+      return true;
+    }
     // The panel owns the FIELDS unconditionally — the whole point is that the dashboard's
     // inputs behind an open drawer are not this page's inputs.
     if (r.fieldType !== "button") { dropped++; return false; }
