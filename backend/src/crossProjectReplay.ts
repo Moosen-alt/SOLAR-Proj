@@ -52,6 +52,15 @@ export interface TripwireReport {
   /** Traces to BOTH projects (utility name, state, battery "No"). A value A and B
    *  genuinely share proves nothing either way — shared, not evidence. */
   shared: TripwireMatch[];
+  /** Traces to A but ALSO to the CLIENT's own record — the installer's email, licence,
+   *  business address. A value the solar company itself carries appears on EVERY filing
+   *  that company makes, so its presence on B's filing can never prove cross-PROJECT
+   *  leakage. Found live on the first Ameren B run: three "leaks" of
+   *  permit@infinitysolarusa.com that were installerEmail-bound fields doing their job —
+   *  the benchmark learn fixture had used the installer address as project A's contact
+   *  email, so the string sat in both sets. Sensitivity is not lost: if a client value
+   *  lands where B's own value belonged, that B key still surfaces under `unfilled`. */
+  clientScoped: TripwireMatch[];
   /** Traces to neither set — portal vocabulary, dates, values this sweep cannot judge. */
   unverifiable: TripwireMatch[];
   /** B keys no filled value traced to: either the form never asks, or it did not land. */
@@ -128,10 +137,16 @@ export function sweepTripwires(
   filled: FilledField[],
   aValues: Record<string, string>,
   bValues: Record<string, string>,
+  /** Strings the CLIENT record itself carries (business email/phone/address, licence and
+   *  docket numbers, disconnect make/model, the credential's username reference). A
+   *  tripwire hit whose value traces to one of these is classified clientScoped, never
+   *  leaked — that string legitimately appears on every filing this company makes. */
+  clientValues: string[] = [],
 ): TripwireReport {
   const aEntries = Object.entries(aValues).filter(([, v]) => String(v ?? "").trim());
   const bEntries = Object.entries(bValues).filter(([, v]) => String(v ?? "").trim());
-  const report: TripwireReport = { landed: [], leaked: [], shared: [], unverifiable: [], unfilled: [], checkedFields: 0 };
+  const clientEntries = clientValues.map((v) => String(v ?? "")).filter((v) => v.trim());
+  const report: TripwireReport = { landed: [], leaked: [], clientScoped: [], shared: [], unverifiable: [], unfilled: [], checkedFields: 0 };
   const bSeen = new Set<string>();
   for (const f of filled) {
     const value = String(f.value ?? "");
@@ -142,6 +157,7 @@ export function sweepTripwires(
     for (const k of matchedB) bSeen.add(k);
     const entry: TripwireMatch = { field: String(f.field ?? ""), value, matchedA, matchedB };
     if (matchedA.length && matchedB.length) report.shared.push(entry);
+    else if (matchedA.length && clientEntries.some((cv) => valueTraces(value, cv))) report.clientScoped.push(entry);
     else if (matchedA.length) report.leaked.push(entry);
     else if (matchedB.length) report.landed.push(entry);
     else report.unverifiable.push(entry);

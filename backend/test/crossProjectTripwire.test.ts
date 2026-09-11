@@ -276,6 +276,41 @@ check("the final-submit step is never part of the sweep", () => {
   assert.equal(fills.length, 0);
 });
 
+// CLIENT-SCOPED VALUES ARE NOT CROSS-PROJECT EVIDENCE. Found live on the first Ameren B
+// run: three "leaks" of permit@infinitysolarusa.com, every one an installerEmail-bound
+// field carrying the SOLAR COMPANY's own address - correct on every filing the company
+// makes. The learn fixture had reused that address as project A's contact email, so the
+// string sat in A's tripwires. The sweep now takes the client's own values and classifies
+// such hits clientScoped, never leaked. Both directions pinned: without clientValues the
+// same hit MUST still read as leaked (the kill direction), and an A value that is NOT the
+// client's stays leaked (the list is not a blanket amnesty).
+check("a client-scoped value matching A is clientScoped, not leaked", () => {
+  const r = sweepTripwires([{ field: "Email", value: "permit@infinitysolarusa.com" }],
+    { email: "permit@infinitysolarusa.com" }, { email: "permit+xproj-b@infinitysolarusa.com" },
+    ["permit@infinitysolarusa.com"]);
+  assert.equal(r.leaked.length, 0, "the company's own email on the company's filing is not a leak");
+  assert.equal(r.clientScoped.length, 1);
+});
+
+check("KILL: the same hit WITHOUT clientValues still reads as leaked", () => {
+  const r = sweepTripwires([{ field: "Email", value: "permit@infinitysolarusa.com" }],
+    { email: "permit@infinitysolarusa.com" }, { email: "permit+xproj-b@infinitysolarusa.com" });
+  assert.equal(r.leaked.length, 1, "omitting clientValues must not silently absorb real leaks");
+});
+
+check("MUST STILL LEAK: an A-only value that is NOT the client's stays leaked", () => {
+  const r = sweepTripwires([{ field: "Owner", value: "Benchmark Springfield" }],
+    { homeownerName: "Benchmark Springfield" }, { homeownerName: "ZZTest Bravo" },
+    ["permit@infinitysolarusa.com", "TML INTERNATIONAL LLC"]);
+  assert.equal(r.leaked.length, 1, "the client list must not become a blanket amnesty");
+});
+
+check("a value that is A's AND B's stays shared even when also client-scoped", () => {
+  const r = sweepTripwires([{ field: "Utility", value: "Ameren Illinois" }],
+    { utility: "Ameren Illinois" }, { utility: "Ameren Illinois" }, ["Ameren Illinois"]);
+  assert.equal(r.shared.length, 1, "shared outranks clientScoped - both projects carry it");
+});
+
 if (failures) { console.error(`\n${failures} cross-project tripwire check(s) FAILED.`); process.exit(1); }
 console.log("\nAll cross-project tripwire checks passed.");
 process.exit(0);

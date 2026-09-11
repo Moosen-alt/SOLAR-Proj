@@ -467,8 +467,20 @@ async function main(): Promise<void> {
       p.value && !nameMatches(fieldsVerified, p.field) && !nameMatches(unresolved, p.field));
     const refusedOrEmpty = planned.filter((p) => nameMatches(unresolved, p.field));
 
-    const verifiedSweep = sweepTripwires(verifiedFills, tripwires, expected);
-    const advisorySweep = sweepTripwires(advisoryFills, tripwires, expected);
+    // CLIENT-SCOPED VALUES ARE NOT CROSS-PROJECT EVIDENCE. The first live Ameren B run
+    // returned "LEAKED: 3" — every one was permit@infinitysolarusa.com in an
+    // installerEmail-bound field, i.e. the SOLAR COMPANY's own email doing exactly what
+    // it should on the company's own filing. It matched A's tripwires only because the
+    // learn fixture had reused the installer address as project A's contact email.
+    // Everything the client record carries (and the credential's username reference) is
+    // therefore handed to the sweep as clientScoped, and classified out of "leaked".
+    const clientRow = db.get<Record<string, unknown>>("SELECT * FROM clients WHERE id = ?", [CLIENT]);
+    const clientValues = [
+      ...Object.values(clientRow ?? {}).map((v) => String(v ?? "")).filter((v) => v.trim().length >= 4),
+      String(cred.usernameReference ?? ""),
+    ];
+    const verifiedSweep = sweepTripwires(verifiedFills, tripwires, expected, clientValues);
+    const advisorySweep = sweepTripwires(advisoryFills, tripwires, expected, clientValues);
     // The review screen disagreeing with project B is bad; disagreeing WITH A'S VALUES is
     // the smoking gun — the hardest leak evidence the result carries.
     const mismatchLeaks = mismatches
@@ -549,6 +561,7 @@ async function main(): Promise<void> {
     for (const l of verifiedSweep.leaked) console.log(`      LEAK  ${l.field} = "${l.value.slice(0, 50)}"  (A's ${l.matchedA.join("/")})`);
     for (const l of mismatchLeaks) console.log(`      LEAK  ${l.field} shows "${l.found.slice(0, 50)}" — traces to project A`);
     console.log(`   shared, not evidence : ${verifiedSweep.shared.length} (values A and B genuinely share prove nothing either way)`);
+    if (verifiedSweep.clientScoped.length) console.log(`   client-scoped        : ${verifiedSweep.clientScoped.length} (the company's own values — on every filing by design, not evidence)`);
     console.log(`   unverifiable         : ${verifiedSweep.unverifiable.length} confirmed field(s) matching neither project`);
     console.log(`   ${variant.label} values unseen  : ${verifiedSweep.unfilled.length} (${verifiedSweep.unfilled.slice(0, 8).join(", ")})`);
     console.log(`   review screen        : ${Number(outcome.reviewFieldsSeen ?? 0)} field(s) read, ${reviewConfirmed} project ${variant.label} value(s) confirmed, ${mismatches.length} mismatch(es)`);
