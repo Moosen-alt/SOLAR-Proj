@@ -98,6 +98,12 @@ export const QUESTION_CLASSIFIER_RULES: QuestionClassifierRule[] = [
   // ── per-job: the silent-wrong-answer hazards ─────────────────────────────
   { id: "per-job:ownership", re: /customer.?owned|third.?party|owner\s?ship|financ|\bleas(e|ed|ing)\b|\bppa\b|power\s?purchase/i,
     classification: "per-job", binding: "ownershipModel", why: "ownership/financing is a per-job fact" },
+  // Grown from the adversarial rewording sweep (2026-09-11): "System owner" /
+  // "Who owns the system?" / "Owner of generating facility" fell to unknown.
+  // NARROW on purpose: the owner must be OF THE SYSTEM/facility/generation —
+  // "Property Owner Name" is an identity field, not financing, and must not hit.
+  { id: "per-job:system-owner", re: /\bsystem\s?owner\b|who\s+owns\s+the\s+(system|generat|facility)|owner\s+of\s+(the\s+)?(system|generat\w*|facility)/i,
+    classification: "per-job", binding: "ownershipModel", why: "who owns the system is the same per-job financing fact" },
   { id: "per-job:configuration", re: /community\s?solar|behind.?the.?meter|collectively\s?owned/i,
     classification: "per-job", binding: "systemConfiguration", why: "program/configuration is a per-job fact" },
   { id: "per-job:storage", re: /batter|energy\s?storage|\bess\b|powerwall|backup\s?power/i,

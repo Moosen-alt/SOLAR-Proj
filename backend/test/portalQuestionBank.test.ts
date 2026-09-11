@@ -254,6 +254,7 @@ run("the audit ranks frozen per-job answers worst, then blanks, then unknowns �
 //    sample must be won by ITS rule (a broad early rule masking a later one fails here).──
 const RULE_SAMPLES: Record<string, string> = {
   "per-job:ownership": "Will the System be Customer-Owned or Third-Party Owned?",
+  "per-job:system-owner": "Who owns the system?",
   "per-job:configuration": "Please select whether this system is a Community Solar, Behind the Meter request, or Collectively Owned Generation Facility:",
   "per-job:storage": "Do you seek to install an Energy Storage System (ESS), or batteries as part of this project?",
   "per-job:export-limit": "Is the proposed DER system a limited export or non-exporting system?",
@@ -293,6 +294,16 @@ run("mustExclude: boilerplate and cross-domain words never leak into the wrong r
   assert.equal(classifyPortalQuestion("Please make your selection regarding meter aggregation below").classification, "unknown");
   // The installer-role question must not read as per-job just because a system is named.
   assert.equal(classifyPortalQuestion("Who will install this generation system?").classification, "portal-constant");
+  // A PROPERTY owner is an identity field, never financing — the system-owner rule
+  // (grown from the adversarial rewording sweep) must not capture it.
+  assert.equal(classifyPortalQuestion("Property Owner Name").ruleId, null);
+  assert.equal(classifyPortalQuestion("Who is the property owner?").ruleId, null);
+  // And the rewordings that grew the rule must now be per-job with the right binding.
+  for (const label of ["System owner", "System Owner:", "Owner of generating facility"]) {
+    const got = classifyPortalQuestion(label);
+    assert.equal(got.classification, "per-job", `"${label}" -> ${got.classification}`);
+    assert.equal(got.binding, "ownershipModel");
+  }
 });
 
 db.close();
