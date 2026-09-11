@@ -43,6 +43,7 @@ import { id } from "./ids";
 import { knowledgeProfileKey, findKnowledgeForLearn } from "./knowledgeBase";
 import { getCodeProfile } from "./codeProfiles";
 import { certifiedNamesForMake } from "./cecEquipment";
+import { recordDraftTouch, type DraftTouch } from "./draftLedger";
 
 export interface AutoLearnResult {
   recipe: PortalRecipe;
@@ -451,6 +452,62 @@ export function learnProfileName(portalType: string, portalUrl: string): string 
   return `${portalType.toLowerCase()}-${slug || "portal"}`;
 }
 
+/**
+ * EVERY PATH THAT OPENS A LIVE PORTAL WRITES THE DRAFT LEDGER FIRST — NOT JUST THE BENCHMARK.
+ *
+ * A learn logs into the operator's real account and starts a real application. It never
+ * submits, but the draft stays under the customer's licence and nothing deletes it. Only
+ * runLearnBenchmark wrote the ledger; the API-triggered learn (jobQueue "auto_learn"), the
+ * self-heal re-learn queue, the staging self-seed and the root live-*-learn scripts all
+ * opened the same portals with no record. This builds the entry every autoLearnPortal run
+ * records BEFORE the browser opens — a run that dies mid-way has still created the draft,
+ * and that is exactly the case worth recording.
+ *
+ * Returns null for exactly one caller: runLearnBenchmark identifies itself with
+ * createdBy "learn-benchmark" and writes its OWN entry (runLearnBenchmark.ts:226) before
+ * this function is ever reached, with the benchmark's richer purpose text — recording here
+ * too would double-count every benchmark draft in the ledger operators clean up from.
+ * The coupling cuts both ways: if the benchmark ever renames its createdBy we get duplicate
+ * rows (noisy but safe); if it ever drops its own recordDraftTouch while keeping the name,
+ * benchmark drafts go UNRECORDED — the dangerous direction — so that call and this skip
+ * must move together.
+ *
+ * Secrets-safe by construction: the account is the credential store's username REFERENCE
+ * (the non-secret half kept in the clear), never a decrypted username or password, and no
+ * field value is copied in. Exported for the unit test.
+ */
+export function buildLearnDraftTouch(input: {
+  portalUrl: string;
+  projectId: string;
+  createdBy?: string;
+  selfTestEnabled: boolean;
+  /** The client's stored logins — the API view, which never carries a secret. */
+  credentials: Array<{ portalUrl: string; usernameReference: string }>;
+}): DraftTouch | null {
+  if ((input.createdBy || "") === "learn-benchmark") return null;
+  let host = "";
+  try { host = new URL(input.portalUrl).hostname.toLowerCase(); } catch { host = ""; }
+  const hit = input.credentials.find((c) => {
+    try { return new URL(c.portalUrl).hostname.toLowerCase() === host; } catch { return false; }
+  });
+  // A host miss with exactly ONE stored login mirrors getDecryptedCredentialAny: when a
+  // single credential is all the client has, it is unambiguous which account the draft
+  // will sit under. More than one and no host match means we honestly don't know — an
+  // empty account beats a guessed one in a cleanup ledger.
+  const account = hit?.usernameReference ?? (input.credentials.length === 1 ? input.credentials[0].usernameReference : "");
+  return {
+    at: new Date().toISOString(),
+    host,
+    portalUrl: input.portalUrl,
+    account: String(account ?? ""),
+    projectId: input.projectId,
+    // The replay self-test re-runs the LIVE portal in a fresh session, so one learn can
+    // mint a SECOND draft — the purpose says so up front, mirroring the benchmark's.
+    purpose: input.selfTestEnabled ? "auto-learn +selftest (up to 2 drafts)" : "auto-learn",
+    note: `learn walks to the review screen and stops; never submitted (createdBy: ${input.createdBy || "unknown"})`,
+  };
+}
+
 export async function autoLearnPortal(
   db: AppDb,
   projectId: string,
@@ -807,6 +864,20 @@ async function autoLearnPortalInner(
       onProgress: input.onProgress,
       onHumanStep,
     });
+  // WRITE IT DOWN BEFORE WE TOUCH THE PORTAL, NOT AFTER. This run is about to log into a
+  // REAL account and start a REAL application; a run that dies mid-way has still created
+  // the draft. The benchmark records its own entry (see buildLearnDraftTouch — it returns
+  // null for that caller); every other learn path records here.
+  const draftTouch = buildLearnDraftTouch({
+    portalUrl,
+    projectId,
+    createdBy: input.createdBy,
+    // Same parse as the self-test gate below — the self-test replays the LIVE portal in a
+    // fresh session, so it can mint a second draft per run.
+    selfTestEnabled: process.env.PORTAL_REPLAY_SELFTEST === "1" || process.env.PORTAL_REPLAY_SELFTEST === "true",
+    credentials: project.clientId ? listPortalCredentials(db, project.clientId) : [],
+  });
+  if (draftTouch) recordDraftTouch(draftTouch);
   try {
     learn = await browserLimiter(runLearn);
   } catch (err) {

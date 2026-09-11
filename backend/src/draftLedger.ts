@@ -30,7 +30,9 @@ export interface DraftTouch {
   account: string;
   /** Our throwaway project id, so a bundle can be tied back to a portal draft. */
   projectId: string;
-  /** Why we were there: "learn" | "replay-selftest" | "benchmark" | "cross-project-test". */
+  /** Why we were there. Free-form but conventional: "auto-learn" (every non-benchmark
+   *  autoLearnPortal run), "auto-learn +selftest (up to 2 drafts)", "benchmark learn",
+   *  "benchmark+selftest (up to 2 drafts)", "annotation", "BACKFILL: ...". */
   purpose: string;
   /** The run bundle directory, when one exists. Bundles are pruned; this ledger is not. */
   bundleDir?: string;
