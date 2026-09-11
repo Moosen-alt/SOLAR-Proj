@@ -3,6 +3,47 @@
 Audience: the next model/dev session (and the operator). Read `CLAUDE.md` first
 for the hard rules; this file is the running state.
 
+## PERMIT SIDE JOINS THE SCOREBOARD + THE QUESTION BANK IS LIVE (2026-09-11 evening)
+
+Coos Bay electrical (Accela, aca-oregon) PASSES the cross-project contract: 6 distinct
+B values confirmed live (name/street/city/zip/email/phone + job value/description landing),
+zero leaks, ZERO model calls, rung 3. It took three fixture iterations, each teaching the
+harness what a real project carries (in-jurisdiction address - Accela validates against
+parcel records; job value + work description - Accela requires them), plus one recipe scrub.
+
+THE SCRUB MATTERED BEYOND THE TEST: the recipe carried a human-patch PAYMENT CAPTURE -
+card CVV "520", cardholder name, expiry - recorded when the operator paid the Coos Bay fee
+in the left-open capture browser, sitting in the SHARED recipes table since 09-02. The
+attribute-only sensitivity predicate missed label-identified card fields. DB scrubbed and
+audited clean fleet-wide; capture now REFUSES card fields outright (fc9136d,
+paymentCapture.dom.smoke). Treat CVV+expiry+name as exposed for nine days; the PAN never was.
+
+FULL CROSS-PROJECT SCOREBOARD - 5 runs, 4 portals, both tracks, ZERO leaks anywhere:
+```
+ Ameren    NEM (B)  PASS  11 landed  2 model calls
+ Ameren    NEM (C)  PASS  11 landed  2 model calls
+ PacifiCorp NEM (B) PASS  15 landed  1 model call   replayed_clean, equipment landed
+ PGE       NEM (B)  PASS  13 landed  1 model call   equipment landed
+ Coos Bay  PERMIT(B) PASS  6 landed  0 model calls
+```
+
+THE QUESTION BANK (operator design: "if PGE detected, ask PGE questions - rigid"):
+commits 3250ba3 / 251d932 / 00a1075 / 1f28f65 / c16fa49. The recipes ARE the bank - every
+frozen [select] literal is a question in the portal's own words. Rigid keyword classifier
+(misses fall to unknown, never guessed), shared portal_question_overrides for one-time
+human calls, v17 per-job columns (ownership_model, system_configuration,
+disconnect_within_10ft), and TWO ask-surfaces: the tokenized intake link and the PARSER
+PAGE (the operator-named intake surface - questions render as rigid selects right after
+Save to project, POST /api/projects/:id/portal-questions, scope-guarded).
+Fleet audit: 63 findings - 11 frozen per-job answers, 1 per-job blank, 51 to triage
+(npm run portal:questions -- --audit).
+OPERATOR-CONFIRMED: installer-role is ALWAYS "Contractor" (portal-constant, classifier
+already agrees); ownership is GENUINELY per-job (they do lease/PPA/third-party), so
+PacifiCorp's frozen "Customer-Owned" was a real silent-wrong-answer for their business.
+
+NOTE: the operator's running server predates these commits - restart it to serve the
+portal-questions route and the parser-page panel.
+
 ## NEM CROSS-PROJECT SCOREBOARD (2026-09-11) - 3 of 3 reachable utility portals PASS
 
 Every utility portal with a working login and a complete recipe now has a LIVE
