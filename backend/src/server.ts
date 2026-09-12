@@ -84,6 +84,7 @@ import { addAuditLog } from "./audit";
 import { buildAuthUrl, exchangeCodeForTokens, gmailStatus, pollGmail } from "./gmail";
 import { imapStatus, pollImap, upsertImapSource } from "./emailPoller";
 import { answerPortalQuestions, createIntakeRequest, getIntakeRequestPublic, submitIntakeRequest, portalQuestionStatus } from "./intakeRequests";
+import { createCredentialRequest, getCredentialRequestPublic, listCredentialRequests, submitCredentialRequest } from "./credentialRequests";
 import { ensureHeartbeat, sseBroadcast, sseSubscribe, setSseOrgResolver } from "./events";
 import {
   addManualCorrection,
@@ -238,6 +239,8 @@ app.get("/api/auth/me", (req, res) => me(db, req, res));
 app.get("/login", (_req, res) => res.sendFile(path.join(frontendDir, "login.html")));
 // Public client intake page (tokenized, no login) — served before the auth gate.
 app.get("/intake", (_req, res) => res.sendFile(path.join(frontendDir, "intake.html")));
+// The one-time secure credential link (onboarding guide S4) - the page the customer opens.
+app.get("/credentials", (_req, res) => res.sendFile(path.join(frontendDir, "credentials.html")));
 // Public read-only client status page (tokenized link, no login).
 app.get("/status", (_req, res) => res.sendFile(path.join(frontendDir, "status.html")));
 app.use(requireAuth(db));
@@ -733,6 +736,35 @@ app.get("/api/projects/:id/portal-questions", asyncHandler(async (req, res) => {
 app.post("/api/projects/:id/portal-questions", asyncHandler(async (req, res) => {
   res.json(await answerPortalQuestions(db, String(req.params.id), (req.body ?? {}).answers ?? {}));
 }));
+
+// THE ONE-TIME SECURE CREDENTIAL LINK (onboarding guide §4). The operator mints a link for a
+// client naming the portals we need logins for; the customer opens it once, types the
+// credentials, and they land encrypted through the ordinary writer. Public routes sit under
+// /api/public/ so they are exempt from the session gate BY THE SAME RULE the intake link uses -
+// the TOKEN is the authorization, and it is single-use and expiring.
+app.post("/api/clients/:id/credential-requests", (req, res) => {
+  const body = (req.body ?? {}) as { portals?: unknown[]; ttlHours?: number };
+  const made = createCredentialRequest(db, String(req.params.id), (body.portals ?? []) as never, {
+    createdBy: requestScope(db, req).userId || "",
+    ttlHours: Number(body.ttlHours) || undefined,
+  });
+  const base = String(process.env.PUBLIC_BASE_URL || "").replace(/\/$/, "");
+  res.json({ ...made, url: `${base}/credentials?token=${made.token}` });
+});
+
+app.get("/api/clients/:id/credential-requests", (req, res) => {
+  res.json({ requests: listCredentialRequests(db, String(req.params.id)) });
+});
+
+// Public (no auth): the customer's view of what we are asking for, and the one-time write.
+app.get("/api/public/credential-request/:token", (req, res) => {
+  res.json(getCredentialRequestPublic(db, String(req.params.token)));
+});
+
+app.post("/api/public/credential-request/:token", (req, res) => {
+  const body = (req.body ?? {}) as { portals?: unknown[] };
+  res.json(submitCredentialRequest(db, String(req.params.token), (body.portals ?? []) as never));
+});
 
 // Public (no auth): read an intake request by token.
 app.get("/api/intake/:token", asyncHandler(async (req, res) => {

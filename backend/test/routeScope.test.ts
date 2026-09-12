@@ -51,6 +51,14 @@ const UNSCOPED_BY_DESIGN: Record<string, string> = {
   // break the whole point (a homeowner has no login).
   "/api/public/status/:token": "tokenized public status page",
   "/api/public/review/:token": "tokenized shared review report",
+  // The one-time secure credential link (onboarding guide S4). Unscoped BY DESIGN: the
+  // customer supplying the logins has no account here. The TOKEN is the authorization and it
+  // is stronger than the siblings above - single-use (spent on first successful submit),
+  // expiring (72h default), write-only (the GET reveals only which portals we asked about,
+  // never anything submitted), and it can only write credentials for the portals the request
+  // itself named. An unknown, spent and expired token all return the SAME message so a prober
+  // learns nothing. See backend/src/credentialRequests.ts and credentialRequest.test.ts.
+  "/api/public/credential-request/:token": "one-time, expiring, write-only credential drop box - the token IS the authorization",
   "/api/intake/:token": "tokenized public client intake link",
 
   // Auth surface — must be reachable before you have an identity.
