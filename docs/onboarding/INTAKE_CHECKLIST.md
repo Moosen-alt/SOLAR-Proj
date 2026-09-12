@@ -28,6 +28,22 @@ in `frontend/dashboard.js`). They can only be set through the intake JSON, the A
 SQL. If you collect them on a call and then type them into the Clients screen, there is
 nowhere to put them and they are silently lost.
 
+**A fourth marker, new and temporary: COLLECT NOW / WRITE BY COLUMN.** Eight answers the
+onboarding guide's packet asks for got database columns in migration v18 —
+`updates_inbox`, `billing_contact_email`, `license_state`, `insurance_expiry`, `bond_expiry`
+on `clients`, and `mfa_required`, `mfa_code_destination`, `fee_responsibility` on
+`portal_credentials`. **Ask for all eight on the call.** But before you assume a run stored
+one, check `npx tsx scripts/onboard-company.ts --example`: a key that is not in that output
+is a key the script does not write, and it fails in the two different ways §"A field name
+the script does not recognise" describes — an unknown **client** key is named in the dry
+run's WARNINGS and dropped, an unknown key inside a `portalCredentials[]` entry is dropped
+**silently**. The REST API is the same story for the credential three: `validation.ts`
+declares neither, and zod strips what it does not declare (the same trap that has always
+eaten `securityAnswers`). Until the script and the schema list them, the column name is the
+contract — a one-line `UPDATE` per client, or per credential, is how the answer gets in.
+Record it in the intake file regardless: the file is where the answer survives the gap
+between the call and the column.
+
 **A field name the script does not recognise is a field that does nothing**, so two habits
 before a real run. First, `npx tsx scripts/onboard-company.ts --example` prints the exact
 shape the script consumes — that output, and the script's bare usage text, are the authority
@@ -73,6 +89,8 @@ against `--example` character by character.
 | `businessCity` / `businessState` / `businessZip` | **REQUIRED** | Filled separately AND recombined into `installerCityStateZip`, because some portals want one field and some want three. **Zip must be exactly 5 digits** — Accela's Add-Contact dialog validates `#####` and refuses ZIP+4. |
 | `businessPhone` | **REQUIRED** | Primary source for `installerPhone`, and it is also split into per-segment keys (`phoneSegmentKeys`) for portals with three separate area/prefix/line boxes. Give it as a plain 10-digit number; formatting is handled. |
 | `businessEmail` | **REQUIRED** | Primary source for `installerEmail`, and — this is the part that gets missed — **the only address we ever send the company anything at.** `notifyClientOfStatusChange` (`backend/src/clientNotifier.ts:118-123`) reads `clients.business_email` and returns silently if it is blank. There is **no** fallback to `contactEmail`. So a blank one means the installer is never told the permit was issued, never told a correction landed, and never gets the read-only status link — with no error anywhere, because in the service-bureau lane those emails are the only thing they receive from us at all (§8). Ask for a shared inbox, not one person's address. |
+| `updatesInbox` | **REQUIRED** (guide S3.1; column `clients.updates_inbox`, COLLECT NOW / WRITE BY COLUMN) | **Where *we* send confirmations, status updates and corrections — and the guide says in as many words "a shared inbox, not one person's".** This is deliberately **not** `businessEmail`. `businessEmail` is the installer address that goes **on the application**, which is where the *AHJ* mails its corrections (`clientStagingOverlay` maps it to `installerEmail`); `updatesInbox` is where *Keelix* writes. They are different addresses for different senders, and a company must be able to change one without changing the other — the person who answers permit-clerk mail is rarely the person who wants our status traffic. Ask for a distribution list or a shared mailbox and say why: one person's address means a week of updates sit unread while they are on holiday. **Today the notifier still reads `business_email` and nothing else** (`backend/src/clientNotifier.ts:118-123`), so filling this column does not yet reroute anything — repointing the notifier is a deliberate switch, not a side effect of the column arriving. Until it happens, `businessEmail` must still be a real monitored address (see its row). |
+| `billingContactEmail` | **REQUIRED** (guide S3.7; column `clients.billing_contact_email`, COLLECT NOW / WRITE BY COLUMN) | Who receives **our** invoices. A third address again, and the one most often given as "just send it to the same place" on the call and then disputed at the first invoice. Ask for accounts payable by name. Reaches no portal field; it is a fact about the relationship, not the filing. |
 | `ein` | **OPTIONAL** | Ask for it because AHJ business-licence paperwork wants it, but be clear-eyed: there is no overlay key feeding it, so a portal field labelled EIN or Tax ID is **not** auto-filled — and it never will be recorded as a literal either, because that label is in the sensitive set (`autoLearn.ts:970`, `autoLearnAdapter.ts:335`) and binds at replay or is redacted. An EIN-requiring portal is a human fill. **Write it, never echo it** — no log line, no console output, no support ticket. |
 | `notes` | **OPTIONAL** | Internal free text on the client row. Not fed to the LLM (the LLM-visible notes columns are `portal_credentials.notes` and `permit_utility_knowledge.notes`), but keep secrets out on principle. |
 
@@ -84,6 +102,7 @@ these lands in the staging overlay and is typed into a real application.
 | Field | Marker | Why we need it / what breaks |
 | --- | --- | --- |
 | `ccbLicenseNumber` | **REQUIRED** (hard gate) | The contractor/CCB licence number. This is the **only** client field the code enforces: `prepareSubmission` throws 409 `{needsCcb: true, clientId}` and nothing stages until it is filled (`repository.ts:5278`). Digits only, no state prefix. |
+| `licenseState` | **REQUIRED** (guide S3.2 asks for the issuing state by name; column `clients.license_state`, COLLECT NOW / WRITE BY COLUMN) | **Which state issued the contractor licence above.** We stored the number with no issuer, and a bare number stops meaning anything the moment a company is licensed in two states — "223690" is a different licence in Oregon than in Washington, and the reciprocity question every multi-state installer asks ("are we licensed in the state this job is in?") cannot be answered from the number alone. Two letters, the USPS abbreviation, matching how `businessState` is stored. |
 | `ccbExpiration` | **OPTIONAL** (strongly recommended) | Free text, unvalidated, reaches no portal fill. Its whole value is that you can see an expiry coming — an expired licence is not a code failure, it is an AHJ rejection of every filing until renewed. Store ISO `YYYY-MM-DD` so it sorts. |
 | `electricalLicenseNumber` | **REQUIRED-IF (they pull electrical or combo permits, i.e. almost always)** | The *company's* electrical contractor licence. Distinct from the two fields below. Many AHJ permit forms require the company licence, the supervising electrician's name, and that electrician's personal licence — all three (`shared/src/types.ts:82-86`). A blank one is a blank required field on the electrical permit. |
 | `electricalSupervisorName` | **REQUIRED-IF (electrical/combo permits)** | The supervising electrician's full name, as licensed. |
@@ -99,7 +118,8 @@ these lands in the staging overlay and is typed into a real application.
 | --- | --- | --- |
 | `bondCarrier` | **OPTIONAL** | Carrier name for the contractor's surety bond. **Reaches no portal fill and no AHJ form today** — it is not a key in `clientStagingOverlay`. Collect it because AHJ business-licence packets ask for it and because you need to know whether they *have* one; nothing automated breaks without it. |
 | `insuranceCarrier` | **OPTIONAL** | Same: stored, not filled. |
-| Certificates of insurance and the bond document itself | **REQUIRED-IF (an AHJ in their list demands a COI upload)** | These are **not** intake fields — there is nowhere on the client record for a file. Keep the PDFs where the human who does the upload can reach them, because a COI attachment is a human step. Ask now, while you have their attention, which carriers and expiry dates apply. |
+| `insuranceExpiry` / `bondExpiry` | **REQUIRED** (guide S3.3 asks for the certificates "with expiry dates"; columns `clients.insurance_expiry` / `clients.bond_expiry`, COLLECT NOW / WRITE BY COLUMN) | **The dates, which are the half that is actionable without a file store.** An expired COI is not a code failure and nothing in the system will throw: it is every filing in the jurisdictions that check it rejected by a human until it is renewed, and the installer usually finds out from the AHJ rather than from us. Storing the date is what lets that be seen coming instead of discovered. Free text, unvalidated, reaches no portal fill — store ISO `YYYY-MM-DD` so it sorts, exactly as `ccbExpiration` is. Ask for both even when the carrier names are the only thing they have to hand; the renewal date is on the certificate. |
+| Certificates of insurance and the bond document itself (the PDFs) | **REQUIRED-IF (an AHJ in their list demands a COI upload)** — and **there is still nowhere to put the file** | The dates now have columns; the documents do not. `project_documents` is the only document table and it is **project**-grained (`project_id NOT NULL`), so a COI — which belongs to the company and outlives every project — has no home. Keep the PDFs where the human who does the upload can reach them, because a COI attachment is a human step either way. What closing this properly would take, so nobody re-derives it on the next call: a client-grained `client_documents` table (`client_id`, `doc_type` — `coi` / `bond` / `license` — `original_filename`, `stored_path`, `content_type`, `size_bytes`, `expires_at`, `uploaded_by`, `uploaded_at`), an upload/list route under `/api/clients/:id/documents` (which inherits the tenancy scope guard automatically), and reuse of the existing on-disk document storage. Until then: collect the dates here, keep the files out of band, and do not tell a customer we hold their certificates. |
 
 ## 4 · Standard equipment
 
@@ -136,7 +156,10 @@ safely" below before you ask for any of this.
 | `username` | **REQUIRED** | 400 if blank. Stored twice: as a plaintext `username_reference` for display and audit, and inside the encrypted envelope. |
 | `password` | **REQUIRED-IF (this credential row does not exist yet — so: always, the first time)** | Goes **only** into the AES-256-GCM envelope; the API never returns it and the credential view exposes `hasSecret` only. Max 1024 chars. **On a credential that already exists, a blank `password` means "leave the stored secret alone"** — it is not an error and it does not blank the envelope. That is what makes a secret-stripped intake file re-runnable (§"Collecting portal passwords safely", item 6). It also means a blank password can never *fix* a wrong stored one: to change a password you have to supply the new one. Credential rows are keyed by `portalUrl` within the client, so a typo in the URL creates a second row rather than updating the first. |
 | `securityAnswers` | **REQUIRED-IF (the portal challenges security questions on a new device)** | Rides inside the same encrypted envelope, and is carried across a password rotation so re-encrypting cannot silently drop it. **CAVEAT: this key only works on the script path.** `portalCredentialCreateSchema` (`backend/src/validation.ts:25`) does not declare it and zod strips unknown keys, so over the REST API the answers vanish with no error. Without them, a portal that challenges on a new device stalls for human capture even though the installer told you the answers. Format is free text — `question: answer; question: answer`. **On a re-run, treat this differently from `password`:** the answers ride in the same envelope, so before applying a re-run of a file you stripped, read the dry run's PORTAL CREDENTIALS block. If a credential line reports `to update  secret …`, stop — you are about to rewrite an envelope you no longer hold the answers for. The safe move is to delete that credential's entry from the kept file entirely (§"Collecting portal passwords safely", item 6). |
-| `notes` | **OPTIONAL** | **PLAINTEXT AND LLM-VISIBLE** — declared so in the column's own comment at `backend/src/portalCredentials.ts:70`; treat it as reaching a prompt. Operational hints only: "login emails a one-time code (human-capture at login)", "account is under the electrician's name". **Never** a password, a security answer, an account number or a meter number. Max 2000 chars. |
+| `mfaRequired` | **REQUIRED** (guide S3.6 "Emailed code at login?"; column `portal_credentials.mfa_required`, COLLECT NOW / WRITE BY COLUMN) | `true` / `false`, per portal account. A portal that emails a one-time code or challenges MFA is **a human at the browser every session, forever** — automation never solves it under any flag (hard rule 1). Recording it per credential is what turns that from a surprise at the first run into a known staffing cost at kickoff. Note `portal_profiles.mfa_required` is a **different table** and nothing in the repo writes it; this is the column on the credential you actually log in with. |
+| `mfaCodeDestination` | **REQUIRED-IF (`mfaRequired` is true)** (guide S3.6 "Which inbox?"; column `portal_credentials.mfa_code_destination`, COLLECT NOW / WRITE BY COLUMN) | **Where the code arrives** — a shared inbox we can read, or, failing that, the named person who relays it, with a way to reach them. The guide commits to exactly this wording: *"route codes to a shared inbox we can access; otherwise name someone who can relay a code."* It is **not a secret** (it is who to ask, never the code), which is why it sits in the plain view rather than the encrypted envelope. Its point is operational: a paused run can name the inbox instead of saying only that it stopped — `mfaCodeDestinationFor(db, clientId, portalUrl)` in `backend/src/portalCredentials.ts` resolves it the same way the password itself was chosen, so it describes the account actually being logged into and says **nothing** rather than naming a neighbouring jurisdiction's inbox. A destination you cannot reach is the single most important thing to hear on the call: **that portal can never be driven unattended, and it should be priced and scheduled that way.** |
+| `feeResponsibility` | **REQUIRED** (guide S3.7 "Agreed **per portal** at kickoff"; column `portal_credentials.fee_responsibility`, COLLECT NOW / WRITE BY COLUMN) | Exactly one of `card-on-file`, `customer-pays`, `mailed-check`, `keelix-pays`, or `""` for "asked, not yet agreed". The code refuses anything else (400) on create **and** update — an invented value would read as an agreement nobody made. **Per portal, because that is how it is actually true**: one installer routinely has a card saved in their Accela account, a person who pays on a different city's portal, and a cheque in the post for Ameren Illinois' $50 Level 1 fee, which must land within 15 business days or the application is not reviewed. `clients.billingMode` answers a different question — how *we* invoice *them* (§7). **This column authorises nothing**: automation never pays a portal fee under any value of it, and a pay/checkout control is refused at the click gate. It records who is expected to do the paying, so that when a filing sits unreviewed there is a name rather than an argument. |
+| `notes` | **OPTIONAL** — and the only home the **account holder** has | **PLAINTEXT AND LLM-VISIBLE** — declared so in the column's own comment at `backend/src/portalCredentials.ts:70`; treat it as reaching a prompt. Operational hints only. **Never** a password, a security answer, an account number or a meter number. Max 2000 chars. **The guide's S3.6 asks for the ACCOUNT HOLDER per portal and there is no column for it — write it here**, as `Account holder: Alex Example (the electrician), not the office`. It matters for two reasons that are not cosmetic: the portal's own audit log shows every run we make under that person's name, and that person is usually the one who rotates the password without telling anybody. |
 
 **`client.portalIdentities[]` — OPTIONAL, and leave it out unless you have a reason.** It
 exists for the portal where the login account's display name is not the legal name, or where
@@ -157,10 +180,12 @@ keyed to a real platform label matches nothing today, and a row keyed `"mock"` m
 intended. With the array empty, `installerCompanyName` falls back to
 `legalBusinessName || companyName`, which is the right answer almost always.
 
-Also ask, per portal, and record in `notes`: does login send a one-time code to an email
-inbox, and **which** inbox? A portal flagged for emailed codes is a human-capture step at
-every login by design (hard rule 1 — automation never solves CAPTCHA or MFA), and if the
-code goes to an inbox you cannot reach, that portal can never be driven at all.
+Ask this one per portal and write it into `mfaRequired` / `mfaCodeDestination` above, not
+into prose: does login send a one-time code, and **which** inbox does it reach? A portal
+flagged for emailed codes is a human-capture step at every login by design (hard rule 1 —
+automation never solves CAPTCHA or MFA), and if the code goes to an inbox you cannot reach,
+**that portal can never be driven at all** — which is a fact to establish on day one, not
+to discover on their first filing.
 
 **Two commitments to get from them out loud, on the call. Both are theirs to keep, not ours.**
 
@@ -315,7 +340,8 @@ while onboarding. `permit_utility_knowledge.notes` is pooled across every tenant
 | `billingMode` | **REQUIRED** (get it right on purpose) | `"per_submission"` **gates staging** behind a paid or waived `submission_payments` row; `""` or `"monthly"` applies no gate (`backend/src/db.ts:1520`). Set `per_submission` before a payment flow exists for this client and every filing is blocked with what looks like an unexplained refusal. When in doubt, `""`. |
 | `serviceFeeUsd` | **OPTIONAL** | Your per-submission service fee for this client, in USD. The only non-string field: `$` and commas are stripped, negatives rejected, rounded to cents. `null` or `""` clears it and falls back to the `SUBMISSION_SERVICE_FEE_USD` env default — which is usually what you want, so leave it null unless this client has a negotiated rate. |
 | `billingStatus` | **OPTIONAL** | Free-text label (`"active"`, `"trial"`, `"suspended"`). Display only; nothing gates on it. |
-| Who pays AHJ and utility fees, and how | **REQUIRED** (a conversation, not a field) | There is no field for this because **automation never pays a portal fee, under any flag** — a pay/checkout control is refused at the click gate before anything else is even consulted, and a payment dialog after submit aborts the run. So establish now: does the installer pay by card in the portal, or by mailed check (Ameren Illinois' $50 Level 1 fee is a mailed check within 15 business days, and the application is not reviewed until it lands)? Whoever pays has to be a human who knows it is their job. |
+| `billingContactEmail` | **REQUIRED** (guide S3.7) | Who receives our invoices — see §1, where it sits in the `client` block. |
+| Who pays AHJ and utility fees, and how | **REQUIRED — and it is now a field, one per portal**: `portalCredentials[].feeResponsibility` (§5) | It stopped being only a conversation because the guide's own grain is per portal — *"Agreed per portal at kickoff: a payment method on file in your portal account, or a person on your side completing payment. Mailed-check fees (Ameren Illinois, for example) are yours to send."* One installer is genuinely card-on-file in one portal and cheque-in-the-post in another, so a client-level answer is wrong for at least one of them. **The field changes nothing about what automation does: it never pays a portal fee under any flag** — a pay/checkout control is refused at the click gate before anything else is consulted, and a payment dialog after submit aborts the run. What it buys is that when a filing sits unreviewed for want of a $50 cheque, the record says whose cheque it was. Whoever pays still has to be a human who knows it is their job. |
 
 ## 8 · Logins — why the company gets none, and what they use instead
 
@@ -397,10 +423,19 @@ script has run.
    back in — but check with `git check-ignore -v <your file>` rather than assuming, and know
    that an ignored file is an invisible one: it sits there with live passwords until you delete
    it. A copy saved anywhere else in the tree is still committed by the next `git add -A`.
-2. **Never accept passwords by email, Slack, or a ticket.** Those copies outlive the
-   onboarding and you cannot delete them. Use a one-time secret link the installer opens
-   themselves, or take them verbally on the call and type them straight into your local
-   file.
+2. **Secrets travel by one-time link or by phone — never by email, text or chat, and never
+   in this file's own return trip.** That is the promise the onboarding guide makes to the
+   customer in S4, in those words, and it is the one that is easiest to break by being
+   helpful: a password pasted into a reply thread, a Slack DM, or a support ticket is a copy
+   that outlives the onboarding in somebody's mail archive and cannot be deleted. **The same
+   rule covers the EIN** (guide S3.2 — "sent securely"), the portal security answers, and
+   any account or meter number. So: send the installer a one-time secret link they open
+   themselves, or take the values verbally on the call and type them straight into your local
+   copy of the intake file. **There is no one-time-link feature in this product yet** —
+   `project_intake_requests` is the tokenized no-login pattern it would be built on, but it
+   collects project data, not credentials — so today that means a reputable external
+   one-time-secret service or the phone. If you promise a customer "our secure link", check
+   first that you have one to send.
 3. **Prefer accounts the installer created for us**, named so a portal audit log shows who
    acted. Shared personal logins mean their MFA device gates our runs and their password
    change breaks us with no notice.
@@ -464,6 +499,15 @@ script has run.
   where that login worked.
 - `businessEmail` non-blank — it is the only address any update we send ever reaches, and a
   blank one fails silently.
+- `updatesInbox` and `billingContactEmail` collected, and `updatesInbox` is a **shared**
+  inbox rather than one person's. Collected is not yet routed: the notifier still reads
+  `businessEmail`, so that one must still be monitored.
+- `licenseState` collected, and `insuranceExpiry` / `bondExpiry` recorded as ISO dates. The
+  certificate PDFs themselves are still out of band — do not tell them we hold the files.
+- Every portal account answered for **MFA** (`mfaRequired`, and `mfaCodeDestination` whenever
+  it is true) and for **fees** (`feeResponsibility`, one of the four values). Any portal whose
+  code goes somewhere you cannot reach is a portal that needs a person every session — say so
+  out loud before the coverage report goes out, not after.
 - Each jurisdiction classified into one of the **five** states in §6 — complete recipe,
   recording draft, `needs_rerecord`, KB portal URL only, or nothing. Only *complete* means
   "we have driven this": there are 6 of those against 55 `needs_rerecord`, and a

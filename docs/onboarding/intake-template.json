@@ -82,7 +82,22 @@
     "    REFERENCE DATA, kept here so the answer travels with the intake. To use it, transcribe",
     "    it by hand into scripts/onboarding-readiness.ts --jurisdictions",
     "    \"STATE|AHJ|UTILITY, STATE|AHJ|UTILITY\" — that is what tells you which of their",
-    "    jurisdictions we have actually driven, before you promise anything."
+    "    jurisdictions we have actually driven, before you promise anything.",
+    "",
+    "── THE ONBOARDING GUIDE'S PACKET NOW HAS COLUMNS, AND THE SCRIPT IS STILL CATCHING UP ──",
+    "Eight answers the customer-facing onboarding guide asks for have somewhere to live as of",
+    "migration v18: updatesInbox, billingContactEmail, licenseState, insuranceExpiry and",
+    "bondExpiry on the client, and mfaRequired, mfaCodeDestination and feeResponsibility on",
+    "each portal credential. Collect all eight on the call — that is the point of the packet.",
+    "BUT CHECK BEFORE YOU TRUST THE RUN: `npx tsx scripts/onboard-company.ts --example` is the",
+    "authority on what the script consumes. If a key below is absent from that output the",
+    "script does not write it yet — an unknown CLIENT key is named in the dry run's WARNINGS",
+    "and dropped, and an unknown key inside a portalCredentials[] entry is dropped with no",
+    "warning at all. The REST API behaves the same way: validation.ts strips what its schema",
+    "does not declare (the long-standing securityAnswers trap). Until --example lists them,",
+    "set the answers with a one-line UPDATE against the column names in",
+    "docs/onboarding/INTAKE_CHECKLIST.md — and write them HERE either way, so the answer is",
+    "not lost between the call and the column."
   ],
 
   "client": {
@@ -103,7 +118,11 @@
     "businessPhone": "(555) 010-0100",
     "businessEmail": "permits@example-solar.invalid",
 
+    "updatesInbox": "keelix-updates@example-solar.invalid",
+    "billingContactEmail": "ap@example-solar.invalid",
+
     "ccbLicenseNumber": "000000",
+    "licenseState": "WA",
     "ccbExpiration": "2027-12-31",
     "electricalLicenseNumber": "C0000",
     "docketNumber": "160000",
@@ -112,7 +131,9 @@
     "electricianLicenseNumber": "0000S",
 
     "bondCarrier": "Example Surety Company",
+    "bondExpiry": "2027-08-31",
     "insuranceCarrier": "Example Mutual Insurance Company",
+    "insuranceExpiry": "2027-05-31",
     "authorizedSignerName": "Jane Example",
     "authorizedSignerTitle": "Managing Member",
 
@@ -132,7 +153,10 @@
       "username": "example-solar",
       "password": "REPLACE-ME-DO-NOT-COMMIT-REAL-SECRETS",
       "securityAnswers": "",
-      "notes": "operational hints only — this column is stored in the clear and is visible to the model."
+      "mfaRequired": false,
+      "mfaCodeDestination": "",
+      "feeResponsibility": "card-on-file",
+      "notes": "Account holder: Jane Example (office). Operational hints only — this column is stored in the clear and is visible to the model."
     },
     {
       "portalType": "IL · PowerClerk",
@@ -140,7 +164,10 @@
       "username": "permits@example-solar.invalid",
       "password": "REPLACE-ME-DO-NOT-COMMIT-REAL-SECRETS",
       "securityAnswers": "mother's maiden name: Example; first car: Example",
-      "notes": "Login emails a one-time code (human-capture at login). Registered under the electrician, not the office."
+      "mfaRequired": true,
+      "mfaCodeDestination": "permits@example-solar.invalid (shared inbox we can read)",
+      "feeResponsibility": "mailed-check",
+      "notes": "Account holder: Alex Example (the electrician), not the office. Login emails a one-time code, so every session needs a human."
     }
   ],
 

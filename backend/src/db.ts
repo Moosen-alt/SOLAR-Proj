@@ -1400,6 +1400,88 @@ const VERSIONED_MIGRATIONS: VersionedMigration[] = [
       addColumnIfMissing(db, "projects", "disconnect_within_10ft", "TEXT NOT NULL DEFAULT ''");
     },
   },
+  {
+    version: 18,
+    name: "onboarding_intake_packet_fields",
+    up: (db) => {
+      // WHAT THE ONBOARDING GUIDE PROMISES TO COLLECT, AND HAD NOWHERE TO PUT.
+      //
+      // The customer-facing onboarding guide's intake packet asks for eight things this
+      // schema could not hold, so every operator who ran that packet kept the answers in a
+      // spreadsheet — which is precisely the failure the onboarding kit exists to end. A
+      // field the guide asks for and the database cannot store is not "collected later", it
+      // is collected once, into a file nobody reads at run time.
+      //
+      // PER-CREDENTIAL, because the guide's own grain is per portal.
+      //
+      // mfa_required / mfa_code_destination — the packet asks, per portal account,
+      // "Emailed code at login? Which inbox?", and the guide's answer to it is a staffing
+      // commitment: "MFA and one-time codes need a person each session — software never
+      // clears them... route codes to a shared inbox we can access; otherwise name someone
+      // who can relay a code." portal_profiles.mfa_required exists but is a DIFFERENT table
+      // (nothing in the repo INSERTs into it), and it carries no destination either way. The
+      // destination is the half that matters operationally: a run that pauses for MFA can
+      // then say WHERE the code will arrive instead of only that it paused, and an operator
+      // reading "paused for MFA" with no inbox has to go hunting for a fact somebody already
+      // wrote down at kickoff.
+      //
+      // fee_responsibility — the packet asks "Who pays AHJ and utility fees, and how?" and
+      // answers it "Agreed PER PORTAL at kickoff: a payment method on file in your portal
+      // account, or a person on your side completing payment. Mailed-check fees (Ameren
+      // Illinois, for example) are yours to send." clients.billing_mode is client-level and
+      // is about how WE invoice, not who pays the AHJ. One installer routinely has a card on
+      // file in one portal, a person who pays in another, and a cheque in the post for
+      // Ameren; a single client-level answer is wrong for at least two of the three.
+      // Vocabulary (enforced in portalCredentials.ts, not here — SQLite has no enum):
+      // '' | 'card-on-file' | 'customer-pays' | 'mailed-check' | 'keelix-pays'.
+      // NOTE: this records an AGREEMENT, it does not authorise anything. Automation never
+      // pays a portal fee under any value of this column (hard safety rule 1).
+      const credCols = db.query<{ name: string }>("PRAGMA table_info(portal_credentials)").map((c) => c.name);
+      if (!credCols.includes("mfa_required")) {
+        db.exec("ALTER TABLE portal_credentials ADD COLUMN mfa_required INTEGER NOT NULL DEFAULT 0");
+      }
+      if (!credCols.includes("mfa_code_destination")) {
+        db.exec("ALTER TABLE portal_credentials ADD COLUMN mfa_code_destination TEXT NOT NULL DEFAULT ''");
+      }
+      if (!credCols.includes("fee_responsibility")) {
+        db.exec("ALTER TABLE portal_credentials ADD COLUMN fee_responsibility TEXT NOT NULL DEFAULT ''");
+      }
+
+      // PER-CLIENT.
+      //
+      // updates_inbox — the packet marks this REQUIRED and describes it as distinct from the
+      // business address: "Where we send confirmations, status updates and corrections. A
+      // shared inbox, not one person's." business_email is the INSTALLER ADDRESS THAT GOES ON
+      // THE APPLICATION (clientStagingOverlay maps it to installerEmail, and the AHJ mails
+      // corrections there); conflating the two means our outbound updates go wherever the
+      // permit clerk was told to write, and the customer cannot change one without changing
+      // the other. Deliberately NOT repointed here: clientNotifier still reads
+      // clients.business_email, and switching the notifier is a behaviour change that wants
+      // its own decision, not a side effect of a column landing.
+      //
+      // billing_contact_email — the same packet section asks, separately, who receives our
+      // invoices. That is a third address again: the AHJ's correspondent, the operations
+      // inbox, and accounts payable are rarely one person.
+      //
+      // license_state — we stored contractor licence NUMBERS with no issuer. A number alone
+      // is ambiguous the moment a company is licensed in two states, and the packet asks for
+      // the issuing state explicitly. Reciprocity questions ("are you licensed in the state
+      // this job is in?") cannot be answered from a bare number at all.
+      //
+      // insurance_expiry / bond_expiry — the packet asks for the certificates as "current
+      // PDFs, with expiry dates". The PDFs are a document-store question (project_documents
+      // is project-grained; there is no client-grain store), but the DATES are the half that
+      // is actionable without one: an expired COI is not a code failure, it is every filing
+      // in that jurisdiction rejected by a human until it is renewed, and the whole point of
+      // asking at kickoff is to see it coming. Free text, stored ISO YYYY-MM-DD so it sorts.
+      const clientCols = db.query<{ name: string }>("PRAGMA table_info(clients)").map((c) => c.name);
+      for (const column of ["updates_inbox", "billing_contact_email", "license_state", "insurance_expiry", "bond_expiry"]) {
+        if (!clientCols.includes(column)) {
+          db.exec(`ALTER TABLE clients ADD COLUMN ${column} TEXT NOT NULL DEFAULT ''`);
+        }
+      }
+    },
+  },
 ];
 
 // One-time repair for the runaway-notes bug: upsertKnowledge used to merge the

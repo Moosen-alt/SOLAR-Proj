@@ -28,6 +28,33 @@ export interface PortalCredentialView {
   lastLoginNote?: string;
   /** The operator-facing verdict: a login the portal refused more recently than it accepted. */
   stale: boolean;
+  /** Does signing in to THIS portal account send a one-time code / challenge MFA? */
+  mfaRequired: boolean;
+  /** WHERE that code arrives — a shared inbox we can read, or the person who relays it.
+   *  Not a secret: it is the answer to "who do I ask for the code", which is exactly what a
+   *  paused run needs to be able to say. */
+  mfaCodeDestination: string;
+  /** Who pays this portal's AHJ/utility fees, agreed per portal at kickoff. One of
+   *  '' (unagreed) | 'card-on-file' | 'customer-pays' | 'mailed-check' | 'keelix-pays'.
+   *  A RECORD OF AN AGREEMENT, never an authorisation — automation never pays a portal fee. */
+  feeResponsibility: string;
+}
+
+/** The agreed answers to "who pays this portal's fees, and how". '' means nobody has agreed
+ *  yet, which is a real and common state at D0 and must stay distinguishable from an answer. */
+export const FEE_RESPONSIBILITY_VALUES = ["card-on-file", "customer-pays", "mailed-check", "keelix-pays"] as const;
+
+/** Normalises and REFUSES anything outside the vocabulary. The REST schema
+ *  (validation.ts) does not declare this key, so this function is the only gate the value
+ *  ever passes through — a silently-accepted "venmo" would read as an agreement nobody made,
+ *  and the whole value of the column is that the answer means something at kickoff. */
+function normalizeFeeResponsibility(raw: unknown): string {
+  const value = s(raw).trim().toLowerCase();
+  if (!value) return "";
+  if (!(FEE_RESPONSIBILITY_VALUES as readonly string[]).includes(value)) {
+    throw new HttpError(400, `feeResponsibility must be one of ${FEE_RESPONSIBILITY_VALUES.join(", ")} (or blank).`);
+  }
+  return value;
 }
 
 function mapView(row: Row): PortalCredentialView {
@@ -41,6 +68,12 @@ function mapView(row: Row): PortalCredentialView {
     notes: s(row.notes),
     createdAt: s(row.created_at),
     updatedAt: s(row.updated_at),
+    // INTEGER column, so the Boolean(s(...)) idiom used above for TEXT columns is WRONG here:
+    // s(0) is the string "0" and Boolean("0") is true, which would report every credential as
+    // MFA-gated and send an operator hunting a shared inbox that does not exist.
+    mfaRequired: Number(row.mfa_required ?? 0) === 1,
+    mfaCodeDestination: s(row.mfa_code_destination),
+    feeResponsibility: s(row.fee_responsibility),
     lastLoginOkAt: s(row.last_login_ok_at) || undefined,
     lastLoginFailedAt: s(row.last_login_failed_at) || undefined,
     lastLoginNote: s(row.last_login_note) || undefined,
@@ -59,7 +92,10 @@ export function listPortalCredentials(db: AppDb, clientId: string): PortalCreden
 export function createPortalCredential(
   db: AppDb,
   clientId: string,
-  payload: { portalType?: string; portalUrl?: string; username?: string; password?: string; notes?: string; securityAnswers?: string },
+  payload: {
+    portalType?: string; portalUrl?: string; username?: string; password?: string; notes?: string; securityAnswers?: string;
+    mfaRequired?: boolean; mfaCodeDestination?: string; feeResponsibility?: string;
+  },
 ): PortalCredentialView {
   const client = db.get<Row>("SELECT id FROM clients WHERE id = ?", [clientId]);
   if (!client) throw new HttpError(404, "Client not found.");
@@ -75,13 +111,20 @@ export function createPortalCredential(
   const secret: { username: string; password: string; securityAnswers?: string } = { username, password };
   if (securityAnswers) secret.securityAnswers = securityAnswers;
   const encrypted = encryptStorageState(secret);
+  // Refuse an unknown fee answer BEFORE writing anything: a half-written credential carrying
+  // a fee agreement nobody made is worse than a refusal the operator can retype.
+  const feeResponsibility = normalizeFeeResponsibility(payload.feeResponsibility);
   const credId = id();
   const now = nowIso();
   db.run(
     `INSERT INTO portal_credentials
-      (id, client_id, portal_type, portal_url, username_reference, encrypted_secret, notes, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [credId, clientId, s(payload.portalType), s(payload.portalUrl), username, encrypted, s(payload.notes), now, now],
+      (id, client_id, portal_type, portal_url, username_reference, encrypted_secret, notes,
+       mfa_required, mfa_code_destination, fee_responsibility, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      credId, clientId, s(payload.portalType), s(payload.portalUrl), username, encrypted, s(payload.notes),
+      payload.mfaRequired ? 1 : 0, s(payload.mfaCodeDestination).trim(), feeResponsibility, now, now,
+    ],
   );
   return mapView(db.get<Row>("SELECT * FROM portal_credentials WHERE id = ?", [credId])!);
 }
@@ -90,15 +133,23 @@ export function updatePortalCredential(
   db: AppDb,
   clientId: string,
   credId: string,
-  payload: { portalType?: string; portalUrl?: string; username?: string; password?: string; notes?: string; securityAnswers?: string },
+  payload: {
+    portalType?: string; portalUrl?: string; username?: string; password?: string; notes?: string; securityAnswers?: string;
+    mfaRequired?: boolean; mfaCodeDestination?: string; feeResponsibility?: string;
+  },
 ): PortalCredentialView {
   const row = db.get<Row>("SELECT * FROM portal_credentials WHERE id = ? AND client_id = ?", [credId, clientId]);
   if (!row) throw new HttpError(404, "Portal credential not found.");
   const sets: string[] = [];
-  const params: (string | null)[] = [];
+  const params: (string | number | null)[] = [];
   if ("portalType" in payload) { sets.push("portal_type = ?"); params.push(s(payload.portalType)); }
   if ("portalUrl" in payload) { sets.push("portal_url = ?"); params.push(s(payload.portalUrl)); }
   if ("notes" in payload) { sets.push("notes = ?"); params.push(s(payload.notes)); }
+  // Key-presence guarded, like the three above: an intake re-run that names only the portal
+  // type must not silently clear an MFA destination somebody took a phone call to establish.
+  if ("mfaRequired" in payload) { sets.push("mfa_required = ?"); params.push(payload.mfaRequired ? 1 : 0); }
+  if ("mfaCodeDestination" in payload) { sets.push("mfa_code_destination = ?"); params.push(s(payload.mfaCodeDestination).trim()); }
+  if ("feeResponsibility" in payload) { sets.push("fee_responsibility = ?"); params.push(normalizeFeeResponsibility(payload.feeResponsibility)); }
   if ("username" in payload && s(payload.username).trim()) { sets.push("username_reference = ?"); params.push(s(payload.username).trim()); }
   // Re-encrypt only when a new password is provided (rotate the secret); a username
   // change without a password keeps the existing secret's username out of sync, so
@@ -409,4 +460,34 @@ export function recordLoginOutcome(
 /** Logins the portal refused more recently than it accepted them — the refresh list. */
 export function listStaleCredentials(db: AppDb, clientId: string): PortalCredentialView[] {
   return listPortalCredentials(db, clientId).filter((c) => c.stale);
+}
+
+// ---------------------------------------------------------------------------
+// "PAUSED FOR MFA" IS HALF AN ANSWER. THE OTHER HALF WAS WRITTEN DOWN AT KICKOFF.
+//
+// Automation never solves a one-time code (hard safety rule 1) — that is settled, and no
+// column changes it. What a pause CAN do is stop sending the operator hunting: the intake
+// packet asks, per portal account, "Emailed code at login? Which inbox?", and until now the
+// answer lived in a spreadsheet while the run said only that it had stopped.
+//
+// Resolved through selectCredentialUrlsFor — the SAME choice that picked the password — so
+// the hint describes the account actually being logged into. A host match with a different
+// jurisdiction segment names a different account and would point at the wrong inbox, so it
+// yields nothing rather than a guess. Empty string means "we were never told", which is a
+// truthful thing for a pause message to omit.
+//
+// Non-secret by construction: a destination is who to ask, never the code itself.
+// ---------------------------------------------------------------------------
+export function mfaCodeDestinationFor(db: AppDb, clientId: string, portalUrl: string): string {
+  if (!clientId || !portalUrl) return "";
+  const rows = db.query<Row>(
+    "SELECT portal_url, mfa_code_destination FROM portal_credentials WHERE client_id = ? ORDER BY updated_at DESC",
+    [clientId],
+  );
+  for (const url of selectCredentialUrlsFor(portalUrl, rows.map((r) => s(r.portal_url)))) {
+    const hit = rows.find((r) => s(r.portal_url) === url);
+    const destination = s(hit?.mfa_code_destination).trim();
+    if (destination) return destination;
+  }
+  return "";
 }
