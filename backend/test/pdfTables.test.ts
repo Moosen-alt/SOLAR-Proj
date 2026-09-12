@@ -52,6 +52,11 @@ async function makeFeeSchedulePdf(): Promise<Uint8Array> {
   draw(page1, "$88.00", 400, 594);
   draw(page1, "Solar system less than 5kw", 50, 576);
   draw(page1, "$50.00", 400, 576);
+  // A multiplier in a dollar-formatted value column, as the real Coos County
+  // land-use schedule prints it ("Community Development Fee *(% of Land Use
+  // application fee)" | "$" "0.05"). The number is real; the dollars are not.
+  draw(page1, "Solar plan review *(% of permit fee)", 50, 558);
+  draw(page1, "0.65", 400, 558);
   // Same baseline as a page-1 row: rows must group by (page, y), never y alone.
   draw(page2, "Solar Permit - City of Elsewhere", 50, 660);
   draw(page2, "$310.00", 400, 660);
@@ -87,7 +92,7 @@ async function main(): Promise<void> {
   const page1 = rows.filter((r) => r.page === 1);
 
   // 1) Baselines become rows, in visual order, top of the page first.
-  assert.equal(page1.length, 7, `expected 7 visual rows on page 1, got ${page1.length}: ${page1.map(rowText).join(" // ")}`);
+  assert.equal(page1.length, 8, `expected 8 visual rows on page 1, got ${page1.length}: ${page1.map(rowText).join(" // ")}`);
   assert.ok(page1[0].y > page1[1].y, "rows come back top-to-bottom (PDF y grows upward)");
   assert.deepEqual(page1[0].cells, ["Solar Permit (when required) - Prescriptive Path System,", "$200.00"]);
   assert.ok(page1.every((r) => r.cells.every((c) => c.trim().length > 0)), "pdfjs' synthetic blank spacer items never become cells");
@@ -181,6 +186,18 @@ async function main(): Promise<void> {
   assert.ok(/no dollar amount/i.test(percent.unparsed ?? ""), `moneyless row reports, never returns 0: ${percent.unparsed}`);
   assert.equal(percent.label, "Structural Plan Review");
   ok("an exclusive bound and a percentage-only row come back unparsed, not guessed");
+
+  // 8b) The percent sign on the OTHER side: the label says "% of", and the
+  //     value column holds a bare multiplier that parseMoney is right to read
+  //     as a number. Quoting it as $0.65 would be a 65-cent plan review.
+  const proportion = fees.find((f) => f.label.includes("% of permit fee"));
+  assert.ok(proportion, "expected the proportional plan-review row");
+  assert.deepEqual(proportion!.money.map((m) => m.amountUsd), [0.65], "the cell really does parse as a number");
+  assert.ok(/multiplier, not dollars/i.test(proportion!.note ?? ""), `findFeeRows must flag it: ${proportion!.note}`);
+  const proportionBracket = parseBracketRow(proportion!);
+  assert.equal(proportionBracket.feeUsd, undefined, "65% of the permit fee is not a $0.65 fee");
+  assert.ok(/proportion of another fee/i.test(proportionBracket.unparsed ?? ""), proportionBracket.unparsed);
+  ok("a multiplier in the value column is not quoted as dollars (real Coos County shape)");
 
   // 9) Pages are separate row spaces, and `pages` selects.
   const elsewhere = rows.filter((r) => r.page === 2);

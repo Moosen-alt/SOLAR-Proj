@@ -285,6 +285,16 @@ export interface FeeRowMatch {
 
 const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+/** A line whose DESCRIPTION says it is a proportion of some other fee. Measured
+ *  on the real Coos County land-use schedule, which prints
+ *      "Community Development Fee *(% of Land Use application fee)" | "$" "0.05"
+ *  — a multiplier sitting in a dollar-formatted column. parseMoney reads that
+ *  cell as $0.05 and it is not wrong to: the cell IS a number. The percentage
+ *  lives in the label, so that is where it has to be caught, or a 5% fee is
+ *  quoted as a nickel. Symmetric with refusing "65% of permit fee" as money
+ *  when the percent sign is in the value cell instead. */
+const PROPORTION_RE = /%\s*(?:of|\bper\b)|\bpercent(?:age)?\s+of\b/i;
+
 /** Word-ish match: "kva" hits "5.01kva" (digit before) but not "kvahr", and
  *  "kw" never hits "kwh". Digits are not letters, which is the whole trick. */
 const keywordRe = (kw: string): RegExp => new RegExp(`(?<![a-z])${escapeRe(kw.toLowerCase())}(?![a-z])`, "i");
@@ -346,7 +356,9 @@ export function findFeeRows(rows: PdfTextRow[], opts: FindFeeRowsOptions = {}): 
       ? `No dollar amount in this row — its value column reads "${valueText || "(nothing)"}".`
       : money.length > 1
         ? `${money.length} dollar amounts share this visual row — the column pairing is ambiguous and a human must read it.`
-        : undefined;
+        : PROPORTION_RE.test(label)
+          ? `The label says this line is a proportion of another fee, so "${valueText}" is a multiplier, not dollars.`
+          : undefined;
 
     out.push({ row, matched, label, money, continuations, ...(note ? { note } : {}) });
   });
@@ -409,7 +421,12 @@ export function parseBracketRow(input: PdfTextRow | FeeRowMatch): BracketRowPars
   const out: BracketRowParse = { label };
   const reasons: string[] = [];
 
-  if (money.length === 1) out.feeUsd = money[0].amountUsd;
+  if (money.length === 1 && PROPORTION_RE.test(label)) {
+    // Deliberately no feeUsd: 0.05 in the value column of a line labelled
+    // "% of Land Use application fee" is five percent, and a caller that
+    // ignores `unparsed` should get nothing rather than a five-cent fee.
+    reasons.push(`the label makes this line a proportion of another fee, so "${split.valueText}" is a multiplier and not dollars`);
+  } else if (money.length === 1) out.feeUsd = money[0].amountUsd;
   else if (money.length === 0) reasons.push(`no dollar amount in this row (its value column reads "${split.valueText || "nothing"}")`);
   else reasons.push(`${money.length} dollar amounts in one visual row — which column is the fee is ambiguous`);
 
