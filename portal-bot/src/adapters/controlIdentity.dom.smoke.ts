@@ -42,6 +42,9 @@ const PAGE = `<!doctype html><html><body>
 
   <label for="idE">*Type (Required):</label>
   <select id="idE"><option value="">Select...</option><option>Plans</option><option>Calculations</option></select>
+
+  <label for="idF">Phone Number:</label>
+  <input id="idF">
 </body></html>`;
 
 const server = http.createServer((_q, r) => { r.writeHead(200, { "Content-Type": "text/html" }); r.end(PAGE); });
@@ -66,12 +69,31 @@ const steps: RecipeStep[] = [
   // recorded note says "contact: email [applicant]" — tokenized they share nothing
   // ("email" vs {"mail"}), and the identity check skipped a correctly-resolved fill on a
   // live ACA contact popup, which then saved NO contact record at all.
-  { action: "fill", phase: "fill", selector: { css: "#idD" }, value: "someone@example.com", note: "contact: email [applicant]" },
+  //
+  // BOUND, NOT A FROZEN LITERAL — and that is not fixture tidiness, it is the only shape
+  // this step can legitimately have. This case used to carry `value: "someone@example.com"`
+  // with no `field`, and it went red the moment the cross-project literal guard landed
+  // (3e42fec): an UNBOUND email under a "contact/applicant" label is the LEARN project's
+  // homeowner, recipes are shared across orgs, so resolveValue refuses it and returns "".
+  // Measured here before changing anything — the identity check ACCEPTED this control
+  // ("level 0 css:#idD -> count 1 ... ACCEPTED", no drift warning) and the blank came from
+  // resolveValue, which reported it in `unresolvedFields`. Binding to `homeownerEmail` (the
+  // key the value dictionary actually defines — backend/src/portalRecipes.ts) restores what
+  // this check is FOR: does the identity check let a real email reach an "E-mail:" box.
+  { action: "fill", phase: "fill", selector: { css: "#idD" }, field: "homeownerEmail", value: "someone@example.com", note: "contact: email [applicant]" },
   // A LABEL THAT IS ALL MARKERS HAS NOTHING TO CONTRADICT. ACA's attachment-type select
   // is labelled "*Type (Required):" — "type" is rightly a stopword, and "required" is a
   // requirement marker, not identity. The identity check refused this correctly-resolved
   // select on a live run and the attachment saved without its required type.
   { action: "select", phase: "fill", selector: { css: "#idE" }, value: "Plans", note: "attachment: document type" },
+  // THE OTHER DIRECTION OF THE SAME RULE. Accepting "E-mail:" for an email step widens the
+  // identity check, and a widening has to be pinned from both sides or it quietly becomes
+  // "accept anything". Same step, same BOUND email, resolved onto a control whose label is
+  // "Phone Number:" — a genuine contradiction. Nothing downstream can save this one: the
+  // value resolves fine (it is project data, not a frozen literal), so the identity check is
+  // the ONLY thing standing between a homeowner's email address and a phone box on a live
+  // interconnection application.
+  { action: "fill", phase: "fill", selector: { css: "#idF" }, field: "homeownerEmail", value: "someone@example.com", note: "contact: email [applicant]" },
 ];
 
 const recipe = {
@@ -86,7 +108,9 @@ await context.addInitScript("globalThis.__name = globalThis.__name || function (
 const page = await context.newPage();
 await page.goto(`http://127.0.0.1:${port}/`);
 
-const adapter = new RecipeAdapter(recipe, {}, {}, { autoSubmit: false });
+// The project's own values. Only the email is needed: every other step here answers with the
+// PORTAL's vocabulary (a select option), which replays as a literal by design.
+const adapter = new RecipeAdapter(recipe, { homeownerEmail: "someone@example.com" }, {}, { autoSubmit: false });
 (adapter as unknown as { page: unknown }).page = page;
 
 // Drive executeStep DIRECTLY, one step at a time. runAll() wraps the loop in readiness
@@ -103,7 +127,7 @@ for (const step of steps.filter((s) => s.action !== "goto")) {
 }
 
 const value = async (sel: string): Promise<string> => page.locator(sel).inputValue().catch(() => "");
-const [a, b, c, d, e] = [await value("#idA"), await value("#idB"), await value("#idC"), await value("#idD"), await value("#idE")];
+const [a, b, c, d, e, f] = [await value("#idA"), await value("#idB"), await value("#idC"), await value("#idD"), await value("#idE"), await value("#idF")];
 const drift = internals.driftWarnings;
 
 check("a step re-anchors to the control its recorded LABEL names", () => {
@@ -123,6 +147,10 @@ check("a correctly-resolved step is left alone (no over-firing)", () => {
 
 check("a hyphenated label is not a contradiction (E-mail: accepts an email fill)", () => {
   assert.equal(d, "someone@example.com", `the identity check must accept "E-mail:" for an email step; got ${JSON.stringify(d)}`);
+});
+
+check("an email is still REFUSED by a phone box (the widening did not become accept-anything)", () => {
+  assert.equal(f, "", `an email step resolved onto "Phone Number:" must never be filled; got ${JSON.stringify(f)}`);
 });
 
 check("an all-markers label (*Type (Required):) has nothing to contradict — the select fills", () => {
