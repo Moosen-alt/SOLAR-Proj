@@ -575,6 +575,39 @@ function bracketLabelFor(b: FeeBracket, basis: FeeBasis): string {
   return "Flat fee";
 }
 
+/** THE ONE EVALUATOR. Both public entry points below route through this, so the
+ *  bracket boundary can only ever be decided in one place — two parallel
+ *  evaluations would drift, and the boundary is the whole point of the table. */
+function evaluateSchedule(
+  schedule: FeeScheduleRecord,
+  inputs: { kw: number | null; kwSource: string; valuationUsd: number | null },
+): { feeUsd: number | null; bracketLabel: string; reason: string } {
+  const miss = (reason: string) => ({ feeUsd: null, bracketLabel: "", reason });
+  const hit = (b: FeeBracket) => ({ feeUsd: b.feeUsd, bracketLabel: bracketLabelFor(b, schedule.basis), reason: "" });
+
+  if (!schedule.brackets.length) return miss("Schedule is stored but carries no fee lines.");
+
+  if (schedule.basis === "flat" || (schedule.basis === "other" && schedule.brackets.length === 1)) {
+    return hit(schedule.brackets[0]);
+  }
+
+  if (schedule.basis === "system_kw") {
+    if (inputs.kw == null) return miss("Schedule brackets on system size, but this project has no system size yet.");
+    const b = matchBracket(schedule.brackets, inputs.kw, "kw");
+    if (!b) return miss(`System size ${inputs.kw} kW (${inputs.kwSource || "rated"}) falls outside every published bracket — check the schedule for a row we missed.`);
+    return hit(b);
+  }
+
+  if (schedule.basis === "valuation") {
+    if (inputs.valuationUsd == null) return miss("Schedule brackets on job valuation, but this project has no valuation yet.");
+    const b = matchBracket(schedule.brackets, inputs.valuationUsd, "valuation");
+    if (!b) return miss(`Valuation $${inputs.valuationUsd.toLocaleString()} falls outside every published bracket.`);
+    return hit(b);
+  }
+
+  return miss(`Schedule basis "${schedule.basis}" needs a human to read it — see notes and the source quote.`);
+}
+
 /** Resolve a stored schedule to a NUMBER (and a bracket label) for THIS project.
  *  Returns null when no schedule is stored at all; returns a row with feeUsd
  *  null + a reason when a schedule exists but cannot be evaluated — so "we have
@@ -588,7 +621,15 @@ export function feeForProject(
   const schedule = findFeeScheduleForProject(db, project, track);
   if (!schedule) return null;
 
-  const base = {
+  const { kw, which } = systemRatingKw(project);
+  // Only pay for the valuation walk when the schedule actually keys on it.
+  const valuationUsd = schedule.basis === "valuation"
+    ? resolveValuation(project.parserSnapshot, project.systemSizeDcKw).value
+    : null;
+  const evaluated = evaluateSchedule(schedule, { kw, kwSource: which, valuationUsd });
+
+  return {
+    ...evaluated,
     basis: schedule.basis,
     sourceUrl: schedule.sourceUrl,
     sourceQuote: schedule.sourceQuote,
@@ -596,30 +637,80 @@ export function feeForProject(
     matchedName: track === "nem" ? schedule.utility : schedule.ahj,
     scheduleId: schedule.id,
   };
-  const unresolved = (reason: string): ProjectFeeResolution => ({ ...base, feeUsd: null, bracketLabel: "", reason });
+}
 
-  if (!schedule.brackets.length) return unresolved("Schedule is stored but carries no fee lines.");
+// ---------------------------------------------------------------------------
+// Seam: the quote ladder's "published_schedule" tier
+//
+// submissionFees.ts loads this module by name and looks for exactly this export
+// (`mod?.lookupPublishedFee`). A MISSING export there is SILENT — its loader
+// warns only on a require error, so a rename here would make the whole tier
+// quietly vanish and every quote fall back to guessing 1.5% of valuation. Keep
+// the name.
+//
+// Deliberately typed against LOCAL structural interfaces rather than the shared
+// PublishedFeeLookupInput/Result: the consumer owns those, they are still in
+// flight, and this module must keep compiling if they move. Its loader
+// duck-types the function and its normalizer whitelists every field of the
+// result, so nothing is lost by staying structural.
+// ---------------------------------------------------------------------------
 
-  if (schedule.basis === "flat" || (schedule.basis === "other" && schedule.brackets.length === 1)) {
-    const b = schedule.brackets[0];
-    return { ...base, feeUsd: b.feeUsd, bracketLabel: bracketLabelFor(b, schedule.basis), reason: "" };
+export interface PublishedFeeLookupArgs {
+  track: string;
+  state: string;
+  ahj: string;
+  utility: string;
+  /** The size to bracket on, pre-computed by the caller (AC-first, as the kVA
+   *  brackets intend). Falls back to the AC/DC fields when absent. */
+  bracketKw?: number | null;
+  systemSizeAcKw?: number | null;
+  systemSizeDcKw?: number | null;
+  /** Pre-resolved job valuation — this seam gets no parser snapshot, so a
+   *  valuation-keyed schedule is unresolvable without it (and says so). */
+  valuationUsd?: number | null;
+}
+
+export interface PublishedFeeLookupResult {
+  feeUsd: number | null;
+  bracketLabel: string | null;
+  sourceUrl: string | null;
+  confidence: FeeConfidence;
+  /** A HUMAN one-liner for the quote screen, not the basis enum. */
+  basis: string;
+  /** The schedule's own name for the jurisdiction — may be the legal name where
+   *  the project carries an operator short name. */
+  jurisdictionName: string;
+}
+
+/** Look up the published schedule for a project and evaluate it. Returns null
+ *  when no schedule is stored; `feeUsd: null` when one is stored but cannot be
+ *  evaluated for this project. Never throws at the caller — it runs inside the
+ *  staging gate, where a thrown error would block a submission. */
+export function lookupPublishedFee(db: AppDb, input: PublishedFeeLookupArgs): PublishedFeeLookupResult | null {
+  try {
+    const track = feeTrack(input.track);
+    const schedule = findFeeScheduleForProject(db, { state: input.state, ahj: input.ahj, utility: input.utility }, track);
+    if (!schedule) return null;
+
+    const kw = num(input.bracketKw) ?? num(input.systemSizeAcKw) ?? num(input.systemSizeDcKw);
+    const evaluated = evaluateSchedule(schedule, {
+      kw: kw != null && kw > 0 ? kw : null,
+      kwSource: input.bracketKw != null ? "bracket" : "AC/DC",
+      valuationUsd: num(input.valuationUsd),
+    });
+    const jurisdictionName = track === "nem" ? schedule.utility : schedule.ahj;
+    return {
+      feeUsd: evaluated.feeUsd,
+      bracketLabel: evaluated.bracketLabel || null,
+      sourceUrl: schedule.sourceUrl || null,
+      confidence: schedule.confidence,
+      basis: evaluated.feeUsd == null
+        ? evaluated.reason
+        : `Published fee schedule${jurisdictionName ? ` (${jurisdictionName})` : ""}${evaluated.bracketLabel ? `: ${evaluated.bracketLabel}` : ""}`,
+      jurisdictionName,
+    };
+  } catch (err) {
+    logger.warn("fees", "lookupPublishedFee failed — falling through the quote ladder", { err: err instanceof Error ? err.message : String(err) });
+    return null;
   }
-
-  if (schedule.basis === "system_kw") {
-    const { kw, which } = systemRatingKw(project);
-    if (kw == null) return unresolved("Schedule brackets on system size, but this project has no system size yet.");
-    const b = matchBracket(schedule.brackets, kw, "kw");
-    if (!b) return unresolved(`System size ${kw} kW (${which}) falls outside every published bracket — check the schedule for a row we missed.`);
-    return { ...base, feeUsd: b.feeUsd, bracketLabel: bracketLabelFor(b, schedule.basis), reason: "" };
-  }
-
-  if (schedule.basis === "valuation") {
-    const valuation = resolveValuation(project.parserSnapshot, project.systemSizeDcKw);
-    if (valuation.value == null) return unresolved("Schedule brackets on job valuation, but this project has no valuation yet.");
-    const b = matchBracket(schedule.brackets, valuation.value, "valuation");
-    if (!b) return unresolved(`Valuation $${valuation.value.toLocaleString()} falls outside every published bracket.`);
-    return { ...base, feeUsd: b.feeUsd, bracketLabel: bracketLabelFor(b, schedule.basis), reason: "" };
-  }
-
-  return unresolved(`Schedule basis "${schedule.basis}" needs a human to read it — see notes and the source quote.`);
 }

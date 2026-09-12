@@ -230,6 +230,29 @@ async function main(): Promise<void> {
   const noSize = feeForProject(db, { state: "OR", ahj: "City of Coos Bay", utility: "Pacific Power", systemSizeAcKw: null, systemSizeDcKw: null, parserSnapshot: {} } as never, "permit");
   check("size-bracketed schedule with no system size reports unresolved, not $0", noSize !== null && noSize.feeUsd === null && noSize.reason.includes("system size"), JSON.stringify(noSize));
 
+  // ---------------------------------------------------------------------
+  // 6. The seam submissionFees.ts loads by name. Its loader is SILENT when the
+  //    export is missing (it warns only on a require error), so a rename here
+  //    would make the whole published-schedule tier vanish without a word.
+  // ---------------------------------------------------------------------
+  const { lookupPublishedFee } = await import("../src/feeSchedules");
+  check("the seam export exists under the name the consumer loads", typeof lookupPublishedFee === "function");
+  // The Coos Bay row is VERIFIED by now and holds the +10 brackets.
+  const seamBracketed = lookupPublishedFee(db, { track: "permit", state: "OR", ahj: "Coos Bay", utility: "Pacific Power", bracketKw: 20, systemSizeAcKw: 20, systemSizeDcKw: 22, valuationUsd: null });
+  check("seam resolves the bracket from bracketKw", seamBracketed?.feeUsd === 270 && (seamBracketed.bracketLabel || "").includes("15.01kva through 25kva"), JSON.stringify(seamBracketed));
+  check("seam reports the jurisdiction's own name and a human basis", seamBracketed?.jurisdictionName === "City of Coos Bay" && seamBracketed.basis.startsWith("Published fee schedule"), JSON.stringify(seamBracketed?.basis));
+  check("seam carries the verified confidence through", seamBracketed?.confidence === "verified");
+  const seamZero = lookupPublishedFee(db, { track: "nem", state: "OR", ahj: "City of Coos Bay", utility: "Portland General Electric", bracketKw: 7 });
+  check("seam returns a sourced $0 as 0, not null", seamZero?.feeUsd === 0, JSON.stringify(seamZero));
+  const seamNone = lookupPublishedFee(db, { track: "nem", state: "WA", ahj: "City of Kelso", utility: "Cowlitz PUD", bracketKw: 7 });
+  check("seam returns null when nothing is stored", seamNone === null);
+  // A valuation-keyed schedule gets no parser snapshot here: without valuationUsd
+  // it must say it cannot answer, and the ladder falls through rather than $0.
+  const seamNoValuation = lookupPublishedFee(db, { track: "permit", state: "OR", ahj: "City of Albany", utility: "PGE", bracketKw: 10 });
+  check("seam with no valuation reports unresolved, not $0", seamNoValuation !== null && seamNoValuation.feeUsd === null && seamNoValuation.basis.includes("valuation"), JSON.stringify(seamNoValuation));
+  const seamValuation = lookupPublishedFee(db, { track: "permit", state: "OR", ahj: "City of Albany", utility: "PGE", bracketKw: 10, valuationUsd: 20000 });
+  check("seam brackets on the valuation it is handed", seamValuation?.feeUsd === 200, JSON.stringify(seamValuation));
+
   // Close before deleting the scratch DB - Windows holds the open handle as a file lock (EBUSY).
   db.close();
   fs.rmSync(dir, { recursive: true, force: true });
