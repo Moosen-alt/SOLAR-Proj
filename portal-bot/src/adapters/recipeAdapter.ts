@@ -3,6 +3,7 @@ import path from "path";
 import type { PortalRecipe, ProjectRecord, RecipeSelector, RecipeStep } from "../../../shared/src/types";
 import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, ok, fail, type PortalContext, type PortalStepResult } from "../adapter";
 import { applyFormatHint } from "../formatHint";
+import { feeBracketCoverage, feeBracketCoverageMessage } from "../feeBracketQuantity";
 
 // A RECORDED ANSWER THAT DESCRIBES A PROJECT OR A PERSON BELONGS TO THAT PROJECT.
 //
@@ -322,6 +323,29 @@ export class RecipeAdapter extends BasePortalAdapter {
   ) {
     super();
     this.portalName = `Recipe: ${recipe.ahj || recipe.utility || recipe.profileKey} (${recipe.portalPlatform || "portal"})`;
+    // A ZERO IN THE ONLY BOX WE KNOW ABOUT IS A FEE THE COUNTY WILL NOT HAVE CHARGED.
+    //
+    // Accela prints one text box per bracket row of the fee table and the quantity ticks
+    // the row that applies. Computing that quantity per project (feeBracketQuantity:* —
+    // backend/src/feeBracketFields.ts) turns a 20 kVA job's frozen, wrong "1" into a right
+    // "0", which is a strict improvement — but the 15.01–25 box then needs its own "1" and
+    // NO STEP EXISTS FOR IT, because the recording only ever captured the box the learn
+    // project filled. Left alone that trades a wrongly-billed permit for a silently
+    // UNDER-billed one, which is the same invisible failure wearing different clothes.
+    //
+    // So the run is flagged for human completion, on BOTH existing channels and for two
+    // different readers: gapFillReport.reportedMissing is what getAutopilotState turns into
+    // the review screen's banner (the screen a person already checks before approving), and
+    // driftWarnings is what stops the run scoring clean — a person still has to open the
+    // portal and type something, which is that list's own stated test. Computed here, in the
+    // constructor, because it is pure over (recipe steps, field values) and must be reported
+    // whether or not the run reaches the box.
+    const coverage = feeBracketCoverage(recipe.steps, fieldValues);
+    if (coverage?.uncovered) {
+      const message = feeBracketCoverageMessage(coverage);
+      this.gapFillReport.reportedMissing.push(message);
+      this.driftWarnings.push(message);
+    }
   }
 
   async login(context: PortalContext): Promise<PortalStepResult> {
