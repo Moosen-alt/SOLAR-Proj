@@ -433,15 +433,39 @@ account - one carried the intake number `BD26-021147-001`. They are drafts, neve
 submitted (automation never clicks final submit), but they accumulate under
 permit@infinitysolarusa.com and someone should cancel them.
 
-### The test chain could hang, and did
+### The test chain could hang, and did - and then it could hide, and did
 
-`portal:test:dom` is sixty smokes joined with `&&`; `replica.dom.smoke` sat for fifty
-minutes and took the other fifty-nine with it, silently, leaving four orphaned browsers
-when it had to be killed - which is where the last round of false portal diagnoses came
-from. **`npm run portal:test:dom:each`** runs the same list, one process and one time
-budget per smoke, with `--from`/`--only` to resume. A hang is now a reported TIMEOUT on one
-row. **61/61 pass** as of 2026-09-09, including the PowerClerk and combobox suites that
-this session's comboboxFill changes could have disturbed.
+`portal:test:dom` was smokes joined with `&&`. Two ways that lies. It HANGS: `replica.dom.smoke`
+sat for fifty minutes and took the other fifty-nine with it, leaving four orphaned browsers when
+it had to be killed - which is where a round of false portal diagnoses came from. And it HIDES:
+`controlIdentity` is the 9th of 71 and had been red since before 2026-09-10, so the chain died at
+#9 every run and **62 smokes had not executed for an unknown number of weeks**. Nobody knew,
+because `&&` reports the first failure and stops.
+
+`npm run portal:test:dom` is now **`scripts/run-dom-smokes.ts`**: every smoke in its own process,
+all of them run regardless of failures, with `--only <substr>`, `--concurrency` (default 3) and
+`--timeout` (default 300s). A hang is a TIMEOUT row, reported separately from a red check because
+they need different repairs. Per-smoke logs land in `.dom-smoke-logs/`.
+
+Three things in it are load-bearing and should not be tidied away:
+
+- **The filesystem is the register.** It discovers `*.smoke.ts` and classifies; it does not read a
+  list. The runner it replaced (`portal-bot/src/runDomSmokes.ts`, deleted) parsed the `&&` chain
+  out of package.json, so it inherited the very drift it was meant to cure. The chain string is
+  gone rather than parked under a second script name - a hand-maintained list is stale the day
+  someone adds a file, and a stale list lying around is what this replaced.
+- **Unclassified is a failure.** A `*.smoke.ts` that is neither a `*.dom.smoke.ts` nor a named
+  exception is NOT run (it might be a live/credentialed one) and turns the suite red until a human
+  sorts it. The suite also prints what it skipped and why, every run. A count of passes with no
+  denominator is how "62 not running" stayed invisible.
+- **Exit 0 with `FAIL -` in the log is its own category.** A smoke that prints failures and still
+  exits clean gets reported as EXIT-CODE-LIED, because the repair is the smoke's exit path, not the
+  code under test.
+
+First full run on the discovered set (2026-09-12, commit `0688884`, concurrency 3): **65 passed,
+5 failed, 1 timed out, 3 skipped as non-DOM (live/stress), 0 unclassified.** `controlIdentity` and
+`batteryDeclaration` were green by then. The five reds below were all downstream of the stop and
+had not been running; none is a regression from the runner.
 ## Point-and-shoot, measured on the accessible fleet (2026-09-09, night)
 
 Per the operator: the 12 refused-credential portals are CALLED OUT and excluded from the

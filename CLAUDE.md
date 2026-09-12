@@ -19,7 +19,11 @@ AHJ documents → stage the portal application → human verifies + submits.
 - `npm run smoke` — full end-to-end on a scratch DB. Must stay green.
 - `npm run backend:test:unit` / `npm run portal:test:unit` — unit suites (chained
   `&&`, so the FIRST failure stops the chain — later tests may not have run).
-- `npm run portal:test:dom` — real-Chromium extraction smoke.
+- `npm run portal:test:dom` — every real-Chromium smoke, each in its own process
+  (`scripts/run-dom-smokes.ts`). Discovers `*.dom.smoke.ts` from disk, so a new one
+  runs without being registered anywhere. Runs ALL of them even when some fail, and
+  prints a summary with a denominator: passed/failed/timed-out/skipped/unclassified.
+  `--only <substr>`, `--concurrency N` (default 3), `--timeout S` (default 300).
 - `npx tsx portal-bot/src/adapters/powerClerkSpecs.dom.smoke.ts` — real-browser
   PowerClerk specs-page cascade smoke (equipment dropdowns).
 - `npm run import:reference -- <files.xlsx> [--dry-run]` — import operator
