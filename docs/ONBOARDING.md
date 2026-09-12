@@ -47,6 +47,51 @@ promise a customer that this changes with a setting.
 
 ---
 
+## 0.5 The seven days we promised them
+
+The customer already has this schedule. It is section 2 of the onboarding guide we hand every
+new company, and they will hold us to it, so it is the spine of this runbook rather than a
+summary of it. Each day below names the section that does the work and the command that
+produces the deliverable.
+
+| Day | What the guide promises them | What you actually do | Where |
+|---|---|---|---|
+| **D0** | **Kickoff** — confirm jurisdictions and portals; agree who handles fees, portal passwords and setup-draft cleanup | Take the intake packet; get the three agreements in writing | §1, §2 |
+| **D1-2** | **Setup** — load company and licence details, store portal credentials encrypted | Fill the intake file outside the repo, run `onboard-company.ts`, mint the secure credential link | §3, §5 |
+| **D2-3** | **Coverage report** — "which of your jurisdictions are ready now, which need a supervised first run, and which can't be filed yet" | `npm run coverage:report -- --client <id> --jurisdictions "…"` | §4 |
+| **D3-6** | **Portal verification** — "we verify each portal with your credentials on a real project, one at a time" | A learn run per portal, watched, serialised | §6 |
+| **D7** | **Ready** | Nothing new — this is the day the coverage report's SUPERVISED FIRST RUN column has emptied | §4 |
+
+**Two items block everything else, and the guide says so in those words: their contractor
+licence number and their portal logins.** Chase both on D0. Everything else on the intake can
+arrive on D1 without stopping the clock; those two cannot. The licence number is a hard gate
+that throws (§1); the logins are a gate you cannot route around, because **we do not create
+portal accounts** — a person at their company registers each one on the portal's own site,
+and several portals email a code to do it.
+
+**The three D0 agreements, which are the ones that get skipped.** Each is a real commitment in
+the guide, each has a home in the data now, and each becomes somebody's bad surprise if it is
+left to the first filing:
+
+1. **Fees — agreed PER PORTAL, not per company.** "A payment method on file in your portal
+   account, or a person on your side completing payment. Mailed-check fees (Ameren Illinois,
+   for example) are yours to send." One installer really is card-on-file in one portal, a
+   person who pays in another, and a cheque in the post for the third, so a single
+   company-level answer is wrong for at least two of them. Record it as each credential's
+   `feeResponsibility` (`card-on-file` / `customer-pays` / `mailed-check` / `keelix-pays`).
+   The coverage report prints `NOT AGREED` per portal until you do. Recording it authorises
+   nothing: automation never pays a portal fee under any value of it.
+2. **Portal passwords — they tell us the day they change one.** Make it an obligation in
+   writing. We cannot detect a rotation; the first sign is a failed filing, and we then stop
+   trying that portal so the account does not get locked. See §2 and §6.
+3. **Setup-draft cleanup — who cancels the drafts we leave.** Every live-portal run mints a
+   real draft application under their account, and nothing of ours removes it. We flag each
+   one: `npx tsx scripts/draft-ledger.ts` prints every live portal touch we have recorded,
+   by host and by account, with any portal-assigned reference. That ledger is the list you
+   hand whoever agreed to do the cancelling. Agree WHO at kickoff, not after the sweep.
+
+---
+
 ## 1. What we need from the company before we start
 
 The full list, with the exact field names and why each one matters, is
@@ -60,6 +105,21 @@ Two items on that checklist BLOCK everything else, so chase them first:
   a 409 and the message `Submitting client "X" has no CCB license number on file`. You will
   not discover this until the first filing, so get it at intake.
 - **The portal logins.** See §5 — there is a safe way to receive these and several unsafe ways.
+
+Take the licence number's **issuing state** with it (`licenseState`). A bare licence number
+stops meaning anything the moment a company is licensed in two states, and a company that
+files in two states is the normal case, not the edge one.
+
+The guide marks several other intake items REQUIRED and says setup stops until we have them.
+Two of those are easy to nod past because they look like duplicates of fields we already hold,
+and are not:
+
+- **The shared inbox for our updates** (`updatesInbox`). "Where we send confirmations, status
+  updates and corrections. A shared inbox, not one person's." It is deliberately NOT
+  `businessEmail` — that one is the installer address that goes **on the application**, which
+  is where the AHJ mails its corrections. One is ours to write to; the other is the agency's.
+- **The billing contact** (`billingContactEmail`) — who receives our invoices, which is
+  routinely not the person who receives the permit correspondence.
 
 Everything else on the checklist — legal business name, business address, EIN, bond and
 insurance carriers, authorized signer, standard disconnect make/model — is not enforced by
@@ -105,6 +165,14 @@ can create a SECOND draft (`backend/src/autoLearn.ts:1155`), so a single
 `--repeat 3 --self-test` sweep can leave six. **A human on their side has to cancel the junk
 drafts.** Agree up front who that is, and warn them before every learn run on a portal where a
 draft is visible to the reviewing authority.
+
+What we DO owe them here is the list, and the guide promises exactly that — "we'll flag each
+one". Every live-portal run writes an append-only ledger entry **before the browser opens**,
+so a run that dies half way is still recorded; read it with `npx tsx scripts/draft-ledger.ts`
+(`--host <host>`, `--since <date>`). It is not pruned, unlike the run bundles under
+`data/learn-runs/`, which are — so the ledger is the only durable record of what we left
+behind. It holds no secret: an account appears as its username reference and no field value
+is copied in. What it cannot do is see backwards: runs that predate it are not in there.
 
 **"When you rotate a portal password, you have to tell us the same day."** Make this an
 obligation in writing, because the failure mode is silent and it is theirs, not ours:
@@ -170,11 +238,13 @@ notification for a brand-new jurisdiction to a customer without checking it firs
 
 **Two questions their security or legal reviewer will ask, answered before they ask.** A
 company handing over government-portal logins gets a review, and both of these are in §5 with
-the detail: (1) their live portal SESSIONS — cookies and saved logins — sit **unencrypted on
-our disk** at `portal-profiles/<clientId>/<portalType>/`, outside `SESSION_ENCRYPTION_KEY`;
-(2) **there is no offboarding procedure in the product** — no route deletes a departing
-company's credentials, sessions or backups in one action; §5 carries the manual checklist and
-names the gaps. Read both before you promise anything about data handling.
+the detail: (1) their live portal SESSIONS — cookies and saved logins — are isolated per
+customer at `portal-profiles/<clientId>/<portalType>/` and sit there **unencrypted**, outside
+`SESSION_ENCRYPTION_KEY`; (2) offboarding is now a real command —
+`npx tsx scripts/offboard-company.ts <clientId> --confirm <clientId>` removes their
+credentials, sessions, projects, documents and homeowner records — and §5 carries what it
+does, what it deliberately leaves, and what is still manual. Read both before you promise
+anything about data handling.
 
 ---
 
@@ -337,7 +407,15 @@ file is a second plaintext copy with no encryption and no access control.
 
 ---
 
-## 4. Verifying with `onboarding-readiness.ts`
+## 4. Verifying — the config check, then the customer's coverage report
+
+**Two different documents, and they are not interchangeable.**
+`onboarding-readiness.ts` is for you: is our own configuration complete enough to attempt a
+filing. `coverage-report.ts` is for them: which of THEIR jurisdictions we can actually file in
+today. Run the readiness check first — a NOT-READY client makes the coverage report answer a
+question nobody asked — then produce the coverage report as the D2-3 deliverable.
+
+### 4.1 `onboarding-readiness.ts` — the config check
 
 ```
 npx tsx scripts/onboarding-readiness.ts
@@ -388,6 +466,54 @@ A NOT-READY verdict names the failing check. Every one of them maps to a section
 it and re-run. Do not proceed with a NOT-READY client on the theory that the first filing
 will reveal the problem — it will, at the customer's expense.
 
+### 4.2 `coverage-report.ts` — the D2-3 deliverable, in the guide's own words
+
+```
+npm run coverage:report -- --client <clientId> --jurisdictions "OR|City of Coos Bay|Pacific Power, IL||Ameren Illinois"
+npm run coverage:report -- --client <clientId> --json > ~/reports/cascade-ridge-coverage.json
+npx tsx scripts/coverage-report.ts --client <clientId> --db backend/data/copy.sqlite
+```
+
+This is the document the guide promises on day 2-3: **"Which of your jurisdictions are ready
+now, which need a supervised first run, and which can't be filed yet."** Transcribe the
+jurisdictions from the intake packet's own `jurisdictions` array into `--jurisdictions`
+("STATE|AHJ|UTILITY", any part may be empty; add a fourth part — `electrical`, `structural` or
+`combo` — to ask about one permit discipline). Omit the flag and it uses the distinct
+state/AHJ/utility triples of the client's existing projects instead.
+
+**Every jurisdiction produces up to TWO rows**, because coverage is per track and a company is
+routinely ready on one and blocked on the other. Permit and NEM resolve different recipes,
+different portal URLs and different logins, and the report never crosses them.
+
+What the three buckets mean, exactly — the line between them is the whole value of the
+document, so do not paraphrase it to a customer:
+
+| Bucket | What it takes to be in it |
+|---|---|
+| **READY NOW** | a `complete` recipe that production's own lookup resolves for that track, AND a stored login **this portal has accepted for this customer** |
+| **SUPERVISED FIRST RUN** | everything is there except proof. Either no complete recipe (the first filing is a learn run), or a complete recipe whose login this customer has never had accepted — a recipe recorded against OUR account is evidence about the portal, not about their access to it |
+| **CANNOT FILE YET** | no portal URL, no login, a login with no stored password, a login the portal has **refused**, or a portal that emails a code at login with **nobody named to relay it** |
+
+Three things to know before you send it:
+
+- **READY NOW is not "unattended".** A filing there still stops at the portal's own review
+  screen for a person to check and submit, and the report says so on every row. A portal that
+  challenges a code at login can reach READY NOW once an inbox is named, and the row then
+  carries "a person has to relay one every session". Do not let that line be edited out.
+- **It reports what it can prove, and refuses to guess.** It opens no network connection, so a
+  jurisdiction production would research on first use reports as "no portal URL known" here —
+  which reads as CANNOT FILE YET. That is the safe direction: it says we have not confirmed a
+  portal, rather than promising one no human has opened. It also deliberately does not count
+  an AHJ *information* page as a portal URL, though production will fall back to one.
+- **`--json` prints the report and nothing else**, so `> file.json` is safe to pipe. Nothing
+  in either output is a secret: a login appears as its username reference and set/missing.
+
+The report is read-only in its own code and exits 0 even when every row is blocked — the
+blocked rows ARE the deliverable. Note the same caveat that applies to the readiness script:
+opening the database re-seeds the baseline knowledge base, which bumps a few hundred
+`permit_utility_knowledge.updated_at` timestamps (no content, no row count). Pass
+`--db <copy>` if that matters.
+
 ---
 
 ## 5. Portal credential intake — how the company hands us logins
@@ -397,10 +523,33 @@ a government system, filing under that company's licence. Treat them accordingly
 
 ### What we actually do
 
-1. **Ask for them over a channel that is not email or chat.** Send them a one-time secret link
-   (a self-destructing secret service) or take them by phone. If a customer has already
-   emailed you a password, tell them so, get the password rotated on the portal, and take the
-   new one properly.
+1. **Send them OUR one-time secure link, or take the logins by phone. Never email, text or
+   chat.** The link is the guide's own promise and it now exists in the product:
+
+   ```
+   curl -X POST localhost:4173/api/clients/<clientId>/credential-requests \
+     -H 'content-type: application/json' \
+     -d '{"portals":[{"portalType":"OR · Accela","portalUrl":"https://aca-oregon.accela.com/oregon/"}]}'
+   → { "token":"…", "expiresAt":"…", "url":"https://<PUBLIC_BASE_URL>/credentials?token=…" }
+   ```
+
+   Send them the `url`. They open it once, type the credentials, and the password goes
+   straight into the AES-256-GCM envelope through the ordinary writer. The properties that
+   make it safe to send are worth knowing, because they are also what you tell their security
+   reviewer: it is **write-only** (the page never echoes anything submitted, so a forwarded
+   link leaks nothing), **single-use** (spent on the first successful submission), **expiring**
+   (72 hours by default, `ttlHours` to change it), and **constrained** (a token-holder can
+   only supply logins for the portals the request named — no adding a portal, no repointing a
+   URL). Unknown, spent and expired tokens all return the same message, so a prober learns
+   nothing. `PUBLIC_BASE_URL` must be set or the `url` comes back with an empty host.
+
+   The same form collects the two per-portal answers the intake packet asks for and that
+   nothing else captures at the right grain: **"Emailed code at login? Which inbox?"** and
+   **who pays that portal's fees**. Ask them to fill those in while they are there — the
+   coverage report reads both.
+
+   If a customer has already emailed you a password, tell them so, get the password rotated on
+   the portal, and take the new one properly.
 2. **Never paste a password into Slack, email, a ticket, a commit, or a shell command that
    lands in your history.** If you have, the password is burned — rotate it.
 3. **Type them into your intake file — the copy you made OUTSIDE the repo (§3.2)** — and load
@@ -461,55 +610,64 @@ is a deployment decision nobody has recorded yet; do not tell a customer it is d
 checking the box it runs on. And do not describe our credential handling as "encrypted at rest"
 full stop — the passwords are; the sessions are not.
 
-### Offboarding a company — no procedure exists in the product; here is the manual one
+### Offboarding a company
 
-**Say this plainly when asked: there is no one-action offboarding.** No route, script or job
-removes a departing company's data. Every step below is a person doing it by hand, and the gaps
-are named as gaps because a company handing over government-portal logins will ask, and a vague
-answer is worse than an ugly one.
+The guide's leaving clause: *"If you ever leave, change your portal passwords; we then remove
+your credentials, sessions, projects and documents from our live systems."* That sentence is
+now executed by one command, and the order in it is load-bearing.
 
-Do these in order. The first two are the ones that actually matter, because they are the ones
-that leave live access behind.
+1. **They rotate every portal password first, on their side.** This is the only step that
+   revokes access with certainty, and it does not depend on our cleanup being complete. We
+   cannot invalidate a session we no longer hold: once the files are gone we cannot log in to
+   end anything, and a session cookie that leaked before the purge outlives it. Their password
+   change closes the door; our run stops us holding the key.
+2. **Dry run.** `npx tsx scripts/offboard-company.ts <clientId>` — the DEFAULT posture is dry
+   run, so this writes nothing, not even the audit row. It prints the inventory first: N
+   credentials, N projects, N documents, N customers, N communications, N session directories.
+   **If those numbers are not the company you meant, stop.** `--list` prints client ids and
+   names so the id can be copied rather than typed.
+3. **The purge.** `npx tsx scripts/offboard-company.ts <clientId> --confirm <clientId>`, plus
+   `--actor=<your email>` so the audit row names a human. `--confirm` takes the client id and
+   **must match** — a mistyped id is refused outright rather than falling back to a dry run,
+   because the id you fat-finger may be another live customer's. It also refuses without a real
+   `SESSION_ENCRYPTION_KEY`: half of what it destroys is ciphertext keyed by that value, and a
+   process that cannot read it is a process pointed at the wrong environment.
 
-1. **Have THEM rotate every portal password, on their side.** This is the only step that
-   revokes access with certainty, and it does not depend on our cleanup being complete. Do it
-   first, not last.
-2. **Delete the session profiles from disk — both copies.** `rm -rf portal-profiles/<clientId>/`
-   **and** `rm -rf backups/portal-profiles/<clientId>/`. Deleting only the live directory leaves
-   a working session in the backup mirror, and the next backup would re-copy a live directory
-   you had not deleted. Nothing does this for you. A deleted client row with its profile
-   directory still on disk is a live portal session belonging to a company we no longer serve.
-3. **Delete each portal credential row, one at a time.**
-   `DELETE /api/clients/:id/portal-credentials/:credId` per credential. **Deleting the client
-   does NOT delete its credentials** — `deleteClient` removes `client_portal_identities`,
-   `portal_profiles` and the `clients` row only, so credentials survive as orphans keyed to a
-   client that no longer exists, still holding the encrypted password. Enumerate them with
-   `GET /api/clients/:id/portal-credentials` first and check the list is empty afterwards.
-4. **Delete or reassign their projects.** `DELETE /api/clients/:id` refuses with a 409 while any
-   project still points at the client, naming the count. `DELETE /api/projects/:id` cascades
-   properly — it removes the child rows (QC results, submissions, corrections, human review
-   items, audit rows, `historical_failure_examples`, fingerprints) **and unlinks the stored
-   document files from disk.** Note the retention consequence: the backup document mirror keeps
-   its copy on purpose, so plan sets and stamped letters survive in `backups/documents/`.
-5. **Delete the client row.** `DELETE /api/clients/:id`, once step 4 has cleared the 409.
-6. **Delete their homeowner records if they ask.** `customers` rows are client-scoped and are
-   **not** touched by `deleteClient`; `DELETE /api/customers/:id` removes one at a time.
-7. **Prune the learn-run bundles.** `data/learn-runs/` holds raw screenshots of their portal
-   account. Retention is "newest 20 folders, pruned when a new run happens", so after they leave
-   nothing prunes them at all. Delete the folders for their runs by hand.
-8. **Leave the pooled knowledge alone.** Portal recipes, AHJ and utility knowledge, code
-   profiles, form templates and CEC equipment rows carry **no `org_id` and no `client_id`** —
-   they are shared across every tenant on purpose (see CLAUDE.md, "Shared knowledge is shared
-   ON PURPOSE"), and they hold jurisdiction facts, not customer data. **They stay.** Tell the
-   customer this at intake rather than at exit: what we learn about a city's portal is not their
-   data and does not leave with them. What DOES carry their data —
-   `historical_failure_examples`, which holds homeowner names and addresses — is org-scoped and
-   goes with their projects in step 4.
-9. **Write down what you did.** Until this is a script, the audit trail is your note.
+   What it removes: `portal_credentials` (the encrypted passwords — the headline promise),
+   every project through the ordinary `deleteProject` cascade (QC results, submissions,
+   corrections, audit rows, `historical_failure_examples`, and the document files unlinked
+   from disk), `customers`, `communications` (deleted FIRST, because both cascades only unlink
+   them and a row can otherwise survive both, orphaned, still carrying the homeowner's name),
+   `email_tracking_sources` (which hold their own encrypted IMAP password),
+   `client_portal_identities`, `portal_profiles`, the `clients` row, and the on-disk session
+   directory `portal-profiles/<clientId>/`. It writes a `client.offboarded` audit row with a
+   null project id, so the record outlives every project it names.
 
-Known gaps in that list, to state rather than hide: nothing verifies completion, nothing removes
-their data from historical backup snapshots (short of deleting the snapshots), and steps 2, 7
-and the backup mirrors have no API surface at all — they are filesystem work on the server. If a
+   **Read the session-directory result rather than assuming it.** Directories it failed to
+   remove are reported, not swallowed — a running Chrome holds a profile open on Windows, and
+   "we removed your sessions" that silently did not is this exact bug again.
+4. **Then the three things it deliberately does not touch**, each still a person on the server:
+   - `backups/portal-profiles/<clientId>/` — the backup mirror of the session state. The live
+     directory is gone; this copy is not, and it is just as much a live login. `rm -rf` it.
+   - `backups/documents/` — the document mirror keeps its copy on purpose, so plan sets and
+     stamped letters survive there.
+   - `data/learn-runs/` — raw screenshots of their portal account. Retention is "newest 20
+     folders, pruned when a new run happens", so once they leave nothing prunes them at all.
+5. **Leave the pooled knowledge alone, and say so at intake rather than at exit.** Portal
+   recipes, AHJ and utility knowledge, code profiles, form templates and CEC equipment rows
+   carry **no `org_id` and no `client_id`** — shared across every tenant on purpose (CLAUDE.md,
+   "Shared knowledge is shared ON PURPOSE") — and they hold jurisdiction facts, not customer
+   data. **They stay.** What DOES carry their data, `historical_failure_examples`, goes with
+   their projects. The append-only draft ledger stays too: it holds no secret, and erasing it
+   erases the list of drafts they still have to cancel on their own portal accounts.
+
+`DELETE /api/clients/:id` still refuses with a 409 while any project points at the client, and
+that is deliberate rather than an oversight: the dashboard path stays hard so a misclick cannot
+destroy a company's filings, while the deliberate path is flagged, confirmed and audited
+precisely because it can.
+
+Still true and worth stating rather than hiding: nothing removes their data from historical
+backup SNAPSHOTS short of deleting the snapshots, and step 4 has no API surface at all. If a
 customer's contract requires provable deletion, that is engineering work to quote, not a
 checkbox to promise.
 
@@ -531,6 +689,15 @@ Say this to the customer explicitly, because it changes what they have to staff:
 - Ask whether they can put us on an account whose MFA is not tied to one person's phone. Some
   portals allow a service account; many do not, and that is a real constraint on how fast we
   can file for them.
+- **Get the answer written down, per portal, not just discussed.** The intake asks "Emailed
+  code at login? Which inbox?" for each portal account, and the answer has a home now:
+  `mfaRequired` and `mfaCodeDestination` on that credential. A destination is who to ask for
+  the code — a shared inbox we can read, or the person who relays it — and it is not a secret,
+  which is exactly why it belongs in a field rather than in somebody's memory. A paused run can
+  then name where the code will arrive instead of only saying it stopped, and
+  **`coverage-report.ts` puts any MFA portal with no destination in CANNOT FILE YET** (§4.2).
+  That is the correct answer: a portal nobody can get a code for is not a portal we can file
+  through, however good the recipe is.
 
 ---
 
@@ -670,8 +837,9 @@ Read the warnings before you run it:
   filter, so the host you named is simply skipped and you get an empty sweep. **Two tools print
   exactly this wrong advice — the benchmark's own closing "CREDENTIALS NEEDING A HUMAN" line and
   the remedy line in `scripts/onboarding-readiness.ts`. Both omit `--include-stale`. Ignore
-  them and use the sequence below** (and if you fix either script, fix this bullet too). What
-  actually works:
+  them and use the sequence below** (and if you fix either script, fix this bullet too).
+  `scripts/coverage-report.ts` prints the correct sequence on every refused-login row, so when
+  two of our own tools disagree, that is the one to believe. What actually works:
   1. Get a working credential from the customer and store it (§5). Storing it does **not** clear
      the flag — nothing resets `last_login_failed_at`.
   2. Re-run with the flag that overrides the skip:
@@ -763,6 +931,8 @@ blocked. Add `--errors` for the tail of the backend log.
 | A benchmark sweep returns nothing for the host you named | The credential is flagged stale, and the stale skip is applied after `--host` | Re-run with `--include-stale` once the credential is fixed; a SUCCESSFUL login is what clears the flag (§6). Do not keep re-running a refused login |
 | Two runs against one portal both "failed" at or after login | Session eviction — the portal allows one session per account and the learn lease is in-process only | Nothing to fix in the engine. Re-run them ONE at a time and compare. Assume the pair of results is void, not the portal (§6) |
 | A deep portal reports a partial walk that looks like an engine limit | The 8-minute default per-portal budget truncated it | Re-run that host with a larger `--portal-timeout` and read the page trace before concluding anything (§6) |
+| "Which of my jurisdictions can you actually file in?" — asked at any point, not just on D2 | Nothing is wrong; this is the question the coverage report exists for | `npm run coverage:report -- --client <id>`. Re-run it rather than quoting the D2 copy: rows move on their own as logins get accepted and recipes get recorded (§4.2) |
+| The coverage report says CANNOT FILE YET for a portal you know works | Usually one of three: the login was never tried (that is SUPERVISED, not CANNOT), a code-at-login portal with no `mfaCodeDestination` recorded, or a stored portal URL whose path segment does not match | Read the row's own `why` line — it names which. The report refuses to guess a portal URL, so an unconfirmed jurisdiction reads as blocked on purpose (§4.2) |
 
 Two habits that save the week:
 
@@ -784,7 +954,8 @@ matching line:
 
 | What is actually true | What to say | Who unblocks it |
 |---|---|---|
-| We hold no login for that portal | "We need an account on that portal before we can file there. Portal accounts have to be registered by a person on the portal's own site — several require an emailed code — so that first step is yours; send us the login the safe way and we will take it from there." | Customer |
+| We hold no login for that portal | "We need an account on that portal before we can file there. We don't create portal accounts — they have to be registered by a person on the portal's own site, and several require an emailed code — so that first step is yours. We'll send you a one-time secure link to hand us the login; never email, text or chat it." | Customer |
+| The portal emails a code at login and nobody is named to relay it | "That portal sends a one-time code at every login, and software never clears one — a person does, every session. Tell us which inbox the code lands in, ideally a shared one we can read, or name someone who will relay it. Until then it isn't a portal we can file through, however well we know the application." | Customer |
 | The stored login is rejected | "The credentials we have for that portal are being refused — usually because the password was rotated and we were not told. We deliberately do not retry, because repeated attempts lock the account, so that portal is paused until we have a working login. Send us one the safe way and we will re-verify the same day. Standing request: tell us the day you rotate a portal password, because we cannot detect it — we find out when a filing fails." | Customer |
 | The portal requires MFA or a CAPTCHA at login | "That portal challenges every new session. We can fill the whole application, but a person has to clear the challenge at the browser. That is a permanent design choice on our side — we do not solve CAPTCHA or MFA — so filings there need someone available, not just a queue." | Human, by design |
 | The portal blocks automated browsers | "That portal actively blocks automation at the network level. We can't drive it, and working around a bot block is not something we will do. Those filings stay manual." | Nobody — it stays manual |
@@ -811,7 +982,23 @@ unencrypted in `portal-profiles/` (§5).
 | `PORTAL_HEADLESS` | `false` on an operator desktop, so a human can clear a challenge in the visible browser. A headless server cannot complete a paused filing at all. |
 | `PORTAL_ALLOW_FINAL_SUBMIT` | Leave it unset. It is one half of the double gate on operator-delegated final submit and has no place in onboarding. |
 
+| `PUBLIC_BASE_URL` | The host the one-time credential link is built against (§5). Unset, the link comes back with an empty host and the customer cannot open it. |
+
+Scripts this runbook uses, in the order the seven days need them:
+
+| Command | What it is for | Section |
+|---|---|---|
+| `npx tsx scripts/onboard-company.ts <intake.json> [--dry-run]` | D1-2 — create the client, licence block and credentials | §3 |
+| `POST /api/clients/:id/credential-requests` | D1-2 — mint the one-time secure link for their logins | §5 |
+| `npx tsx scripts/onboarding-readiness.ts --client=<id>` | D2 — is OUR configuration complete | §4.1 |
+| `npm run coverage:report -- --client <id>` | **D2-3 — the customer's coverage report** | §4.2 |
+| `npm run learn:benchmark -- --host <host> [--include-stale]` | D3-6 — verify each portal, one at a time | §6 |
+| `npx tsx scripts/draft-ledger.ts` | any day — the drafts we left on their real portal accounts | §2 |
+| `npm run ops` | any day — job queue, blockers, recipes, run artifacts | §8 |
+| `npx tsx scripts/offboard-company.ts <id> [--confirm <id>]` | exit — the leaving clause, executed | §5 |
+
 Related reading: `docs/onboarding/INTAKE_CHECKLIST.md` (what to collect),
-`docs/onboarding/CAPABILITIES.md` (measured capability per platform),
-`docs/HANDOFF.md` (current state, open issues, what to verify after each pull),
-`docs/SERVER_SETUP.md` (hosting), `docs/products/README.md` (the split-out products).
+`docs/onboarding/CAPABILITIES.md` (measured capability per platform, and where the guide's
+promises are not yet met), `docs/HANDOFF.md` (current state, open issues, what to verify after
+each pull), `docs/SERVER_SETUP.md` (hosting), `docs/products/README.md` (the split-out
+products).

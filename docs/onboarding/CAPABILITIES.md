@@ -8,10 +8,12 @@ projected numbers here and no numbers from a build other than the one named.
 Measurement date for everything below: **2026-09-09** (one build). Source files are cited
 so any claim can be re-checked.
 
-If you read only one section, read **"Read this before you sign"**. It collects the eight
-facts most likely to change your decision — including what this service does with knowledge
-learned from your jurisdictions, what it leaves behind in your portal accounts, and the fact
-that it has never onboarded a real company.
+If you read only two sections, read **"Where the onboarding guide's promises stand today"** —
+which checks the guide you were handed, clause by clause, against what this build actually does
+— and **"Read this before you sign"**, which collects the eight facts most likely to change
+your decision, including what this service does with knowledge learned from your jurisdictions,
+what it leaves behind in your portal accounts, and the fact that it has never onboarded a real
+company.
 
 ## What the service does, end to end
 
@@ -246,6 +248,12 @@ Named concretely, with who unblocks each.
   knowledge the engine cannot derive and **must not guess** — guessing is exactly the
   wrong-record-type error the guard exists to prevent. One human answer, recorded once,
   unblocks it for everyone.
+- **Nothing enforces "verified before it files".** A portal we have a recipe for but have
+  never logged into with YOUR credentials is not blocked from a filing by any gate; the
+  coverage report puts it in "supervised first run" and a person schedules that run. The
+  distinction matters because a recipe recorded against our own account is evidence about the
+  portal, not about your access to it — a rotated password or an account registered to the
+  wrong person surfaces at the first login attempt, not before.
 - **Refused or expired portal credentials are operator work, not an automation failure —
   and nothing warns you before a filing needs them.** As of 2026-09-09, **12 of the 68
   credentialed hosts are stale** (a refused login more recent than the last accepted one).
@@ -293,6 +301,29 @@ Named concretely, with who unblocks each.
   walk can be truncated by the per-portal time budget. Mitigations exist but do not remove
   this. Any per-portal claim needs `--repeat N` to become a rate.
 
+## Where the onboarding guide's promises stand today
+
+The onboarding guide you were given makes specific commitments. Most of them are true. The ones
+that are not, or that are true in a narrower sense than they read, are below in the guide's own
+words — because a customer-facing guide that over-promises is the expensive kind of wrong, and
+you would find these out anyway, later, at a worse moment.
+
+Checked against this build on **2026-09-11**.
+
+| The guide says | Where it actually stands |
+|---|---|
+| S2 "Coverage report, D2-3: which of your jurisdictions are ready now, which need a supervised first run, and which can't be filed yet" | **True as of this build.** `scripts/coverage-report.ts` produces it, per jurisdiction and per track (permit and interconnection are separate rows, because you can be ready on one and blocked on the other). It reports what it can prove and refuses to guess: a jurisdiction whose portal URL no human has confirmed reads as "can't be filed yet" rather than being promised |
+| S2 "Portal verification, D3-6: we verify each portal with your credentials on a real project, one at a time" | **True as a process, and it is ONLY a process.** Nothing in the software enforces it. The staging gate refuses a filing for five reasons — missing documents, an unconfirmed permit path, no client bound, no licence number, a blank required portal field — and **none of them asks whether that portal has ever accepted your login**. So "supervised first run" is a commitment our operators keep by scheduling it, not a rail the product runs on. The coverage report is what makes the unverified portals visible; it does not block them |
+| S2 "Ready, D7" | **Read this next to "What to expect in your first two weeks" below, which is the measured version and is longer.** D7 is achievable for jurisdictions already covered by pooled knowledge — those inherit an existing recipe on day one. A jurisdiction on a platform we have never driven does not fit in seven days: the honest unit is about two days of engineering for a genuinely new platform. If your set is all-familiar, D7 is real; if it is not, the report on D2-3 will say so, which is the point of producing it that early |
+| S4 "Send them through the one-time secure link we provide" | **True as of this build**, and new. The link is single-use, expires in 72 hours, is write-only (it never echoes anything you submitted, so forwarding it leaks nothing), and only accepts logins for the portals the request named. Before this existed, credentials arrived by whatever channel the operator arranged — which is exactly the gap this closes |
+| S4 "We don't create portal accounts" | True, and it is a hard constraint rather than a policy preference. You register each portal account on the agency's own site; many of them email a code to do it |
+| S4 "MFA and one-time codes need a person each session — software never clears them" | True and permanent. Per portal, tell us which inbox the code arrives in or who relays it; we record it against that login. A portal that challenges a code with nobody named to relay it is reported as **can't be filed yet**, because it is |
+| S4 "Setup runs leave draft applications in your portal account… we'll flag each one" | **True.** Every live-portal run writes an append-only ledger entry before the browser opens, so a run that dies half way is still recorded. What is equally true, and worth planning for: **nothing removes those drafts.** Cancelling them is a person on your side, and who that is gets agreed at kickoff |
+| S6 "Logged-in portal sessions are kept so MFA isn't triggered on every run… isolated per customer" | **The isolation is true; "encrypted at rest" is NOT part of that sentence and must not be read into it.** Sessions live in a per-customer directory (`portal-profiles/<your id>/<portal>/`) that no other customer's run touches. They are stored as plain Chrome profile directories — cookies and saved logins, **not encrypted by us** — and a valid session cookie is functionally a login. Your *passwords* are AES-256-GCM encrypted; your *sessions* are not. See §4 below for what that means for whoever owns the server |
+| S6 "If you ever leave… we then remove your credentials, sessions, projects and documents from our live systems" | **True as of this build**, and it was not until recently. One audited command removes the encrypted credentials, the on-disk sessions, every project and its documents, your homeowner records and correspondence. Three things it does not reach, each cleared by hand afterwards: the backup mirror of the session directories, the backup mirror of your documents, and raw portal screenshots under `data/learn-runs/`. **Deletion from historical backup snapshots is not something we can do short of deleting the snapshots**, so if your contract requires provable deletion, raise it before you sign |
+| S6 "Your projects, homeowner records, documents and credentials are yours alone and never shared" | True — and read it alongside §3 below, which spells out what IS pooled. The line is procedural knowledge (how a portal behaves) versus your data. Some installers consider the first of those a competitive asset |
+| S3 "every item goes straight onto permit and interconnection applications" | True for the licence and business block. Two intake items are stored but not yet consumed anywhere: the insurance and bond **expiry dates** are held, while the **certificate PDFs themselves have no document store** — send them, but expect us to hold them outside the system until that exists |
+
 ## Read this before you sign
 
 Eight things you would not otherwise find on this page, each of which changes the decision
@@ -326,6 +357,13 @@ clearing them is manual work by someone with access to the account. We have not 
 each agency treats an account that accumulates abandoned drafts, so we are not going to tell
 you it is harmless. Agree up front who cleans them up and how often.
 
+What we do owe you is the list, and you get it: every run that touches a live portal writes an
+append-only ledger entry **before the browser opens**, so a run that dies half way is still
+recorded, and the ledger is never pruned (the screenshot bundles are). It names the portal, the
+account, the date, and any reference number the portal assigned. That is the list whoever
+agreed to do the cancelling works from. It cannot see backwards, though: runs that predate the
+ledger are not in it.
+
 ### 3. What is shared, and with whom
 
 Pooled knowledge is the product's core asset and it is shared **on purpose**. Stated in your
@@ -348,17 +386,21 @@ proprietary and a real competitive edge. If you are one of them, this is a term 
 **before** you sign, not a surprise to discover after your first filing has already taught
 the shared tables something.
 
-### 4. Live portal session state is stored unencrypted on disk
+### 4. Live portal session state is isolated per customer, and stored unencrypted on disk
+
+Both halves of that sentence are load-bearing, and the guide only says the first one.
 
 Portal *passwords* are AES-256-GCM encrypted (see "What we do not do"). Portal *sessions* are
 not. To avoid re-triggering MFA on every run, the automation keeps a full Chrome profile per
 client and portal on the machine's filesystem at
-`portal-profiles/<clientId>/<portalType>/`. Those directories hold live cookies and session
-tokens in Chrome's own on-disk format, **not encrypted by us**, and a valid session cookie is
-functionally a login. Anyone with filesystem access to that host, or to an unencrypted backup
-of it, can resume your portal sessions. Protecting them is host security — disk encryption,
-access control, backup handling — not application security, and this page is not claiming
-otherwise.
+`portal-profiles/<clientId>/<portalType>/`. The per-client directory is real isolation — no
+other customer's run reads or writes yours, and offboarding removes the whole directory. But
+those directories hold live cookies and session tokens in Chrome's own on-disk format, **not
+encrypted by us**, and a valid session cookie is functionally a login. Anyone with filesystem
+access to that host, or to an unencrypted backup of it, can resume your portal sessions.
+Protecting them is host security — disk encryption, access control, backup handling — not
+application security, and this page is not claiming otherwise. Do not let "isolated per
+customer" be heard as "encrypted at rest"; only the passwords are.
 
 ### 5. Credential rotation is silent
 
@@ -437,6 +479,15 @@ session to it. A staged or paused filing cannot be finished from somewhere else.
 
 ## What to expect in your first two weeks
 
+**Read this against the guide's seven-day schedule rather than instead of it.** The guide
+promises kickoff on day 0, setup on days 1-2, the coverage report on days 2-3, portal
+verification on days 3-6, and ready on day 7. That schedule is real for jurisdictions already
+covered by pooled knowledge — they inherit a recorded recipe on day one, and the only thing
+standing between them and the normal queue is one verification run with your credentials. The
+two weeks below are what the same period looks like when your set includes platforms nobody
+has driven yet. **The coverage report on day 2-3 is the thing that tells you which of the two
+you are in**, and it is deliberately produced that early for exactly that reason.
+
 Activities, not promised portal counts — because how fast your portals come online depends
 on which platforms they run and whether your credentials work, and we will not invent a
 number for that.
@@ -444,13 +495,18 @@ number for that.
 1. **Days 1-2 — accounts and credentials.** You register or confirm your own portal accounts
    on each AHJ and utility site (this is yours to do; many portals email a one-time code and
    automation is not permitted to complete that). We load your company licence and business
-   details, and import your portal credentials encrypted. Your contractor licence number is
-   required — staging refuses to run without it.
-2. **Days 2-3 — inheritance check.** We report, per jurisdiction you filed in, whether it is
-   already covered by pooled knowledge (a recipe or a confirmed portal profile exists) or is
-   a first encounter. For covered AHJs, existing recipes apply on day one. This report is
-   the honest scope of what is ready versus what needs work, and it is where you should
-   expect the surprises.
+   details, and import your portal credentials encrypted — through the one-time secure link,
+   or by phone. Your contractor licence number is required — staging refuses to run without
+   it — and so is its issuing state.
+2. **Days 2-3 — the coverage report.** Per jurisdiction you named, and per track (a permit
+   filing and an interconnection filing are separate portals, separate logins and separate
+   answers): ready now, needs a supervised first run, or can't be filed yet — with the reason
+   on every row and what unblocks it. For jurisdictions already covered by pooled knowledge,
+   an existing recipe applies on day one and the only gap is verifying YOUR login on it. This
+   report is the honest scope of what is ready versus what needs work, and it is where you
+   should expect the surprises. Expect "can't be filed yet" to be mostly your homework:
+   portal accounts not yet registered, a password that has rotated, or a code-at-login portal
+   with nobody named to relay the code.
 3. **Days 3-8 — first learn attempts on your portals.** We drive your actual portals with
    your credentials against a real project. Expect refused credentials to surface here: every
    sweep prints them, and each is a credential to fix rather than a bug to file. Expect
@@ -460,7 +516,10 @@ number for that.
    review screen and a human on your side verifies and submits every one. Do not plan on
    unattended filing in the first two weeks; the final submit is a person's job by design,
    and for a new jurisdiction a person should also confirm the portal URL was real before
-   trusting that a stage happened.
+   trusting that a stage happened. **"Fully supervised" is a commitment our operators keep by
+   scheduling it, not something the software enforces** — nothing in the staging gate asks
+   whether a portal has been verified for you. Hold us to the schedule rather than assuming a
+   rail exists.
 5. **Days 12-14 — what is actually working, measured.** We re-run the portals that matter to
    you with repeats, so any claim about your fleet is a rate rather than a single run, and
    hand you the same rung breakdown shown above for your own portals. New platforms
