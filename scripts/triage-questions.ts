@@ -1,4 +1,4 @@
-// SIXTEEN BUSINESS CALLS, ONE AT A TIME, IN THE OPERATOR'S OWN TERMINAL.
+// THE BUSINESS CALLS, ONE AT A TIME, IN THE OPERATOR'S OWN TERMINAL.
 //
 // The question bank classifies a portal's questions by keyword and leaves the ambiguous ones
 // UNKNOWN on purpose — "Application Level = Level 1" is size-dependent on Ameren, and
@@ -6,7 +6,7 @@
 // either is exactly the silent-wrong-answer this machinery exists to stop, so they wait for a
 // human.
 //
-// Waiting for a human should not mean typing sixteen long --classify commands with labels that
+// Waiting for a human should not mean typing long --classify commands with labels that
 // contain quotes, em-dashes and newlines. This walks them one at a time: the portal's own
 // wording, the answer the recipe froze, and two keys.
 //
@@ -40,7 +40,44 @@ interface Row { id: string; profile_key: string; portal_url: string; status: str
 const recipes = db.query<Row>("SELECT id, profile_key, portal_url, status, discipline FROM portal_recipes WHERE status = 'complete'")
   .filter((r) => !hostFilter || String(r.portal_url || "").toLowerCase().includes(hostFilter));
 
-interface Pending { profileKey: string; discipline: string; host: string; label: string; answer: string; options: string[] }
+interface Pending { profileKey: string; discipline: string; host: string; label: string; answer: string; options: string[]; context: string }
+
+// A LABEL THAT IS ONLY AN ANSWER TELLS THE OPERATOR NOTHING TO DECIDE.
+//
+// Both Accela recipes carry a checkbox whose recorded label is the bare word "No" — the
+// recorder captured the OPTION's own text rather than the question above it. Asked
+// "[j]/[c]/[s]?" about a question called "No", the only honest answer is to skip, and it has
+// been skipped every pass since.
+//
+// Until the recorder captures a yes/no control under its QUESTION, the neighbouring steps are
+// the next best thing: a control's place in the walk says what part of the form it is in, and
+// that is usually enough for somebody who has seen the page once. Printed only for the labels
+// that need it, so the ordinary queue stays terse.
+const UNINFORMATIVE = /^(yes|no|n\/?a|none|other|true|false|checked|unchecked|ok|continue|select)$/i;
+
+/** The step this question came from, plus what stands either side of it in the walk. */
+function walkContext(steps: Array<Record<string, unknown>>, label: string): string {
+  const labelOf = (s: Record<string, unknown>): string =>
+    String((s?.selector as { label?: string } | undefined)?.label ?? s?.note ?? "").trim();
+  const at = steps.findIndex((s) => labelOf(s).toLowerCase() === label.trim().toLowerCase());
+  if (at < 0) return "";
+  const before: string[] = [];
+  for (let i = at - 1; i >= 0 && before.length < 2; i--) {
+    const t = labelOf(steps[i]);
+    if (t && !UNINFORMATIVE.test(t)) before.unshift(t);
+  }
+  let after = "";
+  for (let i = at + 1; i < steps.length && !after; i++) {
+    const t = labelOf(steps[i]);
+    if (t && !UNINFORMATIVE.test(t)) after = t;
+  }
+  const bit = (s: string): string => (s.length > 46 ? `${s.slice(0, 46)}…` : s);
+  return [
+    before.length ? `after ${before.map((b) => JSON.stringify(bit(b))).join(" then ")}` : "",
+    after ? `before ${JSON.stringify(bit(after))}` : "",
+  ].filter(Boolean).join(", ");
+}
+
 const pending: Pending[] = [];
 for (const r of recipes) {
   let host = r.portal_url;
@@ -57,15 +94,19 @@ for (const r of recipes) {
     console.error(`  ! could not read ${r.profile_key}: ${err instanceof Error ? err.message : String(err)}`);
     qs = [];
   }
+  let recipeSteps: Array<Record<string, unknown>> = [];
+  try { recipeSteps = (getPortalRecipe(db, r.id).steps ?? []) as never; } catch { recipeSteps = []; }
   for (const q of qs) {
     if (String(q.classification ?? "") !== "unknown") continue;
+    const label = String(q.portalLabel ?? "");
     pending.push({
       profileKey: r.profile_key,
       discipline: String((r as unknown as { discipline?: string }).discipline ?? ""),
       host,
-      label: String(q.portalLabel ?? ""),
+      label,
       answer: String(q.recordedAnswer ?? ""),
       options: Array.isArray(q.options) ? (q.options as string[]) : [],
+      context: UNINFORMATIVE.test(label.trim()) ? walkContext(recipeSteps, label) : "",
     });
   }
 }
@@ -88,6 +129,7 @@ if (dryRun) {
     const heading = `${p.host}${p.discipline ? `  [${p.discipline}]` : ""}`;
     if (heading !== host) { host = heading; line(`\n── ${heading}`); }
     line(`   ? ${p.label}`);
+    if (p.context) line(`     on the page: ${p.context}`);
     line(`     recipe currently files: ${JSON.stringify(p.answer)}`);
   }
   line(`\n--dry-run: nothing asked, nothing written. Drop the flag to triage.\n`);
@@ -105,6 +147,7 @@ for (let i = 0; i < pending.length; i++) {
   const heading = `${p.host}${p.discipline ? `  [${p.discipline}]` : ""}`;
   if (heading !== host) { host = heading; line(`\n──────── ${heading} ────────`); }
   line(`\n[${i + 1}/${pending.length}] ${p.label}`);
+  if (p.context) line(`   where it sits in the walk: ${p.context}`);
   line(`   the recipe currently files: ${JSON.stringify(p.answer)}`);
   if (p.options.length) line(`   the portal offers: ${p.options.slice(0, 6).join(" | ")}${p.options.length > 6 ? " …" : ""}`);
 
