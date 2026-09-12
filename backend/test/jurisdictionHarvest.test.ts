@@ -497,6 +497,37 @@ await check("a human-verified fee schedule is never rewritten, and the disagreem
   assert.ok(/NOT applied/.test(after.notes), `the finding went to notes: ${after.notes}`);
 });
 
+await check("a document that AGREES but prints fewer rows does not shrink the stored schedule", async () => {
+  // The real shape: the lead's hand-read Coos County row carries FOUR brackets including the
+  // ">25 kVA = $265 + $10/kVA" formula line; the adopted PDF yields three, because the fourth
+  // is strictly-exclusive phrasing parseBracketRow refuses to guess at. The three AGREE, so
+  // nothing conflicts — and storing the reading would quietly lose the largest tier.
+  const WIDE = "Wide County";
+  const wideKey = feeScheduleProfileKey({ state: STATE, ahj: WIDE }, "permit");
+  saveFeeSchedule(db, { state: STATE, ahj: WIDE, track: "permit" }, {
+    found: true, reason: "", basis: "system_kw",
+    brackets: [
+      { maxKw: 5, feeUsd: 135, label: "5 KVA or less" },
+      { minKw: 5.01, maxKw: 15, feeUsd: 160, label: "5.01 KVA to 15 KVA" },
+      { minKw: 15.01, maxKw: 25, feeUsd: 265, label: "15.01 KVA to 25 KVA" },
+      { minKw: 25.01, maxKw: 100, feeUsd: 265, label: "Solar >25 KVA: $265 + $10 per additional kVA — FORMULA, not flat" },
+    ],
+    notes: "hand-read by the lead", sourceUrl: `${base}/forms/community-development-fees.pdf`,
+    sourceQuote: '"Renewable energy 5 KVA or less" | "$135.00"', sourceKind: "official",
+  });
+
+  const report = await harvestJurisdiction(db, { state: STATE, ahj: WIDE, pageUrl: `${base}/fees-page` }, { llm, apply: true });
+  assert.equal(report.fee.conflict, null, "the rows it does print agree exactly");
+  assert.equal(report.fee.action, "refused_less_coverage", report.fee.reason);
+  assert.ok(/does not print 1 row/.test(report.fee.reason), report.fee.reason);
+  assert.ok(/FORMULA/.test(report.fee.reason), "and names the row that would have been lost");
+
+  const after = getFeeSchedule(db, wideKey, "permit");
+  assert.equal(after.brackets.length, 4, "the wider table stands");
+  const big = feeForProject(db, { ...project, ahj: WIDE, systemSizeAcKw: 30 } as typeof project, "permit");
+  assert.equal(big.feeUsd, 265, "and a 30 kVA job still resolves instead of falling off the table");
+});
+
 // ---------------------------------------------------------------------------
 // 9. A page we were refused is not a page with no forms on it.
 // ---------------------------------------------------------------------------

@@ -236,6 +236,8 @@ export type HarvestFeeAction =
   | "conflict_would_save"
   | "conflict_already_recorded"
   | "refused_verified"
+  /** Agreed with the stored schedule but printed fewer of its rows — see resolveFees. */
+  | "refused_less_coverage"
   | "refused";
 
 export interface HarvestReport {
@@ -1021,6 +1023,33 @@ async function resolveFees(
   // most brackets, because a table read in full is a table; one row of it is a
   // price, and this module exists to store the function rather than the price.
   const best = [...harvested].sort((a, b) => b.brackets.length - a.brackets.length)[0];
+
+  // AGREEING IS NOT THE SAME AS COVERING. saveFeeSchedule REPLACES a seeded row's
+  // bracket list wholesale, so a document that agrees about every row it prints can
+  // still shrink the schedule by not printing the others. Measured shape, on the
+  // jurisdiction this module was built for: the lead's hand-read Coos County row
+  // carries FOUR brackets including the ">25 kVA = $265 + $10/kVA" formula line,
+  // while the adopted PDF yields three — the fourth is strictly-exclusive phrasing
+  // that parseBracketRow correctly refuses to guess at. The three agree, so there is
+  // no conflict to raise, and the silent result is a schedule that has quietly
+  // forgotten its largest tier. A 30 kVA job then falls outside every bracket and
+  // drops to a labelled valuation estimate — loud enough to notice, cheap enough to
+  // prevent. Coverage lost is not an improvement, so it is a refusal with the
+  // missing rows named.
+  const storedCandidate = candidates.find((c) => c.origin === "stored");
+  if (storedCandidate) {
+    const covered = new Set(best.brackets.map(bracketKey));
+    const dropped = storedCandidate.brackets.filter((b) => !covered.has(bracketKey(b)));
+    if (dropped.length) {
+      report.fee.action = "refused_less_coverage";
+      report.fee.schedule = existing;
+      report.fee.reason = `Nothing written: this document AGREES with the stored schedule on every bracket it prints, but it does not print `
+        + `${dropped.length} row(s) the stored schedule already carries — ${dropped.map((b) => `"${squash(b.label) || bracketKey(b)}" ($${b.feeUsd.toFixed(2)})`).join("; ")}. `
+        + `Storing it would replace a wider table with a narrower one. If the jurisdiction really has dropped those rows, a human should re-save it.`;
+      return;
+    }
+  }
+
   const dateNote = best.documentDate
     ? `Source document states "${best.documentDate}".`
     : "Source document states NO revision or effective date — weigh it accordingly against any dated schedule.";
