@@ -10,6 +10,8 @@ import { isHarnessAbort, looksBotBlocked } from "./runAbort";
 import { certifiedModelFor } from "./cecEquipment";
 import { nowIso } from "./time";
 import { parseStreetNumber, parseStreetName, parseStreetLine } from "../../portal-bot/src/addressParse";
+import { feeBracketFieldForLabel, feeBracketQuantityFields } from "./feeBracketFields";
+import { FEE_BRACKET_FIELD_PREFIX } from "../../portal-bot/src/feeBracketQuantity";
 
 type Row = Record<string, unknown>;
 
@@ -1211,7 +1213,16 @@ export function resolveRecipeFieldValues(db: AppDb, project: ProjectRecord, port
   // read — so it gave up exactly where the equipment matters. Empty when the CEC list is
   // unsynced or the choice is ambiguous, leaving the plan-set value to be used unchanged.
   const certifiedModels = certifiedModelFields(db, snapshotFlat, equipment);
-  const merged = { ...snapshotFlat, ...equipment, ...existingSys, ...projectFields, ...overlay, ...installerSplit, ...certifiedModels };
+  // FEE BRACKET QUANTITIES — one key per bracket of THIS project's stored fee
+  // schedule, "1" for the bracket the job falls in and "0" for the others (see
+  // feeBracketFields.ts for why that is a per-project fact and not a recordable
+  // one). Resolved last and namespaced with a colon, so it can collide with
+  // nothing above it. EMPTY when nothing is certain — no schedule, no size, a
+  // size outside the table, or the fee evaluator disagreeing — because a recipe
+  // that gets no keys replays its recorded literal exactly as it does today, and
+  // an unbound literal is visible in a way a computed 0 is not.
+  const feeBrackets = feeBracketQuantityFields(db, project);
+  const merged = { ...snapshotFlat, ...equipment, ...existingSys, ...projectFields, ...overlay, ...installerSplit, ...certifiedModels, ...feeBrackets };
   // A WHOLE-PHONE VALUE IS TYPED INTO A MASKED BOX VERBATIM. A number stored E.164
   // ("+15414042243") fed to a "(###) ###-####" mask keeps its first ten digits —
   // "(154) 140-4224" — and drops the last one: a valid-looking phone belonging to nobody,
@@ -1336,6 +1347,14 @@ export function deadFieldBindings(steps: RecipeStep[], projectFields: Record<str
   const out: string[] = [];
   for (const step of steps ?? []) {
     const field = String(step.field ?? "");
+    // A FEE BRACKET BINDING IS NEVER DEAD, and the reason is that its step keeps
+    // its recorded literal (see convertLiteralsToBoundFields). The resolver emits
+    // these keys only for a project whose AHJ has a size-bracketed fee schedule on
+    // file, so the learn project's own jurisdiction routinely has none — and
+    // without this exemption the first recipe to bind a bracket box would be
+    // refused promotion by the trust gate for a binding that, when unresolved,
+    // replays exactly what it replays today.
+    if (field.startsWith(FEE_BRACKET_FIELD_PREFIX)) continue;
     // A field the resolver DOES define but which is empty for THIS project is fine — the
     // next project may have it. Only a key that cannot exist at all is dead.
     if (field && !known.has(field)) out.push(`${field} (${String(step.note ?? step.action).slice(0, 40)})`);
@@ -1370,6 +1389,28 @@ export function convertLiteralsToBoundFields(
     // A DATE never matches by value (todayDate is skipped above as volatile), so it would
     // otherwise stay frozen and replay a stale — eventually PAST — date onto a live
     // application. Rebind it by the control's label to a field recomputed every replay.
+    // A FEE BRACKET QUANTITY IS ANSWERED BY THE JOB'S SIZE, NOT BY THE VALUE IN
+    // THE BOX. Accela prints one text box per bracket row of the county's fee
+    // table and the quantity ticks the row that applies; the recorded "1" is the
+    // LEARN project's row, so replaying it bills a 20 kVA job in the 5.01–15
+    // tier. Value-equality binding cannot reach this — "1" is one character, and
+    // the binder skips values under two characters as non-identifying — so it is
+    // rebound from the CONTROL's own label, numerically (the Accela label reads
+    // "5.01kva through 15kva" and the county schedule "5.01 KVA to 15 KVA":
+    // different strings, identical bounds).
+    //
+    // AND THE LITERAL IS KEPT, which is the one place this deviates from the date
+    // binding above. The kept literal IS the no-schedule fallback: where no fee
+    // schedule is stored the resolver emits no bracket keys at all, the key reads
+    // as unknown at replay, and the adapter's invented-key branch replays the
+    // recorded answer and says so in its aging notes — exactly today's behaviour,
+    // visibly. Dropping the literal would turn "we have no schedule for this
+    // jurisdiction" into a silently blank fee box, which is worse than the bug.
+    const bracketField = feeBracketFieldForLabel(`${step.selector?.label ?? ""} ${step.note ?? ""}`);
+    if (bracketField && step.action === "fill") {
+      bound.push({ value: step.value as string, field: bracketField, note: step.note });
+      return { ...step, field: bracketField };
+    }
     const dateField = dateFieldForLiteral(`${step.selector?.label ?? ""} ${step.note ?? ""}`, step.value as string);
     if (dateField) {
       bound.push({ value: step.value as string, field: dateField, note: step.note });

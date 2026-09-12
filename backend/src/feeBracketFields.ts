@@ -1,0 +1,209 @@
+// ---------------------------------------------------------------------------
+// THE FROZEN FEE-BRACKET QUANTITY — computing the box instead of remembering it.
+//
+// This is the bug migration v19 was written to make fixable, in its own words:
+// Coos Bay's Accela recipe carries the frozen answer "Renewable energy for
+// electrical systems- 5.01kva through 15kva = 1", which is a FEE BRACKET
+// QUANTITY. Accela renders ONE TEXT BOX PER BRACKET ROW of Coos County's
+// schedule and the quantity ticks the row that applies. "1" is the answer for
+// the project that was LEARNED; replay it onto a 20 kVA job and the county
+// bills the 5.01–15 tier for a 15.01–25 system — wrong, and invisible, because
+// the field looks answered and every click succeeds.
+//
+// v19 stored the schedule as a FUNCTION so the bracket could be evaluated per
+// project; v22 gave it the DISCIPLINE dimension, because this fee is the COUNTY's
+// electrical permit, reached from a City of Coos Bay project through the stored
+// city→county hop. All this module does is turn that evaluation into the flat
+// Record<string,string> replay already substitutes step `field`s from:
+//
+//     feeBracketQuantity:-5        -> "0"
+//     feeBracketQuantity:5.01-15   -> "1"     <- this job's bracket
+//     feeBracketQuantity:15.01-25  -> "0"
+//
+// Bind each recorded box to its own key and replay needs no change at all: "0"
+// is a non-empty string, so it passes the adapter's `if (!v)` blank check and is
+// typed like any other value.
+//
+// ---------------------------------------------------------------------------
+// WHY THERE IS A SECOND BRACKET MATCHER HERE, AND WHY IT CANNOT DRIFT
+//
+// feeSchedules.ts calls its evaluator "THE ONE EVALUATOR ... so the bracket
+// boundary can only ever be decided in one place — two parallel evaluations
+// would drift, and the boundary is the whole point of the table." That comment
+// is right, and `matchBracket` is private, so the containment test below is a
+// copy of it.
+//
+// A copy is only dangerous when it can disagree SILENTLY. So it does not get the
+// last word: after the local match picks a bracket, feeForProject() — the one
+// evaluator, through its public door — is asked the same question, and the keys
+// are emitted ONLY if it agrees on the schedule row, the fee and the bracket
+// label. Any disagreement, and any reason the evaluator cannot price this job at
+// all, returns {} — no keys, so the recipe's recorded literal replays exactly as
+// it does today. Drift therefore degrades to the status quo, which is visible,
+// instead of to a computed "0", which is not.
+//
+// That veto also inherits refusals this module knows nothing about: a schedule
+// the evaluator declines to price (no size on the project, a hop that lands
+// nowhere, a jurisdiction whose stored sources disagree) arrives here as
+// feeUsd: null and the keys simply do not appear.
+//
+// TODO once feeSchedules.ts is quiet: fold this containment test into
+// matchBracket by exporting it, and keep the veto as the regression test.
+// ---------------------------------------------------------------------------
+import type { AppDb } from "./db";
+import type { ProjectRecord } from "../../shared/src/types";
+import type { FeeBracket, FeeScheduleRecord } from "./feeSchedules";
+import { feeForProject, findFeeScheduleForProject } from "./feeSchedules";
+import { parseBracketRow } from "./pdfTables";
+import { feeBracketFieldKey } from "../../portal-bot/src/feeBracketQuantity";
+
+/** The project shape this needs — the same Pick feeForProject takes, so a caller
+ *  that can evaluate a fee can always call this. */
+export type FeeBracketProject = Pick<
+  ProjectRecord,
+  "state" | "ahj" | "utility" | "systemSizeAcKw" | "systemSizeDcKw" | "parserSnapshot"
+>;
+
+/** The submittal track this fee belongs to. The Accela boxes this exists for are
+ *  Coos County's ELECTRICAL permit table; "electrical" is what
+ *  recipeDisciplineForTrack maps onto the electrical fee row, and what
+ *  findFeeScheduleForProject/feeForProject are asked for below.
+ *
+ *  resolveRecipeFieldValues has no track in its signature, so this is fixed
+ *  rather than passed. The degradation is safe in the other direction: a
+ *  structural recipe's bracket box would bind a key the ELECTRICAL schedule does
+ *  not emit, the key resolves unknown, and the step replays its kept literal —
+ *  today's behaviour. Where the two disciplines happen to share bounds the
+ *  answer is identical anyway. */
+const FEE_BRACKET_TRACK = "electrical";
+
+function ratingKw(project: FeeBracketProject): number | null {
+  // AC FIRST, for the reason systemRatingKw states: a schedule bracketed in kVA
+  // is rating the INVERTER output, and a 20 kW-DC job with 15 kW-AC of inverters
+  // sits in a different bracket depending on which you read. DC is the fallback
+  // because it is the field most reliably populated.
+  const ac = Number(project.systemSizeAcKw);
+  if (Number.isFinite(ac) && ac > 0) return ac;
+  const dc = Number(project.systemSizeDcKw);
+  if (Number.isFinite(dc) && dc > 0) return dc;
+  return null;
+}
+
+/** A bracket that answers a SIZE question. A row with neither bound carries no
+ *  size key (matchBracket skips those for the same reason) and gets no box. */
+function isSized(b: FeeBracket): boolean {
+  return b.minKw != null || b.maxKw != null;
+}
+
+/** Copy of matchBracket's kw arm — first sized bracket whose bounds contain the
+ *  value, INCLUSIVE at both ends. Vetoed by feeForProject below. */
+function localMatch(brackets: FeeBracket[], kw: number): FeeBracket | null {
+  for (const b of brackets) {
+    if (!isSized(b)) continue;
+    if (b.minKw != null && kw < b.minKw) continue;
+    if (b.maxKw != null && kw > b.maxKw) continue;
+    return b;
+  }
+  return null;
+}
+
+/** Does the one evaluator agree that THIS bracket is what this project owes? */
+function evaluatorAgrees(
+  db: AppDb,
+  project: FeeBracketProject,
+  schedule: FeeScheduleRecord,
+  picked: FeeBracket,
+): boolean {
+  const resolution = feeForProject(db, project, FEE_BRACKET_TRACK);
+  const line = resolution?.lines.find((l) => l.scheduleId === schedule.id);
+  if (!line || line.feeUsd == null) return false;
+  if (line.feeUsd !== picked.feeUsd) return false;
+  // The evaluator derives a label when the schedule printed none; compare only
+  // when both sides actually have one, or a bounds-derived string would fail a
+  // comparison it was never meant to answer.
+  const own = String(picked.label ?? "").trim();
+  const theirs = String(line.bracketLabel ?? "").trim();
+  if (own && theirs && own !== theirs) return false;
+  return true;
+}
+
+/** ONE KEY PER BRACKET OF THIS PROJECT'S SCHEDULE: "1" for the bracket the job
+ *  falls in, "0" for every other.
+ *
+ *  Returns {} — deliberately no keys — whenever the answer is not certain:
+ *    · no schedule on file for this project's AHJ (after the city→county hop);
+ *    · a schedule that does not bracket on system size;
+ *    · a project with no system size to bracket on;
+ *    · a size outside every published bracket (all-zeros would be the same
+ *      silent under-bill through a different door);
+ *    · the one evaluator disagreeing, or refusing to price the job.
+ *  In every one of those cases the recipe's recorded literal is left to replay
+ *  exactly as it does today. That is the safe direction: an unbound literal is
+ *  the status quo and is visible in the recipe; a computed 0 is neither. */
+export function feeBracketQuantityFields(db: AppDb, project: FeeBracketProject): Record<string, string> {
+  let schedule: FeeScheduleRecord | null = null;
+  try {
+    schedule = findFeeScheduleForProject(db, project, "permit", "electrical");
+  } catch {
+    // A fee lookup must never break a staging run. No schedule reachable reads
+    // as "leave the recipe alone", which is what it was doing yesterday.
+    return {};
+  }
+  if (!schedule || schedule.basis !== "system_kw") return {};
+
+  const sized = schedule.brackets.filter(isSized);
+  if (!sized.length) return {};
+
+  const kw = ratingKw(project);
+  if (kw == null) return {};
+
+  const picked = localMatch(schedule.brackets, kw);
+  if (!picked || !isSized(picked)) return {};
+
+  let agrees = false;
+  try {
+    agrees = evaluatorAgrees(db, project, schedule, picked);
+  } catch {
+    agrees = false;
+  }
+  if (!agrees) return {};
+
+  const out: Record<string, string> = {};
+  for (const b of sized) {
+    const key = feeBracketFieldKey(b.minKw, b.maxKw);
+    if (key) out[key] = "0";
+  }
+  const matchedKey = feeBracketFieldKey(picked.minKw, picked.maxKw);
+  if (!matchedKey || !(matchedKey in out)) return {};
+  // Written LAST so two rows printed with identical bounds (a malformed table)
+  // still resolve to one ticked box rather than to none.
+  out[matchedKey] = "1";
+  return out;
+}
+
+/** The bracket key a RECORDED PORTAL LABEL is asking about, or "".
+ *
+ *  MATCHING MUST BE NUMERIC, NEVER BY STRING. The Accela label reads
+ *  "Renewable energy for electrical systems- 5.01kva through 15kva:" and the
+ *  county schedule reads "5.01 KVA to 15 KVA" — different strings, identical
+ *  bounds, and any string comparison between them is a coin toss.
+ *
+ *  The bounds grammar this needs already exists and is already tested against
+ *  both spellings: pdfTables.parseBracketRow. It takes a visual PDF row, so the
+ *  label is handed to it as a synthetic ONE-CELL row. Only minKw/maxKw are read
+ *  back: `unparsed` will always complain that the row carries no dollar amount,
+ *  because a portal's field label is a question and not a fee line, and that
+ *  complaint is about the fee reader we are not borrowing. */
+export function feeBracketFieldForLabel(label: string): string {
+  const text = String(label ?? "").trim();
+  if (!text) return "";
+  const parsed = parseBracketRow({
+    row: { page: 1, y: 0, cells: [text], xs: [0], height: 10 },
+    matched: [],
+    label: text,
+    money: [],
+    continuations: [],
+    section: "",
+  });
+  return feeBracketFieldKey(parsed.minKw ?? null, parsed.maxKw ?? null);
+}
