@@ -16,13 +16,23 @@
 // Browser-free. Run: tsx backend/test/documentFetch.test.ts
 import assert from "node:assert/strict";
 import http from "node:http";
+import os from "node:os";
+import path from "node:path";
 import type { DocumentBrowserLauncher, DocumentBrowserSession } from "../src/documentFetch";
 
 // The kill switch must not be inherited from the shell, or every escalation check below
 // would pass vacuously.
 delete process.env.DOCUMENT_FETCH_BROWSER;
+// The log lines ARE an assertion here (see the fetchPdf section), so the sink is the console
+// and nothing else: no data/logs/backend.log written by a unit test. And a scratch DB path
+// that is never opened, so importing the form module can never touch the real database.
+process.env.AUTOPILOT_LOG_FILE = "";
+process.env.AUTOPILOT_DB_PATH = path.join(os.tmpdir(), "document-fetch-test-never-opened.sqlite");
 
 const { fetchPublicDocument, findDocumentLinks } = await import("../src/documentFetch");
+// The caller this ladder was built for. Imported here, after the env above, and pure: the
+// module opens no database at import (verified) and fetchPdf touches nothing but the network.
+const { fetchPdf } = await import("../src/ahjFormAuto");
 
 let failures = 0;
 const check = (label: string, fn: () => void | Promise<void>): Promise<void> =>
@@ -77,6 +87,14 @@ const server = http.createServer((req, res) => {
   if (url === "/norobots.pdf") {
     res.writeHead(403, { "content-type": "text/html", server: "Apache" });
     res.end("<html><body><h2>Automated access to this site is prohibited.</h2><p>Please contact the City Recorder for copies of public records.</p></body></html>");
+    return;
+  }
+  if (url === "/moved.pdf") {
+    // The commonest dead form link there is: the AHJ reorganised its site, the .pdf URL still
+    // answers 200, and what comes back is the CMS's own "page not found" page. Nothing is
+    // refusing us, so no rung of the ladder helps — only the PDF guard catches this.
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    res.end("<!doctype html><html><body><h1>Page Not Found</h1><p>The page you requested has moved. Please use the Forms &amp; Applications menu.</p></body></html>");
     return;
   }
   if (url === "/find-a-document") {
@@ -326,6 +344,69 @@ await check("findDocumentLinks returns nothing rather than throwing when the pag
   const { launcher } = grants();
   const links = await findDocumentLinks(`${base}/captcha.pdf`, { launcher });
   assert.deepEqual(links, []);
+});
+
+// ---------------------------------------------------------------------------
+// fetchPdf — the caller the ladder was built for.
+//
+// Its contract to ahjFormAuto is unchanged and must stay unchanged: bytes, or null. What
+// changed is that null is no longer SILENT. "Found candidate links but none returned a valid
+// PDF" is the message an operator sees when acquisition fails, and for a walled jurisdiction
+// it was a lie — the form exists, we were refused. So these checks assert the log line as
+// hard as the return value, and they assert it names which of the two repairs is needed: a
+// wall wants a window, a moved link wants a new URL.
+//
+// fetchPdf takes no launcher, so the wall check switches the browser rung OFF rather than
+// opening a real Chromium in a unit suite — which also proves the rewiring: only the ladder
+// can say "switched off", never a bare fetch().
+// ---------------------------------------------------------------------------
+async function withWarnings<T>(fn: () => Promise<T>): Promise<{ value: T; warned: string }> {
+  const lines: string[] = [];
+  const original = console.warn;
+  console.warn = (...args: unknown[]) => { lines.push(args.map((a) => String(a)).join(" ")); };
+  try {
+    const value = await fn();
+    return { value, warned: lines.join("\n") };
+  } finally {
+    // Restored in a finally, or a failing check mutes every check after it.
+    console.warn = original;
+  }
+}
+
+await check("fetchPdf still returns the bytes of a real PDF, and says nothing when it works", async () => {
+  const { value, warned } = await withWarnings(() => fetchPdf(`${base}/fee.pdf`));
+  assert.ok(value, "the PDF came back null");
+  assert.deepEqual(Array.from(value || []), Array.from(PDF_BYTES));
+  assert.equal(warned, "", `a successful download must not warn: ${warned}`);
+});
+
+await check("fetchPdf still returns null for a 404 — and now says which link is dead", async () => {
+  const { value, warned } = await withWarnings(() => fetchPdf(`${base}/missing.pdf`));
+  assert.equal(value, null);
+  assert.match(warned, /ahj-forms/, "the warning must be attributable to form acquisition");
+  assert.match(warned, /404/, "a dead link must name its status");
+  assert.match(warned, /missing\.pdf/, "…and the URL that produced it");
+});
+
+await check("fetchPdf still rejects an HTML error page that claims to be a PDF, and names the repair", async () => {
+  const { value, warned } = await withWarnings(() => fetchPdf(`${base}/moved.pdf`));
+  assert.equal(value, null, "an HTML 'page not found' body must never be stored as a blank form");
+  assert.match(warned, /answered, but not with a PDF/i);
+  assert.match(warned, /text\/html/, "the reason must distinguish this from a wall — fix the link, not the browser");
+});
+
+await check("a bot wall is no longer indistinguishable from 'this AHJ publishes no form'", async () => {
+  process.env.DOCUMENT_FETCH_BROWSER = "0"; // no real Chromium in a unit suite
+  let out: { value: Uint8Array | null; warned: string };
+  try {
+    out = await withWarnings(() => fetchPdf(`${base}/walled.pdf`));
+  } finally {
+    delete process.env.DOCUMENT_FETCH_BROWSER;
+  }
+  assert.equal(out.value, null, "the guard still refuses a block page");
+  assert.match(out.warned, /403/, "THE WHOLE POINT: the log must name the refusal");
+  assert.match(out.warned, /AkamaiGHost/, "…and who did the refusing");
+  assert.match(out.warned, /switched off/i, "a bare fetch() could never report the ladder's kill switch");
 });
 
 await new Promise<void>((resolve) => server.close(() => resolve()));

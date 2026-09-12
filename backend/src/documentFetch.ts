@@ -484,7 +484,7 @@ export async function findDocumentLinks(
     const text = $(el).text().replace(/\s+/g, " ").trim();
     const link: DocumentLink = { text, href };
     if (!match(link)) return;
-    const key = `${href} ${text}`;
+    const key = `${href}\u0000${text}`;
     if (seen.has(key)) return;
     seen.add(key);
     out.push(link);

@@ -4,6 +4,8 @@ import type { AppDb } from "./db";
 import type { AhjFormUrlResult, LLMProvider, ProjectRecord } from "../../shared/src/types";
 import { inspectFormFields, loadStoredTemplates, type OverlayField, type SignaturePlacement } from "./ahjForms";
 import { describePermitType, findApplicationProfile } from "./applicationDocs";
+import { fetchPublicDocument } from "./documentFetch";
+import { logger } from "./logger";
 import { saveResearchedAhjProfile, knowledgeResearchHint, findKnowledgeForLearn } from "./knowledgeBase";
 import { findAhjProcessProfile } from "./processProfiles";
 import { renderPdfPageToPng } from "./pageImages";
@@ -142,17 +144,42 @@ export function sha256(bytes: Uint8Array): string {
 }
 
 // Fetch a URL and return the bytes only if it looks like a real PDF.
+//
+// A FORM THAT WAS BLOCKED MUST NEVER READ AS A FORM THAT DOES NOT EXIST.
+// This used to be a bare fetch() that returned null on !res.ok — and null is what
+// ensureAhjFormTemplate turns into "Found candidate links but none returned a valid PDF (link
+// rot or login-gated)". coosbayor.gov, and a good number of other jurisdiction sites, sit
+// behind Akamai and answer 403 to EVERY programmatic client: curl with a browser User-Agent,
+// WebFetch and headless Playwright alike, while a headed window gets 200. So form acquisition
+// failed silently on exactly the AHJs that most needed it, and the failure was indistinguishable
+// from the AHJ publishing nothing. fetchPublicDocument is the one retrieval path — it escalates
+// a bot wall to a real window, refuses to climb a CAPTCHA or a stated no-robots notice, and
+// ALWAYS carries a reason. Null still means "no usable PDF" to every caller; the reason is now
+// in the log instead of nowhere.
 export async function fetchPdf(url: string): Promise<Uint8Array | null> {
   try {
-    const res = await fetch(url, { redirect: "follow" });
-    if (!res.ok) return null;
-    const buf = new Uint8Array(await res.arrayBuffer());
-    const type = res.headers.get("content-type") || "";
+    const got = await fetchPublicDocument(url);
+    if (!got.ok || !got.bytes) {
+      logger.warn("ahj-forms", "a blank form could not be downloaded", {
+        url, status: got.status, via: got.via, reason: got.reason,
+      });
+      return null;
+    }
+    const buf = got.bytes;
+    const type = got.contentType || "";
     // %PDF magic, or a pdf content-type. Guard against HTML error pages.
     if (buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46) return buf;
     if (type.includes("pdf") && buf.length > 1000) return buf;
+    // The link answered — with a login page, a "moved" notice or a CMS 200 error page. That is
+    // a different repair from a wall (fix the link, not the browser), so it is said differently.
+    logger.warn("ahj-forms", "a form link answered, but not with a PDF", {
+      url, status: got.status, contentType: type || "(none)", bytes: buf.length, via: got.via,
+    });
     return null;
-  } catch {
+  } catch (err) {
+    // fetchPublicDocument reports rather than throws; this is the belt on the braces, so the
+    // acquisition loop's contract (null, never an exception) holds whatever happens below it.
+    logger.warn("ahj-forms", "a blank form download threw", { url, error: err instanceof Error ? err.message : String(err) });
     return null;
   }
 }
