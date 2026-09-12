@@ -819,6 +819,20 @@ STRUCTURAL (read from structural notes / roof framing plan — drive prescriptiv
 - roofLayers: number of existing roofing layers/coverings under the array (number, e.g. 1)
 - moduleHeightAboveRoof: max height of the module top above the roof surface in inches (number, e.g. 10)
 - permitPath: "prescriptive" or "engineered" if determinable
+BUILDING GEOMETRY (read from the site plan / structural sheet / cover-sheet project data block).
+  AHJ permit portals ask for these on the application itself and refuse to advance without them —
+  Coos Bay's Accela asks Existing Building Area, Building Height and Number of Stories, and its
+  recipe had FROZEN the learn project's answers ("1675" sq ft, "15" feet) onto every later job.
+  Extract only what the documents actually state; return "" rather than estimating from a drawing.
+- existingBuildingArea: conditioned floor area of the EXISTING house in square feet (number, e.g. 1675).
+  Often labelled "existing area", "house sq ft", "conditioned area", or given in a cover-sheet
+  project-data table. It is NOT the array area, the roof area, or the lot size.
+- buildingHeightFeet: overall height of the existing building in whole FEET (number, e.g. 15) —
+  grade to ridge/peak, as the elevation or project-data block states it.
+- buildingHeightInches: the remaining INCHES of that height (number, 0-11; 0 when stated in whole feet).
+- numberOfStories: number of storeys of the existing building (number, e.g. 1 or 2).
+- dwellingUnits: number of dwelling units in the building (number; 1 for a single-family house).
+- numberOfBuildings: number of buildings on the permit (number; 1 unless the plans show more).
 - stampRecommendation: one line on whether PE-stamped/sealed structural documentation is present or required (e.g. "PE-sealed structural letter provided — existing framing adequate" / "no stamp present; AHJ may require one"). Base it ONLY on what the documents show.
 UTILITY INTERCONNECTION (PGE PowerClerk / Pacific Power customer generation NEM)
 - utilitySchedule: the utility rate schedule from the bill (e.g. PGE "Schedule 7", Pacific Power "Schedule 4")

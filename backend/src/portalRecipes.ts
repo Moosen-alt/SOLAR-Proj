@@ -670,6 +670,17 @@ export const RECIPE_FIELD_DESCRIPTIONS: Record<string, string> = {
   authorizedSignerName: "Authorized signer or representative full name",
   authorizedSignerTitle: "Authorized signer's title",
   powerclerkExistingContact: "PowerClerk existing contact ID code",
+  // Building geometry + the permit narrative. AHJ applications ask for these directly, and
+  // before they were bindable the recipes froze the learn project's house onto every filing.
+  existingBuildingArea: "Existing house conditioned floor area in square feet",
+  buildingHeightFeet: "Existing building height, whole feet (grade to ridge)",
+  buildingHeightInches: "Existing building height, remaining inches",
+  numberOfStories: "Number of storeys of the existing building",
+  newBuildingArea: "New building area created by this work (0 for a rooftop retrofit)",
+  dwellingUnits: "Dwelling units in the building (1 for a single-family house)",
+  numberOfBuildings: "Buildings covered by this permit (1 unless the plans show more)",
+  county: "County the project site is in",
+  workDescription: "One-line scope of work for the permit application, derived from this project's own system size",
   accelaContactCode: "Accela contact/license lookup code",
   hasExistingSystem: "Whether an existing PV/storage system is already interconnected on site (Yes/No)",
   existingSystemSizeDcKw: "EXISTING (already interconnected) system DC size in kilowatts",
@@ -988,6 +999,44 @@ export function resolveRecipeFieldValues(db: AppDb, project: ProjectRecord, port
     disconnectModel: String(snapshotFlat.acDiscModel ?? "").trim(),
     disconnectMakeModel: [String(snapshotFlat.acDiscMake ?? "").trim(), String(snapshotFlat.acDiscModel ?? "").trim()]
       .filter(Boolean).join(" ").trim(),
+
+    // BUILDING GEOMETRY AND THE PERMIT NARRATIVE — the answers an AHJ application asks for
+    // that were being FROZEN from the learn project. Coos Bay's Accela recipe carried "1675"
+    // square feet, "15" feet of building height and a comments line naming the learn job's
+    // 8.36 kW system onto every future filing, and the cross-project sweep could not see it:
+    // the sweep compares against the fixture's value sets, and a number neither project
+    // declares lands in "unverifiable", not "leaked". The question bank found them by reading
+    // the recipe instead of the run (see docs/HANDOFF.md, 2026-09-12).
+    //
+    // Parsed where the plan set states them; EMPTY where it does not, so the field surfaces as
+    // an intake question instead of filing somebody else's house.
+    existingBuildingArea: String(snapshotFlat.existingBuildingArea ?? "").trim(),
+    buildingHeightFeet: String(snapshotFlat.buildingHeightFeet ?? "").trim(),
+    buildingHeightInches: String(snapshotFlat.buildingHeightInches ?? "").trim(),
+    numberOfStories: String(snapshotFlat.numberOfStories ?? "").trim(),
+    // Defaults that are facts about a ROOFTOP RETROFIT rather than about a project: adding
+    // panels to an existing roof creates no new building area, and the permit covers the one
+    // house the array sits on. The plan set overrides both whenever it says otherwise.
+    newBuildingArea: String(snapshotFlat.newBuildingArea ?? "0").trim(),
+    dwellingUnits: String(snapshotFlat.dwellingUnits ?? "1").trim(),
+    numberOfBuildings: String(snapshotFlat.numberOfBuildings ?? "1").trim(),
+    // The county the SITE is in — asked by Ameren, and previously frozen as "Sangamon" (the
+    // benchmark project's county) on every Illinois filing. Parsed when the documents name it;
+    // otherwise blank, never inferred from the state.
+    county: String(snapshotFlat.county ?? snapshotFlat.projectCounty ?? "").trim(),
+    // The scope-of-work sentence permit portals ask for free-text. Derived from THIS project's
+    // own numbers so it can never carry another job's system size, which is exactly what the
+    // frozen "Roof-mounted residential solar PV system, 8.36 kW DC / 7.68 kW AC" was doing.
+    workDescription: (() => {
+      const explicit = String(snapshotFlat.workDescription ?? snapshotFlat.description ?? "").trim();
+      if (explicit) return explicit;
+      const dc = String(snapshotFlat.dcKw ?? snapshotFlat.systemSizeDcKw ?? "").trim();
+      const ac = String(snapshotFlat.acKw ?? snapshotFlat.systemSizeAcKw ?? "").trim();
+      const mount = /ground/i.test(String(snapshotFlat.mountType ?? "")) ? "Ground-mounted" : "Roof-mounted";
+      if (!dc && !ac) return "";
+      const size = [dc ? `${dc} kW DC` : "", ac ? `${ac} kW AC` : ""].filter(Boolean).join(" / ");
+      return `${mount} residential solar PV system, ${size}`;
+    })(),
     ...dateFields(),
     // EXPORT LIMITING. Derived here, not only in the learner's planner map: a step that
     // BINDS to this key must resolve at REPLAY time, and it used to exist only at learn
