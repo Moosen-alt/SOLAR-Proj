@@ -981,7 +981,6 @@ unencrypted in `portal-profiles/` (§5).
 | `AUTOPILOT_DB_PATH` | Which database the scripts write to. Wrong value = silently provisioning into a scratch DB. |
 | `PORTAL_HEADLESS` | `false` on an operator desktop, so a human can clear a challenge in the visible browser. A headless server cannot complete a paused filing at all. |
 | `PORTAL_ALLOW_FINAL_SUBMIT` | Leave it unset. It is one half of the double gate on operator-delegated final submit and has no place in onboarding. |
-
 | `PUBLIC_BASE_URL` | The host the one-time credential link is built against (§5). Unset, the link comes back with an empty host and the customer cannot open it. |
 
 Scripts this runbook uses, in the order the seven days need them:
