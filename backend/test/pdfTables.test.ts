@@ -14,6 +14,7 @@ import {
   extractPdfTextItems,
   findFeeRows,
   findMoneyCells,
+  inclusiveMaxFromLabel,
   parseBracketRow,
   parseMoney,
   type PdfTextItem,
@@ -56,6 +57,42 @@ async function makeSectionedPdf(): Promise<Uint8Array> {
 }
 
 const SIZE = 10;
+
+// THE REAL COOS COUNTY RENEWABLE-ENERGY TABLE, printed wording for printed
+// wording. Nothing adversarial about its geometry — the point of this fixture is
+// the WORDING of the first row, "5 KVA or less", which is the bracket every small
+// residential job falls in and which no leading-bound pattern reaches. The value
+// column is kept at x=330 so the long formula cell on the last row still fits on
+// the page, and rows sit 34pt apart (past the 2.2x-height continuation gap) so
+// the solar heading cannot be folded into the $265 row above it.
+async function makeCoosLadderPdf(): Promise<Uint8Array> {
+  const doc = await PDFDocument.create();
+  const page = doc.addPage([612, 792]);
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  const rows: Array<[string, string]> = [
+    ["Renewable Energy", ""],
+    ["5 KVA or less", "$135.00"],
+    ["5.01 KVA to 15 KVA", "$160.00"],
+    ["15.01 KVA to 25 KVA", "$265.00"],
+    ["Solar Generation greater than 25 KVA", ""],
+    // The "maximum of 100 kva" lives in the VALUE cell, exactly as printed. In the
+    // label MAX_RE would read it as a bound and this formula row would come back
+    // looking like a clean 100 kVA bracket at a fee that is per-kVA, not flat.
+    ["25 KVA rate plus each additional KVA", "$265.00 + $10 per add'l kva up to a maximum of 100 kva"],
+  ];
+  let y = 700;
+  for (const [label, amount] of rows) {
+    page.drawText(label, { x: 50, y, size: SIZE, font });
+    if (amount) page.drawText(amount, { x: 330, y, size: SIZE, font });
+    y -= 34;
+  }
+  return doc.save();
+}
+
+/** A two-cell visual row, built by hand: these cases are about WORDING, and a PDF
+ *  adds nothing to a question the label alone answers. */
+const rowOf = (label: string, value: string): PdfTextRow =>
+  ({ page: 1, y: 500, cells: [label, value], xs: [50, 330], height: 10 });
 
 // A two-column fee table. Column 1 (description) at x=50, column 2 (value) at
 // x=400 — and the draw order below is NOT top-to-bottom.
@@ -280,6 +317,133 @@ async function main(): Promise<void> {
   assert.equal(at(162.25)!.section, "Solar Generation Systems greater than 25 kva",
     "the heading must ADVANCE — a row under the solar heading must not inherit the wind one");
   ok("a fee row carries the heading above it, which is the only place its technology is written");
+
+  // 12) THE FIRST ROW OF THE REAL TABLE — "5 KVA or less" — AND THE LADDER IT STARTS.
+  //
+  //     Every bracket pattern here expected the bound word BEFORE the number
+  //     ("up to 5 kVA", "5 kVA and above"), so the one phrasing that opens
+  //     practically every renewable-energy schedule fell through all of them and
+  //     came back with a fee, no bounds and no complaint. That is the bracket most
+  //     residential jobs land in. Read inclusively and verbatim: maxKw 5.
+  const ladderRows = await extractPdfRows(await makeCoosLadderPdf());
+  const ladderFees = findFeeRows(ladderRows);
+  const bracketFor = (needle: string) => {
+    const match = ladderFees.find((f) => f.label.includes(needle));
+    assert.ok(match, `expected a fee row whose label contains "${needle}": ${ladderFees.map((f) => f.label).join(" // ")}`);
+    return parseBracketRow(match!);
+  };
+
+  const r1 = bracketFor("5 KVA or less");
+  const r2 = bracketFor("5.01 KVA to 15 KVA");
+  const r3 = bracketFor("15.01 KVA to 25 KVA");
+  assert.deepEqual(
+    { minKw: r1.minKw, maxKw: r1.maxKw, feeUsd: r1.feeUsd, unparsed: r1.unparsed },
+    { minKw: undefined, maxKw: 5, feeUsd: 135, unparsed: undefined },
+    `"5 KVA or less" must read as maxKw 5 at $135: ${JSON.stringify(r1)}`,
+  );
+  assert.equal(r1.note, undefined, "a row that HAS a bound is not reported as boundless");
+  assert.deepEqual(
+    { minKw: r2.minKw, maxKw: r2.maxKw, feeUsd: r2.feeUsd, unparsed: r2.unparsed },
+    { minKw: 5.01, maxKw: 15, feeUsd: 160, unparsed: undefined },
+  );
+  assert.deepEqual(
+    { minKw: r3.minKw, maxKw: r3.maxKw, feeUsd: r3.feeUsd, unparsed: r3.unparsed },
+    { minKw: 15.01, maxKw: 25, feeUsd: 265, unparsed: undefined },
+  );
+
+  // A CONTIGUOUS LADDER WITH NO HOLE AND NO OVERLAP. The schedule encodes the
+  // exclusion in its own numbers, so 5.00 is the first row and 5.01 the second
+  // with nothing re-interpreted. Without the first row's bound it is not merely
+  // missing a tier — a boundless row is an OPEN row, so it would also answer for
+  // 10 kW and 25 kW and quote $135 for all of them.
+  assert.ok(covers(r1, 5) && !covers(r2, 5), "5.00 kVA lands in the first row");
+  assert.ok(covers(r2, 5.01) && !covers(r1, 5.01), "5.01 kVA lands in the second, and NOT in the first");
+  assert.ok(covers(r2, 15) && !covers(r3, 15), "15.00 kVA is still the middle row");
+  assert.ok(covers(r3, 15.01) && !covers(r2, 15.01), "15.01 kVA is the top printed row");
+  for (const kw of [0.5, 1, 4.99, 5, 5.01, 10, 15, 15.01, 20, 25]) {
+    const hits = [r1, r2, r3].filter((b) => covers(b, kw));
+    assert.equal(hits.length, 1, `${kw} kVA must land in exactly one printed row, got ${hits.length}: ${JSON.stringify(hits)}`);
+  }
+
+  // The fourth row is where the table stops being brackets: a heading that names
+  // the technology, and a per-kVA FORMULA whose value cell is not a whole-cell
+  // dollar amount. It comes back unparsed — which is the honest top of the ladder.
+  // A 30 kVA job is "outside every published bracket" and a person reads the row,
+  // rather than being quoted the 25 kVA flat rate.
+  const heading = ladderFees.find((f) => f.label === "Solar Generation greater than 25 KVA");
+  assert.ok(heading, "the solar heading is a fee-ish row of its own");
+  const headingBracket = parseBracketRow(heading!);
+  assert.equal(headingBracket.minKw, undefined, "no invented 25.01");
+  assert.equal(headingBracket.maxKw, undefined);
+  assert.ok(/greater than 25 KVA/i.test(headingBracket.unparsed ?? ""), `the refusal names the phrase: ${headingBracket.unparsed}`);
+
+  const formula = ladderFees.find((f) => f.label.includes("25 KVA rate plus each additional KVA"));
+  assert.ok(formula, "expected the per-kVA formula row");
+  assert.equal(formula!.section, "Solar Generation greater than 25 KVA", "and it carries the solar heading above it");
+  const formulaBracket = parseBracketRow(formula!);
+  assert.equal(formulaBracket.feeUsd, undefined, '"$265.00 + $10 per add\'l kva…" is not a $265 flat fee');
+  assert.ok(/no dollar amount/i.test(formulaBracket.unparsed ?? ""), formulaBracket.unparsed);
+  assert.equal(formulaBracket.maxKw, undefined, 'the "maximum of 100 kva" printed in the VALUE cell is not a bracket bound');
+  assert.equal(formulaBracket.note, undefined, "a row already reported unparsed does not also fire the advisory");
+  assert.equal([r1, r2, r3].filter((b) => covers(b, 25.01)).length, 0, "25.01 kVA is off the top of the readable ladder");
+  ok('the real Coos ladder reads 5/5.01-15/15.01-25 with no hole, and the >25 formula row refuses to be a bracket');
+
+  // 13) MUST PASS / MUST EXCLUDE, both directions. A bound-reader that rejects the
+  //     row it exists for reads exactly like a parser bug; one that accepts an
+  //     exclusive phrase invents a boundary the schedule never printed. Both lists
+  //     or neither.
+  for (const [label, want] of [
+    ["5 KVA or less", 5],
+    ["5 kva or less", 5],
+    ["Renewable energy 5 KVA or less", 5],
+    ["25 kW or less", 25],
+    ["15 kVA and under", 15],
+    ["1,000 kVA or less", 1000],
+    ["5.5 kilowatts or less", 5.5],
+    // MUST EXCLUDE. A unit is required, so a pounds-per-square-foot line off the
+    // same county's checklist never becomes a 5 kVA bracket…
+    ["Photovoltaic modules weigh 5 psf or less", null],
+    ["2,001 to 3,600 square-feet or less", null],
+    // …and the leading exclusive phrasings stay refused: this helper is not the
+    // back door through which an invented 4.99 gets in.
+    ["Solar system less than 5 kW", null],
+    ["Solar generation under 5 kva", null],
+    ["Solar generation above 15 kVA", null],
+    ["Solar Generation greater than 25 KVA", null],
+    ["5.01 KVA to 15 KVA", null],
+    ["", null],
+  ] as Array<[string, number | null]>) {
+    assert.equal(inclusiveMaxFromLabel(label), want, `inclusiveMaxFromLabel(${JSON.stringify(label)}) should be ${want}`);
+  }
+
+  for (const [label, phrase] of [
+    ["Solar system less than 5 kW", "less than 5 kW"],
+    ["Solar generation under 5 kva", "under 5 kva"],
+    ["Solar generation above 15 kVA", "above 15 kVA"],
+  ] as Array<[string, string]>) {
+    const b = parseBracketRow(rowOf(label, "$135.00"));
+    assert.equal(b.feeUsd, 135, `the fee stays readable when the bound is not: ${label}`);
+    assert.equal(b.minKw, undefined, `no invented bound from "${label}"`);
+    assert.equal(b.maxKw, undefined, `no invented bound from "${label}"`);
+    assert.ok(b.unparsed?.toLowerCase().includes(phrase.toLowerCase()), `unparsed must name the phrase "${phrase}": ${b.unparsed}`);
+  }
+  ok("inclusive trailing bounds are read; exclusive phrasings are still refused with the fee intact");
+
+  // 14) A CLEAN READ WITH NO BOUNDS IS NOT THE SAME ANSWER AS A CLEAN READ.
+  //     "Solar Permit (when required) - Prescriptive Path System" | $200.00 is a
+  //     perfectly good flat fee and has no size key at all. Returning it with no
+  //     comment made those two indistinguishable to a caller.
+  const flat = parseBracketRow(findRow(page1, "Prescriptive Path System")!);
+  assert.equal(flat.feeUsd, 200, "the fee reads fine");
+  assert.equal(flat.unparsed, undefined, "and it is NOT unreadable — a flat fee is a real answer");
+  assert.ok(/no size bounds/i.test(flat.note ?? ""), `a boundless row must say so: ${JSON.stringify(flat.note)}`);
+  // The psf line is the same shape arrived at differently: a fee, and a "5" the
+  // unit rule was right to ignore. It must not be silent either.
+  const psf = parseBracketRow(rowOf("Photovoltaic modules weigh 5 psf or less", "$135.00"));
+  assert.equal(psf.maxKw, undefined, "5 psf is not 5 kVA");
+  assert.ok(/no size bounds/i.test(psf.note ?? ""), `and the row says it has no size key: ${JSON.stringify(psf.note)}`);
+  assert.equal(r2.note, undefined, "a bracketed row never carries the boundless note");
+  ok("a fee row with no size bounds reports that it has no size key, instead of reading as a clean parse");
 
   console.log(`\n${passed} checks passed`);
 }
