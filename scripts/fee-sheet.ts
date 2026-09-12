@@ -258,6 +258,24 @@ export function renderFeeLine(
         ? "— the schedule is on file but no bracket matched this project"
         : "— no schedule on file, so no bracket was resolved",
   ));
+  // ONE JOB CAN DRAW MORE THAN ONE PERMIT, AND THE TOTAL MUST SHOW ITS WORKING.
+  //
+  // A Coos Bay rooftop owes the city $200 for the structural permit and the COUNTY $160 for
+  // the electrical one. Printed as a single "$335" that is a number nobody can check against
+  // a published schedule, because no schedule anywhere says 335 — so each permit gets its own
+  // line, its own authority and its own document. The hop is named out loud ("filed via"),
+  // since "Coos County" appearing under a City of Coos Bay project is otherwise the exact
+  // shape of a wrong-jurisdiction bug.
+  if (schedule && schedule.lines.length > 1) {
+    out.push(row("Permits", `${schedule.lines.length} separate permits — the fee above is their total`));
+    for (const part of schedule.lines) {
+      const who = part.hoppedFrom ? `${part.authority} (filed via ${part.hoppedFrom})` : part.authority || "(unnamed authority)";
+      out.push(row("", `${(part.discipline || "permit").padEnd(11)} ${(part.feeUsd == null ? "UNRESOLVED" : money(part.feeUsd)).padEnd(11)} ${who}`));
+      const detail = part.feeUsd == null ? part.reason : part.bracketLabel;
+      if (detail) out.push(row("", `${" ".repeat(12)}${wrap(detail, 50, cont + " ".repeat(12))}`));
+      if (part.sourceUrl) out.push(row("", `${" ".repeat(12)}${part.sourceUrl}`));
+    }
+  }
   // The published sentence, but only when the engine's own basis text has not already
   // quoted it — the same sentence twice reads as two sources.
   if (schedule?.sourceQuote && !line.basis.includes(schedule.sourceQuote)) {
