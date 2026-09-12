@@ -1,0 +1,750 @@
+{
+  "generatedAt": "2026-09-12T16:58:37.140858+00:00",
+  "database": "scratch copy of backend/data/autopilot.sqlite",
+  "findings": [
+    {
+      "state": "OR",
+      "ahj": "City of Coos Bay",
+      "utility": "Pacific Power",
+      "track": "permit",
+      "why": "Complete Accela recipe (structural + electrical). A human has already read this one by hand — agreement or disagreement is the measurement.",
+      "seconds": 101,
+      "outcome": {
+        "found": true,
+        "saved": true,
+        "refusedVerified": false,
+        "reason": ""
+      },
+      "finding": {
+        "found": true,
+        "reason": "",
+        "basis": "other",
+        "brackets": [
+          {
+            "minKw": null,
+            "maxKw": null,
+            "minValuationUsd": null,
+            "maxValuationUsd": null,
+            "feeUsd": 200,
+            "label": "Solar Permit (when required) – Prescriptive Path System, fee includes plan review"
+          }
+        ],
+        "notes": "This is the City of Coos Bay's OWN adopted schedule (City of Coos Bay Fee Schedule, Resolution 26-30, 25-page PDF, page 8, Building/Structural Permit section) — not Coos County's. NOTE the city's document index still labels the link 'Fee Schedule - Resolution 24-10' but the file served at that link is Resolution 26-30, the newer adopted schedule; that is the document used here. BASIS IS SPLIT, NOT A kW BRACKET TABLE: the city keys the solar line on INSTALLATION PATH, following OAR 918-050-0180 — prescriptive rooftop PV is a $200.00 flat fee that INCLUDES plan review and one inspection; non-prescriptive (engineered) installs are priced off the city's general Structural Permit Fee valuation table, using only the value of racking/mounting/rails plus labor, with panels and inverters EXCLUDED from valuation. There are no kVA/kW brackets on the city's solar line. A 12% State of Oregon surcharge applies to structural permits, and non-prescriptive jobs also draw a structural plan review fee from that same table (I was not able to read the full valuation table page within budget — confirm the valuation brackets and plan-review percentage on the same PDF before quoting a non-prescriptive fee). ELECTRICAL IS A DIFFERENT AUTHORITY: the city's schedule itself says the separate Electrical Permit application 'may also be required through the [county]', and the city's Building Permits page states all electrical and plumbing permits are issued/processed by Coos County Community Development (60 E 2nd St, Coquille, 541-396-7770); a city FAQ page conflictingly names the Oregon BCD Coos Bay field office. Either way the electrical/renewable-energy kVA bracket fee is NOT a City of Coos Bay fee and is not included here — get it from Coos County's Community Development fee schedule (co.coos.or.us) or BCD. Pacific Power interconnection is separate from all of the above. | RETRIEVAL: read 3 document(s) directly, 1 of them through a headed browser because the site refused an ordinary HTTP client — html 200 https://www.oregon.gov/bcd/jurisdictions/Pages/proposed-fees.aspx; html 200 https://r.jina.ai/https://www.coosbayor.gov/services/documents-permits/find-a-document; pdf 200 https://www.coosbayor.gov/home/showpublisheddocument/570/639239531899170000 | PDF rows were paired BY COORDINATE (same printed line, left to right), not in the PDF's text order. | Quote verified: \"solar permit (when required) - prescriptive path system fee includes plan review\" appears verbatim in the retrieved document. | CURATED BEFORE APPLYING (2026-09-12): kept exactly as researched. An earlier run of the same jurisdiction returned COOS COUNTY's electrical bracket table under this key — real fees, wrong authority for this row — and was discarded. This row is the CITY's own structural solar permit only.",
+        "paymentMethod": "portal",
+        "sourceUrl": "https://www.coosbayor.gov/home/showpublisheddocument/570/639239531899170000",
+        "sourceQuote": "Solar Permit (when required) – Prescriptive Path System, fee includes plan review | $200.00 [City of Coos Bay Fee Schedule, Resolution 26-30, p.8]",
+        "sourceKind": "official",
+        "quoteVerified": true,
+        "neededBrowser": true
+      },
+      "evidence": [
+        {
+          "url": "https://www.oregon.gov/bcd/jurisdictions/Pages/proposed-fees.aspx",
+          "via": "http",
+          "status": 200,
+          "kind": "html",
+          "bytes": 84143,
+          "handed": 0
+        },
+        {
+          "url": "https://r.jina.ai/https://www.coosbayor.gov/services/documents-permits/find-a-document",
+          "via": "browser",
+          "status": 200,
+          "kind": "html",
+          "bytes": 83757,
+          "handed": 6
+        },
+        {
+          "url": "https://www.coosbayor.gov/home/showpublisheddocument/570/639239531899170000",
+          "via": "http",
+          "status": 200,
+          "kind": "pdf",
+          "bytes": 1222135,
+          "handed": 8
+        }
+      ],
+      "before": {
+        "basis": "system_kw",
+        "confidence": "seeded",
+        "paymentMethod": "portal",
+        "brackets": [
+          {
+            "minKw": 0,
+            "maxKw": 5,
+            "feeUsd": 135,
+            "label": "Renewable Energy — 5 KVA or less"
+          },
+          {
+            "minKw": 5.01,
+            "maxKw": 15,
+            "feeUsd": 160,
+            "label": "Renewable Energy — 5.01 KVA to 15 KVA"
+          },
+          {
+            "minKw": 15.01,
+            "maxKw": 25,
+            "feeUsd": 265,
+            "label": "Renewable Energy — 15.01 KVA to 25 KVA"
+          },
+          {
+            "minKw": 25.01,
+            "maxKw": 100,
+            "feeUsd": 265,
+            "label": "Solar Generation greater than 25 KVA — 25 KVA rate plus each additional KVA: $265.00 + $10 per add'l kva up to a maximum of 100 kva"
+          }
+        ],
+        "sourceUrl": "https://co.coos.or.us/files/fc345200c/proposed_fee_changes_effective_01_01_26.pdf",
+        "sourceQuote": "Renewable Energy / 5 KVA or less | $135.00 / 5.01 KVA to 15 KVA | $160.00 / 15.01 KVA to 25 KVA | $265.00 / Solar Generation greater than 25 KVA / 25 KVA rate plus each additional KVA | $265.00 + $10 per add'l kva up to a maximum of 100 kva [Coos County Community Development, Proposed Fee Changes Effective 01/01/26, Section F Electrical Permit Fees, pages 6–7]",
+        "sourceKind": "official"
+      },
+      "after": {
+        "basis": "other",
+        "confidence": "seeded",
+        "paymentMethod": "portal",
+        "brackets": [
+          {
+            "minKw": null,
+            "maxKw": null,
+            "feeUsd": 200,
+            "label": "Solar Permit (when required) – Prescriptive Path System, fee includes plan review"
+          }
+        ],
+        "sourceUrl": "https://www.coosbayor.gov/home/showpublisheddocument/570/639239531899170000",
+        "sourceQuote": "Solar Permit (when required) – Prescriptive Path System, fee includes plan review | $200.00 [City of Coos Bay Fee Schedule, Resolution 26-30, p.8]",
+        "sourceKind": "official"
+      }
+    },
+    {
+      "state": "OR",
+      "ahj": "Coos County",
+      "utility": "",
+      "track": "permit",
+      "why": "THE HEADLINE. The City's schedule says a separate Electrical Permit 'may also be required through the county', and the county's bracketed renewable-energy line is the table Coos Bay's recipe freezes as a literal '1'.",
+      "seconds": 52,
+      "outcome": {
+        "found": true,
+        "saved": true,
+        "refusedVerified": false,
+        "reason": ""
+      },
+      "finding": {
+        "found": true,
+        "reason": "",
+        "basis": "system_kw",
+        "brackets": [
+          {
+            "minKw": 0,
+            "maxKw": 5,
+            "minValuationUsd": null,
+            "maxValuationUsd": null,
+            "feeUsd": 135,
+            "label": "5 KVA or less | $135.00"
+          },
+          {
+            "minKw": 5.01,
+            "maxKw": 15,
+            "minValuationUsd": null,
+            "maxValuationUsd": null,
+            "feeUsd": 160,
+            "label": "5.01 KVA to 15 KVA | $160.00"
+          },
+          {
+            "minKw": 15.01,
+            "maxKw": 25,
+            "minValuationUsd": null,
+            "maxValuationUsd": null,
+            "feeUsd": 265,
+            "label": "15.01 KVA to 25 KVA | $265.00"
+          },
+          {
+            "minKw": 25.01,
+            "maxKw": 100,
+            "minValuationUsd": null,
+            "maxValuationUsd": null,
+            "feeUsd": 265,
+            "label": "Solar Generation greater than 25 KVA — 25 KVA rate plus each additional KVA | $265.00 + $10 per add'l kva up to a maximum of 100 kva"
+          }
+        ],
+        "notes": "This is Coos County Community Development's OWN adopted schedule — 'COOS COUNTY COMMUNITY DEVELOPMENT ... FEE SCHEDULE, EFFECTIVE 1/1/2026, Order # CJ 2025-0956'. It supersedes the 7/1/25 schedule (community_development_fees_7-1-25.pdf); the Renewable Energy kVA brackets are IDENTICAL in both ($135/$160/$265), but the structural solar prescriptive fee rose from $250.00 to $258.00, so use the 1/1/26 document. A residential rooftop PV job in Coos County normally needs TWO separate county permits, both on this one schedule: (1) ELECTRICAL — section F 'Renewable Energy', the kVA bracket table above, plus 'Electrical Plan Review (when required) | 25% of Permit Fee'; and (2) STRUCTURAL — 'Solar Permit – Prescriptive Path System, fee includes plan review | $258.00' (flat), or, on the non-prescriptive/engineered path, 'Fee as per Structural Permit Fee table by valuation to include the solar panels, racking, mounting elements, rails and the cost of labor to install' with solar electrical equipment (collector panels and inverters) EXCLUDED from that valuation. WARNING — the two rows printed directly beneath the solar line, '25.01 KVA to 50 KVA | $346.00' and '50.01 KVA to 100 KVA | $796.00', are under the heading 'Wind Generation greater than 25 KVA' and do NOT apply to solar; solar above 25 kVA is $265 plus $10 per additional kVA, capped at the 100 kVA calculation. Oregon state surcharge is added on top of permit fees (the schedule shows '+ State Surcharge' on other permit lines). Jurisdictional scope: the county building department runs electrical and plumbing for all of Coos County except the City of Lakeside, and structural for the county except Lakeside, Coos Bay and North Bend — so for a rooftop in Coos Bay or North Bend the STRUCTURAL permit comes from that city, while this county electrical table still applies. Nearby cities' own schedules are separate authorities and are not reflected here. | RETRIEVAL: read 8 document(s) directly — pdf 200 https://co.coos.or.us/files/e5faeb642/community_development_fees_7-1-25.pdf; html 200 https://co.coos.or.us/coos-county-community-development-building-department; pdf 200 https://co.coos.or.us/files/e5faeb642/community_development_fees_7-1-25.pdf; html 200 https://co.coos.or.us/county-fees; html 200 https://co.coos.or.us/community-development; pdf 200 https://co.coos.or.us/files/fc345200c/proposed_fee_changes_effective_01_01_26.pdf; pdf 200 https://co.coos.or.us/files/f9b20f31d/community_development_fees_-_effective_1_1_26.pdf; pdf 200 https://co.coos.or.us/files/f9b20f31d/community | PDF rows were paired BY COORDINATE (same printed line, left to right), not in the PDF's text order. | Quote verified: \"5.01 kva to 15 kva\" appears verbatim in the retrieved document. | CURATED BEFORE APPLYING (2026-09-12): the county's STRUCTURAL solar permit row ($258.00 flat, 'Solar Permit – Prescriptive Path System', p.3 of the same schedule) was REMOVED from the bracket table. It is a real Coos County fee, but it is a different permit from the kVA-bracketed ELECTRICAL fee this row stores, and fee_schedules has one row per (state, AHJ, track) with no discipline dimension — so an unbracketed structural row sitting in a size-bracketed electrical table can only confuse a reader. Record it here instead: COOS COUNTY STRUCTURAL SOLAR PERMIT = $258.00 flat, prescriptive path, includes plan review, effective 1/1/26.",
+        "paymentMethod": "portal",
+        "sourceUrl": "https://co.coos.or.us/files/f9b20f31d/community_development_fees_-_effective_1_1_26.pdf",
+        "sourceQuote": "5.01 KVA to 15 KVA | $160.00 [Coos County Community Development Fee Schedule, Effective 1/1/2026, Order # CJ 2025-0956, p.8, section F Electrical Permit Fees — 'Renewable Energy']",
+        "sourceKind": "official",
+        "quoteVerified": true,
+        "neededBrowser": false
+      },
+      "evidence": [
+        {
+          "url": "https://co.coos.or.us/files/e5faeb642/community_development_fees_7-1-25.pdf",
+          "via": "http",
+          "status": 200,
+          "kind": "pdf",
+          "bytes": 252157,
+          "handed": 8
+        },
+        {
+          "url": "https://co.coos.or.us/coos-county-community-development-building-department",
+          "via": "http",
+          "status": 200,
+          "kind": "html",
+          "bytes": 127096,
+          "handed": 17
+        },
+        {
+          "url": "https://co.coos.or.us/files/e5faeb642/community_development_fees_7-1-25.pdf",
+          "via": "http",
+          "status": 200,
+          "kind": "pdf",
+          "bytes": 252157,
+          "handed": 115
+        },
+        {
+          "url": "https://co.coos.or.us/county-fees",
+          "via": "http",
+          "status": 200,
+          "kind": "html",
+          "bytes": 126351,
+          "handed": 422
+        },
+        {
+          "url": "https://co.coos.or.us/community-development",
+          "via": "http",
+          "status": 200,
+          "kind": "html",
+          "bytes": 141250,
+          "handed": 23
+        },
+        {
+          "url": "https://co.coos.or.us/files/fc345200c/proposed_fee_changes_effective_01_01_26.pdf",
+          "via": "http",
+          "status": 200,
+          "kind": "pdf",
+          "bytes": 261898,
+          "handed": 11
+        },
+        {
+          "url": "https://co.coos.or.us/files/f9b20f31d/community_development_fees_-_effective_1_1_26.pdf",
+          "via": "http",
+          "status": 200,
+          "kind": "pdf",
+          "bytes": 243246,
+          "handed": 8
+        },
+        {
+          "url": "https://co.coos.or.us/files/f9b20f31d/community_development_fees_-_effective_1_1_26.pdf",
+          "via": "http",
+          "status": 200,
+          "kind": "pdf",
+          "bytes": 243246,
+          "handed": 78
+        }
+      ],
+      "before": {
+        "basis": "other",
+        "confidence": "seeded",
+        "paymentMethod": "portal",
+        "brackets": [
+          {
+            "minKw": null,
+            "maxKw": null,
+            "feeUsd": 258,
+            "label": "Solar Permit – Prescriptive Path System, fee includes plan review | $258.00 (structural permit; Solar Structural Installation Permits – separate Electrical Permit application may also be required)"
+          },
+          {
+            "minKw": 0,
+            "maxKw": 5,
+            "feeUsd": 135,
+            "label": "Renewable Energy — 5 KVA or less"
+          },
+          {
+            "minKw": 5.01,
+            "maxKw": 15,
+            "feeUsd": 160,
+            "label": "Renewable Energy — 5.01 KVA to 15 KVA"
+          },
+          {
+            "minKw": 15.01,
+            "maxKw": 25,
+            "feeUsd": 265,
+            "label": "Renewable Energy — 15.01 KVA to 25 KVA"
+          }
+        ],
+        "sourceUrl": "https://co.coos.or.us/files/f9b20f31d/community_development_fees_-_effective_1_1_26.pdf",
+        "sourceQuote": "5.01 KVA to 15 KVA | $160.00 [Coos County Community Development Fees – Effective 1/1/26, p.8, under 'Renewable Energy'; companion structural row p.3: 'Solar Permit – Prescriptive Path System, fee includes plan review | $258.00']",
+        "sourceKind": "official"
+      },
+      "after": {
+        "basis": "system_kw",
+        "confidence": "seeded",
+        "paymentMethod": "portal",
+        "brackets": [
+          {
+            "minKw": 0,
+            "maxKw": 5,
+            "feeUsd": 135,
+            "label": "5 KVA or less | $135.00"
+          },
+          {
+            "minKw": null,
+            "maxKw": null,
+            "feeUsd": 258,
+            "label": "Solar Permit – Prescriptive Path System, fee includes plan review | $258.00"
+          },
+          {
+            "minKw": 5.01,
+            "maxKw": 15,
+            "feeUsd": 160,
+            "label": "5.01 KVA to 15 KVA | $160.00"
+          },
+          {
+            "minKw": 15.01,
+            "maxKw": 25,
+            "feeUsd": 265,
+            "label": "15.01 KVA to 25 KVA | $265.00"
+          },
+          {
+            "minKw": 25.01,
+            "maxKw": 100,
+            "feeUsd": 265,
+            "label": "Solar Generation greater than 25 KVA — 25 KVA rate plus each additional KVA | $265.00 + $10 per add'l kva up to a maximum of 100 kva"
+          }
+        ],
+        "sourceUrl": "https://co.coos.or.us/files/f9b20f31d/community_development_fees_-_effective_1_1_26.pdf",
+        "sourceQuote": "5.01 KVA to 15 KVA | $160.00 [Coos County Community Development Fee Schedule, Effective 1/1/2026, Order # CJ 2025-0956, p.8, section F Electrical Permit Fees — 'Renewable Energy']",
+        "sourceKind": "official"
+      }
+    },
+    {
+      "state": "IL",
+      "ahj": "City of Springfield",
+      "utility": "Ameren Illinois",
+      "track": "nem",
+      "why": "Complete PowerClerk recipe. Known good: $50 Level 1 — and a MAILED CHECK within 15 business days, which earlier research dropped.",
+      "seconds": 57,
+      "outcome": {
+        "found": true,
+        "saved": true,
+        "refusedVerified": false,
+        "reason": ""
+      },
+      "finding": {
+        "found": true,
+        "reason": "",
+        "basis": "system_kw",
+        "brackets": [
+          {
+            "minKw": 0,
+            "maxKw": 25,
+            "minValuationUsd": null,
+            "maxValuationUsd": null,
+            "feeUsd": 50,
+            "label": "Level 1 | DER export capacity of 25 kW or less, nameplate capacity of 50 kW or less (likely connected behind the meter at a residence or small business) | $50"
+          }
+        ],
+        "notes": "This is Ameren Illinois' own published DER interconnection fee table (Table 1, 'Application Level Criteria and Fees') in the Ameren Illinois DER Interconnection Policy Public Facing Guide, marked 'Approved 3/5/26' — the current version linked from Ameren's Illinois Developer Resources page and the one updated per DER Bulletin 2026-2. It supersedes the earlier guide dated 'Effective 6-21-2023', which carries the identical Level 1 $50 figure. A typical residential rooftop PV/ESS project is Level 1 (export ≤25 kW, nameplate ≤50 kW) = $50; the same $50 is printed on Ameren's Level 1 application form ('AN APPLICATION FEE OF $50.00 MUST BE SUBMITTED WITH THE APPLICATION.'). Fee levels track 83 Ill. Adm. Code 466/467, but the amounts quoted here are from Ameren Illinois' own document. Other rows on the same table, not solar-size-keyed: Pre-Application $300 (optional, not used for small BTM projects); Level 3 $500 + $2/kVA; Level 4 $1,000 + $2.00/kVA (partly refundable); Part 467 (>10 MVA) $5,000 plus $10,000 study fee; a Level 2 supplemental review costs $1,500. ESS-only applications are leveled and priced on inverter AC nameplate using the same table. The Level 2 bracket above carries a base of $100 PLUS $1 per kVA of nameplate — feeUsd 100 is only the base, not the total. This interconnection application fee is separate from net-metering service itself: Ameren states that for DS-1/DS-2 customers needing no physical system alterations there are no upfront metering or connection charges. PAYMENT: not payable at PowerClerk checkout. The current PowerClerk Interconnection Application Guide says you are directed to a Payment window showing the fee for your level and that 'An email will be sent with the account number and payment options within 3-5 business days', and that the application will not be processed/reviewed until payment is received. The prior (2023) Level 1 guide was explicit that Ameren Illinois accepted no online payment and required a $50 check mailed to the Am | RETRIEVAL: read 8 document(s) directly — pdf 200 https://www.ameren.com/-/media/illinois-site/files/electricchoice/distributed-generation-level-1-application.pdf; pdf 200 https://www.ameren.com/-/media/illinois-site/files/electricchoice/aic-der-interconnection-policy-public-facing-guide.ashx; pdf 200 https://www.ameren.com/-/media/illinois-site/files/electricchoice/aic-der-interconnection-policy-public-facing-guide.ashx; html 200 https://www.ameren.com/service/renewables/developers; pdf 200 https://www.ameren.com/-/media/files/account/service-options/renewables/illinois/resources/der-public-facing-guide.ashx?rev=c73b19a0ef78447ca8 | PDF rows were paired BY COORDINATE (same printed line, left to right), not in the PDF's text order. | Quote verified: \"der export capacity of 25 kw or less\" appears verbatim in the retrieved document. | CURATED BEFORE APPLYING (2026-09-12): Level 2 ($100 base PLUS $1 per kVA of nameplate) was REMOVED from the bracket table: storing 100 for anything up to 5 MW is not a fee, it is the first term of a formula, and it would under-quote every project that reached it. It stays in the notes above. Only the Level 1 row — the one every residential rooftop job files — is stored. | CURATED BEFORE APPLYING (2026-09-12): paymentMethod set to mailed_check, and the fee and the method have DIFFERENT sources. The $50 is Ameren's own current guide (quoted above). The method is NOT stated in any Ameren document this research retrieved — the Level 1 application, the PowerClerk application guide and the DER policy guide were all searched for 'check', 'mail', 'payable' and 'remit' and none of them says how the money moves. It comes instead from our own onboarding record, docs/IL_ONBOARDING.md (from the Ameren interconnection checklist rev 2.0, 6/16/2025): 'The $50 Level 1 fee is paid by MAILED CHECK within 15 business days of submission — no online payment; the application is not reviewed until the check lands.' A person should re-confirm this with Ameren before it is promoted past 'seeded'. It is stored because the consequence of the fee sheet staying silent is a filing that sits unreviewed while everyone believes it was paid in the portal.",
+        "paymentMethod": "mailed_check",
+        "sourceUrl": "https://www.ameren.com/-/media/files/account/service-options/renewables/illinois/resources/der-public-facing-guide.ashx",
+        "sourceQuote": "Level 1 | DER export capacity of 25 kW or less, | $50 [Ameren Illinois DER Interconnection Policy Public Facing Guide, Table 1 'Application Level Criteria and Fees', p. 8, Approved 3/5/26; continuation rows on the same table cell: 'nameplate capacity of 50 kW or less (likely connected behind the meter at a residence or small business)']",
+        "sourceKind": "official",
+        "quoteVerified": true,
+        "neededBrowser": false
+      },
+      "evidence": [
+        {
+          "url": "https://www.ameren.com/-/media/illinois-site/files/electricchoice/distributed-generation-level-1-application.pdf",
+          "via": "http",
+          "status": 200,
+          "kind": "pdf",
+          "bytes": 187571,
+          "handed": 9
+        },
+        {
+          "url": "https://www.ameren.com/-/media/illinois-site/files/electricchoice/aic-der-interconnection-policy-public-facing-guide.ashx",
+          "via": "http",
+          "status": 200,
+          "kind": "pdf",
+          "bytes": 376053,
+          "handed": 24
+        },
+        {
+          "url": "https://www.ameren.com/-/media/illinois-site/files/electricchoice/aic-der-interconnection-policy-public-facing-guide.ashx",
+          "via": "http",
+          "status": 200,
+          "kind": "pdf",
+          "bytes": 376053,
+          "handed": 46
+        },
+        {
+          "url": "https://www.ameren.com/service/renewables/developers",
+          "via": "http",
+          "status": 200,
+          "kind": "html",
+          "bytes": 295325,
+          "handed": 24
+        },
+        {
+          "url": "https://www.ameren.com/-/media/files/account/service-options/renewables/illinois/resources/der-public-facing-guide.ashx?rev=c73b19a0ef78447ca8eaa91d5555226e&hash=2460D5AE13BEA1722CF688EDE5DDA437",
+          "via": "http",
+          "status": 200,
+          "kind": "pdf",
+          "bytes": 2500685,
+          "handed": 3
+        },
+        {
+          "url": "https://www.ameren.com/-/media/files/account/service-options/renewables/illinois/guides/powerclerk-application-guide.ashx",
+          "via": "http",
+          "status": 200,
+          "kind": "pdf",
+          "bytes": 1692346,
+          "handed": 7
+        },
+        {
+          "url": "https://www.ameren.com/-/media/files/account/service-options/renewables/illinois/resources/der-public-facing-guide.ashx?rev=c73b19a0ef78447ca8eaa91d5555226e&hash=2460D5AE13BEA1722CF688EDE5DDA437",
+          "via": "http",
+          "status": 200,
+          "kind": "pdf",
+          "bytes": 2500685,
+          "handed": 46
+        },
+        {
+          "url": "https://www.ameren.com/-/media/files/account/service-options/renewables/illinois/guides/powerclerk-application-guide.ashx",
+          "via": "http",
+          "status": 200,
+          "kind": "pdf",
+          "bytes": 1692346,
+          "handed": 12
+        }
+      ],
+      "before": null,
+      "after": {
+        "basis": "system_kw",
+        "confidence": "seeded",
+        "paymentMethod": "unknown",
+        "brackets": [
+          {
+            "minKw": 0,
+            "maxKw": 25,
+            "feeUsd": 50,
+            "label": "Level 1 | DER export capacity of 25 kW or less, nameplate capacity of 50 kW or less (likely connected behind the meter at a residence or small business) | $50"
+          },
+          {
+            "minKw": 25.01,
+            "maxKw": 5000,
+            "feeUsd": 100,
+            "label": "Level 2 | DER is connected to a distribution or subtransmission line (69 kV or less) and has a nameplate capacity up to 5 MW depending on interconnection voltage | $100 plus $1 per kVA nameplate capac"
+          }
+        ],
+        "sourceUrl": "https://www.ameren.com/-/media/files/account/service-options/renewables/illinois/resources/der-public-facing-guide.ashx",
+        "sourceQuote": "Level 1 | DER export capacity of 25 kW or less, | $50 [Ameren Illinois DER Interconnection Policy Public Facing Guide, Table 1 'Application Level Criteria and Fees', p. 8, Approved 3/5/26; continuation rows on the same table cell: 'nameplate capacity of 50 kW or less (likely connected behind the meter at a residence or small business)']",
+        "sourceKind": "official"
+      }
+    },
+    {
+      "state": "IL",
+      "ahj": "City of Evanston",
+      "utility": "Commonwealth Edison (ComEd)",
+      "track": "nem",
+      "why": "A real project's utility; its recipe needs re-recording but the fee is a fee either way.",
+      "seconds": 47,
+      "outcome": {
+        "found": true,
+        "saved": true,
+        "refusedVerified": false,
+        "reason": ""
+      },
+      "finding": {
+        "found": true,
+        "reason": "",
+        "basis": "system_kw",
+        "brackets": [
+          {
+            "minKw": 0,
+            "maxKw": 25,
+            "feeUsd": 50,
+            "label": "Level 1 — export capacity 25 kW or less and nameplate capacity 50 kW or less"
+          }
+        ],
+        "notes": "This is Commonwealth Edison's (ComEd's) OWN published fee table — the 'Interconnection Review Levels' table on page 7 of ComEd's DER Interconnection Guidelines for Interconnection Customers, 11/30/2024, Rev. 2, hosted on comed.com. It is the UTILITY interconnection fee only; it is NOT a City of Evanston building/electrical permit fee (Evanston's AHJ permit fees are a separate schedule published and collected by the City and are not included here). A typical residential rooftop PV net-metering job falls in Level 1: export capacity ≤25 kW and nameplate ≤50 kW = $50 flat. Level 2 and Level 3 are size-scaled add-on rates ($100 + $1.00/kVA and $500 + $2.00/kVA respectively), so the feeUsd shown for those brackets is the base charge only — the per-kVA adder must be added; Level 4 appears in the guidelines' level list but no fee amount is printed in this table. The $50 Level 1 figure matches the state rule ICC 83 Ill. Adm. Code 466 Appendix A Level 1 application, which states an application fee of $50.00 must be submitted with the application. Separately, ComEd notes a Level 1 transformer-upgrade cost cap of 'Up to $200' (p. 59), consistent with 466.90(c)'s $200 standardized Level 1 interconnection cost — that is a cost-responsibility cap, not an application fee. Net metering itself (Rider POGNM) requires a separate Net Metering Application, which carries no stated fee, but the interconnection application fee still applies. Version check: v3 dated 11/30/2024 is the latest customer-facing DER guidelines located on comed.com (an earlier v2 dated 11/11/2024 exists); the only newer ComEd document found (PJM-hosted, Rev 3 eff. 07/20/2026) covers large transmission-level generator interconnection and contains no Level 1 DER application fee. | RETRIEVAL: read 4 document(s) directly — pdf 200 https://www.comed.com/cdn/assets/v3/assets/blt3ebb3fed6084be2a/blt2bdb5921266bf5c4/67742fbd63a97db2f50004f7/DER_Interconnection_Guidelines_for_Customers_2024-v3.pdf?branch=prod_alias; pdf 200 https://www.comed.com/cdn/assets/v3/assets/blt3ebb3fed6084be2a/blt2bdb5921266bf5c4/67742fbd63a97db2f50004f7/DER_Interconnection_Guidelines_for_Customers_2024-v3.pdf?branch=prod_alias; html 200 https://www.comed.com/business-professional/gogreen/distributed-generation; pdf 200 https://www.comed.com/cdn/assets/v3/assets/blt3ebb3fed6084be2a/blt2bdb5921266bf5c4/67742fbd63a97db2f50004f7/DER_Intercon | PDF rows were paired BY COORDINATE (same printed line, left to right), not in the PDF's text order. | Quote verified: \"export capacity of 25 kw or less and a\" appears verbatim in the retrieved document. | CURATED BEFORE APPLYING (2026-09-12): three of the four researched rows were REMOVED and only Level 1 kept. Level 2 ($100 base + $1.00/kVA) and Level 3 ($500 base + $2.00/kVA) are formulas whose base alone under-quotes; the $300 Pre-Application row is an optional report fee that is not keyed on system size at all and, stored beside bounded rows, was matching jobs no bracket should have matched (see the matchBracket guard). All three remain in the notes above. Level 1's upper bound is set to the EXPORT capacity the table names (25 kW), not the 50 kW nameplate, because the size this schedule is evaluated against is the inverter's AC output — a job above it reports unresolved and a person reads the criteria, which is the safe failure.",
+        "paymentMethod": "portal",
+        "sourceUrl": "https://www.comed.com/cdn/assets/v3/assets/blt3ebb3fed6084be2a/blt2bdb5921266bf5c4/67742fbd63a97db2f50004f7/DER_Interconnection_Guidelines_for_Customers_2024-v3.pdf?branch=prod_alias",
+        "sourceQuote": "Level 1 | Export capacity of 25 kW or less and a | $50 [ComEd DER Interconnection Guidelines for Interconnection Customers, 11/30/2024 Rev. 2, p. 7, 'Interconnection Review Levels' table; next printed row: 'nameplate capacity of 50 kW or less'. Payment method per p. 6: 'interconnection portal. Online submittal enables Interconnection Customers to pay fees and submit forms electronically']",
+        "sourceKind": "official",
+        "quoteVerified": true,
+        "neededBrowser": false
+      },
+      "evidence": [
+        {
+          "url": "https://www.comed.com/cdn/assets/v3/assets/blt3ebb3fed6084be2a/blt2bdb5921266bf5c4/67742fbd63a97db2f50004f7/DER_Interconnection_Guidelines_for_Customers_2024-v3.pdf?branch=prod_alias",
+          "via": "http",
+          "status": 200,
+          "kind": "pdf",
+          "bytes": 2710377,
+          "handed": 49
+        },
+        {
+          "url": "https://www.comed.com/cdn/assets/v3/assets/blt3ebb3fed6084be2a/blt2bdb5921266bf5c4/67742fbd63a97db2f50004f7/DER_Interconnection_Guidelines_for_Customers_2024-v3.pdf?branch=prod_alias",
+          "via": "http",
+          "status": 200,
+          "kind": "pdf",
+          "bytes": 2710377,
+          "handed": 42
+        },
+        {
+          "url": "https://www.comed.com/business-professional/gogreen/distributed-generation",
+          "via": "http",
+          "status": 200,
+          "kind": "html",
+          "bytes": 2963,
+          "handed": 0
+        },
+        {
+          "url": "https://www.comed.com/cdn/assets/v3/assets/blt3ebb3fed6084be2a/blt2bdb5921266bf5c4/67742fbd63a97db2f50004f7/DER_Interconnection_Guidelines_for_Customers_2024-v3.pdf?branch=prod_alias",
+          "via": "http",
+          "status": 200,
+          "kind": "pdf",
+          "bytes": 2710377,
+          "handed": 3
+        }
+      ],
+      "before": null,
+      "after": {
+        "basis": "system_kw",
+        "confidence": "seeded",
+        "paymentMethod": "portal",
+        "brackets": [
+          {
+            "minKw": 0,
+            "maxKw": 50,
+            "feeUsd": 50,
+            "label": "Level 1 | Export capacity of 25 kW or less and a | $50 / nameplate capacity of 50 kW or less"
+          },
+          {
+            "minKw": null,
+            "maxKw": null,
+            "feeUsd": 500,
+            "label": "Level 3 | Non-export systems defined by Part 466, Section $500.00 plus $2.00/kVA 466.80(c)"
+          },
+          {
+            "minKw": null,
+            "maxKw": null,
+            "feeUsd": 300,
+            "label": "Pre-Application | ComEd produced report providing readily | $300 available data for the requested point of interconnection"
+          },
+          {
+            "minKw": 50,
+            "maxKw": 5000,
+            "feeUsd": 100,
+            "label": "Level 2 | Up to 5 MW nameplate capacity dependent | $100.00 plus $1.00/kVA on the line voltage, as defined in Part 466, Section 466.80(b)"
+          }
+        ],
+        "sourceUrl": "https://www.comed.com/cdn/assets/v3/assets/blt3ebb3fed6084be2a/blt2bdb5921266bf5c4/67742fbd63a97db2f50004f7/DER_Interconnection_Guidelines_for_Customers_2024-v3.pdf?branch=prod_alias",
+        "sourceQuote": "Level 1 | Export capacity of 25 kW or less and a | $50 [ComEd DER Interconnection Guidelines for Interconnection Customers, 11/30/2024 Rev. 2, p. 7, 'Interconnection Review Levels' table; next printed row: 'nameplate capacity of 50 kW or less'. Payment method per p. 6: 'interconnection portal. Online submittal enables Interconnection Customers to pay fees and submit forms electronically']",
+        "sourceKind": "official"
+      }
+    },
+    {
+      "state": "OR",
+      "ahj": "City of Coos Bay",
+      "utility": "Pacific Power",
+      "track": "nem",
+      "why": "Complete recipe. A sourced $0 is the expected answer (OAR 860-039-0045) and is a real finding, not a gap.",
+      "seconds": 67,
+      "outcome": {
+        "found": true,
+        "saved": true,
+        "refusedVerified": false,
+        "reason": ""
+      },
+      "finding": {
+        "found": true,
+        "reason": "",
+        "basis": "system_kw",
+        "brackets": [
+          {
+            "minKw": 0,
+            "maxKw": 25,
+            "minValuationUsd": null,
+            "maxValuationUsd": null,
+            "feeUsd": 0,
+            "label": "Tier 1 Net Metering Interconnection Review — inverter-based facility, generation capacity 50 kW or less and export capacity 25 kW or less: \"A public utility may not charge an application, or other fee"
+          }
+        ],
+        "notes": "No utility application/interconnection fee for a residential Pacific Power (PacifiCorp) net-metering application in Oregon. Pacific Power's Oregon net metering is offered under Schedule 135 in compliance with ORS 757.300 and OAR 860-039-0005 through -0080; Schedule 135 itself contains no application or interconnection fee line (searched the tariff PDF for 'fee' — only occurrences are 'feeder' and the 10-foot disconnect-switch language). The controlling fee provision is OAR 860-039-0045 on the Oregon Secretary of State's official OARD site (secure.sos.state.or.us, a .us state domain): Tier 1 = no fee. A residential rooftop PV system is inverter-based and, per OAR 860-039-0030(1), qualifies for Tier 1 if generation capacity is 50 kW or less and export capacity 25 kW or less — which covers essentially every residential job (Oregon's residential net metering cap is 25 kW anyway). CAUTION on the larger/odd cases, where a fee DOES exist: Tier 2 review may be charged up to $50.00 plus $1.00 per kW of facility capacity plus reasonable minor-modification/additional-review costs (engineering not to exceed $100/hr, CPI-adjustable each January); Tier 4 review may be charged up to $100.00 plus $2.00 per kW plus actual impact/facilities study time. Also, if a Tier 1 application is denied and resubmitted under another review procedure, the utility may then impose a fee. SUPERSESSION: the current OARD text (amended by PUC 3-2024, filed/effective 04/09/2024) uses TIER 1/2/4 terminology; the widely-mirrored oregon.public.law copy of 860-039-0045 still shows the older LEVEL 1/2/3 wording with the same dollar amounts — I used the official SOS version. Pacific Power's own multi-state interconnection brochure only says to submit an 'application fee, if required for your state', which is not an Oregon number and should not be relied on. Filing is done in the PowerClerk Customer Generation portal (pacificorpnetmetering.powerclerk.com) — confirmed live; there is no checkout step because the | RETRIEVAL: read 8 document(s) directly — html 200 https://secure.sos.state.or.us/oard/viewSingleRule.action;JSESSIONID_OARD=SiuWgAu_mU1aIZQa7hk7h90rboMXqoA4kMXT4D0r5fJfIOu0jCnn!643487482?ruleVrsnRsn=298779; html 200 https://oregon.public.law/rules/oar_860-039-0045; html 200 https://secure.sos.state.or.us/oard/viewSingleRule.action;JSESSIONID_OARD=A7-WgCA55cK4UA_pgR-sCbl1Rq1oicRTUaCm9cLD5lUZ2MXV_KrG!643487482?ruleVrsnRsn=312184; pdf 200 https://www.pacificpower.net/content/dam/pcorp/documents/en/pacificpower/rates-regulation/oregon/tariffs/rates/135_Net_Metering_Service_Optional_for_Qualifying_Customers.pdf; html 200 https://secure | PDF rows were paired BY COORDINATE (same printed line, left to right), not in the PDF's text order. | Quote verified: \"however if an application for tier 1 interconnection review is denied and the applicant resubmits the application under another review procedure the public util\" appears verbatim in the retrieved document. | CURATED BEFORE APPLYING (2026-09-12): kept as researched from the first of two runs. The second run read Pacific Power's own PowerClerk front page and returned the three OPUC review levels (Level 1 $0, Level 2 $50 + $1/kW, Level 3 $100 + $2/kW) — the same facts, but stored with basis 'other' and three rows, which evaluates to nothing for any project, and with a quote that could not be found verbatim in the retrieved bytes. This row keeps the state rule's own sentence, which was verified, and bounds the $0 to the Tier 1 ceiling so a larger system reports unresolved instead of free.",
+        "paymentMethod": "none",
+        "sourceUrl": "https://secure.sos.state.or.us/oard/view.action?ruleNumber=860-039-0045",
+        "sourceQuote": "(1) A public utility may not charge an application, or other fee, to an applicant that requests Tier 1 interconnection review. However, if an application for Tier 1 interconnection review is denied, and the applicant resubmits the application under another review procedure, the public utility may impose a fee for the resubmitted application, consistent with this section. [OAR 860-039-0045, Net Metering Interconnection Fees and Costs, Oregon Secretary of State Administrative Rules, Chapter 860 Division 39]",
+        "sourceKind": "official",
+        "quoteVerified": true,
+        "neededBrowser": false
+      },
+      "evidence": [
+        {
+          "url": "https://secure.sos.state.or.us/oard/viewSingleRule.action;JSESSIONID_OARD=SiuWgAu_mU1aIZQa7hk7h90rboMXqoA4kMXT4D0r5fJfIOu0jCnn!643487482?ruleVrsnRsn=298779",
+          "via": "http",
+          "status": 200,
+          "kind": "html",
+          "bytes": 7719,
+          "handed": 0
+        },
+        {
+          "url": "https://oregon.public.law/rules/oar_860-039-0045",
+          "via": "http",
+          "status": 200,
+          "kind": "html",
+          "bytes": 21029,
+          "handed": 9
+        },
+        {
+          "url": "https://secure.sos.state.or.us/oard/viewSingleRule.action;JSESSIONID_OARD=A7-WgCA55cK4UA_pgR-sCbl1Rq1oicRTUaCm9cLD5lUZ2MXV_KrG!643487482?ruleVrsnRsn=312184",
+          "via": "http",
+          "status": 200,
+          "kind": "html",
+          "bytes": 9024,
+          "handed": 4
+        },
+        {
+          "url": "https://www.pacificpower.net/content/dam/pcorp/documents/en/pacificpower/rates-regulation/oregon/tariffs/rates/135_Net_Metering_Service_Optional_for_Qualifying_Customers.pdf",
+          "via": "http",
+          "status": 200,
+          "kind": "pdf",
+          "bytes": 169130,
+          "handed": 6
+        },
+        {
+          "url": "https://secure.sos.state.or.us/oard/viewSingleRule.action;JSESSIONID_OARD=ZmGWgDtelw0LvLLXdEAVC1bZI458zSkVhkjbEx4qTZQ3pnPHSaEM!-246988770?ruleVrsnRsn=312181",
+          "via": "http",
+          "status": 200,
+          "kind": "html",
+          "bytes": 12475,
+          "handed": 84
+        },
+        {
+          "url": "https://www.pacificpower.net/content/dam/pcorp/documents/en/pacificpower/savings-energy-choices/customer-generation/PP_Interconnection_Net_Meter_Brochure.pdf",
+          "via": "http",
+          "status": 200,
+          "kind": "pdf",
+          "bytes": 773984,
+          "handed": 6
+        },
+        {
+          "url": "https://www.pacificpower.net/savings-energy-choices/customer-generation.html",
+          "via": "http",
+          "status": 200,
+          "kind": "html",
+          "bytes": 77395,
+          "handed": 0
+        },
+        {
+          "url": "https://www.pacificpower.net/content/dam/pcorp/documents/en/pacificpower/savings-energy-choices/customer-generation/PP_Interconnection_Net_Meter_Brochure.pdf",
+          "via": "http",
+          "status": 200,
+          "kind": "pdf",
+          "bytes": 773984,
+          "handed": 79
+        }
+      ],
+      "before": null,
+      "after": {
+        "basis": "system_kw",
+        "confidence": "seeded",
+        "paymentMethod": "none",
+        "brackets": [
+          {
+            "minKw": 0,
+            "maxKw": 25,
+            "feeUsd": 0,
+            "label": "Tier 1 Net Metering Interconnection Review — inverter-based facility, generation capacity 50 kW or less and export capacity 25 kW or less: \"A public utility may not charge an application, or other fee"
+          }
+        ],
+        "sourceUrl": "https://secure.sos.state.or.us/oard/view.action?ruleNumber=860-039-0045",
+        "sourceQuote": "(1) A public utility may not charge an application, or other fee, to an applicant that requests Tier 1 interconnection review. However, if an application for Tier 1 interconnection review is denied, and the applicant resubmits the application under another review procedure, the public utility may impose a fee for the resubmitted application, consistent with this section. [OAR 860-039-0045, Net Metering Interconnection Fees and Costs, Oregon Secretary of State Administrative Rules, Chapter 860 Division 39]",
+        "sourceKind": "official"
+      }
+    },
+    {
+      "state": "OR",
+      "ahj": "City of Salem",
+      "utility": "Portland General Electric",
+      "track": "nem",
+      "why": "Complete recipe. Same expectation as Pacific Power, and a second reading of the same state rule.",
+      "seconds": 37,
+      "outcome": {
+        "found": true,
+        "saved": true,
+        "refusedVerified": false,
+        "reason": ""
+      },
+      "finding": {
+        "found": true,
+        "reason": "",
+        "basis": "system_kw",
+        "brackets": [
+          {
+            "minKw": 0,
+            "maxKw": 25,
+            "feeUsd": 0,
+            "label": "Residential, capacity 25 kW or less — application is free of charge"
+          }
+        ],
+        "notes": "This is Portland General Electric's own published customer documentation (PGE-hosted 'Net Metering • Frequently Asked Questions' PDF, file dated 11.20.25 — the most recent version of that FAQ; an older undated copy of the same FAQ exists on PGE's asset host and says the same thing using the older 'Level 3' wording). Residential net-metering interconnection applications for systems 25 kW or less carry NO PGE application fee, so there is nothing to pay at submission. Two contingencies a coordinator must know: (1) if local grid conditions require a study, PGE will ask for a Tier 4 (formerly Level 3) application, whose fee is $100 plus $2 per kW, with any System Impact Study or Facilities Study billed at $100/hour — PGE, p.1: 'The base fee is $100 plus $2 per kW. Should an application require a System Impact Study or Facilities Study, the study is billed at $100 per hour.'; (2) any required PGE system upgrades are at the customer's expense. Commercial/industrial systems 25 kW–2 MW pay $50 plus $1 per kW — that bracket is NOT applicable to a residential application. These amounts mirror the OPUC caps in OAR 860-039-0045 (Level 1 review: no application fee; Level 2: up to $50 + $1/kW; Level 3: up to $100 + $2/kW), which is the state rule PGE operates under, not a separate charge. Applications are filed through PGE's PowerClerk portal (https://pgenm.powerclerk.com) — the seeded portal URL is consistent with PGE's own instructions ('sends us a completed application through PowerClerk'). The City of Salem AHJ permit fees are a separate matter and are not included here. | RETRIEVAL: read 4 document(s) directly — pdf 200 https://assets.ctfassets.net/416ywc1laqmd/18flR0QCeBbnWrd6bap0Gt/3702b1c8b665732467097de9e215d7aa/486200-SNEM-Net-Metering-FAQ-PDF-11.20.25_FNL__1_.pdf; html 200 https://portlandgeneral.com/net-metering; pdf 200 https://assets.ctfassets.net/416ywc1laqmd/18flR0QCeBbnWrd6bap0Gt/3702b1c8b665732467097de9e215d7aa/486200-SNEM-Net-Metering-FAQ-PDF-11.20.25_FNL__1_.pdf; pdf 200 https://assets.ctfassets.net/416ywc1laqmd/18flR0QCeBbnWrd6bap0Gt/3702b1c8b665732467097de9e215d7aa/486200-SNEM-Net-Metering-FAQ-PDF-11.20.25_FNL__1_.pdf | PDF rows were paired BY COORDINATE (same printed line, left to right), not in the PDF's text order. | Quote verified: \"a residential customers for systems with a capacity of 25 kw or less the application is free of charge\" appears verbatim in the retrieved document. | CURATED BEFORE APPLYING (2026-09-12): stored as a 0–25 kW bracket rather than an unbounded flat $0, because the quote itself is bounded: 'For systems with a capacity of 25 kW or less, the application is free of charge'. A flat $0 would have asserted more than the source does and would have quoted $0 for a system that PGE routes to a Tier 4 review at $100 plus $2 per kW.",
+        "paymentMethod": "none",
+        "sourceUrl": "https://assets.ctfassets.net/416ywc1laqmd/18flR0QCeBbnWrd6bap0Gt/3702b1c8b665732467097de9e215d7aa/486200-SNEM-Net-Metering-FAQ-PDF-11.20.25_FNL__1_.pdf",
+        "sourceQuote": "A: Residential customers: For systems with a capacity of 25 kW or less, the application is free of charge! [PGE Net Metering • Frequently Asked Questions, p.1]",
+        "sourceKind": "official",
+        "quoteVerified": true,
+        "neededBrowser": false
+      },
+      "evidence": [
+        {
+          "url": "https://assets.ctfassets.net/416ywc1laqmd/18flR0QCeBbnWrd6bap0Gt/3702b1c8b665732467097de9e215d7aa/486200-SNEM-Net-Metering-FAQ-PDF-11.20.25_FNL__1_.pdf",
+          "via": "http",
+          "status": 200,
+          "kind": "pdf",
+          "bytes": 813282,
+          "handed": 0
+        },
+        {
+          "url": "https://portlandgeneral.com/net-metering",
+          "via": "http",
+          "status": 200,
+          "kind": "html",
+          "bytes": 218,
+          "handed": 0
+        },
+        {
+          "url": "https://assets.ctfassets.net/416ywc1laqmd/18flR0QCeBbnWrd6bap0Gt/3702b1c8b665732467097de9e215d7aa/486200-SNEM-Net-Metering-FAQ-PDF-11.20.25_FNL__1_.pdf",
+          "via": "http",
+          "status": 200,
+          "kind": "pdf",
+          "bytes": 813282,
+          "handed": 6
+        },
+        {
+          "url": "https://assets.ctfassets.net/416ywc1laqmd/18flR0QCeBbnWrd6bap0Gt/3702b1c8b665732467097de9e215d7aa/486200-SNEM-Net-Metering-FAQ-PDF-11.20.25_FNL__1_.pdf",
+          "via": "http",
+          "status": 200,
+          "kind": "pdf",
+          "bytes": 813282,
+          "handed": 34
+        }
+      ],
+      "before": null,
+      "after": {
+        "basis": "flat",
+        "confidence": "seeded",
+        "paymentMethod": "none",
+        "brackets": [
+          {
+            "minKw": null,
+            "maxKw": null,
+            "feeUsd": 0,
+            "label": "Residential customers: For systems with a capacity of 25 kW or less, the application is free of charge!"
+          }
+        ],
+        "sourceUrl": "https://assets.ctfassets.net/416ywc1laqmd/18flR0QCeBbnWrd6bap0Gt/3702b1c8b665732467097de9e215d7aa/486200-SNEM-Net-Metering-FAQ-PDF-11.20.25_FNL__1_.pdf",
+        "sourceQuote": "A: Residential customers: For systems with a capacity of 25 kW or less, the application is free of charge! [PGE Net Metering • Frequently Asked Questions, p.1]",
+        "sourceKind": "official"
+      }
+    }
+  ]
+}
