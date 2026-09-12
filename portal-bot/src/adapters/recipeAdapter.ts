@@ -1219,6 +1219,41 @@ ${body.slice(0, 4000)}`);
    *  each, not once per resolveValue call (it runs in several loops). */
   private readonly inventedBindings = new Set<string>();
 
+  /** REFUSING THE LEARN ROOF'S NUMBER IS HALF A FIX; THE OTHER HALF IS FILING THIS ROOF'S.
+   *
+   *  Measured on the PacifiCorp storage section replayed for a project that DOES have a
+   *  battery: the declaration answered "Yes" and the manufacturer replayed "Tesla" (a
+   *  `select`, so closed vocabulary survives the guard below), but "Energy Storage Capacity
+   *  of Battery (kWh)" came out EMPTY. Two things combined to do that, and neither is
+   *  wrong on its own:
+   *    - capacity is the one battery spec with NO binding key. RECIPE_FIELD_DESCRIPTIONS
+   *      defines batteryManufacturer/batteryModel/batteryQuantity but nothing for kWh, so
+   *      the binder can only freeze the recorded number as an unbound literal.
+   *    - `looksLikeProjectData` matches "capacity", so that frozen literal is refused —
+   *      correctly. 13.5 is the learn roof's Powerwall; filing it on a 27 kWh job is the
+   *      8000-W-on-a-6-kW-system incident wearing a battery label.
+   *  The result was a filing that tells the utility there IS a Tesla battery and never says
+   *  how big it is — a required kWh field left empty, which is a suspended interconnection
+   *  application rather than a rejected one, but still a filing that does not complete.
+   *
+   *  So the refusal grows its missing half: substitute the capacity THIS project holds.
+   *  Battery context is REQUIRED in the label, not merely "capacity": a bare "System
+   *  Capacity (kW)" is the PV system's AC rating, and answering it with the battery's kWh
+   *  would be the wrong-number outcome this guard exists to prevent. Still blank when the
+   *  project carries no capacity — blank and visible beats another roof's number. */
+  private projectBatteryCapacityFor(label: string): string {
+    if (!/\bbatter(y|ies)\b|\benergy storage\b|\bess\b|\bstorage\b/i.test(label)) return "";
+    if (!/\bcapacity\b|kwh/i.test(label)) return "";
+    // Stated where the value is produced, not only in skipForNoBattery: a project declared
+    // WITHOUT storage must never have a capacity filed for it, whatever else is in scope.
+    if (/^(no|false|none|n)$/i.test(String(this.fieldValues.hasBattery ?? "").trim())) return "";
+    // essKwh is the canonical key normalize.ts derives; batteryCapacityKwh is what the
+    // parser itself emits. Both reach fieldValues through resolveRecipeFieldValues' snapshot
+    // passthrough, and the raw key is the fallback for a snapshot that never went through
+    // normalisation — the same case portalRecipes.ts guards for the energy-source answer.
+    return String(this.fieldValues.essKwh ?? this.fieldValues.batteryCapacityKwh ?? "").trim();
+  }
+
   private resolveValue(step: RecipeStep): string {
     // NOT HAVING A BATTERY IS AN ANSWER, AND IT IS "NO". This step is only reached now
     // because it is the DECLARATION rather than a spec, and the recorded literal on it came
@@ -1291,6 +1326,8 @@ ${body.slice(0, 4000)}`);
         const closedVocabulary = step.action === "select" || step.action === "check";
         const labelText = `${step.selector?.label ?? ""} ${step.note ?? ""}`;
         if (!closedVocabulary && looksLikeProjectData(labelText, String(step.value))) {
+          const ownCapacity = this.projectBatteryCapacityFor(labelText);
+          if (ownCapacity) return applyFormatHint(ownCapacity, String(step.note ?? ""));
           if (!this.inventedBindings.has(key)) {
             this.inventedBindings.add(key);
             this.agingNotes.push(
@@ -1322,6 +1359,8 @@ ${body.slice(0, 4000)}`);
     if (step.action !== "select" && step.action !== "check") {
       const labelText = `${step.selector?.label ?? ""} ${step.note ?? ""}`;
       if (looksLikeProjectData(labelText, String(step.value ?? ""))) {
+        const ownCapacity = this.projectBatteryCapacityFor(labelText);
+        if (ownCapacity) return applyFormatHint(ownCapacity, String(step.note ?? ""));
         const key = `literal:${labelText.slice(0, 40)}`;
         if (!this.inventedBindings.has(key)) {
           this.inventedBindings.add(key);

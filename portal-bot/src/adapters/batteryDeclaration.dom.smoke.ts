@@ -55,13 +55,18 @@ const recipe = {
   createdBy: "test", createdAt: "", updatedAt: "", notes: "", discipline: "",
 } as unknown as PortalRecipe;
 
-const run = async (hasBattery: string): Promise<{ ess: string; cap: string; make: string; blanks: string[] }> => {
+// THE CAPACITY IS THE PROJECT'S, NOT THE RECIPE'S, so every run carries a project capacity
+// that is DELIBERATELY NOT 13.5: a pass here has to mean this roof's number was filed, and
+// an assertion against 13.5 could not tell that apart from replaying the learn roof's.
+const run = async (
+  values: Record<string, string>,
+): Promise<{ ess: string; cap: string; make: string; blanks: string[] }> => {
   const browser = await chromium.launch();
   const context = await browser.newContext();
   await context.addInitScript("globalThis.__name = globalThis.__name || function (fn) { return fn; };");
   const page = await context.newPage();
   await page.goto(url);
-  const a = new RecipeAdapter(recipe, { hasBattery }, {}, { autoSubmit: false });
+  const a = new RecipeAdapter(recipe, values, {}, { autoSubmit: false });
   (a as unknown as { page: unknown }).page = page;
   await a.fillApplication({} as never);
   const ess = await page.locator("#ess").inputValue().catch(() => "");
@@ -72,7 +77,11 @@ const run = async (hasBattery: string): Promise<{ ess: string; cap: string; make
   return { ess, cap, make, blanks };
 };
 
-const no = await run("No");
+// The no-battery project is given a capacity ANYWAY. A stale essKwh on a project whose
+// hasBattery says No must not put a number on the page — and without this key the
+// "specs stay empty" check below would pass for the trivial reason that there was no
+// capacity to fill, proving nothing about the substitution added for the with-battery case.
+const no = await run({ hasBattery: "No", essKwh: "27" });
 console.log(`   no battery -> Energy Storage=${JSON.stringify(no.ess)} capacity=${JSON.stringify(no.cap)} make=${JSON.stringify(no.make)}`);
 console.log(`              -> still blank: ${JSON.stringify(no.blanks)}`);
 
@@ -89,12 +98,35 @@ check("...so the portal has nothing left to complain about",
   !no.blanks.some((b) => /energy storage/i.test(b)), JSON.stringify(no.blanks));
 
 // THE FAIL-SAFE, from the other side: a job that DOES have a battery must still file one.
-const yes = await run("Yes");
+//
+// This is the half that was silently broken. Capacity is the ONE battery spec with no
+// binding key (RECIPE_FIELD_DESCRIPTIONS defines batteryManufacturer/batteryModel/
+// batteryQuantity and nothing for kWh), so the binder can only freeze it as an unbound
+// literal — and the cross-project literal guard then refuses it, because "capacity" is
+// project data. Refusing is right; the bug was that nothing took its place. The utility
+// was told there is a Tesla battery and never told how big it is: a required kWh field
+// left empty, which suspends an interconnection application rather than rejecting it.
+const yes = await run({ hasBattery: "Yes", essKwh: "27" });
 console.log(`   with battery -> Energy Storage=${JSON.stringify(yes.ess)} capacity=${JSON.stringify(yes.cap)} make=${JSON.stringify(yes.make)}`);
 
 check("A REAL BATTERY still files its declaration and its specs",
-  /^yes$/i.test(yes.ess) && yes.cap === "13.5" && /tesla/i.test(yes.make),
+  /^yes$/i.test(yes.ess) && yes.cap === "27" && /tesla/i.test(yes.make),
   `ess=${JSON.stringify(yes.ess)} cap=${JSON.stringify(yes.cap)} make=${JSON.stringify(yes.make)}`);
+
+check("...and the capacity filed is THIS roof's, not the 13.5 kWh the recipe recorded",
+  yes.cap !== "13.5",
+  `capacity=${JSON.stringify(yes.cap)} — the learn project's Powerwall, filed as fact about a different house`);
+
+// A SNAPSHOT THAT NEVER WENT THROUGH normalize.ts still has a battery. essKwh is the
+// canonical key normalize derives; batteryCapacityKwh is what the parser itself emits, and
+// both arrive in fieldValues via the snapshot passthrough in resolveRecipeFieldValues.
+// portalRecipes.ts already guards the energy-source answer for exactly this case.
+const raw = await run({ hasBattery: "Yes", batteryCapacityKwh: "27" });
+console.log(`   un-normalised -> Energy Storage=${JSON.stringify(raw.ess)} capacity=${JSON.stringify(raw.cap)}`);
+
+check("...and the raw parser key works too, for a snapshot that never went through normalize",
+  /^yes$/i.test(raw.ess) && raw.cap === "27",
+  `ess=${JSON.stringify(raw.ess)} cap=${JSON.stringify(raw.cap)}`);
 
 server.close();
 if (failures) { console.error(`\n${failures} battery-declaration check(s) FAILED.`); process.exit(1); }
