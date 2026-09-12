@@ -203,6 +203,33 @@ const PAYMENT_METHODS: FeePaymentMethod[] = ["portal", "mailed_check", "none", "
 // method the producer set itself.
 const MAILED_CHECK_RE = /\b(?:mail(?:ed)?\s+(?:a\s+|the\s+)?check|check\s+(?:payable|by\s+mail)|paid?\s+by\s+check|remit\s+(?:a\s+)?check)\b/i;
 
+// "WE HOLD TWO CONTRADICTORY PUBLISHED NUMBERS" IS NOT "WE HAVE NO SCHEDULE".
+//
+// A conflicted schedule refuses to evaluate, so it arrives here as feeUsd:null —
+// the same channel as "no system size yet" and "no schedule stored at all" — and
+// the quote drops to the labelled 1.5%-of-valuation estimate. That degrade is
+// RIGHT and is kept: the portal's own number trues this up later
+// (recordActualPermitFee), automation never pays the fee (hard rule 1), and this
+// function runs inside the staging gate whose whole contract is never to break a
+// submission. Blocking a filing over a fee-sheet disagreement would trade a
+// minute of somebody's reading for a stopped job.
+//
+// What is NOT right is showing it the way every other gap is shown. Measured on
+// Coos County: the estimate reads $450 against a true $160, under "Rough
+// estimate … true it up" — the sentence an operator sees on every jurisdiction
+// with no schedule, i.e. the ordinary state of the world, i.e. nobody acts. The
+// one actionable fact — that the county's own form says $94 and its own adopted
+// schedule says $160, 1.70x apart, one stamped 2022 and one 2025, resolvable in
+// sixty seconds — was compressed into "needs a human to read it", which says
+// nothing about what to do. So a conflict LEADS the basis line, on whichever
+// tier won the amount.
+//
+// Matched by regex and not by import on purpose: this module require()s the
+// schedule module defensively and must keep quoting if it is absent or broken
+// (see feeScheduleLookup). The literal is feeSchedules.FEE_CONFLICT_MARKER, and
+// submissionFees.test.ts asserts the two still agree so the copies cannot drift.
+const FEE_CONFLICT_RE = /\bUNRESOLVED FEE CONFLICT\b/;
+
 /** Read the producer's result through a whitelist. A module owned elsewhere must
  *  not be able to put a negative fee, a novel enum or a junk URL on a quote. */
 function normalizeScheduleResult(raw: unknown): ScheduleFee | null {
@@ -297,6 +324,7 @@ export function buildPaymentQuote(db: AppDb, project: ProjectRecord, trackInput?
   // where we got the number. Ameren Illinois' $50 is a mailed check whether we
   // read it off the schedule, learned it from a past filing, or typed it in.
   const schedule = publishedScheduleFee(db, project, track);
+  const scheduleConflicted = !!schedule?.reason && FEE_CONFLICT_RE.test(schedule.reason);
 
   let permitFeeUsd: number | null = null;
   let permitFeeSource: PermitFeeSource = "unknown";
@@ -334,13 +362,24 @@ export function buildPaymentQuote(db: AppDb, project: ProjectRecord, trackInput?
       // A schedule that was found but would not evaluate is the most useful thing
       // we can say here: "no size on the project yet" is a fixable answer, where
       // a bare guess just hides it.
-      permitFeeBasis = schedule?.reason
+      permitFeeBasis = schedule?.reason && !scheduleConflicted
         ? `${est.basis} A published schedule for ${schedule.matchedName || "this jurisdiction"} was found but did not resolve: ${schedule.reason}${schedule.sourceUrl ? ` (${schedule.sourceUrl})` : ""}`
         : est.basis;
       // A bracket label describes a schedule line we did not use — do not let it
       // ride along on a guess and read as though the guess were bracketed.
       permitFeeBracketLabel = null;
     }
+  }
+
+  // A CONFLICT IS A FACT ABOUT THE JURISDICTION, NOT ABOUT WHICH TIER WON — so it
+  // is prepended after the ladder, not inside one of its branches. A learned
+  // median or an operator-entered actual is a better answer than either disputed
+  // number and rightly keeps the amount; the open question about what this county
+  // publishes is still true, still unanswered, and still the only thing on this
+  // screen anyone can act on.
+  if (scheduleConflicted && schedule) {
+    permitFeeBasis = `${schedule.reason}${schedule.sourceUrl ? ` (${schedule.sourceUrl})` : ""}`
+      + ` THE AMOUNT QUOTED IS NOT FROM THAT SCHEDULE — ${permitFeeBasis}`;
   }
 
   // Honest default: unknown unless the schedule said, or unless the fee is a

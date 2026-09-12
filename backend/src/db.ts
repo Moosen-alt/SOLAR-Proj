@@ -1696,6 +1696,77 @@ const VERSIONED_MIGRATIONS: VersionedMigration[] = [
       // next research pass, not from a migration reading its notes.
     },
   },
+  {
+    version: 23,
+    name: "fee_schedules_conflict_and_document_date",
+    up: (db) => {
+      // A SAFETY PROPERTY THAT RESTED ON A FALL-THROUGH, AND A DATE THAT ONLY
+      // EXISTED AS PROSE.
+      //
+      // Coos County publishes its adopted schedule ($135 / $160 / $265, "Effective
+      // 7-1-25") and, on its own solar page, a permit APPLICATION still printing
+      // 2022 fees ($79 / $94 / $156, "Revised 12/23/2022") — uniformly 1.70x apart,
+      // the fingerprint of one blanket increase rather than two different fee
+      // types. jurisdictionHarvest.ts detects that and refuses to price the job.
+      //
+      // But it had no column to say so in. The refusal was achieved by storing the
+      // row as basis 'other' with both candidates' brackets, which is the ONE shape
+      // evaluateSchedule falls past every branch on. Its author wrote the coupling
+      // down because they could not edit feeSchedules.ts: "if basis 'other' with
+      // multiple brackets ever becomes evaluable, conflicted schedules silently
+      // start answering with one of the two disputed numbers." A perfectly ordinary
+      // improvement to the evaluator would have started quoting $94 or $160 for
+      // Coos County with nothing going red.
+      //
+      // status — 'ok' | 'conflicted'. The refusal as a FACT ON THE ROW, checked by
+      //   evaluateSchedule before any basis is looked at, and queryable: "which
+      //   jurisdictions are we holding an open fee question on?" was previously
+      //   answerable only by LIKE-matching a marker inside a notes blob.
+      //   NOT a `confidence` value: confidence says who vouches (research, or a
+      //   person — hard rule 3) and conflict says the sources disagree. A
+      //   human-verified row can be conflicted, and must still refuse.
+      //
+      // document_date — WHAT THE DOCUMENT SAYS ABOUT ITSELF, verbatim ("Revised
+      //   12/23/2022"), exactly as ahj_form_templates got in v21 and read by the
+      //   same single parser in documentDate.ts. The currency comparison is what
+      //   DECIDED the Coos conflict, and it survived only as a sentence inside
+      //   notes — unsortable, unqueryable, and lost the moment mergeNotes hit its
+      //   segment cap. NOT backfillable: it lives in the document's bytes.
+      //
+      // candidates_json — each source's OWN reading: tag, name, url, quote, its
+      //   document date, and the brackets IT printed. A conflicted row used to
+      //   flatten both tables into one bracket list with "[S1]"/"[S2]" glued onto
+      //   the labels, which is precisely the form in which you cannot tell which
+      //   document said what. An ordinary row carries one entry, so every row can
+      //   explain where its number came from.
+      for (const [column, decl] of [
+        ["status", "TEXT NOT NULL DEFAULT 'ok'"],
+        ["document_date", "TEXT NOT NULL DEFAULT ''"],
+        ["candidates_json", "TEXT NOT NULL DEFAULT '[]'"],
+      ] as const) {
+        addColumnIfMissing(db, "fee_schedules", column, decl);
+      }
+
+      // BACKFILL, OR THE GUARD PROTECTS ONLY NEW ROWS. A conflict recorded before
+      // this migration carries the marker in its notes and would default to
+      // status 'ok' — leaving it protected by nothing but the fall-through this
+      // column exists to replace, which is the exact trap, still armed, on the one
+      // jurisdiction we have actually measured it on. The marker is
+      // feeSchedules.FEE_CONFLICT_MARKER; it is written out literally here because
+      // a migration must keep meaning the same thing after the constant moves.
+      db.run("UPDATE fee_schedules SET status = 'conflicted' WHERE status = 'ok' AND notes LIKE '%UNRESOLVED FEE CONFLICT%'");
+
+      // candidates_json is NOT reconstructed from those flattened "[S1] …" labels.
+      // Parsing a label back into a source is guesswork, and a wrong attribution
+      // is worse than none: it would tell a person that the 2022 form said $135.
+      // Existing conflicts keep their notes trail and gain the refusal; their
+      // per-source split fills in on the next harvest.
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_fee_schedules_status
+          ON fee_schedules(status, track);
+      `);
+    },
+  },
 ];
 
 // One-time repair for the runaway-notes bug: upsertKnowledge used to merge the

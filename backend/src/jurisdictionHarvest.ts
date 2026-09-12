@@ -27,17 +27,27 @@
 // feeForProject to REFUSE TO ANSWER. A fee with two candidate values is a question for a
 // human, not an answer for a quote.
 //
-// HOW THE REFUSAL IS ACHIEVED WITHOUT OWNING feeSchedules.ts. That module's one evaluator
-// already refuses a schedule it cannot read: `basis "other"` with more than one bracket falls
-// through every branch of evaluateSchedule to
-//     miss(`Schedule basis "other" needs a human to read it — see notes and the source quote.`)
-// so feeForProject returns feeUsd:null with that reason, and lookupPublishedFee hands the
-// quote ladder a null. That is not a trick played on the evaluator; it is the evaluator's own
-// stated meaning of "other" — a table that is not a function of anything this code can
-// evaluate. A conflicted schedule is exactly that. The invariant it rests on (basis "other",
-// >= 2 brackets) is asserted in buildConflictFinding and in the test, because a conflict row
-// that accidentally carried ONE bracket would be ANSWERED, silently, with one of the two
-// disputed numbers.
+// HOW THE REFUSAL IS ACHIEVED — AND IT IS NO LONGER A COUPLING TO A FALL-THROUGH.
+//
+// It used to be. This module could not edit feeSchedules.ts, so it reached the refusal by
+// storing a conflict as `basis "other"` with more than one bracket — the one shape that falls
+// through every branch of evaluateSchedule to "needs a human to read it". That worked, and it
+// was fragile in a way nobody reading the evaluator would have seen: teach "other" to evaluate
+// a two-row table and every conflicted schedule in the database silently starts answering with
+// one of its two disputed numbers.
+//
+// Since migration v23 the refusal is a FACT ON THE ROW. `fee_schedules.status = 'conflicted'`
+// is set by buildConflictFinding and checked by evaluateSchedule BEFORE any basis branch, so
+// it holds whatever the basis is, whatever the bracket count is, and whatever `confidence`
+// says. The basis-"other" shape is kept anyway — two candidate tables really are not a
+// function of anything — but nothing load-bearing rests on it any more, and the assertions
+// below (basis "other", >= 2 brackets, status 'conflicted') are checked against the finding
+// actually built rather than assumed.
+//
+// The row also now carries `document_date` and `candidates_json`: each source's own reading
+// with its own stated date, instead of both tables flattened into one bracket list with
+// "[S1]"/"[S2]" glued onto the labels. The currency comparison is what DECIDED the Coos
+// conflict, and it used to survive only as prose in notes.
 //
 // WHAT THIS MODULE DELIBERATELY DOES NOT DO
 //
@@ -57,11 +67,13 @@
 //  * It writes nothing unless asked (`apply: true`). The dry run is the default because the
 //    first thing a person wants from a new jurisdiction is to SEE the numbers.
 //
-// WHAT feeSchedules.ts WOULD NEED to hold a conflict properly (it is not ours to change): a
-// `confidence`/status value of 'conflicted' distinct from seeded/verified; a `document_date`
-// per source; and a `candidates_json` holding each source's own brackets rather than the two
-// tables flattened into one list with tagged labels. Until then the conflict lives in this
-// module's report, in the schedule's notes, and in the basis-"other" refusal.
+// WHAT feeSchedules.ts NEEDED to hold a conflict properly — all three landed in v23, so this
+// note is now a record of what was done rather than a wish: a `status` of 'conflicted' kept
+// distinct from seeded/verified (confidence says WHO VOUCHES, conflict says THE SOURCES
+// DISAGREE — a verified row can be conflicted and must still refuse); a `document_date` per
+// source; and a `candidates_json` holding each source's own brackets. The conflict now lives
+// in four places that cannot drift apart: this module's report, the schedule's notes, the
+// queryable status column, and evaluateSchedule's own first branch.
 // ---------------------------------------------------------------------------
 
 import type { AppDb } from "./db";
@@ -81,6 +93,7 @@ import {
 import { documentDateForPdf, isDocumentDateStale, isoForDocumentDate } from "./documentDate";
 import { fetchPublicDocument, findDocumentLinks, type DocumentLink, type FetchedDocument } from "./documentFetch";
 import {
+  FEE_CONFLICT_MARKER,
   feeScheduleProfileKey,
   getFeeSchedule,
   saveFeeSchedule,
@@ -88,6 +101,7 @@ import {
   type FeeBracket,
   type FeeScheduleFinding,
   type FeeScheduleRecord,
+  type FeeScheduleSource,
 } from "./feeSchedules";
 import { knowledgeResearchHint } from "./knowledgeBase";
 import { logger } from "./logger";
@@ -546,10 +560,15 @@ export async function readFeeTableFromPdf(bytes: Uint8Array): Promise<HarvestedF
 // ---------------------------------------------------------------------------
 
 /** The marker that makes an unresolved conflict recognisable on a later pass.
- *  It carries NO " | " of its own: KB/fee notes are " | "-joined SEGMENTS, and a
- *  marker containing the separator would be shredded by mergeNotes and never
- *  found again. */
-export const FEE_CONFLICT_MARKER = "UNRESOLVED FEE CONFLICT";
+ *
+ *  DEFINED IN feeSchedules.ts NOW, re-exported here so every existing importer
+ *  keeps working. It moved because the module that REFUSES needs it more than
+ *  the module that detects: the evaluator's refusal reason leads with it and
+ *  submissionFees.ts recognises it at the quote seam, and harvest imports
+ *  feeSchedules (never the reverse), so a single definition can only live on
+ *  that side of the edge. Two copies of a marker are two copies of a safety
+ *  check that silently stop agreeing. */
+export { FEE_CONFLICT_MARKER } from "./feeSchedules";
 
 /** A bracket's identity is its BOUNDS, not its wording or its position. "5 kva or
  *  less" and "5 KVA or less" are the same row of the same table; so are two rows
@@ -641,10 +660,18 @@ function describeCandidate(c: FeeCandidate): string {
 
 /** Turn a conflict into something feeSchedules.ts can hold and REFUSE to answer.
  *
- *  basis "other" with >= 2 brackets is the one shape evaluateSchedule declines to
- *  evaluate ("needs a human to read it"). Both invariants are enforced here
- *  rather than assumed, because a conflict row that arrived with a single bracket
- *  would be answered — with one of the two disputed numbers, silently. */
+ *  THE REFUSAL IS `status: "conflicted"`, and that is the whole of it since v23:
+ *  evaluateSchedule checks it before it looks at a basis, so it cannot be undone
+ *  by a change to how any basis evaluates. basis "other" with >= 2 brackets is
+ *  kept and still asserted — two candidate tables genuinely are not a function of
+ *  anything, and belt-and-braces costs nothing here — but it is no longer the
+ *  mechanism, which is why the coupling note that used to live on it is gone.
+ *
+ *  Each candidate ALSO travels as its own FeeScheduleSource, with the brackets it
+ *  printed and the date it states. The flattened "[S1] 5 kva or less" labels stay
+ *  for the row's own bracket list (that is what a person sees on the stored row),
+ *  but they are no longer the only record of who said what — which is the form in
+ *  which the currency comparison that settles a Coos-shaped conflict was lost. */
 export function buildConflictFinding(
   candidates: FeeCandidate[],
   conflict: FeeConflict,
@@ -679,12 +706,33 @@ export function buildConflictFinding(
     reason: "",
     basis: "other",
     brackets,
+    // THE REFUSAL, as data on the row rather than as a shape the evaluator
+    // happens not to handle.
+    status: "conflicted",
+    documentDate: primary.documentDate,
+    sources: inPlay.map(asScheduleSource),
     notes: notes.join(" | "),
     sourceUrl: primary.sourceUrl,
     sourceQuote: inPlay.map((c) => `${c.tag}: ${c.sourceQuote}`).join("   ").slice(0, 1000),
     // Harvested off the jurisdiction's own document page — the researcher path has
     // to guess at this; the harvest knows.
     sourceKind: "official",
+  };
+}
+
+/** A harvest candidate as the store's own per-source record. Deliberately a
+ *  narrowing: `origin` and the harvest's internal bookkeeping are this module's
+ *  business, while the tag, the document date and the brackets THIS document
+ *  printed are what a person needs months later to settle the question. */
+function asScheduleSource(c: FeeCandidate): FeeScheduleSource {
+  return {
+    tag: c.tag,
+    name: c.name,
+    sourceUrl: c.sourceUrl,
+    sourceQuote: c.sourceQuote,
+    documentDate: c.documentDate,
+    documentDateIso: c.documentDateIso,
+    brackets: c.brackets,
   };
 }
 
@@ -1004,7 +1052,13 @@ async function resolveFees(
   // An unresolved conflict already on file is a QUESTION ALREADY ASKED. Piling a
   // fresh reading on top of it would re-flatten two disputed tables into three and
   // make the question harder, not easier.
-  if (existing && existing.notes.includes(FEE_CONFLICT_MARKER)) {
+  //
+  // The STATUS COLUMN is the check now; the notes marker is kept beside it only as
+  // a belt for a row written by something that set the notes and not the column.
+  // saveFeeSchedule enforces the same rule independently, so a caller that reaches
+  // it by another path is refused there too — this branch exists to report the
+  // situation properly rather than to be the only thing standing in the way.
+  if (existing && (existing.status === "conflicted" || existing.notes.includes(FEE_CONFLICT_MARKER))) {
     report.fee.action = "conflict_already_recorded";
     report.fee.schedule = existing;
     report.fee.conflict = detectFeeConflict(candidates);
@@ -1024,9 +1078,12 @@ async function resolveFees(
       return;
     }
     // The invariant the refusal rests on, checked against the thing actually built.
-    if (built.basis !== "other" || built.brackets.length < 2) {
+    // status is the load-bearing half since v23; basis/brackets are kept because a
+    // conflicted row that looked like an ordinary evaluable schedule would be a
+    // confusing thing to leave behind even though it would still refuse.
+    if (built.status !== "conflicted" || built.basis !== "other" || built.brackets.length < 2) {
       report.fee.action = "refused";
-      report.fee.reason = `Conflict finding failed its own invariant (basis=${built.basis}, brackets=${built.brackets.length}); a schedule like that would be ANSWERED rather than refused, so nothing was written.`;
+      report.fee.reason = `Conflict finding failed its own invariant (status=${built.status ?? "ok"}, basis=${built.basis}, brackets=${built.brackets.length}); a schedule like that would be ANSWERED rather than refused, so nothing was written.`;
       report.warnings.push(report.fee.reason);
       return;
     }
@@ -1086,6 +1143,13 @@ async function resolveFees(
     reason: "",
     basis: best.basis,
     brackets: best.brackets,
+    // THE DATE RIDES WITH THE ROW, not only with the prose below it. An agreeing
+    // single source is still a DATED document, and "which of these two schedules
+    // is more current" is the question every future conflict on this jurisdiction
+    // will turn on — the answer must be on the row before the conflict happens,
+    // not reconstructed from a notes sentence afterwards.
+    documentDate: best.documentDate,
+    sources: [asScheduleSource(best)],
     notes: [
       `Harvested ${cfg.stamp} from ${report.pageUrl || best.sourceUrl} in one pass with this jurisdiction's blank forms.`,
       dateNote,

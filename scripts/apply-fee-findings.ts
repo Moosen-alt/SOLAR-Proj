@@ -20,6 +20,15 @@
 // This script adds one rule of its own: a finding whose quote was not found in bytes the
 // researcher retrieved is REPORTED as such before it is applied, because an unchecked quote
 // and a checked one are indistinguishable once they are both sitting in a fee field.
+//
+// --resolve-conflicts IS THE HUMAN GESTURE THAT CLOSES AN UNRESOLVED FEE CONFLICT.
+// A conflicted row holds two contradictory published tables and refuses to price anything
+// until somebody picks one; saveFeeSchedule refuses every ordinary write over it, including
+// the automated research pass, precisely so that a later pass returning ONE of the two
+// numbers cannot answer the question by winning the race. Passing this flag says a person
+// read both candidates and chose. It is a separate flag for the same reason --db is
+// required with no default: it must be impossible to do by forgetting one. Every conflicted
+// row it is about to overwrite is printed, with both candidates, before anything is written.
 import fs from "node:fs";
 import path from "node:path";
 
@@ -44,12 +53,16 @@ async function main(): Promise<void> {
   const file = args.find((a) => !a.startsWith("--") && a !== flag("db")) || "";
   const dbPath = flag("db");
   const dryRun = args.includes("--dry-run");
+  const resolveConflicts = args.includes("--resolve-conflicts");
 
   if (!file || !dbPath) {
     console.error(
-      "Usage: npx tsx scripts/apply-fee-findings.ts <findings.json> --db <path> [--dry-run]\n\n"
-      + "  Both are required. The findings file comes from:\n"
-      + "    npx tsx scripts/research-fee-schedules.ts --db <a copy> --out findings.json\n",
+      "Usage: npx tsx scripts/apply-fee-findings.ts <findings.json> --db <path> [--dry-run] [--resolve-conflicts]\n\n"
+      + "  The file and --db are required. The findings file comes from:\n"
+      + "    npx tsx scripts/research-fee-schedules.ts --db <a copy> --out findings.json\n\n"
+      + "  --resolve-conflicts  overwrite rows holding an UNRESOLVED FEE CONFLICT. Only pass it\n"
+      + "                       when you have read both candidates and picked; without it such a\n"
+      + "                       row refuses the write and keeps refusing to price a job.\n",
     );
     process.exit(1);
   }
@@ -58,7 +71,7 @@ async function main(): Promise<void> {
   await import("dotenv/config");
   process.env.AUTOPILOT_DB_PATH = dbPath;
   const { openDatabase } = await import("../backend/src/db");
-  const { saveFeeSchedule, getFeeSchedule, feeScheduleProfileKey } = await import("../backend/src/feeSchedules");
+  const { saveFeeSchedule, getFeeSchedule, feeScheduleProfileKey, conflictSummary } = await import("../backend/src/feeSchedules");
   const db = await openDatabase();
 
   const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as { generatedAt?: string; database?: string; findings?: StoredFinding[] };
@@ -86,6 +99,15 @@ async function main(): Promise<void> {
     if (existing?.confidence === "verified") {
       console.log("      a human has verified this row — it will not be overwritten; the finding goes to its notes.");
     }
+    if (existing?.status === "conflicted") {
+      // Printed whether or not the flag was passed: somebody running without it
+      // should see what they would have been overwriting, and somebody running
+      // with it should see it one last time before it goes.
+      console.log(`      ⚠ UNRESOLVED FEE CONFLICT on this row — ${conflictSummary(existing)}`);
+      console.log(resolveConflicts
+        ? "        --resolve-conflicts was passed: this finding will REPLACE both candidates."
+        : "        it will NOT be overwritten. Read both candidates; re-run with --resolve-conflicts to pick this one.");
+    }
     if (dryRun) { console.log("      (dry run)"); continue; }
 
     const outcome = saveFeeSchedule(
@@ -95,10 +117,12 @@ async function main(): Promise<void> {
         found: true, reason: "", basis: f.basis as never, brackets: f.brackets as never,
         notes: f.notes, paymentMethod: f.paymentMethod, sourceUrl: f.sourceUrl,
         sourceQuote: f.sourceQuote, sourceKind: f.sourceKind,
+        resolvesConflict: resolveConflicts,
       },
     );
     if (outcome.saved) { applied++; console.log("      saved as SEEDED."); }
     else if (outcome.refusedVerified) { refused++; console.log("      refused (human-verified) — finding recorded in notes."); }
+    else if (outcome.refusedConflicted) { refused++; console.log("      refused (unresolved conflict) — finding recorded in notes."); }
     else { skipped++; console.log(`      not saved: ${outcome.reason}`); }
   }
 

@@ -42,6 +42,11 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { AppDb } from "./db";
 import type { FeePaymentMethod, ProjectRecord } from "../../shared/src/types";
+// ONE READER FOR "Revised 12/23/2022", shared with ahj_form_templates' own
+// document_date column. A second parser here would eventually disagree with the
+// column it is meant to explain, and a wrong date makes a stale schedule look
+// current — strictly worse than no date at all.
+import { isoForDocumentDate } from "./documentDate";
 import { fetchPublicDocument } from "./documentFetch";
 import type { FetchPublicDocumentOptions } from "./documentFetch";
 import { DEFAULT_FEE_KEYWORDS, groupItemsIntoRows, extractPdfTextItems } from "./pdfTables";
@@ -65,6 +70,29 @@ export type FeeTrack = "permit" | "nem";
 export type FeeBasis = "system_kw" | "valuation" | "flat" | "other";
 export type FeeConfidence = "seeded" | "verified";
 
+/** IS THIS ROW AN ANSWER, OR AN OPEN QUESTION?
+ *
+ *  A dimension of its own, and deliberately NOT a third `confidence` value.
+ *  Confidence says who vouches for the row — research ('seeded') or a person
+ *  ('verified', hard rule 3). A conflict says something else entirely: that two
+ *  published documents for this jurisdiction disagree about the same bracket.
+ *  Those are orthogonal. A human-verified row can be conflicted (somebody
+ *  verified that we hold two numbers and has not yet picked), and it must still
+ *  refuse to price a job — so folding 'conflicted' into confidence would have
+ *  made the refusal depend on nobody ever verifying it. */
+export type FeeScheduleStatus = "ok" | "conflicted";
+
+/** THE MARKER, AND WHY IT LIVES HERE.
+ *
+ *  jurisdictionHarvest.ts writes it into notes and re-exports it, but the
+ *  constant belongs to the module that REFUSES, not to the module that
+ *  detected: the evaluator's refusal reason carries it, and submissionFees.ts
+ *  recognises it at the quote seam. Harvest imports feeSchedules (never the
+ *  other way round), so the one definition has to be on this side of that edge.
+ *  It carries NO " | " of its own — fee/KB notes are " | "-joined SEGMENTS and a
+ *  marker containing the separator would be shredded by mergeNotes. */
+export const FEE_CONFLICT_MARKER = "UNRESOLVED FEE CONFLICT";
+
 /** One line of a published schedule. Which pair of bounds is populated follows
  *  the schedule's `basis`; a flat schedule carries one bracket with neither. A
  *  null/absent upper bound means "and above" (the open last row). */
@@ -77,6 +105,34 @@ export interface FeeBracket {
   /** The jurisdiction's OWN wording for this line — this is what the permit
    *  application's fee-quantity field is asking for, verbatim where possible. */
   label?: string;
+}
+
+/** ONE DOCUMENT'S OWN ACCOUNT OF THIS SCHEDULE — kept per source, not flattened.
+ *
+ *  A conflicted row used to be stored as both candidates' brackets in ONE list
+ *  with "[S1]"/"[S2]" glued onto each label, because the table had nowhere else
+ *  to put them. That loses exactly the thing that resolves a conflict: which
+ *  document said what, and how old each document says it is. Coos County's
+ *  dispute ($79/$94/$156 against $135/$160/$265) is settled the moment you can
+ *  see that the first list comes off a form stamped "Revised 12/23/2022" and the
+ *  second off a schedule stamped "Effective 7-1-25" — and until v23 that fact
+ *  survived only as prose in notes. */
+export interface FeeScheduleSource {
+  /** Short tag as it appears in the notes trail and the refusal reason: S0, S1… */
+  tag: string;
+  /** Human name of the document/authority this reading came from. */
+  name: string;
+  sourceUrl: string;
+  sourceQuote: string;
+  /** The document's own words about its currency — "Revised 12/23/2022",
+   *  "Effective 7-1-25" — verbatim, never normalised. "" when it never said.
+   *  Same convention (and same reader) as ahj_form_templates.document_date. */
+  documentDate: string;
+  /** The comparable date inside that phrase, derived by documentDate.ts's single
+   *  parser so there is never a second reader to drift away from the column. */
+  documentDateIso: string;
+  /** What THIS document printed, before anything was merged or tagged. */
+  brackets: FeeBracket[];
 }
 
 export interface FeeScheduleRecord {
@@ -97,6 +153,18 @@ export interface FeeScheduleRecord {
   collectedByProfileKey: string;
   basis: FeeBasis;
   brackets: FeeBracket[];
+  /** 'conflicted' = two sources disagree and this row must not price anything.
+   *  Read by evaluateSchedule BEFORE any basis branch — see the comment there. */
+  status: FeeScheduleStatus;
+  /** What the document behind this row says about its own currency, verbatim.
+   *  "" when it never said. The currency comparison is what settles a conflict,
+   *  and before this column it survived only as prose in `notes`. */
+  documentDate: string;
+  /** Derived from documentDate, never stored twice. */
+  documentDateIso: string;
+  /** Every source behind this row — one for an ordinary schedule, two or more
+   *  for a conflicted one, each with its own brackets and its own date. */
+  sources: FeeScheduleSource[];
   notes: string;
   /** HOW the money moves. 'mailed_check' is the load-bearing one: it says no portal
    *  can take this fee and a person has to post it (Ameren Illinois' $50 Level 1).
@@ -131,6 +199,26 @@ export interface FeeScheduleFinding {
   /** Which permit this finding priced. Absent reads as "" — undifferentiated,
    *  which is what every pre-existing caller means. */
   discipline?: string;
+  /** 'conflicted' says this finding is not a price at all: it is the RECORD OF A
+   *  DISAGREEMENT between the sources below, and the row it writes must refuse
+   *  to answer. Absent reads as 'ok', which is what every pre-existing caller
+   *  means — a finding is normally somebody's answer. */
+  status?: FeeScheduleStatus;
+  /** The document's own currency phrase, verbatim ("Revised 12/23/2022"). */
+  documentDate?: string;
+  /** Each document's own reading, unmerged. Absent means "one source, this
+   *  finding" and saveFeeSchedule synthesises that entry rather than storing an
+   *  empty list — a row whose sources are blank cannot explain itself. */
+  sources?: FeeScheduleSource[];
+  /** A PERSON HAS READ BOTH CANDIDATES AND PICKED ONE.
+   *
+   *  Without this, the only way past a conflicted row is refusal — including for
+   *  the automated research pass, which is the whole point: a conflict is a
+   *  question asked OF a human, and a later pass that happens to return one of
+   *  the two numbers must not be allowed to answer it by overwriting. Set it
+   *  only where a human gesture actually happened (see
+   *  scripts/apply-fee-findings.ts --resolve-conflicts). */
+  resolvesConflict?: boolean;
   /** Set INSTEAD of brackets to record that another authority publishes this
    *  fee (see FeeScheduleRecord.collectedByProfileKey). A delegation still needs
    *  its URL and its quoted sentence: "somebody else charges this" is a claim
@@ -184,6 +272,11 @@ export interface FeeScheduleResearchOutcome {
   saved: boolean;
   /** True when a human-verified row blocked the write (its finding went to notes). */
   refusedVerified: boolean;
+  /** True when an UNRESOLVED CONFLICT on the stored row blocked the write. A
+   *  distinct flag rather than a shade of `refused`, because the repair is
+   *  distinct: a person reads the two candidates and picks, they do not go
+   *  looking for a better source. */
+  refusedConflicted: boolean;
   profileKey: string;
   track: FeeTrack;
   /** The row as it stands AFTER the pass — unchanged when refusedVerified. */
@@ -342,7 +435,43 @@ function normalizeBrackets(raw: unknown[]): FeeBracket[] {
   return out.sort((a, b) => sortKey(a) - sortKey(b));
 }
 
+/** Same defensive shape as parseBrackets: a candidates_json we cannot read is a
+ *  row with no recorded sources, never a throw at the quote seam. */
+function parseSources(raw: unknown): FeeScheduleSource[] {
+  let parsed: unknown;
+  try { parsed = JSON.parse(text(raw) || "[]"); } catch { return []; }
+  if (!Array.isArray(parsed)) return [];
+  return normalizeSources(parsed);
+}
+
+function normalizeSources(raw: unknown[]): FeeScheduleSource[] {
+  const out: FeeScheduleSource[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const s = item as Record<string, unknown>;
+    const documentDate = clean(s.documentDate).slice(0, 60);
+    out.push({
+      tag: clean(s.tag).slice(0, 12),
+      name: clean(s.name).slice(0, 200),
+      sourceUrl: clean(s.sourceUrl).slice(0, 500),
+      sourceQuote: clean(s.sourceQuote).slice(0, 1000),
+      documentDate,
+      // Derived, never read off the stored JSON: one parser, so the phrase and
+      // the comparable date can never disagree about the same document.
+      documentDateIso: isoForDocumentDate(documentDate),
+      brackets: normalizeBrackets(Array.isArray(s.brackets) ? s.brackets : []),
+    });
+    if (out.length >= 8) break;
+  }
+  return out;
+}
+
+function scheduleStatus(value: unknown): FeeScheduleStatus {
+  return clean(value).toLowerCase() === "conflicted" ? "conflicted" : "ok";
+}
+
 function mapSchedule(row: Row): FeeScheduleRecord {
+  const documentDate = text(row.document_date);
   return {
     id: text(row.id),
     profileKey: text(row.profile_key),
@@ -354,6 +483,10 @@ function mapSchedule(row: Row): FeeScheduleRecord {
     collectedByProfileKey: text(row.collected_by_profile_key),
     basis: (["system_kw", "valuation", "flat", "other"].includes(text(row.basis)) ? text(row.basis) : "other") as FeeBasis,
     brackets: parseBrackets(row.brackets_json),
+    status: scheduleStatus(row.status),
+    documentDate,
+    documentDateIso: isoForDocumentDate(documentDate),
+    sources: parseSources(row.candidates_json),
     notes: text(row.notes),
     paymentMethod: normalizeFeePaymentMethod(row.payment_method),
     sourceUrl: text(row.source_url),
@@ -423,7 +556,14 @@ function followCollectedBy(
 }
 
 /** Mark a schedule human-verified. From here on a research pass may not change
- *  it — it can only append what it found to notes (hard rule 3). */
+ *  it — it can only append what it found to notes (hard rule 3).
+ *
+ *  DELIBERATELY DOES NOT TOUCH `status`. Verifying a conflicted row says "yes,
+ *  we really do hold two contradictory published numbers here" — it does not
+ *  pick one, and the brackets it would be vouching for are two tagged tables
+ *  stapled together. Such a row stays conflicted and stays unquotable; the way
+ *  to resolve it is to re-save the schedule a person picked (see
+ *  FeeScheduleFinding.resolvesConflict). */
 export function markFeeScheduleVerified(
   db: AppDb,
   profileKey: string,
@@ -439,6 +579,31 @@ export function markFeeScheduleVerified(
     [ts, clean(verifiedBy).slice(0, 120), ts, existing.id],
   );
   return getFeeSchedule(db, profileKey, track, discipline);
+}
+
+/** WHAT THE DISAGREEMENT ACTUALLY IS, in one readable line.
+ *
+ *  Built from the stored sources rather than from notes prose, so the sentence a
+ *  person reads on a quote screen carries the two things that settle a Coos-shaped
+ *  conflict: each document's numbers, and what each document says about its own
+ *  currency. "S1 (Revised 12/23/2022) says $79.00 / $94.00 / $156.00 vs S2
+ *  (Effective 7-1-25) says $135.00 / $160.00 / $265.00" resolves in a minute;
+ *  "needs a human to read it" — which is all this used to say — resolves never. */
+export function conflictSummary(schedule: FeeScheduleRecord): string {
+  const sources = schedule.sources.filter((s) => s.brackets.length);
+  if (sources.length < 2) {
+    // Marked conflicted with nothing to show. Still a refusal, and still says so:
+    // "we do not trust this row" is the message either way.
+    return "two published sources disagree about this fee, and the row does not record which — read its notes and the jurisdiction's own page";
+  }
+  return sources
+    .map((s) => {
+      const when = s.documentDate ? `(${s.documentDate})` : "(undated)";
+      const fees = s.brackets.slice(0, 6).map((b) => `$${b.feeUsd.toFixed(2)}`).join(" / ");
+      return `${s.tag || s.name || "source"} ${when} says ${fees}`;
+    })
+    .join(" vs ")
+    .slice(0, 400);
 }
 
 /** One-line human-readable rendering of a finding, for the notes trail. */
@@ -473,27 +638,29 @@ export function saveFeeSchedule(
   const brackets = normalizeBrackets(finding.brackets || []);
   const sourceUrl = clean(finding.sourceUrl);
   const sourceQuote = clean(finding.sourceQuote);
+  const status = finding.status === "conflicted" ? "conflicted" : "ok";
+  const documentDate = clean(finding.documentDate).slice(0, 60);
   const base = { found: finding.found, profileKey, track, finding: { ...finding, brackets } };
 
   if (!finding.found) {
-    return { ...base, reason: finding.reason || "Researcher reported no finding.", saved: false, refusedVerified: false, schedule: getFeeSchedule(db, profileKey, track, discipline) };
+    return { ...base, reason: finding.reason || "Researcher reported no finding.", saved: false, refusedVerified: false, refusedConflicted: false, schedule: getFeeSchedule(db, profileKey, track, discipline) };
   }
   // A FEE WITH NO QUOTE IS A RUMOUR. Both halves are required: the URL says
   // where to go back and check, the sentence says what was actually read there.
   if (!sourceUrl || !sourceQuote) {
     const reason = `Refused: a fee needs both a source URL and the sentence it came from (url=${sourceUrl ? "yes" : "no"}, quote=${sourceQuote ? "yes" : "no"}).`;
     logger.warn("fees", "fee schedule refused — unsourced", { profileKey, track });
-    return { ...base, found: false, reason, saved: false, refusedVerified: false, schedule: getFeeSchedule(db, profileKey, track, discipline) };
+    return { ...base, found: false, reason, saved: false, refusedVerified: false, refusedConflicted: false, schedule: getFeeSchedule(db, profileKey, track, discipline) };
   }
   // A DELEGATION IS THE ONE ROW WITH NOTHING TO EVALUATE, and it still had to
   // pass the sourcing rule above: naming another authority is a claim about the
   // world, and an unsourced one belongs in this table no more than an unsourced
   // number does. A row that is neither a fee nor a hop is refused as before.
   if (!brackets.length && !collectedBy) {
-    return { ...base, found: false, reason: "Refused: no usable fee line (every bracket lacked a finite, non-negative feeUsd), and no collecting authority named.", saved: false, refusedVerified: false, schedule: getFeeSchedule(db, profileKey, track, discipline) };
+    return { ...base, found: false, reason: "Refused: no usable fee line (every bracket lacked a finite, non-negative feeUsd), and no collecting authority named.", saved: false, refusedVerified: false, refusedConflicted: false, schedule: getFeeSchedule(db, profileKey, track, discipline) };
   }
   if (collectedBy && collectedBy === profileKey) {
-    return { ...base, found: false, reason: `Refused: a row cannot delegate its fee to itself ("${profileKey}").`, saved: false, refusedVerified: false, schedule: getFeeSchedule(db, profileKey, track, discipline) };
+    return { ...base, found: false, reason: `Refused: a row cannot delegate its fee to itself ("${profileKey}").`, saved: false, refusedVerified: false, refusedConflicted: false, schedule: getFeeSchedule(db, profileKey, track, discipline) };
   }
 
   const existing = getFeeSchedule(db, profileKey, track, discipline);
@@ -505,7 +672,48 @@ export function saveFeeSchedule(
     const segment = `Research ${ts.slice(0, 10)} (NOT applied — row is human-verified): ${findingSummary({ ...finding, brackets })}`;
     db.run("UPDATE fee_schedules SET notes = ?, updated_at = ? WHERE id = ?", [mergeNotes(existing.notes, [segment]), ts, existing.id]);
     logger.info("fees", "research refused against human-verified fee schedule", { profileKey, track, discipline });
-    return { ...base, reason: "Row is human-verified — finding recorded in notes, schedule unchanged.", saved: false, refusedVerified: true, schedule: getFeeSchedule(db, profileKey, track, discipline) };
+    return { ...base, reason: "Row is human-verified — finding recorded in notes, schedule unchanged.", saved: false, refusedVerified: true, refusedConflicted: false, schedule: getFeeSchedule(db, profileKey, track, discipline) };
+  }
+
+  // AN OPEN CONFLICT IS A QUESTION ASKED OF A HUMAN, AND AN AUTOMATED PASS MUST
+  // NOT ANSWER IT BY WINNING THE RACE.
+  //
+  // Measured reachable today: Coos County's row holds $79/$94/$156 against
+  // $135/$160/$265 and refuses to price anything. Any later researcher that
+  // returns ONE of those tables — having very possibly read only one of the two
+  // documents — would have overwritten the row, cleared the status, and started
+  // quoting that number with a straight face. The disagreement would be gone
+  // from everywhere except a notes segment nobody reads. So the conflict guard
+  // sits alongside the human-verified guard (and AFTER it: a verified row must
+  // be reported as verified, which is the stronger and more specific refusal),
+  // and the only way past it is a finding that says a person picked.
+  if (existing && existing.status === "conflicted" && !finding.resolvesConflict && status !== "conflicted") {
+    const segment = `Research ${ts.slice(0, 10)} (NOT applied — an ${FEE_CONFLICT_MARKER} is open on this row): ${findingSummary({ ...finding, brackets })}`;
+    db.run("UPDATE fee_schedules SET notes = ?, updated_at = ? WHERE id = ?", [mergeNotes(existing.notes, [segment]), ts, existing.id]);
+    logger.info("fees", "write refused against an unresolved fee conflict", { profileKey, track, discipline });
+    return {
+      ...base,
+      reason: `Refused: an ${FEE_CONFLICT_MARKER} is open on this row (${conflictSummary(existing)}). The finding was recorded in its notes and nothing was changed. `
+        + `A person must read both candidates and pick one — re-save with resolvesConflict (scripts/apply-fee-findings.ts --resolve-conflicts).`,
+      saved: false, refusedVerified: false, refusedConflicted: true,
+      schedule: getFeeSchedule(db, profileKey, track, discipline),
+    };
+  }
+
+  // EVERY ROW EXPLAINS ITSELF, conflicted or not. A finding that named its
+  // sources keeps them; one that did not gets a single entry synthesised from
+  // itself, because a row with an empty source list cannot say where its number
+  // came from — and "candidates_json is only for conflicts" is how the ordinary
+  // row's document date would have gone on being lost.
+  const sources = normalizeSources(finding.sources || []);
+  if (!sources.length) {
+    sources.push({
+      tag: "S1",
+      name: clean(input.ahj) || clean(input.utility) || profileKey,
+      sourceUrl, sourceQuote, documentDate,
+      documentDateIso: isoForDocumentDate(documentDate),
+      brackets,
+    });
   }
 
   const notes = mergeNotes(existing?.notes, noteSegments(finding.notes));
@@ -518,31 +726,36 @@ export function saveFeeSchedule(
     db.run(
       `UPDATE fee_schedules SET state = ?, ahj = ?, utility = ?, basis = ?, brackets_json = ?, notes = ?,
          payment_method = ?, source_url = ?, source_quote = ?, source_kind = ?, collected_by_profile_key = ?,
+         status = ?, document_date = ?, candidates_json = ?,
          confidence = 'seeded', updated_at = ?
        WHERE id = ?`,
       [
         clean(input.state), clean(input.ahj), clean(input.utility), finding.basis,
         JSON.stringify(brackets), notes, paymentMethod, sourceUrl, sourceQuote, clean(finding.sourceKind),
-        collectedBy, ts, existing.id,
+        collectedBy, status, documentDate, JSON.stringify(sources), ts, existing.id,
       ],
     );
   } else {
     db.run(
       `INSERT INTO fee_schedules
          (id, profile_key, state, ahj, utility, track, discipline, basis, brackets_json, notes, payment_method,
-          source_url, source_quote, source_kind, collected_by_profile_key, confidence, first_seen_at, updated_at, verified_at, verified_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'seeded', ?, ?, '', '')`,
+          source_url, source_quote, source_kind, collected_by_profile_key, status, document_date, candidates_json,
+          confidence, first_seen_at, updated_at, verified_at, verified_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'seeded', ?, ?, '', '')`,
       [
         id(), profileKey, clean(input.state), clean(input.ahj), clean(input.utility), track, discipline, finding.basis,
-        JSON.stringify(brackets), notes, paymentMethod, sourceUrl, sourceQuote, clean(finding.sourceKind), collectedBy, ts, ts,
+        JSON.stringify(brackets), notes, paymentMethod, sourceUrl, sourceQuote, clean(finding.sourceKind), collectedBy,
+        status, documentDate, JSON.stringify(sources), ts, ts,
       ],
     );
   }
   logger.info("fees", "fee schedule saved (seeded)", {
     profileKey, track, discipline: discipline || "(any)", basis: finding.basis,
     brackets: brackets.length, collectedBy: collectedBy || undefined,
+    status, sources: sources.length, documentDate: documentDate || undefined,
+    resolvedConflict: finding.resolvesConflict && existing?.status === "conflicted" ? true : undefined,
   });
-  return { ...base, reason: "", saved: true, refusedVerified: false, schedule: getFeeSchedule(db, profileKey, track, discipline) };
+  return { ...base, reason: "", saved: true, refusedVerified: false, refusedConflicted: false, schedule: getFeeSchedule(db, profileKey, track, discipline) };
 }
 
 // ---------------------------------------------------------------------------
@@ -1149,7 +1362,7 @@ export async function researchFeeSchedule(
   const subject = track === "nem" ? clean(input.utility) : clean(input.ahj);
   if (!subject) {
     return {
-      found: false, saved: false, refusedVerified: false, profileKey, track, schedule: null, finding: null,
+      found: false, saved: false, refusedVerified: false, refusedConflicted: false, profileKey, track, schedule: null, finding: null,
       reason: track === "nem" ? "utility is required to research a NEM fee schedule." : "ahj is required to research a permit fee schedule.",
     };
   }
@@ -1398,6 +1611,32 @@ function evaluateSchedule(
   const miss = (reason: string) => ({ feeUsd: null, bracketLabel: "", reason });
   const hit = (b: FeeBracket) => ({ feeUsd: b.feeUsd, bracketLabel: bracketLabelFor(b, schedule.basis), reason: "" });
 
+  // A DISPUTED FEE IS REFUSED BY ITS OWN BRANCH, AND IT IS THE FIRST ONE.
+  //
+  // This used to be an ACCIDENT that worked. jurisdictionHarvest.ts stores a
+  // conflicted schedule as basis "other" carrying both candidates' brackets —
+  // the one shape that falls past every branch below to the "needs a human"
+  // miss at the bottom — and its author wrote the coupling down because they
+  // could not edit this file: "if basis 'other' with multiple brackets ever
+  // becomes evaluable, conflicted schedules silently start answering with one of
+  // the two disputed numbers." That is a safety property resting on a
+  // fall-through nobody reading evaluateSchedule would recognise as load-bearing.
+  // Someone teaching "other" to evaluate a two-row table — a perfectly ordinary
+  // improvement — would have quietly started quoting Coos County $94 or $160
+  // with no way to tell which, and no test would have gone red.
+  //
+  // So the refusal is now a FACT ON THE ROW (fee_schedules.status, v23) checked
+  // before any basis is looked at. It holds whatever the basis is, whatever the
+  // bracket count is, and whatever `confidence` says: a person marking a
+  // conflicted row 'verified' has verified that we hold two contradictory
+  // numbers, which is not permission to quote one of them.
+  if (schedule.status === "conflicted") {
+    return miss(
+      `${FEE_CONFLICT_MARKER}: two published sources disagree about this jurisdiction's fee — ${conflictSummary(schedule)}. `
+      + `Nothing is quoted from a disputed schedule; it needs a human to pick a source and re-save it.`,
+    );
+  }
+
   if (!schedule.brackets.length) return miss("Schedule is stored but carries no fee lines.");
 
   if (schedule.basis === "flat" || (schedule.basis === "other" && schedule.brackets.length === 1)) {
@@ -1418,6 +1657,11 @@ function evaluateSchedule(
     return hit(b);
   }
 
+  // THIS IS NO LONGER THE CONFLICT REFUSAL — the status branch at the top is.
+  // It is back to meaning only what it says: a table that is not a function of
+  // anything this code evaluates. Teaching "other" to evaluate something is now
+  // a safe change; before v23 it would have unblocked every disputed schedule
+  // in the table at the same time.
   return miss(`Schedule basis "${schedule.basis}" needs a human to read it — see notes and the source quote.`);
 }
 
