@@ -150,10 +150,35 @@ async function main(): Promise<void> {
   let cursor = 0;
   const runOne = async (t: typeof chosen[number], i: number): Promise<void> => {
     // Per-host first (a portal that checks its parcel database needs a parcel IT has), then
-    // the state default. Utility comes from the state either way.
+    // the state default.
     const stateLoc = CITY_BY_STATE[t.state];
     const hostLoc = ADDRESS_BY_HOST[String(t.host || "").toLowerCase()];
     const loc = hostLoc ? { ...stateLoc, ...hostLoc } : stateLoc;
+
+    // THE UTILITY MUST COME FROM THE PORTAL, NOT FROM THE STATE — a utility-scoped recipe is
+    // keyed ONLY on (state, utility), so naming the wrong utility writes over a DIFFERENT
+    // utility's recipe.
+    //
+    // Illinois has two: CITY_BY_STATE.IL says "Ameren Illinois", so learning ComEd's
+    // interconnect.comed.com produced the key "il|unknown|ameren illinois" — Ameren's row,
+    // holding the verified 79-step v21 that every real Ameren NEM project resolves. It survived
+    // this run only because the deeper-draft guard refused a shallower overwrite. That is luck,
+    // not a design: a ComEd learn that happened to go deeper would have replaced Ameren's
+    // verified recipe with ComEd's steps, and the next Ameren filing would have replayed the
+    // wrong utility's application.
+    //
+    // Matched on the HOST, which is what actually identifies whose portal this is. Anything
+    // unmatched keeps the state default: for a state with one utility that is correct, and for
+    // a new multi-utility state the fix is one line here rather than a silent collision.
+    const UTILITY_BY_HOST: Record<string, string> = {
+      "interconnect.comed.com": "Commonwealth Edison (ComEd)",
+      "peco.connectthegrid.com": "PECO",
+      "amerenillinoisinterconnect.powerclerk.com": "Ameren Illinois",
+      "pgenm.powerclerk.com": "Portland General Electric",
+      "pacificorpnetmetering.powerclerk.com": "Pacific Power",
+      "dlc-customer-owned-generation.customerapplication.com": "Duquesne Light",
+    };
+    const portalUtility = UTILITY_BY_HOST[String(t.host || "").toLowerCase()] || loc.utility;
     let pid = "";
     let outcome: Record<string, unknown> = {};
     try {
@@ -172,7 +197,7 @@ async function main(): Promise<void> {
         //
         // The host is unique and unmistakably not a jurisdiction, so each portal gets its own
         // isolated row and nothing the benchmark writes can collide with real work.
-        ahj: `Benchmark ${t.host}`, utility: loc.utility, clientId: CLIENT,
+        ahj: `Benchmark ${t.host}`, utility: portalUtility, clientId: CLIENT,
         dcKw: "7.2", acKw: "5.22", moduleQty: "18", moduleWattage: "400",
         // REAL EQUIPMENT, OR THE EQUIPMENT FIELDS ARE NEVER TESTED.
         //

@@ -5242,7 +5242,46 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             for (let i = 0; i < fields.length; i++) fields[i].selector = refreshed[i].selector;
             this.debug?.event({ type: "selectors_refreshed_after_rerender", page: pageCount, count: fields.length });
           } else {
-            this.debug?.event({ type: "rerender_changed_the_page", page: pageCount, before: fields.length, after: refreshed.length });
+            // A RE-RENDER THAT CHANGES THE PAGE INVALIDATES AN INDEX, NOT THE PLAN.
+            //
+            // Answering "Existing contact to use for this contact" with "New Contact" is the
+            // case this whole block exists for, and it EXPANDS the block — the Name, Company
+            // and Address inputs the customer is supposed to fill only exist after the answer.
+            // So the shape legitimately changes, `sameShape` is false, and the old code logged
+            // that and moved on with the pre-render field list: every planned index now points
+            // at a different control, or at nothing. Live cost on Ameren, across every
+            // cross-project run: "Name [Interconnection Application]" and "Company
+            // [Interconnection Application]" reported blank on a filing that cannot be
+            // submitted without them.
+            //
+            // Re-anchor instead of giving up. The planner chose a FIELD, and a field's identity
+            // is its label within its section — not its position in a list that just changed
+            // under us. Anything that cannot be re-anchored unambiguously is dropped and
+            // reported, because filling the wrong control is worse than leaving one blank.
+            const before = fields.length;
+            const keyOf = (f: { label?: string; section?: string; fieldType?: string }): string =>
+              `${String(f.section ?? "").trim()} ${String(f.label ?? "").trim()} ${String(f.fieldType ?? "")}`;
+            const counts = new Map<string, number>();
+            for (const f of refreshed) counts.set(keyOf(f), (counts.get(keyOf(f)) ?? 0) + 1);
+            const remapped: Array<{ selectorIndex: number; value: string }> = [];
+            let dropped = 0;
+            for (const fillReq of plan.fills ?? []) {
+              const old = fields[fillReq.selectorIndex];
+              if (!old) { dropped++; continue; }
+              const key = keyOf(old);
+              // Exactly one match, or we do not know which control the planner meant.
+              if ((counts.get(key) ?? 0) !== 1) { dropped++; continue; }
+              const idx = refreshed.findIndex((f) => keyOf(f) === key);
+              if (idx < 0) { dropped++; continue; }
+              remapped.push({ selectorIndex: idx, value: fillReq.value });
+            }
+            fields.length = 0;
+            for (const f of refreshed) fields.push(f);
+            plan.fills = remapped;
+            this.debug?.event({
+              type: "rerender_changed_the_page", page: pageCount, before, after: refreshed.length,
+              reanchored: remapped.length, dropped,
+            });
           }
         }
       } catch { /* best-effort — a block without a picker is the common case */ }
