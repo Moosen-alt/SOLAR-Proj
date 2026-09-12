@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import type { ClientPortalIdentity, ClientRecord } from "../../shared/src/types";
 import type { AppDb } from "./db";
 import { DEFAULT_ORG_ID } from "./db";
@@ -6,6 +8,8 @@ import { phoneSegmentKeys } from "./portalRecipes";
 import { id } from "./ids";
 import { nowIso } from "./time";
 import { text as s } from "./json";
+import { addAuditLog } from "./audit";
+import { deleteCustomer } from "./crm";
 
 type Row = Record<string, unknown>;
 
@@ -199,6 +203,16 @@ export function updateClient(db: AppDb, clientId: string, payload: Record<string
   });
 }
 
+/**
+ * The ORDINARY dashboard delete, and it stays deliberately hard.
+ *
+ * It removes a client that never carried work — identities, profiles, the row — and REFUSES
+ * the moment a project is linked. That refusal is not a gap to route around: a misclick in a
+ * client list must not be able to destroy a company's filings. A real departing customer
+ * always has projects, so this path is never the one that offboards them; `offboardClient`
+ * below is, and it is flagged, confirmed and audited precisely because it is the path that
+ * can destroy everything. Keep the two apart.
+ */
 export function deleteClient(db: AppDb, clientId: string): { deleted: boolean } {
   const existing = db.get<Row>("SELECT id FROM clients WHERE id = ?", [clientId]);
   if (!existing) throw new HttpError(404, "Client not found.");
@@ -212,6 +226,282 @@ export function deleteClient(db: AppDb, clientId: string): { deleted: boolean } 
     db.run("DELETE FROM clients WHERE id = ?", [clientId]);
     return { deleted: true };
   });
+}
+
+// ===========================================================================
+// OFFBOARDING — MAKING THE LEAVING PROMISE TRUE.
+//
+// The onboarding guide tells every customer, in "Your data": if you ever leave, change your
+// portal passwords; WE THEN REMOVE YOUR CREDENTIALS, SESSIONS, PROJECTS AND DOCUMENTS FROM
+// OUR LIVE SYSTEMS. Until this function that sentence was false in every clause. The only
+// removal path was deleteClient above, which deletes three things — client_portal_identities,
+// portal_profiles, the clients row — and refuses outright when any project is linked, which
+// is every real departing customer. So a company could leave and we would still be holding,
+// with no route that removed any of it:
+//   - portal_credentials: their AES-256-GCM encrypted portal passwords, the single worst row
+//     to keep, and the one deleteClient never touched even when it succeeded;
+//   - portal-profiles/<clientId>/: LOGGED-IN Chrome sessions on disk — cookies that still
+//     open their portal account, gitignored but not encrypted;
+//   - every project, and through it every qc result, submission, correction and uploaded
+//     document, i.e. their homeowners' names, addresses and plan sets;
+//   - customers, their communications, and any per-client email source (whose IMAP password
+//     is another encrypted secret).
+//
+// WHAT THIS NEVER DELETES, and this is a product decision, not an oversight: the pooled
+// portal knowledge — portal_recipes, permit_utility_knowledge, jurisdiction_code_profiles,
+// ahj_form_templates, cec_equipment. The guide draws exactly this line: your projects,
+// homeowner records, documents and credentials are yours alone; how a portal behaves is
+// pooled. What a departing customer's filings taught this system about an AHJ's portal stays,
+// for everyone. The append-only draft ledger (data/portal-drafts.jsonl) stays too: it records
+// drafts we left on a real portal account under that customer's licence, it carries username
+// references and never a secret, and erasing it would erase the evidence of what still has to
+// be cancelled on their side.
+//
+// ORDER MATTERS. We cannot invalidate a session we no longer hold, so the customer changes
+// their portal passwords FIRST and we purge second. The CLI prints that back every run.
+// ===========================================================================
+
+/** The literal .env.example value counts as no key at all — cryptoStorage.ts treats it that
+ *  way, and copying the example without editing it is indistinguishable from having none. */
+const KEY_PLACEHOLDER = "replace-with-a-long-random-secret";
+
+function sessionKeyState(): { ok: boolean; reason: string } {
+  const raw = process.env.SESSION_ENCRYPTION_KEY || "";
+  if (!raw) return { ok: false, reason: "SESSION_ENCRYPTION_KEY is unset" };
+  if (raw === KEY_PLACEHOLDER) return { ok: false, reason: "SESSION_ENCRYPTION_KEY is still the .env.example placeholder" };
+  return { ok: true, reason: "" };
+}
+
+/** Resolved the same way repository.ts resolves it for every live run — read, not guessed.
+ *  If these two ever disagree the purge cleans a directory nobody writes to. */
+function portalProfilesBase(): string {
+  return process.env.PORTAL_PROFILES_DIR || path.join(process.cwd(), "portal-profiles");
+}
+
+/** Every browser profile under this client's tree. repository.ts nests them
+ *  <base>/<clientId>/<portalType>/<host>, so the profiles are the leaves; a portalType
+ *  directory with no host children (older layout) is itself a profile. */
+function clientSessionDirs(clientRoot: string): string[] {
+  const found: string[] = [];
+  let level1: string[];
+  try {
+    if (!fs.existsSync(clientRoot)) return found;
+    level1 = fs.readdirSync(clientRoot, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
+  } catch { return found; }
+  for (const portalType of level1) {
+    const typeDir = path.join(clientRoot, portalType);
+    let hosts: string[] = [];
+    try { hosts = fs.readdirSync(typeDir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name); }
+    catch { /* unreadable — still counts as one profile below */ }
+    if (hosts.length === 0) found.push(typeDir);
+    else for (const host of hosts) found.push(path.join(typeDir, host));
+  }
+  return found;
+}
+
+/** What a purge would destroy. Printed before anything is touched, and returned by the dry
+ *  run so the operator sees the shape of the damage before authorising it. */
+export interface OffboardInventory {
+  clientId: string;
+  companyName: string;
+  portalCredentials: number;
+  projects: number;
+  documents: number;
+  customers: number;
+  communications: number;
+  emailSources: number;
+  portalIdentities: number;
+  portalProfiles: number;
+  /** Absolute paths of the logged-in browser profiles on disk. */
+  sessionDirs: string[];
+  /** The directory removed wholesale: <PORTAL_PROFILES_DIR>/<clientId>. */
+  sessionRoot: string;
+  /** False when SESSION_ENCRYPTION_KEY is unset or the placeholder — a purge refuses then. */
+  sessionKeyOk: boolean;
+}
+
+export interface OffboardResult {
+  /** True when nothing was written. The DEFAULT: a purge happens only on a matching confirm. */
+  dryRun: boolean;
+  inventory: OffboardInventory;
+  /** Directories actually gone from disk. */
+  sessionDirsRemoved: string[];
+  /** Directories we FAILED to remove — a Chrome still holding the profile open is the usual
+   *  cause on Windows. Never swallowed: "we removed your sessions" that silently didn't is
+   *  the exact broken promise this function exists to fix. */
+  sessionDirsFailed: { dir: string; error: string }[];
+}
+
+export interface OffboardOptions {
+  /** The client id typed back. Absent → dry run. Present and different → refused outright,
+   *  so a mistyped id can never purge the customer standing next to the intended one. */
+  confirm?: string;
+  /** Who ran it, for the audit row. */
+  actor?: string;
+}
+
+export function offboardInventory(db: AppDb, clientId: string): OffboardInventory {
+  const client = db.get<Row>("SELECT id, company_name FROM clients WHERE id = ?", [clientId]);
+  if (!client) throw new HttpError(404, "Client not found.");
+  const count = (sql: string): number => Number(db.get<{ n: number }>(sql, [clientId])?.n ?? 0);
+  const sessionRoot = path.join(portalProfilesBase(), clientId);
+  return {
+    clientId,
+    companyName: s(client.company_name),
+    portalCredentials: count("SELECT COUNT(*) AS n FROM portal_credentials WHERE client_id = ?"),
+    projects: count("SELECT COUNT(*) AS n FROM projects WHERE client_id = ?"),
+    documents: count(
+      "SELECT COUNT(*) AS n FROM project_documents WHERE project_id IN (SELECT id FROM projects WHERE client_id = ?)",
+    ),
+    customers: count("SELECT COUNT(*) AS n FROM customers WHERE client_id = ?"),
+    communications: Number(
+      db.get<{ n: number }>(
+        `SELECT COUNT(*) AS n FROM communications
+          WHERE customer_id IN (SELECT id FROM customers WHERE client_id = ?)
+             OR project_id  IN (SELECT id FROM projects  WHERE client_id = ?)`,
+        [clientId, clientId],
+      )?.n ?? 0,
+    ),
+    emailSources: count("SELECT COUNT(*) AS n FROM email_tracking_sources WHERE client_id = ?"),
+    portalIdentities: count("SELECT COUNT(*) AS n FROM client_portal_identities WHERE client_id = ?"),
+    portalProfiles: count("SELECT COUNT(*) AS n FROM portal_profiles WHERE client_id = ?"),
+    sessionDirs: clientSessionDirs(sessionRoot),
+    sessionRoot,
+    sessionKeyOk: sessionKeyState().ok,
+  };
+}
+
+/**
+ * Purge one departing customer, or report what a purge would take.
+ *
+ * Async because the project cascade lives in repository.ts, which statically imports THIS
+ * file — the same circular-import guard jobQueue uses. Reusing deleteProject rather than
+ * hand-writing twenty deletes is the point: that cascade already knows about the tables added
+ * since (project_metrics, submission_payments, project_intake_requests) and unlinks documents
+ * from disk, and it will keep knowing as the schema grows. A second copy here would rot, and
+ * the rot would be silent — leftover homeowner rows nobody looks for.
+ */
+export async function offboardClient(db: AppDb, clientId: string, opts: OffboardOptions = {}): Promise<OffboardResult> {
+  const inventory = offboardInventory(db, clientId);
+  const confirm = s(opts.confirm).trim();
+
+  // DRY RUN IS THE DEFAULT POSTURE. No confirm, no writes — not even an audit row.
+  if (!confirm) return { dryRun: true, inventory, sessionDirsRemoved: [], sessionDirsFailed: [] };
+
+  // A MISTYPED ID IS A REFUSAL, NOT A DRY RUN. Falling back to "report only" here would be
+  // worse than throwing: the operator sees an inventory, believes the purge ran, and the
+  // customer's credentials are still on disk. And the id they typed may be another live
+  // customer's — that one must never be the row we act on either.
+  if (confirm !== clientId) {
+    throw new HttpError(
+      400,
+      `--confirm does not match the client being offboarded (got "${confirm}", expected "${clientId}"). ` +
+      "Nothing was deleted. Re-run with the exact client id.",
+    );
+  }
+
+  // REFUSE WITHOUT THE KEY. Half of what this destroys is AES-256-GCM ciphertext keyed by
+  // SESSION_ENCRYPTION_KEY. Running without it means deleting credentials we cannot read,
+  // so nothing can confirm afterwards what was held — and a run that cannot decrypt is a run
+  // configured against the wrong environment, which is exactly when you do NOT want a purge.
+  const key = sessionKeyState();
+  if (!key.ok) {
+    throw new HttpError(
+      400,
+      `${key.reason}. Refusing to offboard: this purge destroys secrets encrypted under that key, and a ` +
+      "process that cannot read them is a process pointed at the wrong environment. Set it and re-run. " +
+      "The dry run (omit --confirm) still reports the full inventory.",
+    );
+  }
+
+  const { deleteProject } = await import("./repository");
+
+  const projectIds = db
+    .query<Row>("SELECT id FROM projects WHERE client_id = ?", [clientId])
+    .map((row) => s(row.id));
+  const customerIds = db
+    .query<Row>("SELECT id FROM customers WHERE client_id = ?", [clientId])
+    .map((row) => s(row.id));
+
+  // COMMUNICATIONS FIRST, because both cascades below only UNLINK them: deleteProject NULLs
+  // project_id and deleteCustomer NULLs customer_id, each so correspondence survives the
+  // other's deletion. Run in that order on a departing customer and the row survives BOTH,
+  // orphaned, still carrying the homeowner's name and the body of the email. For a purge
+  // that is a leak, so they go here while they are still reachable.
+  // Built from the client_id subqueries rather than an IN-list of collected ids: an empty
+  // list renders as `IN ()`, which SQLite rejects outright, and a client with no customers
+  // (or no projects) is the ordinary case, not an edge one.
+  db.run(
+    `DELETE FROM communications
+      WHERE customer_id IN (SELECT id FROM customers WHERE client_id = ?)
+         OR project_id  IN (SELECT id FROM projects  WHERE client_id = ?)`,
+    [clientId, clientId],
+  );
+
+  // Per project, each committing on its own. NOT wrapped in one outer transaction on
+  // purpose: deleteProject unlinks files from disk after its own commit, so a giant
+  // enclosing transaction would delete plan sets and then roll the rows back. Independent
+  // commits also mean a purge interrupted halfway is resumable — re-run it.
+  for (const projectId of projectIds) deleteProject(db, projectId);
+
+  // Customers: reuse the CRM cascade so project_id/communication unlinking stays in one place.
+  for (const customerId of customerIds) deleteCustomer(db, customerId);
+
+  db.transaction(() => {
+    // THE MOST IMPORTANT ROW IN THIS FUNCTION. Everything else is recoverable-ish from a
+    // backup; a portal password we kept after being told to delete it is the promise broken.
+    db.run("DELETE FROM portal_credentials WHERE client_id = ?", [clientId]);
+    // Per-client IMAP sources carry imap_pass_encrypted — another live secret.
+    db.run("DELETE FROM email_tracking_sources WHERE client_id = ?", [clientId]);
+    db.run("DELETE FROM client_portal_identities WHERE client_id = ?", [clientId]);
+    // portal_profiles.encrypted_storage_state is the DB half of the logged-in session.
+    db.run("DELETE FROM portal_profiles WHERE client_id = ?", [clientId]);
+    db.run("DELETE FROM clients WHERE id = ?", [clientId]);
+  });
+
+  // The ON-DISK half of the session: cookies that still open their portal account.
+  const sessionDirsRemoved: string[] = [];
+  const sessionDirsFailed: { dir: string; error: string }[] = [];
+  if (fs.existsSync(inventory.sessionRoot)) {
+    try {
+      fs.rmSync(inventory.sessionRoot, { recursive: true, force: true });
+      if (fs.existsSync(inventory.sessionRoot)) throw new Error("directory still present after removal");
+      sessionDirsRemoved.push(...inventory.sessionDirs);
+    } catch (err) {
+      // Reported, never swallowed — a running Chrome holds these files open on Windows, and
+      // the operator has to know the sessions are still there.
+      sessionDirsFailed.push({ dir: inventory.sessionRoot, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  // Audit LAST, so it can name what actually happened on disk. project_id is null on purpose:
+  // audit_logs' only foreign key is project_id, and every project this row describes has just
+  // been deleted — a row pointing at one of them could not survive its own subject.
+  addAuditLog(db, null, "human", s(opts.actor) || "offboard-company script", "client.offboarded", {
+    clientId,
+    companyName: inventory.companyName,
+    purged: {
+      portalCredentials: inventory.portalCredentials,
+      projects: inventory.projects,
+      documents: inventory.documents,
+      customers: inventory.customers,
+      communications: inventory.communications,
+      emailSources: inventory.emailSources,
+      portalIdentities: inventory.portalIdentities,
+      portalProfiles: inventory.portalProfiles,
+    },
+    sessionRoot: inventory.sessionRoot,
+    sessionDirsRemoved: sessionDirsRemoved.length,
+    sessionDirsFailed: sessionDirsFailed.map((f) => f.dir),
+    // Named in the audit row so a later reader knows the omission was a decision.
+    sharedKnowledgeRetained: [
+      "portal_recipes", "permit_utility_knowledge", "jurisdiction_code_profiles",
+      "ahj_form_templates", "cec_equipment",
+    ],
+    at: nowIso(),
+  });
+
+  return { dryRun: false, inventory, sessionDirsRemoved, sessionDirsFailed };
 }
 
 // Returns the installer/licensing overlay for a project's linked client, keyed
