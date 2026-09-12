@@ -46,7 +46,14 @@ const seedJob = (projectId: string, result: unknown, status = "done"): void => {
   db.run(
     `INSERT INTO job_queue (id, project_id, job_type, payload, status, result, created_at)
      VALUES (?, ?, 'autopilot', '{}', ?, ?, ?)`,
-    [`job-${Math.abs(projectId.split("").reduce((a, c) => a + c.charCodeAt(0), 0))}-${status}`, projectId, status, JSON.stringify(result), new Date().toISOString()],
+    // THE ID IS THE PROJECT'S OWN, not a hash of it. This used to be the SUM of the
+    // project id's character codes — which is order-insensitive, so any two generated
+    // UUIDs that are character-anagrams of each other produced the SAME job id and the
+    // insert died on "UNIQUE constraint failed: job_queue.id". The DELETE above could not
+    // save it either: it clears this project's jobs, and the colliding row belongs to a
+    // different project. Measured once in a full-chain run, which then stopped there and
+    // silently skipped every suite after it.
+    [`job-${projectId}-${status}`, projectId, status, JSON.stringify(result), new Date().toISOString()],
   );
 };
 
