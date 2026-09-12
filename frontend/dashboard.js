@@ -1083,6 +1083,7 @@ async function selectProject(projectId) {
   state.submitGate = null;
   state.submittalTracks = null;
   state.paymentQuotes = null;
+  state.feeSheet = null;
   state.portalQuestions = null;
   $("emptyState").hidden = true;
   $("detailView").hidden = false;
@@ -1102,7 +1103,7 @@ async function selectProject(projectId) {
     loadOpsPlan(), loadSubmitGate(), loadRunbook(), loadHandoffPacket(),
     loadCommunicationDrafts(), loadLiveReadiness(), loadProjectTimeline(),
     loadProcessMap(), loadInstallerPacket(), loadProjectDocuments(),
-    loadSubmittalTracks(), loadPaymentQuotes(), loadPortalQuestions(),
+    loadSubmittalTracks(), loadPaymentQuotes(), loadFeeSheet(), loadPortalQuestions(),
   ]);
   renderDetail();
 }
@@ -1222,6 +1223,142 @@ async function handlePaymentAction(action, track, btn) {
     showMessage(`Payment update failed: ${err.message}`, "error");
     btn.disabled = false;
   }
+}
+
+// --- Fee sheet: what this job costs, and where each number came from ---------
+//
+// Distinct from the payment panel above. That one is the per-submission BILLING gate and
+// appears only for clients invoiced per submission; this one is the money FACTS, and every
+// project has them. The live database's only client bills monthly, so without this panel the
+// dashboard shows an operator no fee at all.
+//
+// THE RULE THIS PANEL EXISTS TO ENFORCE: somebody will quote a customer off this screen. So a
+// number never appears without its provenance, a SEEDED fee (researched, unchecked) is drawn
+// as provisional rather than merely annotated, and an unknown fee prints UNKNOWN — never
+// $0.00, because zero is an answer and unknown is the absence of one.
+async function loadFeeSheet() {
+  const id = state.selectedProjectId;
+  const res = await api(`/api/projects/${id}/fee-sheet`);
+  state.feeSheet = res.feeSheet;
+}
+
+function feeMoney(v) {
+  return v == null
+    ? `<span class="badge badge-warning">UNKNOWN</span>`
+    : `$${Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+// Fee-schedule URLs arrive from web research, so they are untrusted input: esc() stops markup
+// but not a `javascript:` href. Only http(s) is ever turned into a link.
+function httpUrl(value) {
+  const raw = String(value ?? "").trim();
+  return /^https?:\/\//i.test(raw) ? raw : "";
+}
+
+const FEE_SOURCE_TEXT = {
+  actual: "the portal's own fee screen, entered by the operator",
+  published_schedule: "the jurisdiction's published fee schedule",
+  learned_history: "the median of real fees seen here before",
+  valuation_estimate: "a percentage of the project valuation",
+  unknown: "nowhere yet",
+};
+
+const FEE_CONFIDENCE = {
+  actual: { badge: "badge-pass", label: "actual", note: "" },
+  verified: { badge: "badge-pass", label: "verified", note: "" },
+  seeded: {
+    badge: "badge-warning",
+    label: "provisional — not verified",
+    note: "Research found this and nobody has checked it. Verify it against the jurisdiction's own published schedule before quoting a customer.",
+  },
+  estimated: {
+    badge: "badge-warning",
+    label: "estimate",
+    note: "A method, not a fact. Replace it with the portal-calculated fee from the fee/review screen.",
+  },
+  unknown: { badge: "badge-fail", label: "unknown", note: "" },
+};
+
+const FEE_PAYMENT_METHOD = {
+  portal: "Paid in the portal — by a person, at the portal's own checkout.",
+  mailed_check: "Paid by MAILED PAPER CHECK. No portal can take it; somebody posts it.",
+  none: "No fee is charged, so there is nothing to pay.",
+  unknown: "How this is paid is not recorded.",
+};
+
+function renderFeeSheetLine(line) {
+  const conf = FEE_CONFIDENCE[line.confidence] || FEE_CONFIDENCE.unknown;
+  // Provisional and unknown fees carry the warning tone, so the card LOOKS unfinished.
+  const tone = line.confidence === "actual" || line.confidence === "verified" ? "pass" : line.known ? "warning" : "blocker";
+  const trackLabel = line.track === "nem" ? "NEM / interconnection" : "Permit (AHJ)";
+  const url = httpUrl(line.sourceUrl);
+  return `
+    <article class="item ${tone}" style="margin-bottom:8px">
+      <div class="item-title">
+        <span>${esc(trackLabel)} — ${esc(line.jurisdiction || "jurisdiction not set")}</span>
+        <span class="badge ${conf.badge}">${esc(conf.label)}</span>
+      </div>
+      <p style="margin:2px 0;font-size:19px;font-weight:700">${feeMoney(line.feeUsd)}</p>
+      <p class="muted" style="margin:2px 0;font-size:11px">From ${esc(FEE_SOURCE_TEXT[line.source] || line.source)} — ${esc(line.basis || "")}</p>
+      <p style="margin:2px 0;font-size:12px"><strong>Bracket:</strong> ${line.bracketLabel
+        ? esc(line.bracketLabel)
+        : `<span class="muted">no schedule bracket resolved — the application's fee-quantity field cannot be computed from a schedule we do not have</span>`}</p>
+      <p style="margin:2px 0;font-size:12px"><strong>Schedule:</strong> ${url
+        ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(url)}</a>`
+        : `<span class="muted">no source URL on file</span>`}</p>
+      <p style="margin:2px 0;font-size:12px">${esc(FEE_PAYMENT_METHOD[line.paymentMethod] || line.paymentMethod || "")}</p>
+      ${conf.note ? `<p style="margin:4px 0 2px;font-size:12px"><strong>⚠ ${esc(conf.note)}</strong></p>` : ""}
+      <p class="muted" style="margin:2px 0;font-size:11px">Service fee ${feeMoney(line.serviceFeeUsd)} · track total ${feeMoney(line.totalUsd)}</p>
+    </article>`;
+}
+
+function renderFeeSheetPanel() {
+  // The container is created here rather than in dashboard.html so the panel ships with the
+  // code that draws it. It sits directly under the payment panel, which is the other place
+  // fees are discussed.
+  let panel = $("feeSheetPanel");
+  if (!panel) {
+    const anchor = $("paymentPanel");
+    if (!anchor) return;
+    panel = document.createElement("div");
+    panel.id = "feeSheetPanel";
+    anchor.insertAdjacentElement("afterend", panel);
+  }
+  const sheet = state.feeSheet;
+  if (!sheet || !Array.isArray(sheet.lines)) { panel.hidden = true; panel.innerHTML = ""; return; }
+  const provisional = sheet.lines.filter((l) => l.confidence === "seeded" || l.confidence === "estimated");
+  const anyUnknown = sheet.totalUsd == null;
+  panel.hidden = false;
+  panel.innerHTML = `
+    <section class="panel" style="margin:10px 0;padding:12px 14px;border:1px solid ${anyUnknown || provisional.length ? "#f59e0b" : "var(--border,#d1d5db)"};border-radius:8px">
+      <div class="item-title" style="margin-bottom:6px">
+        <span>💵 Fees — permit and NEM</span>
+        ${statusBadge(anyUnknown ? "incomplete" : provisional.length ? "provisional" : "known")}
+      </div>
+      <p class="muted" style="margin:0 0 8px;font-size:12px">
+        What the AHJ and the utility charge for this job, with the line of the published schedule each number came from.
+        The portal's own fee checkout is always completed by a person — never by automation.
+      </p>
+      ${sheet.lines.map(renderFeeSheetLine).join("")}
+      <table style="font-size:12px;margin:4px 0;border-collapse:collapse">
+        <tr><td style="padding:1px 14px 1px 0">Jurisdiction fees (permit + NEM)</td><td style="text-align:right"><strong>${feeMoney(sheet.jurisdictionFeesUsd)}</strong></td></tr>
+        <tr><td style="padding:1px 14px 1px 0">Our service fees${sheet.billingRequired ? " (per submission)" : ""}</td>
+            <td style="text-align:right"><strong>${feeMoney(sheet.serviceFeesUsd)}</strong></td></tr>
+        <tr style="border-top:1px solid var(--border,#d1d5db)"><td style="padding:3px 14px 1px 0"><strong>Project total</strong></td>
+            <td style="text-align:right"><strong>${feeMoney(sheet.totalUsd)}</strong></td></tr>
+      </table>
+      ${sheet.billingRequired ? "" : `<p class="muted" style="margin:2px 0;font-size:11px">This client is not billed per submission (billing mode ${esc(sheet.billingMode || "monthly / none")}), so the service fees above are shown for reference and are not collected here.</p>`}
+      ${anyUnknown ? `<p style="margin:6px 0 2px;font-size:12px"><strong>The total is UNKNOWN because at least one fee is.</strong> It is not a zero and it is not a partial sum — do not put a number in front of this customer yet.</p>` : ""}
+      ${(sheet.unknowns || []).length ? `
+        <p style="margin:6px 0 2px;font-size:12px"><strong>Still unknown</strong></p>
+        <ul style="margin:2px 0;padding-left:18px;font-size:12px">${sheet.unknowns.map((u) => `<li>${esc(u)}</li>`).join("")}</ul>` : ""}
+      ${(sheet.outOfPortalPayments || []).length ? `
+        <p style="margin:6px 0 2px;font-size:12px"><strong>Not payable in any portal</strong></p>
+        <ul style="margin:2px 0;padding-left:18px;font-size:12px">${sheet.outOfPortalPayments.map((p) => `<li>${esc(p)}</li>`).join("")}</ul>` : ""}
+      <p class="muted" style="margin:6px 0 0;font-size:11px">
+        Full sheet, including who agreed to pay each portal's fees: <code>npx tsx scripts/fee-sheet.ts --project ${esc(state.selectedProjectId || "")}</code>
+      </p>
+    </section>`;
 }
 
 // Friendly display labels for every canonical ProjectStatus (shared/src/types.ts).
@@ -1835,6 +1972,7 @@ function renderDetail() {
   safeRender("submitGate", renderSubmitGate);
   safeRender("portalQuestions", renderPortalQuestionChip);
   safeRender("paymentPanel", renderPaymentPanel);
+  safeRender("feeSheetPanel", renderFeeSheetPanel);
   safeRender("submittalTracks", renderSubmittalTracks);
   safeRender("processMap", renderProcessMap);
   safeRender("liveReadiness", renderLiveTestReadiness);

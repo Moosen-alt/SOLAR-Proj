@@ -2307,6 +2307,28 @@ app.post("/api/projects/:id/payment/record-fee", asyncHandler(async (req, res) =
   res.json({ quote });
 }));
 
+// THE FEE SHEET — "what does this job cost, and where did that number come from?"
+//
+// Both tracks in one answer: the amount, the schedule line it fell in, the published page it
+// was read from, the confidence, how it is paid, and — explicitly — what is still unknown. A
+// fee with no number is reported UNKNOWN and never as $0, because zero is an answer ("this
+// utility charges nothing") and a customer gets invoiced off this screen.
+//
+// Distinct from /payment-quote above, which is the per-submission BILLING gate and is shown
+// only to clients on per-submission billing. The fee sheet is the money FACTS, and every
+// project has them regardless of how the client is invoiced.
+//
+// GET, and read-only in intent — but note `buildProjectFeeSheet` builds from fresh quotes and
+// `buildPaymentQuote` persists a `submission_payments` row, which is the same write the
+// payment screen has always made on load. `scripts/fee-sheet.ts` rolls that write back; this
+// route deliberately does not, so the dashboard's two fee panels stay consistent with each
+// other. Nothing here pays anything: the portal's own checkout is always a human's (rule 1).
+app.get("/api/projects/:id/fee-sheet", asyncHandler(async (req, res) => {
+  const { buildProjectFeeSheet } = await import("./submissionFees");
+  const detail = getProjectDetail(db, String(req.params.id));
+  res.json({ feeSheet: buildProjectFeeSheet(db, detail.project) });
+}));
+
 app.post("/api/projects/:id/prepare-submission", (req, res) => {
   // Optional track scopes staging to one filing (nem | building | electrical | combo);
   // omitted = the legacy combined stage.

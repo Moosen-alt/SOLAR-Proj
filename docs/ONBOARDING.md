@@ -81,6 +81,19 @@ left to the first filing:
    `feeResponsibility` (`card-on-file` / `customer-pays` / `mailed-check` / `keelix-pays`).
    The coverage report prints `NOT AGREED` per portal until you do. Recording it authorises
    nothing: automation never pays a portal fee under any value of it.
+
+   **Have the conversation over a number.** "Who pays the fees" is an abstract question until
+   somebody says what the fees are, and then it is a short one. `npx tsx scripts/fee-sheet.ts
+   --project <id>` (or `--client <id>` for every open project) prints both tracks: the amount,
+   the line of the published schedule it fell in, the page it was read from, how sure we are,
+   how it is paid, and the agreement you recorded — or `NOT AGREED`, beside the money. The same
+   sheet is on the project's dashboard and at `GET /api/projects/:id/fee-sheet`.
+
+   Two things to know before you quote anybody from it. A fee marked **SEEDED** was found by
+   research and **nobody has checked it** — verify it against the jurisdiction's own page
+   first; `--research` spends an LLM call and lands exactly that kind of number. And a fee we
+   do not know prints **UNKNOWN**, never `$0.00`: zero is an answer ("this utility charges
+   nothing"), unknown is the absence of one, and a customer gets invoiced off the difference.
 2. **Portal passwords — they tell us the day they change one.** Make it an obligation in
    writing. We cannot detect a rotation; the first sign is a failed filing, and we then stop
    trying that portal so the account does not get locked. See §2 and §6.
@@ -991,6 +1004,7 @@ Scripts this runbook uses, in the order the seven days need them:
 | `POST /api/clients/:id/credential-requests` | D1-2 — mint the one-time secure link for their logins | §5 |
 | `npx tsx scripts/onboarding-readiness.ts --client=<id>` | D2 — is OUR configuration complete | §4.1 |
 | `npm run coverage:report -- --client <id>` | **D2-3 — the customer's coverage report** | §4.2 |
+| `npm run fee:sheet -- --project <id>` | D0 and any day after — what a job costs, where each number came from, and who agreed to pay it | §0.5 |
 | `npm run learn:benchmark -- --host <host> [--include-stale]` | D3-6 — verify each portal, one at a time | §6 |
 | `npx tsx scripts/draft-ledger.ts` | any day — the drafts we left on their real portal accounts | §2 |
 | `npm run ops` | any day — job queue, blockers, recipes, run artifacts | §8 |

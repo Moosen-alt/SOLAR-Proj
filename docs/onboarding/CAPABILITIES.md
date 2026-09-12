@@ -35,6 +35,7 @@ tells you it is ready. Then **a human reviews and submits**.
 | Plan-set parsing into structured project fields | **The reviewer gate** — QC findings must be cleared by a person before anything is staged |
 | QC against the AHJ's adopted code cycle | **Final submit** — the portal's Submit / Continue Application click |
 | Building and filling the AHJ's permit documents | **Portal fees and payment** — never automated under any flag |
+| Working out what the AHJ and the utility will charge, and which line of their published schedule this job falls in | **Verifying a researched fee** before it is quoted to a homeowner (see Known limits) |
 | Pre-placing your stored signature PNG on prepared permit forms, at the operator's direction | **MFA and CAPTCHA** — never solved, never bypassed |
 | Portal login with your stored credentials | **DocuSign / eSign envelopes** — see below |
 | Walking the portal's pages and filling its fields | Registering the portal account itself (portals require this on their own site, often with an emailed code) |
@@ -300,6 +301,37 @@ Named concretely, with who unblocks each.
   produced eleven consecutive false "unreachable" verdicts in eight seconds, and a deep
   walk can be truncated by the per-portal time budget. Mitigations exist but do not remove
   this. Any per-portal claim needs `--repeat N` to become a rate.
+- **Fees: we can now tell you what a job costs and where the number came from — and on the
+  day of writing we hold almost no schedules to say it from.** The fee sheet
+  (`npm run fee:sheet -- --project <id>`, `GET /api/projects/:id/fee-sheet`, and a panel on
+  the project screen) answers both tracks with an amount, the published schedule line the job
+  fell in, the page it was read from, a confidence, how it is paid and what is still unknown.
+  What it is answering *from* is the honest part:
+  - The **published-schedule** rung is the one that makes a number trustworthy, and as of
+    **2026-09-12 the live database holds zero fee schedules.** Every one has to arrive by
+    research (`--research`, one LLM call per jurisdiction) or be typed in. A researched
+    schedule lands as **seeded** — found, *not checked by anyone* — and is drawn as
+    provisional on every screen until a person verifies it. **Do not quote a homeowner from a
+    seeded fee.**
+  - The **learned-history** rung (the median of real fees we have seen for an AHJ) has never
+    fired: `permit_fee_history` holds **0 rows**. It fills only as operators type the
+    portal-calculated fee back in from the fee/review screen.
+  - So most permit fees today fall to the **valuation estimate**: 1.5% of the project
+    valuation, clamped $150–$900, with no jurisdiction in it at all. It is labelled an
+    estimate everywhere it appears, and it is a placeholder for a schedule, not a substitute.
+  - An unknown fee is reported **UNKNOWN, never $0.00**, and one unknown line nulls the
+    project total rather than quietly summing as a zero. That is deliberate: zero is an
+    answer ("this utility charges nothing for residential NEM"), unknown is the absence of
+    one, and a customer gets invoiced off the difference.
+- **Knowing the right fee bracket does not yet make the application fill it.** This is the
+  gap worth understanding, because it is the one that bills a job wrong. Coos Bay's recorded
+  Accela application carries a line item — "Renewable energy for electrical systems- 5.01kva
+  through 15kva" — whose quantity was **frozen from the project the recipe was learned on**.
+  Replay a 20 kW job through it and the city is asked for the 5.01–15 kVA bracket. The fee
+  sheet now *resolves* the correct bracket for that job from the schedule, which is what makes
+  computing the field possible; **nothing in the recipe resolver reads it yet**, so the frozen
+  quantity is still what replays. Until that connection lands, check the fee bracket on the
+  review screen before a person submits.
 
 ## Where the onboarding guide's promises stand today
 
@@ -322,6 +354,7 @@ Checked against this build on **2026-09-11**.
 | S6 "Logged-in portal sessions are kept so MFA isn't triggered on every run… isolated per customer" | **The isolation is true; "encrypted at rest" is NOT part of that sentence and must not be read into it.** Sessions live in a per-customer directory (`portal-profiles/<your id>/<portal>/`) that no other customer's run touches. They are stored as plain Chrome profile directories — cookies and saved logins, **not encrypted by us** — and a valid session cookie is functionally a login. Your *passwords* are AES-256-GCM encrypted; your *sessions* are not. See §4 below for what that means for whoever owns the server |
 | S6 "If you ever leave… we then remove your credentials, sessions, projects and documents from our live systems" | **True as of this build**, including the one-time credential links themselves — fixed the same day it was found. For about an hour after the secure link shipped, offboarding did not know that table existed: a departing customer with a link would have had their projects destroyed and then the purge would have ABORTED on a foreign-key error, keeping their portal passwords. Destructive and silent unless somebody read the stack trace. The audit that found it now has a test case, and the lesson is recorded: a purge test only covers the tables it remembers to create. One audited command removes the encrypted credentials, the on-disk sessions, every project and its documents, your homeowner records and correspondence. Three things it does not reach, each cleared by hand afterwards: the backup mirror of the session directories, the backup mirror of your documents, and raw portal screenshots under `data/learn-runs/`. **Deletion from historical backup snapshots is not something we can do short of deleting the snapshots**, so if your contract requires provable deletion, raise it before you sign |
 | S6 "Your projects, homeowner records, documents and credentials are yours alone and never shared" | True — and read it alongside §3 below, which spells out what IS pooled. The line is procedural knowledge (how a portal behaves) versus your data. Some installers consider the first of those a competitive asset |
+| S3.7 "Who pays AHJ and utility fees, and how — agreed per portal at kickoff" | **True, and now a conversation you can have over a number.** The agreement is recorded per portal (`card-on-file` / `customer-pays` / `mailed-check` / `keelix-pays`) and both the coverage report and the fee sheet print `NOT AGREED` beside any portal where nobody has made one. `npm run fee:sheet -- --project <id>` puts the amount, the schedule line, the source page, the confidence and how it is paid next to that agreement, so kickoff settles who pays *this much*, rather than who pays in principle. Read it with the fee entries under Known limits above: on the day of writing, most permit amounts are still valuation estimates, and a researched fee is unverified until a person checks it. Recording an agreement authorises nothing — automation never pays a portal fee under any value of it |
 | S3 "every item goes straight onto permit and interconnection applications" | True for the licence and business block. Two intake items are stored but not yet consumed anywhere: the insurance and bond **expiry dates** are held, while the **certificate PDFs themselves have no document store** — send them, but expect us to hold them outside the system until that exists |
 
 ## Read this before you sign
@@ -469,7 +502,10 @@ session to it. A staged or paused filing cannot be finished from somewhere else.
   works from an allowlist: only a step a human explicitly marked as the final submit is even
   clickable, and anything that looks like a fee payment is refused before that check is
   reached. A payment dialog aborts the run.
-- **We do not pay fees.** Ever, under any configuration flag.
+- **We do not pay fees.** Ever, under any configuration flag. We will tell you what a fee is,
+  which line of the published schedule it came from and who agreed to pay it — that is a fee
+  sheet, not a payment. The money is moved by a person, at the portal's own checkout or by the
+  cheque they post.
 - **We do not store secrets in plaintext.** Portal passwords and security answers exist only
   inside AES-256-GCM encrypted envelopes. The API never returns a password — a credential
   reports only whether a secret is set. Passwords, account and meter numbers, and similar
