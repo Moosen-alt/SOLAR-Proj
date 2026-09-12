@@ -126,6 +126,7 @@ try {
 
   rule("WHAT WOULD BE DESTROYED");
   line(`  portal credentials (encrypted passwords)   ${inventory.portalCredentials}`);
+  line(`  one-time credential links (S4)            ${inventory.credentialRequests}`);
   line(`  projects (and every row reaching them)     ${inventory.projects}`);
   line(`  uploaded documents                         ${inventory.documents}`);
   line(`  customers (homeowner records)              ${inventory.customers}`);

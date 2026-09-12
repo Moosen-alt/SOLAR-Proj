@@ -324,6 +324,35 @@ check("the per-portal fee agreement is carried, and an unagreed portal says so",
 });
 
 // ---------------------------------------------------------------------------
+// THE RELAY MUST BE SOMEBODY ON THIS CUSTOMER'S SIDE.
+//
+// The relay decides READY NOW vs CANNOT FILE YET, and it was satisfied by any email-shaped
+// string in the sources - including the SHARED knowledge-base row, which every tenant reads
+// and which routinely carries the utility's own support address. A utility hotline is not a
+// person who can hand us a one-time code, so that produced a false READY on a
+// customer-facing deliverable. Found by the onboarding-guide audit; the previous fixture
+// passed only because its KB notes happened to contain no email.
+// ---------------------------------------------------------------------------
+check("MUST NOT: an address in the POOLED knowledge base counts as a relay", () => {
+  const cred = listPortalCredentials(db, CLIENT).find((c) => c.portalUrl === PELHAM_URL)!;
+  // Clear the customer's own answer, then put a utility support address in the SHARED row.
+  updatePortalCredential(db, CLIENT, cred.id, { mfaCodeDestination: "", notes: "" });
+  // SEED the shared row (Pelham Bay has none by default) — an UPDATE here hits zero rows and
+  // makes this whole case vacuous, which is exactly how the first attempt at this test passed
+  // with the fix disabled.
+  seedKnowledge({
+    state: "NM", ahj: "Town of Pelham Bay", portalUrl: PELHAM_URL,
+    notes: "Interconnection questions: customerservice@pelhambay-utility.example — code is emailed at login",
+  });
+  const row = rowFor("Pelham Bay");
+  assert.equal(row.mfa.expected, true, "the shared row still tells us the portal challenges a code");
+  assert.equal(row.mfa.relayNamed, false,
+    `a pooled utility address was accepted as this customer's relay: ${row.mfa.relay}`);
+  assert.equal(row.bucket, "cannot_file_yet",
+    "a declared-MFA portal with nobody named to relay must never read READY NOW");
+});
+
+// ---------------------------------------------------------------------------
 // The MFA vocabulary, in BOTH directions. A filter list fails both ways: one that misses
 // the real note reads as "this portal is fine", and one that fires on everything buries the
 // report under portals nobody has to staff.

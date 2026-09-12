@@ -305,6 +305,9 @@ export interface OffboardInventory {
   clientId: string;
   companyName: string;
   portalCredentials: number;
+  /** Outstanding + spent one-time credential links (guide S4). A pending one is a live write
+   *  path into a client we were told to forget. */
+  credentialRequests: number;
   projects: number;
   documents: number;
   customers: number;
@@ -349,6 +352,12 @@ export function offboardInventory(db: AppDb, clientId: string): OffboardInventor
     clientId,
     companyName: s(client.company_name),
     portalCredentials: count("SELECT COUNT(*) AS n FROM portal_credentials WHERE client_id = ?"),
+    // Lazily-created table: a database older than the secure link has none, and the operator
+    // should see 0 rather than the inventory throwing.
+    credentialRequests: (() => {
+      try { return count("SELECT COUNT(*) AS n FROM credential_requests WHERE client_id = ?"); }
+      catch { return 0; }
+    })(),
     projects: count("SELECT COUNT(*) AS n FROM projects WHERE client_id = ?"),
     documents: count(
       "SELECT COUNT(*) AS n FROM project_documents WHERE project_id IN (SELECT id FROM projects WHERE client_id = ?)",
@@ -451,6 +460,17 @@ export async function offboardClient(db: AppDb, clientId: string, opts: Offboard
     // THE MOST IMPORTANT ROW IN THIS FUNCTION. Everything else is recoverable-ish from a
     // backup; a portal password we kept after being told to delete it is the promise broken.
     db.run("DELETE FROM portal_credentials WHERE client_id = ?", [clientId]);
+    // The one-time secure credential links (onboarding guide §4). A PENDING row is a live
+    // write path into this client — a token that could still deposit a credential for a
+    // customer we were told to forget — and a SPENT row still names the portals they file in.
+    // Guarded because credentialRequests.ts creates this table lazily (no versioned
+    // migration), so an older database genuinely has no such table and a bare DELETE throws
+    // mid-transaction, which would abort the purge AFTER the projects were already gone.
+    // Found by the guide audit: offboarding shipped an hour after the secure link and did not
+    // know about it, so the §6 leaving promise failed for exactly the customers onboarded the
+    // way the runbook recommends.
+    try { db.run("DELETE FROM credential_requests WHERE client_id = ?", [clientId]); }
+    catch { /* pre-secure-link database: no such table, nothing to purge */ }
     // Per-client IMAP sources carry imap_pass_encrypted — another live secret.
     db.run("DELETE FROM email_tracking_sources WHERE client_id = ?", [clientId]);
     db.run("DELETE FROM client_portal_identities WHERE client_id = ?", [clientId]);

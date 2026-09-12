@@ -497,7 +497,19 @@ export function mfaFacts(
 
   const textHit = sources.find((src) => textSuggestsMfa(src.text));
   const expected = Boolean(declaredMfa || declaredDestination || profileFlag || textHit);
-  const relay = declaredDestination || sources.map((src) => findRelay(src.text)).find(Boolean) || "";
+
+  // A RELAY MUST BE SOMEBODY ON THIS CUSTOMER'S SIDE, NOT AN ADDRESS FOUND IN POOLED NOTES.
+  //
+  // The relay decides whether a declared-MFA portal reads READY NOW or CANNOT FILE YET, and it
+  // was being satisfied by ANY email-shaped string in the sources — including the shared
+  // knowledge-base row, which every tenant reads and which routinely carries the UTILITY's own
+  // support address or hotline. "Ameren's customer-service inbox" is not a person who can hand
+  // us a one-time code, so that produced a false READY on a customer-facing deliverable.
+  // Client-scoped sources only: the credential's own notes and this client's portal-profile
+  // notes. The guide's own wording is the test — "otherwise name someone who can relay a code"
+  // means somebody named BY THIS CUSTOMER.
+  const clientScopedSources = sources.filter((src) => src.label !== "the shared knowledge-base row");
+  const relay = declaredDestination || clientScopedSources.map((src) => findRelay(src.text)).find(Boolean) || "";
   const evidence = declaredMfa
     ? "portal_credentials.mfa_required"
     : declaredDestination

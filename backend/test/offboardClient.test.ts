@@ -373,5 +373,43 @@ check("deleteClient still REFUSES a client with projects — a misclick must not
 
 try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* windows file locks */ }
 
+// THE ONE-TIME SECURE LINK IS A LIVE WRITE PATH INTO THIS CLIENT.
+//
+// Offboarding shipped an hour before the secure credential link (guide S4) and did not know
+// about it, so credential_requests survived the purge. A PENDING row is a token that could
+// still deposit a portal password for a customer we were told to forget; a SPENT row still
+// names the portals they file in. The guide audit caught it - 15 green checks had missed it
+// because no case here minted a link, which is the whole lesson: a purge test only covers the
+// tables it remembers to create.
+//
+// KILL-TEST NOTE, because the evidence does not look like a failed assertion: disable the
+// credential_requests purge and this does not report a FAIL - it CRASHES the process with
+// SQLITE_CONSTRAINT_FOREIGNKEY on the DELETE FROM clients, because credential_requests.client_id
+// references it. That is worse than a red check and it is the real severity: the crash lands
+// AFTER the projects and customers have already been deleted (they are purged before the final
+// transaction), so the pre-fix behaviour was to destroy a departing customer's projects and then
+// abort while KEEPING their portal passwords. Destructive, and silent unless someone read the
+// stack.
+// tables it remembers to create.
+{
+  const { createCredentialRequest } = await import("../src/credentialRequests");
+  const c = createClient(db, { companyName: "ZZ Secure Link Offboard" });
+  const pending = createCredentialRequest(db, c.id, [{ portalType: "p", portalUrl: "https://p.invalid/" }]);
+  const spent = createCredentialRequest(db, c.id, [{ portalType: "q", portalUrl: "https://q.invalid/" }]);
+  db.run("UPDATE credential_requests SET status = 'completed' WHERE token = ?", [spent.token]);
+
+  const inv = offboardInventory(db, c.id);
+  check("the inventory counts the one-time credential links", () => {
+    assert.equal(inv.credentialRequests, 2, "the operator cannot decide about rows the inventory hides");
+  });
+
+  await offboardClient(db, c.id, { confirm: c.id, actor: "test" });
+  check("MUST NOT: a pending or spent credential link survives offboarding", () => {
+    const left = db.query<{ n: number }>("SELECT COUNT(*) AS n FROM credential_requests WHERE client_id = ?", [c.id]);
+    assert.equal(Number(left[0]?.n ?? 0), 0,
+      "a live token can still deposit a password for a client we were told to forget");
+  });
+}
+
 console.log(failures === 0 ? "\noffboardClient: all checks passed" : `\noffboardClient: ${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);
