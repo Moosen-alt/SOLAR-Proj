@@ -13,6 +13,7 @@ import { nowIso } from "./time";
 import { parseJson } from "./json";
 import { resolvePermitPath, evaluatePrescriptiveCriteria, type PrescriptiveCriterion, type PrescriptiveLimitInputs } from "./permitPath";
 import { resolveEffectiveCodeContext } from "./codeProfiles";
+import { isDocumentDateStale } from "./documentDate";
 
 // Classify an AHJ form by which mutually-exclusive solar application it is, from its
 // name/filename. A prescriptive and a structural application must NEVER both be filled
@@ -751,6 +752,14 @@ export interface FilledFormResult {
   /** True when signature placements are hand-tuned on the registry def, so the
    *  "Detect signature lines" affordance is irrelevant and hidden in the UI. */
   signaturesLocked?: boolean;
+  /** What the blank says about ITSELF ("Revised 12/23/2022"), "" when it does
+   *  not say. Stored forms only — registry forms are version-pinned in code. */
+  documentDate?: string;
+  /** The document dates itself more than two years back. Worth re-checking
+   *  against the AHJ's current forms page BEFORE this one is filed. */
+  documentStale?: boolean;
+  /** Where the blank was downloaded from, so the operator can re-check it. */
+  sourceUrl?: string;
 }
 
 export async function fillForm(
@@ -949,9 +958,26 @@ export async function buildFilledFormsForProject(db: AppDb, project: ProjectReco
   for (const stored of loadStoredTemplates(db, project.ahj, project.state)) {
     if (forms.some((f) => f.formId === stored.def.id)) continue;
     if (!formAllowedForPath(stored.def.formName, permitPath)) { noteSkip(stored.def.id, stored.def.formName); continue; }
+    // A FORM IS A DATED ARTIFACT, AND THIS IS THE SCREEN WHERE IT GETS FILED.
+    // Coos County's electrical permit application prints the renewable-energy
+    // fee table on page 1 under "Revised 12/23/2022"; the county's adopted
+    // schedule for those same brackets is 1.70x higher. The operator holding
+    // the filled PDF is the last person who can catch that, so the document's
+    // own date travels with the fill result rather than living only in the
+    // template manager.
+    const dated = {
+      documentDate: stored.documentDate,
+      documentStale: stored.documentStale,
+      sourceUrl: stored.sourceUrl,
+    };
+    const staleNote = stored.documentStale
+      ? `This blank dates ITSELF "${stored.documentDate}" — over two years old. Re-check the AHJ's current forms page before filing, and if it prints a fee table, re-check that against the adopted schedule.`
+      : "";
+    const withNote = (message?: string): string | undefined =>
+      [message, staleNote].filter(Boolean).join(" ") || undefined;
     try {
       const result = await fillLoadedForm(stored.def, stored.bytes, ctx, path.join(outDir, `${stored.def.id}.pdf`));
-      forms.push({ ...result, verified: stored.verified, templateId: stored.templateId });
+      forms.push({ ...result, ...dated, message: withNote(result.message), verified: stored.verified, templateId: stored.templateId });
     } catch (err) {
       // Keep the verify/re-map affordance alive even when the fill errors, so the
       // operator can re-map or delete a broken template instead of being stuck.
@@ -959,9 +985,10 @@ export async function buildFilledFormsForProject(db: AppDb, project: ProjectReco
         formId: stored.def.id,
         formName: stored.def.formName,
         status: "error",
-        message: `Fill failed: ${(err as Error).message || String(err)}`,
+        message: withNote(`Fill failed: ${(err as Error).message || String(err)}`),
         verified: stored.verified,
         templateId: stored.templateId,
+        ...dated,
       });
     }
   }
@@ -977,13 +1004,13 @@ export async function buildFilledFormsForProject(db: AppDb, project: ProjectReco
 
 // Build fillable definitions from stored ahj_form_templates rows for this AHJ.
 // The field_map column holds { formName, sourceUrl, fillMode, textFields, checkboxes }.
-export function loadStoredTemplates(db: AppDb, ahj: string, state: string): Array<{ def: AhjFormDefinition; bytes: Uint8Array; templateId: string; verified: boolean }> {
+export function loadStoredTemplates(db: AppDb, ahj: string, state: string): Array<{ def: AhjFormDefinition; bytes: Uint8Array; templateId: string; verified: boolean; documentDate: string; documentStale: boolean; sourceUrl: string }> {
   const needle = (ahj || "").trim().toLowerCase();
   if (!needle) return [];
-  const rows = db.query<{ id: string; ahj_name: string; state: string; original_filename: string; pdf_blob: Buffer | null; field_map: string }>(
-    "SELECT id, ahj_name, state, original_filename, pdf_blob, field_map FROM ahj_form_templates WHERE pdf_blob IS NOT NULL ORDER BY updated_at DESC",
+  const rows = db.query<{ id: string; ahj_name: string; state: string; original_filename: string; pdf_blob: Buffer | null; field_map: string; document_date: string; source_url: string }>(
+    "SELECT id, ahj_name, state, original_filename, pdf_blob, field_map, document_date, source_url FROM ahj_form_templates WHERE pdf_blob IS NOT NULL ORDER BY updated_at DESC",
   );
-  const out: Array<{ def: AhjFormDefinition; bytes: Uint8Array; templateId: string; verified: boolean }> = [];
+  const out: Array<{ def: AhjFormDefinition; bytes: Uint8Array; templateId: string; verified: boolean; documentDate: string; documentStale: boolean; sourceUrl: string }> = [];
   for (const row of rows) {
     const rowAhj = String(row.ahj_name || "").trim().toLowerCase();
     if (!rowAhj) continue;
@@ -1016,6 +1043,9 @@ export function loadStoredTemplates(db: AppDb, ahj: string, state: string): Arra
       bytes: new Uint8Array(row.pdf_blob),
       templateId: row.id,
       verified: map.verified === true,
+      documentDate: String(row.document_date || ""),
+      documentStale: isDocumentDateStale(String(row.document_date || "")),
+      sourceUrl: String(row.source_url || map.sourceUrl || ""),
     });
   }
   return out;

@@ -289,7 +289,46 @@ check("the fee-harvest side can flag a form that carried a fee table", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 6 · The backfill. Every row written before v21 already carried its source URL
+// 6 · The screen where the form actually gets FILED. The template manager is
+//     where an operator browses; the project's form list is where they fill and
+//     download. A date that only reaches the first one has not reached anybody.
+// ---------------------------------------------------------------------------
+const { loadStoredTemplates } = await import("../src/ahjForms");
+
+check("the fill path carries the document's own date, not just the manager", () => {
+  const fillable = storeAhjFormTemplate(db, {
+    ahjName: "Datedville", state: "OR", formType: "permit_application",
+    filename: "application.pdf", bytes: PDF_BYTES,
+    map: {
+      formName: "Datedville permit application", sourceUrl: "https://datedville.example.invalid/app.pdf",
+      fillMode: "acroform", textFields: { Owner: "project.homeownerName" }, checkboxes: {}, notes: "",
+    },
+    documentDate: "Revised 12/23/2022",
+  });
+  const loaded = loadStoredTemplates(db, "Datedville", "OR").find((t) => t.templateId === fillable);
+  assert.ok(loaded, "the stored blank is offered to the fill path");
+  assert.equal(loaded.documentDate, "Revised 12/23/2022");
+  assert.equal(loaded.documentStale, true, "an operator about to file a 2022 form has to be told");
+  assert.equal(loaded.sourceUrl, "https://datedville.example.invalid/app.pdf", "and where to re-check it");
+});
+
+check("...and a blank that never dated itself is not cried wolf over", () => {
+  const undated = storeAhjFormTemplate(db, {
+    ahjName: "Undatedville", state: "OR", formType: "permit_application",
+    filename: "application.pdf", bytes: PDF_BYTES,
+    map: {
+      formName: "Undatedville permit application", sourceUrl: "",
+      fillMode: "acroform", textFields: { Owner: "project.homeownerName" }, checkboxes: {}, notes: "",
+    },
+  });
+  const loaded = loadStoredTemplates(db, "Undatedville", "OR").find((t) => t.templateId === undated);
+  assert.ok(loaded);
+  assert.equal(loaded.documentDate, "");
+  assert.equal(loaded.documentStale, false, "unknown is not old — a stale flag on every uploaded blank teaches operators to ignore it");
+});
+
+// ---------------------------------------------------------------------------
+// 7 · The backfill. Every row written before v21 already carried its source URL
 //     inside the field_map JSON, where nothing could select or show it.
 // ---------------------------------------------------------------------------
 // Write the LEGACY shape by hand: provenance columns blank, source URL only in the
