@@ -474,6 +474,53 @@ a recorded literal that looks like the learn project's own data and is bound to 
 BLANK"). A search for that marker in the other three found nothing, so the shared cause is NOT
 established - do not assume one fix closes four.
 
+**IT IS NOW ESTABLISHED, AND IT IS FOUR OF THE FIVE.** (2026-09-12, second sweep, independent
+re-run: same tally, banner `RED - 5 problem(s)`.) The marker was absent from the other three
+logs only because they never print `agingNotes`; the mechanism is the same one. Measured by
+calling `looksLikeProjectData` directly on each red's own label and value:
+
+| red | label + value the fixture carries | `looksLikeProjectData` |
+|---|---|---|
+| `advanceGuard` | "Meter Number" + "TEST-123" | **true** |
+| `identicalSections` | "Address" + "808 SE Chkalov Dr" | **true** |
+| `finalPageReassert` | "Phone" + "5035550142" | **true** |
+| `paymentBoundary` | "Contractor Licence Expiration Date" + "2027-04-01" | **true** |
+
+Every one is an UNBOUND literal (`field: ""` or no `field`), so `resolveValue` refuses it and
+returns `""` - which is `3e42fec` ("A recipe is shared, so the answer it recorded is somebody
+else's", 92 commits back) working exactly as designed. Proved rather than inferred: binding
+`advanceGuard`'s meter step to `meterNumber` and supplying it takes that smoke from 3 red to
+**7/7 green** (diagnostic only, reverted). Same shape as the `controlIdentity` repair.
+
+The split that decides the repair is whether the label has a key in `RECIPE_FIELD_DESCRIPTIONS`:
+`meterNumber`, `street`/`projectAddress`, `homeownerPhone` all exist, so those three are STALE
+FIXTURES - noisy, not a live blank. **There is no key for a licence expiry** (`/expir/` matches
+nothing in the dictionary), which makes `paymentBoundary` the same class battery capacity was:
+a required field that comes out empty on a real filing with nothing to substitute.
+
+`applicationEntry` is NOT this cause and must not be swept in with them. Its red is
+`matchesEntryLabel("Submit an Application/Request")` returning false, because
+`isExcludedEntryLabel` excludes any label carrying "submit" without "new"
+(`applicationEntry.ts:102`) - safety rule #1, the last guard before an accidental filing. The
+smoke's "good labels" list and that exclusion genuinely contradict each other; picking a winner
+is a human decision, not a repair.
+
+Two things found while establishing the above, neither of which any smoke covers:
+
+- **A bare "Name" label still replays the learn project's person.** `PROJECT_DATA_LABEL` requires
+  `first name`/`last name`/`full name`/`owner`/`customer`/... - plain "Name" matches nothing, so
+  `looksLikeProjectData("Name", "ZZTest Replay Benchmark")` is **false** and the literal replays.
+  It is visible in two PASSING smokes' own output: `finalPageReassert` files
+  `Name="ZZTest Replay Benchmark"` and `identicalSections` files "Charles"/"Bitton" while their
+  addresses correctly blank. Every leak case in `crossProjectReplay.test.ts` uses a label that
+  happens to contain a listed word ("Owner Name", "Service Address", "System Size (W)"), so the
+  commonest label on a portal is untested. This is the wrong-value direction, and it is silent.
+- **A recorded expiration date is rebound to TODAY.** `dateFieldForLiteral` (portalRecipes.ts,
+  called from `convertLiteralsToBoundFields` at :1425) sends any date control not matching
+  `FUTURE_DATE_LABEL` to `todayDate`, on the assumption it is a signature/application date.
+  Measured: `dateFieldForLiteral("Contractor Licence Expiration Date", "2027-04-01")` ->
+  `"todayDate"`. A NEW learn of a licence-expiry control would therefore file "expires today".
+
 **The one wrong verdict was the runner's own.** `terminalPage` was reported TIMEOUT at the original
 300s default; it passes in **317s**, alone AND at concurrency 3. Nothing hung - the budget was
 just under the smoke. The default is now 600s, re-validated on the nine slowest smokes (all green,
