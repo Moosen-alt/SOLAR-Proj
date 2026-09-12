@@ -656,6 +656,17 @@ export const RECIPE_FIELD_DESCRIPTIONS: Record<string, string> = {
   batteryManufacturer: "Battery/storage manufacturer/make",
   batteryModel: "Battery/storage model number",
   batteryQuantity: "Number of battery units",
+  // THE ONE BATTERY SPEC THAT HAD NO KEY TO BIND TO. Every other storage field above has
+  // one, so a capacity control could only ever be frozen as an unbound literal — and the
+  // replay-side cross-project guard then refuses that literal, because "capacity" reads as
+  // project data. Net effect measured on the PacifiCorp storage section: the filing declared
+  // a Tesla battery and left the required kWh box empty on every project, forever. The
+  // adapter now substitutes the project's own capacity for an already-recorded literal;
+  // this entry is what lets a NEW learn bind the control properly instead.
+  // Named for the canonical snapshot key normalize.ts derives (essKwh), with the parser's
+  // own spelling as the alias, so the classifier can match either wording a portal uses.
+  essKwh: "Battery/energy-storage capacity in kilowatt-hours (kWh) — the STORAGE size, never the PV system's kW rating",
+  batteryCapacityKwh: "Battery/energy-storage capacity in kWh (alias of essKwh)",
   installerCompanyName: "Installer/contractor company name",
   installerEmail: "Installer company or contact email address",
   installerPhone: "Installer company phone number",
