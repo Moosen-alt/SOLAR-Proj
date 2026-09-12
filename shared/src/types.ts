@@ -132,8 +132,11 @@ export interface SubmissionPaymentRecord {
  *  human sends it (Ameren Illinois Level 1 = $50 by mail within 15 business days). */
 export type FeePaymentMethod = "portal" | "mailed_check" | "none" | "unknown";
 
-/** How much to trust the amount. "verified"/"seeded" only ever come from a
- *  published schedule — "seeded" is research, "verified" is human-checked. */
+/** How much to trust the amount. "actual" is the portal's own number. "verified"
+ *  means a human stands behind it — a human-checked schedule row, or a median of
+ *  fees people read off real portal screens. "seeded" is unreviewed research, so
+ *  it never auto-overwrites anything (safety rule 3). "estimated" is the
+ *  valuation heuristic, which knows nothing about the jurisdiction. */
 export type FeeConfidence = "actual" | "verified" | "seeded" | "estimated" | "unknown";
 
 export type PermitFeeSource =
