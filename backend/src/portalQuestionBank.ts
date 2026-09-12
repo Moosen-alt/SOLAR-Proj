@@ -360,13 +360,40 @@ export function extractPortalQuestions(db: AppDb, source: PortalRecipe | string)
   return out;
 }
 
+// A PROFILE KEY IS NO LONGER A UNIQUE ADDRESS FOR A RECIPE, AND THIS SILENTLY PICKED ONE.
+//
+// Recipes are keyed per AHJ PER DISCIPLINE. City of Coos Bay has TWO complete recipes under
+// the one key "or|city of coos bay|pacific power" — the city/structural filing and the
+// county/electrical one — and this LIMIT 1 returned whichever sorted first.
+//
+// Measured: the operator's triage queue listed the ELECTRICAL recipe's questions twice and
+// never once showed the structural recipe's own. Its unknown question ("Residential -
+// Structural"), its per-job geometry (building height, stories, areas, dwelling units,
+// number of buildings) and its "Plans - Structural" attachment type were invisible, so no
+// amount of triaging could ever reach them. apply-question-bindings had the same blind spot
+// from the other side: it read the electrical question set and then walked the STRUCTURAL
+// recipe's steps, so every structural label was simply absent from `wanted` and went unbound.
+//
+// Ambiguity here cannot be resolved by picking better — there is no correct single answer to
+// "the recipe for this key" when two exist. So it THROWS, naming both, and the callers that
+// have a recipe in hand (every real one) pass the recipe object instead and never reach it.
+// Silence was the whole defect; an exception is the smallest thing that cannot be silent.
 function recipeForProfileKey(db: AppDb, profileKey: string): PortalRecipe | null {
-  const row = db.get<Row>(
-    `SELECT id FROM portal_recipes WHERE profile_key = ?
-      ORDER BY CASE WHEN status = 'complete' THEN 0 ELSE 1 END, updated_at DESC LIMIT 1`,
+  const rows = db.query<Row>(
+    `SELECT id, discipline, status FROM portal_recipes WHERE profile_key = ?
+      ORDER BY CASE WHEN status = 'complete' THEN 0 ELSE 1 END, updated_at DESC`,
     [profileKey],
   );
-  return row ? getPortalRecipe(db, String(row.id)) : null;
+  const complete = rows.filter((r) => String(r.status) === "complete");
+  const pool = complete.length ? complete : rows;
+  if (pool.length > 1) {
+    const disciplines = pool.map((r) => String(r.discipline || "(untagged)"));
+    throw new Error(
+      `"${profileKey}" has ${pool.length} recipes (disciplines: ${disciplines.join(", ")}) — a profile key alone `
+      + "does not identify one. Pass the PortalRecipe (or getPortalRecipe(db, id)) instead of the key.",
+    );
+  }
+  return pool.length ? getPortalRecipe(db, String(pool[0].id)) : null;
 }
 
 /** The hostname a recipe drives — portal_url first, else the first goto step. */

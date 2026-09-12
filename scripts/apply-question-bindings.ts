@@ -39,7 +39,7 @@ const arg = (name: string): string => {
 const hostFilter = arg("host").toLowerCase();
 
 const { openDatabase } = await import("../backend/src/db");
-const { RECIPE_FIELD_DESCRIPTIONS, appendRecipeNoteSegment } = await import("../backend/src/portalRecipes");
+const { RECIPE_FIELD_DESCRIPTIONS, appendRecipeNoteSegment, getPortalRecipe } = await import("../backend/src/portalRecipes");
 const { extractPortalQuestions } = await import("../backend/src/portalQuestionBank");
 
 const db = await openDatabase();
@@ -68,9 +68,18 @@ for (const row of targets) {
 
   // What the bank believes about this portal's questions, and which binding answers each.
   let questions: Array<{ portalLabel?: string; suggestedBinding?: string; classification?: string }> = [];
-  // extractPortalQuestions takes a PROFILE KEY or a recipe object - passing the recipe id
-  // returns an empty list silently, which is how the first run of this script reported 0.
-  try { questions = extractPortalQuestions(db, row.profile_key) as never; } catch { questions = []; }
+  // BY RECIPE, NOT BY PROFILE KEY. It takes either, and the key is the wrong one: Coos Bay
+  // holds two complete recipes under one key (structural and electrical), so the key resolved
+  // to whichever sorted first. This loop then walked the OTHER recipe's steps, whose labels
+  // were absent from `wanted`, and bound nothing — a silent under-bind that looks exactly like
+  // "this recipe had nothing to bind". (The first run of this script reported a clean 0 for a
+  // related reason: passing a recipe ID, which is neither, returned [] without complaint.)
+  try {
+    questions = extractPortalQuestions(db, getPortalRecipe(db, row.id)) as never;
+  } catch (err) {
+    line(`   ! could not read ${row.profile_key}: ${err instanceof Error ? err.message : String(err)}`);
+    questions = [];
+  }
   const wanted = new Map<string, string>();
   for (const q of questions) {
     const binding = String(q.suggestedBinding ?? "").trim();

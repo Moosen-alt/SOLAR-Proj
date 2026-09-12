@@ -31,26 +31,37 @@ const dryRun = process.argv.includes("--dry-run");
 
 const { openDatabase } = await import("../backend/src/db");
 const { extractPortalQuestions, setPortalQuestionOverride } = await import("../backend/src/portalQuestionBank");
-const { RECIPE_FIELD_DESCRIPTIONS } = await import("../backend/src/portalRecipes");
+const { RECIPE_FIELD_DESCRIPTIONS, getPortalRecipe } = await import("../backend/src/portalRecipes");
 
 const db = await openDatabase();
 const line = (s = ""): void => console.log(s);
 
-interface Row { id: string; profile_key: string; portal_url: string; status: string }
-const recipes = db.query<Row>("SELECT id, profile_key, portal_url, status FROM portal_recipes WHERE status = 'complete'")
+interface Row { id: string; profile_key: string; portal_url: string; status: string; discipline?: string }
+const recipes = db.query<Row>("SELECT id, profile_key, portal_url, status, discipline FROM portal_recipes WHERE status = 'complete'")
   .filter((r) => !hostFilter || String(r.portal_url || "").toLowerCase().includes(hostFilter));
 
-interface Pending { profileKey: string; host: string; label: string; answer: string; options: string[] }
+interface Pending { profileKey: string; discipline: string; host: string; label: string; answer: string; options: string[] }
 const pending: Pending[] = [];
 for (const r of recipes) {
   let host = r.portal_url;
   try { host = new URL(r.portal_url).hostname; } catch { /* keep raw */ }
+  // BY RECIPE, NOT BY PROFILE KEY. Coos Bay holds TWO complete recipes under one key
+  // (city/structural and county/electrical), so the key alone resolved to whichever sorted
+  // first — this queue listed the electrical recipe's questions twice and never showed the
+  // structural recipe's own. And the catch below used to swallow the answer into an empty
+  // list, which is indistinguishable from "this portal asks nothing".
   let qs: Array<Record<string, unknown>> = [];
-  try { qs = extractPortalQuestions(db, r.profile_key) as never; } catch { qs = []; }
+  try {
+    qs = extractPortalQuestions(db, getPortalRecipe(db, r.id)) as never;
+  } catch (err) {
+    console.error(`  ! could not read ${r.profile_key}: ${err instanceof Error ? err.message : String(err)}`);
+    qs = [];
+  }
   for (const q of qs) {
     if (String(q.classification ?? "") !== "unknown") continue;
     pending.push({
       profileKey: r.profile_key,
+      discipline: String((r as unknown as { discipline?: string }).discipline ?? ""),
       host,
       label: String(q.portalLabel ?? ""),
       answer: String(q.recordedAnswer ?? ""),
@@ -71,7 +82,11 @@ line("PORTAL-CONSTANT = your answer is always the same, so the recorded answer k
 if (dryRun) {
   let host = "";
   for (const p of pending) {
-    if (p.host !== host) { host = p.host; line(`\n── ${host}`); }
+    // The heading is host + DISCIPLINE, because one host can carry two recipes: Coos Bay's
+    // Accela serves the city/structural filing and the county/electrical one from the same
+    // hostname, and a bare host printed two blocks a person could not tell apart.
+    const heading = `${p.host}${p.discipline ? `  [${p.discipline}]` : ""}`;
+    if (heading !== host) { host = heading; line(`\n── ${heading}`); }
     line(`   ? ${p.label}`);
     line(`     recipe currently files: ${JSON.stringify(p.answer)}`);
   }
@@ -87,7 +102,8 @@ let skipped = 0;
 let host = "";
 for (let i = 0; i < pending.length; i++) {
   const p = pending[i];
-  if (p.host !== host) { host = p.host; line(`\n──────── ${host} ────────`); }
+  const heading = `${p.host}${p.discipline ? `  [${p.discipline}]` : ""}`;
+  if (heading !== host) { host = heading; line(`\n──────── ${heading} ────────`); }
   line(`\n[${i + 1}/${pending.length}] ${p.label}`);
   line(`   the recipe currently files: ${JSON.stringify(p.answer)}`);
   if (p.options.length) line(`   the portal offers: ${p.options.slice(0, 6).join(" | ")}${p.options.length > 6 ? " …" : ""}`);
