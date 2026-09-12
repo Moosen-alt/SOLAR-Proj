@@ -29,13 +29,17 @@
 //                  emitted as a wrong "0" — an unbound literal is the status quo
 //                  and is visible, a computed 0 is not.
 //
-// Kill tests for this file (each must go RED on its own):
-//   1. feeBracketFields.feeBracketQuantityFields — return "0" for the matched
-//      bracket instead of "1". The 9 kW MUST PASS checks go red.
-//   2. feeBracketQuantity.feeBracketCoverage — return `uncovered: false`. The
-//      coverage MUST EXCLUDE checks go red.
-//   3. portalRecipes.convertLiteralsToBoundFields — make feeBracketFieldForLabel
-//      return "". The binding checks go red.
+// Kill tests for this file, each run and each restored (measured):
+//   1. feeBracketQuantityFields — write "0" for the matched bracket instead of
+//      "1".                                                    11 checks RED
+//   2. feeBracketCoverage — return `uncovered: false`.           3 checks RED
+//   2b. delete the two lines in RecipeAdapter's constructor that push the flag
+//      into gapFillReport/driftWarnings.                         2 checks RED
+//   3. feeBracketFieldForLabel — return "".                      9 checks RED
+//   4. feeBracketQuantityFields — force `agrees = true`, removing the one
+//      evaluator's veto.                                         1 check  RED
+//      (and it shows the hazard: {"feeBracketQuantity:5.01-15":"1"} ticked off
+//      a schedule whose two sources disagree about that very number)
 //
 //   npx tsx backend/test/feeBracketQuantity.test.ts
 import fs from "node:fs";
@@ -175,6 +179,31 @@ async function main(): Promise<void> {
   check("MUST PASS: \"0\" is not blank to replay's fill guard (the claim that replay needs no change)",
     Boolean(String(small[KEY_5_15])) === true && String(small[KEY_5_15]) === "0");
 
+  // ...and asked of THE REAL REPLAY CODE, not asserted about it. resolveValue is
+  // the function a fill step's value comes out of, so "replay needs no change"
+  // is a claim about it and is checked against it. All three outcomes matter:
+  // the ticked box, the zeroed box, and — the MUST EXCLUDE — an unknown key
+  // falling back to the kept literal with an aging note, which is exactly what
+  // this step does today on a jurisdiction with no fee schedule on file.
+  const { RecipeAdapter: ReplayAdapter } = await import("../../portal-bot/src/adapters/recipeAdapter");
+  const bracketStep = {
+    action: "fill", selector: { label: COOS_LABEL_5_15 }, field: KEY_5_15, value: "1", note: COOS_LABEL_5_15,
+  } as RecipeStep;
+  const resolvedBy = (values: Record<string, string>): string => {
+    const a = new ReplayAdapter({ id: "r", scopeType: "ahj", profileKey: "k", state: "OR", ahj: "City of Coos Bay",
+      utility: "", portalPlatform: "accela", portalUrl: "", status: "complete", version: 1, steps: [bracketStep],
+      createdBy: "", createdAt: "", updatedAt: "", notes: "", autoSubmitEnabled: false, discipline: "electrical" } as never,
+      values, {});
+    return (a as unknown as { resolveValue: (s: RecipeStep) => string }).resolveValue(bracketStep);
+  };
+  check("  replay's own resolveValue returns \"1\" when this job IS in the bound bracket",
+    resolvedBy(mid) === "1", JSON.stringify(resolvedBy(mid)));
+  check("  ...and \"0\" when it is not — a zero that is TYPED, not skipped as blank",
+    resolvedBy(small) === "0", JSON.stringify(resolvedBy(small)));
+  check("  MUST EXCLUDE: an unknown bracket key replays the KEPT literal, not a blank",
+    resolvedBy({ homeownerName: "Alice Anderson" }) === "1",
+    JSON.stringify(resolvedBy({ homeownerName: "Alice Anderson" })));
+
   // ---------------------------------------------------------------------
   // 4. BINDING THE RECORDED STEP — by label, with the literal KEPT.
   // ---------------------------------------------------------------------
@@ -249,14 +278,13 @@ async function main(): Promise<void> {
   //                      screen's gapFillBanner at awaiting_approval;
   //   driftWarnings   -> stops the run being scored clean.
   // ---------------------------------------------------------------------
-  const { RecipeAdapter } = await import("../../portal-bot/src/adapters/recipeAdapter");
   const recipeFor = (steps: RecipeStep[]): never => ({
     id: "r-coos", scopeType: "ahj", profileKey: "or|city of coos bay|pacific power", state: "OR",
     ahj: "City of Coos Bay", utility: "Pacific Power", portalPlatform: "accela",
     portalUrl: "https://accela.example.gov", status: "complete", version: 1, steps,
     createdBy: "", createdAt: "", updatedAt: "", notes: "", autoSubmitEnabled: false, discipline: "electrical",
   } as never);
-  const flagged = new RecipeAdapter(recipeFor(boundSteps), uncoveredValues, {});
+  const flagged = new ReplayAdapter(recipeFor(boundSteps), uncoveredValues, {});
   const flaggedDrift = (flagged as unknown as { driftWarnings: string[] }).driftWarnings;
   check("MUST EXCLUDE: the uncovered bracket reaches the REVIEW SCREEN's own channel (gapFill reportedMissing)",
     flagged.gapFillReport.reportedMissing.some((m: string) => /15\.01/.test(m) && /BY HAND/.test(m)),
@@ -264,7 +292,7 @@ async function main(): Promise<void> {
   check("  and it also stops the run scoring clean (driftWarnings)",
     flaggedDrift.some((m: string) => /15\.01/.test(m)), JSON.stringify(flaggedDrift));
 
-  const quiet = new RecipeAdapter(recipeFor(boundSteps), coveredValues, {});
+  const quiet = new ReplayAdapter(recipeFor(boundSteps), coveredValues, {});
   check("  a run whose bracket IS recorded says nothing on either channel — this is not a blanket warning",
     quiet.gapFillReport.reportedMissing.length === 0
       && (quiet as unknown as { driftWarnings: string[] }).driftWarnings.length === 0,
