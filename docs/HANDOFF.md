@@ -3,6 +3,70 @@
 Audience: the next model/dev session (and the operator). Read `CLAUDE.md` first
 for the hard rules; this file is the running state.
 
+## THE FROZEN BRACKET, THE INVISIBLE HALF OF THE TRIAGE QUEUE, AND 63 SMOKES NOBODY WAS RUNNING (2026-09-12)
+
+**The fee-bracket quantity is computed per job now, and it is bound on the live recipe.**
+Accela prints one text box per bracket row of the county's fee table; the quantity ticks the row
+that applies. The Coos Bay electrical recipe carried a frozen `"1"` against
+`"Renewable energy for electrical systems- 5.01kva through 15kva:"` — the learn project's row,
+replayed onto every job since. `resolveRecipeFieldValues` now emits one
+`feeBracketQuantity:<min>-<max>` key per bracket of the project's schedule (through the
+city-to-county hop), matched to the step's label BY NUMBER — `"5.01kva through 15kva"` and
+`"5.01 KVA to 15 KVA"` are different strings and identical bounds. Replay needed no change: a
+value of `"0"` is a non-empty string and survives its known/bound check, which was verified by
+asking the real function rather than asserting it in a comment.
+
+Measured on live projects after binding:
+
+| project | AC kW | 0–5 | 5.01–15 | 15.01–25 | run |
+|---|---|---|---|---|---|
+| Wynema Wright | 5.376 | 0 | **1** | 0 | covered |
+| Ann Marineau | 7.68 | 0 | **1** | 0 | covered |
+| Christopher Ivy | 3.072 | **1** | 0 | 0 | **FLAGGED** |
+
+Christopher Ivy is the case that was silently wrong: a 3.07 kW job typed `"1"` into the
+5.01–15 box and was billed $160 where the county charges $135. It now types `"0"` — and the run
+is FLAGGED, because the 0–5 box has no recorded step. **That flag is the honest half.** The learn
+only captured the box its own project needed, so computing the recorded box correctly turns a
+wrongly-billed permit into an UNDER-billed one unless somebody is told. It reaches both the review
+screen's gap-fill banner and `driftWarnings`, so the run cannot score clean. Closing it properly
+needs real steps for the sibling boxes — one human completion at the review screen on a job in
+another bracket, captured through `appendHumanPatchSteps`, which auto-binds each new box by label.
+
+Operator command, dry-run by default:
+`npm run recipe:bind-fee-brackets -- --id <recipeId> [--apply]`
+
+**A fee conflict no longer rests on a fall-through.** A disputed schedule was safe only because
+`basis "other"` with ≥2 brackets happened to fall past every branch of `evaluateSchedule` to its
+final `miss()`. Making that shape evaluable — a perfectly reasonable future improvement — would
+have started quoting one of two contradictory numbers, silently. It is now an explicit
+`conflicted` status checked at the top of the evaluator, with document dates per source (v23), and
+it was verified by making basis-"other" genuinely evaluable and confirming no disputed number
+escapes.
+
+**Half the triage queue was invisible.** Coos Bay holds TWO complete recipes under one profile key
+(city/structural, county/electrical) and `recipeForProfileKey` ended in `LIMIT 1`. `portal:triage`
+listed the ELECTRICAL recipe's questions twice and never showed the structural recipe's own — its
+record type, its building geometry, its "Plans - Structural" attachment. Both callers now pass the
+recipe; an ambiguous key throws rather than resolving, because there is no correct single answer
+when two exist. Both callers also wrapped the call in `catch { = [] }`, which turned any failure
+into "this portal asks no questions". Queue went 16 → 2 after
+`scripts/seed-question-classifications.ts` recorded the operator's calls with their reasons.
+
+The two left are Accela checkboxes whose recorded label is the bare word **"No"** — the recorder
+captured the option's text, not the question. Triage now prints where such a control sits in the
+walk so it is decidable without opening the portal. **The real fix is NOT to change what `labelFor`
+returns**: that label is a matching key for replay healing, consent detection and the battery
+declaration, and prefixing it with the question broke three DOM smokes on the first attempt
+(reverted). The question belongs in its own field.
+
+**63 DOM smokes had not been running.** `portal:test:dom` is 72 smokes joined by `&&`.
+`controlIdentity` (9th) and `batteryDeclaration` (47th) are long-red — confirmed against a
+pre-session commit, so neither is new — and the chain stops at the 9th. Both are real filing
+defects: an email step whose label reads "E-mail:" resolves to `""` (a blank required field), and
+a real battery files its declaration and make but **not its capacity**. Being fixed, along with a
+runner that runs every smoke and reports every red.
+
 ## ONE JOB, TWO PERMITS: THE FEE A CUSTOMER QUOTE WAS MISSING (2026-09-12)
 
 A Coos Bay rooftop draws TWO permit fees, and the tool knew both and could show only one.
