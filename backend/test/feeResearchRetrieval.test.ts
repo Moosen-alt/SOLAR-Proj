@@ -245,6 +245,35 @@ async function main(): Promise<void> {
   check("…and the notes admit the finding rests on search alone", /web search alone/.test(retrievalNotes(realQuote, newFeeDocumentLedger(), emptySupport).join(" | ")));
 
   // -------------------------------------------------------------------------
+  // 3b. A ROW WITH NO SIZE BOUNDS IS NOT A SIZE BRACKET.
+  //
+  // Straight off a live harvest: ComEd's real interconnection table is Level 1
+  // (25 kW export, $50) and Level 2 (to 5 MW, $100/kVA) — printed beside a $500
+  // non-export line and a $300 PRE-APPLICATION report fee, neither keyed on
+  // system size. Stored as-is, first-match gave a 60 kW job the $500 line.
+  // -------------------------------------------------------------------------
+  const comed = { state: "IL", utility: "ComEd Bracket Probe", track: "nem" as const };
+  saveFeeSchedule(db, comed, base_finding({
+    basis: "system_kw",
+    brackets: [
+      { minKw: 0, maxKw: 50, feeUsd: 50, label: "Level 1 — export capacity 25 kW or less" },
+      { feeUsd: 500, label: "Level 3 — non-export systems" },
+      { feeUsd: 300, label: "Pre-Application report" },
+      { minKw: 50, maxKw: 5000, feeUsd: 100, label: "Level 2 — up to 5 MW" },
+    ],
+    sourceUrl: "https://www.comed.com/der-guidelines.pdf",
+    sourceQuote: "Level 1 | Export capacity of 25 kW or less | $50",
+  }));
+  const comedSeam = (kw: number) => lookupPublishedFee(db, { track: "nem", state: "IL", ahj: "", utility: "ComEd Bracket Probe", bracketKw: kw });
+  check("a 7 kW job still gets Level 1", comedSeam(7)?.feeUsd === 50, JSON.stringify(comedSeam(7)));
+  check("a 60 kW job gets Level 2 — NOT the unbounded $500 line", comedSeam(60)?.feeUsd === 100, JSON.stringify(comedSeam(60)));
+  check(
+    "a size past every bounded row reports unresolved rather than grabbing a boundless one",
+    comedSeam(9000) !== null && comedSeam(9000)?.feeUsd === null,
+    JSON.stringify(comedSeam(9000)),
+  );
+
+  // -------------------------------------------------------------------------
   // 4. HOW THE MONEY MOVES. Ameren Illinois' $50 is a MAILED PAPER CHECK within
   //    15 business days; the application is not reviewed until it lands. A fee
   //    sheet that does not say so hands the operator a filing that silently
