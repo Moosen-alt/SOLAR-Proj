@@ -3,6 +3,46 @@
 Audience: the next model/dev session (and the operator). Read `CLAUDE.md` first
 for the hard rules; this file is the running state.
 
+## THE QUESTION BANK FOUND WHAT THE CROSS-PROJECT SWEEP STRUCTURALLY COULD NOT (2026-09-12)
+
+Triaging the bank's 51 unclassified questions turned up frozen answers carrying PROJECT A's
+own data on every future filing - and the live cross-project runs had scored those same
+portals "0 leaks":
+```
+  County                       = "Sangamon"          A's county (Springfield IL)
+  Existing Building Area:      = "1675"              A's house square footage
+  Building Height - Feet:      = "15"                A's roof height
+  Number of Stories / Units / Buildings               A's house
+  Additional Comments:         = "...8.36 kW DC / 7.68 kW AC"   A's system size
+  Renewable energy 5.01-15kva: = "1"                 A FEE BRACKET keyed to system size
+```
+WHY THE SWEEP MISSED THEM, and why both mechanisms are needed: the tripwire sweep compares
+filled values against the FIXTURE's value sets (name/address/size/equipment). "1675" is in
+neither project's set, so it landed in "unverifiable" - correctly reported, never flagged.
+The question bank reads the RECIPE instead of the run, so it sees every frozen answer whether
+or not a fixture happens to know about it. The sweep proves substitution works; the bank
+proves nothing was left frozen. Neither subsumes the other.
+The fee bracket is the worst of them: a 20 kW job files in the 5.01-15kva bracket and is
+billed wrong.
+
+TRIAGE DONE (30 of 51 classified, persisted in portal_question_overrides, shared like recipes):
+ - 10 per-job with bindings proposed (the table above + county) - the bindings do not exist as
+   project columns yet, so these now surface as intake questions instead of filing A's answer.
+ - 20 portal-constant: equipment/energy vocabulary (Solar/Photovoltaic/Inverter), customer and
+   construction type for a residential rooftop business, Accela entry terms, attachment
+   descriptions, PGE policy acknowledgements. Operator-confirmed earlier: installer role is
+   ALWAYS "Contractor".
+ - 16 left for the operator DELIBERATELY - each needs a business call I should not make:
+   Ameren Application Level/Type (size- and history-dependent), pre-application, volt-watt
+   pilot, municipal-inspection-before-approval; Accela record-type checkboxes and "Project
+   includes any of the following"; PacifiCorp switchgear/parallel-blocking/meter-aggregation/
+   multi-customer; PGE export-limit and aggregation defaults.
+   Classify with: npm run portal:questions -- --host <h> --classify "<label>" --as per-job|portal-constant [--bind <key>]
+
+THE ONE-TIME SECURE CREDENTIAL LINK now exists (0bc8e37) - the onboarding guide's S4 promise
+was the one outright-false product claim. Write-only, single-use, 72h expiry, constrained to
+the portals the request named, indistinguishable failures, nothing echoed. /credentials?token=
+
 ## PERMIT SIDE JOINS THE SCOREBOARD + THE QUESTION BANK IS LIVE (2026-09-11 evening)
 
 Coos Bay electrical (Accela, aca-oregon) PASSES the cross-project contract: 6 distinct
