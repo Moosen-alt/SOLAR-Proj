@@ -51,6 +51,7 @@ const {
   harvestJurisdiction,
   detectFeeConflict,
   bracketKey,
+  readFeeTableFromPdf,
   FEE_CONFLICT_MARKER,
 } = await import("../src/jurisdictionHarvest");
 const { feeForProject, feeScheduleProfileKey, getFeeSchedule, markFeeScheduleVerified, saveFeeSchedule } =
@@ -559,6 +560,47 @@ await check("direct document links (the KB carries plenty) are harvested with no
   assert.equal(report.fee.action, "would_save");
   assert.deepEqual(report.documents[0].fee.brackets.map((b) => b.feeUsd), [135, 160, 265]);
   assert.equal(report.documents[0].documentDate, "Effective 7-1-25");
+});
+
+// ---------------------------------------------------------------------------
+// 11. A WIND ROW IS NOT A SOLAR FEE, however cleanly it is paired.
+//
+// Measured on the real Coos County application, which prints wind sizes and solar
+// sizes in one column under two headings. Every amount paired correctly with its
+// own printed line, and the harvest still stored the wind rates as this
+// jurisdiction's solar brackets: a 30 kVA job was quoted $204 and a 60 kVA job
+// $469. Nothing about those rows is unreadable — the row says "25.01to50kva" and
+// "$204.00" and means it. What it does not say is what it is a fee FOR.
+// ---------------------------------------------------------------------------
+await check("a fee row under a WIND heading never becomes a solar bracket", async () => {
+  const doc = await PDFDocument.create();
+  const page = doc.addPage([612, 792]);
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  let y = 700;
+  const line = (label: string, amount?: string): void => {
+    draw(page, font, label, LABEL_X, y);
+    if (amount) draw(page, font, amount, VALUE_X, y);
+    y -= 34;
+  };
+  line("Renewable Energy");
+  line("5 kva or less", "$79.00");
+  line("Wind Generation Systems greater than 25 kva");
+  line("25.01to50kva", "$204.00");
+  line("50.01 kva to 100 kva", "$469.00");
+  line("Solar Generation Systems greater than 25 kva");
+  line("25.01 kva to 50 kva", "$162.25");
+
+  const table = await readFeeTableFromPdf(await doc.save());
+  assert.ok(table.found, table.reason);
+  const stored = table.brackets.map((b) => b.feeUsd).sort((a, b) => a - b);
+  assert.deepEqual(stored, [79, 162.25], `the wind rates must not be stored: ${JSON.stringify(table.brackets)}`);
+  assert.ok(
+    table.unreadableRows.some((r) => r.includes("204") && /Wind Generation/i.test(r)),
+    `the wind row must be REPORTED with its heading, not silently dropped: ${JSON.stringify(table.unreadableRows)}`,
+  );
+  // ...and the solar row BELOW the wind block still lands: the heading advances.
+  assert.ok(table.brackets.some((b) => b.feeUsd === 162.25 && b.minKw === 25.01 && b.maxKw === 50),
+    `the row under the SOLAR heading must survive: ${JSON.stringify(table.brackets)}`);
 });
 
 server.close();

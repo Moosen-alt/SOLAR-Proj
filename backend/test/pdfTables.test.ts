@@ -46,7 +46,11 @@ async function makeSectionedPdf(): Promise<Uint8Array> {
   for (const [label, amount] of rows) {
     page.drawText(label, { x: 50, y, size: SIZE, font });
     if (amount) page.drawText(amount, { x: 400, y, size: SIZE, font });
-    y -= 22; // wider than the 2.2x-height continuation gap, so no row wraps into another
+    // Comfortably past the 2.2x-height continuation gap. At exactly 2.2x the wind
+    // heading is folded into the $156 row above it as a wrapped label and never
+    // becomes a heading at all — which is a real hazard for a tightly-set table,
+    // but not the one this fixture is about.
+    y -= 34;
   }
   return doc.save();
 }
