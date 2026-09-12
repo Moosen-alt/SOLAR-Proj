@@ -23,7 +23,8 @@ AHJ documents → stage the portal application → human verifies + submits.
   (`scripts/run-dom-smokes.ts`). Discovers `*.dom.smoke.ts` from disk, so a new one
   runs without being registered anywhere. Runs ALL of them even when some fail, and
   prints a summary with a denominator: passed/failed/timed-out/skipped/unclassified.
-  `--only <substr>`, `--concurrency N` (default 3), `--timeout S` (default 300).
+  `--only <substr>`, `--concurrency N` (default 3), `--timeout S` (default 600 —
+  the slowest real smoke takes 317s, so a tighter budget reports it as a hang).
 - `npx tsx portal-bot/src/adapters/powerClerkSpecs.dom.smoke.ts` — real-browser
   PowerClerk specs-page cascade smoke (equipment dropdowns).
 - `npm run import:reference -- <files.xlsx> [--dry-run]` — import operator

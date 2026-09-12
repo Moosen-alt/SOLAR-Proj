@@ -444,7 +444,7 @@ because `&&` reports the first failure and stops.
 
 `npm run portal:test:dom` is now **`scripts/run-dom-smokes.ts`**: every smoke in its own process,
 all of them run regardless of failures, with `--only <substr>`, `--concurrency` (default 3) and
-`--timeout` (default 300s). A hang is a TIMEOUT row, reported separately from a red check because
+`--timeout` (default 600s). A hang is a TIMEOUT row, reported separately from a red check because
 they need different repairs. Per-smoke logs land in `.dom-smoke-logs/`.
 
 Three things in it are load-bearing and should not be tidied away:
@@ -464,8 +464,23 @@ Three things in it are load-bearing and should not be tidied away:
 
 First full run on the discovered set (2026-09-12, commit `0688884`, concurrency 3): **65 passed,
 5 failed, 1 timed out, 3 skipped as non-DOM (live/stress), 0 unclassified.** `controlIdentity` and
-`batteryDeclaration` were green by then. The five reds below were all downstream of the stop and
-had not been running; none is a regression from the runner.
+`batteryDeclaration` measured green at that commit.
+
+The five reds - `advanceGuard`, `applicationEntry`, `finalPageReassert`, `identicalSections`,
+`paymentBoundary` - ALL REPRODUCE AT `8cbec53` (2026-09-11 23:55, pre-session). Every one sits
+downstream of the chain's stop at #9, so none is new and none had been running. Four show the same
+symptom, a field that should fill coming out `""`; only `finalPageReassert` names a cause ("carries
+a recorded literal that looks like the learn project's own data and is bound to nothing - left
+BLANK"). A search for that marker in the other three found nothing, so the shared cause is NOT
+established - do not assume one fix closes four.
+
+**The one wrong verdict was the runner's own.** `terminalPage` was reported TIMEOUT at the original
+300s default; it passes in **317s**, alone AND at concurrency 3. Nothing hung - the budget was
+just under the smoke. The default is now 600s, re-validated on the nine slowest smokes (all green,
+slowest `terminalPage` 317s and `multiArray` 292s). Anyone reading an older note should not go
+hunting a `terminalPage` hang - there isn't one.
+
+**Corrected standing tally: 66 pass, 5 fail, 0 timeouts, 3 skipped, 0 unclassified.**
 ## Point-and-shoot, measured on the accessible fleet (2026-09-09, night)
 
 Per the operator: the 12 refused-credential portals are CALLED OUT and excluded from the

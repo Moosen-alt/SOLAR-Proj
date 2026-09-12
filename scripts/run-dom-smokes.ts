@@ -107,9 +107,13 @@ const argValue = (name: string): string | undefined => {
 const only = (argValue("only") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
 const CONCURRENCY = Math.max(1, Number(argValue("concurrency") ?? 3));
 // Generous on purpose. The budget exists to bound a HANG, not to police slowness — and under
-// concurrency every smoke's own Chromium is competing for the same cores, so a per-smoke wall
-// clock that looks tight in isolation produces false TIMEOUTs in a full run.
-const TIMEOUT_MS = Math.max(1, Number(argValue("timeout") ?? 300)) * 1000;
+// concurrency every smoke's own Chromium competes for the same cores, so a wall clock that looks
+// roomy in isolation produces FALSE TIMEOUTs in a full run. Measured 2026-09-12 on the full set:
+// terminalPage takes 317s ALONE and was killed at a 300s budget during the concurrency-3 run —
+// reported as a hang when nothing had hung. multiArray landed at 291s, also inside the noise.
+// 600s clears the slowest real smoke twice over and still catches the failure this bounds:
+// replica.dom.smoke once sat for FIFTY MINUTES. Raise it, don't lower it.
+const TIMEOUT_MS = Math.max(1, Number(argValue("timeout") ?? 600)) * 1000;
 const LOG_DIR = path.join(REPO_ROOT, ".dom-smoke-logs");
 
 // ---------------------------------------------------------------------------------------------
