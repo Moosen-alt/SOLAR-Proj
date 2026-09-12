@@ -429,6 +429,27 @@ function renderAhjForms() {
     const overlayCount = (map.overlayFields || []).length;
     const mapped = fillMode === "overlay" ? overlayCount : acroCount;
     const fillable = mapped > 0;
+    // Where this blank came from and what it says about itself. A stored form is
+    // a DATED artifact: Coos County's electrical application says "Revised
+    // 12/23/2022" and prints a fee table 1.70x below the county's adopted
+    // schedule. The staleness verdict is the server's (provenance.stale) — no
+    // date parsing happens here, so the API and the page cannot disagree.
+    const prov = r.provenance || {};
+    const provBits = [];
+    if (prov.documentDate) {
+      provBits.push(`<span class="muted" style="font-size:11px">Document says: <strong>${esc(prov.documentDate)}</strong></span>`);
+    } else {
+      provBits.push('<span class="muted" style="font-size:11px">Document states no revision date</span>');
+    }
+    if (prov.stale) {
+      provBits.push(`<span style="font-size:11px;padding:1px 6px;border-radius:4px;background:var(--warning);color:#fff">re-check — over 2 years old${prov.feeTableFound ? " and carries a fee table" : ""}</span>`);
+    }
+    if (prov.sourceUrl) {
+      provBits.push(`<a href="${esc(prov.sourceUrl)}" target="_blank" rel="noopener noreferrer" class="muted" style="font-size:11px">source</a>`);
+    } else {
+      provBits.push('<span class="muted" style="font-size:11px">no source link (uploaded)</span>');
+    }
+    if (prov.retrievedAt) provBits.push(`<span class="muted" style="font-size:11px">pulled ${esc(String(prov.retrievedAt).slice(0, 10))}</span>`);
     return `
     <div class="card" style="padding:8px 10px;margin-bottom:6px">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
@@ -443,6 +464,7 @@ function renderAhjForms() {
           <button class="danger" data-form-delete="${esc(r.id)}" style="font-size:11px">Delete</button>
         </div>
       </div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:4px">${provBits.join('<span class="muted" style="font-size:11px">·</span>')}</div>
       ${map.notes ? `<div class="muted" style="font-size:11px;margin-top:4px">${esc(map.notes)}</div>` : ""}
     </div>`;
   }).join("");

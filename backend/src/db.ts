@@ -1567,6 +1567,82 @@ const VERSIONED_MIGRATIONS: VersionedMigration[] = [
       addColumnIfMissing(db, "fee_schedules", "payment_method", "TEXT NOT NULL DEFAULT ''");
     },
   },
+  {
+    version: 21,
+    name: "ahj_form_template_provenance",
+    up: (db) => {
+      // A FORM IS A DATED ARTIFACT, AND THE STORE TREATED IT AS TIMELESS.
+      //
+      // ahj_form_templates could not answer three questions an operator asks about
+      // a blank before they file it: where did this come from, is it current, and
+      // does the fee table printed on it still apply. Coos County is the worked
+      // example. Its own solar page (co.coos.or.us/solar-installations) links an
+      // electrical permit application whose page 1 carries a renewable-energy fee
+      // table — "5 kva or less $79.00 | 5.01 kva to 15 kva $94.00 | 15.01 kva to
+      // 25 kva $156.00" — under the line "Revised 12/23/2022". The county's
+      // ADOPTED schedule for the same brackets is $135/$160/$265. The form is not
+      // wrong; it is OLD, by about 1.70x. Nothing in this table could have said so.
+      //
+      // source_url — where the bytes came from. It already existed, but only
+      // inside the field_map JSON blob, which means it could not be selected,
+      // sorted, indexed or shown in a listing without parsing every row. The
+      // refresh sweep reads it from the JSON; a human could not read it at all.
+      //   BACKFILLED BELOW from field_map, so existing rows answer immediately.
+      //
+      // document_date — WHAT THE DOCUMENT SAYS ABOUT ITSELF, verbatim: "Revised
+      // 12/23/2022", "Effective 7-1-25". Deliberately the document's own phrase
+      // and not a normalised timestamp, because the qualifier carries meaning a
+      // bare date loses (an "Effective" date in the future means current; a
+      // "Revised" date two years back means aging). Blank when the document does
+      // not say — extractDocumentDate refuses to guess from a filename or a
+      // copyright line, because a wrong date makes a stale form look current,
+      // which is worse than no date at all. NOT backfillable: it lives in the
+      // PDF bytes, and reading them is the acquisition path's job, not a
+      // migration's. Existing rows fill in on their next refresh or re-map.
+      //
+      // retrieved_at — when WE pulled it. Separate from updated_at, which moves
+      // on any row write (a verify, a note patch), and separate from
+      // document_date, which is the AHJ's clock rather than ours.
+      //
+      // fee_table_found — did this blank carry a fee table we harvested. The
+      // operator's insight is that the page you grab building applications from
+      // is often the page that carries the fee structure, and the application
+      // itself often prints it. This flag is the join between the two halves: a
+      // form that carried a fee table AND is two years old is the exact shape of
+      // the Coos County trap, and it is the one an operator should re-check first.
+      for (const [column, decl] of [
+        ["source_url", "TEXT NOT NULL DEFAULT ''"],
+        ["document_date", "TEXT NOT NULL DEFAULT ''"],
+        ["retrieved_at", "TEXT NOT NULL DEFAULT ''"],
+        ["fee_table_found", "INTEGER NOT NULL DEFAULT 0"],
+      ] as const) {
+        addColumnIfMissing(db, "ahj_form_templates", column, decl);
+      }
+
+      // Backfill source_url out of the field_map JSON every stored row already
+      // carries. Done in JS rather than json_extract so this does not depend on
+      // the SQLite build shipping the JSON1 extension, and so a row whose
+      // field_map is unparseable is skipped instead of failing the migration.
+      const rows = db.query<{ id: string; field_map: string; created_at: string }>(
+        "SELECT id, field_map, created_at FROM ahj_form_templates WHERE source_url = ''",
+      );
+      for (const row of rows) {
+        let sourceUrl = "";
+        try {
+          const parsed = JSON.parse(String(row.field_map || "{}")) as { sourceUrl?: unknown };
+          if (typeof parsed?.sourceUrl === "string") sourceUrl = parsed.sourceUrl.trim();
+        } catch { /* an unreadable map is not a reason to fail the migration */ }
+        if (!sourceUrl) continue;
+        // retrieved_at backfills to created_at: the row was written when the bytes
+        // were downloaded, so that IS when we pulled it — the closest true answer
+        // available, and a truer one than blank.
+        db.run(
+          "UPDATE ahj_form_templates SET source_url = ?, retrieved_at = CASE WHEN retrieved_at = '' THEN ? ELSE retrieved_at END WHERE id = ?",
+          [sourceUrl, String(row.created_at || ""), row.id],
+        );
+      }
+    },
+  },
 ];
 
 // One-time repair for the runaway-notes bug: upsertKnowledge used to merge the

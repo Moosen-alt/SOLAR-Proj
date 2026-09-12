@@ -78,7 +78,7 @@ import {
   inspectFormFields,
   matchingForms,
 } from "./ahjForms";
-import { acquireFromBytes, ensureAhjFormTemplate } from "./ahjFormAuto";
+import { acquireFromBytes, ensureAhjFormTemplate, templateProvenance } from "./ahjFormAuto";
 import { createSignature, deleteSignature, getSignatureImage, listSignatures, setDefaultSignature } from "./signatures";
 import { addAuditLog } from "./audit";
 import { buildAuthUrl, exchangeCodeForTokens, gmailStatus, pollGmail } from "./gmail";
@@ -2081,17 +2081,29 @@ app.post("/api/ahj-templates/refresh", asyncHandler(async (_req, res) => {
 // List stored AHJ templates
 app.get("/api/ahj-templates", (req, res) => {
   const state = req.query.state ? String(req.query.state) : null;
+  // PROVENANCE TRAVELS WITH THE LISTING. An operator about to fill a stored
+  // blank needs three facts the row used to keep to itself: where it came from,
+  // what the document says about ITSELF, and whether that is old enough to
+  // re-check. Coos County's electrical application says "Revised 12/23/2022"
+  // and prints a fee table 1.70x below the adopted schedule — the staleness
+  // flag is computed here, server-side, so no date parsing lands in the
+  // browser and every surface agrees on what "stale" means.
+  const cols = "id, ahj_name, state, form_type, original_filename, field_map, source_url, document_date, retrieved_at, fee_table_found, created_at";
   const rows = state
-    ? db.query("SELECT id, ahj_name, state, form_type, original_filename, field_map, created_at FROM ahj_form_templates WHERE state = ? ORDER BY ahj_name", [state])
-    : db.query("SELECT id, ahj_name, state, form_type, original_filename, field_map, created_at FROM ahj_form_templates ORDER BY state, ahj_name");
-  res.json(rows.map((r) => ({ ...r, fieldMap: parseJson<Record<string, unknown>>(String(r.field_map ?? ""), {}) })));
+    ? db.query(`SELECT ${cols} FROM ahj_form_templates WHERE state = ? ORDER BY ahj_name`, [state])
+    : db.query(`SELECT ${cols} FROM ahj_form_templates ORDER BY state, ahj_name`);
+  res.json(rows.map((r) => ({
+    ...r,
+    fieldMap: parseJson<Record<string, unknown>>(String(r.field_map ?? ""), {}),
+    provenance: templateProvenance(r as Record<string, unknown>),
+  })));
 });
 
 // Re-map a stored template's fields from its stored blob (AcroForm first, then
 // vision overlay) — used after a bad auto-map or to refresh the mapping.
 app.post("/api/ahj-templates/:id/remap", asyncHandler(async (req, res) => {
-  const row = db.get<{ id: string; ahj_name: string; state: string; form_type: string; pdf_blob: Buffer | null; field_map: string }>(
-    "SELECT id, ahj_name, state, form_type, pdf_blob, field_map FROM ahj_form_templates WHERE id = ?",
+  const row = db.get<{ id: string; ahj_name: string; state: string; form_type: string; pdf_blob: Buffer | null; field_map: string; retrieved_at: string }>(
+    "SELECT id, ahj_name, state, form_type, pdf_blob, field_map, retrieved_at FROM ahj_form_templates WHERE id = ?",
     [String(req.params.id)],
   );
   if (!row) throw new HttpError(404, "Template not found.");
@@ -2104,6 +2116,10 @@ app.post("/api/ahj-templates/:id/remap", asyncHandler(async (req, res) => {
     result = await acquireFromBytes(db, createLLMProvider(), {
       ahj: row.ahj_name, state: row.state, formType: row.form_type, formName,
       bytes: new Uint8Array(row.pdf_blob), sourceUrl: map.sourceUrl || "",
+      // A re-map re-reads bytes we already had. Stamping "retrieved now" would
+      // make a purely local operation look like a fresh trip to the AHJ's site,
+      // which is the one claim retrieved_at exists to make honestly.
+      retrievedAt: String(row.retrieved_at || ""),
     });
   } catch (err) {
     throw normalizeLlmError(err);

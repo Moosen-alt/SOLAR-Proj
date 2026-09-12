@@ -3,7 +3,7 @@ import type { LLMProvider } from "../../shared/src/types";
 import { logger } from "./logger";
 import { nowIso } from "./time";
 import { parseJson } from "./json";
-import { buildFieldMapForPdf, fetchPdf, sha256, storeAhjFormTemplate, type StoredFieldMap } from "./ahjFormAuto";
+import { buildFieldMapForPdf, documentDateForPdf, fetchPdf, sha256, storeAhjFormTemplate, type StoredFieldMap } from "./ahjFormAuto";
 import { knowledgeResearchHint } from "./knowledgeBase";
 import { startPersistentSchedule } from "./schedulerState";
 
@@ -129,12 +129,18 @@ export async function refreshAhjFormTemplates(db: AppDb, llm: LLMProvider): Prom
     if (live.verified && !map.verified) {
       logger.warn("ahj-forms", `${row.ahj_name} (${row.state}) was verified by an operator while this refresh was running — their mapping is being carried over, not the pre-refresh copy.`);
     }
+    // These are NEW bytes off the AHJ's site, so they carry a new self-description
+    // — often the only visible sign of what changed. Re-read it here or the
+    // refreshed row would keep answering "is this current" with the old form's
+    // revision line, or with nothing at all.
+    const documentDate = await documentDateForPdf(bytes);
     storeAhjFormTemplate(db, {
       ahjName: row.ahj_name,
       state: row.state,
       formType: row.form_type,
       filename: `${formName}.pdf`,
       bytes,
+      documentDate,
       map: {
         formName,
         sourceUrl: map.sourceUrl,
