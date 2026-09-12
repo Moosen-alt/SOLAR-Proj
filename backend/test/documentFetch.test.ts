@@ -115,6 +115,22 @@ const server = http.createServer((req, res) => {
     ));
     return;
   }
+  if (url === "/find-a-document-akamai") {
+    // THE SAME PAGE AGAIN, THE SIZE A REAL ONE IS, SERVED THROUGH AKAMAI.
+    //
+    // Measured shape, not invented: coosbayor.gov's home page is 125,692 bytes and
+    // cityofpsl.com's permit-applications page is 159,684 — both well past WALL_BODY_MAX —
+    // and both carry Akamai's mPulse RUM beacon, whose hostname contains the CDN's own name.
+    // "akamai" is a wall word, so the beacon on a page Akamai SERVED read as Akamai refusing
+    // us, and the size guard that should have exempted a 125 KB document never fired because
+    // it was measuring the truncated peek instead of the page.
+    const beacon = '<script>if(window.BOOMR&&BOOMR.plugins&&BOOMR.plugins.AK){var a='
+      + '"ueg2awixyj72u2vfq3wq-f-2c1115cb1-clientnsv4-s.akamaihd.net";}</script>';
+    const padding = `<!-- ${"x".repeat(110_000)} -->`;
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    res.end(LISTING_HTML.replace("</body>", `${beacon}${padding}</body>`));
+    return;
+  }
   res.writeHead(404, { "content-type": "text/plain" });
   res.end("Not Found");
 });
@@ -324,6 +340,34 @@ await check("a widget on the page is not a wall in front of it", async () => {
   const links = await findDocumentLinks(`${base}/find-a-document-cms`, { launcher }, (l) => /fee schedule/i.test(l.text));
   assert.equal(links.length, 2, JSON.stringify(links));
   assert.equal(links[0].href, `${base}/home/showpublisheddocument/570/639239531899170000`);
+});
+
+// THE CDN'S NAME ON A PAGE IT SERVED IS NOT THE CDN REFUSING US. The check above proves a
+// reCAPTCHA widget is not a wall; this one proves the same about a vendor beacon, at the size
+// a government home page actually is. Both jurisdictions this was measured on answered 200
+// with the whole page in hand and were reported as human-verification challenges — a reason
+// an operator reads and believes, about a wall that was never there.
+await check("a 125 KB page carrying the CDN's own beacon is a page, not a wall", async () => {
+  const { launcher, state } = grants();
+  const res = await fetchPublicDocument(`${base}/find-a-document-akamai`, { launcher });
+  assert.equal(res.ok, true, res.reason);
+  assert.equal(res.via, "http");
+  assert.equal(res.status, 200);
+  assert.ok((res.bytes?.length ?? 0) > 100_000, `the fixture must exceed WALL_BODY_MAX to bite: ${res.bytes?.length}`);
+  assert.equal(state.launches, 0, "a page we were handed must not cost a browser launch");
+  const links = await findDocumentLinks(`${base}/find-a-document-akamai`, { launcher }, (l) => /fee schedule/i.test(l.text));
+  assert.equal(links.length, 2, JSON.stringify(links));
+  assert.equal(links[0].href, `${base}/home/showpublisheddocument/570/639239531899170000`);
+});
+
+// ...and the guard it rests on still refuses a SMALL body that really is a block page, so the
+// fix above is a size test and not an amnesty.
+await check("a short Akamai 403 is still a wall, and still earns a window", async () => {
+  const { launcher, state } = grants();
+  const res = await fetchPublicDocument(`${base}/walled.pdf`, { launcher });
+  assert.equal(res.ok, true, res.reason);
+  assert.equal(res.via, "browser");
+  assert.equal(state.launches, 1);
 });
 
 await check("a walled listing escalates too, and the links come from the RENDERED page", async () => {

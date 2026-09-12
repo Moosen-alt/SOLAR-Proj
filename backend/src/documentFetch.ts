@@ -136,9 +136,29 @@ type Refusal = "captcha" | "robots" | "wall" | "none";
  * generic wall — the Akamai/Cloudflare "Access Denied" aimed at whatever client we are —
  * earns a real window.
  */
-function classifyRefusal(status: number, contentType: string, body: string | undefined): Refusal {
+function classifyRefusal(status: number, contentType: string, body: string | undefined, bodyBytes?: number): Refusal {
   const textish = isTextish(contentType);
-  const snippet = textish && body && body.length <= WALL_BODY_MAX ? body : "";
+  // THE SIZE GUARD HAS TO SEE THE TRUE SIZE, NOT THE PEEK.
+  //
+  // WALL_BODY_MAX says "past this, a body is a document, not a block page". But peekText hands
+  // this function at most WALL_BODY_MAX characters, so testing the SNIPPET's length asks "is
+  // the peek no longer than the peek is allowed to be?" — true for every oversized page there
+  // is. The guard was inert on the one path that needed it, and the bigger the page the more
+  // certainly it was classified.
+  //
+  // What that cost, measured on two jurisdictions in one harvest: coosbayor.gov's real
+  // 125,692-byte home page and cityofpsl.com's 159,684-byte "Permit Applications, Fees and
+  // Checklists" page both answered HTTP 200 with the whole page in hand, and both were thrown
+  // away as "a human-verification challenge — a person must retrieve this one". Neither site
+  // challenged anything. Both carry Akamai's own mPulse telemetry beacon
+  // (...clientnsv4-s.AKAMAIHD.net), and "akamai" is a wall word in the shared predicate, so
+  // the CDN's signature on a page it served successfully read as the CDN refusing us.
+  //
+  // That is this module's own failure mode inverted: it exists because a refused document must
+  // never look like a document that does not exist, and here a document we HELD was reported
+  // as a wall. A false wall is worse than a missed one — it is a reason an operator believes.
+  const size = bodyBytes ?? (body ? body.length : 0);
+  const snippet = textish && body && size <= WALL_BODY_MAX ? body : "";
   // A FILTER LIST FAILS BOTH WAYS, so these two regexes only get to speak about a page that
   // is ALREADY refusing us. /home/showpublisheddocument is CivicPlus — the platform Coos Bay
   // itself runs — and those sites load reCAPTCHA for their own contact and search widgets and
@@ -276,7 +296,7 @@ export async function fetchPublicDocument(url: string, opts: FetchPublicDocument
   }
 
   const peek = peekText(attempt.bytes, attempt.contentType);
-  const refusal = classifyRefusal(attempt.status, attempt.contentType, peek);
+  const refusal = classifyRefusal(attempt.status, attempt.contentType, peek, attempt.bytes.length);
 
   if (attempt.status >= 200 && attempt.status < 300 && refusal === "none") {
     return {
@@ -423,7 +443,7 @@ async function browserAttempt(
     }
 
     const peek = peekText(got.bytes, got.contentType);
-    const refusal = classifyRefusal(got.status, got.contentType, peek);
+    const refusal = classifyRefusal(got.status, got.contentType, peek, got.bytes.length);
     if (refusal === "captcha") {
       return fail(`${cfg.blocked}. A real window was answered with a human-verification challenge; automation never solves those — a person must retrieve this one.`, got.status);
     }
