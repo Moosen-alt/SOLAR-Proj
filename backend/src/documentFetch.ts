@@ -139,7 +139,17 @@ type Refusal = "captcha" | "robots" | "wall" | "none";
 function classifyRefusal(status: number, contentType: string, body: string | undefined): Refusal {
   const textish = isTextish(contentType);
   const snippet = textish && body && body.length <= WALL_BODY_MAX ? body : "";
-  if (snippet) {
+  // A FILTER LIST FAILS BOTH WAYS, so these two regexes only get to speak about a page that
+  // is ALREADY refusing us. /home/showpublisheddocument is CivicPlus — the platform Coos Bay
+  // itself runs — and those sites load reCAPTCHA for their own contact and search widgets and
+  // carry a "use of automated tools is prohibited" line in the footer. Run unguarded, the
+  // classifier reads that furniture as a wall and refuses the very document search this
+  // module exists to read, with a reason ("a human-verification challenge") the researcher
+  // would then pass on as fact. A genuine 200 interstitial still classifies, because
+  // "checking your browser" / "verify you are human" / perimeterx trip looksBotBlocked on
+  // their own — a block page says it is one.
+  const refusing = status === 401 || status === 403 || status === 429 || (snippet !== "" && looksBotBlocked(snippet));
+  if (snippet && refusing) {
     if (CAPTCHA.test(snippet)) return "captcha";
     if (ROBOTS_REFUSAL.test(snippet)) return "robots";
   }

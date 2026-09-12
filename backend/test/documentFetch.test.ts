@@ -84,6 +84,19 @@ const server = http.createServer((req, res) => {
     res.end(LISTING_HTML);
     return;
   }
+  if (url === "/find-a-document-cms") {
+    // THE SAME PAGE, ON A REAL CMS. /home/showpublisheddocument is CivicPlus — the platform
+    // Coos Bay itself runs — and those sites load reCAPTCHA for their own contact and search
+    // widgets and print a terms-of-use line in the footer. Both are ordinary furniture on a
+    // page that is handing us the document.
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    res.end(LISTING_HTML.replace(
+      "</body>",
+      '<script src="https://www.google.com/recaptcha/api.js"></script>'
+      + "<footer>Use of automated tools to access this site is prohibited without written consent.</footer></body>",
+    ));
+    return;
+  }
   res.writeHead(404, { "content-type": "text/plain" });
   res.end("Not Found");
 });
@@ -277,6 +290,22 @@ await check("findDocumentLinks never returns anchors, mailto or javascript links
   const links = await findDocumentLinks(`${base}/find-a-document`, { launcher });
   assert.equal(links.length, 3, JSON.stringify(links));
   assert.ok(!links.some((l) => /^mailto:|#top/.test(l.href)), JSON.stringify(links));
+});
+
+// A FILTER LIST FAILS BOTH WAYS. Every check above proves the classifier REFUSES the right
+// pages; this one proves it lets the right pages through. A reCAPTCHA widget in the page
+// furniture is not a wall in front of the page, and reading it as one would refuse the exact
+// document search this module was built to read — with a reason ("challenge page") the
+// researcher would then honestly pass on as fact.
+await check("a widget on the page is not a wall in front of it", async () => {
+  const { launcher, state } = grants();
+  const res = await fetchPublicDocument(`${base}/find-a-document-cms`, { launcher });
+  assert.equal(res.ok, true, res.reason);
+  assert.equal(res.via, "http");
+  assert.equal(state.launches, 0);
+  const links = await findDocumentLinks(`${base}/find-a-document-cms`, { launcher }, (l) => /fee schedule/i.test(l.text));
+  assert.equal(links.length, 2, JSON.stringify(links));
+  assert.equal(links[0].href, `${base}/home/showpublisheddocument/570/639239531899170000`);
 });
 
 await check("a walled listing escalates too, and the links come from the RENDERED page", async () => {
