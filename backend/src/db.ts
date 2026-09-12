@@ -1643,6 +1643,59 @@ const VERSIONED_MIGRATIONS: VersionedMigration[] = [
       }
     },
   },
+  {
+    version: 22,
+    name: "fee_schedules_discipline",
+    up: (db) => {
+      // ONE JOB, TWO PERMITS, ONE ROW TO PUT THEM IN.
+      //
+      // Measured today on a live project. A Coos Bay rooftop needs the CITY's
+      // structural solar permit ($200 flat, Resolution 26-30 p.8) AND the COUNTY's
+      // electrical permit ($160 at 5.01–15 kVA, Coos County schedule eff. 1/1/26
+      // §F). Both were researched, both stored, and the fee sheet printed $200 —
+      // a customer quote 44% short — because fee_schedules is unique on
+      // (profile_key, track) and "permit" is one slot.
+      //
+      // The same key also FORCED DATA LOSS on the way in: the harvester read Coos
+      // County's own structural row ($258, p.3 of the same PDF) and had to drop it
+      // into a notes paragraph, because an unbracketed structural fee sitting in a
+      // kVA-bracketed electrical table can only mislead whoever reads it next.
+      //
+      // DISCIPLINE IS NOT A NEW IDEA HERE — it is portal_recipes' second key
+      // dimension, and recipeDisciplineForTrack already maps a submittal track onto
+      // it ("" | structural | electrical | combo), with a comment naming this exact
+      // Oregon city/county split. Fee schedules simply never grew the dimension the
+      // recipes have had since v9. Same vocabulary, same values, deliberately: a
+      // fee row and the recipe that files it are now keyed alike.
+      //
+      // collected_by_profile_key IS THE HOP, AND IT IS EXPLICIT ON PURPOSE.
+      // The electrical fee for a City of Coos Bay address is published by Coos
+      // County, under a different AHJ key. Fuzzy-matching "City of Coos Bay" onto
+      // "Coos County" would be the wrong-authority filing bug rebuilt as lookup
+      // code — the one this session already caught once, where every number was
+      // real and the authority was wrong. So the hop is stored data with its own
+      // source and its own quote, seeded and human-verifiable like any other row,
+      // and it is followed EXACTLY ONCE (see followCollectedBy) so no chain of
+      // pointers can ever loop.
+      //
+      // The unique index must be REPLACED, not added: CREATE UNIQUE INDEX IF NOT
+      // EXISTS will not widen the two-column index v19 already built, and leaving
+      // it would forbid the second discipline row this migration exists to allow.
+      // Dropping and recreating here covers the fresh database too (v19's CREATE
+      // runs first, then this), which is why v19 is left exactly as it shipped.
+      addColumnIfMissing(db, "fee_schedules", "discipline", "TEXT NOT NULL DEFAULT ''");
+      addColumnIfMissing(db, "fee_schedules", "collected_by_profile_key", "TEXT NOT NULL DEFAULT ''");
+      db.exec(`
+        DROP INDEX IF EXISTS idx_fee_schedules_profile_track;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_fee_schedules_profile_track_discipline
+          ON fee_schedules(profile_key, track, discipline);
+      `);
+      // Existing rows keep discipline '' and go on answering every lookup that does
+      // not ask for a discipline. Nothing is reclassified by guesswork: a row that
+      // is really the electrical table gets its label from a person or from the
+      // next research pass, not from a migration reading its notes.
+    },
+  },
 ];
 
 // One-time repair for the runaway-notes bug: upsertKnowledge used to merge the

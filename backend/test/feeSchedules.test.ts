@@ -42,7 +42,10 @@ async function main(): Promise<void> {
   const cols = db.query<{ name: string }>("PRAGMA table_info(fee_schedules)").map((c) => c.name);
   check("migration created fee_schedules", cols.includes("brackets_json") && cols.includes("source_quote") && cols.includes("confidence"), cols.join(","));
   const idx = db.query<{ name: string; unique: number }>("PRAGMA index_list(fee_schedules)");
-  check("unique index on (profile_key, track)", idx.some((i) => i.name === "idx_fee_schedules_profile_track" && Number(i.unique) === 1));
+  // v22 widened this key to (profile_key, track, DISCIPLINE): one rooftop draws a
+  // city structural permit AND a county electrical one, and the two-column key had
+  // room for only one of them. See feeDiscipline.test.ts.
+  check("unique index on (profile_key, track, discipline)", idx.some((i) => i.name === "idx_fee_schedules_profile_track_discipline" && Number(i.unique) === 1));
 
   // ---------------------------------------------------------------------
   // 1. A bracketed permit schedule, and the boundary that is the whole point.

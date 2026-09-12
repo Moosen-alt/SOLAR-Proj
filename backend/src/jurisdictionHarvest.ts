@@ -423,6 +423,39 @@ export function inclusiveMaxFromLabel(label: string): number | null {
   return Number.isFinite(v) ? v : null;
 }
 
+/** A generation technology that is NOT the one a solar permit is priced on.
+ *
+ *  THIS IS THE TRAP THE WHOLE MODULE WAS BUILT AROUND, and it bit here first. Coos
+ *  County's electrical application prints, in one column, in this order:
+ *
+ *      "Renewable Energy"
+ *      "5 kva or less"                              $79.00
+ *      "5.01 kva to 15kva"                          $94.00
+ *      "15.01 kva to 25 kva"                        $156.00
+ *      "Wind Generation Systems greater than 25 kva"     <- heading, no amount
+ *      "25.01to50kva"                               $204.00
+ *      "50.01 kva to 100 kva"                       $469.00
+ *      "Solar Generation Systems greater than 25 kva"    <- heading, no amount
+ *      "25kva rate above + ea addtl kva"            $162.25
+ *
+ *  The size rows never say wind or solar; the heading says it once and the sizes
+ *  inherit it. Same-row pairing gets each amount onto its own printed line
+ *  perfectly and still cannot tell you that $204 is a WIND fee — that fact lives
+ *  one row up. Measured consequence before this guard: a 30 kVA solar job was
+ *  quoted $204 and a 60 kVA job $469, both wind rates, from a schedule whose
+ *  every number was real and correctly paired.
+ *
+ *  A heading naming solar as well ("Solar and Wind Generation") is NOT foreign —
+ *  it covers this job too, and dropping a row that does apply is its own error. */
+const FOREIGN_TECHNOLOGY = /\bwind\b|\bhydro(?:electric)?\b|\bgeothermal\b|\bbiomass\b|\bfuel cells?\b/i;
+const OUR_TECHNOLOGY = /\bsolar\b|\bphotovoltaic\b|\bpv\b/i;
+
+export function sectionIsForeignTechnology(section: string): boolean {
+  const s = String(section || "");
+  if (!s) return false;
+  return FOREIGN_TECHNOLOGY.test(s) && !OUR_TECHNOLOGY.test(s);
+}
+
 function bracketBasis(brackets: FeeBracket[]): FeeBasis {
   if (brackets.some((b) => b.minKw != null || b.maxKw != null)) return "system_kw";
   if (brackets.some((b) => b.minValuationUsd != null || b.maxValuationUsd != null)) return "valuation";
@@ -463,6 +496,19 @@ export async function readFeeTableFromPdf(bytes: Uint8Array): Promise<HarvestedF
   const unreadableRows: string[] = [];
   for (const match of feeRows) {
     const quote = rowQuote(match.row.cells, match.continuations);
+    // WHOSE FEE IS THIS? Asked before the row is read as a bracket, because a row
+    // under a wind heading is not an unreadable solar row — it is a perfectly
+    // readable fee for something else, and storing it is how a wind rate reaches
+    // a solar quote. Listed, never silently dropped, with the heading quoted so a
+    // person can check the call.
+    // Only a row carrying an AMOUNT can be somebody's fee. Without this the next
+    // heading down ("Solar Generation Systems greater than 25 kva") is itself read
+    // under the wind heading above it and reported as "not a solar fee", which is
+    // both false and exactly the sentence an operator would stumble on.
+    if (match.money.length > 0 && sectionIsForeignTechnology(match.section)) {
+      unreadableRows.push(`${quote} — NOT STORED: this row sits under the heading "${squash(match.section)}", which is a different generation technology, so it is not a solar fee`);
+      continue;
+    }
     const parsed = parseBracketRow(match);
     if (parsed.unparsed || parsed.feeUsd == null) {
       unreadableRows.push(`${quote} — ${parsed.unparsed || "no dollar amount"}`);

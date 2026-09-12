@@ -278,6 +278,14 @@ export interface FeeRowMatch {
   money: MoneyCell[];
   /** Wrapped lines folded into `label`. Empty when the row is one line. */
   continuations: string[];
+  /** The nearest heading ABOVE this row: the last matched row on this page that
+   *  carried no dollar amount. A fee table says which technology a bracket
+   *  belongs to ONCE, in a heading, and then prints sizes underneath it —
+   *  "Wind Generation Systems greater than 25 kva" followed by two size rows,
+   *  then "Solar Generation Systems greater than 25 kva" followed by one. The
+   *  size rows never repeat the word, so a row read on its own cannot say what
+   *  it is a fee FOR. Empty when no heading precedes the row. */
+  section: string;
   /** Set when the row cannot be read as one description + one fee. Never
    *  silently dropped: an ambiguous row is reported, not guessed at. */
   note?: string;
@@ -339,6 +347,15 @@ export function findFeeRows(rows: PdfTextRow[], opts: FindFeeRowsOptions = {}): 
   }
 
   const out: FeeRowMatch[] = [];
+  // THE HEADING A ROW SITS UNDER, carried down the page. A heading is a row that
+  // matched the vocabulary and printed no amount — "Renewable Energy", "Wind
+  // Generation Systems greater than 25 kva". It is scoped to its page, because a
+  // heading does not reach across a page break, and it is deliberately NOT
+  // interpreted here: this module reports geometry and leaves what a section
+  // MEANS to the caller, the same way it reports money without deciding whose
+  // fee it is.
+  let section = "";
+  let sectionPage = -1;
   ordered.forEach((row, i) => {
     if (continuationOf.has(i)) return;
     const continuations: string[] = [];
@@ -360,7 +377,10 @@ export function findFeeRows(rows: PdfTextRow[], opts: FindFeeRowsOptions = {}): 
           ? `The label says this line is a proportion of another fee, so "${valueText}" is a multiplier, not dollars.`
           : undefined;
 
-    out.push({ row, matched, label, money, continuations, ...(note ? { note } : {}) });
+    if (row.page !== sectionPage) { section = ""; sectionPage = row.page; }
+    out.push({ row, matched, label, money, continuations, section, ...(note ? { note } : {}) });
+    // Set AFTER pushing: a heading's own `section` is the one above it, not itself.
+    if (money.length === 0) section = label;
   });
   return out;
 }

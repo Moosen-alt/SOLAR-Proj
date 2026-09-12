@@ -47,6 +47,11 @@ import type { FetchPublicDocumentOptions } from "./documentFetch";
 import { DEFAULT_FEE_KEYWORDS, groupItemsIntoRows, extractPdfTextItems } from "./pdfTables";
 import type { PdfTextRow } from "./pdfTables";
 import { knowledgeNameMatchScore, knowledgeProfileKey, knowledgeResearchHint } from "./knowledgeBase";
+// THE track→discipline MAPPING IS NOT COPIED HERE, IT IS IMPORTED. portalChannel
+// is a leaf module with no imports of its own, so there is no cycle — and a
+// second copy of this mapping is precisely how "the concept lived in two places
+// and the copies disagreed" has bitten this codebase before.
+import { recipeDisciplineForTrack } from "./portalChannel";
 import { resolveValuation } from "./valuation";
 import { sanitizeApiKey } from "./llm";
 import { logger } from "./logger";
@@ -81,6 +86,15 @@ export interface FeeScheduleRecord {
   ahj: string;
   utility: string;
   track: FeeTrack;
+  /** Which permit this row is the fee for — see FeeDiscipline. */
+  discipline: FeeDiscipline;
+  /** THE HOP, and it is data rather than inference on purpose. Non-empty means
+   *  this row does not publish a fee: the authority named by this profile key
+   *  does. A City of Coos Bay address files its ELECTRICAL permit with Coos
+   *  County, and the only safe way to say so is to have somebody record it with
+   *  a source — matching "City of Coos Bay" onto "Coos County" by name
+   *  similarity is the wrong-authority filing bug rebuilt as lookup code. */
+  collectedByProfileKey: string;
   basis: FeeBasis;
   brackets: FeeBracket[];
   notes: string;
@@ -114,6 +128,14 @@ export interface FeeScheduleFinding {
   /** How the jurisdiction takes the money. Optional so every existing caller
    *  (imports, seed scripts, tests) keeps compiling; absent reads as "unknown". */
   paymentMethod?: string;
+  /** Which permit this finding priced. Absent reads as "" — undifferentiated,
+   *  which is what every pre-existing caller means. */
+  discipline?: string;
+  /** Set INSTEAD of brackets to record that another authority publishes this
+   *  fee (see FeeScheduleRecord.collectedByProfileKey). A delegation still needs
+   *  its URL and its quoted sentence: "somebody else charges this" is a claim
+   *  about the world and gets sourced like any other. */
+  collectedByProfileKey?: string;
   /** RETRIEVAL PROVENANCE — set only by a researcher that fetched the document
    *  itself. `quoteVerified` means the stored sentence was found, character for
    *  character, in bytes this process retrieved: the difference between a quote
@@ -186,6 +208,33 @@ export interface ProjectFeeResolution {
   scheduleId: string;
   /** Populated when feeUsd is null: why the schedule did not evaluate. */
   reason: string;
+  /** EVERY permit this project owes, itemised. One entry for an ordinary
+   *  jurisdiction; two where the city takes the structural permit and the county
+   *  takes the electrical one. feeUsd above is their TOTAL, which is what the
+   *  customer pays — read `lines` to show them what it is made of. */
+  lines: FeeScheduleLine[];
+}
+
+/** One permit, one authority, one number. */
+export interface FeeScheduleLine {
+  discipline: FeeDiscipline;
+  /** Who publishes and collects THIS line — the county on a hopped electrical
+   *  row, even though the project's AHJ is the city. */
+  authority: string;
+  /** Non-empty when the line was reached by a delegation: the AHJ the project
+   *  is filed under, which does not itself charge this fee. */
+  hoppedFrom: string;
+  feeUsd: number | null;
+  bracketLabel: string;
+  basis: FeeBasis;
+  paymentMethod: FeePaymentMethod;
+  sourceUrl: string;
+  sourceQuote: string;
+  confidence: FeeConfidence;
+  notes: string;
+  scheduleId: string;
+  /** Populated when feeUsd is null. */
+  reason: string;
 }
 
 const NOTE_SEGMENT_CAP = 40;
@@ -222,6 +271,23 @@ function mergeNotes(existing: unknown, incoming: string[]): string {
 
 export function feeTrack(track?: string | null): FeeTrack {
   return String(track || "").toLowerCase() === "nem" ? "nem" : "permit";
+}
+
+/** WHICH PERMIT, not which jurisdiction. One rooftop in Coos Bay draws TWO
+ *  permit fees — the city's structural ($200) and the county's electrical
+ *  ($160) — and before this dimension existed the table could hold only one of
+ *  them, so the fee sheet quoted $200 and was 44% short.
+ *
+ *  These are portal_recipes' OWN discipline values, not a parallel vocabulary:
+ *  portalChannel.recipeDisciplineForTrack maps a submittal track onto exactly
+ *  this set, so the fee for a stage and the recipe that files it are keyed
+ *  alike. "" means undifferentiated — the NEM track, and every permit row
+ *  recorded before the distinction was drawn. */
+export type FeeDiscipline = "" | "structural" | "electrical" | "combo";
+
+export function feeDiscipline(value?: string | null): FeeDiscipline {
+  const v = clean(value).toLowerCase();
+  return v === "structural" || v === "electrical" || v === "combo" ? v : "";
 }
 
 /** submissionFees.ts whitelists EXACTLY these four and silently drops anything
@@ -284,6 +350,8 @@ function mapSchedule(row: Row): FeeScheduleRecord {
     ahj: text(row.ahj),
     utility: text(row.utility),
     track: feeTrack(text(row.track)),
+    discipline: feeDiscipline(text(row.discipline)),
+    collectedByProfileKey: text(row.collected_by_profile_key),
     basis: (["system_kw", "valuation", "flat", "other"].includes(text(row.basis)) ? text(row.basis) : "other") as FeeBasis,
     brackets: parseBrackets(row.brackets_json),
     notes: text(row.notes),
@@ -299,9 +367,59 @@ function mapSchedule(row: Row): FeeScheduleRecord {
   };
 }
 
-export function getFeeSchedule(db: AppDb, profileKey: string, track: FeeTrack): FeeScheduleRecord | null {
-  const row = db.get<Row>("SELECT * FROM fee_schedules WHERE profile_key = ? AND track = ?", [profileKey, track]);
+/** One stored row. `discipline` defaults to "" — the undifferentiated row, which
+ *  is what every caller written before disciplines existed is asking for, and
+ *  what every row written before then carries. */
+export function getFeeSchedule(
+  db: AppDb,
+  profileKey: string,
+  track: FeeTrack,
+  discipline: FeeDiscipline = "",
+): FeeScheduleRecord | null {
+  const row = db.get<Row>(
+    "SELECT * FROM fee_schedules WHERE profile_key = ? AND track = ? AND discipline = ?",
+    [profileKey, track, discipline],
+  );
   return row ? mapSchedule(row) : null;
+}
+
+/** Every discipline stored under one key+track, in a stable order. */
+export function getFeeSchedulesForKey(db: AppDb, profileKey: string, track: FeeTrack): FeeScheduleRecord[] {
+  const rows = db.query<Row>(
+    "SELECT * FROM fee_schedules WHERE profile_key = ? AND track = ? ORDER BY discipline",
+    [profileKey, track],
+  );
+  return rows.map(mapSchedule);
+}
+
+/** FOLLOW THE HOP EXACTLY ONCE.
+ *
+ *  A delegation row says "the authority at this other key publishes this fee".
+ *  One hop is all a jurisdiction split needs (city → county), and stopping at
+ *  one is what makes a cycle impossible to write: a pair of rows pointing at
+ *  each other resolves to nothing and says so, rather than spinning. A hop that
+ *  lands on another delegation is reported as unresolved for the same reason —
+ *  a chain of pointers is a modelling mistake somebody should see, not a
+ *  traversal to optimise. */
+function followCollectedBy(
+  db: AppDb,
+  record: FeeScheduleRecord,
+): { record: FeeScheduleRecord; collectedBy: FeeScheduleRecord | null; unresolved: string } {
+  const target = clean(record.collectedByProfileKey);
+  if (!target) return { record, collectedBy: null, unresolved: "" };
+  // The hop preserves the discipline: the city's ELECTRICAL row points at the
+  // county's ELECTRICAL row, never at whatever the county happens to file first.
+  const hopped = getFeeSchedule(db, target, record.track, record.discipline)
+    // A county that publishes one undifferentiated permit schedule still answers
+    // a discipline-specific hop — that row is the only thing it has to say.
+    ?? getFeeSchedule(db, target, record.track, "");
+  if (!hopped) {
+    return { record, collectedBy: null, unresolved: `Fee is collected by "${target}", and no schedule is stored for that authority yet.` };
+  }
+  if (clean(hopped.collectedByProfileKey)) {
+    return { record, collectedBy: null, unresolved: `Fee is collected by "${target}", whose row delegates onward — a chain of pointers needs a person to untangle it.` };
+  }
+  return { record: hopped, collectedBy: hopped, unresolved: "" };
 }
 
 /** Mark a schedule human-verified. From here on a research pass may not change
@@ -311,15 +429,16 @@ export function markFeeScheduleVerified(
   profileKey: string,
   track: FeeTrack,
   verifiedBy: string,
+  discipline: FeeDiscipline = "",
 ): FeeScheduleRecord | null {
-  const existing = getFeeSchedule(db, profileKey, track);
+  const existing = getFeeSchedule(db, profileKey, track, discipline);
   if (!existing) return null;
   const ts = nowIso();
   db.run(
     "UPDATE fee_schedules SET confidence = 'verified', verified_at = ?, verified_by = ?, updated_at = ? WHERE id = ?",
     [ts, clean(verifiedBy).slice(0, 120), ts, existing.id],
   );
-  return getFeeSchedule(db, profileKey, track);
+  return getFeeSchedule(db, profileKey, track, discipline);
 }
 
 /** One-line human-readable rendering of a finding, for the notes trail. */
@@ -340,31 +459,44 @@ function findingSummary(finding: FeeScheduleFinding): string {
  *  operator-entered schedule can use the same guard as research. */
 export function saveFeeSchedule(
   db: AppDb,
-  input: { state: string; ahj?: string; utility?: string; track: FeeTrack },
+  input: { state: string; ahj?: string; utility?: string; track: FeeTrack; discipline?: string },
   finding: FeeScheduleFinding,
 ): FeeScheduleResearchOutcome {
   const track = input.track;
   const profileKey = feeScheduleProfileKey(input, track);
+  // The discipline may travel on either side: on the input (an operator or a
+  // seed script saying which permit this is) or on the finding (a researcher
+  // that worked it out). The input wins — it is the caller's own statement of
+  // what it asked for.
+  const discipline = feeDiscipline(input.discipline || finding.discipline);
+  const collectedBy = clean(finding.collectedByProfileKey);
   const brackets = normalizeBrackets(finding.brackets || []);
   const sourceUrl = clean(finding.sourceUrl);
   const sourceQuote = clean(finding.sourceQuote);
   const base = { found: finding.found, profileKey, track, finding: { ...finding, brackets } };
 
   if (!finding.found) {
-    return { ...base, reason: finding.reason || "Researcher reported no finding.", saved: false, refusedVerified: false, schedule: getFeeSchedule(db, profileKey, track) };
+    return { ...base, reason: finding.reason || "Researcher reported no finding.", saved: false, refusedVerified: false, schedule: getFeeSchedule(db, profileKey, track, discipline) };
   }
   // A FEE WITH NO QUOTE IS A RUMOUR. Both halves are required: the URL says
   // where to go back and check, the sentence says what was actually read there.
   if (!sourceUrl || !sourceQuote) {
     const reason = `Refused: a fee needs both a source URL and the sentence it came from (url=${sourceUrl ? "yes" : "no"}, quote=${sourceQuote ? "yes" : "no"}).`;
     logger.warn("fees", "fee schedule refused — unsourced", { profileKey, track });
-    return { ...base, found: false, reason, saved: false, refusedVerified: false, schedule: getFeeSchedule(db, profileKey, track) };
+    return { ...base, found: false, reason, saved: false, refusedVerified: false, schedule: getFeeSchedule(db, profileKey, track, discipline) };
   }
-  if (!brackets.length) {
-    return { ...base, found: false, reason: "Refused: no usable fee line (every bracket lacked a finite, non-negative feeUsd).", saved: false, refusedVerified: false, schedule: getFeeSchedule(db, profileKey, track) };
+  // A DELEGATION IS THE ONE ROW WITH NOTHING TO EVALUATE, and it still had to
+  // pass the sourcing rule above: naming another authority is a claim about the
+  // world, and an unsourced one belongs in this table no more than an unsourced
+  // number does. A row that is neither a fee nor a hop is refused as before.
+  if (!brackets.length && !collectedBy) {
+    return { ...base, found: false, reason: "Refused: no usable fee line (every bracket lacked a finite, non-negative feeUsd), and no collecting authority named.", saved: false, refusedVerified: false, schedule: getFeeSchedule(db, profileKey, track, discipline) };
+  }
+  if (collectedBy && collectedBy === profileKey) {
+    return { ...base, found: false, reason: `Refused: a row cannot delegate its fee to itself ("${profileKey}").`, saved: false, refusedVerified: false, schedule: getFeeSchedule(db, profileKey, track, discipline) };
   }
 
-  const existing = getFeeSchedule(db, profileKey, track);
+  const existing = getFeeSchedule(db, profileKey, track, discipline);
   const ts = nowIso();
 
   // HUMAN-VERIFIED IS NOT A STARTING POINT. Record what research found, in
@@ -372,8 +504,8 @@ export function saveFeeSchedule(
   if (existing && existing.confidence === "verified") {
     const segment = `Research ${ts.slice(0, 10)} (NOT applied — row is human-verified): ${findingSummary({ ...finding, brackets })}`;
     db.run("UPDATE fee_schedules SET notes = ?, updated_at = ? WHERE id = ?", [mergeNotes(existing.notes, [segment]), ts, existing.id]);
-    logger.info("fees", "research refused against human-verified fee schedule", { profileKey, track });
-    return { ...base, reason: "Row is human-verified — finding recorded in notes, schedule unchanged.", saved: false, refusedVerified: true, schedule: getFeeSchedule(db, profileKey, track) };
+    logger.info("fees", "research refused against human-verified fee schedule", { profileKey, track, discipline });
+    return { ...base, reason: "Row is human-verified — finding recorded in notes, schedule unchanged.", saved: false, refusedVerified: true, schedule: getFeeSchedule(db, profileKey, track, discipline) };
   }
 
   const notes = mergeNotes(existing?.notes, noteSegments(finding.notes));
@@ -385,27 +517,32 @@ export function saveFeeSchedule(
   if (existing) {
     db.run(
       `UPDATE fee_schedules SET state = ?, ahj = ?, utility = ?, basis = ?, brackets_json = ?, notes = ?,
-         payment_method = ?, source_url = ?, source_quote = ?, source_kind = ?, confidence = 'seeded', updated_at = ?
+         payment_method = ?, source_url = ?, source_quote = ?, source_kind = ?, collected_by_profile_key = ?,
+         confidence = 'seeded', updated_at = ?
        WHERE id = ?`,
       [
         clean(input.state), clean(input.ahj), clean(input.utility), finding.basis,
-        JSON.stringify(brackets), notes, paymentMethod, sourceUrl, sourceQuote, clean(finding.sourceKind), ts, existing.id,
+        JSON.stringify(brackets), notes, paymentMethod, sourceUrl, sourceQuote, clean(finding.sourceKind),
+        collectedBy, ts, existing.id,
       ],
     );
   } else {
     db.run(
       `INSERT INTO fee_schedules
-         (id, profile_key, state, ahj, utility, track, basis, brackets_json, notes, payment_method,
-          source_url, source_quote, source_kind, confidence, first_seen_at, updated_at, verified_at, verified_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'seeded', ?, ?, '', '')`,
+         (id, profile_key, state, ahj, utility, track, discipline, basis, brackets_json, notes, payment_method,
+          source_url, source_quote, source_kind, collected_by_profile_key, confidence, first_seen_at, updated_at, verified_at, verified_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'seeded', ?, ?, '', '')`,
       [
-        id(), profileKey, clean(input.state), clean(input.ahj), clean(input.utility), track, finding.basis,
-        JSON.stringify(brackets), notes, paymentMethod, sourceUrl, sourceQuote, clean(finding.sourceKind), ts, ts,
+        id(), profileKey, clean(input.state), clean(input.ahj), clean(input.utility), track, discipline, finding.basis,
+        JSON.stringify(brackets), notes, paymentMethod, sourceUrl, sourceQuote, clean(finding.sourceKind), collectedBy, ts, ts,
       ],
     );
   }
-  logger.info("fees", "fee schedule saved (seeded)", { profileKey, track, basis: finding.basis, brackets: brackets.length });
-  return { ...base, reason: "", saved: true, refusedVerified: false, schedule: getFeeSchedule(db, profileKey, track) };
+  logger.info("fees", "fee schedule saved (seeded)", {
+    profileKey, track, discipline: discipline || "(any)", basis: finding.basis,
+    brackets: brackets.length, collectedBy: collectedBy || undefined,
+  });
+  return { ...base, reason: "", saved: true, refusedVerified: false, schedule: getFeeSchedule(db, profileKey, track, discipline) };
 }
 
 // ---------------------------------------------------------------------------
@@ -1045,8 +1182,35 @@ export function findFeeScheduleForProject(
   db: AppDb,
   project: Pick<ProjectRecord, "state" | "ahj" | "utility">,
   track: FeeTrack,
+  discipline: FeeDiscipline = "",
 ): FeeScheduleRecord | null {
-  const exact = getFeeSchedule(db, feeScheduleProfileKey(project, track), track);
+  const raw = findRawScheduleForProject(db, project, track, discipline);
+  return raw ? followCollectedBy(db, raw).record : null;
+}
+
+/** The row filed under this project's own key BEFORE any hop is followed — the
+ *  delegation itself, when there is one. Kept separate because a caller that
+ *  intends to EVALUATE needs `followCollectedBy`'s `unresolved` reason too, and
+ *  a hop that lands nowhere must read as unresolved rather than as a stored
+ *  schedule with no fee lines (which is a different repair). */
+function findRawScheduleForProject(
+  db: AppDb,
+  project: Pick<ProjectRecord, "state" | "ahj" | "utility">,
+  track: FeeTrack,
+  discipline: FeeDiscipline = "",
+): FeeScheduleRecord | null {
+  const key = feeScheduleProfileKey(project, track);
+  // Ask for the discipline requested; fall back to the undifferentiated row,
+  // which is what a jurisdiction publishing ONE permit schedule has to say
+  // about any discipline, and what every row predating this dimension carries.
+  const exact = getFeeSchedule(db, key, track, discipline)
+    ?? (discipline ? getFeeSchedule(db, key, track, "") : null)
+    // No discipline asked for and no undifferentiated row: a jurisdiction with
+    // exactly one permit schedule still answers. With more than one it does
+    // NOT — picking between a structural and an electrical fee by row order is
+    // how a quote ends up confidently wrong — so the caller gets null here and
+    // feeLinesForProject, which can carry both, is the way to ask.
+    ?? (!discipline ? onlySchedule(getFeeSchedulesForKey(db, key, track)) : null);
   if (exact) return exact;
 
   const wanted = track === "nem" ? clean(project.utility) : clean(project.ahj);
@@ -1060,12 +1224,118 @@ export function findFeeScheduleForProject(
     // somewhere else entirely.
     const rowState = rec.state.trim().toUpperCase();
     if (state && rowState && rowState !== state) continue;
+    // A fuzzy match crossing DISCIPLINES is the same error as one crossing
+    // jurisdictions: "Coos County" scores well against itself under either
+    // heading, and handing an electrical stage the structural table quotes a
+    // real fee for the wrong permit.
+    if (discipline && rec.discipline && rec.discipline !== discipline) continue;
     const name = track === "nem" ? rec.utility : rec.ahj;
     const score = knowledgeNameMatchScore(wanted, name);
     if (score < 60) continue;
     if (!best || score > best.score) best = { row: rec, score };
   }
   return best ? best.row : null;
+}
+
+/** Lookup + hop + evaluate for ONE discipline, as a line. The single-answer
+ *  seams route through this so a dangling or circular hop reaches them as the
+ *  reason it is, not as an empty schedule. */
+function resolveLine(
+  db: AppDb,
+  project: Pick<ProjectRecord, "state" | "ahj" | "utility" | "systemSizeAcKw" | "systemSizeDcKw" | "parserSnapshot">,
+  track: FeeTrack,
+  discipline: FeeDiscipline,
+  inputs?: { kw: number | null; kwSource: string; valuationUsd: number | null },
+): FeeScheduleLine | null {
+  const raw = findRawScheduleForProject(db, project, track, discipline);
+  if (!raw) return null;
+  const hop = followCollectedBy(db, raw);
+  const hoppedFrom = hop.collectedBy ? (track === "nem" ? raw.utility : raw.ahj) : "";
+  const line = lineFor(db, project, track, hop.record, hoppedFrom, inputs);
+  if (hop.unresolved) return { ...line, feeUsd: null, bracketLabel: "", reason: hop.unresolved };
+  // The discipline reported is the one that was ASKED FOR — a hopped line is
+  // still the electrical permit even though it was read off the county's row,
+  // and an undifferentiated row answering a discipline-specific ask answers AS
+  // that discipline.
+  return { ...line, discipline: discipline || line.discipline };
+}
+
+/** The one schedule, when there is exactly one. Never a choice between two. */
+function onlySchedule(rows: FeeScheduleRecord[]): FeeScheduleRecord | null {
+  return rows.length === 1 ? rows[0] : null;
+}
+
+/** WHICH PERMITS THIS PROJECT OWES, as separate lines.
+ *
+ *  An undifferentiated row answers for everything and is the whole answer — a
+ *  jurisdiction that publishes one permit schedule is not secretly charging
+ *  twice, and adding discipline rows to it would double-count. Otherwise every
+ *  stored discipline is a permit this project owes, EXCEPT that a `combo` row
+ *  is an alternative way to file the same work: where a jurisdiction offers
+ *  both, the separate permits are the default and the combo line is reported
+ *  alongside rather than added, because which one gets filed is a choice
+ *  somebody makes per job. */
+function applicableSchedules(db: AppDb, key: string, track: FeeTrack): FeeScheduleRecord[] {
+  const all = getFeeSchedulesForKey(db, key, track);
+  const undifferentiated = all.find((r) => !r.discipline);
+  if (undifferentiated) return [undifferentiated];
+  const separate = all.filter((r) => r.discipline === "structural" || r.discipline === "electrical");
+  if (separate.length) return separate;
+  return all;
+}
+
+export function feeLinesForProject(
+  db: AppDb,
+  project: Pick<ProjectRecord, "state" | "ahj" | "utility" | "systemSizeAcKw" | "systemSizeDcKw" | "parserSnapshot">,
+  track: FeeTrack,
+  /** Evaluation inputs, when the caller already has them. lookupPublishedFee
+   *  runs at a seam with no parser snapshot and its own pre-computed bracket
+   *  size, and must not silently re-derive either. */
+  inputs?: { kw: number | null; kwSource: string; valuationUsd: number | null },
+): FeeScheduleLine[] {
+  const key = feeScheduleProfileKey(project, track);
+  let rows = applicableSchedules(db, key, track);
+  if (!rows.length) {
+    // Nothing under this project's own key — fall back to the fuzzy match the
+    // singular lookup has always done, so an operator short name ("Coos Bay")
+    // still reaches the legal name on file.
+    const fuzzy = findFeeScheduleForProject(db, project, track);
+    rows = fuzzy ? [fuzzy] : [];
+  }
+
+  const rating = inputs ? { kw: inputs.kw, which: inputs.kwSource } : systemRatingKw(project);
+  const { kw, which } = rating;
+  const lines: FeeScheduleLine[] = [];
+  for (const row of rows) {
+    const hop = followCollectedBy(db, row);
+    const schedule = hop.record;
+    const hoppedFrom = hop.collectedBy ? (track === "nem" ? row.utility : row.ahj) : "";
+    const valuationUsd = inputs
+      ? inputs.valuationUsd
+      : (schedule.basis === "valuation" ? resolveValuation(project.parserSnapshot, project.systemSizeDcKw).value : null);
+    const evaluated = hop.unresolved
+      ? { feeUsd: null, bracketLabel: "", reason: hop.unresolved }
+      : evaluateSchedule(schedule, { kw, kwSource: which, valuationUsd });
+    lines.push({
+      discipline: row.discipline,
+      authority: (track === "nem" ? schedule.utility : schedule.ahj) || (track === "nem" ? row.utility : row.ahj),
+      hoppedFrom,
+      feeUsd: evaluated.feeUsd,
+      bracketLabel: evaluated.bracketLabel,
+      basis: schedule.basis,
+      paymentMethod: schedule.paymentMethod,
+      sourceUrl: schedule.sourceUrl,
+      sourceQuote: schedule.sourceQuote,
+      // A hopped line's confidence is the COLLECTING authority's, because the
+      // number is theirs. A verified pointer at a seeded table is still a
+      // seeded number, and the weaker of the two is the honest one to show.
+      confidence: hop.collectedBy && (row.confidence === "seeded" || schedule.confidence === "seeded") ? "seeded" : schedule.confidence,
+      notes: schedule.notes,
+      scheduleId: schedule.id,
+      reason: evaluated.reason,
+    });
+  }
+  return lines;
 }
 
 /** The system rating the kVA brackets are about. AC first: a schedule bracketed
@@ -1161,25 +1431,86 @@ export function feeForProject(
   trackInput?: string | null,
 ): ProjectFeeResolution | null {
   const track = feeTrack(trackInput);
-  const schedule = findFeeScheduleForProject(db, project, track);
-  if (!schedule) return null;
+  // A SUBMITTAL TRACK NAMES ITS PERMIT. "electrical"/"mpu" → the electrical fee,
+  // "building" → the structural one; a bare "permit" (or a null) names no
+  // discipline and asks for everything this project owes.
+  const asked = feeDiscipline(recipeDisciplineForTrack(trackInput));
+  if (asked) {
+    const line = resolveLine(db, project, track, asked);
+    if (!line) return null;
+    return { ...resolutionFrom([line], track), lines: [line] };
+  }
 
-  const { kw, which } = systemRatingKw(project);
+  const lines = feeLinesForProject(db, project, track);
+  if (!lines.length) return null;
+  return { ...resolutionFrom(lines, track), lines };
+}
+
+/** Evaluate one already-resolved schedule into a line. */
+function lineFor(
+  db: AppDb,
+  project: Pick<ProjectRecord, "systemSizeAcKw" | "systemSizeDcKw" | "parserSnapshot">,
+  track: FeeTrack,
+  schedule: FeeScheduleRecord,
+  hoppedFrom: string,
+  inputs?: { kw: number | null; kwSource: string; valuationUsd: number | null },
+): FeeScheduleLine {
+  const { kw, which } = inputs ? { kw: inputs.kw, which: inputs.kwSource } : systemRatingKw(project);
   // Only pay for the valuation walk when the schedule actually keys on it.
-  const valuationUsd = schedule.basis === "valuation"
-    ? resolveValuation(project.parserSnapshot, project.systemSizeDcKw).value
-    : null;
+  const valuationUsd = inputs
+    ? inputs.valuationUsd
+    : (schedule.basis === "valuation" ? resolveValuation(project.parserSnapshot, project.systemSizeDcKw).value : null);
   const evaluated = evaluateSchedule(schedule, { kw, kwSource: which, valuationUsd });
-
   return {
-    ...evaluated,
+    discipline: schedule.discipline,
+    authority: track === "nem" ? schedule.utility : schedule.ahj,
+    hoppedFrom,
+    feeUsd: evaluated.feeUsd,
+    bracketLabel: evaluated.bracketLabel,
     basis: schedule.basis,
     paymentMethod: schedule.paymentMethod,
     sourceUrl: schedule.sourceUrl,
     sourceQuote: schedule.sourceQuote,
     confidence: schedule.confidence,
-    matchedName: track === "nem" ? schedule.utility : schedule.ahj,
+    notes: schedule.notes,
     scheduleId: schedule.id,
+    reason: evaluated.reason,
+  };
+}
+
+/** COLLAPSE THE LINES TO THE ONE NUMBER THE CUSTOMER OWES.
+ *
+ *  A project that files two permits owes both, so the total is their sum — and
+ *  one unreadable line makes the TOTAL unreadable, not smaller. Returning
+ *  "$200" while a $160 line sits unresolved beside it is the under-quote this
+ *  whole dimension exists to stop, and it would look exactly like a confident
+ *  answer. The lines travel alongside so a caller can show the split. */
+function resolutionFrom(lines: FeeScheduleLine[], track: FeeTrack): Omit<ProjectFeeResolution, "lines"> {
+  const primary = lines[0];
+  const unresolved = lines.filter((l) => l.feeUsd == null);
+  const total = unresolved.length ? null : round2(lines.reduce((sum, l) => sum + (l.feeUsd ?? 0), 0));
+  const label = lines.length === 1
+    ? primary.bracketLabel
+    : lines.map((l) => `${l.authority || "?"}${l.discipline ? ` ${l.discipline}` : ""}: ${l.feeUsd == null ? "unresolved" : `$${l.feeUsd.toFixed(2)}`}`).join(" + ");
+  return {
+    feeUsd: total,
+    bracketLabel: label,
+    // A mixed-basis total is not any one basis. "other" is the existing value
+    // for "a human has to read this", which is exactly right for the split.
+    basis: lines.length === 1 ? primary.basis : (lines.every((l) => l.basis === primary.basis) ? primary.basis : "other"),
+    // Likewise the payment method: two permits paid two ways cannot be reported
+    // as one, and 'unknown' is what already makes the fee sheet say so.
+    paymentMethod: lines.every((l) => l.paymentMethod === primary.paymentMethod) ? primary.paymentMethod : "unknown",
+    sourceUrl: primary.sourceUrl,
+    sourceQuote: primary.sourceQuote,
+    // The weakest confidence in the set: a verified line does not vouch for a
+    // seeded one standing next to it in the same total.
+    confidence: lines.some((l) => l.confidence === "seeded") ? "seeded" : "verified",
+    matchedName: lines.length === 1 ? primary.authority : lines.map((l) => l.authority).filter(Boolean).join(" + "),
+    scheduleId: primary.scheduleId,
+    reason: unresolved.length
+      ? unresolved.map((l) => `${l.authority || "this jurisdiction"}${l.discipline ? ` (${l.discipline})` : ""}: ${l.reason}`).join(" ")
+      : "",
   };
 }
 
@@ -1240,26 +1571,45 @@ export interface PublishedFeeLookupResult {
 export function lookupPublishedFee(db: AppDb, input: PublishedFeeLookupArgs): PublishedFeeLookupResult | null {
   try {
     const track = feeTrack(input.track);
-    const schedule = findFeeScheduleForProject(db, { state: input.state, ahj: input.ahj, utility: input.utility }, track);
-    if (!schedule) return null;
-
-    const kw = num(input.bracketKw) ?? num(input.systemSizeAcKw) ?? num(input.systemSizeDcKw);
-    const evaluated = evaluateSchedule(schedule, {
-      kw: kw != null && kw > 0 ? kw : null,
+    const kwRaw = num(input.bracketKw) ?? num(input.systemSizeAcKw) ?? num(input.systemSizeDcKw);
+    const evalInputs = {
+      kw: kwRaw != null && kwRaw > 0 ? kwRaw : null,
       kwSource: input.bracketKw != null ? "bracket" : "AC/DC",
       valuationUsd: num(input.valuationUsd),
-    });
-    const jurisdictionName = track === "nem" ? schedule.utility : schedule.ahj;
+    };
+    const project = {
+      state: input.state, ahj: input.ahj, utility: input.utility,
+      systemSizeAcKw: null, systemSizeDcKw: null, parserSnapshot: null,
+    } as unknown as Pick<ProjectRecord, "state" | "ahj" | "utility" | "systemSizeAcKw" | "systemSizeDcKw" | "parserSnapshot">;
+
+    // THE TRACK STILL NAMES THE PERMIT AT THIS SEAM. input.track carries the
+    // submittal track ("electrical", "building", …) — feeTrack() collapses it to
+    // permit/nem for the table, but the discipline is still in there, and an
+    // electrical stage asking for "the permit fee" must not be handed the
+    // structural one.
+    const asked = feeDiscipline(recipeDisciplineForTrack(input.track));
+    let lines: FeeScheduleLine[];
+    if (asked) {
+      const line = resolveLine(db, project, track, asked, evalInputs);
+      if (!line) return null;
+      lines = [line];
+    } else {
+      lines = feeLinesForProject(db, project, track, evalInputs);
+    }
+    if (!lines.length) return null;
+
+    const rolled = resolutionFrom(lines, track);
+    const jurisdictionName = rolled.matchedName;
     return {
-      feeUsd: evaluated.feeUsd,
-      bracketLabel: evaluated.bracketLabel || null,
-      sourceUrl: schedule.sourceUrl || null,
-      sourceQuote: schedule.sourceQuote,
-      paymentMethod: schedule.paymentMethod,
-      confidence: schedule.confidence,
-      basis: evaluated.feeUsd == null
-        ? evaluated.reason
-        : `Published fee schedule${jurisdictionName ? ` (${jurisdictionName})` : ""}${evaluated.bracketLabel ? `: ${evaluated.bracketLabel}` : ""}`,
+      feeUsd: rolled.feeUsd,
+      bracketLabel: rolled.bracketLabel || null,
+      sourceUrl: rolled.sourceUrl || null,
+      sourceQuote: rolled.sourceQuote,
+      paymentMethod: rolled.paymentMethod,
+      confidence: rolled.confidence,
+      basis: rolled.feeUsd == null
+        ? rolled.reason
+        : `Published fee schedule${lines.length > 1 ? "s" : ""}${jurisdictionName ? ` (${jurisdictionName})` : ""}${rolled.bracketLabel ? `: ${rolled.bracketLabel}` : ""}`,
       jurisdictionName,
     };
   } catch (err) {

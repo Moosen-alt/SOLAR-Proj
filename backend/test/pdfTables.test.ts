@@ -23,6 +23,34 @@ import {
 let passed = 0;
 const ok = (n: string) => { passed++; console.log(`ok   ${n}`); };
 
+// The renewable-energy block of Coos County's electrical permit application, in
+// its printed order: three headings that carry no amount, and size rows beneath
+// them that carry no technology. Nothing here is scrambled — this fixture is not
+// about stream order, it is about the fact that a correctly paired row can still
+// be a fee for something the caller did not ask about.
+async function makeSectionedPdf(): Promise<Uint8Array> {
+  const doc = await PDFDocument.create();
+  const page = doc.addPage([612, 792]);
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  const rows: Array<[string, string]> = [
+    ["Renewable Energy", ""],
+    ["5 kva or less", "$79.00"],
+    ["15.01 kva to 25 kva", "$156.00"],
+    ["Wind Generation Systems greater than 25 kva", ""],
+    ["25.01to50kva", "$204.00"],
+    ["50.01 kva to 100 kva", "$469.00"],
+    ["Solar Generation Systems greater than 25 kva", ""],
+    ["25kva rate above + ea addtl kva", "$162.25"],
+  ];
+  let y = 700;
+  for (const [label, amount] of rows) {
+    page.drawText(label, { x: 50, y, size: SIZE, font });
+    if (amount) page.drawText(amount, { x: 400, y, size: SIZE, font });
+    y -= 22; // wider than the 2.2x-height continuation gap, so no row wraps into another
+  }
+  return doc.save();
+}
+
 const SIZE = 10;
 
 // A two-column fee table. Column 1 (description) at x=50, column 2 (value) at
@@ -223,6 +251,31 @@ async function main(): Promise<void> {
     "y-grouping is load-bearing: merge the rows and the correct solar/$200 pairing must not survive",
   );
   ok("kill test: widening the y tolerance destroys the pairing — the grouping is doing the work");
+
+  // 11) THE TECHNOLOGY IS IN THE HEADING, NOT IN THE ROW.
+  //
+  //     Real shape, off Coos County's electrical permit application: one column
+  //     of sizes under three headings, where only the headings say what is being
+  //     priced. Same-row pairing gets every amount onto its own printed line and
+  //     still cannot tell you that $204 is a WIND fee — that fact is one row up.
+  //     Measured before sections existed: a 30 kVA SOLAR job was quoted $204 and
+  //     a 60 kVA job $469, from a table whose every number was real and correctly
+  //     paired.
+  const sectioned = await extractPdfRows(await makeSectionedPdf());
+  const secFees = findFeeRows(sectioned);
+  const at = (amount: number) => secFees.find((f) => f.money.some((m) => m.amountUsd === amount));
+
+  // The fixture is adversarial: the wind row's OWN words never say wind.
+  assert.ok(at(204), "expected a $204 row");
+  assert.ok(!/wind/i.test(at(204)!.label), `the $204 row must not name its technology: "${at(204)!.label}"`);
+  assert.ok(!/wind/i.test(at(469)!.label), `nor the $469 row: "${at(469)!.label}"`);
+
+  assert.equal(at(79)!.section, "Renewable Energy");
+  assert.equal(at(204)!.section, "Wind Generation Systems greater than 25 kva");
+  assert.equal(at(469)!.section, "Wind Generation Systems greater than 25 kva");
+  assert.equal(at(162.25)!.section, "Solar Generation Systems greater than 25 kva",
+    "the heading must ADVANCE — a row under the solar heading must not inherit the wind one");
+  ok("a fee row carries the heading above it, which is the only place its technology is written");
 
   console.log(`\n${passed} checks passed`);
 }
