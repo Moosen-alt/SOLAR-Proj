@@ -3,6 +3,65 @@
 Audience: the next model/dev session (and the operator). Read `CLAUDE.md` first
 for the hard rules; this file is the running state.
 
+## ONE JOB, TWO PERMITS: THE FEE A CUSTOMER QUOTE WAS MISSING (2026-09-12)
+
+A Coos Bay rooftop draws TWO permit fees, and the tool knew both and could show only one.
+
+    before:  JURISDICTION FEES  $200.00        after:  electrical  $160.00  Coos County (filed via City of Coos Bay)
+             PROJECT TOTAL      $200.00                structural  $200.00  City of Coos Bay
+                                                       PROJECT TOTAL       $360.00
+
+Every number in the "before" was correct and sourced. `fee_schedules` was unique on
+`(profile_key, track)`, and "permit" is one slot, so the COUNTY's electrical table had nowhere
+to be seen from a CITY project. The same key had already forced data loss inbound: the
+harvester read Coos County's own structural row ($258, same PDF) and had to abandon it in a
+notes paragraph.
+
+**Migration v22** gives fee rows the discipline dimension `portal_recipes` has had since v9,
+with the same vocabulary — `recipeDisciplineForTrack` is IMPORTED by `feeSchedules.ts`, not
+restated, so a fee row and the recipe that files it cannot drift apart. A submittal track now
+names its own permit: an `electrical` stage is quoted the electrical fee and nothing else.
+
+`collected_by_profile_key` is the city-to-county hop, stored as data with its own source and
+quoted sentence rather than written as lookup code. Matching "City of Coos Bay" onto "Coos
+County" by name similarity would be the wrong-authority filing bug rebuilt one layer down —
+the one this same session caught where every number was real and the authority was wrong. It
+is followed EXACTLY ONCE, so no chain of pointers can loop, and a hop that lands nowhere reads
+as unresolved rather than as $0.
+
+`feeForProject` / `lookupPublishedFee` keep their names, shapes and single answer (submissionFees
+loads them BY NAME and a missing export there is silent). That answer is now the TOTAL of the
+permits a project owes, itemised in a new `lines` field. **One unreadable line makes the total
+unreadable rather than smaller** — an under-quote that looks confident is the failure being fixed.
+
+What is on file now, all `seeded`, all promotable with `markFeeScheduleVerified(db, key, track, who, discipline)`:
+
+| Jurisdiction | Discipline | Fee | Source |
+|---|---|---|---|
+| City of Coos Bay | structural | $200 flat, prescriptive path | Resolution 26-30, Exhibit A p.8 |
+| City of Coos Bay | electrical | *(hop)* → Coos County | the city's own schedule says so |
+| Coos County | electrical | $135 / $160 / $265 / $265+$10 per kVA | County schedule eff. 1/1/26 §F |
+| Coos County | structural | $258 flat | same schedule, p.3 |
+| Ameren Illinois | nem | $50 Level 1, **mailed check** | Ameren DER guide, Table 1 |
+| ComEd | nem | $50 Level 1 | ComEd DER guidelines p.7 |
+| Pacific Power | nem | $0 Tier 1 | OAR 860-039-0045 |
+| Portland General Electric | nem | $0 residential ≤25 kW | PGE net-metering FAQ |
+
+Commands: `npm run harvest:jurisdiction`, `scripts/research-fee-schedules.ts` (against a COPY),
+`scripts/apply-fee-findings.ts <findings> --db <path>` (`--db` is required, on purpose),
+`scripts/fee-sheet.ts --project <id>`, `scripts/seed-coos-permit-split.ts`.
+
+**Two traps worth remembering.** A web-search summary of the Coos table returned $108/$346/$796
+by attaching the WIND rows printed below the solar block — hence coordinate pairing, never
+reading order. And `--dry-run` in the first version of the split seed guarded only its own
+UPDATE and let `saveFeeSchedule` through, so it wrote two rows and then reported that nothing
+had been written; it now copies the database and works on the copy. A flag every call site has
+to remember is a flag one of them will not.
+
+**Still open here**: `feeBracketQuantity` (the Accela step that files a frozen "1" against one
+bracket row) and the coverage gap behind it — the learn recorded only the box its own project
+needed, so the sibling bracket boxes have no steps at all.
+
 ## THE QUESTION BANK FOUND WHAT THE CROSS-PROJECT SWEEP STRUCTURALLY COULD NOT (2026-09-12)
 
 Triaging the bank's 51 unclassified questions turned up frozen answers carrying PROJECT A's
