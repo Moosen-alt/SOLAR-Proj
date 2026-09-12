@@ -98,13 +98,26 @@ check("the message keeps the prefix that triggers a re-learn", () => {
 
 // CASE 2 — OVER-FIRING GUARD. Fill the required field first; the advance now works and the
 // guard must be invisible. A check that stops good replays is worse than no check.
+//
+// THE METER STEP IS BOUND, BECAUSE A REAL RECORDED METER STEP IS BOUND. This fixture used to
+// carry `value: "TEST-123"` with no `field`, and the cross-project guard (recipeAdapter.ts,
+// commit 3e42fec) correctly refused it: `looksLikeProjectData("Meter Number", "TEST-123")` is
+// true, a recipe is shared across orgs, and the recorded meter number belongs to the roof it
+// was learned on. The refusal left #meter blank, the portal then refused the advance, and this
+// case — whose whole job is to prove a page that DOES advance is not falsely blocked — was
+// measuring the literal guard instead of the advance guard. Binding to `meterNumber` and
+// supplying it is what the recorder actually produces (CLAUDE.md rule 2: a meter number binds
+// by name, never as a literal), so the page reaches the advance the way it does live.
+//
+// Case 1 above keeps `{}` and no meter step at all: the advance is still genuinely refused
+// there, so the guard under test stays testable.
 const okPage = await context.newPage();
 await okPage.goto(url);
 const a2 = new RecipeAdapter(mkRecipe([
-  { action: "fill", phase: "fill", selector: { css: "#meter" }, value: "TEST-123", note: "Meter Number" },
+  { action: "fill", phase: "fill", field: "meterNumber", selector: { css: "#meter" }, value: "TEST-123", note: "Meter Number" },
   advance,
   nextPageStep,
-]), {}, {}, { autoSubmit: false });
+]), { meterNumber: "TEST-123" }, {}, { autoSubmit: false });
 (a2 as unknown as { page: unknown }).page = okPage;
 const r2 = await a2.fillApplication({} as never);
 
