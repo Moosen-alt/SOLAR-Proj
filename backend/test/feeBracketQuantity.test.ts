@@ -308,6 +308,36 @@ async function main(): Promise<void> {
   check("a FLAT schedule asks no bracket question, so it emits no bracket keys",
     Object.keys(flat).length === 0, JSON.stringify(flat));
 
+  // ---------------------------------------------------------------------
+  // 7. A DISPUTED FEE TICKS NOTHING. Run LAST, because it changes the county
+  // row every check above reads.
+  //
+  // The local containment test here is a copy of the private matchBracket, and
+  // the only thing that makes that safe is the veto: feeForProject gets the last
+  // word. This is the veto earning its keep on a refusal this module knows
+  // nothing about — a schedule whose two published sources disagree (v23) must
+  // not quote either number, so it must not tick either box either. Nothing in
+  // feeBracketFields.ts mentions conflicts; it inherits the refusal.
+  // ---------------------------------------------------------------------
+  saveFeeSchedule(db, { ...COUNTY, discipline: "electrical" }, finding({
+    // basis system_kw DELIBERATELY, not the "other" a harvest happens to write:
+    // a conflicted row with a perfectly readable bracket table is precisely the
+    // case v23 exists for (the refusal is a fact on the row, checked before any
+    // basis), and it is the only shape that gets past this module's own basis
+    // gate and reaches the veto. Stored as "other" this check would pass without
+    // the veto at all, and prove nothing.
+    basis: "system_kw", status: "conflicted",
+    brackets: [
+      { minKw: 5.01, maxKw: 15, feeUsd: 160, label: "5.01 KVA to 15 KVA" },
+      { minKw: 5.01, maxKw: 15, feeUsd: 94, label: "5.01 KVA to 15 KVA" },
+    ],
+    sourceUrl: "https://co.coos.or.us/files/f9b20f31d/community_development_fees_-_effective_1_1_26.pdf",
+    sourceQuote: "5.01 KVA to 15 KVA | $160.00",
+  }));
+  const disputed = feeBracketQuantityFields(db, coosProject(9));
+  check("MUST EXCLUDE: a DISPUTED schedule ticks no box at all — the fee evaluator's refusal is inherited",
+    Object.keys(disputed).length === 0, JSON.stringify(disputed));
+
   // Close before deleting the scratch DB — Windows holds the open handle as a
   // file lock (EBUSY).
   db.close();
