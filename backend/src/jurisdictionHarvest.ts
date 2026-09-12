@@ -91,7 +91,7 @@ import {
 } from "./feeSchedules";
 import { knowledgeResearchHint } from "./knowledgeBase";
 import { logger } from "./logger";
-import { extractPdfRows, findFeeRows, parseBracketRow } from "./pdfTables";
+import { extractPdfRows, findFeeRows, inclusiveMaxFromLabel, parseBracketRow } from "./pdfTables";
 import { nowIso } from "./time";
 
 const squash = (s: unknown): string => String(s ?? "").replace(/\s+/g, " ").trim();
@@ -398,31 +398,6 @@ export function classifyHarvestLink(link: DocumentLink): LinkVerdict {
 // 3b. Reading the fee table off the SAME bytes
 // ---------------------------------------------------------------------------
 
-/** The first row of practically every renewable-energy table reads "5 kva or
- *  less", and pdfTables' bracket parser does not reach it: its RANGE/MIN_OPEN/MAX
- *  patterns all expect the bound word BEFORE the number ("up to 5 kVA", "5 kVA
- *  and above"), so "5 kva or less" comes back with a fee, no bounds and no
- *  complaint — and a boundless row in a bracketed table is dropped by the guard
- *  below. That would silently lose the smallest bracket, which is the one most
- *  residential jobs land in.
- *
- *  Read INCLUSIVELY and only from an inclusive phrase, which is the convention
- *  pdfTables and matchBracket already share: "5 kva or less" means maxKw 5 with
- *  nothing invented. The strictly-exclusive phrasings it deliberately refuses
- *  ("greater than 25 KVA") are NOT re-admitted here — inventing an epsilon is
- *  the thing that module declines to do, and this extension does not overrule it. */
-const OR_LESS_RE = new RegExp(
-  String.raw`(\d{1,3}(?:,\d{3})*(?:\.\d+)?)\s*(?:kva|kw|kilowatts?|kilovolt-?amp(?:ere)?s?)\s*(?:or|and)\s*(?:less|under|below|fewer)\b`,
-  "i",
-);
-
-export function inclusiveMaxFromLabel(label: string): number | null {
-  const m = OR_LESS_RE.exec(String(label || ""));
-  if (!m) return null;
-  const v = Number(m[1].replace(/,/g, ""));
-  return Number.isFinite(v) ? v : null;
-}
-
 /** A generation technology that is NOT the one a solar permit is priced on.
  *
  *  THIS IS THE TRAP THE WHOLE MODULE WAS BUILT AROUND, and it bit here first. Coos
@@ -515,6 +490,13 @@ export async function readFeeTableFromPdf(bytes: Uint8Array): Promise<HarvestedF
       continue;
     }
     const label = parsed.label || squash(match.label);
+    // "5 KVA or less" — the first row of practically every renewable-energy table
+    // and the bracket most residential jobs land in. parseBracketRow now folds the
+    // trailing-bound phrasing in itself (it used to expect the bound word BEFORE
+    // the number and returned that row with a fee, no bounds and no complaint), so
+    // parsed.maxKw normally answers. Kept as this module's own read of the SAME
+    // exported helper — one definition, so the two can report a bound but never
+    // two different bounds — and only where there is no min to contradict.
     const maxKw = parsed.maxKw ?? (parsed.minKw == null ? inclusiveMaxFromLabel(label) : null);
     brackets.push({
       minKw: parsed.minKw ?? null,

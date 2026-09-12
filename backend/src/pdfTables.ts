@@ -398,6 +398,17 @@ export interface BracketRowParse {
    *  Reported rather than guessed — a bracket off by one row bills a 20 kW job
    *  in the 15 kVA tier on a field that looks perfectly answered. */
   unparsed?: string;
+  /** Set when the row read cleanly — one description, one amount, no complaint —
+   *  and still carries NO size bounds. That is fine for a flat fee and is a hole
+   *  in a table that brackets on size: the row has no size KEY, so nothing can
+   *  decide whether a 20 kW job is in it. Returning it with no comment at all
+   *  made "read fine" and "has no size key" the same answer, which is how a
+   *  boundless row reached a bracket list in the first place. Advisory, not
+   *  fatal: `unparsed` says do not store this, `note` says store it knowing it
+   *  answers no size question. The caller is the one that can see whether the
+   *  rest of the table is bracketed (readFeeTableFromPdf drops these when it is;
+   *  matchBracket in feeSchedules.ts skips them if one gets through). */
+  note?: string;
 }
 
 const NUM = String.raw`\d{1,3}(?:,\d{3})*(?:\.\d+)?`;
@@ -415,6 +426,38 @@ const EXCLUSIVE_RE = new RegExp(
   String.raw`(?:less than|under|below|fewer than|more than|greater than|over|exceeding|above)\s*(${NUM})\s*${UNIT}`,
   "i",
 );
+
+// THE BOUND WORD CAN COME AFTER THE NUMBER, AND EVERY PATTERN ABOVE ASSUMES IT
+// COMES BEFORE. RANGE/MIN_OPEN/MAX/FIRST all read "up to 5 kVA", "5 kVA and
+// above", "first 25 kVA" — so the one phrasing that opens practically every
+// renewable-energy table, "5 KVA or less", fell through all of them. Measured on
+// the real Coos County renewable-energy schedule, whose FIRST printed row is
+//      "5 KVA or less" | "$135.00"
+// this returned a fee, no bounds, and no complaint: the bracket every small
+// residential job lands in, silently missing its size key.
+//
+// Read INCLUSIVELY, which is the convention the rest of this module and
+// matchBracket() already share: "5 KVA or less" is maxKw 5, taken verbatim, with
+// nothing invented. A UNIT is REQUIRED, which is what keeps "Photovoltaic modules
+// weigh 5 psf or less" (a real line off the same schedule's checklist) from
+// becoming a 5 kVA bracket.
+//
+// Only the INCLUSIVE trailing phrasings. The strictly-exclusive ones this module
+// deliberately refuses ("greater than 25 KVA") are not re-admitted through the
+// back door — inventing an epsilon is the thing parseBracketRow declines to do,
+// and reaching the first row of the table is no reason to overrule it.
+const OR_LESS_RE = new RegExp(String.raw`(${NUM})\s*${UNIT}\s*(?:or|and)\s*(?:less|under|below|fewer)\b`, "i");
+
+/** The inclusive maximum a trailing-bound label prints ("5 KVA or less" -> 5), or
+ *  null. Exported because jurisdictionHarvest reads the same phrasing off the
+ *  same rows and a second copy of this regex would be a second answer waiting to
+ *  disagree. */
+export function inclusiveMaxFromLabel(label: string): number | null {
+  const m = OR_LESS_RE.exec(String(label || ""));
+  if (!m) return null;
+  const v = n(m[1]);
+  return Number.isFinite(v) ? v : null;
+}
 
 /** Read one visual row as a fee bracket.
  *
@@ -459,6 +502,13 @@ export function parseBracketRow(input: PdfTextRow | FeeRowMatch): BracketRowPars
     const max = MAX_RE.exec(label) ?? FIRST_RE.exec(label);
     if (minOpen) out.minKw = n(minOpen[1]);
     if (max) out.maxKw = n(max[1]);
+    // Last, and only if nothing above printed a maximum: the trailing-bound
+    // phrasing ("5 KVA or less"). See OR_LESS_RE — a leading pattern that already
+    // matched is the schedule's own wording and wins.
+    if (out.maxKw == null) {
+      const trailingMax = inclusiveMaxFromLabel(label);
+      if (trailingMax != null) out.maxKw = trailingMax;
+    }
   }
 
   const exclusive = EXCLUSIVE_RE.exec(label);
@@ -474,5 +524,13 @@ export function parseBracketRow(input: PdfTextRow | FeeRowMatch): BracketRowPars
   }
 
   if (reasons.length) out.unparsed = reasons.join("; ");
+  // A CLEAN READ WITH NO BOUNDS IS NOT THE SAME ANSWER AS A CLEAN READ. Said only
+  // when there is nothing else to say: a row that already came back `unparsed`
+  // (an exclusive phrase, a proportion, an ambiguous column) has been told not to
+  // store it at all, and firing both channels would make neither mean anything.
+  else if (out.feeUsd != null && out.minKw == null && out.maxKw == null) {
+    out.note = `this row carries a fee but no size bounds — fine as a flat fee, `
+      + `but in a table bracketed on system size it has no size key and cannot answer "which bracket is this job in?"`;
+  }
   return out;
 }
