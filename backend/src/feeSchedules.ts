@@ -399,6 +399,27 @@ function emptyFinding(reason: string): FeeScheduleFinding {
   return { found: false, reason, basis: "other", brackets: [], notes: "", sourceUrl: "", sourceQuote: "", sourceKind: "" };
 }
 
+/** The SDK client's own ceiling, below. The outer AbortController must never be the
+ *  tighter of the two, or the client's timeout and its retries are unreachable. */
+export const FEE_RESEARCH_CLIENT_TIMEOUT_MS = 240000;
+
+/** How long one research call may run before it is abandoned.
+ *
+ *  A WEB-GROUNDED SEARCH IS NOT A CHAT TURN. This call reads fee pages and PDFs across up to
+ *  six searches; measured live against the four jurisdictions we actually file in, it took
+ *  62s, 66s, 82s and 69s. The previous 60s ceiling therefore aborted EVERY real call — and an
+ *  abort comes back as found:false with a reason, which is the same channel a jurisdiction
+ *  that publishes nothing comes back on. So automatic fee research was off by default and
+ *  said nothing about it: the fee sheet simply reported no schedule, for every jurisdiction,
+ *  forever.
+ *
+ *  Exported so the default itself is testable — the failure was a CONSTANT, and a constant
+ *  nothing asserts is a constant that regresses. */
+export function feeResearchTimeoutMs(): number {
+  const configured = Number(process.env.FEE_RESEARCH_TIMEOUT_MS);
+  return configured > 0 ? configured : FEE_RESEARCH_CLIENT_TIMEOUT_MS;
+}
+
 /** Default researcher: web-grounded Claude. Self-contained rather than routed
  *  through llm.ts because LLMProvider is the shared type surface and this build
  *  does not own it; the call mirrors askWithWebSearch (streamed, hard-timed-out
@@ -424,11 +445,12 @@ export const claudeFeeScheduleResearcher: FeeScheduleResearcher = async (input) 
   ].filter(Boolean).join("\n");
 
   const model = process.env.AUTOPILOT_LLM_MODEL || "claude-opus-5";
-  const timeoutMs = Number(process.env.FEE_RESEARCH_TIMEOUT_MS) > 0 ? Number(process.env.FEE_RESEARCH_TIMEOUT_MS) : 60000;
+  const timeoutMs = feeResearchTimeoutMs();
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
   try {
-    const client = new Anthropic({ apiKey, maxRetries: 3, timeout: 240000 });
+    const client = new Anthropic({ apiKey, maxRetries: 3, timeout: FEE_RESEARCH_CLIENT_TIMEOUT_MS });
     logger.debug("fees", "→ researchFeeSchedule", { model, track: input.track, state: input.state });
     const msg = await client.messages
       .stream(
@@ -460,8 +482,15 @@ export const claudeFeeScheduleResearcher: FeeScheduleResearcher = async (input) 
     if (!finding.found && !finding.reason) finding.reason = "Research returned no usable fee schedule.";
     return finding;
   } catch (err) {
-    const reason = `Fee-schedule research failed: ${err instanceof Error ? err.message : String(err)}`;
-    logger.warn("fees", "researchFeeSchedule failed", { track: input.track, state: input.state });
+    // SAY WHICH FAILURE THIS WAS. A timeout surfaced as the SDK's bare "Request was aborted."
+    // is the worst possible wording here: found:false already means "we could not find out",
+    // and the fee sheet renders that beside the jurisdiction as though nothing is published.
+    // Name the ceiling and the knob, so a run that ran out of clock cannot be mistaken for a
+    // jurisdiction that charges nothing.
+    const reason = timedOut
+      ? `Fee-schedule research timed out after ${Math.round(timeoutMs / 1000)}s — this is a RUN that ran out of clock, NOT a finding that ${input.track === "nem" ? "this utility" : "this jurisdiction"} publishes no fee. Re-run, or raise FEE_RESEARCH_TIMEOUT_MS.`
+      : `Fee-schedule research failed: ${err instanceof Error ? err.message : String(err)}`;
+    logger.warn("fees", "researchFeeSchedule failed", { track: input.track, state: input.state, timedOut });
     return emptyFinding(reason);
   } finally {
     clearTimeout(timer);

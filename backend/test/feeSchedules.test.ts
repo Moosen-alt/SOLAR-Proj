@@ -253,6 +253,40 @@ async function main(): Promise<void> {
   const seamValuation = lookupPublishedFee(db, { track: "permit", state: "OR", ahj: "City of Albany", utility: "PGE", bracketKw: 10, valuationUsd: 20000 });
   check("seam brackets on the valuation it is handed", seamValuation?.feeUsd === 200, JSON.stringify(seamValuation));
 
+  // ---------------------------------------------------------------------
+  // 6. THE RESEARCH CLOCK. Not a schedule fact — a fact about whether we ever
+  //    get one. The live researcher takes 62-82s against the jurisdictions we
+  //    actually file in; a ceiling under that aborts every real call, and an
+  //    abort returns found:false, the SAME channel as "this jurisdiction
+  //    publishes nothing". So a too-tight constant turns the whole feature off
+  //    and reports it as an absence of fees. Both halves are pinned here: the
+  //    default may not drop back under the client's own timeout, and a run that
+  //    ran out of clock must SAY so rather than pass for a finding.
+  // ---------------------------------------------------------------------
+  const { feeResearchTimeoutMs, FEE_RESEARCH_CLIENT_TIMEOUT_MS, claudeFeeScheduleResearcher } = await import("../src/feeSchedules");
+  const savedTimeout = process.env.FEE_RESEARCH_TIMEOUT_MS;
+  const savedKey = process.env.ANTHROPIC_API_KEY;
+  delete process.env.FEE_RESEARCH_TIMEOUT_MS;
+  check("default research ceiling is the client's own timeout, not a tighter budget",
+    feeResearchTimeoutMs() === FEE_RESEARCH_CLIENT_TIMEOUT_MS && FEE_RESEARCH_CLIENT_TIMEOUT_MS >= 240000,
+    `${feeResearchTimeoutMs()} vs ${FEE_RESEARCH_CLIENT_TIMEOUT_MS}`);
+  check("a live call would outlast the 62-82s the real jurisdictions took", feeResearchTimeoutMs() > 120000, `${feeResearchTimeoutMs()}ms`);
+  process.env.FEE_RESEARCH_TIMEOUT_MS = "45000";
+  check("an operator's override still wins", feeResearchTimeoutMs() === 45000, `${feeResearchTimeoutMs()}`);
+
+  // No network: a 1ms ceiling aborts before the request is ever made.
+  process.env.FEE_RESEARCH_TIMEOUT_MS = "1";
+  process.env.ANTHROPIC_API_KEY = "sk-ant-not-a-real-key-this-call-is-aborted-first";
+  const timedOut = await claudeFeeScheduleResearcher({ state: "OR", ahj: "Timeout Probe City", track: "permit" });
+  check("a timed-out run is not reported as a finding", timedOut.found === false);
+  check("a timed-out run SAYS it timed out, not 'Request was aborted'",
+    /timed out/i.test(timedOut.reason) && /NOT a finding/i.test(timedOut.reason), timedOut.reason);
+  check("and names the knob that fixes it", timedOut.reason.includes("FEE_RESEARCH_TIMEOUT_MS"), timedOut.reason);
+  check("a timed-out run stores nothing", (await researchFeeSchedule(db, { state: "OR", ahj: "Timeout Probe City", track: "permit" })).saved === false);
+  check("…and leaves no row behind to read as a $0", getFeeSchedule(db, feeScheduleProfileKey({ state: "OR", ahj: "Timeout Probe City" }, "permit"), "permit") === null);
+  if (savedTimeout === undefined) delete process.env.FEE_RESEARCH_TIMEOUT_MS; else process.env.FEE_RESEARCH_TIMEOUT_MS = savedTimeout;
+  if (savedKey === undefined) delete process.env.ANTHROPIC_API_KEY; else process.env.ANTHROPIC_API_KEY = savedKey;
+
   // Close before deleting the scratch DB - Windows holds the open handle as a file lock (EBUSY).
   db.close();
   fs.rmSync(dir, { recursive: true, force: true });
