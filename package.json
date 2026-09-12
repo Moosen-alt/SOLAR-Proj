@@ -43,7 +43,9 @@
     "learn:benchmark": "tsx backend/src/runLearnBenchmark.ts",
     "replay:benchmark": "tsx backend/src/runReplayBenchmark.ts",
     "replay:cross-project": "tsx backend/src/runCrossProjectReplay.ts",
-    "portal:test:dom:each": "tsx portal-bot/src/runDomSmokes.ts"
+    "portal:test:dom:each": "tsx portal-bot/src/runDomSmokes.ts",
+    "portal:triage": "tsx scripts/triage-questions.ts",
+    "portal:bind": "tsx scripts/apply-question-bindings.ts"
   },
   "engines": {
     "node": ">=20"
