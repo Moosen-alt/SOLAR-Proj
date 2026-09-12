@@ -41,7 +41,11 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import type { AppDb } from "./db";
-import type { ProjectRecord } from "../../shared/src/types";
+import type { FeePaymentMethod, ProjectRecord } from "../../shared/src/types";
+import { fetchPublicDocument } from "./documentFetch";
+import type { FetchPublicDocumentOptions } from "./documentFetch";
+import { DEFAULT_FEE_KEYWORDS, groupItemsIntoRows, extractPdfTextItems } from "./pdfTables";
+import type { PdfTextRow } from "./pdfTables";
 import { knowledgeNameMatchScore, knowledgeProfileKey, knowledgeResearchHint } from "./knowledgeBase";
 import { resolveValuation } from "./valuation";
 import { sanitizeApiKey } from "./llm";
@@ -80,6 +84,10 @@ export interface FeeScheduleRecord {
   basis: FeeBasis;
   brackets: FeeBracket[];
   notes: string;
+  /** HOW the money moves. 'mailed_check' is the load-bearing one: it says no portal
+   *  can take this fee and a person has to post it (Ameren Illinois' $50 Level 1).
+   *  Exactly submissionFees.ts's four values — anything else it silently drops. */
+  paymentMethod: FeePaymentMethod;
   sourceUrl: string;
   sourceQuote: string;
   /** 'official' = the jurisdiction's/utility's own domain; 'third_party' = a
@@ -103,6 +111,29 @@ export interface FeeScheduleFinding {
   sourceUrl: string;
   sourceQuote: string;
   sourceKind: string;
+  /** How the jurisdiction takes the money. Optional so every existing caller
+   *  (imports, seed scripts, tests) keeps compiling; absent reads as "unknown". */
+  paymentMethod?: string;
+  /** RETRIEVAL PROVENANCE — set only by a researcher that fetched the document
+   *  itself. `quoteVerified` means the stored sentence was found, character for
+   *  character, in bytes this process retrieved: the difference between a quote
+   *  and a paraphrase of a search result. Never a gate (a finding sourced from
+   *  web search alone cannot be checked this way); always reported. */
+  evidence?: FeeResearchEvidence[];
+  quoteVerified?: boolean;
+  /** True when the plain HTTP rung was refused and a real window got through. */
+  neededBrowser?: boolean;
+}
+
+/** One document the researcher actually retrieved, and how. */
+export interface FeeResearchEvidence {
+  url: string;
+  via: "http" | "browser";
+  status: number;
+  kind: "html" | "pdf" | "other";
+  bytes: number;
+  /** Rows/characters handed to the model from this document. */
+  handed: number;
 }
 
 export interface FeeScheduleResearchInput {
@@ -115,7 +146,15 @@ export interface FeeScheduleResearchInput {
   knownContext?: string;
 }
 
-export type FeeScheduleResearcher = (input: FeeScheduleResearchInput) => Promise<FeeScheduleFinding>;
+/** The optional second argument is the RETRIEVAL LEDGER: pass one in and the
+ *  researcher records every document it opened into it, so a caller (a harvest
+ *  script, a report) can see what was actually read rather than taking the
+ *  finding's word for it. Optional so an injected test researcher stays a
+ *  one-argument function. */
+export type FeeScheduleResearcher = (
+  input: FeeScheduleResearchInput,
+  options?: { ledger?: FeeDocumentLedger },
+) => Promise<FeeScheduleFinding>;
 
 export interface FeeScheduleResearchOutcome {
   found: boolean;
@@ -137,6 +176,7 @@ export interface ProjectFeeResolution {
   /** The schedule line's own wording — what the application's fee field wants. */
   bracketLabel: string;
   basis: FeeBasis;
+  paymentMethod: FeePaymentMethod;
   sourceUrl: string;
   sourceQuote: string;
   confidence: FeeConfidence;
@@ -182,6 +222,19 @@ function mergeNotes(existing: unknown, incoming: string[]): string {
 
 export function feeTrack(track?: string | null): FeeTrack {
   return String(track || "").toLowerCase() === "nem" ? "nem" : "permit";
+}
+
+/** submissionFees.ts whitelists EXACTLY these four and silently drops anything
+ *  else, so a schedule that said "check" or "by mail" would arrive at the fee
+ *  sheet as no answer at all. Normalise here, at the point the value is stored,
+ *  rather than hoping the producer used the enum. */
+export function normalizeFeePaymentMethod(value: unknown): FeePaymentMethod {
+  const v = clean(value).toLowerCase().replace(/[\s\-/]+/g, "_");
+  if (!v) return "unknown";
+  if (/check|cheque|mail|post|money_order/.test(v)) return "mailed_check";
+  if (/portal|online|website|web|card|credit|e_?pay|checkout/.test(v)) return "portal";
+  if (/^(none|no_fee|no_charge|free|not_applicable|n_a|nothing)$/.test(v)) return "none";
+  return "unknown";
 }
 
 /** Profile key at permit_utility_knowledge's OWN grain, which is two grains and
@@ -234,6 +287,7 @@ function mapSchedule(row: Row): FeeScheduleRecord {
     basis: (["system_kw", "valuation", "flat", "other"].includes(text(row.basis)) ? text(row.basis) : "other") as FeeBasis,
     brackets: parseBrackets(row.brackets_json),
     notes: text(row.notes),
+    paymentMethod: normalizeFeePaymentMethod(row.payment_method),
     sourceUrl: text(row.source_url),
     sourceQuote: text(row.source_quote),
     sourceKind: text(row.source_kind),
@@ -271,9 +325,11 @@ export function markFeeScheduleVerified(
 /** One-line human-readable rendering of a finding, for the notes trail. */
 function findingSummary(finding: FeeScheduleFinding): string {
   const fees = finding.brackets.map((b) => `${b.label ? `${b.label}: ` : ""}$${b.feeUsd.toFixed(2)}`).join("; ");
+  const method = normalizeFeePaymentMethod(finding.paymentMethod);
   return [
     `basis ${finding.basis}`,
     fees ? `(${fees})` : "",
+    method === "unknown" ? "" : `paid: ${method}`,
     finding.sourceUrl ? `[${finding.sourceUrl}]` : "",
     finding.sourceQuote ? `"${finding.sourceQuote.slice(0, 240)}"` : "",
   ].filter(Boolean).join(" ");
@@ -321,25 +377,30 @@ export function saveFeeSchedule(
   }
 
   const notes = mergeNotes(existing?.notes, noteSegments(finding.notes));
+  // A schedule that says nothing about payment does not erase what the row already
+  // said: "unknown" is the absence of an answer, and an absence must never overwrite
+  // an answer somebody found. Only a real method replaces a real method.
+  const incomingMethod = normalizeFeePaymentMethod(finding.paymentMethod);
+  const paymentMethod = incomingMethod === "unknown" ? (existing?.paymentMethod ?? "unknown") : incomingMethod;
   if (existing) {
     db.run(
       `UPDATE fee_schedules SET state = ?, ahj = ?, utility = ?, basis = ?, brackets_json = ?, notes = ?,
-         source_url = ?, source_quote = ?, source_kind = ?, confidence = 'seeded', updated_at = ?
+         payment_method = ?, source_url = ?, source_quote = ?, source_kind = ?, confidence = 'seeded', updated_at = ?
        WHERE id = ?`,
       [
         clean(input.state), clean(input.ahj), clean(input.utility), finding.basis,
-        JSON.stringify(brackets), notes, sourceUrl, sourceQuote, clean(finding.sourceKind), ts, existing.id,
+        JSON.stringify(brackets), notes, paymentMethod, sourceUrl, sourceQuote, clean(finding.sourceKind), ts, existing.id,
       ],
     );
   } else {
     db.run(
       `INSERT INTO fee_schedules
-         (id, profile_key, state, ahj, utility, track, basis, brackets_json, notes,
+         (id, profile_key, state, ahj, utility, track, basis, brackets_json, notes, payment_method,
           source_url, source_quote, source_kind, confidence, first_seen_at, updated_at, verified_at, verified_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'seeded', ?, ?, '', '')`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'seeded', ?, ?, '', '')`,
       [
         id(), profileKey, clean(input.state), clean(input.ahj), clean(input.utility), track, finding.basis,
-        JSON.stringify(brackets), notes, sourceUrl, sourceQuote, clean(finding.sourceKind), ts, ts,
+        JSON.stringify(brackets), notes, paymentMethod, sourceUrl, sourceQuote, clean(finding.sourceKind), ts, ts,
       ],
     );
   }
@@ -350,6 +411,325 @@ export function saveFeeSchedule(
 // ---------------------------------------------------------------------------
 // The researcher
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// RETRIEVAL: the researcher's hands.
+//
+// The researcher used to have exactly one faculty — web search — and one way to
+// fail: honestly. It reported found:false for the City of Coos Bay and gave a
+// well-reasoned refusal; the operator then found the fee schedule in their
+// browser in seconds. It was right that the document was hard to REACH and wrong
+// about why. coosbayor.gov sits behind Akamai and returns 403 to every
+// programmatic client — WebFetch, curl with a browser User-Agent, headless
+// Playwright. A HEADED window gets 200, and the PDF fetched from inside that
+// page context comes back 1.2 MB of application/pdf.
+//
+// And getting the bytes is only half of it. Read in text-stream order, that PDF
+// pairs "Plan Review" with "65% of permit fee" where the printed row says
+// "Structural Plan Review". Same stream, two different facts — and a fee
+// attributed to the wrong line goes onto a customer's quote.
+//
+// So the model gets a tool that does both, and neither half is its job to get
+// right: documentFetch.ts climbs from a plain GET to a real window when the far
+// end refuses one, and pdfTables.ts hands back VISUAL ROWS grouped by baseline
+// and ordered by x. What the model then quotes is a row a person would see.
+//
+// EVERY STRING THIS TOOL RETURNS IS KEPT (the ledger below). After the model
+// answers, its quote is checked against those bytes. That check never refuses a
+// finding — a fee found through web search alone cannot be checked this way, and
+// silently dropping it would be worse than reporting it unchecked — but a stored
+// quote that was never in anything we retrieved is exactly the shape a
+// hallucinated fee has, and the notes say so in as many words.
+// ---------------------------------------------------------------------------
+
+/** The retrieval trail for one research pass: what came back, and the text of it. */
+export interface FeeDocumentLedger {
+  evidence: FeeResearchEvidence[];
+  /** Exactly the strings handed to the model, for the quote check. */
+  corpus: string[];
+}
+
+export function newFeeDocumentLedger(): FeeDocumentLedger {
+  return { evidence: [], corpus: [] };
+}
+
+const OPEN_DOCUMENT_TOOL = {
+  name: "open_document",
+  description:
+    "Retrieve a PUBLIC web page or PDF and read it. Escalates to a real browser window by itself when a site "
+    + "refuses an ordinary HTTP client (many .gov sites sit behind a WAF that 403s every script), so a 403 from "
+    + "your own knowledge of a site is not a reason to skip it — try it here. A PDF comes back as VISUAL ROWS: "
+    + "cells that share a printed line, left to right, joined with ' | '. That pairing is read from the glyph "
+    + "coordinates, NOT from the PDF's text order, so the row you see is the row that is printed. An HTML page "
+    + "comes back as its links (to follow into a document search) plus its text. Never authenticates and never "
+    + "solves a CAPTCHA.",
+  input_schema: {
+    type: "object" as const,
+    properties: {
+      url: { type: "string", description: "Absolute http(s) URL of the page or PDF." },
+      find: {
+        type: "string",
+        description:
+          "Case-insensitive filter. On a PDF, only rows containing it (plus a line of context either side) are "
+          + "returned; omit it and the solar/renewable/kVA rows are returned. On an HTML page it filters the links "
+          + "and text lines. Use it to find the fee table in a 60-page schedule.",
+      },
+      pages: {
+        type: "array",
+        items: { type: "integer" },
+        description: "PDF only: 1-based page numbers to return IN FULL, as printed in a PDF reader. Use this once "
+          + "`find` has told you which page the fee table is on, to read the whole table including its header rows.",
+      },
+    },
+    required: ["url"],
+  },
+};
+
+/** Rows/links/text are capped so one 60-page schedule cannot eat the context
+ *  window (and the budget) that the other five jurisdictions need. */
+const DOC_MAX_ROWS = 220;
+const DOC_MAX_ROW_CHARS = 300;
+const DOC_MAX_LINKS = 70;
+const DOC_MAX_TEXT_CHARS = 3500;
+const DOC_MAX_PDF_PAGES = 80;
+
+const looksLikePdf = (doc: { contentType: string; bytes?: Uint8Array }): boolean => {
+  if (/pdf/i.test(doc.contentType)) return true;
+  const b = doc.bytes;
+  return !!b && b.length > 4 && b[0] === 0x25 && b[1] === 0x50 && b[2] === 0x44 && b[3] === 0x46; // %PDF
+};
+
+const rowText = (row: PdfTextRow): string => `p${row.page}  ${row.cells.join(" | ")}`.slice(0, DOC_MAX_ROW_CHARS);
+
+/** Rows matching the filter, each with one line of context either side, so a
+ *  bracket row is never read without the "Renewable Energy" heading above it. */
+function selectRows(rows: PdfTextRow[], pages: number[], find: string): { picked: PdfTextRow[]; how: string } {
+  const ordered = [...rows].sort((a, b) => a.page - b.page || b.y - a.y);
+  if (pages.length) {
+    const want = new Set(pages);
+    return { picked: ordered.filter((r) => want.has(r.page)), how: `every row on page(s) ${pages.join(", ")}` };
+  }
+  const needles = find ? [find.toLowerCase()] : DEFAULT_FEE_KEYWORDS;
+  const hit = (r: PdfTextRow): boolean => {
+    const hay = r.cells.join(" ").toLowerCase();
+    return needles.some((k) => hay.includes(k));
+  };
+  const keep = new Set<number>();
+  ordered.forEach((r, i) => {
+    if (!hit(r)) return;
+    for (let j = Math.max(0, i - 1); j <= Math.min(ordered.length - 1, i + 1); j++) keep.add(j);
+  });
+  return {
+    picked: ordered.filter((_r, i) => keep.has(i)),
+    how: find
+      ? `rows containing "${find}" (with one line of context either side)`
+      : `rows mentioning ${DEFAULT_FEE_KEYWORDS.join("/")} (with one line of context either side)`,
+  };
+}
+
+function renderHtml(html: string, base: string, find: string): { body: string; handed: number } {
+  const lines: string[] = [];
+  let text = html;
+  let links: Array<{ text: string; href: string }> = [];
+  try {
+    // Regex rather than cheerio on purpose: this runs inside a tool call on an
+    // arbitrary government page, and a parser failure must degrade to "here is
+    // the text" rather than lose the whole retrieval.
+    const anchors = html.matchAll(/<a\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi);
+    for (const m of anchors) {
+      const raw = m[1].trim();
+      if (!raw || raw.startsWith("#") || /^(javascript|mailto|tel):/i.test(raw)) continue;
+      let href: string;
+      try { href = new URL(raw, base).toString(); } catch { continue; }
+      const label = clean(m[2].replace(/<[^>]*>/g, " "));
+      if (!label) continue;
+      links.push({ text: label, href });
+    }
+    text = html
+      .replace(/<script[\s\S]*?<\/script>/gi, " ")
+      .replace(/<style[\s\S]*?<\/style>/gi, " ")
+      .replace(/<[^>]+>/g, "\n");
+  } catch { /* fall through with whatever we have */ }
+
+  const needle = find.toLowerCase();
+  if (needle) links = links.filter((l) => l.text.toLowerCase().includes(needle) || l.href.toLowerCase().includes(needle));
+  const seen = new Set<string>();
+  const uniq = links.filter((l) => (seen.has(l.href) ? false : (seen.add(l.href), true))).slice(0, DOC_MAX_LINKS);
+
+  const textLines = text.split("\n").map((l) => clean(l)).filter(Boolean);
+  const picked = needle ? textLines.filter((l) => l.toLowerCase().includes(needle)) : textLines;
+
+  lines.push(`LINKS (${uniq.length}${links.length > uniq.length ? ` of ${links.length}` : ""}):`);
+  for (const l of uniq) lines.push(`  ${l.text}  ->  ${l.href}`);
+  lines.push("");
+  lines.push("TEXT:");
+  let budget = DOC_MAX_TEXT_CHARS;
+  for (const l of picked) {
+    if (budget <= 0) { lines.push("  … (truncated)"); break; }
+    lines.push(`  ${l.slice(0, budget)}`);
+    budget -= l.length + 1;
+  }
+  const body = lines.join("\n");
+  return { body, handed: uniq.length + picked.length };
+}
+
+/** The tool handler. Never throws: a tool that throws ends the loop, and a
+ *  jurisdiction we could not retrieve is a REASON, not a crash. */
+export async function openFeeDocument(
+  args: { url?: unknown; find?: unknown; pages?: unknown },
+  ledger: FeeDocumentLedger,
+  opts: FetchPublicDocumentOptions = {},
+): Promise<string> {
+  const url = clean(args.url);
+  if (!url) return "No url was given. Call open_document with an absolute http(s) URL.";
+  const find = clean(args.find);
+  const pages = Array.isArray(args.pages)
+    ? args.pages.map((p) => Number(p)).filter((p) => Number.isInteger(p) && p >= 1).slice(0, 8)
+    : [];
+
+  let doc: Awaited<ReturnType<typeof fetchPublicDocument>>;
+  try {
+    doc = await fetchPublicDocument(url, opts);
+  } catch (err) {
+    return `Could not retrieve ${url}: ${err instanceof Error ? err.message : String(err)}`;
+  }
+  if (!doc.ok || !doc.bytes) {
+    // The reason names what blocked us — status, Server header, whether a real
+    // window was tried. That is a fact about this jurisdiction worth reporting
+    // in notes, so it goes to the model rather than being flattened to "failed".
+    return `Could not retrieve ${url}. ${doc.reason}`;
+  }
+
+  const head = `${url}\nHTTP ${doc.status} via ${doc.via}${doc.via === "browser" ? " (a real window — the plain HTTP client was refused)" : ""}`
+    + ` — ${doc.bytes.length} bytes of ${doc.contentType || "unknown type"}${doc.finalUrl && doc.finalUrl !== url ? `\nfinal URL: ${doc.finalUrl}` : ""}`;
+
+  const record = (kind: FeeResearchEvidence["kind"], handed: number, body: string): string => {
+    ledger.evidence.push({ url: doc.finalUrl || url, via: doc.via, status: doc.status, kind, bytes: doc.bytes?.length ?? 0, handed });
+    ledger.corpus.push(body);
+    return `${head}\n\n${body}`;
+  };
+
+  if (looksLikePdf(doc)) {
+    let rows: PdfTextRow[];
+    try {
+      const items = await extractPdfTextItems(doc.bytes, { maxPages: DOC_MAX_PDF_PAGES });
+      rows = groupItemsIntoRows(items);
+    } catch (err) {
+      return `${head}\n\nThis is a PDF but it could not be read: ${err instanceof Error ? err.message : String(err)}`;
+    }
+    const pageCount = rows.reduce((max, r) => Math.max(max, r.page), 0);
+    const { picked, how } = selectRows(rows, pages, find);
+    const shown = picked.slice(0, DOC_MAX_ROWS);
+    const body = [
+      `${pageCount} page(s). Rows are read BY COORDINATE — cells sharing a printed line, left to right, joined " | ".`,
+      `Showing ${shown.length}${picked.length > shown.length ? ` of ${picked.length}` : ""}: ${how}.`,
+      picked.length ? "" : "Nothing matched. Try a different `find`, or ask for a page in full with `pages`.",
+      ...shown.map(rowText),
+    ].filter((l) => l !== undefined).join("\n");
+    return record("pdf", shown.length, body);
+  }
+
+  if (doc.text != null) {
+    const { body, handed } = renderHtml(doc.text, doc.finalUrl || url, find);
+    return record("html", handed, body);
+  }
+
+  return record("other", 0, "Retrieved, but it is neither HTML nor a PDF, so there is nothing to read here.");
+}
+
+// ---------------------------------------------------------------------------
+// Did the quote come from anything we actually read?
+// ---------------------------------------------------------------------------
+
+/** Fold away the differences that make two renderings of the SAME printed row
+ *  look different: the en-dash a fee schedule prints where a model types a
+ *  hyphen, the "$" and thousands separators, runs of white space. */
+function matchKey(value: unknown): string {
+  return String(value ?? "")
+    .toLowerCase()
+    .replace(/[‐-―−]/g, "-")
+    .replace(/[‘’ʼ]/g, "'")
+    .replace(/[“”]/g, '"')
+    .replace(/[$,]/g, "")
+    .replace(/[^a-z0-9.%'"()+/\- ]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export interface QuoteSupport {
+  /** A fragment of the quote, 15+ characters, found verbatim in retrieved bytes. */
+  quoteVerified: boolean;
+  /** Every bracket's fee appears in retrieved bytes. */
+  feesVerified: boolean;
+  /** Nothing was retrieved this run — the check could not be made either way. */
+  noEvidence: boolean;
+  matchedFragment: string;
+  missingFees: number[];
+}
+
+/** Check a finding against the bytes this run actually retrieved.
+ *
+ *  ADVISORY, NEVER A GATE. A fee read off a page our fetcher never opened (web
+ *  search returns its results encrypted, so they are unreadable here) is not
+ *  thereby wrong — refusing it would lose real findings. But "the quote is not
+ *  in anything we read" is the exact signature of an invented one, so it is
+ *  reported every time, in the notes that travel with the row. */
+export function checkQuoteSupport(finding: FeeScheduleFinding, ledger: FeeDocumentLedger): QuoteSupport {
+  const corpus = ledger.corpus.map(matchKey).join("\n");
+  const out: QuoteSupport = {
+    quoteVerified: false, feesVerified: false, noEvidence: corpus.length === 0,
+    matchedFragment: "", missingFees: [],
+  };
+  if (!corpus) return out;
+
+  // Fragments, not the whole sentence: a good quote legitimately staples a row
+  // to its heading, or appends "[Exhibit A, p.8]". One 15-character run that is
+  // verbatim in the document is what distinguishes reading from paraphrasing.
+  const fragments = String(finding.sourceQuote || "")
+    .split(/\s*\|\s*|\s{2,}|[[\]]|(?<=\.)\s+/)
+    .map(matchKey)
+    .filter((f) => f.length >= 15)
+    .sort((a, b) => b.length - a.length);
+  for (const f of fragments) {
+    if (corpus.includes(f)) { out.quoteVerified = true; out.matchedFragment = f.slice(0, 160); break; }
+  }
+
+  const missing = (finding.brackets || []).filter((b) => {
+    const plain = matchKey(String(b.feeUsd));
+    const exact = matchKey(b.feeUsd.toFixed(2));
+    return !corpus.includes(plain) && !corpus.includes(exact);
+  });
+  out.missingFees = missing.map((b) => b.feeUsd);
+  out.feesVerified = missing.length === 0;
+  return out;
+}
+
+/** The note segments that carry the retrieval trail onto the stored row. */
+export function retrievalNotes(finding: FeeScheduleFinding, ledger: FeeDocumentLedger, support: QuoteSupport): string[] {
+  const out: string[] = [];
+  if (!ledger.evidence.length) {
+    out.push("RETRIEVAL: no document was opened this run — the finding rests on web search alone, and its quote could not be checked against any bytes we read.");
+    return out;
+  }
+  const viaBrowser = ledger.evidence.filter((e) => e.via === "browser");
+  out.push(
+    `RETRIEVAL: read ${ledger.evidence.length} document(s) directly`
+    + `${viaBrowser.length ? `, ${viaBrowser.length} of them through a headed browser because the site refused an ordinary HTTP client` : ""}`
+    + ` — ${ledger.evidence.map((e) => `${e.kind} ${e.status} ${e.url}`).join("; ")}`.slice(0, 600),
+  );
+  if (ledger.evidence.some((e) => e.kind === "pdf")) {
+    out.push("PDF rows were paired BY COORDINATE (same printed line, left to right), not in the PDF's text order.");
+  }
+  out.push(
+    support.quoteVerified
+      ? `Quote verified: "${support.matchedFragment}" appears verbatim in the retrieved document.`
+      : "QUOTE NOT VERIFIED: no 15-character run of the stored quote appears in anything this run retrieved. Check it against the source before quoting a customer.",
+  );
+  if (!support.feesVerified && support.missingFees.length) {
+    out.push(`FEE NOT FOUND IN THE RETRIEVED TEXT: ${support.missingFees.map((f) => `$${f}`).join(", ")} — the amount does not appear in the document we read.`);
+  }
+  return out;
+}
 
 const FEE_RESEARCH_SYSTEM = `You research PUBLISHED FEE SCHEDULES for residential solar work and return them as structured data.
 
@@ -362,11 +742,23 @@ Identify which variable the schedule keys on and say so in "basis":
   "flat"       — one charge regardless of size (a single bracket, no bounds)
   "other"      — anything else; explain in notes
 
-SOURCES
-Search the web. PREFER the jurisdiction's own domain (.gov / .us) or the utility's own site — the published fee schedule PDF or fee page. A third-party summary (solar blog, aggregator, permitting vendor) is acceptable ONLY as a last resort and ONLY if you set sourceKind "third_party" and say so in notes.
+HOW TO WORK: SEARCH FINDS THE DOOR, open_document WALKS THROUGH IT
+Use web_search to LOCATE the jurisdiction's fee page, document search or schedule PDF. Then use open_document to READ it. A search snippet is a lead, not a source: snippets and third-party summaries routinely staple a fee to the wrong line of a table. One real case — a summary of a county electrical schedule reported $346 and $796 for two solar brackets, because it had taken the amounts off the WIND GENERATION rows printed below them. The published numbers were $160 and $265. Only the document says which row a number is on.
 
-EVERY NUMBER NEEDS A QUOTE
-"sourceQuote" must be the actual sentence or table row you read the fee from, copied verbatim. DO NOT GUESS A FEE. If you cannot find a quotable sentence, return found:false with a reason — an unsourced number is worse than no number, because it will be filed on a real application.
+open_document climbs to a real browser window by itself when a site refuses an ordinary HTTP client, so DO NOT give up on a .gov page because it seems to block automation — try it. It reads PDF tables BY COORDINATE, returning the cells that share a printed line joined with " | ", which is the same pairing your eye makes and is NOT the order the text sits in the file.
+
+A GOOD SEQUENCE: search → open_document on the fee page (read its links) → open_document on the schedule PDF with find:"solar" or find:"renewable" to locate the table → open_document again with pages:[N] to read that whole page, headings included → quote the row.
+
+SUPERSESSION: fee schedules are dated and replaced. When you find one, check whether a NEWER schedule exists (search the fee page for a later effective date) and say in notes which document you used and why. A permit-application FORM often carries fees years out of date; the adopted schedule wins.
+
+EVERY NUMBER NEEDS A QUOTE, AND THE QUOTE MUST BE A ROW YOU READ
+"sourceQuote" must be the actual table row or sentence carrying the fee, copied verbatim. Where open_document returned a row, quote that row's text exactly as it came back to you — including its " | " separator between the description and the amount — and name the document and page after it in square brackets. What you read is checked against the bytes we retrieved, so a paraphrase is visibly worse than a copy. DO NOT GUESS A FEE. If you cannot find a quotable sentence, return found:false with a reason — an unsourced number is worse than no number, because it will be filed on a real application.
+
+SOURCES
+PREFER the jurisdiction's own domain (.gov / .us) or the utility's own site — the published fee schedule PDF or fee page. A state rule or commission order (e.g. an OAR on oregon.gov) is official too, and is the right source for "the utility may not charge for this": say in notes whose domain it is. A third-party summary (solar blog, aggregator, permitting vendor) is acceptable ONLY as a last resort and ONLY if you set sourceKind "third_party" and say so in notes.
+
+HOW IT IS PAID IS PART OF THE FEE
+Set "paymentMethod" to how the money actually moves: "portal" (paid online at the portal's own checkout), "mailed_check" (a paper check is posted — there is no online payment), "none" (there is no fee to pay), or "unknown" if the source does not say. This matters more than it looks: Ameren Illinois' $50 Level 1 fee is paid BY MAILED CHECK within 15 business days and the application is not reviewed until the check arrives, so an operator who believes it is payable in the portal has a filing that silently stalls. Say so in notes too, with the deadline if the source states one.
 
 "NO FEE" IS AN ANSWER
 Most residential net-metering / interconnection applications carry no utility fee. If the utility's own documentation says so, that is a REAL FINDING: return found:true, basis "flat", one bracket with feeUsd 0, and the sentence that says it. Some utilities do charge — Ameren Illinois, for example, charges a $50 Level 1 interconnection fee paid by mailed check — so check, do not assume. Return found:false ONLY when you genuinely could not determine it.
@@ -379,7 +771,8 @@ Return ONLY JSON:
   "brackets": [
     { "minKw": 5.01, "maxKw": 15, "feeUsd": 175, "label": "<the schedule's OWN wording for this row, verbatim>" }
   ],
-  "notes": "<short segments: what the schedule covers, whether it is combined building+electrical, plan-review percentages, anything a coordinator must know. Say plainly if this is a third-party source.>",
+  "notes": "<short segments: what the schedule covers, whether it is combined building+electrical, plan-review percentages, which document and effective date you used and whether a newer one exists, anything a coordinator must know. Say plainly if this is a third-party source.>",
+  "paymentMethod": "portal|mailed_check|none|unknown",
   "sourceUrl": "<the page/PDF the numbers came from>",
   "sourceQuote": "<the verbatim sentence or table row carrying the fee>",
   "sourceKind": "official|third_party"
@@ -398,6 +791,14 @@ function parseResearchJson(raw: string): Record<string, unknown> {
 function emptyFinding(reason: string): FeeScheduleFinding {
   return { found: false, reason, basis: "other", brackets: [], notes: "", sourceUrl: "", sourceQuote: "", sourceKind: "" };
 }
+
+/** How many times the model may call open_document in one pass. A fee page, the
+ *  schedule PDF, a find, a page-in-full and a supersession check is five; ten
+ *  leaves room to follow a wrong link and come back. */
+export const FEE_RESEARCH_MAX_DOCUMENTS = 10;
+/** Assistant turns. Each turn may carry several tool calls, so this is not the
+ *  same ceiling as the one above. */
+const FEE_RESEARCH_MAX_TURNS = 12;
 
 /** The SDK client's own ceiling, below. The outer AbortController must never be the
  *  tighter of the two, or the client's timeout and its retries are unreachable. */
@@ -425,7 +826,7 @@ export function feeResearchTimeoutMs(): number {
  *  does not own it; the call mirrors askWithWebSearch (streamed, hard-timed-out
  *  so a stalled search can never hang a request). No API key → found:false with
  *  a reason, never a fabricated schedule. */
-export const claudeFeeScheduleResearcher: FeeScheduleResearcher = async (input) => {
+export const claudeFeeScheduleResearcher: FeeScheduleResearcher = async (input, options) => {
   const apiKey = sanitizeApiKey(process.env["ANTHROPIC_API_KEY"]);
   if (!apiKey) return emptyFinding("No ANTHROPIC_API_KEY configured — fee-schedule research is off. Enter the schedule by hand from the jurisdiction's fee page.");
 
@@ -448,25 +849,70 @@ export const claudeFeeScheduleResearcher: FeeScheduleResearcher = async (input) 
   const timeoutMs = feeResearchTimeoutMs();
   const controller = new AbortController();
   let timedOut = false;
+  // ONE DEADLINE FOR THE WHOLE PASS, not per call. The loop below may take five
+  // turns and open ten documents; a per-call clock would let a pass that keeps
+  // making progress run without any ceiling at all.
+  const deadline = Date.now() + timeoutMs;
   const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
+  const ledger = options?.ledger ?? newFeeDocumentLedger();
   try {
     const client = new Anthropic({ apiKey, maxRetries: 3, timeout: FEE_RESEARCH_CLIENT_TIMEOUT_MS });
     logger.debug("fees", "→ researchFeeSchedule", { model, track: input.track, state: input.state });
-    const msg = await client.messages
-      .stream(
-        {
-          model,
-          max_tokens: 3000,
-          thinking: { type: "adaptive" },
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          tools: [{ type: "web_search_20260209", name: "web_search", max_uses: 6 }] as any,
-          system: FEE_RESEARCH_SYSTEM,
-          messages: [{ role: "user", content: userMsg }],
-        },
-        { signal: controller.signal },
-      )
-      .finalMessage();
-    const raw = msg.content.filter((b) => b.type === "text").map((b) => (b as { text: string }).text).join("\n");
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const messages: any[] = [{ role: "user", content: userMsg }];
+    let raw = "";
+    let opened = 0;
+    let exhausted = "";
+
+    for (let turn = 0; turn < FEE_RESEARCH_MAX_TURNS; turn++) {
+      if (Date.now() >= deadline) { timedOut = true; controller.abort(); break; }
+      const msg = await client.messages
+        .stream(
+          {
+            model,
+            max_tokens: 4000,
+            thinking: { type: "adaptive" },
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            tools: [{ type: "web_search_20260209", name: "web_search", max_uses: 8 }, OPEN_DOCUMENT_TOOL] as any,
+            system: FEE_RESEARCH_SYSTEM,
+            messages,
+          },
+          { signal: controller.signal },
+        )
+        .finalMessage();
+
+      const text = msg.content.filter((b) => b.type === "text").map((b) => (b as { text: string }).text).join("\n");
+      if (text.trim()) raw = text;
+      // The assistant turn goes back VERBATIM — thinking blocks, server-side
+      // web_search results and all. Reconstructing it would drop the search
+      // results the model is reasoning from.
+      messages.push({ role: "assistant", content: msg.content });
+
+      const calls = msg.content.filter(
+        (b) => b.type === "tool_use" && (b as { name?: string }).name === OPEN_DOCUMENT_TOOL.name,
+      ) as Array<{ id: string; input: Record<string, unknown> }>;
+      if (!calls.length) break;
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const results: any[] = [];
+      for (const call of calls) {
+        if (opened >= FEE_RESEARCH_MAX_DOCUMENTS) {
+          exhausted = `the ${FEE_RESEARCH_MAX_DOCUMENTS}-document budget for one research pass`;
+          results.push({ type: "tool_result", tool_use_id: call.id, content: `Document budget spent (${FEE_RESEARCH_MAX_DOCUMENTS} retrievals). Answer now from what you have read, or return found:false saying what you would have needed to open.` });
+          continue;
+        }
+        if (Date.now() >= deadline) { timedOut = true; controller.abort(); break; }
+        opened++;
+        const body = await openFeeDocument(call.input || {}, ledger, { timeoutMs: 25_000 });
+        results.push({ type: "tool_result", tool_use_id: call.id, content: body.slice(0, 60_000) });
+      }
+      if (timedOut) break;
+      messages.push({ role: "user", content: results });
+      if (turn === FEE_RESEARCH_MAX_TURNS - 1) exhausted = `the ${FEE_RESEARCH_MAX_TURNS}-turn ceiling for one research pass`;
+    }
+    if (timedOut) throw new Error("aborted");
+
     const parsed = parseResearchJson(raw);
     const basisRaw = clean(parsed.basis).toLowerCase();
     const finding: FeeScheduleFinding = {
@@ -475,11 +921,26 @@ export const claudeFeeScheduleResearcher: FeeScheduleResearcher = async (input) 
       basis: (["system_kw", "valuation", "flat", "other"].includes(basisRaw) ? basisRaw : "other") as FeeBasis,
       brackets: Array.isArray(parsed.brackets) ? normalizeBrackets(parsed.brackets) : [],
       notes: clean(parsed.notes).slice(0, 2000),
+      paymentMethod: normalizeFeePaymentMethod(parsed.paymentMethod),
       sourceUrl: clean(parsed.sourceUrl).slice(0, 500),
       sourceQuote: clean(parsed.sourceQuote).slice(0, 1000),
       sourceKind: clean(parsed.sourceKind).toLowerCase() === "official" ? "official" : clean(parsed.sourceKind) ? "third_party" : "",
+      evidence: ledger.evidence,
+      neededBrowser: ledger.evidence.some((e) => e.via === "browser"),
     };
-    if (!finding.found && !finding.reason) finding.reason = "Research returned no usable fee schedule.";
+    // The check runs on every finding, saved or not, and its verdict travels in
+    // the notes — a row whose quote nothing we read supports must say so where
+    // the person reading the fee sheet will see it.
+    const support = checkQuoteSupport(finding, ledger);
+    finding.quoteVerified = support.quoteVerified;
+    if (finding.found) {
+      finding.notes = mergeNotes(finding.notes, retrievalNotes(finding, ledger, support));
+    }
+    if (!finding.found && !finding.reason) {
+      finding.reason = exhausted
+        ? `Research ran out of room — it hit ${exhausted} before producing an answer. Re-run, or enter the schedule by hand from the jurisdiction's fee page.`
+        : "Research returned no usable fee schedule.";
+    }
     return finding;
   } catch (err) {
     // SAY WHICH FAILURE THIS WAS. A timeout surfaced as the SDK's bare "Request was aborted."
@@ -490,8 +951,11 @@ export const claudeFeeScheduleResearcher: FeeScheduleResearcher = async (input) 
     const reason = timedOut
       ? `Fee-schedule research timed out after ${Math.round(timeoutMs / 1000)}s — this is a RUN that ran out of clock, NOT a finding that ${input.track === "nem" ? "this utility" : "this jurisdiction"} publishes no fee. Re-run, or raise FEE_RESEARCH_TIMEOUT_MS.`
       : `Fee-schedule research failed: ${err instanceof Error ? err.message : String(err)}`;
-    logger.warn("fees", "researchFeeSchedule failed", { track: input.track, state: input.state, timedOut });
-    return emptyFinding(reason);
+    logger.warn("fees", "researchFeeSchedule failed", { track: input.track, state: input.state, timedOut, documentsRead: ledger.evidence.length });
+    // The retrieval trail survives the failure: "we were refused by the site" and
+    // "we read the schedule and then the model fell over" are different problems,
+    // and only the evidence list tells them apart.
+    return { ...emptyFinding(reason), evidence: ledger.evidence, neededBrowser: ledger.evidence.some((e) => e.via === "browser") };
   } finally {
     clearTimeout(timer);
   }
@@ -504,7 +968,7 @@ export const claudeFeeScheduleResearcher: FeeScheduleResearcher = async (input) 
 export async function researchFeeSchedule(
   db: AppDb,
   input: { state: string; ahj?: string; utility?: string; track?: string | null },
-  options: { researcher?: FeeScheduleResearcher } = {},
+  options: { researcher?: FeeScheduleResearcher; ledger?: FeeDocumentLedger } = {},
 ): Promise<FeeScheduleResearchOutcome> {
   const track = feeTrack(input.track);
   const profileKey = feeScheduleProfileKey(input, track);
@@ -525,7 +989,7 @@ export async function researchFeeSchedule(
   const researcher = options.researcher || claudeFeeScheduleResearcher;
   let finding: FeeScheduleFinding;
   try {
-    finding = await researcher({ state: input.state, ahj: input.ahj, utility: input.utility, track, knownContext });
+    finding = await researcher({ state: input.state, ahj: input.ahj, utility: input.utility, track, knownContext }, { ledger: options.ledger });
   } catch (err) {
     finding = emptyFinding(`Researcher threw: ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -660,6 +1124,7 @@ export function feeForProject(
   return {
     ...evaluated,
     basis: schedule.basis,
+    paymentMethod: schedule.paymentMethod,
     sourceUrl: schedule.sourceUrl,
     sourceQuote: schedule.sourceQuote,
     confidence: schedule.confidence,
@@ -703,6 +1168,13 @@ export interface PublishedFeeLookupResult {
   feeUsd: number | null;
   bracketLabel: string | null;
   sourceUrl: string | null;
+  /** The quote is read by the consumer's MAILED_CHECK_RE as a last resort, so it
+   *  travels with the amount even when paymentMethod is explicit. */
+  sourceQuote: string;
+  /** 'portal' | 'mailed_check' | 'none' | 'unknown' — the consumer whitelists
+   *  exactly these and drops anything else, which is why this is normalised on
+   *  the way into the table rather than here. */
+  paymentMethod: FeePaymentMethod;
   confidence: FeeConfidence;
   /** A HUMAN one-liner for the quote screen, not the basis enum. */
   basis: string;
@@ -732,6 +1204,8 @@ export function lookupPublishedFee(db: AppDb, input: PublishedFeeLookupArgs): Pu
       feeUsd: evaluated.feeUsd,
       bracketLabel: evaluated.bracketLabel || null,
       sourceUrl: schedule.sourceUrl || null,
+      sourceQuote: schedule.sourceQuote,
+      paymentMethod: schedule.paymentMethod,
       confidence: schedule.confidence,
       basis: evaluated.feeUsd == null
         ? evaluated.reason

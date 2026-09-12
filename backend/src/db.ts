@@ -1544,6 +1544,29 @@ const VERSIONED_MIGRATIONS: VersionedMigration[] = [
       `);
     },
   },
+  {
+    version: 20,
+    name: "fee_schedules_payment_method",
+    up: (db) => {
+      // HOW THE MONEY MOVES IS PART OF THE FEE.
+      //
+      // Ameren Illinois charges $50 for a Level 1 interconnection and takes it by
+      // MAILED PAPER CHECK within 15 business days — there is no online checkout at
+      // all (docs/IL_ONBOARDING.md). Research found the $50 and dropped the method,
+      // so the fee sheet printed "how it is paid is not recorded" beside a fee that
+      // a human has to physically post, and the staging gate had nothing to put in
+      // its out-of-portal list. A fee an operator believes is payable in the portal
+      // is a filing that sits unreviewed until somebody notices the cheque was
+      // never sent.
+      //
+      // submissionFees.ts already whitelists exactly four values off the published-
+      // schedule lookup ('portal' | 'mailed_check' | 'none' | 'unknown') and already
+      // renders each one; the only missing link was a column to carry the answer
+      // from the schedule to that seam. addColumnIfMissing rather than a new CREATE:
+      // v19 has already run everywhere the table exists.
+      addColumnIfMissing(db, "fee_schedules", "payment_method", "TEXT NOT NULL DEFAULT ''");
+    },
+  },
 ];
 
 // One-time repair for the runaway-notes bug: upsertKnowledge used to merge the
