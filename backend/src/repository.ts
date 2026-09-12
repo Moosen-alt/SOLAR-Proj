@@ -114,6 +114,19 @@ import { buildReviewerReport, renderReviewerReportHtml } from "./reviewerEngine"
 import { resolveEffectiveCodeContext, ensureCodeProfilesResearched } from "./codeProfiles";
 import { applyCachedVisionVerdicts } from "./reviewerVision";
 import { nowIso } from "./time";
+import { looksBotBlocked } from "./runAbort";
+
+// THE FAILURE TEXT LIVES ON THE FAILING STEP, NOT THE SUMMARY. stageWithRecipe's failure
+// result carries no top-level message - "Recipe step failed (fill - inverter quantity)" rides
+// in steps[].message - so anything testing result.message alone is dead code for step
+// failures. Read both, always, through ONE reader so a second caller cannot re-learn this.
+function stageFailureText(result: unknown): string {
+  const r = (result ?? {}) as { message?: unknown; steps?: Array<{ message?: unknown }> };
+  return [
+    typeof r.message === "string" ? r.message : "",
+    ...(Array.isArray(r.steps) ? r.steps.map((s) => (typeof s?.message === "string" ? s.message : "")) : []),
+  ].filter(Boolean).join(" | ");
+}
 
 // Reviewer report with the jurisdiction's adopted-codes context resolved from the DB.
 // Single chokepoint so every internal caller reviews against the same per-AHJ data
@@ -5711,6 +5724,42 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
     result = { ok: false, finalSubmitClicked: false, pauseReason: null, message: msg, steps: [{ ok: false, message: msg }] };
   } else if (recipe && runActorLabel === "RecipeAdapter") {
     result = await stageWithRecipe(recipe, stagedProject, resolveRecipeFieldValues(db, stagedProject, portalType), docsByType, files, stageOptions);
+
+    // A BOT WALL MUST NOT BLOCK A FILING — RETRY WITH A REAL WINDOW.
+    //
+    // autoLearnPortal has had this since Baltimore ("portal refused a headless browser —
+    // retrying with a real window"); STAGING never did, so a portal that refuses headless
+    // failed the submission outright even though the same machine could have filed it. It is
+    // not hypothetical: coosbayor.gov returns 403 to every programmatic client including
+    // HEADLESS Playwright, and 200 to a headed window. A portal behaving that way at staging
+    // time is a filing that silently does not happen.
+    //
+    // Same guard rails as the learn path: only on a failure that LOOKS like a bot block (not
+    // on any old failure, which would double every real error's cost), only once, only when we
+    // were actually headless, and only when the operator has not switched it off. The retry
+    // result is kept only if it got further, so a second refusal cannot erase the first
+    // result's diagnostics.
+    if (!result.ok && looksBotBlocked(stageFailureText(result)) && stageOptions.headless !== false
+        && process.env.PORTAL_HEADED_RETRY !== "0") {
+      logger.info("portal", "portal refused a headless browser at staging — retrying with a real window", {
+        projectId, portal: portalLabel,
+      });
+      try {
+        const headedResult = await stageWithRecipe(
+          recipe, stagedProject, resolveRecipeFieldValues(db, stagedProject, portalType), docsByType, files,
+          { ...stageOptions, headless: false },
+        );
+        const before = Array.isArray((result as { steps?: unknown[] }).steps) ? (result as { steps: unknown[] }).steps.length : 0;
+        const after = Array.isArray((headedResult as { steps?: unknown[] }).steps) ? (headedResult as { steps: unknown[] }).steps.length : 0;
+        if (headedResult.ok || after > before) {
+          result = headedResult;
+          result.message = `${result.message ?? ""} (succeeded on a headed retry — this portal refuses headless browsers)`.trim();
+          addAuditLog(db, projectId, "system", "portal staging", "portal.headed_retry", { portal: portalLabel, track: track ?? "permit" });
+        }
+      } catch (e) {
+        logger.warn("portal", "headed retry failed", { projectId, err: e instanceof Error ? e.message : String(e) });
+      }
+    }
     // SELF-HEALED STEPS: replay repaired drifted selectors by label re-anchoring.
     // Persist the healed selectors into the recipe (healed primary, old selector
     // kept as fallback) so next replay doesn't re-heal — and DROP auto-submit

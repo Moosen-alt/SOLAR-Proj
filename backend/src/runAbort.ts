@@ -53,7 +53,13 @@ export function isHarnessAbort(message: unknown): boolean {
  * disagreed. A shared predicate is the only version of this that stays true.
  */
 const BOT_BLOCK =
-  /\b403\b|forbidden|access denied|request could not be satisfied|request blocked|you have been blocked|attention required|checking your browser|\brobot\b|verify you are (a )?human|unusual traffic|bot detection|security service to protect|cloudflare|perimeterx|akamai|incapsula|\bray id\b/i;
+  // ERR_HTTP_RESPONSE_CODE_FAILURE is Chromium's navigation error for ANY 4xx/5xx, so on its
+  // own it is weaker evidence than the rest of this list — it covers a genuine 404 or 500 too.
+  // It is included deliberately, and the asymmetry is the reason: consulting this predicate
+  // costs at most ONE extra headed browser launch on a run that has already failed, while
+  // missing it costs a filing that silently does not happen. A WAF that refuses the navigation
+  // outright is exactly the case where Playwright reports this and nothing else.
+  /\b403\b|forbidden|access denied|request could not be satisfied|request blocked|you have been blocked|attention required|checking your browser|\brobot\b|verify you are (a )?human|unusual traffic|bot detection|security service to protect|cloudflare|perimeterx|akamai|incapsula|\bray id\b|ERR_HTTP_RESPONSE_CODE_FAILURE/i;
 
 /** Refusals aimed at the CLIENT — a WAF or bot wall, not a rejected account. */
 export function looksBotBlocked(message: string): boolean {
@@ -62,6 +68,15 @@ export function looksBotBlocked(message: string): boolean {
   if (!BOT_BLOCK.test(m)) return false;
   // A refusal that names the ACCOUNT is an authorisation failure, and a real window will be
   // refused exactly the same way. Checked second so it always wins.
-  if (/credential|username|password|sign ?in failed|login failed|not authorized to|permission/i.test(m)) return false;
+  //
+  // "permission" USED TO BE IN THIS LIST AND SWALLOWED THE COMMONEST WAF PAGE THERE IS.
+  // Akamai's stock 403 body reads "You don't have permission to access <url> on this server"
+  // — the literal page coosbayor.gov serves to every programmatic client, and the case this
+  // whole headed-retry path exists for. The exclusion was written for "you do not have
+  // permission to view this record", which is about an ACCOUNT; the WAF sentence is about a
+  // CLIENT. Requiring account-ish company for the word keeps the original intent and stops it
+  // eating the case it was never meant to cover.
+  if (/credential|username|password|sign ?in failed|login failed|not authorized to/i.test(m)) return false;
+  if (/permission/i.test(m) && /\b(account|user|role|your (login|sign|profile)|this record|this page for your)\b/i.test(m)) return false;
   return true;
 }
