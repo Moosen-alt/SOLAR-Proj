@@ -116,9 +116,17 @@ async function main(): Promise<void> {
   check("the ACCELA label resolves to the 5.01–15 bracket key",
     feeBracketFieldForLabel(COOS_LABEL_5_15) === KEY_5_15,
     `${JSON.stringify(COOS_LABEL_5_15)} -> ${JSON.stringify(feeBracketFieldForLabel(COOS_LABEL_5_15))}`);
+  // Asserted against the KEY, not merely against the other label's answer: two
+  // empty strings are also "equal", and a comparison that passes when the parser
+  // returns nothing is not a test of the thing this exists for.
   check("the COUNTY SCHEDULE's own wording resolves to the SAME key — different strings, identical bounds",
-    feeBracketFieldForLabel("5.01 KVA to 15 KVA") === feeBracketFieldForLabel(COOS_LABEL_5_15),
+    feeBracketFieldForLabel("5.01 KVA to 15 KVA") === KEY_5_15
+      && feeBracketFieldForLabel(COOS_LABEL_5_15) === KEY_5_15,
     `${feeBracketFieldForLabel("5.01 KVA to 15 KVA")} vs ${feeBracketFieldForLabel(COOS_LABEL_5_15)}`);
+  check("  and the 15.01–25 row does too, in both spellings",
+    feeBracketFieldForLabel(COOS_LABEL_15_25) === KEY_15_25
+      && feeBracketFieldForLabel("15.01 KVA to 25 KVA") === KEY_15_25,
+    `${feeBracketFieldForLabel(COOS_LABEL_15_25)} vs ${feeBracketFieldForLabel("15.01 KVA to 25 KVA")}`);
   check("  and the stored bracket's own bounds produce it too, so resolver and binder agree by construction",
     feeBracketFieldKey(5.01, 15) === KEY_5_15, feeBracketFieldKey(5.01, 15));
   check("a label that asks nothing about size binds to nothing",
@@ -230,6 +238,37 @@ async function main(): Promise<void> {
   // does not ask the question (or the binder has not been run on it yet).
   check("a recipe with no bracket box at all says nothing",
     feeBracketCoverage([recordedStep], uncoveredValues) === null);
+
+  // ---------------------------------------------------------------------
+  // 5b. AND IT REACHES THE SCREEN. A pure function nobody calls is a fact
+  // nobody is told, which is the failure mode this half of the change exists to
+  // avoid — so the ADAPTER WIRING is pinned, not just the function. Constructing
+  // a RecipeAdapter opens no browser: the check is deliberately in the
+  // constructor so it is reported whether or not the run reaches the box.
+  //   reportedMissing -> getAutopilotState's gapFillMissing -> the review
+  //                      screen's gapFillBanner at awaiting_approval;
+  //   driftWarnings   -> stops the run being scored clean.
+  // ---------------------------------------------------------------------
+  const { RecipeAdapter } = await import("../../portal-bot/src/adapters/recipeAdapter");
+  const recipeFor = (steps: RecipeStep[]): never => ({
+    id: "r-coos", scopeType: "ahj", profileKey: "or|city of coos bay|pacific power", state: "OR",
+    ahj: "City of Coos Bay", utility: "Pacific Power", portalPlatform: "accela",
+    portalUrl: "https://accela.example.gov", status: "complete", version: 1, steps,
+    createdBy: "", createdAt: "", updatedAt: "", notes: "", autoSubmitEnabled: false, discipline: "electrical",
+  } as never);
+  const flagged = new RecipeAdapter(recipeFor(boundSteps), uncoveredValues, {});
+  const flaggedDrift = (flagged as unknown as { driftWarnings: string[] }).driftWarnings;
+  check("MUST EXCLUDE: the uncovered bracket reaches the REVIEW SCREEN's own channel (gapFill reportedMissing)",
+    flagged.gapFillReport.reportedMissing.some((m: string) => /15\.01/.test(m) && /BY HAND/.test(m)),
+    JSON.stringify(flagged.gapFillReport.reportedMissing));
+  check("  and it also stops the run scoring clean (driftWarnings)",
+    flaggedDrift.some((m: string) => /15\.01/.test(m)), JSON.stringify(flaggedDrift));
+
+  const quiet = new RecipeAdapter(recipeFor(boundSteps), coveredValues, {});
+  check("  a run whose bracket IS recorded says nothing on either channel — this is not a blanket warning",
+    quiet.gapFillReport.reportedMissing.length === 0
+      && (quiet as unknown as { driftWarnings: string[] }).driftWarnings.length === 0,
+    `${JSON.stringify(quiet.gapFillReport.reportedMissing)} / ${JSON.stringify((quiet as unknown as { driftWarnings: string[] }).driftWarnings)}`);
 
   // ---------------------------------------------------------------------
   // 6. MUST EXCLUDE — no schedule on file leaves the step EXACTLY as it is.
