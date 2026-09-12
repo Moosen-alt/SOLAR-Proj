@@ -7,15 +7,35 @@
 //                      the portal's fee/review screen (or a prior true-up).
 //   2. learned       — median of real fees previously observed for the same
 //                      AHJ/utility (permit_fee_history), fuzzy name matching.
-//   3. estimate      — valuation-based heuristic, clearly labelled as rough.
+//   3. published     — the jurisdiction's own published fee schedule, bracketed
+//                      to THIS project's size (backend/src/feeSchedules.ts).
+//   4. estimate      — valuation-based heuristic, clearly labelled as rough.
+//
+// Why "published" sits below "learned" and above "estimate": a fee we actually
+// watched a portal charge beats a printed one, because schedules go stale and
+// portals add surcharges, plan-review add-ons and state fees that the PDF does
+// not mention. But a published schedule carrying a source URL the operator can
+// click beats 1.5%-of-valuation by a mile — that guess knows nothing about the
+// jurisdiction at all, and its whole job was to be better than a blank.
 //
 // IMPORTANT: this bills the CLIENT for the submission service. It never pays —
 // and never automates — the AHJ/utility portal's own fee checkout; that stays
 // human-only (same rule as final submit).
 // ---------------------------------------------------------------------------
 
+import { createRequire } from "node:module";
 import type { AppDb } from "./db";
-import type { ProjectRecord, SubmissionPaymentQuote, SubmissionPaymentRecord } from "../../shared/src/types";
+import type {
+  FeeConfidence,
+  FeePaymentMethod,
+  PermitFeeSource,
+  ProjectFeeSheet,
+  ProjectFeeSheetLine,
+  ProjectRecord,
+  PublishedFeeResult,
+  SubmissionPaymentQuote,
+  SubmissionPaymentRecord,
+} from "../../shared/src/types";
 import { knowledgeNameMatchScore } from "./knowledgeBase";
 import { resolveValuation, parseMoney } from "./valuation";
 import { HttpError } from "./httpError";
@@ -109,13 +129,145 @@ function learnedFee(
   return { fee: round2(median), samples: fees.length, matchedName };
 }
 
+// --- Published fee schedules (optional module) ------------------------------
+// backend/src/feeSchedules.ts owns FINDING and storing schedules; this module
+// only consumes them. Everything here is defensive on purpose: the quote runs
+// inside the staging gate, so a schedule module that is missing, half-written,
+// throwing, or returning a shape we did not expect must degrade to the ladder
+// below it — never break a submission.
+
+// The signature is feeSchedules.feeForProject's, so the seam the tests drive is
+// the same call production makes — a stub shaped differently would prove nothing.
+export type FeeScheduleLookup = (
+  db: AppDb,
+  project: ProjectRecord,
+  track: "permit" | "nem",
+) => PublishedFeeResult | null;
+
+/** The export names accepted from the schedule module, most-current first. */
+const LOOKUP_EXPORTS = ["feeForProject", "lookupPublishedFee"];
+
+let injectedLookup: FeeScheduleLookup | null = null;
+let loadedLookup: FeeScheduleLookup | null | undefined; // undefined = not tried yet
+let loadWarned = false;
+
+/** Boot/test seam for the schedule lookup. Pass null to reset, which puts the
+ *  ladder back to whatever the module on disk provides (or, with no module,
+ *  back to its pre-schedule behaviour) in the same process. */
+export function registerFeeScheduleLookup(lookup: FeeScheduleLookup | null): void {
+  injectedLookup = lookup;
+  loadedLookup = undefined;
+}
+
+function feeScheduleLookup(): FeeScheduleLookup | null {
+  if (injectedLookup) return injectedLookup;
+  if (loadedLookup !== undefined) return loadedLookup;
+  loadedLookup = null;
+  const req = createRequire(import.meta.url);
+  for (const spec of ["./feeSchedules.ts", "./feeSchedules.js"]) {
+    try {
+      const mod = req(spec) as Record<string, unknown> | undefined;
+      for (const name of LOOKUP_EXPORTS) {
+        if (typeof mod?.[name] === "function") { loadedLookup = mod[name] as FeeScheduleLookup; break; }
+      }
+      break;
+    } catch (err) {
+      // Absent is an expected state — stay quiet. Present-but-broken is not:
+      // say so once, or the tier vanishes silently and every quote quietly
+      // falls back to guessing.
+      if ((err as { code?: string }).code !== "MODULE_NOT_FOUND" && !loadWarned) {
+        loadWarned = true;
+        console.warn(`[fees] published fee schedules unavailable (${spec}): ${(err as Error)?.message || err}`);
+      }
+    }
+  }
+  return loadedLookup;
+}
+
+interface ScheduleFee {
+  /** null = a schedule exists but did not evaluate for this project (see reason). */
+  feeUsd: number | null;
+  bracketLabel: string | null;
+  sourceUrl: string | null;
+  sourceQuote: string;
+  confidence: "verified" | "seeded";
+  paymentMethod: FeePaymentMethod | null;
+  matchedName: string;
+  reason: string;
+}
+
+const PAYMENT_METHODS: FeePaymentMethod[] = ["portal", "mailed_check", "none", "unknown"];
+
+// A schedule that spells out payment by post is stating a process automation
+// cannot perform. Read only an explicit positive statement, and never flip a
+// method the producer set itself.
+const MAILED_CHECK_RE = /\b(?:mail(?:ed)?\s+(?:a\s+|the\s+)?check|check\s+(?:payable|by\s+mail)|paid?\s+by\s+check|remit\s+(?:a\s+)?check)\b/i;
+
+/** Read the producer's result through a whitelist. A module owned elsewhere must
+ *  not be able to put a negative fee, a novel enum or a junk URL on a quote. */
+function normalizeScheduleResult(raw: unknown): ScheduleFee | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  const rawFee = r.feeUsd;
+  const fee = Number(rawFee);
+  // 0 is an ANSWER ("this jurisdiction charges nothing"). Absent/NaN/negative is
+  // "the schedule could not say", which keeps the row for its reason and URL but
+  // hands the amount to the tier below.
+  const usable = rawFee != null && rawFee !== "" && Number.isFinite(fee) && fee >= 0;
+
+  const url = text(r.sourceUrl).trim();
+  const quote = text(r.sourceQuote).trim().slice(0, 400);
+  const declared = text(r.paymentMethod).trim().toLowerCase() as FeePaymentMethod;
+  let paymentMethod: FeePaymentMethod | null = PAYMENT_METHODS.includes(declared) ? declared : null;
+  if (!paymentMethod && usable && fee > 0 && MAILED_CHECK_RE.test(quote)) paymentMethod = "mailed_check";
+
+  return {
+    feeUsd: usable ? round2(fee) : null,
+    bracketLabel: text(r.bracketLabel).trim().slice(0, 200) || null,
+    sourceUrl: /^https?:\/\//i.test(url) ? url.slice(0, 500) : null,
+    sourceQuote: quote,
+    // Research lands as seeded (safety rule 3); only a human promotes it.
+    confidence: text(r.confidence).trim().toLowerCase() === "verified" ? "verified" : "seeded",
+    paymentMethod,
+    matchedName: text(r.matchedName).trim().slice(0, 200),
+    reason: text(r.reason).trim().slice(0, 400),
+  };
+}
+
+/** The published schedule's answer for THIS project, or null if no schedule is
+ *  stored at all. Resolved for every quote — see buildPaymentQuote for why the
+ *  payment METHOD is taken from here even when a higher tier wins the amount. */
+function publishedScheduleFee(db: AppDb, project: ProjectRecord, track: "permit" | "nem"): ScheduleFee | null {
+  const lookup = feeScheduleLookup();
+  if (!lookup) return null;
+  try {
+    return normalizeScheduleResult(lookup(db, project, track));
+  } catch (err) {
+    if (!loadWarned) {
+      loadWarned = true;
+      console.warn(`[fees] published fee schedule lookup failed: ${(err as Error)?.message || err}`);
+    }
+    return null;
+  }
+}
+
 // Rough valuation-based fallback, env-tunable. Clearly labelled — the operator
 // trues it up with the portal-calculated fee from the review screen.
 function estimatedFee(db: AppDb, project: ProjectRecord, track: "permit" | "nem"): { fee: number | null; basis: string } {
   if (track === "nem") {
+    // An operator who sets the env var has made a statement; honour it.
     const raw = Number(process.env.NEM_FEE_ESTIMATE_USD);
-    const fee = Number.isFinite(raw) && raw >= 0 ? raw : 0;
-    return { fee, basis: fee > 0 ? `Estimated NEM application fee (NEM_FEE_ESTIMATE_USD).` : "Most residential NEM applications carry no utility fee — trued up from the portal's review screen if one appears." };
+    if (Number.isFinite(raw) && raw >= 0) {
+      return { fee: round2(raw), basis: `Configured NEM application estimate (NEM_FEE_ESTIMATE_USD) — a house default, not ${project.utility || "this utility"}'s published schedule. True it up from the portal or the interconnection tariff.` };
+    }
+    // Nothing else may invent one. "Most residential NEM carries no fee" is
+    // true in aggregate and FALSE per utility — Ameren Illinois Level 1 is $50
+    // by mailed check — so with no schedule and no history this is unknown,
+    // not $0. A zero the operator trusts is worse than a blank they chase.
+    return {
+      fee: null,
+      basis: `No published interconnection fee schedule found for ${project.utility || "this utility"} yet. Most residential NEM applications carry no utility fee, but some do (Ameren Illinois Level 1 is $50 by mailed check), so this is reported unknown rather than $0 — find the schedule or enter the real fee.`,
+    };
   }
   const valuation = resolveValuation(project.parserSnapshot, project.systemSizeDcKw);
   if (valuation.value == null) {
@@ -140,26 +292,61 @@ export function buildPaymentQuote(db: AppDb, project: ProjectRecord, trackInput?
   const billing = clientBilling(db, project.clientId);
   const existing = getSubmissionPayment(db, project.id, track);
 
+  // Resolved for EVERY quote, whichever tier wins the amount: the payment method
+  // and the source URL are facts about the jurisdiction's process, not about
+  // where we got the number. Ameren Illinois' $50 is a mailed check whether we
+  // read it off the schedule, learned it from a past filing, or typed it in.
+  const schedule = publishedScheduleFee(db, project, track);
+
   let permitFeeUsd: number | null = null;
-  let permitFeeSource: SubmissionPaymentQuote["permitFeeSource"] = "unknown";
+  let permitFeeSource: PermitFeeSource = "unknown";
   let permitFeeBasis = "";
+  let permitFeeConfidence: FeeConfidence = "unknown";
+  let permitFeeBracketLabel: string | null = schedule?.bracketLabel ?? null;
+  const permitFeeSourceUrl: string | null = schedule?.sourceUrl ?? null;
+
   if (existing?.permitFeeActualUsd != null) {
     permitFeeUsd = existing.permitFeeActualUsd;
     permitFeeSource = "actual";
+    permitFeeConfidence = "actual";
     permitFeeBasis = "Portal-calculated fee (entered from the portal's fee/review screen).";
   } else {
     const learned = learnedFee(db, project, track);
     if (learned) {
       permitFeeUsd = learned.fee;
       permitFeeSource = "learned_history";
+      permitFeeConfidence = "verified";
       permitFeeBasis = `Median of ${learned.samples} real fee(s) previously observed for ${learned.matchedName}.`;
+    } else if (schedule && schedule.feeUsd != null) {
+      permitFeeUsd = schedule.feeUsd;
+      permitFeeSource = "published_schedule";
+      permitFeeConfidence = schedule.confidence;
+      const who = schedule.matchedName || (track === "nem" ? project.utility : project.ahj) || "this jurisdiction";
+      permitFeeBasis = `${who}'s published fee schedule${schedule.bracketLabel ? `, line "${schedule.bracketLabel}"` : ""}`
+        + `${schedule.confidence === "verified" ? " (human-verified)" : " (researched, not yet human-verified)"}.`
+        + `${schedule.sourceQuote ? ` Published as: "${schedule.sourceQuote}".` : ""}`
+        + `${schedule.sourceUrl ? ` ${schedule.sourceUrl}` : ""}`;
     } else {
       const est = estimatedFee(db, project, track);
       permitFeeUsd = est.fee;
       permitFeeSource = est.fee == null ? "unknown" : "valuation_estimate";
-      permitFeeBasis = est.basis;
+      permitFeeConfidence = est.fee == null ? "unknown" : "estimated";
+      // A schedule that was found but would not evaluate is the most useful thing
+      // we can say here: "no size on the project yet" is a fixable answer, where
+      // a bare guess just hides it.
+      permitFeeBasis = schedule?.reason
+        ? `${est.basis} A published schedule for ${schedule.matchedName || "this jurisdiction"} was found but did not resolve: ${schedule.reason}${schedule.sourceUrl ? ` (${schedule.sourceUrl})` : ""}`
+        : est.basis;
+      // A bracket label describes a schedule line we did not use — do not let it
+      // ride along on a guess and read as though the guess were bracketed.
+      permitFeeBracketLabel = null;
     }
   }
+
+  // Honest default: unknown unless the schedule said, or unless the fee is a
+  // known zero (nothing to pay is a payment method).
+  let paymentMethod: FeePaymentMethod = schedule?.paymentMethod ?? "unknown";
+  if (paymentMethod === "unknown" && permitFeeUsd === 0) paymentMethod = "none";
 
   const serviceFeeUsd = round2(billing.serviceFeeUsd);
   const totalUsd = permitFeeUsd == null ? null : round2(permitFeeUsd + serviceFeeUsd);
@@ -190,6 +377,10 @@ export function buildPaymentQuote(db: AppDb, project: ProjectRecord, trackInput?
     permitFeeUsd,
     permitFeeSource,
     permitFeeBasis,
+    permitFeeSourceUrl,
+    permitFeeBracketLabel,
+    permitFeeConfidence,
+    paymentMethod,
     serviceFeeUsd,
     totalUsd,
     payment: getSubmissionPayment(db, project.id, track),
@@ -252,6 +443,70 @@ export function waiveSubmissionPayment(db: AppDb, project: ProjectRecord, trackI
   const ts = nowIso();
   db.run(`UPDATE submission_payments SET status = 'waived', updated_at = ? WHERE id = ?`, [ts, existing.id]);
   return buildPaymentQuote(db, project, track);
+}
+
+/** ONE call answering the operator's actual question — "what will this project
+ *  cost?" — across both tracks: every fee with its source, bracket, citation,
+ *  confidence and payment method, plus what is still unknown. */
+export function buildProjectFeeSheet(db: AppDb, project: ProjectRecord): ProjectFeeSheet {
+  // Built from FRESH quotes, never read back from submission_payments: that row
+  // stores total_usd NOT NULL and persists an unknown as 0, which is the exact
+  // lie this sheet exists to prevent.
+  const quotes: Array<{ track: "permit" | "nem"; quote: SubmissionPaymentQuote }> = [
+    { track: "permit", quote: buildPaymentQuote(db, project, "permit") },
+    { track: "nem", quote: buildPaymentQuote(db, project, "nem") },
+  ];
+  const billingMode = quotes[0].quote.billingMode;
+  const billingRequired = quotes[0].quote.required;
+
+  const lines: ProjectFeeSheetLine[] = quotes.map(({ track, quote }) => ({
+    track,
+    jurisdiction: (track === "nem" ? project.utility : project.ahj) || "",
+    feeUsd: quote.permitFeeUsd,
+    source: quote.permitFeeSource,
+    basis: quote.permitFeeBasis,
+    bracketLabel: quote.permitFeeBracketLabel,
+    sourceUrl: quote.permitFeeSourceUrl,
+    confidence: quote.permitFeeConfidence,
+    paymentMethod: quote.paymentMethod,
+    serviceFeeUsd: quote.serviceFeeUsd,
+    totalUsd: quote.totalUsd,
+    known: quote.permitFeeUsd != null,
+  }));
+
+  const unknowns: string[] = [];
+  const outOfPortalPayments: string[] = [];
+  for (const line of lines) {
+    const who = line.jurisdiction || (line.track === "nem" ? "the utility" : "the AHJ");
+    const label = line.track === "nem" ? "NEM / interconnection fee" : "Permit fee";
+    if (!line.known) unknowns.push(`${label} for ${who} is unknown. ${line.basis}`);
+    if (line.paymentMethod === "mailed_check") {
+      outOfPortalPayments.push(
+        `${label} for ${who}${line.feeUsd != null ? ` ($${line.feeUsd.toFixed(2)})` : ""} is paid by MAILED CHECK — no portal can take it, so a human sends it.`,
+      );
+    }
+  }
+
+  // A total is reported only when EVERY component is known. One unknown line
+  // nulls the total rather than quietly summing it as a zero.
+  const allKnown = lines.every((line) => line.known);
+  const jurisdictionFeesUsd = allKnown ? round2(lines.reduce((sum, line) => sum + (line.feeUsd ?? 0), 0)) : null;
+  // The service fee is charged per SUBMISSION, so a project filing both tracks
+  // carries two — and none at all when the client is not billed per submission.
+  const serviceFeesUsd = billingRequired ? round2(lines.reduce((sum, line) => sum + line.serviceFeeUsd, 0)) : 0;
+
+  return {
+    projectId: project.id,
+    billingMode,
+    billingRequired,
+    lines,
+    jurisdictionFeesUsd,
+    serviceFeesUsd,
+    totalUsd: jurisdictionFeesUsd == null ? null : round2(jurisdictionFeesUsd + serviceFeesUsd),
+    unknowns,
+    outOfPortalPayments,
+    generatedAt: nowIso(),
+  };
 }
 
 /** The staging gate: throws 402 for per-submission clients until this track's

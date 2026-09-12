@@ -125,17 +125,122 @@ export interface SubmissionPaymentRecord {
   updatedAt: string;
 }
 
+/** How a jurisdiction fee actually gets paid. NOT a property of whichever tier
+ *  produced the amount — it belongs to the jurisdiction's process, so it holds
+ *  even when the operator typed the number in by hand. "mailed_check" is the
+ *  one that changes who does the work: no portal can take a check, so the
+ *  human sends it (Ameren Illinois Level 1 = $50 by mail within 15 business days). */
+export type FeePaymentMethod = "portal" | "mailed_check" | "none" | "unknown";
+
+/** How much to trust the amount. "verified"/"seeded" only ever come from a
+ *  published schedule — "seeded" is research, "verified" is human-checked. */
+export type FeeConfidence = "actual" | "verified" | "seeded" | "estimated" | "unknown";
+
+export type PermitFeeSource =
+  | "actual"
+  | "learned_history"
+  | "published_schedule"
+  | "valuation_estimate"
+  | "unknown";
+
 export interface SubmissionPaymentQuote {
   track: string;
   /** True when the project's client bills per submission (staging is gated). */
   required: boolean;
   billingMode: string;
   permitFeeUsd: number | null;
-  permitFeeSource: "actual" | "learned_history" | "valuation_estimate" | "unknown";
+  permitFeeSource: PermitFeeSource;
   permitFeeBasis: string;
+  /** The jurisdiction's own fee page, when a published schedule supplied or
+   *  corroborated the number — so the operator can click through and check. */
+  permitFeeSourceUrl: string | null;
+  /** The schedule line this project's size landed on ("5.01 kVA through 15 kVA").
+   *  Carrying the bracket is the point: a replayed filing that freezes the learn
+   *  project's bracket bills a 20 kW job at the 15 kVA rate. */
+  permitFeeBracketLabel: string | null;
+  permitFeeConfidence: FeeConfidence;
+  paymentMethod: FeePaymentMethod;
   serviceFeeUsd: number;
   totalUsd: number | null;
   payment: SubmissionPaymentRecord | null;
+}
+
+// --- Published fee schedules ----------------------------------------------
+// The consumer-side contract between backend/src/submissionFees.ts (the quote
+// ladder + fee sheet) and backend/src/feeSchedules.ts (which finds, stores and
+// brackets published AHJ/utility schedules). Declared structurally rather than
+// imported from that module so the ladder keeps compiling — and quoting — if it
+// is absent: feeSchedules.ts's own ProjectFeeResolution satisfies this shape.
+//
+// The lookup is SYNCHRONOUS: it reads already-researched rows, it does not go to
+// the web, because the payment gate that calls it is synchronous.
+
+export interface PublishedFeeResult {
+  /** The amount the schedule resolves to for THIS project. 0 is an answer
+   *  ("this utility charges nothing"); null means a schedule was found but could
+   *  not be evaluated — see `reason`. Neither is ever rendered as a plain $0. */
+  feeUsd: number | null;
+  /** The schedule line that was matched, in the jurisdiction's own wording —
+   *  which is exactly what an application's fee-quantity field is asking for. */
+  bracketLabel?: string | null;
+  /** The jurisdiction's published fee page. */
+  sourceUrl?: string | null;
+  /** The line as published, for an operator who wants to see it said. */
+  sourceQuote?: string | null;
+  /** Research lands as "seeded"; only human review promotes it to "verified". */
+  confidence?: "verified" | "seeded";
+  /** Optional: schedules that state how the fee is paid. Absent means unknown,
+   *  and a mailed-check hint may instead be read out of `sourceQuote`. */
+  paymentMethod?: FeePaymentMethod;
+  /** The name the schedule is filed under, which may be the legal name where
+   *  the project carries an operator short name ("Coos Bay" / "City of Coos Bay"). */
+  matchedName?: string;
+  /** Populated when feeUsd is null: why the schedule did not evaluate. */
+  reason?: string;
+}
+
+// --- Project fee sheet -----------------------------------------------------
+
+export interface ProjectFeeSheetLine {
+  track: "permit" | "nem";
+  /** Who is owed the money ("City of Coos Bay", "Ameren Illinois"). */
+  jurisdiction: string;
+  feeUsd: number | null;
+  source: PermitFeeSource;
+  basis: string;
+  bracketLabel: string | null;
+  sourceUrl: string | null;
+  confidence: FeeConfidence;
+  paymentMethod: FeePaymentMethod;
+  serviceFeeUsd: number;
+  /** This track's client total, null whenever the jurisdiction fee is unknown. */
+  totalUsd: number | null;
+  /** False when the fee is unknown. A known $0 is known. */
+  known: boolean;
+}
+
+/** One answer to "what will this project cost": both tracks, what is known,
+ *  and — explicitly — what is not. A total is reported ONLY when every
+ *  component is known; an unknown is never summed as a zero. */
+export interface ProjectFeeSheet {
+  projectId: string;
+  billingMode: string;
+  /** True when the client bills per submission, i.e. the service fees below are
+   *  actually collected (and staging is gated on them). */
+  billingRequired: boolean;
+  lines: ProjectFeeSheetLine[];
+  /** Permit + NEM jurisdiction fees. Null if either is unknown. */
+  jurisdictionFeesUsd: number | null;
+  /** The operator's service fees, counted PER TRACK (two submissions = two
+   *  fees) and only for per-submission clients; 0 for monthly billing. */
+  serviceFeesUsd: number;
+  /** Null the moment any component is unknown. */
+  totalUsd: number | null;
+  /** Plain-language list of what is not known. Empty = the sheet is complete. */
+  unknowns: string[];
+  /** Fees no portal can take — the human sends these (mailed checks). */
+  outOfPortalPayments: string[];
+  generatedAt: string;
 }
 
 // Existing-system / NEM-addition disclosure. Projects adding PV or storage to an
