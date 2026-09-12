@@ -1482,6 +1482,68 @@ const VERSIONED_MIGRATIONS: VersionedMigration[] = [
       }
     },
   },
+  {
+    version: 19,
+    name: "fee_schedules",
+    up: (db) => {
+      // THE SCHEDULE, NOT THE NUMBER.
+      //
+      // permit_fee_history records fees we have ALREADY PAID — one observation per
+      // filing, and it is empty, so every quote today falls through to a 1.5%-of-
+      // valuation guess. That is the cheap half of the problem. The expensive half
+      // is that a permit application does not ask for a dollar amount at all: Coos
+      // Bay's Accela recipe carries the frozen answer "Renewable energy for
+      // electrical systems- 5.01kva through 15kva = 1", which is a FEE BRACKET
+      // QUANTITY. Replay a 20 kW job through it and the bracket is still 5.01–15,
+      // so the city bills the wrong tier and the filing is wrong in a way no
+      // reviewer catches — the field looks answered.
+      //
+      // A bracket cannot be computed from a single remembered total. It needs the
+      // schedule the total came from, which is why this table stores a FUNCTION
+      // rather than a price: `basis` names the variable the jurisdiction keys on
+      // (system kVA/kW, job valuation, or a flat charge) and brackets_json carries
+      // the ordered table. feeForProject then evaluates it for THIS project, and
+      // the bracket label it returns is the thing the application actually asks for.
+      //
+      // profile_key follows permit_utility_knowledge's two grains, not a third:
+      // permit rows key on (state, ahj) and nem rows on (state, utility), so the
+      // same AHJ under two utilities is one permit schedule, as it is in reality.
+      //
+      // source_url + source_quote are NOT decoration. A fee with no quotable
+      // sentence behind it is a rumour, and a rumour that reaches a fee field is
+      // indistinguishable from a fact. The researcher refuses to store one.
+      //
+      // confidence: research lands 'seeded' and NEVER auto-verifies (hard rule 3).
+      // A later pass may rewrite a 'seeded' row; against a 'verified' one it must
+      // refuse and append its finding to notes, so a human sees the disagreement
+      // instead of the row quietly changing under them.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS fee_schedules (
+          id TEXT PRIMARY KEY,
+          profile_key TEXT NOT NULL,
+          state TEXT NOT NULL DEFAULT '',
+          ahj TEXT NOT NULL DEFAULT '',
+          utility TEXT NOT NULL DEFAULT '',
+          track TEXT NOT NULL DEFAULT 'permit',
+          basis TEXT NOT NULL DEFAULT 'other',
+          brackets_json TEXT NOT NULL DEFAULT '[]',
+          notes TEXT NOT NULL DEFAULT '',
+          source_url TEXT NOT NULL DEFAULT '',
+          source_quote TEXT NOT NULL DEFAULT '',
+          source_kind TEXT NOT NULL DEFAULT '',
+          confidence TEXT NOT NULL DEFAULT 'seeded',
+          first_seen_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          verified_at TEXT NOT NULL DEFAULT '',
+          verified_by TEXT NOT NULL DEFAULT ''
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_fee_schedules_profile_track
+          ON fee_schedules(profile_key, track);
+        CREATE INDEX IF NOT EXISTS idx_fee_schedules_track_state
+          ON fee_schedules(track, state);
+      `);
+    },
+  },
 ];
 
 // One-time repair for the runaway-notes bug: upsertKnowledge used to merge the
