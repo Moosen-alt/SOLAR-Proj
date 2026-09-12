@@ -191,7 +191,9 @@ export function money(v: number | null | undefined): string {
 /** Confidence is the field most likely to be skimmed, so it never prints as a bare word. */
 export const CONFIDENCE_NOTE: Record<string, string> = {
   actual: "ACTUAL — the portal's own calculated fee, typed in by a person",
-  verified: "VERIFIED — a person checked this against the published schedule",
+  // Not only a checked schedule: the learned-history tier is also "verified", because a
+  // median of fees people read off real portal screens is a number a person stands behind.
+  verified: "VERIFIED — a person stands behind this number",
   seeded: "SEEDED — researched, NOT YET CHECKED BY ANYONE. Verify before quoting a customer.",
   estimated: "ESTIMATED — a method, not a fact. Trued up from the portal's fee screen.",
   unknown: "UNKNOWN — there is no number here",
