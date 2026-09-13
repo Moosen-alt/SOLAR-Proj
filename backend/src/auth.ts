@@ -269,6 +269,20 @@ export function requireAuth(db: AppDb) {
     if (req.path === "/intake" || req.path.startsWith("/api/intake/")) return next();
     // Public read-only client status page (tokenized, no login) — the page and its API.
     if (req.path === "/status" || req.path.startsWith("/api/public/status/")) return next();
+    // Public one-time portal-credential drop box (tokenized, no login) — the page and its API.
+    //
+    // THIS WAS MISSING, and the shape of the miss is worth keeping. The /credentials PAGE is
+    // registered before this middleware so it rendered fine; its API routes are registered
+    // after, so every fetch from that page 401'd. A customer opened the link, saw the form,
+    // typed a portal password into it, pressed save, and got an error — with the secret already
+    // typed. It never showed up because AUTH_ENABLED defaults to false, so the one configuration
+    // a client-facing page exists for is the one nobody ran.
+    //
+    // The comment at server.ts on these routes claimed they were exempt "BY THE SAME RULE the
+    // intake link uses". That blanket /api/public/ rule is real but lives in the ENTITLEMENT
+    // gate (ALWAYS_OPEN_API_PREFIXES in entitlements.ts), not here. Two gates, one blanket, and
+    // the comment describing the other one.
+    if (req.path === "/credentials" || req.path.startsWith("/api/public/credential-request/")) return next();
     // Public shared review report (tokenized, no login).
     if (req.path.startsWith("/api/public/review/")) return next();
     // Programmatic access: an org API key authenticates the routes of products that
