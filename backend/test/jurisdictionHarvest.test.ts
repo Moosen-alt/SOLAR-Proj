@@ -525,8 +525,17 @@ await check("a document that AGREES but prints fewer rows does not shrink the st
 
   const after = getFeeSchedule(db, wideKey, "permit");
   assert.equal(after.brackets.length, 4, "the wider table stands");
+  // A 30 kVA job must still REACH that top row. It cannot be priced from it — the row is a
+  // formula ("$265 + $10 per additional kVA") and feeSchedules refuses to quote one part of a
+  // formula as the whole fee — but refusing BECAUSE IT IS A FORMULA is a different outcome from
+  // falling off the end of the table, and only the second means coverage was lost. Asserting the
+  // reason is what tells them apart; asserting $265 used to pass by quoting the formula's floor.
   const big = feeForProject(db, { ...project, ahj: WIDE, systemSizeAcKw: 30 } as typeof project, "permit");
-  assert.equal(big.feeUsd, 265, "and a 30 kVA job still resolves instead of falling off the table");
+  assert.equal(big.feeUsd, null, "a formula row must not be quoted as a flat fee");
+  assert.match(big.reason, /FORMULA/i,
+    `a 30 kVA job fell off the table instead of reaching the top row: ${big.reason}`);
+  assert.doesNotMatch(big.reason, /outside every published bracket/i,
+    "the widest tier was lost after all — that is the shrink this check exists to catch");
 });
 
 // ---------------------------------------------------------------------------
