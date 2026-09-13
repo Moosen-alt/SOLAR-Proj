@@ -6,6 +6,8 @@ import { id } from "./ids";
 import { nowIso } from "./time";
 import { text as s } from "./json";
 import { extractPdfText } from "./batchImport";
+import { parseFeeSummary, recordFeeSummary } from "./feeSummary";
+import { logger } from "./logger";
 import { sniffFileKind, looksLikeCad, isImageKind, describeKind, type SniffedKind } from "./fileTypes";
 
 type Row = Record<string, unknown>;
@@ -38,6 +40,47 @@ async function extractDocumentText(db: AppDb, docId: string, storedPath: string)
     extractionsInFlight.delete(docId);
   }
   db.run("UPDATE project_documents SET extracted_text = ? WHERE id = ?", [extracted || "[no text layer]", docId]);
+  if (extracted) recordFeeSummaryIfPresent(db, docId, extracted);
+}
+
+// THE AUTHORITY ALREADY DID THE ARITHMETIC; READ IT WHILE THE TEXT IS IN HAND.
+//
+// The quote ladder's top two rungs are `actual` and `learned_history`, and both were EMPTY —
+// permit_fee_history had 0 rows — so every quote fell to a published schedule or 1.5% of
+// valuation. Meanwhile Portland issues a "Billing Summary" PDF per permit, those PDFs were
+// already being attached and text-extracted, and the total was sitting unread in a column.
+// Measured on a real one: $1,175.83 across 8 fee lines, where our schedule knows only the
+// $283.00 electrical line — 24% of the bill.
+//
+// Runs HERE rather than at upload because this is the one place the text exists and is fresh,
+// and it covers documents attached before the reader did. Everything it does is idempotent by
+// permit number (see recordFeeSummary), which matters because extraction re-fires for any
+// document whose text is missing.
+//
+// Never throws: a document is not worth less because a bill inside it was unreadable.
+function recordFeeSummaryIfPresent(db: AppDb, docId: string, extracted: string): void {
+  try {
+    const summary = parseFeeSummary(extracted);
+    if (!summary || summary.totalUsd == null) return;
+    const row = db.get<Row>(
+      `SELECT p.id AS id, p.state AS state, p.ahj AS ahj, p.utility AS utility
+         FROM project_documents d JOIN projects p ON p.id = d.project_id WHERE d.id = ?`,
+      [docId],
+    );
+    if (!row?.id) return;
+    const outcome = recordFeeSummary(db, {
+      id: s(row.id), state: s(row.state), ahj: s(row.ahj), utility: s(row.utility),
+    } as never, summary);
+    if (outcome.recorded) {
+      logger.info("documents", "a fee summary was attached, so the real permit fee is now on file", {
+        projectId: s(row.id), permitNumber: summary.permitNumber, totalForPermitUsd: outcome.totalForPermitUsd,
+      });
+    }
+  } catch (err) {
+    logger.warn("documents", "could not read a fee summary out of a document", {
+      docId, err: err instanceof Error ? err.message : String(err),
+    });
+  }
 }
 
 /**
