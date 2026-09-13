@@ -22,6 +22,9 @@
 //     book of work. Everything below filters on client_id, and clientPortal.test.ts asserts it.
 //   · Internal review state, QC findings, fees, credentials, documents. A tracker answers
 //     "where is my permit", not "what does your system think".
+//   · ARCHIVED projects. Repeated staging passes at one address are normal internally and read
+//     as separate jobs on a tracker — the first live render showed one company fifteen cards
+//     for about eight real jobs. See projectArchive.ts; the rows are hidden, never deleted.
 // ---------------------------------------------------------------------------
 import crypto from "node:crypto";
 import type { AppDb } from "./db";
@@ -134,7 +137,7 @@ export function clientPortalPayload(db: AppDb, token: string): ClientPortalPaylo
 
   const projects = db.query<Record<string, unknown>>(
     `SELECT id, homeowner_name, project_address, city, state, ahj, utility, status, updated_at
-       FROM projects WHERE client_id = ? ORDER BY updated_at DESC`,
+       FROM projects WHERE client_id = ? AND archived_at = '' ORDER BY updated_at DESC`,
     [clientId],
   );
   if (!projects.length) return { company: String(client.company_name || ""), projects: [] };

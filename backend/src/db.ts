@@ -1884,6 +1884,32 @@ const VERSIONED_MIGRATIONS: VersionedMigration[] = [
       `);
     },
   },
+  {
+    version: 27,
+    name: "projects_archived",
+    up: (db) => {
+      // THE CLIENT'S VIEW IS NOT THE WORKSHOP FLOOR.
+      //
+      // The per-client portal's first render showed one company fifteen cards for about eight
+      // real jobs: four passes at 1075 Flanagan Ave, three at 990 17th St NE, two at 15622 SE
+      // Vivian Way, and a fixture whose homeowner is "Test Testerson". Repeated staging passes
+      // at one address are normal and useful internally; on a client's tracker they read as
+      // four separate jobs.
+      //
+      // A DELETE WAS THE OBVIOUS MOVE AND THE WRONG ONE. portal-bot/src/demoReplay.ts reads
+      // this database and names il-test-ameren, 8f4ca8dd and b0ab5169 by id. HANDOFF.md cites
+      // 29cd57b5 and 8f4ca8dd as certified staging runs whose submission history is the record
+      // of how they went. And il-test-comed's Salem address under an Evanston/ComEd identity
+      // is not a typo to fix — it is the preserved evidence of the snapshot-identity bug that
+      // once pointed an Illinois project at PGE's real portal.
+      //
+      // So only VISIBILITY changes. Empty string means visible, which matches every other
+      // text column here and avoids the NULL-versus-'' confusion that makes a filter hide
+      // everything or nothing.
+      addColumnIfMissing(db, "projects", "archived_at", "TEXT NOT NULL DEFAULT ''");
+      addColumnIfMissing(db, "projects", "archived_reason", "TEXT NOT NULL DEFAULT ''");
+    },
+  },
 ];
 
 // One-time repair for the runaway-notes bug: upsertKnowledge used to merge the
