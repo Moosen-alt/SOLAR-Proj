@@ -120,8 +120,11 @@ check("A REAL BATTERY still files its declaration and its specs",
 // number had gone in. It was the empty box, measured: the smoke above was red for the
 // capacity and this line said the capacity was fine. An assertion must name the value it
 // wants, not the one it fears.
+// Asserting `=== "27"` is the whole fix; adding `&& !== "13.5"` alongside it is not belt and
+// braces, it is dead code — tsc says so (TS2367: the types have no overlap), because once the
+// value is known to be "27" the second comparison can never decide anything.
 check("...and the capacity filed is THIS roof's, not the 13.5 kWh the recipe recorded",
-  yes.cap === "27" && yes.cap !== "13.5",
+  yes.cap === "27",
   `capacity=${JSON.stringify(yes.cap)} — wanted this roof's "27". A BLANK is not a pass here: `
   + `"" is not "13.5" either, and that is how this check once stayed green over an empty box.`);
 
