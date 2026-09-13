@@ -115,11 +115,22 @@ export async function notifyClientOfStatusChange(
     if (process.env.CLIENT_NOTIFICATIONS === "0" || process.env.CLIENT_NOTIFICATIONS === "false") return;
     const template = CLIENT_NOTIFY_OUTCOMES[evt.outcome];
     if (!template || !project.clientId) return;
-    const client = db.get<{ company_name?: string; business_email?: string }>(
-      "SELECT company_name, business_email FROM clients WHERE id = ?",
+    // THE SHARED INBOX IS THE ONE FIELD WHOSE ENTIRE PURPOSE IS THIS MESSAGE.
+    //
+    // The onboarding guide asks for it as REQUIRED, in these words: "Shared inbox for Keelix
+    // updates — where we send confirmations, status updates and corrections. A shared inbox,
+    // not one person's." Migration v18 added the column, the intake template collects it and
+    // INTAKE_CHECKLIST.md documents it — and this function sent to business_email, so every
+    // status update went to the general company address the customer was explicitly told it
+    // would not go to. A contract term that the software quietly does not honour.
+    //
+    // business_email stays as the fallback, because an update reaching the wrong inbox beats
+    // an update nobody gets.
+    const client = db.get<{ company_name?: string; business_email?: string; updates_inbox?: string }>(
+      "SELECT company_name, business_email, updates_inbox FROM clients WHERE id = ?",
       [project.clientId],
     );
-    const to = (client?.business_email || "").trim();
+    const to = (client?.updates_inbox || "").trim() || (client?.business_email || "").trim();
     if (!to) return;
 
     const token = ensureStatusShareToken(db, project.id);

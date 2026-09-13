@@ -73,6 +73,44 @@ await run("no SMTP → update recorded as a DRAFT communication with the status 
   assert.ok(!(comm!.body || "").match(/account|meter/i), "no sensitive field names in body");
 });
 
+await run("THE SHARED INBOX IS THE RECIPIENT — the one field whose whole purpose is this message", async () => {
+  // The guide asks for it as REQUIRED: "Shared inbox for Keelix updates — where we send
+  // confirmations, status updates and corrections. A shared inbox, not one person's." The column
+  // existed (migration v18), the intake template collected it, and the notifier sent to
+  // business_email — so every update went to the address the customer was told it would not.
+  // Asserted through the audit entry, which records the recipient masked as "u***@domain": the
+  // DOMAIN survives masking, so the two addresses are told apart by using different ones.
+  const shared = createClient(db, {
+    companyName: "Shared Inbox Solar", ccbLicenseNumber: "444444",
+    businessEmail: "owner@one-persons-mailbox.test", businessPhone: "5035550100",
+  });
+  db.run("UPDATE clients SET updates_inbox = ? WHERE id = ?", ["permits@shared-team.test", shared.id]);
+  const sp = createProject(db, { clientId: shared.id, owner: "Shared Owner", street: "2 Inbox St", city: "Bend", state: "OR", ahj: "Bend", utility: "PGE", dcKw: "5", acKw: "4" });
+  await notifyClientOfStatusChange(db, sp.project, { outcome: "issued", statusLabel: "Permit Issued", targetType: "permit" });
+  const audit = db.get<{ details?: string }>(
+    "SELECT details FROM audit_logs WHERE project_id = ? AND action LIKE 'client.notif%' ORDER BY created_at DESC LIMIT 1",
+    [sp.project.id],
+  );
+  assert.ok(audit, "the notifier recorded an audit entry");
+  const details = String(audit!.details || "");
+  assert.match(details, /shared-team\.test/, `the update went somewhere other than the shared inbox: ${details}`);
+  assert.doesNotMatch(details, /one-persons-mailbox\.test/, `it went to the general business email the guide promises it would not: ${details}`);
+});
+
+await run("...and business_email is still the FALLBACK, because a misdirected update beats none", async () => {
+  const noShared = createClient(db, {
+    companyName: "No Shared Inbox LLC", ccbLicenseNumber: "555555",
+    businessEmail: "ops@fallback-only.test", businessPhone: "5035550101",
+  });
+  const fp = createProject(db, { clientId: noShared.id, owner: "Fallback Owner", street: "3 Fallback St", city: "Bend", state: "OR", ahj: "Bend", utility: "PGE", dcKw: "5", acKw: "4" });
+  await notifyClientOfStatusChange(db, fp.project, { outcome: "issued", statusLabel: "Permit Issued", targetType: "permit" });
+  const audit = db.get<{ details?: string }>(
+    "SELECT details FROM audit_logs WHERE project_id = ? AND action LIKE 'client.notif%' ORDER BY created_at DESC LIMIT 1",
+    [fp.project.id],
+  );
+  assert.match(String(audit?.details || ""), /fallback-only\.test/, "a client with no shared inbox must still be told");
+});
+
 await run("no client email → silently skips (no row, no throw)", async () => {
   const bare = createClient(db, { companyName: "No Email LLC", ccbLicenseNumber: "333333", businessEmail: "", businessPhone: "" });
   const d2 = createProject(db, { clientId: bare.id, owner: "No Email", street: "1 X St", city: "Bend", state: "OR", ahj: "Bend", utility: "PGE", dcKw: "5", acKw: "4" });
