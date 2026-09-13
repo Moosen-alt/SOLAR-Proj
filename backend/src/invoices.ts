@@ -171,7 +171,11 @@ export function invoiceLinesForPayment(
       track,
       reason: row.permitFeeEstimateUsd == null
         ? "No jurisdiction fee has been recorded for this track."
-        : `Only an ESTIMATE is on file ($${row.permitFeeEstimateUsd.toFixed(2)}) — ${row.feeBasis || "basis not recorded"}. An estimate is not invoiceable.`,
+        // The basis text usually ends in its own full stop, so do not add a second one.
+        : `Only an ESTIMATE is on file ($${row.permitFeeEstimateUsd.toFixed(2)}), and an estimate is not invoiceable. `
+          + `It was quoted as: ${row.feeBasis || "basis not recorded"}`.replace(/\.?$/, ".")
+          + ` NOTE: this is the figure stored when the quote was last built — the published schedule may since`
+          + ` have moved, and scripts/fee-sheet.ts shows what it says today. Neither number is invoiceable.`,
       resolution: "Enter the portal-calculated fee from its own fee/review screen (\"Record real fee\"), which also teaches future quotes for this jurisdiction.",
       amountSeenUsd: row.permitFeeEstimateUsd,
     });
