@@ -186,6 +186,17 @@ const HUB_PAGE = `<html><body>
   <a href="/hub/commercial">Commercial</a>
   <a href="/hub/building-permit-and-land-use-fees">Building Permit and Land Use Fees</a>
   <a href="https://elsewhere.invalid/fees">Fees on somebody else's site</a>
+  <!-- SALEM'S TWO REAL TRAPS, and both beat the fee page before they were handled.
+       1. This link scores application(4)+building(2)+fee(1, from "fees-and-forms" in its PATH)
+          = 7 on the document ranking, where the fee page scores 3 — so it took both hop slots.
+       2. Salem lists the same destination twice under different anchor text, which burned the
+          second slot on a duplicate fetch. -->
+  <a href="/hub/fees-and-forms/building-permit-applications-and-forms">Building Permit Applications and Forms</a>
+  <a href="/hub/fees-and-forms/building-permit-applications-and-forms">Get direct links to building permit application forms</a>
+  <!-- The SAME fee page again under different wording. Both copies outrank everything else on
+       fee-ness, so without a per-URL guard they take both slots between them and the forms page
+       is never reached — the duplicate wastes a fetch AND a slot. -->
+  <a href="/hub/building-permit-and-land-use-fees/">See the building permit and land use fees</a>
 </body></html>`;
 const HUB_FEE_PAGE = `<html><body>
   <a href="/forms/community-development-fees.pdf">Building Permit Fees with Explanations</a>
@@ -197,7 +208,14 @@ const server = http.createServer((req, res) => {
   if (url === "/solar-page") { res.writeHead(200, { "content-type": "text/html" }); res.end(SOLAR_PAGE); return; }
   if (url === "/fees-page") { res.writeHead(200, { "content-type": "text/html" }); res.end(FEES_PAGE); return; }
   if (url === "/hub") { res.writeHead(200, { "content-type": "text/html" }); res.end(HUB_PAGE); return; }
-  if (url === "/hub/building-permit-and-land-use-fees") { res.writeHead(200, { "content-type": "text/html" }); res.end(HUB_FEE_PAGE); return; }
+  if (url === "/hub/building-permit-and-land-use-fees" || url === "/hub/building-permit-and-land-use-fees/") {
+    res.writeHead(200, { "content-type": "text/html" }); res.end(HUB_FEE_PAGE); return;
+  }
+  if (url === "/hub/fees-and-forms/building-permit-applications-and-forms") {
+    res.writeHead(200, { "content-type": "text/html" });
+    res.end(`<html><body><a href="/forms/prescriptive-solar-checklist.pdf">Prescriptive Solar Checklist</a></body></html>`);
+    return;
+  }
   if (url.startsWith("/hub/")) { res.writeHead(200, { "content-type": "text/html" }); res.end("<html><body>nothing here</body></html>"); return; }
   if (url === "/forms/electrical-permit-application.pdf") return pdf(ELECTRICAL);
   if (url === "/forms/prescriptive-solar-checklist.pdf") return pdf(CHECKLIST);
@@ -611,6 +629,13 @@ await check("MUST EXCLUDE: the hop is bounded — depth one, same host, fee word
   // they stay where they were: listed for a person, never fetched.
   assert.ok(!report.feePageHops.some((h) => /^(Building in Salem|Commercial)$/i.test(h.text.trim())),
     `followed a non-fee page: ${JSON.stringify(report.feePageHops.map((h) => h.text))}`);
+  // ONE HOP PER URL. Salem lists the same forms page twice under different anchor text, which
+  // burned both slots on one destination and fetched it twice.
+  const hopUrls = report.feePageHops.map((h) => h.href.replace(/\/$/, "").toLowerCase());
+  assert.equal(new Set(hopUrls).size, hopUrls.length, `hopped the same URL twice: ${JSON.stringify(hopUrls)}`);
+  // And the FEE page must win the slot over a forms page that outranks it on document-ness.
+  assert.ok(/land use fees/i.test(report.feePageHops[0]?.text || ""),
+    `the first hop went somewhere other than the fee page: ${JSON.stringify(report.feePageHops.map((h) => h.text))}`);
 });
 
 await check("direct document links (the KB carries plenty) are harvested with no page at all", async () => {

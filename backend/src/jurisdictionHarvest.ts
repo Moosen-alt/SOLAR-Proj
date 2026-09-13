@@ -906,6 +906,7 @@ export async function harvestJurisdiction(
     //   a control character instead of a word and the hop silently never fired. A character-class
     //   word boundary cannot be mangled that way.
     const FEE_PAGE_WORDING = /(^|[^a-z])fees?([^a-z]|$)/i;
+    const seenHops = new Set<string>();
     const hopCandidates = verdicts
       .filter((e) => e.v.verdict === "unsure"
         && FEE_PAGE_WORDING.test(`${e.l.text} ${decodeURIComponent(e.l.href)}`)
@@ -913,7 +914,32 @@ export async function harvestJurisdiction(
         && !NOT_A_DOCUMENT.test(e.l.href)
         && sameHost(e.l.href, source.pageUrl)
         && e.l.href.replace(/#.*$/, "") !== source.pageUrl.replace(/#.*$/, ""))
-      .sort((a, b) => b.v.rank - a.v.rank)
+      // RANKED FOR FEE-NESS, NOT FOR DOCUMENT-NESS, because the two disagree and the document
+      // ranking loses. Measured on Salem's real hub: "Building Permit Applications and Forms"
+      // scores application(4)+building(2)+fee(1) = 7 — the fee point coming only from the
+      // "/fees-and-forms/" in its path — while "Building Permit and Land Use Fees" scores 3. So
+      // both hop slots went to the FORMS page and the fee schedule was never reached. We are
+      // hopping BECAUSE we want the fee table, so fee wording in the visible TEXT is what counts,
+      // and a link that announces itself as more forms is pushed down: the ordinary keep path
+      // already collects forms.
+      .map((e) => {
+        const t = e.l.text;
+        let hopRank = 0;
+        if (FEE_PAGE_WORDING.test(t)) hopRank += 4;                       // the TEXT says fees
+        if (/fee schedule|fee sheet|land use fees|permit fees|fees and charges/i.test(t)) hopRank += 3;
+        if (/application|form/i.test(t)) hopRank -= 2;                    // forms come the normal way
+        return { ...e, hopRank };
+      })
+      .sort((a, b) => b.hopRank - a.hopRank || b.v.rank - a.v.rank)
+      // ONE HOP PER URL. Salem lists the same page twice under different anchor text ("Building
+      // Permit Applications and Forms" and "Get direct links to building permit application
+      // forms"), which burned both slots on one destination and fetched it twice.
+      .filter((e) => {
+        const key = e.l.href.replace(/#.*$/, "").replace(/\/$/, "").toLowerCase();
+        if (seenHops.has(key)) return false;
+        seenHops.add(key);
+        return true;
+      })
       .slice(0, MAX_FEE_PAGE_HOPS);
 
     for (const { l } of hopCandidates) {
