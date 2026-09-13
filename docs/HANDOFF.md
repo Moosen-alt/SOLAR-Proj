@@ -3,6 +3,107 @@
 Audience: the next model/dev session (and the operator). Read `CLAUDE.md` first
 for the hard rules; this file is the running state.
 
+## THE SUITE THAT WAS NOT RUNNING, AND THE SIX DEFECTS IT WAS HIDING (2026-09-12, late)
+
+`portal:test:dom` was 71 real-Chromium smokes joined by `&&`. Two were long-red at positions 9
+and 47, so the chain stopped at the 9th and **62 smokes had never been executed**. Six of those
+62 were red on first-ever run. None was a regression — all reproduce at `8cbec53`, before this
+session.
+
+`scripts/run-dom-smokes.ts` replaces the chain. It DISCOVERS `*.smoke.ts` from disk (a new file
+runs without being registered — hand-maintained lists are how this drifted), runs every one
+regardless of failures, prints a denominator with named skips, distinguishes TIMEOUT from FAIL
+because they need different repairs, and turns the suite RED on a file it cannot classify. An
+exit 0 with `FAIL -` lines in the output is its own reported category — that lie has happened
+six times this session. One smoke legitimately takes 317s; the first timeout was set to 300 and
+called it a hang.
+
+### The six, and what each would have cost a filing
+
+| defect | cost |
+|---|---|
+| an email step on a label reading `E-mail:` resolved to `""` | blank required field |
+| a real battery filed its declaration and make but **not its capacity** | blank required field on an interconnection |
+| `Submit an Application/Request` refused as an entry link | a whole jurisdiction with no way in |
+| licence expiry had no binding key, so only a literal carried it | blank required field |
+| four fixtures froze project data as unbound literals | noise — production was right |
+| a bare `Name` label replayed the learn project's person | **wrong value, silent, cross-customer** |
+
+### Two in the cross-project guard, both live
+
+**A box labelled just `Name`.** `looksLikeProjectData` asked for "owner name", "first name",
+"customer" — so the bare `Name` that PowerClerk, PGE and Ameren all print beside their contact
+fields matched nothing and the recorded person replayed. This is the leak `3e42fec` exists to
+close, still open under the label most likely to carry it, and it was visible in checks that
+PASSED (`finalPageReassert` filing "ZZTest Replay Benchmark").
+
+Widened on evidence: all 76 recipes were read first. Every person-name step is already bound,
+so this costs them nothing, and the only unbound `name` literal in the corpus is
+`"Permit Name" = "Solar PV System Installation"` — the portal's word — which is excluded
+explicitly. A label naming a THING is not a label naming a person.
+
+**A box labelled `Fax:` could never be told it was the wrong box.** `reanchorIfWrongControl`
+filters identity tokens to >3 characters so "Job Category" and "Job Value" cannot agree on
+"job". A label that is nothing BUT a short word therefore yielded an empty set — and an empty
+set read as "nothing to contradict", i.e. accept. `Fax:`, `ZIP:`, `APN:`, `Tel:`, `Qty:` were
+the one class of label no step could be contradicted on. The strict filter now applies wherever
+it has anything to work with and short tokens are used only when there are no long ones, so
+"job" is still never admitted and `*Type (Required):` — all stopwords — still has nothing to
+contradict. Kill-tested: restore the empty set and an email lands in the fax box.
+
+### A learn-side defect nobody had hit yet
+
+    dateFieldForLiteral("Contractor Licence Expiration Date", "2027-04-01") -> "todayDate"
+
+Every date that was not a future estimate fell through to "today", which is right for the
+signature dates the function was written for and wrong for a licence: the next learn of an
+expiry control would file a licence expiring the day it was submitted. The expiry rule now
+requires the label to name WHAT is expiring — "Expiration Date" is also what a payment page
+prints beside a card, and rather than duplicate `recipeAdapter.PAYMENT_FIELD` here, an expiry
+with no licence context binds to NOTHING and a person sees a blank at review.
+
+### Process notes worth keeping
+
+- **Two assertions proved nothing and were caught by kill tests, not by reading.** A battery
+  capacity check asserted only `cap !== "13.5"`; `""` is not "13.5" either, so it printed `ok`
+  beside an empty box. An x-sort sabotage in `pdfTables` initially passed because a global
+  sort's tiebreak was quietly doing the per-row ordering.
+- **`labelFor`'s output is a MATCHING KEY**, not a display string — replay healing, consent
+  detection and the battery declaration all match on it. Prefixing yes/no controls with their
+  question to make them triageable broke three smokes and was reverted; that metadata needs its
+  own field. Two Accela checkboxes are still recorded as the bare word "No" for this reason;
+  triage prints where each sits in the walk so they stay decidable.
+- **Concurrent agents collided twice in git**: a scoped `git add <path>` still committed another
+  agent's already-staged index entries, and a `git commit --amend` rewrote a commit that had
+  landed in between. Check `git diff --cached --name-only` before committing; never `--amend`
+  in a shared tree.
+
+### Verified state at the end of this session
+
+    backend:test:unit   92 steps, last banner "feeBracketQuantity: all checks passed."
+                        matching the last chain entry, 90 passing banners, 0 failure markers
+    tsc --noEmit        clean
+    npm run smoke       "Smoke test passed: ... and test project deleted cleanly."
+                        (a trailing FOREIGN KEY warn is the job worker retrying
+                        correction_triage against the project the smoke had just deleted)
+    portal:test:dom     74 discovered = 69 passed + 1 failed + 1 timed out + 3 skipped
+                        The 1 failed was multiArray, caused by the short-label widening in
+                        this same session and fixed after that run (091b1b0) — green solo.
+                        The 1 timed out was replica.dom.smoke at 600s; it passes when the
+                        machine is not also running other browsers, so the suite's timeout is
+                        load-sensitive. Worth confirming on a quiet machine before trusting it.
+
+Still open, and each is somebody's decision rather than a missing line of code:
+
+  - The Coos Bay electrical recipe has a step for ONE bracket box. A job in another bracket now
+    correctly files "0" and FLAGS the run, but the sibling boxes have no steps. Closing it needs
+    one human completion at the review screen on a job in another bracket, which
+    appendHumanPatchSteps captures and auto-binds permanently.
+  - Two Accela checkboxes recorded as the bare word "No" stay unclassified. The recorder needs
+    to capture a yes/no control under its QUESTION, in its own field — not by changing what
+    labelFor returns, which is a matching key.
+  - replica.dom.smoke's runtime under load.
+
 ## THE FROZEN BRACKET, THE INVISIBLE HALF OF THE TRIAGE QUEUE, AND 63 SMOKES NOBODY WAS RUNNING (2026-09-12)
 
 **The fee-bracket quantity is computed per job now, and it is bound on the live recipe.**
