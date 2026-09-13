@@ -1794,7 +1794,21 @@ Rules:
       // the same kind of call (FEE_RESEARCH_CLIENT_TIMEOUT_MS); this matches it and stays
       // env-overridable for a machine on a slower link.
       const budgetMs = Math.max(45000, Number(process.env.AHJ_FORM_LOOKUP_TIMEOUT_MS) || 180000);
-      parsed = this.parseJson(await this.askWithWebSearch("findAhjFormUrl", system, userMsg, 1024, 3, budgetMs), {});
+      // 1024 was the signature default and far too small for this call: with the budget fixed it
+      // stopped timing out and immediately hit max_tokens instead (outTok 2918, stop=max_tokens),
+      // truncating the JSON so it parsed to {} — which the harvest then read as "this AHJ has no
+      // forms page". The sibling research calls all use 3000; this one returns several URLs plus
+      // notes after three searches, so it gets more.
+      const raw = await this.askWithWebSearch("findAhjFormUrl", system, userMsg, 4000, 3, budgetMs);
+      parsed = this.parseJson(raw, {});
+      // A RESPONSE WE COULD NOT READ IS NOT AN ANSWER OF "NOTHING". parseJson returns {} for
+      // truncated or malformed output, which is byte-identical to a genuine empty result. If the
+      // model said something substantial and none of it parsed, say so rather than letting the
+      // caller draw a conclusion about the jurisdiction.
+      if (String(raw || "").trim().length > 40 && !Object.keys(parsed).length) {
+        lookupError = "the model replied but the JSON could not be parsed (most likely truncated — raise maxTokens)";
+        logger.warn("llm", "findAhjFormUrl returned unparseable output", { ahj: input.ahj, state: input.state, chars: String(raw).length });
+      }
     } catch (err) {
       lookupError = errMsg(err);
       logger.warn("llm", "findAhjFormUrl web search failed", { ahj: input.ahj, state: input.state, err: lookupError });
