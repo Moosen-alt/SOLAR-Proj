@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- The token is in the URL, so keep this page out of indexes and out of Referer headers.
+       status.html and intake.html are missing both and should get them too. -->
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="referrer" content="no-referrer">
+  <title>Your Projects</title>
+  <style>
+    /* Matched to status.html deliberately — this is its sibling, and a client who follows a
+       link from an update email to here should not feel handed to a different product.
+       Inline because express.static sits behind requireAuth: a sibling .js or .css would
+       redirect a logged-out visitor to /login, which is the exact bug this page must not have. */
+    :root { color-scheme: light; }
+    body { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; background: #f4f6f8; margin: 0; color: #1f2937; }
+    .wrap { max-width: 720px; margin: 0 auto; padding: 24px 16px 48px; }
+    .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 20px; margin-bottom: 16px; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+    .head { margin-bottom: 20px; }
+    h1 { font-size: 20px; margin: 0 0 4px; }
+    h2 { font-size: 15px; margin: 0 0 2px; }
+    .muted { color: #6b7280; font-size: 13px; }
+    .row { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+    .track { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 9px 0; border-top: 1px solid #f3f4f6; font-size: 13px; }
+    .badge { font-size: 12px; padding: 3px 10px; border-radius: 999px; background: #eef2ff; color: #3730a3; white-space: nowrap; }
+    .badge.good { background: #ecfdf5; color: #065f46; }
+    .badge.warn { background: #fffbeb; color: #92400e; }
+    .badge.you { background: #fef2f2; color: #991b1b; }
+    .err { text-align: center; padding: 48px 16px; color: #6b7280; }
+    footer { text-align: center; font-size: 12px; color: #9ca3af; margin-top: 24px; }
+  </style>
+</head>
+<body>
+  <div class="wrap" id="app"><div class="err">Loading your projects…</div></div>
+  <script>
+    // Read-only per-client tracker. One stable link lists every job we are filing for this
+    // company. The payload is sanitized server-side (backend/src/clientPortal.ts): addresses,
+    // status labels and application/permit numbers only — never correction text, never another
+    // company's work, never anything internal.
+
+    // Statuses where the CLIENT is the one who has to do something. Called out separately
+    // because a tracker that shows twenty rows all saying "in progress" is a list, not a signal.
+    const NEEDS_YOU = new Set(["waiting_on_designer", "ready_for_issue"]);
+    const DONE = new Set(["issued", "nem_approved", "handoff_ready", "approved"]);
+    const WARN = new Set(["correction_received", "correction_triaged", "qc_failed", "blocked"]);
+
+    const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    const when = (iso) => iso ? new Date(iso).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }) : "—";
+    const cls = (key) => NEEDS_YOU.has(key) ? "you" : DONE.has(key) ? "good" : WARN.has(key) ? "warn" : "";
+
+    async function load() {
+      const app = document.getElementById("app");
+      const token = new URLSearchParams(location.search).get("token") || "";
+      try {
+        const res = await fetch(`/api/public/portal/${encodeURIComponent(token)}`);
+        if (!res.ok) throw new Error("not found");
+        const d = await res.json();
+        const projects = d.projects || [];
+        const yours = projects.filter((p) => NEEDS_YOU.has(p.statusKey)).length;
+
+        const cards = projects.map((p) => {
+          const tracks = (p.tracks || []).map((t) => `
+            <div class="track">
+              <div>
+                <div>${esc(t.label)}</div>
+                <div class="muted">${t.applicationNumber ? "Application " + esc(t.applicationNumber) + " · " : ""}${t.permitNumber ? "Permit " + esc(t.permitNumber) + " · " : ""}last checked ${when(t.lastCheckedAt)}</div>
+              </div>
+              <span class="badge ${cls(t.outcome)}">${esc(t.statusLabel || t.outcome || "Checking…")}</span>
+            </div>`).join("")
+            || `<div class="track"><span class="muted">Tracking starts once the application is filed.</span></div>`;
+          return `
+            <div class="card">
+              <div class="row">
+                <div>
+                  <h2>${esc(p.address)}</h2>
+                  <div class="muted">${esc(p.ahj || "")}${p.ahj && p.utility ? " · " : ""}${esc(p.utility || "")}</div>
+                </div>
+                <span class="badge ${cls(p.statusKey)}">${esc(p.status)}</span>
+              </div>
+              ${tracks}
+            </div>`;
+        }).join("") || `<div class="card"><span class="muted">No projects yet. They appear here as soon as we open one.</span></div>`;
+
+        app.innerHTML = `
+          <div class="head">
+            <h1>${esc(d.company || "Your projects")}</h1>
+            <div class="muted">${projects.length} project${projects.length === 1 ? "" : "s"}${yours ? ` · ${yours} need${yours === 1 ? "s" : ""} something from you` : ""}</div>
+          </div>
+          ${cards}
+          <footer>Updated automatically as your permits and interconnections move.<br>Bookmark this page — the link does not expire.</footer>`;
+      } catch {
+        app.innerHTML = `<div class="err">This tracking link isn't valid. Please contact your permitting team for a new one.</div>`;
+      }
+    }
+    load();
+  </script>
+</body>
+</html>

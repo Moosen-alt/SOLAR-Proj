@@ -60,6 +60,13 @@ const UNSCOPED_BY_DESIGN: Record<string, string> = {
   // learns nothing. See backend/src/credentialRequests.ts and credentialRequest.test.ts.
   "/api/public/credential-request/:token": "one-time, expiring, write-only credential drop box - the token IS the authorization",
   "/api/intake/:token": "tokenized public client intake link",
+  // The per-CLIENT tracker. Unscoped by session for the same reason as its siblings — the solar
+  // company has no login here (onboarding guide S8) — but the token resolves to exactly one
+  // clients.id and every query below it filters on that id, so the token IS the tenancy
+  // boundary rather than merely bypassing one. Asserted in clientPortal.test.ts, which fails if
+  // another company's project reaches the payload. Note this token is STABLE and unrotatable by
+  // design, so it is a permanent bearer credential for one company's project list.
+  "/api/public/portal/:token": "tokenized per-client tracking page - the token resolves to one client_id and filters on it",
 
   // Auth surface — must be reachable before you have an identity.
   "/api/auth/login": "establishes the session",

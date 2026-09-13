@@ -49,6 +49,7 @@ const PUBLIC_SURFACES = [
   { name: "client intake", page: "/intake", api: "/api/intake/some-token" },
   { name: "portal credential drop box", page: "/credentials", api: "/api/public/credential-request/some-token" },
   { name: "project status", page: "/status", api: "/api/public/status/some-token" },
+  { name: "per-client tracker", page: "/portal", api: "/api/public/portal/some-token" },
 ];
 
 // Anything a logged-out visitor must NOT reach. A carve-out written as a loose prefix is how a

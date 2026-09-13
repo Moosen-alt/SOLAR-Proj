@@ -1857,6 +1857,33 @@ const VERSIONED_MIGRATIONS: VersionedMigration[] = [
       `);
     },
   },
+  {
+    version: 26,
+    name: "clients_portal_share_token",
+    up: (db) => {
+      // ONE STABLE LINK PER SOLAR COMPANY, listing every job we are filing for them.
+      //
+      // projects.status_share_token (v4) is per-PROJECT: fifteen jobs meant fifteen links and a
+      // new one on every new job, so it served as a footer in a notification email and never as
+      // a tracker. This is the same mechanism on the client grain.
+      //
+      // NOT ROTATED, on the operator's explicit instruction — the whole point is a link the
+      // company bookmarks and keeps without asking for a new one. Recorded plainly because it
+      // is a real trade: a link forwarded to the wrong person cannot be killed. Adding rotation
+      // later is easy; it just kills every link already sent, which is the thing being avoided.
+      //
+      // The UNIQUE index is partial on purpose. Every existing row defaults to '', and a plain
+      // UNIQUE would refuse the second client. Partial also means '' is never a lookup key, so
+      // a blank token cannot collide with the never-shared clients — the same hole is closed
+      // again in clientPortal.ts, because one of the two will eventually be edited by somebody
+      // who did not read the other.
+      addColumnIfMissing(db, "clients", "portal_share_token", "TEXT NOT NULL DEFAULT ''");
+      db.exec(`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_clients_portal_share_token
+          ON clients(portal_share_token) WHERE portal_share_token != '';
+      `);
+    },
+  },
 ];
 
 // One-time repair for the runaway-notes bug: upsertKnowledge used to merge the

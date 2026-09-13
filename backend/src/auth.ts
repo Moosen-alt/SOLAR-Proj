@@ -283,6 +283,8 @@ export function requireAuth(db: AppDb) {
     // gate (ALWAYS_OPEN_API_PREFIXES in entitlements.ts), not here. Two gates, one blanket, and
     // the comment describing the other one.
     if (req.path === "/credentials" || req.path.startsWith("/api/public/credential-request/")) return next();
+    // Public per-client tracking page (tokenized, no login) — the page and its API.
+    if (req.path === "/portal" || req.path.startsWith("/api/public/portal/")) return next();
     // Public shared review report (tokenized, no login).
     if (req.path.startsWith("/api/public/review/")) return next();
     // Programmatic access: an org API key authenticates the routes of products that

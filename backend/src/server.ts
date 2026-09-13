@@ -70,6 +70,7 @@ import {
   undeliveredCommunications,
   updateCustomer,
 } from "./crm";
+import { clientPortalPayload, clientPortalUrl, ensureClientPortalToken } from "./clientPortal";
 import { getKpiReport } from "./kpi";
 import {
   ahjFormRegistry,
@@ -244,6 +245,8 @@ app.get("/intake", (_req, res) => res.sendFile(path.join(frontendDir, "intake.ht
 app.get("/credentials", (_req, res) => res.sendFile(path.join(frontendDir, "credentials.html")));
 // Public read-only client status page (tokenized link, no login).
 app.get("/status", (_req, res) => res.sendFile(path.join(frontendDir, "status.html")));
+// The per-CLIENT tracker: one stable link listing every job we are filing for that company.
+app.get("/portal", (_req, res) => res.sendFile(path.join(frontendDir, "portal.html")));
 app.use(requireAuth(db));
 // Licensing: an org reaches only the routes of the products it holds. Deny-by-default,
 // driven by the product registry in entitlements.ts.
@@ -1054,6 +1057,24 @@ app.get("/api/public/status/:token", (req, res) => {
       submittedAt: sub.submittedAt || null,
     })),
   });
+});
+
+// Public (no auth): a solar company's own tracking page. The token is on the CLIENT row, so one
+// link covers every job we file for them — see backend/src/clientPortal.ts for what it carries
+// and, more importantly, what it deliberately does not (correction text, other clients, any
+// internal review state).
+app.get("/api/public/portal/:token", (req, res) => {
+  const payload = clientPortalPayload(db, String(req.params.token || ""));
+  if (!payload) throw new HttpError(404, "Unknown tracking link.");
+  res.json(payload);
+});
+
+// Mint (or re-read) a company's stable tracking link. Operator-only; the link itself is public.
+app.post("/api/clients/:id/portal-link", (req, res) => {
+  const clientId = String(req.params.id);
+  const token = ensureClientPortalToken(db, clientId);
+  addAuditLog(db, null, "human", currentUser(db, req)?.email || "operator", "client.portal_link_shared", { clientId });
+  res.json({ url: clientPortalUrl(token) });
 });
 
 // Public (no auth): submit answers for an intake request.
