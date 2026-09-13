@@ -73,8 +73,35 @@ const mkRecipe = (steps: RecipeStep[]) => ({
   createdBy: "test", createdAt: "", updatedAt: "", notes: "", discipline: "",
 } as unknown as PortalRecipe);
 
-const f = (css: string, value: string, note: string): RecipeStep =>
-  ({ action: "fill", phase: "fill", selector: { css }, value, note } as RecipeStep);
+// BOTH CONTACT BLOCKS ARE BOUND, AND TO DIFFERENT KEYS — WHICH IS THE POINT OF THE SMOKE.
+//
+// These steps used to freeze the literals with no `field`, and since 3e42fec the
+// cross-project guard refuses an unbound literal that looks like project data:
+// looksLikeProjectData("Address", "808 SE Chkalov Dr") is true, and with the bare-"Name"
+// widening so is looksLikeProjectData("Name", "Charles"). Both addresses and both names came
+// back BLANK, so the two sections were indistinguishable by being equally empty and the
+// subject of this test — that the installer's details stay in the preparer block and the
+// homeowner's land in the customer block — was no longer being measured at all.
+//
+// A real recorded step carries the binding, and the live PacifiCorp recipe this file was
+// written from carries exactly these: installerFirstName/installerLastName/installerStreet in
+// the preparer block, homeownerFirstName/homeownerLastName/street in the customer block. Two
+// DISTINCT key sets resolving two DISTINCT values, so a section that gets the wrong one still
+// fails the way the unbound version used to — binding both blocks to one key would make this
+// smoke pass while testing nothing.
+//
+// installerFirstName/installerLastName are absent from RECIPE_FIELD_DESCRIPTIONS but are NOT
+// unanswerable: resolveRecipeFieldValues derives them by splitting the client overlay's
+// installerContactName (the `installerSplit` block), and autoLearn's bindableFields is the
+// UNION of that resolved map with the descriptions dictionary. A key the resolver cannot
+// answer would turn each literal into a permanent blank, which is worse than the red here.
+const FIELD_VALUES: Record<string, string> = {
+  installerFirstName: "Charles", installerLastName: "Bitton", installerStreet: "808 SE Chkalov Dr",
+  homeownerFirstName: "Randal", homeownerLastName: "Rowland", street: "7625 NW Logan Rd",
+};
+
+const f = (css: string, field: string, note: string): RecipeStep =>
+  ({ action: "fill", phase: "fill", selector: { css }, field, value: FIELD_VALUES[field], note } as RecipeStep);
 const advance: RecipeStep = { action: "click", phase: "fill", selector: { css: "#next" }, note: "advance: Next" } as RecipeStep;
 
 const browser = await chromium.launch();
@@ -86,11 +113,11 @@ await context.addInitScript("globalThis.__name = globalThis.__name || function (
 const p1 = await context.newPage();
 await p1.goto(url);
 const a1 = new RecipeAdapter(mkRecipe([
-  f("#f_name", "Charles", "Name"), f("#f_last", "Bitton", "Last"), f("#f_addr", "808 SE Chkalov Dr", "Address"),
+  f("#f_name", "installerFirstName", "Name"), f("#f_last", "installerLastName", "Last"), f("#f_addr", "installerStreet", "Address"),
   advance,
-  f("#f_name", "Randal", "Name"), f("#f_last", "Rowland", "Last"), f("#f_addr", "7625 NW Logan Rd", "Address"),
+  f("#f_name", "homeownerFirstName", "Name"), f("#f_last", "homeownerLastName", "Last"), f("#f_addr", "street", "Address"),
   advance,
-]), {}, {}, { autoSubmit: false });
+]), FIELD_VALUES, {}, { autoSubmit: false });
 (a1 as unknown as { page: unknown }).page = p1;
 const r1 = await a1.fillApplication({} as never);
 const saved = await p1.evaluate(() => (window as unknown as { __saved: Record<string, { name: string; last: string; addr: string }> }).__saved);
@@ -115,8 +142,8 @@ await p2.goto(url);
 const a2 = new RecipeAdapter(mkRecipe([
   advance,
   advance,
-  f("#f_name", "Randal", "Name"), f("#f_last", "Rowland", "Last"), f("#f_addr", "7625 NW Logan Rd", "Address"),
-]), {}, {}, { autoSubmit: false });
+  f("#f_name", "homeownerFirstName", "Name"), f("#f_last", "homeownerLastName", "Last"), f("#f_addr", "street", "Address"),
+]), FIELD_VALUES, {}, { autoSubmit: false });
 (a2 as unknown as { page: unknown }).page = p2;
 const r2 = await a2.fillApplication({} as never);
 const heading = await p2.locator("#heading").innerText();
