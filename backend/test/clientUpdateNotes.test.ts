@@ -130,6 +130,65 @@ await check("the note reaches the client's portal", () => {
   assert.ok(p.updates[0].at, "an update with no date is not a note");
 });
 
+// ── through the REAL trigger, not the helper ─────────────────────────────────────────────
+//
+// Every check above calls notifyClientOfStatusChange directly, which is why none of them caught
+// this: the ONE production trigger, recordPermitStatusCheck, passed only outcome/statusLabel/
+// targetType. permitNumber and applicationNumber are optional on the signature, so omitting them
+// typechecked in silence and the live note read "has issued the permit." with nothing the client
+// could quote back to the AHJ — while a hand-written demo produced the reference perfectly.
+//
+// Testing through the trigger is the difference between "the wording function can render a
+// reference" and "the client actually receives one".
+await check("THE REFERENCE SURVIVES THE REAL TRIGGER, not just the helper", async () => {
+  const { createProject: mkProject } = await import("../src/repository");
+  const { recordPermitStatusCheck } = await import("../src/repository");
+  const { project: p2 } = mkProject(db, {
+    clientId: client.id, owner: "Trigger Owner", street: "7 Trigger St", city: "Coos Bay",
+    state: "OR", ahj: "City of Coos Bay", utility: "Pacific Power", dcKw: "8", acKw: "6.4",
+  });
+  const now = new Date().toISOString();
+  db.run(
+    `INSERT INTO permit_check_targets (id, project_id, target_type, active, latest_outcome, permit_number, application_number, created_at, updated_at)
+     VALUES ('t-trig', ?, 'permit', 1, 'waiting', '194-26-001471-ELEC', 'APP-99', ?, ?)`,
+    [p2.id, now, now],
+  );
+  await recordPermitStatusCheck(db, p2.id, {
+    targetId: "t-trig", source: "manual", rawStatusText: "Permit issued",
+  });
+  // The notify call is fire-and-forget `void`, so let the microtask queue drain.
+  await new Promise((r) => setTimeout(r, 60));
+  const note = db.get<{ body?: string }>(
+    "SELECT body FROM project_notes WHERE project_id = ? AND note_type = 'client_update' ORDER BY created_at DESC LIMIT 1",
+    [p2.id],
+  );
+  assert.ok(note, "the real trigger wrote no client note at all");
+  assert.match(String(note!.body), /194-26-001471-ELEC/,
+    `the jurisdiction's own reference never reached the client: ${note!.body}`);
+});
+
+await check("THE PAGE DOES NOT DIE WITH THE EMAIL: no address still writes the note", async () => {
+  // notifyClientOfStatusChange returns silently when the client has neither an updates inbox nor
+  // a business email — the trap INTAKE_CHECKLIST.md documents. The note write originally sat
+  // BELOW that return, so a blank address took the portal down with the mail, which is exactly
+  // the "both channels go dark together" the ordering is supposed to prevent. The page needs no
+  // mail server, no base URL and no correct address; it must not inherit their failures.
+  const noAddress = createClient(db, { companyName: "No Address Solar", ccbLicenseNumber: "343434" });
+  const { project: p3 } = createProject(db, {
+    clientId: noAddress.id, owner: "Unreachable Owner", street: "8 Silent Row", city: "Coos Bay",
+    state: "OR", ahj: "City of Coos Bay", utility: "Pacific Power", dcKw: "8", acKw: "6.4",
+  });
+  db.run("UPDATE clients SET business_email = '', updates_inbox = '' WHERE id = ?", [noAddress.id]);
+  await notifyClientOfStatusChange(db, p3, { outcome: "issued", statusLabel: "Permit Issued", targetType: "permit" });
+
+  const note = db.get<{ body?: string }>(
+    "SELECT body FROM project_notes WHERE project_id = ? AND note_type = 'client_update' LIMIT 1", [p3.id],
+  );
+  assert.ok(note, "no address meant no note — the portal went dark with the mail");
+  const comm = db.get<{ n: number }>("SELECT COUNT(*) AS n FROM communications WHERE project_id = ?", [p3.id])!;
+  assert.equal(Number(comm.n), 0, "there is no address, so there should be no email row either");
+});
+
 // ── the leak that would matter most ──────────────────────────────────────────────────────
 await check("MUST EXCLUDE: an INTERNAL note never reaches the portal", () => {
   // project_notes holds pm_note, blocker, handoff and system_note alongside client_update. Those

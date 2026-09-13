@@ -44,10 +44,10 @@ const { undeliveredCommunications } = await import("../src/crm");
 const db = await openDatabase();
 
 let failures = 0;
-const check = (label: string, fn: () => void): void => {
-  try { fn(); console.log(`  ok   - ${label}`); }
-  catch (err) { failures++; console.error(`  FAIL - ${label}\n         ${err instanceof Error ? err.message : String(err)}`); }
-};
+const check = (label: string, fn: () => void | Promise<void>): Promise<void> => Promise.resolve()
+  .then(fn)
+  .then(() => { console.log(`  ok   - ${label}`); })
+  .catch((err) => { failures++; console.error(`  FAIL - ${label}\n         ${err instanceof Error ? err.message : String(err)}`); });
 
 const client = createClient(db, {
   companyName: "Undelivered Solar", ccbLicenseNumber: "777777",
@@ -67,31 +67,31 @@ const row = db.get<Record<string, unknown>>(
   "SELECT * FROM communications WHERE project_id = ? ORDER BY created_at DESC LIMIT 1", [project.id],
 )!;
 
-check("THE HEADLINE: an undelivered message says so in a COLUMN, not in its subject text", () => {
+await check("THE HEADLINE: an undelivered message says so in a COLUMN, not in its subject text", () => {
   assert.ok(row, "the notifier recorded nothing at all");
   assert.equal(row.delivery_status, "draft", `delivery_status was ${JSON.stringify(row.delivery_status)}`);
 });
 
-check("UNCONFIGURED is distinguished from FAILED — they need opposite fixes", () => {
+await check("UNCONFIGURED is distinguished from FAILED — they need opposite fixes", () => {
   // "set SMTP_HOST" and "the mail server rejected us" were the same string before. One is a
   // deployment step that has never been done; the other is an incident.
   assert.match(String(row.delivery_detail), /not configured/i,
     `the reason must say which of the two this is: ${JSON.stringify(row.delivery_detail)}`);
 });
 
-check("the recipient is recorded, so you can see WHO was not told", () => {
+await check("the recipient is recorded, so you can see WHO was not told", () => {
   assert.equal(row.recipient, "permits@undelivered.test",
     "without this, an undelivered row cannot be re-sent or chased without re-deriving the address");
 });
 
-check("the SUBJECT is clean — the prefix is gone, because state is not prose", () => {
+await check("the SUBJECT is clean — the prefix is gone, because state is not prose", () => {
   assert.doesNotMatch(String(row.subject), /^\[/,
     `delivery state is still being smuggled into the subject: ${JSON.stringify(row.subject)}`);
   assert.match(String(row.subject), /^Correction requested — /,
     `the subject must be what we would actually send: ${JSON.stringify(row.subject)}`);
 });
 
-check("MUST COUNT: the question 'what did we fail to send?' is now one call", () => {
+await check("MUST COUNT: the question 'what did we fail to send?' is now one call", () => {
   const undelivered = undeliveredCommunications(db);
   assert.equal(undelivered.length, 1, JSON.stringify(undelivered));
   assert.equal(undelivered[0].projectId, project.id);
@@ -99,7 +99,7 @@ check("MUST COUNT: the question 'what did we fail to send?' is now one call", ()
   assert.match(undelivered[0].subject, /Correction requested/);
 });
 
-check("MUST EXCLUDE: an operator's own note is not an undelivered email", () => {
+await check("MUST EXCLUDE: an operator's own note is not an undelivered email", () => {
   // communications also holds notes, calls and inbound mail. Counting those as delivery failures
   // makes the number useless, which is the same as not having it.
   db.run(
@@ -124,11 +124,25 @@ const legacy = [
   ["legacy-sent", "[sent] Permit issued — 1780 Ocean Blvd"],
   ["legacy-bare", "Permit issued — a row from before either prefix existed"],
 ];
+// The body shape as it really sits on the live database — note the status link, frozen as
+// literal text with the localhost base it was drafted under. Setting PUBLIC_BASE_URL later does
+// not rewrite stored prose, which is the whole point of the re-send check below.
+const LEGACY_BODY = [
+  "Hi TML INTERNATIONAL LLC,",
+  "",
+  "Update on your solar project at 773 Kentuck Way:",
+  "",
+  "City of Coos Bay has issued the permit.",
+  "",
+  "Live status page (no login needed): http://localhost:4173/status?token=frozen-at-draft-time",
+  "",
+  "— Solar Submission Autopilot (automated update; reply to reach the team)",
+].join("\n");
 for (const [rid, subject] of legacy) {
   db.run(
     `INSERT INTO communications (id, project_id, direction, channel, subject, body, logged_by, occurred_at, created_at, org_id)
-     VALUES (?, ?, 'outbound', 'email', ?, 'body', 'client-notifier (automated)', ?, ?, 'org-default')`,
-    [rid, project.id, subject, "2026-09-01T20:30:16.175Z", "2026-09-01T20:30:16.175Z"],
+     VALUES (?, ?, 'outbound', 'email', ?, ?, 'client-notifier (automated)', ?, ?, 'org-default')`,
+    [rid, project.id, subject, LEGACY_BODY, "2026-09-01T20:30:16.175Z", "2026-09-01T20:30:16.175Z"],
   );
 }
 db.run("UPDATE communications SET delivery_status = '', delivery_detail = '', recipient = '' WHERE id LIKE 'legacy-%'");
@@ -136,19 +150,19 @@ db.run("UPDATE communications SET delivery_status = '', delivery_detail = '', re
 db.run("DELETE FROM schema_meta WHERE version >= 25");
 const db2 = await openDatabase();
 
-check("BACKFILL: the stranded draft becomes queryable, and keeps its wording", () => {
+await check("BACKFILL: the stranded draft becomes queryable, and keeps its wording", () => {
   const r = db2.get<Record<string, unknown>>("SELECT * FROM communications WHERE id = 'legacy-draft'")!;
   assert.equal(r.delivery_status, "draft", "the real undelivered rows must be findable after this migration");
   assert.equal(r.subject, "Permit issued — 773 Kentuck Way", `the prefix was not stripped: ${JSON.stringify(r.subject)}`);
 });
 
-check("BACKFILL: a delivered row is marked sent, not lumped in with the failures", () => {
+await check("BACKFILL: a delivered row is marked sent, not lumped in with the failures", () => {
   const r = db2.get<Record<string, unknown>>("SELECT * FROM communications WHERE id = 'legacy-sent'")!;
   assert.equal(r.delivery_status, "sent");
   assert.equal(r.subject, "Permit issued — 1780 Ocean Blvd");
 });
 
-check("MUST NOT INVENT: a row that never carried a prefix is left UNKNOWN, not guessed 'sent'", () => {
+await check("MUST NOT INVENT: a row that never carried a prefix is left UNKNOWN, not guessed 'sent'", () => {
   // Guessing here would be the same class of error as the bug: a confident claim about delivery
   // that nothing checked. An unknown row is excluded from the undelivered count rather than
   // silently counted either way.
@@ -158,14 +172,42 @@ check("MUST NOT INVENT: a row that never carried a prefix is left UNKNOWN, not g
     "an unknown-delivery row must not be reported as a known failure");
 });
 
-check("...and the backfilled draft IS in the count, which is the whole point", () => {
+await check("...and the backfilled draft IS in the count, which is the whole point", () => {
   const ids = undeliveredCommunications(db2).map((c) => c.id);
   assert.ok(ids.includes("legacy-draft"), `the stranded message is still invisible: ${JSON.stringify(ids)}`);
 });
 
-check("v25 is recorded, so this is a migration and not a startup chore", () => {
+await check("v25 is recorded, so this is a migration and not a startup chore", () => {
   assert.equal(db2.get<{ name: string }>("SELECT name FROM schema_meta WHERE version = 25")?.name,
     "communications_delivery_state");
+});
+
+// ── re-sending the backlog ───────────────────────────────────────────────────────────────
+//
+// THE LINK IS FROZEN INTO THE PROSE. Every stranded message was drafted while PUBLIC_BASE_URL
+// was unset, so its body literally contains "http://localhost:4173/status?token=...". Setting
+// the env var later does not rewrite stored text. Re-sending the backlog would therefore deliver
+// a dead link to a real client and then mark the row `sent` — the exact failure
+// scripts/undelivered.ts refuses to risk, arriving through a different door. All three rows on
+// the live database were in this state.
+await check("MUST REWRITE: a re-sent message does not carry the localhost link it was drafted with", async () => {
+  const stale = db2.get<Record<string, unknown>>("SELECT * FROM communications WHERE id = 'legacy-draft'")!;
+  assert.match(String(stale.body), /localhost/, "fixture is wrong — the body should start out with a dead link");
+
+  process.env.PUBLIC_BASE_URL = "https://track.example.test";
+  const { resendCommunication } = await import("../src/clientNotifier");
+  // No SMTP configured, so the send throws and the row goes to `failed` — which is fine here:
+  // what is under test is the BODY that would have gone out, and it is persisted either way.
+  await resendCommunication(db2, {
+    id: "legacy-draft", projectId: project.id, recipient: "ops@undelivered.test",
+    subject: String(stale.subject), body: String(stale.body),
+  });
+  const after = db2.get<Record<string, unknown>>("SELECT body FROM communications WHERE id = 'legacy-draft'")!;
+  delete process.env.PUBLIC_BASE_URL;
+  assert.doesNotMatch(String(after.body), /localhost/,
+    `a client would have received a dead link: ${String(after.body)}`);
+  assert.match(String(after.body), /https:\/\/track\.example\.test\/status\?token=/,
+    `the rebuilt link is missing: ${String(after.body)}`);
 });
 
 db2.close();

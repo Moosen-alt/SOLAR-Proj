@@ -103,6 +103,26 @@ async function sendEmail(to: string, subject: string, textBody: string): Promise
  * Never throws: a failure re-stamps the row and is reported, so a bad address in a backlog of
  * twenty cannot stop the other nineteen.
  */
+/**
+ * Rebuild the status link inside a stored message body.
+ *
+ * THE LINK IS FROZEN INTO THE PROSE. A message drafted while PUBLIC_BASE_URL was unset carries
+ * "Live status page (no login needed): http://localhost:4173/status?token=..." as literal text.
+ * Setting the env var later does not rewrite it, so re-sending the backlog would deliver a dead
+ * link to a real client and then mark the row `sent` — the precise failure scripts/undelivered.ts
+ * refuses to risk, arriving by a different door. All three stranded rows on the live database
+ * were written that way.
+ */
+function refreshStatusLink(db: AppDb, projectId: string | null, body: string): string {
+  if (!projectId) return body;
+  try {
+    const link = statusShareUrl(ensureStatusShareToken(db, projectId));
+    return body.replace(/^Live status page \(no login needed\): .*$/m, `Live status page (no login needed): ${link}`);
+  } catch {
+    return body;   // a body we cannot rewrite still beats not sending
+  }
+}
+
 export async function resendCommunication(
   db: AppDb,
   comm: { id: string; projectId: string | null; recipient: string; subject: string; body: string },
@@ -126,19 +146,23 @@ export async function resendCommunication(
     db.run("UPDATE communications SET delivery_status = 'failed', delivery_detail = ? WHERE id = ?", [detail, comm.id]);
     return { delivered: false, to: "(none)", detail };
   }
+  const body = refreshStatusLink(db, comm.projectId, comm.body);
   try {
-    await sendEmail(to, comm.subject, comm.body);
+    await sendEmail(to, comm.subject, body);
     db.run(
-      "UPDATE communications SET delivery_status = 'sent', delivery_detail = '', recipient = ? WHERE id = ?",
-      [to, comm.id],
+      "UPDATE communications SET delivery_status = 'sent', delivery_detail = '', recipient = ?, body = ? WHERE id = ?",
+      [to, body, comm.id],
     );
     logger.info("notify", `re-sent a stranded client message to ${to} (${comm.subject})`);
     return { delivered: true, to, detail: "" };
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
+    // The rewritten body is persisted on failure TOO. The row should always hold what we would
+    // actually send, so the next attempt starts from the repaired link rather than re-deriving
+    // it — and so a human reading the row sees the message as it now stands.
     db.run(
-      "UPDATE communications SET delivery_status = 'failed', delivery_detail = ?, recipient = ? WHERE id = ?",
-      [detail, to, comm.id],
+      "UPDATE communications SET delivery_status = 'failed', delivery_detail = ?, recipient = ?, body = ? WHERE id = ?",
+      [detail, to, body, comm.id],
     );
     logger.warn("notify", `re-send failed for ${to}: ${detail}`);
     return { delivered: false, to, detail };
@@ -155,6 +179,27 @@ export async function notifyClientOfStatusChange(
   try {
     if (process.env.CLIENT_NOTIFICATIONS === "0" || process.env.CLIENT_NOTIFICATIONS === "false") return;
     if (!project.clientId) return;
+
+    // THE NOTE IS WRITTEN FIRST, BEFORE ANYTHING THAT CAN BAIL OUT.
+    //
+    // It used to sit below the recipient lookup, which meant a client with no updates_inbox AND
+    // no business_email got no portal note either — the silent return INTAKE_CHECKLIST.md
+    // documents, now taking a second channel down with it. That is precisely the "both channels
+    // go dark together" this ordering exists to prevent, and the email backlog already proved
+    // how long that goes unnoticed. The page is the channel that does not need a mail server, a
+    // configured base URL, or a correct address, so it must not inherit their failures.
+    const update = clientUpdateFor(db, project, evt.outcome, {
+      targetType: evt.targetType,
+      permitNumber: evt.permitNumber,
+      applicationNumber: evt.applicationNumber,
+    });
+    if (!update) return;   // not a client-facing outcome; that gate lives in clientUpdates.ts
+    try {
+      recordClientUpdateNote(db, project.id, update);
+    } catch (err) {
+      logger.warn("notify", `could not record the client note: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
     // THE SHARED INBOX IS THE ONE FIELD WHOSE ENTIRE PURPOSE IS THIS MESSAGE.
     //
     // The onboarding guide asks for it as REQUIRED, in these words: "Shared inbox for Keelix
@@ -177,16 +222,7 @@ export async function notifyClientOfStatusChange(
     const link = statusShareUrl(token);
     const address = formatProjectAddress(project);
 
-    // ONE VOICE, TWO CHANNELS. These sentences are also what the client's portal shows as a
-    // note, rendered from the same object — see clientUpdates.ts. Two copies of client-facing
-    // prose drift, and the client then reads one wording in their inbox and a different one on
-    // the page, for the same event, on the same day.
-    const update = clientUpdateFor(db, project, evt.outcome, {
-      targetType: evt.targetType,
-      permitNumber: evt.permitNumber,
-      applicationNumber: evt.applicationNumber,
-    });
-    if (!update) return;   // not a client-facing outcome; that gate lives in clientUpdates.ts
+    // ONE VOICE, TWO CHANNELS: the same `update` the note above was rendered from.
     const subject = `${update.subject} — ${address || project.homeownerName || project.id}`;
     const body = clientUpdateEmailBody(update, {
       company: String(client?.company_name || ""),
@@ -194,15 +230,6 @@ export async function notifyClientOfStatusChange(
       statusLine: evt.statusLabel || evt.outcome,
       link,
     });
-
-    // The same words, on the page. Written BEFORE the send is attempted, deliberately: the
-    // portal note must not depend on SMTP being configured, or both channels go dark together
-    // — which is exactly what happened to the emails for twelve days.
-    try {
-      recordClientUpdateNote(db, project.id, update);
-    } catch (err) {
-      logger.warn("notify", `could not record the client note: ${err instanceof Error ? err.message : String(err)}`);
-    }
 
     // THE TWO WAYS THIS DOES NOT ARRIVE ARE DIFFERENT PROBLEMS, so they are recorded as
     // different statuses. "draft" means we never tried — SMTP_HOST/SMTP_FROM are unset, which is

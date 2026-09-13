@@ -4770,6 +4770,12 @@ export async function recordPermitStatusCheck(
       outcome: classification.outcome,
       statusLabel: classification.statusLabel,
       targetType: text(target?.target_type) || "permit",
+      // The jurisdiction's own reference. Without these the client update reads "has issued the
+      // permit." with nothing they can quote back to the AHJ — the whole point of the sentence is
+      // that they can look it up themselves. Optional on the signature, so omitting them
+      // typechecked silently and only production was affected.
+      permitNumber: text(target?.permit_number),
+      applicationNumber: text(target?.application_number),
     });
   }
 
