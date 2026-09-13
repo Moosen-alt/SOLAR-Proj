@@ -113,9 +113,17 @@ check("A REAL BATTERY still files its declaration and its specs",
   /^yes$/i.test(yes.ess) && yes.cap === "27" && /tesla/i.test(yes.make),
   `ess=${JSON.stringify(yes.ess)} cap=${JSON.stringify(yes.cap)} make=${JSON.stringify(yes.make)}`);
 
+// A BLANK USED TO SATISFY THIS CHECK, WHICH MADE IT NO CHECK AT ALL.
+//
+// It asserted only `cap !== "13.5"`, and "" is not "13.5" — so while the capacity was being
+// refused outright and filed as nothing, this stayed green and reported that the right
+// number had gone in. It was the empty box, measured: the smoke above was red for the
+// capacity and this line said the capacity was fine. An assertion must name the value it
+// wants, not the one it fears.
 check("...and the capacity filed is THIS roof's, not the 13.5 kWh the recipe recorded",
-  yes.cap !== "13.5",
-  `capacity=${JSON.stringify(yes.cap)} — the learn project's Powerwall, filed as fact about a different house`);
+  yes.cap === "27" && yes.cap !== "13.5",
+  `capacity=${JSON.stringify(yes.cap)} — wanted this roof's "27". A BLANK is not a pass here: `
+  + `"" is not "13.5" either, and that is how this check once stayed green over an empty box.`);
 
 // A SNAPSHOT THAT NEVER WENT THROUGH normalize.ts still has a battery. essKwh is the
 // canonical key normalize derives; batteryCapacityKwh is what the parser itself emits, and
