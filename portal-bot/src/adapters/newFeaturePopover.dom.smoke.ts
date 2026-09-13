@@ -97,9 +97,19 @@ const navigate: RecipeStep = {
   action: "click", phase: "fill", selector: { css: "#newapp" },
   note: "navigate to application: New Pacific Power Customer Generation",
 } as RecipeStep;
+// BOUND, NOT FROZEN. This step exists only as proof that the step AFTER the popover ran, but
+// it used to carry "Randal" as an unbound literal under the label "Name" — which is the shape
+// of the cross-project leak recipeAdapter's looksLikeProjectData guard refuses: a recipe is
+// SHARED, so a person's name frozen into one replays onto every later customer. The guard was
+// widened to cover a bare "Name" (the label PowerClerk, PGE and Ameren all print beside their
+// contact box, and previously the one it matched nothing for), so the literal is now correctly
+// blanked and this fixture stopped proving what it names. Binding it is what a real recorded
+// contact step carries anyway.
 const fillName: RecipeStep = {
-  action: "fill", phase: "fill", selector: { css: "#first" }, value: "Randal", note: "Name",
+  action: "fill", phase: "fill", selector: { css: "#first" }, value: "Randal",
+  field: "homeownerFirstName", note: "Name",
 } as RecipeStep;
+const NAME_VALUES = { homeownerFirstName: "Randal" };
 
 const browser = await chromium.launch();
 const context = await browser.newContext();
@@ -111,7 +121,7 @@ await context.addInitScript("globalThis.__name = globalThis.__name || function (
 // CASE 1 — the popover is up, anchored over the button, and its "Got it" never closes it.
 const blocked = await context.newPage();
 await blocked.goto(`${base}/`);
-const a1 = new RecipeAdapter(mkRecipe(`${base}/`, [navigate, fillName]), {}, {}, { autoSubmit: false });
+const a1 = new RecipeAdapter(mkRecipe(`${base}/`, [navigate, fillName]), NAME_VALUES, {}, { autoSubmit: false });
 (a1 as unknown as { page: unknown }).page = blocked;
 const r1 = await a1.fillApplication({} as never);
 const reached = await blocked.locator("#page2").isVisible();
@@ -137,7 +147,7 @@ check("the run actually progressed to the next page", () => {
 loads = 0;
 const clean = await context.newPage();
 await clean.goto(`${base}/clean`);
-const a2 = new RecipeAdapter(mkRecipe(`${base}/clean`, [navigate, fillName]), {}, {}, { autoSubmit: false });
+const a2 = new RecipeAdapter(mkRecipe(`${base}/clean`, [navigate, fillName]), NAME_VALUES, {}, { autoSubmit: false });
 (a2 as unknown as { page: unknown }).page = clean;
 const r2 = await a2.fillApplication({} as never);
 const reached2 = await clean.locator("#page2").isVisible();

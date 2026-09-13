@@ -26,6 +26,28 @@ const PROJECT_DATA_LABEL = /\b(owner|homeowner|applicant|customer|contact|first\
 const UNAMBIGUOUS_PII_VALUE = /^[^@\s]+@[^@\s]+\.[a-z]{2,}$/i /* email */;
 const PHONE_VALUE = /^\+?\d[\d\s().-]{8,}$/;
 
+// "NAME" ON ITS OWN IS THE COMMONEST LABEL A PORTAL PRINTS, AND IT MATCHED NOTHING.
+//
+// PROJECT_DATA_LABEL asks for "owner name", "first name", "customer"… so a box labelled just
+// "Name" — which is what PowerClerk, PGE and Ameren all print beside their contact fields —
+// fell through every rule and the recorded literal replayed. This is the leak the guard above
+// was written to close, still open for the label it is most likely to arrive under, and it is
+// visible in the DOM suite right now: finalPageReassert files Name="ZZTest Replay Benchmark"
+// and identicalSections files "Charles"/"Bitton" in checks that PASS.
+//
+// Widened on evidence rather than on instinct. Every step in the 76 recorded recipes whose
+// label contains "name" was read first: all 36 person-name steps are already BOUND (to
+// homeownerFirstName, installerLastName…), so this rule costs them nothing — and the ONLY
+// unbound "name" literals in the whole corpus are two copies of
+//     "Permit Name" = "Solar PV System Installation"
+// which is the portal's word for the kind of permit, not anybody's name. Blanking that would
+// have traded a hypothetical leak for a real blank required field, so a label that names a
+// THING is excluded explicitly. "Project Name" is deliberately NOT on that list: on the live
+// Ameren recipe it is bound to projectAddress, because a project's name is usually the
+// customer's address or the customer.
+const BARE_NAME_LABEL = /\bnames?\b/i;
+const NAMES_A_THING_NOT_A_PERSON = /\b(permit|file|document|program|record|application|template|report|folder|attachment|field|column|tab|page)\s*names?\b/i;
+
 export function looksLikeProjectData(label: string, value: string): boolean {
   const l = String(label ?? "");
   const v = String(value ?? "").trim();
@@ -34,6 +56,8 @@ export function looksLikeProjectData(label: string, value: string): boolean {
   // though "category" sits near words we treat as project data elsewhere.
   if (TAXONOMY_LABEL.test(l) && !PROJECT_DATA_LABEL.test(l)) return false;
   if (PROJECT_DATA_LABEL.test(l)) return true;
+  // A bare "Name" is a person's until the label says it is a thing's — see the comment above.
+  if (BARE_NAME_LABEL.test(l) && !NAMES_A_THING_NOT_A_PERSON.test(l)) return true;
   return UNAMBIGUOUS_PII_VALUE.test(v) || PHONE_VALUE.test(v);
 }
 import { rankAddressVersions } from "../addressVersion";

@@ -143,6 +143,27 @@ results.frozenPii = await run([
   { action: "fill", selector: { label: "Service Address" }, value: A_ADDRESS } as RecipeStep,
 ]);
 
+// THE COMMONEST LABEL ON ANY PORTAL, AND IT WAS THE ONE CASE NOT COVERED HERE.
+//
+// Every leak case above names the customer in the LABEL — "Owner Name", "Service Address",
+// "System Size (W)". PowerClerk, PGE and Ameren all print their contact box as just "Name",
+// which matched no rule in the guard, so the recorded person replayed. A DOM-suite census
+// found it filing "ZZTest Replay Benchmark" and "Charles"/"Bitton" in checks that PASSED.
+results.bareNameLabel = await run([
+  { action: "fill", selector: { label: "Name" }, field: "ownerFullName", value: A_HOMEOWNER } as RecipeStep,
+]);
+results.bareNameNoSection = await run([
+  { action: "fill", selector: { label: "Designer Direct Contact Name" }, value: A_HOMEOWNER } as RecipeStep,
+]);
+
+// MUST STILL WORK: a label that names a THING, not a person. This is the only unbound
+// "name" literal in all 76 recorded recipes — "Permit Name" = "Solar PV System Installation",
+// the portal's word for the kind of permit. Blanking it would trade a leak for a blank
+// required field, which is the trade this guard exists to avoid making blindly.
+results.thingNotPerson = await run([
+  { action: "fill", selector: { label: "Permit Name" }, value: "Solar PV System Installation" } as RecipeStep,
+]);
+
 // The control case: a properly bound step MUST resolve to B's value.
 results.boundCorrectly = await run([
   { action: "fill", selector: { label: "Homeowner" }, field: "homeownerName", value: A_HOMEOWNER } as RecipeStep,
@@ -164,7 +185,8 @@ results.unboundVocabulary = await run([
   { action: "select", selector: { label: "Work Type" }, value: "SOLAR PANEL" } as RecipeStep,
 ]);
 
-const leakCases = [results.unknownBinding, results.frozenLiteral, results.frozenPii, results.boundCorrectly];
+const leakCases = [results.unknownBinding, results.frozenLiteral, results.frozenPii, results.boundCorrectly,
+  results.bareNameLabel, results.bareNameNoSection];
 const allTyped = leakCases.map(typed).join(" || ");
 console.log(`   typed across all cases: ${allTyped}`);
 
@@ -194,6 +216,23 @@ check("MUST NOT: an unknown binding key replays the learn project's homeowner", 
 check("MUST NOT: a frozen unmatched literal replays the learn project's system size", () => {
   assert.ok(!typed(results.frozenLiteral).includes(A_SIZE_W),
     `WRONG DATA: project A's ${A_SIZE_W} W was typed for project B, whose system is ${fieldValuesB.systemSizeKw} kW (typed: ${JSON.stringify(typed(results.frozenLiteral))})`);
+});
+
+check("MUST NOT: a bare \"Name\" label replays the learn project's person", () => {
+  // The label PowerClerk, PGE and Ameren all print beside their contact box. It named
+  // nothing in the guard's vocabulary, so the recorded person replayed onto every customer.
+  assert.ok(!typed(results.bareNameLabel).includes(A_HOMEOWNER),
+    `a bare "Name" replayed project A's homeowner (typed: ${JSON.stringify(typed(results.bareNameLabel))})`);
+  assert.ok(!typed(results.bareNameNoSection).includes(A_HOMEOWNER),
+    `a contact-name label replayed project A's homeowner (typed: ${JSON.stringify(typed(results.bareNameNoSection))})`);
+});
+
+check("MUST STILL WORK: a label that names a THING, not a person, still replays", () => {
+  // "Permit Name" = "Solar PV System Installation" is the ONLY unbound "name" literal in all
+  // 76 recorded recipes, and it is the portal's own word. Blanking it would trade a leak for
+  // a blank required field.
+  assert.ok(typed(results.thingNotPerson).includes("Solar PV System Installation"),
+    `a portal constant on a "…Name" label was blanked (typed: ${JSON.stringify(typed(results.thingNotPerson))})`);
 });
 
 check("MUST NOT: a frozen unmatched literal replays the learn project's address", () => {
