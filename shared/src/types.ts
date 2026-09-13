@@ -1747,6 +1747,15 @@ export interface AhjFormUrlResult {
   submittalRequirements?: string;
   /** Permit structure: "combo" (one combined permit) vs "separate" (distinct BLD + ELE permits). */
   permitStructure?: "combo" | "separate" | "unknown";
+  /** TRUE when the lookup could not be MADE — the web-search call errored or timed out — as
+   *  opposed to being made and finding nothing. Without it a 45-second abort is reported as
+   *  "this AHJ has no forms page", which is a claim about the jurisdiction rather than about us,
+   *  and the operator goes looking for a page that is very likely sitting there. Measured on
+   *  City of Salem: findAhjFormUrl aborted at 45,016ms and the harvest printed "research found
+   *  no forms page (0 direct candidates)". */
+  lookupFailed?: boolean;
+  /** Why it could not be made, when it could not. */
+  lookupError?: string;
 }
 
 export interface AhjFieldMapResult {

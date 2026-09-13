@@ -1785,10 +1785,19 @@ Rules:
 - Prefer the most current year's form. Return valid JSON only.`;
     const userMsg = `AHJ: ${input.ahj}\nState: ${input.state}\nForm needed: residential solar ${formType.replace(/_/g, " ")} (building + electrical permit applications).${input.knownContext ? `\n\n${input.knownContext}\nStart from the known portal/URLs above when searching.` : ""}\nFind the AHJ's forms/applications page and the direct blank PDF links.`;
     let parsed: Partial<AhjFormUrlResult> = {};
+    let lookupError = "";
     try {
-      parsed = this.parseJson(await this.askWithWebSearch("findAhjFormUrl", system, userMsg), {});
+      // A GROUNDED SEARCH NEEDS A GROUNDED BUDGET. This ran on askWithWebSearch's 45-second
+      // default while making up to three web searches, and on City of Salem it aborted at
+      // 45,016ms — after which the harvest reported "research found no forms page", a claim
+      // about the jurisdiction rather than about us. The fee researcher already uses 240s for
+      // the same kind of call (FEE_RESEARCH_CLIENT_TIMEOUT_MS); this matches it and stays
+      // env-overridable for a machine on a slower link.
+      const budgetMs = Math.max(45000, Number(process.env.AHJ_FORM_LOOKUP_TIMEOUT_MS) || 180000);
+      parsed = this.parseJson(await this.askWithWebSearch("findAhjFormUrl", system, userMsg, 1024, 3, budgetMs), {});
     } catch (err) {
-      logger.warn("llm", "findAhjFormUrl web search failed", { ahj: input.ahj, state: input.state, err: errMsg(err) });
+      lookupError = errMsg(err);
+      logger.warn("llm", "findAhjFormUrl web search failed", { ahj: input.ahj, state: input.state, err: lookupError });
     }
     const urls = Array.isArray(parsed.candidateUrls)
       ? parsed.candidateUrls.map((u) => String(u)).filter((u) => /^https?:\/\//i.test(u))
@@ -1808,6 +1817,9 @@ Rules:
       portalPlatform: String(parsed.portalPlatform || ""),
       submittalRequirements: String(parsed.submittalRequirements || ""),
       permitStructure: (["combo", "separate", "unknown"].includes(String(parsed.permitStructure)) ? parsed.permitStructure : "unknown") as "combo" | "separate" | "unknown",
+      // "We could not look" is a different report from "we looked and there is nothing".
+      lookupFailed: Boolean(lookupError),
+      lookupError,
     };
   }
 

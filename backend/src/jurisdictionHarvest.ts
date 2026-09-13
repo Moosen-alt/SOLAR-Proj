@@ -333,7 +333,16 @@ export const defaultPageFinder: HarvestPageFinder = async ({ db, state, ahj, uti
     const research = await llm.findAhjFormUrl({ ahj, state, formType: "permit_application", knownContext: hint?.text });
     const page = squash(research.formsPageUrl);
     for (const u of research.candidateUrls || []) if (!directUrls.includes(u)) directUrls.push(u);
-    hows.push(page ? `research: ${page}` : `research found no forms page (${research.candidateUrls?.length || 0} direct candidate(s))`);
+    // "WE COULD NOT LOOK" IS NOT "THERE IS NOTHING THERE". findAhjFormUrl swallows its own
+    // failure and returns an empty result, so a web-search call that ABORTED read here as a
+    // finding about the jurisdiction. Measured on City of Salem: the call died at 45,016ms and
+    // this line printed "research found no forms page (0 direct candidates)" — sending an
+    // operator to look for a page that is very probably sitting on the city's website.
+    hows.push(page
+      ? `research: ${page}`
+      : research.lookupFailed
+        ? `research COULD NOT RUN (${research.lookupError || "the web-search call failed"}) — this says nothing about whether ${ahj} publishes a forms page; retry before concluding anything`
+        : `research ran and found no forms page (${research.candidateUrls?.length || 0} direct candidate(s))`);
     return { pageUrl: page, directUrls, how: hows.join("; ") };
   } catch (err) {
     hows.push(`research failed: ${err instanceof Error ? err.message : String(err)}`);
