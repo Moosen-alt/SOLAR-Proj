@@ -24,6 +24,37 @@ export interface ApplicationEntryMatch {
   href?: string;
 }
 
+// "SUBMIT AN APPLICATION" IS A DOOR; "SUBMIT APPLICATION" IS THE FILE BUTTON.
+//
+// These are two different questions wearing one word, and the difference is grammatical
+// rather than cosmetic. A start-here link NAMES the thing you are beginning — a determiner
+// plus a noun, "Submit an Application/Request". A final submit is an imperative acting on
+// the form already filled — "Submit", "Submit Application", "Submit Form". Measured on this
+// fleet rather than assumed:
+//
+//   - Banked recipe ca8cacd0 (Frederick County MD, planningandpermitting.frederickcountymd.gov,
+//     Momentum/CIVICS) records "Submit an Application/Request" as step 1, phase "open", note
+//     "application entry" — and the walk went on to fill 3 fields and click "Save & Continue"
+//     AFTER clicking it. A final submit ENDS a run; this one began one. The recipe is
+//     needs_rerecord, so the exclusion was not blocking a hypothetical portal: it was
+//     blocking the re-learn that jurisdiction needs, at step 1, with "No 'start an
+//     application' control found on this page."
+//   - Every isFinalSubmit label banked across all 76 recipes is determiner-less: "Submit",
+//     "SUBMIT APPLICATION", "Submit Form", "submit_form", "Complete Application",
+//     "Continue Application »". Not one carries "a"/"an" + a noun.
+//   - permiteyes.us, the incident that created the exclusion below (a25311d), files with
+//     <input type=submit value="Submit Application">. No determiner. Still refused, and its
+//     smoke (enterSubmitGuard.dom.smoke) still asserts the form is never submitted.
+//
+// END-ANCHORED on purpose: the phrase must BE the whole label, so "Submit an Application Fee"
+// (a payment) and "Submit an Application Status Search" cannot ride in on it. The slash tail
+// is Frederick's own wording and is allowed only between these same start nouns.
+//
+// This admits a label; it does not admit a PAGE. The structural half of the guard lives in
+// findApplicationEntry, which refuses any submit-worded candidate on a form-shaped page.
+const SUBMIT_START_PHRASE =
+  /\bsubmit (?:a|an) (?:new )?(?:application|permit|request|submittal)(?:\s*\/\s*(?:application|permit|request|submittal))?\s*$/i;
+
 // Controls that begin a NEW application. Ordered most-specific → most-generic so the
 // diagnostic label is the meaningful one when several match.
 const ENTRY_PATTERNS: RegExp[] = [
@@ -41,6 +72,11 @@ const ENTRY_PATTERNS: RegExp[] = [
   // apps) the un-qualified pattern clicked the file button and submitted. Safety rule #1:
   // automation never clicks final submit.
   /\bsubmit (a |an )?new (application|permit)\b/i,
+  // The determiner-led start phrase — Frederick County MD's "Submit an Application/Request".
+  // See SUBMIT_START_PHRASE above for why an article separates a door from a file button.
+  // A positive pattern was needed as well as the exclusion carve-out: measured, NONE of the
+  // other eight patterns matches this label, so relaxing the exclusion alone left it refused.
+  SUBMIT_START_PHRASE,
   /\bapply online\b/i,                                  // SmartGov
   /\bcreate (a |an )?(new )?(permit|record|case)\b/i,
   /\bpermit application\b/i,
@@ -97,9 +133,15 @@ export function isExcludedEntryLabel(label: string): boolean {
   // FINAL-SUBMIT CONTROLS ARE NEVER ENTRY. "Submit Application" / "Submit" / "File" /
   // "Finish" files the form; entering the flow never requires one. Excluded outright UNLESS
   // the label carries "new" (an unambiguous "start a new application"), which a final-submit
-  // button never does. Safety rule #1 — the entry pass runs before any fill, so on a portal
-  // whose landing page is the form itself this is the last guard before an accidental filing.
-  if (/\b(submit|file|finish|finalize)\b/i.test(text) && !/\bnew\b/i.test(text)) return true;
+  // button never does — or IS the determiner-led start phrase, which one never is either
+  // (checked against every isFinalSubmit label this fleet has banked; see
+  // SUBMIT_START_PHRASE). "file"/"finish"/"finalize" get no such carve-out: nothing in the
+  // KB shows them naming a door, and a rule widened past its evidence is how this one broke
+  // Frederick County in the first place.
+  // Safety rule #1 — the entry pass runs before any fill, so on a portal whose landing page
+  // is the form itself this is the last LABEL guard before an accidental filing; the page
+  // guard in findApplicationEntry is the structural one behind it.
+  if (/\b(submit|file|finish|finalize)\b/i.test(text) && !/\bnew\b/i.test(text) && !SUBMIT_START_PHRASE.test(text)) return true;
   return EXCLUDE_PATTERNS.some((re) => re.test(text));
 }
 
@@ -127,13 +169,21 @@ export async function findApplicationEntry(page: Page): Promise<{ locator: Locat
   let best: { locator: Locator; match: ApplicationEntryMatch; rank: number } | null = null;
 
   for (const scope of scopes) {
-    let candidates: Array<{ label: string; href: string; index: number; fromText: boolean }> = [];
+    let scan: { candidates: Array<{ label: string; href: string; index: number; fromText: boolean }>; fillable: number } =
+      { candidates: [], fillable: 0 };
     try {
-      candidates = await (scope as Frame).evaluate(() => {
+      scan = await (scope as Frame).evaluate(() => {
         const vis = (el: Element) => {
           const r = (el as HTMLElement).getBoundingClientRect();
           return r.width > 0 && r.height > 0;
         };
+        // HOW MANY FIELDS THIS PAGE WANTS FILLED — the structural half of the submit guard
+        // below. Counted here, in the same pass as the candidates, so it describes the exact
+        // frame the candidate was found in rather than the top document.
+        const fillable = (Array.from(document.querySelectorAll("input, select, textarea")) as HTMLElement[])
+          .filter(vis)
+          .filter((el) => !/^(button|submit|reset|hidden|image)$/i.test((el as HTMLInputElement).type || ""))
+          .length;
         // THE VISIBLE TEXT IS OFTEN NOT THE NAME. Newer portals put the entry on a floating
         // action button whose content is "+" or an icon-font ligature, with the real name in
         // aria-label or a hover tooltip (title) — ComEd's interconnection portal is exactly
@@ -143,7 +193,7 @@ export async function findApplicationEntry(page: Page): Promise<{ locator: Locat
         // tooltip. Order matters — a normal button's visible text still wins, because that
         // is what a person reads.
         const meaningful = (t: string): boolean => t.length >= 3 && !/^[+\-–—·•*]+$/.test(t) && !/^[a-z][a-z0-9_]{1,24}$/.test(t);
-        return (Array.from(document.querySelectorAll("a, button, input[type=button], input[type=submit], [role=button]")) as HTMLElement[])
+        const candidates = (Array.from(document.querySelectorAll("a, button, input[type=button], input[type=submit], [role=button]")) as HTMLElement[])
           .filter(vis)
           .map((el, index) => {
             const own = ((el as HTMLInputElement).value || el.textContent || "").replace(/\s+/g, " ").trim();
@@ -158,10 +208,27 @@ export async function findApplicationEntry(page: Page): Promise<{ locator: Locat
             };
           })
           .filter((c) => c.label);
+        return { candidates, fillable };
       });
     } catch { continue; } // cross-origin frame
-    for (const c of candidates) {
+    // THE PAGE HAS TO LOOK LIKE A DASHBOARD, NOT LIKE THE FORM ITSELF.
+    //
+    // The article in SUBMIT_START_PHRASE is a grammar argument; this is a structural one, and
+    // hard rule #1 deserves both rather than either. The incident that created the submit
+    // exclusion (a25311d) was permiteyes.us, whose LANDING PAGE IS a 176-field single-page
+    // application — the entry pass runs before anything has been filled and cannot tell from
+    // a label alone which kind of page it is standing on. So a submit-worded candidate is
+    // refused outright wherever the frame carries more than a handful of fillable controls,
+    // and both halves would have to be wrong at once for the pass to press a file button.
+    //
+    // Same threshold and the same reasoning as pressEnterInLastFilledField's (>5): a
+    // dashboard's search box is one or two controls, an application is dozens. Only
+    // submit-worded labels are gated — a portal is perfectly free to put "Create an
+    // Application" or "Apply Here" beside a filter panel, and those keep working.
+    const formShaped = scan.fillable > 5;
+    for (const c of scan.candidates) {
       if (!matchesEntryLabel(c.label)) continue;
+      if (formShaped && /\bsubmit\b/i.test(c.label)) continue;
       const rank = entryRank(c.label);
       if (best && rank >= best.rank) continue;
       // Re-locate the way the label was DERIVED. A label taken from aria-label or a tooltip

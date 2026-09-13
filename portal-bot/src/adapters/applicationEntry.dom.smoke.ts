@@ -117,6 +117,36 @@ const PAGES: Record<string, string> = {
     <button title="New Application">+</button>
   </body>`,
 
+  // Frederick County MD (Momentum/CIVICS), from its own banked recipe ca8cacd0: the
+  // logged-in dashboard's start-here link is worded "Submit an Application/Request", and the
+  // recipe's step 1 clicks it and then goes on to FILL. A dashboard legitimately carries a
+  // search box or two, which is why the form-shape guard is a handful of fields and not one.
+  "/frederick": `<!doctype html><body>
+    <input type="text" placeholder="Search my records">
+    <a href="/my-dashboard">My Dashboard</a>
+    <a href="/apply">Submit an Application/Request</a>
+    <a href="/pay">Pay Fees Due</a>
+    <a href="/search">Search Applications</a>
+  </body>`,
+  // permiteyes.us's shape: the LANDING PAGE IS THE APPLICATION. The label here is the
+  // determiner-led one the label rule admits, so only the page-shape guard can refuse it.
+  "/single-page-form": `<!doctype html><body>
+    <form onsubmit="document.title='FILED';return false;">
+      <input name="a"><input name="b"><input name="c"><input name="d">
+      <input name="e"><input name="f"><input name="g"><textarea name="h"></textarea>
+      <button type="submit">Submit an Application</button>
+    </form>
+  </body>`,
+  // A sparse page — dashboard-shaped, so the form guard cannot be what refuses these —
+  // offering nothing but genuine final-submit controls, worded as this fleet actually banks
+  // them (see the isFinalSubmit labels pinned below).
+  "/final-submit-only": `<!doctype html><body>
+    <input type="submit" value="Submit Application">
+    <button>Submit</button>
+    <button>Complete Application</button>
+    <button>Continue Application »</button>
+  </body>`,
+
   // A mobile-first home where the whole menu — entry included — is behind a hamburger.
   // Verified live: Momentum's logged-in home offers only "Open Navigation Menu".
   "/collapsed-nav": `<!doctype html><body>
@@ -266,6 +296,56 @@ await check("a checklist/instructions document is never mistaken for the way in"
   for (const doc of documents) {
     assert.equal(isExcludedEntryLabel(doc), true, `should exclude: ${doc}`);
     assert.equal(matchesEntryLabel(doc), false, `should not match: ${doc}`);
+  }
+});
+
+// AN ENTRY LINK THAT SAYS "SUBMIT" — AND THE TWO THINGS THAT KEEP IT FROM BEING A FILING.
+//
+// "Submit an Application/Request" is Frederick County MD's start-here link, recorded as step
+// 1 (phase "open") of banked recipe ca8cacd0 with three fills and a "Save & Continue" AFTER
+// it — a final submit ends a run, this one began one. Before this, isExcludedEntryLabel
+// refused every "submit" label without "new", so that jurisdiction's re-learn (the recipe is
+// needs_rerecord) stopped at "No 'start an application' control found on this page."
+//
+// The exclusion existed for permiteyes.us, whose landing page IS a 176-field application, so
+// the separation has to hold on evidence rather than on wording alone. Two independent
+// guards, each pinned below on its own:
+//   1. GRAMMAR — a door names what you are beginning ("Submit an Application/Request");
+//      a file button is a bare imperative. Every isFinalSubmit label across all 76 banked
+//      recipes is determiner-less: "Submit", "SUBMIT APPLICATION", "Submit Form",
+//      "submit_form", "Complete Application", "Continue Application »".
+//   2. PAGE SHAPE — a submit-worded candidate is refused on any frame carrying more than a
+//      handful of fillable controls, which is exactly what permiteyes is and what a
+//      dashboard is not.
+await check("Frederick County MD: 'Submit an Application/Request' is a door, and is entered", () =>
+  expectEntry("/frederick", "Submit an Application/Request"));
+
+await check("MUST EXCLUDE: the same label on a page that IS the form is refused", async () => {
+  await page.goto(`http://127.0.0.1:${port}/single-page-form`);
+  // The premise: guard 1 admits this label, so a null below can only be guard 2 doing it.
+  assert.equal(matchesEntryLabel("Submit an Application"), true, "the label itself is admitted — that's the premise");
+  const found = await findApplicationEntry(page);
+  assert.equal(found, null, `must not offer ${JSON.stringify(found?.match.label)} on a 176-field-shaped page`);
+  assert.notEqual(await page.title(), "FILED", "and nothing may have been submitted");
+});
+
+await check("MUST EXCLUDE: a genuine final-submit control is never an entry candidate", async () => {
+  // This page is SPARSE — no fillable inputs at all — so the form-shape guard cannot fire and
+  // the label rule has to carry it alone.
+  await page.goto(`http://127.0.0.1:${port}/final-submit-only`);
+  const found = await findApplicationEntry(page);
+  assert.equal(found, null, `must not pick ${JSON.stringify(found?.match.label)}`);
+  // Every isFinalSubmit label this fleet has actually banked, label-by-label.
+  for (const final of ["Submit Application", "SUBMIT APPLICATION", "Submit Form", "Submit",
+                       "submit_form", "Complete Application", "Continue Application »",
+                       "Submit", "File Application", "Finish", "Finalize Submission"]) {
+    assert.equal(matchesEntryLabel(final), false, `should NOT be an entry: ${final}`);
+  }
+  // …and the near-misses the carve-out must not widen into: a fee is a payment, a status
+  // search reaches into real filings.
+  for (const near of ["Submit an Application Fee", "Submit an Application Status Search",
+                      "Submit a Payment", "File an Application"]) {
+    assert.equal(matchesEntryLabel(near), false, `carve-out leaked: ${near}`);
   }
 });
 

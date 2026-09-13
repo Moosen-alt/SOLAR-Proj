@@ -76,6 +76,49 @@ check("a permit whose name happens to contain a legal word is not eaten", () => 
   assert.equal(isExcludedEntryLabel("Owner Consent Form"), false);
 });
 
+// ---------------------------------------------------------------------------
+// A DOOR THAT SAYS "SUBMIT". The exclusion refuses any "submit" label without "new", which
+// is right for a file button and wrong for Frederick County MD (Momentum/CIVICS), whose
+// logged-in dashboard starts an application at "Submit an Application/Request" — banked as
+// step 1, phase "open", of recipe ca8cacd0, with three fills and a "Save & Continue" AFTER
+// it. The carve-out is the determiner: a door NAMES what you begin, a file button is a bare
+// imperative. Measured, not assumed — every isFinalSubmit label across all 76 banked recipes
+// is determiner-less, and they are pinned here as the must-exclude side.
+// ---------------------------------------------------------------------------
+check("the determiner-led start phrase is a door, not a filing", () => {
+  // Kept to the width of the evidence: determiner + a start noun, and nothing else. There is
+  // no banked portal wording a door "Submit a <qualifier> Application", so the phrase is not
+  // widened to admit one — an exclusion widened past its evidence is what broke Frederick.
+  for (const label of ["Submit an Application/Request", "Submit an Application", "Submit a Request",
+                       "Submit a New Application"]) {
+    assert.equal(isExcludedEntryLabel(label), false, `wrongly excluded: ${label}`);
+    assert.equal(matchesEntryLabel(label), true, `no longer matches: ${label}`);
+  }
+});
+
+check("MUST EXCLUDE: every final-submit label this fleet has banked", () => {
+  // Taken from the isFinalSubmit steps in portal_recipes, verbatim.
+  for (const label of ["Submit Application", "SUBMIT APPLICATION", "Submit Form", "Submit",
+                       "submit_form", "Complete Application", "Continue Application »"]) {
+    assert.equal(matchesEntryLabel(label), false, `should NOT be an entry: ${label}`);
+  }
+  // The submit/file/finish family is refused by the exclusion itself, not merely by failing
+  // to match a positive pattern — so a future pattern cannot quietly re-admit one.
+  for (const label of ["Submit Application", "SUBMIT APPLICATION", "Submit Form", "Submit",
+                       "File Application", "File an Application", "Finish", "Finalize Submission"]) {
+    assert.equal(isExcludedEntryLabel(label), true, `not excluded: ${label}`);
+  }
+});
+
+check("MUST EXCLUDE: the carve-out is end-anchored and does not widen", () => {
+  // A fee is a payment and a status search reaches into real filings; both start with the
+  // admitted phrase and must still die. This is why SUBMIT_START_PHRASE ends at the noun.
+  for (const label of ["Submit an Application Fee", "Submit an Application Status Search",
+                       "Submit a Payment", "Submit a Request for Inspection"]) {
+    assert.equal(matchesEntryLabel(label), false, `carve-out leaked: ${label}`);
+  }
+});
+
 check("the checklist exclusion that came before it still holds", () => {
   assert.equal(isExcludedEntryLabel("Permit Application Checklist"), true);
   assert.equal(isExcludedEntryLabel("Application Instructions"), true);
