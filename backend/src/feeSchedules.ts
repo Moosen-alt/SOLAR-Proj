@@ -1590,6 +1590,39 @@ function matchBracket(brackets: FeeBracket[], value: number, kind: "kw" | "valua
   return null;
 }
 
+// A ROW THAT DESCRIBES A FORMULA CANNOT ANSWER WITH A SINGLE NUMBER.
+//
+// Measured while pricing Portland as a brand-new AHJ. Its schedule's top row reads "Solar
+// Generation System Over 25 KVA — Each kva over 25.012 up to 100 kva | $15.52", and the
+// researcher stored feeUsd 15.52 — the RATE — with the formula in the label. matchBracket then
+// hands a 40 kVA job $15.52, where the real fee is $391 for the first 25 plus 15.52 x ~15, about
+// $624. A 40x under-quote, sourced, quotable and completely confident.
+//
+// Every jurisdiction priced so far has one of these rows and they store it differently, which is
+// the point — the label is prose and the shape cannot be trusted:
+//   Portland      "Each kva over 25.012 up to 100 kva"          stored the RATE   ($15.52)
+//   Lincoln City  "$250.00 for first 25kva plus $6.25 per kva"  stored the BASE   ($250)
+//   Coos County   "$265 + $10 per add'l kva up to 100 kva"      stored the FLOOR  ($265)
+// One of those under-quotes by 40x, the others by whatever the job is over the threshold.
+//
+// So a formula row REFUSES rather than guessing which number it stored. Until FeeBracket can
+// carry the rate and its threshold as data (see the note on FeeBracket), the honest answer is
+// that a person has to read the schedule — which is the same rule already applied to a
+// conflicting fee and to a valuation with no valuation.
+//   NOTE the "each <unit>" arm. Portland's row says "EACH kva over 25.012" — no "per", no
+//   "additional" — and the first version of this regex missed exactly the one label that costs
+//   the most to miss. A rate is a rate whichever preposition the city chose.
+//   Written as ONE literal rather than a joined array. The array version was assembled by a
+//   patch script that turned every \b into a literal BACKSPACE character (0x08) — invisible in
+//   a terminal, so the regex read as "<BS>per\s+..." and matched nothing at all while looking
+//   perfectly correct on screen. A literal is what the next person can read and check.
+const FORMULA_LABEL =
+  /\bper\s+(add|addl|additional|each)|\beach\s+(add|addl|additional|kva|kw|kilowatt|\$)|\bfor\s+each\b|\bplus\s*\$|\+\s*\$[\d.,]+\s*(for|per)|\bper\s+(kva|kw|kilowatt)\b|\bper\s+\$\s*1,?000|\brate\s+plus\b/i;
+
+export function bracketDescribesFormula(label: string | undefined): boolean {
+  return FORMULA_LABEL.test(String(label ?? ""));
+}
+
 function bracketLabelFor(b: FeeBracket, basis: FeeBasis): string {
   if (b.label) return b.label;
   if (basis === "system_kw" && (b.minKw != null || b.maxKw != null)) {
@@ -1609,7 +1642,16 @@ function evaluateSchedule(
   inputs: { kw: number | null; kwSource: string; valuationUsd: number | null },
 ): { feeUsd: number | null; bracketLabel: string; reason: string } {
   const miss = (reason: string) => ({ feeUsd: null, bracketLabel: "", reason });
-  const hit = (b: FeeBracket) => ({ feeUsd: b.feeUsd, bracketLabel: bracketLabelFor(b, schedule.basis), reason: "" });
+  const hit = (b: FeeBracket) => (bracketDescribesFormula(b.label)
+    ? {
+      feeUsd: null,
+      bracketLabel: bracketLabelFor(b, schedule.basis),
+      reason: `This bracket is a FORMULA, not a flat fee — "${String(b.label ?? "").slice(0, 120)}". The stored `
+        + `$${b.feeUsd.toFixed(2)} is one part of it (a base, a floor or a per-unit rate, and schedules differ), `
+        + `so quoting it would under-state the real fee. Read the published schedule and enter the portal's own `
+        + `figure once you have it.`,
+    }
+    : { feeUsd: b.feeUsd, bracketLabel: bracketLabelFor(b, schedule.basis), reason: "" });
 
   // A DISPUTED FEE IS REFUSED BY ITS OWN BRANCH, AND IT IS THE FIRST ONE.
   //
