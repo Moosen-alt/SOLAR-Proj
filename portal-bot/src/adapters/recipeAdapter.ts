@@ -1879,10 +1879,34 @@ ${body.slice(0, 4000)}`);
     }).catch(() => "") as string;
     if (!actual) return null; // unlabelled control — nothing to contradict
 
-    const words = (v: string) => new Set(
+    // A LABEL CAN BE SHORT AND STILL SAY SOMETHING, AND AN EMPTY SET ACCEPTS ANYTHING.
+    //
+    // The `length > 3` filter exists to stop weak tokens creating false agreement ("Job
+    // Category" and "Job Value" must not agree on "job"). But it also empties the set for a
+    // label that is nothing BUT a short word — "Fax:", "ZIP:", "APN:", "Tel:", "Qty:" — and
+    // `!b.size` then returns null, which means ACCEPT. So the one class of label where a
+    // mis-resolution is hardest to notice was the one class that could never be contradicted:
+    // any step at all could be typed into a box labelled "Fax".
+    //
+    // The fix keeps the strict filter wherever it has anything to work with, and falls back
+    // to the short tokens ONLY when a label has no long ones. That is why it does not
+    // reintroduce the "job" problem: "Job Category" has "category", so "job" is never
+    // admitted. And `*Type (Required):` — all stopwords and markers — still yields nothing at
+    // either length, so a label that is genuinely all boilerplate still has nothing to
+    // contradict and is still accepted.
+    //
+    // The cost is a short label whose synonym differs ("APN" recorded, "Parcel Number" on the
+    // page) reaching the candidate scan, and aborting if nothing better is found. That is the
+    // trade this function already declares below: filing the right answer into the wrong
+    // question is far worse than leaving it blank for the human at review.
+    const meaningful = (v: string): string[] =>
       v.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/)
-        .filter((w) => w.length > 3 && !IDENTITY_STOPWORDS.has(w)),
-    );
+        .filter((w) => w && !IDENTITY_STOPWORDS.has(w));
+    const words = (v: string) => {
+      const tokens = meaningful(v);
+      const strong = tokens.filter((w) => w.length > 3);
+      return new Set(strong.length ? strong : tokens);
+    };
     const a = words(recorded);
     const b = words(actual);
     if (!a.size || !b.size) return null;

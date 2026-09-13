@@ -45,6 +45,17 @@ const PAGE = `<!doctype html><html><body>
 
   <label for="idF">Phone Number:</label>
   <input id="idF">
+
+  <!-- A LABEL THAT IS NOTHING BUT A SHORT WORD. Every token is under the >3-character
+       identity filter, so the actual-label word set came out EMPTY and "!b.size" returned
+       null — accept. That made "Fax:" the one class of label no step could ever be
+       contradicted on: any answer at all could be typed into it. -->
+  <label for="idG">Fax:</label>
+  <input id="idG">
+
+  <!-- MUST STILL WORK: a short label the step genuinely means. -->
+  <label for="idH">ZIP:</label>
+  <input id="idH">
 </body></html>`;
 
 const server = http.createServer((_q, r) => { r.writeHead(200, { "Content-Type": "text/html" }); r.end(PAGE); });
@@ -94,6 +105,12 @@ const steps: RecipeStep[] = [
   // the ONLY thing standing between a homeowner's email address and a phone box on a live
   // interconnection application.
   { action: "fill", phase: "fill", selector: { css: "#idF" }, field: "homeownerEmail", value: "someone@example.com", note: "contact: email [applicant]" },
+  // An email step resolved onto "Fax:" — the short-label hole. The label contradicts the
+  // step as plainly as "Phone Number:" does, and used to be accepted because the filter
+  // that decides what a label MEANS discarded its only word for being three letters long.
+  { action: "fill", phase: "fill", selector: { css: "#idG" }, field: "homeownerEmail", value: "someone@example.com", note: "contact: email [applicant]" },
+  // MUST STILL WORK: the same short label, meant. A short label is not a broken one.
+  { action: "fill", phase: "fill", selector: { css: "#idH" }, field: "homeownerZip", value: "97420", note: "zip" },
 ];
 
 const recipe = {
@@ -110,7 +127,7 @@ await page.goto(`http://127.0.0.1:${port}/`);
 
 // The project's own values. Only the email is needed: every other step here answers with the
 // PORTAL's vocabulary (a select option), which replays as a literal by design.
-const adapter = new RecipeAdapter(recipe, { homeownerEmail: "someone@example.com" }, {}, { autoSubmit: false });
+const adapter = new RecipeAdapter(recipe, { homeownerEmail: "someone@example.com", homeownerZip: "97420" }, {}, { autoSubmit: false });
 (adapter as unknown as { page: unknown }).page = page;
 
 // Drive executeStep DIRECTLY, one step at a time. runAll() wraps the loop in readiness
@@ -127,7 +144,7 @@ for (const step of steps.filter((s) => s.action !== "goto")) {
 }
 
 const value = async (sel: string): Promise<string> => page.locator(sel).inputValue().catch(() => "");
-const [a, b, c, d, e, f] = [await value("#idA"), await value("#idB"), await value("#idC"), await value("#idD"), await value("#idE"), await value("#idF")];
+const [a, b, c, d, e, f, g, h] = [await value("#idA"), await value("#idB"), await value("#idC"), await value("#idD"), await value("#idE"), await value("#idF"), await value("#idG"), await value("#idH")];
 const drift = internals.driftWarnings;
 
 check("a step re-anchors to the control its recorded LABEL names", () => {
@@ -151,6 +168,8 @@ check("a hyphenated label is not a contradiction (E-mail: accepts an email fill)
 
 check("an email is still REFUSED by a phone box (the widening did not become accept-anything)", () => {
   assert.equal(f, "", `an email step resolved onto "Phone Number:" must never be filled; got ${JSON.stringify(f)}`);
+  assert.equal(g, "", `an email step resolved onto "Fax:" must never be filled; a label being SHORT is not a label being absent — got ${JSON.stringify(g)}`);
+  assert.equal(h, "97420", `a zip step resolved onto "ZIP:" must STILL be filled — closing the short-label hole must not make every short label a contradiction; got ${JSON.stringify(h)}`);
 });
 
 check("an all-markers label (*Type (Required):) has nothing to contradict — the select fills", () => {
