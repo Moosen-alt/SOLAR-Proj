@@ -214,7 +214,31 @@ export function invoiceLinesForPayment(
     : null;
   const billable = actual ?? publishedTotal;
 
-  if (!responsibility) {
+  // NOTHING TO BILL BEATS EVERY OTHER REASON, INCLUDING A MISSING AGREEMENT.
+  //
+  // A SOURCED ZERO IS INFORMATION, NOT A CHARGE. Pacific Power's Tier 1 interconnection is $0 by
+  // Oregon rule (OAR 860-039-0045), PGE's likewise, and that is worth knowing — but a "$0.00"
+  // line on an invoice is clutter a bookkeeper reads past, and it would print on every Oregon NEM
+  // filing. It belongs in the notes, with its source.
+  //
+  // This test USED to sit below the agreement branches, so it only fired when fee responsibility
+  // happened to be on file — and on the live database no credential has it set yet, so it never
+  // fired at all. Every Oregon NEM track instead reported "A fee of $0.00 is published ... but no
+  // fee responsibility was on file", whose resolution sends an operator to the credential to
+  // record who pays and then RE-ENTER the fee: two motions to stamp an agreement on nothing. The
+  // comment below is explicit that a refusal naming the wrong cause sends somebody to fix the
+  // wrong thing, and this was that.
+  //
+  // Tested on `billable` rather than `publishedTotal` so a RECORDED zero is answered the same way
+  // as a published one. `null` stays distinct — an unknown fee is a gap, a zero fee is an answer.
+  if (billable === 0) {
+    excluded.push({
+      track,
+      reason: `No fee is charged for this track — ${actual == null ? "the published schedule says" : "the recorded figure is"} $0.00, which is a sourced answer rather than a gap.`,
+      resolution: "Nothing to do. Shown here rather than as a $0.00 invoice line.",
+      amountSeenUsd: 0,
+    });
+  } else if (!responsibility) {
     excluded.push({
       track,
       reason: billable == null
@@ -242,17 +266,6 @@ export function invoiceLinesForPayment(
       reconciliation: reconcile(actual, published),
       paymentReference: text(row.paymentReference),
       recordedAt: text(row.feeRecordedAt) || text(row.updatedAt),
-    });
-  } else if (publishedTotal === 0) {
-    // A SOURCED ZERO IS INFORMATION, NOT A CHARGE. Pacific Power's Tier 1 interconnection is $0
-    // by Oregon rule (OAR 860-039-0045), and that is worth knowing — but a "$0.00" line on an
-    // invoice is clutter a bookkeeper has to read past, and it would print on every Oregon NEM
-    // filing. It belongs in the notes, with its source.
-    excluded.push({
-      track,
-      reason: `No fee is charged for this track — the published schedule says $0.00, which is a sourced answer rather than a gap.`,
-      resolution: "Nothing to do. Shown here rather than as a $0.00 invoice line.",
-      amountSeenUsd: 0,
     });
   } else if (publishedTotal != null) {
     lines.push({

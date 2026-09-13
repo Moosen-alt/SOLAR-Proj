@@ -251,6 +251,59 @@ async function main(): Promise<void> {
     fallbackInv.billTo === "ops@fallback.test" && fallbackInv.billToSource === "business_email",
     `${fallbackInv.billTo} (${fallbackInv.billToSource})`);
 
+  // A STATUTORY $0 IS "NOTHING TO BILL", NOT "NOBODY AGREED WHO PAYS".
+  //
+  // Oregon OAR 860-039-0045 forbids a utility from charging a Tier 1 net-metering application
+  // fee, so Pacific Power and PGE both publish $0.00 — a real, sourced number, not a placeholder.
+  // The first version reported that row the same way it reports a missing agreement: "A fee of
+  // $0.00 is published ... but no fee responsibility was on file", telling an operator to go set
+  // responsibility on the NEM credential AND re-enter the fee. Two motions to stamp an agreement
+  // on nothing. The comment above this branch in invoices.ts is explicit that a refusal naming
+  // the wrong cause sends somebody to fix the wrong thing — this was that.
+  //
+  // The permit line in the SAME invoice must keep saying exactly what it said before, which is
+  // what makes this a clarification rather than a suppressed refusal.
+  // A NEM schedule is keyed on the UTILITY and carries no discipline — the same shape
+  // recipeDisciplineForTrack yields for the nem track, which is how the live row is stored.
+  saveFeeSchedule(db, { state: "OR", utility: "Pacific Power", track: "nem" }, {
+    found: true, reason: "", basis: "system_kw",
+    brackets: [{ minKw: 0, maxKw: 25, feeUsd: 0, label: "Tier 1 Net Metering Interconnection Review — a public utility may not charge an application fee" }],
+    notes: "", sourceUrl: "https://secure.sos.state.or.us/oard/view.action?ruleNumber=860-039-0045",
+    sourceQuote: "A public utility may not charge an application, or other fee",
+    sourceKind: "official",
+  });
+  const freeNem = mkProject(noAgreement.id, 9);
+  buildPaymentQuote(db, freeNem, "permit");
+  buildPaymentQuote(db, freeNem, "nem");
+  const freeNemInv = buildProjectInvoice(db, freeNem);
+  // The same $0 WITH an agreement on file. This path was already correct before the hoist — a
+  // publishedTotal===0 branch sat further down and caught it — and that is precisely why the bug
+  // went unseen: the live database has no responsibility recorded anywhere, so nothing ever
+  // reached that branch. The hoist replaces it (the old one became unreachable and was deleted),
+  // which makes this the check that the replacement did not lose the ground it covered. Measured:
+  // disable the hoist and this reports a $0.00 PROVISIONAL reimbursement line — a line for no
+  // money, on every Oregon NEM filing.
+  const agreedFree = mkProject(perSub.id, 9);
+  buildPaymentQuote(db, agreedFree, "nem");
+  db.run("UPDATE submission_payments SET fee_responsibility = 'keelix-pays' WHERE project_id = ?", [agreedFree.id]);
+  const agreedFreeInv = buildProjectInvoice(db, agreedFree);
+  check("  …and an agreement on file does not turn $0 into an invoice LINE either",
+    agreedFreeInv.lines.filter((l) => l.kind === "reimbursement").length === 0,
+    JSON.stringify(agreedFreeInv.lines.filter((l) => l.kind === "reimbursement").map((l) => [l.amountUsd, l.basis, l.provisional])));
+
+  const nemGap = freeNemInv.notInvoiceable.filter((x) => x.track === "nem");
+  const permitGap = freeNemInv.notInvoiceable.filter((x) => x.track === "permit");
+  check("a statutory $0 fee is excluded as NOTHING TO BILL, not as a missing agreement",
+    nemGap.length === 1 && !/responsibility/i.test(nemGap[0].reason) && /\$0|no fee|free|nothing/i.test(nemGap[0].reason),
+    JSON.stringify(nemGap.map((x) => x.reason)));
+  check("  …and it does NOT send anyone to the credential to stamp an agreement on $0",
+    nemGap.length === 1 && !/S3\.7|re-enter/i.test(nemGap[0].resolution),
+    JSON.stringify(nemGap.map((x) => x.resolution)));
+  check("  …while the permit line in the SAME invoice still names the missing agreement",
+    permitGap.length === 1 && /responsibility/i.test(permitGap[0].reason)
+    && /S3\.7|credential/i.test(permitGap[0].resolution),
+    JSON.stringify(permitGap.map((x) => [x.reason, x.resolution])));
+
   // ---------------------------------------------------------------------
   // 4. Both tracks reach the same invoice.
   // ---------------------------------------------------------------------
