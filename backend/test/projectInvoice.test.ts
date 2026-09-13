@@ -230,6 +230,28 @@ async function main(): Promise<void> {
     JSON.stringify(truedLines.map((l) => l.reconciliation)));
 
   // ---------------------------------------------------------------------
+  // 3c. AN INVOICE NEEDS AN ADDRESSEE. The guide's S3.7 asks for one by name — "Billing
+  //     contact: who receives Keelix invoices" — and migration v18 stores it in a column
+  //     ClientRecord does not expose, so it was collected and never read.
+  // ---------------------------------------------------------------------
+  const billed = createClient(db, { companyName: "Billed Solar", billingMode: "per_submission", serviceFeeUsd: "175", businessEmail: "ops@general.test" });
+  db.run("UPDATE clients SET billing_contact_email = ? WHERE id = ?", ["ap@accounts.test", billed.id]);
+  const billedProject = mkProject(billed.id, 9);
+  recordActualPermitFee(db, billedProject, "permit", 360);
+  const billedInv = buildProjectInvoice(db, billedProject);
+  check("the invoice is addressed to the BILLING CONTACT from the intake packet",
+    billedInv.billTo === "ap@accounts.test" && billedInv.billToSource === "billing_contact",
+    `${billedInv.billTo} (${billedInv.billToSource})`);
+
+  const noBilling = createClient(db, { companyName: "No AP Solar", billingMode: "per_submission", serviceFeeUsd: "175", businessEmail: "ops@fallback.test" });
+  const noBillingProject = mkProject(noBilling.id, 9);
+  recordActualPermitFee(db, noBillingProject, "permit", 360);
+  const fallbackInv = buildProjectInvoice(db, noBillingProject);
+  check("  …and falls back to the business email, SAYING that is what it did",
+    fallbackInv.billTo === "ops@fallback.test" && fallbackInv.billToSource === "business_email",
+    `${fallbackInv.billTo} (${fallbackInv.billToSource})`);
+
+  // ---------------------------------------------------------------------
   // 4. Both tracks reach the same invoice.
   // ---------------------------------------------------------------------
   const both = mkProject(perSub.id, 9);

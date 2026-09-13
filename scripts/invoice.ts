@@ -51,6 +51,15 @@ const head = `${inv.homeownerName || "(unnamed)"}  ${inv.projectId.slice(0, 8)} 
 line();
 line(`── INVOICE  ${head} ${"─".repeat(Math.max(0, 76 - head.length))}`);
 line(`   Bill to:  ${inv.clientName || "(no client assigned)"}   (billing: ${inv.billingMode})`);
+const SOURCE_NOTE: Record<string, string> = {
+  billing_contact: "the billing contact from the intake packet (guide S3.7)",
+  business_email: "the general business email — no billing contact on file",
+  primary_contact: "the primary contact — no billing contact or business email on file",
+  none: "",
+};
+line(inv.billTo
+  ? `             ${inv.billTo}   (${SOURCE_NOTE[inv.billToSource]})`
+  : `             NO ADDRESSEE — ask for the billing contact (guide S3.7: "who receives Keelix invoices")`);
 line();
 
 const reimbursements = inv.lines.filter((l) => l.kind === "reimbursement");

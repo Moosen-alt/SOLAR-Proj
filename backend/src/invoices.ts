@@ -106,6 +106,12 @@ export interface ProjectInvoice {
   jurisdiction: string;
   clientId: string;
   clientName: string;
+  /** WHERE THIS GOES. The guide's §3.7 asks for it by name — "Billing contact: who receives
+   *  Keelix invoices" — and migration v18 stores it. An invoice with no addressee is a document
+   *  somebody has to look a person up for, every time. Falls back to the general business email
+   *  and then the primary contact, and says which it used. */
+  billTo: string;
+  billToSource: "billing_contact" | "business_email" | "primary_contact" | "none";
   billingMode: string;
   lines: InvoiceLine[];
   /** Fees we advanced and are recovering. Pass-through. */
@@ -307,6 +313,20 @@ export function buildProjectInvoice(db: AppDb, project: ProjectRecord): ProjectI
   if (text(project.clientId)) {
     try { client = getClient(db, text(project.clientId)); } catch { client = null; }
   }
+  // billing_contact_email is a v18 column that ClientRecord does not expose, so it is read
+  // directly rather than left unused. Worth knowing if you are extending this: updates_inbox,
+  // license_state, insurance_expiry and bond_expiry are in the same position — collected by
+  // docs/onboarding/intake-template.json, stored, and absent from the mapped record.
+  const billingContact = text(project.clientId)
+    ? text(db.get<{ billing_contact_email?: string }>(
+      "SELECT billing_contact_email FROM clients WHERE id = ?", [text(project.clientId)],
+    )?.billing_contact_email)
+    : "";
+  const billTo = billingContact || text(client?.businessEmail) || text(client?.contactEmail);
+  const billToSource: ProjectInvoice["billToSource"] = billingContact
+    ? "billing_contact"
+    : text(client?.businessEmail) ? "business_email"
+      : text(client?.contactEmail) ? "primary_contact" : "none";
 
   const lines: InvoiceLine[] = [];
   const notInvoiceable: InvoiceExclusion[] = [];
@@ -347,6 +367,8 @@ export function buildProjectInvoice(db: AppDb, project: ProjectRecord): ProjectI
     jurisdiction: [text(project.ahj), text(project.utility)].filter(Boolean).join(" | "),
     clientId: text(project.clientId),
     clientName: text(client?.companyName) || text(client?.legalBusinessName),
+    billTo,
+    billToSource,
     billingMode: text(client?.billingMode).toLowerCase() || "monthly/none",
     lines,
     reimbursementTotalUsd: sum("reimbursement"),
