@@ -53,6 +53,35 @@ run("a signature/application date is today, not a future estimate", () => {
   assert.equal(dateFieldForLiteral("Application Date", "08/08/2026"), "todayDateUs");
 });
 
+run("A LICENCE EXPIRY IS NOT TODAY: it binds to the licence's own date", () => {
+  // Every date that was not a future estimate used to fall through to "today", which is right
+  // for the signature and application dates this function was written for and wrong for a
+  // licence. A portal asking for a contractor licence usually asks when it expires in the next
+  // box, so the next learn of one would have filed a licence expiring the day it was
+  // submitted — a wrong value on a contractor's application, filed silently.
+  assert.equal(dateFieldForLiteral("Contractor Licence Expiration Date", "2027-04-01"), "ccbExpiration");
+  assert.equal(dateFieldForLiteral("CCB License Expiration Date", "04/01/2027"), "ccbExpiration");
+  assert.equal(dateFieldForLiteral("License valid through (date)", "2027-04-01"), "ccbExpiration");
+});
+
+run("MUST EXCLUDE: an expiry that names nothing binds to NOTHING, rather than to a licence", () => {
+  // "Expiration Date" is also what a payment page prints beside a card. Rather than teach the
+  // date binder card vocabulary — recipeAdapter's PAYMENT_FIELD already owns that at replay,
+  // and a second copy drifts — the expiry rule requires the label to name what is expiring.
+  // Binding nothing keeps the literal, which the cross-project guard then refuses if it looks
+  // like somebody's data, and a person sees a blank at review.
+  assert.equal(dateFieldForLiteral("Card Expiration Date", "04/01/2027"), null);
+  assert.equal(dateFieldForLiteral("Expiration Date", "2027-04-01"), null);
+});
+
+run("MUST EXCLUDE: the dates that were already right are unmoved", () => {
+  // The expiry rule is checked BEFORE the future-date rule, so this pins that it did not
+  // capture a commissioning estimate on its way past.
+  assert.equal(dateFieldForLiteral("Estimated Commissioning Date", "08/08/2026"), "estimatedCommissioningDate");
+  assert.equal(dateFieldForLiteral("Signature Date", "2026-08-08"), "todayDate");
+  assert.equal(dateFieldForLiteral("Application Date", "08/08/2026"), "todayDateUs");
+});
+
 run("only DATE-labelled controls holding DATE-shaped values are touched", () => {
   // A date-shaped value on a control that is not a date (an account number that happens
   // to look like one, a free-text note) must keep its recorded literal.

@@ -43,7 +43,12 @@ const recipe = {
   status: "complete", version: 1,
   steps: [
     { action: "fill", phase: "fill", field: "", note: "Job Value ($)", value: "25000", selector: { css: "#jobvalue" } },
-    { action: "fill", phase: "fill", field: "", note: "Contractor Licence Expiration Date", value: "2027-04-01", selector: { css: "#licexp" } },
+    // BOUND, like a real recording now is. This froze "2027-04-01" as an unbound literal, and
+    // recipeAdapter's cross-project guard refuses that shape — correctly, because a licence
+    // expiry belongs to the company that was learned on, not to whoever replays the recipe.
+    // The reason it could ONLY be a literal was that nothing in RECIPE_FIELD_DESCRIPTIONS
+    // matched /expir/, so there was no key to bind it to; ccbExpiration is that key.
+    { action: "fill", phase: "fill", field: "ccbExpiration", note: "Contractor Licence Expiration Date", value: "2027-04-01", selector: { css: "#licexp" } },
     { action: "fill", phase: "fill", field: "", note: "Total Fees Due", value: "412.50", selector: { css: "#feeamt" } },
     { action: "fill", phase: "fill", field: "", note: "Card Number", value: "4111111111111111", selector: { css: "#ccnum" } },
     { action: "fill", phase: "fill", field: "", note: "CVV:", value: "123", selector: { css: "#cvv" } },
@@ -56,7 +61,8 @@ const context = await browser.newContext();
 await context.addInitScript("globalThis.__name = globalThis.__name || function (fn) { return fn; };");
 const page = await context.newPage();
 await page.goto(url);
-const adapter = new RecipeAdapter(recipe, {}, {}, { autoSubmit: false });
+// The client's own licence expiry, the way clientStagingOverlay supplies it at replay.
+const adapter = new RecipeAdapter(recipe, { ccbExpiration: "2027-04-01" }, {}, { autoSubmit: false });
 (adapter as unknown as { page: unknown }).page = page;
 const res = await adapter.fillApplication({} as never);
 const data = (res as unknown as { data?: { skipped?: string[]; stoppedAtPayment?: boolean; executed?: number } }).data ?? {};
@@ -82,7 +88,11 @@ check("A DOLLAR AMOUNT IS NOT A CARD: the job value is still filled",
   jobvalue === "25000", `job value came out ${JSON.stringify(jobvalue)} — the boundary fired too early`);
 
 check("A LICENCE EXPIRY IS NOT A CARD EXPIRY: it is still filled",
-  licexp === "2027-04-01", `licence expiration came out ${JSON.stringify(licexp)} — the boundary fired too early`);
+  licexp === "2027-04-01",
+  `licence expiration came out ${JSON.stringify(licexp)}. Check the PAYMENT BOUNDARY only after ruling out the `
+  + `cross-project literal guard: a blank here has twice meant the value was refused as unbound project data `
+  + `(recipeAdapter.looksLikeProjectData), not that the boundary stopped too early. The old message named the `
+  + `wrong subsystem and sent whoever triaged it to the wrong file.`);
 
 // THE ORDERING THE LIVE RUN EXPOSED. The page-drift precheck runs at the START of a segment,
 // before the loop reaches any of its steps — so on Coos Bay electrical it fired on the section

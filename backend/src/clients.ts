@@ -559,6 +559,16 @@ export function clientStagingOverlay(db: AppDb, clientId: string | null, portalT
       (client.businessZip ? ` ${client.businessZip}` : ""),
     installerContactName: client.contactName || client.authorizedSignerName,
     ccbLicenseNumber: client.ccbLicenseNumber,
+    // A LICENCE NUMBER WITHOUT ITS EXPIRY IS HALF AN ANSWER, AND THE OTHER HALF HAD NO KEY.
+    //
+    // Portals that ask for a contractor licence usually ask when it expires in the next box.
+    // Nothing in RECIPE_FIELD_DESCRIPTIONS matched /expir/, so a recorded expiry could only be
+    // frozen as an unbound literal — and recipeAdapter's cross-project guard then correctly
+    // refuses it, because "2027-04-01" belongs to the company that was learned on. Measured in
+    // paymentBoundary.dom.smoke: the licence expiration came out "". This is exactly the class
+    // battery capacity was in before 55b5d24; the repair is the same one — give the value a
+    // key, and the literal stops being its only carrier.
+    ccbExpiration: client.ccbExpiration,
     electricalLicenseNumber: client.electricalLicenseNumber,
     docketNumber: client.docketNumber,
     metroCityLicenseNumber: client.metroCityLicenseNumber,

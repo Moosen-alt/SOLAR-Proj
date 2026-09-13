@@ -675,6 +675,7 @@ export const RECIPE_FIELD_DESCRIPTIONS: Record<string, string> = {
   installerCityStateZip: "Installer company city, state, zip (no street)",
   installerContactName: "Installer contact person full name",
   ccbLicenseNumber: "CCB (contractor) license number",
+  ccbExpiration: "CCB (contractor) license EXPIRATION date — when the licence runs out, not today's date",
   electricalLicenseNumber: "Electrical contractor license number",
   docketNumber: "ICC/state docket number for the installer's DG certification (Illinois Part 468)",
   metroCityLicenseNumber: "Metro or city business license number",
@@ -742,12 +743,34 @@ function dateFields(): Record<string, string> {
 // and picks the format the portal already demonstrated it accepts.
 const DATE_LITERAL = /^(\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}\/\d{4})$/;
 const FUTURE_DATE_LABEL = /commission|in[- ]?service|energiz|operation|installation|completion|start|planned|expected|estimated|anticipat|schedul/i;
+// AN EXPIRY IS NEITHER A SIGNATURE DATE NOR A COMMISSIONING ESTIMATE.
+//
+// This function's last line assumed every date that is not a future estimate is "today" —
+// which is right for the signature and application dates it was written for, and wrong for a
+// licence. A portal that asks for a contractor licence usually asks when it expires in the
+// next box, and the next learn of one would have bound it to todayDate: every replay then
+// files a licence that expires the day it was submitted. A wrong value on a contractor's
+// application, filed silently, and it costs nothing to close before the next learn rather
+// than after.
+const EXPIRY_DATE_LABEL = /expir|valid\s*(through|until|thru)|renew/i;
+// WHOSE expiry, though. "Expiration Date" is also what a payment page prints next to a card,
+// and ccbExpiration is emphatically not that. Rather than teach this function card vocabulary
+// — recipeAdapter's PAYMENT_FIELD already owns that question at replay, and a second copy of
+// it here is how two regexes drift apart — the expiry rule requires the label to name what is
+// expiring. An expiry with no licence context binds to NOTHING: the literal stays, the
+// cross-project guard refuses it if it looks like somebody's data, and a person sees a blank
+// at review. Declining to bind is the safe half of this decision.
+const LICENCE_CONTEXT = /licen[sc]e|registration|certificat|bond|insurance|\bccb\b|contractor/i;
 export function dateFieldForLiteral(label: string, value: string): string | null {
   const raw = String(value || "").trim();
   if (!DATE_LITERAL.test(raw)) return null;
   const text = String(label || "");
   if (!/date/i.test(text)) return null; // only rebind a control that is actually a date
   const isUs = raw.includes("/");
+  // Checked BEFORE the future-date rule on purpose: "Licence Valid Through Date" carries both
+  // an expiry word and nothing else, while a label like "Expiration of the estimated schedule"
+  // does not exist. Expiry is the more specific reading wherever both could fire.
+  if (EXPIRY_DATE_LABEL.test(text)) return LICENCE_CONTEXT.test(text) ? "ccbExpiration" : null;
   if (FUTURE_DATE_LABEL.test(text)) return isUs ? "estimatedCommissioningDate" : "estimatedCommissioningDateIso";
   // A signature/application date is "today", not a future estimate.
   return isUs ? "todayDateUs" : "todayDate";
