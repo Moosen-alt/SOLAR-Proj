@@ -23,6 +23,7 @@ import { findApplicationProfile } from "./applicationDocs";
 import { enrichMboxLearningWithLlm } from "./llm";
 import { allAhjProcessProfiles, findAhjProcessProfile } from "./processProfiles";
 import { nowIso } from "./time";
+import { logger } from "./logger";
 
 type Row = Record<string, unknown>;
 
@@ -76,11 +77,66 @@ export function knowledgeProfileKey(input: { state?: string; ahj?: string; utili
   return profileKey(input);
 }
 
+// A CREDENTIAL TYPED INTO A SHARED TABLE REACHES EVERY TENANT, AND THEN THE MODEL.
+//
+// Found on 2026-09-12 by decrypting the credential store and hunting the plaintext on disk:
+// FOUR permit_utility_knowledge rows carried a real stored secret in their notes —
+//     "Sec- Q: <security answer>"                  (md|aaco md)
+//     "permit@<company>.com Walmart<password>"      (wa|wa portal)
+// plus two more under Sacramento. permit_utility_knowledge is one of the tables CLAUDE.md
+// shares across tenants ON PURPOSE, so those were readable by every customer of the system.
+//
+// Worse, the notes are not inert. knowledgeResearchHint puts up to 700 characters of them into
+// the `knownContext` that ahjFormAuto hands to llm.findAhjFormUrl, and autoLearn's KB block
+// puts up to 900 into the learner prompt. So a password pasted here went to a language model —
+// against §6 of the onboarding guide ("never displayed, printed or passed to a language model")
+// and against hard rule 2.
+//
+// The rows have been redacted. This is the part that stops it coming back: the guard sits at
+// the ONE place every writer's notes pass through — imports, research, human patches and the
+// learner all route through noteSegments — so no caller has to remember. A dropped segment is
+// logged, never silently swallowed, because an operator who typed something useful alongside a
+// password needs to know which half went.
+// TWO NARROW TESTS, NOT ONE BROAD ONE. The first attempt joined three patterns with "|" and one
+// of them carried its own top-level alternation (`...\d|\d\S*[A-Za-z]`), which leaked out and made
+// the whole regex match "a digit followed by a letter" — every kVA bracket and fee amount in the
+// knowledge base. Separate predicates cannot do that to each other.
+//
+// A LABEL, with its value. "Sec- Q:" is the real row's wording, so the label side tolerates the
+// abbreviation and the stray hyphen.
+const CREDENTIAL_LABEL =
+  /\b(pass(word|wd|phrase)?|pwd|sec(urity)?\s*[-–—]?\s*(q(uestion)?|a(nswer)?)|secret\s*[qa]|login\s*(pw|pass)|pin|passcode|otp|totp|mfa\s*(seed|secret))\b\s*[:=]/i;
+
+// AN EMAIL FOLLOWED BY A PASSWORD-SHAPED TOKEN, which is how the Washington row read:
+// "permit@<company>.com Walmart<secret>". The lookaheads keep this off ordinary prose: requiring
+// lower AND upper AND a digit in the same token means "Contact permits@city.gov regarding
+// corrections" does not trip it, while a real password almost always does. A password of all one
+// case slips through, and that is the accepted cost of not refusing half the notes anyone writes
+// about a portal contact address.
+const USER_PASS_PAIR =
+  /[\w.+-]+@[\w-]+\.[a-z]{2,}\s+(?=\S{6,})(?=\S*[a-z])(?=\S*[A-Z])(?=\S*\d)\S+/;
+
+/** True when a note segment looks like it carries a credential rather than portal knowledge. */
+export function looksLikeCredentialNote(segment: string): boolean {
+  const s = String(segment ?? "");
+  return CREDENTIAL_LABEL.test(s) || USER_PASS_PAIR.test(s);
+}
+
 // Notes are stored as " | "-joined segments. Split before merging so dedupe
 // compares SEGMENTS — merging the whole blob as one item re-appends the same
 // seed sentence on every startup/learn event (the runaway-notes bug).
 function noteSegments(value: unknown): string[] {
-  return clean(value).split(" | ").map((s) => s.trim()).filter(Boolean);
+  const kept: string[] = [];
+  for (const seg of clean(value).split(" | ").map((s) => s.trim()).filter(Boolean)) {
+    if (looksLikeCredentialNote(seg)) {
+      // Never log the segment itself — that would move the secret into the log file, which is
+      // the same mistake one layer along.
+      logger.warn("kb", "refused a knowledge note that looks like a credential", { chars: seg.length });
+      continue;
+    }
+    kept.push(seg);
+  }
+  return kept;
 }
 
 function mergeUnique(existing: string[], incoming: string[], limit = 80): string[] {
@@ -387,7 +443,12 @@ function upsertKnowledge(db: AppDb, facts: KnowledgeFacts, event?: KnowledgeEven
         correctionCount,
         facts.confidence || "seeded",
         asJson(sources),
-        clean(facts.notes),
+        // THE INSERT BRANCH HAD NO GUARD, and a brand-new jurisdiction is exactly where a
+        // credential gets pasted — somebody sets a portal up, writes what they had to type, and
+        // the row is created rather than updated. noteSegments (which filters) was applied only
+        // on the UPDATE path above, so the first write of any profile went through raw. Caught by
+        // kbCredentialNote.test.ts driving the real import path instead of the predicate.
+        noteSegments(facts.notes).join(" | "),
         ts,
         event ? ts : "",
         ts,
