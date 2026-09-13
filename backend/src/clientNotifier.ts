@@ -174,7 +174,7 @@ export async function resendCommunication(
 export async function notifyClientOfStatusChange(
   db: AppDb,
   project: ProjectRecord,
-  evt: { outcome: string; statusLabel: string; targetType: string; permitNumber?: string; applicationNumber?: string },
+  evt: { outcome: string; statusLabel: string; targetType: string; permitType?: string; permitNumber?: string; applicationNumber?: string },
 ): Promise<void> {
   try {
     if (process.env.CLIENT_NOTIFICATIONS === "0" || process.env.CLIENT_NOTIFICATIONS === "false") return;
@@ -190,6 +190,7 @@ export async function notifyClientOfStatusChange(
     // configured base URL, or a correct address, so it must not inherit their failures.
     const update = clientUpdateFor(db, project, evt.outcome, {
       targetType: evt.targetType,
+      permitType: evt.permitType,
       permitNumber: evt.permitNumber,
       applicationNumber: evt.applicationNumber,
     });

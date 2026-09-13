@@ -1910,6 +1910,41 @@ const VERSIONED_MIGRATIONS: VersionedMigration[] = [
       addColumnIfMissing(db, "projects", "archived_reason", "TEXT NOT NULL DEFAULT ''");
     },
   },
+  {
+    version: 28,
+    name: "permit_check_target_discipline",
+    up: (db) => {
+      // A STRUCTURAL PERMIT WAS BEING SHOWN TO CLIENTS AS AN ELECTRICAL ONE.
+      //
+      // permit_check_targets.permit_type has held the discipline ('nem' | 'building' |
+      // 'electrical' | 'combo') since it was added, but addPermitCheckTarget's INSERT never
+      // listed the column, so every target it created defaulted to ''. On the live database four
+      // of seven were blank, and the client portal — which had no discipline to show — labelled
+      // every permit track "Building/electrical permit". A project with separate structural and
+      // electrical permits showed two identical rows.
+      //
+      // The submissions table recorded the discipline against the SAME application number all
+      // along, so this is recovered from what we wrote down, not inferred from the -STR/-ELEC
+      // suffix in the number.
+      //
+      // SCOPED TO THE PROJECT, deliberately. Application numbers are unique within a
+      // jurisdiction, not globally — matching on the number alone would let one company's
+      // submission decide another company's label.
+      db.exec(`
+        UPDATE permit_check_targets
+           SET permit_type = COALESCE((
+                 SELECT s.permit_type FROM submissions s
+                  WHERE s.project_id = permit_check_targets.project_id
+                    AND s.application_number = permit_check_targets.application_number
+                    AND s.permit_type NOT IN ('', 'permit')
+                  ORDER BY s.created_at DESC LIMIT 1
+               ), permit_type)
+         WHERE permit_type = '' AND application_number != '';
+      `);
+      // A target with no application number yet cannot be matched and stays blank. It renders as
+      // the honest "Permit" rather than a guess.
+    },
+  },
 ];
 
 // One-time repair for the runaway-notes bug: upsertKnowledge used to merge the

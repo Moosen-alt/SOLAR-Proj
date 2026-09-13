@@ -39,6 +39,11 @@ import { nowIso } from "./time";
 export interface ClientUpdateContext {
   /** "permit" | "nem" — which track moved. */
   targetType: string;
+  /** 'building' | 'electrical' | 'combo' | 'nem'. A project often files a structural AND an
+   *  electrical permit; "the permit has been issued" is ambiguous when two are outstanding, and
+   *  the client cannot tell which trade they can now schedule. Blank when we do not know, and
+   *  the wording then stays deliberately general rather than guessing. */
+  permitType?: string;
   /** The jurisdiction's own reference, when the portal gave us one. */
   permitNumber?: string;
   applicationNumber?: string;
@@ -96,6 +101,16 @@ export function clientUpdateFor(
   const ahj = text(project.ahj) || "the jurisdiction";
   const utility = text(project.utility) || "the utility";
   const ref = text(ctx.permitNumber) || text(ctx.applicationNumber);
+  // "the electrical permit" when we know, plain "the permit" when we do not. Never a guess:
+  // naming the wrong trade tells a client to schedule the wrong crew.
+  const which = ((): string => {
+    switch (text(ctx.permitType).toLowerCase()) {
+      case "electrical": return "the electrical permit";
+      case "building": case "structural": return "the building permit";
+      case "combo": return "the combination building & electrical permit";
+      default: return "the permit";
+    }
+  })();
   const refPhrase = ref ? `, reference ${ref}` : "";
   const other = otherTrackOutcome(db, project.id, ctx.targetType);
   const otherDone = DONE_OUTCOMES.has(other);
@@ -105,7 +120,7 @@ export function clientUpdateFor(
     case "issued":
       return {
         subject: "Permit issued",
-        headline: `${ahj} has issued the permit${refPhrase}.`,
+        headline: `${ahj} has issued ${which}${refPhrase}.`,
         meaning: "The building and electrical side is cleared, so the installation can be scheduled.",
         action: hasOther && !otherDone
           ? `Nothing needed from you. The ${utility} interconnection is still in review — we are watching it and will tell you the day it moves.`
@@ -115,7 +130,7 @@ export function clientUpdateFor(
     case "ready_for_issue":
       return {
         subject: "Permit ready for issue",
-        headline: `${ahj} has the permit ready for issue${refPhrase}.`,
+        headline: `${ahj} has ${which} ready for issue${refPhrase}.`,
         // The distinction that saves a phone call: approved is not the same as in your hand.
         meaning: "It is approved but not released yet — most jurisdictions want a fee paid or the permit collected first.",
         action: "Nothing needed from you yet. We are confirming which applies here and will come straight back to you.",

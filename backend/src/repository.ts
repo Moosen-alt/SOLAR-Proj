@@ -4589,6 +4589,10 @@ export function createPermitCheckTarget(
     checkFrequencyDays?: number;
     notes?: string;
     targetType?: "permit" | "nem";
+    /** 'building' | 'electrical' | 'combo' | 'nem' — WHICH permit this track is.
+     *  Omitting it leaves the client portal unable to tell a project's structural permit from
+     *  its electrical one; both then render as the honest but unhelpful "Permit". */
+    permitType?: string;
   },
 ): ProjectDetail {
   const detail = getProjectDetail(db, projectId);
@@ -4604,8 +4608,8 @@ export function createPermitCheckTarget(
       `INSERT INTO permit_check_targets
         (id, project_id, jurisdiction, portal_name, portal_url, application_number, permit_number,
          check_frequency_days, active, last_checked_at, next_check_at, latest_outcome, latest_status_label,
-         notes, target_type, portal_platform, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         notes, target_type, portal_platform, permit_type, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         targetId,
         projectId,
@@ -4623,6 +4627,11 @@ export function createPermitCheckTarget(
         input.notes || "",
         targetType,
         portalPlatform,
+        // THE COLUMN WAS NEVER IN THIS INSERT. It has existed since the per-permit tracks landed
+        // and silently defaulted to '', so four of seven live targets had no discipline and the
+        // client portal labelled a structural permit "Building/electrical". Migration v28
+        // backfills the existing rows from submissions; this stops new ones being born blank.
+        input.permitType || (targetType === "nem" ? "nem" : ""),
         ts,
         ts,
       ],
@@ -4774,6 +4783,9 @@ export async function recordPermitStatusCheck(
       // permit." with nothing they can quote back to the AHJ — the whole point of the sentence is
       // that they can look it up themselves. Optional on the signature, so omitting them
       // typechecked silently and only production was affected.
+      // Which permit, not just "the permit" — a project files a structural AND an electrical
+      // one, and "has issued the permit" leaves the client guessing which crew to book.
+      permitType: text(target?.permit_type),
       permitNumber: text(target?.permit_number),
       applicationNumber: text(target?.application_number),
     });

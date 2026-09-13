@@ -76,6 +76,33 @@ export interface ClientPortalTrack {
   permitNumber: string;
 }
 
+/**
+ * What to call one filing track on a client's page.
+ *
+ * THE BUG THIS FIXES: every non-NEM track was labelled "Building/electrical permit", so a
+ * project with separate structural and electrical permits showed two identical rows and the
+ * client had to read the -STR/-ELEC suffix to tell which of their permits had been issued. The
+ * discipline was in permit_check_targets.permit_type the whole time.
+ *
+ * An unknown discipline returns the bare "Permit". Replacing one confident guess with a
+ * different confident guess is not a fix — if we do not know whether it is the structural or the
+ * electrical permit, the page must not say. The application number is displayed beside it and
+ * carries the jurisdiction's own suffix.
+ */
+export function trackLabel(targetType: string, permitType: string): string {
+  if (targetType === "nem" || permitType === "nem") return "Utility interconnection (NEM)";
+  switch ((permitType || "").trim().toLowerCase()) {
+    case "electrical": return "Electrical permit";
+    // The fee layer calls this "structural" and permit_type calls it "building"; they are the
+    // same trade. "Building permit" is the phrase a client will recognise.
+    case "building":
+    case "structural": return "Building permit";
+    case "combo": return "Combination building & electrical permit";
+    // "permit" is the legacy default the column shipped with — a placeholder, not a discipline.
+    default: return "Permit";
+  }
+}
+
 export interface ClientPortalUpdate {
   at: string;
   body: string;
@@ -155,7 +182,7 @@ export function clientPortalPayload(db: AppDb, token: string): ClientPortalPaylo
   const ids = projects.map((p) => String(p.id));
   const placeholders = ids.map(() => "?").join(",");
   const targets = db.query<Record<string, unknown>>(
-    `SELECT project_id, target_type, latest_status_label, latest_outcome, last_checked_at,
+    `SELECT project_id, target_type, permit_type, latest_status_label, latest_outcome, last_checked_at,
             application_number, permit_number
        FROM permit_check_targets WHERE project_id IN (${placeholders})`,
     ids,
@@ -185,7 +212,7 @@ export function clientPortalPayload(db: AppDb, token: string): ClientPortalPaylo
     const list = byProject.get(pid) || [];
     list.push({
       type,
-      label: type === "nem" ? "Utility interconnection (NEM)" : "Building/electrical permit",
+      label: trackLabel(type, String(t.permit_type || "")),
       statusLabel: String(t.latest_status_label || ""),
       outcome: String(t.latest_outcome || ""),
       lastCheckedAt: t.last_checked_at ? String(t.last_checked_at) : null,

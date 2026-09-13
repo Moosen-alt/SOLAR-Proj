@@ -149,8 +149,8 @@ await check("THE REFERENCE SURVIVES THE REAL TRIGGER, not just the helper", asyn
   });
   const now = new Date().toISOString();
   db.run(
-    `INSERT INTO permit_check_targets (id, project_id, target_type, active, latest_outcome, permit_number, application_number, created_at, updated_at)
-     VALUES ('t-trig', ?, 'permit', 1, 'waiting', '194-26-001471-ELEC', 'APP-99', ?, ?)`,
+    `INSERT INTO permit_check_targets (id, project_id, target_type, permit_type, active, latest_outcome, permit_number, application_number, created_at, updated_at)
+     VALUES ('t-trig', ?, 'permit', 'electrical', 1, 'waiting', '194-26-001471-ELEC', 'APP-99', ?, ?)`,
     [p2.id, now, now],
   );
   await recordPermitStatusCheck(db, p2.id, {
@@ -165,6 +165,19 @@ await check("THE REFERENCE SURVIVES THE REAL TRIGGER, not just the helper", asyn
   assert.ok(note, "the real trigger wrote no client note at all");
   assert.match(String(note!.body), /194-26-001471-ELEC/,
     `the jurisdiction's own reference never reached the client: ${note!.body}`);
+  // WHICH permit, not just "the permit". A project files a structural AND an electrical permit;
+  // "has issued the permit" with two outstanding leaves the client guessing which crew to book.
+  assert.match(String(note!.body), /issued the electrical permit/,
+    `the note does not say which of the two permits landed: ${note!.body}`);
+});
+
+await check("MUST NOT GUESS the trade: an unknown discipline says 'the permit'", () => {
+  // Naming the wrong trade is worse than naming none — it tells somebody to schedule the wrong
+  // crew. A blank permit_type must stay general.
+  const u = clientUpdateFor(db, project, "issued", { targetType: "permit", permitType: "" })!;
+  assert.match(u.headline, /has issued the permit/, u.headline);
+  assert.doesNotMatch(u.headline, /electrical|building/i,
+    `a trade was asserted with no discipline on file: ${u.headline}`);
 });
 
 await check("THE PAGE DOES NOT DIE WITH THE EMAIL: no address still writes the note", async () => {
