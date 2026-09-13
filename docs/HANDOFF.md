@@ -3,6 +3,68 @@
 Audience: the next model/dev session (and the operator). Read `CLAUDE.md` first
 for the hard rules; this file is the running state.
 
+## LOCKOUT, SUPERVISED LEARN, INVOICING, AND 26 ROWS POINTING AT THE WRONG PORTAL (2026-09-13)
+
+Operator direction for this stretch: single tenant (their own company), so cross-tenant safety is
+not the threat model — get it working reliably and stop there.
+
+**New operator commands**
+
+    npm run learn:supervised -- --project "<name>" [--track nem|electrical]
+    npx tsx scripts/invoice.ts --project "<name>"
+    npx tsx scripts/fix-ahj-portal-urls.ts [--apply]
+    npm run recipe:bind-fee-brackets -- --id <recipeId> [--apply]
+
+**Portal lockout (asked for directly).** We cannot detect a password change — the first sign is a
+failed filing — and re-attempting is how an account gets locked, on the operator's own licence. The
+`stale` flag had been correct for months but only `runLearnBenchmark` read it, so every real stage
+kept knocking; 12 credentials on the live client were in that state. `prepareSubmission` now refuses
+at 409 **before a browser opens** (`credentialLockedOut: true`, `PORTAL_CREDENTIAL_LOCKOUT=0` to
+disable). Safe in the direction that matters: `stale` is set by `recordLoginOutcome`, which refuses
+when `isHarnessAbort(note)` — the guard that exists because a dead browser was once logged as six
+credential failures and retired seven working platforms. Tested explicitly.
+
+**Supervised learn.** The machinery existed with no door: `autoLearnPortal` takes `headless:false`
+and the adapter arms `armHumanCaptureOnPage` on every page, so a human's clicks and typing become
+recipe steps and merge. A supervised run is a lesson, not a manual filing. Two things it surfaced:
+resolve the portal the way staging does (recipe URL first, then KB, each through the utility-platform
+filter), and with no `--track` the discipline is `""` which must mean "any discipline" rather than
+"only an untagged recipe" — otherwise it finds nothing on any jurisdiction learned since the
+discipline dimension landed.
+
+**Per-project invoicing.** Two totals kept apart and NO grand total: fees we advanced
+(`keelix-pays` only — pass-through) versus our service fee (revenue). Migration v24 stamps
+`fee_responsibility` + `fee_recorded_at` on the payment row AT RECORD TIME, so editing a credential
+later cannot rewrite an old invoice, and `fee_recorded_at` is the column a monthly statement will cut
+on (`paid_at` never fires for monthly clients; `updated_at` moves on any touch). A published
+SCHEDULE bills as PROVISIONAL; the 1.5%-of-valuation heuristic never does — on the first live project
+it said \$435.99 where the county says \$360. Written as a line-builder over payment rows, so monthly
+is the same function plus a WHERE.
+
+**Nothing invoices until `fee_responsibility` is set.** All 83 credentials are unset, and 0 of 90
+submissions carry a `portal_profile_id`, so the resolver cannot fire. Data entry, not a bug.
+
+**26 AHJ rows pointed at a utility portal.** `or|city of coos bay|pacific power` held a PacifiCorp
+PowerClerk URL. Residue of the benchmark bug fixed earlier (utility picked by STATE, scope hardcoded
+"ahj"), and on several rows the real permit URL was stranded in `portal_name`. Production was never
+exposed — `permitSafeUrl` drops a utility platform on the permit path — but everything reading the KB
+directly was wrong. Repaired preferring recovery: 1 from a recipe, 6 from `portal_name`, 19 blanked
+(honest, and the coverage report then names the blocker). Human-verified rows untouched.
+
+**Eight portal logins were in `permit_utility_knowledge.notes` in plaintext**, a shared table, and
+those notes go to an LLM (`knowledgeResearchHint` -> `llm.findAhjFormUrl`; `autoLearn`'s KB block).
+Redacted, and `noteSegments` now refuses credential-shaped segments — the guard caught that it was
+only on `upsertKnowledge`'s UPDATE branch, so a brand-new jurisdiction went through raw. The four
+logins involved (Multnomah County, Shoreline WA, Pacific WA, Anne Arundel MD) are worth rotating.
+
+**Also fixed:** status updates went to `business_email` rather than the shared inbox the guide asks
+for as REQUIRED; the invoice had no addressee beside a `billing_contact_email` column that names one.
+
+**Verified at the end:** `tsc` clean; `backend:test:unit` 95 steps, last banner matching the last
+chain entry, 0 failure markers; `portal:test:unit` green; `npm run smoke` passed. Coverage unchanged
+at 1 ready / 11 supervised / 4 cannot-file of 16 — that is the number to move, and supervised learn
+is the tool for moving it.
+
 ## THE SUITE THAT WAS NOT RUNNING, AND THE SIX DEFECTS IT WAS HIDING (2026-09-12, late)
 
 `portal:test:dom` was 71 real-Chromium smokes joined by `&&`. Two were long-red at positions 9
