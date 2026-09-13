@@ -54,9 +54,27 @@ export interface InvoiceComposition {
   collectedVia: string;
 }
 
+/** WHERE THE NUMBER CAME FROM, and the invoice always says.
+ *
+ *  'recorded'  — the figure a person read off the portal's own fee screen. The best answer.
+ *  'published' — the jurisdiction's own published schedule, bracketed to this project, carrying
+ *                the document and the sentence it was read from. An ESTIMATE, and billable:
+ *                it is a number the authority publishes about this job, not a guess about it.
+ *  'service'   — our own fee, which is not an estimate of anything.
+ *
+ *  Deliberately no fourth value. submissionFees' ladder has a valuation heuristic below the
+ *  schedule (1.5% of contract value, clamped) and it must never reach an invoice: it knows
+ *  nothing about the jurisdiction, and its whole job was to be better than a blank on a QUOTE.
+ *  The gate that enforces that is structural rather than a check — feeForProject can only
+ *  answer from a stored schedule, so asking it is the same as refusing the heuristic. */
+export type InvoiceBasis = "recorded" | "published" | "service";
+
 export interface InvoiceLine {
   track: InvoiceTrack;
   kind: "reimbursement" | "service";
+  basis: InvoiceBasis;
+  /** True when this amount is an estimate that a recorded figure should later supersede. */
+  provisional: boolean;
   description: string;
   amountUsd: number;
   /** Empty for a service line. For a reimbursement, the split the schedule publishes — one
@@ -166,44 +184,92 @@ export function invoiceLinesForPayment(
   }
 
   // ── the jurisdiction fee ────────────────────────────────────────────────────────────
-  if (actual == null) {
+  //
+  // TESTED IN THE ORDER THE BLOCKERS ACTUALLY APPLY, because the reason is half the value of a
+  // refusal. The first version asked "is there an amount?" before "is there an agreement?", so a
+  // Coos Bay project with a perfectly good published schedule was told "no published schedule is
+  // on file" when the real blocker was that nobody had recorded who pays. A refusal that names
+  // the wrong cause sends somebody to fix the wrong thing.
+  //
+  // AN ESTIMATE FROM THE JURISDICTION'S OWN SCHEDULE IS BILLABLE; A GUESS ABOUT IT IS NOT.
+  // Waiting for somebody to type the portal's figure means a company goes unbilled for weeks over
+  // money we already advanced, so the authority's own published schedule — bracketed to this
+  // project, carrying the document and sentence it was read from — carries the line, marked
+  // PROVISIONAL until a recorded figure supersedes it.
+  //
+  // What stays out is the rung below the schedule in submissionFees' quote ladder: 1.5% of
+  // contract value, clamped. On the first live project this ran against it said $435.99 where the
+  // county's schedule says $360 — a 21% error on money being re-billed, from a percentage that
+  // has never read a fee table. The gate is structural rather than a check: feeForProject can only
+  // answer from a stored schedule, so asking IT is the refusal.
+  const published = compositionFor(db, project, track);
+  const publishedTotal = published.length && published.every((c) => c.amountUsd != null)
+    ? round2(published.reduce((t, c) => t + (c.amountUsd ?? 0), 0))
+    : null;
+  const billable = actual ?? publishedTotal;
+
+  if (!responsibility) {
     excluded.push({
       track,
-      reason: row.permitFeeEstimateUsd == null
-        ? "No jurisdiction fee has been recorded for this track."
-        // The basis text usually ends in its own full stop, so do not add a second one.
-        : `Only an ESTIMATE is on file ($${row.permitFeeEstimateUsd.toFixed(2)}), and an estimate is not invoiceable. `
-          + `It was quoted as: ${row.feeBasis || "basis not recorded"}`.replace(/\.?$/, ".")
-          + ` NOTE: this is the figure stored when the quote was last built — the published schedule may since`
-          + ` have moved, and scripts/fee-sheet.ts shows what it says today. Neither number is invoiceable.`,
-      resolution: "Enter the portal-calculated fee from its own fee/review screen (\"Record real fee\"), which also teaches future quotes for this jurisdiction.",
-      amountSeenUsd: row.permitFeeEstimateUsd,
+      reason: billable == null
+        ? "No fee responsibility is on file for this track, and no fee is known either."
+        : `A fee of $${billable.toFixed(2)} is ${actual == null ? "published for this jurisdiction" : "recorded"}, but no fee responsibility was on file when it was entered — so there is no agreement saying whose money it was.`,
+      resolution: "Record fee responsibility on the portal credential (guide S3.7), then re-enter the fee so the agreement is stamped on it. Historic rows are deliberately not back-filled: reading today's credential would rewrite what was agreed then.",
+      amountSeenUsd: billable,
     });
-  } else if (responsibility === REIMBURSABLE_RESPONSIBILITY) {
-    const composition = compositionFor(db, project, track);
+  } else if (responsibility !== REIMBURSABLE_RESPONSIBILITY) {
+    excluded.push({
+      track,
+      reason: `${billable == null ? "This track's fee" : `A fee of $${billable.toFixed(2)}`} was ${RESPONSIBILITY_PROSE[responsibility] || responsibility} — not advanced by us, so not ours to recover.`,
+      resolution: "Nothing to do. This is recorded for the project's history, not for billing.",
+      amountSeenUsd: billable,
+    });
+  } else if (actual != null) {
     lines.push({
       track,
       kind: "reimbursement",
+      basis: "recorded",
+      provisional: false,
       description: `${TRACK_LABEL[track]} — advanced by us, re-billed at cost`,
       amountUsd: round2(actual),
-      composition,
-      reconciliation: reconcile(actual, composition),
+      composition: published,
+      reconciliation: reconcile(actual, published),
       paymentReference: text(row.paymentReference),
       recordedAt: text(row.feeRecordedAt) || text(row.updatedAt),
     });
-  } else if (!responsibility) {
+  } else if (publishedTotal === 0) {
+    // A SOURCED ZERO IS INFORMATION, NOT A CHARGE. Pacific Power's Tier 1 interconnection is $0
+    // by Oregon rule (OAR 860-039-0045), and that is worth knowing — but a "$0.00" line on an
+    // invoice is clutter a bookkeeper has to read past, and it would print on every Oregon NEM
+    // filing. It belongs in the notes, with its source.
     excluded.push({
       track,
-      reason: `A fee of $${actual.toFixed(2)} is recorded, but no fee responsibility was on file when it was entered — so there is no agreement saying whose money it was.`,
-      resolution: "Record fee responsibility on the portal credential (guide S3.7), then re-enter the fee so the agreement is stamped on it. Historic rows are deliberately not back-filled: reading today's credential would rewrite what was agreed then.",
-      amountSeenUsd: actual,
+      reason: `No fee is charged for this track — the published schedule says $0.00, which is a sourced answer rather than a gap.`,
+      resolution: "Nothing to do. Shown here rather than as a $0.00 invoice line.",
+      amountSeenUsd: 0,
+    });
+  } else if (publishedTotal != null) {
+    lines.push({
+      track,
+      kind: "reimbursement",
+      basis: "published",
+      provisional: true,
+      description: `${TRACK_LABEL[track]} — estimated from the published schedule, pending the portal's own figure`,
+      amountUsd: publishedTotal,
+      composition: published,
+      reconciliation: "",
+      paymentReference: text(row.paymentReference),
+      recordedAt: "",
     });
   } else {
     excluded.push({
       track,
-      reason: `A fee of $${actual.toFixed(2)} is recorded, and it was ${RESPONSIBILITY_PROSE[responsibility] || responsibility} — not advanced by us, so not ours to recover.`,
-      resolution: "Nothing to do. This is recorded for the project's history, not for billing.",
-      amountSeenUsd: actual,
+      reason: row.permitFeeEstimateUsd == null
+        ? "No jurisdiction fee is known for this track: nothing recorded from the portal, and no published schedule on file."
+        : `The only figure available is a VALUATION HEURISTIC ($${row.permitFeeEstimateUsd.toFixed(2)}) — ${row.feeBasis || "basis not recorded"}`.replace(/\.?$/, ".")
+          + " That is a guess about the jurisdiction rather than something read from it, so it does not carry an invoice. A published schedule would have; none is on file for this jurisdiction and track, or it could not be priced for this project's size.",
+      resolution: "Either research the jurisdiction's published schedule (scripts/research-fee-schedules.ts, then apply-fee-findings.ts), or enter the portal-calculated fee from its own fee/review screen (\"Record real fee\").",
+      amountSeenUsd: row.permitFeeEstimateUsd,
     });
   }
 
@@ -214,6 +280,8 @@ export function invoiceLinesForPayment(
     lines.push({
       track,
       kind: "service",
+      basis: "service",
+      provisional: false,
       description: `Submission service fee — ${track === "nem" ? "interconnection" : "permit"} filing prepared and staged`,
       amountUsd: serviceFee,
       composition: [],

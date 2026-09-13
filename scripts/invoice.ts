@@ -59,12 +59,15 @@ const services = inv.lines.filter((l) => l.kind === "service");
 if (reimbursements.length) {
   line("  FEES WE ADVANCED — recovered at cost, not revenue");
   for (const l of reimbursements) {
-    line(`      ${money(l.amountUsd).padStart(11)}   ${l.description}`);
+    line(`      ${money(l.amountUsd).padStart(11)}   ${l.description}${l.provisional ? "   [PROVISIONAL]" : ""}`);
     // The split: one rooftop can owe a city and a county separately, and the sum is a number
     // no published schedule contains.
     for (const c of l.composition) {
       const who = c.collectedVia ? `${c.authority} (filed via ${c.collectedVia})` : c.authority;
-      line(`      ${(c.amountUsd == null ? "—" : money(c.amountUsd)).padStart(11)}     ${c.discipline || "permit"}: ${who}`);
+      // Fall back to the TRACK, not the word "permit" — a NEM line labelled "permit: Pacific
+      // Power" is wrong on a document that goes to a customer.
+      const what = c.discipline || (l.track === "nem" ? "interconnection" : "permit");
+      line(`      ${(c.amountUsd == null ? "—" : money(c.amountUsd)).padStart(11)}     ${what}: ${who}`);
       if (c.sourceUrl) line(`                      ${c.sourceUrl}`);
     }
     if (l.reconciliation) line(`                    ! ${l.reconciliation}`);
@@ -79,7 +82,13 @@ if (services.length) {
   line();
 }
 
+const provisional = reimbursements.filter((l) => l.provisional);
 line(`  REIMBURSEMENT DUE   ${money(inv.reimbursementTotalUsd)}   (fees we paid on the client's behalf)`);
+if (provisional.length) {
+  line(`                      ${money(provisional.reduce((t, l) => t + l.amountUsd, 0))} of that is PROVISIONAL — read from the`);
+  line(`                      jurisdiction's published schedule, not yet from the portal's own fee screen.`);
+  line(`                      Recording the real fee replaces it and trues up the invoice.`);
+}
 line(`  SERVICE FEES DUE    ${money(inv.serviceTotalUsd)}   (ours)`);
 line(`  These are reported separately on purpose — one is a pass-through, the other is revenue.`);
 
