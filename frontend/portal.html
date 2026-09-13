@@ -27,6 +27,8 @@
     .badge.good { background: #ecfdf5; color: #065f46; }
     .badge.warn { background: #fffbeb; color: #92400e; }
     .badge.you { background: #fef2f2; color: #991b1b; }
+    .upd { border-top: 1px solid #f3f4f6; padding: 10px 0 2px; font-size: 13px; line-height: 1.5; }
+    .upd .when { color: #6b7280; font-size: 12px; display: block; margin-bottom: 2px; }
     .err { text-align: center; padding: 48px 16px; color: #6b7280; }
     footer { text-align: center; font-size: 12px; color: #9ca3af; margin-top: 24px; }
   </style>
@@ -69,6 +71,11 @@
               <span class="badge ${cls(t.outcome)}">${esc(t.statusLabel || t.outcome || "Checking…")}</span>
             </div>`).join("")
             || `<div class="track"><span class="muted">Tracking starts once the application is filed.</span></div>`;
+          // The latest few updates, in the words we actually sent them. Same sentences as the
+          // email for the same event — one source, two channels (backend/src/clientUpdates.ts).
+          // Capped so a long-running job does not bury the current status under its own history.
+          const updates = (p.updates || []).slice(0, 4).map((u) => `
+            <div class="upd"><span class="when">${when(u.at)}</span>${esc(u.body)}</div>`).join("");
           return `
             <div class="card">
               <div class="row">
@@ -79,6 +86,7 @@
                 <span class="badge ${cls(p.statusKey)}">${esc(p.status)}</span>
               </div>
               ${tracks}
+              ${updates}
             </div>`;
         }).join("") || `<div class="card"><span class="muted">No projects yet. They appear here as soon as we open one.</span></div>`;
 

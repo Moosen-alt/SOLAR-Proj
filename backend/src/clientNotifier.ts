@@ -10,9 +10,14 @@
 //   2. include their tokenized read-only status link (auto-created on first
 //      send) so they can self-serve progress checks,
 //   3. SEND it over SMTP when configured (SMTP_HOST + SMTP_FROM), and
-//   4. ALWAYS record the communication in the CRM (channel "email", status in
-//      the body header: sent vs drafted) so the project timeline shows exactly
-//      what the client was told and when.
+//   4. ALWAYS record the communication in the CRM (channel "email", with
+//      delivery_status/delivery_detail/recipient as COLUMNS — migration v25;
+//      it used to be a prefix inside the subject, which made "what did we fail
+//      to send?" unqueryable), and
+//   5. record the SAME sentences as a client_update note on the project, so the
+//      client's portal and their inbox never carry two wordings for one event.
+//      The note is written before the send is attempted, deliberately: it must
+//      not go dark just because SMTP is unconfigured.
 //
 // No SMTP configured → the email is still recorded as a DRAFT communication
 // (visible in the dashboard to copy/send by hand), so behaviour degrades
@@ -25,31 +30,13 @@ import crypto from "node:crypto";
 import type { AppDb } from "./db";
 import type { ProjectRecord } from "../../shared/src/types";
 import { addCommunication, undeliveredCommunications } from "./crm";
+import { clientUpdateFor, clientUpdateEmailBody, isClientFacingOutcome, recordClientUpdateNote } from "./clientUpdates";
 import { addAuditLog } from "./audit";
 import { logger } from "./logger";
 
-// Outcomes worth telling a client about, with plain-language templates.
-const CLIENT_NOTIFY_OUTCOMES: Record<string, { subject: string; line: string }> = {
-  issued: {
-    subject: "Permit issued",
-    line: "The building/electrical permit has been ISSUED. Installation can be scheduled.",
-  },
-  ready_for_issue: {
-    subject: "Permit ready for issue",
-    line: "The permit is READY FOR ISSUE — the jurisdiction may require fee payment or pickup before it is released.",
-  },
-  nem_approved: {
-    subject: "Interconnection (NEM) approved",
-    line: "The utility interconnection / NEM application has been APPROVED. The permission-to-operate path is open.",
-  },
-  correction_flagged: {
-    subject: "Correction requested",
-    line: "The reviewing agency requested a CORRECTION on this application. Our team is triaging it and will follow up with the fix.",
-  },
-};
-
 export function shouldNotifyClient(outcome: string, previousOutcome: string | null | undefined): boolean {
-  if (!(outcome in CLIENT_NOTIFY_OUTCOMES)) return false;
+  // Derived from clientUpdates.ts, never a second copy — see CLIENT_FACING_OUTCOMES there.
+  if (!isClientFacingOutcome(outcome)) return false;
   // Only on a CHANGE — the monitor re-checks every few days and must not re-send
   // "permit issued" on every poll of an already-issued permit.
   return outcome !== (previousOutcome || "");
@@ -163,12 +150,11 @@ export async function resendCommunication(
 export async function notifyClientOfStatusChange(
   db: AppDb,
   project: ProjectRecord,
-  evt: { outcome: string; statusLabel: string; targetType: string },
+  evt: { outcome: string; statusLabel: string; targetType: string; permitNumber?: string; applicationNumber?: string },
 ): Promise<void> {
   try {
     if (process.env.CLIENT_NOTIFICATIONS === "0" || process.env.CLIENT_NOTIFICATIONS === "false") return;
-    const template = CLIENT_NOTIFY_OUTCOMES[evt.outcome];
-    if (!template || !project.clientId) return;
+    if (!project.clientId) return;
     // THE SHARED INBOX IS THE ONE FIELD WHOSE ENTIRE PURPOSE IS THIS MESSAGE.
     //
     // The onboarding guide asks for it as REQUIRED, in these words: "Shared inbox for Keelix
@@ -189,21 +175,34 @@ export async function notifyClientOfStatusChange(
 
     const token = ensureStatusShareToken(db, project.id);
     const link = statusShareUrl(token);
-    const track = evt.targetType === "nem" ? "Interconnection (NEM)" : "Permit";
     const address = formatProjectAddress(project);
-    const subject = `${template.subject} — ${address || project.homeownerName || project.id}`;
-    const body = [
-      `Hi ${client?.company_name || "there"},`,
-      ``,
-      `Update on your solar project at ${address || "the project site"}:`,
-      ``,
-      `${track} status: ${evt.statusLabel || evt.outcome}`,
-      template.line,
-      ``,
-      `Live status page (no login needed): ${link}`,
-      ``,
-      `— Solar Submission Autopilot (automated update; reply to reach the team)`,
-    ].join("\n");
+
+    // ONE VOICE, TWO CHANNELS. These sentences are also what the client's portal shows as a
+    // note, rendered from the same object — see clientUpdates.ts. Two copies of client-facing
+    // prose drift, and the client then reads one wording in their inbox and a different one on
+    // the page, for the same event, on the same day.
+    const update = clientUpdateFor(db, project, evt.outcome, {
+      targetType: evt.targetType,
+      permitNumber: evt.permitNumber,
+      applicationNumber: evt.applicationNumber,
+    });
+    if (!update) return;   // not a client-facing outcome; that gate lives in clientUpdates.ts
+    const subject = `${update.subject} — ${address || project.homeownerName || project.id}`;
+    const body = clientUpdateEmailBody(update, {
+      company: String(client?.company_name || ""),
+      address,
+      statusLine: evt.statusLabel || evt.outcome,
+      link,
+    });
+
+    // The same words, on the page. Written BEFORE the send is attempted, deliberately: the
+    // portal note must not depend on SMTP being configured, or both channels go dark together
+    // — which is exactly what happened to the emails for twelve days.
+    try {
+      recordClientUpdateNote(db, project.id, update);
+    } catch (err) {
+      logger.warn("notify", `could not record the client note: ${err instanceof Error ? err.message : String(err)}`);
+    }
 
     // THE TWO WAYS THIS DOES NOT ARRIVE ARE DIFFERENT PROBLEMS, so they are recorded as
     // different statuses. "draft" means we never tried — SMTP_HOST/SMTP_FROM are unset, which is

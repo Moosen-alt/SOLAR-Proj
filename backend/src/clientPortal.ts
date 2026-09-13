@@ -76,6 +76,11 @@ export interface ClientPortalTrack {
   permitNumber: string;
 }
 
+export interface ClientPortalUpdate {
+  at: string;
+  body: string;
+}
+
 export interface ClientPortalProject {
   id: string;
   address: string;
@@ -87,6 +92,8 @@ export interface ClientPortalProject {
   status: string;
   updatedAt: string;
   tracks: ClientPortalTrack[];
+  /** What we have told this client about this job, newest first. */
+  updates: ClientPortalUpdate[];
 }
 
 export interface ClientPortalPayload {
@@ -153,6 +160,24 @@ export function clientPortalPayload(db: AppDb, token: string): ClientPortalPaylo
        FROM permit_check_targets WHERE project_id IN (${placeholders})`,
     ids,
   );
+  // THE ONE NOTE TYPE. project_notes also holds pm_note, blocker, handoff and system_note —
+  // where an operator writes things like "client is chasing, do not mention the re-inspection
+  // fee yet". Filtering on client_update is the whole safety property here; selecting the table
+  // would publish the lot.
+  const notes = db.query<Record<string, unknown>>(
+    `SELECT project_id, body, created_at FROM project_notes
+      WHERE project_id IN (${placeholders}) AND note_type = 'client_update'
+      ORDER BY created_at DESC`,
+    ids,
+  );
+  const updatesByProject = new Map<string, ClientPortalUpdate[]>();
+  for (const n of notes) {
+    const pid = String(n.project_id);
+    const list = updatesByProject.get(pid) || [];
+    list.push({ at: String(n.created_at || ""), body: String(n.body || "") });
+    updatesByProject.set(pid, list);
+  }
+
   const byProject = new Map<string, ClientPortalTrack[]>();
   for (const t of targets) {
     const pid = String(t.project_id);
@@ -187,6 +212,7 @@ export function clientPortalPayload(db: AppDb, token: string): ClientPortalPaylo
         status: PUBLIC_STATUS_TEXT[statusKey] || "In progress",
         updatedAt: String(p.updated_at || ""),
         tracks: byProject.get(String(p.id)) || [],
+        updates: updatesByProject.get(String(p.id)) || [],
       };
     }),
   };

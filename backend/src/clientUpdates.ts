@@ -1,0 +1,193 @@
+// ---------------------------------------------------------------------------
+// ONE VOICE, TWO CHANNELS.
+//
+// The wording a client sees for "your permit was issued" was living inside clientNotifier as an
+// email template. Adding a note to the portal would have made a second copy, and two copies of
+// client-facing prose drift — the client then gets one wording in their inbox and a different
+// one on the page, for the same event, on the same day. So the words live here and both
+// channels render them.
+//
+// WHAT MAKES A NOTE READ LIKE A PROJECT MANAGER RATHER THAN A STATUS BADGE
+//
+// Not prose variety. It is that a person's update always answers three things, and a status
+// label answers only the first:
+//
+//   · what happened, with the number, so they can look it up themselves
+//   · what it means for them — what they can now do, or not do
+//   · whether anything is needed FROM them
+//
+// That third line is the one that matters. "Correction requested" reads as an emergency; "we're
+// reading it now, nothing for you to do yet" is the same fact and a completely different
+// Tuesday. Every update below ends with it, including when the answer is "nothing".
+//
+// WHY THESE ARE TEMPLATES AND NOT LLM-WRITTEN. The event set is four outcomes, so a template
+// can be genuinely well written once and then be right every time. An LLM would cost per event,
+// and — the real objection — it would occasionally claim something we do not know, in text sent
+// to a paying customer under our name. The variation a model would add is not worth a single
+// sentence telling somebody they can schedule an install when they cannot.
+//
+// NEVER IN HERE: correction TEXT. It is raw scraped portal prose and forwarded AHJ email
+// carrying homeowner names, phone numbers and examiners' direct lines. The client learns a
+// correction landed and that we are on it. The wording stays internal.
+// ---------------------------------------------------------------------------
+import type { AppDb } from "./db";
+import type { ProjectRecord } from "../../shared/src/types";
+import { text } from "./json";
+import { id } from "./ids";
+import { nowIso } from "./time";
+
+export interface ClientUpdateContext {
+  /** "permit" | "nem" — which track moved. */
+  targetType: string;
+  /** The jurisdiction's own reference, when the portal gave us one. */
+  permitNumber?: string;
+  applicationNumber?: string;
+}
+
+export interface ClientUpdate {
+  /** Email subject line, without the address — callers append that. */
+  subject: string;
+  /** What happened. One sentence, names the authority, carries the number. */
+  headline: string;
+  /** What it means for them. */
+  meaning: string;
+  /** Whether anything is needed from them. NEVER empty — "nothing" is an answer they want. */
+  action: string;
+}
+
+/** The other track's latest outcome, so an update can say what is still outstanding rather than
+ *  implying the whole job is done. Returns "" when there is no other track. */
+function otherTrackOutcome(db: AppDb, projectId: string, thisType: string): string {
+  const want = thisType === "nem" ? "permit" : "nem";
+  const row = db.get<{ latest_outcome?: string }>(
+    `SELECT latest_outcome FROM permit_check_targets
+      WHERE project_id = ? AND target_type = ? AND active = 1
+      ORDER BY last_checked_at DESC LIMIT 1`,
+    [projectId, want],
+  );
+  return text(row?.latest_outcome);
+}
+
+const DONE_OUTCOMES = new Set(["issued", "nem_approved", "approved"]);
+
+/**
+ * The outcomes a client hears about. THE ONE LIST — shouldNotifyClient derives its gate from
+ * this rather than keeping a parallel copy, the same way the API-key allowlist is derived from
+ * the product registry. Two lists of "what the client is told about" would eventually disagree,
+ * and the failure is silent in both directions: an event with wording but no gate is never sent,
+ * and an event with a gate but no wording used to send a blank line.
+ */
+export const CLIENT_FACING_OUTCOMES = ["issued", "ready_for_issue", "nem_approved", "correction_flagged"] as const;
+
+export function isClientFacingOutcome(outcome: string): boolean {
+  return (CLIENT_FACING_OUTCOMES as readonly string[]).includes(outcome);
+}
+
+/**
+ * The client-facing wording for one status change, or null when this outcome is not something a
+ * client is told about. The null is the gate — it keeps internal states internal.
+ */
+export function clientUpdateFor(
+  db: AppDb,
+  project: Pick<ProjectRecord, "id" | "ahj" | "utility">,
+  outcome: string,
+  ctx: ClientUpdateContext,
+): ClientUpdate | null {
+  const ahj = text(project.ahj) || "the jurisdiction";
+  const utility = text(project.utility) || "the utility";
+  const ref = text(ctx.permitNumber) || text(ctx.applicationNumber);
+  const refPhrase = ref ? `, reference ${ref}` : "";
+  const other = otherTrackOutcome(db, project.id, ctx.targetType);
+  const otherDone = DONE_OUTCOMES.has(other);
+  const hasOther = Boolean(other);
+
+  switch (outcome) {
+    case "issued":
+      return {
+        subject: "Permit issued",
+        headline: `${ahj} has issued the permit${refPhrase}.`,
+        meaning: "The building and electrical side is cleared, so the installation can be scheduled.",
+        action: hasOther && !otherDone
+          ? `Nothing needed from you. The ${utility} interconnection is still in review — we are watching it and will tell you the day it moves.`
+          : "Nothing needed from you.",
+      };
+
+    case "ready_for_issue":
+      return {
+        subject: "Permit ready for issue",
+        headline: `${ahj} has the permit ready for issue${refPhrase}.`,
+        // The distinction that saves a phone call: approved is not the same as in your hand.
+        meaning: "It is approved but not released yet — most jurisdictions want a fee paid or the permit collected first.",
+        action: "Nothing needed from you yet. We are confirming which applies here and will come straight back to you.",
+      };
+
+    case "nem_approved":
+      return {
+        subject: "Interconnection approved",
+        headline: `${utility} has approved the interconnection${refPhrase}.`,
+        meaning: "The permission-to-operate path is open.",
+        action: hasOther && !otherDone
+          ? `Nothing needed from you. The ${ahj} permit is still in review — we are watching it and will tell you the day it moves.`
+          : "Nothing needed from you.",
+      };
+
+    case "correction_flagged":
+      return {
+        subject: "Correction requested",
+        headline: `${ahj} has sent the application back with a correction${refPhrase}.`,
+        // Deliberately does NOT quote the correction. See the header.
+        meaning: "The reviewer wants changes before it can go further. This is routine and it is not a rejection.",
+        // The single most useful sentence we send. A correction notice with no instruction reads
+        // as an emergency; most of the time there is nothing for them to do at all.
+        action: "Nothing for you to do yet. We are reading exactly what they asked for and will come back to you with it — and tell you if we need anything from your designer.",
+      };
+
+    default:
+      return null;
+  }
+}
+
+/** The note as it appears on the client's portal — the three lines, as a PM would write them. */
+export function clientUpdateNoteBody(update: ClientUpdate): string {
+  return [update.headline, update.meaning, update.action].join(" ");
+}
+
+/** The email body. Same words, plus the greeting and the link the email needs. */
+export function clientUpdateEmailBody(
+  update: ClientUpdate,
+  opts: { company: string; address: string; statusLine: string; link: string },
+): string {
+  return [
+    `Hi ${opts.company || "there"},`,
+    "",
+    `Update on your solar project at ${opts.address || "the project site"}:`,
+    "",
+    update.headline,
+    update.meaning,
+    update.action,
+    "",
+    `Live status page (no login needed): ${opts.link}`,
+    "",
+    "— Solar Submission Autopilot (automated update; reply to reach the team)",
+  ].join("\n");
+}
+
+/**
+ * Record the update as a client-visible note.
+ *
+ * Inserts directly rather than calling repository.addProjectNote, which would be the obvious
+ * reuse: repository.ts imports clientNotifier (it is the one trigger site for status-change
+ * notifications), so clientNotifier importing repository back is a cycle. Same guard the
+ * codebase already applies between jobQueue and repository.
+ *
+ * note_type is ALWAYS client_update. project_notes also holds pm_note, blocker, handoff and
+ * system_note, which are where an operator writes things like "client is chasing, do not mention
+ * the re-inspection fee yet" — the portal filters on this one type and nothing else.
+ */
+export function recordClientUpdateNote(db: AppDb, projectId: string, update: ClientUpdate): void {
+  db.run(
+    `INSERT INTO project_notes (id, project_id, note_type, body, created_by, created_at)
+     VALUES (?, ?, 'client_update', ?, 'client-notifier (automated)', ?)`,
+    [id(), projectId, clientUpdateNoteBody(update), nowIso()],
+  );
+}
