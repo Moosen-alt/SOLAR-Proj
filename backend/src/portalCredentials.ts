@@ -462,6 +462,37 @@ export function listStaleCredentials(db: AppDb, clientId: string): PortalCredent
   return listPortalCredentials(db, clientId).filter((c) => c.stale);
 }
 
+/**
+ * THE CREDENTIAL FOR THIS PORTAL, IF THE PORTAL HAS ALREADY REFUSED IT.
+ *
+ * The onboarding guide promises this in as many words: "We can't detect a password change — the
+ * first sign is a failed filing — and we stop trying that portal until we have a working login so
+ * the account doesn't get locked." The `stale` flag has existed and been correct for a long time
+ * (a later success clears it without anyone editing anything), but it was consulted ONLY by the
+ * benchmark — the comment above says so outright — so a real filing kept re-attempting a rejected
+ * login, every stage, on the operator's own account. Which is how accounts get locked.
+ *
+ * Safe in the direction that matters: `stale` is set by recordLoginOutcome, which refuses to mark
+ * anything when isHarnessAbort(note) is true. That guard exists because a dead browser was once
+ * recorded as six credential failures and quietly retired seven working platforms — so "our
+ * browser died" can never reach this function as "the password was refused".
+ */
+export function lockedOutCredential(
+  db: AppDb,
+  clientId: string,
+  portalUrl: string,
+): PortalCredentialView | null {
+  if (!clientId || !portalUrl) return null;
+  const rows = listPortalCredentials(db, clientId);
+  if (!rows.length) return null;
+  // Matched the way production matches: most-specific stored URL first.
+  for (const url of selectCredentialUrlsFor(portalUrl, rows.map((c) => c.portalUrl))) {
+    const hit = rows.find((c) => c.portalUrl === url);
+    if (hit) return hit.stale ? hit : null;   // the FIRST match decides; a later one is a different portal
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // "PAUSED FOR MFA" IS HALF AN ANSWER. THE OTHER HALF WAS WRITTEN DOWN AT KICKOFF.
 //

@@ -73,7 +73,7 @@ import { STAGE_COUNT, stageForStatus, isBlockedStatus } from "./projectStage";
 import { addAuditLog } from "./audit";
 import { clientStagingOverlay, getClient } from "./clients";
 import { assertSubmissionPaid } from "./submissionFees";
-import { getDecryptedCredential, getDecryptedCredentialByUrl, getDecryptedCredentialAny } from "./portalCredentials";
+import { getDecryptedCredential, getDecryptedCredentialByUrl, getDecryptedCredentialAny, lockedOutCredential } from "./portalCredentials";
 import { logger } from "./logger";
 import { selectAdapterActor, selectStagingActor, resolvePortalChannel, seedOutcomeToStageResult, isUtilityPlatformUrl, isAutoSeedDisabled, recipeDisciplineFromSteps, disciplineConflictsWithTrack, recipeDisciplineForTrack } from "./portalChannel";
 import { isPortalPaused } from "./portalPause";
@@ -5495,6 +5495,43 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
     permitSafeUrl(draftRecipe && draftRecipe.portalUrl) ||
     (track === "nem" ? utilityPortalUrl : (permitSafeUrl(ahjPortalUrl) || statewidePortalUrl || findApplicationProfile(detail.project).sourceUrl)) ||
     "";
+
+  // LOCK THE PORTAL OUT ONCE IT HAS REFUSED THE LOGIN, BEFORE A BROWSER OPENS.
+  //
+  // We cannot detect a password change — the first sign is a failed filing. Re-attempting after
+  // that is how an account gets locked, and it is the OPERATOR'S OWN account on the line, under
+  // their licence. The `stale` flag has been correct for a long time (a later success clears it
+  // with nobody editing anything) but was consulted only by the benchmark, so every real stage
+  // kept knocking.
+  //
+  // Safe in the direction that matters: stale is set by recordLoginOutcome, which refuses to mark
+  // anything when isHarnessAbort(note) is true — the guard that exists because a dead browser was
+  // once recorded as six credential failures and quietly retired seven working platforms. So "our
+  // browser died" cannot arrive here as "the password was refused".
+  //
+  // Refusing at 409 rather than failing the stage mid-run is deliberate: nothing is attempted, no
+  // draft is left behind, and the message says the one thing that clears it.
+  if (credentialUrl && detail.project.clientId) {
+    const lockedOut = lockedOutCredential(db, detail.project.clientId, credentialUrl);
+    if (lockedOut && process.env.PORTAL_CREDENTIAL_LOCKOUT !== "0") {
+      addAuditLog(db, projectId, "system", "submit gate", "portal.credential_locked_out", {
+        track: track ?? "permit", portalUrl: lockedOut.portalUrl, lastLoginNote: lockedOut.lastLoginNote,
+      });
+      throw new HttpError(409,
+        `Staging stopped: ${lockedOut.portalUrl} refused this login the last time we tried, so we are not knocking again — `
+        + `repeated attempts are what locks an account. Update the credential (or confirm the existing one still works) `
+        + `and the block clears itself on the next successful login. `
+        + `${lockedOut.lastLoginNote ? `The portal said: ${lockedOut.lastLoginNote}` : ""}`.trim(),
+        {
+          credentialLockedOut: true,
+          portalUrl: lockedOut.portalUrl,
+          clientId: detail.project.clientId,
+          // A supervised learn is the other way through: run it headed, watch it, and anything you
+          // do on the page is captured as recipe steps (armHumanCaptureOnPage).
+          supervisedLearnHint: "npm run learn:supervised -- --project <id> --track <track>",
+        });
+    }
+  }
   // COLD-START RESEARCH: a brand-new AHJ/utility with nothing in the KB, no
   // recipe, and no statewide fallback used to dead-end with "record the portal
   // once". With an API key, research the portal URL instead (web-grounded,
