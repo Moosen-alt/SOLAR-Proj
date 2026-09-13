@@ -91,6 +91,21 @@ export interface ClientRecord {
   businessZip: string;
   businessPhone: string;
   businessEmail: string;
+  /** Where OUR outbound updates go — deliberately NOT businessEmail, which is the installer
+   *  address printed on the application for the AHJ to write to. The onboarding packet marks
+   *  this REQUIRED and asks for a shared inbox rather than one person's. Falls back to
+   *  businessEmail in clientNotifier when blank. */
+  updatesInbox: string;
+  /** Who receives OUR invoices — a third address again: the AHJ's correspondent, the
+   *  operations inbox and accounts payable are rarely one person. */
+  billingContactEmail: string;
+  /** The issuing state for the contractor licence numbers above. A bare number is ambiguous
+   *  the moment a company is licensed in two states. */
+  licenseState: string;
+  /** ISO YYYY-MM-DD so it sorts. An expired COI is not a code failure — it is every filing in
+   *  that jurisdiction rejected by a human until it is renewed. */
+  insuranceExpiry: string;
+  bondExpiry: string;
   ein: string;
   bondCarrier: string;
   insuranceCarrier: string;

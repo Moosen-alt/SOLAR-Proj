@@ -326,15 +326,7 @@ export function buildProjectInvoice(db: AppDb, project: ProjectRecord): ProjectI
   if (text(project.clientId)) {
     try { client = getClient(db, text(project.clientId)); } catch { client = null; }
   }
-  // billing_contact_email is a v18 column that ClientRecord does not expose, so it is read
-  // directly rather than left unused. Worth knowing if you are extending this: updates_inbox,
-  // license_state, insurance_expiry and bond_expiry are in the same position — collected by
-  // docs/onboarding/intake-template.json, stored, and absent from the mapped record.
-  const billingContact = text(project.clientId)
-    ? text(db.get<{ billing_contact_email?: string }>(
-      "SELECT billing_contact_email FROM clients WHERE id = ?", [text(project.clientId)],
-    )?.billing_contact_email)
-    : "";
+  const billingContact = text(client?.billingContactEmail);
   const billTo = billingContact || text(client?.businessEmail) || text(client?.contactEmail);
   const billToSource: ProjectInvoice["billToSource"] = billingContact
     ? "billing_contact"

@@ -14,7 +14,7 @@ delete process.env.SMTP_HOST; // force the draft path — no network in tests
 delete process.env.CLIENT_NOTIFICATIONS;
 
 const { openDatabase } = await import("../src/db");
-const { createClient } = await import("../src/clients");
+const { createClient, updateClient, getClient } = await import("../src/clients");
 const { createProject } = await import("../src/repository");
 const { shouldNotifyClient, ensureStatusShareToken, statusShareUrl, notifyClientOfStatusChange } = await import("../src/clientNotifier");
 
@@ -84,7 +84,15 @@ await run("THE SHARED INBOX IS THE RECIPIENT — the one field whose whole purpo
     companyName: "Shared Inbox Solar", ccbLicenseNumber: "444444",
     businessEmail: "owner@one-persons-mailbox.test", businessPhone: "5035550100",
   });
-  db.run("UPDATE clients SET updates_inbox = ? WHERE id = ?", ["permits@shared-team.test", shared.id]);
+  // THROUGH THE NORMAL WRITE PATH, deliberately. The first version of this test set the column
+  // with raw SQL, which is how it went unnoticed that `updates_inbox` is readable by the notifier
+  // and writable by NOTHING: it is absent from ClientRecord, mapClient and FIELD_COLUMNS, so
+  // createClient/updateClient silently drop it and the onboarding script cannot record the very
+  // field its own intake template marks REQUIRED. A test that reaches around the API it is
+  // testing proves the column exists, not that the feature works.
+  updateClient(db, shared.id, { updatesInbox: "permits@shared-team.test" });
+  assert.equal(getClient(db, shared.id)?.updatesInbox, "permits@shared-team.test",
+    "the shared inbox did not survive a normal write — the API cannot record the address the guide asks every client for");
   const sp = createProject(db, { clientId: shared.id, owner: "Shared Owner", street: "2 Inbox St", city: "Bend", state: "OR", ahj: "Bend", utility: "PGE", dcKw: "5", acKw: "4" });
   await notifyClientOfStatusChange(db, sp.project, { outcome: "issued", statusLabel: "Permit Issued", targetType: "permit" });
   const audit = db.get<{ details?: string }>(

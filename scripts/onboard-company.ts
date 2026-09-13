@@ -241,6 +241,11 @@ const CLIENT_FIELDS = [
   "electricalSupervisorName", "electricianLicenseNumber", "businessAddress", "businessCity",
   "businessState", "businessZip", "businessPhone", "businessEmail", "ein", "bondCarrier",
   "insuranceCarrier", "authorizedSignerName", "authorizedSignerTitle", "billingMode", "serviceFeeUsd",
+  // The v18 five. intake-template.json has collected these since the column landed; until they
+  // reached ClientRecord and FIELD_COLUMNS this list rejected them with "is not a writable
+  // client field", so an operator filling the template correctly got a warning and a dropped
+  // value. updatesInbox is the address every automated status update is sent to.
+  "updatesInbox", "billingContactEmail", "licenseState", "insuranceExpiry", "bondExpiry",
 ] as const;
 
 /** Fields that never throw when blank but silently produce blank PORTAL fields, which is a

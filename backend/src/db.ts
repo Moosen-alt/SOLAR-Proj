@@ -1455,9 +1455,10 @@ const VERSIONED_MIGRATIONS: VersionedMigration[] = [
       // THE APPLICATION (clientStagingOverlay maps it to installerEmail, and the AHJ mails
       // corrections there); conflating the two means our outbound updates go wherever the
       // permit clerk was told to write, and the customer cannot change one without changing
-      // the other. Deliberately NOT repointed here: clientNotifier still reads
-      // clients.business_email, and switching the notifier is a behaviour change that wants
-      // its own decision, not a side effect of a column landing.
+      // the other. The notifier was repointed later and now prefers updates_inbox, falling
+      // back to business_email when it is blank (clientNotifier.ts) — this comment used to
+      // say the opposite, which is worth more than a typo: it is the only description of the
+      // recipient rule anywhere near the schema.
       //
       // billing_contact_email — the same packet section asks, separately, who receives our
       // invoices. That is a third address again: the AHJ's correspondent, the operations
