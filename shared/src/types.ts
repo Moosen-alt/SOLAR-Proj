@@ -120,6 +120,15 @@ export interface SubmissionPaymentRecord {
   totalUsd: number;
   feeBasis: string;
   paymentReference: string;
+  /** The fee agreement IN FORCE when the real fee was recorded — one of
+   *  card-on-file | customer-pays | mailed-check | keelix-pays, or "" when nothing was on
+   *  file at the time. Stamped rather than read live, so an invoice cannot change because
+   *  somebody edited a credential afterwards. Only 'keelix-pays' is ours to re-bill. */
+  feeResponsibility: string;
+  /** When the real fee became known. Distinct from paidAt (which is the client-pays-operator
+   *  gate and never fires for monthly-billed clients) and from updatedAt (which moves on any
+   *  touch): this is the date a billing period is cut on. */
+  feeRecordedAt: string;
   quotedAt: string;
   paidAt: string | null;
   updatedAt: string;

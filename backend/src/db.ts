@@ -1767,6 +1767,43 @@ const VERSIONED_MIGRATIONS: VersionedMigration[] = [
       `);
     },
   },
+  {
+    version: 24,
+    name: "submission_payments_fee_responsibility",
+    up: (db) => {
+      // AN INVOICE MUST NOT RECOMPUTE HISTORY.
+      //
+      // Whether a jurisdiction fee is ours to re-bill lives on the portal CREDENTIAL, as
+      // feeResponsibility ∈ card-on-file | customer-pays | mailed-check | keelix-pays, and only
+      // the last of those means "we pay it and re-bill". Reading that live at invoice time
+      // would make last quarter's invoice change when somebody edits a credential this
+      // quarter: the same filing would silently stop being reimbursable, or start.
+      //
+      // So the agreement is STAMPED onto the payment row at the moment the real fee is
+      // recorded, and the invoice reads the row. An invoice is then a statement about what was
+      // agreed when the money moved, which is the only version of it a bookkeeper can defend.
+      //
+      // fee_recorded_at is not redundant with the two timestamps already there, and the
+      // difference is what makes a monthly invoice possible later:
+      //   · paid_at is the CLIENT-pays-OPERATOR gate. It never fires for a monthly-billed
+      //     client, so it cannot date a monthly statement.
+      //   · updated_at moves on any touch of the row, including a re-quote.
+      // Neither anchors "when did we learn what this permit actually cost", which is the date a
+      // period has to be cut on.
+      //
+      // Deliberately NOT backfilled. A row recorded before this migration has no agreement on
+      // file, and inventing one — even "the credential says so today" — is the very
+      // recomputation this column exists to prevent. Those rows render as "responsibility
+      // unrecorded at payment time" and are excluded from the reimbursement total.
+      addColumnIfMissing(db, "submission_payments", "fee_responsibility", "TEXT NOT NULL DEFAULT ''");
+      addColumnIfMissing(db, "submission_payments", "fee_recorded_at", "TEXT NOT NULL DEFAULT ''");
+      // The index a monthly statement will want: every recorded fee in a date window.
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_submission_payments_fee_recorded
+          ON submission_payments(fee_recorded_at);
+      `);
+    },
+  },
 ];
 
 // One-time repair for the runaway-notes bug: upsertKnowledge used to merge the

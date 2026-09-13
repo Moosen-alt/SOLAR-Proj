@@ -2345,6 +2345,15 @@ app.get("/api/projects/:id/fee-sheet", asyncHandler(async (req, res) => {
   res.json({ feeSheet: buildProjectFeeSheet(db, detail.project) });
 }));
 
+// What the assigned client owes for this project: fees we ADVANCED and re-bill, kept apart
+// from our own service fee, because one is a pass-through and the other is revenue. Reads
+// only — unlike the payment-quote route below it, asking for an invoice never creates a row.
+app.get("/api/projects/:id/invoice", asyncHandler(async (req, res) => {
+  const { buildProjectInvoice } = await import("./invoices");
+  const detail = getProjectDetail(db, String(req.params.id));
+  res.json({ invoice: buildProjectInvoice(db, detail.project) });
+}));
+
 app.post("/api/projects/:id/prepare-submission", (req, res) => {
   // Optional track scopes staging to one filing (nem | building | electrical | combo);
   // omitted = the legacy combined stage.

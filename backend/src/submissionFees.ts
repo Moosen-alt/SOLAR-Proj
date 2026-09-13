@@ -37,11 +37,13 @@ import type {
   SubmissionPaymentRecord,
 } from "../../shared/src/types";
 import { knowledgeNameMatchScore } from "./knowledgeBase";
+import { listPortalCredentials, selectCredentialUrlsFor } from "./portalCredentials";
 import { resolveValuation, parseMoney } from "./valuation";
 import { HttpError } from "./httpError";
 import { id } from "./ids";
 import { text } from "./json";
 import { nowIso } from "./time";
+import { logger } from "./logger";
 
 type Row = Record<string, unknown>;
 
@@ -72,6 +74,8 @@ function mapPayment(row: Row): SubmissionPaymentRecord {
     totalUsd: num(row.total_usd) ?? 0,
     feeBasis: text(row.fee_basis),
     paymentReference: text(row.payment_reference),
+    feeResponsibility: text(row.fee_responsibility),
+    feeRecordedAt: text(row.fee_recorded_at),
     quotedAt: text(row.quoted_at),
     paidAt: row.paid_at ? text(row.paid_at) : null,
     updatedAt: text(row.updated_at),
@@ -428,6 +432,63 @@ export function buildPaymentQuote(db: AppDb, project: ProjectRecord, trackInput?
 
 /** Record the REAL portal-calculated fee (true-up) and feed the fee history so
  *  future quotes for this AHJ/utility start from reality. */
+/** THE FEE AGREEMENT AT THIS MOMENT, for stamping onto a payment row.
+ *
+ *  Whether a jurisdiction fee is ours to re-bill lives on the portal credential, and only
+ *  'keelix-pays' means we advance it. Resolved here, at record time, so the invoice can read a
+ *  fact rather than recompute one — see migration v24.
+ *
+ *  NEVER GUESSES BETWEEN CREDENTIALS. A client with several portals on file and no way to tell
+ *  which one this track filed through returns "" — unrecorded — and the invoice says so. An
+ *  invented agreement is worse than a missing one: it puts a number in front of a customer that
+ *  nobody consented to, which is the whole failure this column exists to prevent. */
+export function feeResponsibilityNow(db: AppDb, project: ProjectRecord, track: "permit" | "nem"): string {
+  const clientId = text(project.clientId);
+  if (!clientId) return "";
+  // STATICALLY IMPORTED, not require()d. The first version reached for require() inside a
+  // try/catch here and silently returned "" in an ESM module where require does not exist —
+  // so every fee looked like it had no agreement on file, which is indistinguishable from a
+  // client who genuinely has none. That is the catch-swallows-the-answer shape this codebase
+  // keeps getting bitten by. portalCredentials does not import this module, so there is no
+  // cycle to avoid.
+  try {
+    const rows = listPortalCredentials(db, clientId);
+    if (!rows.length) return "";
+
+    // The portal this track actually filed through, when the submission recorded one. That is
+    // better evidence than any prediction made today: it is the door the money went through.
+    const profileUrl = text(db.get<Row>(
+      `SELECT p.portal_url AS portal_url FROM submissions s
+         JOIN portal_profiles p ON p.id = s.portal_profile_id
+        WHERE s.project_id = ? AND p.portal_url <> ''
+        ORDER BY s.created_at DESC LIMIT 1`,
+      [project.id],
+    )?.portal_url);
+    if (profileUrl) {
+      const usable = selectCredentialUrlsFor(profileUrl, rows.map((r) => r.portalUrl));
+      for (const url of usable) {
+        const hit = rows.find((r) => r.portalUrl === url && text(r.feeResponsibility));
+        if (hit) return text(hit.feeResponsibility);
+      }
+    }
+
+    // No recorded portal. One credential is unambiguous; several are not, and a permit track
+    // must never inherit a utility portal's agreement (safety rule 5).
+    const stated = rows.filter((r) => text(r.feeResponsibility));
+    if (stated.length === 1) return text(stated[0].feeResponsibility);
+    return "";
+  } catch (err) {
+    // A credential store that cannot be read is not a reason to refuse the fee entry — the
+    // agreement goes unrecorded and the invoice reports it as such. But it is SAID, because a
+    // silent "" here reads exactly like a client who never agreed anything, and that is a
+    // statement about a business relationship.
+    logger.warn("fees", "could not resolve fee responsibility — recording the fee without an agreement", {
+      projectId: project.id, track, err: err instanceof Error ? err.message : String(err),
+    });
+    return "";
+  }
+}
+
 export function recordActualPermitFee(
   db: AppDb,
   project: ProjectRecord,
@@ -442,9 +503,16 @@ export function recordActualPermitFee(
   const existing = getSubmissionPayment(db, project.id, track)!;
   const ts = nowIso();
   const total = round2(fee + existing.serviceFeeUsd);
+  // STAMPED HERE, ONCE. Re-entering a corrected fee re-stamps, which is right — the agreement
+  // that matters is the one in force when the amount was settled. An already-stamped row whose
+  // agreement has since been REMOVED keeps what it had, because "" means "nothing was on file",
+  // not "the agreement was withdrawn".
+  const responsibility = feeResponsibilityNow(db, project, track) || existing.feeResponsibility;
   db.run(
-    `UPDATE submission_payments SET permit_fee_actual_usd = ?, total_usd = ?, fee_basis = ?, updated_at = ? WHERE id = ?`,
-    [fee, total, "Portal-calculated fee (entered from the portal's fee/review screen).", ts, existing.id],
+    `UPDATE submission_payments SET permit_fee_actual_usd = ?, total_usd = ?, fee_basis = ?,
+       fee_responsibility = ?, fee_recorded_at = ?, updated_at = ? WHERE id = ?`,
+    [fee, total, "Portal-calculated fee (entered from the portal's fee/review screen).",
+      responsibility, ts, ts, existing.id],
   );
   db.run(
     `INSERT INTO permit_fee_history (id, state, ahj, utility, track, fee_usd, source, project_id, recorded_at)
