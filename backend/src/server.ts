@@ -2682,6 +2682,9 @@ app.post("/api/projects/:id/submittal-tracks/:type/mark-submitted", asyncHandler
     trackingUrl: b.trackingUrl ? String(b.trackingUrl) : undefined,
     submittedBy: b.submittedBy ? String(b.submittedBy) : undefined,
     notes: b.notes ? String(b.notes) : undefined,
+    // Blank means today, which is the same-sitting case. Supplied means the filing really went
+    // in on that day and is being recorded later — the client's review clock runs from it.
+    submittedAt: b.submittedAt ? String(b.submittedAt) : undefined,
   });
   // The operator just SUBMITTED this track by hand from the staged review browser — that
   // manual submit is the strongest verification the captured fill works. If the track's

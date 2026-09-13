@@ -344,12 +344,36 @@ export function markTrackSubmitted(
     trackingUrl?: string;
     submittedBy?: string;
     notes?: string;
+    /** WHEN IT ACTUALLY WENT IN. Defaults to now, which is right when the operator files in the
+     *  portal and records it in the same sitting. File on Monday and record on Wednesday and the
+     *  default is wrong in the one field the client tracker exists to report — their review clock
+     *  would appear to start two days late. ISO date or datetime. */
+    submittedAt?: string;
   },
 ): void {
   if (!requiredTracks(project).includes(type)) {
     throw new HttpError(400, `This project does not require a "${type}" submittal track.`);
   }
   const ts = nowIso();
+  // THE FILING DATE IS VALIDATED, NEVER COERCED. An unparseable string stored here reaches a
+  // client's page as a confident wrong fact about the only date that matters to them, and a
+  // future one says a jurisdiction received something it has not. Both refuse.
+  //
+  // The skew allowance exists because "now" from a browser whose clock runs a little fast is not
+  // somebody claiming to have filed tomorrow, and refusing it is a support call for nothing.
+  const FUTURE_SKEW_MS = 5 * 60_000;
+  const submittedAt = ((): string => {
+    const raw = (input.submittedAt || "").trim();
+    if (!raw) return ts;
+    const parsed = new Date(raw);
+    if (Number.isNaN(parsed.getTime())) {
+      throw new HttpError(400, `Could not read "${raw}" as a filing date. Use YYYY-MM-DD, or leave it blank for today.`);
+    }
+    if (parsed.getTime() > Date.now() + FUTURE_SKEW_MS) {
+      throw new HttpError(400, `That filing date is in the future (${raw}). A permit cannot have been submitted tomorrow.`);
+    }
+    return parsed.toISOString();
+  })();
   const applicationNumber = (input.applicationNumber || "").trim();
   const permitNumber = (input.permitNumber || "").trim();
   const confirmationNumber = (input.confirmationNumber || "").trim();
@@ -375,7 +399,7 @@ export function markTrackSubmitted(
           applicationNumber,
           permitNumber,
           confirmationNumber,
-          ts,
+          submittedAt,
           (input.submittedBy || "").trim(),
           (input.notes || `${TRACK_LABELS[type]} submitted manually by operator.`),
           s(awaiting.id),
@@ -397,10 +421,10 @@ export function markTrackSubmitted(
           applicationNumber,
           permitNumber,
           confirmationNumber,
-          ts,
+          submittedAt,
           (input.submittedBy || "").trim(),
           (input.notes || `${TRACK_LABELS[type]} submitted manually by operator.`),
-          ts,
+          ts,   // created_at is when the ROW was written; submitted_at is when it was FILED
         ],
       );
     }
