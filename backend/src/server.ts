@@ -67,6 +67,7 @@ import {
   getCustomer,
   listCommunications,
   listCustomers,
+  undeliveredCommunications,
   updateCustomer,
 } from "./crm";
 import { getKpiReport } from "./kpi";
@@ -2776,6 +2777,16 @@ const server = app.listen(port, () => {
     } catch { /* cleanup is best-effort; never block startup */ }
     startJobWorker(db);
   })();
+  // A COUNT AT BOOT. The drafts that went unnoticed for twelve days accumulated while the
+  // process was already running, so the per-event warning above is the primary channel — but a
+  // restart is when somebody is actually looking at the log, and a backlog should greet them.
+  try {
+    const stranded = undeliveredCommunications(db);
+    if (stranded.length) {
+      const oldest = stranded[0];
+      logger.warn("notify", `${stranded.length} client message(s) were never delivered — oldest ${oldest.occurredAt.slice(0, 10)} "${oldest.subject}". Run: npx tsx scripts/undelivered.ts`);
+    }
+  } catch { /* never block startup on a report */ }
   startBackupScheduler(db);
   startArtifactRetention();
   startMonitorScheduler(db);

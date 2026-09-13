@@ -59,14 +59,19 @@ await run("ensureStatusShareToken is idempotent and URL-safe", () => {
 
 await run("no SMTP → update recorded as a DRAFT communication with the status link", async () => {
   await notifyClientOfStatusChange(db, project, { outcome: "issued", statusLabel: "Permit Issued", targetType: "permit" });
-  const comm = db.get<{ subject?: string; body?: string; direction?: string; channel?: string }>(
+  const comm = db.get<{ subject?: string; body?: string; direction?: string; channel?: string; delivery_status?: string; delivery_detail?: string; recipient?: string }>(
     "SELECT * FROM communications WHERE project_id = ? ORDER BY created_at DESC LIMIT 1",
     [project.id],
   );
   assert.ok(comm, "communication row recorded");
   assert.equal(comm!.direction, "outbound");
   assert.equal(comm!.channel, "email");
-  assert.ok((comm!.subject || "").includes("[draft"), `draft-marked (subject: ${comm!.subject})`);
+  // Delivery state moved OUT of the subject and into its own column (migration v25). The
+  // prefix is what made "what did we fail to send?" unqueryable and let three real messages sit
+  // undelivered for twelve days, so asserting it here would pin the bug in place.
+  assert.equal(comm!.delivery_status, "draft", `draft-marked (status: ${comm!.delivery_status})`);
+  assert.match(comm!.delivery_detail || "", /not configured/i, "and the reason distinguishes unconfigured SMTP from a failed send");
+  assert.doesNotMatch(comm!.subject || "", /^\[/, `the subject must be the subject: ${comm!.subject}`);
   assert.ok((comm!.subject || "").includes("Permit issued"), "subject carries the outcome");
   assert.ok((comm!.body || "").includes("/status?token="), "body carries the status link");
   assert.ok((comm!.body || "").includes("9 Status St"), "body carries the address");

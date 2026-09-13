@@ -153,6 +153,13 @@ export interface CommunicationRecord {
   loggedBy: string;
   occurredAt: string;
   createdAt: string;
+  /** "sent" | "draft" | "failed", or "" for a row that is not an outbound email (a note, a call,
+   *  inbound mail) or predates delivery tracking. "" means UNKNOWN, never "fine". */
+  deliveryStatus: string;
+  /** Why it is not sent, in words: which of "SMTP is not configured" and "the send threw". */
+  deliveryDetail: string;
+  /** The address we resolved at the time we tried. Blank on rows backfilled from a prefix. */
+  recipient: string;
 }
 
 function mapComm(row: Row): CommunicationRecord {
@@ -167,7 +174,29 @@ function mapComm(row: Row): CommunicationRecord {
     loggedBy: String(row.logged_by ?? ""),
     occurredAt: String(row.occurred_at),
     createdAt: String(row.created_at),
+    deliveryStatus: String(row.delivery_status ?? ""),
+    deliveryDetail: String(row.delivery_detail ?? ""),
+    recipient: String(row.recipient ?? ""),
   };
+}
+
+/**
+ * Everything we meant to send and did not. THE POINT OF THE COLUMN: before this, answering it
+ * meant reading every row's subject line, so nobody did, and three real client emails — one a
+ * correction request — sat undelivered for twelve days.
+ *
+ * Counts only outbound EMAIL with a known-bad status. A note, a logged call and inbound mail all
+ * live in this table too; counting those would make the number meaningless, which is the same as
+ * not having it. A row whose status is "" is UNKNOWN and deliberately excluded — see migration
+ * v25 on why an old row is not guessed either way.
+ */
+export function undeliveredCommunications(db: AppDb, orgId?: string | null): CommunicationRecord[] {
+  const where = ["direction = 'outbound'", "channel = 'email'", "delivery_status IN ('draft','failed')"];
+  const params: string[] = [];
+  if (orgId !== null && orgId !== undefined) { where.push("org_id = ?"); params.push(orgId); }
+  return db
+    .query<Row>(`SELECT * FROM communications WHERE ${where.join(" AND ")} ORDER BY occurred_at ASC`, params)
+    .map(mapComm);
 }
 
 export function listCommunications(
@@ -202,14 +231,18 @@ export function addCommunication(
     loggedBy?: string;
     occurredAt?: string;
     orgId?: string;
+    deliveryStatus?: string;
+    deliveryDetail?: string;
+    recipient?: string;
   },
 ): CommunicationRecord {
   const id = crypto.randomUUID();
   const ts = nowIso();
   db.run(
     `INSERT INTO communications
-      (id, customer_id, project_id, direction, channel, subject, body, logged_by, occurred_at, created_at, org_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (id, customer_id, project_id, direction, channel, subject, body, logged_by, occurred_at, created_at, org_id,
+       delivery_status, delivery_detail, recipient)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       input.customerId ?? null,
@@ -222,6 +255,9 @@ export function addCommunication(
       input.occurredAt || ts,
       ts,
       input.orgId || DEFAULT_ORG_ID,
+      input.deliveryStatus ?? "",
+      input.deliveryDetail ?? "",
+      input.recipient ?? "",
     ],
   );
   return mapComm(db.get<Row>("SELECT * FROM communications WHERE id = ?", [id])!);

@@ -24,7 +24,7 @@
 import crypto from "node:crypto";
 import type { AppDb } from "./db";
 import type { ProjectRecord } from "../../shared/src/types";
-import { addCommunication } from "./crm";
+import { addCommunication, undeliveredCommunications } from "./crm";
 import { addAuditLog } from "./audit";
 import { logger } from "./logger";
 
@@ -104,6 +104,60 @@ async function sendEmail(to: string, subject: string, textBody: string): Promise
   await transporter.sendMail({ from: process.env.SMTP_FROM, to, subject, text: textBody });
 }
 
+/**
+ * Re-send one message that never left. Used by scripts/undelivered.ts after SMTP is configured,
+ * so a backlog written during an outage is not simply lost.
+ *
+ * THE RECIPIENT IS RE-RESOLVED, not replayed. Rows backfilled from the old subject-line prefix
+ * carry no recipient at all, and an address recorded weeks ago may since have been corrected —
+ * this is exactly the window in which somebody fixes the address that caused the failure. The
+ * stored one is the fallback, not the source of truth.
+ *
+ * Never throws: a failure re-stamps the row and is reported, so a bad address in a backlog of
+ * twenty cannot stop the other nineteen.
+ */
+export async function resendCommunication(
+  db: AppDb,
+  comm: { id: string; projectId: string | null; recipient: string; subject: string; body: string },
+): Promise<{ delivered: boolean; to: string; detail: string }> {
+  let to = "";
+  try {
+    const project = comm.projectId
+      ? db.get<{ client_id?: string }>("SELECT client_id FROM projects WHERE id = ?", [comm.projectId])
+      : null;
+    if (project?.client_id) {
+      const client = db.get<{ business_email?: string; updates_inbox?: string }>(
+        "SELECT business_email, updates_inbox FROM clients WHERE id = ?", [project.client_id],
+      );
+      to = (client?.updates_inbox || "").trim() || (client?.business_email || "").trim();
+    }
+  } catch { /* fall through to the stored address */ }
+  to = to || comm.recipient.trim();
+
+  if (!to) {
+    const detail = "No recipient: the project has no client, or the client has neither an updates inbox nor a business email.";
+    db.run("UPDATE communications SET delivery_status = 'failed', delivery_detail = ? WHERE id = ?", [detail, comm.id]);
+    return { delivered: false, to: "(none)", detail };
+  }
+  try {
+    await sendEmail(to, comm.subject, comm.body);
+    db.run(
+      "UPDATE communications SET delivery_status = 'sent', delivery_detail = '', recipient = ? WHERE id = ?",
+      [to, comm.id],
+    );
+    logger.info("notify", `re-sent a stranded client message to ${to} (${comm.subject})`);
+    return { delivered: true, to, detail: "" };
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    db.run(
+      "UPDATE communications SET delivery_status = 'failed', delivery_detail = ?, recipient = ? WHERE id = ?",
+      [detail, to, comm.id],
+    );
+    logger.warn("notify", `re-send failed for ${to}: ${detail}`);
+    return { delivered: false, to, detail };
+  }
+}
+
 /** Notify the submitting client of a status change. Never throws — a delivery
  *  problem must never break the monitor tick that detected the change. */
 export async function notifyClientOfStatusChange(
@@ -151,28 +205,51 @@ export async function notifyClientOfStatusChange(
       `— Solar Submission Autopilot (automated update; reply to reach the team)`,
     ].join("\n");
 
-    let delivered = false;
+    // THE TWO WAYS THIS DOES NOT ARRIVE ARE DIFFERENT PROBLEMS, so they are recorded as
+    // different statuses. "draft" means we never tried — SMTP_HOST/SMTP_FROM are unset, which is
+    // a deployment step nobody has done. "failed" means we tried and the server refused, which
+    // is an incident with an error message worth keeping. They used to share one subject-line
+    // string, and the deployment step went undone for twelve days behind it.
+    let deliveryStatus = "draft";
+    let deliveryDetail = "SMTP is not configured (SMTP_HOST / SMTP_FROM are unset), so no send was attempted.";
     if (smtpConfigured()) {
       try {
         await sendEmail(to, subject, body);
-        delivered = true;
+        deliveryStatus = "sent";
+        deliveryDetail = "";
       } catch (err) {
-        logger.warn("notify", `client email send failed (${to}): ${err instanceof Error ? err.message : String(err)}`);
+        deliveryStatus = "failed";
+        deliveryDetail = err instanceof Error ? err.message : String(err);
+        logger.warn("notify", `client email send failed (${to}): ${deliveryDetail}`);
       }
     }
-    // Always on the record — the project timeline shows what the client was told.
+    const delivered = deliveryStatus === "sent";
+    // Always on the record — the project timeline shows what the client was told. The subject is
+    // the subject: delivery state is in its own column, so "what did we fail to send?" is a
+    // query, and a stranded row still holds exactly what we would send if we re-tried.
     addCommunication(db, {
       projectId: project.id,
       direction: "outbound",
       channel: "email",
-      subject: `${delivered ? "[sent]" : "[draft — SMTP not configured or send failed]"} ${subject}`,
+      subject,
       body,
       loggedBy: "client-notifier (automated)",
+      deliveryStatus,
+      deliveryDetail,
+      recipient: to,
     });
     addAuditLog(db, project.id, "system", "client-notifier", delivered ? "client.notified" : "client.notification_drafted", {
       outcome: evt.outcome, targetType: evt.targetType, to: to.replace(/(.).+(@.*)/, "$1***$2"),
     });
-    logger.info("notify", `${delivered ? "sent" : "drafted"} client update (${evt.outcome}) for project ${project.id}`);
+    if (delivered) {
+      logger.info("notify", `sent client update (${evt.outcome}) for project ${project.id}`);
+    } else {
+      // WARN, WITH THE RUNNING TOTAL. An INFO line saying "drafted" is what this used to be, and
+      // it scrolled past three times without anyone reading it. A number that only goes up is
+      // harder to ignore than an event that looks the same every time.
+      const stranded = undeliveredCommunications(db).length;
+      logger.warn("notify", `client update NOT delivered (${deliveryStatus}) for project ${project.id}: ${deliveryDetail} — ${stranded} message(s) now waiting. Run: npx tsx scripts/undelivered.ts`);
+    }
   } catch (err) {
     logger.warn("notify", `client notification failed: ${err instanceof Error ? err.message : String(err)}`);
   }

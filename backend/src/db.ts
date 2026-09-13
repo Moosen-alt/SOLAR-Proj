@@ -1805,6 +1805,58 @@ const VERSIONED_MIGRATIONS: VersionedMigration[] = [
       `);
     },
   },
+  {
+    version: 25,
+    name: "communications_delivery_state",
+    up: (db) => {
+      // "WAS IT SENT?" WAS NOT A QUESTION YOU COULD ASK THIS TABLE.
+      //
+      // Delivery state lived as a prefix inside `subject` — "[sent] Permit issued — ..." or
+      // "[draft - SMTP not configured or send failed] ...". Three consequences, all of which
+      // bit on the live database:
+      //
+      //   1. Nobody could COUNT failures. Finding them meant reading every row's subject. Three
+      //      real client emails sat undelivered for twelve days, one of them a correction
+      //      request, because no number anywhere went up.
+      //   2. Two different situations shared one string. "SMTP_HOST is unset" is a deployment
+      //      step nobody has done; "the mail server threw" is an incident. Opposite fixes.
+      //   3. The subject stopped being the subject, so a row could not be re-sent from what it
+      //      stores without first parsing prose back off it.
+      //
+      // recipient is stored because an undelivered row is useless if you cannot see who was not
+      // told. It is the resolved address at the time we tried, not a live lookup.
+      addColumnIfMissing(db, "communications", "delivery_status", "TEXT NOT NULL DEFAULT ''");
+      addColumnIfMissing(db, "communications", "delivery_detail", "TEXT NOT NULL DEFAULT ''");
+      addColumnIfMissing(db, "communications", "recipient", "TEXT NOT NULL DEFAULT ''");
+
+      // BACKFILL FROM THE PREFIX, which is the only record those rows have. Matched on "[draft"
+      // and "[sent]" rather than the full string so the em-dash in the original never has to
+      // survive a round trip through this file.
+      db.exec(`
+        UPDATE communications
+           SET delivery_status = 'sent',
+               subject = substr(subject, instr(subject, '] ') + 2)
+         WHERE channel = 'email' AND subject LIKE '[sent]%' AND instr(subject, '] ') > 0;
+      `);
+      db.exec(`
+        UPDATE communications
+           SET delivery_status = 'draft',
+               delivery_detail = 'Recorded before delivery state was tracked. The subject said "SMTP not configured or send failed" without saying which.',
+               subject = substr(subject, instr(subject, '] ') + 2)
+         WHERE channel = 'email' AND subject LIKE '[draft%' AND instr(subject, '] ') > 0;
+      `);
+      // A row with NO prefix keeps delivery_status ''. It predates both prefixes and nothing
+      // here knows what happened to it. Calling it 'sent' would be the same mistake this
+      // migration exists to undo: a confident claim about delivery that nothing checked.
+      // Unknown rows are excluded from the undelivered count rather than guessed either way.
+
+      // The index the count uses.
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_communications_delivery
+          ON communications(delivery_status, occurred_at);
+      `);
+    },
+  },
 ];
 
 // One-time repair for the runaway-notes bug: upsertKnowledge used to merge the
