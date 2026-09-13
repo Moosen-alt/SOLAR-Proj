@@ -45,14 +45,35 @@ await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
 const port = (server.address() as { port: number }).port;
 const url = `http://127.0.0.1:${port}/`;
 
+// A CONTACT BLOCK IS BOUND, SO THE FIXTURE BINDS IT.
+//
+// Both steps carried field:"" — an unbound literal — and since 3e42fec the cross-project
+// guard refuses those: looksLikeProjectData("Phone", "5035550142") is true on the value shape
+// alone, and with the bare-"Name" widening so is looksLikeProjectData("Name", "ZZTest Replay
+// Benchmark"). Both fields resolved to "" and were never typed, so there was nothing for the
+// portal's re-render to drop and nothing to re-assert: the run reported requiredStillEmpty
+// ["Name","Phone"] and the literal-refusal note instead of a re-assert note, and the one thing
+// this file exists to measure — that the LAST page gets the re-assert every other page gets —
+// was not exercised at all. 4 red checks.
+//
+// homeownerName and homeownerPhone are what a recorded Ameren contact block binds to, and on a
+// UTILITY portal the homeowner* keys resolve to the utility account holder (see the
+// ubAccountHolder fallback in resolveRecipeFieldValues). The literals stay as the learn run
+// recorded them — a real step carries both — and are supplied here as this project's values,
+// because a binding the resolver cannot answer is a permanent blank rather than a red.
+const FIELD_VALUES: Record<string, string> = {
+  homeownerName: "ZZTest Replay Benchmark",
+  homeownerPhone: "5035550142",
+};
+
 // No advancing click anywhere: the run ENDS on this page, which is the whole point.
 const recipe = {
   id: "fp1", scopeType: "utility", profileKey: "il|unknown|ameren illinois", state: "IL",
   ahj: "", utility: "Ameren Illinois", portalPlatform: "powerclerk", portalUrl: url,
   status: "complete", version: 1,
   steps: [
-    { action: "fill", phase: "fill", field: "", note: "Name", value: "ZZTest Replay Benchmark", selector: { css: "#nm" } },
-    { action: "fill", phase: "fill", field: "", note: "Phone", value: "5035550142", selector: { css: "#ph" } },
+    { action: "fill", phase: "fill", field: "homeownerName", note: "Name", value: "ZZTest Replay Benchmark", selector: { css: "#nm" } },
+    { action: "fill", phase: "fill", field: "homeownerPhone", note: "Phone", value: "5035550142", selector: { css: "#ph" } },
   ] as unknown as RecipeStep[],
   createdBy: "test", createdAt: "", updatedAt: "", notes: "", discipline: "",
 } as unknown as PortalRecipe;
@@ -62,7 +83,7 @@ const context = await browser.newContext();
 await context.addInitScript("globalThis.__name = globalThis.__name || function (fn) { return fn; };");
 const page = await context.newPage();
 await page.goto(url);
-const adapter = new RecipeAdapter(recipe, {}, {}, { autoSubmit: false });
+const adapter = new RecipeAdapter(recipe, FIELD_VALUES, {}, { autoSubmit: false });
 (adapter as unknown as { page: unknown }).page = page;
 // Count gap-fill offers without a live planner. Re-asserting can only restore a value the
 // recipe already knows how to write; a required field the recipe has NO step for is what
