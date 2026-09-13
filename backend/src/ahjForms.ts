@@ -14,6 +14,7 @@ import { parseJson } from "./json";
 import { resolvePermitPath, evaluatePrescriptiveCriteria, type PrescriptiveCriterion, type PrescriptiveLimitInputs } from "./permitPath";
 import { resolveEffectiveCodeContext } from "./codeProfiles";
 import { isDocumentDateStale } from "./documentDate";
+import { findFeeScheduleForProject } from "./feeSchedules";
 
 // Classify an AHJ form by which mutually-exclusive solar application it is, from its
 // name/filename. A prescriptive and a structural application must NEVER both be filled
@@ -290,6 +291,10 @@ export interface FillContext {
   // (loaded in buildContext) — the presc* sources must screen against the SAME
   // limits QC's baseline rules use, not always the Oregon defaults.
   prescriptiveLimits?: PrescriptiveLimitInputs;
+  // The jurisdiction's PUBLISHED electrical fee brackets, when one is on file. Loaded in
+  // buildContext so renewableFee can prefer a schedule somebody researched over the ladder
+  // printed on the form we happen to have a copy of. See renewableFee.
+  publishedElectricalBrackets?: Array<{ minKw?: number | null; maxKw?: number | null; feeUsd: number }>;
 }
 
 function str(v: unknown): string {
@@ -302,15 +307,51 @@ function systemKva(ctx: FillContext): number {
   return Number(ctx.project.systemSizeAcKw || ctx.project.systemSizeDcKw || 0);
 }
 
-// Renewable energy permit fee using the rate schedule PRINTED ON THIS FORM
-// (rev 7/1/2025): ≤5 kVA $201, 5.01–15 $283, 15.01–25 $372, >25 $14.78/kVA.
+// A FEE HARDCODED FROM A FORM GOES STALE EVERY JULY, AND THIS ONE HAD.
+//
+// The ladder below is the one PRINTED ON THE FORM we hold a copy of (rev 7/1/2025):
+// ≤5 kVA $201, 5.01–15 $283, 15.01–25 $372, >25 $14.78/kVA. Running the fee researcher at
+// Portland as a brand-new AHJ on 2026-09-13 turned up the CURRENT schedule — "Electrical Permit
+// Fee Schedule, City of Portland, Effective Date: July 10, 2026" — and every row had moved:
+//
+//     ≤5 kVA $212   5.01–15 $298   15.01–25 $391   >25 $15.52/kva
+//
+// Uniformly ~5.3% higher: an annual increase, the same shape as the Coos County 1.70x jump.
+// So this function was writing $283 onto a Portland application where the city charges $298 —
+// and it feeds the line, the subtotal, the 12% state surcharge and the TOTAL, so one stale
+// constant is four wrong numbers on a document that goes to the city.
+//
+// The repair is not to retype the 2026 figures, which would be stale again next July. A
+// published schedule on file WINS, and the printed ladder is the fallback for a jurisdiction
+// nobody has researched yet — so every future fee year is free, and the worst case is exactly
+// today's behaviour. feeSchedules is the same store the fee sheet and the invoice read, so the
+// PDF and the quote cannot disagree about what this permit costs.
+const PRINTED_LADDER: Array<{ max: number | null; fee: number | null; perKva: number | null }> = [
+  { max: 5, fee: 201, perKva: null },
+  { max: 15, fee: 283, perKva: null },
+  { max: 25, fee: 372, perKva: null },
+  { max: null, fee: null, perKva: 14.78 },
+];
+
 function renewableFee(ctx: FillContext): number {
   const k = systemKva(ctx);
   if (k <= 0) return 0;
-  if (k <= 5) return 201;
-  if (k <= 15) return 283;
-  if (k <= 25) return 372;
-  return Math.round(k * 14.78 * 100) / 100;
+  // Bounds are INCLUSIVE at both ends, matching feeSchedules.matchBracket — a schedule read one
+  // way and evaluated another disagrees silently at the boundary.
+  for (const b of ctx.publishedElectricalBrackets || []) {
+    const min = b.minKw ?? null;
+    const max = b.maxKw ?? null;
+    if (min == null && max == null) continue;      // not a size row
+    if (min != null && k < min) continue;
+    if (max != null && k > max) continue;
+    return Math.round(b.feeUsd * 100) / 100;
+  }
+  for (const row of PRINTED_LADDER) {
+    if (row.max != null && k > row.max) continue;
+    if (row.fee != null) return row.fee;
+    return Math.round(k * (row.perKva ?? 0) * 100) / 100;
+  }
+  return 0;
 }
 
 function feeBracket(ctx: FillContext): string {
@@ -498,9 +539,28 @@ export function buildContext(db: AppDb, project: ProjectRecord): FillContext {
     if (p.maxRafterSpacingIn != null) prescriptiveLimits.maxRafterSpacingIn = p.maxRafterSpacingIn;
     if (p.allowedWindExposures?.length) prescriptiveLimits.allowedWindExposures = p.allowedWindExposures;
   } catch { /* profile data optional — Oregon defaults apply */ }
+  // The jurisdiction's own published electrical brackets, if anybody has researched them. Read
+  // through the SAME discipline-aware lookup the fee sheet and the invoice use, so the PDF and
+  // the quote cannot disagree. Absent is the ordinary case and costs nothing: renewableFee then
+  // falls back to the ladder printed on the form.
+  // STATICALLY IMPORTED, not require()d. This is the second time today the same mistake was
+  // made in this repo: require() does not exist in an ESM module, the surrounding catch
+  // swallows the ReferenceError, and the feature silently does nothing — here that meant the
+  // printed ladder kept winning and the test that proves the fix went red. feeSchedules does
+  // not import this file, so there is no cycle to dodge.
+  let publishedElectricalBrackets: FillContext["publishedElectricalBrackets"];
+  try {
+    const sched = findFeeScheduleForProject(db, project, "permit", "electrical" as never);
+    // Only a SIZE-bracketed schedule can answer this box. A flat or valuation-keyed one is a
+    // different question, and silently substituting it would be worse than the printed ladder.
+    if (sched && sched.basis === "system_kw" && Array.isArray(sched.brackets) && sched.brackets.length) {
+      publishedElectricalBrackets = sched.brackets;
+    }
+  } catch { /* no schedule module or unreadable row — the printed ladder stands */ }
   return {
     project,
     client,
+    publishedElectricalBrackets,
     snapshot: (project.parserSnapshot ?? {}) as Record<string, unknown>,
     // The signature stamped on a permit form comes from the org that OWNS the
     // project — this runs from background jobs with no request, so it can't be
