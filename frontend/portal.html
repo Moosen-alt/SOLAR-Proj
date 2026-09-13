@@ -22,7 +22,7 @@
     h2 { font-size: 15px; margin: 0 0 2px; }
     .muted { color: #6b7280; font-size: 13px; }
     .row { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
-    .track { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 9px 0; border-top: 1px solid #f3f4f6; font-size: 13px; }
+    .track { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; padding: 9px 0; border-top: 1px solid #f3f4f6; font-size: 13px; }
     .badge { font-size: 12px; padding: 3px 10px; border-radius: 999px; background: #eef2ff; color: #3730a3; white-space: nowrap; }
     .badge.good { background: #ecfdf5; color: #065f46; }
     .badge.warn { background: #fffbeb; color: #92400e; }
@@ -40,6 +40,10 @@
     // company. The payload is sanitized server-side (backend/src/clientPortal.ts): addresses,
     // status labels and application/permit numbers only — never correction text, never another
     // company's work, never anything internal.
+
+    // "Filed" is the date the JURISDICTION received it, not the date we staged it. A track with no
+    // filing date has not been submitted — automation never presses final submit, so a fully
+    // prepared application still reads "Not filed yet" until a person files it.
 
     // Statuses where the CLIENT is the one who has to do something. Called out separately
     // because a tracker that shows twenty rows all saying "in progress" is a list, not a signal.
@@ -66,7 +70,8 @@
             <div class="track">
               <div>
                 <div>${esc(t.label)}</div>
-                <div class="muted">${t.applicationNumber ? "Application " + esc(t.applicationNumber) + " · " : ""}${t.permitNumber ? "Permit " + esc(t.permitNumber) + " · " : ""}last checked ${when(t.lastCheckedAt)}</div>
+                <div class="muted">${t.submittedAt ? "Filed " + when(t.submittedAt) : "Not filed yet"}${t.applicationNumber ? " · " + esc(t.applicationNumber) : ""}${t.confirmationNumber ? " · receipt " + esc(t.confirmationNumber) : ""}</div>
+                <div class="muted">${t.permitNumber && t.permitNumber !== t.applicationNumber ? "Permit " + esc(t.permitNumber) + " · " : ""}last checked ${when(t.lastCheckedAt)}</div>
               </div>
               <span class="badge ${cls(t.outcome)}">${esc(t.statusLabel || t.outcome || "Checking…")}</span>
             </div>`).join("")

@@ -74,6 +74,10 @@ export interface ClientPortalTrack {
   lastCheckedAt: string | null;
   applicationNumber: string;
   permitNumber: string;
+  /** When the filing ACTUALLY went in — null when it has not. See the query below. */
+  submittedAt: string | null;
+  /** The jurisdiction's receipt, when it is a different string from the application number. */
+  confirmationNumber: string;
 }
 
 /**
@@ -205,19 +209,59 @@ export function clientPortalPayload(db: AppDb, token: string): ClientPortalPaylo
     updatesByProject.set(pid, list);
   }
 
+  // WHEN EACH TRACK WAS ACTUALLY FILED.
+  //
+  // `submitted` ONLY. Automation never presses final submit (CLAUDE.md rule 1), so a staged
+  // application sits at `awaiting_human_submit` with every field filled and nothing filed. A date
+  // on one of those would tell a client the jurisdiction has their permit when we do, and that a
+  // review clock is running when it is not. Five live projects are in that state right now.
+  //
+  // MIN(submitted_at), because one filing is recorded as two or three rows on the live database
+  // and taking the latest would walk a client's filing date forward on any re-record.
+  //
+  // Keyed by (project_id, application_number) — the same scoping as migration v28. Application
+  // numbers are unique within a jurisdiction, not globally.
+  const filings = db.query<Record<string, unknown>>(
+    `SELECT project_id, application_number,
+            MIN(submitted_at) AS submitted_at,
+            MIN(confirmation_number) AS confirmation_number
+       FROM submissions
+      WHERE project_id IN (${placeholders})
+        AND status = 'submitted' AND submitted_at IS NOT NULL AND submitted_at != ''
+        AND application_number != ''
+      GROUP BY project_id, application_number`,
+    ids,
+  );
+  const filingKey = (projectId: string, app: string): string => `${projectId}::${app}`;
+  const filingByKey = new Map<string, { submittedAt: string; confirmationNumber: string }>();
+  for (const f of filings) {
+    filingByKey.set(filingKey(String(f.project_id), String(f.application_number)), {
+      submittedAt: String(f.submitted_at || ""),
+      confirmationNumber: String(f.confirmation_number || ""),
+    });
+  }
+
   const byProject = new Map<string, ClientPortalTrack[]>();
   for (const t of targets) {
     const pid = String(t.project_id);
     const type = String(t.target_type || "permit");
     const list = byProject.get(pid) || [];
+    const applicationNumber = String(t.application_number || "");
+    const filing = filingByKey.get(filingKey(pid, applicationNumber));
+    // PowerClerk's confirmation number IS the application number. Printing both would be the same
+    // string twice on one line, which reads as a page that does not know what it is showing.
+    const confirmation = filing && filing.confirmationNumber !== applicationNumber
+      ? filing.confirmationNumber : "";
     list.push({
       type,
       label: trackLabel(type, String(t.permit_type || "")),
       statusLabel: String(t.latest_status_label || ""),
       outcome: String(t.latest_outcome || ""),
       lastCheckedAt: t.last_checked_at ? String(t.last_checked_at) : null,
-      applicationNumber: String(t.application_number || ""),
+      applicationNumber,
       permitNumber: String(t.permit_number || ""),
+      submittedAt: filing?.submittedAt || null,
+      confirmationNumber: confirmation,
     });
     byProject.set(pid, list);
   }
