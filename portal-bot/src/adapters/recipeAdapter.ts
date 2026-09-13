@@ -1920,6 +1920,31 @@ ${body.slice(0, 4000)}`);
     const bCompact = compact(actual);
     for (const w of a) if (bCompact.includes(w)) return null;
     for (const w of b) if (aCompact.includes(w)) return null;
+    // AN ABBREVIATION IS NOT A CONTRADICTION, and admitting short tokens above made it look
+    // like one. multiArray went red on a control labelled "Qty" whose step is noted "pv array
+    // quantity": zero shared words, and "quantity" does not CONTAIN "qty", so a correct fill
+    // was refused and aborted. Qty/quantity, Amt/amount, Mfr/manufacturer and Tel/telephone
+    // are all the same shape.
+    //
+    // A written abbreviation keeps its letters in order, so a subsequence test is what tells
+    // "qty" inside "pvarrayquantity" (q…t…y) from "fax" inside "contactemailapplicant" (no f
+    // at all). Capped at four letters, because past that a subsequence match is coincidence
+    // rather than shorthand.
+    //
+    // This direction of error is the cheap one: an escape that fires spuriously only ACCEPTS,
+    // which is precisely what this function did for every short label before today — so the
+    // worst case is the old behaviour, while a missing escape ABORTS a correct fill and leaves
+    // a required field blank. The corpus agrees it should be generous: all seven all-short
+    // labels in the 76 recorded recipes ("Zip", "Yes", "No", "Sub Type", "120/240") carry a
+    // note identical to the label, so none of them needs this at all — the hole being closed
+    // above is real but unwitnessed, and it must not be closed at the price of a real abort.
+    const subsequence = (needle: string, hay: string): boolean => {
+      let i = 0;
+      for (const ch of hay) if (ch === needle[i] && ++i === needle.length) return true;
+      return needle.length === 0;
+    };
+    for (const w of a) if (w.length <= 4 && subsequence(w, bCompact)) return null;
+    for (const w of b) if (w.length <= 4 && subsequence(w, aCompact)) return null;
 
     // They share nothing. Find the control the recipe actually meant — by scanning the
     // page's own label associations, the SAME mechanism that just detected the mismatch.
