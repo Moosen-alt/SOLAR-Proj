@@ -49,6 +49,7 @@ process.env.DOCUMENT_FETCH_BROWSER = "0";
 const { openDatabase } = await import("../src/db");
 const {
   harvestJurisdiction,
+  MAX_FEE_PAGE_HOPS,
   detectFeeConflict,
   bracketKey,
   readFeeTableFromPdf,
@@ -174,11 +175,30 @@ const FEES_PAGE = `<html><body>
   <a href="/jobs">Employment opportunities</a>
 </body></html>`;
 
+
+// SALEM'S REAL SHAPE. A hub page that links the fee page by name and carries no files of its
+// own; the fee page then carries the PDF. The classifier correctly refuses to fetch a PAGE as a
+// document, so without one bounded hop the schedule is invisible — which is exactly what
+// happened on cityofsalem.net: 264 anchors, 0 kept, and "Building Permit and Land Use Fees"
+// sitting in the unsure list.
+const HUB_PAGE = `<html><body>
+  <a href="/hub/building">Building in Salem</a>
+  <a href="/hub/commercial">Commercial</a>
+  <a href="/hub/building-permit-and-land-use-fees">Building Permit and Land Use Fees</a>
+  <a href="https://elsewhere.invalid/fees">Fees on somebody else's site</a>
+</body></html>`;
+const HUB_FEE_PAGE = `<html><body>
+  <a href="/forms/community-development-fees.pdf">Building Permit Fees with Explanations</a>
+</body></html>`;
+
 const server = http.createServer((req, res) => {
   const url = (req.url || "").split("?")[0];
   const pdf = (bytes: Uint8Array) => { res.writeHead(200, { "content-type": "application/pdf" }); res.end(Buffer.from(bytes)); };
   if (url === "/solar-page") { res.writeHead(200, { "content-type": "text/html" }); res.end(SOLAR_PAGE); return; }
   if (url === "/fees-page") { res.writeHead(200, { "content-type": "text/html" }); res.end(FEES_PAGE); return; }
+  if (url === "/hub") { res.writeHead(200, { "content-type": "text/html" }); res.end(HUB_PAGE); return; }
+  if (url === "/hub/building-permit-and-land-use-fees") { res.writeHead(200, { "content-type": "text/html" }); res.end(HUB_FEE_PAGE); return; }
+  if (url.startsWith("/hub/")) { res.writeHead(200, { "content-type": "text/html" }); res.end("<html><body>nothing here</body></html>"); return; }
   if (url === "/forms/electrical-permit-application.pdf") return pdf(ELECTRICAL);
   if (url === "/forms/prescriptive-solar-checklist.pdf") return pdf(CHECKLIST);
   if (url === "/forms/community-development-fees.pdf") return pdf(ADOPTED);
@@ -559,6 +579,40 @@ await check("a 404 page is reported as reachable-but-empty, which is a different
 // ---------------------------------------------------------------------------
 // 10. Direct document links, with no page to index.
 // ---------------------------------------------------------------------------
+await check("ONE HOP: a hub that links the fee PAGE still yields the fee table", async () => {
+  // Measured on cityofsalem.net: research found the forms page unaided and read four real
+  // applications, and the schedule was one click away on a sibling the hub listed as "Building
+  // Permit and Land Use Fees". The classifier matched it on "fee" and set it aside — "the link
+  // is a page, not a file" — which is the right rule against crawling a city website and the
+  // wrong outcome here, because hub -> fees page -> PDF is the standard CivicPlus/GovAccess
+  // shape. Pointed at that page by hand it read the brackets immediately.
+  const HOP = "Hub County";
+  const report = await harvestJurisdiction(db, { state: STATE, ahj: HOP, pageUrl: `${base}/hub` }, { llm, apply: false });
+  assert.ok(report.feePageHops.length >= 1, "no fee-worded page was followed at all");
+  const hop = report.feePageHops.find((h) => /land use fees/i.test(h.text));
+  assert.ok(hop, `the fee page was not the one followed: ${JSON.stringify(report.feePageHops.map((h) => h.text))}`);
+  assert.ok(hop!.found >= 1, "the hop was made but nothing was taken from the page");
+  assert.ok(report.documents.some((d) => /community-development-fees\.pdf/.test(d.url)),
+    `the schedule behind the hop never reached the documents: ${JSON.stringify(report.documents.map((d) => d.url))}`);
+  // The candidates are where a read table lands on a dry run (schedule is null when nothing is
+  // written), so that is what proves the hop produced a priced result rather than just a fetch.
+  assert.equal(report.fee.action, "would_save", report.fee.reason);
+  assert.ok(report.fee.candidates.some((c) => c.brackets.length >= 3),
+    `no fee table was read through the hop: ${report.fee.reason}`);
+});
+
+await check("MUST EXCLUDE: the hop is bounded — depth one, same host, fee wording only", async () => {
+  const report = await harvestJurisdiction(db, { state: STATE, ahj: "Hub Bounds", pageUrl: `${base}/hub` }, { llm, apply: false });
+  assert.ok(report.feePageHops.length <= MAX_FEE_PAGE_HOPS,
+    `followed ${report.feePageHops.length} pages — a harvester that follows interesting links is a crawler`);
+  assert.ok(!report.feePageHops.some((h) => /elsewhere\.invalid/.test(h.href)),
+    "followed a fee link onto somebody else's domain");
+  // "Building in Salem" and "Commercial" match document wording but say nothing about fees, so
+  // they stay where they were: listed for a person, never fetched.
+  assert.ok(!report.feePageHops.some((h) => /^(Building in Salem|Commercial)$/i.test(h.text.trim())),
+    `followed a non-fee page: ${JSON.stringify(report.feePageHops.map((h) => h.text))}`);
+});
+
 await check("direct document links (the KB carries plenty) are harvested with no page at all", async () => {
   const report = await harvestJurisdiction(db, { state: STATE, ahj: "Direct County" }, {
     llm,

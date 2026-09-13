@@ -269,6 +269,9 @@ export interface HarvestReport {
   unsure: HarvestLink[];
   /** Nearly matched — a person should glance at these before believing the harvest. */
   nearMisses: HarvestLink[];
+  /** Fee-worded PAGE links this run followed, one hop deep, and what each yielded. Reported so a
+   *  document's provenance names the page it actually came from, not the page we started at. */
+  feePageHops: Array<{ text: string; href: string; found: number; note: string }>;
   skippedCount: number;
   documents: HarvestDocumentReport[];
   fee: {
@@ -381,6 +384,15 @@ export interface LinkVerdict {
   matched: string[];
   /** Higher goes first when maxDocuments bites. */
   rank: number;
+}
+
+/** How many fee-worded PAGE links one harvest may follow. Two covers "Fees" plus a
+ *  "Fee Schedule" sibling; more than that and a harvester is a crawler. */
+export const MAX_FEE_PAGE_HOPS = 2;
+
+/** Same site? A fee page on another domain belongs to somebody else. */
+export function sameHost(a: string, b: string): boolean {
+  try { return new URL(a).host.toLowerCase() === new URL(b).host.toLowerCase(); } catch { return false; }
 }
 
 /** Decide what a page's anchor is, and SAY WHY in every branch. */
@@ -806,7 +818,7 @@ export async function harvestJurisdiction(
   const report: HarvestReport = {
     state, ahj, utility, track: "permit",
     pageUrl: "", pageHow: "", pageReason: "",
-    anchorsSeen: 0, kept: [], unsure: [], nearMisses: [], skippedCount: 0,
+    anchorsSeen: 0, kept: [], unsure: [], nearMisses: [], feePageHops: [], skippedCount: 0,
     documents: [],
     fee: { action: "none", reason: "", profileKey, candidates: [], conflict: null, schedule: null },
     applied: apply,
@@ -866,6 +878,60 @@ export async function harvestJurisdiction(
     }
     for (const { l, v } of verdicts.filter((e) => e.v.verdict === "keep").sort((a, b) => b.v.rank - a.v.rank)) {
       targets.push({ url: l.href, text: l.text });
+    }
+
+    // ONE HOP TO THE FEES PAGE, BECAUSE THAT IS HOW AHJ SITES ARE BUILT.
+    //
+    // Measured on City of Salem. Research found the FORMS page on its own and read four real
+    // applications off it — and the fee schedule was one click away, on a sibling the hub page
+    // listed as "Building Permit and Land Use Fees". The classifier saw it, matched it on "fee",
+    // and set it aside: "the link is a page, not a file — a person should open it". Correct as a
+    // rule against crawling a whole city website, and wrong here, because hub -> fees page -> PDF
+    // is the standard shape on CivicPlus/GovAccess sites, which is Salem, Coos Bay and Portland.
+    //
+    // Pointed at that page by hand it found the table immediately: five brackets, $79/$94/$156/
+    // $204/$469, off a document whose own printed "Effective Date: September 24, 2013" got it
+    // flagged stale. So the only thing missing was the hop.
+    //
+    // BOUNDED HARD, because "follow interesting links" is how a harvester becomes a crawler:
+    //   · depth ONE. A page reached by a hop never hops again — hopped pages are not re-scanned.
+    //   · only a link whose WORDING is about fees. An application link that happens to be a page
+    //     is still left for a person; this is not a general "follow pages" rule.
+    //   · same host only. A fee page on another domain is somebody else's site.
+    //   · at most MAX_FEE_PAGE_HOPS of them, best-ranked first.
+    //   · every hop is REPORTED, so a document's provenance names the page it actually came from
+    //     rather than the page we started at.
+    //   NO BACKSLASHES ON PURPOSE. This line was corrupted twice by patch scripts that turn a
+    //   backslash-b into a literal BACKSPACE (0x08) — invisible on screen, so the regex matched
+    //   a control character instead of a word and the hop silently never fired. A character-class
+    //   word boundary cannot be mangled that way.
+    const FEE_PAGE_WORDING = /(^|[^a-z])fees?([^a-z]|$)/i;
+    const hopCandidates = verdicts
+      .filter((e) => e.v.verdict === "unsure"
+        && FEE_PAGE_WORDING.test(`${e.l.text} ${decodeURIComponent(e.l.href)}`)
+        && !DOC_HREF.test(e.l.href)            // a file would already have been kept
+        && !NOT_A_DOCUMENT.test(e.l.href)
+        && sameHost(e.l.href, source.pageUrl)
+        && e.l.href.replace(/#.*$/, "") !== source.pageUrl.replace(/#.*$/, ""))
+      .sort((a, b) => b.v.rank - a.v.rank)
+      .slice(0, MAX_FEE_PAGE_HOPS);
+
+    for (const { l } of hopCandidates) {
+      let hopped: DocumentLink[] = [];
+      try {
+        hopped = await findLinks(l.href);
+      } catch {
+        report.feePageHops.push({ text: l.text, href: l.href, found: 0, note: "could not be read" });
+        continue;
+      }
+      let added = 0;
+      for (const { l: hl, v: hv } of hopped.map((x) => ({ l: x, v: classifyHarvestLink(x) }))) {
+        if (hv.verdict !== "keep") continue;
+        if (targets.some((t) => t.url === hl.href)) continue;
+        targets.push({ url: hl.href, text: `${hl.text} (via the ${l.text.trim()} page)` });
+        added++;
+      }
+      report.feePageHops.push({ text: l.text, href: l.href, found: added, note: added ? "" : "no document links on it" });
     }
   } else if (!report.pageReason) {
     report.pageReason = "no document page was found or given";

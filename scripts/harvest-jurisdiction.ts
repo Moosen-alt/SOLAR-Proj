@@ -57,6 +57,12 @@ console.log(`\nPage:     ${report.pageUrl || "(none found)"}`);
 console.log(`How:      ${report.pageHow}`);
 if (report.pageReason) console.log(`Note:     ${report.pageReason}`);
 console.log(`Anchors:  ${report.anchorsSeen} seen — ${report.kept.length} kept, ${report.unsure.length} unsure, ${report.skippedCount} skipped`);
+// A hopped page is where half the fee tables actually live, so say which pages were opened and
+// what each gave up — a document found two clicks in should never look like it came from one.
+for (const h of report.feePageHops ?? []) {
+  console.log(`Hopped:   "${h.text.trim()}" -> ${h.found} document(s)${h.note ? `  (${h.note})` : ""}`);
+  console.log(`          ${h.href}`);
+}
 
 if (report.unsure.length) {
   console.log(`\n-- UNSURE (matched on wording, not fetched — look at these yourself) --`);
