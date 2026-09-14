@@ -192,7 +192,12 @@ export function jurisdictionsFromProjects(db: AppDb, clientId: string): Jurisdic
   // `ahj || city` mirrors what the knowledge base itself keys on, so a project whose ahj was
   // never filled in resolves here the way it would in a run.
   const rows = db.query<{ state: string; ahj: string; city: string; utility: string }>(
-    "SELECT DISTINCT state, ahj, city, utility FROM projects WHERE client_id = ?",
+    // ARCHIVED PROJECTS ARE NOT JURISDICTIONS WE SERVE. The archive (v27) hides superseded
+    // staging passes and test fixtures from the client portal; counting them here inflates the
+    // denominator of the one number this report exists to state. On the live database the two
+    // Illinois fixtures added City of Springfield and City of Evanston to "CANNOT FILE YET",
+    // so the readiness figure described work on jurisdictions nobody has a job in.
+    "SELECT DISTINCT state, ahj, city, utility FROM projects WHERE client_id = ? AND archived_at = ''",
     [clientId],
   );
   const seen = new Set<string>();

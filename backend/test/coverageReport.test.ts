@@ -37,6 +37,7 @@ process.env.SESSION_ENCRYPTION_KEY = process.env.SESSION_ENCRYPTION_KEY || "unit
 
 const { openDatabase } = await import("../src/db");
 const { createClient } = await import("../src/clients");
+const { createProject } = await import("../src/repository");
 const { createPortalCredential, updatePortalCredential, listPortalCredentials, recordLoginOutcome } = await import("../src/portalCredentials");
 const { recipeProfileKey } = await import("../src/portalRecipes");
 const { knowledgeProfileKey } = await import("../src/knowledgeBase");
@@ -44,6 +45,7 @@ const {
   buildCoverageReport,
   renderCoverageReport,
   parseJurisdictions,
+  jurisdictionsFromProjects,
   classifyCoverage,
   textSuggestsMfa,
   findRelay,
@@ -251,6 +253,24 @@ check("CANNOT FILE YET: a login the portal refused, with the §6 remedy and not 
   // silently skips the host. Do not ship a third.
   assert.match(row.unblocks, /--include-stale/);
   assert.match(row.unblocks, /successful login clears it/i);
+});
+
+check("MUST EXCLUDE: an ARCHIVED project is not a jurisdiction we serve", () => {
+  // The archive (v27) hides superseded staging passes and test fixtures from the client portal.
+  // Counting them here inflates the denominator of the only number this report states. On the
+  // live database two Illinois TEST fixtures put City of Springfield and City of Evanston into
+  // CANNOT FILE YET, so the readiness figure described jurisdictions nobody has a job in.
+  const before = jurisdictionsFromProjects(db, CLIENT).length;
+  const { project: fixture } = createProject(db, {
+    clientId: CLIENT, owner: "Test Testerson", street: "800 E Monroe St", city: "Springfield",
+    state: "IL", ahj: "City of Springfield", utility: "Ameren Illinois", dcKw: "8", acKw: "6.4",
+  });
+  assert.equal(jurisdictionsFromProjects(db, CLIENT).length, before + 1,
+    "fixture is wrong — the new jurisdiction should show up before it is archived");
+  db.run("UPDATE projects SET archived_at = ? WHERE id = ?", [new Date().toISOString(), fixture.id]);
+  const after = jurisdictionsFromProjects(db, CLIENT);
+  assert.equal(after.length, before, `an archived project still counts as a jurisdiction: ${JSON.stringify(after.map((j) => j.ahj))}`);
+  assert.ok(!after.some((j) => j.ahj === "City of Springfield"), "the archived jurisdiction is still listed");
 });
 
 check("the counts add up and every bucket is one of the three the guide names", () => {
