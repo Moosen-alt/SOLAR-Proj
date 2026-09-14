@@ -145,6 +145,10 @@ export interface CoverageSignals {
    *  of it — but an unagreed portal is a kickoff item the customer has to close, and a
    *  coverage report is where they will actually see it. */
   feeResponsibility: string;
+  /** A filing this client ACTUALLY put through this jurisdiction on this track. A login that
+   *  produced an application number is the strongest evidence the login works — stronger than
+   *  the flag, which only the LEARN path ever writes. */
+  filedHere: { filed: boolean; at: string; reference: string };
 }
 
 export interface CoverageRow extends CoverageSignals {
@@ -533,6 +537,52 @@ export function mfaFacts(
 // always beats a recipe.
 // ---------------------------------------------------------------------------------------
 
+/**
+ * Has this client actually filed this track in this jurisdiction?
+ *
+ * WHY THIS EXISTS: READY NOW turns on portal_credentials.last_login_ok_at, and that flag is
+ * written by exactly one caller — the auto-learn path. A REPLAY that stages a real filing logs
+ * in, fills the form and captures an application number, and records nothing. So on the live
+ * database every portal we have actually filed through read "we have never presented this
+ * company's login", and the report told the operator to schedule a supervised first run for
+ * portals already proven twice over.
+ *
+ * Reading the filing is the honest fix and it writes nothing: an application number issued to
+ * this client by this jurisdiction could not exist unless the login worked.
+ *
+ * NOT used to override a REFUSAL — that check sits above this one in classifyCoverage. A portal
+ * that rejected the password this week outranks a filing from last month, because the password
+ * has since changed.
+ */
+export function filedInJurisdiction(
+  db: AppDb,
+  clientId: string,
+  j: { state: string; ahj: string; utility: string },
+  track: CoverageTrack,
+): { filed: boolean; at: string; reference: string } {
+  const none = { filed: false, at: "", reference: "" };
+  const disciplines = track === "nem" ? ["nem"] : ["building", "electrical", "combo", "permit"];
+  const placeholders = disciplines.map(() => "?").join(",");
+  // Matched on the JURISDICTION the row is about, not on a portal URL: the URL a filing went
+  // through is not stored on the submission, and the jurisdiction is what the row claims.
+  const where = track === "nem"
+    ? "lower(p.utility) = lower(?)"
+    : "lower(COALESCE(NULLIF(p.ahj, ''), p.city)) = lower(?)";
+  const match = track === "nem" ? j.utility : j.ahj;
+  if (!s(match).trim()) return none;
+  const row = db.get<{ submitted_at?: string; application_number?: string }>(
+    `SELECT sub.submitted_at, sub.application_number
+       FROM submissions sub JOIN projects p ON p.id = sub.project_id
+      WHERE p.client_id = ? AND p.archived_at = '' AND lower(p.state) = lower(?) AND ${where}
+        AND sub.permit_type IN (${placeholders})
+        AND sub.status = 'submitted' AND sub.application_number != ''
+      ORDER BY sub.submitted_at DESC LIMIT 1`,
+    [clientId, j.state, match, ...disciplines],
+  );
+  if (!row?.submitted_at) return none;
+  return { filed: true, at: s(row.submitted_at), reference: s(row.application_number) };
+}
+
 export function classifyCoverage(
   sig: CoverageSignals,
   context: { track: CoverageTrack; portalLabel: string },
@@ -600,10 +650,17 @@ export function classifyCoverage(
     ? ` This portal emails a code at login, so a person (${sig.mfa.relay}) has to relay one every session — it is never unattended.`
     : "";
 
-  if (sig.recipeStatus === "complete" && sig.credential.loginAccepted) {
+  // A FILING IS A LOGIN THAT WORKED. Reached only after the refusal and MFA branches above, so
+  // a portal that rejected the password this week still outranks a filing from last month.
+  const provenByFiling = sig.credential.stored && !sig.credential.loginAccepted && sig.filedHere.filed;
+  if (sig.recipeStatus === "complete" && (sig.credential.loginAccepted || provenByFiling)) {
     return {
       bucket: "ready_now",
-      reason: `${sig.recipeDetail}, and ${host} accepted this company's login${sig.credential.lastLoginOkAt ? ` on ${sig.credential.lastLoginOkAt.slice(0, 10)}` : ""}.${mfaNote}`,
+      reason: provenByFiling
+        ? `${sig.recipeDetail}, and this company has already filed through ${host} — ${sig.filedHere.reference} on `
+          + `${sig.filedHere.at.slice(0, 10)}. That application number could not exist unless the login worked, which is `
+          + `stronger evidence than the login flag (only the learn path ever sets it).${mfaNote}`
+        : `${sig.recipeDetail}, and ${host} accepted this company's login${sig.credential.lastLoginOkAt ? ` on ${sig.credential.lastLoginOkAt.slice(0, 10)}` : ""}.${mfaNote}`,
       unblocks:
         `Nothing. File it through the normal queue — and remember the filing still stops at the portal's own review ` +
         `screen for a person to check and submit.`,
@@ -678,6 +735,7 @@ export function buildCoverageReport(
         mfa,
         otherDisciplinesWithRecipe: resolved.otherDisciplinesWithRecipe,
         feeResponsibility: s(credentialRow?.feeResponsibility),
+        filedHere: filedInJurisdiction(db, client.id, j, track),
       };
       const verdict = classifyCoverage(signals, { track, portalLabel });
       rows.push({

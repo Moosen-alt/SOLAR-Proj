@@ -255,6 +255,79 @@ check("CANNOT FILE YET: a login the portal refused, with the §6 remedy and not 
   assert.match(row.unblocks, /successful login clears it/i);
 });
 
+// ---------------------------------------------------------------------------
+// A FILING IS A LOGIN THAT WORKED.
+//
+// READY NOW turns on portal_credentials.last_login_ok_at, and exactly one caller writes that
+// flag: the auto-learn path. A REPLAY that stages a real filing logs in, fills the form and
+// captures an application number — and records nothing. On the live database only ONE credential
+// in the whole table had ever recorded an accepted login (a Sacramento benchmark), while real
+// applications had been filed through aca-oregon.accela.com twice. The report was telling the
+// operator to book a supervised first run for portals already proven.
+// ---------------------------------------------------------------------------
+const EVERDALE_URL = "https://everdale-permits.invalid/portal/";
+seedRecipe({ scopeType: "ahj", state: "NM", ahj: "City of Everdale", status: "complete", portalUrl: EVERDALE_URL, steps: 31 });
+createPortalCredential(db, CLIENT, {
+  portalType: "NM · Everdale", portalUrl: EVERDALE_URL, username: "permits@thorncrest-solar.invalid", password: PASSWORD,
+});
+// Deliberately NO recordLoginOutcome — this is the state every replayed portal is in.
+const everdaleScope = [...jurisdictions, ...parseJurisdictions("NM|City of Everdale|")];
+const everdaleRow = () => {
+  const report = buildCoverageReport(db, client, everdaleScope);
+  return report.rows.find((r) => r.jurisdiction.includes("Everdale") && r.track === "permit")!;
+};
+
+check("before any filing: a complete recipe with an untried login is SUPERVISED", () => {
+  const row = everdaleRow();
+  assert.equal(row.recipeStatus, "complete");
+  assert.equal(row.credential.neverAttempted, true, "fixture is wrong — this login must be untried");
+  assert.equal(row.bucket, "supervised_first_run", row.reason);
+});
+
+const { project: everdaleProject } = createProject(db, {
+  clientId: CLIENT, owner: "Everdale Owner", street: "4 Everdale Rd", city: "Everdale",
+  state: "NM", ahj: "City of Everdale", utility: "Everdale Power", dcKw: "8", acKw: "6.4",
+});
+const fileIt = (status: string, appNumber: string, discipline = "electrical") => db.run(
+  `INSERT INTO submissions (id, project_id, submission_type, permit_type, status, application_number, submitted_at, created_at)
+   VALUES (?, ?, 'permit', ?, ?, ?, ?, ?)`,
+  [`sub-${appNumber}-${status}`, everdaleProject.id, discipline, status, appNumber,
+    "2026-09-01T10:00:00.000Z", "2026-09-01T10:00:00.000Z"],
+);
+
+check("MUST NOT: a STAGED filing is not evidence — nothing was ever presented to the portal", () => {
+  // awaiting_human_submit means the form is filled and sitting in our review window. No login of
+  // this company's was necessarily accepted, and certainly no application exists.
+  fileIt("awaiting_human_submit", "EV-STAGED");
+  assert.equal(everdaleRow().bucket, "supervised_first_run", "a staged, unfiled application was read as proof of login");
+});
+
+check("THE HEADLINE: a real filing moves it to READY NOW, and the reason says why", () => {
+  fileIt("submitted", "EV-2026-0042");
+  const row = everdaleRow();
+  assert.equal(row.bucket, "ready_now", row.reason);
+  assert.equal(row.filedHere.filed, true);
+  assert.match(row.reason, /EV-2026-0042/, `the reason must name the evidence: ${row.reason}`);
+  assert.match(row.reason, /could not exist unless the login worked/i, row.reason);
+});
+
+check("MUST NOT: a REFUSED login outranks a past filing — the password has since changed", () => {
+  // The refusal branch sits above this one on purpose. A portal that rejected us this week is not
+  // ready because we filed there last month.
+  recordLoginOutcome(db, CLIENT, EVERDALE_URL, { ok: false, note: "Still on the login form after submitting — the stored username/password was likely rejected." });
+  const row = everdaleRow();
+  assert.equal(row.bucket, "cannot_file_yet", `a filing overrode a live refusal: ${row.reason}`);
+  assert.match(row.reason, /REFUSED/i, row.reason);
+  recordLoginOutcome(db, CLIENT, EVERDALE_URL, { ok: true, note: "login accepted" });
+});
+
+check("MUST NOT: a filing in a DIFFERENT jurisdiction is not evidence for this one", () => {
+  const otherRow = buildCoverageReport(db, client, everdaleScope).rows
+    .find((r) => r.jurisdiction.includes("Fallowmere"))!;
+  assert.equal(otherRow.filedHere.filed, false,
+    "Everdale's filing was counted as evidence for Fallowmere");
+});
+
 check("MUST EXCLUDE: an ARCHIVED project is not a jurisdiction we serve", () => {
   // The archive (v27) hides superseded staging passes and test fixtures from the client portal.
   // Counting them here inflates the denominator of the only number this report states. On the
