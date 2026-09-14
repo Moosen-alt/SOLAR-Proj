@@ -55,7 +55,19 @@ async function waitForServer(): Promise<void> {
     try { if ((await fetch(`${BASE}/health`)).ok) return; } catch { /* not up */ }
     await new Promise((r) => setTimeout(r, 1000));
   }
-  throw new Error(`server never came up. log tail:\n${serverLog.slice(-2000)}`);
+  // NAME THE PORT, AND THE LIKELIEST CAUSE. This test picks a random port in a 20-wide band, and
+  // "server never came up" sends you reading the server log — which prints a perfectly healthy
+  // startup banner, because the process starts either way. The real cause is usually that
+  // something else already holds the port: on Windows a svchost service can sit on one of these,
+  // and then this test fails about one run in twenty with a message about the wrong thing.
+  const portTaken = /EADDRINUSE|address already in use/i.test(serverLog);
+  throw new Error(
+    `server never answered ${BASE}/health within 60s`
+    + (portTaken ? ` — PORT ${PORT} IS ALREADY IN USE (that is the failure, not the server).` : "")
+    + `\nIf the log below looks like a healthy startup banner, check the port first:`
+    + `\n  netstat -ano | findstr :${PORT}`
+    + `\nlog tail:\n${serverLog.slice(-2000)}`,
+  );
 }
 
 let failures = 0;

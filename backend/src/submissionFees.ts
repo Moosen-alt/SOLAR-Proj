@@ -464,8 +464,28 @@ export function feeResponsibilityNow(db: AppDb, project: ProjectRecord, track: "
         ORDER BY s.created_at DESC LIMIT 1`,
       [project.id],
     )?.portal_url);
-    if (profileUrl) {
-      const usable = selectCredentialUrlsFor(profileUrl, rows.map((r) => r.portalUrl));
+    // THE TRACK'S OWN RECORDED PORTAL. permit_check_targets.portal_url is written by
+    // markTrackSubmitted and by staging, it is per TRACK, and on the live database it is the only
+    // one of these that is actually populated — every submission carries portal_profile_id NULL,
+    // so the lookup above never fires and everything fell to the "exactly one credential" rule
+    // below. That rule worked only while ONE credential had an agreement; recording the agreement
+    // across all 83 turned it from "unambiguous" into "ambiguous" and every invoice blocked.
+    //
+    // Track-scoped on purpose, and it is safety rule 5: a permit track must never inherit the
+    // utility portal's agreement. Both credentials usually state one and they can disagree, so an
+    // unscoped match would under- or over-bill silently.
+    const targetUrl = text(db.get<Row>(
+      `SELECT portal_url FROM permit_check_targets
+        WHERE project_id = ? AND target_type = ? AND portal_url <> ''
+        ORDER BY updated_at DESC LIMIT 1`,
+      [project.id, track],
+    )?.portal_url);
+
+    // The submission's own portal first when it exists — it is the narrowest evidence — then the
+    // track's target. Both are records of the door the filing went through, not predictions.
+    for (const recorded of [profileUrl, targetUrl]) {
+      if (!recorded) continue;
+      const usable = selectCredentialUrlsFor(recorded, rows.map((r) => r.portalUrl));
       for (const url of usable) {
         const hit = rows.find((r) => r.portalUrl === url && text(r.feeResponsibility));
         if (hit) return text(hit.feeResponsibility);
