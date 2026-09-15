@@ -80,9 +80,42 @@ export function hasStampedStructuralEvidence(project: ProjectRecord): boolean {
     snap(project, "uploadedDocumentNames"),
     snap(project, "documentInventoryText"),
   ].join("\n").toLowerCase();
+  // A DENIAL OUTRANKS A MENTION, and it has to be checked FIRST.
+  //
+  // Coos Bay structural 187-26-000309-STR was filed without stamps and landed in plan review.
+  // The parser had already read the plan set and written, verbatim:
+  //
+  //   "No PE stamp/seal shown (title block 'Signature with Seal' is blank); AHJ may require
+  //    stamped structural for 2x4 @16" rafters..."
+  //
+  // The old rule matched "stamped" (from "may require stamped structural") and its negative
+  // guard wanted the words "no stamp" ADJACENT — the text says "No PE stamp". Two characters,
+  // "PE", turned a statement that the seal box is BLANK into evidence that a seal exists, and
+  // requiredDocuments then counted the PE-stamped-letter requirement satisfied "via stamp in
+  // plan set".
+  //
+  // So absence is tested first and wins outright. A sentence that denies a seal almost always
+  // ALSO contains the word "stamped", because it goes on to say a stamped structural may be
+  // required — any rule that weighs the two loses to its own subject matter.
+  // REGEX LITERALS, not strings joined into a RegExp: "\b" inside a JS string literal is a
+  // BACKSPACE character, not a word boundary — the first version of this block shipped exactly
+  // that, and every pattern silently matched nothing.
+  const DENIES_A_SEAL: RegExp[] = [
+    // "no PE stamp", "no engineer's seal", "no wet stamp" — anything between "no" and the noun.
+    /\bno\b[^.;\n]{0,24}\b(stamp|seal|signature)\b/i,
+    // "not stamped", "unstamped", "unsigned", "unsealed"
+    /\b(not\s+(stamped|sealed|signed)|unstamped|unsealed|unsigned)\b/i,
+    // "does not appear to be stamped"
+    /\bdoes\s+not\b[^.;\n]{0,32}\b(stamp|seal|sign)/i,
+    // the title-block phrasing the parser actually emits
+    /\b(signature\s+with\s+seal|stamp\s+area|seal\s+box|signature\s+block)\b[^.;\n]{0,24}(is\s+)?(blank|empty|missing)/i,
+    /\b(stamp|seal)\b[^.;\n]{0,16}(is\s+)?(blank|empty|missing|absent|pending)\b/i,
+  ];
+  if (DENIES_A_SEAL.some((re) => re.test(blob))) return false;
+
   // "stamped" / "wet stamp" / "PE stamp" / "sealed" / "engineer of record" / "structural letter".
   const hasStamp = /\b(wet[-\s]?stamp|stamped|p\.?e\.? stamp|pe[-\s]?stamp|sealed by|engineer(?:'s)? seal|engineer of record|structural letter|stamped calc)/i.test(blob);
-  // Avoid a false positive when the text only says a stamp is NOT included / is needed.
+  // Kept as a second net for phrasings the denial regex above does not cover.
   const onlyNeeds = /(no stamp|stamp (?:is )?(?:not|missing|needed|required|pending)|without (?:a )?stamp|unstamped)/i.test(blob)
     && !/stamped (?:plan|set|sheet|calc)/i.test(blob);
   return hasStamp && !onlyNeeds;
