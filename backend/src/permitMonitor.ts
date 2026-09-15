@@ -28,6 +28,41 @@ const reviewedPattern =
 const waitingPattern =
   /\b(under review|in review|review in progress|submitted|received|intake|pending review|processing|assigned to reviewer|awaiting review|queued)\b/i;
 
+// THE AGENCY IS WAITING ON US. Checked BEFORE waitingPattern, because these wordings contain
+// the very words that pattern matches — Coos Bay's real status is "Intake Requirements Needed",
+// which hit `intake` and was reported as "In review" at 0.72 while the permit sat stalled.
+// Nobody chases a permit that says the city is reviewing it.
+const actionNeededPattern =
+  /\b(intake\s+requirements?\s+needed|requirements?\s+needed|additional\s+(?:information|documents?)\s+(?:required|needed)|pending\s+applicant|awaiting\s+applicant|resubmittal\s+required|application\s+incomplete|incomplete\b[^.;\n]{0,32}\brequired|on\s+hold)\b/i;
+
+// A RECORD- OR PARCEL-LEVEL CONDITION stops a permit dead and has nothing to do with our
+// documents. 1780 Ocean carries one from 2019 — "Outstanding permit 187-M16-213 expired prior to
+// final" — which sat in text we captured and stored, and which nothing ever read.
+const conditionPattern =
+  /\b(condition:\s*[a-z]|total\s+conditions:\s*[1-9]|parcel\s+notifications?|permit\s+outstanding|outstanding\s+permit|stop\s+work|lien\b)/i;
+
+/**
+ * The condition text as the portal printed it, so the operator sees the actual notice.
+ *
+ * THE SPECIFIC SENTENCE WINS. Accela prints a generic header ("Condition: PERMIT OUTSTANDING
+ * Severity: Notice Total Conditions: 1 ...") ahead of the sentence that actually says what is
+ * wrong ("Outstanding permit 187-M16-213 expired prior to final."). Taking the first match and
+ * truncating produced a banner with no facts in it — the permit number, which is the one thing an
+ * operator can act on, fell off the end.
+ */
+export function extractPortalCondition(text: string): string {
+  const blob = String(text || "").replace(/\s+/g, " ");
+  // NO LEADING WORD BOUNDARY: Accela renders this page with words glued together where markup was
+  // stripped — the real record reads "PERMIT OUTSTANDINGOutstanding permit 187-M16-213", so \b
+  // before "outstanding permit" never matches and the useless generic header wins instead.
+  const specific = /(outstanding permit[^.|]{0,140}|stop work order[^.|]{0,140}|lien[^.|]{0,140})/i.exec(blob);
+  if (specific) return specific[0].trim().slice(0, 180);
+  const header = /condition:\s*([^|]{0,140})/i.exec(blob);
+  return header ? `Condition: ${header[1].trim()}`.slice(0, 180) : "";
+}
+
+
+
 function clean(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
@@ -146,6 +181,28 @@ export function classifyPermitStatusText(rawStatusText: string): PermitStatusCla
       message: "AHJ review appears complete or approved, but ready-for-issue wording was not found.",
     };
   }
+
+  // Checked ahead of waitingPattern on purpose — see the comment on actionNeededPattern.
+  if (actionNeededPattern.test(text)) {
+    // AGAINST THE FULL PAGE, not `text`. extractStatedStatus narrows `text` to the stated status
+    // ("Intake Requirements Needed") and the condition lives elsewhere on the record — testing
+    // the narrowed string found nothing, and the first version of the test passed anyway because
+    // it matched the word "outstanding" in this very message rather than the portal's notice.
+    const condition = conditionPattern.test(rawStatusText) ? extractPortalCondition(rawStatusText) : "";
+    return {
+      outcome: "needs_human_review",
+      statusLabel: "Action needed before review",
+      confidence: 0.8,
+      reviewedByAhj: false,
+      readyForIssue: false,
+      issueFeeDue: false,
+      message:
+        "The agency is waiting on the APPLICANT, not reviewing — the record says requirements are "
+        + "outstanding at intake. Nothing moves until they are supplied."
+        + (condition ? ` The record also carries a condition: "${condition}".` : ""),
+    };
+  }
+
 
   if (waitingPattern.test(text)) {
     return {
