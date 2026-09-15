@@ -4,6 +4,8 @@ import { evaluateBaselineRules } from "./baselineRules";
 import { id } from "./ids";
 import { parseJson } from "./json";
 import { fieldAliases, parserField } from "./normalize";
+import { logger } from "./logger";
+import { documentInventory } from "./requiredDocuments";
 import { nowIso } from "./time";
 import type { ParserPayload, QcStatus, Severity } from "../../shared/src/types";
 import { resolveEffectiveCodeContext } from "./codeProfiles";
@@ -119,7 +121,7 @@ function statusFor(check: Check, ctx: QcContext): QcStatus {
 }
 
 export function runQcForProject(db: AppDb, projectId: string): QcRunResult {
-  const project = db.get<ProjectRow>("SELECT id, parser_json, ahj, state FROM projects WHERE id = ?", [projectId]);
+  const project = db.get<ProjectRow>("SELECT id, parser_json, ahj, state, utility, system_size_dc_kw FROM projects WHERE id = ?", [projectId]);
   if (!project) throw new Error("Project not found.");
 
   const payload = parseJson<ParserPayload>(project.parser_json, {});
@@ -159,6 +161,62 @@ export function runQcForProject(db: AppDb, projectId: string): QcRunResult {
         // it left behind on a prior run — otherwise it lingers in Human Review.
         resolvePendingReviewItem(db, projectId, check.fieldName);
       }
+    }
+
+    // THE DOCUMENTS THIS AHJ WILL WANT, ASKED AT QC INSTEAD OF AT THE PORTAL.
+    //
+    // documentInventory already knew exactly what a Coos Bay structural filing needs, and the
+    // staging gate already refuses without it. It just ran too late: two real permits came back
+    // "Intake Requirements Needed" — one wanting a PE-stamped structural, one wanting a plan
+    // review fee — and the operator found out from the city rather than from us. By staging time
+    // the plan set is weeks old and a sealed letter means going back to the designer; QC runs the
+    // day the plan set lands, which is when there is still time to ask.
+    //
+    // SAME INVENTORY, read earlier — deliberately not a second list. Two lists that can disagree
+    // is how the portal ends up being the thing that tells you.
+    try {
+      const inv = documentInventory(db, {
+        id: projectId,
+        ahj: ctx.ahj,
+        state: ctx.state,
+        utility: clean((project as unknown as Record<string, unknown>).utility) || clean(payload.utility) || "",
+        systemSizeDcKw: (project as unknown as Record<string, unknown>).system_size_dc_kw == null
+          ? null : Number((project as unknown as Record<string, unknown>).system_size_dc_kw),
+        parserSnapshot: payload,
+      } as never);
+      const where = ctx.ahj ? ` for ${ctx.ahj}` : "";
+      const say = (status: string, severity: string, docType: string, label: string, why: string) => {
+        db.run(
+          `INSERT INTO qc_results (id, project_id, qc_status, rule_id, rule_name, message, severity, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          [id(), projectId, status, `docs.${docType}`, "Required document", `${label} is not attached${where}. ${why}`.trim(), severity, createdAt],
+        );
+      };
+      // WARNING, NOT FAIL — surface early, block late. Making a missing document fail QC changes
+      // FLOW CONTROL, not just visibility: qc_failed blocks staging and autopilot, so every
+      // project would stall at QC the moment it is parsed, before anyone has had a chance to
+      // attach anything. The hard refusal already exists at staging and stays there. This exists
+      // so an operator SEES, on the day the plan set lands, what this AHJ is going to want.
+      for (const d of inv.missingBlocking) {
+        warningCount += 1;
+        say("warning", "error", d.docType, d.label,
+          `${String(d.why || "")} Staging will refuse without it.`.trim());
+      }
+      for (const d of inv.missingAdvisory) {
+        warningCount += 1;
+        say("warning", "warning", d.docType, d.label, String(d.why || ""));
+      }
+      if (!inv.missingBlocking.length && !inv.missingAdvisory.length) {
+        db.run(
+          `INSERT INTO qc_results (id, project_id, qc_status, rule_id, rule_name, message, severity, created_at)
+           VALUES (?, ?, 'pass', 'docs.complete', 'Required documents', ?, 'info', ?)`,
+          [id(), projectId, `Every document this filing needs${where} is attached.`, createdAt],
+        );
+      }
+    } catch (err) {
+      // Never let a document check break QC itself — QC failing closed on an inventory error
+      // would stop work for a reason that has nothing to do with the plan set.
+      logger.warn("qc", "document inventory check failed", { projectId, err: err instanceof Error ? err.message : String(err) });
     }
 
     const packetReadiness = clean(payload.packetReadinessText);
