@@ -1,4 +1,4 @@
-import type { PermitCheckOutcome } from "../../shared/src/types";
+import type { PermitCheckOutcome, PermitCheckSource } from "../../shared/src/types";
 
 export interface PermitStatusClassification {
   outcome: PermitCheckOutcome;
@@ -225,6 +225,85 @@ export function classifyPermitStatusText(rawStatusText: string): PermitStatusCla
     issueFeeDue: false,
     message: "Status text did not match a known monitor rule. Human review is required.",
   };
+}
+
+// ---------------------------------------------------------------------------
+// A HISTORY OF CHANGES, NOT A LOG OF LOOKUPS.
+//
+// permit_status_checks was written unconditionally on every poll, so a permit that sat in "In
+// review" for three weeks produced a row per sweep. The client's "Recent updates" list reads
+// those rows, so it showed twelve identical lines — six pairs seconds apart, because a sweep
+// walks the project's STR target and then its ELEC target — and the client concluded nothing was
+// happening because nothing legible was.
+//
+// The email side already had this right: shouldNotifyClient suppresses a re-send when the outcome
+// has not moved. The row was written anyway, so the page showed the ladder the inbox was
+// deliberately spared. This is that same gate, for the row.
+//
+// WHY THIS LIVES WITH THE CLASSIFIER AND NOT AT THE INSERT. "Did anything change?" is a judgement
+// about monitor output — which labels count as the same state, which sources are polls — and it
+// belongs beside the code that produces those labels. The persistence layer calls it; it does not
+// re-derive it, because a second copy of this rule would drift from the classifier that feeds it.
+//
+// WHAT IS NOT LOST. audit_logs already records one `permit_status.checked` row per check, inside
+// the same transaction, carrying source/outcome/statusLabel/targetId. The per-check evidence trail
+// is there and is unaffected. permit_check_targets.last_checked_at is also advanced on every
+// check, so "when did we last look" is a different question from "when did it last move" and
+// both still have an answer.
+// ---------------------------------------------------------------------------
+
+/**
+ * The sources that are a POLL — us going and looking, on a timer, at something that usually has
+ * not moved. These are the only ones that can ladder, and the only ones gated.
+ *
+ * `email` and `manual` are deliberately absent:
+ *
+ *   · `email` — an inbound AHJ email is an EVENT, not a poll. Two emails saying the same thing are
+ *     two things that happened. It is already deduped upstream by email_project_matches
+ *     .source_signature (UNIQUE), so it cannot ladder; and the match row stores the id of the
+ *     check written for it, so suppressing that insert would silently link a new email to an
+ *     older check.
+ *   · `manual` — an operator pasting status text expects a record of having done so.
+ */
+const POLLED_CHECK_SOURCES: ReadonlySet<PermitCheckSource> = new Set<PermitCheckSource>([
+  "portal",
+  "public_url",
+  "mock",
+]);
+
+export function isPolledCheckSource(source: string): boolean {
+  return POLLED_CHECK_SOURCES.has(source as PermitCheckSource);
+}
+
+/**
+ * Does this check represent a CHANGE worth recording as a row?
+ *
+ * `previous` is the target's latest_outcome / latest_status_label as they stood BEFORE this check
+ * — the same pair the client-notification gate reads. Pass null when there is no target (a
+ * project-level check has nothing to compare against and is always recorded).
+ *
+ * COMPARE ON BOTH FIELDS, NOT THE OUTCOME ALONE. One outcome carries several distinct labels:
+ * `ready_for_issue` is either "Ready for issue" or "Ready for issue - fee/payment needed", and
+ * `needs_human_review` is "No status text", "Needs human review" OR "Action needed before
+ * review". A permit moving from "In review" to "Action needed before review" is the single most
+ * important thing a client can be told — the agency has stopped and is waiting on us — and on an
+ * outcome-only comparison from some prior states it would be swallowed as "no change".
+ *
+ * THE FIRST CHECK ALWAYS COUNTS. A blank previous outcome is a target that has never been looked
+ * at; the first reading is a transition from nothing to something.
+ */
+export function shouldRecordStatusCheck(
+  previous: { outcome?: string | null; statusLabel?: string | null } | null | undefined,
+  next: { outcome: string; statusLabel: string },
+  source: PermitCheckSource,
+): boolean {
+  if (!isPolledCheckSource(source)) return true;
+  if (!previous) return true;
+  const previousOutcome = String(previous.outcome ?? "").trim();
+  if (!previousOutcome) return true;
+  const previousLabel = String(previous.statusLabel ?? "").trim();
+  return previousOutcome !== String(next.outcome ?? "").trim()
+    || previousLabel !== String(next.statusLabel ?? "").trim();
 }
 
 export function nextCheckIso(days: number, from = new Date()): string {

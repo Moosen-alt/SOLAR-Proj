@@ -78,7 +78,14 @@ function summarise(row: FeeScheduleRecord | null): Record<string, unknown> | nul
     basis: row.basis,
     confidence: row.confidence,
     paymentMethod: row.paymentMethod,
-    brackets: row.brackets.map((b) => ({ minKw: b.minKw, maxKw: b.maxKw, feeUsd: b.feeUsd, label: b.label })),
+    // `corroboration` rides along because this file is a REPLAY ARTIFACT: the
+    // sanctioned flow researches against a COPY and applies the JSON to the live
+    // database later, so anything dropped here is dropped from the row that
+    // eventually lands. It is a machine check (label and fee found together on
+    // one printed line), never a promotion — confidence above stays 'seeded'.
+    brackets: row.brackets.map((b) => ({
+      minKw: b.minKw, maxKw: b.maxKw, feeUsd: b.feeUsd, label: b.label, corroboration: b.corroboration,
+    })),
     sourceUrl: row.sourceUrl,
     sourceQuote: row.sourceQuote,
     sourceKind: row.sourceKind,
@@ -183,6 +190,14 @@ async function main(): Promise<void> {
           ? `${b.minKw ?? 0}–${b.maxKw ?? "∞"} kVA`
           : b.minValuationUsd != null || b.maxValuationUsd != null ? `$${b.minValuationUsd ?? 0}–${b.maxValuationUsd ?? "∞"}` : "flat";
         console.log(`      ${range.padEnd(18)} $${b.feeUsd.toFixed(2)}   ${b.label || ""}`);
+        // PER BRACKET, because that is the grain of the claim. The row-level
+        // quote below can support at most ONE row of a bracket table; this says,
+        // for each row, whether we found it printed with its own fee beside it.
+        console.log(
+          b.corroboration?.corroborated
+            ? `          CORROBORATED (${b.corroboration.via}) "${b.corroboration.matchedLine}"`
+            : `          not corroborated — this row was not found printed with its fee in anything we retrieved`,
+        );
       }
       console.log(`  QUOTE: "${finding.sourceQuote}"`);
       console.log(`  quote found in retrieved bytes: ${finding.quoteVerified ? "YES" : "NO — treat this number as unchecked"}`);

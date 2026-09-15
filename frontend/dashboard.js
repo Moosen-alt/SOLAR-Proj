@@ -1321,14 +1321,22 @@ function renderFeeSheetLine(line) {
         <span class="badge ${conf.badge}">${esc(conf.label)}</span>
       </div>
       <p style="margin:2px 0;font-size:19px;font-weight:700">${feeMoney(line.feeUsd)}</p>
-      <p class="muted" style="margin:2px 0;font-size:11px">From ${esc(FEE_SOURCE_TEXT[line.source] || line.source)} — ${esc(line.basis || "")}</p>
-      <p style="margin:2px 0;font-size:12px"><strong>Bracket:</strong> ${line.bracketLabel
-        ? esc(line.bracketLabel)
-        : `<span class="muted">no schedule bracket resolved — the application's fee-quantity field cannot be computed from a schedule we do not have</span>`}</p>
-      <p style="margin:2px 0;font-size:12px"><strong>Schedule:</strong> ${url
-        ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(url)}</a>`
-        : `<span class="muted">no source URL on file</span>`}</p>
       <p style="margin:2px 0;font-size:12px">${esc(FEE_PAYMENT_METHOD[line.paymentMethod] || line.paymentMethod || "")}</p>
+      <!-- The amount and how it is paid drive action, so they stay loud. Where
+           the number came from is the product's core claim and is kept in full —
+           one click away, not competing with the number itself. -->
+      <details class="provenance">
+        <summary>Where this number came from</summary>
+        <div class="provenance-body">
+          <p>From ${esc(FEE_SOURCE_TEXT[line.source] || line.source)} — ${esc(line.basis || "")}</p>
+          <p><strong>Bracket:</strong> ${line.bracketLabel
+            ? esc(line.bracketLabel)
+            : `no schedule bracket resolved — the application's fee-quantity field cannot be computed from a schedule we do not have`}</p>
+          <p><strong>Schedule:</strong> ${url
+            ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(url)}</a>`
+            : `no source URL on file`}</p>
+        </div>
+      </details>
       ${conf.note ? `<p style="margin:4px 0 2px;font-size:12px"><strong>⚠ ${esc(conf.note)}</strong></p>` : ""}
       <p class="muted" style="margin:2px 0;font-size:11px">Service fee ${feeMoney(line.serviceFeeUsd)} · track total ${feeMoney(line.totalUsd)}</p>
     </article>`;
@@ -1377,9 +1385,15 @@ function renderFeeSheetPanel() {
       ${(sheet.outOfPortalPayments || []).length ? `
         <p style="margin:6px 0 2px;font-size:12px"><strong>Not payable in any portal</strong></p>
         <ul style="margin:2px 0;padding-left:18px;font-size:12px">${sheet.outOfPortalPayments.map((p) => `<li>${esc(p)}</li>`).join("")}</ul>` : ""}
-      <p class="muted" style="margin:6px 0 0;font-size:11px">
-        Full sheet, including who agreed to pay each portal's fees: <code>npx tsx scripts/fee-sheet.ts --project ${esc(state.selectedProjectId || "")}</code>
-      </p>
+      <!-- A shell command is not something an operator does on this page; it was
+           printed as body copy under the fee total. Kept, moved out of the way. -->
+      <details class="provenance">
+        <summary>Full sheet from the command line</summary>
+        <div class="provenance-body">
+          <p>Includes who agreed to pay each portal's fees:</p>
+          <p><code>npx tsx scripts/fee-sheet.ts --project ${esc(state.selectedProjectId || "")}</code></p>
+        </div>
+      </details>
     </section>`;
 }
 
@@ -2175,11 +2189,19 @@ function renderSubmitGate() {
                 <span>${esc(check.title)}</span>
                 ${statusBadge(`${check.lane} | ${check.status}`)}
               </div>
-              <p><strong>Owner:</strong> ${esc(check.ownerRole)}<br><strong>Next:</strong> ${esc(check.nextAction)}</p>
-              <p class="muted">${esc(check.requirement)}</p>
-              ${(check.evidence || []).length ? `<ul class="evidence-list">${check.evidence.slice(0, 4).map((line) => `<li>${esc(line)}</li>`).join("")}</ul>` : ""}
+              <!-- "Next" is the act-on-it half and stays at full weight. Owner,
+                   requirement, evidence and source are provenance. -->
+              <p><strong>Next:</strong> ${esc(check.nextAction)}</p>
               ${check.id === "ahj-form-mapping-verified" && (check.status === "blocker" || check.status === "warning") ? `<button type="button" class="secondary" style="font-size:12px;margin-top:4px" onclick="document.querySelector('.stage-accordion[data-stage-index=\\'2\\']')?.setAttribute('open','');document.getElementById('applicationDocs')?.scrollIntoView({behavior:'smooth'})">Go to App Docs → verify forms</button>` : ""}
-              <p class="muted">${esc(check.source)}</p>
+              <details class="provenance">
+                <summary>${esc(check.ownerRole)} · ${esc(check.source)}</summary>
+                <div class="provenance-body">
+                  <p><strong>Owner:</strong> ${esc(check.ownerRole)}</p>
+                  <p>${esc(check.requirement)}</p>
+                  ${(check.evidence || []).length ? `<ul class="evidence-list">${check.evidence.slice(0, 4).map((line) => `<li>${esc(line)}</li>`).join("")}</ul>` : ""}
+                  <p>${esc(check.source)}</p>
+                </div>
+              </details>
             </article>
           `).join("") : `<p class="muted">No submit gate checks generated yet.</p>`}
         </div>
@@ -2910,9 +2932,17 @@ function renderProcessMap() {
               <div class="process-step ${opsClass(step.status)}">
                 <div class="item-title"><span>${esc(step.label)}</span>${statusBadge(humanize(step.status))}</div>
                 <p>${esc(step.summary)}</p>
-                <p class="muted">${esc(step.ownerRole)} | ${esc(step.source)}</p>
                 <p><strong>Next:</strong> ${esc(step.nextAction)}</p>
-                ${(step.evidence || []).length ? `<ul class="evidence-list">${step.evidence.slice(0, 2).map((line) => `<li>${esc(line)}</li>`).join("")}</ul>` : ""}
+                <!-- ownerRole|source are internal routing keys ("Data QA |
+                     qc.human_review"). They printed at the same size as the
+                     next action, seventeen times on one page. -->
+                <details class="provenance">
+                  <summary>${esc(step.ownerRole)}</summary>
+                  <div class="provenance-body">
+                    <p>${esc(step.ownerRole)} | ${esc(step.source)}</p>
+                    ${(step.evidence || []).length ? `<ul class="evidence-list">${step.evidence.slice(0, 2).map((line) => `<li>${esc(line)}</li>`).join("")}</ul>` : ""}
+                  </div>
+                </details>
               </div>
             `).join("")}
           </div>
@@ -2953,12 +2983,56 @@ function renderInstallerPacket() {
           </div>
           <p><strong>Ask:</strong> ${esc(item.ask)}</p>
           <p><strong>Why:</strong> ${esc(item.why)}</p>
-          <p class="muted">${esc(item.ownerRole)} | ${esc(item.dueBefore)} | ${esc(item.source)}</p>
-          ${(item.evidence || []).length ? `<ul class="evidence-list">${item.evidence.slice(0, 3).map((line) => `<li>${esc(line)}</li>`).join("")}</ul>` : ""}
+          <details class="provenance">
+            <summary>${esc(item.ownerRole)} · due ${esc(item.dueBefore)}</summary>
+            <div class="provenance-body">
+              <p>${esc(item.ownerRole)} | ${esc(item.dueBefore)} | ${esc(item.source)}</p>
+              ${(item.evidence || []).length ? `<ul class="evidence-list">${item.evidence.slice(0, 3).map((line) => `<li>${esc(line)}</li>`).join("")}</ul>` : ""}
+            </div>
+          </details>
         </article>
       `).join("") : `<p class="muted">No installer/design actions are currently blocking the package.</p>`}
     </div>
   `;
+}
+
+// One timeline event. The DATE stays visible — a timeline without dates isn't
+// one — but actor|source are internal provenance, and `evidence` is where the
+// raw checkId/targetId UUIDs and raw Playwright failures ("locator.click:
+// Timeout 30000ms exceeded") live. Those belong behind the disclosure: still
+// there, still complete, no longer competing with the operator's next action.
+function timelineEventCard(event) {
+  const owner = event.ownerRole || "Operations";
+  return `
+      <article class="timeline-item ${briefClass(event.severity)}">
+        <div class="item-title">
+          <span>${esc(event.title)}</span>
+          ${statusBadge(event.category.replaceAll("_", " "))}
+        </div>
+        <p>${esc(event.detail)}</p>
+        <p class="timeline-meta">${esc(fmtDate(event.occurredAt))}</p>
+        ${event.nextAction ? `<p><strong>Next:</strong> ${esc(event.nextAction)}</p>` : ""}
+        <details class="provenance">
+          <summary>${esc(owner)} · ${esc(event.source || "source")}</summary>
+          <div class="provenance-body">
+            <p>${esc(fmtDate(event.occurredAt))} | ${esc(event.actor || "system")} | ${esc(event.source || "source")}</p>
+            <p><strong>Owner:</strong> ${esc(owner)}</p>
+            ${(event.evidence || []).length ? `<ul class="evidence-list">${event.evidence.slice(0, 3).map((line) => `<li>${esc(line)}</li>`).join("")}</ul>` : ""}
+          </div>
+        </details>
+      </article>`;
+}
+
+// Eight events at READ weight, the rest collapsed into one row. Twenty-four
+// full-weight events — each with a meta line, an Owner/Next line and three
+// evidence lines — was most of the page's length on its own.
+function timelineEventCards(events) {
+  const visible = events.slice(0, 8);
+  const rest = events.slice(8);
+  return visible.map(timelineEventCard).join("")
+    + (rest.length
+      ? `<details class="provenance"><summary>${rest.length} earlier event${rest.length === 1 ? "" : "s"}</summary><div class="provenance-body">${rest.map(timelineEventCard).join("")}</div></details>`
+      : "");
 }
 
 function renderProjectTimeline() {
@@ -2983,18 +3057,7 @@ function renderProjectTimeline() {
         <span>${report.correctionCount || 0} corrections</span>
       </div>
     </article>
-    ${events.length ? events.slice(0, 24).map((event) => `
-      <article class="timeline-item ${briefClass(event.severity)}">
-        <div class="item-title">
-          <span>${esc(event.title)}</span>
-          ${statusBadge(event.category.replaceAll("_", " "))}
-        </div>
-        <p>${esc(event.detail)}</p>
-        <p class="timeline-meta">${esc(fmtDate(event.occurredAt))} | ${esc(event.actor || "system")} | ${esc(event.source || "source")}</p>
-        ${event.ownerRole || event.nextAction ? `<p><strong>Owner:</strong> ${esc(event.ownerRole || "Operations")} ${event.nextAction ? `| <strong>Next:</strong> ${esc(event.nextAction)}` : ""}</p>` : ""}
-        ${(event.evidence || []).length ? `<ul class="evidence-list">${event.evidence.slice(0, 3).map((line) => `<li>${esc(line)}</li>`).join("")}</ul>` : ""}
-      </article>
-    `).join("") : `<p class="muted">No timeline events yet.</p>`}
+    ${events.length ? timelineEventCards(events) : `<p class="muted">No timeline events yet.</p>`}
   `;
 }
 
@@ -3589,14 +3652,38 @@ function renderPermitMonitor() {
     </article>`;
   }).join("") : `<p class="muted">No permit check targets yet.</p>`;
 
-  $("permitChecks").innerHTML = checks.length ? checks.map((check) => `
+  // The API returns up to 50 status checks and most are literal duplicates — a
+  // monitor that runs every few days re-records "In review" until something
+  // changes. Rendering all of them at full weight buried the two or three that
+  // actually carry news. Four at READ weight; the rest are one click away, and
+  // each card's confidence/source/raw-text now sits behind its own disclosure
+  // instead of printing at the same size as the operator's next action.
+  const permitCheckCard = (check) => {
+    const pct = Math.round((check.confidence || 0) * 100);
+    const source = check.source || "manual";
+    return `
     <article class="item ${check.outcome === "correction_flagged" ? "fail" : check.readyForIssue ? "pass" : check.outcome === "needs_human_review" ? "warning" : "info"}">
       <div class="item-title"><span>${esc(check.statusLabel)}</span>${statusBadge(statusLabel(check.outcome))}</div>
       <p>${esc(check.message)}</p>
-      <p class="muted">${esc(fmtDate(check.createdAt))} · confidence ${Math.round((check.confidence || 0) * 100)}% · source: ${esc(check.source || "manual")}</p>
-      ${check.rawStatusText ? `<details style="margin-top:4px"><summary class="muted" style="font-size:12px;cursor:pointer">Raw status text</summary><p class="muted" style="font-size:12px;white-space:pre-wrap">${esc(check.rawStatusText.slice(0, 1200))}</p></details>` : ""}
-    </article>
-  `).join("") : `<p class="muted">No permit status checks yet.</p>`;
+      <details class="provenance">
+        <summary>Evidence · ${pct}% · ${esc(source)}</summary>
+        <div class="provenance-body">
+          <p>${esc(fmtDate(check.createdAt))} · confidence ${pct}% · source: ${esc(source)}</p>
+          ${check.rawStatusText
+            ? `<p style="white-space:pre-wrap">${esc(check.rawStatusText.slice(0, 1200))}</p>`
+            : `<p>No raw status text was captured for this check.</p>`}
+        </div>
+      </details>
+    </article>`;
+  };
+  const recentChecks = checks.slice(0, 4);
+  const earlierChecks = checks.slice(4);
+  $("permitChecks").innerHTML = checks.length
+    ? recentChecks.map(permitCheckCard).join("")
+      + (earlierChecks.length
+        ? `<details class="provenance"><summary>${earlierChecks.length} earlier check${earlierChecks.length === 1 ? "" : "s"}</summary><div class="provenance-body">${earlierChecks.map(permitCheckCard).join("")}</div></details>`
+        : "")
+    : `<p class="muted">No permit status checks yet.</p>`;
 
   if (emailMatches.length) {
     $("permitChecks").innerHTML += `
@@ -3662,12 +3749,18 @@ function renderPortalRuns() {
 
 function renderAudit() {
   const logs = state.detail.auditLogs || [];
-  $("auditLog").innerHTML = logs.length ? logs.map((log) => `
+  // Already inside a collapsed accordion, so this is about the length of the
+  // list once opened. A cap without a denominator reads as "that's all of it" —
+  // always say how many there really are.
+  const shown = logs.slice(0, 20);
+  $("auditLog").innerHTML = logs.length ? shown.map((log) => `
     <article class="item info">
       <div class="item-title"><span>${esc(log.action)}</span><span>${esc(fmtDate(log.createdAt))}</span></div>
       <p>${esc(log.actorType)}: ${esc(log.actorName)}</p>
     </article>
-  `).join("") : `<p class="muted">No audit entries yet.</p>`;
+  `).join("") + (logs.length > shown.length
+      ? `<p class="disclosure-count">Showing the ${shown.length} most recent of ${logs.length} audit entries.</p>`
+      : "") : `<p class="muted">No audit entries yet.</p>`;
 }
 
 async function autofillSpecs() {
@@ -4938,6 +5031,18 @@ function closeKnowledgeModal() { $("knowledgeModal").hidden = true; }
 if ($("openKnowledgeBtn")) $("openKnowledgeBtn").addEventListener("click", openKnowledgeModal);
 if ($("closeKnowledgeBtn")) $("closeKnowledgeBtn").addEventListener("click", closeKnowledgeModal);
 if ($("knowledgeModal")) $("knowledgeModal").addEventListener("click", (e) => { if (e.target.id === "knowledgeModal") closeKnowledgeModal(); });
+
+// Topbar "Workspace ▾" menu. The five destinations live inside a <details>, so
+// the only behaviour it needs is dismissal: a bare <details> would stay hanging
+// open over the board after you picked something. No ids or handlers involved —
+// each button still binds itself by getElementById above.
+(() => {
+  const menu = document.querySelector(".topbar-more");
+  if (!menu) return;
+  menu.addEventListener("click", (e) => { if (e.target.closest(".topbar-more-menu")) menu.open = false; });
+  document.addEventListener("click", (e) => { if (!menu.contains(e.target)) menu.open = false; });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") menu.open = false; });
+})();
 
 // Record-this-portal helper (Submit stage): rebuild the command live, copy, download .bat.
 if ($("recordScope")) $("recordScope").addEventListener("change", renderRecordPortal);

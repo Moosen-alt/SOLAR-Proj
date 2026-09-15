@@ -120,8 +120,15 @@ export const QUESTION_CLASSIFIER_RULES: QuestionClassifierRule[] = [
     classification: "per-job", binding: "meterLocation", why: "meter siting varies by site" },
   { id: "per-job:meter-device", re: /meter.?(mounted.?device|collar)|\bmmd\b/i,
     classification: "per-job", binding: null, why: "a meter collar / meter-mounted device is installed per job" },
+  // Per-job in principle, but the operator has a STANDING answer for it ("Yes" —
+  // the standard residential detail always places the lockable AC disconnect
+  // within the required distance). That standing answer lives as data in
+  // OPERATOR_POLICY_ANSWERS (intakeRequests.ts), which is what stops it being
+  // asked at intake; it stays per-job HERE so a project that genuinely differs
+  // can still record its own answer and win.
   { id: "per-job:disconnect-10ft", re: /disconnect.{0,20}within\s?10|within\s?10.{0,12}(feet|ft)\b/i,
-    classification: "per-job", binding: "disconnectWithin10ft", why: "disconnect placement comes from the site design" },
+    classification: "per-job", binding: "disconnectWithin10ft",
+    why: "disconnect placement is a site fact — settled for this operator by a standing policy answer, overridable per project" },
   { id: "per-job:connection-side", re: /line\s(or|\/)\s?load.?side|(line|load).?side of the main/i,
     classification: "per-job", binding: null, why: "point of connection comes from the electrical design" },
   // ── portal constants: the same answer on every filing this operator makes ─

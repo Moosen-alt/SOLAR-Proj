@@ -6,29 +6,95 @@
 /* "Why can't I submit" banner, shown above the project when the submit gate has
    blockers — so the reason is visible without expanding the Stage-4 panel. */
 .submit-blocker-note {
-  margin: 10px 0; padding: 10px 12px; border-radius: 8px;
+  margin: 10px 0; padding: 10px 12px; border-radius: var(--radius-md);
   background: #fef2f2; border: 1px solid #dc2626; color: #7f1d1d; font-size: 13px;
 }
 .submit-blocker-note .fix-link { color: #b91c1c; font-weight: 700; text-decoration: underline; cursor: pointer; }
 .submit-blocker-note .fix-link:hover { color: #7f1d1d; }
 /* Brief highlight when a "fix" link scrolls the operator to the panel to act on. */
-@keyframes fixFlash { 0% { box-shadow: 0 0 0 3px rgba(37,99,235,.5); } 100% { box-shadow: 0 0 0 3px rgba(37,99,235,0); } }
-.fix-flash { animation: fixFlash 1.5s ease-out; border-radius: 8px; }
+@keyframes fixFlash { 0% { box-shadow: 0 0 0 3px color-mix(in oklab, var(--ring) 55%, transparent); } 100% { box-shadow: 0 0 0 3px transparent; } }
+.fix-flash { animation: fixFlash 1.5s ease-out; border-radius: var(--radius-md); }
 
+/* ===========================================================================
+   DESIGN TOKENS — the Keelix palette, in oklch.
+
+   Two naming layers on purpose:
+     1. CANONICAL (--background, --foreground, --card, --primary, --border …)
+        is the single source of truth. A future palette change edits only these.
+     2. LEGACY ALIASES (--bg, --surface, --text, --line …) point AT the
+        canonical names, so the ~150 existing var() call sites in this file and
+        in dashboard.js keep working untouched.
+
+   THE NAME COLLISION THAT MATTERS: in shadcn/Keelix, `--muted` is a near-white
+   SURFACE. In this codebase `--muted` has always been a TEXT colour — all 46
+   usages are `color: var(--muted)`. Importing Keelix's value under that name
+   would paint 46 pieces of secondary text white-on-white with no error. So
+   `--muted` stays mapped to `--muted-foreground`, and the quiet-SURFACE role is
+   carried by `--secondary` (aliased as `--surface-2`), which already did that job.
+
+   No hex twins, no @supports fallback: this is a Chrome-only app (it drives
+   Playwright/Chromium and already ships color-mix(), backdrop-filter and
+   overflow-x:clip bare). A duplicated palette is exactly the drift that left
+   seven tokens dangling below.
+   =========================================================================== */
 :root {
   color-scheme: light;
-  --bg: #f6f7f9;
-  --surface: #ffffff;
-  --surface-2: #eef2f5;
-  --text: #17202a;
-  --muted: #687281;
-  --line: #d9e0e7;
-  --primary: #0f766e;
-  --primary-strong: #115e59;
-  --danger: #b91c1c;
-  --warning: #a16207;
-  --info: #1d4ed8;
-  --success: #15803d;
+
+  /* ---- Canonical (Keelix) ------------------------------------------------ */
+  --background:         oklch(98.5% .004 95);
+  --foreground:         oklch(20.5% .025 220);
+  --card:               oklch(100% 0 0);
+  --card-foreground:    oklch(12.9% .042 264.695);
+  --primary:            oklch(42% .105 173);
+  --primary-foreground: oklch(98.4% .003 247.858);
+  --secondary:          oklch(95.5% .009 180);
+  --muted-foreground:   oklch(52% .025 220);
+  --border:             oklch(88% .012 220);
+  --input:              oklch(88% .012 220);
+  --ring:               oklch(55% .105 173);
+  --accent:             oklch(91% .07 153);
+  --destructive:        oklch(57.7% .245 27.325);
+
+  /* Derived / semantic steps. In dark these step LIGHTER, not darker. */
+  --primary-strong:     oklch(34% .085 173);
+  --warning:            oklch(52% .12 75);
+  --info:               oklch(48% .16 262);
+  --success:            oklch(50% .13 150);
+
+  /* ---- Legacy aliases — every pre-existing rule keeps working ------------ */
+  --bg:        var(--background);
+  --surface:   var(--card);
+  --surface-2: var(--secondary);
+  --text:      var(--foreground);
+  --muted:     var(--muted-foreground);   /* TEXT, not a surface — see above. */
+  --line:      var(--border);
+  --danger:    var(--destructive);
+
+  /* ---- Healed references -------------------------------------------------
+     These seven were referenced by styles.css and dashboard.js but DEFINED
+     NOWHERE, so they silently fell back to hardcoded literals from a palette
+     the product abandoned (#2563eb, #d1d5db, #e5e7eb, #475569, #16a34a). That
+     is why the notification panel, the fee tables, the auto-learn progress bar
+     and the portal-login chips did not look like the rest of the teal app.
+     Defining them here fixes all of those without touching a line of JS. */
+  --panel:      var(--card);
+  --ink:        var(--foreground);
+  --text-muted: var(--muted-foreground);
+  --ok:         var(--success);
+  --warn:       var(--warning);
+
+  /* ---- Typography -------------------------------------------------------- */
+  --font-sans: "Manrope", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+
+  /* Type scale (rem, so it honours the browser's text-size setting). The page
+     previously mixed 11px/12px/12.5px/13px/14px/15px/19px with no system. */
+  --text-xs:   .75rem;     /* 12px — provenance, meta, stamps */
+  --text-sm:   .875rem;    /* 14px — body copy, table cells, item cards */
+  --text-base: 1rem;       /* 16px */
+  --text-lg:   1.125rem;   /* 18px */
+  --text-xl:   1.25rem;    /* 20px */
+  --text-2xl:  1.5rem;     /* 24px */
 
   /* Spacing rhythm (4px base) — use these instead of ad-hoc px for new work. */
   --space-1: 4px;
@@ -38,10 +104,11 @@
   --space-5: 24px;
   --space-6: 32px;
 
-  /* Radius scale */
-  --radius-sm: 6px;
-  --radius-md: 8px;
-  --radius-lg: 12px;
+  /* Radius scale — one knob. Change --radius and the whole app follows. */
+  --radius: .45rem;
+  --radius-sm: calc(var(--radius) - 2px);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) + 4px);
 
   /* Refined, layered shadow scale (subtle borders do most of the work) */
   --shadow-sm: 0 1px 2px rgba(24, 35, 48, .06);
@@ -54,6 +121,142 @@
   /* Fast, non-distracting micro-transition (transform/opacity/color only). */
   --t-fast: 130ms cubic-bezier(.4, 0, .2, 1);
 }
+
+/* ===========================================================================
+   DARK PALETTE — OPT-IN ONLY (<html data-theme="dark">), deliberately NOT
+   wired to prefers-color-scheme.
+
+   Why opt-in: roughly forty pass/warn/fail tint literals still live in this
+   file (.item.pass #f0fdf4, .check-row.missing #fff1f2, .badge-info #dbeafe …)
+   plus ~19 more inline in dashboard.js. Auto-switching on the OS setting would
+   hand every dark-mode operator a near-white pastel card carrying near-white
+   text — unreadable, and it would arrive without anyone asking for it.
+
+   So: the palette ships complete and correct, the canonical tokens invert, and
+   the semantic tint families are overridden below so opted-in dark is genuinely
+   usable. Flipping it on for everyone is then one wrapper —
+   `@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { … } }`
+   — once the inline JS literals are converted. Additive; zero light-mode risk.
+   =========================================================================== */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --background:         oklch(20.5% .015 220);
+  --foreground:         oklch(96% .005 220);
+  --card:               oklch(24.5% .018 220);
+  --card-foreground:    oklch(96% .005 220);
+  --primary:            oklch(70% .105 173);
+  --primary-foreground: oklch(18% .02 220);
+  --secondary:          oklch(29% .02 220);
+  --muted-foreground:   oklch(72% .02 220);
+  --border:             oklch(36% .02 220);
+  --input:              oklch(36% .02 220);
+  --ring:               oklch(70% .105 173);
+  --accent:             oklch(42% .07 153);
+  --destructive:        oklch(70% .19 25);
+
+  /* Hover/status steps invert direction: lighter is "stronger" on a dark ground. */
+  --primary-strong:     oklch(80% .09 173);
+  --warning:            oklch(80% .12 75);
+  --info:               oklch(76% .13 262);
+  --success:            oklch(76% .13 150);
+
+  /* Shadows read as depth on light, as noise on dark — deepen and shrink them. */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, .34);
+  --shadow:    0 1px 2px rgba(0, 0, 0, .3), 0 4px 12px rgba(0, 0, 0, .34);
+  --shadow-lg: 0 8px 28px rgba(0, 0, 0, .5);
+}
+
+/* The semantic tint families, restated for dark. Each is the same hue mixed
+   INTO the card instead of a fixed pastel, so the card stays dark and the tint
+   only says pass/warn/fail. Light mode never sees these rules. */
+:root[data-theme="dark"] {
+  --tint-pass:  color-mix(in oklab, var(--success) 15%, var(--card));
+  --tint-warn:  color-mix(in oklab, var(--warning) 15%, var(--card));
+  --tint-fail:  color-mix(in oklab, var(--destructive) 15%, var(--card));
+  --tint-info:  color-mix(in oklab, var(--info) 15%, var(--card));
+  --edge-pass:  color-mix(in oklab, var(--success) 45%, var(--border));
+  --edge-warn:  color-mix(in oklab, var(--warning) 45%, var(--border));
+  --edge-fail:  color-mix(in oklab, var(--destructive) 45%, var(--border));
+  --edge-info:  color-mix(in oklab, var(--info) 45%, var(--border));
+}
+:root[data-theme="dark"] .item.pass,
+:root[data-theme="dark"] .submit-gate-check.pass,
+:root[data-theme="dark"] .track-recipe--has { background: var(--tint-pass); border-color: var(--edge-pass); }
+:root[data-theme="dark"] .item.info,
+:root[data-theme="dark"] .next-step-banner { background: var(--tint-info); border-color: var(--edge-info); color: var(--foreground); }
+:root[data-theme="dark"] .item.warning,
+:root[data-theme="dark"] .submit-gate-check.warning,
+:root[data-theme="dark"] .submit-gate-manual,
+:root[data-theme="dark"] .kpi-card.kpi-warn { background: var(--tint-warn); border-color: var(--edge-warn); }
+:root[data-theme="dark"] .item.blocker,
+:root[data-theme="dark"] .item.error,
+:root[data-theme="dark"] .submit-gate-check.blocker,
+:root[data-theme="dark"] .kpi-card.kpi-fail,
+:root[data-theme="dark"] .submit-blocker-note { background: var(--tint-fail); border-color: var(--edge-fail); color: var(--foreground); }
+
+:root[data-theme="dark"] .check-row.present,
+:root[data-theme="dark"] .check-row.pass,
+:root[data-theme="dark"] .check-row.done { background: var(--tint-pass); border-left-color: var(--success); }
+:root[data-theme="dark"] .check-row.missing,
+:root[data-theme="dark"] .check-row.blocker,
+:root[data-theme="dark"] .check-row.failed { background: var(--tint-fail); border-left-color: var(--destructive); }
+:root[data-theme="dark"] .check-row.needs_review,
+:root[data-theme="dark"] .check-row.warning,
+:root[data-theme="dark"] .check-row.callout { background: var(--tint-warn); border-left-color: var(--warning); }
+:root[data-theme="dark"] .check-row.external { background: var(--secondary); border-left-color: var(--muted-foreground); }
+:root[data-theme="dark"] .check-row.external strong { color: var(--muted-foreground); }
+
+:root[data-theme="dark"] .badge-pass { background: var(--tint-pass); color: var(--success); }
+:root[data-theme="dark"] .badge-fail { background: var(--tint-fail); color: var(--destructive); }
+:root[data-theme="dark"] .badge-warning { background: var(--tint-warn); color: var(--warning); }
+:root[data-theme="dark"] .badge-info { background: var(--tint-info); color: var(--info); }
+
+:root[data-theme="dark"] .stage-accordion.is-done .stage-marker,
+:root[data-theme="dark"] .stage-accordion.is-done .stage-pill,
+:root[data-theme="dark"] .handoff-banner { background: var(--tint-pass); border-color: var(--edge-pass); color: var(--success); }
+:root[data-theme="dark"] .handoff-banner-head,
+:root[data-theme="dark"] .handoff-checklist { color: var(--foreground); }
+:root[data-theme="dark"] .stage-accordion.is-blocked { border-color: var(--edge-fail); }
+:root[data-theme="dark"] .stage-accordion.is-blocked .stage-marker,
+:root[data-theme="dark"] .stage-accordion.is-blocked .stage-pill,
+:root[data-theme="dark"] .stage-tag.is-blocked,
+:root[data-theme="dark"] .board-card-meta .chip.danger { background: var(--tint-fail); color: var(--destructive); }
+:root[data-theme="dark"] .board-card.is-blocked { background: var(--tint-fail); }
+
+:root[data-theme="dark"] .next-step-banner.is-done { background: var(--tint-pass); border-color: var(--edge-pass); color: var(--foreground); }
+:root[data-theme="dark"] .next-step-banner.is-warn { background: var(--tint-warn); border-color: var(--edge-warn); color: var(--foreground); }
+:root[data-theme="dark"] .next-step-step { background: rgba(0, 0, 0, .28); }
+
+:root[data-theme="dark"] .secondary:hover { background: color-mix(in oklab, var(--secondary) 80%, var(--foreground)); border-color: var(--muted-foreground); }
+:root[data-theme="dark"] .danger-button { background: var(--tint-fail); border-color: var(--edge-fail); }
+:root[data-theme="dark"] .danger-button:hover { background: color-mix(in oklab, var(--destructive) 26%, var(--card)); }
+:root[data-theme="dark"] tbody tr:hover,
+:root[data-theme="dark"] tbody tr.active,
+:root[data-theme="dark"] .client-row.active,
+:root[data-theme="dark"] .client-list-item.active,
+:root[data-theme="dark"] .batch-results-table tr.imported td { background: color-mix(in oklab, var(--primary) 14%, var(--card)); }
+:root[data-theme="dark"] .batch-results-table tr.error td { background: var(--tint-fail); }
+:root[data-theme="dark"] .skeleton { background: linear-gradient(90deg, var(--secondary) 25%, color-mix(in oklab, var(--secondary) 70%, var(--foreground)) 37%, var(--secondary) 63%); }
+:root[data-theme="dark"] .start-here > summary { background: linear-gradient(180deg, color-mix(in oklab, var(--primary) 18%, var(--card)), var(--card)); }
+:root[data-theme="dark"] .autofill-card { background: color-mix(in oklab, var(--info) 12%, var(--card)); border-color: var(--edge-info); }
+:root[data-theme="dark"] .autofill-head,
+:root[data-theme="dark"] .autofill-status { color: var(--info); }
+:root[data-theme="dark"] .autofill-status { border-top-color: var(--edge-info); }
+:root[data-theme="dark"] .track-recipe--none { background: var(--secondary); }
+:root[data-theme="dark"] .track-recipe-badge.badge-ok { color: var(--success); }
+:root[data-theme="dark"] .track-recipe-badge.badge-warn { color: var(--warning); }
+:root[data-theme="dark"] .submit-gate-focus { background: var(--secondary); }
+:root[data-theme="dark"] .rv-finding,
+:root[data-theme="dark"] .modal,
+:root[data-theme="dark"] .shortcuts-overlay { background-color: rgba(0, 0, 0, .6); }
+/* Stage pills in the project table: same hues, mixed into the dark card. */
+:root[data-theme="dark"] .stage-tag.stage-intake  { background: color-mix(in oklab, oklch(70% .13 232) 22%, var(--card)); color: oklch(80% .1 232); }
+:root[data-theme="dark"] .stage-tag.stage-qc      { background: color-mix(in oklab, oklch(65% .18 295) 22%, var(--card)); color: oklch(80% .12 295); }
+:root[data-theme="dark"] .stage-tag.stage-build   { background: color-mix(in oklab, var(--warning) 22%, var(--card)); color: var(--warning); }
+:root[data-theme="dark"] .stage-tag.stage-submit  { background: color-mix(in oklab, oklch(70% .15 50) 22%, var(--card)); color: oklch(82% .12 50); }
+:root[data-theme="dark"] .stage-tag.stage-track,
+:root[data-theme="dark"] .stage-tag.stage-closeout { background: var(--tint-pass); color: var(--success); }
 
 /* Accessible focus for keyboard users; mouse clicks don't show the ring. */
 :focus-visible {
@@ -76,7 +279,14 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font-family: Inter, Segoe UI, Arial, sans-serif;
+  font-family: var(--font-sans);
+  /* There was no line-height here at all, so the entire app ran at the browser
+     default (~1.2). That alone is a large part of why a long project read as a
+     wall of text: nothing had room to breathe between lines. */
+  font-size: var(--text-sm);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 .topbar {
@@ -100,12 +310,12 @@ h1, h2, h3, p { margin: 0; }
    status each took one more, so the masthead was taller than the toolbar beside
    it. Title on its own row, tagline and status sharing the next. */
 .masthead { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 10px; min-width: 0; }
-.masthead h1 { flex: 1 0 100%; font-size: 19px; letter-spacing: -.01em; }
+.masthead h1 { flex: 1 0 100%; font-size: var(--text-lg); }
 .masthead .tagline, .masthead .conn-status { margin-top: 3px; }
-.tagline { color: var(--muted); font-size: 13px; margin-top: 2px; }
+.tagline { color: var(--muted); font-size: var(--text-sm); margin-top: 2px; }
 .conn-status {
   display: inline-flex; align-items: center; gap: 6px;
-  font-size: 12px; font-weight: 600; margin-top: 3px; color: var(--muted);
+  font-size: var(--text-xs); font-weight: 600; margin-top: 3px; color: var(--muted);
 }
 .conn-status::before {
   content: ""; width: 7px; height: 7px; border-radius: 50%;
@@ -115,10 +325,18 @@ h1, h2, h3, p { margin: 0; }
 .conn-status--down { color: var(--danger); }
 .conn-status--checking { color: var(--muted); }
 
-h1 { font-size: 24px; }
-h2 { font-size: 20px; }
-h3 { font-size: 16px; }
+/* Headings: tracking-tight and a tighter leading, so a heading reads as one
+   object rather than as more body copy set in bold. */
+h1, h2, h3, .item-title, .kpi-value {
+  line-height: 1.25;
+  letter-spacing: -.025em;
+}
+h1 { font-size: var(--text-2xl); }
+h2 { font-size: var(--text-xl); }
+h3 { font-size: var(--text-lg); }
 p, .muted { color: var(--muted); }
+/* Prose gets a looser measure than UI chrome does. */
+.item p, .muted, .start-here-intro, .autofill-hint, .closeout-note { line-height: 1.625; }
 
 .layout {
   /* Single full-width page at a time (Dashboard / Projects / Team / Project),
@@ -130,15 +348,15 @@ p, .muted { color: var(--muted); }
 .layout > section { width: 100%; }
 
 /* Primary page tabs (Dashboard / Projects / Team Workload). */
-.page-tabs { display: flex; gap: 4px; padding: 0 18px; border-bottom: 1px solid var(--line); background: var(--surface, #fff); }
+.page-tabs { display: flex; gap: 4px; padding: 0 18px; border-bottom: 1px solid var(--line); background: var(--surface); }
 .page-tab {
   display: inline-flex; align-items: center; gap: 6px; padding: 10px 16px;
-  border: none; background: none; cursor: pointer; font-size: 14px; font-weight: 600;
-  color: var(--muted, #64748b); border-bottom: 2px solid transparent; margin-bottom: -1px;
+  border: none; background: none; cursor: pointer; font-size: var(--text-sm); font-weight: 600;
+  color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px;
 }
 .page-tab svg { width: 16px; height: 16px; }
-.page-tab[aria-selected="true"] { color: var(--primary, #2563eb); border-bottom-color: var(--primary, #2563eb); }
-.page-tab:hover { color: var(--text, #0f172a); }
+.page-tab[aria-selected="true"] { color: var(--primary); border-bottom-color: var(--primary); }
+.page-tab:hover { color: var(--text); }
 
 /* --- Layout containment: keep everything inside its column, no horizontal scroll --- */
 .layout > * { min-width: 0; }                 /* let grid children shrink instead of overflowing */
@@ -154,11 +372,11 @@ p, .muted { color: var(--muted); }
 /* --- Item card color states (article.item.pass / .warning / .blocker / .info) --- */
 .item {
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   padding: 10px 14px;
   background: var(--surface);
   margin-bottom: 8px;
-  font-size: 13px;
+  font-size: var(--text-sm);
 }
 .item.pass { background: #f0fdf4; border-color: #86efac; }
 .item.info { background: #eff6ff; border-color: #93c5fd; }
@@ -168,7 +386,7 @@ p, .muted { color: var(--muted); }
 /* --- Checklist rows (reviewer gate, live readiness, historical failures) --- */
 .check-row {
   display: flex; flex-direction: column; gap: 3px;
-  padding: 8px 12px; border-radius: 7px; font-size: 13px;
+  padding: 8px 12px; border-radius: var(--radius-sm); font-size: var(--text-sm);
   border-left: 3px solid var(--line); margin-bottom: 6px;
   background: var(--surface-2);
 }
@@ -188,13 +406,13 @@ p, .muted { color: var(--muted); }
 /* --- Record this portal (stepped layout) --- */
 .record-steps { list-style: none; margin: 0 0 12px; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .record-steps li { display: flex; gap: 10px; align-items: flex-start; font-size: 13px; }
-.record-step-num { flex: 0 0 22px; width: 22px; height: 22px; border-radius: 50%; background: var(--primary); color: #fff; font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
-.record-steps code { background: var(--surface-2); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+.record-step-num { flex: 0 0 22px; width: 22px; height: 22px; border-radius: 50%; background: var(--primary); color: var(--primary-foreground); font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
+.record-steps code { background: var(--surface-2); padding: 1px 5px; border-radius: 4px; font-family: var(--font-mono); font-size: var(--text-xs); }
 .record-config { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; margin-bottom: 10px; }
 .record-config label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); font-weight: 600; }
 .record-config .record-scope { flex: 0 0 200px; }
 .record-config .record-url { flex: 1 1 280px; min-width: 220px; }
-.record-config select, .record-config input { padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; font: inherit; font-size: 13px; background: var(--surface); }
+.record-config select, .record-config input { padding: 7px 9px; border: 1px solid var(--line); border-radius: var(--radius-sm); font: inherit; font-size: 13px; background: var(--surface); }
 .record-launch { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
 .record-alt { display: flex; align-items: center; gap: 6px; font-size: 12px; flex-wrap: wrap; }
 .record-alt button { font-size: 12px; padding: 5px 9px; }
@@ -212,11 +430,11 @@ p, .muted { color: var(--muted); }
 .track-submit > summary { cursor: pointer; font-size: 12px; color: var(--primary-strong); font-weight: 600; }
 .track-submit-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 8px; align-items: end; }
 .track-field { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--muted); }
-.track-field input { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; font: inherit; font-size: 12px; background: var(--surface); }
+.track-field input { padding: 6px 8px; border: 1px solid var(--line); border-radius: var(--radius-sm); font: inherit; font-size: 12px; background: var(--surface); }
 .track-submit-form button { grid-column: 1 / -1; justify-self: start; }
 
 /* --- Per-track inline recipe / record flow --- */
-.track-recipe { margin-top: 8px; padding: 7px 10px; border-radius: 6px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12px; }
+.track-recipe { margin-top: 8px; padding: 7px 10px; border-radius: var(--radius-sm); display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12px; }
 .track-recipe--has { background: #f0fdf4; border: 1px solid #bbf7d0; }
 .track-recipe--none { background: #fafafa; border: 1px dashed var(--line); }
 .track-recipe-badge { display: inline-flex; align-items: center; gap: 4px; font-weight: 600; font-size: 11px; }
@@ -230,20 +448,20 @@ p, .muted { color: var(--muted); }
 .track-record-hint code { background: var(--surface-2); padding: 1px 4px; border-radius: 3px; }
 
 /* --- Manual project-data entry form (valuation, homeowner, description) --- */
-.manual-entry-form { border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); padding: 10px 12px; margin: 6px 0 10px; display: flex; flex-direction: column; gap: 8px; }
+.manual-entry-form { border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-2); padding: 10px 12px; margin: 6px 0 10px; display: flex; flex-direction: column; gap: 8px; }
 .manual-entry-field { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
-.manual-entry-field input, .manual-entry-field textarea, .manual-entry-field select { padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; font: inherit; font-size: 13px; background: var(--surface); color: var(--ink, #17202a); resize: vertical; }
+.manual-entry-field input, .manual-entry-field textarea, .manual-entry-field select { padding: 7px 9px; border: 1px solid var(--line); border-radius: var(--radius-sm); font: inherit; font-size: var(--text-sm); background: var(--surface); color: var(--ink); resize: vertical; }
 .manual-entry-hint { font-size: 11px; color: var(--muted); font-style: italic; margin: -2px 0 2px; }
 .manual-entry-actions { display: flex; align-items: center; gap: 10px; }
 
 /* --- Auto-fill inverter specs helper card --- */
-.autofill-card { border: 1px solid #bfdbfe; border-radius: 10px; background: linear-gradient(180deg, #f5f9ff, #eef5ff); padding: 12px 14px; margin: 0 0 12px; }
+.autofill-card { border: 1px solid #bfdbfe; border-radius: var(--radius-lg); background: linear-gradient(180deg, #f5f9ff, #eef5ff); padding: 12px 14px; margin: 0 0 12px; }
 .autofill-head { display: flex; align-items: center; gap: 7px; font-weight: 700; font-size: 14px; color: #1e40af; }
 .autofill-head svg { width: 16px; height: 16px; }
 .autofill-hint { margin: 5px 0 10px; font-size: 12px; color: var(--muted); line-height: 1.45; }
 .autofill-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.autofill-row input[type="text"] { flex: 1 1 240px; min-width: 200px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 7px; font: inherit; background: var(--surface); }
-.autofill-row input[type="number"] { width: 70px; flex: 0 0 auto; padding: 8px 10px; border: 1px solid var(--line); border-radius: 7px; font: inherit; background: var(--surface); }
+.autofill-row input[type="text"] { flex: 1 1 240px; min-width: 200px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius-sm); font: inherit; background: var(--surface); }
+.autofill-row input[type="number"] { width: 70px; flex: 0 0 auto; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius-sm); font: inherit; background: var(--surface); }
 .autofill-status { font-size: 12px; margin-top: 10px; padding-top: 8px; border-top: 1px solid #dbeafe; color: #1e40af; }
 .autofill-status:empty { display: none; }
 
@@ -263,9 +481,9 @@ p, .muted { color: var(--muted); }
   margin-bottom: 14px;
 }
 .summary-grid .metric {
-  background: var(--surface-2, #f8fafc);
+  background: var(--surface-2);
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   padding: 8px 10px;
   min-width: 0;
 }
@@ -288,7 +506,7 @@ p, .muted { color: var(--muted); }
 .empty {
   background: var(--surface);
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   box-shadow: var(--shadow);
 }
 
@@ -318,7 +536,7 @@ p, .muted { color: var(--muted); }
 .button,
 button {
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
   display: inline-flex;
   align-items: center;
@@ -340,7 +558,7 @@ button svg,
 
 .primary {
   background: var(--primary);
-  color: #fff;
+  color: var(--primary-foreground);
 }
 .primary:hover { background: var(--primary-strong); }
 
@@ -349,7 +567,7 @@ button svg,
   border-color: var(--line);
   color: var(--text);
 }
-.secondary:hover { background: #e3e9ee; border-color: #c6d0d9; }
+.secondary:hover { background: color-mix(in oklab, var(--secondary) 92%, var(--foreground)); border-color: var(--muted-foreground); }
 
 /* Tertiary: copy-to-clipboard, "Download record.bat", "Clear history". The class
    was already on seven buttons and had no rule at all, so the two carrying it
@@ -411,6 +629,24 @@ button svg,
 
 .topbar .actions .actions-divider { height: 20px; align-self: center; }
 
+/* "Workspace ▾" — the five destinations, folded into one control. The topbar
+   now reads: New project · Fill a form · Parser · [Workspace ▾] · Permit checks ·
+   NEM checks · Refresh · bell. Fourteen competing links became eight, and the
+   two that drive live portals are no longer lost among panel-openers. */
+.topbar-more { position: relative; }
+.topbar-more > summary { list-style: none; cursor: pointer; }
+.topbar-more > summary::-webkit-details-marker { display: none; }
+.topbar-more > summary::after { content: "▾"; font-size: 10px; opacity: .7; }
+.topbar-more[open] > summary { background: var(--surface-2); color: var(--text); }
+.topbar-more-menu {
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 20;
+  display: flex; flex-direction: column; gap: 2px; min-width: 190px;
+  padding: var(--space-1); background: var(--card);
+  border: 1px solid var(--border); border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+}
+.topbar-more-menu button { width: 100%; justify-content: flex-start; }
+
 button:disabled { opacity: .55; cursor: not-allowed; }
 .danger { color: var(--danger); }
 
@@ -422,7 +658,7 @@ button:disabled { opacity: .55; cursor: not-allowed; }
   border-radius: 999px;
   background: var(--surface-2);
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-xs);
   font-weight: 800;
   /* THE ONE PLACE ALL-CAPS EARNS ITS KEEP — and the rule for the whole app:
      capitals mark a STATE STAMP from a fixed vocabulary (PASS, DONE, IDLE,
@@ -432,6 +668,7 @@ button:disabled { opacity: .55; cursor: not-allowed; }
      shouted at the operator in places where it was only naming things.
      Only .badge, .stage-pill and .next-step-step should carry uppercase. */
   text-transform: uppercase;
+  letter-spacing: .1em;
 }
 
 .badge-pass { background: #d1fae5; color: #065f46; }
@@ -440,32 +677,32 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .badge-info { background: #dbeafe; color: #1e40af; }
 
 .table-wrap { overflow: auto; }
-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+table { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }
 th, td { padding: 11px 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
-th { color: var(--muted); font-size: 12px; font-weight: 600; }
+th { color: var(--muted); font-size: var(--text-xs); font-weight: 600; }
 tbody tr { cursor: pointer; }
 tbody tr:hover, tbody tr.active { background: #f0fdfa; }
 
 /* Client assignment control on project detail */
 .client-assign { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 13px; color: var(--muted); }
-.client-assign select { padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
+.client-assign select { padding: 4px 8px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface); }
 .client-assign i { width: 16px; height: 16px; }
 
 /* Clients modal */
 .modal { position: fixed; inset: 0; background: rgba(24, 35, 48, .45); display: flex; align-items: center; justify-content: center; z-index: 50; padding: 24px; }
 .modal[hidden] { display: none; }
-.modal-card { background: var(--surface); border-radius: 12px; box-shadow: var(--shadow); width: min(960px, 100%); max-height: 90vh; display: flex; flex-direction: column; overflow: hidden; }
+.modal-card { background: var(--surface); border-radius: var(--radius-lg); box-shadow: var(--shadow); width: min(960px, 100%); max-height: 90vh; display: flex; flex-direction: column; overflow: hidden; }
 .modal-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--line); }
 .modal-head h2 { margin: 0; font-size: 18px; }
 .modal-body { display: grid; grid-template-columns: 260px 1fr; gap: 0; overflow: hidden; min-height: 0; }
 .clients-list-pane { border-right: 1px solid var(--line); padding: 16px; overflow-y: auto; }
 .clients-form-pane { padding: 16px 20px; overflow-y: auto; }
-.client-row { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%; text-align: left; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); cursor: pointer; margin-bottom: 6px; }
+.client-row { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%; text-align: left; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); cursor: pointer; margin-bottom: 6px; }
 .client-row.active { background: #f0fdfa; border-color: var(--primary); }
 .client-row .muted { font-size: 12px; }
 .clients-form-pane h3 { margin: 14px 0 4px; font-size: 13px; font-weight: 600; color: var(--muted); }
 .clients-form-pane label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; flex: 1; }
-.clients-form-pane input, .clients-form-pane textarea, .clients-form-pane select { padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; font: inherit; background: var(--surface); }
+.clients-form-pane input, .clients-form-pane textarea, .clients-form-pane select { padding: 7px 9px; border: 1px solid var(--line); border-radius: var(--radius-sm); font: inherit; background: var(--surface); }
 .form-row { display: flex; gap: 10px; }
 .portal-identity-row { display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 6px; align-items: center; margin-bottom: 6px; }
 .portal-identity-row .danger-button { padding: 6px 8px; }
@@ -475,7 +712,7 @@ tbody tr:hover, tbody tr.active { background: #f0fdfa; }
 
 /* Project filter bar */
 .project-filters { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 0; }
-.project-filters input[type=search], .project-filters select { padding: 7px 10px; border: 1px solid var(--line); border-radius: 6px; font: inherit; background: var(--surface); font-size: 13px; }
+.project-filters input[type=search], .project-filters select { padding: 7px 10px; border: 1px solid var(--line); border-radius: var(--radius-sm); font: inherit; background: var(--surface); font-size: 13px; }
 .project-filters input[type=search] { flex: 1; min-width: 160px; }
 
 /* Team workload */
@@ -496,22 +733,22 @@ tbody tr:hover, tbody tr.active { background: #f0fdfa; }
 .pl-chips:empty { display: none; }
 .pl-chip {
   display: inline-flex; align-items: center; gap: 6px;
-  font-size: 12px; padding: 6px 10px; border-radius: var(--radius-md, 8px);
-  border: 1px solid var(--line); background: var(--surface, #fff); cursor: pointer;
-  transition: background var(--t-fast, .12s) ease, border-color var(--t-fast, .12s) ease;
+  font-size: 12px; padding: 6px 10px; border-radius: var(--radius-md);
+  border: 1px solid var(--line); background: var(--surface); cursor: pointer;
+  transition: background var(--t-fast) ease, border-color var(--t-fast) ease;
 }
-.pl-chip:hover { background: var(--surface-2, #f4f6f8); border-color: var(--accent, #2563eb); }
-.pl-chip[data-has-secret="1"] { border-color: var(--ok, #16a34a); }
+.pl-chip:hover { background: var(--surface-2); border-color: var(--ring); }
+.pl-chip[data-has-secret="1"] { border-color: var(--ok); }
 .pl-chip .pl-chip-state { font-size: 11px; color: var(--muted); }
 .pl-cred-row {
   display: flex; justify-content: space-between; align-items: center; gap: 8px;
-  padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius-md, 8px);
+  padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius-md);
 }
 .pl-cred-row .pl-cred-meta { font-size: 13px; }
 .pl-cred-row .pl-cred-url { font-size: 11px; color: var(--muted); word-break: break-all; }
 
 /* Record-this-portal helper (Submit stage) */
-.record-cmd { background: var(--surface-2); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; font-size: 11.5px; white-space: pre-wrap; word-break: break-all; margin: 8px 0 0; }
+.record-cmd { background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 8px 10px; font-family: var(--font-mono); font-size: var(--text-xs); white-space: pre-wrap; word-break: break-all; margin: 8px 0 0; }
 .record-data-row { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; border-bottom: 1px dashed var(--line); font-size: 13px; }
 .record-data-row:last-child { border-bottom: none; }
 .record-data-section { margin-bottom: 10px; }
@@ -522,7 +759,7 @@ tbody tr:hover, tbody tr.active { background: #f0fdfa; }
 .kpi-body { padding: 20px; overflow-y: auto; }
 .kpi-period { font-size: 13px; color: var(--muted); margin-bottom: 16px; }
 .kpi-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; }
-.kpi-card { background: var(--surface-2); border-radius: 10px; padding: 16px; text-align: center; border: 1px solid var(--line); }
+.kpi-card { background: var(--surface-2); border-radius: var(--radius-lg); padding: 16px; text-align: center; border: 1px solid var(--line); }
 .kpi-card.kpi-warn { background: #fef3c7; border-color: #fbbf24; }
 .kpi-card.kpi-fail { background: #fee2e2; border-color: #fca5a5; }
 .kpi-value { font-size: 28px; font-weight: 800; color: var(--text); line-height: 1.1; }
@@ -530,13 +767,13 @@ tbody tr:hover, tbody tr.active { background: #f0fdfa; }
 .text-danger { color: var(--danger); font-weight: 700; }
 
 /* Handoff banner — shown when permit issued + NEM approved */
-.handoff-banner { background: #d1fae5; border: 1.5px solid #34d399; border-radius: 10px; padding: 14px 18px; margin-bottom: 16px; }
+.handoff-banner { background: #d1fae5; border: 1.5px solid #34d399; border-radius: var(--radius-lg); padding: 14px 18px; margin-bottom: 16px; }
 .handoff-banner-head { font-weight: 700; color: #065f46; font-size: 15px; margin-bottom: 8px; }
 .handoff-checklist { font-size: 12px; font-family: inherit; white-space: pre-wrap; color: #064e3b; margin: 0; line-height: 1.6; }
 
 /* Batch import form */
 .batch-import-form { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 0; align-items: center; }
-.batch-import-form input { padding: 7px 10px; border: 1px solid var(--line); border-radius: 6px; font: inherit; background: var(--surface); font-size: 13px; }
+.batch-import-form input { padding: 7px 10px; border: 1px solid var(--line); border-radius: var(--radius-sm); font: inherit; background: var(--surface); font-size: 13px; }
 .batch-results-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
 .batch-results-table th { text-align: left; padding: 6px 8px; color: var(--muted); font-weight: 600; font-size: 11px; border-bottom: 1px solid var(--line); }
 .batch-results-table td { padding: 5px 8px; border-bottom: 1px solid var(--line); vertical-align: top; word-break: break-word; }
@@ -544,7 +781,7 @@ tbody tr:hover, tbody tr.active { background: #f0fdfa; }
 .batch-results-table tr.error td { background: #fff1f2; }
 
 /* "Start here" new-hire guide */
-.start-here { margin: 14px 18px 0; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); overflow: hidden; }
+.start-here { margin: 14px 18px 0; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg); box-shadow: var(--shadow); overflow: hidden; }
 .start-here > summary { list-style: none; cursor: pointer; display: flex; align-items: center; justify-content: space-between; padding: 13px 18px; background: linear-gradient(180deg, #ecfdf5, #f6fefb); border-bottom: 1px solid transparent; }
 .start-here[open] > summary { border-bottom-color: var(--line); }
 .start-here > summary::-webkit-details-marker { display: none; }
@@ -554,20 +791,20 @@ tbody tr:hover, tbody tr.active { background: #f0fdfa; }
 .start-here-body { padding: 14px 18px 18px; }
 .start-here-intro { color: var(--text); margin-bottom: 12px; font-size: 14px; }
 .flow-steps { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
-.flow-steps li { display: flex; gap: 10px; align-items: flex-start; background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+.flow-steps li { display: flex; gap: 10px; align-items: flex-start; background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius-md); padding: 10px 12px; }
 .flow-steps li > div { min-width: 0; }
 .flow-steps strong { display: block; font-size: 14px; color: var(--text); }
 .flow-steps p { font-size: 12.5px; color: var(--muted); margin-top: 3px; line-height: 1.45; }
 .flow-steps em { font-style: normal; font-weight: 700; color: var(--primary-strong); }
 .flow-steps a { color: var(--info); font-weight: 700; }
-.flow-num { flex: none; width: 24px; height: 24px; border-radius: 999px; background: var(--primary); color: #fff; font-weight: 800; font-size: 13px; display: inline-flex; align-items: center; justify-content: center; }
+.flow-num { flex: none; width: 24px; height: 24px; border-radius: 999px; background: var(--primary); color: var(--primary-foreground); font-weight: 800; font-size: 13px; display: inline-flex; align-items: center; justify-content: center; }
 
 /* Per-project "Next step" banner */
-.next-step-banner { display: flex; align-items: center; gap: 10px; background: #eff6ff; border: 1.5px solid #93c5fd; border-radius: 10px; padding: 12px 16px; margin-bottom: 14px; font-size: 14px; color: #1e3a8a; }
+.next-step-banner { display: flex; align-items: center; gap: 10px; background: #eff6ff; border: 1.5px solid #93c5fd; border-radius: var(--radius-lg); padding: 12px 16px; margin-bottom: 14px; font-size: 14px; color: #1e3a8a; }
 .next-step-banner[hidden] { display: none; }
 .next-step-banner.is-done { background: #d1fae5; border-color: #34d399; color: #065f46; }
 .next-step-banner.is-warn { background: #fef3c7; border-color: #fbbf24; color: #92400e; }
-.next-step-step { flex: none; font-weight: 800; text-transform: uppercase; font-size: 11px; letter-spacing: .04em; padding: 3px 8px; border-radius: 999px; background: rgba(255,255,255,.7); }
+.next-step-step { flex: none; font-weight: 800; text-transform: uppercase; font-size: var(--text-xs); letter-spacing: .1em; padding: 3px 8px; border-radius: 999px; background: rgba(255,255,255,.7); }
 .next-step-text strong { font-weight: 800; }
 
 /* Numbered action toolbar — sticky so the primary daily-step buttons stay
@@ -595,25 +832,25 @@ tbody tr:hover, tbody tr.active { background: #f0fdfa; }
 .notif-btn { position: relative; }
 .notif-badge {
   position: absolute; top: 4px; right: 4px;
-  min-width: 16px; height: 16px; padding: 0 3px; border-radius: 8px;
-  background: var(--danger); color: #fff;
+  min-width: 16px; height: 16px; padding: 0 3px; border-radius: var(--radius-md);
+  background: var(--danger); color: var(--background);
   font-size: 10px; font-weight: 700; line-height: 16px; text-align: center;
   pointer-events: none;
 }
 
 /* client-list-item used by user list */
-.client-list-item { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); cursor: pointer; margin-bottom: 6px; font-size: 13px; }
+.client-list-item { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); cursor: pointer; margin-bottom: 6px; font-size: 13px; }
 .client-list-item.active { background: #f0fdfa; border-color: var(--primary); }
 
 /* Communication log (Leads & Customers modal) */
-.comm-add { border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: var(--surface); margin-bottom: 10px; }
-.comm-entry { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: var(--surface); }
+.comm-add { border: 1px solid var(--line); border-radius: var(--radius-md); padding: 10px; background: var(--surface); margin-bottom: 10px; }
+.comm-entry { border: 1px solid var(--line); border-radius: var(--radius-md); padding: 8px 10px; background: var(--surface); }
 .comm-meta { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 13px; }
 .comm-subject { font-weight: 600; margin-top: 2px; font-size: 13px; }
-.comm-body { margin-top: 2px; font-size: 13px; white-space: pre-wrap; color: var(--text-muted, #475569); }
+.comm-body { margin-top: 2px; font-size: var(--text-sm); white-space: pre-wrap; color: var(--text-muted); }
 
 /* MBOX / batch PDF drop zones */
-.mbox-drop-zone { border: 2px dashed var(--line); border-radius: 10px; padding: 18px 16px; display: flex; align-items: center; gap: 10px; cursor: pointer; transition: border-color 0.15s, background 0.15s; font-size: 13px; color: var(--text-muted, #475569); margin-bottom: 8px; }
+.mbox-drop-zone { border: 2px dashed var(--line); border-radius: var(--radius-lg); padding: 18px 16px; display: flex; align-items: center; gap: 10px; cursor: pointer; transition: border-color 0.15s, background 0.15s; font-size: var(--text-sm); color: var(--text-muted); margin-bottom: 8px; }
 .mbox-drop-zone svg { width: 22px; height: 22px; flex-shrink: 0; opacity: 0.5; }
 .mbox-drop-zone input[type="file"] { display: none; }
 .mbox-drop-zone .drop-browse { color: var(--primary); text-decoration: underline; cursor: pointer; }
@@ -624,7 +861,7 @@ tbody tr:hover, tbody tr.active { background: #f0fdfa; }
 .progress-bar { height: 100%; background: var(--primary); border-radius: 99px; transition: width 0.3s; width: 0%; }
 
 /* Knowledge Base accordion */
-.kb-accordion { border: 1px solid var(--line); border-radius: 6px; padding: 0 12px; }
+.kb-accordion { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 0 12px; }
 .kb-summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 0; cursor: pointer; font-size: 15px; font-weight: 600; list-style: none; user-select: none; }
 .kb-summary::-webkit-details-marker { display: none; }
 .kb-summary::before { content: "▸"; margin-right: 8px; font-size: 11px; }
@@ -637,7 +874,7 @@ tbody tr:hover, tbody tr.active { background: #f0fdfa; }
    --------------------------------------------------------------------------- */
 .stage-accordion, .audit-accordion {
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   margin: 10px 0;
   background: var(--surface);
   box-shadow: var(--shadow);
@@ -656,7 +893,7 @@ tbody tr:hover, tbody tr.active { background: #f0fdfa; }
 .stage-name { flex: 1; }
 .stage-pill {
   font-size: 11px; font-weight: 800; text-transform: uppercase;
-  letter-spacing: .03em; padding: 3px 9px; border-radius: 999px;
+  letter-spacing: .1em; padding: 3px 9px; border-radius: 999px;
   background: var(--surface-2); color: var(--muted);
 }
 .stage-body { padding: 4px 16px 14px; border-top: 1px solid var(--line); }
@@ -666,7 +903,7 @@ tbody tr:hover, tbody tr.active { background: #f0fdfa; }
 .stage-accordion.is-done .stage-marker { background: #d1fae5; color: #065f46; }
 .stage-accordion.is-done .stage-pill { background: #d1fae5; color: #065f46; }
 .stage-accordion.is-current { border-color: var(--primary); }
-.stage-accordion.is-current .stage-marker { background: var(--primary); color: #fff; }
+.stage-accordion.is-current .stage-marker { background: var(--primary); color: var(--primary-foreground); }
 .stage-accordion.is-current .stage-pill { background: color-mix(in srgb, var(--primary) 15%, transparent); color: var(--primary-strong); }
 /* "Locked" = not reached yet, but still openable so a solo operator can look ahead
    or work out of order. The lock is a visual cue, not a hard barrier. */
@@ -695,13 +932,13 @@ tbody tr:hover, tbody tr.active { background: #f0fdfa; }
    dominating a board whose actual news is the cards. Each column is now only as
    tall as what it holds. */
 .stage-board { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(190px, 1fr); align-items: start; gap: 10px; overflow-x: auto; padding-bottom: 8px; }
-.stage-col { background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; display: flex; flex-direction: column; min-height: 80px; }
+.stage-col { background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius-md); display: flex; flex-direction: column; min-height: 80px; }
 .stage-col-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 8px 10px; font-size: 12px; font-weight: 600; border-bottom: 1px solid var(--line); }
 .stage-col-body { padding: 8px; display: flex; flex-direction: column; gap: 8px; }
 .board-empty { text-align: center; font-size: 12px; margin: 6px 0; color: var(--muted); }
 .board-card {
   text-align: left; width: 100%; background: var(--surface);
-  border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px;
+  border: 1px solid var(--line); border-radius: var(--radius-md); padding: 8px 10px;
   cursor: pointer; display: flex; flex-direction: column; gap: 4px;
   box-shadow: var(--shadow-sm);
   transition: border-color var(--t-fast), box-shadow var(--t-fast), transform var(--t-fast);
@@ -735,19 +972,19 @@ tbody tr:hover, tbody tr.active { background: #f0fdfa; }
 
 /* Ops report layout */
 .ops-report-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin-top: 8px; }
-.ops-report-section { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; background: var(--surface-2); }
+.ops-report-section { border: 1px solid var(--line); border-radius: var(--radius-md); padding: 10px 12px; background: var(--surface-2); }
 .ops-report-section.wide { grid-column: 1 / -1; }
 
 /* Brief / Runbook sections */
-.brief-section { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin-top: 8px; background: var(--surface-2); }
+.brief-section { border: 1px solid var(--line); border-radius: var(--radius-md); padding: 10px 12px; margin-top: 8px; background: var(--surface-2); }
 
 /* Submit gate checks */
 .submit-gate { display: flex; flex-direction: column; gap: 8px; }
-.submit-gate-check { padding: 8px 12px; border-radius: 7px; border: 1px solid var(--line); font-size: 13px; }
+.submit-gate-check { padding: 8px 12px; border-radius: var(--radius-sm); border: 1px solid var(--line); font-size: var(--text-sm); }
 .submit-gate-check.pass { background: #f0fdf4; border-color: #86efac; }
 .submit-gate-check.warning { background: #fffbeb; border-color: #fcd34d; }
 .submit-gate-check.blocker { background: #fff1f2; border-color: #fca5a5; }
-.submit-gate-manual, .submit-gate-focus { border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; margin-top: 8px; font-size: 13px; }
+.submit-gate-manual, .submit-gate-focus { border: 1px solid var(--line); border-radius: var(--radius-md); padding: 10px 14px; margin-top: 8px; font-size: var(--text-sm); }
 .submit-gate-manual { background: #fffbeb; border-color: #fcd34d; }
 .submit-gate-focus { background: var(--surface-2); }
 
@@ -760,7 +997,7 @@ tbody tr:hover, tbody tr.active { background: #f0fdfa; }
   100% { background-position: -200% 0; }
 }
 .skeleton {
-  background: linear-gradient(90deg, var(--surface-2) 25%, #e3e9ee 37%, var(--surface-2) 63%);
+  background: linear-gradient(90deg, var(--surface-2) 25%, color-mix(in oklab, var(--secondary) 92%, var(--foreground)) 37%, var(--surface-2) 63%);
   background-size: 200% 100%;
   animation: skeletonSheen 1.2s ease-in-out infinite;
   border-radius: var(--radius-sm);
@@ -780,13 +1017,185 @@ tbody tr:hover, tbody tr.active { background: #f0fdfa; }
 .shortcuts-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 7px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
 .shortcuts-row:last-child { border-bottom: none; }
 .shortcuts-row .keys { display: inline-flex; gap: 4px; flex: none; }
+/* One monospace hook, so identifiers/commands stop carrying inline
+   `style="font-family:monospace"` (which bypassed the token and picked whatever
+   the browser's default fixed face happened to be). */
+.mono, code, pre, samp { font-family: var(--font-mono); }
+
 kbd {
   display: inline-block; min-width: 20px; text-align: center;
   padding: 2px 6px; border-radius: 5px; font-size: 11px; font-weight: 700;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   background: var(--surface-2); border: 1px solid var(--line);
   border-bottom-width: 2px; color: var(--text); line-height: 1.4;
 }
+
+/* ===========================================================================
+   PROGRESSIVE DISCLOSURE — the .provenance component.
+
+   This product's core claim is that every number is sourced. That is exactly
+   why the sourcing had swamped the page: confidence scores, ownerRole|source
+   routing keys, raw Playwright errors, checkId/targetId UUIDs and schedule URLs
+   all printed at the same size and colour as the operator's next action, so a
+   project read as ~28,000 characters of undifferentiated text.
+
+   Three tiers now:
+     ACT   — full contrast, .875–1rem: toolbars, blockers, the fee AMOUNT.
+     READ  — --foreground, .875rem: headings, metrics, QC/review items.
+     PROVE — --muted-foreground, .75rem, COLLAPSED: everything below.
+
+   NOTHING IS DELETED. Every URL, confidence score, source tag and raw error is
+   one click away. This deliberately reuses the <details> idiom the codebase
+   already uses four ways (.stage-accordion, .kb-accordion, .audit-accordion,
+   .track-submit) rather than inventing a new disclosure pattern.
+   =========================================================================== */
+.provenance { margin-top: var(--space-1); }
+.provenance > summary {
+  list-style: none; cursor: pointer;
+  display: inline-flex; align-items: center; gap: var(--space-1);
+  font-size: var(--text-xs); font-weight: 500; color: var(--muted-foreground);
+  border-radius: var(--radius-sm); padding: 1px 2px;
+}
+.provenance > summary::-webkit-details-marker { display: none; }
+.provenance > summary::before { content: "▸"; font-size: 10px; line-height: 1; }
+.provenance[open] > summary::before { content: "▾"; }
+.provenance > summary:hover { color: var(--text); }
+.provenance-body {
+  margin-top: var(--space-1);
+  padding-left: 10px;
+  border-left: 2px solid var(--border);
+  font-size: var(--text-xs);
+  line-height: 1.55;
+  color: var(--muted-foreground);
+  overflow-wrap: anywhere;
+}
+.provenance-body p { margin: 2px 0; color: inherit; }
+.provenance-body ul { margin: 2px 0; padding-left: 16px; }
+.provenance-body code, .provenance-body .mono { font-family: var(--font-mono); }
+/* "3 earlier checks" / "showing 20 of 84" — the count a truncated list owes
+   the reader. A list that silently stops is a list that lies about its size. */
+.disclosure-count { font-size: var(--text-xs); color: var(--muted-foreground); margin-top: var(--space-1); }
+
+/* ===========================================================================
+   LAYOUT CLASSES THAT HAD NO RULE AT ALL.
+
+   Sixty classes emitted by dashboard.js/dashboard.html matched no selector in
+   this file. The most damaging was .columns: dashboard.html uses it four times,
+   each wrapping two .panel children (QC | Human Review, App Docs | Submission
+   Workflow, Historical Failures | Live Readiness, Corrections | Portal Runs).
+   With no rule they block-stacked, so eight panels designed as four side-by-side
+   pairs printed as eight full-page bands — the single biggest contributor to
+   the "endless scroll" complaint.
+   =========================================================================== */
+.columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: var(--space-3);
+  align-items: start;
+}
+/* .stage-body sets `> .panel { margin-top }`; inside a grid that margin would
+   push the two columns out of alignment. The grid gap owns the spacing here. */
+.stage-body > .columns > .panel, .stage-body > .columns > section { margin-top: 0; }
+
+/* showMessage() sets el.style.borderLeftColor on #message, but .message had no
+   rule — so there was no border to colour and every error, warning and success
+   status rendered as identical undifferentiated text. */
+.message {
+  border-left: 3px solid var(--info);
+  background: var(--secondary);
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  margin-bottom: var(--space-3);
+}
+
+/* Generic surface used by recipe/doc rows. */
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+}
+
+/* --- Process map: PermitFlow beside NEMflow, which is the comparison the
+       operator actually makes, rather than one above the other. --- */
+.process-map { display: flex; flex-direction: column; gap: var(--space-3); }
+.process-lanes { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: var(--space-3); align-items: start; }
+.process-lane { border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--card); padding: var(--space-3); }
+.process-lane-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-2); margin-bottom: var(--space-2); }
+.process-lane-head strong { display: block; font-size: var(--text-sm); }
+.process-lane-head span { display: block; font-size: var(--text-xs); color: var(--muted-foreground); margin-top: 2px; }
+.process-steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: var(--space-2); margin-top: var(--space-2); }
+.process-step { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px 10px; background: var(--card); font-size: var(--text-sm); }
+.process-step p { margin: 2px 0; }
+
+/* --- Timeline --- */
+.timeline-item { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px 10px; background: var(--card); font-size: var(--text-sm); margin-bottom: var(--space-2); }
+.timeline-item p { margin: 2px 0; }
+.timeline-meta { font-size: var(--text-xs); color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+
+/* --- Installer / design action requests --- */
+.installer-action-list { display: flex; flex-direction: column; gap: var(--space-2); }
+.installer-action { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px 10px; background: var(--card); font-size: var(--text-sm); }
+.installer-action p { margin: 2px 0; }
+
+/* --- Evidence (always inside a .provenance body now) --- */
+.evidence-list { margin: var(--space-1) 0 0; padding-left: 16px; font-size: var(--text-xs); color: var(--muted-foreground); }
+.evidence-trail { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--space-2); }
+.evidence-card { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px 10px; background: var(--secondary); font-size: var(--text-xs); }
+.evidence-card strong { font-size: var(--text-sm); }
+.screenshot-slot { border-style: dashed; }
+.code-refs { display: flex; flex-wrap: wrap; gap: var(--space-1); margin-top: var(--space-1); font-size: var(--text-xs); }
+
+/* --- Submit gate: the manual guardrail sits beside the focus checks --- */
+.submit-gate-grid { display: grid; grid-template-columns: minmax(220px, 1fr) 2fr; gap: var(--space-3); align-items: start; }
+.submit-gate-checks { display: flex; flex-direction: column; gap: var(--space-2); }
+.manual-submit-list { margin: var(--space-1) 0 0; padding-left: 18px; font-size: var(--text-sm); }
+.manual-submit-list li { margin: 2px 0; }
+@media (max-width: 860px) { .submit-gate-grid { grid-template-columns: 1fr; } }
+
+/* --- Compact entry forms (permit target, confirmation, AHJ/utility adds) --- */
+.permit-form, .confirmation, .add-ahj-form, .add-utility-form, .email-watch-form, .mbox-path-form, .ops-action-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: var(--space-2);
+  align-items: end;
+}
+.permit-form input, .permit-form select, .confirmation input,
+.add-ahj-form input, .add-utility-form input, .email-watch-form input,
+.mbox-path-form input, .ops-action-form input, .ops-action-form select {
+  padding: 7px 9px; border: 1px solid var(--input); border-radius: var(--radius-sm);
+  font: inherit; font-size: var(--text-sm); background: var(--surface); color: var(--text);
+}
+.permit-actions, .autopilot-actions, .ops-actions, .ops-action-controls, .runbook-update-controls {
+  display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center;
+}
+
+/* --- Ops plan / runbook / brief / handoff panels --- */
+.ops-action-list, .runbook-steps, .communication-draft-list { display: flex; flex-direction: column; gap: var(--space-2); }
+.ops-action-card, .runbook-step, .communication-draft {
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3); background: var(--card); font-size: var(--text-sm);
+}
+.ops-action-card-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
+.ops-action-metrics, .email-tracker-status, .runbook-current-update { display: flex; flex-wrap: wrap; gap: var(--space-3); font-size: var(--text-xs); color: var(--muted-foreground); }
+.ops-report { display: flex; flex-direction: column; gap: var(--space-2); }
+.runbook-notes, .done-criteria, .section-note { font-size: var(--text-xs); color: var(--muted-foreground); }
+.draft-body { white-space: pre-wrap; font-size: var(--text-sm); margin-top: var(--space-1); }
+.brief-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: var(--space-2); }
+.brief-row { border: 1px solid var(--border); border-left-width: 3px; border-radius: var(--radius-sm); padding: 6px 10px; background: var(--card); font-size: var(--text-sm); }
+.brief-row.pass { border-left-color: var(--success); }
+.brief-row.warning { border-left-color: var(--warning); }
+.brief-row.blocker, .brief-row.error { border-left-color: var(--destructive); }
+.brief-row.info { border-left-color: var(--info); }
+.handoff-sections { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: var(--space-2); }
+.handoff-section { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--space-2) var(--space-3); background: var(--card); font-size: var(--text-sm); }
+
+/* --- Misc panels/controls that fell back to browser defaults --- */
+.workflow-panel, .submit-gate-panel, .submittal-tracks-panel, .record-portal-panel { display: block; }
+.track-card { margin-bottom: var(--space-2); }
+.compact-button { min-height: 28px; padding: 0 8px; font-size: var(--text-xs); }
+.intake-link-row { flex-wrap: wrap; }
 
 /* --- Print / Save-as-PDF --- */
 /* The sticky .topbar otherwise gets painted at each page boundary and overlaps
@@ -800,4 +1209,15 @@ kbd {
   .item, .autofill-card, .submit-gate-check, .flow-steps li { break-inside: avoid; }
   /* Open accordions print expanded; collapsed ones stay collapsed. */
   .stage-accordion[open] .stage-body { break-inside: auto; }
+
+  /* PROVENANCE PRINTS EVEN WHEN COLLAPSED — a deliberate choice, not an
+     oversight. Collapsing the sourcing is the cure for a 28,000-character
+     screen; it must NOT quietly become a cure for the printed record, because a
+     project packet is the artifact someone audits later. On screen it is one
+     click away; on paper it is simply there. (::details-content is Chrome's
+     open/closed content box — this app is Chrome-only.) */
+  .provenance::details-content { content-visibility: visible !important; }
+  .provenance > summary { color: var(--muted-foreground); }
+  .provenance > summary::before { content: ""; }
+  .stage-accordion, .audit-accordion, .kb-accordion { break-inside: auto; }
 }

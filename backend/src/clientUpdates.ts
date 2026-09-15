@@ -81,6 +81,33 @@ function otherTrackOutcome(db: AppDb, projectId: string, thisType: string): stri
 const DONE_OUTCOMES = new Set(["issued", "nem_approved", "approved"]);
 
 /**
+ * "the electrical permit" when we know, plain "the permit" when we do not. Never a guess: naming
+ * the wrong trade tells a client to schedule the wrong crew.
+ */
+function permitPhrase(permitType: string): string {
+  switch (text(permitType).toLowerCase()) {
+    case "electrical": return "the electrical permit";
+    case "building": case "structural": return "the building permit";
+    case "combo": return "the combination building & electrical permit";
+    default: return "the permit";
+  }
+}
+
+/**
+ * The same filing named as an APPLICATION rather than a permit.
+ *
+ * A correction lands against a filing that is not a permit yet — "the city sent the electrical
+ * permit back" reads as a permit having been issued and then withdrawn, which is a different and
+ * much worse Tuesday. Derived from permitPhrase so the two cannot drift: one switch, one list of
+ * disciplines. An unknown discipline collapses to the general "the application", which is what
+ * this sentence has always said.
+ */
+function applicationPhrase(permitType: string): string {
+  const which = permitPhrase(permitType);
+  return which === "the permit" ? "the application" : `${which} application`;
+}
+
+/**
  * The outcomes a client hears about. THE ONE LIST — shouldNotifyClient derives its gate from
  * this rather than keeping a parallel copy, the same way the API-key allowlist is derived from
  * the product registry. Two lists of "what the client is told about" would eventually disagree,
@@ -106,16 +133,8 @@ export function clientUpdateFor(
   const ahj = text(project.ahj) || "the jurisdiction";
   const utility = text(project.utility) || "the utility";
   const ref = text(ctx.permitNumber) || text(ctx.applicationNumber);
-  // "the electrical permit" when we know, plain "the permit" when we do not. Never a guess:
-  // naming the wrong trade tells a client to schedule the wrong crew.
-  const which = ((): string => {
-    switch (text(ctx.permitType).toLowerCase()) {
-      case "electrical": return "the electrical permit";
-      case "building": case "structural": return "the building permit";
-      case "combo": return "the combination building & electrical permit";
-      default: return "the permit";
-    }
-  })();
+  const which = permitPhrase(text(ctx.permitType));
+  const whichApplication = applicationPhrase(text(ctx.permitType));
   const refPhrase = ref ? `, reference ${ref}` : "";
   const other = otherTrackOutcome(db, project.id, ctx.targetType);
   const otherDone = DONE_OUTCOMES.has(other);
@@ -161,7 +180,10 @@ export function clientUpdateFor(
     case "correction_flagged":
       return {
         subject: "Correction requested",
-        headline: `${ahj} has sent the application back with a correction${refPhrase}.`,
+        // WHICH filing came back. A project files a structural AND an electrical application; a
+        // client told only that "the application" was returned cannot tell which of the two is
+        // stalled, and the reference number alone makes them go and look it up.
+        headline: `${ahj} has sent ${whichApplication} back with a correction${refPhrase}.`,
         // Deliberately does NOT quote the correction. See the header.
         meaning: "The reviewer wants changes before it can go further. This is routine and it is not a rejection.",
         // The single most useful sentence we send. A correction notice with no instruction reads

@@ -55,6 +55,9 @@ export interface PortalIntakeQuestion {
   label: string;
   options: string[];
   portalType?: string;
+  /** The bank's PortalQuestionKind for this question, when it came from the bank.
+   *  Only "bound-empty" is load-bearing here — see OPERATOR_POLICY_ANSWERS. */
+  kind?: string;
   /** Set when the installer explicitly answered "I'm not sure" — the operator
    *  resolves it instead of the automation guessing. */
   unsure?: boolean;
@@ -154,6 +157,76 @@ const CANONICAL_BINDING_OPTIONS: Record<string, string[]> = {
   disconnectWithin10ft: ["Yes", "No"],
 };
 
+// ---------------------------------------------------------------------------
+// OPERATOR POLICY ANSWERS — a standing answer for a per-job binding.
+//
+// "Is your disconnect within 10 feet of the PGE utility meter?" was reaching the
+// homeowner's intake form on every PGE job. It is per-job in PRINCIPLE, but this
+// operator has a standing call on it: the standard residential detail places the
+// lockable AC disconnect within the required distance on every install. The
+// learn-time pass already applies exactly that answer (POLICY_RADIO_DEFAULTS in
+// portal-bot/src/adapters/autoLearnAdapter.ts), so the two halves of the system
+// held opposite beliefs about the same question and the client paid for it.
+//
+// THIS IS DATA, NOT A RULE. The operator will one day have a job where the
+// answer is No, and this table is deliberately the LOWEST-ranked answer source:
+// projectAnswer() consults the parser snapshot, the project record, and the v17
+// per-job column FIRST, so anything recorded for a specific project still wins.
+// Adding/removing a policy answer is a one-line data edit here, with its reason.
+const OPERATOR_POLICY_ANSWERS: Record<string, { answer: string; why: string }> = {
+  disconnectWithin10ft: {
+    answer: "Yes",
+    why: "standard residential detail places the lockable AC disconnect within the required distance on every install — the operator's standing answer, and the same one autoLearnAdapter's POLICY_RADIO_DEFAULTS files at learn time",
+  },
+};
+
+/** The operator's standing answer for a binding, or "" when there is none. */
+export function operatorPolicyAnswer(key: string): string {
+  return OPERATOR_POLICY_ANSWERS[key]?.answer ?? "";
+}
+
+/** True when the operator's standing answer settles this question, so nobody
+ *  should be asked it.
+ *
+ *  THE "bound-empty" CARVE-OUT IS LOAD-BEARING. A bank question of kind
+ *  "bound-empty" means the RECIPE has a step bound to this field: replay fills
+ *  that control from resolveRecipeFieldValues (portalRecipes.ts), which has no
+ *  policy default of its own and resolves "" — so suppressing the question there
+ *  would file a BLANK into a required portal control with nothing surfacing it,
+ *  strictly worse than asking. Those keep being asked, the answer lands in the
+ *  v17 column, and the resolver then resolves it. Drop this clause only once
+ *  portalRecipes.ts applies the same policy default. */
+function policySettles(q: PortalIntakeQuestion): boolean {
+  return !!OPERATOR_POLICY_ANSWERS[q.key] && q.kind !== "bound-empty";
+}
+
+// A RECIPE NOTE IS NOT A QUESTION.
+//
+// autoLearnAdapter records a policy-answered radio as a step whose NOTE is
+// `policy default: <the portal's question> → <the answer>` and whose selector is
+// css-only; the bank's stepLabel() then falls back to that note, and the whole
+// internal string was rendered to a homeowner on a public no-login page.
+//
+// The note is also a MATCHING KEY — recipeAdapter's conditional-question replay
+// skip tests /^policy default:/ on it, and portal_question_overrides is
+// PRIMARY-KEYED on its normalized form (a live row reads
+// "…:: policy default: do you propose to limit the export capacity? → no").
+// So it is cleaned HERE, at the one boundary where it is shown to a person, and
+// nowhere upstream: changing stepLabel/normalizeQuestionLabel would silently
+// orphan that override row.
+const POLICY_NOTE_PREFIX = /^\s*policy default:\s*/i;
+
+function publicQuestionLabel(label: string): string {
+  // ANCHORED ON THE PREFIX. A legitimate portal label may contain an arrow
+  // ("Line → Load side of the main panel?") and must survive byte-identical.
+  if (!POLICY_NOTE_PREFIX.test(label)) return label;
+  const body = label.replace(POLICY_NOTE_PREFIX, "");
+  // Drop the recorded ANSWER the note carries after the arrow — the LAST arrow,
+  // so a question that itself contains one keeps its own wording.
+  const cleaned = body.replace(/^([\s\S]*)(?:→|->)\s*\S[\s\S]*$/, "$1").trim();
+  return cleaned || body.trim() || label;
+}
+
 /** The live question bank returns TRACK-GROUPED results ({track, unanswered:
  *  PortalQuestion[]}, portalQuestionBank.ts). Flatten to question rows tagged
  *  with the track's portal identity; a flat array passes through untouched. */
@@ -179,15 +252,28 @@ function normalizeQuestions(raw: unknown): PortalIntakeQuestion[] {
     if (!item || typeof item !== "object") continue;
     const q = item as Record<string, unknown>;
     const key = str(q.key ?? q.field ?? q.bindsTo ?? q.suggestedBinding);
-    const label = str(q.label ?? q.question ?? q.prompt ?? q.portalLabel);
+    const label = publicQuestionLabel(str(q.label ?? q.question ?? q.prompt ?? q.portalLabel));
     const rawOptions = Array.isArray(q.options) ? q.options : Array.isArray(q.choices) ? q.choices : [];
     let options = [...new Set(rawOptions.map((o) => str(o)).filter(Boolean))];
     if (options.length < 2 && CANONICAL_BINDING_OPTIONS[key]) options = CANONICAL_BINDING_OPTIONS[key];
     if (!key || !label || options.length < 2) continue; // not rigidly answerable
     if (!publicSafeQuestionKey(key)) continue;
+    // DEFENCE IN DEPTH. questionsForProject already keeps only per-job questions,
+    // but an injected source, a future bank shape or a stored legacy row could
+    // hand us a portal-constant — a question with a FIXED answer, which asking a
+    // client for is the whole defect. Checked only when a classification is
+    // actually supplied: storedJson does not persist one, so a pending row
+    // written before this change must still parse.
+    const classification = str(q.classification);
+    if (classification && classification !== "per-job") continue;
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push({ key, label, options, portalType: str(q.portalType) || undefined, unsure: q.unsure === true || undefined });
+    out.push({
+      key, label, options,
+      portalType: str(q.portalType) || undefined,
+      kind: str(q.kind) || undefined,
+      unsure: q.unsure === true || undefined,
+    });
   }
   return out.slice(0, 20);
 }
@@ -200,12 +286,24 @@ function projectAnswer(project: ProjectRecord, key: string, columns: Record<stri
   return str(snap[key]) || str((project as unknown as Record<string, unknown>)[key]) || str(columns[key]);
 }
 
+/** THE ONE DEFINITION OF "still needs an answer", shared by every surface: the
+ *  bank filter, the public GET, and the required check in the POST.
+ *
+ *  They MUST agree. If the GET hides a question the POST still requires, a
+ *  client is rejected for a question the form never showed them — so this is a
+ *  single function rather than three lookalike conditions. */
+function questionIsOpen(project: ProjectRecord, q: PortalIntakeQuestion, columns: Record<string, string>): boolean {
+  if (projectAnswer(project, q.key, columns)) return false; // parser / record / v17 column already answered it
+  if (policySettles(q)) return false;                       // the operator's standing answer settles it
+  return true;
+}
+
 /** Bank questions this project has NOT answered yet. */
 export async function unansweredPortalQuestions(db: AppDb, project: ProjectRecord): Promise<PortalIntakeQuestion[]> {
   const bank = await bankQuestionsForProject(db, project);
   if (!bank.length) return [];
   const columns = perJobColumnAnswers(db, project.id);
-  return bank.filter((q) => !projectAnswer(project, q.key, columns));
+  return bank.filter((q) => questionIsOpen(project, q, columns));
 }
 
 // ---------------------------------------------------------------------------
@@ -239,6 +337,9 @@ function storedJson(fields: IntakeField[], questions: PortalIntakeQuestion[]): s
   const qs = questions.map((q) => ({
     key: q.key, label: q.label, options: q.options,
     ...(q.portalType ? { portalType: q.portalType } : {}),
+    // Persisted because it decides whether an operator policy answer may settle
+    // the question without asking (see policySettles).
+    ...(q.kind ? { kind: q.kind } : {}),
     ...(q.unsure ? { unsure: true } : {}),
   }));
   return JSON.stringify([...fields, ...qs]);
@@ -303,8 +404,8 @@ export async function createIntakeRequest(
 export function getIntakeRequestPublic(db: AppDb, token: string): {
   status: string;
   projectLabel: string;
-  fields: Array<{ key: IntakeField; label: string; value: string }>;
-  questions: Array<{ key: string; label: string; options: string[]; value: string }>;
+  fields: Array<{ key: IntakeField; label: string; value: string; required: boolean }>;
+  questions: Array<{ key: string; label: string; options: string[]; value: string; required: boolean }>;
 } {
   const row = db.get<IntakeRow>("SELECT * FROM project_intake_requests WHERE token = ?", [token]);
   if (!row) throw new HttpError(404, "Intake link not found.");
@@ -316,15 +417,24 @@ export function getIntakeRequestPublic(db: AppDb, token: string): {
   const snap = project.parserSnapshot || {};
   const { fields, questions } = parseStored(row);
 
+  const columns = perJobColumnAnswers(db, project.id);
   return {
     status: row.status,
     projectLabel: [project.homeownerName, project.projectAddress].filter(Boolean).join(" — ") || "Solar project",
-    fields: fields.map((key) => ({ key, label: FIELD_LABELS[key], value: str(snap[key]) })),
-    // normalizeQuestions (inside parseStored) re-applies the public-key denylist,
-    // so a row written before a denylist tightening still can't leak.
-    questions: questions.map((q) => ({
+    // Required = there is nothing on file yet. A prefilled field is shown but not
+    // demanded, which is exactly what submitIntakeRequest enforces — the two must
+    // not diverge or a client is blocked on a box that already has a value.
+    fields: fields.map((key) => ({ key, label: FIELD_LABELS[key], value: str(snap[key]), required: !str(snap[key]) })),
+    // normalizeQuestions (inside parseStored) re-applies the public-key denylist
+    // and strips internal recipe vocabulary from the label, so a row written
+    // before either tightening still can't leak.
+    questions: questions.filter((q) => questionIsOpen(project, q, columns)).map((q) => ({
       key: q.key, label: q.label, options: q.options,
-      value: projectAnswer(project, q.key, perJobColumnAnswers(db, project.id)),
+      // An "I'm not sure" answer is never written to the project, so without this
+      // it round-trips as blank and a client reopening the link to correct an
+      // email would be blocked by a question they already answered.
+      value: q.unsure ? INTAKE_UNSURE : "",
+      required: true,
     })),
   };
 }
@@ -332,7 +442,9 @@ export function getIntakeRequestPublic(db: AppDb, token: string): {
 /** Submit answers to a public intake request — writes to the project snapshot.
  *  Portal-question answers are RIGID: only one of the portal's own options (or
  *  the "I'm not sure" sentinel, which marks the question for the operator and
- *  never touches the project). */
+ *  never touches the project). Every field/question the request still ASKS is
+ *  REQUIRED: a short post is a 400 naming what is missing, thrown before any
+ *  write, so a half-filled intake can never report itself complete. */
 export function submitIntakeRequest(
   db: AppDb,
   token: string,
@@ -344,6 +456,9 @@ export function submitIntakeRequest(
     throw new HttpError(410, "This intake link has expired.");
   }
 
+  const project = getProjectDetail(db, row.project_id).project;
+  const snap = (project.parserSnapshot || {}) as Record<string, unknown>;
+  const columns = perJobColumnAnswers(db, row.project_id);
   const { fields, questions } = parseStored(row);
   const payload: Record<string, unknown> = {};
   for (const key of fields) {
@@ -370,7 +485,34 @@ export function submitIntakeRequest(
     payload[q.key] = value;
   }
 
-  if (Object.keys(payload).length === 0 && !unsureMarked) {
+  // REQUIRED, ENFORCED HERE — against the STORED request, and BEFORE any write.
+  //
+  // A control the client left empty is simply absent from the body, so "skipped"
+  // and "never asked" were indistinguishable on the wire, and ONE answer out of
+  // five satisfied this endpoint: the row flipped to 'completed' and
+  // maybeResumeAutopilot re-drove a half-answered project toward the approval
+  // gate. Throwing before updateProject is what stops that.
+  //
+  // REQUIRED MEANS ANSWERED, NOT CERTAIN: INTAKE_UNSURE is a real answer (it
+  // escalates to the operator), so it satisfies the check — either in this post
+  // (q.unsure was just set above) or from a previous one that is not resent.
+  //
+  // questionIsOpen is the SAME predicate getIntakeRequestPublic renders with, so
+  // a client is never rejected for a question the form did not show them.
+  const missing: string[] = [];
+  for (const key of fields) {
+    if (payload[key] == null && !str(snap[key])) missing.push(FIELD_LABELS[key]);
+  }
+  for (const q of questions) {
+    if (!questionIsOpen(project, q, columns)) continue;
+    if (payload[q.key] != null || q.unsure) continue;
+    missing.push(q.label);
+  }
+  if (missing.length) {
+    // Read by a homeowner/installer, not an operator — name what is missing.
+    throw new HttpError(400, `Please answer: ${missing.join("; ")}.`);
+  }
+  if (!fields.length && !questions.length && Object.keys(payload).length === 0 && !unsureMarked) {
     throw new HttpError(400, "No values provided.");
   }
 

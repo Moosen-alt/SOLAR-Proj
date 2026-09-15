@@ -16,6 +16,20 @@
 //   4. A project that already answered gets a request that carries none.
 //   5. Public-safety: questions bound to portal-identity keys (state/ahj/
 //      utility) or secret-shaped keys never reach the no-login payload.
+//   6. No INTERNAL VOCABULARY reaches the client. autoLearnAdapter records a
+//      policy-answered radio as a step whose note is "policy default: <question>
+//      → <answer>", the bank falls back to that note when the step carried no
+//      selector label, and the whole string was rendered to a homeowner. It is
+//      stripped at the public boundary — and ONLY there: the raw note is the
+//      primary key of portal_question_overrides and recipeAdapter's replay-skip
+//      key, so a label that merely CONTAINS an arrow must survive untouched.
+//   7. A question the OPERATOR has a standing answer for is never asked
+//      (OPERATOR_POLICY_ANSWERS) — with the bound-empty carve-out that keeps a
+//      recipe-bound control from being filed blank.
+//   8. REQUIRED IS ENFORCED SERVER-SIDE: a short post is a 400 naming what is
+//      missing, thrown before any write, so a half-filled intake can no longer
+//      mark itself completed and re-drive autopilot. "I'm not sure" counts as
+//      answered.
 //
 // KILL-TEST (verified during development): with the questionsForProject append
 // removed from createIntakeRequest, test [1] fails — the payload lacks the
@@ -71,6 +85,20 @@ setPortalQuestionSource(() => [
   { key: "installNotes", label: "Anything else?", options: [] },
 ]);
 
+// Every field the link still ASKS is required now, so a post that only carries a
+// portal answer is a 400. These suites are about the QUESTIONS, so they answer
+// the fixed fields from here and keep their subject in focus.
+const FIELD_ANSWERS: Record<string, string> = {
+  jobValue: "24500",
+  homeownerEmail: "owner@example.com",
+  homeownerPhone: "503-555-0142",
+};
+const fieldAnswersFor = (pub: { fields: Array<{ key: string }> }): Record<string, string> => {
+  const out: Record<string, string> = {};
+  for (const f of pub.fields) out[f.key] = FIELD_ANSWERS[f.key] ?? "n/a";
+  return out;
+};
+
 const projectA = createProject(db, {
   owner: "Question Test A", street: "1 Ownership Way", city: "Portland", state: "OR", zip: "97201",
   ahj: "City of Portland", utility: "PacifiCorp", dcKw: "6.4",
@@ -86,17 +114,19 @@ run("public payload carries the question", Boolean(pubQ));
 run("…with the portal's own wording", pubQ?.label === OWNERSHIP_Q.label);
 run("…with exactly the portal's options", JSON.stringify(pubQ?.options) === JSON.stringify(OWNERSHIP_Q.options));
 run("…unanswered (empty value)", pubQ?.value === "");
+run("…and marked required, so the form and the server agree on what must be answered", pubQ?.required === true);
 run("identity binding (utility) never reaches the public payload", !pubA.questions.some((q) => q.key === "utility"));
 run("secret-shaped binding never reaches the public payload", !pubA.questions.some((q) => q.key === "portalPassword"));
 run("option-less question is not rigidly askable and is dropped", !pubA.questions.some((q) => q.key === "installNotes"));
 run("classic fixed fields still present", pubA.fields.length >= 1);
 
 console.log("\n[2] answers are rigid — the portal's vocabulary or nothing");
-const freeText = throws(() => submitIntakeRequest(db, reqA.token, { ownershipModel: "we lease it I think" }));
+const fieldsA = fieldAnswersFor(pubA);
+const freeText = throws(() => submitIntakeRequest(db, reqA.token, { ...fieldsA, ownershipModel: "we lease it I think" }));
 run("free text for a classified question is a 400", freeText?.status === 400, freeText?.message ?? "no error");
 run("free text did not touch the project",
   !(getProjectDetail(db, projectA).project.parserSnapshot as Record<string, unknown>).ownershipModel);
-const submitted = submitIntakeRequest(db, reqA.token, { ownershipModel: "Third-Party Owned" });
+const submitted = submitIntakeRequest(db, reqA.token, { ...fieldsA, ownershipModel: "Third-Party Owned" });
 run("a portal option is accepted", submitted.ok === true);
 run("the answer landed in the project snapshot",
   (getProjectDetail(db, projectA).project.parserSnapshot as Record<string, unknown>).ownershipModel === "Third-Party Owned");
@@ -121,13 +151,25 @@ const projectB = createProject(db, {
 }).project.id;
 const reqB = await createIntakeRequest(db, projectB);
 run("B's request asks the question", reqB.questions.length === 1);
-const unsureSubmit = submitIntakeRequest(db, reqB.token, { ownershipModel: INTAKE_UNSURE });
+const fieldsB = fieldAnswersFor(getIntakeRequestPublic(db, reqB.token));
+const unsureSubmit = submitIntakeRequest(db, reqB.token, { ...fieldsB, ownershipModel: INTAKE_UNSURE });
 run("unsure-only submission completes", unsureSubmit.ok === true);
 run("the sentinel never reached the project",
   !(getProjectDetail(db, projectB).project.parserSnapshot as Record<string, unknown>).ownershipModel);
 const statusB = await portalQuestionStatus(db, projectB);
 run("still unanswered for the operator", statusB.unansweredCount === 1);
 run("…and flagged as installer-unsure", statusB.unsureCount === 1 && statusB.questions[0]?.unsure === true);
+// "I'm not sure" is never written to the project, so without an explicit
+// round-trip it reads back blank — and a client reopening the link to correct an
+// email would then be blocked by a question they already answered.
+const pubB = getIntakeRequestPublic(db, reqB.token);
+const pubBQ = pubB.questions.find((q) => q.key === "ownershipModel");
+run("the reopened link shows the unsure answer still selected", pubBQ?.value === INTAKE_UNSURE, JSON.stringify(pubBQ));
+run("…and still marked required", pubBQ?.required === true);
+const reunsure = throws(() => submitIntakeRequest(db, reqB.token, { ownershipModel: INTAKE_UNSURE }));
+run("re-posting the sentinel is accepted, not 400'd as missing", reunsure === null, reunsure?.message ?? "");
+const resilent = throws(() => submitIntakeRequest(db, reqB.token, {}));
+run("…and an already-unsure question stays satisfied when it is not resent", resilent === null, resilent?.message ?? "");
 
 console.log("\n[5] legacy rows (plain string fields_json) keep working");
 db.run(
@@ -182,12 +224,130 @@ const projectE = createProject(db, {
 }).project.id;
 const reqE = await createIntakeRequest(db, projectE);
 const eOwnership = reqE.questions.find((q) => q.key === "ownershipModel");
-run("track-grouped questions flatten into the request", reqE.questions.length === 2, JSON.stringify(reqE.questions));
+run("track-grouped questions flatten into the request", reqE.questions.length === 1, JSON.stringify(reqE.questions));
 run("uncaptured dropdown falls back to the canonical portal vocabulary",
   JSON.stringify(eOwnership?.options) === JSON.stringify(["Customer-Owned", "Third-Party Owned", "Lease", "PPA"]));
 run("the track's portal identity tags the question", eOwnership?.portalType === "utility:or:pacificorp");
 run("a question with no binding cannot land anywhere and is not asked",
   !reqE.questions.some((q) => q.label.startsWith("Mystery")));
+// The disconnect question the operator screenshotted. It is per-job in the bank
+// and it always will be — what settles it is the operator's STANDING ANSWER, so
+// the homeowner is not asked a question their coordinator has already decided.
+run("a question the operator has a standing answer for is not asked",
+  !reqE.questions.some((q) => q.key === "disconnectWithin10ft"), JSON.stringify(reqE.questions));
+setPortalQuestionSource(null);
+
+console.log("\n[9] the operator's standing answer settles the disconnect question — except where replay would file a blank");
+const DISCONNECT_NOTE = "policy default: Is your disconnect within 10 feet of the PGE utility meter? → Yes";
+const makeProjectFor = (owner: string, street: string) => createProject(db, {
+  owner, street, city: "Portland", state: "OR", zip: "97201",
+  ahj: "City of Portland", utility: "Portland General Electric", dcKw: "6.0",
+}).project.id;
+
+// (a) The LIVE shape: PGE's policy-default radio, recorded with a css-only
+//     selector so the bank falls back to the step NOTE for a label.
+setPortalQuestionSource(() => [
+  { key: "disconnectWithin10ft", label: DISCONNECT_NOTE, options: ["Yes", "No"], classification: "per-job", kind: "radio-choice" },
+]);
+const projectF = makeProjectFor("Question Test F", "6 Policy Pl");
+const reqF = await createIntakeRequest(db, projectF);
+run("the PGE disconnect question never reaches the client form", reqF.questions.length === 0, JSON.stringify(reqF.questions));
+run("…nor the public payload", getIntakeRequestPublic(db, reqF.token).questions.length === 0);
+const statusF = await portalQuestionStatus(db, projectF);
+run("…nor the operator's unanswered chip", statusF.unansweredCount === 0);
+
+// (b) THE CARVE-OUT, tested from the other side. kind "bound-empty" means the
+//     RECIPE binds a control to this field: replay fills it from
+//     resolveRecipeFieldValues, which has no policy default and resolves "", so
+//     suppressing the question here would file a BLANK into a required portal
+//     control. Those must still be asked.
+setPortalQuestionSource(() => [
+  { key: "disconnectWithin10ft", label: DISCONNECT_NOTE, options: ["Yes", "No"], classification: "per-job", kind: "bound-empty" },
+]);
+const projectG = makeProjectFor("Question Test G", "7 Bound Blvd");
+const reqG = await createIntakeRequest(db, projectG);
+run("a RECIPE-BOUND disconnect control is still asked — a blank filing is worse than a question",
+  reqG.questions.length === 1 && reqG.questions[0].key === "disconnectWithin10ft", JSON.stringify(reqG.questions));
+
+console.log("\n[10] internal recipe vocabulary is impossible to render to a customer");
+const pubG = getIntakeRequestPublic(db, reqG.token);
+const pubGQ = pubG.questions.find((q) => q.key === "disconnectWithin10ft");
+run("the 'policy default:' prefix and the recorded '→ Yes' answer are stripped",
+  pubGQ?.label === "Is your disconnect within 10 feet of the PGE utility meter?", JSON.stringify(pubGQ?.label));
+run("…and the raw note never appears anywhere in the public payload",
+  !JSON.stringify(pubG).toLowerCase().includes("policy default"), JSON.stringify(pubG.questions));
+
+// mustExclude — the other half of the filter. The strip is ANCHORED on the
+// prefix: a legitimate portal label that merely contains an arrow must survive
+// byte-identical, or a line/load-side question is silently truncated.
+const ARROW_LABEL = "Line → Load side of the main panel?";
+setPortalQuestionSource(() => [
+  { key: "mountType", label: ARROW_LABEL, options: ["Line side", "Load side"], classification: "per-job" },
+]);
+const projectH = makeProjectFor("Question Test H", "8 Arrow Ave");
+const reqH = await createIntakeRequest(db, projectH);
+run("a normal label containing an arrow survives byte-identical",
+  reqH.questions[0]?.label === ARROW_LABEL, JSON.stringify(reqH.questions[0]?.label));
+
+console.log("\n[11] a portal-constant has a fixed answer — asking a client for it is the defect");
+setPortalQuestionSource(() => [
+  { key: "ownershipModel", label: "Will the System be Customer-Owned or Third-Party Owned?", options: ["Customer-Owned", "Third-Party Owned"], classification: "per-job" },
+  { key: "mountType", label: "Who will install this generation system?", options: ["Contractor", "Self"], classification: "portal-constant" },
+  // No classification at all: storedJson does not persist one, so a pending row
+  // written before this guard existed must still parse. Dropping these would
+  // silently empty every intake link already in flight.
+  { key: "tilt", label: "Array tilt?", options: ["Flush", "Tilted"] },
+]);
+const projectI = makeProjectFor("Question Test I", "9 Constant Ct");
+const reqI = await createIntakeRequest(db, projectI);
+const iKeys = reqI.questions.map((q) => q.key).sort();
+run("a portal-constant never reaches the intake payload", !iKeys.includes("mountType"), JSON.stringify(iKeys));
+run("…while per-job and unclassified questions still do",
+  JSON.stringify(iKeys) === JSON.stringify(["ownershipModel", "tilt"]), JSON.stringify(iKeys));
+
+console.log("\n[12] required is enforced server-side, before anything is written");
+setPortalQuestionSource(() => [OWNERSHIP_Q]);
+const projectJ = makeProjectFor("Question Test J", "10 Required Rd");
+const reqJ = await createIntakeRequest(db, projectJ);
+const pubJ = getIntakeRequestPublic(db, reqJ.token);
+const fieldsJ = fieldAnswersFor(pubJ);
+run("every asked field is published as required", pubJ.fields.length > 0 && pubJ.fields.every((f) => f.required === true));
+
+const noQuestion = throws(() => submitIntakeRequest(db, reqJ.token, fieldsJ));
+run("a post missing the portal question is a 400", noQuestion?.status === 400, JSON.stringify(noQuestion));
+run("…whose message NAMES the question, in the portal's own wording",
+  Boolean(noQuestion?.message.includes(OWNERSHIP_Q.label)), noQuestion?.message ?? "");
+
+const firstFieldKey = pubJ.fields[0].key;
+const shortFields = { ...fieldsJ, ownershipModel: "Customer-Owned" };
+delete (shortFields as Record<string, string>)[firstFieldKey];
+const noField = throws(() => submitIntakeRequest(db, reqJ.token, shortFields));
+run("a post missing a fixed field is a 400", noField?.status === 400, JSON.stringify(noField));
+run("…whose message names that field", Boolean(noField?.message.includes(pubJ.fields[0].label)), noField?.message ?? "");
+
+// NOTHING may be written by a rejected post — the old code marked the row
+// 'completed' and fired maybeResumeAutopilot off a one-answer submission.
+const rowJ = db.get<Record<string, unknown>>("SELECT status, completed_at FROM project_intake_requests WHERE id = ?", [reqJ.id]);
+run("a rejected post leaves the request pending", String(rowJ?.status) === "pending", JSON.stringify(rowJ));
+run("…and writes nothing to the project",
+  !(getProjectDetail(db, projectJ).project.parserSnapshot as Record<string, unknown>).ownershipModel
+  && !(getProjectDetail(db, projectJ).project.parserSnapshot as Record<string, unknown>).homeownerEmail);
+
+const complete = throws(() => submitIntakeRequest(db, reqJ.token, { ...fieldsJ, ownershipModel: "Customer-Owned" }));
+run("a complete post is accepted", complete === null, complete?.message ?? "");
+run("…and only then does the request complete",
+  String(db.get<Record<string, unknown>>("SELECT status FROM project_intake_requests WHERE id = ?", [reqJ.id])?.status) === "completed");
+
+const unsureJ = makeProjectFor("Question Test K", "11 Unsure Way");
+const reqK = await createIntakeRequest(db, unsureJ);
+const okUnsure = throws(() => submitIntakeRequest(db, reqK.token, {
+  ...fieldAnswersFor(getIntakeRequestPublic(db, reqK.token)), ownershipModel: INTAKE_UNSURE,
+}));
+run("\"I'm not sure\" satisfies required — it escalates, it does not guess", okUnsure === null, okUnsure?.message ?? "");
+run("…and the sentinel still never reaches the project",
+  !(getProjectDetail(db, unsureJ).project.parserSnapshot as Record<string, unknown>).ownershipModel);
+run("…and the question stays open for the operator, flagged unsure",
+  (await portalQuestionStatus(db, unsureJ)).unsureCount === 1);
 setPortalQuestionSource(null);
 
 if (failures) {

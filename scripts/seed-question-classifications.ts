@@ -80,6 +80,14 @@ const CALLS: Call[] = [
 
   // ── Portland General Electric ────────────────────────────────────────────────────────
   {
+    // THE RAW NOTE IS THE KEY — DO NOT TIDY IT. autoLearnAdapter records a
+    // policy-answered radio with a css-only selector, so the bank falls back to
+    // the step's NOTE for the label and portal_question_overrides is
+    // primary-keyed on its normalized form. The homeowner-facing intake form
+    // strips the "policy default: … → answer" wrapper at the DISPLAY boundary
+    // (publicQuestionLabel, backend/src/intakeRequests.ts) precisely so this key
+    // can stay verbatim; rewriting it here, or in stepLabel /
+    // normalizeQuestionLabel, orphans this row silently.
     key: PGE, label: "policy default: Do you propose to limit the export capacity? → No", classification: "portal-constant",
     why: "Export limiting is a design election, and this operator does not propose it — a full-export residential net-metering system every time. Note this is a POLICY DEFAULT step, which already carries its answer in its own label.",
   },

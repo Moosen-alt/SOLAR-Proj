@@ -30,10 +30,12 @@
 import type { AppDb } from "./db";
 import type { ProjectRecord } from "../../shared/src/types";
 import { projectDocsByType } from "./projectDocuments";
+import { filledFormsByDocType } from "./ahjForms";
 import { resolvePermitPath, resolveStampRequirement, hasStampedStructuralEvidence } from "./permitPath";
 import { resolveEffectiveCodeContext } from "./codeProfiles";
 import { findAhjProcessProfile } from "./processProfiles";
 import { findKnowledgeForLearn } from "./knowledgeBase";
+import { findApplicationProfile, namedApplicationForm, permitStructureForProject } from "./applicationDocs";
 
 export interface RequiredDocItem {
   /** project_documents.doc_type this maps to (or a synthetic key for path docs). */
@@ -45,7 +47,73 @@ export interface RequiredDocItem {
   lane: "permit" | "nem";
   /** Missing a blocking doc stops submit; advisory docs only warn. */
   blocking: boolean;
+  /**
+   * The permit DISCIPLINE this document files under, in the SAME vocabulary
+   * recipeDisciplineForTrack (portalChannel.ts) already defines for submittal
+   * tracks and migration v22 for fee rows: "structural" | "electrical" |
+   * "combo" | "". Deliberately not a parallel "building" word — the track
+   * `building` maps to discipline `structural`, and the doc side must agree or
+   * a staging filter keyed on one will silently miss the other.
+   * Absent/"" on the universal plan-set family, which every discipline needs.
+   */
+  discipline?: string;
+  /**
+   * Other docTypes that satisfy this row. Needed because classifyFormType
+   * (ahjFormAuto.ts) falls through to the generic `permit_application` for a
+   * blank whose name carries neither "building" nor "structural" — Coos Bay's
+   * "Prescriptive Solar Photovoltaic Installation Permit Application" is exactly
+   * that. Without the alias the inventory demands a document that is sitting on
+   * disk under another key: the one-letter-apart bug, rebuilt.
+   */
+  altDocTypes?: string[];
+  /**
+   * Which of the two MUTUALLY EXCLUSIVE building-side applications this row is,
+   * in the vocabulary formAllowedForPath (ahjForms.ts) enforces at fill time.
+   * Only ever set on the ONE building-side row — the AHJ takes exactly one
+   * ("upload only the application that pertains — DO NOT upload both").
+   */
+  applicationKind?: "prescriptive" | "structural";
 }
+
+/** An application/checklist row, which always names its discipline. */
+export interface RequiredApplicationDoc extends RequiredDocItem {
+  discipline: string;
+}
+
+/**
+ * The AHJ-dependent inputs the application set needs, resolved by the caller.
+ *
+ * requiredDocuments() is called DB-free with bare projects that carry no
+ * ahj/state/city (backend/test/conditionalStampDocs.test.ts), and
+ * permitStructureForProject -> findApplicationProfile does
+ * `project.state.trim().toUpperCase()`, which throws on those. So the lookups
+ * live in applicationDocContext() — guarded, called from documentInventory and
+ * from form acquisition — and are THREADED IN, exactly the way
+ * stampThresholdKwDc / processProfileRequiresStamp already are. The pure
+ * function stays pure.
+ */
+export interface ApplicationDocContext {
+  permitStructure?: "separate" | "combo" | "unknown";
+  processFlags?: {
+    requiresBuildingPermitApplication?: boolean;
+    requiresElectricalPermitApplication?: boolean;
+    requiresSolarChecklist?: boolean;
+  };
+  /** The AHJ's own name for the path-chosen building-side application. */
+  buildingApplicationName?: string;
+  /** How to refer to this jurisdiction in `why`. */
+  ahjLabel?: string;
+}
+
+/** The application-family docTypes — the only keys a filled AHJ form may claim.
+ *  Agrees with classifyFormType, filledFormsByDocType and UPLOAD_LABEL_PATTERNS
+ *  (pinned in backend/test/filledFormUpload.test.ts). */
+export const APPLICATION_DOC_TYPES = new Set([
+  "permit_application",
+  "building_application",
+  "electrical_application",
+  "solar_checklist",
+]);
 
 export interface DocPresence extends RequiredDocItem {
   present: boolean;
@@ -99,8 +167,22 @@ function sheetInPlanSet(project: ProjectRecord, docType: string, docsByType: Rec
   return readyLine || splitLine;
 }
 
-function present(docType: string, project: ProjectRecord, docsByType: Record<string, string>): { present: boolean; via: string } {
-  if (docsByType[docType]) return { present: true, via: "attached file" };
+function present(
+  item: RequiredDocItem,
+  project: ProjectRecord,
+  docsByType: Record<string, string>,
+  uploads: Record<string, string> = docsByType,
+  filledApplications: Record<string, string> = {},
+): { present: boolean; via: string } {
+  const docType = item.docType;
+  // A row is satisfied by its own docType OR by any alias it accepts, and by an
+  // UPLOAD or by a FILLED form. Uploads are checked first at each key so an
+  // operator's own version wins, mirroring prepareSubmission's merge order.
+  for (const key of [docType, ...(item.altDocTypes || [])]) {
+    const under = key === docType ? "" : ` (stored as ${key.replace(/_/g, " ")})`;
+    if (uploads[key]) return { present: true, via: `attached file${under}` };
+    if (filledApplications[key]) return { present: true, via: `filled form${under}` };
+  }
   // The engineered PE stamp + structural letter usually live ON the structural sheets
   // inside the uploaded plan set. Count it present when a stamped-structural file exists
   // OR the parse of the real uploaded plan set shows a current stamp/seal/letter.
@@ -123,9 +205,17 @@ function present(docType: string, project: ProjectRecord, docsByType: Record<str
  */
 export function requiredDocuments(
   project: ProjectRecord,
-  opts: { stampThresholdKwDc?: number | null; jurisdictionLabel?: string; processProfileRequiresStamp?: boolean } = {},
+  opts: {
+    stampThresholdKwDc?: number | null;
+    jurisdictionLabel?: string;
+    processProfileRequiresStamp?: boolean;
+    /** Resolved by the caller (documentInventory / form acquisition), which has
+     *  the DB and does the guarded profile lookups. Omitted → no permit
+     *  APPLICATION is demanded at all, which is what keeps this function safe to
+     *  call with a bare project that has no ahj/state. */
+    application?: ApplicationDocContext;
+  } = {},
 ): RequiredDocItem[] {
-  const path = resolvePermitPath(project).path;
   const hasUtility = Boolean((project.utility || "").trim());
   const items: RequiredDocItem[] = [
     { docType: "plan_set", label: "Plan set (stamped/complete PDF)", why: "The full plan set is the core of every AHJ + NEM submittal.", lane: "permit", blocking: true },
@@ -163,12 +253,176 @@ export function requiredDocuments(
   if (!hasUtility) {
     for (const it of items) if (it.docType === "inverter_spec") it.lane = "permit";
   }
+
+  // THE PERMIT APPLICATIONS THEMSELVES. The baseline above is the plan-set
+  // family; until now nothing in this list was an APPLICATION, so a jurisdiction
+  // that files a building AND an electrical permit could pass every check with
+  // one of the two never acquired, never filled and never attached.
+  items.push(...requiredApplicationDocs(project, opts.application ?? {}));
   return items;
+}
+
+/**
+ * The permit APPLICATIONS this project must file, computed through BOTH axes at
+ * once — because they are orthogonal and conflating them is the bug:
+ *
+ *   AXIS 1 — PERMIT STRUCTURE (permitStructureForProject): combo = one permit;
+ *     separate = a building (BLD) permit AND an electrical (ELE) permit, two
+ *     filings. This is the same signal that already splits requiredTracks() and
+ *     prints "Separate building (BLD) + electrical (ELE) permits — both must be
+ *     filed" on the operator's screen.
+ *   AXIS 2 — PERMIT PATH (resolvePermitPath): prescriptive XOR engineered. This
+ *     chooses WHICH building-side application, and the AHJ takes exactly one
+ *     ("upload only the application that pertains — DO NOT upload both").
+ *
+ * So a prescriptive project at a separate-permit AHJ needs the PRESCRIPTIVE
+ * application plus the ELECTRICAL application — never the structural one. The
+ * electrical application does not depend on the path at all; that independence
+ * is the whole point.
+ *
+ * BLOCKING SOURCE RULE (the safety boundary): a flag-derived row blocks ONLY
+ * when the structure resolves to "separate" — the signal already visible to the
+ * operator as two submittal tracks. "combo"/"unknown" stay advisory, and the
+ * KB-prose rows (kbApplicationDocItems) stay advisory as they always were.
+ * These are 380+ seeded, spreadsheet-imported flags; a wrong one must not be
+ * able to stop a filing on its own.
+ */
+export function requiredApplicationDocs(
+  project: ProjectRecord,
+  ctx: ApplicationDocContext = {},
+): RequiredApplicationDoc[] {
+  const structure = ctx.permitStructure ?? "unknown";
+  const flags = ctx.processFlags ?? {};
+  const separate = structure === "separate";
+  const combo = structure === "combo";
+  const wantsBuilding = separate || combo || Boolean(flags.requiresBuildingPermitApplication);
+  const wantsElectrical = separate || Boolean(flags.requiresElectricalPermitApplication);
+  const wantsChecklist = Boolean(flags.requiresSolarChecklist);
+  // NO SIGNAL, NO DEMAND. A project with no resolved structure and no process
+  // flags (an AHJ we have no knowledge of, or a bare project in a unit test)
+  // must not be told to attach applications nobody can name.
+  if (!wantsBuilding && !wantsElectrical && !wantsChecklist) return [];
+
+  const path = resolvePermitPath(project).path;
+  const where = (ctx.ahjLabel || project.ahj || "").trim() || "This AHJ";
+  const named = (ctx.buildingApplicationName || "").trim();
+  const permitWord = combo ? "combined building + electrical permit" : "building permit";
+  const out: RequiredApplicationDoc[] = [];
+
+  if (wantsBuilding) {
+    // ONE building-side row, chosen BY PATH — never both. A required set that
+    // tells a prescriptive project to attach the structural application is
+    // wrong in the same way filing both is wrong.
+    const kind = path === "engineered" ? "structural" : path === "prescriptive" ? "prescriptive" : "";
+    const label =
+      kind === "structural" ? "Structural (non-prescriptive) permit application, filled"
+      : kind === "prescriptive" ? "Prescriptive solar permit application, filled"
+      : "Building-side permit application (prescriptive or structural), filled";
+    const why =
+      kind === "structural"
+        ? `${where} files a ${permitWord}, and this project resolved to the ENGINEERED (non-prescriptive) path — file ${named || "the AHJ's structural (standard building) permit application"}. The prescriptive one must NOT also go up; the AHJ takes exactly one.`
+        : kind === "prescriptive"
+          ? `${where} files a ${permitWord}, and this project resolved to the PRESCRIPTIVE path — file ${named || "the AHJ's prescriptive solar application"}. The structural one must NOT also go up; the AHJ takes exactly one.`
+          : `${where} files a ${permitWord}, but the permit path is not confirmed. The prescriptive and structural applications are mutually exclusive — set the path (Manual entry → Permit path) so the right one is built.`;
+    out.push({
+      docType: "building_application",
+      // A blank whose name says neither "building" nor "structural" is stored
+      // under the generic key by classifyFormType; accept it here so the row is
+      // not demanding a file that already exists under another name.
+      altDocTypes: ["permit_application"],
+      label,
+      why,
+      lane: "permit",
+      // An unconfirmed path is ALREADY a hard block at repository.ts (staging
+      // refuses until the operator picks). Blocking here too would only replace
+      // a precise message with a vaguer one.
+      blocking: separate && path !== "unknown",
+      discipline: combo ? "combo" : "structural",
+      ...(kind ? { applicationKind: kind } : {}),
+    });
+  }
+
+  if (wantsElectrical) {
+    const statute = (project.state || "").trim().toUpperCase() === "OR" ? " (Oregon: OAR 918-050-0180.)" : "";
+    out.push({
+      docType: "electrical_application",
+      // DELIBERATELY NO `permit_application` ALIAS. One generic blank must never
+      // be able to satisfy both the building-side row and this one — that is the
+      // exact shape of the failure this set exists to catch.
+      label: "Electrical (renewable-energy) permit application, filled",
+      why: separate
+        ? `${where} files SEPARATE building and electrical permits, so the renewable-energy electrical application is required in addition to the building-side one — on either permit path, on every interconnection.${statute}`
+        : `${where}'s process profile records that an electrical permit application is required. Confirm it before filing.`,
+      lane: "permit",
+      blocking: separate,
+      discipline: "electrical",
+    });
+  }
+
+  if (wantsChecklist) {
+    out.push({
+      docType: "solar_checklist",
+      label: "Solar prescriptive checklist, filled",
+      // Advisory: a checklist flag is not evidence of a second permit, so it is
+      // not covered by the blocking-source rule above.
+      why: `${where}'s process profile records a solar checklist / worksheet requirement alongside the application.`,
+      lane: "permit",
+      blocking: false,
+      discipline: combo ? "combo" : "structural",
+    });
+  }
+
+  return out;
+}
+
+/**
+ * Resolve the AHJ-dependent inputs requiredApplicationDocs needs. Every lookup is
+ * guarded: an incomplete project (no state/ahj/city, as qc.ts builds) yields a
+ * thinner context, never a throw.
+ */
+export function applicationDocContext(project: ProjectRecord): ApplicationDocContext {
+  const ctx: ApplicationDocContext = {};
+  const ahj = (project.ahj || "").trim();
+  if (ahj) ctx.ahjLabel = ahj;
+  try {
+    ctx.permitStructure = permitStructureForProject(project);
+  } catch { /* profile data optional — an unresolved structure demands nothing as blocking */ }
+  try {
+    const proc = findAhjProcessProfile(project);
+    if (proc) {
+      ctx.processFlags = {
+        requiresBuildingPermitApplication: Boolean(proc.requiresBuildingPermitApplication),
+        requiresElectricalPermitApplication: Boolean(proc.requiresElectricalPermitApplication),
+        requiresSolarChecklist: Boolean(proc.requiresSolarChecklist),
+      };
+    }
+  } catch { /* process profile optional */ }
+  try {
+    ctx.buildingApplicationName = namedApplicationForm(findApplicationProfile(project), resolvePermitPath(project).path);
+  } catch { /* the AHJ's own name for the form is a nicety, not a requirement */ }
+  return ctx;
 }
 
 /** Resolve the required docs against the actual uploaded/split file inventory. */
 export function documentInventory(db: AppDb, project: ProjectRecord): DocumentInventory {
-  const docsByType = projectDocsByType(db, project.id);
+  const uploads = projectDocsByType(db, project.id);
+  // A FILLED APPLICATION IS A DOCUMENT. Filled AHJ forms are written to
+  // backend/data/filled/<projectId>/ and have NO project_documents row, so
+  // projectDocsByType cannot see them — which is why prepareSubmission already
+  // merges filledFormsByDocType before packaging (repository.ts). The inventory
+  // read only the uploads, so it would have called a built-and-filled
+  // application "missing" forever. Same merge, same precedence: an operator who
+  // uploaded their own version meant to use it.
+  //
+  // Narrowed to the APPLICATION family on purpose: nothing here may touch the
+  // plan-set presence logic, and a stray template form_type must not be able to.
+  const filledApplications: Record<string, string> = {};
+  try {
+    for (const [type, file] of Object.entries(filledFormsByDocType(db, project.id))) {
+      if (APPLICATION_DOC_TYPES.has(type)) filledApplications[type] = file;
+    }
+  } catch { /* no filled dir yet — simply nothing built */ }
+  const docsByType = { ...filledApplications, ...uploads };
   // Per-jurisdiction stamp threshold, so "does this project need a sealed
   // structural letter?" is answered by the AHJ's own adopted rules rather than a
   // single global assumption. Never fatal — an unknown jurisdiction simply falls
@@ -190,17 +444,23 @@ export function documentInventory(db: AppDb, project: ProjectRecord): DocumentIn
   // and/or checklist some AHJs want attached alongside the plan set. Learned data, so
   // advisory and never fatal to the inventory.
   let kbItems: RequiredDocItem[] = [];
+  // Structure + process flags + the AHJ's own name for the path-chosen
+  // application. Resolved HERE, where the guarded lookups belong, and threaded
+  // into the pure function.
+  const application = applicationDocContext(project);
+  const docOpts = { stampThresholdKwDc, jurisdictionLabel, processProfileRequiresStamp, application };
+  const baselineItems = requiredDocuments(project, docOpts);
   try {
     const kb = findKnowledgeForLearn(db, { state: project.state, ahj: project.ahj, utility: project.utility });
     const reqs = kb.ahj?.requiredDocuments ?? [];
     if (reqs.length) {
-      const baseline = new Set(requiredDocuments(project, { stampThresholdKwDc, jurisdictionLabel, processProfileRequiresStamp }).map((i) => i.docType));
+      const baseline = new Set(baselineItems.flatMap((i) => [i.docType, ...(i.altDocTypes || [])]));
       kbItems = kbApplicationDocItems(reqs, baseline);
     }
   } catch { /* KB optional */ }
-  const required = [...requiredDocuments(project, { stampThresholdKwDc, jurisdictionLabel, processProfileRequiresStamp }), ...kbItems];
+  const required = [...baselineItems, ...kbItems];
   const presence: DocPresence[] = required.map((item) => {
-    const p = present(item.docType, project, docsByType);
+    const p = present(item, project, docsByType, uploads, filledApplications);
     // HONESTY CHECK on the sealed letter: presence only proves a FILE is in the
     // slot — a placeholder PDF satisfies the gate identically (live-tested with a
     // file literally named "FAKE STAMPS.pdf"). We can't verify a real PE seal

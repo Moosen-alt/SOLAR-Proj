@@ -212,8 +212,23 @@ export interface PublishedFeeResult {
   bracketLabel?: string | null;
   /** The jurisdiction's published fee page. */
   sourceUrl?: string | null;
-  /** The line as published, for an operator who wants to see it said. */
+  /** The SCHEDULE's own citation — provenance of the table. Row grain, so on a
+   *  bracketed schedule it agrees with at most one of the brackets: read it as a
+   *  pointer back to the document (and, as below, as a mailed-check hint), never
+   *  as the evidence for the amount. `bracketQuote` is that. */
   sourceQuote?: string | null;
+  /** The published line that supports THIS amount, verbatim — the corroborated
+   *  printed row where there is one, else the matched bracket's own label. "" or
+   *  absent when the amount is the total of more than one permit: no single
+   *  published line states a sum. This is the only quote safe to show beside the
+   *  number. */
+  bracketQuote?: string | null;
+  /** A MACHINE went back to the cited document and found every line printed
+   *  there — label and fee on one row. A dimension of its own, NOT a third
+   *  `confidence` value: 'verified' means a PERSON vouched (hard rule 3) and
+   *  nothing automatic may ever set it. The operator-facing word is
+   *  CORROBORATED. */
+  corroborated?: boolean;
   /** Research lands as "seeded"; only human review promotes it to "verified". */
   confidence?: "verified" | "seeded";
   /** Optional: schedules that state how the fee is paid. Absent means unknown,

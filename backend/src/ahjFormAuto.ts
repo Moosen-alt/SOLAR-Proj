@@ -8,6 +8,7 @@ import { fetchPublicDocument } from "./documentFetch";
 import { logger } from "./logger";
 import { saveResearchedAhjProfile, knowledgeResearchHint, findKnowledgeForLearn } from "./knowledgeBase";
 import { findAhjProcessProfile } from "./processProfiles";
+import { applicationDocContext, requiredApplicationDocs } from "./requiredDocuments";
 import { renderPdfPageToPng } from "./pageImages";
 import { prescriptiveCriterionCatalog } from "./permitPath";
 import { nowIso } from "./time";
@@ -485,7 +486,25 @@ export async function ensureAhjFormsForProject(
   llm: LLMProvider,
   project: ProjectRecord,
 ): Promise<{ neededTypes: string[]; results: Array<EnsureFormResult & { formType: string }> }> {
-  const needed = new Set<string>(["permit_application"]);
+  // WHAT THIS PROJECT MUST FILE DECIDES WHAT WE GO AND FETCH.
+  //
+  // This used to be the constant ["permit_application"], which is why a
+  // separate-permit AHJ — Coos Bay files a BLD permit and an ELE permit, and its
+  // process profile says so in two flags — only ever had its building
+  // application acquired. The electrical one arrived by luck (the download loop
+  // classifies whatever extra blanks a research pass trips over) or not at all.
+  // The same constant also re-ran a paid research pass on every "Find official
+  // form" click, because the blank is STORED as building_application (the form's
+  // own name decides) and hasStoredTemplateOfType was asked about
+  // permit_application. A discipline-keyed needed set fixes both.
+  const needed = new Set<string>();
+  try {
+    for (const item of requiredApplicationDocs(project, applicationDocContext(project))) needed.add(item.docType);
+  } catch { /* profile data optional — the baseline slot below still runs */ }
+  // THE BASELINE SLOT. An AHJ we have no structure/flags for still gets its one
+  // application pulled, and a blank whose own name says nothing falls through
+  // classifyFormType to this generic type — so it has to be a slot we asked for.
+  if (!needed.has("building_application") && !needed.has("permit_application")) needed.add("permit_application");
   try {
     const proc = findAhjProcessProfile(project);
     if (proc?.requiresSolarChecklist) needed.add("solar_checklist");

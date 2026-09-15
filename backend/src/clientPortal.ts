@@ -108,9 +108,155 @@ export function trackLabel(targetType: string, permitType: string): string {
   }
 }
 
+/**
+ * WHO IS WAITING ON WHOM — the one thing a status badge never said.
+ *
+ * The classifier's labels are written for an operator reading a queue, and two of them invert the
+ * meaning when a client reads them cold:
+ *
+ *   · "In review" does not say WHO is reviewing. A client reads it as "someone is working on it"
+ *     and has no idea that the someone is the city and there is nothing to chase.
+ *   · "Action needed before review" names an action and not its owner. The commit that added it
+ *     (Coos Bay's real "Intake Requirements Needed", which had been classified as "In review"
+ *     while the permit sat stalled) fixed the classifier so we stopped telling ourselves the city
+ *     was reviewing. On the client page it still read as THEIR action — and it is ours.
+ *
+ * So every wording here answers the question the label left open, in the string itself, because
+ * the badge is one span and there is nowhere else to put it. "In review by the jurisdiction" and
+ * "Waiting on us — ..." are the two halves of the contrast, and every other state picks a side.
+ *
+ * THE OUTCOME IS NOT TOUCHED, only the words. Both public pages colour their badges from the raw
+ * outcome (status.html's GOOD/WARN sets, portal.html's cls()), so a `needs_human_review` row stays
+ * amber and keeps drawing the eye — which is right, because something is stuck. Changing the
+ * outcome to make the wording nicer would also change what the monitor and the handoff gate think
+ * happened.
+ *
+ * UNKNOWN LABELS PASS THROUGH UNCHANGED. Legacy rows hold labels no current classifier emits;
+ * inventing a client wording for a string we cannot interpret is how a page states a fact it does
+ * not have.
+ */
+const PUBLIC_CHECK_LABELS = new Map<string, string>([
+  // Waiting on THEM.
+  ["waiting::in review", "In review by the jurisdiction"],
+  ["reviewed_by_ahj::reviewed by ahj", "Reviewed by the jurisdiction"],
+  ["ready_for_issue::ready for issue", "Approved — ready for issue"],
+  ["ready_for_issue::ready for issue - fee/payment needed", "Approved — fee due before issue"],
+  ["issued::permit issued", "Permit issued"],
+  ["nem_approved::nem / interconnection approved", "Interconnection approved"],
+  // Waiting on US. Never phrased as something the client must do — a correction and an intake
+  // shortfall are both our work, and telling a client to act on one is a wrong instruction.
+  ["correction_flagged::correction flagged", "Correction requested — we are on it"],
+  ["needs_human_review::action needed before review", "Waiting on us — the jurisdiction wants more before review"],
+  ["needs_human_review::no status text", "Waiting on us — checking the jurisdiction by hand"],
+  ["needs_human_review::needs human review", "Waiting on us — reading the jurisdiction's latest update"],
+]);
+
+export function publicCheckLabel(outcome: string, statusLabel: string): string {
+  const label = String(statusLabel || "").replace(/\s+/g, " ").trim();
+  if (!label) return "";
+  const key = `${String(outcome || "").trim()}::${label.toLowerCase()}`;
+  return PUBLIC_CHECK_LABELS.get(key) || label;
+}
+
 export interface ClientPortalUpdate {
   at: string;
   body: string;
+}
+
+/** One line on a client's timeline: a filing, named, and what it moved TO. */
+export interface ClientPortalHistoryEntry {
+  /** When this state was FIRST seen — the moment it CHANGED, not the last time we looked. */
+  at: string;
+  /** WHICH filing moved: "Building permit" / "Electrical permit" / "Utility interconnection (NEM)". */
+  label: string;
+  /** The jurisdiction's own reference for that filing, so two permit rows are never ambiguous. */
+  applicationNumber: string;
+  /** Client-facing wording — see publicCheckLabel. */
+  statusLabel: string;
+  /** The raw outcome. For badge STYLING only; the words are in statusLabel. */
+  outcome: string;
+}
+
+/**
+ * How far back to read before collapsing. The rows are one-per-check on every project filed
+ * before the write-time transition gate landed, so the newest handful of them can easily all be
+ * the same state; reading only twelve would collapse to one line and hide the change that
+ * actually happened a month ago.
+ */
+const HISTORY_SCAN_LIMIT = 200;
+
+/**
+ * THE TIMELINE, AS A HISTORY OF CHANGES.
+ *
+ * The client page reads permit_status_checks, which (until the write-time gate lands in the
+ * monitor's persistence path) holds one row per CHECK. On a settled permit that is one row per
+ * sweep, and the page showed twelve lines that all said the same thing, in pairs seconds apart —
+ * the pairs being one sweep's structural target and then its electrical target.
+ *
+ * Two things are fixed here and they are separate:
+ *
+ *   1. CONSECUTIVE IDENTICAL STATES COLLAPSE, per target. Rows from two targets interleave, so
+ *      collapsing globally would treat the STR row as "a change" merely because an ELEC row sat
+ *      between two identical STR rows. The run's FIRST row survives, because a timeline entry
+ *      dated today for a status that has not moved since August is a wrong date, not a fresh
+ *      update. A state that returns (A → B → A) is three entries, correctly: it changed back.
+ *
+ *      This is READ-TIME repair for rows already written. It does not replace the write-time gate
+ *      — nothing here can undo the duplicate human_review_items and corrections rows the same
+ *      unconditional write produces, and no row is deleted (email_project_matches.status_check_id
+ *      is a foreign key into this table).
+ *
+ *   2. EVERY ENTRY NAMES ITS FILING. The projection used to emit three fields — date, statusLabel,
+ *      outcome — so a project with a structural and an electrical permit produced a timeline where
+ *      no line said which permit it was about. The discipline was already on the target row and
+ *      the join simply never carried it across. Same trackLabel() as the Applications list above,
+ *      so a filing cannot be called one thing in one section and another thing in the next.
+ *
+ * TENANCY: takes a projectId the caller has ALREADY authorized (a share token resolved to exactly
+ * one project). It widens nothing and must not grow a "all projects" mode.
+ *
+ * NEVER SELECTED: raw_status_text and message. They are scraped portal prose and forwarded AHJ
+ * email carrying homeowner names and examiners' direct lines — see this file's header.
+ */
+export function projectStatusHistory(db: AppDb, projectId: string, limit = 12): ClientPortalHistoryEntry[] {
+  const clean = String(projectId || "").trim();
+  if (!clean) return [];
+  // ORDERED BY rowid, NOT id. Collapsing a run needs true INSERT order, and created_at alone does
+  // not give it: two checks recorded in the same millisecond tie, and the primary key is a random
+  // UUID, so a uuid tiebreak would shuffle them and split a run that never moved. SQLite's rowid
+  // is the insertion counter for this table (it has a TEXT primary key, so the implicit rowid is
+  // intact). Keep this table ROWID-backed if it is ever redefined.
+  const rows = db.query<Record<string, unknown>>(
+    `SELECT c.target_id, c.outcome, c.status_label, c.application_number, c.created_at,
+            t.target_type, t.permit_type, t.application_number AS target_application_number
+       FROM permit_status_checks c
+       LEFT JOIN permit_check_targets t ON t.id = c.target_id
+      WHERE c.project_id = ?
+      ORDER BY c.created_at DESC, c.rowid DESC
+      LIMIT ?`,
+    [clean, HISTORY_SCAN_LIMIT],
+  );
+
+  const entries: ClientPortalHistoryEntry[] = [];
+  const lastStateByTarget = new Map<string, string>();
+  // Oldest first, so "the first row of a run" is the row that actually recorded the change.
+  for (const row of rows.slice().reverse()) {
+    const targetKey = String(row.target_id || "");
+    const outcome = String(row.outcome || "");
+    const rawLabel = String(row.status_label || "");
+    const state = `${outcome}::${rawLabel}`;
+    if (lastStateByTarget.get(targetKey) === state) continue; // same state, still. Not news.
+    lastStateByTarget.set(targetKey, state);
+    entries.push({
+      at: String(row.created_at || ""),
+      label: trackLabel(String(row.target_type || ""), String(row.permit_type || "")),
+      applicationNumber: String(row.application_number || row.target_application_number || ""),
+      statusLabel: publicCheckLabel(outcome, rawLabel),
+      outcome,
+    });
+  }
+  entries.reverse(); // newest first, the way a timeline is read
+  return entries.slice(0, Math.max(1, Math.floor(limit || 12)));
 }
 
 export interface ClientPortalProject {
@@ -256,7 +402,10 @@ export function clientPortalPayload(db: AppDb, token: string): ClientPortalPaylo
     list.push({
       type,
       label: trackLabel(type, String(t.permit_type || "")),
-      statusLabel: String(t.latest_status_label || ""),
+      // The badge says who the next move belongs to, not just what the queue is called. An
+      // operator-facing "Action needed before review" on a client's page reads as THEIR action
+      // when the action is ours — see publicCheckLabel.
+      statusLabel: publicCheckLabel(String(t.latest_outcome || ""), String(t.latest_status_label || "")),
       outcome: String(t.latest_outcome || ""),
       lastCheckedAt: t.last_checked_at ? String(t.last_checked_at) : null,
       applicationNumber,

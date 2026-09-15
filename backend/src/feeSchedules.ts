@@ -105,6 +105,38 @@ export interface FeeBracket {
   /** The jurisdiction's OWN wording for this line — this is what the permit
    *  application's fee-quantity field is asking for, verbatim where possible. */
   label?: string;
+  /** Set ONLY by corroborateBrackets, from bytes this process retrieved. A model
+   *  can never put it here — see normalizeBrackets' `trusted` flag. */
+  corroboration?: FeeBracketCorroboration;
+}
+
+/** DID THE DOCUMENT ACTUALLY PRINT THIS BRACKET? — a dimension of its own.
+ *
+ *  Deliberately NOT a third `FeeConfidence` value, for exactly the reason
+ *  FeeScheduleStatus is not one either (see above). Confidence says WHO vouches
+ *  for the row: research ('seeded') or a person ('verified', hard rule 3).
+ *  Corroboration says something orthogonal and much narrower: that a machine
+ *  went back to the cited document, found the printed line where this bracket's
+ *  LABEL and its FEE sit together, and kept that line verbatim. Code may write
+ *  this; code may NEVER write 'verified'. The operator-facing word for it is
+ *  CORROBORATED, never "verified" — a machine reading a PDF is not a person
+ *  taking responsibility for a number.
+ *
+ *  It lives per BRACKET rather than per document because that is the grain of
+ *  the claim. FeeResearchEvidence already answers "what did we open"; this
+ *  answers "was THIS row in it", and a schedule has N rows and one document.
+ *  Stored inside brackets_json, so no migration and so a bracket can never be
+ *  separated from the line that supports it. */
+export interface FeeBracketCorroboration {
+  corroborated: boolean;
+  /** The coordinate-paired printed row, verbatim, where the label and the fee
+   *  CO-OCCUR. This — not the row-level sourceQuote — is the sentence that may
+   *  be shown beside this bracket's amount. */
+  matchedLine: string;
+  /** The document actually fetched and read, as the fetcher finally saw it. */
+  sourceUrl: string;
+  checkedAt: string;
+  via: "http" | "browser";
 }
 
 /** ONE DOCUMENT'S OWN ACCOUNT OF THIS SCHEDULE — kept per source, not flattened.
@@ -293,7 +325,20 @@ export interface ProjectFeeResolution {
   basis: FeeBasis;
   paymentMethod: FeePaymentMethod;
   sourceUrl: string;
+  /** THE ROW'S CITATION — where the TABLE came from. Row grain, so it supports
+   *  at most one of N brackets and contradicts the rest. NOT evidence for the
+   *  amount above it: read `bracketQuote` for that. Kept row-grain because
+   *  submissionFees.ts reads it with MAILED_CHECK_RE as a last-resort signal
+   *  about how the money moves, which is a fact about the schedule, not the
+   *  bracket. */
   sourceQuote: string;
+  /** THE EVIDENCE FOR *THIS AMOUNT*, verbatim, and the only quote that may be
+   *  shown beside it. "" when the total is made of more than one permit: no
+   *  single published line supports a sum that no document anywhere prints. */
+  bracketQuote: string;
+  /** True only when EVERY line was found printed — label and fee on one row — in
+   *  the cited document. Never a promotion: confidence stays 'seeded'. */
+  corroborated: boolean;
   confidence: FeeConfidence;
   /** The AHJ/utility name the schedule is filed under (may differ from the
    *  project's spelling when the fuzzy fallback matched). */
@@ -322,7 +367,15 @@ export interface FeeScheduleLine {
   basis: FeeBasis;
   paymentMethod: FeePaymentMethod;
   sourceUrl: string;
+  /** The ROW's citation (see ProjectFeeResolution.sourceQuote) — provenance of
+   *  the table, not evidence for this line's amount. */
   sourceQuote: string;
+  /** THE EVIDENCE FOR THIS LINE'S AMOUNT: the corroborated printed row where
+   *  possible, else the bracket's own verbatim label, else "". This is what
+   *  belongs beside the number; the row's sourceQuote is not. */
+  bracketQuote: string;
+  /** Present only when this bracket was found printed in the cited document. */
+  corroboration?: FeeBracketCorroboration;
   confidence: FeeConfidence;
   notes: string;
   scheduleId: string;
@@ -410,18 +463,53 @@ function parseBrackets(raw: unknown): FeeBracket[] {
   let parsed: unknown;
   try { parsed = JSON.parse(text(raw) || "[]"); } catch { return []; }
   if (!Array.isArray(parsed)) return [];
-  return normalizeBrackets(parsed);
+  // THE DB-READ PATH IS TRUSTED because only this module ever wrote it, and only
+  // through corroborateBrackets. Dropping corroboration here would quietly
+  // un-corroborate every row on the next read.
+  return normalizeBrackets(parsed, { trusted: true });
+}
+
+/** A corroboration claim, read through a whitelist. `corroborated: true` with no
+ *  matched line and no URL is not a claim anybody can check, so it is discarded
+ *  rather than stored — the same rule the module already applies to a fee with
+ *  no quote. */
+function normalizeCorroboration(raw: unknown): FeeBracketCorroboration | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const c = raw as Record<string, unknown>;
+  if (c.corroborated !== true) return undefined;
+  const matchedLine = clean(c.matchedLine).slice(0, 300);
+  const sourceUrl = clean(c.sourceUrl).slice(0, 500);
+  if (!matchedLine || !sourceUrl) return undefined;
+  return {
+    corroborated: true,
+    matchedLine,
+    sourceUrl,
+    checkedAt: clean(c.checkedAt).slice(0, 40),
+    via: clean(c.via).toLowerCase() === "browser" ? "browser" : "http",
+  };
 }
 
 /** Keep only lines with a real fee, and ORDER them, because bracket evaluation
- *  is first-match — an unsorted table silently answers with the wrong tier. */
-function normalizeBrackets(raw: unknown[]): FeeBracket[] {
+ *  is first-match — an unsorted table silently answers with the wrong tier.
+ *
+ *  `trusted` IS THE WHOLE SAFETY PROPERTY OF CORROBORATION, so it defaults to
+ *  false. Untrusted (the default) STRIPS `corroboration`, which is what the
+ *  model-output path at the end of claudeFeeScheduleResearcher relies on: a
+ *  model that emitted `"corroboration":{"corroborated":true}` alongside an
+ *  invented fee would otherwise have laundered its own guess into the one field
+ *  that is supposed to mean "we went back and read the document". Same class of
+ *  rule as "code never writes confidence 'verified'". Trusted is passed by
+ *  exactly two callers: parseBrackets (bytes this module wrote) and
+ *  saveFeeSchedule (whose input has already been through corroborateBrackets,
+ *  which re-derives from the ledger and ignores whatever arrived). */
+function normalizeBrackets(raw: unknown[], opts: { trusted?: boolean } = {}): FeeBracket[] {
   const out: FeeBracket[] = [];
   for (const item of raw) {
     if (!item || typeof item !== "object") continue;
     const b = item as Record<string, unknown>;
     const fee = num(b.feeUsd ?? b.fee_usd ?? b.fee);
     if (fee == null || fee < 0) continue;
+    const corroboration = opts.trusted ? normalizeCorroboration(b.corroboration) : undefined;
     out.push({
       minKw: num(b.minKw ?? b.min_kw ?? b.minKva ?? b.min_kva),
       maxKw: num(b.maxKw ?? b.max_kw ?? b.maxKva ?? b.max_kva),
@@ -429,6 +517,7 @@ function normalizeBrackets(raw: unknown[]): FeeBracket[] {
       maxValuationUsd: num(b.maxValuationUsd ?? b.max_valuation_usd),
       feeUsd: round2(fee),
       label: clean(b.label).slice(0, 200),
+      ...(corroboration ? { corroboration } : {}),
     });
   }
   const sortKey = (b: FeeBracket): number => b.minKw ?? b.minValuationUsd ?? 0;
@@ -635,7 +724,10 @@ export function saveFeeSchedule(
   // what it asked for.
   const discipline = feeDiscipline(input.discipline || finding.discipline);
   const collectedBy = clean(finding.collectedByProfileKey);
-  const brackets = normalizeBrackets(finding.brackets || []);
+  // Trusted: whatever corroboration is on these brackets was put there by
+  // corroborateBrackets (which re-derives it from retrieved bytes and discards
+  // anything that arrived claiming to be corroborated), never by a model.
+  const brackets = normalizeBrackets(finding.brackets || [], { trusted: true });
   const sourceUrl = clean(finding.sourceUrl);
   const sourceQuote = clean(finding.sourceQuote);
   const status = finding.status === "conflicted" ? "conflicted" : "ok";
@@ -1054,6 +1146,128 @@ export function checkQuoteSupport(finding: FeeScheduleFinding, ledger: FeeDocume
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// PER-BRACKET CORROBORATION: was THIS row in the document, on one printed line?
+//
+// checkQuoteSupport above answers two ROW-grain questions — "is the stored
+// sentence in anything we read" and "does each fee appear ANYWHERE in the
+// corpus". The second one is too weak to be called corroboration, and it is weak
+// in precisely the way this codebase has already been bitten: a third-party
+// summary reported $346 and $796 for two solar brackets because it had taken the
+// amounts off the WIND GENERATION rows printed below them. "Does $346 appear in
+// the document?" answers YES for that mistake, because $346 really is printed on
+// page 8 — on the wrong line.
+//
+// So corroboration requires CO-OCCURRENCE ON ONE PRINTED LINE: the bracket's fee
+// and a run of the bracket's own label, in the same coordinate-paired row
+// openFeeDocument handed back ("p8  5 KVA or less | $135.00"). That is the same
+// pairing a person's eye makes, and it is what keeps a wind fee off a solar row.
+//
+// ADVISORY, NEVER A GATE — the same contract as checkQuoteSupport. A bracket we
+// could not corroborate still saves, as seeded, recorded as uncorroborated. A
+// fee found through web search alone is not thereby wrong, and turning a failed
+// fetch into found:false would surface on the very channel ("this jurisdiction
+// publishes nothing") the timeout wording below exists to keep clear.
+// ---------------------------------------------------------------------------
+
+/** The dollar amounts a piece of printed text actually NAMES. `$`-anchored and
+ *  run on the raw string, because matchKey folds the "$" away — and a bare
+ *  number in a fee schedule is as likely to be a kVA bound as a price. */
+export function quotedAmounts(value: unknown): number[] {
+  const out: number[] = [];
+  for (const m of String(value ?? "").matchAll(/\$\s*([\d,]+(?:\.\d{1,2})?)/g)) {
+    const n = Number(m[1].replace(/,/g, ""));
+    if (Number.isFinite(n)) out.push(round2(n));
+  }
+  return out;
+}
+
+/** Is this fee printed on this line AS A NUMBER OF ITS OWN? A substring test
+ *  would find "135" inside "1350.00" and corroborate a bracket off a ten-times
+ *  bigger fee. */
+function feeOnLine(folded: string, feeUsd: number): boolean {
+  return [feeUsd.toFixed(2), String(feeUsd)].some((form) => {
+    const esc = form.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`(?:^|[^\\d.])${esc}(?![\\d])`).test(folded);
+  });
+}
+
+/** The runs of a bracket's own label specific enough to pin one printed row.
+ *
+ *  The WHOLE label first, then the label with its inline "$135.00" removed (many
+ *  stored labels are the whole row, fee and all). Deliberately NOT the label
+ *  chopped into small pieces: "25.01 kva to 50 kva" is a fragment of the SOLAR
+ *  label that appears verbatim on the WIND row, which is the entire mistake this
+ *  function exists to refuse. */
+function labelFragments(label: string): string[] {
+  const whole = matchKey(label);
+  const core = matchKey(String(label ?? "").replace(/\$\s*[\d,]+(?:\.\d{1,2})?/g, " "));
+  const out: string[] = [];
+  for (const f of [whole, core]) if (f.length >= 10 && !out.includes(f)) out.push(f);
+  return out;
+}
+
+/** Re-derive every bracket's corroboration from the bytes THIS RUN retrieved.
+ *
+ *  Whatever arrived on the incoming brackets is DISCARDED first, unconditionally.
+ *  That is the guard, not the `trusted` flag: even if a model's output reached
+ *  here with `corroborated: true` glued to an invented fee, this function throws
+ *  it away and asks the corpus. */
+export function corroborateBrackets(finding: FeeScheduleFinding, ledger: FeeDocumentLedger): FeeBracket[] {
+  const brackets: FeeBracket[] = (finding.brackets || []).map((b) => {
+    const copy: FeeBracket = { ...b };
+    delete copy.corroboration;
+    return copy;
+  });
+
+  // openFeeDocument pushes to `evidence` and `corpus` in the same call, so the
+  // two are index-parallel and a matched line can name the document it came off.
+  const lines: Array<{ raw: string; folded: string; doc: number }> = [];
+  ledger.corpus.forEach((body, doc) => {
+    for (const line of String(body ?? "").split("\n")) {
+      const raw = line.trim();
+      if (!raw) continue;
+      lines.push({ raw, folded: matchKey(raw), doc });
+    }
+  });
+  if (!lines.length) return brackets;
+
+  const checkedAt = nowIso();
+  for (const b of brackets) {
+    const fragments = labelFragments(String(b.label ?? ""));
+    // A bracket with no label of its own (or a label too short to identify a
+    // row) has nothing to co-occur WITH. Reporting it uncorroborated is the
+    // honest answer; matching on the fee alone is the wind-row bug.
+    if (!fragments.length) continue;
+    const hitLine = lines.find((l) => feeOnLine(l.folded, b.feeUsd) && fragments.some((f) => l.folded.includes(f)));
+    if (!hitLine) continue;
+    const doc = ledger.evidence[hitLine.doc];
+    b.corroboration = {
+      corroborated: true,
+      matchedLine: hitLine.raw.slice(0, 300),
+      sourceUrl: clean(doc?.url) || clean(finding.sourceUrl),
+      checkedAt,
+      via: doc?.via === "browser" ? "browser" : "http",
+    };
+  }
+  return brackets;
+}
+
+/** One line for the notes trail, in the operator's vocabulary. Says CORROBORATED
+ *  — never "verified", which belongs to a person (hard rule 3). */
+export function corroborationNotes(brackets: FeeBracket[]): string[] {
+  if (!brackets.length) return [];
+  const done = brackets.filter((b) => b.corroboration?.corroborated);
+  if (!done.length) {
+    return ["NO BRACKET CORROBORATED: none of this schedule's rows was found printed — label and fee on one line — in anything this run retrieved. The numbers are research, unchecked against the document."];
+  }
+  const missing = brackets.filter((b) => !b.corroboration?.corroborated).map((b) => `$${b.feeUsd.toFixed(2)}`);
+  return [
+    `CORROBORATED ${done.length}/${brackets.length} bracket(s) against the fetched document — each one's label and fee found together on one printed line`
+    + `${missing.length ? `; NOT corroborated: ${missing.join(", ")}` : ""}.`,
+  ];
+}
+
 /** The note segments that carry the retrieval trail onto the stored row. */
 export function retrievalNotes(finding: FeeScheduleFinding, ledger: FeeDocumentLedger, support: QuoteSupport): string[] {
   const out: string[] = [];
@@ -1315,13 +1529,37 @@ export const claudeFeeScheduleResearcher: FeeScheduleResearcher = async (input, 
       evidence: ledger.evidence,
       neededBrowser: ledger.evidence.some((e) => e.via === "browser"),
     };
+    // GO AND READ THE DOCUMENT IT CITED, IF IT DID NOT ALREADY.
+    //
+    // Without this, corroboration is opportunistic: it can only check bytes the
+    // model happened to open, so a finding sourced from web search alone could
+    // never be corroborated even when its URL is one GET away. The operator's
+    // ask was "verify it while you are looking it up", and this is the half that
+    // makes that true rather than lucky.
+    //
+    // OUTSIDE the document budget (that ceiling governs the MODEL's exploration,
+    // not our verification) and INSIDE the pass deadline, which is the only
+    // clock that may stop this. openFeeDocument never throws and never refuses a
+    // finding — a fetch that fails simply leaves the brackets uncorroborated.
+    const alreadyRead = new Set(ledger.evidence.map((e) => clean(e.url)));
+    if (finding.found && finding.sourceUrl && !alreadyRead.has(clean(finding.sourceUrl)) && Date.now() < deadline) {
+      await openFeeDocument({ url: finding.sourceUrl }, ledger, { timeoutMs: 25_000 });
+    }
+    // Re-derived from retrieved bytes, and it discards anything the model may
+    // have attached to its own brackets. Runs BEFORE the quote check so the
+    // notes describe the same corpus the corroboration was drawn from.
+    finding.brackets = corroborateBrackets(finding, ledger);
+
     // The check runs on every finding, saved or not, and its verdict travels in
     // the notes — a row whose quote nothing we read supports must say so where
     // the person reading the fee sheet will see it.
     const support = checkQuoteSupport(finding, ledger);
     finding.quoteVerified = support.quoteVerified;
     if (finding.found) {
-      finding.notes = mergeNotes(finding.notes, retrievalNotes(finding, ledger, support));
+      finding.notes = mergeNotes(finding.notes, [
+        ...retrievalNotes(finding, ledger, support),
+        ...corroborationNotes(finding.brackets),
+      ]);
     }
     if (!finding.found && !finding.reason) {
       finding.reason = exhausted
@@ -1465,7 +1703,7 @@ function resolveLine(
   const hop = followCollectedBy(db, raw);
   const hoppedFrom = hop.collectedBy ? (track === "nem" ? raw.utility : raw.ahj) : "";
   const line = lineFor(db, project, track, hop.record, hoppedFrom, inputs);
-  if (hop.unresolved) return { ...line, feeUsd: null, bracketLabel: "", reason: hop.unresolved };
+  if (hop.unresolved) return { ...line, feeUsd: null, bracketLabel: "", bracketQuote: "", corroboration: undefined, reason: hop.unresolved };
   // The discipline reported is the one that was ASKED FOR — a hopped line is
   // still the electrical permit even though it was read off the county's row,
   // and an undifferentiated row answering a discipline-specific ask answers AS
@@ -1527,7 +1765,7 @@ export function feeLinesForProject(
       ? inputs.valuationUsd
       : (schedule.basis === "valuation" ? resolveValuation(project.parserSnapshot, project.systemSizeDcKw).value : null);
     const evaluated = hop.unresolved
-      ? { feeUsd: null, bracketLabel: "", reason: hop.unresolved }
+      ? { feeUsd: null, bracketLabel: "", bracketQuote: "", corroboration: undefined, reason: hop.unresolved }
       : evaluateSchedule(schedule, { kw, kwSource: which, valuationUsd });
     lines.push({
       discipline: row.discipline,
@@ -1539,6 +1777,8 @@ export function feeLinesForProject(
       paymentMethod: schedule.paymentMethod,
       sourceUrl: schedule.sourceUrl,
       sourceQuote: schedule.sourceQuote,
+      bracketQuote: evaluated.bracketQuote,
+      ...(evaluated.corroboration ? { corroboration: evaluated.corroboration } : {}),
       // A hopped line's confidence is the COLLECTING authority's, because the
       // number is theirs. A verified pointer at a seeded table is still a
       // seeded number, and the weaker of the two is the honest one to show.
@@ -1634,24 +1874,92 @@ function bracketLabelFor(b: FeeBracket, basis: FeeBasis): string {
   return "Flat fee";
 }
 
+/** THE EVIDENCE FOR ONE BRACKET, VERBATIM — never a string this code composed.
+ *
+ *  Order matters and each rung is a different kind of fact:
+ *    1. the corroborated printed row (we fetched the document and found this
+ *       bracket's label and fee together on one line);
+ *    2. for a ONE-BRACKET schedule, the row's own sourceQuote — with a single
+ *       bracket, row grain IS bracket grain, and that sentence is usually the
+ *       richest thing we have ("payable by check mailed within 15 business
+ *       days");
+ *    3. the bracket's own stored label.
+ *
+ *  bracketLabelFor() is deliberately NOT a rung. It SYNTHESISES a label when the
+ *  schedule printed none ("$0 – $25000"), and a synthesised string is not
+ *  evidence — worse, its bounds look exactly like fees and would fail the
+ *  contradiction check below against numbers no document ever charged. */
+function bracketEvidence(schedule: FeeScheduleRecord, b: FeeBracket): string {
+  const corroborated = b.corroboration?.corroborated ? clean(b.corroboration.matchedLine) : "";
+  if (corroborated) return corroborated;
+  if (schedule.brackets.length === 1 && clean(schedule.sourceQuote)) return clean(schedule.sourceQuote);
+  return clean(b.label);
+}
+
 /** THE ONE EVALUATOR. Both public entry points below route through this, so the
  *  bracket boundary can only ever be decided in one place — two parallel
  *  evaluations would drift, and the boundary is the whole point of the table. */
 function evaluateSchedule(
   schedule: FeeScheduleRecord,
   inputs: { kw: number | null; kwSource: string; valuationUsd: number | null },
-): { feeUsd: number | null; bracketLabel: string; reason: string } {
-  const miss = (reason: string) => ({ feeUsd: null, bracketLabel: "", reason });
-  const hit = (b: FeeBracket) => (bracketDescribesFormula(b.label)
-    ? {
-      feeUsd: null,
-      bracketLabel: bracketLabelFor(b, schedule.basis),
-      reason: `This bracket is a FORMULA, not a flat fee — "${String(b.label ?? "").slice(0, 120)}". The stored `
-        + `$${b.feeUsd.toFixed(2)} is one part of it (a base, a floor or a per-unit rate, and schedules differ), `
-        + `so quoting it would under-state the real fee. Read the published schedule and enter the portal's own `
-        + `figure once you have it.`,
+): { feeUsd: number | null; bracketLabel: string; bracketQuote: string; corroboration?: FeeBracketCorroboration; reason: string } {
+  const miss = (reason: string) => ({ feeUsd: null, bracketLabel: "", bracketQuote: "", reason });
+  const hit = (b: FeeBracket) => {
+    const bracketQuote = bracketEvidence(schedule, b);
+    const corroboration = b.corroboration?.corroborated ? b.corroboration : undefined;
+    const bracketLabel = bracketLabelFor(b, schedule.basis);
+    if (bracketDescribesFormula(b.label)) {
+      return {
+        feeUsd: null,
+        bracketLabel,
+        bracketQuote,
+        corroboration,
+        reason: `This bracket is a FORMULA, not a flat fee — "${String(b.label ?? "").slice(0, 120)}". The stored `
+          + `$${b.feeUsd.toFixed(2)} is one part of it (a base, a floor or a per-unit rate, and schedules differ), `
+          + `so quoting it would under-state the real fee. Read the published schedule and enter the portal's own `
+          + `figure once you have it.`,
+      };
     }
-    : { feeUsd: b.feeUsd, bracketLabel: bracketLabelFor(b, schedule.basis), reason: "" });
+
+    // THE EVIDENCE AND THE CHARGE MUST BE THE SAME MONEY.
+    //
+    // Measured on the live Coos County row: the stored evidence read "5.01 KVA
+    // to 15 KVA | $160.00" while the bracket matched for a 3.072 kVA job charges
+    // $135 — so the sentence printed beside the number named a DIFFERENT number,
+    // on three of the four brackets. Quoted confidently, that is worse than no
+    // citation at all: the operator reads "published as $160", quotes $135, and
+    // one of the two is wrong with no way to tell which from this screen.
+    //
+    // Re-using FEE_CONFLICT_MARKER is the point, not a shortcut. This IS the
+    // conflict the marker names — two readings of the same published schedule
+    // that do not agree — so it degrades exactly the way a two-source conflict
+    // already does: the amount falls to the tier below and submissionFees.ts
+    // leads the basis line with the disagreement (its FEE_CONFLICT_RE is
+    // unanchored, so the marker survives resolutionFrom's reason join).
+    //
+    // NOTE WHAT THIS DOES NOT DO: it never moves the bracket. The row matched
+    // for 3.072 kVA is still "5 KVA or less"; a "fix" that picked a different
+    // bracket to agree with the quote would invent a real under/over-quote where
+    // there was only a mis-grained citation. The refusal is scoped to the ROW's
+    // status being untouched too — 'conflicted' there means two documents
+    // disagree, which is a different and durable fact about the jurisdiction.
+    const named = quotedAmounts(bracketQuote);
+    if (named.length && !named.includes(round2(b.feeUsd))) {
+      return {
+        feeUsd: null,
+        bracketLabel,
+        bracketQuote,
+        corroboration,
+        reason: `${FEE_CONFLICT_MARKER}: the evidence stored for this line names `
+          + `${named.slice(0, 4).map((n) => `$${n.toFixed(2)}`).join(" / ")}, but the bracket matched for this `
+          + `project charges $${b.feeUsd.toFixed(2)} — "${bracketQuote.slice(0, 160)}". A citation that names a `
+          + `different amount than the one being charged cannot support it, so nothing is quoted from this line. `
+          + `Re-read the published schedule and re-save the row with the line this bracket is actually printed on.`,
+      };
+    }
+
+    return { feeUsd: b.feeUsd, bracketLabel, bracketQuote, corroboration, reason: "" };
+  };
 
   // A DISPUTED FEE IS REFUSED BY ITS OWN BRANCH, AND IT IS THE FIRST ONE.
   //
@@ -1757,6 +2065,8 @@ function lineFor(
     paymentMethod: schedule.paymentMethod,
     sourceUrl: schedule.sourceUrl,
     sourceQuote: schedule.sourceQuote,
+    bracketQuote: evaluated.bracketQuote,
+    ...(evaluated.corroboration ? { corroboration: evaluated.corroboration } : {}),
     confidence: schedule.confidence,
     notes: schedule.notes,
     scheduleId: schedule.id,
@@ -1789,6 +2099,17 @@ function resolutionFrom(lines: FeeScheduleLine[], track: FeeTrack): Omit<Project
     paymentMethod: lines.every((l) => l.paymentMethod === primary.paymentMethod) ? primary.paymentMethod : "unknown",
     sourceUrl: primary.sourceUrl,
     sourceQuote: primary.sourceQuote,
+    // NO SINGLE PUBLISHED LINE SUPPORTS A TOTAL OF TWO PERMITS. A Coos Bay
+    // rooftop owes the city $200 and the county $135; no document anywhere
+    // prints $335, so quoting ANY row beside it — which is what propagating
+    // lines[0]'s citation did — is a citation for a number its source never
+    // mentioned. "" here, and the caller shows each line's own evidence beside
+    // its own amount (`lines[i].bracketQuote`).
+    bracketQuote: lines.length === 1 ? primary.bracketQuote : "",
+    // Weakest link, like confidence: a total is corroborated only if every line
+    // in it was found printed. Still never a promotion — confidence below is
+    // decided separately and code never writes 'verified'.
+    corroborated: lines.length > 0 && lines.every((l) => !!l.corroboration?.corroborated),
     // The weakest confidence in the set: a verified line does not vouch for a
     // seeded one standing next to it in the same total.
     confidence: lines.some((l) => l.confidence === "seeded") ? "seeded" : "verified",
@@ -1835,9 +2156,17 @@ export interface PublishedFeeLookupResult {
   feeUsd: number | null;
   bracketLabel: string | null;
   sourceUrl: string | null;
-  /** The quote is read by the consumer's MAILED_CHECK_RE as a last resort, so it
-   *  travels with the amount even when paymentMethod is explicit. */
+  /** ROW GRAIN, AND A MACHINE SIGNAL RATHER THAN A CITATION. The consumer reads
+   *  it with MAILED_CHECK_RE as a last resort — how the money moves is a fact
+   *  about the schedule, not about which bracket matched — so it stays the row's
+   *  own sentence. Do NOT print it beside the amount; that is `bracketQuote`. */
   sourceQuote: string;
+  /** The evidence for THIS amount, safe to show beside it. "" when the amount is
+   *  the total of more than one permit. */
+  bracketQuote: string;
+  /** Every line was found printed in its cited document. Never promotes
+   *  `confidence`, which only a person may move to 'verified'. */
+  corroborated: boolean;
   /** 'portal' | 'mailed_check' | 'none' | 'unknown' — the consumer whitelists
    *  exactly these and drops anything else, which is why this is normalised on
    *  the way into the table rather than here. */
@@ -1891,6 +2220,8 @@ export function lookupPublishedFee(db: AppDb, input: PublishedFeeLookupArgs): Pu
       bracketLabel: rolled.bracketLabel || null,
       sourceUrl: rolled.sourceUrl || null,
       sourceQuote: rolled.sourceQuote,
+      bracketQuote: rolled.bracketQuote,
+      corroborated: rolled.corroborated,
       paymentMethod: rolled.paymentMethod,
       confidence: rolled.confidence,
       basis: rolled.feeUsd == null

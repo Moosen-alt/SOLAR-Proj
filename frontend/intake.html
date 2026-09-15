@@ -5,21 +5,28 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Project details · Solar Submission Autopilot</title>
   <link rel="stylesheet" href="/styles.css" />
+  <!-- Manrope. Unlike the vendored lucide above, a webfont degrades gracefully:
+       if fonts.googleapis.com is unreachable (offline demo, locked-down cloud)
+       the page falls back to the system stack in --font-sans and every layout
+       still holds. Icons would simply vanish, which is why THOSE are vendored. -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <style>
     .intake-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; }
-    .intake-card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); width: min(440px, 100%); padding: 28px; }
-    .intake-card h1 { font-size: 20px; margin-bottom: 4px; }
-    .intake-card p.muted { margin-bottom: 18px; font-size: 13px; }
-    .intake-card .project-label { font-weight: 700; margin-bottom: 18px; padding: 10px 12px; background: var(--bg, #f6f7f9); border-radius: 8px; font-size: 14px; }
-    .intake-card label { display: block; font-size: 13px; font-weight: 700; margin: 14px 0 4px; }
-    .intake-card input, .intake-card select { width: 100%; padding: 9px 11px; border: 1px solid var(--line); border-radius: 6px; font: inherit; background: var(--surface); }
-    .portal-q-head { margin: 20px 0 2px; font-size: 13px; font-weight: 700; }
-    .portal-q-sub { font-size: 12px; color: var(--muted, #667); margin-bottom: 4px; }
+    .intake-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg); box-shadow: var(--shadow); width: min(440px, 100%); padding: 28px; }
+    .intake-card h1 { font-size: var(--text-xl); margin-bottom: 4px; }
+    .intake-card p.muted { margin-bottom: 18px; font-size: var(--text-sm); }
+    .intake-card .project-label { font-weight: 700; margin-bottom: 18px; padding: 10px 12px; background: var(--surface-2); border-radius: var(--radius-md); font-size: var(--text-sm); }
+    .intake-card label { display: block; font-size: var(--text-sm); font-weight: 700; margin: 14px 0 4px; }
+    .intake-card input, .intake-card select { width: 100%; padding: 9px 11px; border: 1px solid var(--input); border-radius: var(--radius-sm); font: inherit; background: var(--surface); color: var(--text); }
+    .portal-q-head { margin: 20px 0 2px; font-size: var(--text-sm); font-weight: 700; }
+    .portal-q-sub { font-size: var(--text-xs); color: var(--muted); margin-bottom: 4px; }
     .intake-card button { width: 100%; justify-content: center; margin-top: 20px; }
-    .field-hint { font-weight: 400; font-size: 12px; color: var(--muted, #667); }
-    #intakeMsg { font-size: 13px; margin-top: 14px; min-height: 18px; }
+    .field-hint { font-weight: 400; font-size: var(--text-xs); color: var(--muted); }
+    #intakeMsg { font-size: var(--text-sm); margin-top: 14px; min-height: 18px; }
     #intakeMsg.error { color: var(--danger); }
-    #intakeMsg.ok { color: var(--success, #1a7f37); }
+    #intakeMsg.ok { color: var(--success); }
   </style>
 </head>
 <body>
@@ -72,6 +79,9 @@
           input.id = id;
           input.name = f.key;
           input.type = TYPE[f.key] || "text";
+          // Convenience only — the server enforces this. A browser that ignores
+          // `required` (or a hand-rolled POST) still gets a 400 naming the gap.
+          if (f.required) input.required = true;
           if (f.value) input.value = f.value;
           fieldsEl.appendChild(label);
           fieldsEl.appendChild(input);
@@ -100,6 +110,7 @@
           select.id = id;
           select.name = q.key;
           select.dataset.portalQuestion = "1";
+          if (q.required) select.required = true;
           const blank = document.createElement("option");
           blank.value = "";
           blank.textContent = "— choose —";
@@ -114,7 +125,10 @@
           unsure.value = "__unsure__";
           unsure.textContent = "I’m not sure — ask my coordinator";
           select.appendChild(unsure);
-          if (q.value && (q.options || []).includes(q.value)) select.value = q.value;
+          // "I'm not sure" is an ANSWER, so it must come back selected — otherwise
+          // reopening the link to fix a typo re-asks a question already answered.
+          if (q.value === "__unsure__") select.value = "__unsure__";
+          else if (q.value && (q.options || []).includes(q.value)) select.value = q.value;
           fieldsEl.appendChild(label);
           fieldsEl.appendChild(select);
         }
@@ -127,11 +141,20 @@
     document.getElementById("intakeForm").addEventListener("submit", async (e) => {
       e.preventDefault();
       setMsg("");
+      const controls = Array.from(fieldsEl.querySelectorAll("input, select"));
+      // PREFLIGHT BEFORE THE BUTTON IS DISABLED. Bailing after disabling it would
+      // strand the client on a dead form with no way to submit the fix.
+      const firstEmpty = controls.find((c) => c.required && !c.value.trim());
+      if (firstEmpty) {
+        setMsg("Please answer every question on this form before submitting.", "error");
+        firstEmpty.focus();
+        return;
+      }
       submitBtn.disabled = true;
       const payload = {};
-      for (const input of fieldsEl.querySelectorAll("input, select")) {
-        if (input.value.trim()) payload[input.name] = input.value.trim();
-      }
+      // Send EVERY control the form asked, empty ones included: dropping blanks
+      // made "skipped" and "never asked" identical on the wire.
+      for (const input of controls) payload[input.name] = input.value.trim();
       try {
         const res = await fetch("/api/intake/" + encodeURIComponent(token), {
           method: "POST",

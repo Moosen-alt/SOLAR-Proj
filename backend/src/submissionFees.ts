@@ -193,7 +193,18 @@ interface ScheduleFee {
   feeUsd: number | null;
   bracketLabel: string | null;
   sourceUrl: string | null;
+  /** The ROW's citation. Read below by MAILED_CHECK_RE — a signal about how the
+   *  money moves — and NEVER printed beside the amount: a bracketed schedule has
+   *  one of these and N brackets, so it agrees with at most one of them. */
   sourceQuote: string;
+  /** The evidence for THIS amount, which is what may be shown beside it. "" when
+   *  the producer could not offer one (or when the amount is a total of two
+   *  permits, which no single published line states). */
+  bracketQuote: string;
+  /** The producer found every line printed in the document it cites. A machine
+   *  check, and a different dimension from `confidence` — it never means a
+   *  person has vouched for the number. */
+  corroborated: boolean;
   confidence: "verified" | "seeded";
   paymentMethod: FeePaymentMethod | null;
   matchedName: string;
@@ -257,6 +268,8 @@ function normalizeScheduleResult(raw: unknown): ScheduleFee | null {
     bracketLabel: text(r.bracketLabel).trim().slice(0, 200) || null,
     sourceUrl: /^https?:\/\//i.test(url) ? url.slice(0, 500) : null,
     sourceQuote: quote,
+    bracketQuote: text(r.bracketQuote).trim().slice(0, 400),
+    corroborated: r.corroborated === true,
     // Research lands as seeded (safety rule 3); only a human promotes it.
     confidence: text(r.confidence).trim().toLowerCase() === "verified" ? "verified" : "seeded",
     paymentMethod,
@@ -354,9 +367,29 @@ export function buildPaymentQuote(db: AppDb, project: ProjectRecord, trackInput?
       permitFeeSource = "published_schedule";
       permitFeeConfidence = schedule.confidence;
       const who = schedule.matchedName || (track === "nem" ? project.utility : project.ahj) || "this jurisdiction";
+      // THE SENTENCE BESIDE THE NUMBER MUST BE ABOUT THAT NUMBER.
+      //
+      // This used to print the schedule ROW's `sourceQuote`, which is one line
+      // of an N-line table. On the live Coos County row that meant a 3.072 kVA
+      // job was quoted $135 under `Published as: "5.01 KVA to 15 KVA | $160.00"`
+      // — a citation for a bracket we did not charge, on three of that table's
+      // four rows. `bracketQuote` is the producer's evidence for THIS amount
+      // (the printed line it was corroborated against, or the bracket's own
+      // verbatim label), and it is "" rather than wrong when the amount is the
+      // total of two permits — no published line states a sum.
+      //
+      // CORROBORATED IS NOT VERIFIED and the wording keeps them apart: a machine
+      // re-read the cited document and found this row printed in it; nobody has
+      // signed off on the number (hard rule 3). Only a person moves a row to
+      // 'verified', and nothing in this file may say otherwise.
+      const vouching = schedule.confidence === "verified"
+        ? " (human-verified)"
+        : schedule.corroborated
+          ? " (researched and CORROBORATED against the cited document — still not human-verified)"
+          : " (researched, not yet human-verified)";
       permitFeeBasis = `${who}'s published fee schedule${schedule.bracketLabel ? `, line "${schedule.bracketLabel}"` : ""}`
-        + `${schedule.confidence === "verified" ? " (human-verified)" : " (researched, not yet human-verified)"}.`
-        + `${schedule.sourceQuote ? ` Published as: "${schedule.sourceQuote}".` : ""}`
+        + `${vouching}.`
+        + `${schedule.bracketQuote ? ` Published as: "${schedule.bracketQuote}".` : ""}`
         + `${schedule.sourceUrl ? ` ${schedule.sourceUrl}` : ""}`;
     } else {
       const est = estimatedFee(db, project, track);
