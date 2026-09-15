@@ -40,6 +40,7 @@
 // ---------------------------------------------------------------------------
 
 import Anthropic from "@anthropic-ai/sdk";
+import { performance } from "node:perf_hooks";
 import type { AppDb } from "./db";
 import type { FeePaymentMethod, ProjectRecord } from "../../shared/src/types";
 // ONE READER FOR "Revised 12/23/2022", shared with ahj_form_templates' own
@@ -57,8 +58,22 @@ import { knowledgeNameMatchScore, knowledgeProfileKey, knowledgeResearchHint } f
 // second copy of this mapping is precisely how "the concept lived in two places
 // and the copies disagreed" has bitten this codebase before.
 import { recipeDisciplineForTrack } from "./portalChannel";
+// THE PERMIT PATH IS AN INPUT TO THE FEE, NOT JUST TO THE DOCUMENTS. permitPath.ts
+// imports nothing but the shared types, so there is no cycle — and it is the only
+// safe home for the classifier, because the module that already owns the
+// prescriptive/engineered vocabulary on the DOCUMENT side (ahjForms.ts) imports
+// THIS file. See pathWordingScope's header for the full argument.
+import { resolvePermitPath, pathWordingScope, pathWordingContradicts } from "./permitPath";
+import type { PermitPath } from "./permitPath";
 import { resolveValuation } from "./valuation";
-import { sanitizeApiKey } from "./llm";
+// recordLlmCall, NOT a new accounting log. The fee researcher is the single most
+// expensive model operation in this system — up to twelve Opus turns with web
+// search and ten document retrievals, per jurisdiction — and it was the only one
+// invisible to the call log, because it is self-contained rather than routed
+// through LLMProvider. "Invisible and expensive" is the pair that makes a cost
+// regression unfindable, so every turn now files the same record instrument()
+// files, under a label that names the jurisdiction.
+import { recordLlmCall, sanitizeApiKey } from "./llm";
 import { logger } from "./logger";
 import { id } from "./ids";
 import { text } from "./json";
@@ -1496,8 +1511,11 @@ export const claudeFeeScheduleResearcher: FeeScheduleResearcher = async (input, 
     // does not here — see WEB_SEARCH_TOOL — but a null id must never be sent.
     let containerId: string | null = null;
 
+    const who4 = `${input.track}:${clean(input.state)}:${(clean(input.ahj) || clean(input.utility) || "?").slice(0, 40)}`;
     for (let turn = 0; turn < FEE_RESEARCH_MAX_TURNS; turn++) {
       if (Date.now() >= deadline) { timedOut = true; controller.abort(); break; }
+      const startedAt = Date.now();
+      const t0 = performance.now();
       const msg = await client.messages
         .stream(
           {
@@ -1507,12 +1525,33 @@ export const claudeFeeScheduleResearcher: FeeScheduleResearcher = async (input, 
             ...(containerId ? { container: containerId } : {}),
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             tools: [WEB_SEARCH_TOOL, OPEN_DOCUMENT_TOOL] as any,
-            system: FEE_RESEARCH_SYSTEM,
+            // THE SYSTEM PROMPT IS RE-SENT ON EVERY TURN OF THIS LOOP, unchanged —
+            // it is the one part of the request that never varies while the message
+            // list grows. Twelve turns per jurisdiction, several jurisdictions per
+            // fee-sheet run, all inside the cache's five-minute window: this prompt
+            // is the textbook case for caching and was the only multi-turn loop in
+            // the codebase not doing it. It clears the 512-token Opus 5 minimum on
+            // its own (see the MODEL note in llm.ts).
+            system: [{ type: "text", text: FEE_RESEARCH_SYSTEM, cache_control: { type: "ephemeral" } }],
             messages,
           },
           { signal: controller.signal },
         )
         .finalMessage();
+      // EVERY TURN IS A RECORD, and it carries the cache columns on purpose: a
+      // cache that silently stops hitting looks exactly like a cache that is
+      // working, right up until the bill. cacheRead near zero on turn two of a pass
+      // is the signal, and it is only visible if it is written down.
+      recordLlmCall({
+        at: startedAt,
+        label: `researchFeeSchedule[${who4}]#${turn + 1}`,
+        ms: Math.round(performance.now() - t0),
+        inTok: msg.usage?.input_tokens,
+        outTok: msg.usage?.output_tokens,
+        cacheRead: msg.usage?.cache_read_input_tokens ?? undefined,
+        cacheWrite: msg.usage?.cache_creation_input_tokens ?? undefined,
+        stop: msg.stop_reason,
+      });
       containerId = msg.container?.id ?? containerId;
 
       const text = msg.content.filter((b) => b.type === "text").map((b) => (b as { text: string }).text).join("\n");
@@ -1609,6 +1648,16 @@ export const claudeFeeScheduleResearcher: FeeScheduleResearcher = async (input, 
       ? `Fee-schedule research timed out after ${Math.round(timeoutMs / 1000)}s — this is a RUN that ran out of clock, NOT a finding that ${input.track === "nem" ? "this utility" : "this jurisdiction"} publishes no fee. Re-run, or raise FEE_RESEARCH_TIMEOUT_MS.`
       : `Fee-schedule research failed: ${err instanceof Error ? err.message : String(err)}`;
     logger.warn("fees", "researchFeeSchedule failed", { track: input.track, state: input.state, timedOut, documentsRead: ledger.evidence.length });
+    // THE FAILURE IS AN ACCOUNTING FACT TOO. A pass that burns four minutes of Opus
+    // turns and then aborts has cost real money; recording only the successes would
+    // make the expensive failure mode the invisible one. The turns that DID come
+    // back are already recorded above — this is the one that did not.
+    recordLlmCall({
+      at: Date.now(),
+      label: `researchFeeSchedule[${input.track}:${clean(input.state)}:${(clean(input.ahj) || clean(input.utility) || "?").slice(0, 40)}]#failed`,
+      ms: 0,
+      error: timedOut ? `timed out after ${Math.round(timeoutMs / 1000)}s` : (err instanceof Error ? err.message : String(err)),
+    });
     // The retrieval trail survives the failure: "we were refused by the site" and
     // "we read the schedule and then the model fell over" are different problems,
     // and only the evidence list tells them apart.
@@ -1728,6 +1777,36 @@ function findRawScheduleForProject(
   return best ? best.row : null;
 }
 
+/** Evaluation inputs a caller may pre-compute. `permitPath` is optional for the
+ *  same reason the rest are: a seam that has no parser snapshot (lookupPublishedFee)
+ *  cannot resolve one, and "unknown" — which is what it gets — contradicts nothing. */
+interface FeeEvalInputs {
+  kw: number | null;
+  kwSource: string;
+  valuationUsd: number | null;
+  permitPath?: PermitPath;
+}
+
+/** The permit path for fee selection, read from THE SAME resolver the document
+ *  gate uses. One resolver is the point: a fee card and a blocker panel computing
+ *  the path two different ways is exactly how one screen came to demand a PE stamp
+ *  while billing the prescriptive rate.
+ *
+ *  Never throws. This runs inside the staging gate and inside every quote; a path
+ *  resolver that blew up on a malformed snapshot would take a submission down, and
+ *  "unknown" is both the safe answer and the honest one. */
+function pathForProject(project: Pick<ProjectRecord, "parserSnapshot">, track: FeeTrack): PermitPath {
+  if (track !== "permit") return "unknown";
+  try {
+    return resolvePermitPath(project).path;
+  } catch (err) {
+    logger.warn("fees", "permit path could not be resolved for fee selection — treating as unknown", {
+      err: err instanceof Error ? err.message : String(err),
+    });
+    return "unknown";
+  }
+}
+
 /** Lookup + hop + evaluate for ONE discipline, as a line. The single-answer
  *  seams route through this so a dangling or circular hop reaches them as the
  *  reason it is, not as an empty schedule. */
@@ -1736,7 +1815,7 @@ function resolveLine(
   project: Pick<ProjectRecord, "state" | "ahj" | "utility" | "systemSizeAcKw" | "systemSizeDcKw" | "parserSnapshot">,
   track: FeeTrack,
   discipline: FeeDiscipline,
-  inputs?: { kw: number | null; kwSource: string; valuationUsd: number | null },
+  inputs?: FeeEvalInputs,
 ): FeeScheduleLine | null {
   const raw = findRawScheduleForProject(db, project, track, discipline);
   if (!raw) return null;
@@ -1782,7 +1861,7 @@ export function feeLinesForProject(
   /** Evaluation inputs, when the caller already has them. lookupPublishedFee
    *  runs at a seam with no parser snapshot and its own pre-computed bracket
    *  size, and must not silently re-derive either. */
-  inputs?: { kw: number | null; kwSource: string; valuationUsd: number | null },
+  inputs?: FeeEvalInputs,
 ): FeeScheduleLine[] {
   const key = feeScheduleProfileKey(project, track);
   let rows = applicableSchedules(db, key, track);
@@ -1796,6 +1875,7 @@ export function feeLinesForProject(
 
   const rating = inputs ? { kw: inputs.kw, which: inputs.kwSource } : systemRatingKw(project);
   const { kw, which } = rating;
+  const permitPath = inputs?.permitPath ?? pathForProject(project, track);
   const lines: FeeScheduleLine[] = [];
   for (const row of rows) {
     const hop = followCollectedBy(db, row);
@@ -1806,7 +1886,7 @@ export function feeLinesForProject(
       : (schedule.basis === "valuation" ? resolveValuation(project.parserSnapshot, project.systemSizeDcKw).value : null);
     const evaluated = hop.unresolved
       ? { feeUsd: null, bracketLabel: "", bracketQuote: "", corroboration: undefined, reason: hop.unresolved }
-      : evaluateSchedule(schedule, { kw, kwSource: which, valuationUsd });
+      : evaluateSchedule(schedule, { kw, kwSource: which, valuationUsd, track, permitPath });
     lines.push({
       discipline: row.discipline,
       authority: (track === "nem" ? schedule.utility : schedule.ahj) || (track === "nem" ? row.utility : row.ahj),
@@ -1936,12 +2016,103 @@ function bracketEvidence(schedule: FeeScheduleRecord, b: FeeBracket): string {
   return clean(b.label);
 }
 
+// ---------------------------------------------------------------------------
+// WHICH PATH'S FEE IS THIS PROJECT'S FEE?
+//
+// The prescriptive and the engineered applications are mutually exclusive, and so
+// are their FEES. The document half of that pair has been path-scoped for a while
+// (ahjForms.formAllowedForPath / formContradictsPath); the fee half was blind, and
+// on Ann Marineau's live Coos Bay project the two halves contradicted each other
+// on one screen: the blocker panel demanded a PE stamp and a sealed engineering
+// letter, while the fee card quoted $360 — $160 county electrical plus $200 off a
+// row labelled "Solar Permit (when required) – PRESCRIPTIVE PATH System" whose own
+// notes read "NONPRESCRIPTIVE (engineered) installs are charged from the Structural
+// Permit Fee table by valuation … a different number this row does not cover".
+// The row said it did not cover her; the evaluator quoted it anyway, sourced and
+// confident, because nothing in the fee path had ever heard of the permit path.
+//
+// SCOPE OF THE GATE, and each clause earns its place:
+//   · track === "permit"  — the prescriptive/engineered split is an AHJ building
+//     application distinction. A NEM schedule's lines are free to say "engineering
+//     review" about a utility study, and letting that word veto an interconnection
+//     fee would be a new bug wearing this one's clothes.
+//   · discipline !== "electrical" — the path decides which STRUCTURAL application
+//     you file. The electrical permit is the same permit on either path, and its
+//     fee must not move because a rafter failed a screen.
+//   · path known — an UNKNOWN path contradicts nothing, exactly as
+//     formContradictsPath says for the document side. We have not decided, so we
+//     cannot claim the row is wrong.
+// ---------------------------------------------------------------------------
+function pathGateApplies(schedule: FeeScheduleRecord, track: FeeTrack, path: PermitPath | undefined): path is "prescriptive" | "engineered" {
+  if (track !== "permit") return false;
+  if (schedule.discipline === "electrical") return false;
+  return path === "prescriptive" || path === "engineered";
+}
+
+/** The lines this project could be charged from, once the ones whose own wording
+ *  scopes them to the OTHER path are removed. Returns the list unchanged whenever
+ *  the gate does not apply, so a schedule that never mentions a path, an unknown
+ *  path, a NEM row and an electrical row all evaluate exactly as before. */
+function bracketsForPath(
+  schedule: FeeScheduleRecord,
+  track: FeeTrack,
+  path: PermitPath | undefined,
+): FeeBracket[] {
+  if (!pathGateApplies(schedule, track, path)) return schedule.brackets;
+  return schedule.brackets.filter((b) => !pathWordingContradicts(pathWordingScope(b.label), path));
+}
+
+/** The sentence the operator reads when this jurisdiction's table holds a fee for
+ *  the OTHER path and none for this one.
+ *
+ *  THE ACTIONABLE CLAUSE COMES FIRST, on purpose: submissionFees.normalizeScheduleResult
+ *  slices `reason` to 400 characters before it reaches the quote's basis line, and
+ *  resolutionFrom joins several lines' reasons together, so anything at the tail can
+ *  be cut. The row's own label and the row's own notes about the other path follow —
+ *  they are the repair (they name the table that DOES cover this project), but they
+ *  are not the headline.
+ *
+ *  It deliberately carries NO FEE_CONFLICT_MARKER. This is not two documents
+ *  disagreeing about one number — it is a GAP, one path priced and the other not —
+ *  and submissionFees.ts's conflict wording ("two published sources disagree …
+ *  needs a human to pick a source") would describe something that never happened. */
+function pathMissReason(schedule: FeeScheduleRecord, path: "prescriptive" | "engineered", blocked: FeeBracket[]): string {
+  const other = path === "engineered" ? "PRESCRIPTIVE" : "ENGINEERED (non-prescriptive)";
+  const who = schedule.ahj || "this jurisdiction";
+  const labels = blocked.map((b) => clean(b.label)).filter(Boolean).slice(0, 2);
+  // " | " is the NOTE SEGMENT SEPARATOR (mergeNotes splits on it). Quoting segments
+  // back with that separator inside a reason invites the next writer to feed this
+  // string into notes and have it shredded into fragments; "; " cannot.
+  //
+  // TRUNCATED PER SEGMENT, because a research note is not length-bounded: the live
+  // City of Coos Bay row carries a 1,500-character segment, and an un-capped quote
+  // would push the actionable headline past the 400 characters
+  // submissionFees.normalizeScheduleResult keeps. The notes are the repair, not the
+  // report — a person who wants the rest opens the row.
+  //
+  // NOTE THE FILTER IS OVER SEGMENTS, NOT OVER THE BLOB. pathWordingScope must
+  // never be asked to classify whole notes (see its header): this row's notes are
+  // FULL of engineered words and the row is prescriptive-only. Here the classifier
+  // is used the other way round — to FIND the segments that talk about the path we
+  // could not price — which is safe precisely because nothing is decided by it.
+  const relevant = noteSegments(schedule.notes)
+    .filter((seg) => pathWordingScope(seg) === path || /valuation/i.test(seg))
+    .slice(0, 2)
+    .map((seg) => (seg.length > 240 ? `${seg.slice(0, 240).trimEnd()}…` : seg))
+    .join("; ");
+  return `NO ${path.toUpperCase()} FEE HELD: every fee line stored for ${who} is scoped to the ${other} path, and this `
+    + `project resolved to the ${path.toUpperCase()} path, so none of them prices it. Nothing is quoted — read ${who}'s `
+    + `published schedule for the ${path} figure and enter it.`
+    + `${labels.length ? ` The stored line${labels.length > 1 ? "s" : ""}: "${labels.join('", "')}".` : ""}`
+    + `${relevant ? ` The row's own note: ${relevant}` : ""}`;
+}
+
 /** THE ONE EVALUATOR. Both public entry points below route through this, so the
  *  bracket boundary can only ever be decided in one place — two parallel
  *  evaluations would drift, and the boundary is the whole point of the table. */
 function evaluateSchedule(
   schedule: FeeScheduleRecord,
-  inputs: { kw: number | null; kwSource: string; valuationUsd: number | null },
+  inputs: { kw: number | null; kwSource: string; valuationUsd: number | null; track?: FeeTrack; permitPath?: PermitPath },
 ): { feeUsd: number | null; bracketLabel: string; bracketQuote: string; corroboration?: FeeBracketCorroboration; reason: string } {
   const miss = (reason: string) => ({ feeUsd: null, bracketLabel: "", bracketQuote: "", reason });
   const hit = (b: FeeBracket) => {
@@ -2029,21 +2200,61 @@ function evaluateSchedule(
 
   if (!schedule.brackets.length) return miss("Schedule is stored but carries no fee lines.");
 
-  if (schedule.basis === "flat" || (schedule.basis === "other" && schedule.brackets.length === 1)) {
-    return hit(schedule.brackets[0]);
+  // THE PATH FILTERS THE CANDIDATES, IT DOES NOT VETO THE WINNER — and that
+  // difference is the whole reason this is SELECTION rather than a second gate
+  // bolted after matchBracket. A jurisdiction that publishes both paths in one
+  // table (a prescriptive flat line and an engineered valuation line) must hand
+  // an engineered project the ENGINEERED line, not refuse. A jurisdiction that
+  // publishes only the other path's line has nothing to hand over, and says so.
+  const track = inputs.track ?? "permit";
+  const candidates = bracketsForPath(schedule, track, inputs.permitPath);
+  if (!candidates.length) {
+    // Reached only when the gate applied (otherwise candidates === brackets, and
+    // the empty case was already refused above), so the path is known here.
+    return miss(pathMissReason(schedule, inputs.permitPath as "prescriptive" | "engineered", schedule.brackets));
+  }
+
+  // NOTE THE WIDENING, AND WHY IT IS SAFE. This arm used to read
+  // `schedule.brackets.length === 1`; it now reads the FILTERED list, so a
+  // basis-"other" row holding one line per path becomes evaluable for the path
+  // that matched. jurisdictionHarvest.ts's author wrote down the exact fear this
+  // raises: "if basis 'other' with multiple brackets ever becomes evaluable,
+  // conflicted schedules silently start answering with one of the two disputed
+  // numbers." It cannot happen here, for two independent reasons — a conflicted
+  // row is refused by the status branch ABOVE this, before any basis is looked at
+  // (v23 made that a fact on the row rather than this fall-through); and a
+  // conflict's two candidates are the SAME jurisdiction's fee read off two
+  // documents, so their labels differ by amount and date, never by path, and the
+  // filter never separates them. feeConflict.test.ts holds both halves.
+  if (schedule.basis === "flat" || (schedule.basis === "other" && candidates.length === 1)) {
+    return hit(candidates[0]);
   }
 
   if (schedule.basis === "system_kw") {
     if (inputs.kw == null) return miss("Schedule brackets on system size, but this project has no system size yet.");
-    const b = matchBracket(schedule.brackets, inputs.kw, "kw");
-    if (!b) return miss(`System size ${inputs.kw} kW (${inputs.kwSource || "rated"}) falls outside every published bracket — check the schedule for a row we missed.`);
+    const b = matchBracket(candidates, inputs.kw, "kw");
+    // "OUTSIDE EVERY BRACKET" AND "THE ONLY BRACKET THAT FITS IS THE OTHER PATH'S"
+    // are different facts with different repairs — one sends a person looking for
+    // a row we failed to read, the other tells them this table prices the other
+    // path. Re-matching the UNFILTERED list is the only way to tell them apart.
+    if (!b) {
+      if (candidates.length !== schedule.brackets.length && matchBracket(schedule.brackets, inputs.kw, "kw")) {
+        return miss(pathMissReason(schedule, inputs.permitPath as "prescriptive" | "engineered", schedule.brackets.filter((x) => !candidates.includes(x))));
+      }
+      return miss(`System size ${inputs.kw} kW (${inputs.kwSource || "rated"}) falls outside every published bracket — check the schedule for a row we missed.`);
+    }
     return hit(b);
   }
 
   if (schedule.basis === "valuation") {
     if (inputs.valuationUsd == null) return miss("Schedule brackets on job valuation, but this project has no valuation yet.");
-    const b = matchBracket(schedule.brackets, inputs.valuationUsd, "valuation");
-    if (!b) return miss(`Valuation $${inputs.valuationUsd.toLocaleString()} falls outside every published bracket.`);
+    const b = matchBracket(candidates, inputs.valuationUsd, "valuation");
+    if (!b) {
+      if (candidates.length !== schedule.brackets.length && matchBracket(schedule.brackets, inputs.valuationUsd, "valuation")) {
+        return miss(pathMissReason(schedule, inputs.permitPath as "prescriptive" | "engineered", schedule.brackets.filter((x) => !candidates.includes(x))));
+      }
+      return miss(`Valuation $${inputs.valuationUsd.toLocaleString()} falls outside every published bracket.`);
+    }
     return hit(b);
   }
 
@@ -2087,14 +2298,15 @@ function lineFor(
   track: FeeTrack,
   schedule: FeeScheduleRecord,
   hoppedFrom: string,
-  inputs?: { kw: number | null; kwSource: string; valuationUsd: number | null },
+  inputs?: FeeEvalInputs,
 ): FeeScheduleLine {
   const { kw, which } = inputs ? { kw: inputs.kw, which: inputs.kwSource } : systemRatingKw(project);
   // Only pay for the valuation walk when the schedule actually keys on it.
   const valuationUsd = inputs
     ? inputs.valuationUsd
     : (schedule.basis === "valuation" ? resolveValuation(project.parserSnapshot, project.systemSizeDcKw).value : null);
-  const evaluated = evaluateSchedule(schedule, { kw, kwSource: which, valuationUsd });
+  const permitPath = inputs?.permitPath ?? pathForProject(project, track);
+  const evaluated = evaluateSchedule(schedule, { kw, kwSource: which, valuationUsd, track, permitPath });
   return {
     discipline: schedule.discipline,
     authority: track === "nem" ? schedule.utility : schedule.ahj,

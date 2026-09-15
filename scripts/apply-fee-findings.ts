@@ -34,6 +34,16 @@
 // carried onto a row whose brackets no longer say that. Re-corroborating an applied row means
 // re-reading the document, which is researchFeeSchedule's job, not this script's.
 //
+// A FINDING WITH NO DISCIPLINE IS REFUSED WHERE THE JURISDICTION FILES SEPARATE PERMITS.
+// fee_schedules is keyed (profile_key, track, DISCIPLINE) and "" is not a wildcard — it is
+// the undifferentiated row, which feeSchedules.applicableSchedules returns ALONE, ignoring
+// every split row beside it. The findings file never carried a discipline, so a replay for
+// a city that files structural and electrical separately quietly demoted both to
+// unreachable: measured on a copy of the live database, Christopher Ivy's Coos Bay permit
+// total went $335.00 -> $200.00 and the county's $135.00 electrical permit left the quote
+// with nothing printed anywhere. A findings ROW may now carry "discipline"; one that does
+// not, aimed at a key that already holds split rows, writes nothing and prints the repair.
+//
 // --resolve-conflicts IS THE HUMAN GESTURE THAT CLOSES AN UNRESOLVED FEE CONFLICT.
 // A conflicted row holds two contradictory published tables and refuses to price anything
 // until somebody picks one; saveFeeSchedule refuses every ordinary write over it, including
@@ -47,6 +57,14 @@ import path from "node:path";
 
 interface StoredFinding {
   state: string; ahj: string; utility: string; track: "permit" | "nem";
+  /** WHICH PERMIT THIS IS, and the findings file had no way to say it.
+   *  fee_schedules is keyed (profile_key, track, DISCIPLINE), and an empty
+   *  discipline is not "any" — it is its own row, the undifferentiated one, which
+   *  applicableSchedules() treats as the WHOLE answer for the jurisdiction. See
+   *  the guard in main() for the measured consequence. Optional because every
+   *  findings file written before this line lacks it; blank is refused rather
+   *  than guessed wherever guessing would cost a permit. */
+  discipline?: string;
   finding: {
     found: boolean; reason: string; basis: string; brackets: Array<Record<string, unknown>>;
     notes: string; paymentMethod?: string; sourceUrl: string; sourceQuote: string; sourceKind: string;
@@ -116,7 +134,10 @@ async function main(): Promise<void> {
   await import("dotenv/config");
   process.env.AUTOPILOT_DB_PATH = dbPath;
   const { openDatabase } = await import("../backend/src/db");
-  const { saveFeeSchedule, getFeeSchedule, feeScheduleProfileKey, conflictSummary } = await import("../backend/src/feeSchedules");
+  const {
+    saveFeeSchedule, getFeeSchedule, getFeeSchedulesForKey, feeScheduleProfileKey,
+    feeDiscipline, conflictSummary,
+  } = await import("../backend/src/feeSchedules");
   const db = await openDatabase();
 
   const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as { generatedAt?: string; database?: string; findings?: StoredFinding[] };
@@ -125,14 +146,19 @@ async function main(): Promise<void> {
   console.log(`  researched:    ${parsed.generatedAt || "(undated)"} against ${parsed.database || "(unnamed database)"}`);
   console.log(`  applying to:   ${dbPath}${dryRun ? "   (--dry-run: nothing will be written)" : ""}\n`);
 
-  let applied = 0; let refused = 0; let skipped = 0;
+  let applied = 0; let refused = 0; let skipped = 0; let shadowing = 0;
   for (const row of rows) {
     const who = row.track === "nem" ? row.utility : row.ahj;
     const f = row.finding;
     if (!f || !f.found) { console.log(`  skip    ${row.track.padEnd(7)} ${row.state} ${who} — research found nothing to store.`); skipped++; continue; }
 
     const key = feeScheduleProfileKey(row, row.track);
-    const existing = getFeeSchedule(db, key, row.track);
+    const discipline = feeDiscipline(row.discipline);
+    // Asked for at the row's OWN grain. Looking the existing row up without the
+    // discipline would report a human-verified ELECTRICAL row as absent while
+    // writing a structural one, and the two guards below would then be answering
+    // about a row nobody was touching.
+    const existing = getFeeSchedule(db, key, row.track, discipline);
     const head = `${row.track.padEnd(7)} ${row.state} ${who}`;
     const fees = f.brackets.map((b) => `$${Number(b.feeUsd).toFixed(2)}`).join(" / ");
     console.log(`  ${head}`);
@@ -161,13 +187,69 @@ async function main(): Promise<void> {
         ? "        --resolve-conflicts was passed: this finding will REPLACE both candidates."
         : "        it will NOT be overwritten. Read both candidates; re-run with --resolve-conflicts to pick this one.");
     }
+    console.log(`      discipline: ${discipline || "(none given — the undifferentiated row)"}`);
+    // feeDiscipline() folds anything outside its enum to "" — silently, because
+    // it normalises rows from a dozen producers. Here that silence would print
+    // "add a discipline" at an operator who just did, so say which word was not
+    // understood. Not a refusal on its own: "" is a legitimate answer, and the
+    // guard below decides whether it is a safe one HERE.
+    const rawDiscipline = String(row.discipline ?? "").trim();
+    if (rawDiscipline && !discipline) {
+      console.log(`      NOTE: "${rawDiscipline}" is not a discipline this table knows`
+        + " (structural / electrical / combo) - it was read as none.");
+    }
+
+    // AN UNDIFFERENTIATED ROW IS NOT A NEUTRAL PLACE TO PUT A FEE — IT OUTRANKS
+    // EVERY SPLIT ROW UNDER THE SAME KEY.
+    //
+    // feeSchedules.applicableSchedules: "An undifferentiated row answers for
+    // everything and is the whole answer" — it returns that row ALONE and never
+    // looks at the discipline rows beside it. The findings file has no discipline
+    // field (scripts/research-fee-schedules.ts never wrote one), so every replay
+    // landed on discipline "", and MEASURED on a copy of the live database that
+    // is not a cosmetic duplicate:
+    //
+    //   before   Christopher Ivy, Coos Bay — permit total $335.00
+    //            = Coos County ELECTRICAL $135.00 + City of Coos Bay STRUCTURAL $200.00
+    //   after    an ordinary two-row findings file applied
+    //   after    permit total $200.00 — ONE line, the electrical permit gone from
+    //            the quote entirely. Both split rows still sat in the table,
+    //            untouched and unreachable.
+    //
+    // $135 of a county permit disappearing from a customer's number with nothing
+    // printed is the same class of silent wrongness as a frozen fee-bracket
+    // quantity, so the replay refuses rather than guesses. It cannot infer the
+    // discipline — a file saying "Coos County, permit, $135/$160/$265" is equally
+    // the electrical table and a jurisdiction that publishes one schedule — and
+    // picking wrong writes a real fee onto the wrong permit. Naming it is one word
+    // in the file, so the repair is printed with the refusal.
+    //
+    // Printed BEFORE the dry-run bail, and refused on a dry run too: a dry run an
+    // operator reads to decide must show the same outcome the real run will take.
+    if (!discipline) {
+      const split = getFeeSchedulesForKey(db, key, row.track).filter((r) => r.discipline);
+      if (split.length) {
+        shadowing++;
+        console.log(`      REFUSED: ${who} already files this track as ${split.length} SEPARATE permit(s), and this`);
+        console.log("               finding names no discipline. An undifferentiated row is not stored alongside");
+        console.log("               them - it REPLACES them as the whole answer, so a permit would vanish from");
+        console.log("               the quote with nothing printed. Nothing was written.");
+        for (const s of split) {
+          const lines = s.brackets.map((b) => `$${b.feeUsd.toFixed(2)}`).join(" / ") || "(no fee line)";
+          console.log(`                 would have shadowed: discipline "${s.discipline}" (${s.confidence}) ${lines}`);
+        }
+        console.log(`               THE REPAIR: add "discipline": "${split[0].discipline}" (or the right one of `
+          + `${split.map((s) => `"${s.discipline}"`).join(", ")}) to this findings row and re-run.`);
+        continue;
+      }
+    }
     if (dryRun) { console.log("      (dry run)"); continue; }
 
     // NO LEDGER IS PASSED, and that is the guard: saveFeeSchedule strips every
     // corroboration claim on these brackets rather than trusting a file for it.
     const outcome = saveFeeSchedule(
       db,
-      { state: row.state, ahj: row.ahj, utility: row.utility, track: row.track },
+      { state: row.state, ahj: row.ahj, utility: row.utility, track: row.track, discipline },
       {
         found: true, reason: "", basis: f.basis as never, brackets: f.brackets as never,
         notes: notesWithoutStaleCorroboration(f.notes, claimedCorroborated > 0),
@@ -182,7 +264,12 @@ async function main(): Promise<void> {
     else { skipped++; console.log(`      not saved: ${outcome.reason}`); }
   }
 
-  console.log(`\n  ${applied} applied, ${refused} refused against a human-verified row, ${skipped} skipped.`);
+  console.log(`\n  ${applied} applied, ${refused} refused against a human-verified row, ${skipped} skipped`
+    + `${shadowing ? `, ${shadowing} REFUSED for naming no discipline against a split-permit jurisdiction` : ""}.`);
+  if (shadowing) {
+    console.log(`  Those ${shadowing} finding(s) wrote NOTHING. Add a "discipline" to each and re-run — see the`);
+    console.log("  repair printed beside each one. This is not a warning you can apply through.");
+  }
   console.log("  Everything applied is SEEDED. Promote a row only after a person has read the");
   console.log("  jurisdiction's own published page:  markFeeScheduleVerified(db, key, track, who).\n");
   db.close();

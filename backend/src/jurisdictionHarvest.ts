@@ -94,11 +94,15 @@ import { documentDateForPdf, isDocumentDateStale, isoForDocumentDate } from "./d
 import { fetchPublicDocument, findDocumentLinks, type DocumentLink, type FetchedDocument } from "./documentFetch";
 import {
   FEE_CONFLICT_MARKER,
+  corroborateBrackets,
+  corroborationNotes,
   feeScheduleProfileKey,
   getFeeSchedule,
+  newFeeDocumentLedger,
   saveFeeSchedule,
   type FeeBasis,
   type FeeBracket,
+  type FeeDocumentLedger,
   type FeeScheduleFinding,
   type FeeScheduleRecord,
   type FeeScheduleSource,
@@ -171,6 +175,15 @@ export interface HarvestedFeeTable {
   /** The jurisdiction's own printed rows, cell by cell, SAME-ROW paired. This is
    *  the sentence saveFeeSchedule demands behind every number. */
   quote: string;
+  /** THE SAME ROWS, STILL SEPARATE — one printed line per entry, never joined.
+   *
+   *  `quote` above staples every row into one string, and one string is one LINE
+   *  to corroborateBrackets, which splits the corpus on "\n". Corroboration means
+   *  "this bracket's label and its fee were printed TOGETHER ON ONE LINE"; hand it
+   *  the joined blob and every fee in the table co-occurs with every label in it,
+   *  which is precisely the wind-row mis-attribution the pairing exists to refuse.
+   *  So the rows travel apart, and only the display string is joined. */
+  rowQuotes: string[];
   /** Fee-ish rows that could not be read as one description + one amount. Listed,
    *  never dropped: an unreadable row is a thing a person should look at. */
   unreadableRows: string[];
@@ -489,7 +502,7 @@ function rowQuote(cells: string[], continuations: string[]): string {
  *  decision is that one unreadable document must not end the harvest. */
 export async function readFeeTableFromPdf(bytes: Uint8Array): Promise<HarvestedFeeTable> {
   const empty = (reason: string): HarvestedFeeTable =>
-    ({ found: false, reason, basis: "other", brackets: [], quote: "", unreadableRows: [] });
+    ({ found: false, reason, basis: "other", brackets: [], quote: "", rowQuotes: [], unreadableRows: [] });
 
   let rows;
   try {
@@ -572,6 +585,12 @@ export async function readFeeTableFromPdf(bytes: Uint8Array): Promise<HarvestedF
     basis: bracketBasis(usable),
     brackets: usable,
     quote: quotes.join("  "),
+    // Only rows that READ as one description + one amount are in here. A row under
+    // a wind/hydro/geothermal heading went to `unreadableRows` above and never
+    // reaches this list, so it can never be the line a solar bracket corroborates
+    // against — the guard that keeps a wind rate off a solar quote holds on this
+    // path too, for free, because both read the same loop.
+    rowQuotes: quotes,
     unreadableRows,
   };
 }
@@ -975,6 +994,22 @@ export async function harvestJurisdiction(
   const seenHashes = new Map<string, string>();
   const candidates: FeeCandidate[] = [];
   let tagN = 0;
+  // THE RETRIEVAL TRAIL, KEPT THIS TIME.
+  //
+  // This pass downloads the jurisdiction's own PDF and reads its fee table by
+  // COORDINATE PAIRING — the strongest evidence anything in this codebase can
+  // produce for a fee, and until now it was thrown away at the save. Every
+  // harvested row landed with `corroboration` stripped, because saveFeeSchedule
+  // treats a caller that hands over no ledger as untrusted (round 2's fix, and it
+  // is right: scripts/apply-fee-findings.ts fetches nothing). Harvest is the other
+  // kind of caller — it fetched the bytes itself — and the only thing it was
+  // missing was the paperwork. So the printed rows go in a ledger as they are
+  // read, and the save re-derives every bracket's corroboration from it.
+  //
+  // `evidence` and `corpus` are pushed TOGETHER, once per document, and must stay
+  // index-parallel: corroborateBrackets names the source document by the corpus
+  // index a matched line came from.
+  const feeLedger: FeeDocumentLedger = newFeeDocumentLedger();
 
   for (const target of targets.slice(0, maxDocuments)) {
     const got = await fetchDoc(target.url);
@@ -997,7 +1032,7 @@ export async function harvestJurisdiction(
       documentDateIso: "",
       documentStale: false,
       form: { action: "failed", mappedFields: null, acroFields: null, note: got.reason },
-      fee: { found: false, reason: "not fetched", basis: "other", brackets: [], quote: "", unreadableRows: [] },
+      fee: { found: false, reason: "not fetched", basis: "other", brackets: [], quote: "", rowQuotes: [], unreadableRows: [] },
     };
     report.documents.push(doc);
     if (!got.ok || !got.bytes) continue;
@@ -1029,6 +1064,18 @@ export async function harvestJurisdiction(
     doc.documentStale = isDocumentDateStale(doc.documentDate);
 
     if (doc.fee.found) {
+      // One entry per document, both halves at once. `handed` is the number of
+      // printed rows this document contributed, which is what a later reader
+      // wants to know about the strength of the trail.
+      feeLedger.evidence.push({
+        url: doc.finalUrl,
+        via: got.via === "browser" ? "browser" : "http",
+        status: got.status,
+        kind: "pdf",
+        bytes: bytes.length,
+        handed: doc.fee.rowQuotes.length,
+      });
+      feeLedger.corpus.push(doc.fee.rowQuotes.join("\n"));
       tagN += 1;
       candidates.push({
         tag: `S${tagN}`,
@@ -1105,7 +1152,7 @@ export async function harvestJurisdiction(
   }
 
   // ---- 4. THE FEE DECISION --------------------------------------------------
-  await resolveFees(db, report, candidates, { apply, stamp, state, ahj, profileKey });
+  await resolveFees(db, report, candidates, { apply, stamp, state, ahj, profileKey, ledger: feeLedger });
 
   logger.info("harvest", "jurisdiction harvest complete", {
     ahj, state, page: report.pageUrl || undefined, documents: report.documents.length,
@@ -1118,7 +1165,7 @@ async function resolveFees(
   db: AppDb,
   report: HarvestReport,
   harvested: FeeCandidate[],
-  cfg: { apply: boolean; stamp: string; state: string; ahj: string; profileKey: string },
+  cfg: { apply: boolean; stamp: string; state: string; ahj: string; profileKey: string; ledger: FeeDocumentLedger },
 ): Promise<void> {
   const existing = getFeeSchedule(db, cfg.profileKey, "permit");
 
@@ -1194,7 +1241,14 @@ async function resolveFees(
       report.fee.reason = `CONFLICT: ${conflict.summary}. ${conflict.ratioNote} Would store both candidates as basis "other" so feeForProject refuses to answer until a human picks one.`.trim();
       return;
     }
-    const outcome = saveFeeSchedule(db, { state: cfg.state, ahj: cfg.ahj, track: "permit" }, built);
+    // The ledger goes with the conflict save too, for one reason: the SAME rule
+    // must apply to every write this module makes, so nobody later has to work out
+    // which of two save sites was trusted. In practice nothing corroborates here —
+    // buildConflictFinding prefixes each label with its source tag ("[S1] 5 kva or
+    // less"), and that prefix is not on any printed line, so corroborateBrackets
+    // correctly finds no match. A conflicted row refuses to answer anyway; an
+    // uncorroborated bracket on it is the honest reading, not a loss.
+    const outcome = saveFeeSchedule(db, { state: cfg.state, ahj: cfg.ahj, track: "permit" }, built, { corroborateAgainst: cfg.ledger });
     report.fee.schedule = outcome.schedule;
     report.fee.action = outcome.refusedVerified ? "refused_verified" : outcome.saved ? "conflict_saved" : "refused";
     report.fee.reason = outcome.refusedVerified
@@ -1262,13 +1316,26 @@ async function resolveFees(
     sourceKind: "official",
   };
 
+  // WHAT THIS RUN ACTUALLY SAW, SAID ON THE ROW. Composed from the SAME ledger the
+  // save re-derives from a few lines down, so the sentence and the stored
+  // corroboration cannot drift: saveFeeSchedule runs corroborateBrackets again on
+  // exactly this ledger and gets exactly this answer. (It is deliberately not the
+  // corroborated brackets that are assigned to `finding.brackets` — the save owns
+  // that, and one owner is the whole point of round 2's fix.)
+  const corroborationLine = corroborationNotes(corroborateBrackets(finding, cfg.ledger));
+  finding.notes = [finding.notes, ...corroborationLine].filter(Boolean).join(" | ");
+
   if (!cfg.apply) {
     report.fee.action = "would_save";
     report.fee.schedule = existing;
     report.fee.reason = `Would save ${finding.brackets.length} bracket(s) on basis ${finding.basis} from ${best.sourceUrl}.`;
     return;
   }
-  const outcome = saveFeeSchedule(db, { state: cfg.state, ahj: cfg.ahj, track: "permit" }, finding);
+  // THE LEDGER IS THE POINT OF THIS CALL. Without it saveFeeSchedule treats the
+  // finding as untrusted and strips corroboration from every bracket — which is
+  // what it did on this path for every harvest ever run, despite the harvest
+  // having downloaded and coordinate-paired the document itself.
+  const outcome = saveFeeSchedule(db, { state: cfg.state, ahj: cfg.ahj, track: "permit" }, finding, { corroborateAgainst: cfg.ledger });
   report.fee.schedule = outcome.schedule;
   report.fee.action = outcome.refusedVerified ? "refused_verified" : outcome.saved ? "saved" : "refused";
   report.fee.reason = outcome.refusedVerified

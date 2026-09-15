@@ -31,7 +31,7 @@ import type { AppDb } from "./db";
 import type { ProjectStatus, PublicProjectStatusPayload, PublicStatusHistoryEntry } from "../../shared/src/types";
 import { formatProjectAddress } from "./clientNotifier";
 import { getProjectDetail } from "./repository";
-import { staleStatusClassifications } from "./permitMonitor";
+import { scanStaleStatusClassifications } from "./permitMonitor";
 import { logger } from "./logger";
 
 /**
@@ -230,9 +230,22 @@ export function publicCheckLabel(outcome: string, statusLabel: string, track: Tr
  *
  * Returns TARGET IDS only. The raw portal text the comparison needs is read inside
  * staleStatusClassifications and never leaves it.
+ *
+ * AND IT NEVER THROWS. This is a CUSTOMER page's critical path — three of them: the emailed
+ * per-project status page, the per-client tracker, and the timeline. The drift pass underneath
+ * joins two tables and re-runs the classifier over stored portal prose; the day any of that
+ * throws, an unguarded call here 500s the link we sent a homeowner, over a caveat. So the scan is
+ * the guarded one, and a failure lands as NO MARKER on a page that still renders.
+ *
+ * What a failure must NOT become is a quiet "everything is current". These pages have no wording
+ * for "our own drift diagnostic broke" (status.html/portal.html render a boolean), so the honesty
+ * lives in the two places that can carry it: scanStaleStatusClassifications logs at ERROR, and the
+ * operator route reports `checked:false` to the dashboard, which says so in words. An unmarked
+ * badge after a failure means UNVERIFIED — never confirmed fresh.
  */
 function staleTargetIds(db: AppDb, projectIds: string[]): Set<string> {
-  return new Set(staleStatusClassifications(db, projectIds).map((s) => s.targetId).filter(Boolean));
+  const scan = scanStaleStatusClassifications(db, projectIds);
+  return new Set(scan.readings.map((s) => s.targetId).filter(Boolean));
 }
 
 export interface ClientPortalUpdate {

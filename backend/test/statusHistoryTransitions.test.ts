@@ -57,10 +57,11 @@
 //
 //   npx tsx backend/test/statusHistoryTransitions.test.ts
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "status-history-transitions-"));
 process.env.AUTOPILOT_DB_PATH = path.join(tmpDir, "test.sqlite");
@@ -76,7 +77,7 @@ const { publicProjectStatusPayload, projectStatusHistory, publicCheckLabel, trac
   clientPortalPayload, ensureClientPortalToken } = await import("../src/clientPortal");
 const { ensureStatusShareToken } = await import("../src/clientNotifier");
 const { shouldRecordStatusCheck, classifyPermitStatusText, staleStatusClassifications,
-  classificationDrift } = await import("../src/permitMonitor");
+  scanStaleStatusClassifications, classificationDrift } = await import("../src/permitMonitor");
 const { clientUpdateFor } = await import("../src/clientUpdates");
 
 const db = await openDatabase();
@@ -733,29 +734,403 @@ await check("THE CURE IS A NEW ROW: a real re-check clears the mark and leaves h
     + "moved on afterwards");
 });
 
-await check("THE STALE SURFACE IS WIRED: the operator route, and both public pages", () => {
-  const here = path.dirname(fileURLToPath(import.meta.url));
-  const src = fs.readFileSync(path.join(here, "..", "src", "server.ts"), "utf8");
-  const at = src.indexOf('app.get("/api/projects/:id/permit-checks/stale"');
-  assert.ok(at > 0,
-    "there is no operator surface for stale classifications — the fix reaches nobody who could "
-    + "trigger a re-check");
-  const nextRoute = src.slice(at + 40).search(/\napp\.(get|post|put|patch|delete|use)\(/);
-  const body = src.slice(at, nextRoute > 0 ? at + 40 + nextRoute : at + 2000);
-  assert.match(body, /staleStatusClassifications\(/, "the route re-implements the drift check beside the helper");
-  assert.match(body, /permit-checks/, "the route does not name the re-check call that fixes what it reports");
-  assert.doesNotMatch(body, /\bUPDATE\b|recordPermitStatusCheck\(/,
-    "the stale REPORT writes: permit_status_checks is an audit trail and a GET must not edit it");
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const REPO = path.join(HERE, "..", "..");
 
-  // The pages are where a human actually sees it. Both consume the flag; status.html on the
-  // timeline AND the badges, portal.html on its badges (it has no timeline card).
-  const statusHtml = fs.readFileSync(path.join(here, "..", "..", "frontend", "status.html"), "utf8");
+await check("BOTH PUBLIC PAGES CONSUME THE FLAG (status.html / portal.html)", () => {
+  // SOURCE-TEXT COVER, and the only kind available for these two: status.html and portal.html are
+  // server-rendered templates with their markup inline, exercised end-to-end nowhere in this suite.
+  // It is weak evidence and it is labelled as such — the STRONG evidence for the surfaces lives in
+  // the checks below, which run the real code. Deleting this would leave these two pages with
+  // nothing at all.
+  const statusHtml = fs.readFileSync(path.join(REPO, "frontend", "status.html"), "utf8");
   assert.match(statusHtml, /t\.needsRecheck/, "status.html's Applications badges ignore the flag");
   assert.match(statusHtml, /h\.needsRecheck/, "status.html's Recent updates timeline ignores the flag");
   assert.match(statusHtml, /needs confirming/i, "nothing on the page says the reading is unconfirmed");
-  const portalHtml = fs.readFileSync(path.join(here, "..", "..", "frontend", "portal.html"), "utf8");
+  const portalHtml = fs.readFileSync(path.join(REPO, "frontend", "portal.html"), "utf8");
   assert.match(portalHtml, /t\.needsRecheck/, "the per-client tracker publishes stale readings as fact");
   assert.match(portalHtml, /needs confirming/i, "portal.html shows no caveat beside a stale badge");
+});
+
+// ═════════════════════════════════════════════════════════════════════════════════════════
+// PART 2b — THE TWO RISKS ROUND 3 LEFT OPEN.
+//
+//   1. THE ORPHAN. GET /api/projects/:id/permit-checks/stale shipped with ZERO production
+//      callers and a test that GREPPED server.ts for its own source text. That is the same
+//      defect as the bug it was written to fix — a classifier correction that reaches nobody
+//      who can act on it — reproduced inside the fix. It is now called by the operator
+//      dashboard, and the checks below DRIVE THE DASHBOARD: they import the real
+//      frontend/dashboard.js as a module against a stub DOM and call selectProject(), the same
+//      entry point the router calls when an operator opens a project. No string matching.
+//
+//   2. THE UNGUARDED DRIFT PASS on the customer's critical path. staleTargetIds is reached from
+//      publicProjectStatusPayload (the tokenized page we EMAIL a homeowner), clientPortalPayload
+//      and projectStatusHistory, and it re-ran a JOIN plus the whole classifier with no try/catch.
+//      A throw there served a 500 to a customer over a caveat. The failure is injected below,
+//      through the real db.query the real payload builders use.
+//
+// THE FIXTURE IS A SECOND, PERMANENTLY-STALE PROJECT. The one above is CURED by the re-check test
+// directly overhead, and a "nothing is stale" report proves nothing about a staleness report. Two
+// targets, deliberately: the ELECTRICAL one is current and the STRUCTURAL one is stale, which is
+// exactly Ann's and Ivy's shape — and the structural target is NOT the project's first, so a
+// re-check that quietly files against permitCheckTargets[0] records the wrong permit.
+// ═════════════════════════════════════════════════════════════════════════════════════════
+const { project: driftProject } = createProject(db, {
+  clientId: client.id, owner: "Drift Guard", street: "990 Empire Blvd", city: "Coos Bay",
+  state: "OR", ahj: "City of Coos Bay", utility: "Pacific Power", dcKw: "3.52", acKw: "3.072",
+});
+createPermitCheckTarget(db, driftProject.id, {
+  jurisdiction: "Coos County", applicationNumber: "187-26-000401-ELEC",
+  targetType: "permit", permitType: "electrical",
+});
+const driftDetail2 = createPermitCheckTarget(db, driftProject.id, {
+  jurisdiction: "City of Coos Bay", applicationNumber: "187-26-000401-STR",
+  targetType: "permit", permitType: "building",
+});
+const driftElec = driftDetail2.permitCheckTargets.find((t) => t.permitType === "electrical")!;
+const driftStr = driftDetail2.permitCheckTargets.find((t) => t.permitType === "building")!;
+const driftToken = ensureStatusShareToken(db, driftProject.id);
+
+await check("PRECONDITION: one stale filing, one current, on the same project", async () => {
+  await recordPermitStatusCheck(db, driftProject.id, { targetId: driftElec.id, source: "portal", rawStatusText: ISSUED });
+  await recordPermitStatusCheck(db, driftProject.id, { targetId: driftStr.id, source: "portal", rawStatusText: INTAKE_NEEDED });
+  await new Promise((r) => setTimeout(r, 60));
+  // Same move as the first fixture: put the structural row back under the verdict the OLD rules
+  // gave its text, in both places production keeps in step.
+  const row = db.get<{ id: string }>(
+    "SELECT id FROM permit_status_checks WHERE target_id = ? ORDER BY rowid DESC LIMIT 1", [driftStr.id],
+  )!;
+  db.run("UPDATE permit_status_checks SET outcome = 'waiting', status_label = 'In review' WHERE id = ?", [row.id]);
+  db.run("UPDATE permit_check_targets SET latest_outcome = 'waiting', latest_status_label = 'In review' WHERE id = ?", [driftStr.id]);
+
+  const scan = scanStaleStatusClassifications(db, [driftProject.id]);
+  assert.equal(scan.checked, true, "the drift pass did not even run on the fixture");
+  assert.equal(scan.readings.length, 1,
+    `the fixture must hold exactly one stale filing, got ${JSON.stringify(scan.readings.map((s) => s.applicationNumber))} — `
+    + "with none of them stale every assertion below passes without the fix");
+  assert.equal(scan.readings[0].targetId, driftStr.id, "the STRUCTURAL filing is the stale one");
+  assert.equal(driftDetail2.permitCheckTargets.length, 2,
+    "one filing must be current while the other is stale — if both are stale, 'only the stale one "
+    + "is reported' is not being tested at all");
+  assert.notEqual(driftElec.id, driftStr.id);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────
+// RISK 2 — A DRIFT-PASS FAILURE MUST NOT REACH THE CUSTOMER, AND MUST NOT READ AS FRESHNESS.
+//
+// Injected through db.query, which is what staleStatusClassifications actually calls, and keyed
+// on the drift query's own signature so every OTHER read the payload builders do still works.
+// Anything coarser would prove the page dies of something unrelated.
+// ─────────────────────────────────────────────────────────────────────────────────────────
+const realQuery = db.query.bind(db);
+const INJECTED = "injected: the drift pass exploded";
+function breakDriftPass(): () => void {
+  (db as unknown as { query: unknown }).query = (sql: string, params?: unknown[]) => {
+    if (/MAX\(c2\.rowid\)/.test(String(sql))) throw new Error(INJECTED);
+    return (realQuery as (s: string, p?: unknown[]) => unknown)(sql, params);
+  };
+  return () => { (db as unknown as { query: unknown }).query = realQuery; };
+}
+
+await check("A DRIFT FAILURE DEGRADES TO NO MARKER — the emailed status page still renders", () => {
+  const errors: string[] = [];
+  const realError = console.error;
+  console.error = (...args: unknown[]) => { errors.push(args.map(String).join(" ")); };
+  const restore = breakDriftPass();
+  try {
+    // All three entry points, because all three call it and a guard on one is a guard on none.
+    const status = publicProjectStatusPayload(db, driftToken);
+    assert.ok(status, "the tokenized status page a customer was emailed returned nothing at all");
+    assert.ok(status!.tracks.length >= 2, `the page lost its filings: ${JSON.stringify(status!.tracks)}`);
+    const portalToken = ensureClientPortalToken(db, client.id);
+    const portal = clientPortalPayload(db, portalToken);
+    assert.ok(portal, "the per-client tracker died with the drift pass");
+    const history = projectStatusHistory(db, driftProject.id);
+    assert.ok(Array.isArray(history), "the timeline died with the drift pass");
+
+    // NO MARKER — the page is honest about not knowing by not asserting, and the operator route
+    // says the rest. What it must never do is 500.
+    for (const t of status!.tracks) {
+      assert.equal(t.needsRecheck, false,
+        `${t.applicationNumber} was marked stale by a pass that never ran — the marker would be invented`);
+    }
+
+    // ...and the failure is LOUD. A silent empty result is indistinguishable from "all current",
+    // which is precisely how a stalled permit goes on reading "In review" to the person waiting.
+    const line = errors.find((e) => /permit-monitor/.test(e));
+    assert.ok(line, `the drift pass failed and nothing was logged: ${JSON.stringify(errors)}`);
+    assert.match(line!, /stale/i, line!);
+    assert.match(line!, /unverified|not confirmed/i,
+      `the log says the pass failed but not what that means for the readings: ${line}`);
+    assert.match(line!, new RegExp(INJECTED.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+      `the underlying cause was swallowed, so nobody can fix it: ${line}`);
+
+    // THE THIRD ANSWER, kept separate from the second: "we could not tell" is not "nothing is
+    // stale". The operator surface reads this and says so in words.
+    const scan = scanStaleStatusClassifications(db, [driftProject.id]);
+    assert.equal(scan.checked, false, "a failed pass reported itself as a completed one");
+    assert.deepEqual(scan.readings, []);
+  } finally {
+    restore();
+    console.error = realError;
+  }
+});
+
+await check("...and the guard did not cost the feature: with the pass working, the mark is back", () => {
+  const status = publicProjectStatusPayload(db, driftToken)!;
+  const str = status.tracks.find((t) => t.applicationNumber === "187-26-000401-STR")!;
+  const elec = status.tracks.find((t) => t.applicationNumber === "187-26-000401-ELEC")!;
+  assert.equal(str.needsRecheck, true,
+    "the try/catch swallowed the real answer too — the stale reading is published unqualified");
+  assert.equal(elec.needsRecheck, false, "the current filing was marked as well, which makes the mark noise");
+  const scan = scanStaleStatusClassifications(db, [driftProject.id]);
+  assert.equal(scan.checked, true);
+  assert.equal(scan.readings.length, 1);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────
+// RISK 1 — THE OPERATOR'S PAGE, RUN.
+//
+// frontend/dashboard.js is an ES module (<script type="module">), so it is IMPORTED here — the
+// real shipped file, byte for byte, with one appended `export {}` line so the test can reach the
+// bindings it already has. Nothing is re-implemented and nothing is grepped: selectProject() is
+// the function the hash router calls when an operator opens a project, and what it does with the
+// network is observed through a fetch stub.
+//
+// The DOM is stubbed to the shape dashboard.js actually uses. If this harness starts failing to
+// LOAD, that is a real signal — the page acquired a browser dependency that this suite cannot see.
+// ─────────────────────────────────────────────────────────────────────────────────────────
+interface DashCall { url: string; method: string; body: Record<string, unknown> | null }
+class FakeElement {}
+let dashCalls: DashCall[] = [];
+let dashStaleBody: unknown = { projectId: "P1", checked: true, staleReadings: [] };
+const dashElements = new Map<string, Record<string, unknown>>();
+const DASH_DETAIL = {
+  project: {
+    id: "P1", owner: "Drift Guard", status: "approved", ahj: "City of Coos Bay",
+    utility: "Pacific Power", street: "990 Empire Blvd", city: "Coos Bay", state: "OR", zip: "97420",
+  },
+  // Electrical FIRST, structural second — the order that made permitCheckTargets[0] wrong.
+  permitCheckTargets: [
+    { id: "T-ELEC", targetType: "permit", permitType: "electrical", checkFrequencyDays: 7 },
+    { id: "T-STR", targetType: "permit", permitType: "building", checkFrequencyDays: 7 },
+  ],
+  permitStatusChecks: [], emailProjectMatches: [], qcResults: [], documents: [], corrections: [],
+  submissions: [], projectNotes: [], humanReviewItems: [], auditLogs: [],
+};
+
+function dashElement(id: string): Record<string, unknown> {
+  const existing = dashElements.get(id);
+  if (existing) return existing;
+  const listeners: Record<string, Array<(ev: unknown) => void>> = {};
+  const el = Object.assign(new FakeElement(), {
+    id, innerHTML: "", textContent: "", value: "", hidden: false, disabled: false, checked: false,
+    dataset: {} as Record<string, string>, style: {} as Record<string, string>, listeners,
+    classList: { add() {}, remove() {}, toggle() {}, contains: () => false },
+    addEventListener(type: string, fn: (ev: unknown) => void) { (listeners[type] ||= []).push(fn); },
+    removeEventListener() {},
+    querySelector: (sel: string) => dashElement(`${id}>>${sel}`),
+    querySelectorAll: () => [],
+    closest: () => null,
+    appendChild() {}, removeChild() {}, remove() {},
+    setAttribute() {}, getAttribute: () => null, hasAttribute: () => false,
+    insertAdjacentHTML() {},
+    focus() {}, blur() {}, click() {}, scrollIntoView() {}, select() {},
+    getBoundingClientRect: () => ({ top: 0, left: 0, width: 0, height: 0, bottom: 0, right: 0 }),
+  }) as unknown as Record<string, unknown>;
+  Object.defineProperty(el, "parentElement", { get: () => dashElement(`${id}^parent`) });
+  Object.defineProperty(el, "parentNode", { get: () => dashElement(`${id}^parent`) });
+  dashElements.set(id, el);
+  return el;
+}
+
+const dashGlobals = globalThis as unknown as Record<string, unknown>;
+const savedGlobals: Record<string, unknown> = {};
+for (const key of ["document", "window", "location", "fetch", "Element", "EventSource", "alert", "confirm"]) {
+  savedGlobals[key] = dashGlobals[key];
+}
+const realConsoleError = console.error;
+function installDashDom(): void {
+  console.error = (...args: unknown[]) => { dashRenderNoise.push(args.map(String).join(" ")); };
+  dashGlobals.document = {
+    getElementById: (id: string) => dashElement(id),
+    querySelector: (sel: string) => dashElement(`doc>>${sel}`),
+    querySelectorAll: () => [],
+    addEventListener() {},
+    createElement: (tag: string) => dashElement(`new:${tag}:${Math.random()}`),
+    body: dashElement("body"),
+    documentElement: dashElement("html"),
+  };
+  dashGlobals.window = {
+    location: { hash: "", href: "http://localhost/", origin: "http://localhost" },
+    addEventListener() {},
+    matchMedia: () => ({ matches: false, addEventListener() {} }),
+    scrollTo() {}, open: () => null,
+  };
+  dashGlobals.location = (dashGlobals.window as { location: unknown }).location;
+  dashGlobals.Element = FakeElement;
+  dashGlobals.EventSource = class { addEventListener() {} close() {} };
+  dashGlobals.alert = () => {};
+  dashGlobals.confirm = () => true;
+  dashGlobals.fetch = async (url: string, init: { method?: string; body?: string } = {}) => {
+    const u = String(url);
+    dashCalls.push({
+      url: u, method: String(init.method || "GET"),
+      body: init.body ? JSON.parse(init.body) as Record<string, unknown> : null,
+    });
+    const body = u.includes("/permit-checks/stale") ? dashStaleBody
+      : (u.includes("/permit-checks") || /\/api\/projects\/[^/?]+$/.test(u)) ? DASH_DETAIL
+        : {};
+    return { ok: true, status: 200, json: async () => body };
+  };
+}
+function restoreDashDom(): void {
+  console.error = realConsoleError;
+  for (const [key, value] of Object.entries(savedGlobals)) {
+    if (value === undefined) delete dashGlobals[key];
+    else dashGlobals[key] = value;
+  }
+}
+
+// dashboard.js's own safeRender() reports every panel that fails to render, and on stub data most
+// of the OTHER panels do — pages of stack traces that bury this file's results. They are captured
+// rather than printed, and quoted back in the failure messages below, where they are evidence.
+let dashRenderNoise: string[] = [];
+
+const STALE_REPORT = {
+  projectId: "P1",
+  checked: true,
+  staleReadings: [{
+    projectId: "P1", targetId: "T-STR", checkId: "C1", checkedAt: "2026-09-03T10:00:00.000Z",
+    source: "portal", targetType: "permit", permitType: "building",
+    applicationNumber: "187-26-000401-STR", hasPortalUrl: false,
+    stale: true, storedOutcome: "waiting", storedStatusLabel: "In review",
+    currentOutcome: "needs_human_review", currentStatusLabel: "Action needed before review",
+    label: "Structural permit",
+    recheck: { method: "POST", path: "/api/projects/P1/permit-checks", body: { targetId: "T-STR", source: "manual" } },
+  }],
+};
+
+interface DashModule {
+  state: Record<string, unknown>;
+  selectProject: (id: string) => Promise<void>;
+}
+let dash: DashModule | null = null;
+let dashLoadError = "";
+
+installDashDom();
+try {
+  // The shipped file plus one export line. Written beside the test's own scratch DB so nothing
+  // is added to frontend/, and imported as .mjs so Node treats it as the module it really is.
+  const dashSource = fs.readFileSync(path.join(REPO, "frontend", "dashboard.js"), "utf8");
+  const dashFile = path.join(tmpDir, "dashboard.harness.mjs");
+  fs.writeFileSync(dashFile, `${dashSource}\nexport { state, selectProject };\n`, "utf8");
+  dash = await import(pathToFileURL(dashFile).href) as unknown as DashModule;
+} catch (err) {
+  dashLoadError = err instanceof Error ? (err.stack || err.message) : String(err);
+} finally {
+  restoreDashDom();
+}
+
+/** Open a project the way the router does, with the stale route answering `body`. */
+async function openProjectInDashboard(body: unknown): Promise<string> {
+  dashStaleBody = body;
+  dashCalls = [];
+  dashRenderNoise = [];
+  installDashDom();
+  try {
+    await dash!.selectProject("P1").catch(() => { /* unrelated panels may fail on stub data */ });
+    return String((dashElement("permitChecks") as { innerHTML: string }).innerHTML || "");
+  } finally {
+    restoreDashDom();
+  }
+}
+
+await check("THE OPERATOR'S PAGE ASKS FOR IT: opening a project calls the stale route", async () => {
+  assert.equal(dashLoadError, "", `frontend/dashboard.js would not load in the harness:\n${dashLoadError}`);
+  const html = await openProjectInDashboard(STALE_REPORT);
+  const asked = dashCalls.filter((c) => c.url.includes("/permit-checks/stale"));
+  assert.equal(asked.length, 1,
+    "opening a project does not fetch /api/projects/:id/permit-checks/stale — the route has no "
+    + `production caller and the operator never learns a reading is stale. Calls: ${JSON.stringify(dashCalls.map((c) => c.url))}`);
+  assert.equal(asked[0].url, "/api/projects/P1/permit-checks/stale");
+  assert.equal(asked[0].method, "GET", "the drift REPORT was fetched with a write method");
+  assert.equal((dash!.state as { staleReadings?: unknown }).staleReadings !== null, true, "the answer was thrown away");
+
+  // ...and it REACHES THE PAGE, through renderDetail → renderPermitMonitor, not by us calling the
+  // renderer ourselves.
+  assert.match(html, /today's rules would classify differently/i,
+    `the report was fetched and never rendered — #permitChecks holds: ${html.slice(0, 400)}\n`
+    + `dashboard render errors: ${dashRenderNoise.join(" | ").slice(0, 600)}`);
+  assert.match(html, /In review/, "the panel does not say what the client is currently being told");
+  assert.match(html, /Action needed before review/, "the panel does not say what the rule says now");
+  assert.match(html, /187-26-000401-STR/, "the panel does not name which filing it is about");
+  assert.match(html, /data-recheck-target="T-STR"/,
+    "there is no control to act on it — a report an operator cannot act on is the orphan again");
+  // No portal URL on this filing: a blind fetch would replace a stale reading with a blanker one.
+  assert.match(html, /Paste a fresh status/, "a fetch-only control was offered for a filing with no portal URL");
+});
+
+await check("THE THIRD ANSWER RENDERS AS UNKNOWN, NOT AS AN ALL-CLEAR", async () => {
+  const failed = await openProjectInDashboard({ projectId: "P1", checked: false, staleReadings: [] });
+  assert.match(failed, /could not be checked/i,
+    `a failed drift pass rendered as silence, which on this page reads as "nothing is stale": ${failed.slice(0, 300)}`);
+  assert.match(failed, /unverified/i, "the operator is not told what an unmarked badge now means");
+  assert.doesNotMatch(failed, /rules would classify differently/i,
+    "a failed pass was reported as a completed one with no findings");
+
+  // And the genuinely clean answer renders NOTHING — otherwise the warning above is wallpaper.
+  const clean = await openProjectInDashboard({ projectId: "P1", checked: true, staleReadings: [] });
+  assert.doesNotMatch(clean, /could not be checked|rules would classify differently/i,
+    `a project with no stale readings still shows the panel: ${clean.slice(0, 300)}`);
+});
+
+await check("THE RE-CHECK CONTROL FILES AGAINST ITS OWN FILING, then re-reads the report", async () => {
+  await openProjectInDashboard(STALE_REPORT);
+  const container = dashElement("permitChecks") as { listeners: Record<string, Array<(ev: unknown) => void>> };
+  const clickHandlers = container.listeners.click || [];
+  assert.equal(clickHandlers.length, 1,
+    "no click handler is bound to #permitChecks, so the button in the panel does nothing");
+
+  const fireClick = (targetId: string, source: string): void => {
+    const button = Object.assign(new FakeElement(), { dataset: { recheckTarget: targetId, recheckSource: source } });
+    const evTarget = Object.assign(new FakeElement(), {
+      closest: (sel: string) => (sel === "button[data-recheck-target]" ? button : null),
+    });
+    for (const fn of clickHandlers) fn({ target: evTarget });
+  };
+
+  // A filing with NO portal URL: fetching would only record "no status text", so the control must
+  // send the operator to the paste box instead of firing a check that makes the reading blanker.
+  installDashDom();
+  dashCalls = [];
+  fireClick("T-STR", "manual");
+  await new Promise((r) => setTimeout(r, 40));
+  restoreDashDom();
+  assert.deepEqual(dashCalls, [],
+    `a filing with no portal URL was re-checked blind: ${JSON.stringify(dashCalls.map((c) => c.url))}`);
+  assert.equal((dash!.state as { recheckTargetId?: string }).recheckTargetId, "T-STR",
+    "the paste box was opened without remembering which filing the paste belongs to, so the next "
+    + "paste files against permitCheckTargets[0] — the wrong permit");
+
+  // A filing WITH a portal URL: fetch it, and against ITS OWN target, not the project's first.
+  installDashDom();
+  dashCalls = [];
+  fireClick("T-STR", "public_url");
+  await new Promise((r) => setTimeout(r, 150));
+  restoreDashDom();
+  const post = dashCalls.find((c) => c.method === "POST");
+  assert.ok(post, `the re-check button fired no request: ${JSON.stringify(dashCalls.map((c) => c.url))}`);
+  assert.equal(post!.url, "/api/projects/P1/permit-checks", "the cure is a NEW check on the existing POST route");
+  assert.equal(post!.body?.targetId, "T-STR",
+    `the re-check was filed against ${JSON.stringify(post!.body?.targetId)} — the project's FIRST target, not the `
+    + "stale one. On Ann's project that records the electrical permit and leaves the structural stale.");
+  assert.equal(post!.body?.source, "public_url");
+  const postIndex = dashCalls.indexOf(post!);
+  const refreshed = dashCalls.findIndex((c, i) => i > postIndex && c.url.includes("/permit-checks/stale"));
+  assert.ok(refreshed > postIndex,
+    "the report is not re-read after a re-check, so the panel keeps showing a reading that has "
+    + `just been cured: ${JSON.stringify(dashCalls.map((c) => c.url))}`);
 });
 
 // ═════════════════════════════════════════════════════════════════════════════════════════
@@ -932,8 +1307,99 @@ await check("THE CORRECTION NOTE NAMES ITS FILING", () => {
     `a trade was asserted with no discipline on file: ${unknown.headline}`);
 });
 
+// ═════════════════════════════════════════════════════════════════════════════════════════
+// THE ROUTE ITSELF, OVER HTTP.
+//
+// The dashboard checks above prove the operator's page CALLS /api/projects/:id/permit-checks/stale.
+// This proves the thing at the other end of that URL answers — through the real Express stack, the
+// real scope guard and the real 404 gate, in a real server process. Same shape as reviewApi.test.ts
+// (node + the tsx CLI directly: "npx" is not spawnable on Windows, and a shell wrapper would let
+// kill() stop the shell while orphaning the server).
+//
+// READ-ONLY, and asserted as such: permit_status_checks is an audit trail with a foreign key
+// pointing into it, and the row count is compared across the whole HTTP phase. A GET that edits
+// history would be a worse bug than the one this route reports.
+// ═════════════════════════════════════════════════════════════════════════════════════════
+const PORT = 4930 + Math.floor(Math.random() * 40);
+const BASE = `http://127.0.0.1:${PORT}`;
+const serverEnv = {
+  ...process.env,
+  AUTOPILOT_DB_PATH: process.env.AUTOPILOT_DB_PATH,
+  AUTOPILOT_AUTO_START: "0",
+  PORT: String(PORT),
+  SEED_TEST_INSTALLER: "false",
+  MONITOR_INTERVAL_MINUTES: "0",
+  LOG_LEVEL: "warn",
+  ANTHROPIC_API_KEY: "",
+  SESSION_ENCRYPTION_KEY: process.env.SESSION_ENCRYPTION_KEY || "unit-test-key-not-a-real-secret",
+  NO_PROXY: "*",
+  no_proxy: "*",
+};
+for (const key of ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"]) {
+  delete (serverEnv as Record<string, string | undefined>)[key];
+}
+const httpServer = spawn(
+  process.execPath, ["node_modules/tsx/dist/cli.mjs", "backend/src/server.ts"],
+  { env: serverEnv as NodeJS.ProcessEnv, stdio: ["ignore", "pipe", "pipe"], detached: false },
+);
+let httpLog = "";
+httpServer.stdout?.on("data", (d) => { httpLog += String(d); });
+httpServer.stderr?.on("data", (d) => { httpLog += String(d); });
+
+try {
+  let up = false;
+  for (let i = 0; i < 90 && !up; i++) {
+    try { up = (await fetch(`${BASE}/health`)).ok; } catch { /* not listening yet */ }
+    if (!up) await new Promise((r) => setTimeout(r, 1000));
+  }
+
+  await check("THE ROUTE, OVER HTTP: it reports the stale filing and names the call that cures it", async () => {
+    assert.ok(up, `the server never came up on ${PORT}. log tail:\n${httpLog.slice(-1500)}`);
+    const rowsBefore = rowsForProject(driftProject.id);
+
+    const res = await fetch(`${BASE}/api/projects/${driftProject.id}/permit-checks/stale`);
+    const text = await res.text();
+    assert.equal(res.status, 200, `the operator route the dashboard calls is not reachable: ${text.slice(0, 300)}`);
+    const body = JSON.parse(text) as {
+      projectId: string; checked: boolean;
+      staleReadings: Array<{ targetId: string; applicationNumber: string; label: string;
+        storedStatusLabel: string; currentStatusLabel: string; hasPortalUrl: boolean;
+        recheck: { method: string; path: string; body: { targetId: string; source: string } } }>;
+    };
+    assert.equal(body.projectId, driftProject.id);
+    assert.equal(body.checked, true, "the route reported the pass as failed when it ran fine");
+    assert.equal(body.staleReadings.length, 1,
+      `the stalled structural filing is not reported: ${text.slice(0, 400)}`);
+    const only = body.staleReadings[0];
+    assert.equal(only.targetId, driftStr.id, "the report names the wrong filing");
+    assert.equal(only.applicationNumber, "187-26-000401-STR");
+    assert.equal(only.storedStatusLabel, "In review");
+    assert.equal(only.currentStatusLabel, "Action needed before review");
+    assert.equal(only.hasPortalUrl, false);
+    assert.match(only.label, /permit/i, `the row does not name its filing: ${only.label}`);
+    // The cure, as a call the operator can actually make — and it points at the EXISTING POST.
+    assert.equal(only.recheck.method, "POST");
+    assert.equal(only.recheck.path, `/api/projects/${driftProject.id}/permit-checks`);
+    assert.equal(only.recheck.body.targetId, driftStr.id);
+    assert.equal(only.recheck.body.source, "manual", "a fetch was offered for a filing with no portal URL");
+    // NO SCRAPED PROSE over the wire: raw_status_text carries homeowner names and examiners' lines.
+    assert.doesNotMatch(text, /rawStatusText|raw_status_text|Submitted 09\/02/i, text.slice(0, 400));
+
+    // 404, not 403, and not a leak: an unknown/out-of-scope project must be indistinguishable.
+    const missing = await fetch(`${BASE}/api/projects/00000000-0000-0000-0000-000000000000/permit-checks/stale`);
+    assert.equal(missing.status, 404, `an unknown project answered ${missing.status}: ${(await missing.text()).slice(0, 200)}`);
+
+    assert.equal(rowsForProject(driftProject.id), rowsBefore,
+      "the stale REPORT wrote to permit_status_checks — email_project_matches.status_check_id "
+      + "points into that table and a GET must never edit what we believed at the time");
+  });
+} finally {
+  httpServer.kill();
+  await new Promise((r) => setTimeout(r, 300));
+}
+
 db.close();
-fs.rmSync(tmpDir, { recursive: true, force: true });
+try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* the killed server may still hold the file */ }
 console.log(failures === 0
   ? "\nstatusHistoryTransitions: all checks passed."
   : `\nstatusHistoryTransitions: ${failures} check(s) FAILED.`);

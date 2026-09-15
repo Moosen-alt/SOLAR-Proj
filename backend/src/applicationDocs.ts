@@ -6,7 +6,7 @@ import type {
   ProjectRecord,
 } from "../../shared/src/types";
 import { nowIso } from "./time";
-import { findAhjProcessProfile } from "./processProfiles";
+import { findAhjProcessProfile, ahjProcessKnowledgeStatus } from "./processProfiles";
 import { resolvePermitPath, resolveStampRequirement, permitPathCallout, hasStampedStructuralEvidence, evaluatePrescriptiveCriteria, type PermitPathResolution } from "./permitPath";
 
 // Derive combo-vs-separate from the AHJ process knowledge when the static application
@@ -550,7 +550,29 @@ function applicationHasMpuScope(project: ProjectRecord): boolean {
 }
 
 export function buildApplicationDocumentPackage(project: ProjectRecord, client: ClientRecord | null = null): ApplicationDocumentPackage {
-  const profile = findApplicationProfile(project);
+  const matched = findApplicationProfile(project);
+  // SAY IT ON THE PACKET WHEN THE JURISDICTION KNOWLEDGE WAS NEVER READ.
+  //
+  // findApplicationProfile degrades QUIETLY when the 381-profile AHJ process reference
+  // is unreadable: applicationProfileFromProcess returns null for every jurisdiction,
+  // so an Oregon project silently drops to the generic "oregon-generic-epermitting"
+  // fallback and an out-of-state one to "Generic AHJ Package" — each of which renders
+  // as a confident, named profile with its own notes. The operator reads a profile
+  // name and a document list that were produced with none of this AHJ's real process
+  // knowledge, and nothing on the screen says so.
+  //
+  // profile.notes is already rendered as "Jurisdiction notes" on the AHJ packet card
+  // (frontend/dashboard.js) and is reproduced in the generated packet HTML below, so
+  // this reaches the operator on the same screen the wrong list appears on. Copied,
+  // never mutated: the registry profiles are module-level shared objects.
+  const knowledge = ahjProcessKnowledgeStatus();
+  const profile: ApplicationRequirementProfile = knowledge.status === "resolved" ? matched : {
+    ...matched,
+    notes: [
+      `WARNING — the AHJ process reference (jurisdiction requirements for 381 AHJs) could not be read, so this package was built WITHOUT this jurisdiction's own process knowledge. The profile below is a generic fallback; treat its document list as unverified and check the AHJ's requirements by hand before submitting. Cause: ${knowledge.error || "unknown"}`,
+      ...(matched.notes || []),
+    ],
+  };
   const structure = permitStructureForProject(project);
   const permitPath = resolvePermitPath(project);
   const hasMpu = applicationHasMpuScope(project);

@@ -28,6 +28,11 @@
 // [3] pins researchFeeSchedule's own wiring: it must OWN the ledger it gives the
 //     researcher, or every caller that does not pass one (scripts/fee-sheet.ts)
 //     silently loses corroboration on real passes.
+// [4] the SECOND thing the same replay asserted without standing: a finding with no
+//     DISCIPLINE, written to the undifferentiated row, which outranks and hides
+//     every split row under the same key. Measured on a copy of the live database,
+//     that turned one project's $335 permit total into $200 with the county's
+//     electrical permit simply absent. Same script, same spawnSync harness.
 //
 // Browser-free, network-free. Run: tsx backend/test/feeCorroborationTrust.test.ts
 import fs from "node:fs";
@@ -49,7 +54,7 @@ async function main(): Promise<void> {
 
   const { openDatabase } = await import("../src/db");
   const {
-    saveFeeSchedule, getFeeSchedule, feeScheduleProfileKey, feeForProject,
+    saveFeeSchedule, getFeeSchedule, getFeeSchedulesForKey, feeScheduleProfileKey, feeForProject,
     researchFeeSchedule, newFeeDocumentLedger,
   } = await import("../src/feeSchedules");
   type Finding = import("../src/feeSchedules").FeeScheduleFinding;
@@ -232,6 +237,119 @@ async function main(): Promise<void> {
   check("a researcher that retrieved nothing cannot corroborate its own numbers",
     emptyPass.saved && emptyRow?.brackets[0]?.corroboration === undefined,
     JSON.stringify(emptyRow?.brackets[0]?.corroboration));
+
+  // =========================================================================
+  // [4] THE SAME REPLAY PATH, AND THE OTHER THING IT WAS SILENTLY DESTROYING.
+  //
+  // Found by running the real script end-to-end against a COPY of the live
+  // database rather than a scratch one, which is the only reason it was visible:
+  // fee_schedules is keyed (profile_key, track, DISCIPLINE), the findings file had
+  // no discipline field at all, and "" is NOT a wildcard — it is the
+  // undifferentiated row, which feeSchedules.applicableSchedules returns ALONE
+  // ("An undifferentiated row answers for everything and is the whole answer").
+  //
+  // MEASURED, on a copy of the live database, applying an ordinary two-row
+  // findings file for Coos Bay / Coos County:
+  //     before   Christopher Ivy's permit total  $335.00
+  //              = Coos County ELECTRICAL $135.00 + City of Coos Bay STRUCTURAL $200.00
+  //     after    $200.00, ONE line. The county's electrical permit left the quote
+  //              entirely; both split rows were still in the table, untouched and
+  //              unreachable behind the new "" row. Nothing was printed.
+  //
+  // Same shape as the corroboration defect above — a replay asserting something it
+  // has no standing to assert — so it is pinned in the same suite, through the same
+  // real script. The rows are SEEDED HERE THROUGH saveFeeSchedule, never raw SQL:
+  // a fixture built by INSERT can pin a shape nothing in production can write.
+  // =========================================================================
+  const SPLIT = { state: "OR", ahj: "City of Splitpermit", track: "permit" as const };
+  const SPLIT_KEY = feeScheduleProfileKey(SPLIT, "permit");
+  // Each row's quote NAMES ITS OWN FEE. evaluateSchedule refuses a single-bracket
+  // line whose stored evidence quotes a different amount (FEE_CONFLICT_MARKER), so
+  // re-using this file's $42/$88 quote would make the fixture unpriceable for a
+  // reason that has nothing to do with what [4] is pinning.
+  saveFeeSchedule(db, { ...SPLIT, discipline: "electrical" }, base({
+    sourceQuote: "Electrical permit, 0 through 25 kVA | $111.00",
+    brackets: [{ minKw: 0, maxKw: 25, feeUsd: 111, label: "Electrical permit, 0-25 kVA" }] as never,
+  }));
+  saveFeeSchedule(db, { ...SPLIT, discipline: "structural" }, base({
+    basis: "flat", sourceQuote: "Structural permit, flat | $222.00",
+    brackets: [{ feeUsd: 222, label: "Structural permit, flat" }] as never,
+  }));
+  const splitProject = {
+    state: "OR", ahj: SPLIT.ahj, utility: "Pacific Power",
+    systemSizeAcKw: 8, systemSizeDcKw: 10, parserSnapshot: {},
+  } as never;
+  check("[4] fixture: the jurisdiction files TWO separate permits, totalling $333",
+    feeForProject(db, splitProject, "permit")?.feeUsd === 333,
+    JSON.stringify(feeForProject(db, splitProject, "permit")?.feeUsd));
+
+  /** One findings row, written and applied exactly as an operator would. */
+  const applyOne = (name: string, ahj: string, discipline: string | null, feeUsd: number): string => {
+    const p = path.join(dir, `findings-${name}.json`);
+    fs.writeFileSync(p, JSON.stringify({
+      generatedAt: "2026-09-15T00:00:00.000Z",
+      database: "/tmp/a-scratch-copy.sqlite",
+      findings: [{
+        state: "OR", ahj, utility: "", track: "permit",
+        ...(discipline === null ? {} : { discipline }),
+        finding: {
+          found: true, reason: "", basis: "system_kw",
+          brackets: [{ minKw: 0, maxKw: 25, feeUsd, label: `Replayed line, $${feeUsd}`, corroboration: forgedCorroboration() }],
+          notes: "", paymentMethod: "portal",
+          sourceUrl: SOURCE_URL, sourceQuote: `Replayed line, 0 through 25 kVA | $${feeUsd}.00`,
+          sourceKind: "official", quoteVerified: true,
+        },
+      }],
+    }, null, 2), "utf8");
+    const r = spawnSync(
+      process.execPath,
+      [TSX_CLI, APPLY_SCRIPT, p, "--db", process.env.AUTOPILOT_DB_PATH as string],
+      { cwd: REPO_ROOT, encoding: "utf8", timeout: 180_000 },
+    );
+    return `${r.stdout ?? ""}\n${r.stderr ?? ""}`;
+  };
+
+  // --- (a) NO DISCIPLINE, against a jurisdiction that files separately. --------
+  // ASCII assertions only: this is read out of a child process's stdout on Windows.
+  const blind = applyOne("blind", SPLIT.ahj, null, 999);
+  check("[4a] a discipline-less finding against a split-permit jurisdiction is REFUSED",
+    blind.includes("REFUSED") && blind.includes("SEPARATE permit(s)"), blind.slice(-900));
+  check("[4a] ...it says nothing was written, and names the repair",
+    blind.includes("Nothing was written.") && blind.includes("THE REPAIR") && blind.includes('"electrical"'),
+    blind.slice(-900));
+  check("[4a] ...and it did NOT save", !/saved as SEEDED/.test(blind), blind.slice(-900));
+  const afterBlind = getFeeSchedulesForKey(db, SPLIT_KEY, "permit");
+  check("[4a] NO UNDIFFERENTIATED ROW WAS CREATED to shadow the two real ones",
+    afterBlind.length === 2 && afterBlind.every((r) => !!r.discipline),
+    JSON.stringify(afterBlind.map((r) => [r.discipline, r.brackets.map((b) => b.feeUsd)])));
+  check("[4a] THE QUOTE IS UNCHANGED — no permit vanished from the customer's total",
+    feeForProject(db, splitProject, "permit")?.feeUsd === 333,
+    JSON.stringify(feeForProject(db, splitProject, "permit")?.feeUsd));
+
+  // --- (b) THE SAME FILE, one word added. -------------------------------------
+  const named = applyOne("named", SPLIT.ahj, "electrical", 444);
+  check("[4b] naming the discipline lets the finding through", /saved as SEEDED/.test(named), named.slice(-900));
+  const elec = getFeeSchedule(db, SPLIT_KEY, "permit", "electrical");
+  const struct = getFeeSchedule(db, SPLIT_KEY, "permit", "structural");
+  check("[4b] ...onto the ELECTRICAL row", elec?.brackets[0]?.feeUsd === 444, JSON.stringify(elec?.brackets));
+  check("[4b] ...leaving the structural permit alone", struct?.brackets[0]?.feeUsd === 222, JSON.stringify(struct?.brackets));
+  check("[4b] ...still two rows, still no undifferentiated one",
+    getFeeSchedulesForKey(db, SPLIT_KEY, "permit").length === 2,
+    JSON.stringify(getFeeSchedulesForKey(db, SPLIT_KEY, "permit").map((r) => r.discipline)));
+  check("[4b] ...and corroboration is STILL stripped — the discipline door is not a trust door",
+    elec?.brackets[0]?.corroboration === undefined && elec?.confidence === "seeded",
+    JSON.stringify([elec?.confidence, elec?.brackets[0]?.corroboration]));
+
+  // --- (c) THE ORDINARY CASE MUST NOT HAVE MOVED. -----------------------------
+  // A jurisdiction with no split rows is exactly what every findings file written
+  // before this guard was aimed at, and it still applies with no discipline.
+  const FRESH = { state: "OR", ahj: "City of Nosplit", track: "permit" as const };
+  const fresh = applyOne("fresh", FRESH.ahj, null, 555);
+  check("[4c] a discipline-less finding against a key with NO split rows still applies",
+    /saved as SEEDED/.test(fresh) && !/REFUSED/.test(fresh), fresh.slice(-900));
+  const freshRow = getFeeSchedule(db, feeScheduleProfileKey(FRESH, "permit"), "permit", "");
+  check("[4c] ...as the undifferentiated row, as before",
+    freshRow?.brackets[0]?.feeUsd === 555, JSON.stringify(freshRow?.brackets));
 
   if (failures) {
     console.error(`\nfeeCorroborationTrust: ${failures} failure(s)`);

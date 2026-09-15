@@ -40,8 +40,9 @@ import { projectDocsByType } from "./projectDocuments";
 import { filledFormsByDocType, applicationKindForPath } from "./ahjForms";
 import { resolvePermitPath, resolveStampRequirement, hasStampedStructuralEvidence } from "./permitPath";
 import { resolveEffectiveCodeContext } from "./codeProfiles";
-import { findAhjProcessProfile } from "./processProfiles";
+import { findAhjProcessProfile, ahjProcessKnowledgeStatus, AHJ_PROCESS_REFERENCE_ENV } from "./processProfiles";
 import { findKnowledgeForLearn } from "./knowledgeBase";
+import { HttpError } from "./httpError";
 import { findApplicationProfile, namedApplicationForm, permitStructureForProject } from "./applicationDocs";
 
 export interface RequiredDocItem {
@@ -119,6 +120,30 @@ export interface ApplicationDocContext {
    * from Oregon's statewide prescriptive rule, which is why nothing ever demanded it.
    */
   requiresPrescriptiveChecklist?: boolean;
+  /**
+   * WHETHER THE ABSENCE OF DEMANDS ABOVE IS AN ANSWER AT ALL — the same distinction
+   * Round 3 drew for pkg.missingDocumentsStatus, one layer upstream and in the same
+   * two words on purpose.
+   *
+   *   "resolved"    — the 381-profile AHJ process reference was read. An empty
+   *                   processFlags then genuinely means THIS AHJ IS UNKNOWN TO US:
+   *                   a legitimately empty demand, and the NO SIGNAL, NO DEMAND rule
+   *                   in requiredApplicationDocs is the right answer.
+   *   "unavailable" — the reference file could not be read at all (absent, malformed,
+   *                   zero profiles). EVERY jurisdiction looks unknown, which is
+   *                   indistinguishable from the case above by the flags alone — and
+   *                   that indistinguishability is the bug: with the file unreachable,
+   *                   Christopher Ivy's blocking set went from three documents to
+   *                   none and the packet printed "Every required document is
+   *                   attached". documentInventory() refuses on this value rather
+   *                   than computing a set it has no basis for.
+   *
+   * Set only by applicationDocContext(), which does the lookups. A context built by
+   * hand (unit tests, the pure-function callers) leaves it absent.
+   */
+  knowledgeStatus?: "resolved" | "unavailable";
+  /** Why the knowledge base could not be read. Set only alongside "unavailable". */
+  knowledgeError?: string;
 }
 
 /** The application-family docTypes — the only keys a filled AHJ form may claim.
@@ -446,11 +471,28 @@ export function requiredApplicationDocs(
  * Resolve the AHJ-dependent inputs requiredApplicationDocs needs. Every lookup is
  * guarded: an incomplete project (no state/ahj/city, as qc.ts builds) yields a
  * thinner context, never a throw.
+ *
+ * AND IT DISTINGUISHES THE TWO WAYS OF KNOWING NOTHING. A thin context used to mean
+ * one of two opposite things with no way to tell them apart:
+ *
+ *   - THIS AHJ IS UNKNOWN. The 381-profile reference was read and has no row for this
+ *     jurisdiction. Demanding nothing is correct — see NO SIGNAL, NO DEMAND above.
+ *   - THE LOOKUP FAILED. The reference file could not be read, so EVERY jurisdiction
+ *     looks unknown, including the ones we have complete knowledge of. Demanding
+ *     nothing is then a claim we have no basis for, and it renders as an all-clear.
+ *
+ * knowledgeStatus carries the difference. It does not throw here — ahjFormAuto also
+ * calls this function and an exception would only trade a wrong answer for a crash —
+ * the refusal belongs at documentInventory(), which is the choke point every document
+ * verdict and the staging gate pass through.
  */
 export function applicationDocContext(project: ProjectRecord): ApplicationDocContext {
   const ctx: ApplicationDocContext = {};
   const ahj = (project.ahj || "").trim();
   if (ahj) ctx.ahjLabel = ahj;
+  const knowledge = ahjProcessKnowledgeStatus();
+  ctx.knowledgeStatus = knowledge.status;
+  if (knowledge.status === "unavailable") ctx.knowledgeError = knowledge.error;
   try {
     ctx.permitStructure = permitStructureForProject(project);
   } catch { /* profile data optional — an unresolved structure demands nothing as blocking */ }
@@ -531,6 +573,36 @@ export function documentInventory(db: AppDb, project: ProjectRecord): DocumentIn
   // application. Resolved HERE, where the guarded lookups belong, and threaded
   // into the pure function.
   const application = applicationDocContext(project);
+  // AN UNREADABLE KNOWLEDGE BASE MUST NEVER RENDER AS "NOTHING IS MISSING".
+  //
+  // THE choke point. Every document verdict in the product reaches the operator through
+  // this function: the packet card (getApplicationDocumentPackage), the submit-gate
+  // report, the QC document rows, and prepareSubmission's staging refusal. If the
+  // 381-profile reference is unreadable, every jurisdiction resolves to "no flags, no
+  // structure", requiredApplicationDocs' NO SIGNAL, NO DEMAND rule correctly emits
+  // nothing for a signal that isn't there, missingBlocking comes back empty, and the
+  // screen prints the pass-green "Every required document is attached" over a lookup
+  // that never happened. Measured on the live database with the file made unreachable,
+  // Christopher Ivy lost building_application, electrical_application and
+  // solar_checklist — the operator's own stated reason his permit bounced — and the
+  // submit gate dropped from blocker to warning.
+  //
+  // Refusing here is what converts that into the state Round 3 already built for it:
+  // getApplicationDocumentPackage catches and sets missingDocumentsStatus
+  // "unavailable", which the dashboard renders as "We could not determine which
+  // documents this AHJ requires" with the reason, never an all-clear; prepareSubmission
+  // does NOT catch, so staging stops with this message instead of proceeding.
+  //
+  // HttpError so the operator gets 503 + a readable cause rather than a 500 stack; the
+  // status also says the truth, which is that a dependency is missing, not that the
+  // request was wrong.
+  if (application.knowledgeStatus === "unavailable") {
+    throw new HttpError(
+      503,
+      `The AHJ process knowledge base is unreadable, so we cannot say which documents ${project.ahj || "this jurisdiction"} requires — refusing to report an empty list, which would read as "nothing is missing". Restore backend/data/reference-ahj-processes.json or set ${AHJ_PROCESS_REFERENCE_ENV} to its absolute path. Cause: ${application.knowledgeError || "unknown"}`,
+      { ahjKnowledgeUnavailable: true },
+    );
+  }
   const docOpts = { stampThresholdKwDc, jurisdictionLabel, processProfileRequiresStamp, application };
   const baselineItems = requiredDocuments(project, docOpts);
   try {

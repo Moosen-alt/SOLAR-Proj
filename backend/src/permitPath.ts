@@ -35,15 +35,25 @@ export interface PermitPathResolution {
   requiredEngineeredDocs: string[];
 }
 
+/** EVERYTHING resolvePermitPath reads is the parser snapshot — see `snap`/`num`
+ *  below, which are its only accessors. Stated as a type rather than left
+ *  implicit because callers already rely on it: ahjForms.permitPathForProject
+ *  casts a bare `{ parserSnapshot }` through `as ProjectRecord` to call this, and
+ *  feeSchedules.ts asks the same question from a Pick that carries no more than
+ *  this. Widening the parameter is safe for every existing caller (a full
+ *  ProjectRecord still satisfies it) and removes the need for the next one to
+ *  lie to the compiler. */
+export type PermitPathInputs = Pick<ProjectRecord, "parserSnapshot">;
+
 function clean(value: unknown): string {
   return typeof value === "string" ? value.trim() : value == null ? "" : String(value).trim();
 }
 
-function snap(project: ProjectRecord, key: string): string {
+function snap(project: PermitPathInputs, key: string): string {
   return clean((project.parserSnapshot || {})[key]);
 }
 
-function num(project: ProjectRecord, key: string): number | null {
+function num(project: PermitPathInputs, key: string): number | null {
   const raw = snap(project, key).replace(/[^0-9.\-]/g, "");
   if (!raw) return null;
   const n = Number(raw);
@@ -63,7 +73,7 @@ export const ENGINEERED_REQUIRED_DOCS = [
 // Does the parsed evidence show a stamped structural plan / engineering letter is
 // already in hand? Looks across the structural/stamp text + the split-page mapping
 // + any uploaded-document filenames captured on the snapshot.
-export function hasStampedStructuralEvidence(project: ProjectRecord): boolean {
+export function hasStampedStructuralEvidence(project: PermitPathInputs): boolean {
   const blob = [
     snap(project, "stampRecommendation"),
     // structuralCalcText is the key the parser actually emits (the narrative
@@ -210,7 +220,7 @@ export function resolveStampRequirement(
  *      screen → prescriptive.
  *   5. Default for a standard residential roof mount → prescriptive.
  */
-export function resolvePermitPath(project: ProjectRecord): PermitPathResolution {
+export function resolvePermitPath(project: PermitPathInputs): PermitPathResolution {
   const basis: string[] = [];
   const finalize = (path: PermitPath, source: PermitPathResolution["source"]): PermitPathResolution => ({
     path,
@@ -438,6 +448,79 @@ export function evaluatePrescriptiveCriteria(
   maxRow("roofLayers", `Existing roofing layers <= ${L.maxRoofLayers}`, "roofLayers", L.maxRoofLayers, "layer(s)");
 
   return rows;
+}
+
+// ---------------------------------------------------------------------------
+// WHAT PATH DOES A PUBLISHED LINE CLAIM TO BE ABOUT?
+//
+// The AHJ publishes two applications and you file one; it also publishes two
+// FEES and you owe one. The document half of that pair has been path-scoped for
+// a while (formApplicationKind / formAllowedForPath in ahjForms.ts). The fee
+// half was not, and on a live Coos Bay project the two halves said opposite
+// things on the same screen: the blocker panel demanded a PE stamp and a sealed
+// engineering letter (engineered path) while the fee card quoted $200 off a row
+// whose own label reads "Solar Permit (when required) – PRESCRIPTIVE PATH
+// System" and whose own notes say engineered installs are charged from a
+// different table by valuation. This is that gate, for the fee side.
+//
+// THE ENGINEERED TEST RUNS FIRST, AND THAT ORDER IS THE WHOLE CORRECTNESS OF
+// THIS FUNCTION — the same rule, for the same reason, as formApplicationKind's
+// header states: "Non-Prescriptive" CONTAINS "prescriptive". Test /prescriptive/
+// first and every line the AHJ titles with its own word for ENGINEERED comes
+// back "prescriptive", which is the inverted gate rebuilt on the money side.
+//
+// WHY THIS IS NOT formApplicationKind, and must not be "deduplicated" into it:
+//
+//   1. IMPORT CYCLE. ahjForms.ts imports feeSchedules.ts (findFeeScheduleForProject).
+//      feeSchedules.ts needing a classifier from ahjForms.ts would close that
+//      loop. permitPath.ts imports nothing but the shared types, so it is the
+//      side of the edge a shared classifier can live on.
+//   2. "STRUCTURAL" MEANS SOMETHING ELSE HERE. formApplicationKind reads
+//      /structural/ as the engineered application, which is right for a FORM
+//      NAME. On a fee row "structural" is the DISCIPLINE (FeeDiscipline:
+//      structural vs electrical vs combo) and says nothing about the path — the
+//      City of Coos Bay row IS the structural permit AND is prescriptive-only.
+//      A label reading "Solar structural permit, prescriptive path" would
+//      classify engineered under formApplicationKind and invert the gate again.
+//
+// LABELS ONLY — NEVER NOTES. A bracket's label is the jurisdiction's own wording
+// for THAT line, at the grain of the claim. Notes are prose ABOUT the row and
+// routinely discuss both paths in one breath: the live City of Coos Bay row's
+// notes read "Prescriptive path only. NONPRESCRIPTIVE (engineered) installs are
+// charged from the Structural Permit Fee table by valuation …" — every
+// engineered word in the table sits in the notes of a PRESCRIPTIVE row. Any
+// classifier pointed at that blob reports "engineered" and hands the engineered
+// project the prescriptive fee it was built to refuse. feePathScope.test.ts
+// holds that exact row as a fixture so the rule is enforced, not just written.
+// ---------------------------------------------------------------------------
+
+/** "" means the line makes NO claim about the path, which is the ordinary case
+ *  and is compatible with either one — the same convention formApplicationKind
+ *  uses for null. Never a guess. */
+export type PathWordingScope = "prescriptive" | "engineered" | "";
+
+/** Does this published line's own wording scope it to one of the two mutually
+ *  exclusive permit paths? Engineered is tested FIRST — see the header. */
+export function pathWordingScope(label: string | null | undefined): PathWordingScope {
+  const n = String(label ?? "").toLowerCase();
+  // REGEX LITERALS, not strings joined into a RegExp — "\b" inside a JS string
+  // literal is a BACKSPACE character, and this module has shipped that bug once
+  // already (see DENIES_A_SEAL above).
+  if (/\bnon-?\s*prescriptive\b|\bengineered\b/.test(n)) return "engineered";
+  if (/\bprescriptive\b/.test(n)) return "prescriptive";
+  return "";
+}
+
+/** Does a line scoped THIS way contradict a project resolved to THAT path?
+ *
+ *  Deliberately the same shape and the same weakness as ahjForms'
+ *  formContradictsPath: only an AFFIRMATIVE contradiction counts. An UNKNOWN
+ *  path contradicts nothing (we have not decided, so we cannot say the row is
+ *  wrong) and a line that claims no path contradicts nothing either. */
+export function pathWordingContradicts(scope: PathWordingScope, path: PermitPath): boolean {
+  if (!scope) return false;
+  if (path !== "prescriptive" && path !== "engineered") return false;
+  return scope !== path;
 }
 
 /** One-line human callout summarizing the path + its fee/review implications. */

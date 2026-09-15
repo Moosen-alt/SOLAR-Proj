@@ -40,9 +40,12 @@
       background: var(--bg);
       border-bottom: 1px solid var(--line);
     }
-    .ps-brand { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
-    .ps-brand strong { font-size: var(--text-sm); font-weight: 700; letter-spacing: -.01em; }
-    .ps-brand span { font-size: var(--text-xs); color: var(--muted); }
+    .ps-brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+    /* DIRECT CHILD, deliberately. The wordmark's own spans (.brand-mark, .brand-name,
+       .brand-sub) live inside the <a class="brand">, and a bare `.ps-brand span` outranks
+       styles.css's single-class rules — it would repaint the leaf muted and shrink KEELIX to
+       tagline size. This matches only the tagline beside the mark. */
+    .ps-brand > span { font-size: var(--text-xs); color: var(--muted); }
     .ps-topbar nav { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 
     .ps-wrap { max-width: 1160px; margin: 0 auto; padding: 0 28px 110px; }
@@ -271,9 +274,24 @@
 </head>
 
 <body>
+<!-- Same wordmark and leaf as dashboard.html's masthead, same .brand/.brand-mark/.brand-word
+     classes out of /styles.css (linked above) — this page still read "Solar Submission Autopilot"
+     while every other page had become Keelix, so the product changed name on the way in. -->
 <header class="ps-topbar">
   <div class="ps-brand">
-    <strong>Solar Submission Autopilot</strong>
+    <a class="brand" href="/dashboard" aria-label="Keelix Automation — dashboard">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M12 22.2v-6.6" stroke="currentColor" stroke-width="2.3" stroke-linecap="round"/>
+          <path d="M12 15.6s-.5-6.5-6.3-9.5c0 0-.7 6.4 2.7 8.7 2 1.3 3.6.8 3.6.8Z" fill="currentColor"/>
+          <path d="M12 15.6s.5-6.5 6.3-9.5c0 0 .7 6.4-2.7 8.7-2 1.3-3.6.8-3.6.8Z" fill="currentColor" opacity=".62"/>
+        </svg>
+      </span>
+      <span class="brand-word">
+        <span class="brand-name">KEELIX</span>
+        <span class="brand-sub">AUTOMATION</span>
+      </span>
+    </a>
     <span>Project intake</span>
   </div>
   <nav>

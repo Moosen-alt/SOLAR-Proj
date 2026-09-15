@@ -1,4 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
+import { z } from "zod";
 import { performance } from "node:perf_hooks";
 import type { AgentRunInput, AgentRunResult, AgentToolResult, AhjFieldMapResult, AhjFormUrlResult, AhjOverlayMapResult, AhjResearchResult, CorrectionBucket, InverterSpecLookup, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, PortalFieldPlan, PortalFieldPlanInput, PortalFillVerification, PortalFillVerifyInput, PortalFillVisionVerifyInput, ProjectRecord, UtilityResearchResult, AiPlanReviewResult, ReviewWorkType, JurisdictionCodeProfile, JurisdictionCodeResearchResult, ParserExtractedField } from "../../shared/src/types";
 import { RECIPE_FIELD_DESCRIPTIONS } from "./portalRecipes";
@@ -27,6 +29,172 @@ function hasCompleteJsonBlock(text: string): boolean {
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
+
+// ---------------------------------------------------------------------------
+// STRUCTURED OUTPUTS — stop depending on the model happening to emit clean JSON.
+//
+// `output_config.format` constrains DECODING server-side: the bytes coming back
+// are already valid JSON matching the schema, so the failure mode this file was
+// built to survive (a brace in the wrong place → parseJson returns the fallback →
+// an empty plan that looks exactly like "the planner chose to do nothing") cannot
+// occur at all. The repair paths below are KEPT as the net for the two failures a
+// schema cannot prevent — `max_tokens` truncation and a safety `refusal`.
+//
+// WIRE-ONLY FORMAT, DELIBERATELY. zodOutputFormat() returns {type, schema, parse};
+// passing the whole thing to .stream()/.create() makes the SDK run `parse` inside
+// the stream and THROW an AnthropicError on any content it cannot validate — which
+// would destroy the raw text that hasCompleteJsonBlock's 2× retry, the
+// "Response began: …" diagnostic in normalizeExtraction, and the "no actionable
+// plan" warning all read. So we send {type, schema} only and validate client-side
+// with safeParse, where a failure is a VALUE (null) we can fall back from rather
+// than an exception that eats the evidence. `client.messages.parse()` is used only
+// where a throw is contained and the output is too small to truncate
+// (classifyCorrection).
+//
+// The formats are module-level consts: the planner re-sends an identical request
+// prefix on every page of a learn run (18-80 calls), and a format rebuilt per call
+// would change bytes and cost the prompt cache.
+// ---------------------------------------------------------------------------
+
+/** The wire half of a zod schema: a plain JSONOutputFormat with NO client parse fn.
+ *  See the note above — attaching `parse` makes the SDK throw inside the stream. */
+function wireFormat(schema: z.ZodType): Anthropic.JSONOutputFormat {
+  const built = zodOutputFormat(schema);
+  const json: Record<string, unknown> = { ...built.schema };
+  // zod stamps `$schema` on the root object. The SDK's schema transform is an allowlist
+  // and folds any keyword the API does not take into `description` — so that dialect URI
+  // would arrive as a line of prompt noise on the root of every request. It carries no
+  // constraint; drop it. (The same fold is what turns z.enum() into a description hint —
+  // that one is wanted, and our own safeParse still enforces the enum.)
+  if (typeof json.description === "string" && /^\{\$schema:/.test(json.description)) delete json.description;
+  return { type: built.type, schema: json };
+}
+
+/** Close every object in a TOOL input schema so `strict: true` is legal on it.
+ *  Strict tool use requires `additionalProperties: false`; `required` is left exactly as
+ *  the caller authored it. Both of the shapes this repo's agent tools actually use were
+ *  probed against the live API before this shipped: a schema with a property absent from
+ *  `required` is ACCEPTED, and so is `properties: {}` with no `required` at all — so no
+ *  caller in correctionAgent.ts / runTriage.ts has to change to gain the guarantee.
+ *  Recursive because a nested open object would be rejected just as a top-level one is. */
+function closeToolSchema<T>(schema: T): T {
+  if (Array.isArray(schema)) return schema.map((e) => closeToolSchema(e)) as unknown as T;
+  if (!schema || typeof schema !== "object") return schema;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(schema as Record<string, unknown>)) out[k] = closeToolSchema(v);
+  if (out.type === "object") out.additionalProperties = false;
+  return out as unknown as T;
+}
+
+/** Nullable-required rather than optional: the supported JSON-schema subset is
+ *  smallest and most predictable when every property is present, and every call
+ *  site here already reads a null/non-number as "absent". */
+const nullableNumber = z.union([z.number(), z.null()]);
+const nullableString = z.union([z.string(), z.null()]);
+const confidenceEnum = z.enum(["low", "medium", "high"]);
+
+/** planPortalFields — the hottest structured call in the system (18-80 per learn
+ *  run) and the one whose unparseable response used to read as a silent stall. */
+const portalFieldPlanSchema = z.object({
+  fills: z.array(z.object({
+    index: z.number(),
+    value: z.string(),
+    field: nullableString,
+  })),
+  navigateIndex: nullableNumber,
+  advanceIndex: nullableNumber,
+  finalSubmitIndex: nullableNumber,
+  atReview: z.boolean(),
+  confidence: confidenceEnum,
+  notes: z.string(),
+});
+const PORTAL_FIELD_PLAN_FORMAT = wireFormat(portalFieldPlanSchema);
+
+/** verifyPortalFill / verifyPortalFillVision — gates whether a recorded recipe is
+ *  trusted for reuse, so an unreadable answer is a silently untrusted recipe. */
+const portalFillVerificationSchema = z.object({
+  matches: z.array(z.object({
+    label: z.string(),
+    expected: z.string(),
+    found: z.string(),
+    ok: z.boolean(),
+  })),
+  overallConfidence: confidenceEnum,
+  accurate: z.boolean(),
+  issues: z.array(z.string()),
+  notes: z.string(),
+});
+const PORTAL_FILL_VERIFICATION_FORMAT = wireFormat(portalFillVerificationSchema);
+
+/** mapAcroFormFields — RESHAPED to arrays on the wire. The result type keeps its
+ *  Record<fieldName, source> shape; the transport cannot, because a JSON schema in
+ *  the supported subset needs `additionalProperties: false` on every object and an
+ *  open map of PDF field names is exactly `additionalProperties: <schema>`. The
+ *  arrays are folded back into the Records below, so AhjFieldMapResult is unchanged. */
+const acroFieldMapSchema = z.object({
+  textFields: z.array(z.object({ name: z.string(), source: z.string() })),
+  checkboxes: z.array(z.object({ name: z.string(), source: z.string(), equals: nullableString })),
+  notes: z.string(),
+});
+const ACRO_FIELD_MAP_FORMAT = wireFormat(acroFieldMapSchema);
+
+/** mapFlatFormOverlay — coordinates are drawn VERBATIM onto a permit PDF, so the
+ *  0..1 range checks stay client-side (numeric bounds are outside the schema subset). */
+const overlayMapSchema = z.object({
+  fields: z.array(z.object({
+    source: z.string(),
+    page: z.number(),
+    nx: z.number(),
+    ny: z.number(),
+    size: nullableNumber,
+    maxWidthFrac: nullableNumber,
+    label: nullableString,
+  })),
+  signatures: z.array(z.object({
+    role: z.enum(["applicant", "owner", "contractor", "electrician", "other"]),
+    page: z.number(),
+    nx: z.number(),
+    ny: z.number(),
+    widthFrac: nullableNumber,
+    heightFrac: nullableNumber,
+    dateNx: nullableNumber,
+    dateNy: nullableNumber,
+    label: nullableString,
+  })),
+  notes: z.string(),
+});
+const OVERLAY_MAP_FORMAT = wireFormat(overlayMapSchema);
+
+/** suggestRecipeFieldBindings — the route answered with a bare JSON ARRAY, which a
+ *  format cannot express (the top level must be an object). Wrapped in `bindings`. */
+const recipeFieldBindingsSchema = z.object({
+  bindings: z.array(z.object({ index: z.number(), field: nullableString })),
+});
+const RECIPE_FIELD_BINDINGS_FORMAT = wireFormat(recipeFieldBindingsSchema);
+
+/** classifyCorrection — small enough that truncation is not a real failure mode, so
+ *  this is the one route that uses the SDK's own client.messages.parse(). */
+const CORRECTION_BUCKETS = [
+  "permit_approval", "permit_correction", "nem_approval", "nem_correction",
+  "status_update", "missing_info_request", "fee_request", "inspection_final_notice",
+  "spam_irrelevant",
+] as const;
+const correctionClassificationSchema = z.object({
+  bucket: z.enum(CORRECTION_BUCKETS),
+  confidence: z.number(),
+  notes: z.string(),
+});
+
+// Exported for backend/test/structuredOutputs.test.ts: the test asserts the exact
+// wire schemas production sends, so it must read the same consts production reads.
+export const STRUCTURED_OUTPUT_FORMATS = {
+  planPortalFields: PORTAL_FIELD_PLAN_FORMAT,
+  verifyPortalFill: PORTAL_FILL_VERIFICATION_FORMAT,
+  mapAcroFormFields: ACRO_FIELD_MAP_FORMAT,
+  mapFlatFormOverlay: OVERLAY_MAP_FORMAT,
+  suggestRecipeFieldBindings: RECIPE_FIELD_BINDINGS_FORMAT,
+  classifyCorrection: wireFormat(correctionClassificationSchema),
+} as const;
 
 // ---------------------------------------------------------------------------
 // LLM call log — an in-memory ring buffer of every Claude call's outcome
@@ -548,15 +716,18 @@ export class ClaudeLLMProvider implements LLMProvider {
   // when a parse "fails for no reason". `label` is the operation name so a log
   // line reads e.g. `[llm] ✓ extractProjectFields ms=8421ms inTok=6210 outTok=1840 stop=end_turn`.
   // ---------------------------------------------------------------------------
-  private async instrument(
+  // Generic in the message type so a `client.messages.parse()` call keeps its
+  // `parsed_output` through the wrapper — every existing caller is unaffected
+  // (T infers to Anthropic.Message).
+  private async instrument<T extends Anthropic.Message>(
     label: string,
     meta: Record<string, unknown>,
-    exec: () => Promise<Anthropic.Message>,
-  ): Promise<Anthropic.Message> {
+    exec: () => Promise<T>,
+  ): Promise<T> {
     const t0 = performance.now();
     const at = Date.now();
     logger.debug("llm", `→ ${label}`, { model: MODEL, ...meta });
-    let msg: Anthropic.Message;
+    let msg: T;
     // A TRANSIENT FAILURE INSIDE A STREAM DOES NOT REACH THE SDK'S RETRY.
     //
     // The client is built with maxRetries:5 and the SDK does retry 429/5xx — but only when
@@ -646,13 +817,109 @@ export class ClaudeLLMProvider implements LLMProvider {
     return [{ type: "text", text: systemPrompt, cache_control: { type: "ephemeral" } }];
   }
 
-  private async ask(label: string, systemPrompt: string, userMessage: string): Promise<string> {
-    const msg = await this.instrument(label, { chars: userMessage.length }, () =>
+  /** ONCE PER PROCESS, not once per call — see countPlannerPrompt. */
+  private plannerPromptCounted = false;
+
+  /** What the planner's USER half may cost before somebody should look at it.
+   *
+   *  The system half is a fixed multi-KB prompt and is cached (measured: 6143
+   *  tokens, read from cache on every repeat page). The user half is the page's
+   *  field list plus the project digest, and it is the half a regression lands in.
+   *
+   *  MEASURED, claude-opus-5, 2026-09-15, through the real planPortalFields:
+   *    · compact designNotesDigest, 4-field page → user half 313 tokens (686 chars)
+   *    · raw parser text in the digest's place  → user half 6673 tokens (15711 chars)
+   *  The second is the regression CLAUDE.md warns about, and its price is exactly
+   *  the warning's: +6360 input tokens per planner call × 80 calls on a learn run
+   *  × $15/Mtok = $7.63 per run, for prompt text the planner does not read.
+   *
+   *  4000 is chosen between them: roughly twice what a sixty-field page needs
+   *  (fields are ~20 tokens each, digest ~300, bodyText ~500) and well under the
+   *  measured regression, so a busy page is quiet and raw text is not. */
+  private static readonly PLANNER_USER_TOKEN_BUDGET = 4000;
+
+  /** Count the planner prompt ONCE per process and write it to the call log.
+   *
+   *  count_tokens is free and does not consume the model, but it is still a round
+   *  trip, and a learn run makes 18-80 planner calls whose user half is the same
+   *  SHAPE every time. One measurement answers the question ("is the digest still
+   *  compact?"); eighty answer it eighty times and add eighty round trips to the
+   *  run this is supposed to be protecting.
+   *
+   *  NEVER THROWS AND NEVER BLOCKS THE PLAN. A measurement that fails must cost a
+   *  log line, not a portal page — so the flag is set BEFORE the await and the
+   *  catch is silent-by-design. */
+  private async countPlannerPrompt(label: string, systemPrompt: string, userMessage: string): Promise<void> {
+    if (this.plannerPromptCounted) return;
+    this.plannerPromptCounted = true;
+    const startedAt = Date.now();
+    const t0 = performance.now();
+    try {
+      const whole = await this.client.messages.countTokens({
+        model: MODEL,
+        system: this.cachedSystem(systemPrompt),
+        messages: [{ role: "user", content: userMessage }],
+      });
+      const systemOnly = await this.client.messages.countTokens({
+        model: MODEL,
+        system: this.cachedSystem(systemPrompt),
+        messages: [{ role: "user", content: "." }],
+      });
+      const userTokens = Math.max(0, whole.input_tokens - systemOnly.input_tokens);
+      recordLlmCall({
+        at: startedAt,
+        label: `${label}.countTokens`,
+        ms: Math.round(performance.now() - t0),
+        inTok: whole.input_tokens,
+        outTok: 0,
+      });
+      logger.info("llm", "planner prompt measured (once per process)", {
+        label, promptTokens: whole.input_tokens, systemTokens: systemOnly.input_tokens,
+        userTokens, userChars: userMessage.length, budget: ClaudeLLMProvider.PLANNER_USER_TOKEN_BUDGET,
+      });
+      if (userTokens > ClaudeLLMProvider.PLANNER_USER_TOKEN_BUDGET) {
+        logger.warn(
+          "llm",
+          `⚠ PLANNER PROMPT IS OVER BUDGET: its user half is ${userTokens} tokens against a ${ClaudeLLMProvider.PLANNER_USER_TOKEN_BUDGET} budget. `
+          + "A learn run sends this 18-80 times. The usual cause is raw parser text reaching the planner instead of the compact "
+          + "designNotesDigest (see CLAUDE.md) — check what resolveRecipeFieldValues is putting in projectFields before running a full learn.",
+          { label, userTokens, userChars: userMessage.length },
+        );
+      }
+    } catch (err) {
+      // A count that fails tells us nothing; a count that throws would cost a page.
+      logger.debug("llm", "planner prompt count_tokens unavailable", { label, err: errMsg(err) });
+    }
+  }
+
+  // EFFORT IS OPTIONAL HERE AND THE DEFAULT IS NOT FREE.
+  //
+  // Measured on this exact route (lookupInverterSpec, four real inverter/part
+  // numbers, claude-opus-5, 2026-09-15): output_config omitted → 933 output
+  // tokens; effort:"high" → 924; effort:"medium" → 721; effort:"low" → 531. The
+  // unset default IS high. So every call through this helper has been paying for
+  // high-effort reasoning whether or not the route needed it, and "no effort set"
+  // is a decision that was never made rather than a cheap default.
+  //
+  // It stays OPT-IN. Lowering effort is a per-route judgement — a route whose
+  // answer is checked or escalated downstream can afford a weaker first pass; a
+  // route whose answer is acted on unverified cannot — so callers name it, and
+  // anything that says nothing keeps exactly the behaviour it had.
+  private async ask(
+    label: string,
+    systemPrompt: string,
+    userMessage: string,
+    format?: Anthropic.JSONOutputFormat,
+    effort?: "low" | "medium" | "high" | "xhigh",
+  ): Promise<string> {
+    const outputConfig = { ...(effort ? { effort } : {}), ...(format ? { format } : {}) };
+    const msg = await this.instrument(label, { chars: userMessage.length, ...(format ? { schema: true } : {}), ...(effort ? { effort } : {}) }, () =>
       this.client.messages
         .stream({
           model: MODEL,
           max_tokens: 2048,
           thinking: { type: "adaptive" },
+          ...(Object.keys(outputConfig).length ? { output_config: outputConfig } : {}),
           system: this.cachedSystem(systemPrompt),
           messages: [{ role: "user", content: userMessage }],
         })
@@ -670,6 +937,28 @@ export class ClaudeLLMProvider implements LLMProvider {
     }
   }
 
+  // Read a schema-constrained response. Returns the validated value, or null when the
+  // response was NOT schema-shaped — which with output_config.format set means the call
+  // truncated or was refused, not that the model wrote sloppy JSON. Null is a value the
+  // caller falls back from; the SDK's own parse would have thrown here instead, inside
+  // the stream, taking the raw text (and every diagnostic that reads it) with it.
+  private readStructured<T>(raw: string, schema: z.ZodType<T>, label: string): T | null {
+    const NOTHING = Symbol("no-json");
+    const obj = this.parseJson<unknown>(raw, NOTHING);
+    if (obj === NOTHING) {
+      logger.warn("llm", `⚠ ${label} returned no JSON despite a response schema — truncated or refused`, { chars: raw.length });
+      return null;
+    }
+    const result = schema.safeParse(obj);
+    if (result.success) return result.data;
+    // The server constrains decoding to this schema, so a mismatch is a real signal
+    // (usually a truncated object that still parsed). Say so; fall back, never throw.
+    logger.warn("llm", `⚠ ${label} response did not satisfy its schema — falling back to tolerant parsing`, {
+      issue: result.error.issues[0] ? `${result.error.issues[0].path.join(".")}: ${result.error.issues[0].message}` : "unknown",
+    });
+    return null;
+  }
+
   async extractFields(input: Record<string, unknown>): Promise<Record<string, unknown>> {
     const system = `You are a solar permit document parser. Extract structured data from solar permit application text.
 Return a JSON object with any of these fields you can find: customerName, address, city, state, zip, systemKw, panelCount, panelModel, inverterModel, inverterCount, batteryModel, batteryCount, utilityAccount, meterNumber, ahj, utility, roofType, mountType, azimuth, tilt.
@@ -680,16 +969,17 @@ Set confidence (0-1) for each field. Return only valid JSON.`;
   }
 
   // Larger budget than ask() — plan sets are dense and we want every field.
-  private async askLong(label: string, systemPrompt: string, userMessage: string, maxTokens = 4096): Promise<string> {
+  private async askLong(label: string, systemPrompt: string, userMessage: string, maxTokens = 4096, format?: Anthropic.JSONOutputFormat): Promise<string> {
     const run = (budget: number) =>
-      this.instrument(label, { chars: userMessage.length, maxTokens: budget, effort: "high" }, () =>
+      this.instrument(label, { chars: userMessage.length, maxTokens: budget, effort: "high", ...(format ? { schema: true } : {}) }, () =>
         this.client.messages
           .stream({
             model: MODEL,
             max_tokens: budget,
             thinking: { type: "adaptive" },
             // Plan sets are dense, multi-section reasoning — give the model room to reason.
-            output_config: { effort: "high" },
+            // `format`, when supplied, constrains decoding to the route's JSON schema.
+            output_config: { effort: "high", ...(format ? { format } : {}) },
             system: this.cachedSystem(systemPrompt),
             messages: [{ role: "user", content: userMessage }],
           })
@@ -709,9 +999,9 @@ Set confidence (0-1) for each field. Return only valid JSON.`;
   // Like askLong, but with a page SCREENSHOT prepended (vision-assisted planning). The model
   // reads the visible layout/section headings as the authoritative signal and the JSON field
   // list corroborates it. Used by planPortalFields when a screenshot is available.
-  private async askLongWithImage(label: string, systemPrompt: string, userMessage: string, imageBase64: string, mimeType: "image/png" | "image/jpeg" | "image/webp", maxTokens = 4096): Promise<string> {
+  private async askLongWithImage(label: string, systemPrompt: string, userMessage: string, imageBase64: string, mimeType: "image/png" | "image/jpeg" | "image/webp", maxTokens = 4096, format?: Anthropic.JSONOutputFormat): Promise<string> {
     const run = (budget: number) =>
-      this.instrument(label, { chars: userMessage.length, maxTokens: budget, effort: "xhigh", image: true }, () =>
+      this.instrument(label, { chars: userMessage.length, maxTokens: budget, effort: "xhigh", image: true, ...(format ? { schema: true } : {}) }, () =>
         this.client.messages
           .stream({
             model: MODEL,
@@ -719,7 +1009,7 @@ Set confidence (0-1) for each field. Return only valid JSON.`;
             thinking: { type: "adaptive" },
             // The vision-assisted planner is the hardest "see and reason" step (read the live
             // layout, reconcile it with the field list, decide each fill) — run it at xhigh.
-            output_config: { effort: "xhigh" },
+            output_config: { effort: "xhigh", ...(format ? { format } : {}) },
             system: this.cachedSystem(systemPrompt),
             messages: [{
               role: "user",
@@ -1048,13 +1338,35 @@ Classify the correction request into exactly one bucket:
 
 Return JSON: {"bucket": "<bucket>", "confidence": 0.0-1.0, "notes": "<brief reason>"}`;
     const ctx = input.project ? `Project: ${input.project.homeownerName}, AHJ: ${input.project.ahj}\n\n` : "";
-    const raw = await this.ask("classifyCorrection", system, `${ctx}Correction text:\n${input.correctionText}`);
-    const parsed = this.parseJson<{ bucket: CorrectionBucket; confidence: number; notes: string }>(raw, {
+    // THE ONE ROUTE THAT USES THE SDK'S OWN client.messages.parse(). Everywhere else the
+    // SDK's client-side parse would throw inside the stream and take the raw text with it;
+    // here the output is three small keys that cannot realistically truncate, the call is
+    // non-streaming, and the catch lands on the SAME default this route already returned
+    // on a parse failure — so the throw is fully contained and we get a typed,
+    // enum-validated bucket instead of whatever string came back.
+    const fallback = {
       bucket: "C_reviewer_clarification" as CorrectionBucket,
       confidence: 0.3,
       notes: "Parse error — review manually",
-    });
-    return parsed;
+    };
+    try {
+      const msg = await this.instrument("classifyCorrection", { schema: true }, () =>
+        this.client.messages.parse({
+          model: MODEL,
+          max_tokens: 2048,
+          thinking: { type: "adaptive" },
+          output_config: { format: zodOutputFormat(correctionClassificationSchema) },
+          system: this.cachedSystem(system),
+          messages: [{ role: "user", content: `${ctx}Correction text:\n${input.correctionText}` }],
+        }),
+      );
+      const out = msg.parsed_output;
+      if (!out) return fallback;
+      return { bucket: out.bucket as CorrectionBucket, confidence: out.confidence, notes: out.notes };
+    } catch (err) {
+      logger.warn("llm", "classifyCorrection could not be read", { err: errMsg(err).slice(0, 160) });
+      return fallback;
+    }
   }
 
   async draftResponse(input: { correctionText: string; project?: ProjectRecord }): Promise<{ draft: string; confidence: number }> {
@@ -1440,7 +1752,9 @@ Rules:
     const system = `You are a field-binding assistant for a solar permit automation bot.
 For each portal form fill/select interaction, decide if the typed value corresponds to one of the known project/client data fields — even when formatted differently (e.g. "TML INTERNATIONAL LLC" → installerCompanyName).
 Return null for portal-specific literal values (dropdown options, status words, fixed portal text) that should NOT be substituted per-project.
-Respond with ONLY a valid JSON array: [{"index":N,"field":"fieldKey"|null}]`;
+Respond with ONLY a valid JSON object: {"bindings":[{"index":N,"field":"fieldKey"|null}]}
+One entry per interaction you were given, in the same order. "field" is required — send null
+when the value is a portal literal.`;
 
     const user = `Known project/client fields:
 ${JSON.stringify(fieldRef, null, 2)}
@@ -1448,8 +1762,14 @@ ${JSON.stringify(fieldRef, null, 2)}
 Unbound portal form interactions to classify:
 ${JSON.stringify(input.unbound, null, 2)}`;
 
-    const raw = await this.ask("suggestRecipeFieldBindings", system, user);
-    const suggestions = this.parseJson<Array<{ index: number; field: string | null }>>(raw, []);
+    const raw = await this.ask("suggestRecipeFieldBindings", system, user, RECIPE_FIELD_BINDINGS_FORMAT);
+    // Legacy fallback still accepts the bare top-level array this route used to return —
+    // a top-level array is not expressible as an output format, which is why the wire
+    // shape moved inside "bindings".
+    const structured = this.readStructured(raw, recipeFieldBindingsSchema, "suggestRecipeFieldBindings");
+    const suggestions = structured
+      ? structured.bindings
+      : this.parseJson<Array<{ index: number; field: string | null }>>(raw, []);
     const validKeys = new Set(Object.keys(input.fieldValues));
     return suggestions
       .filter((s) => typeof s.index === "number")
@@ -1524,10 +1844,11 @@ HARD SAFETY RULES:
 - Prefer binding a field to a reusable project-field KEY (the "field" property, e.g. "homeownerName") over a literal value, so the recipe generalizes. Only use a literal "value" for fixed dropdown selections/portal-specific choices.
 - Do NOT fill a field you can't confidently map. Leave it out.
 - FILE UPLOADS: ignore file-input fields (fieldType "file") entirely — do NOT put them in "fills". The bot attaches the correct split document (SLD, site plan, inverter spec, meter photo, etc.) to each upload control automatically. Still return "advanceIndex" for the Next/Continue button on an upload page so the form proceeds.
-Return ONLY JSON:
-{"fills":[{"index":<field index>,"value":"<string>","field":"<projectFieldKey or omit>"}],
- "navigateIndex": <index of dashboard nav link, or omit>,
- "advanceIndex": <index or omit>, "finalSubmitIndex": <index or omit>,
+Return ONLY JSON. EVERY key below is required — where you have no answer send null (for the
+index keys) or an empty array/string; never omit a key:
+{"fills":[{"index":<field index>,"value":"<string>","field":"<projectFieldKey, or null for a portal-specific literal>"}],
+ "navigateIndex": <index of dashboard nav link, or null>,
+ "advanceIndex": <index, or null>, "finalSubmitIndex": <index, or null>,
  "atReview": <true if this is the review/confirm screen>, "confidence":"low|medium|high", "notes":"<short>"}`;
     const user = JSON.stringify({
       url: input.url, pageTitle: input.pageTitle, fields: input.fields,
@@ -1547,11 +1868,44 @@ Return ONLY JSON:
       // 8192 output budget: a field-heavy page (equipment repeaters, 40+ fills) truncated at
       // 4096 in a real PGE run → an unparseable plan → a silent stall. askLong also retries
       // once at 2× on max_tokens. Accuracy over speed.
+      const label = input.screenshotBase64 ? "planPortalFields.vision" : "planPortalFields";
+      // MEASURE THE PROMPT THE $10 WARNING IS ABOUT. CLAUDE.md: "the planner gets a
+      // compact designNotesDigest, NOT raw parser text … regressing this costs ~$10
+      // per run" — and nothing measured it, so the regression would arrive as a
+      // bill. `chars` in the call log is not the number: tokens are what is billed,
+      // and 18-80 planner calls multiply whatever this is.
+      await this.countPlannerPrompt(label, system, user);
       const raw = input.screenshotBase64
-        ? await this.askLongWithImage("planPortalFields.vision", system, user, input.screenshotBase64, "image/png", 8192)
-        : await this.askLong("planPortalFields", system, user, 8192);
-      parsed = this.parseJson<Partial<PortalFieldPlan>>(raw, {});
-    } catch { parsed = {}; }
+        ? await this.askLongWithImage(label, system, user, input.screenshotBase64, "image/png", 8192, PORTAL_FIELD_PLAN_FORMAT)
+        : await this.askLong(label, system, user, 8192, PORTAL_FIELD_PLAN_FORMAT);
+      // Schema-constrained first; the tolerant parseJson stays as the net for the two
+      // things a response schema cannot prevent (max_tokens truncation, a refusal).
+      // The schema carries explicit nulls where PortalFieldPlan uses optionals — mapped
+      // here, so every post-filter below (pay/submit guards, empty-plan warning) is
+      // untouched and behaves identically on both paths.
+      const structured = this.readStructured(raw, portalFieldPlanSchema, label);
+      parsed = structured
+        ? {
+            fills: structured.fills.map((f) => ({ index: f.index, value: f.value, ...(f.field ? { field: f.field } : {}) })),
+            navigateIndex: structured.navigateIndex ?? undefined,
+            advanceIndex: structured.advanceIndex ?? undefined,
+            finalSubmitIndex: structured.finalSubmitIndex ?? undefined,
+            atReview: structured.atReview,
+            confidence: structured.confidence,
+            notes: structured.notes,
+          }
+        : this.parseJson<Partial<PortalFieldPlan>>(raw, {});
+    } catch (err) {
+      // SAY WHY. A bare `catch {}` here turned every planner failure — a bad request, a
+      // 400 on the response schema, an auth error — into the same empty plan the warning
+      // below calls "truncated or unparseable", and the learn loop just span. The error
+      // is still swallowed (an empty plan is the correct degradation), but it is no
+      // longer invisible.
+      logger.warn("llm", "planPortalFields call failed — planning this page produced nothing", {
+        url: input.url || "page", err: errMsg(err).slice(0, 300),
+      });
+      parsed = {};
+    }
     // Safety post-filter: never let a pay/fee button through as advance/submit, and drop
     // a finalSubmit that was mistakenly set as advance.
     const labelOf = (i?: number) => (i == null ? "" : input.fields.find((f) => f.index === i)?.label || "");
@@ -1591,7 +1945,11 @@ Return ONLY JSON:
  "issues":["<short issue>"], "notes":"<short>"}`;
     const user = JSON.stringify({ reviewFields: input.reviewFields, projectFields: input.projectFields, bodyText: input.bodyText.slice(0, 1500) });
     let parsed: Partial<PortalFillVerification> = {};
-    try { parsed = this.parseJson<Partial<PortalFillVerification>>(await this.ask("verifyPortalFill", system, user), {}); } catch { parsed = {}; }
+    try {
+      const raw = await this.ask("verifyPortalFill", system, user, PORTAL_FILL_VERIFICATION_FORMAT);
+      parsed = this.readStructured(raw, portalFillVerificationSchema, "verifyPortalFill")
+        ?? this.parseJson<Partial<PortalFillVerification>>(raw, {});
+    } catch { parsed = {}; }
     const matches = Array.isArray(parsed.matches)
       ? parsed.matches.map((m) => ({ label: String(m.label || ""), expected: String(m.expected || ""), found: String(m.found || ""), ok: Boolean(m.ok) }))
       : [];
@@ -1620,10 +1978,12 @@ Return ONLY JSON:
     ];
     let parsed: Partial<PortalFillVerification> = {};
     try {
-      const msg = await this.instrument("verifyPortalFillVision", { effort: "high", image: true }, () =>
-        this.client.messages.create({ model: MODEL, max_tokens: 3072, thinking: { type: "adaptive" }, output_config: { effort: "high" }, system: this.cachedSystem(system), messages: [{ role: "user", content: user }] }),
+      const msg = await this.instrument("verifyPortalFillVision", { effort: "high", image: true, schema: true }, () =>
+        this.client.messages.create({ model: MODEL, max_tokens: 3072, thinking: { type: "adaptive" }, output_config: { effort: "high", format: PORTAL_FILL_VERIFICATION_FORMAT }, system: this.cachedSystem(system), messages: [{ role: "user", content: user }] }),
       );
-      parsed = this.parseJson<Partial<PortalFillVerification>>(this.textOf(msg), {});
+      const raw = this.textOf(msg);
+      parsed = this.readStructured(raw, portalFillVerificationSchema, "verifyPortalFillVision")
+        ?? this.parseJson<Partial<PortalFillVerification>>(raw, {});
     } catch { parsed = {}; }
     const matches = Array.isArray(parsed.matches)
       ? parsed.matches.map((m) => ({ label: String(m.label || ""), expected: String(m.expected || ""), found: String(m.found || ""), ok: Boolean(m.ok) }))
@@ -1713,7 +2073,21 @@ Notes:
     let source = "model knowledge";
     if (model) {
       try {
-        parsed = this.parseJson(await this.ask("lookupInverterSpec", system, `Model / part number: ${model}`), {});
+        // EFFORT "low", AND THE ESCALATION BELOW IS WHY IT IS SAFE.
+        //
+        // This is recall of one number off one datasheet — not a route that has to
+        // reconcile anything — and it is the only call in this file whose answer is
+        // CHECKED before it is used: outputCurrentA null or confidence "low" falls
+        // through to the web-search pass, and a web pass that finds nothing falls
+        // through to resolveInverterOffline. A weaker first pass therefore cannot
+        // produce a wrong number, only a cheap escalation.
+        //
+        // Measured (claude-opus-5, 2026-09-15, four real models — Enphase
+        // IQ8A-72-2-US, SolarEdge SE7600H-US, SMA Sunny Boy 7.7-US-41, Tesla part
+        // 1538000): unset/default 933 output tokens, high 924, medium 721, low 531.
+        // Every model returned the SAME amps/VA at all four settings. 43% fewer
+        // output tokens for an identical answer on the cases we could check.
+        parsed = this.parseJson(await this.ask("lookupInverterSpec", system, `Model / part number: ${model}`, undefined, "low"), {});
       } catch { parsed = {}; }
 
       // Web fallback when knowledge is unsure/unknown — search the manufacturer datasheet
@@ -1862,10 +2236,11 @@ Source syntax (use these EXACT strings):
 - "project.<key>" / "snapshot.<key>" / "client.<key>" / "computed.<key>" — pull from project data
 - "lit:<text>" — a literal constant (use for fixed marks, e.g. "lit:X" for a checkbox, "lit:Solar")
 
-Return ONLY JSON:
+Return ONLY JSON. Every key is required — send an empty array where you have nothing, and
+null for an "equals" you do not need:
 {
-  "textFields": { "<exact form field name>": "<source string>", ... },
-  "checkboxes": { "<exact checkbox field name>": { "source": "<source string>", "equals": "<optional value to compare>" }, ... },
+  "textFields": [ { "name": "<exact form field name>", "source": "<source string>" }, ... ],
+  "checkboxes": [ { "name": "<exact checkbox field name>", "source": "<source string>", "equals": "<value to compare, or null>" }, ... ],
   "notes": "<short note on anything ambiguous or left blank, e.g. signature/date fields left for the human>"
 }
 Rules:
@@ -1884,23 +2259,42 @@ ${input.fields.slice(0, 200).map((f) => `${f.name} | ${f.type}`).join("\n")}
 
 AVAILABLE DATA SOURCES:
 ${input.availableSources.join("\n")}`;
-    let parsed: Partial<AhjFieldMapResult> = {};
+    // Both shapes are normalized to [name, rule] pairs so the SAME validation runs on the
+    // schema-constrained ARRAY response and on the legacy OBJECT response the tolerant
+    // repair path still yields. AhjFieldMapResult (Records) is unchanged either way.
+    let textEntries: Array<[string, string]> = [];
+    let checkboxEntries: Array<[string, { source?: unknown; equals?: unknown }]> = [];
+    let mapNotes = "";
     try {
-      parsed = this.parseJson(await this.askLong("mapAcroFormFields", system, userMsg, 4096), {});
+      const raw = await this.askLong("mapAcroFormFields", system, userMsg, 4096, ACRO_FIELD_MAP_FORMAT);
+      const structured = this.readStructured(raw, acroFieldMapSchema, "mapAcroFormFields");
+      if (structured) {
+        textEntries = structured.textFields.map((f) => [f.name, f.source]);
+        checkboxEntries = structured.checkboxes.map((c) => [c.name, { source: c.source, equals: c.equals }]);
+        mapNotes = structured.notes;
+      } else {
+        const legacy = this.parseJson<Partial<AhjFieldMapResult>>(raw, {});
+        if (legacy.textFields && typeof legacy.textFields === "object") {
+          textEntries = Object.entries(legacy.textFields).map(([k, v]) => [k, String(v)]);
+        }
+        if (legacy.checkboxes && typeof legacy.checkboxes === "object") {
+          checkboxEntries = Object.entries(legacy.checkboxes) as Array<[string, { source?: unknown; equals?: unknown }]>;
+        }
+        mapNotes = String(legacy.notes || "");
+      }
     } catch (err) {
       logger.warn("llm", "mapAcroFormFields failed", { err: errMsg(err) });
     }
     const textFields: Record<string, string> = {};
-    if (parsed.textFields && typeof parsed.textFields === "object") {
-      for (const [k, v] of Object.entries(parsed.textFields)) {
+    {
+      for (const [k, v] of textEntries) {
         const src = this.cleanFieldSourceString(String(v));
         if (k && src && /^(project|snapshot|client|computed)\.|^lit:/.test(src)) textFields[k] = src;
       }
     }
     const checkboxes: Record<string, { source: string; equals?: string }> = {};
-    if (parsed.checkboxes && typeof parsed.checkboxes === "object") {
-      for (const [k, v] of Object.entries(parsed.checkboxes)) {
-        const rule = v as { source?: unknown; equals?: unknown };
+    {
+      for (const [k, rule] of checkboxEntries) {
         let src = this.cleanFieldSourceString(String(rule?.source || ""));
         // An EMPTY equals must be dropped, not kept: at fill time `equals: ""`
         // would mean "check when the value resolves EMPTY" — i.e. tick the box
@@ -1922,7 +2316,7 @@ ${input.availableSources.join("\n")}`;
         }
       }
     }
-    return { provider: "claude", textFields, checkboxes, notes: String(parsed.notes || "") };
+    return { provider: "claude", textFields, checkboxes, notes: mapNotes };
   }
 
   async mapFlatFormOverlay(input: {
@@ -1952,6 +2346,8 @@ ALSO locate every SIGNATURE line (where a handwritten signature goes) and return
 - "label": the printed signature label
 
 Return ONLY JSON: {"fields":[ ... ], "signatures":[ ... ], "notes":"<caveats>"}
+Every key listed above is required on every entry — send null for one that does not apply
+(e.g. "maxWidthFrac": null, "dateNx": null), never omit it. Send empty arrays when you find nothing.
 
 Rules:
 - Place a value ONLY where you can clearly see the matching labeled blank. Do not guess positions.
@@ -1972,12 +2368,12 @@ Rules:
 
     let raw = "";
     try {
-      const msg = await this.instrument("mapFlatFormOverlay", { pages: input.pages.length, effort: "high" }, () =>
+      const msg = await this.instrument("mapFlatFormOverlay", { pages: input.pages.length, effort: "high", schema: true }, () =>
         this.client.messages.create({
           model: MODEL,
           max_tokens: 4096,
           thinking: { type: "adaptive" },
-          output_config: { effort: "high" },
+          output_config: { effort: "high", format: OVERLAY_MAP_FORMAT },
           system: this.cachedSystem(system),
           messages: [{ role: "user", content }],
         }),
@@ -1986,7 +2382,24 @@ Rules:
     } catch (err) {
       logger.warn("llm", "mapFlatFormOverlay failed", { err: errMsg(err) });
     }
-    const parsed = this.parseJson<{ fields?: unknown[]; signatures?: unknown[]; notes?: string }>(raw, {});
+    // The schema spells "not applicable" as an explicit null; the coordinate readers below
+    // were written against an OMITTED key (Number(undefined) is NaN → the default; but
+    // Number(null) is 0 → a placement drawn at the page corner). Dropping nulls makes the
+    // schema-constrained entry byte-for-byte the shape those readers already handle, so
+    // every 0..1 range check and default stays exactly as it was.
+    const dropNulls = (o: Record<string, unknown>): Record<string, unknown> => {
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(o)) if (v !== null) out[k] = v;
+      return out;
+    };
+    const structured = this.readStructured(raw, overlayMapSchema, "mapFlatFormOverlay");
+    const parsed: { fields?: unknown[]; signatures?: unknown[]; notes?: string } = structured
+      ? {
+          fields: structured.fields.map((f) => dropNulls(f as unknown as Record<string, unknown>)),
+          signatures: structured.signatures.map((s) => dropNulls(s as unknown as Record<string, unknown>)),
+          notes: structured.notes,
+        }
+      : this.parseJson<{ fields?: unknown[]; signatures?: unknown[]; notes?: string }>(raw, {});
     const fields: AhjOverlayMapResult["fields"] = [];
     if (Array.isArray(parsed.fields)) {
       for (const f of parsed.fields) {
@@ -2047,7 +2460,19 @@ Rules:
     const maxIterations = Math.max(1, Math.min(input.maxIterations ?? 12, 20));
     const effort = input.effort ?? "medium";
     const toolByName = new Map(input.tools.map((t) => [t.name, t]));
-    const apiTools = input.tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.input_schema as Anthropic.Tool.InputSchema }));
+    // STRICT TOOL USE. `classify_correction` and `report_finding` set a bucket / a
+    // severity that the operator then acts on, and `propose_data_update` writes a
+    // human-approved data change — the handlers coerce every field defensively
+    // because until now a tool_use.input was whatever the model felt like emitting.
+    // strict:true has the API validate the input against the schema instead, so a
+    // missing required field or an invented key cannot reach a handler at all.
+    // The handlers' coercion stays: defence in depth, and it is what runs in stub mode.
+    const apiTools: Anthropic.Tool[] = input.tools.map((t) => ({
+      name: t.name,
+      description: t.description,
+      strict: true,
+      input_schema: closeToolSchema(t.input_schema) as Anthropic.Tool.InputSchema,
+    }));
     const messages: Anthropic.MessageParam[] = [{ role: "user", content: input.user }];
     let finalText = "";
     let iterations = 0;

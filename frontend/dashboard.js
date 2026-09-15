@@ -19,6 +19,15 @@ const state = {
   processMap: null,
   installerPacket: null,
   submitGate: null,
+  // GET /api/projects/:id/permit-checks/stale — which of this project's STORED permit readings
+  // today's classifier rules would call something else, and the exact re-check that fixes each
+  // one. Null while unloaded; `{ checked:false }` means the drift pass itself failed, which is
+  // NOT the same as "nothing is stale" (see renderPermitMonitor).
+  staleReadings: null,
+  // Which filing the next pasted status belongs to, set when the operator clicks "Paste a fresh
+  // status" on a stale row. Cleared on project switch and after every recorded check — a stale
+  // target id would file the next paste against the wrong permit.
+  recheckTargetId: null,
   // Per-project manual stage open/close overrides so the operator can pin a stage
   // (e.g. Submit) open and have it persist across re-renders and navigation.
   stageOverrides: {},
@@ -956,6 +965,16 @@ async function loadPmPackets() {
   await loadCommunicationDrafts();
 }
 
+// WHICH STORED READINGS THIS PROJECT IS STILL PUBLISHING THAT THE RULES NOW DISAGREE WITH.
+//
+// The customer's status page already marks a stale reading "needs confirming" — but only the
+// OPERATOR can clear it, and clearing it means recording a real new check. This is the operator's
+// half of that: the same drift report, on the page where the re-check button lives. Without it the
+// classifier fix reaches the person who cannot act on it and not the person who can.
+async function loadStaleReadings() {
+  await loadProjectResource("staleReadings", "permit-checks/stale");
+}
+
 async function loadProjectTimeline() {
   await loadProjectResource("projectTimeline", "timeline");
 }
@@ -1420,6 +1439,8 @@ async function selectProject(projectId) {
   state.processMap = null;
   state.installerPacket = null;
   state.submitGate = null;
+  state.staleReadings = null;
+  state.recheckTargetId = null;
   state.submittalTracks = null;
   state.paymentQuotes = null;
   state.feeSheet = null;
@@ -1443,6 +1464,7 @@ async function selectProject(projectId) {
     loadCommunicationDrafts(), loadLiveReadiness(), loadProjectTimeline(),
     loadProcessMap(), loadInstallerPacket(), loadProjectDocuments(),
     loadSubmittalTracks(), loadPaymentQuotes(), loadFeeSheet(), loadPortalQuestions(),
+    loadStaleReadings(),
   ]);
   renderDetail();
 }
@@ -4187,6 +4209,81 @@ async function uploadAhjForm(ev) {
   }
 }
 
+// THE READINGS WE ARE STILL PUBLISHING THAT TODAY'S RULES WOULD CHANGE.
+//
+// Coos Bay's structural permits have said "Intake Requirements Needed" since Sep 3. The rule that
+// reads that as "the city is waiting on US" landed an hour after the last check ran, so the stored
+// rows — the ones the client page publishes — still say "In review by the jurisdiction" about a
+// permit nobody is reviewing. Nothing is rewritten to fix that (permit_status_checks is an audit
+// trail); the cure is a NEW check, and this is where an operator triggers one.
+//
+// THREE STATES, and the third is the one that gets lost:
+//   · a list of rows        — these readings are stale, here is the re-check for each.
+//   · checked, nothing      — the pass ran and every reading is current. Render nothing.
+//   · checked === false     — the pass FAILED. We do not know. That must never look like the
+//                             line above. The customer pages can only render a boolean, so this
+//                             is the one surface that can say "unverified", and it says it.
+function staleReadingPanel() {
+  const report = state.staleReadings;
+  if (!report) return "";
+  if (report.checked === false) {
+    return `
+    <article class="item warning">
+      <div class="item-title"><span>Staleness could not be checked</span><span class="badge badge-warning">Unverified</span></div>
+      <p>The drift pass over this project's stored readings failed, so the badges below are
+         <strong>unverified — not confirmed current</strong>. The client's status page is showing them
+         without a caveat. Check the server log for <code>permit-monitor</code>, then re-check any
+         filing you need to trust.</p>
+    </article>`;
+  }
+  const rows = report.staleReadings || [];
+  if (!rows.length) return "";
+  return `
+    <article class="item warning">
+      <div class="item-title"><span>${rows.length} reading${rows.length === 1 ? "" : "s"} today's rules would classify differently</span><span class="badge badge-warning">Re-check</span></div>
+      <p>These are the verdicts the client's status page is publishing right now. They were
+         classified by rules we have since changed. Nothing is rewritten — a re-check writes a new
+         row and leaves the old one in the audit trail.</p>
+      ${rows.map((row) => {
+        const manual = row.recheck?.body?.source !== "public_url";
+        return `
+        <p>
+          <strong>${esc(row.label || "Filing")}</strong>${row.applicationNumber ? ` · ${esc(row.applicationNumber)}` : ""} —
+          stored as “${esc(row.storedStatusLabel)}”, today’s rules read it as
+          “${esc(row.currentStatusLabel)}”. Last checked ${esc(fmtDate(row.checkedAt))}.
+          <button type="button" class="secondary" style="font-size:12px;margin-left:6px"
+                  data-recheck-target="${esc(row.targetId)}"
+                  data-recheck-source="${esc(row.recheck?.body?.source || "manual")}">
+            ${manual ? "Paste a fresh status" : "Re-check now"}
+          </button>
+          ${manual ? `<span class="muted"> No portal URL on this filing — a fetch would only record “no status text”, so paste what the portal says.</span>` : ""}
+        </p>`;
+      }).join("")}
+    </article>`;
+}
+
+// Delegated because the buttons above are re-rendered on every refresh. Registered once, on the
+// container that already exists in dashboard.html.
+function handleStaleRecheckClick(event) {
+  const target = event.target;
+  if (!(target instanceof Element)) return;
+  const button = target.closest("button[data-recheck-target]");
+  if (!button) return;
+  const targetId = button.dataset.recheckTarget;
+  if (button.dataset.recheckSource === "public_url") {
+    // .catch, not a floating promise: a failed fetch here would otherwise vanish, and the panel
+    // would go on showing the stale row with no explanation of why nothing happened.
+    recordPermitStatus("public_url", targetId).catch((err) => showMessage(err.message || "Re-check failed.", "error"));
+    return;
+  }
+  // No portal URL: firing a blind fetch here would replace a stale reading with a blanker one.
+  // Send the operator to the paste box instead, with the filing already selected.
+  const box = $("permitStatusText");
+  if (box) { box.focus(); box.scrollIntoView({ behavior: "smooth", block: "center" }); }
+  state.recheckTargetId = targetId;
+  showMessage("Paste what the portal says for this filing, then click Classify status — it will be recorded against that filing.", "info");
+}
+
 function renderPermitMonitor() {
   const targets = state.detail.permitCheckTargets || [];
   const checks = state.detail.permitStatusChecks || [];
@@ -4232,12 +4329,15 @@ function renderPermitMonitor() {
   };
   const recentChecks = checks.slice(0, 4);
   const earlierChecks = checks.slice(4);
-  $("permitChecks").innerHTML = checks.length
-    ? recentChecks.map(permitCheckCard).join("")
-      + (earlierChecks.length
-        ? `<details class="provenance"><summary>${earlierChecks.length} earlier check${earlierChecks.length === 1 ? "" : "s"}</summary><div class="provenance-body">${earlierChecks.map(permitCheckCard).join("")}</div></details>`
-        : "")
-    : `<p class="muted">No permit status checks yet.</p>`;
+  // The drift panel sits ABOVE the checks it is about: an operator reading the list has to know
+  // which of these verdicts we can no longer stand behind before they read the verdicts.
+  $("permitChecks").innerHTML = staleReadingPanel()
+    + (checks.length
+      ? recentChecks.map(permitCheckCard).join("")
+        + (earlierChecks.length
+          ? `<details class="provenance"><summary>${earlierChecks.length} earlier check${earlierChecks.length === 1 ? "" : "s"}</summary><div class="provenance-body">${earlierChecks.map(permitCheckCard).join("")}</div></details>`
+          : "")
+      : `<p class="muted">No permit status checks yet.</p>`);
 
   if (emailMatches.length) {
     $("permitChecks").innerHTML += `
@@ -4860,7 +4960,11 @@ async function addPermitTarget() {
   await loadProjects();
 }
 
-async function recordPermitStatus(source = "manual") {
+// `targetId` is EXPLICIT when the caller knows which filing it means. The default — the project's
+// FIRST target — was the only behaviour, and on a project with a structural and an electrical
+// permit (Coos Bay: both, one stalled) it silently recorded every re-check against whichever
+// happened to be first. The stale panel always passes the target its row is about.
+async function recordPermitStatus(source = "manual", targetId = null) {
   if (!state.selectedProjectId) return;
   const target = state.detail.permitCheckTargets?.[0];
   const rawStatusText = source === "mock" ? "" : $("permitStatusText").value.trim();
@@ -4871,7 +4975,7 @@ async function recordPermitStatus(source = "manual") {
   state.detail = await api(`/api/projects/${state.selectedProjectId}/permit-checks`, {
     method: "POST",
     body: JSON.stringify({
-      targetId: target?.id || null,
+      targetId: targetId || state.recheckTargetId || target?.id || null,
       source,
       rawStatusText,
       applicationNumber: $("permitApplicationNumber").value,
@@ -4879,6 +4983,7 @@ async function recordPermitStatus(source = "manual") {
     }),
   });
   $("permitStatusText").value = "";
+  state.recheckTargetId = null;
   state.workflow = null;
   state.historicalReport = null;
   await loadOpsPlan();
@@ -4887,6 +4992,9 @@ async function recordPermitStatus(source = "manual") {
   await loadProjectTimeline();
   await loadProcessMap();
   await loadInstallerPacket();
+  // The new row is the CURE for a stale reading, so re-run the drift report: a mark that survives
+  // a fresh check is noise, and one that vanishes without a check would be a lie.
+  await loadStaleReadings();
   const latest = state.detail.permitStatusChecks?.[0];
   showMessage(latest ? `Permit check classified: ${latest.statusLabel}` : "Permit check recorded.");
   renderDetail();
@@ -5249,6 +5357,9 @@ $("deleteProjectBtn").addEventListener("click", deleteSelectedProject);
 $("addCorrectionBtn").addEventListener("click", addCorrection);
 $("addPermitTargetBtn").addEventListener("click", addPermitTarget);
 $("recordPermitStatusBtn").addEventListener("click", () => recordPermitStatus("manual"));
+// The stale-reading panel renders inside #permitChecks and is rebuilt on every refresh, so its
+// re-check buttons are bound by delegation on the container, once.
+$("permitChecks").addEventListener("click", handleStaleRecheckClick);
 // Mock Check removed for production: it recorded a FABRICATED status check on a
 // real project's permit history. Simulated checks live in tests, not the UI.
 $("mockPermitCheckBtn")?.addEventListener("click", () => recordPermitStatus("mock"));

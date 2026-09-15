@@ -101,6 +101,22 @@ async function main(): Promise<void> {
       res.end("<html><head><title>Access Denied</title></head><body>You don't have permission to access /fees.pdf on this server.</body></html>");
       return;
     }
+    // The ordinary, unwalled path a harvest walks: a fee page that links the
+    // adopted schedule, and the schedule itself served plainly at 200.
+    if (url.startsWith("/fee-page")) {
+      res.writeHead(200, { "content-type": "text/html" });
+      res.end(
+        "<html><body><a href='/jobs'>Employment opportunities</a>"
+        + "<a href=\"/forms/adopted-fee-schedule.pdf\">Community Development Fee Schedule effective 7-1-25</a>"
+        + "</body></html>",
+      );
+      return;
+    }
+    if (url.startsWith("/forms/adopted-fee-schedule.pdf")) {
+      res.writeHead(200, { "content-type": "application/pdf" });
+      res.end(Buffer.from(pdfBytes));
+      return;
+    }
     if (url.startsWith("/find-a-document")) {
       res.writeHead(200, { "content-type": "text/html" });
       res.end(
@@ -328,6 +344,94 @@ async function main(): Promise<void> {
     sourceQuote: "Ameren charges $75 online.",
   }));
   check("a verified row refuses a method change too", overwrite.refusedVerified && getFeeSchedule(db, amerenKey, "nem")?.paymentMethod === "mailed_check", JSON.stringify(getFeeSchedule(db, amerenKey, "nem")?.paymentMethod));
+
+  // -------------------------------------------------------------------------
+  // 5. THE HARVEST'S OWN RETRIEVAL IS EVIDENCE — and it used to be thrown away.
+  //
+  // jurisdictionHarvest downloads the jurisdiction's adopted schedule and reads
+  // its fee table by COORDINATE PAIRING. That is the strongest evidence anything
+  // in this codebase can produce for a fee: bytes this process fetched, and the
+  // bracket's label and amount on one printed line. It then called
+  // saveFeeSchedule with NO ledger — and saveFeeSchedule treats a caller with no
+  // ledger as untrusted and STRIPS corroboration (round 2's fix, which is right:
+  // scripts/apply-fee-findings.ts fetches nothing and may not assert anything).
+  // So every harvested bracket ever stored landed uncorroborated, and the
+  // corroboration column on the live rows is empty for that reason and not
+  // because the machinery cannot do it.
+  //
+  // This drives the REAL harvestJurisdiction against the REAL saveFeeSchedule and
+  // reads the row back out of the database.
+  // -------------------------------------------------------------------------
+  const { harvestJurisdiction } = await import("../src/jurisdictionHarvest");
+  const HARVEST_AHJ = "City of Ledger Falls";
+  const harvest = await harvestJurisdiction(
+    db,
+    { state: "OR", ahj: HARVEST_AHJ, pageUrl: `${base}/fee-page` },
+    { apply: true },
+  );
+  check("the harvest found and saved a schedule", harvest.fee.action === "saved", `${harvest.fee.action}: ${harvest.fee.reason}`);
+
+  const harvestKey = feeScheduleProfileKey({ state: "OR", ahj: HARVEST_AHJ, utility: "" }, "permit");
+  const harvested = getFeeSchedule(db, harvestKey, "permit");
+  check("the harvested row is on file", Boolean(harvested), JSON.stringify(harvest.fee.reason));
+  check("…and it is SEEDED, never verified — rule 3 is a human's signature", harvested?.confidence === "seeded", harvested?.confidence);
+  const kvaBracket = (harvested?.brackets || []).find((b) => Math.abs(b.feeUsd - 160) < 0.005);
+  check("the 5.01–15 kVA bracket was stored", Boolean(kvaBracket), JSON.stringify(harvested?.brackets));
+
+  // THE POINT OF THIS SECTION.
+  check(
+    "A HARVESTED BRACKET CARRIES CORROBORATION — the harvest fetched the bytes, so it may assert it",
+    kvaBracket?.corroboration?.corroborated === true,
+    JSON.stringify(kvaBracket?.corroboration ?? null),
+  );
+  check(
+    "…and the corroboration quotes the PRINTED ROW the fee was read off",
+    (kvaBracket?.corroboration?.matchedLine || "").includes("5.01kva") && (kvaBracket?.corroboration?.matchedLine || "").includes("$160.00"),
+    kvaBracket?.corroboration?.matchedLine,
+  );
+  check(
+    "…naming the DOCUMENT it was downloaded from, not the page that linked it",
+    (kvaBracket?.corroboration?.sourceUrl || "").includes("/forms/adopted-fee-schedule.pdf"),
+    kvaBracket?.corroboration?.sourceUrl,
+  );
+  // ROWS STAY APART IN THE CORPUS. The harvest's `quote` staples every printed row
+  // into one string; corroborateBrackets splits the corpus on "\n", so handing it
+  // that blob would make every fee in the table co-occur with every label in it —
+  // the wind-row mis-attribution, rebuilt. The matched line must be ONE row.
+  check(
+    "the matched line is ONE printed row, not the whole table stapled together",
+    !(kvaBracket?.corroboration?.matchedLine || "").includes("Solar Permit (when required)"),
+    kvaBracket?.corroboration?.matchedLine,
+  );
+  check(
+    "the row's notes say CORROBORATED, in the operator's words",
+    /CORROBORATED 1\/1 bracket/.test(harvested?.notes || ""),
+    (harvested?.notes || "").slice(-300),
+  );
+  // THE SENTENCE MAY NOT OUTRUN THE ROW. harvest composes that notes line from its
+  // own ledger and saveFeeSchedule re-derives the stored corroboration from the
+  // same one; if those two ever stop being the same ledger, the notes would claim
+  // evidence the row does not carry — which is worse than claiming none, because a
+  // person reading the fee sheet would believe it. So the count in the sentence is
+  // checked against the brackets actually stored.
+  const storedCorroborated = (harvested?.brackets || []).filter((b) => b.corroboration?.corroborated).length;
+  const claimed = Number(/CORROBORATED (\d+)\//.exec(harvested?.notes || "")?.[1] ?? -1);
+  check(
+    "the notes' corroborated COUNT matches the brackets actually stored",
+    claimed === storedCorroborated,
+    `notes claim ${claimed}, row carries ${storedCorroborated}`,
+  );
+
+  // A HUMAN-VERIFIED ROW IS STILL UNTOUCHABLE ON THIS PATH. Corroboration is
+  // evidence, not authority: it may not become a reason to overwrite a person.
+  markFeeScheduleVerified(db, harvestKey, "permit", "operator@example.com");
+  const secondPass = await harvestJurisdiction(
+    db,
+    { state: "OR", ahj: HARVEST_AHJ, pageUrl: `${base}/fee-page` },
+    { apply: true },
+  );
+  check("a corroborating harvest still refuses a human-verified row", secondPass.fee.action === "refused_verified", `${secondPass.fee.action}: ${secondPass.fee.reason}`);
+  check("…and the row is still the human's", getFeeSchedule(db, harvestKey, "permit")?.confidence === "verified");
 
   await new Promise<void>((resolve) => server.close(() => resolve()));
   db.close();

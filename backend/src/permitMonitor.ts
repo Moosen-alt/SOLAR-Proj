@@ -1,5 +1,6 @@
 import type { AppDb } from "./db";
 import type { PermitCheckOutcome, PermitCheckSource } from "../../shared/src/types";
+import { logger } from "./logger";
 
 export interface PermitStatusClassification {
   outcome: PermitCheckOutcome;
@@ -468,4 +469,51 @@ export function staleStatusClassifications(db: AppDb, projectIds: string[]): Sta
     });
   }
   return stale;
+}
+
+/**
+ * The drift pass, WITH THE THIRD ANSWER: "we could not tell".
+ *
+ * staleStatusClassifications above reads permit_status_checks, joins permit_check_targets and
+ * RE-RUNS classifyPermitStatusText over stored portal prose. Any of that can throw — a schema
+ * migration mid-deploy, a row the classifier chokes on, a locked database. Unguarded, that throw
+ * propagates into clientPortalPayload / publicProjectStatusPayload / projectStatusHistory and
+ * takes down the tokenized status page a CUSTOMER was emailed. A homeowner gets a 500 because a
+ * diagnostic about our own rule changes failed. That trade is never worth making: the staleness
+ * marker is a caveat on the page, not the page.
+ *
+ * So a failure degrades to NO MARKER — and says so. `checked:false` is not `readings:[]`:
+ *
+ *   checked:true,  readings:[]   — the drift pass ran and every stored reading is current.
+ *   checked:false, readings:[]   — the drift pass FAILED. We do not know. Treat nothing here as
+ *                                  confirmed fresh.
+ *
+ * Collapsing those two into a bare empty array is the bug this exists to prevent: "unknown"
+ * rendering as an affirmative all-clear is exactly how a stalled permit goes on reading "In
+ * review" to the person waiting on it. Callers that have somewhere to SAY it (the operator route,
+ * which reports `checked` to the dashboard) must say it; the customer pages, which have no wording
+ * for "our diagnostic broke", drop the caveat and leave the loud log below as the channel.
+ *
+ * NEVER RETHROWS. Every call site is a page render.
+ */
+export interface StaleReadingScan {
+  /** false means the pass FAILED, not that nothing is stale. See above — the distinction is the point. */
+  checked: boolean;
+  readings: StaleStatusReading[];
+}
+
+export function scanStaleStatusClassifications(db: AppDb, projectIds: string[]): StaleReadingScan {
+  try {
+    return { checked: true, readings: staleStatusClassifications(db, projectIds) };
+  } catch (err) {
+    // No project ids, no scraped prose — the ids are internal UUIDs and the count is the useful
+    // number. logger redacts nothing for us here, so nothing identifying goes in.
+    logger.error(
+      "permit-monitor",
+      "Stale-classification pass failed; status pages will render WITHOUT staleness markers. "
+      + "An unmarked reading is now unverified, not confirmed current.",
+      { projects: (projectIds || []).length, reason: err instanceof Error ? err.message : String(err) },
+    );
+    return { checked: false, readings: [] };
+  }
 }

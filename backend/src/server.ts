@@ -71,7 +71,7 @@ import {
   updateCustomer,
 } from "./crm";
 import { clientPortalPayload, clientPortalUrl, ensureClientPortalToken, publicProjectStatusPayload, trackLabel } from "./clientPortal";
-import { staleStatusClassifications } from "./permitMonitor";
+import { scanStaleStatusClassifications } from "./permitMonitor";
 import { getKpiReport } from "./kpi";
 import {
   ahjFormRegistry,
@@ -140,6 +140,7 @@ import {
   runDuePermitChecks,
 } from "./repository";
 import { getSubmittalTracks, markTrackSubmitted } from "./submittalTracks";
+import { ahjProcessKnowledgeStatus, AHJ_PROCESS_REFERENCE_ENV } from "./processProfiles";
 import type { SubmittalTrackType } from "../../shared/src/types";
 
 const app = express();
@@ -164,6 +165,35 @@ const app = express();
       "SESSION_ENCRYPTION_KEY is short (<24 chars) — use a long random secret so the scrypt-derived credential key is not brute-forceable from a leaked DB.",
     );
   }
+})();
+
+// Startup AHJ-knowledge gate. backend/data/reference-ahj-processes.json holds the 381
+// seeded jurisdiction process profiles, and it is the ONLY place the system knows that
+// (say) Coos Bay files separate building + electrical permits and wants a prescriptive
+// checklist. Booting without it does not fail loudly — it makes every jurisdiction look
+// like one we have no requirements for, so nothing is demanded, missingBlocking comes
+// back empty and the packet card prints "Every required document is attached". Measured
+// against the live database with the file unreachable, that is exactly what happened to
+// the two Coos Bay permits that stalled on "Intake Requirements Needed".
+//
+// A server that cannot answer "what does this AHJ require?" must not answer it wrongly
+// for weeks. Fail fast, the way the credential-key gate above does, and name the cause:
+// the repo's own .dockerignore excludes `backend/data`, so the Docker/Fly images never
+// carry this file and mount an empty volume over the directory — a container that has
+// silently been in this state since it was first built will now refuse to start and say
+// why. Loads and COUNTS the profiles rather than stat-ing the path, so a truncated or
+// malformed file fails the gate too.
+(function assertAhjProcessKnowledge(): void {
+  const knowledge = ahjProcessKnowledgeStatus();
+  if (knowledge.status !== "resolved") {
+    logger.error(
+      "ahj-knowledge",
+      `The AHJ process reference could not be read — refusing to start. Without it no jurisdiction's required documents can be resolved and every document verdict silently reads as "nothing is missing". Restore backend/data/reference-ahj-processes.json, or set ${AHJ_PROCESS_REFERENCE_ENV} to its absolute path (Docker/Fly: .dockerignore excludes backend/data, so ship the file into the image or mount it and point this env var at it). Cause: ${knowledge.error || "unknown"}`,
+      { triedPaths: knowledge.triedPaths },
+    );
+    process.exit(1);
+  }
+  logger.info("ahj-knowledge", `AHJ process reference loaded: ${knowledge.profileCount} jurisdiction profiles.`, { path: knowledge.path });
 })();
 
 const db = await openDatabase();
@@ -1697,13 +1727,26 @@ app.post("/api/projects/:id/permit-checks", asyncHandler(async (req, res) => {
 //
 // Scope: under /api/projects/:id, so it inherits the tenancy guard (CLAUDE.md rule 6) — no new
 // top-level path. getProjectDetail 404s an unknown project before anything is read.
+//
+// WHO CALLS IT: frontend/dashboard.js — loadStaleReadings() on every project open (in
+// selectProject's allSettled batch) and again after recordPermitStatus(), rendered by
+// renderPermitMonitor() as the "Readings today's rules would change" panel with a re-check
+// control per row. It shipped once with no caller at all, which is the same defect as the bug it
+// was written to fix: a classifier correction nobody can act on. If the panel is ever removed,
+// remove this route with it rather than leaving it orphaned again.
+//
+// `checked` is the third answer. scanStaleStatusClassifications never throws; when the pass itself
+// fails it returns checked:false with an empty list, and an empty list that means "we could not
+// tell" must not reach the operator looking identical to "nothing is stale" — the dashboard prints
+// the difference. This is the ONE surface that can say it: the customer pages render a boolean.
 app.get("/api/projects/:id/permit-checks/stale", (req, res) => {
   const projectId = String(req.params.id);
   getProjectDetail(db, projectId); // 404 if missing / out of scope
-  const stale = staleStatusClassifications(db, [projectId]);
+  const scan = scanStaleStatusClassifications(db, [projectId]);
   res.json({
     projectId,
-    staleReadings: stale.map((s) => ({
+    checked: scan.checked,
+    staleReadings: scan.readings.map((s) => ({
       ...s,
       label: trackLabel(s.targetType, s.permitType),
       // The production path, named rather than described. `public_url` is the fetching source for
