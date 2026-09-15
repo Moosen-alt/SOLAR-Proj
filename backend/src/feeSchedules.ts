@@ -1777,14 +1777,44 @@ function findRawScheduleForProject(
   return best ? best.row : null;
 }
 
-/** Evaluation inputs a caller may pre-compute. `permitPath` is optional for the
- *  same reason the rest are: a seam that has no parser snapshot (lookupPublishedFee)
- *  cannot resolve one, and "unknown" — which is what it gets — contradicts nothing. */
+/** WHAT THE EVALUATOR WAS TOLD ABOUT THE PERMIT PATH. Three states, and the third
+ *  one is the whole point of this type existing.
+ *
+ *    "prescriptive" / "engineered" — resolved. The gate selects on it.
+ *    "unknown"     — WE LOOKED AND COULD NOT DECIDE. A real parser snapshot went
+ *                    through resolvePermitPath and it came back undecided. That
+ *                    contradicts nothing (the same rule ahjForms.formContradictsPath
+ *                    applies on the document side), so the row quotes exactly as it
+ *                    did before the gate existed, and autopilot.ts raises its own
+ *                    `permit_path` blocker so the undecided-ness is visible.
+ *    "unresolved"  — WE NEVER LOOKED. No snapshot was in reach at this seam. That is
+ *                    a DIFFERENT FACT and must not render as the same answer:
+ *                    "we could not check" is not "nothing is wrong". A path-scoped
+ *                    line picked without the path is a coin toss that would print as
+ *                    a citation — measured at $200 off City of Coos Bay's row titled
+ *                    "…Prescriptive Path System" for an ENGINEERED project.
+ *
+ *  Local to this module on purpose (see the seam header near lookupPublishedFee):
+ *  "unresolved" is not a permit path, it is a statement about the CALLER, and
+ *  permitPath.ts must keep owning PermitPath alone. */
+type FeePathInput = PermitPath | "unresolved";
+
+/** Evaluation inputs a caller may pre-compute.
+ *
+ *  `permitPath` IS REQUIRED, and that is the fix rather than a style choice. It used
+ *  to be optional "because a seam with no parser snapshot cannot resolve one", and
+ *  every consumer wrote `inputs?.permitPath ?? pathForProject(project, track)` —
+ *  which, on a synthetic project carrying `parserSnapshot: null`, silently returned
+ *  "unknown", turned the gate off, and handed back the other path's fee. Nobody
+ *  had to make a mistake for that to happen; they only had to omit a field.
+ *  Required means the omission is a COMPILE ERROR, and a caller that genuinely
+ *  cannot resolve a path has to say so in the value ("unresolved") where a reviewer
+ *  reads it. */
 interface FeeEvalInputs {
   kw: number | null;
   kwSource: string;
   valuationUsd: number | null;
-  permitPath?: PermitPath;
+  permitPath: FeePathInput;
 }
 
 /** The permit path for fee selection, read from THE SAME resolver the document
@@ -1860,7 +1890,9 @@ export function feeLinesForProject(
   track: FeeTrack,
   /** Evaluation inputs, when the caller already has them. lookupPublishedFee
    *  runs at a seam with no parser snapshot and its own pre-computed bracket
-   *  size, and must not silently re-derive either. */
+   *  size, and must not silently re-derive either — including the PERMIT PATH,
+   *  which is why FeeEvalInputs requires it rather than leaving it to the
+   *  fallback below. */
   inputs?: FeeEvalInputs,
 ): FeeScheduleLine[] {
   const key = feeScheduleProfileKey(project, track);
@@ -1875,7 +1907,11 @@ export function feeLinesForProject(
 
   const rating = inputs ? { kw: inputs.kw, which: inputs.kwSource } : systemRatingKw(project);
   const { kw, which } = rating;
-  const permitPath = inputs?.permitPath ?? pathForProject(project, track);
+  // A TERNARY ON `inputs`, NOT `inputs?.permitPath ?? …`. The `??` form reads as a
+  // default and would come back the moment someone made the field optional again;
+  // this form says what is true — a caller that brought inputs decided the path,
+  // and only a caller that brought none is asking us to resolve it.
+  const permitPath: FeePathInput = inputs ? inputs.permitPath : pathForProject(project, track);
   const lines: FeeScheduleLine[] = [];
   for (const row of rows) {
     const hop = followCollectedBy(db, row);
@@ -2042,11 +2078,37 @@ function bracketEvidence(schedule: FeeScheduleRecord, b: FeeBracket): string {
 //   · path known — an UNKNOWN path contradicts nothing, exactly as
 //     formContradictsPath says for the document side. We have not decided, so we
 //     cannot claim the row is wrong.
+//
+// AND THE CLAUSE THAT WAS MISSING, which is not a fourth clause but a different
+// question, asked by pathUncheckedGate below: "unknown" above means the resolver
+// RAN. A caller that never resolved a path at all is in a third state
+// ("unresolved"), and reading it as "unknown" is what let this exact bug back in
+// through lookupPublishedFee — a synthetic project with parserSnapshot: null,
+// a resolver with nothing to read, an "unknown" that turned the gate off, and the
+// prescriptive row quoted to an engineered job all over again. An unknown must
+// never render as a reassurance.
 // ---------------------------------------------------------------------------
-function pathGateApplies(schedule: FeeScheduleRecord, track: FeeTrack, path: PermitPath | undefined): path is "prescriptive" | "engineered" {
+function pathGateApplies(schedule: FeeScheduleRecord, track: FeeTrack, path: FeePathInput | undefined): path is "prescriptive" | "engineered" {
   if (track !== "permit") return false;
   if (schedule.discipline === "electrical") return false;
   return path === "prescriptive" || path === "engineered";
+}
+
+/** DOES "WE NEVER LOOKED" HAVE TO STOP THIS ROW?
+ *
+ *  The two scope clauses are the gate's own, and for the same reasons: a NEM line
+ *  and an electrical line are not scoped by the building path at all, so an
+ *  unchecked path cannot be wrong about them. What differs is the third clause —
+ *  here the path is "unresolved", which is NOT "unknown".
+ *
+ *  Keeping these two predicates separate rather than widening pathGateApplies is
+ *  deliberate: the gate SELECTS between paths and needs a known one, while this
+ *  asks whether the question was ever put. Folding them together is how "we did
+ *  not check" would start borrowing "we checked and it is fine". */
+function pathUncheckedGate(schedule: FeeScheduleRecord, track: FeeTrack, path: FeePathInput | undefined): boolean {
+  if (track !== "permit") return false;
+  if (schedule.discipline === "electrical") return false;
+  return path === "unresolved";
 }
 
 /** The lines this project could be charged from, once the ones whose own wording
@@ -2056,8 +2118,13 @@ function pathGateApplies(schedule: FeeScheduleRecord, track: FeeTrack, path: Per
 function bracketsForPath(
   schedule: FeeScheduleRecord,
   track: FeeTrack,
-  path: PermitPath | undefined,
+  path: FeePathInput | undefined,
 ): FeeBracket[] {
+  // NEVER LOOKED: every line that CLAIMS a path is out of reach, because choosing
+  // one of them would BE choosing a path — with nothing behind the choice. A line
+  // that claims no path is untouched: it prices the job on either path and needs
+  // no decision, which is why this filter is over the CLAIM and not over the row.
+  if (pathUncheckedGate(schedule, track, path)) return schedule.brackets.filter((b) => !pathWordingScope(b.label));
   if (!pathGateApplies(schedule, track, path)) return schedule.brackets;
   return schedule.brackets.filter((b) => !pathWordingContradicts(pathWordingScope(b.label), path));
 }
@@ -2107,12 +2174,43 @@ function pathMissReason(schedule: FeeScheduleRecord, path: "prescriptive" | "eng
     + `${relevant ? ` The row's own note: ${relevant}` : ""}`;
 }
 
+/** The sentence for the OTHER refusal — the one where nobody ever asked which path
+ *  this project is on.
+ *
+ *  IT MUST NOT READ LIKE pathMissReason. That one says "this jurisdiction prices the
+ *  other path and not yours", which is a fact about the TABLE and sends a person to
+ *  the published schedule. This one says "we do not know which path you are on", a
+ *  fact about the CALL, whose repair is to pass the path. Printing the first
+ *  sentence for the second situation would send somebody hunting a fee that is
+ *  sitting right there.
+ *
+ *  ACTIONABLE CLAUSE FIRST, like its sibling: submissionFees.normalizeScheduleResult
+ *  slices `reason` to 400 characters on its way to the quote's basis line. */
+function pathUncheckedReason(schedule: FeeScheduleRecord, blocked: FeeBracket[]): string {
+  const who = schedule.ahj || "this jurisdiction";
+  const labels = blocked.map((b) => clean(b.label)).filter(Boolean).slice(0, 2);
+  return `PERMIT PATH NOT CHECKED: this lookup was given no permit path and holds no plan-set snapshot to resolve `
+    + `one from, and every fee line stored for ${who} is scoped to the prescriptive or the engineered path. `
+    + `Nothing is quoted — a path-scoped line chosen without the path is a coin toss that would print as a `
+    + `citation. Pass the project's resolved permitPath (permitPath.resolvePermitPath) to price this.`
+    + `${labels.length ? ` The stored line${labels.length > 1 ? "s" : ""}: "${labels.join('", "')}".` : ""}`;
+}
+
+/** Which refusal this is. The three miss sites below route through here so the
+ *  `as "prescriptive" | "engineered"` narrowing can only ever happen where it is
+ *  true — an "unresolved" path reaching that cast would print "NO UNRESOLVED FEE
+ *  HELD", which is both nonsense and a claim about the jurisdiction we cannot make. */
+function pathRefusalReason(schedule: FeeScheduleRecord, path: FeePathInput | undefined, blocked: FeeBracket[]): string {
+  if (path === "unresolved") return pathUncheckedReason(schedule, blocked);
+  return pathMissReason(schedule, path as "prescriptive" | "engineered", blocked);
+}
+
 /** THE ONE EVALUATOR. Both public entry points below route through this, so the
  *  bracket boundary can only ever be decided in one place — two parallel
  *  evaluations would drift, and the boundary is the whole point of the table. */
 function evaluateSchedule(
   schedule: FeeScheduleRecord,
-  inputs: { kw: number | null; kwSource: string; valuationUsd: number | null; track?: FeeTrack; permitPath?: PermitPath },
+  inputs: { kw: number | null; kwSource: string; valuationUsd: number | null; track?: FeeTrack; permitPath?: FeePathInput },
 ): { feeUsd: number | null; bracketLabel: string; bracketQuote: string; corroboration?: FeeBracketCorroboration; reason: string } {
   const miss = (reason: string) => ({ feeUsd: null, bracketLabel: "", bracketQuote: "", reason });
   const hit = (b: FeeBracket) => {
@@ -2209,9 +2307,10 @@ function evaluateSchedule(
   const track = inputs.track ?? "permit";
   const candidates = bracketsForPath(schedule, track, inputs.permitPath);
   if (!candidates.length) {
-    // Reached only when the gate applied (otherwise candidates === brackets, and
-    // the empty case was already refused above), so the path is known here.
-    return miss(pathMissReason(schedule, inputs.permitPath as "prescriptive" | "engineered", schedule.brackets));
+    // Reached only when one of the two path gates applied (otherwise
+    // candidates === brackets, and the empty case was already refused above), so
+    // this is either "your path is not priced here" or "nobody said which path".
+    return miss(pathRefusalReason(schedule, inputs.permitPath, schedule.brackets));
   }
 
   // NOTE THE WIDENING, AND WHY IT IS SAFE. This arm used to read
@@ -2239,7 +2338,7 @@ function evaluateSchedule(
     // path. Re-matching the UNFILTERED list is the only way to tell them apart.
     if (!b) {
       if (candidates.length !== schedule.brackets.length && matchBracket(schedule.brackets, inputs.kw, "kw")) {
-        return miss(pathMissReason(schedule, inputs.permitPath as "prescriptive" | "engineered", schedule.brackets.filter((x) => !candidates.includes(x))));
+        return miss(pathRefusalReason(schedule, inputs.permitPath, schedule.brackets.filter((x) => !candidates.includes(x))));
       }
       return miss(`System size ${inputs.kw} kW (${inputs.kwSource || "rated"}) falls outside every published bracket — check the schedule for a row we missed.`);
     }
@@ -2251,7 +2350,7 @@ function evaluateSchedule(
     const b = matchBracket(candidates, inputs.valuationUsd, "valuation");
     if (!b) {
       if (candidates.length !== schedule.brackets.length && matchBracket(schedule.brackets, inputs.valuationUsd, "valuation")) {
-        return miss(pathMissReason(schedule, inputs.permitPath as "prescriptive" | "engineered", schedule.brackets.filter((x) => !candidates.includes(x))));
+        return miss(pathRefusalReason(schedule, inputs.permitPath, schedule.brackets.filter((x) => !candidates.includes(x))));
       }
       return miss(`Valuation $${inputs.valuationUsd.toLocaleString()} falls outside every published bracket.`);
     }
@@ -2305,7 +2404,8 @@ function lineFor(
   const valuationUsd = inputs
     ? inputs.valuationUsd
     : (schedule.basis === "valuation" ? resolveValuation(project.parserSnapshot, project.systemSizeDcKw).value : null);
-  const permitPath = inputs?.permitPath ?? pathForProject(project, track);
+  // Same ternary, same reason as feeLinesForProject — see the note there.
+  const permitPath: FeePathInput = inputs ? inputs.permitPath : pathForProject(project, track);
   const evaluated = evaluateSchedule(schedule, { kw, kwSource: which, valuationUsd, track, permitPath });
   return {
     discipline: schedule.discipline,
@@ -2402,6 +2502,21 @@ export interface PublishedFeeLookupArgs {
   /** Pre-resolved job valuation — this seam gets no parser snapshot, so a
    *  valuation-keyed schedule is unresolvable without it (and says so). */
   valuationUsd?: number | null;
+  /** THE PERMIT PATH, WHICH THIS SEAM CANNOT WORK OUT FOR ITSELF.
+   *
+   *  It builds a project with `parserSnapshot: null` — resolvePermitPath has
+   *  nothing to read — so OMITTING THIS IS NOT A DEFAULT, IT IS AN ADMISSION, and
+   *  it is handled as one: every path-scoped fee line refuses and says why
+   *  (pathUncheckedReason). Measured before that: this lookup handed an ENGINEERED
+   *  Coos Bay project $200 off the row titled "Solar Permit (when required) –
+   *  Prescriptive Path System", a row whose own stored notes say engineered
+   *  installs are charged by valuation and that it does not cover them.
+   *
+   *  "unknown" IS LEGAL AND IS NOT THE SAME THING. It means resolvePermitPath
+   *  actually RAN against a real snapshot and could not decide — which contradicts
+   *  no row, and quotes. Pass it only after resolving; passing it to quiet a
+   *  refusal is a claim that a check happened when it did not. */
+  permitPath?: PermitPath;
 }
 
 export interface PublishedFeeLookupResult {
@@ -2439,10 +2554,18 @@ export function lookupPublishedFee(db: AppDb, input: PublishedFeeLookupArgs): Pu
   try {
     const track = feeTrack(input.track);
     const kwRaw = num(input.bracketKw) ?? num(input.systemSizeAcKw) ?? num(input.systemSizeDcKw);
-    const evalInputs = {
+    // ANNOTATED, NOT INFERRED. FeeEvalInputs requires `permitPath`; spelling the
+    // type here is what makes the compiler reject this object literal if the field
+    // is ever dropped again, instead of quietly inferring a narrower shape that
+    // the call site below still accepts.
+    const evalInputs: FeeEvalInputs = {
       kw: kwRaw != null && kwRaw > 0 ? kwRaw : null,
       kwSource: input.bracketKw != null ? "bracket" : "AC/DC",
       valuationUsd: num(input.valuationUsd),
+      // NEVER `?? "unknown"`. See PublishedFeeLookupArgs.permitPath: this seam has
+      // no snapshot, so with nothing passed the honest value is "we never looked".
+      // (Kill-tested: `?? "unknown"` compiles cleanly and puts $360 / $200 back.)
+      permitPath: input.permitPath ?? "unresolved",
     };
     const project = {
       state: input.state, ahj: input.ahj, utility: input.utility,

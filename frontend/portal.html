@@ -145,6 +145,12 @@
     .recheck-row { flex: 1 1 100%; margin-top: 2px; }
     .recheck { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px 3px 7px; border-radius: 999px; background: color-mix(in oklab, var(--warning) 12%, var(--surface)); color: oklch(38% .12 68); font-size: 12px; font-weight: 500; }
     .recheck::before { content: ""; width: 6px; height: 6px; border-radius: 999px; background: var(--warning); flex: none; }
+    /* THE THIRD ANSWER, same look as status.html's: our own check did not run, so we know nothing
+       about this reading either way. Not the warning colour — amber says "something is wrong with
+       this filing", and nothing is known to be wrong with it. A grey gap in OUR knowledge, shown
+       as one. Absent is the one thing it must never be. */
+    .recheck.unknown { background: var(--surface-2); color: var(--muted); }
+    .recheck.unknown::before { background: transparent; border: 1.5px solid var(--muted); }
 
     /* The updates strip sits on the quiet surface at the foot of the card — the
        same move the site's mock card makes with its tinted "Recommended action" box. */
@@ -206,13 +212,41 @@
         const projects = d.projects || [];
         const yours = projects.filter((p) => NEEDS_YOU.has(p.statusKey)).length;
 
-        // A badge is a stored READING. `needsRecheck` means the last one for this filing was
-        // classified by rules we have since changed — our own checks read that same text
-        // differently now — so it is shown with a caveat and re-checked, never republished as
-        // today's fact. Wording names no reviewer: one line serves permits and interconnections.
-        // Plain words, no jargon: a client has to be able to read it.
-        const recheckNote = (flag) => flag
-          ? `<div class="recheck-row"><span class="recheck">Being re-checked — this reading needs confirming</span></div>` : "";
+        // A badge is a stored READING, and a reading is one of THREE things — never two.
+        //
+        //   current    — we checked it, and our rules today agree with what we recorded.
+        //   stale      — we checked it, and our rules now read that same text differently. Shown
+        //                with a caveat and re-checked, never republished as today's fact.
+        //   unverified — OUR CHECK DID NOT RUN AT ALL, so we do not know which of the two it is.
+        //
+        // The third value is the whole reason this reads `t.reading` instead of a boolean. One
+        // `false` stood for two different facts, and this page published the flattering one: the
+        // day the drift pass broke, a permit stalled at the counter since Sep 3 went back to an
+        // unqualified "In review by the jurisdiction", identical to a filing we had just
+        // confirmed. A check that did not happen is not a clean bill of health.
+        //
+        // Wording names no reviewer: one line serves permits and interconnections. Plain words, no
+        // jargon: a client has to be able to read it.
+        const READING_NOTE = {
+          stale: "Being re-checked — this reading needs confirming",
+          unverified: "We could not confirm this is up to date — it may have changed since we last checked",
+        };
+        // An unrecognised value reads as UNVERIFIED, never as current — the only direction a page
+        // is allowed to guess in is the cautious one. A payload with no `reading` at all falls back
+        // to the older boolean, which now means "do not publish this as today's fact".
+        const readingOf = (row) => {
+          const r = row && row.reading;
+          if (r === "current" || r === "stale" || r === "unverified") return r;
+          if (r) return "unverified";
+          return row && row.needsRecheck ? "stale" : "current";
+        };
+        // `claim` is the sentence the caveat qualifies — a filing with no reading at all shows
+        // "Checking…", which asserts nothing, so there is nothing to walk back.
+        const readingNote = (row, claim) => {
+          const state = readingOf(row);
+          if (state === "current" || !claim) return "";
+          return `<div class="recheck-row"><span class="recheck${state === "unverified" ? " unknown" : ""}">${esc(READING_NOTE[state])}</span></div>`;
+        };
         const cards = projects.map((p) => {
           const tracks = (p.tracks || []).map((t) => `
             <div class="track">
@@ -222,7 +256,7 @@
                 <div class="muted">${t.permitNumber && t.permitNumber !== t.applicationNumber ? "Permit " + esc(t.permitNumber) + " · " : ""}last checked ${when(t.lastCheckedAt)}</div>
               </div>
               <span class="badge ${cls(t.outcome)}">${esc(t.statusLabel || t.outcome || "Checking…")}</span>
-              ${recheckNote(t.needsRecheck)}
+              ${readingNote(t, t.statusLabel || t.outcome)}
             </div>`).join("")
             || `<div class="empty">Tracking starts once the application is filed.</div>`;
           // The latest few updates, in the words we actually sent them. Same sentences as the

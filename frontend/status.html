@@ -129,13 +129,19 @@
 
     /* A reading taken before our current status rules landed. Muted-warning, not alarm: nothing is
        known to be wrong with the filing — we are simply not willing to publish an old reading as
-       today's fact. See needsRecheck in the payload (backend/src/clientPortal.ts).
+       today's fact. See `reading` in the payload (backend/src/clientPortal.ts).
        Styled as a soft chip so a homeowner reads it as a note beside the status, not as an error,
        and given its own full-width row so it lands UNDER the status it qualifies rather than
        above it — the caveat has to follow the claim to read as one. */
     .recheck-row { flex: 1 1 100%; margin-top: 2px; }
     .recheck { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px 3px 7px; border-radius: 999px; background: color-mix(in oklab, var(--warning) 12%, var(--surface)); color: oklch(38% .12 68); font-size: 12px; font-weight: 500; }
     .recheck::before { content: ""; width: 6px; height: 6px; border-radius: 999px; background: var(--warning); flex: none; }
+    /* THE THIRD ANSWER — our own check did not run, so we know nothing about this reading either
+       way. Deliberately NOT the warning colour: amber says "something is wrong with your permit",
+       and nothing is known to be wrong with it. This is a grey gap in OUR knowledge, and it reads
+       as one — a hollow dot and neutral ink. What it must never be is absent. */
+    .recheck.unknown { background: var(--surface-2); color: var(--muted); }
+    .recheck.unknown::before { background: transparent; border: 1.5px solid var(--muted); }
 
     /* Timeline. A dot rail marks each entry; the newest one is green. */
     .hist { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 4px 16px; padding: 13px 0 13px 18px; border-top: 1px solid var(--line); position: relative; font-size: 14px; }
@@ -198,16 +204,43 @@
         const res = await fetch(`/api/public/status/${encodeURIComponent(token)}`);
         if (!res.ok) throw new Error("not found");
         const d = await res.json();
-        // THE BADGE IS A READING, AND A READING CAN BE OUT OF DATE. `needsRecheck` means the last
-        // stored reading for this filing was classified by rules we have since changed — our own
-        // checks now read that same text differently. Two Coos Bay permits sat in exactly that
-        // state: stalled at the counter, and this page saying the city was reviewing them. The
-        // badge still shows what was recorded (it is what we actually know), with the caveat
-        // beside it, and a real re-check writes the new reading. Reviewer-neutral wording on
-        // purpose — the same line serves a permit and an interconnection. Plain words, no jargon:
-        // a homeowner has to be able to read it.
-        const recheckNote = (flag) => flag
-          ? `<div class="recheck-row"><span class="recheck">Being re-checked — this reading needs confirming</span></div>` : "";
+        // THE BADGE IS A READING, AND A READING IS ONE OF THREE THINGS — NEVER TWO.
+        //
+        //   current    — we checked, and what we are showing is what our rules say today.
+        //   stale      — we checked, and our rules now read that same text differently. Two Coos
+        //                Bay permits sat in exactly that state: stalled at the counter, and this
+        //                page saying the city was reviewing them.
+        //   unverified — OUR CHECK DID NOT RUN. We do not know which of the other two this is.
+        //
+        // The third one is why this reads `t.reading` and not a boolean. A boolean had one `false`
+        // for two different facts, and this page rendered the comfortable one: when the drift pass
+        // broke, Ivy's stalled building permit went back to an unqualified "In review by the
+        // jurisdiction" — identical, byte for byte, to a permit we had just confirmed. A check we
+        // could not run is not a clean bill of health, and it never renders as one.
+        //
+        // The badge still shows what was RECORDED either way (it is what we actually know), with
+        // the caveat under it. Reviewer-neutral wording on purpose — the same lines serve a permit
+        // and an interconnection. Plain words, no jargon: a homeowner has to be able to read it.
+        const READING_NOTE = {
+          stale: "Being re-checked — this reading needs confirming",
+          unverified: "We could not confirm this is up to date — it may have changed since we last checked",
+        };
+        // An unrecognised value is treated as UNVERIFIED, never as current: the one direction a
+        // page may guess in is the cautious one. A payload with no `reading` at all falls back to
+        // the older boolean, which now means "do not publish this as today's fact".
+        const readingOf = (row) => {
+          const r = row && row.reading;
+          if (r === "current" || r === "stale" || r === "unverified") return r;
+          if (r) return "unverified";
+          return row && row.needsRecheck ? "stale" : "current";
+        };
+        // `claim` is the sentence the caveat qualifies. A filing we have never had a reading for
+        // shows "Checking…", which asserts nothing, so there is nothing to walk back.
+        const readingNote = (row, claim) => {
+          const state = readingOf(row);
+          if (state === "current" || !claim) return "";
+          return `<div class="recheck-row"><span class="recheck${state === "unverified" ? " unknown" : ""}">${esc(READING_NOTE[state])}</span></div>`;
+        };
         const tracks = (d.tracks || []).map((t) => `
           <div class="track">
             <div class="what">
@@ -215,7 +248,7 @@
               <div class="muted">${t.applicationNumber ? "Application " + esc(t.applicationNumber) + " · " : ""}${t.permitNumber ? "Permit " + esc(t.permitNumber) + " · " : ""}last checked ${when(t.lastCheckedAt)}</div>
             </div>
             ${badge(t.outcome, t.statusLabel)}
-            ${recheckNote(t.needsRecheck)}
+            ${readingNote(t, t.statusLabel || t.outcome)}
           </div>`).join("") || `<div class="empty">Tracking will appear here once the application is submitted.</div>`;
         // EVERY LINE NAMES ITS FILING. This card used to render date + status only, so a project
         // with a structural AND an electrical permit produced "Permit issued / In review / Permit
@@ -232,7 +265,7 @@
               ${filing ? `<div class="filing">${filing}</div>` : ""}
             </div>
             <span class="muted when">${when(h.at)}</span>
-            ${recheckNote(h.needsRecheck)}
+            ${readingNote(h, h.statusLabel || h.outcome)}
           </div>`;
         }).join("") || `<div class="empty">No status changes yet.</div>`;
         app.innerHTML = `

@@ -365,6 +365,20 @@ export interface ProjectRecord {
   /** Site fact: is the AC disconnect within 10 feet of the utility meter — 'yes' | 'no'.
    *  NEVER defaulted (it is measured on site, not inferable). */
   disconnectWithin10ft?: string;
+  /** ISO timestamp when this project was ARCHIVED; "" while it is live.
+   *
+   *  Archiving takes a job off the CLIENT-FACING portal and deletes nothing
+   *  (backend/src/projectArchive.ts) — operator surfaces still answer for it on
+   *  purpose, because hiding work from the people doing it is how a cleanup
+   *  becomes a second problem. What they must not do is answer IDENTICALLY, and
+   *  that is what they did for as long as this column could not reach a record:
+   *  the superseded Daly pass (cf1c56aa) priced out at $274.43 and raised blocking
+   *  demands with nothing anywhere saying its live twin is the real job. */
+  archivedAt?: string;
+  /** Why it was archived — the sentence that explains, six months later, why a job
+   *  vanished from a client's list. "" while live. Shown, not just stored: a
+   *  notice that cannot say "superseded by the certified run" is just a scold. */
+  archivedReason?: string;
 }
 
 export interface ProjectListItem extends Omit<ProjectRecord, "parserSnapshot"> {
@@ -1547,6 +1561,30 @@ export interface ProjectDetail {
 // CONSTRUCTION — a field that is not here cannot be published by accident.
 // ---------------------------------------------------------------------------
 
+/**
+ * HOW MUCH WE KNOW ABOUT ONE PUBLISHED READING. THREE VALUES, AND NEVER TWO.
+ *
+ * Every badge on both customer pages is a STORED reading, and there are three separable things
+ * that can be true about it — not two:
+ *
+ *   "current"    — the drift pass RAN and today's rules agree with what the row stored.
+ *   "stale"      — the drift pass RAN and today's rules read that same stored text differently.
+ *   "unverified" — THE DRIFT PASS COULD NOT RUN AT ALL. We do not know which of the other two
+ *                  this is. It is not an all-clear, and it must never render as one.
+ *
+ * The third value exists because the boolean did not have room for it. `needsRecheck:false` used
+ * to mean BOTH "we checked and it is current" AND "our check blew up", and the pages rendered the
+ * reassuring reading of that: Christopher Ivy's building permit — stalled at Coos Bay's counter on
+ * "Intake Requirements Needed" since Sep 3 — went on telling the homeowner "In review by the
+ * jurisdiction" with no caveat at all, in a payload BYTE-IDENTICAL to a confirmed-fresh one. A
+ * failed check that looks exactly like a passed check is worse than no check, because it is the
+ * shape of a fact.
+ *
+ * So the wire carries the three-valued answer and the pages word each one differently. Anything
+ * that reduces this to a boolean must reduce "unverified" to the CAUTIOUS side — see needsRecheck.
+ */
+export type ReadingFreshness = "current" | "stale" | "unverified";
+
 /** One line on a client's timeline: a filing, NAMED, and what it moved TO. */
 export interface PublicStatusHistoryEntry {
   /** When this state was FIRST seen — the moment it CHANGED, not the last time we looked. */
@@ -1563,11 +1601,21 @@ export interface PublicStatusHistoryEntry {
   /** The raw outcome. For badge STYLING only; the words are in statusLabel. */
   outcome: string;
   /**
-   * This entry is the filing's CURRENT state and was classified by rules we have since changed —
-   * a re-read of the same stored text disagrees with it. The page marks the reading as needing
-   * confirmation instead of publishing it as a fact; the stored row is never rewritten (it is an
-   * audit trail), so the fix is a fresh check, which writes a NEW row. Superseded entries are
-   * never marked: they are history, not a claim about today.
+   * What we know about this entry AS A CLAIM ABOUT TODAY. Only an entry that is still its filing's
+   * CURRENT state can be "stale" or "unverified"; a superseded entry is what we believed then, not
+   * a claim about now, and stays "current" (i.e. unmarked) forever. The stored row is never
+   * rewritten — it is an audit trail — so the cure for either mark is a fresh check, which writes
+   * a NEW row.
+   */
+  reading: ReadingFreshness;
+  /**
+   * "DO NOT PUBLISH THIS AS TODAY'S FACT" — true for BOTH `stale` and `unverified`.
+   *
+   * It is `reading !== "current"`, computed in one place beside it, and the widening is the whole
+   * point: the boolean used to mean "today's rules disagree with this row", which left a FAILED
+   * drift pass falling through to `false` — the same value a confirmed-fresh reading carries. Any
+   * consumer still reading only this boolean now errs toward the caveat instead of the all-clear.
+   * A consumer that wants to word the two cases differently reads `reading`.
    */
   needsRecheck: boolean;
 }
@@ -1581,7 +1629,9 @@ export interface PublicStatusTrack {
   lastCheckedAt: string | null;
   applicationNumber: string;
   permitNumber: string;
-  /** This badge's reading predates the current status rules — see PublicStatusHistoryEntry. */
+  /** What we know about this badge's reading: checked-and-current, checked-and-stale, or NOT CHECKED. */
+  reading: ReadingFreshness;
+  /** `reading !== "current"` — true for a stale reading AND for one we could not check. */
   needsRecheck: boolean;
 }
 

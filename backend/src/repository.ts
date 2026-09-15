@@ -205,6 +205,14 @@ function mapProject(row: ProjectRow): ProjectRecord {
     parserConfidenceSummary: row.parser_confidence_summary,
     parserSnapshot,
     existingSystem: existingSystemFromSnapshot(parserSnapshot),
+    // ARCHIVE STATE TRAVELS WITH THE RECORD (v-archive columns, `SELECT *` above).
+    // It was stored and never mapped, so nothing built on a ProjectRecord could
+    // tell a retired job from a live one: submissionFees quoted the superseded
+    // Daly pass at $274.43 exactly as it quotes its certified twin. Mapping it
+    // does NOT hide anything — projectArchive.ts is explicit that operator
+    // surfaces keep showing archived work — it only makes the fact sayable.
+    archivedAt: text((row as Record<string, unknown>).archived_at),
+    archivedReason: text((row as Record<string, unknown>).archived_reason),
     assignedUserId: row.assigned_user_id ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,

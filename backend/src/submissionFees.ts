@@ -330,6 +330,32 @@ function estimatedFee(db: AppDb, project: ProjectRecord, track: "permit" | "nem"
   };
 }
 
+// AN ARCHIVED PROJECT STILL GETS A REAL QUOTE. IT MUST NOT GET A SILENT ONE.
+//
+// Archiving hides a job from the CLIENT portal and deletes nothing; projectArchive.ts
+// is explicit that operator surfaces keep showing everything, "because hiding work
+// from the people doing it is how a cleanup becomes a second problem". So suppressing
+// the fee here would be the wrong fix twice over: it would contradict that decision,
+// and a suppressed fee arrives at the sheet through the SAME `known: false` channel as
+// "we have no schedule" — an amount we know perfectly well, re-rendered as an unknown.
+//
+// What was actually wrong is that nobody was told. On the live database the superseded
+// Daly pass (cf1c56aa, archived "Superseded pass at 990 17th St NE; 8f4ca8dd is the
+// certified Daly/PGE run") quotes $274.43 and reads exactly like the job that is real.
+// So: quote it, and say what it is, in the one sentence that is already drawn beside
+// every amount — the payment panel prints `permitFeeBasis`, and so does each fee-sheet
+// line, so one chokepoint covers both with no new field for a renderer to forget.
+function archivedNotice(project: ProjectRecord): string {
+  const at = String(project.archivedAt ?? "").trim();
+  if (!at) return "";
+  const why = String(project.archivedReason ?? "").trim();
+  // The reason is quoted, not paraphrased, and bounded: it is operator-written text
+  // of no fixed length, and this sentence leads a field the fee sheet slices.
+  return `ARCHIVED PROJECT (${at}) — this job was taken off the client's portal, so this quote is for work that `
+    + `is not expected to be filed. Check before collecting anything.`
+    + `${why ? ` Reason on file: "${why.length > 200 ? `${why.slice(0, 200).trimEnd()}…` : why}".` : ""} `;
+}
+
 /** Build (and persist, unless already paid/waived) the payment quote for a track. */
 export function buildPaymentQuote(db: AppDb, project: ProjectRecord, trackInput?: string | null): SubmissionPaymentQuote {
   const track = billingTrack(trackInput);
@@ -452,7 +478,13 @@ export function buildPaymentQuote(db: AppDb, project: ProjectRecord, trackInput?
     billingMode: billing.billingMode,
     permitFeeUsd,
     permitFeeSource,
-    permitFeeBasis,
+    // A DISPLAY VALUE, PREPENDED AFTER THE WRITE ABOVE — deliberately not the
+    // stored `fee_basis`. The archive is reversible (unarchiveProject), so a
+    // notice baked into the persisted column would outlive the fact it reports
+    // and would have to be scrubbed on un-archive; computed per quote it simply
+    // stops being true. The stored sentence stays the reason for the AMOUNT,
+    // which is what a re-read of that column is for.
+    permitFeeBasis: archivedNotice(project) + permitFeeBasis,
     permitFeeSourceUrl,
     permitFeeBracketLabel,
     permitFeeConfidence,

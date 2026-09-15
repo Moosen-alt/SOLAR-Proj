@@ -54,6 +54,13 @@
 //   MUST NAME      — every entry: which filing, and the jurisdiction's own reference for it.
 //   MUST SAY       — who the next move belongs to, in the words themselves, on the timeline AND
 //                    on the track badges.
+//   MUST DISTINGUISH — a reading we CHECKED and agree with, a reading we checked and DISAGREE with,
+//                    and a reading OUR OWN CHECK COULD NOT MAKE. Three states, three encodings on
+//                    the wire, three renders on both customer pages. The drift pass is made to
+//                    throw and the payload is compared against a confirmed-fresh one: when those
+//                    two were byte-identical, a permit stalled at the counter since Sep 3 went on
+//                    telling the homeowner the jurisdiction was reviewing it. The pages are RUN
+//                    (node:vm over their shipped inline script), not grepped.
 //
 //   npx tsx backend/test/statusHistoryTransitions.test.ts
 import assert from "node:assert/strict";
@@ -62,6 +69,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+// The two customer pages are inline-script HTML. node:vm runs that script — the shipped bytes —
+// against a stub document, so what this file asserts about status.html and portal.html is the
+// markup they actually produce and not a string that happens to appear in them.
+import vm from "node:vm";
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "status-history-transitions-"));
 process.env.AUTOPILOT_DB_PATH = path.join(tmpDir, "test.sqlite");
@@ -655,8 +666,11 @@ await check("THE PAGE MARKS IT: badge and timeline both say the reading needs co
     `the client is told "${track.statusLabel}" as a plain fact about a permit whose stored reading `
     + "predates the rule that would change it — a classifier fix that never reaches the stored "
     + "rows is invisible to the customer");
+  assert.equal(track.reading, "stale",
+    `a reading we CHECKED and disagree with is reported as "${track.reading}"`);
   assert.equal(payload.history[0].needsRecheck, true,
     `the timeline publishes the stale reading unqualified: ${JSON.stringify(payload.history[0])}`);
+  assert.equal(payload.history[0].reading, "stale", JSON.stringify(payload.history[0]));
   // The wording is still the STORED verdict, not a silently re-derived one. Quietly re-classifying
   // at read time would publish a verdict no check ever produced and leave the stored row — the one
   // every other consumer reads — wrong and unnoticed.
@@ -676,6 +690,9 @@ await check("A CURRENT READING IS NOT MARKED — the flag is evidence, not decor
   const payload = publicProjectStatusPayload(db, nemToken)!;
   for (const t of payload.tracks) {
     assert.equal(t.needsRecheck, false, `${t.applicationNumber} was marked stale while it is current`);
+    assert.equal(t.reading, "current",
+      `${t.applicationNumber} reads "${t.reading}" after a pass that ran and agreed with it — if a `
+      + "confirmed reading cannot say so, the third value has eaten the second");
   }
   for (const h of payload.history) {
     assert.equal(h.needsRecheck, false, `${h.applicationNumber} (${h.at}) was marked stale while it is current`);
@@ -737,20 +754,53 @@ await check("THE CURE IS A NEW ROW: a real re-check clears the mark and leaves h
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.join(HERE, "..", "..");
 
-await check("BOTH PUBLIC PAGES CONSUME THE FLAG (status.html / portal.html)", () => {
-  // SOURCE-TEXT COVER, and the only kind available for these two: status.html and portal.html are
-  // server-rendered templates with their markup inline, exercised end-to-end nowhere in this suite.
-  // It is weak evidence and it is labelled as such — the STRONG evidence for the surfaces lives in
-  // the checks below, which run the real code. Deleting this would leave these two pages with
-  // nothing at all.
-  const statusHtml = fs.readFileSync(path.join(REPO, "frontend", "status.html"), "utf8");
-  assert.match(statusHtml, /t\.needsRecheck/, "status.html's Applications badges ignore the flag");
-  assert.match(statusHtml, /h\.needsRecheck/, "status.html's Recent updates timeline ignores the flag");
-  assert.match(statusHtml, /needs confirming/i, "nothing on the page says the reading is unconfirmed");
-  const portalHtml = fs.readFileSync(path.join(REPO, "frontend", "portal.html"), "utf8");
-  assert.match(portalHtml, /t\.needsRecheck/, "the per-client tracker publishes stale readings as fact");
-  assert.match(portalHtml, /needs confirming/i, "portal.html shows no caveat beside a stale badge");
-});
+// ─────────────────────────────────────────────────────────────────────────────────────────
+// THE TWO CUSTOMER PAGES, ACTUALLY RUN.
+//
+// The previous version of this check GREPPED status.html and portal.html for `t.needsRecheck`.
+// That is the same defect this file was opened over: a string that appears in a file is not a
+// caller, and a page can hold the identifier and still render nothing a homeowner can see.
+//
+// So the inline <script> of each SHIPPED page is executed — the real markup, byte for byte, in a
+// node:vm context with a stub document and a fetch that answers with THE REAL PAYLOAD from the
+// real builder above. What is asserted is the HTML the page put on screen.
+//
+// The pages swallow their own errors ("This status link isn't valid anymore"), so every render
+// asserts it produced the real card first. Without that, a harness that fed the page nothing would
+// sail through every doesNotMatch below.
+// ─────────────────────────────────────────────────────────────────────────────────────────
+async function renderCustomerPage(file: string, payload: unknown): Promise<string> {
+  const html = fs.readFileSync(path.join(REPO, "frontend", file), "utf8");
+  const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+  assert.equal(scripts.length, 1,
+    `${file} has ${scripts.length} inline scripts; this harness runs exactly one and would be `
+    + "testing the wrong half of the page");
+  const app = { innerHTML: "" };
+  const fetched: string[] = [];
+  const sandbox: Record<string, unknown> = {
+    console: { log() {}, warn() {}, error() {} },
+    URLSearchParams,
+    setTimeout,
+    document: { getElementById: (id: string) => (id === "app" ? app : { innerHTML: "" }) },
+    location: { search: "?token=harness" },
+    fetch: async (url: string) => {
+      fetched.push(String(url));
+      return { ok: true, status: 200, json: async () => payload };
+    },
+  };
+  const context = vm.createContext(sandbox);
+  vm.runInContext(`${scripts[0]}\n;globalThis.__rendered = load();`, context, { filename: file });
+  await (sandbox as { __rendered?: Promise<void> }).__rendered;
+  assert.ok(fetched.length > 0, `${file} never asked for its payload`);
+  return String(app.innerHTML || "");
+}
+const occurrences = (haystack: string, needle: string): number => haystack.split(needle).length - 1;
+/** The rendered markup from an application number to the end of its row — the caveat's own scope. */
+const rowAfter = (html: string, marker: string): string => {
+  const at = html.indexOf(marker);
+  assert.notEqual(at, -1, `the rendered page never mentions ${marker}`);
+  return html.slice(at, at + 500);
+};
 
 // ═════════════════════════════════════════════════════════════════════════════════════════
 // PART 2b — THE TWO RISKS ROUND 3 LEFT OPEN.
@@ -832,7 +882,27 @@ function breakDriftPass(): () => void {
   return () => { (db as unknown as { query: unknown }).query = realQuery; };
 }
 
-await check("A DRIFT FAILURE DEGRADES TO NO MARKER — the emailed status page still renders", () => {
+/**
+ * THE FRESHNESS THE CUSTOMER PAYLOAD IS CLAIMING, and nothing else about the filing.
+ *
+ * This is the comparison round 4's failure injection made on the live database: with the drift
+ * pass broken, Ivy's stalled building permit encoded IDENTICALLY to a filing we had just confirmed
+ * was current — same two fields, same two values — so no reader, human or machine, could tell a
+ * check that passed from a check that never ran.
+ */
+const freshnessSignature = (row: { reading?: string; needsRecheck: boolean }): string =>
+  JSON.stringify({ reading: row.reading ?? null, needsRecheck: row.needsRecheck });
+
+/** The payloads a broken drift pass produces, captured once and asserted on repeatedly. */
+interface BrokenRender {
+  status: NonNullable<ReturnType<typeof publicProjectStatusPayload>>;
+  portal: NonNullable<ReturnType<typeof clientPortalPayload>>;
+  errors: string[];
+}
+let broken: BrokenRender | null = null;
+const portalToken = ensureClientPortalToken(db, client.id);
+
+await check("A DRIFT FAILURE READS AS 'WE COULD NOT CHECK' — never as a confirmed-fresh reading", () => {
   const errors: string[] = [];
   const realError = console.error;
   console.error = (...args: unknown[]) => { errors.push(args.map(String).join(" ")); };
@@ -842,17 +912,39 @@ await check("A DRIFT FAILURE DEGRADES TO NO MARKER — the emailed status page s
     const status = publicProjectStatusPayload(db, driftToken);
     assert.ok(status, "the tokenized status page a customer was emailed returned nothing at all");
     assert.ok(status!.tracks.length >= 2, `the page lost its filings: ${JSON.stringify(status!.tracks)}`);
-    const portalToken = ensureClientPortalToken(db, client.id);
     const portal = clientPortalPayload(db, portalToken);
     assert.ok(portal, "the per-client tracker died with the drift pass");
     const history = projectStatusHistory(db, driftProject.id);
-    assert.ok(Array.isArray(history), "the timeline died with the drift pass");
+    assert.ok(Array.isArray(history) && history.length >= 2, "the timeline died with the drift pass");
+    broken = { status: status!, portal: portal!, errors };
 
-    // NO MARKER — the page is honest about not knowing by not asserting, and the operator route
-    // says the rest. What it must never do is 500.
+    // THE THIRD ANSWER REACHES THE CUSTOMER PAYLOAD. Not "stale" — we have no evidence of drift —
+    // and not "current", which is the lie: our own pass never ran.
     for (const t of status!.tracks) {
-      assert.equal(t.needsRecheck, false,
-        `${t.applicationNumber} was marked stale by a pass that never ran — the marker would be invented`);
+      assert.equal(t.reading, "unverified",
+        `${t.applicationNumber} came back as "${t.reading}" from a pass that never ran: ${JSON.stringify(t)}`);
+      assert.equal(t.needsRecheck, true,
+        `${t.applicationNumber} is published with no caveat at all after our check failed — this is `
+        + "Ivy's stalled permit reading \"In review by the jurisdiction\" as a plain fact");
+    }
+    // The timeline is newest-first, so the FIRST entry for a filing is the one still being claimed
+    // as today's state. Only that one carries the verdict; everything behind it is dated history
+    // and stays unmarked whatever the pass did.
+    const seenFilings = new Set<string>();
+    for (const h of history) {
+      const isLive = !seenFilings.has(h.applicationNumber);
+      seenFilings.add(h.applicationNumber);
+      assert.equal(h.reading, isLive ? "unverified" : "current",
+        isLive
+          ? `the timeline's live entry claims freshness from a pass that never ran: ${JSON.stringify(h)}`
+          : `a superseded entry was re-opened by a failed pass: ${JSON.stringify(h)}`);
+    }
+    assert.equal(seenFilings.size, 2, `the fixture's timeline lost a filing: ${JSON.stringify(history)}`);
+    const portalTracks = portal!.projects.find((p) => p.id === driftProject.id)!.tracks;
+    assert.ok(portalTracks.length >= 2, JSON.stringify(portalTracks));
+    for (const t of portalTracks) {
+      assert.equal(t.reading, "unverified", `the per-client tracker publishes ${t.applicationNumber} as checked`);
+      assert.equal(t.needsRecheck, true, JSON.stringify(t));
     }
 
     // ...and the failure is LOUD. A silent empty result is indistinguishable from "all current",
@@ -876,16 +968,128 @@ await check("A DRIFT FAILURE DEGRADES TO NO MARKER — the emailed status page s
   }
 });
 
+await check("THE BYTE-IDENTITY ROUND 4 PROVED: a failed check must not encode as a passed one", () => {
+  // The working pass, for the same two filings: one CONFIRMED CURRENT, one CONFIRMED STALE.
+  const fresh = publicProjectStatusPayload(db, driftToken)!;
+  const freshElec = fresh.tracks.find((t) => t.applicationNumber === "187-26-000401-ELEC")!;
+  const freshStr = fresh.tracks.find((t) => t.applicationNumber === "187-26-000401-STR")!;
+  assert.equal(freshStr.reading, "stale", "the fixture is not stale under a working pass — nothing below is being tested");
+  assert.equal(freshElec.reading, "current", JSON.stringify(freshElec));
+
+  const brokenElec = broken!.status.tracks.find((t) => t.applicationNumber === "187-26-000401-ELEC")!;
+  const brokenStr = broken!.status.tracks.find((t) => t.applicationNumber === "187-26-000401-STR")!;
+
+  // THIS IS THE BUG, STATED AS AN ASSERTION. On the live database, with the drift query made to
+  // throw, the whole track object for a filing we could not check came back byte-for-byte equal to
+  // the run where we had checked it and confirmed it current.
+  assert.notEqual(JSON.stringify(brokenElec), JSON.stringify(freshElec),
+    "a filing we CONFIRMED is current and a filing we COULD NOT CHECK are byte-identical in the "
+    + `customer payload — there is no way to tell them apart: ${JSON.stringify(brokenElec)}`);
+  assert.notEqual(freshnessSignature(brokenStr), freshnessSignature(freshElec),
+    "the stalled building permit, after our check failed, now carries exactly the freshness a "
+    + `confirmed-current filing carries: ${freshnessSignature(brokenStr)} — this is Ivy's and Ann's `
+    + "permit telling the homeowner the jurisdiction is reviewing it");
+  // Belt and braces on the other direction: the three states are three distinct encodings.
+  const encodings = new Set([
+    freshnessSignature(freshElec), freshnessSignature(freshStr), freshnessSignature(brokenStr),
+  ]);
+  assert.equal(encodings.size, 3,
+    `current / stale / could-not-check collapsed into ${encodings.size} encoding(s): ${[...encodings].join(" ")}`);
+
+  // The same three-way distinction on the per-client tracker, which is a different builder.
+  const portalFresh = clientPortalPayload(db, portalToken)!
+    .projects.find((p) => p.id === driftProject.id)!.tracks
+    .find((t) => t.applicationNumber === "187-26-000401-ELEC")!;
+  const portalBroken = broken!.portal.projects.find((p) => p.id === driftProject.id)!.tracks
+    .find((t) => t.applicationNumber === "187-26-000401-ELEC")!;
+  assert.notEqual(JSON.stringify(portalBroken), JSON.stringify(portalFresh),
+    `the tracker cannot tell a confirmed reading from an unchecked one either: ${JSON.stringify(portalBroken)}`);
+});
+
 await check("...and the guard did not cost the feature: with the pass working, the mark is back", () => {
   const status = publicProjectStatusPayload(db, driftToken)!;
   const str = status.tracks.find((t) => t.applicationNumber === "187-26-000401-STR")!;
   const elec = status.tracks.find((t) => t.applicationNumber === "187-26-000401-ELEC")!;
   assert.equal(str.needsRecheck, true,
     "the try/catch swallowed the real answer too — the stale reading is published unqualified");
+  assert.equal(str.reading, "stale", `a real drift finding was reported as "${str.reading}"`);
   assert.equal(elec.needsRecheck, false, "the current filing was marked as well, which makes the mark noise");
+  assert.equal(elec.reading, "current",
+    `a filing we checked and agree with reports "${elec.reading}" — if everything is unverified, `
+    + "the word means nothing");
   const scan = scanStaleStatusClassifications(db, [driftProject.id]);
   assert.equal(scan.checked, true);
   assert.equal(scan.readings.length, 1);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────
+// AND NOW THE PAGES THEMSELVES — the surface the homeowner actually reads. renderCustomerPage
+// runs the shipped inline script of each file against the payloads captured above.
+// ─────────────────────────────────────────────────────────────────────────────────────────
+
+await check("status.html RENDERS THE THIRD ANSWER: 'we could not confirm', on every reading", async () => {
+  const html = await renderCustomerPage("status.html", broken!.status);
+  assert.doesNotMatch(html, /isn't valid anymore/, `the harness fed the page nothing it could render: ${html.slice(0, 200)}`);
+  assert.match(html, /187-26-000401-STR/, `the page did not render the filings: ${html.slice(0, 300)}`);
+
+  // THE RENDERED ROW FIRST, because that is the thing a homeowner reads. The caveat sits inside
+  // its own filing's row, under the claim it qualifies.
+  assert.match(rowAfter(html, "187-26-000401-STR"), /could not confirm/,
+    "the stalled building permit is published as a plain fact — this is the live bug, on the page "
+    + "we email a homeowner");
+  assert.match(rowAfter(html, "187-26-000401-ELEC"), /could not confirm/,
+    "the issued electrical permit claims to be confirmed by a check that never ran");
+  // ...and it does NOT claim a re-check is under way for drift we never detected.
+  assert.equal(occurrences(html, "needs confirming"), 0,
+    "a pass that never ran reported specific readings as stale");
+  // The stalled permit still shows what we recorded — we publish what we know, with the caveat.
+  assert.match(html, /In review by the jurisdiction/,
+    "the page stopped showing the recorded reading altogether, which tells the customer less, not more");
+
+  // EVERY reading the page publishes carries the caveat — counted against the payload itself, so
+  // a track or timeline entry that quietly loses its note fails here. The `claims >= 3` guard is
+  // the fixture's own tripwire: if the payload ever stops producing unverified rows, the count
+  // below would be 0 === 0 and this whole check would pass while proving nothing.
+  const claims = [...broken!.status.tracks, ...broken!.status.history]
+    .filter((row) => (row.statusLabel || row.outcome) && row.reading === "unverified").length;
+  assert.ok(claims >= 3, `the fixture stopped producing unverified rows: ${claims}`);
+  assert.equal(occurrences(html, "could not confirm"), claims,
+    `${claims} readings we could not check produced ${occurrences(html, "could not confirm")} caveats on the `
+    + `page a homeowner opens from our email: ${html.slice(0, 600)}`);
+});
+
+await check("status.html KEEPS THE TWO APART: a stale reading and a working check read differently", async () => {
+  const html = await renderCustomerPage("status.html", publicProjectStatusPayload(db, driftToken)!);
+  assert.doesNotMatch(html, /isn't valid anymore/, html.slice(0, 200));
+  assert.equal(occurrences(html, "could not confirm"), 0,
+    `the pass RAN and the page still says we could not check: ${html.slice(0, 400)}`);
+  assert.match(rowAfter(html, "187-26-000401-STR"), /needs confirming/,
+    "the stale reading lost its caveat when the third value was added");
+  // The confirmed-current filing carries NO note at all. If every row is caveated, the caveat is
+  // wallpaper and the stalled permit stops standing out.
+  assert.doesNotMatch(rowAfter(html, "187-26-000401-ELEC"), /needs confirming|could not confirm/,
+    "a filing we checked and agree with is shown with a caveat");
+});
+
+await check("portal.html RENDERS THE THIRD ANSWER TOO — the tracker is not the forgotten page", async () => {
+  const html = await renderCustomerPage("portal.html", broken!.portal);
+  assert.doesNotMatch(html, /isn't valid/, `the harness fed the tracker nothing: ${html.slice(0, 200)}`);
+  assert.match(html, /187-26-000401-STR/, `the tracker did not render the filings: ${html.slice(0, 300)}`);
+  assert.match(rowAfter(html, "187-26-000401-STR"), /could not confirm/,
+    "the per-client tracker publishes the stalled permit with no caveat after our check failed");
+  assert.match(rowAfter(html, "187-26-000401-ELEC"), /could not confirm/,
+    "a reading nobody checked is shown on the tracker as if it were confirmed");
+  assert.equal(occurrences(html, "needs confirming"), 0,
+    "the tracker reported specific readings as stale from a pass that never ran");
+
+  // And with the pass working, the tracker draws the same distinction the status page does.
+  const working = await renderCustomerPage("portal.html", clientPortalPayload(db, portalToken)!);
+  assert.equal(occurrences(working, "could not confirm"), 0,
+    `the pass ran and the tracker still says we could not check: ${working.slice(0, 400)}`);
+  assert.match(rowAfter(working, "187-26-000401-STR"), /needs confirming/,
+    "the tracker lost the stale caveat");
+  assert.doesNotMatch(rowAfter(working, "187-26-000401-ELEC"), /needs confirming|could not confirm/,
+    "a confirmed-current filing is caveated on the tracker");
 });
 
 // ─────────────────────────────────────────────────────────────────────────────────────────

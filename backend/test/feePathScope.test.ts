@@ -52,6 +52,47 @@
 // MUST-EXCLUDE check stays green, because those are the behaviours the fix must not
 // touch. That difference IS the finding.
 //
+// ---------------------------------------------------------------------------
+// SECTIONS 10–12 (added after the round-4 fix): THE SAME GATE, AT THE SEAM THAT
+// COULD WALK AROUND IT.
+//
+// The gate above holds on feeForProject. It did NOT hold on feeSchedules'
+// lookupPublishedFee, which builds a synthetic project carrying
+// `parserSnapshot: null` and built its evaluation inputs with no permitPath at all.
+// pathForProject then resolved that empty snapshot to "unknown", "unknown"
+// contradicts nothing, the gate switched itself off, and the seam handed an
+// ENGINEERED Coos Bay job $200 off the row titled "…Prescriptive Path System" —
+// measured on a copy of the live database, not theorised:
+//
+//   lookupPublishedFee({track:"permit",  state:"OR", ahj:"City of Coos Bay", bracketKw:7.68})
+//     → feeUsd 360   ($160 county electrical + $200 city PRESCRIPTIVE structural)
+//   lookupPublishedFee({track:"building",state:"OR", ahj:"City of Coos Bay", bracketKw:7.68})
+//     → feeUsd 200   label "Solar Permit (when required) – Prescriptive Path System…"
+//
+// It had ZERO production callers, which is what made it worth fixing rather than
+// shrugging at: nothing was wrong TODAY, and the next person to wire the tier would
+// have reinstated the bug with a correct-looking one-line change.
+//
+//   MUST PASS    — the seam given NO path REFUSES every path-scoped line, and says
+//                  "PERMIT PATH NOT CHECKED" rather than the jurisdiction-blaming
+//                  "NO … FEE HELD" (different fact, different repair);
+//                  the seam given "engineered" refuses with the engineered reason;
+//                  archived state reaches ProjectRecord and is SAID on the quote.
+//   MUST EXCLUDE — the seam given "prescriptive" still pays Ivy his $200 / $335 —
+//                  the refusal is about the MISSING INPUT, not about the row;
+//                  the seam given "unknown" (the resolver RAN and could not decide)
+//                  quotes $360 exactly as feeForProject does for that project — the
+//                  escape hatch exists, is explicit, and matches the live path;
+//                  ELECTRICAL and NEM are untouched with or without a path;
+//                  a row whose lines claim NO path still quotes with no path given;
+//                  an archived project's AMOUNT is unchanged — it is labelled, not
+//                  suppressed, and the stored fee_basis column stays clean.
+//
+// THE KILL TEST for sections 10–11: in feeSchedules.lookupPublishedFee change
+// `permitPath: input.permitPath ?? "unresolved"` to `?? "unknown"` (or delete the
+// line — it no longer compiles, which is the point). 10a/10b/10c go red with the
+// exact numbers above. For section 12: drop `archivedAt` from repository.mapProject.
+//
 //   npx tsx backend/test/feePathScope.test.ts
 import fs from "node:fs";
 import path from "node:path";
@@ -65,11 +106,12 @@ async function main(): Promise<void> {
   process.env.SUBMISSION_SERVICE_FEE_USD = "100";
 
   const { openDatabase } = await import("../src/db");
-  const { saveFeeSchedule, feeForProject, feeScheduleProfileKey } = await import("../src/feeSchedules");
+  const { saveFeeSchedule, feeForProject, feeScheduleProfileKey, lookupPublishedFee } = await import("../src/feeSchedules");
   const { resolvePermitPath, pathWordingScope, pathWordingContradicts } = await import("../src/permitPath");
   const { createClient } = await import("../src/clients");
   const { getProjectDetail } = await import("../src/repository");
-  const { buildPaymentQuote } = await import("../src/submissionFees");
+  const { buildPaymentQuote, buildProjectFeeSheet } = await import("../src/submissionFees");
+  const { archiveProject, unarchiveProject } = await import("../src/projectArchive");
   const { feeBracketQuantityFields } = await import("../src/feeBracketFields");
   const { feeBracketCoverage } = await import("../../portal-bot/src/feeBracketQuantity");
   type Finding = import("../src/feeSchedules").FeeScheduleFinding;
@@ -380,6 +422,154 @@ async function main(): Promise<void> {
   const annFields = feeBracketQuantityFields(db, ANN);
   check("  MUST EXCLUDE: the engineered project's ELECTRICAL boxes compute too (5.01–15 ticked)",
     annFields["feeBracketQuantity:5.01-15"] === "1", JSON.stringify(annFields));
+
+  // -------------------------------------------------------------------------
+  // 10. MUST PASS — THE GATE CANNOT BE WALKED AROUND BY BUILDING AN INPUT WITH
+  //     NO PATH. lookupPublishedFee is the seam submissionFees loads by name; it
+  //     has no parser snapshot, so with nothing passed it now says "we never
+  //     looked" instead of borrowing "we looked and are undecided".
+  //
+  //     Ann's OWN numbers go through it — state, AHJ, AC kW — because that is the
+  //     call a future wirer writes, and it is the call that returned $360.
+  // -------------------------------------------------------------------------
+  const seamArgs = (over: Record<string, unknown> = {}) => ({
+    track: "permit", state: STATE, ahj: "City of Coos Bay", utility: "Pacific Power",
+    bracketKw: ANN.systemSizeAcKw, systemSizeAcKw: ANN.systemSizeAcKw, systemSizeDcKw: ANN.systemSizeDcKw,
+    ...over,
+  }) as never;
+
+  const seamNoPath = lookupPublishedFee(db, seamArgs())!;
+  check("10a. the seam given NO permit path quotes NOTHING (it used to answer $360)",
+    seamNoPath.feeUsd === null, `${seamNoPath.feeUsd} / ${seamNoPath.bracketLabel}`);
+  check("  and it is explicitly neither the old $360 total nor the $200 prescriptive row",
+    seamNoPath.feeUsd !== 360 && seamNoPath.feeUsd !== 200, String(seamNoPath.feeUsd));
+  // THE TWO REFUSALS ARE DIFFERENT FACTS WITH DIFFERENT REPAIRS. "NO ENGINEERED FEE
+  // HELD" blames the jurisdiction's table and sends a person to the published
+  // schedule; here the table is fine and the CALL is short an input. Printing the
+  // first sentence for the second situation sends somebody hunting a fee that is
+  // sitting right there, so the wording is pinned, not just the null.
+  check("10b. it says the PATH was never checked — not that the jurisdiction holds no fee",
+    /PERMIT PATH NOT CHECKED/.test(seamNoPath.basis) && !/NO ENGINEERED FEE HELD/.test(seamNoPath.basis),
+    seamNoPath.basis.slice(0, 200));
+  check("  and it names the repair: pass the resolved permitPath",
+    /permitPath/.test(seamNoPath.basis), seamNoPath.basis.slice(0, 300));
+
+  // The single-line shape: a "building" stage names the structural permit, and
+  // this is the call that returned a bare $200 off the prescriptive row.
+  const seamBuilding = lookupPublishedFee(db, seamArgs({ track: "building" }))!;
+  check("10c. a BUILDING stage through the seam is no longer handed the $200 prescriptive row",
+    seamBuilding.feeUsd === null && seamBuilding.bracketLabel !== CITY_STRUCTURAL_LABEL,
+    `${seamBuilding.feeUsd} / ${seamBuilding.bracketLabel}`);
+
+  // Handed the path, the seam agrees with feeForProject — which is the whole
+  // point of there being one gate rather than two.
+  const seamEngineered = lookupPublishedFee(db, seamArgs({ permitPath: "engineered" }))!;
+  check("10d. the seam given ENGINEERED refuses with the jurisdiction reason, and never $200",
+    seamEngineered.feeUsd === null && /NO ENGINEERED FEE HELD/.test(seamEngineered.basis),
+    `${seamEngineered.feeUsd} / ${seamEngineered.basis.slice(0, 120)}`);
+
+  // -------------------------------------------------------------------------
+  // 11. MUST EXCLUDE — THE REFUSAL IS ABOUT THE MISSING INPUT, NOT ABOUT THE ROW.
+  //     Over-exclusion here would be the opposite failure and just as silent:
+  //     every Coos Bay job stops quoting and the prescriptive ones were right.
+  // -------------------------------------------------------------------------
+  const seamPrescriptive = lookupPublishedFee(db, seamArgs({
+    permitPath: "prescriptive", bracketKw: IVY.systemSizeAcKw,
+    systemSizeAcKw: IVY.systemSizeAcKw, systemSizeDcKw: IVY.systemSizeDcKw,
+  }))!;
+  check("11a. Ivy through the seam, PRESCRIPTIVE, is still quoted his legitimate $335.00",
+    seamPrescriptive.feeUsd === 335, `${seamPrescriptive.feeUsd} / ${seamPrescriptive.basis.slice(0, 120)}`);
+  const seamPrescriptiveBld = lookupPublishedFee(db, seamArgs({ track: "building", permitPath: "prescriptive" }))!;
+  check("  and his STRUCTURAL line alone is still the $200 prescriptive row, label intact",
+    seamPrescriptiveBld.feeUsd === 200 && seamPrescriptiveBld.bracketLabel === CITY_STRUCTURAL_LABEL,
+    `${seamPrescriptiveBld.feeUsd} / ${seamPrescriptiveBld.bracketLabel}`);
+
+  // "unknown" means resolvePermitPath RAN and could not decide. That contradicts
+  // nothing (check 5), so the seam must answer exactly as feeForProject answers
+  // for the UNKNOWN project — $360. A seam that diverged from the live path for
+  // the same project would be a second source of truth about the same money.
+  const seamUnknown = lookupPublishedFee(db, seamArgs({ permitPath: "unknown" }))!;
+  check("11b. the seam given a RESOLVED-unknown path quotes $360, matching feeForProject(UNKNOWN)",
+    seamUnknown.feeUsd === 360 && seamUnknown.feeUsd === unknown.feeUsd,
+    `${seamUnknown.feeUsd} vs ${unknown.feeUsd}`);
+
+  // The electrical permit is the same permit on either path — with a path, without
+  // one, it does not move. (Ann's 7.68 kVA sits in the 5.01–15 bracket: $160.)
+  check("11c. the ELECTRICAL stage is untouched at $160 with NO path supplied",
+    lookupPublishedFee(db, seamArgs({ track: "electrical" }))?.feeUsd === 160,
+    String(lookupPublishedFee(db, seamArgs({ track: "electrical" }))?.feeUsd));
+  check("  and untouched at $160 with an ENGINEERED path supplied",
+    lookupPublishedFee(db, seamArgs({ track: "electrical", permitPath: "engineered" }))?.feeUsd === 160);
+  // NEM: the building path says nothing about interconnection.
+  check("11d. the NEM track is untouched at $0.00 with no path supplied",
+    lookupPublishedFee(db, seamArgs({ track: "nem" }))?.feeUsd === 0,
+    String(lookupPublishedFee(db, seamArgs({ track: "nem" }))?.feeUsd));
+
+  // THE SHARPEST MUST-EXCLUDE: the filter is over lines that CLAIM a path, not over
+  // every line. A jurisdiction whose rows name no path prices both paths and needs
+  // no decision — refusing there would take the whole table down over a missing
+  // input it never needed.
+  saveFeeSchedule(db, { state: STATE, ahj: "City of Nopathwords", track: "permit" }, finding({
+    basis: "flat",
+    brackets: [{ feeUsd: 310, label: "Solar photovoltaic installation permit" }],
+    sourceUrl: "https://nopathwords.example.gov/fees",
+    sourceQuote: "Solar photovoltaic installation permit | $310.00",
+  }));
+  check("11e. a schedule whose lines claim NO path still quotes $310 with no path supplied",
+    lookupPublishedFee(db, seamArgs({ ahj: "City of Nopathwords" }))?.feeUsd === 310,
+    String(lookupPublishedFee(db, seamArgs({ ahj: "City of Nopathwords" }))?.feeUsd));
+
+  // -------------------------------------------------------------------------
+  // 12. AN ARCHIVED PROJECT IS QUOTED, AND SAID TO BE ARCHIVED.
+  //
+  //     Archiving hides a job from the CLIENT portal and deletes nothing, and
+  //     projectArchive.ts is explicit that operator surfaces keep showing it. So
+  //     the fee is NOT suppressed — a suppressed fee reaches the sheet through the
+  //     same `known:false` channel as "we have no schedule", which is an amount we
+  //     know re-rendered as an unknown. What was missing is that archived_at never
+  //     reached ProjectRecord, so nothing built on a record could say it.
+  //
+  //     Driven through the REAL write path (archiveProject → the column →
+  //     getProjectDetail → mapProject), not by stipulating a field on a literal.
+  // -------------------------------------------------------------------------
+  const liveIvyQuote = buildPaymentQuote(db, IVY, "permit");
+  const arch = archiveProject(db, IVY.id, "Superseded pass — the certified run is proj-ivy-2");
+  check("12. archiveProject wrote the column through its own API", arch.archived, arch.reason);
+
+  const archivedIvy = getProjectDetail(db, IVY.id).project;
+  check("  archived_at now travels ON THE RECORD (it was stored and never mapped)",
+    !!String(archivedIvy.archivedAt || "").trim(), JSON.stringify(archivedIvy.archivedAt));
+  check("  and so does the reason, which is the only thing that explains it later",
+    /Superseded pass/.test(String(archivedIvy.archivedReason || "")), String(archivedIvy.archivedReason));
+
+  const archivedQuote = buildPaymentQuote(db, archivedIvy, "permit");
+  check("12a. the quote SAYS the project is archived, on the sentence already drawn beside the amount",
+    /^ARCHIVED PROJECT/.test(archivedQuote.permitFeeBasis), archivedQuote.permitFeeBasis.slice(0, 120));
+  check("  and hands over the reason, so it is actionable rather than just a scold",
+    /Superseded pass/.test(archivedQuote.permitFeeBasis), archivedQuote.permitFeeBasis.slice(0, 220));
+  check("12b. MUST EXCLUDE: the AMOUNT is unchanged — labelled, never suppressed",
+    archivedQuote.permitFeeUsd === liveIvyQuote.permitFeeUsd && archivedQuote.permitFeeUsd === 335,
+    `${archivedQuote.permitFeeUsd} vs ${liveIvyQuote.permitFeeUsd}`);
+  check("  and the basis it labels is still the schedule's own account of the number",
+    /published fee schedule/i.test(archivedQuote.permitFeeBasis), archivedQuote.permitFeeBasis.slice(-200));
+  const archivedSheet = buildProjectFeeSheet(db, archivedIvy);
+  check("12c. the FEE SHEET carries it too — one chokepoint, both screens",
+    /^ARCHIVED PROJECT/.test(archivedSheet.lines[0].basis) && archivedSheet.lines[0].known,
+    archivedSheet.lines[0].basis.slice(0, 80));
+
+  // A DISPLAY VALUE, NOT A STORED ONE. The archive is reversible, so a notice baked
+  // into submission_payments.fee_basis would outlive the fact it reports.
+  const storedBasis = String(db.query<{ fee_basis: string }>(
+    "SELECT fee_basis FROM submission_payments WHERE project_id = ? AND track = 'permit'", [IVY.id],
+  )[0]?.fee_basis || "");
+  check("12d. the STORED fee_basis column is untouched — the notice is computed per quote",
+    storedBasis.length > 0 && !/ARCHIVED PROJECT/.test(storedBasis), storedBasis.slice(0, 100));
+
+  unarchiveProject(db, IVY.id);
+  const revived = getProjectDetail(db, IVY.id).project;
+  check("12e. MUST EXCLUDE: un-archiving clears the notice — nothing had to be scrubbed",
+    !String(revived.archivedAt || "").trim()
+    && !/ARCHIVED PROJECT/.test(buildPaymentQuote(db, revived, "permit").permitFeeBasis));
 
   console.log(failures ? `\nFAILED ${failures} check(s)` : "\nfeePathScope.test.ts: all checks passed");
   process.exit(failures ? 1 : 0);

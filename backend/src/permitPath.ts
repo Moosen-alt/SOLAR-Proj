@@ -70,65 +70,153 @@ export const ENGINEERED_REQUIRED_DOCS = [
   "Structural engineering letter or stamped calculations (PE-sealed)",
 ];
 
-// Does the parsed evidence show a stamped structural plan / engineering letter is
-// already in hand? Looks across the structural/stamp text + the split-page mapping
-// + any uploaded-document filenames captured on the snapshot.
-export function hasStampedStructuralEvidence(project: PermitPathInputs): boolean {
-  const blob = [
-    snap(project, "stampRecommendation"),
-    // structuralCalcText is the key the parser actually emits (the narrative
-    // structural blob); planSetExtractedText is the uploaded-document text
-    // overlay. The three legacy keys below this were read for years but are
-    // written NOWHERE in the codebase — kept only so an older snapshot that
-    // happens to carry them still resolves.
-    snap(project, "structuralCalcText"),
-    snap(project, "planSetExtractedText"),
-    snap(project, "structuralText"),
-    snap(project, "structuralNotesText"),
-    snap(project, "splitPagesText"),
-    snap(project, "reviewFlags"),
-    snap(project, "uploadedDocumentNames"),
-    snap(project, "documentInventoryText"),
-  ].join("\n").toLowerCase();
-  // A DENIAL OUTRANKS A MENTION, and it has to be checked FIRST.
-  //
-  // Coos Bay structural 187-26-000309-STR was filed without stamps and landed in plan review.
-  // The parser had already read the plan set and written, verbatim:
-  //
-  //   "No PE stamp/seal shown (title block 'Signature with Seal' is blank); AHJ may require
-  //    stamped structural for 2x4 @16" rafters..."
-  //
-  // The old rule matched "stamped" (from "may require stamped structural") and its negative
-  // guard wanted the words "no stamp" ADJACENT — the text says "No PE stamp". Two characters,
-  // "PE", turned a statement that the seal box is BLANK into evidence that a seal exists, and
-  // requiredDocuments then counted the PE-stamped-letter requirement satisfied "via stamp in
-  // plan set".
-  //
-  // So absence is tested first and wins outright. A sentence that denies a seal almost always
-  // ALSO contains the word "stamped", because it goes on to say a stamped structural may be
-  // required — any rule that weighs the two loses to its own subject matter.
-  // REGEX LITERALS, not strings joined into a RegExp: "\b" inside a JS string literal is a
-  // BACKSPACE character, not a word boundary — the first version of this block shipped exactly
-  // that, and every pattern silently matched nothing.
-  const DENIES_A_SEAL: RegExp[] = [
-    // "no PE stamp", "no engineer's seal", "no wet stamp" — anything between "no" and the noun.
-    /\bno\b[^.;\n]{0,24}\b(stamp|seal|signature)\b/i,
-    // "not stamped", "unstamped", "unsigned", "unsealed"
-    /\b(not\s+(stamped|sealed|signed)|unstamped|unsealed|unsigned)\b/i,
-    // "does not appear to be stamped"
-    /\bdoes\s+not\b[^.;\n]{0,32}\b(stamp|seal|sign)/i,
-    // the title-block phrasing the parser actually emits
-    /\b(signature\s+with\s+seal|stamp\s+area|seal\s+box|signature\s+block)\b[^.;\n]{0,24}(is\s+)?(blank|empty|missing)/i,
-    /\b(stamp|seal)\b[^.;\n]{0,16}(is\s+)?(blank|empty|missing|absent|pending)\b/i,
-  ];
-  if (DENIES_A_SEAL.some((re) => re.test(blob))) return false;
+// ---------------------------------------------------------------------------
+// IS A SEALED STRUCTURAL DOCUMENT ACTUALLY IN HAND?
+//
+// Twice now, a sentence stating that a sealed document is ABSENT has been counted
+// as proof that it is PRESENT:
+//
+//   Coos Bay 187-26-000309-STR (Ann Marineau, 1780 Ocean Blvd) — filed, then sent
+//   to plan review for stamps. The parser had already written:
+//     "No PE stamp/seal shown (title block 'Signature with Seal' is blank); AHJ
+//      may require stamped structural for 2x4 @16" rafters"
+//   The old rule matched "stamped" and its negative guard wanted "no stamp"
+//   ADJACENT. "PE" sat between them. Fixed in 8c6f6a8 by a DENIES_A_SEAL list.
+//
+//   Portland 26-033226-000-00-RS (Bren Trask, 11739 SE Reedway) — same defect,
+//   different words, straight through that list:
+//     "Vector Structural Engineering review block with signature/seal area shown
+//      (VSE Project U4703-1659-261) referencing a separate structural letter; the
+//      letter itself was not supplied — submit the sealed letter with the permit"
+//   DENIES_A_SEAL enumerated "not stamped / not sealed / not signed" and had no
+//   pattern for "not supplied". So the packet printed the all-clear on a letter
+//   its own parse says nobody ever sent.
+//
+// A LIST OF WAYS TO SAY "ABSENT" CANNOT BE FINISHED. "not supplied", "not
+// provided", "was never included", "we do not have it", "still outstanding" — the
+// PREDICATE side of English is open-class and a keyword list will keep losing to
+// it. NEGATION ITSELF is closed-class: roughly twenty words carry it, and they are
+// listed below in full. So this reads the negators, not the predicates, and binds
+// each one to its own CLAUSE — which is the other half of the 8c6f6a8 bug, where
+// "no" and "stamp" had to sit within 24 characters of each other to count.
+//
+// FIVE RULES, all of them defaulting to NOT SATISFIED:
+//   1. Clause scope. Split on sentence AND clause punctuation, so a negator is
+//      weighed against the artifact in its own clause and nothing else.
+//   2. A denial anywhere outranks every affirmative everywhere. A sentence that
+//      denies a seal almost always ALSO contains "stamped", because it goes on to
+//      say a stamped structural may be required; any rule that weighs the two
+//      loses to its own subject matter. This is also the honest answer when text
+//      both mentions a seal and disclaims it.
+//   3. Hedged, conditional or imperative language is not evidence. "submit the
+//      sealed letter with the permit" is an instruction about the future.
+//   4. Naming the BOX is not naming the MARK. "signature/seal area shown" says a
+//      title-block region exists, which every title block has.
+//   5. A MENTION IS NOT AN ASSERTION. The clause must actually say the document is
+//      in hand. "referencing a separate structural letter" names one without
+//      claiming anyone has it, and so did not survive Portland.
+//
+// THE SAFETY PROPERTY, and the reason the two lists below are built differently:
+// negators are closed-class, so NEGATOR can be exhaustive; presence predicates are
+// open-class, so ASSERTS_PRESENCE cannot be. That is fine HERE and only here,
+// because a gap in EITHER list now lands on "not satisfied" — an unrecognised
+// denial no longer counts as proof, and an unrecognised affirmation blocks. The
+// old code had this exactly inverted: a gap in its negative list produced
+// "satisfied", which is how two permits went out the door.
+//
+// REGEX LITERALS, not strings joined into a RegExp: "\b" inside a JS string
+// literal is a BACKSPACE character, and this module shipped exactly that bug once.
+// ---------------------------------------------------------------------------
 
-  // "stamped" / "wet stamp" / "PE stamp" / "sealed" / "engineer of record" / "structural letter".
-  const hasStamp = /\b(wet[-\s]?stamp|stamped|p\.?e\.? stamp|pe[-\s]?stamp|sealed by|engineer(?:'s)? seal|engineer of record|structural letter|stamped calc)/i.test(blob);
-  // Kept as a second net for phrasings the denial regex above does not cover.
-  const onlyNeeds = /(no stamp|stamp (?:is )?(?:not|missing|needed|required|pending)|without (?:a )?stamp|unstamped)/i.test(blob)
-    && !/stamped (?:plan|set|sheet|calc)/i.test(blob);
-  return hasStamp && !onlyNeeds;
+/** Sentence and clause boundaries. Commas and colons count, because the parser's
+ *  own specified phrasing for a genuine letter (llm.ts) is
+ *  "PE-sealed structural letter provided: existing framing adequate, no upgrades
+ *  required." — one blob-wide read of that sees "no" and refuses a real seal. */
+const CLAUSE_BREAK = /[\n;:,()\[\]|"]|—|–|\.(?=\s|$)|\bbut\b|\bhowever\b|\balthough\b/i;
+
+/** The ARTIFACTS whose presence or absence this question is about. Deliberately
+ *  nouns for the document/mark only — never "engineer" or "PE" on their own,
+ *  because plan-set boilerplate ("do not scale without written approval of the
+ *  engineer") would then read as a denial on every project. */
+const SEAL_ARTIFACT = /\b(?:wet[-\s]?stamps?|stamps?|stamped|stamping|seals?|sealed|sealing|signatures?|signed|unstamped|unsealed|unsigned)\b|\b(?:structural|engineering|sealed|stamped|pe|se)[\s-]*letters?\b|\bletter\b|\bengineer\s+of\s+record\b/i;
+
+/** NEGATION IS A CLOSED CLASS — this is the whole list, and it does not grow with
+ *  the verbs people choose. "not supplied", "not provided", "never included" and
+ *  every future phrasing are all caught by "not"/"never" alone. */
+const NEGATOR = /\b(?:no|not|non|never|none|neither|nor|without|lacks?|lacking|lacked|absent|absence|missing|blank|empty|omits?|omitted|omitting|unavailable|illegible|unreadable|pending|tbd|awaits?|awaiting)\b|n't\b|\bun(?:stamped|sealed|signed|executed|certified|available)\b/i;
+
+/** Conditional / prospective / imperative — a statement about what SHOULD happen,
+ *  not a report of what is in hand. Past participles are deliberately excluded:
+ *  "provide" is a hedge, "provided" is a fact, and \b keeps them apart. */
+const HEDGED = /\b(?:may|might|could|should|would|will|shall|if|whether|unless|prior|before|needs?|needed|requires?|required|recommend\w*|pending|tbd|assume\w*)\b|\b(?:submit|provide|supply|obtain|upload|attach|furnish|secure|request)\b/i;
+
+/** The container, not its contents: "signature/seal area", "stamp block". */
+const CONTAINER_ONLY = /\b(?:stamps?|seals?|signatures?)[\s\/-]*(?:\w+[\s\/-]*)?(?:areas?|blocks?|box(?:es)?|fields?|spaces?|placeholders?)\b/i;
+
+/** The clause has to CLAIM the document is in hand, not merely name it. Open-class
+ *  and therefore incomplete on purpose — every phrasing this misses blocks. */
+const ASSERTS_PRESENCE = /\b(?:present|presents|provided|supplied|included|attached|affixed|applied|shown|executed|received|furnished|issued|bears?|carries|carrying|contains?|includes?)\b|\bon\s+file\b|\bin\s+hand\b|\b(?:sealed|stamped|signed)\s+by\b|\b(?:is|are|was|were)\s+(?:\w+\s+){0,3}?(?:stamped|sealed|signed)\b/i;
+
+/** "No. 12345" / "No 4" is the abbreviation for NUMBER — a licence number sits
+ *  next to a real seal ("Sealed by Jane Roe, PE, Oregon No. 12345"), so reading it
+ *  as a negator would refuse the genuine article. */
+function withoutNumberAbbreviation(clause: string): string {
+  return clause.replace(/\bno\.?\s*(?=[#\d])/gi, " number ");
+}
+
+/**
+ * Does the parsed evidence show a stamped structural plan / engineering letter is
+ * already in hand?
+ *
+ * TWO TIERS, and the asymmetry runs in the SAFE direction:
+ *
+ *   ASSESSED text — the parser's own findings about the documents — may assert
+ *   that a seal is present, and may deny it.
+ *
+ *   RAW EXTRACTED text — the literal characters pulled out of the uploaded plan
+ *   set — may only DENY. It cannot assert, because an empty title block prints
+ *   the words "SIGNATURE WITH SEAL" exactly like a signed one does. Measured on
+ *   the live database: reading raw plan text in the positive direction flipped
+ *   two projects (15622 SE Vivian Way, 990 17th St NE) to "stamped" on that
+ *   boilerplate alone, with no seal anywhere in either set. An extracted string is
+ *   not an assessment, and a label is not a signature.
+ *
+ * A project whose sealed letter is a real FILE does not come through here at all —
+ * requiredDocuments satisfies it from stamped_plans / engineering_letter /
+ * structural_letter uploads before it ever asks this question.
+ */
+export function hasStampedStructuralEvidence(project: PermitPathInputs): boolean {
+  // structuralCalcText is the key the parser actually emits (the narrative
+  // structural blob), and llm.ts asks it for "whether stamped engineering is
+  // present". The legacy keys beside it are read for years but written NOWHERE in
+  // the codebase — kept only so an older snapshot carrying them still resolves.
+  const assessed = ["stampRecommendation", "structuralCalcText", "reviewFlags",
+    "structuralText", "structuralNotesText", "uploadedDocumentNames", "documentInventoryText"];
+  // planSetExtractedText is the uploaded-document text overlay; splitPagesText is
+  // the splitter's sheet map. Both are machine extracts of the sheets themselves.
+  const extracted = ["planSetExtractedText", "splitPagesText"];
+
+  let affirmed = false;
+  /** Returns TRUE as soon as any clause DENIES a seal — that ends the question
+   *  outright (rule 2). Sets `affirmed` for a clause that survives rules 3-5. */
+  const deniesASeal = (keys: string[], mayAssert: boolean): boolean => {
+    for (const key of keys) {
+      for (const piece of snap(project, key).toLowerCase().split(CLAUSE_BREAK)) {
+        const clause = (piece || "").trim();
+        if (!clause || !SEAL_ARTIFACT.test(clause)) continue;   // RULE 1 — clause scope
+        if (NEGATOR.test(withoutNumberAbbreviation(clause))) return true; // RULE 2
+        if (!mayAssert) continue;                     // raw extracts never assert
+        if (HEDGED.test(clause)) continue;            // RULE 3
+        if (CONTAINER_ONLY.test(clause)) continue;    // RULE 4
+        if (!ASSERTS_PRESENCE.test(clause)) continue; // RULE 5
+        affirmed = true;
+      }
+    }
+    return false;
+  };
+  if (deniesASeal(assessed, true)) return false;
+  if (deniesASeal(extracted, false)) return false;
+  return affirmed;
 }
 
 // ---------------------------------------------------------------------------
@@ -505,7 +593,7 @@ export function pathWordingScope(label: string | null | undefined): PathWordingS
   const n = String(label ?? "").toLowerCase();
   // REGEX LITERALS, not strings joined into a RegExp — "\b" inside a JS string
   // literal is a BACKSPACE character, and this module has shipped that bug once
-  // already (see DENIES_A_SEAL above).
+  // already (see hasStampedStructuralEvidence above).
   if (/\bnon-?\s*prescriptive\b|\bengineered\b/.test(n)) return "engineered";
   if (/\bprescriptive\b/.test(n)) return "prescriptive";
   return "";

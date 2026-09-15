@@ -1,5 +1,5 @@
 import type { AppDb } from "./db";
-import type { PermitCheckOutcome, PermitCheckSource } from "../../shared/src/types";
+import type { PermitCheckOutcome, PermitCheckSource, ReadingFreshness } from "../../shared/src/types";
 import { logger } from "./logger";
 
 export interface PermitStatusClassification {
@@ -500,6 +500,40 @@ export interface StaleReadingScan {
   /** false means the pass FAILED, not that nothing is stale. See above — the distinction is the point. */
   checked: boolean;
   readings: StaleStatusReading[];
+}
+
+/**
+ * THE SAME PASS, IN A SHAPE A CALLER CANNOT COLLAPSE. This is what the customer payloads use.
+ *
+ * `scanStaleStatusClassifications` above is honest — `checked:false` is not `readings:[]` — and it
+ * was STILL collapsed, one line later, in exactly the way its own comment warned about:
+ *
+ *     return new Set(scan.readings.map((s) => s.targetId));   // clientPortal.staleTargetIds
+ *
+ * That Set answers `has()` with `false` for a reading we confirmed is current AND for a pass that
+ * exploded before it read anything, and the pages published the flattering one. Christopher Ivy's
+ * building permit went from "needs confirming" to an unqualified "In review by the jurisdiction",
+ * on a permit that has been stalled at the counter since Sep 3, in a payload byte-identical to a
+ * confirmed-fresh one. The guard was there. The SHAPE it returned is what lost the third answer.
+ *
+ * So the answer that reaches a page is not a membership test. It is a THREE-VALUED verdict per
+ * target, and "we could not check" is a value of its own — there is no empty collection to read a
+ * reassurance out of, and no boolean whose `false` branch has two meanings. A caller that ignores
+ * `"unverified"` has to write the word, which is a thing a reviewer can see.
+ *
+ * NEVER THROWS, for the same reason the scan does not: every call site is a page a customer opened.
+ * A failure means every reading on that page is `"unverified"` — not marked stale (we have no
+ * evidence of drift) and never confirmed current (we have no evidence of freshness either).
+ */
+export type PublishedReadingFreshness = (targetId: string) => ReadingFreshness;
+
+export function publishedReadingFreshness(db: AppDb, projectIds: string[]): PublishedReadingFreshness {
+  const scan = scanStaleStatusClassifications(db, projectIds);
+  // THE FAILURE BRANCH FIRST, and it ignores its argument on purpose: with no pass there is no
+  // per-target answer to give, and every reading the page is about to publish is unverified.
+  if (!scan.checked) return () => "unverified";
+  const stale = new Set(scan.readings.map((s) => String(s.targetId || "")).filter(Boolean));
+  return (targetId: string) => (stale.has(String(targetId || "")) ? "stale" : "current");
 }
 
 export function scanStaleStatusClassifications(db: AppDb, projectIds: string[]): StaleReadingScan {

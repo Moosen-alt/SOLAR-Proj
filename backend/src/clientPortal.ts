@@ -28,10 +28,12 @@
 // ---------------------------------------------------------------------------
 import crypto from "node:crypto";
 import type { AppDb } from "./db";
-import type { ProjectStatus, PublicProjectStatusPayload, PublicStatusHistoryEntry } from "../../shared/src/types";
+import type {
+  ProjectStatus, PublicProjectStatusPayload, PublicStatusHistoryEntry, ReadingFreshness,
+} from "../../shared/src/types";
 import { formatProjectAddress } from "./clientNotifier";
 import { getProjectDetail } from "./repository";
-import { scanStaleStatusClassifications } from "./permitMonitor";
+import { publishedReadingFreshness } from "./permitMonitor";
 import { logger } from "./logger";
 
 /**
@@ -82,9 +84,11 @@ export interface ClientPortalTrack {
   /** The jurisdiction's receipt, when it is a different string from the application number. */
   confirmationNumber: string;
   /**
-   * This badge is showing a reading our CURRENT status rules would classify differently — it was
-   * taken before they landed. The page says so rather than asserting it. See staleTargetIds.
+   * WHAT WE KNOW ABOUT THIS BADGE: checked and current, checked and stale, or NOT CHECKED AT ALL.
+   * The third value is not a decoration — see readingFields and ReadingFreshness.
    */
+  reading: ReadingFreshness;
+  /** `reading !== "current"`. True for a stale reading AND for one our own pass could not check. */
   needsRecheck: boolean;
 }
 
@@ -215,7 +219,7 @@ export function publicCheckLabel(outcome: string, statusLabel: string, track: Tr
 }
 
 /**
- * THE READINGS THIS PAGE IS PUBLISHING THAT TODAY'S RULES WOULD CHANGE.
+ * WHAT WE KNOW ABOUT THE READING THIS PAGE IS ABOUT TO PUBLISH — in three values, never two.
  *
  * Ann's and Ivy's structural permits have said "Intake Requirements Needed" since Sep 3. The rule
  * that reads that as "the city is waiting on US" landed an hour AFTER the last status check ran,
@@ -228,24 +232,31 @@ export function publicCheckLabel(outcome: string, statusLabel: string, track: Tr
  * a nicer label at read time would publish a verdict no check ever produced and leave the stored
  * row — the one every other consumer reads — wrong and unnoticed.
  *
- * Returns TARGET IDS only. The raw portal text the comparison needs is read inside
+ * THIS USED TO RETURN A SET OF STALE TARGET IDS AND THAT WAS THE BUG. The drift pass underneath is
+ * guarded (it never throws — every call site here is a page a customer opened from an email, and a
+ * 500 over a caveat is never the right trade), but a guard that returns an EMPTY COLLECTION has
+ * thrown the answer away: `stale.has(id)` was `false` both for a reading we confirmed is current
+ * and for a pass that exploded before reading anything, and the payload published the flattering
+ * one. Ivy's stalled building permit flipped from "needs confirming" to an unqualified "In review
+ * by the jurisdiction" the moment our own diagnostic broke — byte-identical to a confirmed-fresh
+ * reading, on the page we email a homeowner.
+ *
+ * So the pass hands back a three-valued verdict per target and every field below is derived from
+ * it by readingFields(), which cannot emit "confirmed current" for a check that did not happen.
+ *
+ * Still TARGET IDS IN, VERDICT OUT: the raw portal text the comparison needs is read inside
  * staleStatusClassifications and never leaves it.
- *
- * AND IT NEVER THROWS. This is a CUSTOMER page's critical path — three of them: the emailed
- * per-project status page, the per-client tracker, and the timeline. The drift pass underneath
- * joins two tables and re-runs the classifier over stored portal prose; the day any of that
- * throws, an unguarded call here 500s the link we sent a homeowner, over a caveat. So the scan is
- * the guarded one, and a failure lands as NO MARKER on a page that still renders.
- *
- * What a failure must NOT become is a quiet "everything is current". These pages have no wording
- * for "our own drift diagnostic broke" (status.html/portal.html render a boolean), so the honesty
- * lives in the two places that can carry it: scanStaleStatusClassifications logs at ERROR, and the
- * operator route reports `checked:false` to the dashboard, which says so in words. An unmarked
- * badge after a failure means UNVERIFIED — never confirmed fresh.
  */
-function staleTargetIds(db: AppDb, projectIds: string[]): Set<string> {
-  const scan = scanStaleStatusClassifications(db, projectIds);
-  return new Set(scan.readings.map((s) => s.targetId).filter(Boolean));
+type ReadingFields = { reading: ReadingFreshness; needsRecheck: boolean };
+
+/**
+ * ONE place derives BOTH fields, so they cannot disagree. `needsRecheck` is the cautious reduction
+ * of the three values to a boolean — "do not publish this as today's fact" — and it is true for
+ * `unverified` as well as `stale`. A consumer that only knows the old boolean therefore shows the
+ * caveat when our check failed, instead of the all-clear it used to show.
+ */
+function readingFields(reading: ReadingFreshness): ReadingFields {
+  return { reading, needsRecheck: reading !== "current" };
 }
 
 export interface ClientPortalUpdate {
@@ -347,19 +358,23 @@ export function projectStatusHistory(db: AppDb, projectId: string, limit = 12): 
         outcome,
         // Set below: only the entry that is still the filing's CURRENT state can be a reading we
         // are wrongly publishing. An "In review" from July that a later entry has superseded is
-        // history, and history is not re-opened because the rules moved on afterwards.
-        needsRecheck: false,
+        // history, and history is not re-opened because the rules moved on afterwards — nor is it
+        // re-opened because our drift pass broke today. "current" here means UNMARKED, and a
+        // superseded entry is unmarked whatever the pass did.
+        ...readingFields("current"),
       },
     });
   }
   built.reverse(); // newest first, the way a timeline is read
 
-  const stale = staleTargetIds(db, [clean]);
+  const freshnessOf = publishedReadingFreshness(db, [clean]);
   const markedTargets = new Set<string>();
   for (const row of built) {
     if (markedTargets.has(row.targetId)) continue; // an older entry for a filing already handled
     markedTargets.add(row.targetId);
-    if (stale.has(row.targetId)) row.entry.needsRecheck = true;
+    // The NEWEST entry per filing is the one this page is claiming as today's state, so it carries
+    // the verdict — including "unverified", which is neither a mark of drift nor a clean bill.
+    Object.assign(row.entry, readingFields(freshnessOf(row.targetId)));
   }
   return built.map((row) => row.entry).slice(0, Math.max(1, Math.floor(limit || 12)));
 }
@@ -499,8 +514,9 @@ export function clientPortalPayload(db: AppDb, token: string): ClientPortalPaylo
   }
 
   // ONE drift pass for the whole company's book, alongside the batched target read above. Every
-  // badge below is a stored reading, and a stale one must not be published as a fact.
-  const staleTargets = staleTargetIds(db, ids);
+  // badge below is a stored reading; a stale one must not be published as a fact, and neither must
+  // one we could not check — which is why this hands back a verdict per target and not a set.
+  const freshnessOf = publishedReadingFreshness(db, ids);
 
   const byProject = new Map<string, ClientPortalTrack[]>();
   for (const t of targets) {
@@ -530,7 +546,7 @@ export function clientPortalPayload(db: AppDb, token: string): ClientPortalPaylo
       permitNumber: String(t.permit_number || ""),
       submittedAt: filing?.submittedAt || null,
       confirmationNumber: confirmation,
-      needsRecheck: staleTargets.has(String(t.id || "")),
+      ...readingFields(freshnessOf(String(t.id || ""))),
     });
     byProject.set(pid, list);
   }
@@ -595,8 +611,9 @@ export function publicProjectStatusPayload(db: AppDb, token: string): PublicProj
   const detail = getProjectDetail(db, String(row.id));
   const p = detail.project;
   // Same drift pass as the per-client tracker. This page is the one the operator opened when they
-  // found a stalled permit reading "In review", so it is the one that has to stop saying it.
-  const staleTargets = staleTargetIds(db, [String(row.id)]);
+  // found a stalled permit reading "In review", so it is the one that has to stop saying it — and
+  // the one that must not go back to saying it the day the pass itself fails.
+  const freshnessOf = publishedReadingFreshness(db, [String(row.id)]);
   return {
     project: {
       address: formatProjectAddress(p),
@@ -625,9 +642,10 @@ export function publicProjectStatusPayload(db: AppDb, token: string): PublicProj
       lastCheckedAt: t.lastCheckedAt || null,
       applicationNumber: t.applicationNumber || "",
       permitNumber: t.permitNumber || "",
-      // A reading our current rules would classify differently is not published as a fact. The
-      // stored row stays exactly as it was written; the page stops asserting it.
-      needsRecheck: staleTargets.has(String(t.id || "")),
+      // A reading our current rules would classify differently is not published as a fact, and
+      // neither is one we could not check at all. The stored row stays exactly as it was written;
+      // the page stops asserting it, and says WHICH of the two it is.
+      ...readingFields(freshnessOf(String(t.id || ""))),
     })),
     history: projectStatusHistory(db, String(row.id)),
     submissions: (detail.submissions || []).slice(0, 6).map((sub) => ({
