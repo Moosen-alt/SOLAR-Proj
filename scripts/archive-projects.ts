@@ -23,9 +23,18 @@ const flagValues = (flag: string): string[] => argv.reduce<string[]>((acc, a, i)
 }, []);
 const targets = flagValues("--project");
 const unarchive = flagValues("--unarchive");
-const why = flagValues("--why")[0] || "";
+const why = (flagValues("--why")[0] || "").trim();
 
 const db = await openDatabase();
+
+// A BARE --project (id left off the end, or a --projects typo) collected no values and fell
+// through to the listing branch, which printed a report and exited 0 — so a mistyped archive
+// reported success while writing nothing. Asked for the flag, gave no value: that is an error.
+if ((argv.includes("--project") || argv.includes("--unarchive")) && !targets.length && !unarchive.length) {
+  console.error("\n--project/--unarchive was given with no id after it. Nothing was written.\n");
+  db.close();
+  process.exit(1);
+}
 
 if (argv.includes("--list") || (!targets.length && !unarchive.length)) {
   const archived = listArchivedProjects(db);

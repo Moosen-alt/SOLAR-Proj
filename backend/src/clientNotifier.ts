@@ -180,6 +180,22 @@ export async function notifyClientOfStatusChange(
     if (process.env.CLIENT_NOTIFICATIONS === "0" || process.env.CLIENT_NOTIFICATIONS === "false") return;
     if (!project.clientId) return;
 
+    // AN ARCHIVED PROJECT DOES NOT TALK. Hiding the card was only half the feature: the monitor
+    // keeps polling an archived project's permit_check_targets row, and on an outcome change this
+    // function emailed the client about a job their tracker says does not exist — and minted a
+    // working per-project status link while doing it. That is the duplicate-job confusion the
+    // archive exists to remove, arriving down the other channel.
+    //
+    // Read fresh from the row, not from the passed record: callers hold a ProjectRecord captured
+    // before the archive and it carries no archived_at.
+    const archived = db.get<{ archived_at?: string }>(
+      "SELECT archived_at FROM projects WHERE id = ?", [project.id],
+    );
+    if (String(archived?.archived_at || "").trim()) {
+      logger.info("notify", "skipped a client update for an archived project", { projectId: project.id });
+      return;
+    }
+
     // THE NOTE IS WRITTEN FIRST, BEFORE ANYTHING THAT CAN BAIL OUT.
     //
     // It used to sit below the recipient lookup, which meant a client with no updates_inbox AND

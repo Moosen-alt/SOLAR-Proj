@@ -22,6 +22,13 @@
 //   MUST HIDE    — archived projects vanish from the client portal.
 //   MUST KEEP    — the row, its submissions and its documents are all still there afterwards.
 //   MUST REVERSE — unarchiving puts it back.
+//
+// NOT COVERED HERE, and stated rather than hidden: clientNotifier now refuses to notify an
+// ARCHIVED project (it was emailing the client about a job their tracker does not show, and
+// minting a live status link while doing it). That bug reproduces in a standalone script and the
+// fix is verified there — but every attempt to build a check in THIS fixture passed against
+// deliberately sabotaged code, so it was measuring nothing and was removed rather than shipped
+// green. The fix stands on the standalone reproduction; suite coverage for it is an open gap.
 //   MUST NOT     — hide anything by accident: a project with no archived_at is visible, and
 //                  archiving one client's project does not touch another's.
 //
@@ -38,7 +45,7 @@ process.env.AUTOPILOT_AUTO_START = "0";
 
 const { openDatabase } = await import("../src/db");
 const { createClient } = await import("../src/clients");
-const { createProject } = await import("../src/repository");
+const { createProject, getProjectList } = await import("../src/repository");
 const { ensureClientPortalToken, clientPortalPayload } = await import("../src/clientPortal");
 const { archiveProject, unarchiveProject } = await import("../src/projectArchive");
 
@@ -50,7 +57,12 @@ const check = (label: string, fn: () => void): void => {
   catch (err) { failures++; console.error(`  FAIL - ${label}\n         ${err instanceof Error ? err.message : String(err)}`); }
 };
 
-const client = createClient(db, { companyName: "Archive Solar", ccbLicenseNumber: "888999" });
+// A REACHABLE ADDRESS, or the notify check below proves nothing: notifyClientOfStatusChange
+// returns silently when the client has neither an updates inbox nor a business email, so without
+// this the "archived projects do not email" check passes against unfixed code. Measured.
+const client = createClient(db, {
+  companyName: "Archive Solar", ccbLicenseNumber: "888999", businessEmail: "ops@archive-solar.test",
+});
 const other = createClient(db, { companyName: "Other Solar", ccbLicenseNumber: "888000" });
 const mk = (clientId: string, owner: string, street: string) => createProject(db, {
   clientId, owner, street, city: "Coos Bay", state: "OR", ahj: "City of Coos Bay",
@@ -64,19 +76,38 @@ const theirs = mk(other.id, "Their Owner", "2 Theirs St");
 const token = ensureClientPortalToken(db, client.id);
 const otherToken = ensureClientPortalToken(db, other.id);
 
-check("before archiving, all three passes at one job are on the client's page", () => {
+await check("before archiving, all three passes at one job are on the client's page", () => {
   assert.equal(clientPortalPayload(db, token)!.projects.length, 3);
 });
 
 const outcome = archiveProject(db, supersededA.id, "superseded by a later pass at the same job");
 archiveProject(db, supersededB.id, "superseded by a later pass at the same job");
 
-check("THE HEADLINE: an archived project is gone from the client's page", () => {
+await check("THE HEADLINE: an archived project is gone from the client's page", () => {
   const ids = clientPortalPayload(db, token)!.projects.map((p) => p.id);
   assert.deepEqual(ids, [keep.id], `the client still sees superseded passes: ${JSON.stringify(ids)}`);
 });
 
-check("MUST KEEP: the row, its submissions and its documents are all still there", () => {
+// THE ATTACHED WORK, so the check below is about more than one row. The first version of this
+// test created no submissions and no documents and asserted on neither — so replacing the UPDATE
+// with `DELETE FROM submissions WHERE project_id = ?`, the exact regression the commit message
+// says would break demoReplay.ts and the HANDOFF-cited runs, left every assertion green. Caught
+// in review; it was a claim in a label, not a test.
+const now2 = new Date().toISOString();
+for (const [sid, pid] of [["arch-sub-1", supersededA.id], ["arch-sub-2", supersededA.id]] as const) {
+  db.run(
+    `INSERT INTO submissions (id, project_id, submission_type, permit_type, status, application_number, submitted_at, created_at)
+     VALUES (?, ?, 'permit', 'electrical', 'submitted', 'ARCH-1', ?, ?)`,
+    [sid, pid, now2, now2],
+  );
+}
+db.run(
+  `INSERT INTO project_documents (id, project_id, doc_type, original_filename, stored_path, uploaded_at)
+   VALUES ('arch-doc-1', ?, 'plan_set', 'plans.pdf', '/tmp/plans.pdf', ?)`,
+  [supersededA.id, now2],
+);
+
+await check("MUST KEEP: the row, its submissions and its documents are all still there", () => {
   // The whole reason this is not a delete. demoReplay.ts reads the live database by project id,
   // and HANDOFF cites these runs — archiving must cost nothing but visibility.
   assert.equal(outcome.archived, true, outcome.reason);
@@ -84,28 +115,46 @@ check("MUST KEEP: the row, its submissions and its documents are all still there
   assert.ok(row, "the project row was destroyed — this is supposed to be reversible");
   assert.ok(String(row!.archived_at), "archived_at was not stamped");
   assert.match(String(row!.archived_reason), /superseded/, "the reason is how you know why, months later");
+  // The part that actually matters: demoReplay.ts reads this database BY PROJECT ID and HANDOFF
+  // cites these runs, so archiving must cost nothing but visibility.
+  const subs = db.get<{ n: number }>("SELECT COUNT(*) AS n FROM submissions WHERE project_id = ?", [supersededA.id])!;
+  assert.equal(Number(subs.n), 2, "archiving destroyed the submission history — this is supposed to be visibility only");
+  const docs = db.get<{ n: number }>("SELECT COUNT(*) AS n FROM project_documents WHERE project_id = ?", [supersededA.id])!;
+  assert.equal(Number(docs.n), 1, "archiving destroyed the attached documents");
 });
 
-check("MUST REVERSE: unarchiving puts it back on the page", () => {
+await check("MUST NOT FILTER THE OPERATOR: an archived project is still in listProjects", () => {
+  // The commit promises "the operator dashboard still shows everything" and nothing asserted it.
+  // A later author who reasonably reads "archive" as "archive" adds `AND archived_at = ''` to the
+  // operator query, the whole suite stays green, and seven staging passes vanish from the people
+  // who need to find them. This is the check that stops that.
+  // getProjectList is what GET /api/projects serves the dashboard from (server.ts:413).
+  const ids = getProjectList(db, { limit: 500 }).projects.map((p: { id: string }) => p.id);
+  assert.ok(ids.includes(supersededA.id),
+    "an archived project disappeared from the OPERATOR list — archiving is client-visibility only");
+  assert.ok(ids.includes(keep.id));
+});
+
+await check("MUST REVERSE: unarchiving puts it back on the page", () => {
   unarchiveProject(db, supersededA.id);
   const ids = clientPortalPayload(db, token)!.projects.map((p) => p.id).sort();
   assert.deepEqual(ids.sort(), [keep.id, supersededA.id].sort(), "an archive you cannot undo is a delete with extra steps");
   archiveProject(db, supersededA.id, "re-archived by the test");
 });
 
-check("MUST NOT: archiving one client's project does not touch another's", () => {
+await check("MUST NOT: archiving one client's project does not touch another's", () => {
   assert.equal(clientPortalPayload(db, otherToken)!.projects.length, 1,
     "the other company's project disappeared too");
 });
 
-check("MUST NOT: a project that was never archived stays visible", () => {
+await check("MUST NOT: a project that was never archived stays visible", () => {
   // The failure mode worth guarding: a filter written as `archived_at IS NULL` when the column
   // defaults to '' hides nothing, and one written as `= ''` against a NULL hides everything.
   const visible = clientPortalPayload(db, token)!.projects.map((p) => p.id);
   assert.ok(visible.includes(keep.id), "the live project vanished — the filter is inverted or null-confused");
 });
 
-check("archiving an unknown project is refused, not silently ignored", () => {
+await check("archiving an unknown project is refused, not silently ignored", () => {
   const r = archiveProject(db, "no-such-project", "typo");
   assert.equal(r.archived, false);
   assert.match(r.reason, /no such project/i);

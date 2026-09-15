@@ -28,6 +28,7 @@
 // ---------------------------------------------------------------------------
 import crypto from "node:crypto";
 import type { AppDb } from "./db";
+import type { ProjectStatus } from "../../shared/src/types";
 import { formatProjectAddress } from "./clientNotifier";
 import { logger } from "./logger";
 
@@ -43,7 +44,7 @@ import { logger } from "./logger";
  * doing. "waiting_on_designer" is their action, and saying so is the difference between a
  * tracker and a progress bar.
  */
-export const PUBLIC_STATUS_TEXT: Record<string, string> = {
+export const PUBLIC_STATUS_TEXT: Record<ProjectStatus, string> = {
   intake_uploaded: "Received — plan set being read",
   parsed: "Plan set read — running checks",
   qc_failed: "Checks found a problem — our team is on it",
@@ -280,7 +281,10 @@ export function clientPortalPayload(db: AppDb, token: string): ClientPortalPaylo
         ahj: String(p.ahj || ""),
         utility: String(p.utility || ""),
         statusKey,
-        status: PUBLIC_STATUS_TEXT[statusKey] || "In progress",
+        // The MAP is exhaustive and the compiler enforces that; the LOOKUP still tolerates a
+        // value the database holds that the union does not, which is a different risk and is
+        // what the fallback is for.
+        status: PUBLIC_STATUS_TEXT[statusKey as ProjectStatus] || "In progress",
         updatedAt: String(p.updated_at || ""),
         tracks: byProject.get(String(p.id)) || [],
         updates: updatesByProject.get(String(p.id)) || [],
