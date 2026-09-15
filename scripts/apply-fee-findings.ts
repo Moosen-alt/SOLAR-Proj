@@ -21,6 +21,19 @@
 // researcher retrieved is REPORTED as such before it is applied, because an unchecked quote
 // and a checked one are indistinguishable once they are both sitting in a fee field.
 //
+// CORROBORATION IS NOT REPLAYABLE, AND THIS IS THE PATH THAT PROVED IT.
+// A bracket's `corroboration` means "a machine fetched the cited document and found THIS
+// row's label and fee printed together on one line". This script fetches nothing. It reads a
+// JSON file — an ordinary text file a person can open in an editor — so anything it forwarded
+// would be a corroboration claim asserted BY HAND, and it would then be printed beside the
+// amount as that amount's evidence. saveFeeSchedule now refuses to store corroboration unless
+// the caller hands over the retrieval ledger it was derived from, which a file replay cannot
+// produce; this script hands over none, so applied brackets land UNCORROBORATED. That is a
+// real loss and it is announced, not swallowed: the count is printed before anything is
+// written, and the research run's own "CORROBORATED n/m" note segment is dropped rather than
+// carried onto a row whose brackets no longer say that. Re-corroborating an applied row means
+// re-reading the document, which is researchFeeSchedule's job, not this script's.
+//
 // --resolve-conflicts IS THE HUMAN GESTURE THAT CLOSES AN UNRESOLVED FEE CONFLICT.
 // A conflicted row holds two contradictory published tables and refuses to price anything
 // until somebody picks one; saveFeeSchedule refuses every ordinary write over it, including
@@ -39,6 +52,38 @@ interface StoredFinding {
     notes: string; paymentMethod?: string; sourceUrl: string; sourceQuote: string; sourceKind: string;
     quoteVerified?: boolean; neededBrowser?: boolean;
   } | null;
+}
+
+/** Would this have been STORED as corroboration had the path been trusted?
+ *  Deliberately the same shape normalizeCorroboration accepts (true + a matched
+ *  line + a URL), so the count printed below is the count of claims that would
+ *  otherwise have reached a fee field — not every stray `corroboration` key. */
+function isCorroborationClaim(raw: unknown): boolean {
+  if (!raw || typeof raw !== "object") return false;
+  const c = raw as Record<string, unknown>;
+  return c.corroborated === true && !!String(c.matchedLine ?? "").trim() && !!String(c.sourceUrl ?? "").trim();
+}
+
+// KB/fee notes are " | "-joined SEGMENTS (feeSchedules.mergeNotes), so a stale
+// claim is removed by segment, never by rewriting the blob.
+const CORROBORATED_SEGMENT = /^CORROBORATED\s+\d/i;
+
+/** Drop the research run's "CORROBORATED n/m bracket(s)…" segment on the way in.
+ *  It was true of the row that run wrote against its own copy of the database;
+ *  it is NOT true of the row this script is about to write, whose brackets carry
+ *  no corroboration at all. A sentence in notes that contradicts the field next
+ *  to it is exactly how a machine check gets read as a human one. The negative
+ *  segment ("NO BRACKET CORROBORATED…") is kept — it is still accurate. */
+function notesWithoutStaleCorroboration(notes: string, claimed: boolean): string {
+  const segments = String(notes ?? "").split(" | ").map((s) => s.trim()).filter(Boolean)
+    .filter((s) => !CORROBORATED_SEGMENT.test(s));
+  if (claimed) {
+    segments.push(
+      "APPLIED FROM A FINDINGS FILE: the corroboration recorded by the research run was NOT re-checked "
+      + "by this process (it fetched no document), so these brackets are stored uncorroborated.",
+    );
+  }
+  return segments.join(" | ");
 }
 
 async function main(): Promise<void> {
@@ -96,6 +141,14 @@ async function main(): Promise<void> {
     if (f.quoteVerified === false) {
       console.log("      ⚠ THE QUOTE WAS NOT FOUND in any document the researcher retrieved. Check it by hand.");
     }
+    // Printed BEFORE the dry-run bail: the dry run is what an operator reads to
+    // decide, so it must show the same loss the real run will take. ASCII on
+    // purpose — this line is asserted on in a spawned child's stdout.
+    const claimedCorroborated = f.brackets.filter((b) => isCorroborationClaim(b?.corroboration)).length;
+    if (claimedCorroborated) {
+      console.log(`      NOTE: the file claims ${claimedCorroborated} corroborated bracket(s). CORROBORATION IS NOT REPLAYED`);
+      console.log("            from a file - this process fetched no document - so these land UNCORROBORATED.");
+    }
     if (existing?.confidence === "verified") {
       console.log("      a human has verified this row — it will not be overwritten; the finding goes to its notes.");
     }
@@ -110,12 +163,15 @@ async function main(): Promise<void> {
     }
     if (dryRun) { console.log("      (dry run)"); continue; }
 
+    // NO LEDGER IS PASSED, and that is the guard: saveFeeSchedule strips every
+    // corroboration claim on these brackets rather than trusting a file for it.
     const outcome = saveFeeSchedule(
       db,
       { state: row.state, ahj: row.ahj, utility: row.utility, track: row.track },
       {
         found: true, reason: "", basis: f.basis as never, brackets: f.brackets as never,
-        notes: f.notes, paymentMethod: f.paymentMethod, sourceUrl: f.sourceUrl,
+        notes: notesWithoutStaleCorroboration(f.notes, claimedCorroborated > 0),
+        paymentMethod: f.paymentMethod, sourceUrl: f.sourceUrl,
         sourceQuote: f.sourceQuote, sourceKind: f.sourceKind,
         resolvesConflict: resolveConflicts,
       },

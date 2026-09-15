@@ -213,7 +213,12 @@ setPortalQuestionSource(() => [
     answered: [],
     unanswered: [
       { portalLabel: "Will the System be Customer-Owned or Third-Party Owned?", suggestedBinding: "ownershipModel", classification: "per-job" },
-      { portalLabel: "Is a disconnect installed within 10 feet of the meter?", suggestedBinding: "disconnectWithin10ft", options: ["Yes", "No"], classification: "per-job" },
+      // `kind` is carried because the live bank always carries one —
+      // extractPortalQuestions builds EVERY PortalQuestion through build(label,
+      // kind, …), so a kind-less row is not a shape production can produce. It
+      // matters here: an absent kind now means "unknown", and an unknown kind is
+      // asked rather than settled (see [13]).
+      { portalLabel: "Is a disconnect installed within 10 feet of the meter?", suggestedBinding: "disconnectWithin10ft", options: ["Yes", "No"], classification: "per-job", kind: "radio-choice" },
       { portalLabel: "Mystery question with no binding", suggestedBinding: null, classification: "per-job" },
     ],
   },
@@ -349,6 +354,92 @@ run("…and the sentinel still never reaches the project",
 run("…and the question stays open for the operator, flagged unsure",
   (await portalQuestionStatus(db, unsureJ)).unsureCount === 1);
 setPortalQuestionSource(null);
+
+console.log("\n[13] a PENDING request written before 'kind' was persisted degrades to ASKING, never to a blank filing");
+// THE REGRESSION. storedJson only began persisting `kind` in the commit that
+// introduced OPERATOR_POLICY_ANSWERS, so every intake request already pending at
+// that moment carries questions with no kind. policySettles read that as
+// "not bound-empty" and suppressed them — and for a recipe-bound control that is
+// the worst available outcome: the question disappears from the client's form
+// while resolveRecipeFieldValues (which has no policy default) goes on resolving
+// "" into a REQUIRED portal control, with nothing anywhere surfacing it. The
+// code's own comment calls that "strictly worse than asking", so an unknown kind
+// must ask.
+const projectL = makeProjectFor("Question Test L", "12 Legacy Ln");
+const LEGACY_DISCONNECT_TOKEN = "legacy-kindless-token";
+db.run(
+  `INSERT INTO project_intake_requests (id, project_id, token, fields_json, status, created_by, created_at)
+   VALUES ('legacy-kindless', ?, ?, ?, 'pending', '', ?)`,
+  [
+    projectL, LEGACY_DISCONNECT_TOKEN,
+    // Exactly what pre-change storedJson wrote: key, label, options — no kind.
+    // The denylisted binding is the mustExclude arm: degrading to "ask" must not
+    // also degrade the public-key guard, or a no-login token could repoint a filing.
+    JSON.stringify([
+      "homeownerEmail",
+      { key: "disconnectWithin10ft", label: DISCONNECT_NOTE, options: ["Yes", "No"] },
+      { key: "utility", label: "Which utility?", options: ["PacifiCorp", "PGE"] },
+    ]),
+    new Date().toISOString(),
+  ],
+);
+const pubL = getIntakeRequestPublic(db, LEGACY_DISCONNECT_TOKEN);
+const pubLQ = pubL.questions.find((q) => q.key === "disconnectWithin10ft");
+run("a legacy kind-less policy question is ASKED, not silently settled", Boolean(pubLQ), JSON.stringify(pubL.questions));
+run("…in the portal's own wording, with the internal note prefix still stripped",
+  pubLQ?.label === "Is your disconnect within 10 feet of the PGE utility meter?", JSON.stringify(pubLQ?.label));
+run("…and marked required, so the form and the server still agree",
+  pubLQ?.required === true, JSON.stringify(pubLQ));
+// mustExclude — the public-key denylist is untouched by the degrade.
+run("…while a portal-identity binding in the same legacy row still never reaches the form",
+  !pubL.questions.some((q) => q.key === "utility"), JSON.stringify(pubL.questions));
+
+const legacyShort = throws(() => submitIntakeRequest(db, LEGACY_DISCONNECT_TOKEN, { homeownerEmail: "legacy@example.com" }));
+run("a post that omits it is a 400 — the server requires what the form showed",
+  legacyShort?.status === 400, JSON.stringify(legacyShort));
+run("…naming the question in the portal's own wording",
+  Boolean(legacyShort?.message.includes("Is your disconnect within 10 feet of the PGE utility meter?")),
+  legacyShort?.message ?? "");
+// "I'm not sure" must remain a real answer on this path too — it escalates to the
+// operator, and escalation is still better than a blank in a required control.
+const legacyUnsure = throws(() => submitIntakeRequest(db, LEGACY_DISCONNECT_TOKEN, {
+  homeownerEmail: "legacy@example.com", disconnectWithin10ft: INTAKE_UNSURE,
+}));
+run("\"I'm not sure\" still satisfies it", legacyUnsure === null, legacyUnsure?.message ?? "");
+run("…and the sentinel never reached the project",
+  !(getProjectDetail(db, projectL).project.parserSnapshot as Record<string, unknown>).disconnectWithin10ft);
+
+// THE OTHER DIRECTION, from storage rather than from the live bank: a row whose
+// kind WAS persisted still lets the operator's standing answer settle it. [9](a)
+// only covers the live-source path; this pins the round trip through fields_json.
+const projectM = makeProjectFor("Question Test M", "13 Stored St");
+db.run(
+  `INSERT INTO project_intake_requests (id, project_id, token, fields_json, status, created_by, created_at)
+   VALUES ('stored-kind', ?, 'stored-kind-token', ?, 'pending', '', ?)`,
+  [
+    projectM,
+    JSON.stringify([
+      "homeownerEmail",
+      { key: "disconnectWithin10ft", label: DISCONNECT_NOTE, options: ["Yes", "No"], kind: "radio-choice" },
+    ]),
+    new Date().toISOString(),
+  ],
+);
+run("a stored row that DOES carry its kind is still settled by the standing answer",
+  getIntakeRequestPublic(db, "stored-kind-token").questions.length === 0,
+  JSON.stringify(getIntakeRequestPublic(db, "stored-kind-token").questions));
+// …and a stored bound-empty row keeps being asked, as it always has.
+const projectN = makeProjectFor("Question Test N", "14 Bound Ct");
+db.run(
+  `INSERT INTO project_intake_requests (id, project_id, token, fields_json, status, created_by, created_at)
+   VALUES ('stored-bound', ?, 'stored-bound-token', ?, 'pending', '', ?)`,
+  [
+    projectN,
+    JSON.stringify([{ key: "disconnectWithin10ft", label: DISCONNECT_NOTE, options: ["Yes", "No"], kind: "bound-empty" }]),
+    new Date().toISOString(),
+  ],
+);
+run("a stored bound-empty row is still asked", getIntakeRequestPublic(db, "stored-bound-token").questions.length === 1);
 
 if (failures) {
   console.error(`\nportalIntakeQuestions: ${failures} failure(s)`);

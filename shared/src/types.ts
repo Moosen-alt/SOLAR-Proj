@@ -610,7 +610,32 @@ export interface ApplicationDocumentPackage {
   profile: ApplicationRequirementProfile;
   generatedAt: string;
   docs: GeneratedApplicationDocument[];
+  /** SCALAR project FIELDS that are blank — fifteen checks, none of which ever looks
+   *  at a document. Feeds packageReady and four stage-status computations, so its
+   *  meaning must not widen. */
   missingFields: string[];
+  /**
+   * Required DOCUMENTS (actual files) that are not attached — documentInventory's
+   * blocking set, resolved against real uploads and filled forms on disk.
+   *
+   * DELIBERATELY NOT FOLDED INTO missingFields. The screen used to report "No critical
+   * document fields missing from the generated packet" out of missingFields alone, and
+   * an operator read that as "the packet is complete" — which is how a jurisdiction
+   * that files TWO permits passed through with one application never attached. The
+   * sentence was true and the impression was false. Folding the documents into
+   * missingFields would fix the sentence and silently change what packageReady and
+   * every stage-status computation mean; a separate field fixes the sentence only.
+   *
+   * Optional: buildApplicationDocumentPackage is DB-free and cannot resolve it — it is
+   * attached by getApplicationDocumentPackage, which has the database.
+   */
+  missingDocuments?: Array<{
+    docType: string;
+    label: string;
+    lane: "permit" | "nem";
+    /** Why a clean submittal needs it, in the jurisdiction's own terms. */
+    why: string;
+  }>;
   html: string;
   /** When the knowledge base has a learned profile for this AHJ, its real
    *  required-document list + portal (so the PM isn't relying on the generic fallback). */
@@ -1487,6 +1512,54 @@ export interface ProjectDetail {
   stageLabel: string;
   stageCount: number;
   isBlocked: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// THE TOKENIZED, NO-LOGIN CLIENT STATUS PAGE (/api/public/status/:token → frontend/status.html).
+//
+// Declared here rather than inside the backend because frontend/status.html is the other half of
+// the contract and there is nothing else holding the two in step. Everything on this page is
+// visible to anyone holding the link, so the shape is a whitelist: raw scraped portal prose,
+// correction text, fees, credentials, documents and internal review state are all absent BY
+// CONSTRUCTION — a field that is not here cannot be published by accident.
+// ---------------------------------------------------------------------------
+
+/** One line on a client's timeline: a filing, NAMED, and what it moved TO. */
+export interface PublicStatusHistoryEntry {
+  /** When this state was FIRST seen — the moment it CHANGED, not the last time we looked. */
+  at: string;
+  /** WHICH filing moved: "Building permit" / "Electrical permit" / "Utility interconnection (NEM)". */
+  label: string;
+  /** The jurisdiction's own reference for that filing, so two permit rows are never ambiguous. */
+  applicationNumber: string;
+  /** Client-facing wording — says who the next move belongs to. See publicCheckLabel. */
+  statusLabel: string;
+  /** The raw outcome. For badge STYLING only; the words are in statusLabel. */
+  outcome: string;
+}
+
+/** One filing being tracked, as the client sees it. */
+export interface PublicStatusTrack {
+  type: string;
+  label: string;
+  statusLabel: string;
+  outcome: string;
+  lastCheckedAt: string | null;
+  applicationNumber: string;
+  permitNumber: string;
+}
+
+export interface PublicProjectStatusPayload {
+  project: {
+    address: string;
+    ahj: string;
+    utility: string;
+    status: string;
+    updatedAt: string;
+  };
+  tracks: PublicStatusTrack[];
+  history: PublicStatusHistoryEntry[];
+  submissions: Array<{ type: string; status: string; submittedAt: string | null }>;
 }
 
 /** Where an extracted value came from — shown to the PM to verify accuracy. */

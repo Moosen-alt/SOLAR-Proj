@@ -68,7 +68,7 @@ import { notifyClientOfStatusChange, shouldNotifyClient } from "./clientNotifier
 import { detectPlatform, publicPermitStatusCheck } from "./publicPermitStatus";
 import { planSetTextForProject, projectDocsByType, DOCS_DIR } from "./projectDocuments";
 import { findAhjProcessProfile } from "./processProfiles";
-import { documentInventory } from "./requiredDocuments";
+import { documentInventory, type DocumentInventory, type DocPresence } from "./requiredDocuments";
 import { STAGE_COUNT, stageForStatus, isBlockedStatus } from "./projectStage";
 import { addAuditLog } from "./audit";
 import { clientStagingOverlay, getClient } from "./clients";
@@ -105,7 +105,7 @@ import {
   type ClassifiedMboxMessage,
 } from "./knowledgeBase";
 import { compactAlnum, existingSystemFromSnapshot, fieldAliases, normalizeProject, normalizeTokens } from "./normalize";
-import { classifyPermitStatusText, isAuthWallText, nextCheckIso } from "./permitMonitor";
+import { classifyPermitStatusText, isAuthWallText, nextCheckIso, shouldRecordStatusCheck } from "./permitMonitor";
 import { evidenceForTopic, evidenceLines, type EvidenceTopic } from "./projectEvidence";
 import { runQcForProject } from "./qc";
 import { loadStoredTemplates, formAllowedForPath, filledFormsByDocType } from "./ahjForms";
@@ -4224,6 +4224,22 @@ export function getApplicationDocumentPackage(db: AppDb, projectId: string): App
   const client = detail.project.clientId ? (() => { try { return getClient(db, detail.project.clientId!); } catch { return null; } })() : null;
   const pkg = buildApplicationDocumentPackage(detail.project, client);
 
+  // A MISSING DOCUMENT IS NOT A MISSING FIELD, AND THE PACKET SCREEN SAID IT WAS.
+  //
+  // pkg.missingFields is fifteen SCALAR field checks (requiredProjectFields) — not one
+  // of them ever looks at a document. The screen rendered "No critical document fields
+  // missing from the generated packet" out of it, which reads as "the packet is
+  // complete", and two permits went out that way with an application never attached.
+  //
+  // documentInventory answers the question the sentence appeared to answer. It lands in
+  // its OWN field: missingFields feeds packageReady and four stage-status computations,
+  // so widening it would change four things to fix one. Never fatal — the packet screen
+  // must still render for a project whose inventory cannot be resolved.
+  try {
+    pkg.missingDocuments = documentInventory(db, detail.project).missingBlocking
+      .map((d) => ({ docType: d.docType, label: d.label, lane: d.lane, why: d.why }));
+  } catch { /* advisory surface — the staging gate is the authority and runs its own check */ }
+
   // Enrich with the LEARNED AHJ profile from the knowledge base. The static
   // builder only knows a handful of hardcoded jurisdictions; the KB knows many
   // more (seeded + learned from mbox/projects). When it has this AHJ, use its
@@ -4260,6 +4276,7 @@ export function getApplicationDocumentPackage(db: AppDb, projectId: string): App
     profile: pkg.profile.id,
     docCount: pkg.docs.length,
     missingFields: pkg.missingFields,
+    missingDocuments: (pkg.missingDocuments || []).map((d) => d.docType),
     learnedProfile: learned ? `${learned.state}:${learned.ahj}:${learned.utility}` : null,
   });
   return pkg;
@@ -4666,17 +4683,47 @@ export async function recordPermitStatusCheck(
   const source = input.source || "manual";
   const rawStatusText = await resolveStatusText(target, input.rawStatusText || "", source);
   const classification = classifyPermitStatusText(rawStatusText);
-  // Previous outcome BEFORE this check updates the target — the client is notified only
-  // when the outcome actually CHANGES (never re-sent on every poll of a settled status).
+  // Previous outcome/label BEFORE this check updates the target — the client is notified only
+  // when the outcome actually CHANGES (never re-sent on every poll of a settled status), and the
+  // same pair decides whether this check is a row at all. Both must be read here, above the
+  // UPDATE below that overwrites them.
   const previousOutcome = target ? text(target.latest_outcome) : "";
+  const previousStatusLabel = target ? text(target.latest_status_label) : "";
+  // A HISTORY OF CHANGES, NOT A LOG OF LOOKUPS.
+  //
+  // This table was written on every CHECK. A permit sitting in "In review" for three weeks got a
+  // row per sweep, and a project with three polled targets got three rows per sweep, so the
+  // client's "Recent updates" card showed twelve identical lines in pairs seconds apart. The gate
+  // is shouldRecordStatusCheck() in permitMonitor.ts — it lives beside the classifier that
+  // produces these labels, and this is its only caller. It is NOT re-derived here: a second copy
+  // of "did anything move" would drift from the classifier feeding it.
+  //
+  // WHAT THIS GATES, AND WHY ALL THREE TOGETHER. The status-check row, the human_review_items row
+  // and insertMonitorCorrection (which also writes its own human_review_items row and enqueues a
+  // correction-triage job) are all "this is news" artifacts of one check. Gating only the check
+  // row would leave a correction each sweep with no check row to hang off, and would keep
+  // re-queuing triage for a correction already recorded. The FIRST poll that sees a correction is
+  // a transition, so it is recorded in full; only the re-reads of that same state are suppressed.
+  //
+  // WHAT IS NOT GATED, deliberately: the permit_check_targets UPDATE (last_checked_at must
+  // advance every time we look), updateProjectForPermitOutcome, triggerHandoffIfReady, the
+  // audit_logs row, and learnFromPermitStatus. "When did we last look" and "when did it last
+  // move" are two questions and both keep an answer.
+  const recordCheck = shouldRecordStatusCheck(
+    target ? { outcome: previousOutcome, statusLabel: previousStatusLabel } : null,
+    { outcome: classification.outcome, statusLabel: classification.statusLabel },
+    source,
+  );
   const ts = nowIso();
   const checkId = id();
   let correctionId: string | null = null;
 
   db.transaction(() => {
-    if (classification.outcome === "correction_flagged") {
+    // `recordCheck &&` on all three: see the note above. An unchanged poll falls straight through
+    // to the target/project/audit work below, which is NOT gated.
+    if (recordCheck && classification.outcome === "correction_flagged") {
       correctionId = insertMonitorCorrection(db, detail.project, rawStatusText, classification.message, ts, source === "email" ? "email" : "portal");
-    } else if (classification.outcome === "needs_human_review") {
+    } else if (recordCheck && classification.outcome === "needs_human_review") {
       db.run(
         `INSERT INTO human_review_items
           (id, project_id, issue_type, field_name, parser_value, llm_suggested_value, source_excerpt, status, notes, created_at, updated_at)
@@ -4697,31 +4744,33 @@ export async function recordPermitStatusCheck(
       );
     }
 
-    db.run(
-      `INSERT INTO permit_status_checks
-        (id, project_id, target_id, source, raw_status_text, status_label, outcome, confidence,
-         correction_id, reviewed_by_ahj, ready_for_issue, issue_fee_due, application_number,
-         permit_number, message, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        checkId,
-        projectId,
-        input.targetId || null,
-        source,
-        rawStatusText,
-        classification.statusLabel,
-        classification.outcome,
-        classification.confidence,
-        correctionId,
-        classification.reviewedByAhj ? 1 : 0,
-        classification.readyForIssue ? 1 : 0,
-        classification.issueFeeDue ? 1 : 0,
-        input.applicationNumber || text(target?.application_number) || "",
-        input.permitNumber || text(target?.permit_number) || "",
-        classification.message,
-        ts,
-      ],
-    );
+    if (recordCheck) {
+      db.run(
+        `INSERT INTO permit_status_checks
+          (id, project_id, target_id, source, raw_status_text, status_label, outcome, confidence,
+           correction_id, reviewed_by_ahj, ready_for_issue, issue_fee_due, application_number,
+           permit_number, message, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          checkId,
+          projectId,
+          input.targetId || null,
+          source,
+          rawStatusText,
+          classification.statusLabel,
+          classification.outcome,
+          classification.confidence,
+          correctionId,
+          classification.reviewedByAhj ? 1 : 0,
+          classification.readyForIssue ? 1 : 0,
+          classification.issueFeeDue ? 1 : 0,
+          input.applicationNumber || text(target?.application_number) || "",
+          input.permitNumber || text(target?.permit_number) || "",
+          classification.message,
+          ts,
+        ],
+      );
+    }
 
     if (target) {
       const frequency = Number(target.check_frequency_days ?? 7);
@@ -4735,8 +4784,13 @@ export async function recordPermitStatusCheck(
 
     updateProjectForPermitOutcome(db, detail.project.status, projectId, classification.outcome, classification.message, ts, text(target?.target_type));
     triggerHandoffIfReady(db, projectId, ts);
+    // ONE ROW PER CHECK, ALWAYS — this is the per-check evidence trail, and it is the thing the
+    // status-check gate above is allowed to suppress *because* this is not. `checkId` is null when
+    // no row was written: an audit entry pointing at a permit_status_checks id that does not exist
+    // would be worse than no id at all.
     addAuditLog(db, projectId, "system", "permit monitor", "permit_status.checked", {
-      checkId,
+      checkId: recordCheck ? checkId : null,
+      recorded: recordCheck,
       targetId: input.targetId || null,
       source,
       outcome: classification.outcome,
@@ -4747,7 +4801,9 @@ export async function recordPermitStatusCheck(
       db,
       detail.project,
       {
-        id: checkId,
+        // Blank when this check was not persisted — learnFromPermitStatus reads outcome/labels/
+        // timestamps and never the id, so the KB still learns from every look.
+        id: recordCheck ? checkId : "",
         projectId,
         targetId: input.targetId || null,
         source,
@@ -5200,6 +5256,72 @@ function validatePortalFields(
   return missing;
 }
 
+/**
+ * THE FILES THIS SUBMITTAL PACKAGES — what the portal upload sweep is handed.
+ *
+ * Exported for the same reason as the gate filter below: it was an inline expression,
+ * so nothing could assert on what actually goes up without rebuilding the expression.
+ *
+ * Uploaded documents win on a key collision — an operator who uploaded their own
+ * version meant to use it. The filled AHJ application counts as one of the documents:
+ * it is written to backend/data/filled/<projectId>/ rather than the document store, so
+ * it has no project_documents row and projectDocsByType cannot see it. Without the
+ * merge the filled form attaches on the LEARN run and silently stops attaching on every
+ * replay afterwards — the worst shape of regression, appearing only once a portal has
+ * been learned, which is exactly when the operator stops watching.
+ *
+ * AND IT IS PATH-SCOPED. filledFormsByDocType drops a filled application that
+ * contradicts the project's resolved permit path, because "skip the other application"
+ * never deleted the previous path's PDF. A project filled on the engineered path and
+ * then flipped to prescriptive still had a STRUCTURAL application sitting on disk —
+ * and this is the line that would have uploaded it, against Coos Bay's own printed
+ * instruction: "Prescriptive path — upload ONLY the prescriptive application. Do NOT
+ * also upload the structural application."
+ */
+export function packagedDocumentsByType(db: AppDb, project: ProjectRecord): Record<string, string> {
+  return {
+    ...filledFormsByDocType(db, project.id, resolvePermitPath(project).path),
+    ...projectDocsByType(db, project.id),
+  };
+}
+
+/**
+ * THE DOCUMENT GATE'S FILTER — the one prepareSubmission turns into its 409.
+ *
+ * Exported because it was previously an inline expression, and the only way to test
+ * "the gate refuses this" was to restate the filter in the test. A copy of a filter
+ * cannot notice the original drifting; this is the original.
+ *
+ * TWO dimensions, and they are not the same dimension:
+ *
+ *  - LANE (permit vs nem) scopes out the OTHER utility/AHJ side, so staging one lane
+ *    isn't blocked by the other's document. inverter_spec is dual-purpose and always
+ *    counts.
+ *  - DISCIPLINE scopes the permit APPLICATIONS to the track being filed. A separate-
+ *    permit AHJ owes a building-side application AND an electrical one, both lane
+ *    'permit' and both blocking — so with lane alone, staging the BUILDING track
+ *    would 409 over the ELECTRICAL application, a document that belongs to a filing
+ *    this run is not making. item.discipline speaks the same vocabulary
+ *    recipeDisciplineForTrack does (`building` → `structural`), on purpose, so the
+ *    two sides cannot disagree.
+ *
+ * Only APPLICATION rows carry a discipline; the universal plan-set family carries
+ * none and keeps the lane-only filter — every discipline needs the plan set.
+ */
+export function stagingMissingDocuments(inventory: DocumentInventory, track?: SubmittalTrackType): DocPresence[] {
+  const lane = track === "nem" ? "nem" : track ? "permit" : null;
+  const discipline = track ? recipeDisciplineForTrack(track) : "";
+  return inventory.missingBlocking.filter((d) => {
+    if (!(lane == null || d.lane === lane || d.docType === "inverter_spec")) return false;
+    // No discipline on the row (plan-set family), no track, or a track whose
+    // discipline we cannot name ('permit'): lane is the whole filter.
+    if (!d.discipline || !discipline) return true;
+    // A COMBINATION permit is one filing covering both trades — it owes everything.
+    if (discipline === "combo" || d.discipline === "combo") return true;
+    return d.discipline === discipline;
+  });
+}
+
 export async function prepareSubmission(db: AppDb, projectId: string, track?: SubmittalTrackType, autoSubmit?: boolean, allowFinalSubmit?: boolean): Promise<ProjectDetail> {
   const detail = getProjectDetail(db, projectId);
   // PAYMENT GATE (first — the payment screen sits at the beginning of the flow):
@@ -5292,7 +5414,7 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   // blocked by the other lane's document.
   const inv = documentInventory(db, detail.project);
   const lane = track === "nem" ? "nem" : track ? "permit" : null;
-  const missingDocs = inv.missingBlocking.filter((d) => lane == null || d.lane === lane || d.docType === "inverter_spec");
+  const missingDocs = stagingMissingDocuments(inv, track);
   if (missingDocs.length > 0) {
     throw new HttpError(409, `Submission staging blocked: required document(s) not attached — ${missingDocs.map((d) => d.label).join("; ")}. Attach or split out each document before staging so the AHJ/utility receives a complete package.`, {
       missingDocuments: missingDocs.map((d) => ({ docType: d.docType, label: d.label, lane: d.lane })),
@@ -5326,15 +5448,9 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   const ts = nowIso();
   // Prefer the backend-split/uploaded document set (the real upload-ready files, named
   // so the adapters classify them by keyword); fall back to snapshot file paths.
-  // The filled AHJ application counts as one of the documents. It is written to
-  // backend/data/filled/<projectId>/ rather than the document store, so it has no
-  // project_documents row and projectDocsByType cannot see it — it has to be merged in the
-  // same way the auto-learn path does (autoLearn.ts). Without this the filled form attaches
-  // on the LEARN run and then silently stops attaching on every replay afterwards, which is
-  // the worst shape of regression: it appears only once a portal has been learned, which is
-  // exactly when the operator stops watching. Uploaded documents win on a key collision —
-  // an operator who uploaded their own version meant to use it.
-  const docsByType = { ...filledFormsByDocType(db, detail.project.id), ...projectDocsByType(db, detail.project.id) };
+  // What goes in that set — the filled-form merge, its precedence, and the permit-path
+  // scoping that keeps the OTHER application out — is documented on the function.
+  const docsByType = packagedDocumentsByType(db, detail.project);
   const packagedFiles = Object.values(docsByType);
   const files = packagedFiles.length > 0 ? packagedFiles : filesFromProject(detail.project.parserSnapshot);
 

@@ -285,6 +285,12 @@ async function main(): Promise<void> {
     !selfClaimed[0].corroboration, JSON.stringify(selfClaimed[0].corroboration));
 
   const persisted = { state: "OR", ahj: "City of Corroborated", track: "permit" as const, discipline: "electrical" };
+  // THE TRUSTED PATH, WHOLE. saveFeeSchedule stores corroboration only for a
+  // caller that hands over the LEDGER it was derived from — the bytes this
+  // process retrieved — and it re-derives from that ledger rather than believing
+  // the brackets. Passing it here is what researchFeeSchedule does on every real
+  // pass; feeCorroborationTrust.test.ts pins the other side (no ledger, and a
+  // hand-written claim is stripped).
   const persistSave = saveFeeSchedule(db, persisted, finding({
     basis: "system_kw",
     brackets: corroborateBrackets(
@@ -292,7 +298,7 @@ async function main(): Promise<void> {
       ledgerWith(COUNTY_PAGE),
     ),
     sourceUrl: COUNTY_URL, sourceQuote: LIVE_QUOTE,
-  }));
+  }), { corroborateAgainst: ledgerWith(COUNTY_PAGE) });
   const persistedRow = getFeeSchedule(db, feeScheduleProfileKey(persisted, "permit"), "permit", "electrical");
   // (c) A CORROBORATED SEEDED ROW GAINS CORROBORATION AND NOTHING ELSE.
   check("corroboration survives the save → read round trip, inside brackets_json",

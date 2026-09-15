@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import { PDFDocument } from "pdf-lib";
 import type { AppDb } from "./db";
 import type { AhjFormUrlResult, LLMProvider, ProjectRecord } from "../../shared/src/types";
-import { inspectFormFields, loadStoredTemplates, type OverlayField, type SignaturePlacement } from "./ahjForms";
+import { inspectFormFields, loadStoredTemplates, formApplicationKind, storedApplicationKind, applicationKindForPath, type OverlayField, type SignaturePlacement } from "./ahjForms";
 import { describePermitType, findApplicationProfile } from "./applicationDocs";
 import { fetchPublicDocument } from "./documentFetch";
 import { logger } from "./logger";
@@ -10,7 +10,7 @@ import { saveResearchedAhjProfile, knowledgeResearchHint, findKnowledgeForLearn 
 import { findAhjProcessProfile } from "./processProfiles";
 import { applicationDocContext, requiredApplicationDocs } from "./requiredDocuments";
 import { renderPdfPageToPng } from "./pageImages";
-import { prescriptiveCriterionCatalog } from "./permitPath";
+import { prescriptiveCriterionCatalog, resolvePermitPath } from "./permitPath";
 import { nowIso } from "./time";
 // A form is a DATED artifact; documentDate.ts is what reads the date off it.
 // It lives in its OWN module, importing nothing from here, because ahjForms.ts
@@ -140,6 +140,14 @@ export interface StoredFieldMap {
    *  stored signature for each role is stamped here at fill time. */
   signatureFields?: SignaturePlacement[];
   notes: string;
+  /** Which of the two MUTUALLY EXCLUSIVE building-side applications this blank is —
+   *  the vocabulary formAllowedForPath / applicationKindForPath enforce. Stamped by
+   *  acquisition, which KNOWS what it went looking for; absent means "makes no claim"
+   *  (a generic application a jurisdiction uses on both paths), which is compatible
+   *  with every path. Deliberately its own field rather than a re-reading of formName:
+   *  a structural blank published as "Building Permit Application.pdf" derives NOTHING
+   *  from its name, and that is the hole this closes. */
+  applicationKind?: "prescriptive" | "structural";
   /** sha256 of the blank PDF bytes — lets the periodic refresh detect when the
    *  AHJ has revised the form at its source URL. Set by storeAhjFormTemplate. */
   sourceHash?: string;
@@ -207,6 +215,11 @@ export function storeAhjFormTemplate(
   db: AppDb,
   input: {
     ahjName: string; state: string; formType: string; filename: string; bytes: Uint8Array; map: StoredFieldMap;
+    /** Which building-side application this blank is, when the caller KNOWS (it went
+     *  looking for the prescriptive one). Stamped onto the field map, and part of the
+     *  storage key for building_application so the two mutually-exclusive blanks do
+     *  not overwrite each other. Omit when unknown — the form's name is the fallback. */
+    applicationKind?: "prescriptive" | "structural" | null;
     /** What the DOCUMENT says about itself ("Revised 12/23/2022"). "" when it
      *  says nothing — never a guess. From documentDateForPdf(bytes). */
     documentDate?: string;
@@ -229,10 +242,19 @@ export function storeAhjFormTemplate(
   // whole time. classifyFormType returns the caller's value when the name says nothing, so a
   // specific name wins and a generic caller is still respected.
   input.formType = classifyFormType(input.filename || "", input.formType);
+  // WHICH of the two building-side applications this blank is, stamped so nothing
+  // downstream has to re-guess from a filename that may say nothing. The caller's
+  // explicit answer wins (acquisition knows what it went looking for); otherwise the
+  // form's own name, and null when it makes no claim.
+  const applicationKind = input.applicationKind ?? formApplicationKind(`${input.map?.formName || ""} ${input.filename || ""}`);
   // Stamp the content hash + check time so the periodic refresh can tell when the
   // AHJ has revised the form at its source URL. A fresh (re)mapping is always
   // UNVERIFIED — the operator must preview and verify before a real submit.
-  input.map = { ...input.map, sourceHash: sha256(input.bytes), lastCheckedAt: now, verified: false, verifiedAt: undefined };
+  input.map = {
+    ...input.map,
+    ...(applicationKind ? { applicationKind } : {}),
+    sourceHash: sha256(input.bytes), lastCheckedAt: now, verified: false, verifiedAt: undefined,
+  };
   // PROVENANCE FOLLOWS THE BYTES. sourceUrl lives in the field map already and
   // every caller sets it, so the column mirrors it rather than inventing a
   // second answer; the column is what makes it selectable, sortable and
@@ -248,10 +270,34 @@ export function storeAhjFormTemplate(
   // "we genuinely do not know when this arrived" and must survive as blank.
   const retrievedAt = input.retrievedAt === undefined ? now : String(input.retrievedAt);
   const feeTableFound = input.feeTableFound ? 1 : 0;
-  const existing = db.get<{ id: string }>(
-    "SELECT id FROM ahj_form_templates WHERE lower(ahj_name) = lower(?) AND lower(state) = lower(?) AND form_type = ? LIMIT 1",
-    [input.ahjName, input.state, input.formType],
-  );
+  // ONE SLOT PER (ahj, state, form_type) — EXCEPT THE BUILDING SIDE, WHICH IS TWO FORMS.
+  //
+  // A jurisdiction on the separate-permit model publishes BOTH a prescriptive solar
+  // application and a structural (non-prescriptive) one, and classifyFormType lands both
+  // in `building_application`. Under a single slot, whichever was acquired first was
+  // overwritten by the second — and hasStoredTemplateOfType then answered "already have
+  // it" for a project on the OTHER path, permanently blocking acquisition of the blank it
+  // actually needs. So the building-side slot is keyed by kind as well.
+  //
+  // Scoped to building_application deliberately: it is the only mutually-exclusive pair.
+  // Widening the key to every form_type would turn a renamed re-upload of a checklist or
+  // an electrical application into a duplicate row instead of an update.
+  const kindKeyed = input.formType === "building_application";
+  const existing = kindKeyed
+    ? (() => {
+        const rows = db.query<{ id: string; original_filename?: string; field_map?: string }>(
+          "SELECT id, original_filename, field_map FROM ahj_form_templates WHERE lower(ahj_name) = lower(?) AND lower(state) = lower(?) AND form_type = ?",
+          [input.ahjName, input.state, input.formType],
+        );
+        // Replace the row that is the SAME application. A kind-less incoming blank
+        // replaces a kind-less row (the single-generic-form jurisdiction), never one of
+        // the two named applications.
+        return rows.find((row) => storedApplicationKind(row) === applicationKind) ?? null;
+      })()
+    : db.get<{ id: string }>(
+        "SELECT id FROM ahj_form_templates WHERE lower(ahj_name) = lower(?) AND lower(state) = lower(?) AND form_type = ? LIMIT 1",
+        [input.ahjName, input.state, input.formType],
+      );
   if (existing) {
     db.run(
       `UPDATE ahj_form_templates
@@ -462,17 +508,35 @@ export function classifyFormType(nameOrUrl: string, fallback: string): string {
 
 // Does this AHJ already have a stored template of THIS form type? (Same fuzzy
 // name containment as loadStoredTemplates, narrowed by form_type.)
-export function hasStoredTemplateOfType(db: AppDb, ahj: string, state: string, formType: string): boolean {
+//
+// `applicationKind` narrows further, and is what stops the two mutually-exclusive
+// building-side applications from being treated as one holding. Asking "do we have a
+// building_application?" answered YES off the STRUCTURAL blank for a project on the
+// PRESCRIPTIVE path — so acquisition of the prescriptive one was skipped forever and
+// the project went on believing its application was in hand. A row that makes no kind
+// claim still counts for either: a jurisdiction with one generic application genuinely
+// has what both paths need, and demanding a second blank there would be the
+// over-blocking mirror of the same mistake.
+export function hasStoredTemplateOfType(
+  db: AppDb,
+  ahj: string,
+  state: string,
+  formType: string,
+  applicationKind?: "prescriptive" | "structural" | null,
+): boolean {
   const needle = (ahj || "").trim().toLowerCase();
   if (!needle) return false;
-  const rows = db.query<{ ahj_name: string; state: string }>(
-    "SELECT ahj_name, state FROM ahj_form_templates WHERE pdf_blob IS NOT NULL AND form_type = ?",
+  const rows = db.query<{ ahj_name: string; state: string; original_filename?: string; field_map?: string }>(
+    "SELECT ahj_name, state, original_filename, field_map FROM ahj_form_templates WHERE pdf_blob IS NOT NULL AND form_type = ?",
     [formType],
   );
   return rows.some((row) => {
     const rowAhj = String(row.ahj_name || "").trim().toLowerCase();
     const stateOk = !row.state || !state || String(row.state).toLowerCase() === String(state).toLowerCase();
-    return Boolean(rowAhj) && stateOk && (rowAhj === needle || needle.includes(rowAhj) || rowAhj.includes(needle));
+    if (!rowAhj || !stateOk || !(rowAhj === needle || needle.includes(rowAhj) || rowAhj.includes(needle))) return false;
+    if (!applicationKind) return true;
+    const rowKind = storedApplicationKind(row);
+    return !rowKind || rowKind === applicationKind;
   });
 }
 
@@ -481,11 +545,19 @@ export function hasStoredTemplateOfType(db: AppDb, ahj: string, state: string, f
  *  Sources for "what's needed": the AHJ process profile flags and the KB's
  *  imported required-documents list. Each acquisition stores + learns, so the
  *  next project under this AHJ skips the research entirely. */
+export interface NeededAhjForm {
+  formType: string;
+  /** WHICH building-side application, when the required set names one. Carried
+   *  through acquisition so a prescriptive project goes after the PRESCRIPTIVE
+   *  blank rather than "whatever is stored under building_application". */
+  applicationKind: "prescriptive" | "structural" | null;
+}
+
 export async function ensureAhjFormsForProject(
   db: AppDb,
   llm: LLMProvider,
   project: ProjectRecord,
-): Promise<{ neededTypes: string[]; results: Array<EnsureFormResult & { formType: string }> }> {
+): Promise<{ neededTypes: string[]; needed: NeededAhjForm[]; results: Array<EnsureFormResult & { formType: string; applicationKind: "prescriptive" | "structural" | null }> }> {
   // WHAT THIS PROJECT MUST FILE DECIDES WHAT WE GO AND FETCH.
   //
   // This used to be the constant ["permit_application"], which is why a
@@ -497,27 +569,53 @@ export async function ensureAhjFormsForProject(
   // form" click, because the blank is STORED as building_application (the form's
   // own name decides) and hasStoredTemplateOfType was asked about
   // permit_application. A discipline-keyed needed set fixes both.
-  const needed = new Set<string>();
+  //
+  // AND WHICH ONE OF THE TWO. requiredApplicationDocs already decides, by permit path,
+  // which of the two mutually-exclusive building-side applications this project owes —
+  // and the acquisition side used to throw that away, keeping only item.docType. So a
+  // PRESCRIPTIVE project researched a generic "building application", and a structural
+  // blank whose filename says nothing satisfied it on every path. The kind travels with
+  // the slot now.
+  const needed = new Map<string, NeededAhjForm>();
+  const want = (formType: string, applicationKind: "prescriptive" | "structural" | null = null): void => {
+    const prior = needed.get(formType);
+    // A named kind is strictly more information than none; never let a later
+    // unqualified mention erase one.
+    if (prior && (prior.applicationKind || !applicationKind)) return;
+    needed.set(formType, { formType, applicationKind });
+  };
   try {
-    for (const item of requiredApplicationDocs(project, applicationDocContext(project))) needed.add(item.docType);
+    for (const item of requiredApplicationDocs(project, applicationDocContext(project))) {
+      want(item.docType, item.applicationKind ?? null);
+    }
   } catch { /* profile data optional — the baseline slot below still runs */ }
   // THE BASELINE SLOT. An AHJ we have no structure/flags for still gets its one
   // application pulled, and a blank whose own name says nothing falls through
   // classifyFormType to this generic type — so it has to be a slot we asked for.
-  if (!needed.has("building_application") && !needed.has("permit_application")) needed.add("permit_application");
+  // It still carries the project's path, because even the generic slot should go
+  // looking for the right one of the two when the AHJ turns out to publish both.
+  if (!needed.has("building_application") && !needed.has("permit_application")) {
+    let baselineKind: "prescriptive" | "structural" | null = null;
+    try { baselineKind = applicationKindForPath(resolvePermitPath(project).path); } catch { /* path optional */ }
+    want("permit_application", baselineKind);
+  }
   try {
     const proc = findAhjProcessProfile(project);
-    if (proc?.requiresSolarChecklist) needed.add("solar_checklist");
+    if (proc?.requiresSolarChecklist) want("solar_checklist");
   } catch { /* profile data optional */ }
   try {
     const kb = findKnowledgeForLearn(db, { state: project.state, ahj: project.ahj, utility: project.utility });
-    if ((kb.ahj?.requiredDocuments || []).some((d) => /checklist|worksheet/i.test(d))) needed.add("solar_checklist");
+    if ((kb.ahj?.requiredDocuments || []).some((d) => /checklist|worksheet/i.test(d))) want("solar_checklist");
   } catch { /* KB optional */ }
-  const results: Array<EnsureFormResult & { formType: string }> = [];
-  for (const formType of needed) {
-    results.push({ formType, ...(await ensureAhjFormTemplate(db, llm, project, formType)) });
+  const results: Array<EnsureFormResult & { formType: string; applicationKind: "prescriptive" | "structural" | null }> = [];
+  for (const item of needed.values()) {
+    results.push({
+      formType: item.formType,
+      applicationKind: item.applicationKind,
+      ...(await ensureAhjFormTemplate(db, llm, project, item.formType, { applicationKind: item.applicationKind })),
+    });
   }
-  return { neededTypes: [...needed], results };
+  return { neededTypes: [...needed.keys()], needed: [...needed.values()], results };
 }
 
 // Ensure the AHJ has a usable stored form. Research → download → map → store.
@@ -526,12 +624,24 @@ export async function ensureAhjFormTemplate(
   llm: LLMProvider,
   project: ProjectRecord,
   formType = "permit_application",
+  opts: { applicationKind?: "prescriptive" | "structural" | null } = {},
 ): Promise<EnsureFormResult> {
+  // WHICH of the two building-side applications this call is for. Given by the caller
+  // (the required set decided it from the permit path); otherwise resolved from the
+  // project, so a direct "find official form" click is path-aware too.
+  let applicationKind = opts.applicationKind ?? null;
+  if (!applicationKind && (formType === "building_application" || formType === "permit_application")) {
+    try { applicationKind = applicationKindForPath(resolvePermitPath(project).path); } catch { /* path optional */ }
+  }
+  const kindWord = applicationKind === "structural" ? "structural (non-prescriptive)" : applicationKind === "prescriptive" ? "prescriptive" : "";
   // Already have a fillable stored template of THIS form type for this AHJ?
   // (Per-type, so acquiring the checklist isn't skipped just because the
-  // permit application is already stored.)
-  if (hasStoredTemplateOfType(db, project.ahj, project.state, formType)) {
-    return { status: "exists", message: `A stored ${formType.replace(/_/g, " ")} template already exists for this AHJ.` };
+  // permit application is already stored.) Kind-scoped on the building side: a
+  // stored STRUCTURAL blank is not the prescriptive application, and answering
+  // "exists" off it is what left a prescriptive project permanently without the
+  // only form its AHJ will accept.
+  if (hasStoredTemplateOfType(db, project.ahj, project.state, formType, applicationKind)) {
+    return { status: "exists", message: `A stored ${kindWord ? `${kindWord} ` : ""}${formType.replace(/_/g, " ")} template already exists for this AHJ.` };
   }
 
   // Check if the AHJ is known to be online-only (e-permitting portal). These
@@ -553,7 +663,18 @@ export async function ensureAhjFormTemplate(
   let kbHint: ReturnType<typeof knowledgeResearchHint> = null;
   try { kbHint = knowledgeResearchHint(db, { state: project.state, ahj: project.ahj }, "ahj"); } catch { /* non-fatal */ }
 
-  const research = await llm.findAhjFormUrl({ ahj: project.ahj, state: project.state, formType, knownContext: kbHint?.text });
+  // STEER THE SEARCH AT THE RIGHT ONE OF THE TWO. An AHJ on the separate-permit model
+  // publishes both a prescriptive solar application and a structural (standard building)
+  // one, and the AHJ takes exactly one — "upload ONLY the application that pertains".
+  // A search for a generic "building application" is a coin flip between them.
+  const kindDirective = applicationKind === "prescriptive"
+    ? "This project is on the PRESCRIPTIVE path. Find the AHJ's PRESCRIPTIVE solar PV application (often titled \"Prescriptive Solar Photovoltaic Installation Permit Application\" or a solar-specific checklist/worksheet application). Do NOT return the structural / non-prescriptive / standard building permit application — the AHJ accepts exactly one of the two."
+    : applicationKind === "structural"
+      ? "This project is on the ENGINEERED (non-prescriptive) path. Find the AHJ's STRUCTURAL / standard building permit application. Do NOT return the prescriptive solar application — the AHJ accepts exactly one of the two."
+      : "";
+  const knownContext = [kbHint?.text, kindDirective].filter(Boolean).join("\n\n") || undefined;
+
+  const research = await llm.findAhjFormUrl({ ahj: project.ahj, state: project.state, formType, knownContext });
 
   // Learn the submittal portal/platform/requirements so the record-portal training
   // step pre-fills the portal URL for this new AHJ, and future projects skip the
@@ -611,15 +732,25 @@ export async function ensureAhjFormTemplate(
   let primary: EnsureFormResult | null = null;
   const extraMessages: string[] = [];
   for (const dl of downloads) {
-    // One template per (ahj, form_type): don't overwrite a slot this pass
-    // already filled, and don't re-store a type that already exists.
-    const type = storedTypes.has(dl.type) || (dl.type !== formType && hasStoredTemplateOfType(db, project.ahj, project.state, dl.type)) ? "" : dl.type;
+    // One template per (ahj, form_type) — EXCEPT the building side, where the
+    // prescriptive and structural applications are two different forms that both
+    // classify to building_application. Key the "already did this one" checks by
+    // kind as well, or a research pass that usefully surfaced BOTH blanks throws
+    // the second away and the other path is left with nothing to file.
+    //
+    // The kind comes from the blank's OWN name/URL, never from what we went looking
+    // for: a name that claims neither is a jurisdiction's single generic form, and
+    // stamping our search intent on it would be inventing evidence.
+    const dlName = dl.type === formType && research.formName ? research.formName : "";
+    const dlKind = formApplicationKind(`${dl.url} ${dlName}`);
+    const slot = `${dl.type}|${dlKind || ""}`;
+    const type = storedTypes.has(slot) || (dl.type !== formType && hasStoredTemplateOfType(db, project.ahj, project.state, dl.type, dlKind)) ? "" : dl.type;
     if (!type) continue;
-    storedTypes.add(type);
+    storedTypes.add(slot);
     const formName = type === formType && research.formName
       ? research.formName
       : `${project.ahj} ${type.replace(/_/g, " ")}`;
-    const acquired = await acquireFromBytes(db, llm, { ahj: project.ahj, state: project.state, formType: type, formName, bytes: dl.bytes, sourceUrl: dl.url });
+    const acquired = await acquireFromBytes(db, llm, { ahj: project.ahj, state: project.state, formType: type, formName, bytes: dl.bytes, sourceUrl: dl.url, applicationKind: dlKind });
     if (!primary) primary = acquired;
     else extraMessages.push(`Also stored ${type.replace(/_/g, " ")}: ${acquired.message}`);
   }
@@ -640,6 +771,11 @@ export async function acquireFromBytes(
   llm: LLMProvider,
   input: {
     ahj: string; state: string; formType: string; formName: string; bytes: Uint8Array; sourceUrl: string;
+    /** Which of the two building-side applications this blank is, when known. Null /
+     *  omitted falls back to the form's own name, and stays null when the name makes
+     *  no claim — a jurisdiction's single generic application is compatible with
+     *  either path, and pretending otherwise would block it on both. */
+    applicationKind?: "prescriptive" | "structural" | null;
     /** When the bytes were pulled. Omit for a fresh download (defaults to now);
      *  pass the stored row's value when re-mapping bytes already on disk. */
     retrievedAt?: string;
@@ -651,8 +787,12 @@ export async function acquireFromBytes(
   // below. A form stored without it cannot answer "is this current", and the
   // Coos County electrical application — "Revised 12/23/2022", fee table 1.70x
   // below the adopted schedule — is what that costs.
+  //
+  // WHICH application it is rides along the same way, for the same reason: a blank
+  // stored without it forces every later reader to re-guess from a filename.
   const documentDate = await documentDateForPdf(bytes);
-  const provenance = { documentDate, retrievedAt };
+  const applicationKind = input.applicationKind ?? formApplicationKind(formName);
+  const provenance = { documentDate, retrievedAt, applicationKind };
 
   // A single vision pass locates signature lines (and, for flat forms, the data
   // placements). Reused across both branches so signatures are detected once.

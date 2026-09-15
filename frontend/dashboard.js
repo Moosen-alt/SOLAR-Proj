@@ -3469,14 +3469,26 @@ function renderApplicationDocs() {
   const profile = pkg.profile || {};
   const learnedDocs = (learned && learned.requiredDocuments) || [];
   const pid = state.selectedProjectId;
+  // A MISSING DOCUMENT IS NOT A MISSING FIELD. This card used to say "No critical
+  // document fields missing from the generated packet" whenever pkg.missingFields was
+  // empty — and missingFields is fifteen SCALAR project-field checks that never look at
+  // a document. The sentence was literally true and read as "the packet is complete";
+  // two permits went out with an application never attached. Missing DOCUMENTS now get
+  // their own line, stated as plainly as a missing field, and the all-clear sentence
+  // only appears when BOTH lists are empty.
+  const missingDocs = pkg.missingDocuments || [];
+  const missingFields = pkg.missingFields || [];
   $("applicationDocs").innerHTML = `
     ${renderFilledForms(pid)}
     <div id="submittalEmailCard"></div>
-    <article class="item ${pkg.missingFields?.length ? "warning" : "pass"}">
+    <article class="item ${missingFields.length || missingDocs.length ? "warning" : "pass"}">
       <div class="item-title"><span>${esc(profile.name)}</span>${statusBadge(profile.requiresAhjApplication || profile.requiresPortalEntryOnly ? "docs required" : "manifest only")}</div>
       ${pkg.permitType ? `<p><strong>Permitting type:</strong> ${esc(pkg.permitType)}</p>` : ""}
       <p>${(profile.notes || []).map(esc).join("<br>")}</p>
-      ${pkg.missingFields?.length ? `<p><strong>Missing fields:</strong> ${esc(pkg.missingFields.join(", "))}</p>` : "<p>No critical document fields missing from the generated packet.</p>"}
+      ${missingFields.length ? `<p><strong>Missing fields:</strong> ${esc(missingFields.join(", "))}</p>` : ""}
+      ${missingDocs.length ? `<p><strong>Missing required documents (${missingDocs.length}) — these files are NOT in the packet:</strong></p>
+      <ul>${missingDocs.map((d) => `<li>${esc(d.label)}<span class="muted"> — ${esc(d.why)}</span></li>`).join("")}</ul>` : ""}
+      ${!missingFields.length && !missingDocs.length ? "<p>No critical document fields missing, and every required document is attached.</p>" : ""}
     </article>
     ${learned ? `
     <article class="item info">

@@ -37,7 +37,7 @@
 import type { AppDb } from "./db";
 import type { ProjectRecord } from "../../shared/src/types";
 import { projectDocsByType } from "./projectDocuments";
-import { filledFormsByDocType } from "./ahjForms";
+import { filledFormsByDocType, applicationKindForPath } from "./ahjForms";
 import { resolvePermitPath, resolveStampRequirement, hasStampedStructuralEvidence } from "./permitPath";
 import { resolveEffectiveCodeContext } from "./codeProfiles";
 import { findAhjProcessProfile } from "./processProfiles";
@@ -320,7 +320,10 @@ export function requiredApplicationDocs(
     // ONE building-side row, chosen BY PATH — never both. A required set that
     // tells a prescriptive project to attach the structural application is
     // wrong in the same way filing both is wrong.
-    const kind = path === "engineered" ? "structural" : path === "prescriptive" ? "prescriptive" : "";
+    // ONE mapping from path → application kind, shared with the fill-time gate and the
+    // presence/packaging filters (ahjForms.applicationKindForPath). A second copy here
+    // is how the two sides drift into disagreeing about which form the AHJ is owed.
+    const kind = applicationKindForPath(path) ?? "";
     const label =
       kind === "structural" ? "Structural (non-prescriptive) permit application, filled"
       : kind === "prescriptive" ? "Prescriptive solar permit application, filled"
@@ -423,9 +426,20 @@ export function documentInventory(db: AppDb, project: ProjectRecord): DocumentIn
   //
   // Narrowed to the APPLICATION family on purpose: nothing here may touch the
   // plan-set presence logic, and a stray template form_type must not be able to.
+  //
+  // PATH-SCOPED. The prescriptive and structural applications are mutually exclusive
+  // and BOTH key to building_application, so a stale STRUCTURAL fill left over from
+  // before the operator flipped the path to prescriptive used to satisfy the
+  // PRESCRIPTIVE row ("via: filled form") — the gate green-lighting the exact upload
+  // the AHJ forbids. filledFormsByDocType drops an off-path fill from the file list
+  // before it collapses to one file per docType, so the row is satisfied only by a
+  // form the path actually calls for. The permit path is passed explicitly because we
+  // have the whole project here; a caller that only has an id gets the same answer
+  // resolved from the record.
+  const permitPath = resolvePermitPath(project).path;
   const filledApplications: Record<string, string> = {};
   try {
-    for (const [type, file] of Object.entries(filledFormsByDocType(db, project.id))) {
+    for (const [type, file] of Object.entries(filledFormsByDocType(db, project.id, permitPath))) {
       if (APPLICATION_DOC_TYPES.has(type)) filledApplications[type] = file;
     }
   } catch { /* no filled dir yet — simply nothing built */ }

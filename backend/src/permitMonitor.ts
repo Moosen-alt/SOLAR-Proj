@@ -242,8 +242,15 @@ export function classifyPermitStatusText(rawStatusText: string): PermitStatusCla
 //
 // WHY THIS LIVES WITH THE CLASSIFIER AND NOT AT THE INSERT. "Did anything change?" is a judgement
 // about monitor output — which labels count as the same state, which sources are polls — and it
-// belongs beside the code that produces those labels. The persistence layer calls it; it does not
-// re-derive it, because a second copy of this rule would drift from the classifier that feeds it.
+// belongs beside the code that produces those labels. It does not belong in two places: a second
+// copy of this rule would drift from the classifier that feeds it.
+//
+// WHO CALLS IT. recordPermitStatusCheck() in repository.ts, and nothing else — it is the one
+// function that writes permit_status_checks, and it gates that INSERT (plus the
+// human_review_items row and insertMonitorCorrection, which are the same check's other "this is
+// news" artifacts) on the answer. This paragraph used to assert the call existed while the
+// function had no production caller at all and only a test drove it; if you are moving this
+// logic, grep for `shouldRecordStatusCheck` in backend/src before trusting the sentence above.
 //
 // WHAT IS NOT LOST. audit_logs already records one `permit_status.checked` row per check, inside
 // the same transaction, carrying source/outcome/statusLabel/targetId. The per-check evidence trail

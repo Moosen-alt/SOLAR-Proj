@@ -35,6 +35,26 @@
 //   NO OVER-BLOCK     — combo/unknown structure demands nothing as a hard blocker, because
 //                       these are 380+ spreadsheet-imported flags.
 //
+// AND THEN: THE DISTINCTION WAS EXPRESSED AND NEVER READ. `applicationKind` was declared,
+// set, and consulted NOWHERE in production — only here, in 398 lines of passing assertions
+// against functions nothing called. What that cost, each pinned below:
+//
+//   THE FORBIDDEN     — a stale STRUCTURAL fill left on disk by a path flip satisfied the
+//   UPLOAD              PRESCRIPTIVE row and was packaged for upload. Coos Bay prints
+//                       "upload ONLY the prescriptive application. ... Do NOT also upload
+//                       the structural application" — the gate green-lit the violation.
+//   INVERTED NAME     — "Non-Prescriptive" CONTAINS "prescriptive", and the prescriptive
+//   CLASSIFICATION      test ran first, so the AHJ's own name for the ENGINEERED form
+//                       classified as the prescriptive one. Exactly backwards.
+//   ONE SLOT, TWO     — whichever building-side blank was acquired first overwrote and then
+//   FORMS               permanently blocked the other.
+//   PATH-BLIND        — acquisition kept item.docType and threw applicationKind away, so a
+//   ACQUISITION         prescriptive project researched a generic "building application".
+//   TRACK BLEED       — both applications are lane 'permit' and blocking, so staging the
+//                       BUILDING track alone 409'd over the ELECTRICAL application.
+//   THE SENTENCE      — "No critical document fields missing from the generated packet" came
+//                       out of fifteen SCALAR field checks that never look at a document.
+//
 //   npx tsx backend/test/requiredApplicationSet.test.ts
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -49,7 +69,14 @@ process.env.ANTHROPIC_API_KEY = ""; // stub LLM — deterministic, no network re
 
 const { openDatabase } = await import("../src/db");
 const { createClient } = await import("../src/clients");
-const { createProject } = await import("../src/repository");
+// The REAL staging filter and the REAL packaging expression, imported rather than
+// restated. See "THE FILTER ITSELF, NOT A COPY OF IT" below.
+const {
+  createProject,
+  stagingMissingDocuments,
+  packagedDocumentsByType,
+  getApplicationDocumentPackage,
+} = await import("../src/repository");
 const {
   applicationDocContext,
   documentInventory,
@@ -60,7 +87,8 @@ const { permitStructureForProject } = await import("../src/applicationDocs");
 const { resolvePermitPath } = await import("../src/permitPath");
 const { findAhjProcessProfile } = await import("../src/processProfiles");
 const { recipeDisciplineForTrack } = await import("../src/portalChannel");
-const { ensureAhjFormsForProject, storeAhjFormTemplate } = await import("../src/ahjFormAuto");
+const { ensureAhjFormsForProject, storeAhjFormTemplate, hasStoredTemplateOfType } = await import("../src/ahjFormAuto");
+const { loadStoredTemplates, formApplicationKind, formAllowedForPath, filledFormsByDocType } = await import("../src/ahjForms");
 const { createLLMProvider } = await import("../src/llm");
 
 const db = await openDatabase();
@@ -102,22 +130,39 @@ const FILLED_ROOT = path.resolve(process.cwd(), "backend/data/filled");
 const filledDirs: string[] = [];
 /** Build a filled form the way the real fill path does: a stored template (so its form_type
  *  is the AHJ's own classification) plus a PDF at backend/data/filled/<pid>/tmpl-<id>.pdf. */
-const buildFilledForm = (pid: string, formType: string, filename: string): void => {
+// Filled-form fixtures are stored under their OWN AHJ, never Coos Bay. filledFormsByDocType
+// resolves a filled PDF by TEMPLATE ID, so the AHJ name is irrelevant to it — but
+// hasStoredTemplateOfType is keyed on the AHJ, and a fixture blank parked under Coos Bay
+// silently answers the acquisition checks below.
+const FILLED_FIXTURE_AHJ = "City of Filledformville";
+const buildFilledForm = (pid: string, formType: string, filename: string): string => {
   const templateId = storeAhjFormTemplate(db, {
-    ahjName: "City of Coos Bay", state: "OR", formType, filename,
+    ahjName: FILLED_FIXTURE_AHJ, state: "OR", formType, filename,
     bytes: new Uint8Array(Buffer.from("%PDF-1.4 blank")),
     map: { formName: filename.replace(/\.pdf$/, ""), sourceUrl: "", fillMode: "acroform", textFields: {}, checkboxes: {}, notes: "" },
   });
+  placeFilledForm(pid, templateId);
+  return templateId;
+};
+/** Drop an already-stored template's filled PDF into another project's filled dir —
+ *  the same blank filled for a second project, which is exactly what happens in life. */
+const placeFilledForm = (pid: string, templateId: string): void => {
   const dir = path.join(FILLED_ROOT, pid);
   fs.mkdirSync(dir, { recursive: true });
   filledDirs.push(dir);
   fs.writeFileSync(path.join(dir, `tmpl-${templateId}.pdf`), "%PDF-1.4 filled");
 };
 
-/** The exact filter prepareSubmission applies before its 409 (repository.ts). */
-const stagingWouldRefuse = (pid: string, project: object, lane: "permit" | "nem" | null = "permit") =>
-  documentInventory(db, project as never).missingBlocking
-    .filter((d) => lane == null || d.lane === lane || d.docType === "inverter_spec");
+// THE FILTER ITSELF, NOT A COPY OF IT.
+//
+// This used to be a local `stagingWouldRefuse` that RE-IMPLEMENTED prepareSubmission's
+// lane filter, under a check claiming "...and that is exactly the list prepareSubmission
+// turns into its 409". A copy of a filter cannot notice the original drifting — and the
+// original did drift (it grew a discipline dimension), which a copy would have sailed
+// straight past while still claiming to pin it. The filter is now an exported function
+// that prepareSubmission calls and this test calls; there is one of it.
+const stagingWouldRefuse = (project: object, track?: string) =>
+  stagingMissingDocuments(documentInventory(db, project as never), track as never);
 
 // ---------------------------------------------------------------------------
 // FIXTURE PREMISES — asserted, not assumed. If the snapshot override is dropped or the
@@ -225,25 +270,26 @@ await check("THE GATE FAILS: building application attached, electrical absent �
   const row = inv.missingBlocking.find((d) => d.docType === "electrical_application")!;
   assert.match(row.label, /[Ee]lectrical/, "the operator has to be told WHICH document");
   assert.match(row.why, /Coos Bay/, "…and why it is required");
-  assert.ok(stagingWouldRefuse(missingEle.id, missingEle).length > 0,
-    "the permit-lane filter prepareSubmission applies drops it, so staging would still go through");
+  assert.ok(stagingWouldRefuse(missingEle, "electrical").length > 0,
+    "the filter prepareSubmission applies drops it, so staging would still go through");
 });
 
 await check("...and that is exactly the list prepareSubmission turns into its 409", () => {
   // prepareSubmission is reached only after the QC / human-review / reviewer-blocker gates,
   // which a fixture project trips for unrelated reasons (a bare parse has no SLD, no fire
-  // pathways, no framing...). So the DOCUMENT gate is pinned where qcDocumentGate.test.ts
-  // already pins it — the inventory plus the exact lane filter — and the WIRING is pinned by
-  // source, the way credentialLockout.test.ts does: a list nothing consults is precisely the
-  // state this one was in.
-  const kept = stagingWouldRefuse(missingEle.id, missingEle);
+  // pathways, no framing...). So the DOCUMENT gate is exercised through the REAL exported
+  // filter prepareSubmission calls — not a restatement of it — and the WIRING (that
+  // prepareSubmission still calls that filter, and still 409s on what it returns) is pinned
+  // by source, the way credentialLockout.test.ts does.
+  const kept = stagingWouldRefuse(missingEle, "electrical");
   assert.match(kept.map((d) => d.label).join("; "), /[Ee]lectrical/,
     "the 409 interpolates these labels and nothing else — it must name the document");
   const src = fs.readFileSync(path.join(process.cwd(), "backend", "src", "repository.ts"), "utf8");
   const at = src.indexOf("const inv = documentInventory(db, detail.project);");
   assert.ok(at > -1, "prepareSubmission no longer consults documentInventory at all");
   const window = src.slice(at, at + 900);
-  assert.match(window, /missingBlocking\.filter/, "the gate must read missingBlocking");
+  assert.match(window, /stagingMissingDocuments\(inv, track\)/,
+    "the gate must call the SAME exported filter this test calls — an inline copy is how the two drift apart");
   assert.match(window, /Submission staging blocked: required document\(s\) not attached/,
     "…and refuse with a 409 that names them");
 });
@@ -341,6 +387,229 @@ await check("A BARE PROJECT IS STILL SAFE: no ahj/state, no application demands,
 });
 
 // ---------------------------------------------------------------------------
+// THE DISTINCTION MUST BE REAL AT RUNTIME, NOT JUST EXPRESSED.
+//
+// The round that added applicationKind DECLARED it and SET it and then read it
+// nowhere in production. Everything below is a consequence of that, and every check
+// here fails with the distinction removed.
+//
+// Coos Bay prints both instructions at once, and they are both true:
+//   "Prescriptive path — upload ONLY the prescriptive application. ... Do NOT also
+//    upload the structural application."
+//   "Separate building (BLD) + electrical (ELE) permits — both must be filed."
+// Two permits; exactly ONE of the two mutually-exclusive building-side forms.
+// ---------------------------------------------------------------------------
+
+// A project FILLED on the engineered path, then flipped to prescriptive. Nothing
+// deletes backend/data/filled/<pid>/, so the STRUCTURAL pdf is still sitting there.
+const flipped = mk("prescriptive");
+for (const d of [...PLAN_SET_FAMILY, "electrical_application"]) attach(flipped.id, d);
+const structuralTemplateId = buildFilledForm(flipped.id, "building_application", "Coos Bay Structural (non-prescriptive) Permit Application.pdf");
+
+await check("A STALE STRUCTURAL FILL DOES NOT SATISFY THE PRESCRIPTIVE ROW", () => {
+  // Both applications key to building_application, so the leftover structural PDF
+  // reported the prescriptive row as present "via: filled form" — the gate that exists
+  // to prevent the double upload green-lighting it instead.
+  const inv = documentInventory(db, flipped as never);
+  const row = inv.presence.find((d) => d.docType === "building_application")!;
+  assert.equal(row.applicationKind, "prescriptive", "fixture premise: this project owes the PRESCRIPTIVE application");
+  assert.equal(row.present, false,
+    `a STRUCTURAL application satisfied the PRESCRIPTIVE row (via: "${row.via}") — the AHJ takes exactly one, and this is the upload it forbids`);
+  assert.ok(inv.missingBlocking.map((d) => d.docType).includes("building_application"),
+    "…so the prescriptive application must read as still missing");
+});
+
+await check("…AND IT IS NOT PACKAGED FOR UPLOAD", () => {
+  // The other half, and the one that actually reaches the jurisdiction: the packaging
+  // expression prepareSubmission hands to the portal upload sweep.
+  const packaged = packagedDocumentsByType(db, flipped as never);
+  const stale = path.join(FILLED_ROOT, flipped.id, `tmpl-${structuralTemplateId}.pdf`);
+  assert.ok(!Object.values(packaged).includes(stale),
+    `the stale STRUCTURAL application was packaged for upload as ${JSON.stringify(Object.entries(packaged).find(([, f]) => f === stale))} — "Do NOT also upload the structural application"`);
+  assert.equal(packaged.building_application, undefined,
+    "nothing may occupy the building-side upload slot when the only candidate is the wrong one of the two");
+  // AND WITH NO PATH ARGUMENT AT ALL. autoLearn's upload sweep has only a projectId in
+  // hand and calls filledFormsByDocType(db, projectId) — a second door onto the same
+  // portal upload. It is not downstream of the staging document gate (the learn job can
+  // be queued on its own), so the drop has to hold when nobody passes the path.
+  assert.deepEqual(filledFormsByDocType(db, flipped.id), {},
+    "the off-path fill came back through the caller that does not know the permit path");
+});
+
+await check("NO OVER-BLOCK: the same filled structural form DOES satisfy an ENGINEERED project", () => {
+  // The rule is "contradicts the path", not "is an application". A fix that simply
+  // stopped trusting filled forms would break every engineered filing to fix this one.
+  const onPath = mk("engineered");
+  for (const d of [...PLAN_SET_FAMILY, "electrical_application"]) attach(onPath.id, d);
+  placeFilledForm(onPath.id, structuralTemplateId);
+  const inv = documentInventory(db, onPath as never);
+  const row = inv.presence.find((d) => d.docType === "building_application")!;
+  assert.equal(row.applicationKind, "structural", "fixture premise");
+  assert.equal(row.present, true, `the engineered path's own application was rejected: ${JSON.stringify(inv.missingBlocking.map((d) => d.label))}`);
+  assert.match(row.via, /filled form/);
+  assert.equal(packagedDocumentsByType(db, onPath as never).building_application,
+    path.join(FILLED_ROOT, onPath.id, `tmpl-${structuralTemplateId}.pdf`),
+    "…and it is the file that goes up");
+});
+
+await check("A GENERIC APPLICATION STILL SATISFIES EITHER PATH", () => {
+  // Plenty of AHJs publish ONE application used on both paths. A name that claims
+  // neither kind must stay compatible with both — over-blocking those jurisdictions
+  // would be the same mistake seen from the other side.
+  const generic = mk("prescriptive");
+  for (const d of [...PLAN_SET_FAMILY, "electrical_application"]) attach(generic.id, d);
+  buildFilledForm(generic.id, "building_application", "Coos Bay Residential Permit Application.pdf");
+  const inv = documentInventory(db, generic as never);
+  assert.deepEqual(inv.missingBlocking.map((d) => d.docType), [],
+    `a jurisdiction's single generic application was refused: ${JSON.stringify(inv.missingBlocking.map((d) => d.label))}`);
+});
+
+// ---------------------------------------------------------------------------
+// BOTH BLANKS MUST BE STORABLE. hasStoredTemplateOfType keyed on one (ahj, form_type)
+// slot, so whichever of the two building-side blanks was acquired FIRST overwrote and
+// then permanently blocked the other — leaving every project on the other path with
+// nothing to file and the system reporting it already had the form.
+// ---------------------------------------------------------------------------
+const TWO_FORM_AHJ = "City of Twoforms";
+const blank = (filename: string, ahjName = TWO_FORM_AHJ) => storeAhjFormTemplate(db, {
+  ahjName, state: "OR", formType: "building_application", filename,
+  bytes: new Uint8Array(Buffer.from(`%PDF-1.4 ${filename}`)),
+  // A mapped field, because loadStoredTemplates skips a template it could not fill.
+  map: { formName: filename.replace(/\.pdf$/, ""), sourceUrl: "", fillMode: "acroform", textFields: { Owner: "project.homeownerName" }, checkboxes: {}, notes: "" },
+});
+
+await check("NAME CLASSIFICATION: \"Non-Prescriptive\" is the STRUCTURAL form, not the prescriptive one", () => {
+  // "non-prescriptive" CONTAINS "prescriptive". Testing /prescriptive/ first classified
+  // the AHJ's own name for the ENGINEERED application as the prescriptive one — the fill
+  // gate then built it for prescriptive projects and refused it for engineered ones,
+  // exactly inverted, on the one pair where being wrong means the forbidden upload.
+  assert.equal(formApplicationKind("Structural (Non-Prescriptive) Permit Application"), "structural");
+  assert.equal(formApplicationKind("Non-Prescriptive Solar Application"), "structural");
+  assert.equal(formApplicationKind("Prescriptive Solar Photovoltaic Installation Permit Application"), "prescriptive");
+  assert.equal(formApplicationKind("Residential Permit Application"), null,
+    "a form that claims neither kind must stay compatible with both paths");
+  assert.equal(formAllowedForPath("Structural (Non-Prescriptive) Permit Application", "engineered"), true);
+  assert.equal(formAllowedForPath("Structural (Non-Prescriptive) Permit Application", "prescriptive"), false,
+    "the fill gate must refuse to build the structural application for a prescriptive project");
+});
+
+await check("ONE AHJ, TWO BUILDING-SIDE BLANKS: storing the second does not destroy the first", () => {
+  const prescriptiveId = blank("Prescriptive Solar Photovoltaic Installation Permit Application.pdf");
+  const structuralId = blank("Structural Permit Application.pdf");
+  assert.notEqual(prescriptiveId, structuralId,
+    "the second blank overwrote the first — one slot for two mutually exclusive forms");
+  const rows = db.query<{ id: string }>(
+    "SELECT id FROM ahj_form_templates WHERE lower(ahj_name) = lower(?) AND form_type = 'building_application'", [TWO_FORM_AHJ]);
+  assert.equal(rows.length, 2, `expected both blanks stored, got ${rows.length}`);
+  const names = loadStoredTemplates(db, TWO_FORM_AHJ, "OR").map((t) => t.def.formName).sort();
+  assert.deepEqual(names, ["Prescriptive Solar Photovoltaic Installation Permit Application", "Structural Permit Application"],
+    "both must be loadable for fill — formAllowedForPath picks the one the path calls for");
+  // Re-storing the SAME application updates its own row rather than adding a third.
+  assert.equal(blank("Prescriptive Solar Photovoltaic Installation Permit Application.pdf"), prescriptiveId,
+    "a re-acquisition of the same form must update it, not accumulate duplicates");
+});
+
+await check("…and the existence check answers per KIND, not per slot", () => {
+  assert.equal(hasStoredTemplateOfType(db, TWO_FORM_AHJ, "OR", "building_application", "prescriptive"), true);
+  assert.equal(hasStoredTemplateOfType(db, TWO_FORM_AHJ, "OR", "building_application", "structural"), true);
+  // An AHJ holding ONLY the structural blank does not "already have" the prescriptive one.
+  const oneSided = "City of Onlystructural";
+  blank("Structural (Non-Prescriptive) Permit Application.pdf", oneSided);
+  assert.equal(hasStoredTemplateOfType(db, oneSided, "OR", "building_application", "structural"), true);
+  assert.equal(hasStoredTemplateOfType(db, oneSided, "OR", "building_application", "prescriptive"), false,
+    "a stored STRUCTURAL blank answered YES to 'do we have the prescriptive application?' — acquisition then skipped it forever");
+  // A blank that claims NEITHER kind is a jurisdiction's single generic form and counts for both.
+  const generic = "City of Onegeneric";
+  blank("Residential Permit Application.pdf", generic);
+  assert.equal(hasStoredTemplateOfType(db, generic, "OR", "building_application", "prescriptive"), true);
+  assert.equal(hasStoredTemplateOfType(db, generic, "OR", "building_application", "structural"), true);
+});
+
+// ---------------------------------------------------------------------------
+// THE DISCIPLINE FILTER. The application rows are lane 'permit' and blocking, so with a
+// lane-only filter, staging the BUILDING track alone would 409 over the ELECTRICAL
+// application — a document belonging to a filing this run is not making.
+// ---------------------------------------------------------------------------
+const buildingOnly = mk("prescriptive");
+for (const d of [...PLAN_SET_FAMILY, "building_application"]) attach(buildingOnly.id, d);
+
+await check("STAGING THE BUILDING TRACK ALONE does not 409 on the missing ELECTRICAL application", () => {
+  assert.deepEqual(stagingWouldRefuse(buildingOnly, "building").map((d) => d.docType), [],
+    "the building filing is complete; the electrical application belongs to the OTHER track");
+  assert.deepEqual(stagingWouldRefuse(buildingOnly, "electrical").map((d) => d.docType), ["electrical_application"],
+    "…and staging the electrical track must still refuse, naming it");
+  assert.deepEqual(stagingWouldRefuse(buildingOnly, "mpu").map((d) => d.docType), ["electrical_application"],
+    "an MPU is filed as an electrical permit, so it owes the electrical application");
+  assert.ok(stagingWouldRefuse(buildingOnly, undefined).map((d) => d.docType).includes("electrical_application"),
+    "staging EVERYTHING still owes both applications");
+  // The plan-set family carries no discipline and must survive the filter on every track.
+  const noPlans = mk("prescriptive");
+  attach(noPlans.id, "building_application");
+  const blocked = stagingWouldRefuse(noPlans, "building").map((d) => d.docType);
+  assert.ok(blocked.includes("plan_set") && blocked.includes("sld"),
+    `the universal plan-set family must block every discipline: ${JSON.stringify(blocked)}`);
+});
+
+await check("…and the discipline vocabulary is recipeDisciplineForTrack's, not a parallel one", () => {
+  // The filter compares item.discipline against recipeDisciplineForTrack(track). If the doc
+  // side ever said "building" where the track side says "structural", this filter would
+  // silently drop the building application from every building stage.
+  const building = setFor(prescriptive).find((d) => d.docType === "building_application")!;
+  assert.equal(building.discipline, recipeDisciplineForTrack("building"));
+  const electrical = setFor(prescriptive).find((d) => d.docType === "electrical_application")!;
+  assert.equal(electrical.discipline, recipeDisciplineForTrack("electrical"));
+});
+
+// ---------------------------------------------------------------------------
+// THE SENTENCE THE OPERATOR COMPLAINED ABOUT. "No critical document fields missing from
+// the generated packet" was rendered out of pkg.missingFields — fifteen SCALAR field
+// checks that never look at a document. It was literally true and read as "the packet is
+// complete", and that is how two permits passed through with an application unattached.
+// ---------------------------------------------------------------------------
+await check("A PACKET MISSING A REQUIRED DOCUMENT SAYS SO", () => {
+  const pkg = getApplicationDocumentPackage(db, missingEle.id);
+  const missingDocs = pkg.missingDocuments || [];
+  assert.ok(missingDocs.length > 0,
+    "the packet reported nothing missing while a required permit application was not attached");
+  assert.ok(missingDocs.some((d) => d.docType === "electrical_application"),
+    `the missing document must be named: ${JSON.stringify(missingDocs.map((d) => d.docType))}`);
+  assert.match(missingDocs.find((d) => d.docType === "electrical_application")!.why, /Coos Bay/,
+    "…and say whose requirement it is");
+});
+
+await check("…WITHOUT being folded into missingFields, which four other things read", () => {
+  // missingFields feeds packageReady and four stage-status computations. Widening it
+  // would change four behaviours to fix one sentence.
+  const pkg = getApplicationDocumentPackage(db, missingEle.id);
+  for (const field of pkg.missingFields || []) {
+    assert.doesNotMatch(field, /application|plan set|one-?line|spec sheet/i,
+      `a DOCUMENT leaked into missingFields ("${field}") — packageReady and four stage statuses read that list`);
+  }
+  // A genuinely complete packet still says the all-clear.
+  assert.deepEqual((getApplicationDocumentPackage(db, bothUploaded.id).missingDocuments || []).map((d) => d.docType), [],
+    "a complete packet must not invent a missing document");
+});
+
+await check("…and the screen no longer prints the all-clear while a DOCUMENT is missing", () => {
+  // No DOM harness here, so the render is pinned by source the way the staging wiring is.
+  // The old line was an unconditional else-branch on missingFields alone.
+  const src = fs.readFileSync(path.join(process.cwd(), "frontend", "dashboard.js"), "utf8");
+  const at = src.indexOf("function renderApplicationDocs()");
+  assert.ok(at > -1, "renderApplicationDocs is gone — re-point this check");
+  const window = src.slice(at, at + 2600);
+  assert.ok(!/missingFields\?\.length \? `<p><strong>Missing fields:[\s\S]{0,120}?` : "<p>No critical document fields missing from the generated packet\.<\/p>"/.test(window),
+    "the all-clear is still an else-branch on missingFields alone — a missing DOCUMENT cannot reach it");
+  assert.match(window, /!missingFields\.length && !missingDocs\.length/,
+    "the all-clear sentence must be gated on BOTH lists being empty");
+  assert.match(window, /Missing required documents/,
+    "a missing required DOCUMENT must be stated as plainly as a missing field");
+  assert.match(window, /missingDocs\.map\(\(d\) => `<li>\$\{esc\(d\.label\)\}/,
+    "everything interpolated into innerHTML must be esc()'d");
+  assert.match(window, /missingFields\.length \|\| missingDocs\.length \? "warning"/,
+    "the card must read as a warning when either list is non-empty");
+});
+
+// ---------------------------------------------------------------------------
 // ACQUISITION — what we go and FETCH is now what the project must FILE.
 // ---------------------------------------------------------------------------
 await check("ACQUISITION asks for the electrical application, not a hardcoded generic slot", async () => {
@@ -352,6 +621,33 @@ await check("ACQUISITION asks for the electrical application, not a hardcoded ge
     `Coos Bay's blank is STORED as building_application, so that is what must be asked for: ${JSON.stringify(ensured.neededTypes)}`);
   assert.ok(!ensured.neededTypes.includes("permit_application"),
     "asking for permit_application here is what re-ran a paid research pass on every click");
+});
+
+await check("ACQUISITION GOES AFTER THE PRESCRIPTIVE BLANK, not 'whatever is under building_application'", async () => {
+  // ahjFormAuto kept item.docType from the required set and DISCARDED applicationKind, so
+  // a prescriptive project researched a generic "building application" — and a stored
+  // STRUCTURAL blank answered the existence check, ending acquisition before it started.
+  // Stand that structural blank up for the real Coos Bay fixture and ask both paths.
+  storeAhjFormTemplate(db, {
+    ahjName: "City of Coos Bay", state: "OR", formType: "building_application",
+    filename: "Coos Bay Structural (non-prescriptive) Permit Application.pdf",
+    bytes: new Uint8Array(Buffer.from("%PDF-1.4 structural blank")),
+    map: { formName: "Coos Bay Structural (non-prescriptive) Permit Application", sourceUrl: "", fillMode: "acroform", textFields: {}, checkboxes: {}, notes: "" },
+  });
+  const llm = createLLMProvider(); // stub — no network, no research spend
+  const forPrescriptive = await ensureAhjFormsForProject(db, llm, prescriptive as never);
+  const bld = forPrescriptive.results.find((r) => r.formType === "building_application")!;
+  assert.ok(bld, "the building-side slot was not asked for at all");
+  assert.equal(bld.applicationKind, "prescriptive",
+    "the required set already decided WHICH of the two; acquisition must carry it rather than drop it");
+  assert.notEqual(bld.status, "exists",
+    "a stored STRUCTURAL blank was accepted as the PRESCRIPTIVE application — the prescriptive form would never be acquired");
+  // The same stored blank IS what an engineered project needs, and must not be re-fetched.
+  const forEngineered = await ensureAhjFormsForProject(db, llm, engineered as never);
+  const bldEng = forEngineered.results.find((r) => r.formType === "building_application")!;
+  assert.equal(bldEng.applicationKind, "structural");
+  assert.equal(bldEng.status, "exists",
+    "the engineered path's own blank is already stored — re-researching it is the paid round trip this check exists to prevent");
 });
 
 await check("...while an AHJ with no structure knowledge still gets its one generic application", () => {

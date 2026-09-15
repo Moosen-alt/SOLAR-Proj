@@ -28,8 +28,9 @@
 // ---------------------------------------------------------------------------
 import crypto from "node:crypto";
 import type { AppDb } from "./db";
-import type { ProjectStatus } from "../../shared/src/types";
+import type { ProjectStatus, PublicProjectStatusPayload, PublicStatusHistoryEntry } from "../../shared/src/types";
 import { formatProjectAddress } from "./clientNotifier";
+import { getProjectDetail } from "./repository";
 import { logger } from "./logger";
 
 /**
@@ -163,19 +164,14 @@ export interface ClientPortalUpdate {
   body: string;
 }
 
-/** One line on a client's timeline: a filing, named, and what it moved TO. */
-export interface ClientPortalHistoryEntry {
-  /** When this state was FIRST seen — the moment it CHANGED, not the last time we looked. */
-  at: string;
-  /** WHICH filing moved: "Building permit" / "Electrical permit" / "Utility interconnection (NEM)". */
-  label: string;
-  /** The jurisdiction's own reference for that filing, so two permit rows are never ambiguous. */
-  applicationNumber: string;
-  /** Client-facing wording — see publicCheckLabel. */
-  statusLabel: string;
-  /** The raw outcome. For badge STYLING only; the words are in statusLabel. */
-  outcome: string;
-}
+/**
+ * One line on a client's timeline: a filing, named, and what it moved TO.
+ *
+ * ONE SHAPE FOR BOTH PUBLIC PAGES. The per-project page (/status) and the per-client tracker
+ * (/portal) render the same timeline from the same builder, so the type lives in the shared
+ * surface and this is an alias, not a second copy that can drift from it.
+ */
+export type ClientPortalHistoryEntry = PublicStatusHistoryEntry;
 
 /**
  * How far back to read before collapsing. The rows are one-per-check on every project filed
@@ -188,10 +184,13 @@ const HISTORY_SCAN_LIMIT = 200;
 /**
  * THE TIMELINE, AS A HISTORY OF CHANGES.
  *
- * The client page reads permit_status_checks, which (until the write-time gate lands in the
- * monitor's persistence path) holds one row per CHECK. On a settled permit that is one row per
- * sweep, and the page showed twelve lines that all said the same thing, in pairs seconds apart —
- * the pairs being one sweep's structural target and then its electrical target.
+ * The client page reads permit_status_checks. recordPermitStatusCheck now gates that INSERT on
+ * shouldRecordStatusCheck, so rows written FROM NOW ON are transitions. Every row written BEFORE
+ * that gate landed is still one-row-per-check — on a settled permit, one per sweep, which is the
+ * twelve identical lines in pairs seconds apart the operator saw, the pairs being one sweep's
+ * structural target and then its electrical target. Those rows are NOT deleted
+ * (email_project_matches.status_check_id is a foreign key into this table, and the audit trail is
+ * the point of them), so the ladder has to collapse at READ time. That is this function.
  *
  * Two things are fixed here and they are separate:
  *
@@ -201,10 +200,12 @@ const HISTORY_SCAN_LIMIT = 200;
  *      dated today for a status that has not moved since August is a wrong date, not a fresh
  *      update. A state that returns (A → B → A) is three entries, correctly: it changed back.
  *
- *      This is READ-TIME repair for rows already written. It does not replace the write-time gate
- *      — nothing here can undo the duplicate human_review_items and corrections rows the same
- *      unconditional write produces, and no row is deleted (email_project_matches.status_check_id
- *      is a foreign key into this table).
+ *      This is READ-TIME repair for rows ALREADY WRITTEN, and it is not a substitute for the
+ *      write-time gate: nothing here can undo the duplicate human_review_items, corrections and
+ *      correction-triage jobs the old unconditional write produced on every sweep. Those are
+ *      stopped at the source, in recordPermitStatusCheck. Both halves are needed and neither is
+ *      redundant — this one because no row is ever deleted, that one because a page is not the
+ *      only thing reading the table.
  *
  *   2. EVERY ENTRY NAMES ITS FILING. The projection used to emit three fields — date, statusLabel,
  *      outcome — so a project with a structural and an electrical permit produced a timeline where
@@ -272,6 +273,11 @@ export interface ClientPortalProject {
   tracks: ClientPortalTrack[];
   /** What we have told this client about this job, newest first. */
   updates: ClientPortalUpdate[];
+  /**
+   * What each FILING has actually done, newest first — one entry per change, never per check, and
+   * every entry naming the filing it belongs to. See projectStatusHistory.
+   */
+  history: ClientPortalHistoryEntry[];
 }
 
 export interface ClientPortalPayload {
@@ -437,7 +443,75 @@ export function clientPortalPayload(db: AppDb, token: string): ClientPortalPaylo
         updatedAt: String(p.updated_at || ""),
         tracks: byProject.get(String(p.id)) || [],
         updates: updatesByProject.get(String(p.id)) || [],
+        // ONE QUERY PER PROJECT, unlike the batched reads above. Deliberate: the collapse is a
+        // per-target running comparison over a window of rows, and a single batched query would
+        // have to carry one project's 200-row window times every project in the company's book
+        // before throwing almost all of it away. A company's list is tens of projects, already
+        // filtered to this client, and the index on (project_id, created_at) makes each one a
+        // range scan. Revisit only if a tracker page gets slow, and batch by project_id then.
+        history: projectStatusHistory(db, String(p.id)),
       };
     }),
+  };
+}
+
+/**
+ * THE PER-PROJECT PUBLIC STATUS PAGE (/api/public/status/:token → frontend/status.html).
+ *
+ * This is the whole body of that route. It lives here, beside the per-client tracker, because the
+ * two pages publish the same facts to the same kind of reader and had already drifted once: the
+ * "Recent updates" card was built inline in the route as `permitStatusChecks.slice(0, 12)` — no
+ * per-target collapse, no filing name, no application number, and the raw operator label — which
+ * is exactly the twelve-identical-rows card the operator reported, on the exact screen they were
+ * looking at. Anything that fixed the tracker missed this page entirely.
+ *
+ * Returns null for an unknown/blank token; the route turns that into a 404.
+ *
+ * THE BLANK TOKEN IS THE DANGEROUS CASE, same as the tracker: status_share_token defaults to ''
+ * on every project row, so the empty string is rejected here AND in the SQL.
+ */
+export function publicProjectStatusPayload(db: AppDb, token: string): PublicProjectStatusPayload | null {
+  const clean = String(token || "").trim();
+  if (!clean) return null;
+  const row = db.get<{ id?: string }>(
+    "SELECT id FROM projects WHERE status_share_token = ? AND status_share_token != ''",
+    [clean],
+  );
+  if (!row?.id) return null;
+
+  const detail = getProjectDetail(db, String(row.id));
+  const p = detail.project;
+  return {
+    project: {
+      address: formatProjectAddress(p),
+      ahj: p.ahj,
+      utility: p.utility,
+      status: p.status,
+      updatedAt: p.updatedAt,
+    },
+    tracks: (detail.permitCheckTargets || []).map((t) => ({
+      type: t.targetType,
+      // SAME LABEL RULE AS THE PER-CLIENT PORTAL. This page had its own copy of the hardcoded
+      // "Building/electrical permit", so a project with separate structural and electrical
+      // permits showed two identical rows here even after the portal was fixed — the operator
+      // hit it by clicking the link in a real update email. One function, both surfaces.
+      label: trackLabel(t.targetType, String(t.permitType || "")),
+      // ...and the same WORDING rule, which this page did not have at all: it shipped
+      // latestStatusLabel raw, so Coos Bay's "Action needed before review" reached a client as an
+      // instruction to them when the action is ours. The badge is one span; the ownership of the
+      // next move has to be in the words. The raw `outcome` below is untouched — status.html
+      // colours from it, and a stuck filing must keep drawing the eye.
+      statusLabel: publicCheckLabel(String(t.latestOutcome || ""), t.latestStatusLabel || ""),
+      outcome: String(t.latestOutcome || ""),
+      lastCheckedAt: t.lastCheckedAt || null,
+      applicationNumber: t.applicationNumber || "",
+      permitNumber: t.permitNumber || "",
+    })),
+    history: projectStatusHistory(db, String(row.id)),
+    submissions: (detail.submissions || []).slice(0, 6).map((sub) => ({
+      type: sub.submissionType,
+      status: sub.status,
+      submittedAt: sub.submittedAt || null,
+    })),
   };
 }

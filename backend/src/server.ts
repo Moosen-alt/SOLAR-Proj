@@ -54,7 +54,7 @@ import { PRODUCTS, PRODUCT_KEYS, grantProduct, revokeProduct, orgEntitlements, p
 import { requestScope, orgFilter, reqOrgFilter, assertInScope, auditCrossOrgAccess } from "./scope";
 import type { RequestScope } from "./scope";
 import { DEFAULT_ORG_ID } from "./db";
-import { ensureStatusShareToken, formatProjectAddress, statusShareUrl } from "./clientNotifier";
+import { ensureStatusShareToken, statusShareUrl } from "./clientNotifier";
 import { listCodeProfiles, getCodeProfile, saveResearchedCodeProfile, saveVerifiedCodeProfile, codeProfileKey } from "./codeProfiles";
 import { runStandaloneReview, getReviewSubmission, listReviewSubmissions, reviewSubjectToProject } from "./reviewSubject";
 import { renderReviewerReportHtml } from "./reviewerEngine";
@@ -70,7 +70,7 @@ import {
   undeliveredCommunications,
   updateCustomer,
 } from "./crm";
-import { clientPortalPayload, clientPortalUrl, ensureClientPortalToken, trackLabel } from "./clientPortal";
+import { clientPortalPayload, clientPortalUrl, ensureClientPortalToken, publicProjectStatusPayload } from "./clientPortal";
 import { getKpiReport } from "./kpi";
 import {
   ahjFormRegistry,
@@ -1022,45 +1022,14 @@ app.post("/api/projects/:id/share-status", (req, res) => {
   res.json({ token, url: statusShareUrl(token) });
 });
 
+// The payload is built in clientPortal.ts, next to the per-client tracker that publishes the same
+// facts — see publicProjectStatusPayload. It used to be assembled inline here, and the "Recent
+// updates" card was `permitStatusChecks.slice(0, 12)`: one line per CHECK rather than per change,
+// with nothing naming which of the project's filings each line was about.
 app.get("/api/public/status/:token", (req, res) => {
-  const token = String(req.params.token || "").trim();
-  if (!token) throw new HttpError(404, "Unknown status link.");
-  const row = db.get<{ id?: string }>("SELECT id FROM projects WHERE status_share_token = ? AND status_share_token != ''", [token]);
-  if (!row?.id) throw new HttpError(404, "Unknown status link.");
-  const detail = getProjectDetail(db, String(row.id));
-  const p = detail.project;
-  res.json({
-    project: {
-      address: formatProjectAddress(p),
-      ahj: p.ahj,
-      utility: p.utility,
-      status: p.status,
-      updatedAt: p.updatedAt,
-    },
-    tracks: (detail.permitCheckTargets || []).map((t) => ({
-      type: t.targetType,
-      // SAME LABEL RULE AS THE PER-CLIENT PORTAL. This page had its own copy of the hardcoded
-      // "Building/electrical permit", so a project with separate structural and electrical
-      // permits showed two identical rows here even after the portal was fixed — the operator
-      // hit it by clicking the link in a real update email. One function, both surfaces.
-      label: trackLabel(t.targetType, String((t as { permitType?: string }).permitType || "")),
-      statusLabel: t.latestStatusLabel || "",
-      outcome: t.latestOutcome || "",
-      lastCheckedAt: t.lastCheckedAt || null,
-      applicationNumber: t.applicationNumber || "",
-      permitNumber: t.permitNumber || "",
-    })),
-    history: (detail.permitStatusChecks || []).slice(0, 12).map((c) => ({
-      at: c.createdAt,
-      statusLabel: c.statusLabel,
-      outcome: c.outcome,
-    })),
-    submissions: (detail.submissions || []).slice(0, 6).map((sub) => ({
-      type: sub.submissionType,
-      status: sub.status,
-      submittedAt: sub.submittedAt || null,
-    })),
-  });
+  const payload = publicProjectStatusPayload(db, String(req.params.token || ""));
+  if (!payload) throw new HttpError(404, "Unknown status link.");
+  res.json(payload);
 });
 
 // Public (no auth): a solar company's own tracking page. The token is on the CLIENT row, so one

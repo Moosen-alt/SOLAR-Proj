@@ -195,9 +195,24 @@ export function operatorPolicyAnswer(key: string): string {
  *  would file a BLANK into a required portal control with nothing surfacing it,
  *  strictly worse than asking. Those keep being asked, the answer lands in the
  *  v17 column, and the resolver then resolves it. Drop this clause only once
- *  portalRecipes.ts applies the same policy default. */
+ *  portalRecipes.ts applies the same policy default.
+ *
+ *  AN ABSENT KIND IS NOT "NOT bound-empty" — it is "we do not know", and the two
+ *  must not be spelled the same way. `kind` only began being persisted by
+ *  storedJson in the commit that introduced this function, so every intake
+ *  request that was already PENDING carries questions with no kind at all. Read
+ *  as `q.kind !== "bound-empty"` those legacy rows suppress, and a legacy
+ *  recipe-bound disconnect question then vanishes from the public form while
+ *  resolveRecipeFieldValues goes on resolving "" into the required control —
+ *  exactly the blank filing the carve-out above exists to prevent, arrived at by
+ *  the back door. So an unknown kind degrades to ASKING. The cost of being wrong
+ *  in that direction is one needless question on a link already in flight; the
+ *  cost in the other is a blank in a live portal application that nothing
+ *  surfaces. Live bank questions are unaffected: extractPortalQuestions builds
+ *  every PortalQuestion with an explicit kind, and storedJson now persists it. */
 function policySettles(q: PortalIntakeQuestion): boolean {
-  return !!OPERATOR_POLICY_ANSWERS[q.key] && q.kind !== "bound-empty";
+  if (!OPERATOR_POLICY_ANSWERS[q.key]) return false;
+  return !!q.kind && q.kind !== "bound-empty";
 }
 
 // A RECIPE NOTE IS NOT A QUESTION.

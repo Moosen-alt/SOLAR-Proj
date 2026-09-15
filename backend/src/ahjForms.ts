@@ -16,14 +16,62 @@ import { resolveEffectiveCodeContext } from "./codeProfiles";
 import { isDocumentDateStale } from "./documentDate";
 import { findFeeScheduleForProject } from "./feeSchedules";
 
+/** Which of the two MUTUALLY EXCLUSIVE building-side applications a permit path calls
+ *  for. THE single mapping from path → application kind; requiredApplicationDocs,
+ *  form acquisition and the presence/packaging filters all read it rather than each
+ *  restating `path === "engineered" ? "structural" : ...`. "unknown" deliberately
+ *  yields null: before the operator confirms the path we do not know which of the two
+ *  the AHJ is owed, and guessing is the failure this whole module exists to stop. */
+export function applicationKindForPath(path: "prescriptive" | "engineered" | "unknown"): "prescriptive" | "structural" | null {
+  if (path === "prescriptive") return "prescriptive";
+  if (path === "engineered") return "structural";
+  return null;
+}
+
 // Classify an AHJ form by which mutually-exclusive solar application it is, from its
 // name/filename. A prescriptive and a structural application must NEVER both be filled
 // for the same project — the AHJ takes exactly one, chosen by the permit path.
-function formApplicationKind(formName: string): "prescriptive" | "structural" | null {
+//
+// NULL IS A REAL ANSWER, NOT A FAILURE. Plenty of AHJs publish ONE generic application
+// used on both paths ("Building Permit Application.pdf"), and a name that says neither
+// "prescriptive" nor "structural" is exactly that until something better says otherwise.
+// So null means "no claim" and is treated as compatible with every path — widening
+// /building/ into "structural" would hard-block every single-form jurisdiction.
+// Where the truth IS known (we went looking for the prescriptive blank specifically),
+// acquisition stamps it on the stored template and storedApplicationKind reads it back;
+// the name is the fallback, not the only source.
+//
+// THE STRUCTURAL TEST RUNS FIRST, AND THAT ORDER IS THE WHOLE CORRECTNESS OF THIS
+// FUNCTION. "Non-Prescriptive" CONTAINS "prescriptive". With /prescriptive/ tested
+// first, every form whose title is the AHJ's own phrasing for the ENGINEERED
+// application — "Structural (Non-Prescriptive) Permit Application" — came back
+// "prescriptive": the fill gate then built the structural application for prescriptive
+// projects and refused it for engineered ones, exactly inverted, on the one pair of
+// forms where being wrong means uploading the document the AHJ forbids.
+export function formApplicationKind(formName: string): "prescriptive" | "structural" | null {
   const n = (formName || "").toLowerCase();
-  if (/prescriptive/.test(n)) return "prescriptive";
   if (/structural|non[-\s]?prescriptive|engineered/.test(n)) return "structural";
+  if (/prescriptive/.test(n)) return "prescriptive";
   return null;
+}
+
+/**
+ * Does a form of this kind CONTRADICT the project's resolved permit path?
+ *
+ * This is deliberately weaker than formAllowedForPath, and the difference matters.
+ * formAllowedForPath is the FILL-time gate: on an unconfirmed path it refuses to fill
+ * either application, because building the wrong one wastes a form and invites the
+ * operator to upload it. This is the PRESENCE/PACKAGING gate, and it only ever removes
+ * an AFFIRMATIVE contradiction — a structural application on a prescriptive project.
+ * An unknown path contradicts nothing (staging already refuses outright there, with a
+ * message that says what to do), and a null-kind form contradicts nothing either.
+ */
+export function formContradictsPath(formName: string, path: "prescriptive" | "engineered" | "unknown", knownKind?: "prescriptive" | "structural" | null): boolean {
+  const want = applicationKindForPath(path);
+  if (!want) return false;
+  const kind = knownKind === undefined ? formApplicationKind(formName) : knownKind;
+  if (!kind) return false;
+  return kind !== want;
 }
 
 // Should this form be filled given the project's resolved permit path? Only the
@@ -975,6 +1023,16 @@ export async function buildFilledFormsForProject(db: AppDb, project: ProjectReco
   const skipped: FilledFormResult[] = [];
   const noteSkip = (formId: string, formName: string): void => {
     const kind = formApplicationKind(formName);
+    // A SKIP MUST ALSO CLEAN UP. Skipping was the whole of the old behaviour, and it
+    // left the PREVIOUS path's filled PDF sitting in backend/data/filled/<projectId>/.
+    // Flip a project from engineered to prescriptive and rebuild, and the structural
+    // application is still on disk — now off-path, still packaged. Delete it as part
+    // of not filling it. (The presence/packaging filters are the guarantee for the
+    // window where nobody rebuilds; this closes the window.)
+    try {
+      const stale = path.join(outDir, `${formId}.pdf`);
+      if (fs.existsSync(stale)) fs.rmSync(stale, { force: true });
+    } catch { /* best effort — the off-path filters still drop it */ }
     skipped.push({
       formId,
       formName,
@@ -1131,31 +1189,102 @@ export function saveRegistrySignatureOverride(db: AppDb, formId: string, signatu
   );
 }
 
-/** Already-BUILT filled forms for a project, keyed by application docType
- *  (building_application / electrical_application / solar_checklist /
- *  permit_application) so portal upload slots asking for the completed
- *  application can attach the real filled PDF. Disk-only — never triggers a
- *  build (step 3 builds; staging just uses what exists). First form wins per type. */
-export function filledFormsByDocType(db: AppDb, projectId: string): Record<string, string> {
-  const out: Record<string, string> = {};
+/** What a stored template row claims to be. The kind acquisition STAMPED on it wins
+ *  (we went looking for the prescriptive blank and that is what we stored); the form's
+ *  own name is the fallback for rows stored before the stamp existed. */
+export function storedApplicationKind(row: { original_filename?: string; field_map?: string }): "prescriptive" | "structural" | null {
+  const map = parseJson<{ formName?: string; applicationKind?: string }>(String(row.field_map || "{}"), {});
+  const stamped = String(map.applicationKind || "");
+  if (stamped === "prescriptive" || stamped === "structural") return stamped;
+  return formApplicationKind(`${map.formName || ""} ${row.original_filename || ""}`);
+}
+
+/** The permit path for a project id, read the way resolvePermitPath reads it.
+ *  resolvePermitPath consults ONLY project.parserSnapshot (permitPath.ts `snap`/`num`),
+ *  which is the projects.parser_json column — so this is the same data the repository
+ *  mapper hands it, not a second opinion. Guarded: anything unreadable is "unknown",
+ *  which contradicts nothing and therefore filters nothing. */
+function permitPathForProjectId(db: AppDb, projectId: string): "prescriptive" | "engineered" | "unknown" {
+  try {
+    const row = db.get<{ parser_json?: string }>("SELECT parser_json FROM projects WHERE id = ?", [projectId]);
+    if (!row) return "unknown";
+    return resolvePermitPath({ parserSnapshot: parseJson(String(row.parser_json || "{}"), {}) } as ProjectRecord).path;
+  } catch {
+    return "unknown";
+  }
+}
+
+export interface FilledApplicationForm {
+  /** The application docType this filled PDF claims. */
+  docType: string;
+  /** Absolute path to the filled PDF on disk. */
+  filePath: string;
+  /** The form's own name, as stored/registered. */
+  formName: string;
+  /** Which of the two mutually-exclusive building-side applications it is, or null
+   *  for a form that makes no such claim (generic application, electrical, checklist). */
+  applicationKind: "prescriptive" | "structural" | null;
+}
+
+/**
+ * Already-BUILT filled forms for a project. Disk-only — never triggers a build
+ * (step 3 builds; staging just uses what exists).
+ *
+ * OFF-PATH FILLS ARE DROPPED HERE, AND THIS IS THE WHOLE POINT. buildFilledFormsForProject
+ * only ever SKIPS the other application; nothing deleted backend/data/filled/<projectId>/.
+ * So an ENGINEERED fill followed by a path flip to PRESCRIPTIVE left a STRUCTURAL PDF on
+ * disk that satisfied the prescriptive row ("via: filled form") and was then handed to the
+ * portal upload sweep — against the AHJ's own printed instruction: "Prescriptive path —
+ * upload ONLY the prescriptive application. Do NOT also upload the structural application."
+ *
+ * The filter runs over the FILE LIST, before the first-wins-per-docType collapse: a stale
+ * structural fill and a fresh prescriptive fill both key to building_application, and
+ * collapsing first would let whichever was read first decide the slot.
+ */
+export function filledApplicationForms(db: AppDb, projectId: string, permitPath?: "prescriptive" | "engineered" | "unknown"): FilledApplicationForm[] {
   const dir = path.join(FILLED_DIR, projectId);
   let files: string[] = [];
-  try { files = fs.readdirSync(dir).filter((f) => f.endsWith(".pdf")); } catch { return out; }
+  try { files = fs.readdirSync(dir).filter((f) => f.endsWith(".pdf")); } catch { return []; }
+  // Resolved here when the caller didn't pass one, so EVERY consumer is covered —
+  // including ones that only have a projectId in hand (autoLearn's upload sweep).
+  const resolvedPath = permitPath ?? permitPathForProjectId(db, projectId);
+  const out: FilledApplicationForm[] = [];
   for (const f of files) {
     const formId = f.replace(/\.pdf$/, "");
     let docType = "permit_application";
+    let formName = "";
+    let kind: "prescriptive" | "structural" | null = null;
     const tmpl = formId.startsWith("tmpl-")
-      ? db.get<{ form_type?: string }>("SELECT form_type FROM ahj_form_templates WHERE id = ?", [formId.slice(5)])
+      ? db.get<{ form_type?: string; original_filename?: string; field_map?: string }>(
+          "SELECT form_type, original_filename, field_map FROM ahj_form_templates WHERE id = ?", [formId.slice(5)])
       : null;
-    if (tmpl?.form_type) docType = String(tmpl.form_type);
-    else {
+    if (tmpl) {
+      if (tmpl.form_type) docType = String(tmpl.form_type);
+      formName = String(parseJson<{ formName?: string }>(String(tmpl.field_map || "{}"), {}).formName || tmpl.original_filename || "");
+      kind = storedApplicationKind(tmpl);
+    } else {
       const def = ahjFormRegistry.find((d) => d.id === formId);
-      const name = (def?.formName || "").toLowerCase();
+      formName = def?.formName || "";
+      const name = formName.toLowerCase();
       if (/electrical/.test(name)) docType = "electrical_application";
       else if (/checklist|worksheet|eligibilit/.test(name)) docType = "solar_checklist";
       else if (/building|structural/.test(name)) docType = "building_application";
+      kind = formApplicationKind(formName);
     }
-    if (!out[docType]) out[docType] = path.join(dir, f);
+    if (formContradictsPath(formName, resolvedPath, kind)) continue;
+    out.push({ docType, filePath: path.join(dir, f), formName, applicationKind: kind });
+  }
+  return out;
+}
+
+/** Already-BUILT filled forms keyed by application docType (building_application /
+ *  electrical_application / solar_checklist / permit_application) so portal upload
+ *  slots asking for the completed application can attach the real filled PDF.
+ *  First form wins per type — AFTER the off-path drop above. */
+export function filledFormsByDocType(db: AppDb, projectId: string, permitPath?: "prescriptive" | "engineered" | "unknown"): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const form of filledApplicationForms(db, projectId, permitPath)) {
+    if (!out[form.docType]) out[form.docType] = form.filePath;
   }
   return out;
 }

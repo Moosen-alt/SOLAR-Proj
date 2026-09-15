@@ -105,8 +105,10 @@ export interface FeeBracket {
   /** The jurisdiction's OWN wording for this line — this is what the permit
    *  application's fee-quantity field is asking for, verbatim where possible. */
   label?: string;
-  /** Set ONLY by corroborateBrackets, from bytes this process retrieved. A model
-   *  can never put it here — see normalizeBrackets' `trusted` flag. */
+  /** Set ONLY by corroborateBrackets, from bytes this process retrieved. Neither
+   *  a model nor a JSON file replayed by a script can put it here: it survives
+   *  into storage only when saveFeeSchedule was handed the ledger to re-derive
+   *  it from — see normalizeBrackets' `trusted` flag. */
   corroboration?: FeeBracketCorroboration;
 }
 
@@ -498,10 +500,21 @@ function normalizeCorroboration(raw: unknown): FeeBracketCorroboration | undefin
  *  model that emitted `"corroboration":{"corroborated":true}` alongside an
  *  invented fee would otherwise have laundered its own guess into the one field
  *  that is supposed to mean "we went back and read the document". Same class of
- *  rule as "code never writes confidence 'verified'". Trusted is passed by
- *  exactly two callers: parseBrackets (bytes this module wrote) and
- *  saveFeeSchedule (whose input has already been through corroborateBrackets,
- *  which re-derives from the ledger and ignores whatever arrived). */
+ *  rule as "code never writes confidence 'verified'".
+ *
+ *  TRUSTED IS PASSED BY EXACTLY TWO CALLERS, and the second one earns it every
+ *  time rather than assuming it:
+ *    · parseBrackets — bytes this module itself wrote into brackets_json;
+ *    · saveFeeSchedule — and ONLY on brackets it has just re-derived through
+ *      corroborateBrackets against a FeeDocumentLedger its caller handed over.
+ *  It used to say the second caller's input "has already been through
+ *  corroborateBrackets", and that was FALSE: scripts/apply-fee-findings.ts hands
+ *  saveFeeSchedule the brackets out of a JSON file, in a process that never
+ *  fetches a document and never runs corroborateBrackets. A hand-edited findings
+ *  file could therefore assert `corroborated: true` with any matchedLine it
+ *  liked and have it printed next to the amount as evidence. A ledger is
+ *  something only a process that actually retrieved bytes can produce, so
+ *  requiring one is what makes the sentence above true instead of hopeful. */
 function normalizeBrackets(raw: unknown[], opts: { trusted?: boolean } = {}): FeeBracket[] {
   const out: FeeBracket[] = [];
   for (const item of raw) {
@@ -710,11 +723,24 @@ function findingSummary(finding: FeeScheduleFinding): string {
 
 /** Store a finding as a 'seeded' schedule. Refuses (a) unsourced numbers and
  *  (b) any write over a human-verified row. Exported so an importer or an
- *  operator-entered schedule can use the same guard as research. */
+ *  operator-entered schedule can use the same guard as research.
+ *
+ *  CORROBORATION IS DENIED BY DEFAULT, AND THE ONLY KEY IS A LEDGER.
+ *  `opts.corroborateAgainst` is the retrieval trail of the process that is doing
+ *  the saving; hand one over and every bracket's corroboration is RE-DERIVED
+ *  from it here (corroborateBrackets discards whatever arrived and asks the
+ *  corpus). Hand nothing over — an importer, a seed script, an operator-entered
+ *  row, or scripts/apply-fee-findings.ts replaying a JSON file — and any
+ *  `corroboration` riding on the incoming brackets is STRIPPED. That is
+ *  deliberate and it is the whole point: corroboration means "a machine fetched
+ *  the cited source and found this number printed in it", and a caller that
+ *  cannot produce the bytes it read has not done that. It is not a refusal — the
+ *  fee still saves, as seeded, simply uncorroborated. */
 export function saveFeeSchedule(
   db: AppDb,
   input: { state: string; ahj?: string; utility?: string; track: FeeTrack; discipline?: string },
   finding: FeeScheduleFinding,
+  opts: { corroborateAgainst?: FeeDocumentLedger } = {},
 ): FeeScheduleResearchOutcome {
   const track = input.track;
   const profileKey = feeScheduleProfileKey(input, track);
@@ -724,10 +750,16 @@ export function saveFeeSchedule(
   // what it asked for.
   const discipline = feeDiscipline(input.discipline || finding.discipline);
   const collectedBy = clean(finding.collectedByProfileKey);
-  // Trusted: whatever corroboration is on these brackets was put there by
-  // corroborateBrackets (which re-derives it from retrieved bytes and discards
-  // anything that arrived claiming to be corroborated), never by a model.
-  const brackets = normalizeBrackets(finding.brackets || [], { trusted: true });
+  // THE TRUST BOUNDARY, and it is structural rather than documented.
+  //
+  // With a ledger: corroborateBrackets deletes every incoming corroboration
+  // unconditionally and re-derives from the corpus this process retrieved, so
+  // what `trusted` then keeps was computed here, one line ago, out of bytes we
+  // read. Without one: untrusted, and corroboration is stripped — a caller that
+  // cannot show what it read cannot claim to have read it.
+  const brackets = opts.corroborateAgainst
+    ? normalizeBrackets(corroborateBrackets(finding, opts.corroborateAgainst), { trusted: true })
+    : normalizeBrackets(finding.brackets || [], {});
   const sourceUrl = clean(finding.sourceUrl);
   const sourceQuote = clean(finding.sourceQuote);
   const status = finding.status === "conflicted" ? "conflicted" : "ok";
@@ -1612,13 +1644,21 @@ export async function researchFeeSchedule(
   } catch { /* non-fatal: research still runs unseeded */ }
 
   const researcher = options.researcher || claudeFeeScheduleResearcher;
+  // ONE LEDGER FOR THE PASS, OWNED HERE — not "whatever the caller happened to
+  // pass". saveFeeSchedule now re-derives corroboration from the ledger and
+  // strips it when there is none, so a caller that wanted a fee schedule but did
+  // not care about the retrieval trail (scripts/fee-sheet.ts) would otherwise
+  // have every bracket silently uncorroborated. Making it here means the bytes
+  // the researcher read and the bytes the save checks against are the same
+  // object, always.
+  const ledger = options.ledger ?? newFeeDocumentLedger();
   let finding: FeeScheduleFinding;
   try {
-    finding = await researcher({ state: input.state, ahj: input.ahj, utility: input.utility, track, knownContext }, { ledger: options.ledger });
+    finding = await researcher({ state: input.state, ahj: input.ahj, utility: input.utility, track, knownContext }, { ledger });
   } catch (err) {
     finding = emptyFinding(`Researcher threw: ${err instanceof Error ? err.message : String(err)}`);
   }
-  return saveFeeSchedule(db, { state: input.state, ahj: input.ahj, utility: input.utility, track }, finding);
+  return saveFeeSchedule(db, { state: input.state, ahj: input.ahj, utility: input.utility, track }, finding, { corroborateAgainst: ledger });
 }
 
 // ---------------------------------------------------------------------------
