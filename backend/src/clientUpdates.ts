@@ -33,6 +33,11 @@
 import type { AppDb } from "./db";
 import type { ProjectRecord } from "../../shared/src/types";
 import { text } from "./json";
+
+/** The name a client sees on every update. PROVISIONAL — the operator has not settled the
+ *  company name, so it lives here as one constant with an env override rather than being
+ *  scattered through the templates. Change BRAND_NAME in .env, or this default. */
+export const BRAND = (process.env.BRAND_NAME || "Keelix").trim() || "Keelix";
 import { id } from "./ids";
 import { nowIso } from "./time";
 
@@ -121,7 +126,14 @@ export function clientUpdateFor(
       return {
         subject: "Permit issued",
         headline: `${ahj} has issued ${which}${refPhrase}.`,
-        meaning: "The building and electrical side is cleared, so the installation can be scheduled.",
+        // THE CLAIM IS CONDITIONAL, and the operator caught it not being so. The action line
+        // already named the outstanding interconnection, while this line said the install could
+        // be scheduled — the two contradicted each other in the same paragraph. A permit is not
+        // permission to energise, so with the interconnection still open this states what was
+        // actually cleared and nothing more.
+        meaning: hasOther && !otherDone
+          ? "That clears the permit side."
+          : "The building and electrical side is cleared, so the installation can be scheduled.",
         action: hasOther && !otherDone
           ? `Nothing needed from you. The ${utility} interconnection is still in review — we are watching it and will tell you the day it moves.`
           : "Nothing needed from you.",

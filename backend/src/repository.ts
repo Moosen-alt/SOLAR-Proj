@@ -293,6 +293,10 @@ function mapPermitTarget(row: Row): PermitCheckTarget {
     latestStatusLabel: text(row.latest_status_label),
     notes: text(row.notes),
     targetType: (row.target_type === "nem" ? "nem" : "permit") as "permit" | "nem",
+    // WHICH permit this track is ('building' | 'electrical' | 'combo' | 'nem'). Carried because
+    // both client-facing surfaces name the trade from it; without it a project with separate
+    // structural and electrical permits shows two identical rows.
+    permitType: text(row.permit_type),
     portalPlatform: text(row.portal_platform),
     trackingUrl: row.tracking_url ? text(row.tracking_url) : undefined,
     createdAt: text(row.created_at),

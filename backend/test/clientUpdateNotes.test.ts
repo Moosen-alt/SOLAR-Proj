@@ -94,6 +94,23 @@ await check("...and stops saying so once the other track is through", () => {
   assert.doesNotMatch(u.action, /still in review/i, `it is still reporting an outstanding track that closed: ${u.action}`);
 });
 
+await check("A PERMIT IS NOT PERMISSION TO ENERGISE: no 'schedule the install' while NEM is open", () => {
+  // The operator caught this reading the real email: the action line named the outstanding
+  // Pacific Power interconnection while the line above it said the installation could be
+  // scheduled. Both in one paragraph, contradicting each other.
+  db.run("UPDATE permit_check_targets SET latest_outcome = 'waiting' WHERE id = 't-nem'");
+  const open = clientUpdateFor(db, project, "issued", { targetType: "permit" })!;
+  assert.doesNotMatch(open.meaning, /installation can be scheduled/i,
+    `claimed the install can be scheduled with the interconnection still open: ${open.meaning}`);
+  assert.match(open.action, /still in review/i, "and it must still say what is outstanding");
+
+  // With BOTH tracks through, the claim is true and should be made.
+  db.run("UPDATE permit_check_targets SET latest_outcome = 'nem_approved' WHERE id = 't-nem'");
+  const done = clientUpdateFor(db, project, "issued", { targetType: "permit" })!;
+  assert.match(done.meaning, /installation can be scheduled/i,
+    `the claim was dropped even with everything cleared: ${done.meaning}`);
+});
+
 await check("MUST EXCLUDE: an outcome a client is not told about produces no wording at all", () => {
   for (const internal of ["qc_failed", "waiting", "needs_human_review", "blocked", ""]) {
     assert.equal(clientUpdateFor(db, project, internal, { targetType: "permit" }), null,

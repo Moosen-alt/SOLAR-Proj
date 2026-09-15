@@ -87,8 +87,14 @@ await check("the recipient is recorded, so you can see WHO was not told", () => 
 await check("the SUBJECT is clean — the prefix is gone, because state is not prose", () => {
   assert.doesNotMatch(String(row.subject), /^\[/,
     `delivery state is still being smuggled into the subject: ${JSON.stringify(row.subject)}`);
-  assert.match(String(row.subject), /^Correction requested — /,
-    `the subject must be what we would actually send: ${JSON.stringify(row.subject)}`);
+  // The point of this check is that DELIVERY STATE is not smuggled into the subject — not the
+  // exact wording, which is a product decision that has since changed (the subject now leads with
+  // the sender name and carries the homeowner: "Keelix — Correction requested — Owner — Address").
+  // Pinning the full string made a deliberate copy change look like a regression.
+  assert.match(String(row.subject), /Correction requested/,
+    `the subject must still say what happened: ${JSON.stringify(row.subject)}`);
+  assert.match(String(row.subject), /9 Quiet Ln/,
+    `and still identify the job: ${JSON.stringify(row.subject)}`);
 });
 
 await check("MUST COUNT: the question 'what did we fail to send?' is now one call", () => {

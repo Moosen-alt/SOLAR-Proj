@@ -70,7 +70,7 @@ import {
   undeliveredCommunications,
   updateCustomer,
 } from "./crm";
-import { clientPortalPayload, clientPortalUrl, ensureClientPortalToken } from "./clientPortal";
+import { clientPortalPayload, clientPortalUrl, ensureClientPortalToken, trackLabel } from "./clientPortal";
 import { getKpiReport } from "./kpi";
 import {
   ahjFormRegistry,
@@ -1039,7 +1039,11 @@ app.get("/api/public/status/:token", (req, res) => {
     },
     tracks: (detail.permitCheckTargets || []).map((t) => ({
       type: t.targetType,
-      label: t.targetType === "nem" ? "Utility interconnection (NEM)" : "Building/electrical permit",
+      // SAME LABEL RULE AS THE PER-CLIENT PORTAL. This page had its own copy of the hardcoded
+      // "Building/electrical permit", so a project with separate structural and electrical
+      // permits showed two identical rows here even after the portal was fixed — the operator
+      // hit it by clicking the link in a real update email. One function, both surfaces.
+      label: trackLabel(t.targetType, String((t as { permitType?: string }).permitType || "")),
       statusLabel: t.latestStatusLabel || "",
       outcome: t.latestOutcome || "",
       lastCheckedAt: t.lastCheckedAt || null,

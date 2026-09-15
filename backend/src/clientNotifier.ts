@@ -30,8 +30,9 @@ import crypto from "node:crypto";
 import type { AppDb } from "./db";
 import type { ProjectRecord } from "../../shared/src/types";
 import { addCommunication, undeliveredCommunications } from "./crm";
-import { clientUpdateFor, clientUpdateEmailBody, isClientFacingOutcome, recordClientUpdateNote } from "./clientUpdates";
+import { BRAND, clientUpdateFor, clientUpdateEmailBody, isClientFacingOutcome, recordClientUpdateNote } from "./clientUpdates";
 import { addAuditLog } from "./audit";
+import { text } from "./json";
 import { logger } from "./logger";
 
 export function shouldNotifyClient(outcome: string, previousOutcome: string | null | undefined): boolean {
@@ -240,7 +241,13 @@ export async function notifyClientOfStatusChange(
     const address = formatProjectAddress(project);
 
     // ONE VOICE, TWO CHANNELS: the same `update` the note above was rendered from.
-    const subject = `${update.subject} — ${address || project.homeownerName || project.id}`;
+    // BRAND — EVENT — HOMEOWNER — ADDRESS. A client filing for several homeowners on one street
+    // cannot tell two jobs apart from the address alone, and the inbox shows the subject before
+    // anything else. Each segment is dropped when it is blank rather than leaving a dangling dash.
+    const subject = [BRAND, update.subject, text(project.homeownerName), address || project.id]
+      .map((part) => String(part || "").trim())
+      .filter(Boolean)
+      .join(" — ");
     const body = clientUpdateEmailBody(update, {
       company: String(client?.company_name || ""),
       address,

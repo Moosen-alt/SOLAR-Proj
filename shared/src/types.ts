@@ -476,6 +476,8 @@ export interface PermitCheckTarget {
   latestStatusLabel: string;
   notes: string;
   targetType: "permit" | "nem";
+  /** 'building' | 'electrical' | 'combo' | 'nem' — which permit this track is. */
+  permitType?: string;
   /** Auto-detected from portalUrl — drives the public HTTP status-check strategy. */
   portalPlatform?: string;
   /** Public AHJ portal record URL — no login required. Paste into browser to check status. */
