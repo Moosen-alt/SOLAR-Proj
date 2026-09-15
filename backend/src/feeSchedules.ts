@@ -1777,22 +1777,37 @@ function findRawScheduleForProject(
   return best ? best.row : null;
 }
 
-/** WHAT THE EVALUATOR WAS TOLD ABOUT THE PERMIT PATH. Three states, and the third
- *  one is the whole point of this type existing.
+/** WHAT THE EVALUATOR WAS TOLD ABOUT THE PERMIT PATH. Four values, TWO behaviours,
+ *  and the split is not where it used to be.
  *
- *    "prescriptive" / "engineered" — resolved. The gate selects on it.
+ *    "prescriptive" / "engineered" — DECIDED. The gate SELECTS on it: the line
+ *                    scoped to this path is kept, the line scoped to the other is
+ *                    dropped, and a table that prices only the other path says so.
+ *
+ *  The other two are both UNDECIDED, and an undecided path buys a path-scoped line
+ *  NOTHING. They differ only in what a person has to do about it:
+ *
  *    "unknown"     — WE LOOKED AND COULD NOT DECIDE. A real parser snapshot went
- *                    through resolvePermitPath and it came back undecided. That
- *                    contradicts nothing (the same rule ahjForms.formContradictsPath
- *                    applies on the document side), so the row quotes exactly as it
- *                    did before the gate existed, and autopilot.ts raises its own
- *                    `permit_path` blocker so the undecided-ness is visible.
- *    "unresolved"  — WE NEVER LOOKED. No snapshot was in reach at this seam. That is
- *                    a DIFFERENT FACT and must not render as the same answer:
- *                    "we could not check" is not "nothing is wrong". A path-scoped
- *                    line picked without the path is a coin toss that would print as
- *                    a citation — measured at $200 off City of Coos Bay's row titled
- *                    "…Prescriptive Path System" for an ENGINEERED project.
+ *                    through resolvePermitPath and came back undecided (in practice:
+ *                    "No structural inputs were parsed"). It contradicts no row —
+ *                    pathWordingContradicts still says so, and ahjForms
+ *                    .formContradictsPath says the same on the document side — but
+ *                    NOT CONTRADICTING A ROW IS NOT QUALIFYING FOR IT. A line whose
+ *                    own label restricts it to one of two mutually exclusive paths
+ *                    cannot be charged until somebody knows which path this is.
+ *                    Repair: confirm the path (the operator's dropdown) or parse the
+ *                    structural inputs. autopilot.ts raises its own `permit_path`
+ *                    blocker over the same gap.
+ *    "unresolved"  — WE NEVER LOOKED. No snapshot was in reach at this seam. Same
+ *                    refusal, DIFFERENT REPAIR — a caller has to bring a project,
+ *                    where "unknown" needs an operator to make a decision — so it
+ *                    keeps its own sentence.
+ *
+ *  THE ONE LESSON THIS TYPE EXISTS TO HOLD: an unknown must never read as permission
+ *  and must never read as reassurance. For two rounds "unknown" read as permission —
+ *  it switched the gate OFF, so the state that knew LEAST quoted the most
+ *  confidently, at $200 off City of Coos Bay's row titled "…Prescriptive Path
+ *  System" for every job whose plan set carried no structural inputs.
  *
  *  Local to this module on purpose (see the seam header near lookupPublishedFee):
  *  "unresolved" is not a permit path, it is a statement about the CALLER, and
@@ -2075,56 +2090,89 @@ function bracketEvidence(schedule: FeeScheduleRecord, b: FeeBracket): string {
 //   · discipline !== "electrical" — the path decides which STRUCTURAL application
 //     you file. The electrical permit is the same permit on either path, and its
 //     fee must not move because a rafter failed a screen.
-//   · path known — an UNKNOWN path contradicts nothing, exactly as
-//     formContradictsPath says for the document side. We have not decided, so we
-//     cannot claim the row is wrong.
+//   · a DECIDED path — the gate SELECTS between two lines, and selecting takes a
+//     decision. With one in hand the contradicting line is dropped and the matching
+//     one is charged.
 //
-// AND THE CLAUSE THAT WAS MISSING, which is not a fourth clause but a different
-// question, asked by pathUncheckedGate below: "unknown" above means the resolver
-// RAN. A caller that never resolved a path at all is in a third state
-// ("unresolved"), and reading it as "unknown" is what let this exact bug back in
-// through lookupPublishedFee — a synthetic project with parserSnapshot: null,
-// a resolver with nothing to read, an "unknown" that turned the gate off, and the
-// prescriptive row quoted to an engineered job all over again. An unknown must
-// never render as a reassurance.
+// AND THE HALF THAT WAS INVERTED FOR TWO ROUNDS: WHAT HAPPENS WITH NO DECISION.
+//
+// The gate used to switch ITSELF OFF for "unknown", on the reasoning that an
+// undecided path contradicts no row. That reasoning is true and it is not the
+// question. NOT CONTRADICTING A ROW IS NOT QUALIFYING FOR IT: a line whose own
+// label restricts it to one of two mutually exclusive paths cannot be charged
+// until somebody knows which path this is. The effect was that the state where the
+// system knows LEAST quoted the most confidently: a Coos Bay project whose plan set
+// carried no structural inputs resolved "unknown" (resolvePermitPath step 5 —
+// "No structural inputs were parsed"), turned the gate off, and was handed $200 off
+// the row titled "…Prescriptive Path System" inside a sourced, citable $335 total,
+// with no screen and no operator decision behind the choice. Ann was refused that
+// row for being engineered while a project nobody had screened at all was charged
+// it.
+//
+// MEASURED HONESTLY: on the live database at the time of the fix, 0 of 13 Oregon
+// projects were in that state (9 engineered, 4 prescriptive), so nothing was being
+// mis-quoted THAT DAY. This is a fix to the mechanism, not to a row — the state is
+// reachable from any plan set that parses without structural inputs, and the
+// quote it produced was confident and citable.
+//
+// So an undecided path is GATE-ON (pathUndecidedGate below): every line that CLAIMS
+// a path refuses, every line that claims none still prices, and the total goes
+// unreadable rather than quietly wrong — the same partial the split already
+// produces for any other unreadable line. The two undecided values keep separate
+// SENTENCES because their repairs differ ("unknown" is an operator confirming a
+// path; "unresolved" is a caller bringing a project), but neither of them buys a
+// path-scoped line anything.
 // ---------------------------------------------------------------------------
-function pathGateApplies(schedule: FeeScheduleRecord, track: FeeTrack, path: FeePathInput | undefined): path is "prescriptive" | "engineered" {
+
+/** The two SCOPE clauses both gates share, in one place so they cannot drift: a NEM
+ *  line and an electrical line are not scoped by the building path at all, so NO
+ *  state of the path — decided, undecided or never asked — decides anything about
+ *  them. */
+function pathScopeApplies(schedule: FeeScheduleRecord, track: FeeTrack): boolean {
   if (track !== "permit") return false;
-  if (schedule.discipline === "electrical") return false;
+  return schedule.discipline !== "electrical";
+}
+
+/** Is there a DECISION here to select on? */
+function pathGateApplies(schedule: FeeScheduleRecord, track: FeeTrack, path: FeePathInput | undefined): path is "prescriptive" | "engineered" {
+  if (!pathScopeApplies(schedule, track)) return false;
   return path === "prescriptive" || path === "engineered";
 }
 
-/** DOES "WE NEVER LOOKED" HAVE TO STOP THIS ROW?
+/** IS THE PATH UNDECIDED WHERE IT MATTERS? — "unknown" (we looked and could not
+ *  tell), "unresolved" (we never looked), and anything a future edit adds.
  *
- *  The two scope clauses are the gate's own, and for the same reasons: a NEM line
- *  and an electrical line are not scoped by the building path at all, so an
- *  unchecked path cannot be wrong about them. What differs is the third clause —
- *  here the path is "unresolved", which is NOT "unknown".
- *
- *  Keeping these two predicates separate rather than widening pathGateApplies is
- *  deliberate: the gate SELECTS between paths and needs a known one, while this
- *  asks whether the question was ever put. Folding them together is how "we did
- *  not check" would start borrowing "we checked and it is fine". */
-function pathUncheckedGate(schedule: FeeScheduleRecord, track: FeeTrack, path: FeePathInput | undefined): boolean {
-  if (track !== "permit") return false;
-  if (schedule.discipline === "electrical") return false;
-  return path === "unresolved";
+ *  WRITTEN AS A NEGATIVE ON PURPOSE, and that is the safety property. Its
+ *  predecessor asked `path === "unresolved"`, which enumerates the states that
+ *  REFUSE — so every state it forgot (there was one: "unknown") fell through to
+ *  gate-off and quoted. This form enumerates the two states that may SELECT and
+ *  treats everything else as undecided, so a value added later lands on the careful
+ *  side without anyone remembering to come back here. Within scope the two
+ *  predicates are exact complements: either we select on a decision or we refuse
+ *  every line that needs one. There is no third outcome to fall into. */
+function pathUndecidedGate(schedule: FeeScheduleRecord, track: FeeTrack, path: FeePathInput | undefined): boolean {
+  if (!pathScopeApplies(schedule, track)) return false;
+  return path !== "prescriptive" && path !== "engineered";
 }
 
-/** The lines this project could be charged from, once the ones whose own wording
- *  scopes them to the OTHER path are removed. Returns the list unchanged whenever
- *  the gate does not apply, so a schedule that never mentions a path, an unknown
- *  path, a NEM row and an electrical row all evaluate exactly as before. */
+/** The lines this project could be charged from, once the ones its path cannot
+ *  reach are removed. Returns the list unchanged whenever the gate is out of scope,
+ *  so a NEM row and an electrical row evaluate exactly as they always did — and a
+ *  schedule whose lines claim no path is untouched in every case, because the
+ *  filters are over the line's CLAIM, never over the row. */
 function bracketsForPath(
   schedule: FeeScheduleRecord,
   track: FeeTrack,
   path: FeePathInput | undefined,
 ): FeeBracket[] {
-  // NEVER LOOKED: every line that CLAIMS a path is out of reach, because choosing
+  // NO DECISION: every line that CLAIMS a path is out of reach, because choosing
   // one of them would BE choosing a path — with nothing behind the choice. A line
   // that claims no path is untouched: it prices the job on either path and needs
   // no decision, which is why this filter is over the CLAIM and not over the row.
-  if (pathUncheckedGate(schedule, track, path)) return schedule.brackets.filter((b) => !pathWordingScope(b.label));
+  // That is what keeps the answer a PARTIAL rather than a blank — Coos County's
+  // electrical row is not path-scoped and still prices at $135 while the city's
+  // prescriptive-only line refuses beside it.
+  if (pathUndecidedGate(schedule, track, path)) return schedule.brackets.filter((b) => !pathWordingScope(b.label));
   if (!pathGateApplies(schedule, track, path)) return schedule.brackets;
   return schedule.brackets.filter((b) => !pathWordingContradicts(pathWordingScope(b.label), path));
 }
@@ -2174,35 +2222,65 @@ function pathMissReason(schedule: FeeScheduleRecord, path: "prescriptive" | "eng
     + `${relevant ? ` The row's own note: ${relevant}` : ""}`;
 }
 
-/** The sentence for the OTHER refusal — the one where nobody ever asked which path
- *  this project is on.
+/** The sentence when THE PROJECT has no decided path — the resolver ran against a
+ *  real plan set and could not tell prescriptive from engineered.
  *
- *  IT MUST NOT READ LIKE pathMissReason. That one says "this jurisdiction prices the
- *  other path and not yours", which is a fact about the TABLE and sends a person to
- *  the published schedule. This one says "we do not know which path you are on", a
- *  fact about the CALL, whose repair is to pass the path. Printing the first
- *  sentence for the second situation would send somebody hunting a fee that is
- *  sitting right there.
+ *  THREE REFUSALS, THREE REPAIRS, WHICH IS WHY THERE ARE THREE SENTENCES:
+ *    "NO … FEE HELD"           — the TABLE prices the other path. Read this
+ *                                jurisdiction's published schedule for your figure.
+ *    "PERMIT PATH UNDECIDED"   — the PROJECT has not been screened. Confirm the
+ *                                path, or parse the structural inputs, and the fee
+ *                                that is already stored prices itself. (Here.)
+ *    "PERMIT PATH NOT CHECKED" — the CALL never held a project to ask. Quote through
+ *                                feeForProject.
+ *  Printing any of them for either of the others sends somebody to the wrong repair:
+ *  the first would send an operator hunting a fee that is sitting right there, and
+ *  the third would hand an operator a developer's job.
  *
- *  ACTIONABLE CLAUSE FIRST, like its sibling: submissionFees.normalizeScheduleResult
- *  slices `reason` to 400 characters on its way to the quote's basis line. */
-function pathUncheckedReason(schedule: FeeScheduleRecord, blocked: FeeBracket[]): string {
+ *  ACTIONABLE CLAUSE FIRST, like its siblings: submissionFees.normalizeScheduleResult
+ *  slices `reason` to 400 characters on its way to the quote's basis line, so the
+ *  repair leads and the stored labels trail. And NO FEE_CONFLICT_MARKER — nothing
+ *  disagrees with anything here; a decision has simply not been made yet. */
+function pathUndecidedReason(schedule: FeeScheduleRecord, blocked: FeeBracket[]): string {
   const who = schedule.ahj || "this jurisdiction";
   const labels = blocked.map((b) => clean(b.label)).filter(Boolean).slice(0, 2);
-  return `PERMIT PATH NOT CHECKED: this lookup was given no permit path and holds no plan-set snapshot to resolve `
-    + `one from, and every fee line stored for ${who} is scoped to the prescriptive or the engineered path. `
-    + `Nothing is quoted — a path-scoped line chosen without the path is a coin toss that would print as a `
-    + `citation. Pass the project's resolved permitPath (permitPath.resolvePermitPath) to price this.`
+  return `PERMIT PATH UNDECIDED: confirm this project's permit path (prescriptive vs engineered) — resolvePermitPath `
+    + `ran and could not decide, typically because no structural inputs were parsed. Every fee line stored for `
+    + `${who} is scoped to one of those two mutually exclusive paths, so nothing is quoted: a line picked before `
+    + `the path is decided is a coin toss that would print as a citation.`
     + `${labels.length ? ` The stored line${labels.length > 1 ? "s" : ""}: "${labels.join('", "')}".` : ""}`;
 }
 
-/** Which refusal this is. The three miss sites below route through here so the
- *  `as "prescriptive" | "engineered"` narrowing can only ever happen where it is
- *  true — an "unresolved" path reaching that cast would print "NO UNRESOLVED FEE
- *  HELD", which is both nonsense and a claim about the jurisdiction we cannot make. */
+/** The sentence when THE CALL never held a project — no plan set was ever in reach,
+ *  so the question of the path was not merely undecided, it was never put.
+ *
+ *  See pathUndecidedReason's header for why this is a third sentence and not a
+ *  reuse of either other one. */
+function pathUncheckedReason(schedule: FeeScheduleRecord, blocked: FeeBracket[]): string {
+  const who = schedule.ahj || "this jurisdiction";
+  const labels = blocked.map((b) => clean(b.label)).filter(Boolean).slice(0, 2);
+  return `PERMIT PATH NOT CHECKED: this lookup was handed jurisdiction names and a system size, not a project, so `
+    + `there is no plan set to resolve a permit path from — and every fee line stored for ${who} is scoped to the `
+    + `prescriptive or the engineered path. Nothing is quoted; a path-scoped line chosen without the path is a coin `
+    + `toss that would print as a citation. Quote through feeForProject(db, project, track), which resolves the path `
+    + `from the project itself.`
+    + `${labels.length ? ` The stored line${labels.length > 1 ? "s" : ""}: "${labels.join('", "')}".` : ""}`;
+}
+
+/** Which refusal this is. The three miss sites below route through here, so the
+ *  narrowing to a decided path can only happen where it is actually true — an
+ *  undecided path reaching pathMissReason would print "NO UNKNOWN FEE HELD", which
+ *  is both nonsense and a claim about the jurisdiction we cannot make.
+ *
+ *  Note the shape: the DECIDED values are enumerated and everything else falls to a
+ *  refusal about the call rather than about the table. That is the same asymmetry
+ *  pathUndecidedGate is built on — a value nobody remembered to handle lands on the
+ *  careful side — and it is what let the old `as "prescriptive" | "engineered"`
+ *  cast go away. */
 function pathRefusalReason(schedule: FeeScheduleRecord, path: FeePathInput | undefined, blocked: FeeBracket[]): string {
-  if (path === "unresolved") return pathUncheckedReason(schedule, blocked);
-  return pathMissReason(schedule, path as "prescriptive" | "engineered", blocked);
+  if (path === "prescriptive" || path === "engineered") return pathMissReason(schedule, path, blocked);
+  if (path === "unknown") return pathUndecidedReason(schedule, blocked);
+  return pathUncheckedReason(schedule, blocked);
 }
 
 /** THE ONE EVALUATOR. Both public entry points below route through this, so the
@@ -2309,7 +2387,8 @@ function evaluateSchedule(
   if (!candidates.length) {
     // Reached only when one of the two path gates applied (otherwise
     // candidates === brackets, and the empty case was already refused above), so
-    // this is either "your path is not priced here" or "nobody said which path".
+    // this is one of three facts: your path is not priced here, nobody has decided
+    // your path yet, or nobody ever put the question. pathRefusalReason picks.
     return miss(pathRefusalReason(schedule, inputs.permitPath, schedule.brackets));
   }
 
@@ -2474,13 +2553,25 @@ function resolutionFrom(lines: FeeScheduleLine[], track: FeeTrack): Omit<Project
 }
 
 // ---------------------------------------------------------------------------
-// Seam: the quote ladder's "published_schedule" tier
+// Seam: the quote ladder's "published_schedule" tier — THE FALLBACK NAME, NOT THE
+// EXPORT PRODUCTION LOADS. READ THIS BEFORE FIXING ANYTHING HERE.
 //
-// submissionFees.ts loads this module by name and looks for exactly this export
-// (`mod?.lookupPublishedFee`). A MISSING export there is SILENT — its loader
-// warns only on a require error, so a rename here would make the whole tier
-// quietly vanish and every quote fall back to guessing 1.5% of valuation. Keep
-// the name.
+// submissionFees.ts loads this module by name and takes the FIRST export it finds
+// from `LOOKUP_EXPORTS = ["feeForProject", "lookupPublishedFee"]`, most-current
+// first. feeForProject is always exported, so IT is what every production quote
+// runs through, and this function has NO PRODUCTION CALLER AT ALL.
+//
+// This header used to say the loader "looks for exactly this export
+// (`mod?.lookupPublishedFee`)", which is false and was expensive: a whole round's
+// work landed on this dead seam believing it was the live one, while the same
+// defect stayed live on feeForProject. A fix to the path gate belongs in
+// evaluateSchedule / bracketsForPath, which both entry points share; anything done
+// only here is done to a compatibility shim.
+//
+// The name is still load-bearing in one direction: a MISSING export is SILENT (the
+// loader warns only on a require error), so if feeForProject were ever renamed and
+// this one had been deleted, the whole tier would quietly vanish and every quote
+// would fall back to guessing 1.5% of valuation. Keep BOTH names.
 //
 // Deliberately typed against LOCAL structural interfaces rather than the shared
 // PublishedFeeLookupInput/Result: the consumer owns those, they are still in
@@ -2502,21 +2593,21 @@ export interface PublishedFeeLookupArgs {
   /** Pre-resolved job valuation — this seam gets no parser snapshot, so a
    *  valuation-keyed schedule is unresolvable without it (and says so). */
   valuationUsd?: number | null;
-  /** THE PERMIT PATH, WHICH THIS SEAM CANNOT WORK OUT FOR ITSELF.
-   *
-   *  It builds a project with `parserSnapshot: null` — resolvePermitPath has
-   *  nothing to read — so OMITTING THIS IS NOT A DEFAULT, IT IS AN ADMISSION, and
-   *  it is handled as one: every path-scoped fee line refuses and says why
-   *  (pathUncheckedReason). Measured before that: this lookup handed an ENGINEERED
-   *  Coos Bay project $200 off the row titled "Solar Permit (when required) –
-   *  Prescriptive Path System", a row whose own stored notes say engineered
-   *  installs are charged by valuation and that it does not cover them.
-   *
-   *  "unknown" IS LEGAL AND IS NOT THE SAME THING. It means resolvePermitPath
-   *  actually RAN against a real snapshot and could not decide — which contradicts
-   *  no row, and quotes. Pass it only after resolving; passing it to quiet a
-   *  refusal is a claim that a check happened when it did not. */
-  permitPath?: PermitPath;
+  // THERE IS DELIBERATELY NO `permitPath` HERE, AND ITS ABSENCE IS THE POINT.
+  //
+  // One existed for exactly one round and NOTHING IN PRODUCTION EVER SET IT — this
+  // seam has no production caller at all (see the header above), so the field could
+  // only ever be set by the tests written to exercise it. A field only tests set is
+  // a field only tests are protected by, and it read as though the path question
+  // had been dealt with here while the live gate — feeForProject's — still let an
+  // undecided path quote a prescriptive-only line.
+  //
+  // A caller that holds a project already has the answer and should call
+  // feeForProject(db, project, track), which resolves the path from the project's
+  // own plan set through the same resolver the document gate uses. A caller that
+  // holds only jurisdiction names and a size is, correctly, told that the path was
+  // never checked (pathUncheckedReason) rather than being handed a switch that
+  // silences the refusal without doing the check.
 }
 
 export interface PublishedFeeLookupResult {
@@ -2562,10 +2653,15 @@ export function lookupPublishedFee(db: AppDb, input: PublishedFeeLookupArgs): Pu
       kw: kwRaw != null && kwRaw > 0 ? kwRaw : null,
       kwSource: input.bracketKw != null ? "bracket" : "AC/DC",
       valuationUsd: num(input.valuationUsd),
-      // NEVER `?? "unknown"`. See PublishedFeeLookupArgs.permitPath: this seam has
-      // no snapshot, so with nothing passed the honest value is "we never looked".
-      // (Kill-tested: `?? "unknown"` compiles cleanly and puts $360 / $200 back.)
-      permitPath: input.permitPath ?? "unresolved",
+      // "UNRESOLVED", ALWAYS, WITH NO ARGUMENT THAT CAN OVERRIDE IT. The project
+      // built below carries `parserSnapshot: null`: this seam is handed jurisdiction
+      // names and a size, never a plan set, so nothing here has ever looked at a
+      // permit path and saying otherwise would be a claim that a check happened.
+      // NOT `pathForProject(project, track)` either — that resolver would read the
+      // empty snapshot, return "unknown", and quietly restate "we never looked" as
+      // "we looked and could not tell", which are different facts with different
+      // repairs. See PublishedFeeLookupArgs for why there is no field to pass.
+      permitPath: "unresolved",
     };
     const project = {
       state: input.state, ahj: input.ahj, utility: input.utility,

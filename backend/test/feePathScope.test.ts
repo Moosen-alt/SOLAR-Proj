@@ -31,6 +31,9 @@
 //                  never to the prescriptive number;
 //                  where a table holds BOTH paths, the engineered project is handed
 //                  the ENGINEERED line — this is SELECTION, not a veto;
+//                  an UNDECIDED path refuses every path-SCOPED line and still prices
+//                  every line that claims no path — a visible PARTIAL, never a
+//                  confident total (section 5, and see its own header);
 //                  "Non-Prescriptive" classifies ENGINEERED (the ordering that is the
 //                  whole correctness of the classifier), tested in both directions.
 //   MUST EXCLUDE — Ivy (3.072 kW AC, prescriptive) still totals exactly $335.00 off
@@ -38,7 +41,8 @@
 //                  NOTES ARE NEVER CLASSIFIED — the live row's notes are full of
 //                  engineered words and it is a PRESCRIPTIVE row; a classifier over
 //                  that blob inverts this gate and hands Ann the $200 again;
-//                  an UNKNOWN path contradicts nothing and quotes as it did before;
+//                  an undecided path does NOT take the un-scoped lines down with it
+//                  (over-exclusion is the mirror-image bug and just as silent);
 //                  the ELECTRICAL permit never moves (the path decides which
 //                  STRUCTURAL application you file — the electrical permit is the
 //                  same permit on either path);
@@ -52,46 +56,61 @@
 // MUST-EXCLUDE check stays green, because those are the behaviours the fix must not
 // touch. That difference IS the finding.
 //
-// ---------------------------------------------------------------------------
-// SECTIONS 10–12 (added after the round-4 fix): THE SAME GATE, AT THE SEAM THAT
-// COULD WALK AROUND IT.
+// THE NARROWER KILL TEST, for the UNDECIDED half (section 5): in pathUndecidedGate
+// put back `return path === "unresolved";`. Section 5 goes red with the exact
+// pre-fix numbers — feeUsd 360, structural $200 — and NOTHING ELSE MOVES: Ivy's
+// $335, Ann's refusal, 5b's un-scoped $160 and the seam checks all stay green. Run
+// it that way round before believing this file covers the undecided path; the wider
+// kill test above cannot tell the two halves apart.
 //
-// The gate above holds on feeForProject. It did NOT hold on feeSchedules'
-// lookupPublishedFee, which builds a synthetic project carrying
-// `parserSnapshot: null` and built its evaluation inputs with no permitPath at all.
-// pathForProject then resolved that empty snapshot to "unknown", "unknown"
-// contradicts nothing, the gate switched itself off, and the seam handed an
-// ENGINEERED Coos Bay job $200 off the row titled "…Prescriptive Path System" —
-// measured on a copy of the live database, not theorised:
+// ---------------------------------------------------------------------------
+// SECTIONS 10–12: THE SAME GATE, AT THE SEAM THAT HOLDS NO PROJECT.
+//
+// feeSchedules' lookupPublishedFee builds a synthetic project carrying
+// `parserSnapshot: null` — it is handed jurisdiction names and a system size, never
+// a plan set — so the permit path there was never merely undecided, it was never
+// asked. It used to resolve that empty snapshot to "unknown", "unknown" switched the
+// gate off, and the seam handed an ENGINEERED Coos Bay job $200 off the row titled
+// "…Prescriptive Path System" — measured on a copy of the live database:
 //
 //   lookupPublishedFee({track:"permit",  state:"OR", ahj:"City of Coos Bay", bracketKw:7.68})
 //     → feeUsd 360   ($160 county electrical + $200 city PRESCRIPTIVE structural)
 //   lookupPublishedFee({track:"building",state:"OR", ahj:"City of Coos Bay", bracketKw:7.68})
 //     → feeUsd 200   label "Solar Permit (when required) – Prescriptive Path System…"
 //
-// It had ZERO production callers, which is what made it worth fixing rather than
-// shrugging at: nothing was wrong TODAY, and the next person to wire the tier would
-// have reinstated the bug with a correct-looking one-line change.
+// AND IT HAS ZERO PRODUCTION CALLERS — submissionFees' loader takes the FIRST name
+// in `LOOKUP_EXPORTS = ["feeForProject", "lookupPublishedFee"]`, and feeForProject
+// is always exported. That fact is why the round that fixed only this seam left the
+// live defect standing on feeForProject, and why these sections deliberately do NOT
+// carry the gate's real coverage: the decided-path behaviour is proved on
+// feeForProject (sections 2, 3, 6) and the undecided-path behaviour in section 5,
+// because those are the calls production makes. What is left here is the seam's own
+// question — what a lookup that holds no project may say.
 //
-//   MUST PASS    — the seam given NO path REFUSES every path-scoped line, and says
-//                  "PERMIT PATH NOT CHECKED" rather than the jurisdiction-blaming
-//                  "NO … FEE HELD" (different fact, different repair);
-//                  the seam given "engineered" refuses with the engineered reason;
+// The `permitPath` ARGUMENT this seam briefly accepted is gone. Nothing in
+// production ever set it, so it was a switch only tests could throw, and a switch
+// that silences a refusal without performing the check is worse than no switch.
+//
+//   MUST PASS    — the seam REFUSES every path-scoped line, and says "PERMIT PATH
+//                  NOT CHECKED" rather than the jurisdiction-blaming "NO … FEE HELD"
+//                  (different fact, different repair) or the project-blaming
+//                  "PERMIT PATH UNDECIDED" (nobody here ever looked at a project);
+//                  it names the repair a CALLER can perform — quote through
+//                  feeForProject;
 //                  archived state reaches ProjectRecord and is SAID on the quote.
-//   MUST EXCLUDE — the seam given "prescriptive" still pays Ivy his $200 / $335 —
-//                  the refusal is about the MISSING INPUT, not about the row;
-//                  the seam given "unknown" (the resolver RAN and could not decide)
-//                  quotes $360 exactly as feeForProject does for that project — the
-//                  escape hatch exists, is explicit, and matches the live path;
-//                  ELECTRICAL and NEM are untouched with or without a path;
-//                  a row whose lines claim NO path still quotes with no path given;
+//   MUST EXCLUDE — the refusal is about the MISSING PROJECT, not about the row: Ivy
+//                  still gets his $200 / $335 through feeForProject, which is the
+//                  call that has his plan set;
+//                  ELECTRICAL and NEM are untouched;
+//                  a row whose lines claim NO path still quotes with no project;
 //                  an archived project's AMOUNT is unchanged — it is labelled, not
 //                  suppressed, and the stored fee_basis column stays clean.
 //
 // THE KILL TEST for sections 10–11: in feeSchedules.lookupPublishedFee change
-// `permitPath: input.permitPath ?? "unresolved"` to `?? "unknown"` (or delete the
-// line — it no longer compiles, which is the point). 10a/10b/10c go red with the
-// exact numbers above. For section 12: drop `archivedAt` from repository.mapProject.
+// `permitPath: "unresolved"` to `pathForProject(project, track)` (which returns
+// "unknown" for its empty snapshot). 10b goes red — the refusal starts blaming a
+// project this call never held. For section 12: drop `archivedAt` from
+// repository.mapProject.
 //
 //   npx tsx backend/test/feePathScope.test.ts
 import fs from "node:fs";
@@ -327,13 +346,97 @@ async function main(): Promise<void> {
     `${ivyQuote.permitFeeUsd} / ${ivyQuote.permitFeeSource}`);
 
   // -------------------------------------------------------------------------
-  // 5. MUST EXCLUDE — AN UNKNOWN PATH CONTRADICTS NOTHING. We have not decided,
-  //    so we cannot claim the row is wrong. (lookupPublishedFee's seam has no
-  //    parser snapshot at all and lands here, which is why this matters.)
+  // 5. MUST PASS — AN UNDECIDED PATH BUYS A PATH-SCOPED LINE NOTHING.
+  //
+  //    THIS SECTION ASSERTED THE OPPOSITE AND WAS CHANGED, because the old
+  //    assertion encoded the bug. It read "an unconfirmed path quotes exactly as it
+  //    did before the gate existed ($360.00)", on the reasoning that an unknown path
+  //    contradicts no row. That reasoning is true (check 1 still pins
+  //    pathWordingContradicts saying exactly that) and it is not the question. NOT
+  //    CONTRADICTING A ROW IS NOT QUALIFYING FOR IT.
+  //
+  //    The consequence was that the gate was OFF precisely when the system knew
+  //    least: a Coos Bay job whose plan set carried no structural inputs — no screen
+  //    run, no operator decision, nothing behind it — was handed $200 off the row
+  //    titled "…Prescriptive Path System" inside a sourced, citable $335 total. Ann
+  //    was refused that row for being engineered while a project nobody had screened
+  //    at all was charged it. That is the same shape as the empty-Set staleness bug:
+  //    one value meaning both "fine" and "we could not check".
+  //
+  //    MEASURED HONESTLY: 0 of the 13 Oregon projects on the live database were in
+  //    that state when this was fixed (9 engineered, 4 prescriptive), so no live row
+  //    was being mis-quoted that day. UNKNOWN is a state resolvePermitPath reaches
+  //    deliberately — step 5, "No structural inputs were parsed" — for any plan set
+  //    that parses without them, which is why this is fixed in the mechanism and
+  //    proved on a project built to be in it rather than on a row that happened to be.
+  //
+  //    THE HONEST ANSWER IS A PARTIAL, and it is the shape the split already had for
+  //    any other unreadable line (feeDiscipline's "one unreadable line makes the
+  //    TOTAL unreadable, not smaller"): what is NOT path-scoped still prices, what IS
+  //    comes back unresolved carrying its reason, and the total is null because it is
+  //    incomplete. Not a confident $360, and not nothing.
   // -------------------------------------------------------------------------
   const unknown = feeForProject(db, UNKNOWN, "permit")!;
-  check("5. an unconfirmed path quotes exactly as it did before the gate existed ($360.00)",
-    unknown.feeUsd === 360, `${unknown.feeUsd} (${unknown.lines.map((l) => `${l.discipline}=${l.feeUsd}`).join(",")})`);
+  const unknownByDiscipline = Object.fromEntries(unknown.lines.map((l) => [l.discipline, l]));
+  check("5a. an undecided path is no longer quoted the $360 total",
+    unknown.feeUsd === null, `${unknown.feeUsd} (${unknown.lines.map((l) => `${l.discipline}=${l.feeUsd}`).join(",")})`);
+  check("  and it is explicitly neither the old $360 nor the bare $200 prescriptive row",
+    unknown.feeUsd !== 360 && unknown.feeUsd !== 200, String(unknown.feeUsd));
+
+  // THE MIRROR-IMAGE BUG, GUARDED. Over-excluding reads to an operator as a broken
+  // gate: the county's electrical row claims NO path, prices the job on either one,
+  // and needs no decision. Taking it down over a missing decision it never needed
+  // would turn one silent under-quote into a different silent blank.
+  check("5b. MUST EXCLUDE: the county ELECTRICAL line claims no path and still prices at $160",
+    unknownByDiscipline.electrical?.feeUsd === 160 && !unknownByDiscipline.electrical?.reason,
+    `${unknownByDiscipline.electrical?.feeUsd} / ${unknownByDiscipline.electrical?.reason}`);
+  check("  so the PARTIAL is visible: the known half is itemised beside the unresolved half",
+    /Coos County electrical: \$160\.00/.test(unknown.bracketLabel) && /structural: unresolved/.test(unknown.bracketLabel),
+    unknown.bracketLabel);
+
+  const unknownStructural = unknownByDiscipline.structural;
+  check("5c. the path-SCOPED structural line refuses — it is not priced and not dropped",
+    unknownStructural != null && unknownStructural.feeUsd === null, String(unknownStructural?.feeUsd));
+  check("  and leads with PERMIT PATH UNDECIDED",
+    /^PERMIT PATH UNDECIDED/.test(unknownStructural?.reason ?? ""), (unknownStructural?.reason ?? "").slice(0, 140));
+  // THREE REFUSALS, THREE REPAIRS. Borrowing either sibling's sentence here sends a
+  // person to the wrong place: "NO … FEE HELD" blames a table that is perfectly fine
+  // and sends them hunting a fee that is sitting right there, and "PERMIT PATH NOT
+  // CHECKED" is a developer's repair (pass a project) handed to an operator whose
+  // actual repair is to confirm the path.
+  check("  NOT the jurisdiction-blaming sentence — this city's table is fine, the project is not screened",
+    !/FEE HELD/.test(unknownStructural?.reason ?? ""), (unknownStructural?.reason ?? "").slice(0, 140));
+  check("  NOT the never-asked sentence either — resolvePermitPath DID run, against a real snapshot",
+    !/NOT CHECKED/.test(unknownStructural?.reason ?? ""), (unknownStructural?.reason ?? "").slice(0, 140));
+  check("  and it names the repair an OPERATOR can actually perform: confirm the path",
+    /confirm this project's permit path/i.test(unknownStructural?.reason ?? ""), (unknownStructural?.reason ?? "").slice(0, 200));
+  check("  it is not dressed as a two-document conflict (nothing disagrees; a decision is missing)",
+    !/UNRESOLVED FEE CONFLICT/.test(unknownStructural?.reason ?? ""), (unknownStructural?.reason ?? "").slice(0, 80));
+  // ACTIONABLE CLAUSE FIRST IS A LOAD-BEARING RULE, NOT A STYLE NOTE:
+  // submissionFees.normalizeScheduleResult slices `reason` to 400 characters on its
+  // way to the quote's basis line, and resolutionFrom joins several lines' reasons
+  // before that. So the test is not "the string is short" — it is that the headline
+  // and the repair SURVIVE THE SLICE, with only the trailing quote of the stored
+  // line lost, exactly as its two siblings behave.
+  const keptByTheQuote = (unknownStructural?.reason ?? "").slice(0, 400);
+  check("  the headline and the repair survive the 400 characters submissionFees keeps of it",
+    /^PERMIT PATH UNDECIDED/.test(keptByTheQuote) && /confirm this project's permit path/i.test(keptByTheQuote),
+    `${(unknownStructural?.reason ?? "").length} chars: ${keptByTheQuote.slice(-60)}`);
+  check("  and the whole reason is still bounded — a research paragraph must not bury it",
+    (unknownStructural?.reason ?? "").length < 900, String((unknownStructural?.reason ?? "").length));
+
+  // THE PRODUCTION SEAM FOR THE UNDECIDED CASE. buildPaymentQuote is where the
+  // customer's number comes from, and a refusal that never reached it would be
+  // invisible: the quote must fall to the LABELLED estimate carrying the reason,
+  // never to the prescriptive number wearing a citation.
+  const unknownQuote = buildPaymentQuote(db, UNKNOWN, "permit");
+  check("5d. the undecided project's QUOTE is not sourced to the published schedule",
+    unknownQuote.permitFeeSource !== "published_schedule", unknownQuote.permitFeeSource);
+  check("  it is neither $360 nor $200",
+    unknownQuote.permitFeeUsd !== 360 && unknownQuote.permitFeeUsd !== 200, String(unknownQuote.permitFeeUsd));
+  check("  and the refusal travels with it, so the operator sees what to decide",
+    /PERMIT PATH UNDECIDED/.test(unknownQuote.permitFeeBasis) && /Rough estimate/i.test(unknownQuote.permitFeeBasis),
+    unknownQuote.permitFeeBasis.slice(0, 200));
 
   // -------------------------------------------------------------------------
   // 6. MUST PASS — SELECTION, NOT A VETO. A jurisdiction that publishes BOTH
@@ -424,10 +527,11 @@ async function main(): Promise<void> {
     annFields["feeBracketQuantity:5.01-15"] === "1", JSON.stringify(annFields));
 
   // -------------------------------------------------------------------------
-  // 10. MUST PASS — THE GATE CANNOT BE WALKED AROUND BY BUILDING AN INPUT WITH
-  //     NO PATH. lookupPublishedFee is the seam submissionFees loads by name; it
-  //     has no parser snapshot, so with nothing passed it now says "we never
-  //     looked" instead of borrowing "we looked and are undecided".
+  // 10. MUST PASS — A LOOKUP THAT HOLDS NO PROJECT SAYS SO. lookupPublishedFee has
+  //     no parser snapshot and no argument that could carry a path, so it says "we
+  //     never looked" — never borrowing "we looked and are undecided" (section 5's
+  //     fact, about a project) and never "this jurisdiction holds no fee for you"
+  //     (section 3's fact, about a table).
   //
   //     Ann's OWN numbers go through it — state, AHJ, AC kW — because that is the
   //     call a future wirer writes, and it is the call that returned $360.
@@ -449,10 +553,12 @@ async function main(): Promise<void> {
   // first sentence for the second situation sends somebody hunting a fee that is
   // sitting right there, so the wording is pinned, not just the null.
   check("10b. it says the PATH was never checked — not that the jurisdiction holds no fee",
-    /PERMIT PATH NOT CHECKED/.test(seamNoPath.basis) && !/NO ENGINEERED FEE HELD/.test(seamNoPath.basis),
+    /PERMIT PATH NOT CHECKED/.test(seamNoPath.basis) && !/FEE HELD/.test(seamNoPath.basis),
     seamNoPath.basis.slice(0, 200));
-  check("  and it names the repair: pass the resolved permitPath",
-    /permitPath/.test(seamNoPath.basis), seamNoPath.basis.slice(0, 300));
+  check("  nor that the PROJECT is undecided — there is no project here to be undecided about",
+    !/PERMIT PATH UNDECIDED/.test(seamNoPath.basis), seamNoPath.basis.slice(0, 200));
+  check("  and it names the repair a caller can perform: quote through feeForProject",
+    /feeForProject/.test(seamNoPath.basis), seamNoPath.basis.slice(0, 300));
 
   // The single-line shape: a "building" stage names the structural permit, and
   // this is the call that returned a bare $200 off the prescriptive row.
@@ -461,45 +567,52 @@ async function main(): Promise<void> {
     seamBuilding.feeUsd === null && seamBuilding.bracketLabel !== CITY_STRUCTURAL_LABEL,
     `${seamBuilding.feeUsd} / ${seamBuilding.bracketLabel}`);
 
-  // Handed the path, the seam agrees with feeForProject — which is the whole
-  // point of there being one gate rather than two.
-  const seamEngineered = lookupPublishedFee(db, seamArgs({ permitPath: "engineered" }))!;
-  check("10d. the seam given ENGINEERED refuses with the jurisdiction reason, and never $200",
-    seamEngineered.feeUsd === null && /NO ENGINEERED FEE HELD/.test(seamEngineered.basis),
-    `${seamEngineered.feeUsd} / ${seamEngineered.basis.slice(0, 120)}`);
+  // THE DECIDED-PATH BEHAVIOUR IS PROVED ON feeForProject, NOT HERE, AND THAT IS THE
+  // POINT OF THIS BLOCK. It used to be proved by handing this seam a `permitPath`
+  // argument — an input NOTHING IN PRODUCTION EVER SET, so the checks that looked
+  // like coverage of the gate were coverage of a switch only they could throw. The
+  // argument is gone; the same questions are asked of the call production actually
+  // makes, which is the one that has a plan set to resolve a path from.
+  const annBuilding = feeForProject(db, ANN, "building")!;
+  check("10d. ENGINEERED, through the caller production uses: refused, with the jurisdiction reason",
+    annBuilding.feeUsd === null && /NO ENGINEERED FEE HELD/.test(annBuilding.reason),
+    `${annBuilding.feeUsd} / ${annBuilding.reason.slice(0, 120)}`);
+  check("  and never the $200 prescriptive row",
+    annBuilding.feeUsd !== 200 && annBuilding.bracketLabel !== CITY_STRUCTURAL_LABEL,
+    `${annBuilding.feeUsd} / ${annBuilding.bracketLabel}`);
 
   // -------------------------------------------------------------------------
-  // 11. MUST EXCLUDE — THE REFUSAL IS ABOUT THE MISSING INPUT, NOT ABOUT THE ROW.
+  // 11. MUST EXCLUDE — THE REFUSAL IS ABOUT THE MISSING PROJECT, NOT ABOUT THE ROW.
   //     Over-exclusion here would be the opposite failure and just as silent:
   //     every Coos Bay job stops quoting and the prescriptive ones were right.
   // -------------------------------------------------------------------------
-  const seamPrescriptive = lookupPublishedFee(db, seamArgs({
-    permitPath: "prescriptive", bracketKw: IVY.systemSizeAcKw,
+  const ivyBuilding = feeForProject(db, IVY, "building")!;
+  check("11a. Ivy, PRESCRIPTIVE, is still quoted his legitimate $200 structural line, label intact",
+    ivyBuilding.feeUsd === 200 && ivyBuilding.bracketLabel === CITY_STRUCTURAL_LABEL,
+    `${ivyBuilding.feeUsd} / ${ivyBuilding.bracketLabel}`);
+  check("  and his permit total is still exactly $335.00 — the same two rows, one of them path-scoped to HIM",
+    feeForProject(db, IVY, "permit")?.feeUsd === 335, String(feeForProject(db, IVY, "permit")?.feeUsd));
+
+  // THE SEAM'S REFUSAL IS UNIFORM BECAUSE ITS IGNORANCE IS UNIFORM: it never holds a
+  // project, so it cannot tell Ivy from Ann and must not pretend to. Feeding it
+  // Ivy's numbers is the check that it refuses him the same way — a seam that
+  // quoted him would be quoting whoever asked with a small enough kW.
+  const seamIvyNumbers = lookupPublishedFee(db, seamArgs({
+    track: "building", bracketKw: IVY.systemSizeAcKw,
     systemSizeAcKw: IVY.systemSizeAcKw, systemSizeDcKw: IVY.systemSizeDcKw,
   }))!;
-  check("11a. Ivy through the seam, PRESCRIPTIVE, is still quoted his legitimate $335.00",
-    seamPrescriptive.feeUsd === 335, `${seamPrescriptive.feeUsd} / ${seamPrescriptive.basis.slice(0, 120)}`);
-  const seamPrescriptiveBld = lookupPublishedFee(db, seamArgs({ track: "building", permitPath: "prescriptive" }))!;
-  check("  and his STRUCTURAL line alone is still the $200 prescriptive row, label intact",
-    seamPrescriptiveBld.feeUsd === 200 && seamPrescriptiveBld.bracketLabel === CITY_STRUCTURAL_LABEL,
-    `${seamPrescriptiveBld.feeUsd} / ${seamPrescriptiveBld.bracketLabel}`);
+  check("11b. the same seam call with IVY's numbers also refuses — it cannot tell him from Ann",
+    seamIvyNumbers.feeUsd === null && /PERMIT PATH NOT CHECKED/.test(seamIvyNumbers.basis),
+    `${seamIvyNumbers.feeUsd} / ${seamIvyNumbers.basis.slice(0, 120)}`);
 
-  // "unknown" means resolvePermitPath RAN and could not decide. That contradicts
-  // nothing (check 5), so the seam must answer exactly as feeForProject answers
-  // for the UNKNOWN project — $360. A seam that diverged from the live path for
-  // the same project would be a second source of truth about the same money.
-  const seamUnknown = lookupPublishedFee(db, seamArgs({ permitPath: "unknown" }))!;
-  check("11b. the seam given a RESOLVED-unknown path quotes $360, matching feeForProject(UNKNOWN)",
-    seamUnknown.feeUsd === 360 && seamUnknown.feeUsd === unknown.feeUsd,
-    `${seamUnknown.feeUsd} vs ${unknown.feeUsd}`);
-
-  // The electrical permit is the same permit on either path — with a path, without
-  // one, it does not move. (Ann's 7.68 kVA sits in the 5.01–15 bracket: $160.)
-  check("11c. the ELECTRICAL stage is untouched at $160 with NO path supplied",
+  // The electrical permit is the same permit on either path, so a call with no
+  // project does not move it. (Ann's 7.68 kVA sits in the 5.01–15 bracket: $160.)
+  check("11c. the ELECTRICAL stage is untouched at $160 with no project supplied",
     lookupPublishedFee(db, seamArgs({ track: "electrical" }))?.feeUsd === 160,
     String(lookupPublishedFee(db, seamArgs({ track: "electrical" }))?.feeUsd));
-  check("  and untouched at $160 with an ENGINEERED path supplied",
-    lookupPublishedFee(db, seamArgs({ track: "electrical", permitPath: "engineered" }))?.feeUsd === 160);
+  check("  and untouched at $160 for the ENGINEERED project through feeForProject",
+    feeForProject(db, ANN, "electrical")?.feeUsd === 160,
+    String(feeForProject(db, ANN, "electrical")?.feeUsd));
   // NEM: the building path says nothing about interconnection.
   check("11d. the NEM track is untouched at $0.00 with no path supplied",
     lookupPublishedFee(db, seamArgs({ track: "nem" }))?.feeUsd === 0,

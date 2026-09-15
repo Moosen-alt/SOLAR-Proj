@@ -144,9 +144,18 @@ async function main(): Promise<void> {
     sourceQuote: "Solar Structural Installation Permits - separate Electrical Permit application may also be required through the county",
   }));
 
+  // THE SNAPSHOT IS LOAD-BEARING, DO NOT STRIP IT BACK TO {}. The city's $200 line is
+  // titled "…Prescriptive Path System", and a line whose own label scopes it to one of
+  // the two mutually exclusive permit paths only prices a project KNOWN to be on that
+  // path (feeSchedules.bracketsForPath). With an empty snapshot the path resolves
+  // UNDECIDED and that line correctly refuses — right behaviour, wrong subject for a
+  // file about pairing evidence to amounts. A microinverter roof mount clearing the
+  // structural screen is the real shape of the job, and it resolves prescriptive
+  // through resolvePermitPath's own rules rather than by stipulation.
   const project = {
     state: "OR", ahj: "City of Coos Bay", utility: "Pacific Power",
-    systemSizeAcKw: 3.072, systemSizeDcKw: 4.2, parserSnapshot: {},
+    systemSizeAcKw: 3.072, systemSizeDcKw: 4.2,
+    parserSnapshot: { mounting: "Roof mount", pvMicroMake: "Enphase", pvMicroModel: "IQ8PLUS-72-2-US" },
   } as never;
   const split = feeForProject(db, project, "permit");
   check("the split still totals $335.00 — MUST EXCLUDE: neither amount moved",

@@ -56,17 +56,27 @@ async function main(): Promise<void> {
 
   const now = new Date().toISOString();
   let n = 0;
+  // THE SNAPSHOT IS LOAD-BEARING, DO NOT STRIP IT BACK TO {}. The Coos Bay structural
+  // row these projects are priced from is titled "Prescriptive path system", and a
+  // line whose own label scopes it to one of the two mutually exclusive permit paths
+  // only prices a project KNOWN to be on that path (feeSchedules.bracketsForPath).
+  // With an empty snapshot the path resolves UNDECIDED, the line refuses, and the
+  // published-schedule tier this file is about never fires. A microinverter roof mount
+  // clearing the structural screen resolves prescriptive through resolvePermitPath's
+  // own rules — it is not stipulated here. Both copies matter: the column is what
+  // getProjectDetail would read, the literal is what these calls actually pass.
+  const PRESCRIPTIVE_SNAPSHOT = { mounting: "Roof mount", pvMicroMake: "Enphase", pvMicroModel: "IQ8PLUS-72-2-US" };
   const mkProject = (clientId: string, acKw: number | null): ProjectRecord => {
     const pid = `inv-${++n}`;
     db.run(
       `INSERT INTO projects (id, client_id, homeowner_name, state, ahj, utility, system_size_dc_kw, system_size_ac_kw, status, parser_json, created_at, updated_at)
-       VALUES (?, ?, 'Test Owner', 'OR', 'City of Coos Bay', 'Pacific Power', ?, ?, 'ready_to_stage', '{}', ?, ?)`,
-      [pid, clientId, acKw == null ? null : acKw * 1.3, acKw, now, now],
+       VALUES (?, ?, 'Test Owner', 'OR', 'City of Coos Bay', 'Pacific Power', ?, ?, 'ready_to_stage', ?, ?, ?)`,
+      [pid, clientId, acKw == null ? null : acKw * 1.3, acKw, JSON.stringify(PRESCRIPTIVE_SNAPSHOT), now, now],
     );
     return {
       id: pid, clientId, state: "OR", ahj: "City of Coos Bay", utility: "Pacific Power",
       systemSizeDcKw: acKw == null ? null : acKw * 1.3, systemSizeAcKw: acKw, totalExportKw: null,
-      homeownerName: "Test Owner", parserSnapshot: {},
+      homeownerName: "Test Owner", parserSnapshot: { ...PRESCRIPTIVE_SNAPSHOT },
     } as unknown as ProjectRecord;
   };
 

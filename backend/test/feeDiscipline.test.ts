@@ -66,9 +66,20 @@ async function main(): Promise<void> {
 
   // A 4.55 kW-AC job — deliberately in the county's LOWEST bracket ($135), so a
   // test that passed by echoing the middle bracket would be visible.
+  //
+  // THE SNAPSHOT IS LOAD-BEARING, DO NOT STRIP IT BACK TO null. The city's $200 line
+  // is titled "Prescriptive path system", and a line whose own label scopes it to one
+  // of the two mutually exclusive permit paths is only chargeable to a project KNOWN
+  // to be on that path (feeSchedules.bracketsForPath). With no snapshot this project's
+  // path resolves UNDECIDED and that line correctly refuses — which is a fine
+  // behaviour and the wrong subject for a file about the DISCIPLINE split. A
+  // microinverter roof mount that clears the structural screen is the real shape of
+  // the Coos Bay job these numbers were measured on, and it resolves prescriptive
+  // through resolvePermitPath's own rules rather than by stipulation.
   const project = {
     state: "OR", ahj: "City of Coos Bay", utility: "Pacific Power",
-    systemSizeAcKw: 4.55, systemSizeDcKw: 6.2, parserSnapshot: null,
+    systemSizeAcKw: 4.55, systemSizeDcKw: 6.2,
+    parserSnapshot: { mounting: "Roof mount", pvMicroMake: "Enphase", pvMicroModel: "IQ8PLUS-72-2-US" },
   } as never;
 
   // ---------------------------------------------------------------------
@@ -167,11 +178,32 @@ async function main(): Promise<void> {
   });
   check("lookupPublishedFee (the staging gate) resolves the electrical stage to the county's $135",
     staged?.feeUsd === 135 && /Coos County/.test(String(staged?.jurisdictionName)), `${staged?.feeUsd} / ${staged?.jurisdictionName}`);
+  // AN UNDISCIPLINED 'permit' STAGE THROUGH THIS SEAM IS A PARTIAL, NOT A TOTAL.
+  //
+  // This block asserted a confident $335 and was CHANGED because that assertion
+  // encoded the bug. lookupPublishedFee is handed jurisdiction names and a size —
+  // never a plan set — so it has no permit path, while the city's structural line
+  // scopes itself to the PRESCRIPTIVE path. Quoting that line here is choosing a
+  // path with nothing behind the choice, which is exactly how an ENGINEERED Coos Bay
+  // job was handed the prescriptive $200.
+  //
+  // The honest answer is neither $335 nor nothing. It is BOTH halves of what is
+  // actually known: the county's electrical line is NOT path-scoped and still prices
+  // at $135, the city's path-scoped line comes back unresolved carrying its reason,
+  // and the TOTAL is null because it is incomplete — an incomplete total reported as
+  // a number is the confident under-quote this whole dimension exists to stop.
   const stagedBoth = lookupPublishedFee(db, {
     track: "permit", state: "OR", ahj: "City of Coos Bay", utility: "Pacific Power", bracketKw: 4.55,
   });
-  check("and an undisciplined 'permit' stage is quoted the whole $335",
-    stagedBoth?.feeUsd === 335, String(stagedBoth?.feeUsd));
+  check("an undisciplined 'permit' stage with NO path quotes no total (it used to say $335)",
+    stagedBoth?.feeUsd === null, String(stagedBoth?.feeUsd));
+  check("  and the $135 electrical line — which is NOT path-scoped — is still priced and itemised",
+    /Coos County electrical: \$135\.00/.test(String(stagedBoth?.bracketLabel)), String(stagedBoth?.bracketLabel));
+  check("  while the path-scoped structural line is marked UNRESOLVED — not silently dropped, not priced",
+    /City of Coos Bay structural: unresolved/.test(String(stagedBoth?.bracketLabel)), String(stagedBoth?.bracketLabel));
+  check("  and the basis says WHY: the path was never checked, not that the city holds no fee",
+    /PERMIT PATH NOT CHECKED/.test(String(stagedBoth?.basis)) && !/FEE HELD/.test(String(stagedBoth?.basis)),
+    String(stagedBoth?.basis).slice(0, 220));
 
   // ---------------------------------------------------------------------
   // 4. MUST EXCLUDE — the ways a split could quote a wrong number confidently.
