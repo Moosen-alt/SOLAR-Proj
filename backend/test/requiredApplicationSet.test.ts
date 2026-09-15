@@ -49,7 +49,7 @@ process.env.ANTHROPIC_API_KEY = ""; // stub LLM — deterministic, no network re
 
 const { openDatabase } = await import("../src/db");
 const { createClient } = await import("../src/clients");
-const { createProject, prepareSubmission } = await import("../src/repository");
+const { createProject } = await import("../src/repository");
 const {
   applicationDocContext,
   documentInventory,

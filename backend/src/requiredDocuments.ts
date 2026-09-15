@@ -9,11 +9,18 @@
 // County / Keizer on Oregon ePermitting) bounced exactly that.
 //
 // This module resolves the concrete set of documents a clean residential rooftop
-// solar submittal must carry — path-driven (prescriptive vs engineered) and
+// solar submittal must carry — path-driven (prescriptive vs engineered),
+// structure-driven (one combined permit vs separate BLD + ELE permits) and
 // lane-aware (AHJ permit vs utility NEM) — and checks each against the actual
-// uploaded/split file inventory (project_documents), with the parsed plan-set
-// sheet map as a secondary signal for sheets that legitimately live INSIDE the
-// combined plan-set PDF. Missing blocking documents become hard submit blockers.
+// file inventory: uploads (project_documents) AND the filled AHJ forms on disk
+// (backend/data/filled/<projectId>/, which carry no row), with the parsed
+// plan-set sheet map as a secondary signal for sheets that legitimately live
+// INSIDE the combined plan-set PDF. Missing blocking documents hard-block submit.
+//
+// The permit APPLICATIONS themselves (requiredApplicationDocs, below) were the
+// long-standing hole: nothing ever computed "the set of documents this project
+// must produce", so a jurisdiction that files TWO permits could pass every check
+// with one of the two applications never acquired, never filled, never attached.
 //
 // Authoritative basis (verified against state sources):
 //   - Oregon requires a SEPARATE structural permit AND electrical permit for solar

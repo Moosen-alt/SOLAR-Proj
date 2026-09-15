@@ -309,7 +309,18 @@ h1, h2, h3, p { margin: 0; }
    Two lines, not four: the title wrapped onto a second line and the tagline and
    status each took one more, so the masthead was taller than the toolbar beside
    it. Title on its own row, tagline and status sharing the next. */
-.masthead { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 10px; min-width: 0; }
+/* The masthead used to grow to whatever it liked, which squeezed the toolbar
+   into three and four wrapped rows and left the sticky .topbar ~125px tall —
+   while .step-actions below it is pinned at `top: 61px`, i.e. the height of a
+   ONE-row topbar. The identity block now takes only what it needs and the
+   toolbar gets the remaining width. */
+.masthead { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 10px; min-width: 0; flex: 0 1 auto; max-width: 28rem; }
+/* A toolbar is denser than a content row: tighter gap and padding here only, so
+   the eight remaining controls hold ONE row at laptop widths and the topbar
+   stays the ~61px that .step-actions' sticky offset assumes. */
+.topbar .actions { flex: 1 1 auto; justify-content: flex-end; gap: 6px; }
+.topbar .actions .button, .topbar .actions button { padding: 0 9px; }
+.topbar .actions .actions-divider { margin: 0 2px; }
 .masthead h1 { flex: 1 0 100%; font-size: var(--text-lg); }
 .masthead .tagline, .masthead .conn-status { margin-top: 3px; }
 .tagline { color: var(--muted); font-size: var(--text-sm); margin-top: 2px; }

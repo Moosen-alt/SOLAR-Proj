@@ -5,21 +5,41 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Project Status</title>
   <style>
-    :root { color-scheme: light; }
-    body { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; background: #f4f6f8; margin: 0; color: #1f2937; }
+    /* PALETTE MATCHED BY VALUE to frontend/styles.css — not by reference.
+       This page links no stylesheet on purpose (express.static sits behind
+       requireAuth, so a sibling .css would bounce a logged-out client to
+       /login), so these are hand-kept in step with the :root there. Same oklch
+       values, same names. Font stays the system stack: this is a client-facing
+       page that must render instantly with zero external requests. */
+    :root {
+      color-scheme: light;
+      --bg:        oklch(98.5% .004 95);
+      --surface:   oklch(100% 0 0);
+      --surface-2: oklch(95.5% .009 180);
+      --text:      oklch(20.5% .025 220);
+      --muted:     oklch(52% .025 220);
+      --line:      oklch(88% .012 220);
+      --primary:   oklch(42% .105 173);
+      --success:   oklch(50% .13 150);
+      --warning:   oklch(52% .12 75);
+      --danger:    oklch(57.7% .245 27.325);
+      --radius-md: .45rem;
+      --radius-lg: calc(.45rem + 4px);
+    }
+    body { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg); margin: 0; color: var(--text); line-height: 1.5; }
     .wrap { max-width: 640px; margin: 0 auto; padding: 24px 16px 48px; }
-    .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 20px; margin-bottom: 16px; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+    .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg); padding: 20px; margin-bottom: 16px; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
     h1 { font-size: 18px; margin: 0 0 4px; }
-    h2 { font-size: 14px; margin: 0 0 10px; color: #374151; }
-    .muted { color: #6b7280; font-size: 13px; }
-    .track { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid #f3f4f6; }
+    h2 { font-size: 14px; margin: 0 0 10px; color: var(--text); }
+    .muted { color: var(--muted); font-size: 13px; }
+    .track { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line); }
     .track:first-of-type { border-top: 0; }
-    .badge { font-size: 12px; padding: 3px 10px; border-radius: 999px; background: #eef2ff; color: #3730a3; white-space: nowrap; }
-    .badge.good { background: #ecfdf5; color: #065f46; }
-    .badge.warn { background: #fffbeb; color: #92400e; }
-    .hist { font-size: 13px; padding: 6px 0; border-top: 1px solid #f3f4f6; display: flex; justify-content: space-between; gap: 10px; }
-    .err { text-align: center; padding: 48px 16px; color: #6b7280; }
-    footer { text-align: center; font-size: 12px; color: #9ca3af; margin-top: 24px; }
+    .badge { font-size: 12px; padding: 3px 10px; border-radius: 999px; background: var(--surface-2); color: var(--primary); white-space: nowrap; }
+    .badge.good { background: color-mix(in oklab, var(--success) 14%, var(--surface)); color: var(--success); }
+    .badge.warn { background: color-mix(in oklab, var(--warning) 16%, var(--surface)); color: var(--warning); }
+    .hist { font-size: 13px; padding: 6px 0; border-top: 1px solid var(--line); display: flex; justify-content: space-between; gap: 10px; }
+    .err { text-align: center; padding: 48px 16px; color: var(--muted); }
+    footer { text-align: center; font-size: 12px; color: var(--muted); margin-top: 24px; }
   </style>
 </head>
 <body>
