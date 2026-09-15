@@ -18,7 +18,30 @@ const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tenancy-test-"));
 // Distinct port band per server-booting suite: filledFormDownload owns 4930-4949
 // and reviewApi owns 4970-4989. These run sequentially in the chain, but a socket
 // lingering in TIME_WAIT from the previous suite made a shared band flaky.
-const PORT = 5040 + Math.floor(Math.random() * 20);
+// PICK A PORT THAT IS ACTUALLY FREE, rather than a random one and hope.
+//
+// This used to be `5040 + Math.floor(Math.random() * 20)`. On this machine a Windows svchost
+// holds 5040, so roughly one chain run in twenty died here — and when it did, the failure read
+// "server never came up" above a perfectly healthy startup banner, sending the reader to the
+// server rather than the port. It cost two chain runs in one session before anybody looked at
+// netstat.
+//
+// Probing beats retrying: bind a throwaway listener to each candidate and keep the first that
+// accepts. A port held by another process fails here, silently and instantly, instead of
+// 60 seconds later as a mystery.
+function freePortInBand(start: number, count: number): number {
+  for (let i = 0; i < count; i++) {
+    const candidate = start + i;
+    try {
+      execFileSync(process.execPath, ["-e", `require("net").createServer().listen(${candidate},"127.0.0.1",function(){this.close()}).on("error",()=>process.exit(1))`], { stdio: "ignore" });
+      return candidate;
+    } catch { /* held — try the next */ }
+  }
+  // Every candidate held: fall back to the old behaviour rather than refusing to run, and let
+  // waitForServer report it with the port named.
+  return start + Math.floor(Math.random() * count);
+}
+const PORT = freePortInBand(5040, 20);
 const BASE = `http://127.0.0.1:${PORT}`;
 
 const env = {
