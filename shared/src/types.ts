@@ -257,13 +257,18 @@ export interface ProjectFeeSheetLine {
   serviceFeeUsd: number;
   /** This track's client total, null whenever the jurisdiction fee is unknown. */
   totalUsd: number | null;
-  /** False when the fee is unknown. A known $0 is known. */
+  /** False when the fee is not KNOWN. A known $0 is known; a valuation ESTIMATE
+   *  is not — the number still travels on feeUsd with confidence "estimated",
+   *  and the sheet's `unknowns` names the gap. known:true beside an estimate
+   *  was the machine-readable claim that nothing here is unknown. */
   known: boolean;
 }
 
 /** One answer to "what will this project cost": both tracks, what is known,
  *  and — explicitly — what is not. A total is reported ONLY when every
- *  component is known; an unknown is never summed as a zero. */
+ *  component carries a number; an unknown is never summed as a zero, and a
+ *  total that includes an ESTIMATED line says so (`totalConfidence`) rather
+ *  than presenting as flat fact. */
 export interface ProjectFeeSheet {
   projectId: string;
   billingMode: string;
@@ -271,13 +276,20 @@ export interface ProjectFeeSheet {
    *  actually collected (and staging is gated on them). */
   billingRequired: boolean;
   lines: ProjectFeeSheetLine[];
-  /** Permit + NEM jurisdiction fees. Null if either is unknown. */
+  /** Permit + NEM jurisdiction fees. Null if either has no number at all. */
   jurisdictionFeesUsd: number | null;
   /** The operator's service fees, counted PER TRACK (two submissions = two
    *  fees) and only for per-submission clients; 0 for monthly billing. */
   serviceFeesUsd: number;
-  /** Null the moment any component is unknown. */
+  /** Null the moment any component has no number. An estimate is a number and
+   *  is summed — see totalConfidence, which is how the total says so. */
   totalUsd: number | null;
+  /** The weakest confidence among the summed fees — a total is only as good as
+   *  its shakiest line (actual > verified > seeded > estimated). "estimated"
+   *  means the total INCLUDES the valuation heuristic and must present as an
+   *  estimate, never as flat fact; "unknown" whenever totalUsd is null. Same
+   *  vocabulary as each line's `confidence` — no new one. */
+  totalConfidence: FeeConfidence;
   /** Plain-language list of what is not known. Empty = the sheet is complete. */
   unknowns: string[];
   /** Fees no portal can take — the human sends these (mailed checks). */

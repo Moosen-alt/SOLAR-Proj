@@ -306,12 +306,21 @@ export function renderFeeSheet(view: FeeSheetPresentation): string {
     out.push(renderFeeLine(line, view.schedules[line.track as FeeTrack] ?? null, view.agreements[line.track as FeeTrack] ?? { whoPays: "", portalHost: "" }, sheet.billingRequired));
   }
   out.push("");
+  // Keyed on totalConfidence — graded by the engine beside the sum itself — so
+  // the marker cannot drift from the arithmetic it qualifies. A total that
+  // includes the valuation heuristic must present as an estimate, never as
+  // flat fact: that is the same lie as an unlabelled estimated line, one level up.
+  const totalEstimated = sheet.totalUsd != null && sheet.totalConfidence === "estimated";
   out.push(`  JURISDICTION FEES   ${money(sheet.jurisdictionFeesUsd)}   (permit + NEM, owed to the AHJ and the utility)`);
   out.push(`  SERVICE FEES        ${money(sheet.serviceFeesUsd)}   (ours, ${sheet.billingRequired ? "per submission — two tracks, two fees" : `not collected: billing mode "${sheet.billingMode || "monthly/none"}"`})`);
-  out.push(`  PROJECT TOTAL       ${money(sheet.totalUsd)}`);
+  out.push(`  PROJECT TOTAL       ${totalEstimated ? `≈ ${money(sheet.totalUsd)}   (ESTIMATE)` : money(sheet.totalUsd)}`);
   if (sheet.totalUsd == null) {
     out.push("  The total is UNKNOWN because at least one fee is. It is not a zero and it is not");
     out.push("  a partial sum — do not put a number in front of this customer yet.");
+  } else if (totalEstimated) {
+    out.push("  This total INCLUDES AN ESTIMATE: at least one fee is a valuation heuristic, not");
+    out.push("  anything read from the jurisdiction. True it up from the portal's own fee screen");
+    out.push("  before quoting a customer.");
   }
   if (sheet.unknowns.length) {
     out.push("");
@@ -328,6 +337,16 @@ export function renderFeeSheet(view: FeeSheetPresentation): string {
     out.push("");
     out.push(`  ${seeded.length} fee(s) above are SEEDED: research found them and nobody has checked them.`);
     out.push("  Verify against the jurisdiction's own published schedule before quoting a customer.");
+  }
+  // The banner keys on the LINES (like the seeded one above), not on the total:
+  // an estimated permit beside an unknown NEM makes the total null — and the
+  // estimate still needs flagging exactly then.
+  const estimated = sheet.lines.filter((l) => l.confidence === "estimated");
+  if (estimated.length) {
+    out.push("");
+    out.push(`  ${estimated.length} fee(s) above are ESTIMATES: a percentage of the project valuation, from a`);
+    out.push("  method that has never read this jurisdiction's fee table. The STILL UNKNOWN list");
+    out.push("  names what would replace each one.");
   }
   if (FEE_TRACKS.some((t) => !view.agreements[t]?.whoPays)) {
     out.push("");

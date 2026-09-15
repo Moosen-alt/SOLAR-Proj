@@ -300,6 +300,14 @@ export interface FeeScheduleResearchInput {
   ahj?: string;
   utility?: string;
   track: FeeTrack;
+  /** WHICH PERMIT the research is for ("structural" | "electrical" | "combo").
+   *  ""/absent = undifferentiated — research whatever the jurisdiction publishes.
+   *  Carried so a split jurisdiction's electrical pass asks for the electrical
+   *  line (not whichever table a search happens to surface first), and so the
+   *  row that lands carries the discipline the project actually files — an
+   *  undifferentiated row SHADOWS split rows at lookup (applicableSchedules),
+   *  which is the measured Ivy $335→$200 under-quote. */
+  discipline?: string;
   /** What the KB already knows about this jurisdiction/utility — several of the
    *  permit_utility_knowledge rows already carry the AHJ's own fee-page URL. */
   knownContext?: string;
@@ -1476,6 +1484,18 @@ export const claudeFeeScheduleResearcher: FeeScheduleResearcher = async (input, 
   const who = input.track === "nem"
     ? `Utility: ${clean(input.utility) || "(unknown)"}`
     : `AHJ: ${clean(input.ahj) || "(unknown)"}`;
+  // WHICH PERMIT, when the caller knows. A split jurisdiction publishes a
+  // structural table AND an electrical one; an unscoped ask returns whichever a
+  // search surfaces first, filed as though it priced everything.
+  const askedDiscipline = input.track === "nem" ? "" : feeDiscipline(input.discipline);
+  const disciplineAsk =
+    askedDiscipline === "structural"
+      ? "This research is for the BUILDING/STRUCTURAL permit specifically: extract that permit's fee line, not the electrical permit's (some jurisdictions file the two separately, sometimes with different authorities)."
+      : askedDiscipline === "electrical"
+        ? "This research is for the ELECTRICAL permit specifically: extract that permit's fee line, not the building/structural permit's (some jurisdictions file the two separately, sometimes with different authorities)."
+        : askedDiscipline === "combo"
+          ? "This research is for a COMBINATION (building + electrical in one filing) solar permit: extract the fee for the combined solar permit as this jurisdiction publishes it."
+          : "";
   const userMsg = [
     who,
     `State: ${clean(input.state)}`,
@@ -1486,6 +1506,7 @@ export const claudeFeeScheduleResearcher: FeeScheduleResearcher = async (input, 
     input.track === "nem"
       ? "Find the published APPLICATION / INTERCONNECTION FEE for a residential net-metering (net energy metering) application to this utility. If there is none, say so with the sentence that says so."
       : "Find the published PERMIT FEE SCHEDULE line for a residential rooftop solar PV installation in this jurisdiction (building and/or electrical permit). Extract the full bracket table for the solar/renewable-energy line.",
+    disciplineAsk,
   ].filter(Boolean).join("\n");
 
   const model = process.env.AUTOPILOT_LLM_MODEL || "claude-opus-5";
@@ -1673,7 +1694,7 @@ export const claudeFeeScheduleResearcher: FeeScheduleResearcher = async (input, 
  *  which the quote ladder's single "unknown" cannot. */
 export async function researchFeeSchedule(
   db: AppDb,
-  input: { state: string; ahj?: string; utility?: string; track?: string | null },
+  input: { state: string; ahj?: string; utility?: string; track?: string | null; discipline?: string },
   options: { researcher?: FeeScheduleResearcher; ledger?: FeeDocumentLedger } = {},
 ): Promise<FeeScheduleResearchOutcome> {
   const track = feeTrack(input.track);
@@ -1703,11 +1724,129 @@ export async function researchFeeSchedule(
   const ledger = options.ledger ?? newFeeDocumentLedger();
   let finding: FeeScheduleFinding;
   try {
-    finding = await researcher({ state: input.state, ahj: input.ahj, utility: input.utility, track, knownContext }, { ledger });
+    finding = await researcher({ state: input.state, ahj: input.ahj, utility: input.utility, track, discipline: input.discipline, knownContext }, { ledger });
   } catch (err) {
     finding = emptyFinding(`Researcher threw: ${err instanceof Error ? err.message : String(err)}`);
   }
-  return saveFeeSchedule(db, { state: input.state, ahj: input.ahj, utility: input.utility, track }, finding, { corroborateAgainst: ledger });
+  // The caller's discipline travels on the INPUT side of saveFeeSchedule, where it
+  // wins over anything the researcher inferred — the row that lands is keyed to the
+  // permit the caller asked to price (see FeeScheduleResearchInput.discipline).
+  return saveFeeSchedule(db, { state: input.state, ahj: input.ahj, utility: input.utility, track, discipline: input.discipline }, finding, { corroborateAgainst: ledger });
+}
+
+// ---------------------------------------------------------------------------
+// Autonomous acquisition: the moment a project needs a fee we do not hold, go
+// find the schedule — as a BACKGROUND JOB, never a call on a request path.
+// ---------------------------------------------------------------------------
+
+/** How long after a fee_research attempt (found something or not) the same target
+ *  is left alone. Longer than code_research's 6h window on purpose: one fee pass
+ *  is up to twelve web-grounded Opus turns and ten document retrievals — the most
+ *  expensive model operation in the system — where a code pass is one call, and a
+ *  jurisdiction that published nothing this morning will not have published it by
+ *  this afternoon. The job rows themselves are the marker; a miss is NEVER stored
+ *  as an empty fee row, which would block auto-research forever. */
+export const FEE_RESEARCH_BACKOFF_HOURS_DEFAULT = 24;
+
+function feeResearchBackoffMs(): number {
+  const hours = Number(process.env.FEE_RESEARCH_BACKOFF_HOURS);
+  return (Number.isFinite(hours) && hours > 0 ? hours : FEE_RESEARCH_BACKOFF_HOURS_DEFAULT) * 3600_000;
+}
+
+/** One row the fee table must be able to answer for this project. */
+export interface FeeResearchNeed {
+  track: FeeTrack;
+  discipline: FeeDiscipline;
+}
+
+/** The (track, discipline) fee rows a project's submittal tracks will ask the
+ *  quote ladder for — the SAME mapping the lookup side uses (feeForProject's
+ *  recipeDisciplineForTrack), so what research is asked for and what the fee
+ *  sheet later asks about cannot disagree. "nem" needs the utility row; every
+ *  permit track needs its own discipline's row (building→structural,
+ *  electrical/mpu→electrical, combo→combo — mpu collapses into electrical here,
+ *  which the Set dedupe below makes harmless). */
+export function feeResearchNeedsForTracks(tracks: readonly string[]): FeeResearchNeed[] {
+  const seen = new Set<string>();
+  const out: FeeResearchNeed[] = [];
+  for (const t of tracks) {
+    const track = feeTrack(t);
+    const discipline = track === "nem" ? ("" as FeeDiscipline) : feeDiscipline(recipeDisciplineForTrack(t));
+    const key = `${track}|${discipline}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ track, discipline });
+  }
+  return out;
+}
+
+/** WHEN A PROJECT LANDS AT AN AHJ (OR UTILITY) WE HOLD NO FEE ROW FOR, QUEUE THE
+ *  RESEARCHER. Called from QC (runQcForProject) — the same day-the-plan-set-lands
+ *  moment the document demands moved to — and fire-and-forget: the current QC run
+ *  proceeds on the honest miss, the researched row starts answering the next
+ *  quote. Follows ensureCodeProfilesResearched's shape exactly.
+ *
+ *  Enqueues NOTHING when:
+ *   · FEE_RESEARCH=off (operator kill switch), or this process runs no job worker
+ *     (jobWorkerRunning) — the smoke, unit tests, scripts and benchmarks all run
+ *     QC under a dotenv'd real API key, and an enqueue's instant kick would spend
+ *     a multi-minute web-grounded pass in-process. Today "runs the worker" is
+ *     exactly the server.
+ *   · the production lookup (findFeeScheduleForProject: exact key → undifferentiated
+ *     fallback → state-scoped fuzzy → delegation hop) already holds a row for the
+ *     (track, discipline) this project needs — including a delegation whose target
+ *     is missing, which is a modelling question for a person, not a research gap;
+ *   · an identical target (dedupe key `track|profileKey|discipline`, carried in the
+ *     payload as researchKey) already has a pending/running fee_research job, or
+ *     ANY fee_research attempt inside the backoff window above — a miss must not
+ *     be re-bought on every QC re-run.
+ *
+ *  The API-key gate lives in the researcher itself (claudeFeeScheduleResearcher
+ *  refuses keyless and stores nothing), same as code_research's stub path — so a
+ *  keyless deployment costs one no-op job per target per backoff window, and the
+ *  moment a key appears research resumes with no code change. */
+export async function ensureFeeSchedulesResearched(
+  db: AppDb,
+  project: Pick<ProjectRecord, "id" | "state" | "ahj" | "utility">,
+  tracks: readonly string[],
+): Promise<number> {
+  if (process.env.FEE_RESEARCH === "off") return 0;
+  // Lazy import avoids the static cycle (jobQueue → repository → … → feeSchedules).
+  let jobQueue: typeof import("./jobQueue");
+  try {
+    jobQueue = await import("./jobQueue");
+  } catch {
+    return 0;
+  }
+  if (!jobQueue.jobWorkerRunning()) return 0;
+  let enqueued = 0;
+  for (const need of feeResearchNeedsForTracks(tracks)) {
+    try {
+      const subject = need.track === "nem" ? clean(project.utility) : clean(project.ahj);
+      if (!subject) continue;
+      if (findFeeScheduleForProject(db, project, need.track, need.discipline)) continue;
+      const profileKey = feeScheduleProfileKey(project, need.track);
+      const researchKey = `${need.track}|${profileKey}|${need.discipline}`;
+      const recent = db.get<Row>(
+        `SELECT id FROM job_queue
+          WHERE job_type = 'fee_research' AND payload LIKE ?
+            AND (status IN ('pending','running') OR created_at > ?)
+          LIMIT 1`,
+        [`%"researchKey":${JSON.stringify(researchKey)}%`, new Date(Date.now() - feeResearchBackoffMs()).toISOString()],
+      );
+      if (recent) continue;
+      // maxRetries 2: the worker's retry math (`retryCount+1 < maxRetries`) means
+      // 1 yields ZERO retries — 2 gives the intended single retry (and the
+      // researcher catches its own failures, so retries are rare anyway).
+      jobQueue.enqueueJob(db, "fee_research", {
+        state: clean(project.state), ahj: clean(project.ahj), utility: clean(project.utility),
+        track: need.track, discipline: need.discipline, profileKey, researchKey,
+      }, { priority: 3, maxRetries: 2, projectId: project.id });
+      enqueued++;
+      logger.info("fees", `fee-schedule auto-research queued for ${subject} (${need.track}${need.discipline ? `/${need.discipline}` : ""})`);
+    } catch { /* autonomy is best-effort — never break the caller */ }
+  }
+  return enqueued;
 }
 
 // ---------------------------------------------------------------------------

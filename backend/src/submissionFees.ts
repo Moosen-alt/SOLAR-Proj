@@ -213,6 +213,12 @@ interface ScheduleFee {
 
 const PAYMENT_METHODS: FeePaymentMethod[] = ["portal", "mailed_check", "none", "unknown"];
 
+/** Trust order for FeeConfidence, weakest last — buildProjectFeeSheet grades a
+ *  TOTAL by the weakest line summed into it. Same vocabulary as the lines. */
+const FEE_CONFIDENCE_RANK: Record<FeeConfidence, number> = {
+  actual: 4, verified: 3, seeded: 2, estimated: 1, unknown: 0,
+};
+
 // A schedule that spells out payment by post is stating a process automation
 // cannot perform. Read only an explicit positive statement, and never flip a
 // method the producer set itself.
@@ -663,7 +669,15 @@ export function buildProjectFeeSheet(db: AppDb, project: ProjectRecord): Project
     paymentMethod: quote.paymentMethod,
     serviceFeeUsd: quote.serviceFeeUsd,
     totalUsd: quote.totalUsd,
-    known: quote.permitFeeUsd != null,
+    // AN ESTIMATE IS NOT KNOWLEDGE. `known: feeUsd != null` marked the
+    // 1.5%-of-valuation heuristic as a known fee — measured on the live Trask /
+    // City of Portland quote: $450.00, source valuation_estimate, known:true,
+    // unknowns:[]. The basis SENTENCE was honest ("Rough estimate … true it
+    // up") while the machine-readable flags claimed nothing was unknown, which
+    // is the unknown-rendering-as-reassurance defect again. The number is kept
+    // (feeUsd + confidence "estimated" — the operator quoting a customer needs
+    // it); the claim of knowledge goes, and `unknowns` below names the gap.
+    known: quote.permitFeeUsd != null && quote.permitFeeConfidence !== "estimated",
   }));
 
   const unknowns: string[] = [];
@@ -671,7 +685,20 @@ export function buildProjectFeeSheet(db: AppDb, project: ProjectRecord): Project
   for (const line of lines) {
     const who = line.jurisdiction || (line.track === "nem" ? "the utility" : "the AHJ");
     const label = line.track === "nem" ? "NEM / interconnection fee" : "Permit fee";
-    if (!line.known) unknowns.push(`${label} for ${who} is unknown. ${line.basis}`);
+    if (line.feeUsd == null) unknowns.push(`${label} for ${who} is unknown. ${line.basis}`);
+    else if (!line.known) {
+      // AN ESTIMATED LINE IS AN OPEN QUESTION AND IS LISTED AS ONE — an empty
+      // unknowns array beside it is the machine-readable claim that nothing is
+      // unknown. "resolved" rather than "held" on purpose: it stays true both
+      // when no schedule exists at all (Portland) and when one is held but
+      // refused this project (an engineered job against a prescriptive-only
+      // row — the basis carries that refusal's own words either way).
+      const discipline = line.track === "nem" ? "interconnection" : "permit";
+      unknowns.push(
+        `${label} for ${who} is an ESTIMATE, not a known fee — no published fee schedule resolved for ${who} (${discipline}), `
+        + `no portal figure recorded, no observed history. The $${line.feeUsd.toFixed(2)} shown is a valuation heuristic. ${line.basis}`,
+      );
+    }
     if (line.paymentMethod === "mailed_check") {
       outOfPortalPayments.push(
         `${label} for ${who}${line.feeUsd != null ? ` ($${line.feeUsd.toFixed(2)})` : ""} is paid by MAILED CHECK — no portal can take it, so a human sends it.`,
@@ -679,13 +706,29 @@ export function buildProjectFeeSheet(db: AppDb, project: ProjectRecord): Project
     }
   }
 
-  // A total is reported only when EVERY component is known. One unknown line
-  // nulls the total rather than quietly summing it as a zero.
-  const allKnown = lines.every((line) => line.known);
-  const jurisdictionFeesUsd = allKnown ? round2(lines.reduce((sum, line) => sum + (line.feeUsd ?? 0), 0)) : null;
+  // A total is reported only when EVERY component carries a NUMBER — estimates
+  // included, because "what will this cost" deserves the best current answer.
+  // A line with no number at all still nulls the total rather than quietly
+  // summing as a zero. (This gate used to read `line.known`; `known` was true
+  // for estimates then, so the arithmetic here is unchanged — only the flags
+  // moved, and totalConfidence below is how a summed estimate now says so.)
+  const allPriced = lines.every((line) => line.feeUsd != null);
+  const jurisdictionFeesUsd = allPriced ? round2(lines.reduce((sum, line) => sum + (line.feeUsd ?? 0), 0)) : null;
   // The service fee is charged per SUBMISSION, so a project filing both tracks
   // carries two — and none at all when the client is not billed per submission.
   const serviceFeesUsd = billingRequired ? round2(lines.reduce((sum, line) => sum + line.serviceFeeUsd, 0)) : 0;
+
+  // THE TOTAL IS ONLY AS GOOD AS ITS SHAKIEST LINE. A $785 that is $335 of
+  // published schedule plus $450 of 1.5%-guess presenting as flat fact is the
+  // per-line lie one level up, so the total carries the weakest grade of
+  // anything summed into it — on the vocabulary the lines already speak.
+  const worstConfidence = (): FeeConfidence => {
+    let worst: FeeConfidence = "actual";
+    for (const line of lines) {
+      if (FEE_CONFIDENCE_RANK[line.confidence] < FEE_CONFIDENCE_RANK[worst]) worst = line.confidence;
+    }
+    return worst;
+  };
 
   return {
     projectId: project.id,
@@ -695,6 +738,7 @@ export function buildProjectFeeSheet(db: AppDb, project: ProjectRecord): Project
     jurisdictionFeesUsd,
     serviceFeesUsd,
     totalUsd: jurisdictionFeesUsd == null ? null : round2(jurisdictionFeesUsd + serviceFeesUsd),
+    totalConfidence: allPriced ? worstConfidence() : "unknown",
     unknowns,
     outOfPortalPayments,
     generatedAt: nowIso(),

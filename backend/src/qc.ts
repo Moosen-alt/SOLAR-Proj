@@ -7,9 +7,11 @@ import { fieldAliases, parserField } from "./normalize";
 import { logger } from "./logger";
 import { documentInventory } from "./requiredDocuments";
 import { nowIso } from "./time";
-import type { ParserPayload, QcStatus, Severity } from "../../shared/src/types";
+import type { ParserPayload, ProjectRecord, QcStatus, Severity } from "../../shared/src/types";
 import { resolveEffectiveCodeContext } from "./codeProfiles";
 import { findKnowledgeForLearn } from "./knowledgeBase";
+import { ensureFeeSchedulesResearched } from "./feeSchedules";
+import { requiredTracks } from "./submittalTracks";
 
 // Look up whether the AHJ for this project uses a portal platform that requires
 // individual sheets to be split and uploaded separately (e.g. ProjectDox, EnerGov).
@@ -32,6 +34,7 @@ interface ProjectRow {
   parser_json: string;
   ahj: string | null;
   state: string | null;
+  utility: string | null;
 }
 
 interface Check {
@@ -294,6 +297,33 @@ export function runQcForProject(db: AppDb, projectId: string): QcRunResult {
       projectId,
     ]);
   });
+
+  // THE FEE THIS FILING WILL COST, ASKED AT QC — the same day-the-plan-set-lands
+  // moment the document demands above moved to. If the fee table cannot answer for
+  // a track this project files, queue background research (a JOB, like
+  // code_research — never a synchronous LLM call here) so the fee sheet starts
+  // quoting the published schedule instead of the labelled estimate. Fire-and-
+  // forget and best-effort: the helper owns every dedupe/backoff/eligibility rule,
+  // and research must never break or slow QC itself. Outside the transaction
+  // above on purpose — the enqueue is its own write, not part of QC's results.
+  try {
+    const utility = clean(project.utility) || clean(payload.utility) || "";
+    // requiredTracks reads exactly these fields (ahj/city/state for the
+    // application profile match, utility for the NEM track, parserSnapshot for
+    // MPU scope) — the same derivation the tracks panel and autopilot use, so
+    // what research is asked for and what later gets filed cannot disagree.
+    const projectLike = {
+      id: projectId,
+      state: ctx.state,
+      ahj: ctx.ahj,
+      city: clean(payload.city) || "",
+      utility,
+      parserSnapshot: payload,
+    } as unknown as ProjectRecord;
+    void ensureFeeSchedulesResearched(db, projectLike, requiredTracks(projectLike)).catch(() => null);
+  } catch (err) {
+    logger.warn("qc", "fee-research trigger failed", { projectId, err: err instanceof Error ? err.message : String(err) });
+  }
 
   return { failCount, warningCount };
 }

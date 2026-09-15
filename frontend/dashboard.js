@@ -1650,7 +1650,10 @@ const FEE_PAYMENT_METHOD = {
 function renderFeeSheetLine(line) {
   const conf = FEE_CONFIDENCE[line.confidence] || FEE_CONFIDENCE.unknown;
   // Provisional and unknown fees carry the warning tone, so the card LOOKS unfinished.
-  const tone = line.confidence === "actual" || line.confidence === "verified" ? "pass" : line.known ? "warning" : "blocker";
+  // Keyed on "is there a number" rather than `known`: an ESTIMATE is known:false now
+  // (an estimate is not knowledge) but it still has a figure to act on — it warns, it
+  // does not block. Blocker stays for the line with no number at all.
+  const tone = line.confidence === "actual" || line.confidence === "verified" ? "pass" : line.feeUsd != null ? "warning" : "blocker";
   const trackLabel = line.track === "nem" ? "NEM / interconnection" : "Permit (AHJ)";
   const url = httpUrl(line.sourceUrl);
   return `
@@ -1697,6 +1700,9 @@ function renderFeeSheetPanel() {
   if (!sheet || !Array.isArray(sheet.lines)) { panel.hidden = true; panel.innerHTML = ""; return; }
   const provisional = sheet.lines.filter((l) => l.confidence === "seeded" || l.confidence === "estimated");
   const anyUnknown = sheet.totalUsd == null;
+  // Keyed on totalConfidence — computed by the backend BESIDE the sum — so the
+  // marker cannot drift from the arithmetic it qualifies.
+  const totalEstimated = !anyUnknown && sheet.totalConfidence === "estimated";
   panel.hidden = false;
   panel.innerHTML = `
     <section class="panel kx-callout-panel ${anyUnknown || provisional.length ? "is-warn" : ""}">
@@ -1713,11 +1719,12 @@ function renderFeeSheetPanel() {
         <tr><td style="padding:1px 14px 1px 0">Jurisdiction fees (permit + NEM)</td><td style="text-align:right"><strong>${feeMoney(sheet.jurisdictionFeesUsd)}</strong></td></tr>
         <tr><td style="padding:1px 14px 1px 0">Our service fees${sheet.billingRequired ? " (per submission)" : ""}</td>
             <td style="text-align:right"><strong>${feeMoney(sheet.serviceFeesUsd)}</strong></td></tr>
-        <tr style="border-top:1px solid var(--border)"><td style="padding:3px 14px 1px 0"><strong>Project total</strong></td>
-            <td style="text-align:right"><strong>${feeMoney(sheet.totalUsd)}</strong></td></tr>
+        <tr style="border-top:1px solid var(--border)"><td style="padding:3px 14px 1px 0"><strong>Project total${totalEstimated ? " (estimate)" : ""}</strong></td>
+            <td style="text-align:right"><strong>${totalEstimated ? "≈ " : ""}${feeMoney(sheet.totalUsd)}</strong></td></tr>
       </table>
       ${sheet.billingRequired ? "" : `<p class="muted" style="margin:2px 0;font-size:11px">This client is not billed per submission (billing mode ${esc(sheet.billingMode || "monthly / none")}), so the service fees above are shown for reference and are not collected here.</p>`}
       ${anyUnknown ? `<p style="margin:6px 0 2px;font-size:12px"><strong>The total is UNKNOWN because at least one fee is.</strong> It is not a zero and it is not a partial sum — do not put a number in front of this customer yet.</p>` : ""}
+      ${totalEstimated ? `<p style="margin:6px 0 2px;font-size:12px"><strong>⚠ This total INCLUDES AN ESTIMATE.</strong> At least one fee is a valuation heuristic, not a published or recorded number — true it up from the portal's fee screen before quoting a customer.</p>` : ""}
       ${(sheet.unknowns || []).length ? `
         <p style="margin:6px 0 2px;font-size:12px"><strong>Still unknown</strong></p>
         <ul style="margin:2px 0;padding-left:18px;font-size:12px">${sheet.unknowns.map((u) => `<li>${esc(u)}</li>`).join("")}</ul>` : ""}

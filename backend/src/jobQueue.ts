@@ -2,6 +2,8 @@ import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
 import type { AppDb, SqlParam } from "./db";
 import { DEFAULT_ORG_ID } from "./db";
+// audit.ts is a leaf (db/ids/json/time only) — no cycle through repository here.
+import { addAuditLog } from "./audit";
 import { importMboxKnowledge } from "./knowledgeBase";
 import { restoreRecipeSnapshotIfAbandoned, upsertRecipeNote } from "./portalRecipes";
 import { runDuePermitChecks } from "./repository";
@@ -18,6 +20,7 @@ export type JobType =
   | "prepare_submission"
   | "auto_learn"
   | "code_research"
+  | "fee_research"
   | "run_triage"
   | "correction_triage";
 
@@ -402,9 +405,24 @@ export function recoverStalePortalRecordings(db: AppDb): number {
   return stale.length;
 }
 
+// TRUE once startJobWorker has run in THIS process — i.e. this process actually
+// executes background jobs (today: exactly the server; server.ts starts the worker
+// in its listen callback). Read by feeSchedules.ensureFeeSchedulesResearched so
+// that passive processes — the smoke, unit tests, one-off scripts, benchmarks —
+// never CREATE autonomous research work as a side effect of merely running QC:
+// those processes load dotenv (a real ANTHROPIC_API_KEY) and their enqueue's
+// instant kick would run a multi-minute web-grounded LLM pass in-process. A
+// process that runs no worker has declared it is not the place background
+// spending happens.
+let workerStarted = false;
+export function jobWorkerRunning(): boolean {
+  return workerStarted;
+}
+
 // Background worker — call once at server startup. Polls the job queue on a fixed interval.
 // Interval defaults to JOB_WORKER_INTERVAL_MS env var, or 30 seconds.
 export function startJobWorker(db: AppDb): ReturnType<typeof setInterval> {
+  workerStarted = true;
   const intervalMs = Number(process.env.JOB_WORKER_INTERVAL_MS ?? 30_000);
   // Clear out jobs left `running` by a previous process before we start polling.
   recoverOrphanedJobs(db, { startup: true });
@@ -719,6 +737,48 @@ export async function processNextJob(db: AppDb): Promise<boolean> {
         const saved = saveResearchedCodeProfile(db, research.profile);
         result = { saved: true, key: saved.key, confidence: saved.confidence, webGrounded: research.webGrounded, adoptedCodes: saved.adoptedCodes.length };
       }
+    } else if (job.jobType === "fee_research") {
+      // Autonomous fee-schedule onboarding: web-research the jurisdiction's (or
+      // utility's) published fee schedule and land it through the REAL save path —
+      // researchFeeSchedule owns the retrieval ledger, so what is stored carries
+      // citation/corroboration evidence, always as confidence 'seeded' (hard rule
+      // 3). Enqueued the first time QC sees a project needing a fee row the table
+      // cannot answer (feeSchedules.ensureFeeSchedulesResearched). Same contract as
+      // code_research: gated on ANTHROPIC_API_KEY (the researcher itself refuses
+      // without a key), and a stub/empty/found:false result stores NOTHING — an
+      // empty fee row would block future auto-research for this target; the job
+      // rows themselves are the re-try backoff marker. saveFeeSchedule owns the
+      // hard refusals (human-verified rows, open conflicts, unsourced fees), so
+      // nothing in this handler can weaken them.
+      const { researchFeeSchedule } = await import("./feeSchedules");
+      const p = job.payload as { state?: string; ahj?: string; utility?: string; track?: string; discipline?: string };
+      const discipline = String(p.discipline || "");
+      const outcome = await researchFeeSchedule(db, {
+        state: String(p.state || ""),
+        ahj: String(p.ahj || ""),
+        utility: String(p.utility || ""),
+        track: p.track === "nem" ? "nem" : "permit",
+        discipline,
+      });
+      result = {
+        saved: outcome.saved, found: outcome.found,
+        profileKey: outcome.profileKey, track: outcome.track, discipline,
+        refusedVerified: outcome.refusedVerified, refusedConflicted: outcome.refusedConflicted,
+        reason: outcome.reason || undefined,
+      };
+      // The attempt is a visible fact either way (the cold-start portal-URL
+      // research does the same): a save says where the fee sheet's new number came
+      // from; a miss says research ran and found nothing, so the project's honest
+      // unknown is a checked unknown, not a gap nobody looked at.
+      try {
+        addAuditLog(db, job.projectId, "system", "fee research",
+          outcome.saved ? "fees.schedule_researched" : "fees.research_no_result", {
+            profileKey: outcome.profileKey, track: outcome.track, discipline: discipline || "(any)",
+            saved: outcome.saved, found: outcome.found,
+            refusedVerified: outcome.refusedVerified || undefined,
+            reason: (outcome.reason || "").slice(0, 400) || undefined,
+          });
+      } catch { /* audit is best-effort — never fail the job over it */ }
     } else {
       result = { skipped: true, reason: "job type handled externally" };
     }
