@@ -72,9 +72,11 @@ delete process.env.CLIENT_NOTIFICATIONS;
 const { openDatabase } = await import("../src/db");
 const { createClient } = await import("../src/clients");
 const { createProject, createPermitCheckTarget, recordPermitStatusCheck } = await import("../src/repository");
-const { publicProjectStatusPayload, projectStatusHistory, publicCheckLabel, trackLabel } = await import("../src/clientPortal");
+const { publicProjectStatusPayload, projectStatusHistory, publicCheckLabel, trackLabel, trackKind,
+  clientPortalPayload, ensureClientPortalToken } = await import("../src/clientPortal");
 const { ensureStatusShareToken } = await import("../src/clientNotifier");
-const { shouldRecordStatusCheck, classifyPermitStatusText } = await import("../src/permitMonitor");
+const { shouldRecordStatusCheck, classifyPermitStatusText, staleStatusClassifications,
+  classificationDrift } = await import("../src/permitMonitor");
 const { clientUpdateFor } = await import("../src/clientUpdates");
 
 const db = await openDatabase();
@@ -495,6 +497,268 @@ await check("A PROJECT WITH NO CHECKS AT ALL yields an empty timeline, not a cra
 });
 
 // ═════════════════════════════════════════════════════════════════════════════════════════
+// PART 2B — TWO THINGS THE PAGE SAID THAT WERE NOT TRUE.
+//
+//   1. A NEM ROW IS NOT REVIEWED BY A JURISDICTION. publicCheckLabel took no track, so an
+//      interconnection application sitting in waiting::"In review" told the client "In review by
+//      the jurisdiction" — about an application Pacific Power holds and no city has ever seen.
+//      Both surfaces are driven here: the per-project page (/status) and the per-client tracker
+//      (/portal), because the same wrong badge was on both.
+//   2. A STORED READING CAN PREDATE THE RULE THAT WOULD CHANGE IT. Ann's and Ivy's structural
+//      permits have read "Intake Requirements Needed" since Sep 3; the rule that calls that "the
+//      city is waiting on US" landed an hour AFTER the last check ran. The client page reads
+//      STORED rows, so it keeps publishing "In review by the jurisdiction" about a stalled permit.
+//      Nothing may rewrite those rows — permit_status_checks is an audit trail — so the page has
+//      to say the reading needs confirming, and a REAL re-check has to write a NEW row.
+// ═════════════════════════════════════════════════════════════════════════════════════════
+
+const { project: nemProject } = createProject(db, {
+  clientId: client.id, owner: "Interconnection Owner", street: "88 Utility Way", city: "Coos Bay",
+  state: "OR", ahj: "City of Coos Bay", utility: "Pacific Power", dcKw: "6", acKw: "4.8",
+});
+createPermitCheckTarget(db, nemProject.id, {
+  jurisdiction: "City of Coos Bay", applicationNumber: "187-26-000777-STR",
+  targetType: "permit", permitType: "building",
+});
+const nemProjectDetail = createPermitCheckTarget(db, nemProject.id, {
+  jurisdiction: "Pacific Power", applicationNumber: "APP-222888",
+  targetType: "nem", permitType: "nem",
+});
+const nemStrTarget = nemProjectDetail.permitCheckTargets.find((t) => t.applicationNumber.endsWith("-STR"))!;
+const nemAppTarget = nemProjectDetail.permitCheckTargets.find((t) => t.applicationNumber === "APP-222888")!;
+const nemToken = ensureStatusShareToken(db, nemProject.id);
+
+await check("A NEM ROW NEVER SAYS 'JURISDICTION' — through the endpoint, badges and timeline", async () => {
+  // ONE stored state, TWO reviewers. Both filings are polled with the same text and both land on
+  // waiting::"In review" — the defect is entirely in what the page then calls that state.
+  await recordPermitStatusCheck(db, nemProject.id, { targetId: nemStrTarget.id, source: "portal", rawStatusText: IN_REVIEW });
+  await recordPermitStatusCheck(db, nemProject.id, { targetId: nemAppTarget.id, source: "portal", rawStatusText: IN_REVIEW });
+  await new Promise((r) => setTimeout(r, 60));
+
+  const stored = db.query<{ status_label: string; outcome: string }>(
+    "SELECT status_label, outcome FROM permit_status_checks WHERE project_id = ?", [nemProject.id],
+  );
+  assert.deepEqual([...new Set(stored.map((s) => `${s.outcome}::${s.status_label}`))], ["waiting::In review"],
+    "the fixture's two filings are not in the same stored state, so a wording difference below "
+    + "would prove nothing about the track");
+
+  const payload = publicProjectStatusPayload(db, nemToken)!;
+  const nemTrack = payload.tracks.find((t) => t.applicationNumber === "APP-222888")!;
+  const strTrack = payload.tracks.find((t) => t.applicationNumber === "187-26-000777-STR")!;
+  assert.doesNotMatch(nemTrack.statusLabel, /jurisdiction|\bAHJ\b/i,
+    `the interconnection badge reads "${nemTrack.statusLabel}" — Pacific Power reviews this `
+    + "application and no jurisdiction is involved in it");
+  assert.match(nemTrack.statusLabel, /utility/i, nemTrack.statusLabel);
+  assert.match(strTrack.statusLabel, /jurisdiction/i,
+    `the building permit badge reads "${strTrack.statusLabel}" — the city does review this one`);
+  assert.doesNotMatch(strTrack.statusLabel, /\butility\b/i, strTrack.statusLabel);
+  assert.equal(nemTrack.label, "Utility interconnection (NEM)");
+
+  const nemHist = payload.history.find((h) => h.applicationNumber === "APP-222888")!;
+  const strHist = payload.history.find((h) => h.applicationNumber === "187-26-000777-STR")!;
+  assert.ok(nemHist && strHist, `both filings must be on the timeline: ${JSON.stringify(payload.history)}`);
+  assert.doesNotMatch(nemHist.statusLabel, /jurisdiction|\bAHJ\b/i,
+    `the timeline tells the client a jurisdiction is reviewing their interconnection: "${nemHist.statusLabel}"`);
+  assert.match(nemHist.statusLabel, /utility/i, nemHist.statusLabel);
+  assert.match(strHist.statusLabel, /jurisdiction/i, strHist.statusLabel);
+
+  // AND THE STORED LABEL IS UNTOUCHED. status_label is a MATCHING KEY — PUBLIC_CHECK_LABELS keys
+  // on it, shouldRecordStatusCheck compares on it, and the classifier writes it. Only the display
+  // value may differ per track.
+  const after = db.query<{ status_label: string }>(
+    "SELECT status_label FROM permit_status_checks WHERE project_id = ?", [nemProject.id],
+  );
+  assert.deepEqual([...new Set(after.map((s) => s.status_label))], ["In review"],
+    "the stored matching key was rewritten to make the wording work — every consumer that "
+    + "compares on status_label now disagrees with the classifier");
+});
+
+await check("...and on the per-CLIENT tracker's badges too (portal.html), not only /status", () => {
+  // The same wrong wording was on both public pages, and a fix to one has missed the other before.
+  const portalToken = ensureClientPortalToken(db, client.id);
+  const portal = clientPortalPayload(db, portalToken)!;
+  const proj = portal.projects.find((p) => p.id === nemProject.id)!;
+  assert.ok(proj, "the tracker lost the project entirely");
+  const nemTrack = proj.tracks.find((t) => t.applicationNumber === "APP-222888")!;
+  const strTrack = proj.tracks.find((t) => t.applicationNumber === "187-26-000777-STR")!;
+  assert.doesNotMatch(nemTrack.statusLabel, /jurisdiction|\bAHJ\b/i,
+    `the tracker's interconnection badge reads "${nemTrack.statusLabel}"`);
+  assert.match(nemTrack.statusLabel, /utility/i, nemTrack.statusLabel);
+  assert.match(strTrack.statusLabel, /jurisdiction/i, strTrack.statusLabel);
+  const nemHist = proj.history.find((h) => h.applicationNumber === "APP-222888")!;
+  assert.doesNotMatch(nemHist.statusLabel, /jurisdiction|\bAHJ\b/i, nemHist.statusLabel);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────
+// A STORED READING THAT PREDATES THE RULE.
+//
+// WHY THE FIXTURE ENDS IN A RAW UPDATE, which this file otherwise never does: the real writer
+// CANNOT produce a historically-stale row. It classifies with today's rules by construction, so
+// the only way to hold the state Ann's row is in — text that today reads "the city is waiting on
+// us", stored under the verdict the OLD rules gave it — is to write the row through the real
+// writer and then move the two columns the old rules would have written. The check row AND the
+// target's latest_* pair are both moved, because production keeps them in step (the target UPDATE
+// is ungated, so it always mirrors the newest check) and a fixture where they disagree would test
+// a state production cannot hold.
+//
+// The precondition below then proves the fixture is actually stale under TODAY's classifier — so
+// the day a rule change makes that text classify as "In review" again, this fails loudly instead
+// of passing while proving nothing.
+// ─────────────────────────────────────────────────────────────────────────────────────────
+const { project: staleProject } = createProject(db, {
+  clientId: client.id, owner: "Stalled At Intake", street: "1780 Ocean Blvd SE", city: "Coos Bay",
+  state: "OR", ahj: "City of Coos Bay", utility: "Pacific Power", dcKw: "8.36", acKw: "7.68",
+});
+const staleDetail = createPermitCheckTarget(db, staleProject.id, {
+  jurisdiction: "City of Coos Bay", applicationNumber: "187-26-000309-STR",
+  targetType: "permit", permitType: "building",
+});
+const staleTarget = staleDetail.permitCheckTargets[0]!;
+const staleToken = ensureStatusShareToken(db, staleProject.id);
+let staleCheckId = "";
+
+await check("PRECONDITION: the stored row holds a verdict today's rules disagree with", async () => {
+  await recordPermitStatusCheck(db, staleProject.id, { targetId: staleTarget.id, source: "portal", rawStatusText: INTAKE_NEEDED });
+  await new Promise((r) => setTimeout(r, 60));
+  const row = db.get<{ id: string; raw_status_text: string; outcome: string; status_label: string }>(
+    "SELECT id, raw_status_text, outcome, status_label FROM permit_status_checks WHERE target_id = ? ORDER BY rowid DESC LIMIT 1",
+    [staleTarget.id],
+  )!;
+  staleCheckId = row.id;
+  // Move it back to what the pre-fix classifier wrote for this exact text. Both halves, together.
+  db.run("UPDATE permit_status_checks SET outcome = 'waiting', status_label = 'In review' WHERE id = ?", [row.id]);
+  db.run("UPDATE permit_check_targets SET latest_outcome = 'waiting', latest_status_label = 'In review' WHERE id = ?", [staleTarget.id]);
+
+  const stored = db.get<{ raw_status_text: string; outcome: string; status_label: string }>(
+    "SELECT raw_status_text, outcome, status_label FROM permit_status_checks WHERE id = ?", [row.id],
+  )!;
+  assert.match(stored.raw_status_text, /Intake Requirements Needed/i,
+    "the fixture's stored text is not the stalled-at-intake record this is about");
+  const today = classifyPermitStatusText(stored.raw_status_text);
+  assert.notEqual(`${today.outcome}::${today.statusLabel}`, `${stored.outcome}::${stored.status_label}`,
+    "TODAY's classifier agrees with the stored row, so there is no staleness to detect and every "
+    + "assertion below would pass without the fix");
+  // And the drift helper itself says so, in the same terms the operator surface reports.
+  const drift = classificationDrift({
+    outcome: stored.outcome, statusLabel: stored.status_label, rawStatusText: stored.raw_status_text,
+  });
+  assert.equal(drift.stale, true);
+  assert.equal(drift.storedStatusLabel, "In review");
+  assert.equal(drift.currentStatusLabel, "Action needed before review");
+});
+
+await check("THE PAGE MARKS IT: badge and timeline both say the reading needs confirming", () => {
+  const payload = publicProjectStatusPayload(db, staleToken)!;
+  const track = payload.tracks.find((t) => t.applicationNumber === "187-26-000309-STR")!;
+  assert.equal(track.needsRecheck, true,
+    `the client is told "${track.statusLabel}" as a plain fact about a permit whose stored reading `
+    + "predates the rule that would change it — a classifier fix that never reaches the stored "
+    + "rows is invisible to the customer");
+  assert.equal(payload.history[0].needsRecheck, true,
+    `the timeline publishes the stale reading unqualified: ${JSON.stringify(payload.history[0])}`);
+  // The wording is still the STORED verdict, not a silently re-derived one. Quietly re-classifying
+  // at read time would publish a verdict no check ever produced and leave the stored row — the one
+  // every other consumer reads — wrong and unnoticed.
+  assert.match(track.statusLabel, /In review by the jurisdiction/,
+    `the page re-derived a new verdict instead of flagging the old one: "${track.statusLabel}"`);
+  const stored = db.get<{ outcome: string; status_label: string }>(
+    "SELECT outcome, status_label FROM permit_status_checks WHERE id = ?", [staleCheckId],
+  )!;
+  assert.equal(`${stored.outcome}::${stored.status_label}`, "waiting::In review",
+    "reading the page REWROTE the audit row — email_project_matches.status_check_id points into "
+    + "this table and correction_id/reviewed_by_ahj feed other logic; history is not editable");
+});
+
+await check("A CURRENT READING IS NOT MARKED — the flag is evidence, not decoration", () => {
+  // The NEM/permit project above is polled with text today's rules agree with. If everything is
+  // marked, the mark says nothing.
+  const payload = publicProjectStatusPayload(db, nemToken)!;
+  for (const t of payload.tracks) {
+    assert.equal(t.needsRecheck, false, `${t.applicationNumber} was marked stale while it is current`);
+  }
+  for (const h of payload.history) {
+    assert.equal(h.needsRecheck, false, `${h.applicationNumber} (${h.at}) was marked stale while it is current`);
+  }
+});
+
+await check("THE OPERATOR SURFACE: which rows, what the rule says now, and the call that fixes it", () => {
+  const stale = staleStatusClassifications(db, [staleProject.id]);
+  assert.equal(stale.length, 1, `the stalled filing is not reported: ${JSON.stringify(stale)}`);
+  const only = stale[0];
+  assert.equal(only.targetId, staleTarget.id);
+  assert.equal(only.checkId, staleCheckId, "the report must name the exact audit row, not a copy");
+  assert.equal(only.storedStatusLabel, "In review");
+  assert.equal(only.currentOutcome, "needs_human_review");
+  assert.equal(only.currentStatusLabel, "Action needed before review");
+  assert.equal(only.applicationNumber, "187-26-000309-STR");
+  assert.equal(only.hasPortalUrl, false,
+    "this target has no portal URL, and an operator handed a fetch trigger for it would get "
+    + "'No status text available' — the report has to say which of the two they are getting");
+  // NO SCRAPED PROSE, on an operator route or anywhere else. The condition sentence lives in the
+  // classifier's message and is not needed to decide to re-check.
+  const blob = JSON.stringify(stale);
+  assert.doesNotMatch(blob, /rawStatusText|raw_status_text|Submitted 09\/02/i, blob);
+  // ...and a project whose readings are current reports nothing at all.
+  assert.deepEqual(staleStatusClassifications(db, [nemProject.id]), []);
+  assert.deepEqual(staleStatusClassifications(db, []), []);
+});
+
+await check("THE CURE IS A NEW ROW: a real re-check clears the mark and leaves history intact", async () => {
+  // This is the production path the operator surface points at — POST /api/projects/:id/
+  // permit-checks, whose entire body is recordPermitStatusCheck. The stale row is not touched;
+  // a second row is written, classified by today's rules.
+  const before = rowsFor(staleTarget.id);
+  await recordPermitStatusCheck(db, staleProject.id, { targetId: staleTarget.id, source: "manual", rawStatusText: INTAKE_NEEDED });
+  await new Promise((r) => setTimeout(r, 60));
+  assert.equal(rowsFor(staleTarget.id), before + 1, "the re-check wrote no new row");
+  const preserved = db.get<{ outcome: string; status_label: string }>(
+    "SELECT outcome, status_label FROM permit_status_checks WHERE id = ?", [staleCheckId],
+  )!;
+  assert.equal(`${preserved.outcome}::${preserved.status_label}`, "waiting::In review",
+    "the re-check rewrote the old row instead of writing a new one — that is the audit trail "
+    + "being edited to say we always knew");
+
+  const payload = publicProjectStatusPayload(db, staleToken)!;
+  const track = payload.tracks.find((t) => t.applicationNumber === "187-26-000309-STR")!;
+  assert.equal(track.needsRecheck, false, "the mark survived a fresh reading — it is not evidence, it is noise");
+  assert.match(track.statusLabel, /\bus\b/i,
+    `after a real check the client is finally told who is holding it: "${track.statusLabel}"`);
+  // The superseded entry stays on the timeline, unmarked: it is what we believed then, not a
+  // claim about today.
+  assert.equal(payload.history[0].needsRecheck, false, JSON.stringify(payload.history[0]));
+  const old = payload.history.find((h) => /In review by the jurisdiction/.test(h.statusLabel));
+  assert.ok(old, `the earlier reading vanished from the timeline: ${JSON.stringify(payload.history)}`);
+  assert.equal(old!.needsRecheck, false,
+    "a superseded entry is marked 'needs confirming' — history is not re-opened because the rules "
+    + "moved on afterwards");
+});
+
+await check("THE STALE SURFACE IS WIRED: the operator route, and both public pages", () => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const src = fs.readFileSync(path.join(here, "..", "src", "server.ts"), "utf8");
+  const at = src.indexOf('app.get("/api/projects/:id/permit-checks/stale"');
+  assert.ok(at > 0,
+    "there is no operator surface for stale classifications — the fix reaches nobody who could "
+    + "trigger a re-check");
+  const nextRoute = src.slice(at + 40).search(/\napp\.(get|post|put|patch|delete|use)\(/);
+  const body = src.slice(at, nextRoute > 0 ? at + 40 + nextRoute : at + 2000);
+  assert.match(body, /staleStatusClassifications\(/, "the route re-implements the drift check beside the helper");
+  assert.match(body, /permit-checks/, "the route does not name the re-check call that fixes what it reports");
+  assert.doesNotMatch(body, /\bUPDATE\b|recordPermitStatusCheck\(/,
+    "the stale REPORT writes: permit_status_checks is an audit trail and a GET must not edit it");
+
+  // The pages are where a human actually sees it. Both consume the flag; status.html on the
+  // timeline AND the badges, portal.html on its badges (it has no timeline card).
+  const statusHtml = fs.readFileSync(path.join(here, "..", "..", "frontend", "status.html"), "utf8");
+  assert.match(statusHtml, /t\.needsRecheck/, "status.html's Applications badges ignore the flag");
+  assert.match(statusHtml, /h\.needsRecheck/, "status.html's Recent updates timeline ignores the flag");
+  assert.match(statusHtml, /needs confirming/i, "nothing on the page says the reading is unconfirmed");
+  const portalHtml = fs.readFileSync(path.join(here, "..", "..", "frontend", "portal.html"), "utf8");
+  assert.match(portalHtml, /t\.needsRecheck/, "the per-client tracker publishes stale readings as fact");
+  assert.match(portalHtml, /needs confirming/i, "portal.html shows no caveat beside a stale badge");
+});
+
+// ═════════════════════════════════════════════════════════════════════════════════════════
 // PART 3 — THE POLICY AND THE WORDING, on their own.
 //
 // UNIT COVER ONLY. Everything below calls a helper directly, which is what the previous version
@@ -554,8 +818,8 @@ await check("POLICY: email and manual are EXEMPT — they are events, not polls"
 });
 
 await check("THE INVERSION: 'the agency is reviewing' vs 'the agency is waiting on us'", () => {
-  const them = publicCheckLabel("waiting", "In review");
-  const us = publicCheckLabel("needs_human_review", "Action needed before review");
+  const them = publicCheckLabel("waiting", "In review", "permit");
+  const us = publicCheckLabel("needs_human_review", "Action needed before review", "permit");
   assert.match(them, /jurisdiction/i, `"${them}" does not say who is reviewing`);
   assert.notEqual(them, us);
   assert.match(us, /\bus\b/i,
@@ -569,9 +833,55 @@ await check("THE INVERSION: 'the agency is reviewing' vs 'the agency is waiting 
 });
 
 await check("THE WORDING IS A MAP, NOT A GUESS: an unknown label passes through", () => {
-  assert.equal(publicCheckLabel("waiting", "Some legacy label we never emitted"), "Some legacy label we never emitted");
-  assert.equal(publicCheckLabel("waiting", ""), "", "a blank label must stay blank so the page can fall back");
-  assert.equal(publicCheckLabel("issued", "Permit issued"), "Permit issued");
+  for (const kind of ["permit", "nem"] as const) {
+    assert.equal(publicCheckLabel("waiting", "Some legacy label we never emitted", kind), "Some legacy label we never emitted");
+    assert.equal(publicCheckLabel("waiting", "", kind), "", "a blank label must stay blank so the page can fall back");
+    assert.equal(publicCheckLabel("issued", "Permit issued", kind), "Permit issued");
+  }
+});
+
+await check("A NEM FILING IS NOT REVIEWED BY A JURISDICTION — every branch, both kinds", () => {
+  // "NEM/interconnection isnt an ahj" — the operator, and they are right. An interconnection
+  // application is Pacific Power's queue; no city has ever seen it. Driving the real classifier
+  // rather than restating its label list means a NEW branch is covered the day it is added, which
+  // is the whole point: the map is keyed on the stored label and a new key with a
+  // jurisdiction-flavoured wording would sail through a list written by hand.
+  const samples = [IN_REVIEW, INTAKE_NEEDED, ISSUED,
+    "Record Status: Approved. Plan review complete.",
+    "Record Status: Ready for Issue. Fees due.",
+    CORRECTION, NEM_APPROVED, ""];
+  for (const raw of samples) {
+    const c = classifyPermitStatusText(raw);
+    const nem = publicCheckLabel(c.outcome, c.statusLabel, "nem");
+    const permit = publicCheckLabel(c.outcome, c.statusLabel, "permit");
+    assert.doesNotMatch(nem, /jurisdiction|\bAHJ\b/i,
+      `an interconnection application reads "${nem}" — it is reviewed by the UTILITY, and no `
+      + "jurisdiction is involved in it at all");
+    assert.doesNotMatch(permit, /\butility\b/i,
+      `a building permit reads "${permit}" — the utility does not review permits`);
+    assert.ok(nem && permit, `${c.outcome}::${c.statusLabel} produced no wording at all`);
+  }
+  // The two states a stalled filing actually sits in, named explicitly: same stored key, two
+  // reviewers.
+  assert.equal(publicCheckLabel("waiting", "In review", "nem"), "In review by the utility");
+  assert.equal(publicCheckLabel("waiting", "In review", "permit"), "In review by the jurisdiction");
+  assert.match(publicCheckLabel("needs_human_review", "Action needed before review", "nem"), /\bus\b.*utility/i);
+});
+
+await check("THE TRACK KIND COMES FROM THE ROW, and a blank target_type still finds the NEM", () => {
+  // trackLabel and publicCheckLabel must agree on what a filing IS. A legacy target with a blank
+  // target_type and permit_type 'nem' is titled "Utility interconnection (NEM)" by trackLabel; if
+  // the wording asked a different question it would title the row for the utility and then say the
+  // jurisdiction was reviewing it.
+  assert.equal(trackKind("nem", ""), "nem");
+  assert.equal(trackKind("", "nem"), "nem");
+  assert.equal(trackKind("permit", "building"), "permit");
+  assert.equal(trackKind("", ""), "permit", "an unknown track must not be guessed into the utility's queue");
+  for (const [type, permitType] of [["nem", "nem"], ["", "nem"], ["NEM", ""]] as Array<[string, string]>) {
+    assert.equal(trackLabel(type, permitType), "Utility interconnection (NEM)");
+    assert.doesNotMatch(publicCheckLabel("waiting", "In review", trackKind(type, permitType)), /jurisdiction/i,
+      `trackLabel calls (${type}/${permitType}) an interconnection while the badge names a jurisdiction`);
+  }
 });
 
 await check("NO OPERATOR JARGON REACHES THE CLIENT PAGE", () => {
@@ -597,14 +907,17 @@ await check("NO OPERATOR JARGON REACHES THE CLIENT PAGE", () => {
   for (const raw of samples) {
     const c = classifyPermitStatusText(raw);
     seen.add(`${c.outcome}::${c.statusLabel}`);
-    const words = publicCheckLabel(c.outcome, c.statusLabel);
-    for (const [pattern, why] of JARGON) {
-      assert.doesNotMatch(words, pattern,
-        `"${c.statusLabel}" (${c.outcome}) reaches the client as "${words}" — ${why}`);
+    for (const kind of ["permit", "nem"] as const) {
+      const words = publicCheckLabel(c.outcome, c.statusLabel, kind);
+      for (const [pattern, why] of JARGON) {
+        assert.doesNotMatch(words, pattern,
+          `"${c.statusLabel}" (${c.outcome}) reaches the client as "${words}" on a ${kind} track — ${why}`);
+      }
     }
   }
   // And the fallback branch, which no sample text reaches.
-  assert.doesNotMatch(publicCheckLabel("needs_human_review", "Needs human review"), /human review/i);
+  assert.doesNotMatch(publicCheckLabel("needs_human_review", "Needs human review", "permit"), /human review/i);
+  assert.doesNotMatch(publicCheckLabel("needs_human_review", "Needs human review", "nem"), /human review/i);
   assert.ok(seen.size >= 7, `the samples exercised only ${seen.size} classifier branches`);
 });
 

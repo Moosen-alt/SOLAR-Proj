@@ -636,6 +636,29 @@ export interface ApplicationDocumentPackage {
     /** Why a clean submittal needs it, in the jurisdiction's own terms. */
     why: string;
   }>;
+  /**
+   * WHETHER missingDocuments ABOVE IS AN ANSWER AT ALL. An ABSENT list and an EMPTY list
+   * are not the same fact, and for two permits the difference was invisible: the inventory
+   * throw was swallowed, missingDocuments stayed undefined, the screen's `|| []` turned it
+   * into an empty list, and a pass-styled "every required document is attached" printed
+   * over a computation that never ran.
+   *
+   *  - "resolved"    — documentInventory ran. The list is authoritative, and an EMPTY list
+   *                    genuinely means nothing blocking is missing. Only this value may
+   *                    render an all-clear.
+   *  - "unavailable" — documentInventory threw. missingDocuments is ABSENT, not empty. The
+   *                    honest rendering is "we could not determine what this AHJ needs",
+   *                    with missingDocumentsError as the reason. Never an all-clear.
+   *  - absent        — this package came off the DB-free builder (buildApplicationDocumentPackage),
+   *                    which never resolves an inventory. Read it as unavailable, not clear.
+   *
+   * Deliberately its own field rather than a change to missingDocuments' type: widening
+   * that array to carry a sentinel would change what every existing reader means.
+   */
+  missingDocumentsStatus?: "resolved" | "unavailable";
+  /** Why the inventory could not be computed, for the operator. Set only alongside
+   *  missingDocumentsStatus === "unavailable". */
+  missingDocumentsError?: string;
   html: string;
   /** When the knowledge base has a learned profile for this AHJ, its real
    *  required-document list + portal (so the PM isn't relying on the generic fallback). */
@@ -1532,10 +1555,21 @@ export interface PublicStatusHistoryEntry {
   label: string;
   /** The jurisdiction's own reference for that filing, so two permit rows are never ambiguous. */
   applicationNumber: string;
-  /** Client-facing wording — says who the next move belongs to. See publicCheckLabel. */
+  /**
+   * Client-facing wording — says who the next move belongs to, AND who is holding it: the
+   * jurisdiction on a permit, the UTILITY on an interconnection. See publicCheckLabel.
+   */
   statusLabel: string;
   /** The raw outcome. For badge STYLING only; the words are in statusLabel. */
   outcome: string;
+  /**
+   * This entry is the filing's CURRENT state and was classified by rules we have since changed —
+   * a re-read of the same stored text disagrees with it. The page marks the reading as needing
+   * confirmation instead of publishing it as a fact; the stored row is never rewritten (it is an
+   * audit trail), so the fix is a fresh check, which writes a NEW row. Superseded entries are
+   * never marked: they are history, not a claim about today.
+   */
+  needsRecheck: boolean;
 }
 
 /** One filing being tracked, as the client sees it. */
@@ -1547,6 +1581,8 @@ export interface PublicStatusTrack {
   lastCheckedAt: string | null;
   applicationNumber: string;
   permitNumber: string;
+  /** This badge's reading predates the current status rules — see PublicStatusHistoryEntry. */
+  needsRecheck: boolean;
 }
 
 export interface PublicProjectStatusPayload {

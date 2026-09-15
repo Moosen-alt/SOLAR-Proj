@@ -3,86 +3,140 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Solar Submission Autopilot</title>
+  <title>Keelix · Solar Submission Autopilot</title>
+  <!-- Manrope now arrives from @font-face in styles.css, served out of
+       frontend/vendor alongside lucide below — same convention, same reason.
+       The CDN <link> that used to live here could only reach the four pages
+       someone had edited; login.html linked this stylesheet and NO font, so the
+       first screen a customer sees rendered in Segoe UI while the rest of the
+       app rendered in Manrope. One @font-face fixes every page at once. -->
   <link rel="stylesheet" href="/styles.css" />
-  <!-- Manrope. Unlike the vendored lucide above, a webfont degrades gracefully:
-       if fonts.googleapis.com is unreachable (offline demo, locked-down cloud)
-       the page falls back to the system stack in --font-sans and every layout
-       still holds. Icons would simply vanish, which is why THOSE are vendored. -->
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <!-- Vendored locally (frontend/vendor) so the dashboard renders icons offline
        and never depends on a CDN being reachable during a demo or in the cloud. -->
   <script src="/vendor/lucide.min.js"></script>
 </head>
 <body>
+  <!-- ===================================================================
+       ONE NAVIGATION.
+
+       This page used to carry three, stacked: a toolbar of eight controls, a
+       second row of three page tabs, and a "Start here" banner. The operator's
+       verdict on the result was that it did not read like the product's own
+       marketing site "minus the colors maybe" — and three rows of chrome above
+       the first project is a large part of why.
+
+       It is now the site's header shape: wordmark left, a short primary nav
+       centred, one filled green action right. The spine is the pipeline, in the
+       operator's own words — "everything will go through the parser and through
+       the workflows till completed" — so Parser leads the nav as the way in.
+
+       NOTHING WAS DELETED. Every control that left the top bar is in the "⋯"
+       menu with its id and its handler intact; the standalone tools are
+       unlaunched products, not dead weight, and they stay reachable.
+
+       TWO THINGS THAT WILL BITE WHOEVER EDITS THIS NEXT:
+        1. Only the three real pages may carry class="page-tab". dashboard.js
+           binds EVERY .page-tab to navigate("#/" + dataset.page), so a tab with
+           no data-page routes to "#/undefined" and follows its href as well.
+           New nav entries use class="page-link" (see Parser).
+        2. There may be exactly ONE <details class="topbar-more"> in the header.
+           dashboard.js dismisses it with querySelector(".topbar-more") —
+           singular — so a second menu would never close.
+       =================================================================== -->
   <header class="topbar">
     <div class="masthead">
-      <h1>Solar Submission Autopilot</h1>
-      <p class="tagline">From plan set to permit and interconnection</p>
-      <p id="serviceStatus" class="conn-status conn-status--checking">Connecting…</p>
+      <h1 class="brand-heading">
+        <a class="brand" href="#/dashboard" aria-label="Keelix Automation — dashboard">
+          <span class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M12 22.2v-6.6" stroke="currentColor" stroke-width="2.3" stroke-linecap="round"/>
+              <path d="M12 15.6s-.5-6.5-6.3-9.5c0 0-.7 6.4 2.7 8.7 2 1.3 3.6.8 3.6.8Z" fill="currentColor"/>
+              <path d="M12 15.6s.5-6.5 6.3-9.5c0 0 .7 6.4-2.7 8.7-2 1.3-3.6.8-3.6.8Z" fill="currentColor" opacity=".62"/>
+            </svg>
+          </span>
+          <span class="brand-word">
+            <span class="brand-name">KEELIX</span>
+            <span class="brand-sub">AUTOMATION</span>
+          </span>
+        </a>
+      </h1>
     </div>
-    <!-- Ordered by what the control does, not by when it was added: create,
-         then places to go, then the two buttons that actually go and drive live
-         portals, then utilities. The dividers and the `runs` class carry that
-         grouping in the styling — see "LOOKING vs DOING" in styles.css. -->
-    <nav class="actions">
-      <a class="button primary" href="/new-project"><i data-lucide="plus"></i><span>New project</span></a>
-      <span class="actions-divider"></span>
-      <a class="button secondary" href="/fill-form"><i data-lucide="file-pen-line"></i><span>Fill a form</span></a>
-      <a class="button secondary" href="/parser"><i data-lucide="file-scan"></i><span>Parser</span></a>
-      <!-- Five pure DESTINATIONS, folded behind one control. They open panels;
-           they never drive a portal. The eleven topbar controls all sat at the
-           same weight, so "Permit checks" — which goes out and drives live
-           jurisdiction portals — looked exactly like "KPIs". This is the
-           LOOKING vs DOING split already documented in styles.css, finally made
-           structural. Every button keeps its id and its handler: all five bind
-           through getElementById, which does not care about nesting. -->
+
+    <nav class="primary-nav" aria-label="Primary">
+      <!-- Parser first: it is where a project enters the pipeline. A plain
+           link, NOT a .page-tab — see note 1 above. -->
+      <a class="page-link" href="/parser"><span>Parser</span></a>
+      <button class="page-tab" data-page="dashboard" aria-selected="true"><span>Dashboard</span></button>
+      <button class="page-tab" data-page="projects" aria-selected="false"><span>Projects</span></button>
+      <button class="page-tab" data-page="team" aria-selected="false"><span>Team Workload</span></button>
+    </nav>
+
+    <div class="topbar-end">
+      <p id="serviceStatus" class="conn-status conn-status--checking">Connecting…</p>
+      <button id="refreshBtn" class="icon-button" title="Refresh (r)" aria-label="Refresh"><i data-lucide="refresh-cw"></i></button>
+      <!-- The inline display:none must stay inline: bumpNotifBadge reveals the bell
+           with `btn.style.display = ""`, which only unhides it if the hiding rule
+           is the inline one. Moving it to the class would hide the bell forever. -->
+      <button id="notifBadgeBtn" class="icon-button notif-btn" title="Notifications" aria-label="Notifications" style="display:none">
+        <i data-lucide="bell"></i>
+        <span id="notifBadge" class="notif-badge">0</span>
+      </button>
       <details class="topbar-more">
-        <summary class="button secondary"><i data-lucide="layout-grid"></i><span>Workspace</span></summary>
+        <summary class="icon-button" title="More" aria-label="More"><i data-lucide="more-horizontal"></i></summary>
         <div class="topbar-more-menu">
+          <!-- DOING. These two go out and drive live jurisdiction and utility
+               portals, so they keep the outlined brand treatment and sit apart
+               from the panel-openers below — the LOOKING vs DOING split that
+               styles.css documents. -->
+          <p class="menu-group">Run a check</p>
+          <button id="runPermitMonitorBtn" class="secondary runs"><i data-lucide="radar"></i><span>Permit checks</span></button>
+          <button id="runNemMonitorBtn" class="secondary runs"><i data-lucide="zap"></i><span>NEM checks</span></button>
+          <p class="menu-note">These read live portals. They never submit, pay a fee, or answer MFA — a person does that.</p>
+          <!-- LOOKING. Five panels. Every one still binds by getElementById,
+               which does not care that it now lives inside a menu. -->
+          <p class="menu-group">Workspace</p>
           <button id="openCustomersBtn" class="secondary"><i data-lucide="contact"></i><span>Leads</span></button>
           <button id="openClientsBtn" class="secondary"><i data-lucide="building-2"></i><span>Clients</span></button>
           <button id="openUsersBtn" class="secondary"><i data-lucide="users"></i><span>Team</span></button>
           <button id="openKpiBtn" class="secondary"><i data-lucide="bar-chart-2"></i><span>KPIs</span></button>
           <button id="openKnowledgeBtn" class="secondary"><i data-lucide="brain"></i><span>Knowledge</span></button>
+          <!-- A standalone tool: still shipping, just no longer competing with
+               the pipeline for top-level space. -->
+          <p class="menu-group">Tools</p>
+          <a class="button secondary" href="/fill-form"><i data-lucide="file-pen-line"></i><span>Fill a form</span></a>
         </div>
       </details>
-      <span class="actions-divider"></span>
-      <button id="runPermitMonitorBtn" class="secondary runs"><i data-lucide="radar"></i><span>Permit checks</span></button>
-      <button id="runNemMonitorBtn" class="secondary runs"><i data-lucide="zap"></i><span>NEM checks</span></button>
-      <span class="actions-divider"></span>
-      <button id="refreshBtn" class="secondary"><i data-lucide="refresh-cw"></i><span>Refresh</span></button>
-      <!-- The inline display:none must stay inline: bumpNotifBadge reveals the bell
-           with `btn.style.display = ""`, which only unhides it if the hiding rule
-           is the inline one. Moving it to the class would hide the bell forever. -->
-      <button id="notifBadgeBtn" class="secondary notif-btn" title="Notifications" style="display:none">
-        <i data-lucide="bell"></i>
-        <span id="notifBadge" class="notif-badge">0</span>
-      </button>
-    </nav>
+      <!-- THE single action. -->
+      <a class="button primary" href="/new-project"><i data-lucide="plus"></i><span>New project</span></a>
+    </div>
   </header>
   <div id="toastContainer" style="position:fixed;bottom:24px;right:24px;z-index:9999;display:flex;flex-direction:column;gap:8px;pointer-events:none"></div>
 
-  <nav class="page-tabs" aria-label="Primary">
-    <button class="page-tab" data-page="dashboard" aria-selected="true"><i data-lucide="layout-dashboard"></i><span>Dashboard</span></button>
-    <button class="page-tab" data-page="projects" aria-selected="false"><i data-lucide="folder-kanban"></i><span>Projects</span></button>
-    <button class="page-tab" data-page="team" aria-selected="false"><i data-lucide="users-round"></i><span>Team Workload</span></button>
-  </nav>
-
+  <!-- The third of the three competing navigations, kept but demoted. A
+       seven-stage pipeline needs a legend, and this is the only place on the
+       dashboard where the human-does-the-final-submit rule is spelled out — so
+       it is not deleted, it is a quiet hairline strip that stays shut until
+       asked. The hint used to be the single static string "click to collapse",
+       which was wrong in the state it spends most of its life in; two spans
+       swapped by [open] in CSS, no JS. -->
   <details id="startHereGuide" class="start-here">
     <summary>
-      <span class="start-here-title"><i data-lucide="compass"></i> Start here — how a project flows</span>
-      <span class="start-here-hint">click to collapse</span>
+      <span class="start-here-title"><i data-lucide="compass"></i> How a project flows</span>
+      <span class="start-here-hint start-here-hint--closed">Show the 7 steps</span>
+      <span class="start-here-hint start-here-hint--open">Hide</span>
     </summary>
     <div class="start-here-body">
-      <p class="start-here-intro">Every project moves left-to-right through these 7 steps. Pick a project from the list to see its <strong>Next step</strong> banner, which tells you exactly which button to click.</p>
+      <p class="start-here-intro">Every project moves left to right through these seven steps. Pick a project from the list to see its <strong>Next step</strong> banner, which names the button to click.</p>
       <ol class="flow-steps">
         <li><span class="flow-num">1</span><div><strong>Intake</strong><p>Open the <a href="/parser">Parser</a>, upload the plan set + utility bill, click <em>Parse</em>, then <em>Save to project</em>.</p></div></li>
         <li><span class="flow-num">2</span><div><strong>QC check</strong><p>Select the project, click <em>Run QC</em>. Fix anything flagged in <em>QC Results</em>, then re-run.</p></div></li>
         <li><span class="flow-num">3</span><div><strong>Build docs</strong><p>Click <em>Build AHJ/NEM Docs</em> to generate the application packet.</p></div></li>
-        <li><span class="flow-num">4</span><div><strong>Final review</strong><p>Click <em>Reviewer Gate</em> — the last automated check before a human submits.</p></div></li>
+        <!-- The plan review gate is a STEP IN THIS WORKFLOW, not a destination.
+             The operator: "plan review gate is part of the workflow i dont know
+             why you showed me the separate tool." It has never been in this
+             page's navigation and it is not being added to it; you reach it on
+             the project you are working, which is what step 4 says. -->
+        <li><span class="flow-num">4</span><div><strong>Plan review</strong><p>Open the project and click <em>Reviewer Gate</em> — the last automated check before a human submits. It lives on the project, not on its own screen.</p></div></li>
         <li><span class="flow-num">5</span><div><strong>Submit</strong><p>Click <em>Prepare Submittal</em>. <strong>A person does the final submit</strong> in the portal — automation never clicks submit, pays fees, or solves MFA/CAPTCHA.</p></div></li>
         <li><span class="flow-num">6</span><div><strong>Track</strong><p>Use <em>Permit Checks</em> + <em>NEM Checks</em> to monitor. Paste any correction letter into <em>Corrections</em> for an AI-drafted reply (you review before sending).</p></div></li>
         <li><span class="flow-num">7</span><div><strong>Handoff</strong><p>When the permit is issued <em>and</em> NEM approved, copy the <em>Handoff Packet</em> to the installer. Our scope ends here — PTO is the installer's job.</p></div></li>
@@ -123,7 +177,17 @@
         </div>
       </div>
       <div class="section-head">
-        <h2 id="listPageTitle">Dashboard</h2>
+        <!-- The site puts a tiny green uppercase eyebrow above every section
+             heading, and it is the piece that most says "same product". It is a
+             STATIC SIBLING of #listPageTitle, never a change to that element:
+             dashboard.js writes its textContent ("Dashboard" / "Projects" /
+             "Team Workload") on every page change, and this file set does not
+             own dashboard.js. So the eyebrow has to read true on all three,
+             which is why it names the domain rather than the page. -->
+        <div class="section-head-title">
+          <span class="eyebrow">Solar operations</span>
+          <h2 id="listPageTitle">Dashboard</h2>
+        </div>
         <div class="actions">
           <span id="projectCount" class="badge">0</span>
         </div>

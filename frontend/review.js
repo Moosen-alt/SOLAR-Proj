@@ -18,7 +18,20 @@ let lastSubmissionId = "";
 
 // --- Work types + solar-field toggling --------------------------------------
 async function loadWorkTypes() {
-  const { workTypes } = await (await api("/api/review/work-types")).json();
+  // Every other loader on this page reports its own failure; this one threw into an unhandled
+  // rejection, so a 500 on /api/review/work-types left an empty picker, a Run button that could
+  // never validate, and nothing on screen saying why. Same failure, now visible.
+  let workTypes;
+  try {
+    ({ workTypes } = await (await api("/api/review/work-types")).json());
+  } catch (err) {
+    $("runStatus").textContent = `Could not load the work types: ${err.message || err}. Reload the page.`;
+    return;
+  }
+  if (!Array.isArray(workTypes)) {
+    $("runStatus").textContent = "The server returned no work types. Reload the page, or check the review service.";
+    return;
+  }
   $("workType").innerHTML = workTypes
     .map((w) => `<option value="${esc(w.workType)}" title="${esc(w.description)}">${esc(w.label)}${w.deterministic ? " (deterministic checks)" : " (AI pre-review)"}</option>`)
     .join("");
@@ -106,17 +119,77 @@ async function runReview() {
   }
 }
 
+// The severity words are the report's own vocabulary and are matched on
+// elsewhere; these are DISPLAY labels only, keyed by that vocabulary.
+const SEVERITY_LABEL = { blocker: "Blocker", warning: "Potential issue", callout: "Note" };
+
+// One "POTENTIAL ISSUE" panel, laid out exactly as the AHJ preflight card on the
+// marketing site: what the code requires, what the plan set shows, what to do.
+function issueHtml(f) {
+  // Several rules set cityFeedback to the same sentence as message (the
+  // "Critical project field missing" family, for one). Printing it twice — once
+  // as what the plan set shows and again as what to do about it — makes the card
+  // look padded and teaches the reader to skip the green box.
+  const rec = (f.cityFeedback || "").trim() === (f.message || "").trim() ? "" : f.cityFeedback;
+  const refs = (f.codeReferences || []).map((c) => `
+        <p>§ ${esc(c.code)} ${esc(c.section)} — ${esc(c.title)}${c.sourceUrl ? ` · <a href="${esc(c.sourceUrl)}" target="_blank" rel="noopener">source</a>` : ""}
+           ${c.adoptionScope ? `<i class="rv-scope">${esc(c.adoptionScope)}</i>` : ""}</p>`).join("");
+  return `
+    <div class="rv-issue ${esc(f.severity)}">
+      <span class="rv-issue-kind">${esc(SEVERITY_LABEL[f.severity] || f.severity)}</span>
+      <h4>${esc(f.title)}${f.category === "ai_review" ? '<span class="rv-ai-badge">AI-assisted — confirm before acting</span>' : ""}</h4>
+      ${refs ? `<div class="rv-issue-line"><span>AHJ requirement</span>${refs}</div>` : ""}
+      ${f.message ? `<div class="rv-issue-line"><span>Plan set</span><p>${esc(f.message)}</p></div>` : ""}
+      ${rec ? `<div class="rv-rec"><span>Recommended action</span><p>${esc(rec)}</p></div>` : ""}
+    </div>`;
+}
+
 function renderReport(report, aiSummary, aiNotes) {
   const order = { blocker: 0, warning: 1, callout: 2, pass: 3 };
   const findings = [...report.findings].sort((a, b) => (order[a.severity] ?? 9) - (order[b.severity] ?? 9));
-  const blockers = findings.filter((f) => f.severity === "blocker").length;
+  const passes = findings.filter((f) => f.severity === "pass");
+  const issues = findings.filter((f) => f.severity !== "pass");
+  const blockers = issues.filter((f) => f.severity === "blocker").length;
   $("resultSummary").textContent = `— ${findings.length} finding(s), ${blockers} blocker(s)${aiSummary ? ` · AI: ${aiSummary}` : ""}${aiNotes ? ` · ${aiNotes}` : ""}`;
-  $("findings").innerHTML = findings.map((f) => `
-    <div class="rv-finding ${esc(f.severity)}">
-      <h4>${esc(f.title)}${f.category === "ai_review" ? '<span class="rv-ai-badge">AI-assisted — confirm before acting</span>' : ""} <span class="rv-muted">[${esc(f.severity)}]</span></h4>
-      <p>${esc(f.cityFeedback || f.message)}</p>
-      ${(f.codeReferences || []).map((c) => `<p class="rv-cite">§ ${esc(c.code)} ${esc(c.section)} — ${esc(c.title)}${c.sourceUrl ? ` · <a href="${esc(c.sourceUrl)}" target="_blank" rel="noopener">source</a>` : ""}<br><i>${esc(c.adoptionScope)}</i></p>`).join("")}
-    </div>`).join("") || '<p class="rv-muted">No findings — the intake screen found nothing to flag.</p>';
+
+  const subject = [$("ahj").value.trim(), $("state").value.trim()].filter(Boolean).join(", ") || "This project";
+  // The option text carries a "(deterministic checks)" / "(AI pre-review)" suffix
+  // that belongs in the picker, not in a chip on the result card.
+  const workType = (($("workType").selectedOptions[0] || {}).textContent || "").replace(/\s*\(.*\)\s*$/, "").trim();
+
+  // An empty column is worse than no column: with nothing passing, a 40%-wide
+  // blank rail beside twenty findings reads as a rendering fault.
+  const cols = [];
+  if (passes.length) {
+    cols.push(`<div class="rv-checks"><div class="rv-col-title">Project checks</div>
+        <ul class="rv-checklist">${passes.map((f) => `<li>${esc(f.title)}</li>`).join("")}</ul></div>`);
+  }
+  cols.push(`<div class="rv-issues">
+        <div class="rv-col-title">${issues.length
+          ? `${issues.length} item(s) to review`
+          : "Nothing flagged"}</div>
+        ${issues.length
+          ? issues.map(issueHtml).join("")
+          : '<p class="rv-empty">No potential issues found. A human plans examiner still completes the review.</p>'}
+        ${passes.length ? "" : '<p class="rv-empty" style="margin-top:14px">No check passed outright, so there is no "project checks" column yet — the intake is too thin to confirm anything.</p>'}
+      </div>`);
+
+  $("findings").innerHTML = `
+    <div class="rv-preflight">
+      <div class="rv-preflight-head">
+        <div>
+          <span class="rv-eyebrow">AHJ preflight</span>
+          <span class="rv-subject">${esc(subject)}</span>
+        </div>
+        ${workType ? `<span class="rv-chip">${esc(workType)}</span>` : ""}
+      </div>
+      <div class="rv-preflight-body${cols.length === 1 ? " one-col" : ""}">
+        ${cols.join("")}
+      </div>
+      <p class="rv-disclaimer">Keelix identifies potential issues for review. Final code interpretation
+        and project approval remain with the applicable authority and the responsible project
+        professionals.</p>
+    </div>`;
   $("resultCard").style.display = "";
   $("resultCard").scrollIntoView({ behavior: "smooth" });
 }
@@ -138,11 +211,20 @@ $("shareBtn").addEventListener("click", async () => {
 async function loadSubmissions() {
   try {
     const { submissions } = await (await api("/api/review/submissions")).json();
+    // The id used to be interpolated into an inline onclick, i.e. into a JS string
+    // inside an HTML attribute — esc() turns a quote into &#39;, which the attribute
+    // parser hands BACK to the JS parser as a quote. Carried as data, bound as a
+    // listener, the same id is inert.
     $("subs").innerHTML = submissions.map((s) => `
-      <div class="rv-sub" onclick="window.open('/api/review/submissions/${esc(s.id)}?format=html','_blank')">
+      <div class="rv-sub" role="button" tabindex="0" data-submission="${esc(s.id)}">
         <span>${esc(s.ahj)}, ${esc(s.state)} · ${esc(s.workType.replace(/_/g, " "))}</span>
         <span class="rv-muted">${s.blockers} blocker(s) / ${s.findings} finding(s) · ${new Date(s.createdAt).toLocaleString()}</span>
       </div>`).join("") || '<span class="rv-muted">No reviews yet.</span>';
+    $("subs").querySelectorAll("[data-submission]").forEach((row) => {
+      const open = () => window.open(`/api/review/submissions/${encodeURIComponent(row.dataset.submission)}?format=html`, "_blank");
+      row.addEventListener("click", open);
+      row.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } });
+    });
   } catch { $("subs").textContent = "Could not load submissions."; }
 }
 
@@ -154,9 +236,9 @@ async function loadProfiles() {
     $("profiles").innerHTML = profiles.map((p, i) => `
       <div class="rv-profile-row">
         <span>${esc(p.state)}${p.ahj ? " · " + esc(p.ahj) : " · (state default)"} <span class="${p.confidence === "verified" ? "badge-verified" : "badge-seeded"}">${esc(p.confidence)}</span></span>
-        <span>
-          <span class="rv-muted">${(p.adoptedCodes || []).map((c) => `${esc(c.code)} ${esc(c.edition)}`).join(", ") || "no codes recorded"}</span>
-          <button data-edit="${i}" style="margin-left:8px">Review / verify</button>
+        <span style="display:flex;align-items:center;gap:12px">
+          <span class="rv-codes">${(p.adoptedCodes || []).map((c) => `${esc(c.code)} ${esc(c.edition)}`).join(", ") || "no codes recorded"}</span>
+          <button class="secondary" data-edit="${i}">Review / verify</button>
         </span>
       </div>`).join("") || '<span class="rv-muted">No profiles yet — research one above.</span>';
     document.querySelectorAll("[data-edit]").forEach((btn) => btn.addEventListener("click", () => {

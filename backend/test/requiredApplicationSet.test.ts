@@ -60,6 +60,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { PDFDocument, StandardFonts } from "pdf-lib";
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "required-app-set-"));
 process.env.AUTOPILOT_DB_PATH = path.join(tmpDir, "test.sqlite");
@@ -76,6 +77,8 @@ const {
   stagingMissingDocuments,
   packagedDocumentsByType,
   getApplicationDocumentPackage,
+  addManualCorrection,
+  captureConfirmation,
 } = await import("../src/repository");
 const {
   applicationDocContext,
@@ -88,7 +91,14 @@ const { resolvePermitPath } = await import("../src/permitPath");
 const { findAhjProcessProfile } = await import("../src/processProfiles");
 const { recipeDisciplineForTrack } = await import("../src/portalChannel");
 const { ensureAhjFormsForProject, storeAhjFormTemplate, hasStoredTemplateOfType } = await import("../src/ahjFormAuto");
-const { loadStoredTemplates, formApplicationKind, formAllowedForPath, filledFormsByDocType } = await import("../src/ahjForms");
+const {
+  loadStoredTemplates,
+  formApplicationKind,
+  formAllowedForPath,
+  filledFormsByDocType,
+  storedApplicationKind,
+  buildFilledFormsForProject,
+} = await import("../src/ahjForms");
 const { createLLMProvider } = await import("../src/llm");
 
 const db = await openDatabase();
@@ -294,8 +304,12 @@ await check("...and that is exactly the list prepareSubmission turns into its 40
     "…and refuse with a 409 that names them");
 });
 
+// FIXTURE COMPLETION under the concurrent requiredDocuments.ts change that makes the
+// prescriptive solar checklist a BLOCKING row on a confirmed prescriptive path. Only the
+// attachment list grows; not one assertion below is altered. Attaching a document can only
+// SATISFY a demand, so these fixtures stay correct whether or not that change lands.
 const bothUploaded = mk("prescriptive");
-for (const d of [...PLAN_SET_FAMILY, "building_application", "electrical_application"]) attach(bothUploaded.id, d);
+for (const d of [...PLAN_SET_FAMILY, "building_application", "electrical_application", "solar_checklist"]) attach(bothUploaded.id, d);
 
 await check("THE GATE ACCEPTS when both applications are present", () => {
   const inv = documentInventory(db, bothUploaded as never);
@@ -304,7 +318,7 @@ await check("THE GATE ACCEPTS when both applications are present", () => {
 });
 
 const filledOnly = mk("prescriptive");
-for (const d of [...PLAN_SET_FAMILY, "building_application"]) attach(filledOnly.id, d);
+for (const d of [...PLAN_SET_FAMILY, "building_application", "solar_checklist"]) attach(filledOnly.id, d);
 buildFilledForm(filledOnly.id, "electrical_application", "Coos Bay Electrical Permit Application.pdf");
 
 await check("THE GATE CLEARS ON A FILLED FORM, NOT ONLY AN UPLOAD", () => {
@@ -320,7 +334,7 @@ await check("THE GATE CLEARS ON A FILLED FORM, NOT ONLY AN UPLOAD", () => {
 });
 
 const genericBlank = mk("prescriptive");
-for (const d of [...PLAN_SET_FAMILY, "permit_application", "electrical_application"]) attach(genericBlank.id, d);
+for (const d of [...PLAN_SET_FAMILY, "permit_application", "electrical_application", "solar_checklist"]) attach(genericBlank.id, d);
 
 await check("DOCTYPE DEAD-END GUARD: the generic permit_application satisfies the BUILDING-side row", () => {
   // "Prescriptive Solar Photovoltaic Installation Permit Application" matches neither
@@ -335,7 +349,7 @@ await check("DOCTYPE DEAD-END GUARD: the generic permit_application satisfies th
 await check("...but that generic blank does NOT also satisfy the ELECTRICAL row", () => {
   // One file must never paper over two permits.
   const p = mk("prescriptive");
-  for (const d of [...PLAN_SET_FAMILY, "permit_application"]) attach(p.id, d);
+  for (const d of [...PLAN_SET_FAMILY, "permit_application", "solar_checklist"]) attach(p.id, d);
   const blocked = documentInventory(db, p as never).missingBlocking.map((d) => d.docType);
   assert.deepEqual(blocked, ["electrical_application"], `got ${JSON.stringify(blocked)}`);
 });
@@ -457,7 +471,7 @@ await check("A GENERIC APPLICATION STILL SATISFIES EITHER PATH", () => {
   // neither kind must stay compatible with both — over-blocking those jurisdictions
   // would be the same mistake seen from the other side.
   const generic = mk("prescriptive");
-  for (const d of [...PLAN_SET_FAMILY, "electrical_application"]) attach(generic.id, d);
+  for (const d of [...PLAN_SET_FAMILY, "electrical_application", "solar_checklist"]) attach(generic.id, d);
   buildFilledForm(generic.id, "building_application", "Coos Bay Residential Permit Application.pdf");
   const inv = documentInventory(db, generic as never);
   assert.deepEqual(inv.missingBlocking.map((d) => d.docType), [],
@@ -531,7 +545,7 @@ await check("…and the existence check answers per KIND, not per slot", () => {
 // application — a document belonging to a filing this run is not making.
 // ---------------------------------------------------------------------------
 const buildingOnly = mk("prescriptive");
-for (const d of [...PLAN_SET_FAMILY, "building_application"]) attach(buildingOnly.id, d);
+for (const d of [...PLAN_SET_FAMILY, "building_application", "solar_checklist"]) attach(buildingOnly.id, d);
 
 await check("STAGING THE BUILDING TRACK ALONE does not 409 on the missing ELECTRICAL application", () => {
   assert.deepEqual(stagingWouldRefuse(buildingOnly, "building").map((d) => d.docType), [],
@@ -590,23 +604,102 @@ await check("…WITHOUT being folded into missingFields, which four other things
     "a complete packet must not invent a missing document");
 });
 
-await check("…and the screen no longer prints the all-clear while a DOCUMENT is missing", () => {
-  // No DOM harness here, so the render is pinned by source the way the staging wiring is.
-  // The old line was an unconditional else-branch on missingFields alone.
+// The verdict the operator actually reads. There is no DOM harness in this suite, but
+// documentVerdictHtml is a pure pkg -> string function, so we lift the REAL production
+// body (plus the real esc/plural it closes over) out of dashboard.js and run it. That
+// beats pinning source text: it survives a refactor and still fails on a behaviour change.
+//
+// Two distinct lies have been shipped from this card, and both are asserted here:
+//   1. an all-clear printed out of missingFields alone, while a DOCUMENT was missing;
+//   2. an all-clear printed when the inventory never RAN, because `missingDocuments || []`
+//      turned "we did not ask" into "nothing is missing". Hence the status-based cases.
+const ALL_CLEAR = "Every required document is attached";
+
+function loadDocumentVerdictHtml(): (pkg: unknown) => string {
   const src = fs.readFileSync(path.join(process.cwd(), "frontend", "dashboard.js"), "utf8");
-  const at = src.indexOf("function renderApplicationDocs()");
-  assert.ok(at > -1, "renderApplicationDocs is gone — re-point this check");
-  const window = src.slice(at, at + 2600);
-  assert.ok(!/missingFields\?\.length \? `<p><strong>Missing fields:[\s\S]{0,120}?` : "<p>No critical document fields missing from the generated packet\.<\/p>"/.test(window),
-    "the all-clear is still an else-branch on missingFields alone — a missing DOCUMENT cannot reach it");
-  assert.match(window, /!missingFields\.length && !missingDocs\.length/,
-    "the all-clear sentence must be gated on BOTH lists being empty");
-  assert.match(window, /Missing required documents/,
+  const cut = (name: string) => {
+    const at = src.indexOf(`function ${name}(`);
+    assert.ok(at > -1, `${name} is gone from dashboard.js — re-point this check`);
+    // Brace-match so we lift exactly one function, regardless of what follows it.
+    let depth = 0;
+    let i = src.indexOf("{", at);
+    for (let j = i; j < src.length; j++) {
+      if (src[j] === "{") depth++;
+      else if (src[j] === "}" && --depth === 0) return src.slice(at, j + 1);
+    }
+    throw new Error(`unbalanced braces reading ${name}`);
+  };
+  const bundle = [cut("esc"), cut("plural"), cut("documentVerdictHtml")].join("\n\n");
+  return new Function(`${bundle}\nreturn documentVerdictHtml;`)() as (pkg: unknown) => string;
+}
+
+const verdict = loadDocumentVerdictHtml();
+
+await check("…and the screen no longer prints the all-clear while a DOCUMENT is missing", () => {
+  const html = verdict({
+    missingFields: [],
+    missingDocumentsStatus: "resolved",
+    missingDocuments: [{ docType: "electrical_application", label: "Electrical permit application", why: "City of Coos Bay files a separate ELE permit" }],
+  });
+  assert.ok(!html.includes(ALL_CLEAR),
+    "the card printed the document all-clear while a required document was missing");
+  assert.ok(html.includes("Electrical permit application"),
+    "the missing document must be named on the screen, not merely counted");
+  assert.match(html, /NOT in the packet/,
     "a missing required DOCUMENT must be stated as plainly as a missing field");
-  assert.match(window, /missingDocs\.map\(\(d\) => `<li>\$\{esc\(d\.label\)\}/,
-    "everything interpolated into innerHTML must be esc()'d");
-  assert.match(window, /missingFields\.length \|\| missingDocs\.length \? "warning"/,
-    "the card must read as a warning when either list is non-empty");
+});
+
+await check("…and a missing FIELD alone never suppresses the document all-clear (no over-correction)", () => {
+  const html = verdict({
+    missingFields: ["Contractor licence number"],
+    missingDocumentsStatus: "resolved",
+    missingDocuments: [],
+  });
+  assert.ok(html.includes(ALL_CLEAR),
+    "a blank scalar field must not make the DOCUMENT verdict go dark — they are separate claims");
+  assert.match(html, /still blank/, "…while the field verdict still reports the blank field");
+});
+
+await check("A FAILURE TO ANSWER IS NOT AN ANSWER OF 'NOTHING': an unresolved inventory never reads as clear", () => {
+  // `missingDocuments || []` on an absent list is how the all-clear got printed over a
+  // computation that threw. Status drives the state; the array length must not.
+  for (const pkg of [
+    { missingFields: [], missingDocumentsStatus: "unavailable", missingDocumentsError: "reference profile unreadable" },
+    { missingFields: [], missingDocumentsStatus: undefined, missingDocuments: [] }, // the DB-free workflow builder
+    { missingFields: [] }, // status absent entirely
+  ]) {
+    const html = verdict(pkg);
+    assert.ok(!html.includes(ALL_CLEAR),
+      `an all-clear printed for an inventory that never resolved: ${JSON.stringify(pkg)}`);
+    assert.match(html, /could not determine/i,
+      `the operator must be told the question went unanswered: ${JSON.stringify(pkg)}`);
+  }
+  assert.match(verdict({ missingFields: [], missingDocumentsStatus: "unavailable", missingDocumentsError: "reference profile unreadable" }),
+    /reference profile unreadable/, "a failed inventory must show why, so it can be fixed");
+});
+
+await check("…and everything interpolated into that card is esc()'d", () => {
+  const html = verdict({
+    missingFields: ["<img src=x onerror=alert(1)>"],
+    missingDocumentsStatus: "resolved",
+    missingDocuments: [{ docType: "x", label: "<script>bad()</script>", why: "<b>why</b>" }],
+  });
+  assert.ok(!html.includes("<script>") && !html.includes("<img src=x"),
+    "raw markup reached innerHTML — esc() every interpolated value");
+  assert.ok(html.includes("&lt;script&gt;"), "the escaped form should be what renders");
+});
+
+await check("…and the superseded all-clear sentence is gone from the file entirely", () => {
+  // Cheap regression pin on the exact sentence that shipped the first lie. It may only
+  // survive as prose in the comment explaining the history, never inside a template.
+  const src = fs.readFileSync(path.join(process.cwd(), "frontend", "dashboard.js"), "utf8");
+  const live = src.split(/\r?\n/).filter((line) => {
+    const t = line.trim();
+    return !t.startsWith("*") && !t.startsWith("//") && !t.startsWith("/*");
+  });
+  const offenders = live.filter((l) => l.includes("No critical document fields missing from the generated packet"));
+  assert.deepEqual(offenders, [],
+    `the old missingFields-only all-clear is still live code, not just history: ${JSON.stringify(offenders)}`);
 });
 
 // ---------------------------------------------------------------------------
@@ -655,6 +748,283 @@ await check("...while an AHJ with no structure knowledge still gets its one gene
   // process profile for — a much bigger regression than the one being fixed.
   const unknownAhj = { id: "p-unknown", clientId: null, state: "OR", ahj: "City of Nowhereville", utility: "PGE", parserSnapshot: {} };
   assert.deepEqual(requiredApplicationDocs(unknownAhj as never, applicationDocContext(unknownAhj as never)), []);
+});
+
+// ---------------------------------------------------------------------------
+// THE STAMP THE FILL GATE COULD NOT SEE.
+//
+// storedApplicationKind already reads acquisition's stamp first and the form's NAME only
+// as a fallback — and the packaging filter (formContradictsPath, filledApplicationForms)
+// used it. The FILL gate did not: formAllowedForPath took a formName and nothing else. So
+// for a blank the AHJ publishes as "Building Permit Application.pdf" — a name that claims
+// NEITHER kind — the two halves disagreed:
+//
+//    fill gate  : kind = null  -> "compatible with every path" -> FILLED
+//    packaging  : kind = structural (stamped) -> contradicts prescriptive -> DROPPED
+//
+// A prescriptive project therefore got a filled STRUCTURAL application sitting in its
+// forms list, labelled filled, while the upload sweep quietly refused to send it. The
+// operator sees a completed application and attaches it by hand — against Coos Bay's own
+// printed "upload ONLY the prescriptive application. Do NOT also upload the structural
+// application." Name-only classification is the fragile path ("Non-Prescriptive" CONTAINS
+// "prescriptive"), and this was the last place still taking it as the only answer.
+//
+// AND A RE-STORE MUST NOT FORGET. The 60-day refresh (ahjFormRefresh.ts) re-fetches a row's
+// own sourceUrl and re-stores with a freshly built map carrying no applicationKind — so the
+// stamp fell back to the NAME, which for this blank says nothing. The row was silently
+// demoted to kind-less, and because the kind IS the building-side storage key, the re-store
+// no longer matched its own row and inserted a THIRD, kind-less duplicate.
+// ---------------------------------------------------------------------------
+const STAMPED_AHJ = "City of Stampedblank";
+const STAMPED_URL = "https://stampedblank.example/forms/building-permit-application.pdf";
+const STAMPED_NAME = "Building Permit Application";
+const bldRows = (ahjName: string) => db.query<{ id: string; original_filename?: string; field_map?: string }>(
+  "SELECT id, original_filename, field_map FROM ahj_form_templates WHERE lower(ahj_name) = lower(?) AND form_type = 'building_application'",
+  [ahjName],
+);
+/** A REAL PDF, not `%PDF-1.4 blank`. buildFilledFormsForProject actually parses the blob;
+ *  garbage bytes come back status "error", which would let this test pass for the wrong
+ *  reason and hide whether the gate ran at all. */
+const realBlank = async (heading: string): Promise<Uint8Array> => {
+  const doc = await PDFDocument.create();
+  const page = doc.addPage([612, 792]);
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  page.drawText(heading, { x: 46, y: 730, size: 14, font });
+  for (let i = 0; i < 9; i++) page.drawText(`Field label ${i}:`, { x: 46, y: 660 - i * 16, size: 11, font });
+  return doc.save();
+};
+/** An overlay map, so loadStoredTemplates considers the template fillable. */
+const overlayMap = (formName: string, sourceUrl: string) => ({
+  formName, sourceUrl, fillMode: "overlay" as const, textFields: {}, checkboxes: {},
+  overlayFields: [{ source: "project.homeownerName", page: 0, x: 240, y: 730, size: 11 }],
+  notes: "",
+});
+const stampedId = storeAhjFormTemplate(db, {
+  ahjName: STAMPED_AHJ, state: "OR", formType: "building_application",
+  filename: `${STAMPED_NAME}.pdf`, bytes: await realBlank(STAMPED_NAME),
+  // Acquisition KNEW: it went looking for the structural (non-prescriptive) blank.
+  applicationKind: "structural",
+  map: overlayMap(STAMPED_NAME, STAMPED_URL),
+});
+const atStamped = (permitPathOverride: string) => {
+  const proj = createProject(db, {
+    clientId: client.id, owner: `Stamp Owner ${++n}`, street: `${n} Stamp Ave`, city: "Stampton",
+    state: "OR", ahj: STAMPED_AHJ, utility: "Pacific Power", dcKw: "8", acKw: "6.4",
+    permitPathOverride,
+  }).project;
+  filledDirs.push(path.join(FILLED_ROOT, proj.id));
+  return proj;
+};
+
+await check("PREMISE: the stamped blank's own NAME claims neither kind — only the stamp knows", () => {
+  assert.equal(formApplicationKind(STAMPED_NAME), null,
+    "fixture premise: this filename must be the generic kind a name cannot classify");
+  const rows = bldRows(STAMPED_AHJ);
+  assert.equal(rows.length, 1, `fixture premise: one stored blank, got ${rows.length}`);
+  assert.equal(storedApplicationKind(rows[0]), "structural",
+    "acquisition's stamp is the only evidence of which application this is");
+  const loaded = loadStoredTemplates(db, STAMPED_AHJ, "OR");
+  assert.equal(loaded.length, 1);
+  assert.equal(loaded[0].applicationKind, "structural",
+    "the stamp has to survive the load, or the fill gate has nothing to read");
+});
+
+await check("THE FILL GATE READS THE STAMP: the structural blank is NOT built for a prescriptive project", async () => {
+  const proj = atStamped("prescriptive");
+  assert.equal(resolvePermitPath(proj as never).path, "prescriptive", "fixture premise");
+  const pkg = await buildFilledFormsForProject(db, proj as never);
+  const entry = pkg.forms.find((f) => f.formId === `tmpl-${stampedId}`);
+  assert.ok(entry, `the stored template never reached the fill loop: ${JSON.stringify(pkg.forms.map((f) => f.formId))}`);
+  assert.equal(entry!.status, "skipped",
+    `the STRUCTURAL application was BUILT for a PRESCRIPTIVE project — the AHJ's printed instruction is "do NOT upload both": ${JSON.stringify(entry)}`);
+  assert.match(String(entry!.message), /structural/i,
+    "…and the skip names the application it skipped, from the stamp — not the one the filename suggests");
+  assert.ok(!fs.existsSync(path.join(FILLED_ROOT, proj.id, `tmpl-${stampedId}.pdf`)),
+    "a skip must also leave nothing on disk for the upload sweep to find");
+});
+
+await check("…and the SAME blank IS built for the engineered project it belongs to", async () => {
+  // The gate must not simply become stricter: over-blocking the engineered path would be
+  // the same failure seen from the other side.
+  const proj = atStamped("engineered");
+  const pkg = await buildFilledFormsForProject(db, proj as never);
+  const entry = pkg.forms.find((f) => f.formId === `tmpl-${stampedId}`);
+  assert.equal(entry?.status, "filled",
+    `the engineered path's own application was refused: ${JSON.stringify(entry)}`);
+  assert.ok(fs.existsSync(path.join(FILLED_ROOT, proj.id, `tmpl-${stampedId}.pdf`)),
+    "…and the filled PDF is on disk for the upload sweep");
+});
+
+await check("A RE-STORE OF THE SAME BLANK KEEPS THE STAMP, and updates its own row", async () => {
+  // EXACTLY the refresh's shape (ahjFormRefresh.ts:137-157): new bytes fetched from the
+  // row's OWN sourceUrl, a freshly BUILT field map, and no applicationKind anywhere.
+  const again = storeAhjFormTemplate(db, {
+    ahjName: STAMPED_AHJ, state: "OR", formType: "building_application",
+    filename: `${STAMPED_NAME}.pdf`, bytes: await realBlank(`${STAMPED_NAME} (rev 2026)`),
+    map: overlayMap(STAMPED_NAME, STAMPED_URL),
+  });
+  assert.equal(again, stampedId,
+    "the refresh did not land on the row it was refreshing — the kind is part of the building-side key, so losing it loses the row");
+  const rows = bldRows(STAMPED_AHJ);
+  assert.equal(rows.length, 1,
+    `the refresh inserted a duplicate beside the row it meant to update: ${JSON.stringify(rows.map((r) => r.id))}`);
+  assert.equal(storedApplicationKind(rows[0]), "structural",
+    "the refresh stripped the stamp — the blank is kind-less now and every gate is back to reading its filename");
+});
+
+await check("…and the gate still refuses it for a prescriptive project AFTER the refresh", async () => {
+  const proj = atStamped("prescriptive");
+  const pkg = await buildFilledFormsForProject(db, proj as never);
+  const entry = pkg.forms.find((f) => f.formId === `tmpl-${stampedId}`);
+  assert.equal(entry?.status, "skipped",
+    `the refresh re-opened the hole: ${JSON.stringify(entry)}`);
+});
+
+await check("BUT A DIFFERENT BLANK DOES NOT INHERIT THE STAMP — the carry-forward is not a name match", () => {
+  // The other half of the filter. An operator uploading their own generically-named blank
+  // (sourceUrl "", because it came off their desktop) must NOT be adopted as the stamped
+  // structural application — that would invent evidence and silently re-key the AHJ.
+  const uploaded = storeAhjFormTemplate(db, {
+    ahjName: STAMPED_AHJ, state: "OR", formType: "building_application",
+    filename: `${STAMPED_NAME}.pdf`, bytes: new Uint8Array(Buffer.from("%PDF-1.4 operator upload")),
+    map: { formName: STAMPED_NAME, sourceUrl: "", fillMode: "acroform" as const, textFields: { Owner: "project.homeownerName" }, checkboxes: {}, notes: "" },
+  });
+  assert.notEqual(uploaded, stampedId,
+    "an operator's own generic blank overwrote the stamped structural application");
+  const rows = bldRows(STAMPED_AHJ);
+  assert.equal(rows.length, 2, `expected the stamped row plus the new generic one, got ${rows.length}`);
+  const fresh = rows.find((r) => r.id === uploaded)!;
+  assert.equal(storedApplicationKind(fresh), null,
+    "a blank that claims nothing and came from nowhere must stay kind-less — compatible with both paths, claiming neither");
+  assert.equal(storedApplicationKind(rows.find((r) => r.id === stampedId)!), "structural",
+    "…and the stamped row is untouched");
+});
+
+// ---------------------------------------------------------------------------
+// "WE COULD NOT FIND OUT" IS NOT "NOTHING IS MISSING".
+//
+// getApplicationDocumentPackage attached missingDocuments inside a bare try/catch. When
+// documentInventory threw, missingDocuments stayed undefined — and the packet screen's
+// `pkg.missingDocuments || []` turned that absence into an empty list, printing the
+// pass-styled "No critical document fields missing, and every required document is
+// attached." The sentence this whole field exists to stop, reproduced by its error path.
+// The catch's own excuse ("the staging gate is the authority and runs its own check") does
+// not hold either: the staging gate calls the SAME documentInventory.
+//
+// The failure is REPRESENTABLE now. The frontend contract: render an all-clear only when
+// missingDocumentsStatus === "resolved"; "unavailable" (or an absent status) renders as
+// unknown, never as empty.
+// ---------------------------------------------------------------------------
+await check("THE PACKET SAYS 'RESOLVED' when the inventory actually ran", () => {
+  const proj = mk("prescriptive");
+  for (const d of [...PLAN_SET_FAMILY, "building_application", "electrical_application", "solar_checklist"]) attach(proj.id, d);
+  const pkg = getApplicationDocumentPackage(db, proj.id);
+  assert.equal(pkg.missingDocumentsStatus, "resolved",
+    "a package whose inventory ran must say so, or the honest rendering has nothing to key on");
+  assert.ok(Array.isArray(pkg.missingDocuments), "…and the list is a list");
+  assert.deepEqual(pkg.missingDocuments!.map((d) => d.docType), [],
+    "fixture premise: this project is complete, so an EMPTY list here is a real answer");
+  assert.equal(pkg.missingDocumentsError, undefined);
+});
+
+await check("…and 'UNAVAILABLE' when it threw — the list is ABSENT, never empty", () => {
+  const proj = mk("prescriptive");
+  for (const d of PLAN_SET_FAMILY) attach(proj.id, d);
+  // Break the inventory at a statement ONLY documentInventory issues on this path
+  // (projectDocsByType, its first line), through the real getApplicationDocumentPackage.
+  // No re-implementation, no raw-SQL fakery — the production function, a real throw.
+  const BOOM = "SELECT doc_type, stored_path FROM project_documents WHERE project_id = ? ORDER BY uploaded_at DESC";
+  let armed = false;
+  const brokenDb = new Proxy(db as unknown as Record<string, unknown>, {
+    get(target, prop, recv) {
+      const value = Reflect.get(target, prop, recv);
+      if (typeof value !== "function") return value;
+      if (prop === "query") {
+        return (sql: string, params?: unknown) => {
+          if (armed && sql === BOOM) throw new Error("simulated inventory failure: reference profile unreadable");
+          return (value as (s: string, p?: unknown) => unknown).call(target, sql, params);
+        };
+      }
+      return (value as (...a: unknown[]) => unknown).bind(target);
+    },
+  }) as unknown as typeof db;
+  armed = true;
+  const pkg = getApplicationDocumentPackage(brokenDb, proj.id);
+  assert.equal(pkg.missingDocumentsStatus, "unavailable",
+    "the inventory threw and the package reported nothing about it — indistinguishable from a clean project");
+  assert.equal(pkg.missingDocuments, undefined,
+    "an empty list is a CLAIM, and it is the claim that shipped two permits with an application never attached");
+  assert.match(String(pkg.missingDocumentsError), /simulated inventory failure/,
+    "the operator must be told what failed, not handed silence");
+});
+
+// ---------------------------------------------------------------------------
+// A RE-FILED PACKAGE MUST CLOSE THE CORRECTIONS IT ANSWERS.
+//
+// resolveOpenCorrectionsOnResubmit had ZERO callers, while its own header comment and
+// resolveCorrection's BOTH said prepareSubmission called it. So a corrected package went
+// back out and its corrections kept closed_at NULL and resubmitted = 0 unless an operator
+// hit POST /api/corrections/:id/resolve by hand — and every surface filtering on
+// `!closedAt && !resubmitted` (openCorrectionCount, the permit and NEM lanes, the action
+// queue) kept telling the operator to "resolve AHJ corrections before resubmittal" on a
+// job already resubmitted, while the cycle-time KPI that needs resubmitted = 1 never
+// completed. Ann Marineau and Christopher Ivy are about to enter exactly this flow.
+//
+// Wired at captureConfirmation, NOT prepareSubmission: staging is not submitting (hard
+// safety rule 1 — automation never clicks final submit), and a staged run can be abandoned
+// at the review screen. captureConfirmation is where a HUMAN says the filing went out.
+// ---------------------------------------------------------------------------
+await check("A CONFIRMED RESUBMISSION CLOSES ITS OPEN CORRECTIONS", () => {
+  const proj = mk("prescriptive");
+  const withCorrection = addManualCorrection(db, proj.id, "Structural review: the prescriptive checklist was not attached. Resubmit with it.");
+  const correctionId = withCorrection.corrections[0].id;
+  assert.equal(withCorrection.corrections[0].closedAt ?? null, null, "fixture premise: the correction starts open");
+  assert.equal(withCorrection.corrections[0].resubmitted, false, "fixture premise");
+
+  // The staged re-filing, as the portal path leaves it: a run + a submission row awaiting
+  // the human's final click. Raw SQL is fixture SETUP only — captureConfirmation, the real
+  // route handler's function, is what is under test.
+  const runId = `run-${proj.id}`;
+  const ts = new Date().toISOString();
+  db.run(
+    "INSERT INTO portal_runs (id, project_id, run_type, status, started_at) VALUES (?, ?, 'submit', 'awaiting_human_submit', ?)",
+    [runId, proj.id, ts],
+  );
+  db.run(
+    "INSERT INTO submissions (id, project_id, submission_type, status, created_at) VALUES (?, ?, 'permit', 'awaiting_human_submit', ?)",
+    [`sub-${proj.id}`, proj.id, ts],
+  );
+
+  const after = captureConfirmation(db, runId, { applicationNumber: "187-26-000309-STR", submittedBy: "operator" });
+  const correction = after.corrections.find((c) => c.id === correctionId);
+  assert.ok(correction, "the correction vanished from the project");
+  assert.ok(correction!.closedAt,
+    "the re-filing went out and the correction is still open — the board keeps saying 'resolve AHJ corrections before resubmittal' on a resubmitted job");
+  assert.equal(correction!.resubmitted, true,
+    "resubmitted stayed 0, so the cycle-time KPI that needs it can never complete");
+  const stillOpen = db.query<{ id: string }>(
+    "SELECT id FROM corrections WHERE project_id = ? AND closed_at IS NULL AND resubmitted = 0", [proj.id]);
+  assert.equal(stillOpen.length, 0, `still open: ${JSON.stringify(stillOpen)}`);
+});
+
+await check("…and a FIRST submission with nothing open is an untouched no-op", () => {
+  // The wiring fires on every confirmed submit, so it must be inert when there is no
+  // correction to answer — otherwise a first filing would invent a resubmission.
+  const proj = mk("prescriptive");
+  const runId = `run-first-${proj.id}`;
+  const ts = new Date().toISOString();
+  db.run(
+    "INSERT INTO portal_runs (id, project_id, run_type, status, started_at) VALUES (?, ?, 'submit', 'awaiting_human_submit', ?)",
+    [runId, proj.id, ts],
+  );
+  db.run(
+    "INSERT INTO submissions (id, project_id, submission_type, status, created_at) VALUES (?, ?, 'permit', 'awaiting_human_submit', ?)",
+    [`sub-first-${proj.id}`, proj.id, ts],
+  );
+  const after = captureConfirmation(db, runId, { applicationNumber: "187-26-000999-STR", submittedBy: "operator" });
+  assert.deepEqual(after.corrections, [], "a first filing must not manufacture correction history");
+  const row = db.get<{ status: string }>("SELECT status FROM projects WHERE id = ?", [proj.id]);
+  assert.equal(row?.status, "submitted", "…and the confirmation itself still lands");
 });
 
 try { db.close(); } catch { /* best effort */ }

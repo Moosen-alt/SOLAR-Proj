@@ -18,7 +18,8 @@ import { findFeeScheduleForProject } from "./feeSchedules";
 
 /** Which of the two MUTUALLY EXCLUSIVE building-side applications a permit path calls
  *  for. THE single mapping from path → application kind; requiredApplicationDocs,
- *  form acquisition and the presence/packaging filters all read it rather than each
+ *  form acquisition, the FILL gate (formAllowedForPath) and the presence/packaging
+ *  filters all read it rather than each
  *  restating `path === "engineered" ? "structural" : ...`. "unknown" deliberately
  *  yields null: before the operator confirms the path we do not know which of the two
  *  the AHJ is owed, and guessing is the failure this whole module exists to stop. */
@@ -78,12 +79,33 @@ export function formContradictsPath(formName: string, path: "prescriptive" | "en
 // application matching the path is filled; non-application forms (electrical, etc.)
 // always pass. When the path is unknown we fill neither application form (the operator
 // must confirm the path first) — surfaced in the form message.
-export function formAllowedForPath(formName: string, path: "prescriptive" | "engineered" | "unknown"): boolean {
-  const kind = formApplicationKind(formName);
+//
+// THE NAME IS THE FALLBACK, NOT THE SOURCE. `knownKind` is the kind the STORED template
+// carries (storedApplicationKind: acquisition's own stamp first, its name second). Pass
+// it whenever you have it. A jurisdiction is free to publish the structural application
+// as "Building Permit Application.pdf" — the name then claims nothing, this gate returned
+// true on BOTH paths, and the structural blank was filled and handed to a prescriptive
+// project, against the AHJ's printed "do NOT upload both". The packaging filter
+// (formContradictsPath, which DOES read the stamp) dropped it from the upload sweep, so
+// the two halves disagreed: the operator saw a filled structural application in the forms
+// list and uploaded it by hand. Reading the same stamp here makes the fill gate and the
+// packaging filter one answer.
+//
+// Convention matches formContradictsPath exactly: `undefined` means "no stamp in hand,
+// classify by name"; an explicit `null` means "this form makes no claim" and is therefore
+// compatible with every confirmed path.
+export function formAllowedForPath(
+  formName: string,
+  path: "prescriptive" | "engineered" | "unknown",
+  knownKind?: "prescriptive" | "structural" | null,
+): boolean {
+  const kind = knownKind === undefined ? formApplicationKind(formName) : knownKind;
   if (!kind) return true;
-  if (path === "prescriptive") return kind === "prescriptive";
-  if (path === "engineered") return kind === "structural";
-  return false; // unknown path → don't auto-fill either application until confirmed
+  // applicationKindForPath IS the path → kind mapping (see its header). Restating it here
+  // as `path === "engineered" ? "structural" : ...` is what let the fill gate and the
+  // presence/packaging filters drift apart while each stayed self-consistent.
+  const want = applicationKindForPath(path);
+  return want != null && kind === want; // unknown path → fill neither application until confirmed
 }
 
 // =============================================================================
@@ -1021,8 +1043,10 @@ export async function buildFilledFormsForProject(db: AppDb, project: ProjectReco
   // Forms skipped because they're the "other" application for this permit path —
   // reported so the operator can see why only one application was filled.
   const skipped: FilledFormResult[] = [];
-  const noteSkip = (formId: string, formName: string): void => {
-    const kind = formApplicationKind(formName);
+  const noteSkip = (formId: string, formName: string, knownKind?: "prescriptive" | "structural" | null): void => {
+    // Same precedence as the gate that just refused it, or the skip message names the
+    // wrong application for a stamped blank whose filename claims nothing.
+    const kind = knownKind === undefined ? formApplicationKind(formName) : knownKind;
     // A SKIP MUST ALSO CLEAN UP. Skipping was the whole of the old behaviour, and it
     // left the PREVIOUS path's filled PDF sitting in backend/data/filled/<projectId>/.
     // Flip a project from engineered to prescriptive and rebuild, and the structural
@@ -1039,7 +1063,11 @@ export async function buildFilledFormsForProject(db: AppDb, project: ProjectReco
       status: "skipped",
       message: permitPath === "unknown"
         ? `Not filled — permit path not confirmed. ${kind === "prescriptive" ? "Prescriptive" : "Structural"} application is only filled once you set the permit path (Manual entry → Permit path).`
-        : `Not filled — this project is on the ${permitPath} path, so only the ${permitPath === "prescriptive" ? "prescriptive" : "structural"} application is filled. Do NOT upload both applications.`,
+        // NAME THE FORM'S OWN KIND, not just the path's. A blank the AHJ published as
+        // "Building Permit Application.pdf" IS the structural application (acquisition
+        // stamped it), and a message that only repeats the path leaves the operator
+        // staring at a generically-named form with no idea why it was skipped.
+        : `Not filled — this blank is the ${kind === "prescriptive" ? "prescriptive" : "structural"} application and this project is on the ${permitPath} path, so only the ${permitPath === "prescriptive" ? "prescriptive" : "structural"} application is filled. Do NOT upload both applications.`,
       verified: true,
     });
   };
@@ -1075,7 +1103,12 @@ export async function buildFilledFormsForProject(db: AppDb, project: ProjectReco
   // for this AHJ/state that aren't already covered by a built-in registry form.
   for (const stored of loadStoredTemplates(db, project.ahj, project.state)) {
     if (forms.some((f) => f.formId === stored.def.id)) continue;
-    if (!formAllowedForPath(stored.def.formName, permitPath)) { noteSkip(stored.def.id, stored.def.formName); continue; }
+    // The STORED kind, not the name — see formAllowedForPath's header. A structural blank
+    // published as "Building Permit Application.pdf" is invisible to a name-only gate.
+    if (!formAllowedForPath(stored.def.formName, permitPath, stored.applicationKind)) {
+      noteSkip(stored.def.id, stored.def.formName, stored.applicationKind);
+      continue;
+    }
     // A FORM IS A DATED ARTIFACT, AND THIS IS THE SCREEN WHERE IT GETS FILED.
     // Coos County's electrical permit application prints the renewable-energy
     // fee table on page 1 under "Revised 12/23/2022"; the county's adopted
@@ -1122,13 +1155,17 @@ export async function buildFilledFormsForProject(db: AppDb, project: ProjectReco
 
 // Build fillable definitions from stored ahj_form_templates rows for this AHJ.
 // The field_map column holds { formName, sourceUrl, fillMode, textFields, checkboxes }.
-export function loadStoredTemplates(db: AppDb, ahj: string, state: string): Array<{ def: AhjFormDefinition; bytes: Uint8Array; templateId: string; verified: boolean; documentDate: string; documentStale: boolean; sourceUrl: string }> {
+//
+// `applicationKind` travels WITH the template, because the gates that read it (the fill
+// gate here, the submit gate in repository.ts) only ever held the form's NAME, and a name
+// is the weaker of the two answers — acquisition stamped what it went looking for.
+export function loadStoredTemplates(db: AppDb, ahj: string, state: string): Array<{ def: AhjFormDefinition; bytes: Uint8Array; templateId: string; verified: boolean; documentDate: string; documentStale: boolean; sourceUrl: string; applicationKind: "prescriptive" | "structural" | null }> {
   const needle = (ahj || "").trim().toLowerCase();
   if (!needle) return [];
   const rows = db.query<{ id: string; ahj_name: string; state: string; original_filename: string; pdf_blob: Buffer | null; field_map: string; document_date: string; source_url: string }>(
     "SELECT id, ahj_name, state, original_filename, pdf_blob, field_map, document_date, source_url FROM ahj_form_templates WHERE pdf_blob IS NOT NULL ORDER BY updated_at DESC",
   );
-  const out: Array<{ def: AhjFormDefinition; bytes: Uint8Array; templateId: string; verified: boolean; documentDate: string; documentStale: boolean; sourceUrl: string }> = [];
+  const out: Array<{ def: AhjFormDefinition; bytes: Uint8Array; templateId: string; verified: boolean; documentDate: string; documentStale: boolean; sourceUrl: string; applicationKind: "prescriptive" | "structural" | null }> = [];
   for (const row of rows) {
     const rowAhj = String(row.ahj_name || "").trim().toLowerCase();
     if (!rowAhj) continue;
@@ -1164,6 +1201,7 @@ export function loadStoredTemplates(db: AppDb, ahj: string, state: string): Arra
       documentDate: String(row.document_date || ""),
       documentStale: isDocumentDateStale(String(row.document_date || "")),
       sourceUrl: String(row.source_url || map.sourceUrl || ""),
+      applicationKind: storedApplicationKind(row),
     });
   }
   return out;

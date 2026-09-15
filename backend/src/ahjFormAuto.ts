@@ -244,9 +244,67 @@ export function storeAhjFormTemplate(
   input.formType = classifyFormType(input.filename || "", input.formType);
   // WHICH of the two building-side applications this blank is, stamped so nothing
   // downstream has to re-guess from a filename that may say nothing. The caller's
-  // explicit answer wins (acquisition knows what it went looking for); otherwise the
-  // form's own name, and null when it makes no claim.
-  const applicationKind = input.applicationKind ?? formApplicationKind(`${input.map?.formName || ""} ${input.filename || ""}`);
+  // explicit answer wins (acquisition knows what it went looking for); then a stamp the
+  // caller already put on the map; then the form's own name, and null when it makes no
+  // claim. Resolved BEFORE the row lookup, because the kind is part of the building-side
+  // storage key.
+  const claimedKind: "prescriptive" | "structural" | null =
+    input.applicationKind
+    ?? (input.map?.applicationKind === "prescriptive" || input.map?.applicationKind === "structural" ? input.map.applicationKind : null)
+    ?? formApplicationKind(`${input.map?.formName || ""} ${input.filename || ""}`);
+  const incomingUrl = String(input.map?.sourceUrl || "");
+  // ONE SLOT PER (ahj, state, form_type) — EXCEPT THE BUILDING SIDE, WHICH IS TWO FORMS.
+  //
+  // A jurisdiction on the separate-permit model publishes BOTH a prescriptive solar
+  // application and a structural (non-prescriptive) one, and classifyFormType lands both
+  // in `building_application`. Under a single slot, whichever was acquired first was
+  // overwritten by the second — and hasStoredTemplateOfType then answered "already have
+  // it" for a project on the OTHER path, permanently blocking acquisition of the blank it
+  // actually needs. So the building-side slot is keyed by kind as well.
+  //
+  // Scoped to building_application deliberately: it is the only mutually-exclusive pair.
+  // Widening the key to every form_type would turn a renamed re-upload of a checklist or
+  // an electrical application into a duplicate row instead of an update.
+  const kindKeyed = input.formType === "building_application";
+  type ExistingRow = { id: string; original_filename?: string; field_map?: string; source_url?: string };
+  let existing: ExistingRow | null = null;
+  // A RE-STORE MUST NOT AMNESIA THE STAMP. The 60-day refresh (ahjFormRefresh.ts) re-fetches
+  // a row's own sourceUrl and re-stores the new bytes with a freshly BUILT field map — it
+  // passes no applicationKind and its map carries none, so the kind fell back to the form's
+  // NAME. For a structural blank published as "Building Permit Application.pdf" the name
+  // claims nothing, so the refresh silently downgraded a stamped row to kind-less; worse, on
+  // the building side the kind IS the storage key, so the re-store no longer matched its own
+  // row and INSERTED a third, kind-less duplicate beside the two real applications. The
+  // invariant belongs here, at the one chokepoint every writer passes through, not in the
+  // refresh — an operator re-uploading the same blank is the same re-store.
+  let inheritedKind: "prescriptive" | "structural" | null = null;
+  if (kindKeyed) {
+    const rows = db.query<ExistingRow>(
+      "SELECT id, original_filename, field_map, source_url FROM ahj_form_templates WHERE lower(ahj_name) = lower(?) AND lower(state) = lower(?) AND form_type = ?",
+      [input.ahjName, input.state, input.formType],
+    );
+    if (claimedKind) {
+      // Replace the row that is the SAME application.
+      existing = rows.find((row) => storedApplicationKind(row) === claimedKind) ?? null;
+    } else {
+      // No claim in hand. Bytes arriving from a row's OWN source URL are a re-store OF THAT
+      // ROW, so it is the row to replace and its stamp is the answer. Matched on URL only:
+      // a name match would let an operator's generically-named upload inherit a stamp that
+      // belongs to a different application, and uploads carry sourceUrl "" so they cannot.
+      const sameSource = incomingUrl ? rows.find((row) => String(row.source_url || "") === incomingUrl) ?? null : null;
+      // Otherwise a kind-less incoming blank replaces a kind-less row (the
+      // single-generic-form jurisdiction), never one of the two named applications.
+      existing = sameSource ?? rows.find((row) => storedApplicationKind(row) === null) ?? null;
+      if (existing) inheritedKind = storedApplicationKind(existing);
+    }
+  } else {
+    existing = db.get<ExistingRow>(
+      "SELECT id, original_filename, field_map, source_url FROM ahj_form_templates WHERE lower(ahj_name) = lower(?) AND lower(state) = lower(?) AND form_type = ? LIMIT 1",
+      [input.ahjName, input.state, input.formType],
+    ) ?? null;
+    if (!claimedKind && existing) inheritedKind = storedApplicationKind(existing);
+  }
+  const applicationKind = claimedKind ?? inheritedKind;
   // Stamp the content hash + check time so the periodic refresh can tell when the
   // AHJ has revised the form at its source URL. A fresh (re)mapping is always
   // UNVERIFIED — the operator must preview and verify before a real submit.
@@ -270,34 +328,6 @@ export function storeAhjFormTemplate(
   // "we genuinely do not know when this arrived" and must survive as blank.
   const retrievedAt = input.retrievedAt === undefined ? now : String(input.retrievedAt);
   const feeTableFound = input.feeTableFound ? 1 : 0;
-  // ONE SLOT PER (ahj, state, form_type) — EXCEPT THE BUILDING SIDE, WHICH IS TWO FORMS.
-  //
-  // A jurisdiction on the separate-permit model publishes BOTH a prescriptive solar
-  // application and a structural (non-prescriptive) one, and classifyFormType lands both
-  // in `building_application`. Under a single slot, whichever was acquired first was
-  // overwritten by the second — and hasStoredTemplateOfType then answered "already have
-  // it" for a project on the OTHER path, permanently blocking acquisition of the blank it
-  // actually needs. So the building-side slot is keyed by kind as well.
-  //
-  // Scoped to building_application deliberately: it is the only mutually-exclusive pair.
-  // Widening the key to every form_type would turn a renamed re-upload of a checklist or
-  // an electrical application into a duplicate row instead of an update.
-  const kindKeyed = input.formType === "building_application";
-  const existing = kindKeyed
-    ? (() => {
-        const rows = db.query<{ id: string; original_filename?: string; field_map?: string }>(
-          "SELECT id, original_filename, field_map FROM ahj_form_templates WHERE lower(ahj_name) = lower(?) AND lower(state) = lower(?) AND form_type = ?",
-          [input.ahjName, input.state, input.formType],
-        );
-        // Replace the row that is the SAME application. A kind-less incoming blank
-        // replaces a kind-less row (the single-generic-form jurisdiction), never one of
-        // the two named applications.
-        return rows.find((row) => storedApplicationKind(row) === applicationKind) ?? null;
-      })()
-    : db.get<{ id: string }>(
-        "SELECT id FROM ahj_form_templates WHERE lower(ahj_name) = lower(?) AND lower(state) = lower(?) AND form_type = ? LIMIT 1",
-        [input.ahjName, input.state, input.formType],
-      );
   if (existing) {
     db.run(
       `UPDATE ahj_form_templates

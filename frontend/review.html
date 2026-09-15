@@ -5,116 +5,315 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Plan Review Gate</title>
   <link rel="stylesheet" href="/styles.css">
-  <!-- Manrope. Unlike the vendored lucide above, a webfont degrades gracefully:
-       if fonts.googleapis.com is unreachable (offline demo, locked-down cloud)
-       the page falls back to the system stack in --font-sans and every layout
-       still holds. Icons would simply vanish, which is why THOSE are vendored. -->
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <!-- Manrope is NOT linked here. It is vendored in frontend/vendor and declared with
+       @font-face in /styles.css, which every page below loads — see the MANROPE block at
+       the top of styles.css. A <link> here would re-add the CDN dependency that was
+       deliberately removed, and would only cover the pages someone remembered to edit. -->
   <style>
-    .rv-wrap { max-width: 980px; margin: 0 auto; padding: 20px 16px 60px; }
-    .rv-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 18px; margin-bottom: 16px; }
-    .rv-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
-    .rv-grid label { display: block; font-size: var(--text-xs); color: var(--muted); margin-bottom: 3px; }
-    .rv-grid input, .rv-grid select, .rv-card textarea { width: 100%; box-sizing: border-box; padding: 7px 9px; border: 1px solid var(--input); border-radius: var(--radius-sm); font: inherit; font-size: var(--text-sm); background: var(--surface); color: var(--text); }
-    .rv-banner { padding: 9px 12px; border-radius: var(--radius-md); font-size: var(--text-sm); margin: 10px 0; }
-    .rv-banner.verified { background: #ecfdf5; color: #065f46; }
-    .rv-banner.seeded { background: #fffbeb; color: #92400e; }
-    .rv-banner.defaults { background: #eef2ff; color: #3730a3; }
-    .rv-finding { border-left: 4px solid var(--border); padding: 10px 12px; margin: 8px 0; background: var(--surface-2); border-radius: 0 var(--radius-md) var(--radius-md) 0; }
-    .rv-finding.blocker { border-left-color: var(--danger); }
-    .rv-finding.warning { border-left-color: var(--warning); }
-    .rv-finding.callout { border-left-color: var(--info); }
-    .rv-finding h4 { margin: 0 0 4px; font-size: var(--text-sm); }
-    .rv-finding p { margin: 3px 0; font-size: var(--text-sm); }
-    .rv-cite { font-size: var(--text-xs); color: var(--muted); }
-    .rv-ai-badge { display: inline-block; font-size: 11px; background: #ede9fe; color: #5b21b6; border-radius: 999px; padding: 2px 8px; margin-left: 6px; vertical-align: middle; }
-    .rv-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
-    .rv-actions button, .rv-run { padding: 8px 14px; border-radius: var(--radius-md); border: 1px solid var(--border); background: var(--surface); color: var(--text); cursor: pointer; font: inherit; font-size: var(--text-sm); }
-    .rv-run { background: var(--primary); color: var(--primary-foreground); border-color: var(--primary); }
-    .rv-sub { display: flex; justify-content: space-between; gap: 10px; padding: 8px 0; border-top: 1px solid var(--border); font-size: var(--text-sm); align-items: center; cursor: pointer; }
-    .rv-muted { color: var(--muted); font-size: var(--text-xs); }
-    .rv-profile-row { display: flex; justify-content: space-between; gap: 10px; padding: 7px 0; border-top: 1px solid var(--border); font-size: var(--text-sm); align-items: center; }
-    .badge-seeded { background: #fffbeb; color: #92400e; border-radius: 999px; padding: 2px 9px; font-size: 11px; }
-    .badge-verified { background: #ecfdf5; color: #065f46; border-radius: 999px; padding: 2px 9px; font-size: 11px; }
+    /* ==========================================================================
+       PLAN REVIEW GATE — a STAGE OF THE PIPELINE, not a separate product.
+
+       The page used to open on a bare "Plan Review Gate" heading and a stack of
+       identical grey cards, which read as its own little tool. It now carries the
+       marketing site's structure — eyebrow, sentence-case heading, hairline rules
+       — and, above the form, the same six-stage strip the dashboard uses
+       (PROJECT_STAGES in projectStage.ts), with QC / Verify marked as where this
+       page sits. Nothing here calls a different API than it did.
+
+       The findings render is the site's own "AHJ PREFLIGHT / City of Example"
+       card, built from the data the reviewer already returns:
+         pass findings          -> left "Project checks" column of green ticks
+         blocker/warning/callout-> right "POTENTIAL ISSUE" stack
+         codeReferences         -> "AHJ requirement"
+         message                -> "Plan set"
+         cityFeedback           -> the green "Recommended action" box
+       ========================================================================== */
+
+    body { background: var(--bg); color: var(--text); }
+
+    .rv-topbar {
+      position: sticky; top: 0; z-index: 20;
+      display: flex; align-items: center; justify-content: space-between; gap: 16px;
+      padding: 14px 28px; background: var(--bg); border-bottom: 1px solid var(--line);
+    }
+    .rv-brand { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+    .rv-brand strong { font-size: var(--text-sm); font-weight: 700; letter-spacing: -.01em; }
+    .rv-brand span { font-size: var(--text-xs); color: var(--muted); }
+
+    .rv-wrap { max-width: 1060px; margin: 0 auto; padding: 0 28px 110px; }
+    .rv-wrap a { color: var(--primary); text-decoration: none; border-bottom: 1px solid color-mix(in srgb, var(--primary) 35%, transparent); }
+    .rv-wrap a:hover { border-bottom-color: var(--primary); }
+
+    .rv-eyebrow {
+      display: block; font-size: 11px; font-weight: 700; line-height: 1;
+      letter-spacing: .16em; text-transform: uppercase; color: var(--primary);
+    }
+    .rv-hero { padding: 54px 0 30px; max-width: 720px; }
+    .rv-hero h1 { margin-top: 18px; font-size: clamp(32px, 4vw, 46px); font-weight: 600; letter-spacing: -.028em; line-height: 1.1; }
+    .rv-hero p { margin-top: 18px; font-size: var(--text-base); line-height: 1.65; color: var(--muted); max-width: 62ch; }
+
+    /* ---- Where this page sits in the pipeline ----------------------------- */
+    .rv-pipeline {
+      display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+      padding: 16px 0 18px; margin-bottom: 34px;
+      border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
+    }
+    .rv-pipeline .rv-stage {
+      font-size: 11px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase;
+      color: var(--muted); padding: 5px 12px; border: 1px solid var(--border); border-radius: 999px;
+    }
+    .rv-pipeline .rv-stage.is-here { color: var(--primary-foreground); background: var(--primary); border-color: var(--primary); }
+    .rv-pipeline .rv-arrow { color: var(--border); font-size: var(--text-xs); }
+
+    /* ---- Cards ------------------------------------------------------------ */
+    .rv-card {
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: var(--radius-sm); padding: 24px 26px; margin-bottom: 18px;
+      box-shadow: var(--shadow-sm);
+    }
+    .rv-card > h2 { font-size: var(--text-lg); font-weight: 600; letter-spacing: -.02em; }
+    .rv-card > h2 + p { margin-top: 8px; }
+    .rv-card-intro { font-size: var(--text-sm); line-height: 1.65; color: var(--muted); max-width: 80ch; }
+
+    .rv-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px 16px; margin-top: 16px; }
+    .rv-grid label, .rv-label { display: block; font-size: var(--text-xs); font-weight: 600; color: var(--muted); margin-bottom: 6px; }
+    .rv-wrap input, .rv-wrap select, .rv-wrap textarea {
+      width: 100%; box-sizing: border-box; padding: 9px 11px;
+      border: 1px solid var(--input); border-radius: var(--radius-sm);
+      font: inherit; font-size: var(--text-sm); background: var(--card); color: var(--text);
+      transition: border-color .15s ease, box-shadow .15s ease;
+    }
+    .rv-wrap textarea { line-height: 1.55; resize: vertical; }
+    .rv-wrap input:hover, .rv-wrap select:hover, .rv-wrap textarea:hover { border-color: var(--muted); }
+    .rv-wrap input:focus, .rv-wrap select:focus, .rv-wrap textarea:focus {
+      outline: none; border-color: var(--primary);
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 16%, transparent);
+    }
+    .rv-wrap input[type=file] { padding: 7px 10px; background: var(--surface-2); cursor: pointer; }
+    .rv-wrap input[type=file]::file-selector-button {
+      margin-right: 12px; padding: 6px 12px; border: 1px solid var(--border); border-radius: 999px;
+      background: var(--card); color: var(--text); font: inherit; font-size: var(--text-xs); font-weight: 600; cursor: pointer;
+    }
+    .rv-wrap ::placeholder { color: color-mix(in oklab, var(--muted) 70%, transparent); }
+
+    /* Banner classes are set by review.js as `rv-banner <kind>` — the names are a
+       contract with that file, so they are restyled here, never renamed. */
+    .rv-banner {
+      padding: 11px 14px; border-radius: var(--radius-sm); font-size: var(--text-sm);
+      line-height: 1.55; margin: 14px 0 0; border: 1px solid var(--border); background: var(--surface-2);
+    }
+    .rv-banner.verified { background: color-mix(in oklab, var(--accent) 34%, var(--card)); border-color: color-mix(in oklab, var(--accent) 65%, var(--border)); color: var(--primary-strong); }
+    .rv-banner.seeded { background: color-mix(in oklab, var(--warning) 12%, var(--card)); border-color: color-mix(in oklab, var(--warning) 35%, var(--border)); color: var(--warning); }
+    .rv-banner.defaults { background: var(--surface-2); color: var(--muted); }
+
+    .rv-actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 20px; }
+    .rv-muted { color: var(--muted); font-size: var(--text-xs); line-height: 1.6; }
+
+    /* ====================================================================
+       THE AHJ PREFLIGHT CARD — the layout the marketing site draws.
+       ==================================================================== */
+    .rv-preflight { border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--card); overflow: hidden; }
+    .rv-preflight-head {
+      display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap;
+      padding: 18px 22px; border-bottom: 1px solid var(--line);
+    }
+    .rv-preflight-head .rv-subject { font-size: var(--text-base); font-weight: 600; letter-spacing: -.02em; margin-top: 7px; display: block; }
+    .rv-chip {
+      font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+      padding: 5px 12px; border-radius: 999px; border: 1px solid var(--border);
+      background: var(--surface-2); color: var(--muted); white-space: nowrap;
+    }
+    .rv-preflight-body { display: grid; grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr); }
+    .rv-preflight-body > * { padding: 22px; }
+    .rv-preflight-body > .rv-issues { border-left: 1px solid var(--line); }
+    /* renderReport() drops a column rather than leaving one blank; the divider
+       has to go with it. */
+    .rv-preflight-body.one-col { grid-template-columns: 1fr; }
+    .rv-preflight-body.one-col > .rv-issues { border-left: 0; }
+    @media (max-width: 800px) {
+      .rv-preflight-body { grid-template-columns: 1fr; }
+      .rv-preflight-body > .rv-issues { border-left: 0; border-top: 1px solid var(--line); }
+    }
+    .rv-col-title { font-size: var(--text-sm); font-weight: 700; letter-spacing: -.01em; margin-bottom: 14px; }
+
+    .rv-checklist { list-style: none; margin: 0; padding: 0; display: grid; gap: 11px; }
+    .rv-checklist li { display: grid; grid-template-columns: 16px 1fr; gap: 9px; font-size: var(--text-sm); line-height: 1.5; }
+    /* The tick is drawn, not typed: a glyph would inherit the text colour and a
+       green-only signal fails for a colour-blind reviewer. Shape + colour both. */
+    .rv-checklist li::before {
+      content: ""; margin-top: 4px; width: 11px; height: 6px;
+      border-left: 2px solid var(--primary); border-bottom: 2px solid var(--primary);
+      transform: rotate(-45deg);
+    }
+
+    .rv-issue { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 16px 18px; }
+    .rv-issue + .rv-issue { margin-top: 12px; }
+    .rv-issue-kind {
+      display: inline-flex; align-items: center; gap: 7px;
+      font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase;
+    }
+    .rv-issue-kind::before {
+      content: ""; width: 0; height: 0; flex: none;
+      border-left: 5px solid transparent; border-right: 5px solid transparent;
+      border-bottom: 9px solid currentColor;
+    }
+    .rv-issue.blocker { border-color: color-mix(in oklab, var(--danger) 45%, var(--border)); }
+    .rv-issue.blocker .rv-issue-kind { color: var(--danger); }
+    .rv-issue.warning .rv-issue-kind { color: var(--warning); }
+    .rv-issue.callout .rv-issue-kind { color: var(--info); }
+    .rv-issue h4 { margin: 10px 0 0; font-size: var(--text-base); font-weight: 600; letter-spacing: -.02em; line-height: 1.3; }
+    .rv-issue-line { margin-top: 13px; }
+    .rv-issue-line > span {
+      display: block; font-size: var(--text-xs); font-weight: 700; color: var(--text); margin-bottom: 3px;
+    }
+    .rv-issue-line p { font-size: var(--text-sm); line-height: 1.55; color: var(--muted); margin: 0; }
+    .rv-issue-line p + p { margin-top: 5px; }
+    .rv-issue-line a { color: var(--primary); }
+    .rv-issue-line .rv-scope { display: block; font-size: var(--text-xs); color: var(--muted); font-style: italic; margin-top: 2px; }
+    .rv-rec {
+      margin-top: 14px; padding: 13px 15px; border-radius: var(--radius-sm);
+      border: 1px solid color-mix(in oklab, var(--accent) 65%, var(--border));
+      background: color-mix(in oklab, var(--accent) 34%, var(--card));
+    }
+    .rv-rec > span { display: block; font-size: var(--text-xs); font-weight: 700; color: var(--primary-strong); margin-bottom: 4px; }
+    .rv-rec p { margin: 0; font-size: var(--text-sm); line-height: 1.55; color: var(--text); }
+    .rv-ai-badge {
+      display: inline-block; font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+      background: var(--surface-2); color: var(--muted); border: 1px solid var(--border);
+      border-radius: 999px; padding: 2px 9px; margin-left: 8px; vertical-align: middle;
+    }
+    .rv-empty { font-size: var(--text-sm); color: var(--muted); line-height: 1.6; }
+    .rv-disclaimer {
+      padding: 14px 22px; border-top: 1px solid var(--line); background: var(--surface-2);
+      font-size: var(--text-xs); color: var(--muted); line-height: 1.6;
+    }
+
+    /* ---- Lists ------------------------------------------------------------ */
+    .rv-sub, .rv-profile-row {
+      display: flex; justify-content: space-between; align-items: center; gap: 14px;
+      padding: 12px 0; border-top: 1px solid var(--line); font-size: var(--text-sm);
+    }
+    .rv-sub { cursor: pointer; }
+    .rv-sub:hover { color: var(--primary); }
+    .rv-profile-row .rv-codes { color: var(--muted); font-size: var(--text-xs); text-align: right; }
+    .badge-seeded, .badge-verified {
+      font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+      border-radius: 999px; padding: 3px 9px; margin-left: 6px; white-space: nowrap;
+    }
+    .badge-seeded { background: color-mix(in oklab, var(--warning) 14%, var(--card)); color: var(--warning); border: 1px solid color-mix(in oklab, var(--warning) 35%, var(--border)); }
+    .badge-verified { background: color-mix(in oklab, var(--accent) 40%, var(--card)); color: var(--primary-strong); border: 1px solid color-mix(in oklab, var(--accent) 70%, var(--border)); }
     #verifyEditor { font-family: var(--font-mono); font-size: var(--text-xs); min-height: 220px; }
-    h1 { font-size: var(--text-xl); } h2 { font-size: var(--text-base); margin-top: 0; }
   </style>
 </head>
 <body>
+  <header class="rv-topbar">
+    <div class="rv-brand">
+      <strong>Solar Submission Autopilot</strong>
+      <span>Plan review gate</span>
+    </div>
+    <nav><a class="button ghost" href="/dashboard">&#8592; Dashboard</a></nav>
+  </header>
+
   <div class="rv-wrap">
-    <h1>Plan Review Gate</h1>
-    <p class="rv-muted">AI-assisted intake pre-review against your jurisdiction's adopted codes. Deterministic checks where built (solar PV); advisory AI observations everywhere — a human plans examiner always completes the review.</p>
+    <div class="rv-hero">
+      <span class="rv-eyebrow">AHJ intelligence</span>
+      <h1>Catch potential corrections before the AHJ does.</h1>
+      <p>The plan review gate is a stage of the project pipeline, not a side tool. It pre-reviews an
+         intake against the jurisdiction's adopted codes — deterministic checks where they are built
+         (solar PV), advisory AI observations everywhere else — so the package is corrected before it
+         is filed. A human plans examiner always completes the review.</p>
+    </div>
+
+    <!-- The six stages are the product's own, from PROJECT_STAGES in
+         backend/src/projectStage.ts; this page is where stage 2 is worked. -->
+    <div class="rv-pipeline">
+      <span class="rv-stage">1 &middot; Intake</span>
+      <span class="rv-arrow">&#8594;</span>
+      <span class="rv-stage is-here">2 &middot; QC / Verify</span>
+      <span class="rv-arrow">&#8594;</span>
+      <span class="rv-stage">3 &middot; Build &amp; Validate</span>
+      <span class="rv-arrow">&#8594;</span>
+      <span class="rv-stage">4 &middot; Submit</span>
+      <span class="rv-arrow">&#8594;</span>
+      <span class="rv-stage">5 &middot; Track Approvals</span>
+      <span class="rv-arrow">&#8594;</span>
+      <span class="rv-stage">6 &middot; Closeout</span>
+    </div>
 
     <div class="rv-card">
       <h2>New review</h2>
+      <p class="rv-card-intro">State and AHJ are required; everything else sharpens the checks. Attach the
+         plan set to add the AI page review on top of the deterministic ones.</p>
       <div class="rv-grid">
-        <div><label>Work type</label><select id="workType"></select></div>
-        <div><label>State</label><input id="state" placeholder="ID" maxlength="20"></div>
-        <div><label>Jurisdiction (AHJ)</label><input id="ahj" placeholder="Elmore County"></div>
-        <div><label>Utility (optional)</label><input id="utility" placeholder="Idaho Power"></div>
+        <div><label for="workType">Work type</label><select id="workType"></select></div>
+        <div><label for="state">State</label><input id="state" placeholder="ID" maxlength="20"></div>
+        <div><label for="ahj">Jurisdiction (AHJ)</label><input id="ahj" placeholder="Elmore County"></div>
+        <div><label for="utility">Utility (optional)</label><input id="utility" placeholder="Idaho Power"></div>
       </div>
       <div id="profileBanner" class="rv-banner defaults" style="display:none"></div>
-      <div class="rv-grid" style="margin-top:8px">
-        <div><label>Site address</label><input id="address"></div>
-        <div><label>City</label><input id="city"></div>
-        <div><label>Applicant name</label><input id="applicant"></div>
+      <div class="rv-grid">
+        <div><label for="address">Site address</label><input id="address"></div>
+        <div><label for="city">City</label><input id="city"></div>
+        <div><label for="applicant">Applicant name</label><input id="applicant"></div>
       </div>
-      <div id="solarFields" class="rv-grid" style="margin-top:8px; display:none">
-        <div><label>DC size (kW)</label><input id="dcKw" type="number" step="0.01"></div>
-        <div><label>AC size (kW)</label><input id="acKw" type="number" step="0.01"></div>
-        <div><label>Interconnection</label><input id="interco" placeholder="Load-side breaker"></div>
-        <div><label>Ground snow (psf)</label><input id="snow" type="number"></div>
-        <div><label>PV dead load (psf)</label><input id="deadLoad" type="number" step="0.1"></div>
-        <div><label>Rafter spacing (in)</label><input id="rafter" type="number"></div>
-        <div><label>Wind exposure</label><input id="wind" placeholder="B / C / D"></div>
-        <div><label>Bus rating (A)</label><input id="bus" type="number"></div>
-        <div><label>Main breaker (A)</label><input id="mainBreaker" type="number"></div>
-        <div><label>PV breaker (A)</label><input id="pvBreaker" type="number"></div>
+      <div id="solarFields" class="rv-grid" style="display:none">
+        <div><label for="dcKw">DC size (kW)</label><input id="dcKw" type="number" step="0.01"></div>
+        <div><label for="acKw">AC size (kW)</label><input id="acKw" type="number" step="0.01"></div>
+        <div><label for="interco">Interconnection</label><input id="interco" placeholder="Load-side breaker"></div>
+        <div><label for="snow">Ground snow (psf)</label><input id="snow" type="number"></div>
+        <div><label for="deadLoad">PV dead load (psf)</label><input id="deadLoad" type="number" step="0.1"></div>
+        <div><label for="rafter">Rafter spacing (in)</label><input id="rafter" type="number"></div>
+        <div><label for="wind">Wind exposure</label><input id="wind" placeholder="B / C / D"></div>
+        <div><label for="bus">Bus rating (A)</label><input id="bus" type="number"></div>
+        <div><label for="mainBreaker">Main breaker (A)</label><input id="mainBreaker" type="number"></div>
+        <div><label for="pvBreaker">PV breaker (A)</label><input id="pvBreaker" type="number"></div>
       </div>
-      <div style="margin-top:8px">
-        <label class="rv-muted">Project description / notes</label>
+      <div style="margin-top:16px">
+        <label class="rv-label" for="description">Project description / notes</label>
         <textarea id="description" rows="2"></textarea>
       </div>
-      <div style="margin-top:8px">
-        <label class="rv-muted">Plan set PDF (optional — enables the AI page review)</label>
+      <div style="margin-top:16px">
+        <label class="rv-label" for="planset">Plan set PDF (optional — enables the AI page review)</label>
         <input id="planset" type="file" accept="application/pdf">
       </div>
       <div class="rv-actions">
-        <button id="runBtn" class="rv-run">Run pre-review</button>
+        <button id="runBtn" class="primary">Run pre-review</button>
         <span id="runStatus" class="rv-muted"></span>
       </div>
     </div>
 
+    <!-- renderReport() in review.js fills #findings with the preflight card and
+         #resultSummary with the count line; both ids are its contract. -->
     <div class="rv-card" id="resultCard" style="display:none">
-      <h2>Findings <span id="resultSummary" class="rv-muted"></span></h2>
-      <div id="findings"></div>
+      <h2>Preflight result <span id="resultSummary" class="rv-muted"></span></h2>
+      <div id="findings" style="margin-top:16px"></div>
       <div class="rv-actions">
-        <button id="printBtn">Print / PDF</button>
-        <button id="shareBtn">Copy share link</button>
+        <button id="printBtn" class="secondary">Print / PDF</button>
+        <button id="shareBtn" class="secondary">Copy share link</button>
       </div>
     </div>
 
     <div class="rv-card">
       <h2>Past reviews</h2>
-      <div id="subs" class="rv-muted">Loading…</div>
+      <div id="subs" class="rv-muted" style="margin-top:6px">Loading…</div>
     </div>
 
     <div class="rv-card">
       <h2>Jurisdiction code profiles</h2>
-      <p class="rv-muted">What each jurisdiction has adopted (code editions, amendments, design criteria). <b>Seeded</b> = AI-researched, findings say "verify locally" until a human verifies against the cited official sources.</p>
+      <p class="rv-card-intro">What each jurisdiction has adopted (code editions, amendments, design
+        criteria). <b>Seeded</b> = AI-researched; findings say "verify locally" until a human verifies
+        it against the cited official sources.</p>
       <div class="rv-grid">
-        <div><label>State</label><input id="cpState" placeholder="ID" maxlength="20"></div>
-        <div><label>AHJ (blank = state default)</label><input id="cpAhj" placeholder="Elmore County"></div>
-        <div><label>&nbsp;</label><button id="researchBtn" class="rv-run" style="width:100%">Research adopted codes</button></div>
+        <div><label for="cpState">State</label><input id="cpState" placeholder="ID" maxlength="20"></div>
+        <div><label for="cpAhj">AHJ (blank = state default)</label><input id="cpAhj" placeholder="Elmore County"></div>
+        <div style="display:flex;align-items:flex-end"><button id="researchBtn" class="primary" style="width:100%;justify-content:center">Research adopted codes</button></div>
       </div>
-      <div id="cpStatus" class="rv-muted" style="margin-top:6px"></div>
-      <div id="profiles" style="margin-top:8px"></div>
-      <div id="verifyPanel" style="display:none; margin-top:10px">
-        <label class="rv-muted">Review each value against its cited source, edit as needed, then verify:</label>
+      <div id="cpStatus" class="rv-muted" style="margin-top:10px"></div>
+      <div id="profiles" style="margin-top:10px"></div>
+      <div id="verifyPanel" style="display:none; margin-top:16px">
+        <label class="rv-label" for="verifyEditor">Review each value against its cited source, edit as needed, then verify:</label>
         <textarea id="verifyEditor"></textarea>
-        <div class="rv-actions"><button id="verifyBtn" class="rv-run">Mark verified</button><span id="verifyStatus" class="rv-muted"></span></div>
+        <div class="rv-actions"><button id="verifyBtn" class="primary">Mark verified</button><span id="verifyStatus" class="rv-muted"></span></div>
       </div>
     </div>
   </div>

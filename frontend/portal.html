@@ -4,57 +4,178 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <!-- The token is in the URL, so keep this page out of indexes and out of Referer headers.
-       status.html and intake.html are missing both and should get them too. -->
+       status.html and intake.html now carry both too. -->
   <meta name="robots" content="noindex, nofollow">
   <meta name="referrer" content="no-referrer">
-  <title>Your Projects</title>
+  <title>Your projects · Keelix Automation</title>
+  <!-- Manrope, the marketing site's typeface.
+       IT IS VENDORED NOW (frontend/vendor/manrope-*.woff2, wired by the @font-face
+       block at the top of styles.css) — AND THAT FILE CANNOT REACH THIS PAGE. /vendor/*
+       is not in `openPaths` (backend/src/auth.ts), so for a tokenized, logged-out
+       visitor requireAuth 302s the font request to /login and the face never arrives.
+       MEASURED, not assumed: a logged-out load requests /vendor/manrope-latin.woff2 and
+       gets 302, then gets the face from fonts.gstatic.com with 200.
+       So the CDN link below is what actually puts the brand typeface in front of a
+       client, and it stays until `/vendor/` is added to openPaths — at which point this
+       page can carry its own @font-face and drop the external request.
+       Either way `display=swap` plus the system fallback in --font-sans keeps the old
+       promise: first paint is immediate and an offline demo still renders whole. -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <style>
     /* Matched to status.html deliberately — this is its sibling, and a client who follows a
-       link from an update email to here should not feel handed to a different product.
-       Inline because express.static sits behind requireAuth: a sibling .js or .css would
-       redirect a logged-out visitor to /login, which is the exact bug this page must not have. */
-    /* PALETTE MATCHED BY VALUE to frontend/styles.css — not by reference.
-       This page links no stylesheet on purpose (express.static sits behind
-       requireAuth, so a sibling .css would bounce a logged-out client to
-       /login), so these are hand-kept in step with the :root there. Same oklch
-       values, same names. Font stays the system stack: this is a client-facing
-       page that must render instantly with zero external requests. */
+       link from an update email to here should not feel handed to a different product. */
+    /* PALETTE MATCHED BY VALUE to frontend/styles.css — not by reference, so these
+       are hand-kept in step with the :root there. Same oklch values, same names.
+
+       This page links no stylesheet on purpose. The old reason given here — that a
+       sibling .css would bounce a logged-out client to /login — is only half true:
+       /styles.css is one of the five exempt `openPaths` in backend/src/auth.ts, so it
+       alone would load. Any OTHER sibling asset behind express.static genuinely does
+       302 (see the vendored-font note in the head). The reason that still holds is
+       independence: styles.css is a large shared surface under concurrent edit, and a
+       tokenized page a customer opens from an email must not restyle itself because
+       the operator dashboard changed.
+
+       THE LOOK IS THE MARKETING SITE'S, deliberately: this page is the company's
+       face to the client, so it carries the site's structure — the wordmark, a
+       green uppercase eyebrow over every section, a confident sentence-case
+       heading, a dark full-bleed band under the header, hairline cards and pill
+       chips on warm paper. Nothing about the data or the wording changed. */
     :root {
       color-scheme: light;
-      --bg:        oklch(98.5% .004 95);
+      --bg:        oklch(98.5% .004 95);   /* warm paper, not white */
       --surface:   oklch(100% 0 0);
       --surface-2: oklch(95.5% .009 180);
       --text:      oklch(20.5% .025 220);
       --muted:     oklch(52% .025 220);
       --line:      oklch(88% .012 220);
       --primary:   oklch(42% .105 173);
+      --accent:    oklch(91% .07 153);     /* light green tint — positive chips */
       --success:   oklch(50% .13 150);
       --warning:   oklch(52% .12 75);
       --danger:    oklch(57.7% .245 27.325);
+      /* The site's dark band: near-black teal. Same value as the app's dark
+         --background, used here in light mode as a full-bleed section fill. */
+      --ink:          oklch(20.5% .025 220);
+      --ink-text:     oklch(96% .005 220);
+      --ink-muted:    oklch(72% .02 220);
+      --ink-line:     oklch(36% .02 220);
+      --ink-primary:  oklch(70% .105 173); /* the eyebrow green, legible on ink */
+      --radius-sm: calc(.45rem - 2px);     /* ~5.2px — the site's card radius */
       --radius-md: .45rem;
       --radius-lg: calc(.45rem + 4px);
+      --font-sans: "Manrope", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+      --shadow-sm: 0 1px 2px rgba(24, 35, 48, .05);
     }
-    body { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg); margin: 0; color: var(--text); line-height: 1.5; }
-    .wrap { max-width: 720px; margin: 0 auto; padding: 24px 16px 48px; }
-    .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg); padding: 20px; margin-bottom: 16px; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
-    .head { margin-bottom: 20px; }
-    h1 { font-size: 20px; margin: 0 0 4px; }
-    h2 { font-size: 15px; margin: 0 0 2px; }
+    * { box-sizing: border-box; }
+    body {
+      font-family: var(--font-sans);
+      background: var(--bg); margin: 0; color: var(--text);
+      line-height: 1.55; font-weight: 400;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ---- Brand bar. Static, outside #app, so the mark is there while loading
+            and still there if the link has expired. ---------------------------- */
+    .topbar { border-bottom: 1px solid var(--line); background: var(--bg); }
+    .topbar .inner { max-width: 760px; margin: 0 auto; padding: 16px 20px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+    .mark { display: flex; align-items: center; gap: 9px; }
+    .mark svg { display: block; flex: none; }
+    .mark .name { font-size: 15px; font-weight: 800; letter-spacing: .07em; line-height: 1; }
+    .mark .sub { font-size: 8px; font-weight: 700; letter-spacing: .2em; color: var(--muted); line-height: 1; margin-top: 3px; }
+    .topbar .kicker { font-size: 11px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+
+    /* ---- Full-bleed bands. #app is full width; each band centres its own inner. */
+    .band { width: 100%; }
+    .band .inner { max-width: 760px; margin: 0 auto; padding: 0 20px; }
+    .band-ink { background: var(--ink); color: var(--ink-text); }
+    .band-ink .inner { padding-top: 44px; padding-bottom: 44px; }
+    .band-paper .inner { padding-top: 40px; padding-bottom: 56px; }
+
+    /* ---- The site's section signature: green uppercase eyebrow, then a large
+            sentence-case heading that ends in a period. ------------------------ */
+    .eyebrow { font-size: 11px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: var(--primary); margin: 0 0 12px; }
+    .band-ink .eyebrow { color: var(--ink-primary); }
+    h1 { font-size: clamp(26px, 6.4vw, 34px); font-weight: 600; letter-spacing: -.02em; line-height: 1.16; margin: 0 0 10px; }
+    h2 { font-size: clamp(19px, 3.4vw, 23px); font-weight: 600; letter-spacing: -.015em; line-height: 1.25; margin: 0 0 18px; }
+    .lede { color: var(--ink-muted); font-size: 14px; margin: 0; }
+    /* The one number on this page a client acts on, so it gets the site's
+       positive-chip treatment instead of another grey sentence. */
+    .needs-you { display: inline-block; margin-top: 18px; padding: 5px 13px; border-radius: 999px; background: color-mix(in oklab, var(--ink-primary) 22%, transparent); color: var(--ink-primary); font-size: 13px; font-weight: 700; }
+
+    /* ---- Hairline cards, restrained shadow, the site's ~5.2px radius. -------- */
+    .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-sm); box-shadow: var(--shadow-sm); overflow: hidden; margin-bottom: 18px; }
+    .card:last-of-type { margin-bottom: 0; }
+    .card-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; gap: 8px 16px; padding: 16px 18px; border-bottom: 1px solid var(--line); }
+    .card-head .what { flex: 1 1 250px; min-width: 0; }
+    .card-body { padding: 2px 18px 4px; }
+    h3 { font-size: 16px; font-weight: 600; letter-spacing: -.01em; line-height: 1.3; margin: 0 0 2px; }
     .muted { color: var(--muted); font-size: 13px; }
-    .row { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
-    .track { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; padding: 9px 0; border-top: 1px solid var(--line); font-size: 13px; }
-    .badge { font-size: 12px; padding: 3px 10px; border-radius: 999px; background: var(--surface-2); color: var(--primary); white-space: nowrap; }
-    .badge.good { background: color-mix(in oklab, var(--success) 14%, var(--surface)); color: var(--success); }
-    .badge.warn { background: color-mix(in oklab, var(--warning) 16%, var(--surface)); color: var(--warning); }
-    .badge.you { background: color-mix(in oklab, var(--danger) 12%, var(--surface)); color: var(--danger); }
-    .upd { border-top: 1px solid var(--line); padding: 10px 0 2px; font-size: 13px; line-height: 1.5; }
-    .upd .when { color: var(--muted); font-size: 12px; display: block; margin-bottom: 2px; }
-    .err { text-align: center; padding: 48px 16px; color: var(--muted); }
-    footer { text-align: center; font-size: 12px; color: var(--muted); margin-top: 24px; }
+
+    /* Rows wrap rather than clip: a status label can be a whole sentence
+       ("Waiting on us — reading the jurisdiction's latest update") and it has to
+       survive a 360px phone intact. flex-shrink is 1 on the chip for the same
+       reason — at 0 the longest label ran off the right edge of the card. */
+    .track { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; gap: 8px 16px; padding: 14px 0; border-top: 1px solid var(--line); font-size: 13px; }
+    .track:first-child { border-top: 0; }
+    .track .what { flex: 1 1 250px; min-width: 0; }
+    .track .name { font-size: 14px; font-weight: 600; letter-spacing: -.005em; }
+
+    /* The neutral chip is an OUTLINE, like the site's own "Plan review" pill.
+       It used to be green-on-tint, which made "Waiting on us — reading the
+       utility's latest update" look like good news. Green is now reserved for
+       the states that actually are. */
+    .badge { flex: 0 1 auto; max-width: 100%; align-self: flex-start; font-size: 12px; font-weight: 700; line-height: 1.4; padding: 4px 11px; border-radius: 999px; background: var(--surface); border: 1px solid var(--line); color: var(--muted); }
+    .badge.good { background: var(--accent); border-color: transparent; color: oklch(32% .08 160); }
+    .badge.warn { background: color-mix(in oklab, var(--warning) 18%, var(--surface)); border-color: transparent; color: oklch(38% .12 68); }
+    /* "Your move" is the SOLID green chip — the site's own CTA colour. It used to be a
+       danger-red tint, which put "Permit ready for issue" (good news, one action away)
+       in the colour a client reads as "something is wrong". Red now says nothing here,
+       amber stays the problem colour for corrections, pale green stays "done", and the
+       outline pill stays "nothing needed from anyone yet". Four states, four readings. */
+    .badge.you { background: var(--primary); border-color: transparent; color: oklch(98.4% .003 247.858); }
+
+    /* Same meaning, same look as status.html's: a reading taken before our current status rules
+       landed, shown with its caveat rather than published as today's fact. Styled as a soft chip
+       so a client reads it as a note beside the status, not as an error, and given its own
+       full-width row so it lands UNDER the status it qualifies rather than above it — the caveat
+       has to follow the claim to read as one. */
+    .recheck-row { flex: 1 1 100%; margin-top: 2px; }
+    .recheck { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px 3px 7px; border-radius: 999px; background: color-mix(in oklab, var(--warning) 12%, var(--surface)); color: oklch(38% .12 68); font-size: 12px; font-weight: 500; }
+    .recheck::before { content: ""; width: 6px; height: 6px; border-radius: 999px; background: var(--warning); flex: none; }
+
+    /* The updates strip sits on the quiet surface at the foot of the card — the
+       same move the site's mock card makes with its tinted "Recommended action" box. */
+    .updates { background: var(--surface-2); border-top: 1px solid var(--line); padding: 4px 18px 14px; }
+    .updates .head { font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); padding: 13px 0 2px; }
+    .upd { padding: 9px 0 0; font-size: 13px; line-height: 1.55; }
+    .upd .when { color: var(--muted); font-size: 12px; font-weight: 500; display: block; margin-bottom: 2px; }
+
+    .empty { padding: 16px 0; color: var(--muted); font-size: 13px; }
+    .err { max-width: 760px; margin: 0 auto; text-align: center; padding: 72px 24px; color: var(--muted); font-size: 15px; }
+    footer { border-top: 1px solid var(--line); margin-top: 28px; padding-top: 20px; font-size: 12px; color: var(--muted); }
   </style>
 </head>
 <body>
-  <div class="wrap" id="app"><div class="err">Loading your projects…</div></div>
+  <header class="topbar">
+    <div class="inner">
+      <div class="mark">
+        <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M12 21.5v-6.6" fill="none" stroke="oklch(42% .105 173)" stroke-width="2.1" stroke-linecap="round"/>
+          <path d="M12 15.1C12 10.7 9 7.1 4.6 6.2 4 10.7 7.2 14.5 12 15.1Z" fill="oklch(42% .105 173)"/>
+          <path d="M12 15.1C12 10.7 15 7.1 19.4 6.2 20 10.7 16.8 14.5 12 15.1Z" fill="oklch(42% .105 173)" opacity=".62"/>
+        </svg>
+        <div>
+          <div class="name">KEELIX</div>
+          <div class="sub">AUTOMATION</div>
+        </div>
+      </div>
+      <div class="kicker">Project tracker</div>
+    </div>
+  </header>
+  <main id="app"><div class="err">Loading your projects…</div></main>
   <script>
     // Read-only per-client tracker. One stable link lists every job we are filing for this
     // company. The payload is sanitized server-side (backend/src/clientPortal.ts): addresses,
@@ -85,17 +206,25 @@
         const projects = d.projects || [];
         const yours = projects.filter((p) => NEEDS_YOU.has(p.statusKey)).length;
 
+        // A badge is a stored READING. `needsRecheck` means the last one for this filing was
+        // classified by rules we have since changed — our own checks read that same text
+        // differently now — so it is shown with a caveat and re-checked, never republished as
+        // today's fact. Wording names no reviewer: one line serves permits and interconnections.
+        // Plain words, no jargon: a client has to be able to read it.
+        const recheckNote = (flag) => flag
+          ? `<div class="recheck-row"><span class="recheck">Being re-checked — this reading needs confirming</span></div>` : "";
         const cards = projects.map((p) => {
           const tracks = (p.tracks || []).map((t) => `
             <div class="track">
-              <div>
-                <div>${esc(t.label)}</div>
+              <div class="what">
+                <div class="name">${esc(t.label)}</div>
                 <div class="muted">${t.submittedAt ? "Filed " + when(t.submittedAt) : "Not filed yet"}${t.applicationNumber ? " · " + esc(t.applicationNumber) : ""}${t.confirmationNumber ? " · receipt " + esc(t.confirmationNumber) : ""}</div>
                 <div class="muted">${t.permitNumber && t.permitNumber !== t.applicationNumber ? "Permit " + esc(t.permitNumber) + " · " : ""}last checked ${when(t.lastCheckedAt)}</div>
               </div>
               <span class="badge ${cls(t.outcome)}">${esc(t.statusLabel || t.outcome || "Checking…")}</span>
+              ${recheckNote(t.needsRecheck)}
             </div>`).join("")
-            || `<div class="track"><span class="muted">Tracking starts once the application is filed.</span></div>`;
+            || `<div class="empty">Tracking starts once the application is filed.</div>`;
           // The latest few updates, in the words we actually sent them. Same sentences as the
           // email for the same event — one source, two channels (backend/src/clientUpdates.ts).
           // Capped so a long-running job does not bury the current status under its own history.
@@ -103,25 +232,35 @@
             <div class="upd"><span class="when">${when(u.at)}</span>${esc(u.body)}</div>`).join("");
           return `
             <div class="card">
-              <div class="row">
-                <div>
-                  <h2>${esc(p.address)}</h2>
+              <div class="card-head">
+                <div class="what">
+                  <h3>${esc(p.address)}</h3>
                   <div class="muted">${esc(p.ahj || "")}${p.ahj && p.utility ? " · " : ""}${esc(p.utility || "")}</div>
                 </div>
                 <span class="badge ${cls(p.statusKey)}">${esc(p.status)}</span>
               </div>
-              ${tracks}
-              ${updates}
+              <div class="card-body">${tracks}</div>
+              ${updates ? `<div class="updates"><div class="head">Latest updates</div>${updates}</div>` : ""}
             </div>`;
-        }).join("") || `<div class="card"><span class="muted">No projects yet. They appear here as soon as we open one.</span></div>`;
+        }).join("") || `<div class="card"><div class="card-body"><div class="empty">No projects yet. They appear here as soon as we open one.</div></div></div>`;
 
         app.innerHTML = `
-          <div class="head">
-            <h1>${esc(d.company || "Your projects")}</h1>
-            <div class="muted">${projects.length} project${projects.length === 1 ? "" : "s"}${yours ? ` · ${yours} need${yours === 1 ? "s" : ""} something from you` : ""}</div>
+          <div class="band band-ink">
+            <div class="inner">
+              <p class="eyebrow">Permitting &amp; interconnection</p>
+              <h1>${esc(d.company || "Your projects")}</h1>
+              <p class="lede">${projects.length} project${projects.length === 1 ? "" : "s"} tracked here. Updated automatically as each one moves.</p>
+              ${yours ? `<div class="needs-you">${yours} need${yours === 1 ? "s" : ""} something from you</div>` : ""}
+            </div>
           </div>
-          ${cards}
-          <footer>Updated automatically as your permits and interconnections move.<br>Bookmark this page — the link does not expire.</footer>`;
+          <div class="band band-paper">
+            <div class="inner">
+              <p class="eyebrow">Your projects</p>
+              <h2>Every filing we are running for you, in one place.</h2>
+              ${cards}
+              <footer>Updated automatically as your permits and interconnections move.<br>Bookmark this page — the link does not expire.</footer>
+            </div>
+          </div>`;
       } catch {
         app.innerHTML = `<div class="err">This tracking link isn't valid. Please contact your permitting team for a new one.</div>`;
       }

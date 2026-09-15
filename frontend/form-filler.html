@@ -5,33 +5,82 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Form Filler · standalone tool</title>
   <link rel="stylesheet" href="/styles.css" />
+  <!-- Manrope is NOT linked here. It is vendored in frontend/vendor and declared with
+       @font-face in /styles.css, which every page below loads — see the MANROPE block at
+       the top of styles.css. A <link> here would re-add the CDN dependency that was
+       deliberately removed, and would only cover the pages someone remembered to edit. -->
   <style>
     /* Standalone form-filler — no project/DB dependency. Upload any flat form
        (PDF, or DOCX auto-converted server-side), click to drop values, drag to
-       position, save a reusable field template, download the filled PDF. */
-    .ff2-bar { position: sticky; top: 0; z-index: 20; background: var(--surface); border-bottom: 1px solid var(--line); padding: 12px 18px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-    .ff2-bar h1 { font-size: 16px; margin-right: 8px; }
+       position, save a reusable field template, download the filled PDF.
+
+       This is a canvas tool, so it keeps its toolbar-over-stage shape; what
+       changes is that it now speaks the design system. TWO REAL DEFECTS FIXED
+       HERE, both caused by `var(--accent, #6366f1)`: `--accent` used to be
+       undefined, so those rules silently used the indigo fallback. It is now a
+       defined token — a LIGHT GREEN tint — which turned the drag grip and the
+       active segment into white-on-pale-green (unreadable), and `var(--bg,…)` on
+       the <code> chip into background-on-background (invisible). The interactive
+       surfaces now use --primary, which is the token that is meant to carry
+       --primary-foreground text. */
+    body { background: var(--bg); color: var(--text); }
+
+    .ff2-bar {
+      position: sticky; top: 0; z-index: 20; background: var(--bg);
+      border-bottom: 1px solid var(--line); padding: 12px 20px;
+      display: flex; align-items: center; gap: 9px; flex-wrap: wrap;
+    }
+    .ff2-bar h1 { font-size: var(--text-sm); font-weight: 700; letter-spacing: -.01em; margin-right: 6px; }
     .ff2-bar .spacer { flex: 1; }
-    .ff2-bar .hint { font-size: 12px; color: var(--muted, #778); }
-    #ff2status { font-size: 12px; color: var(--muted, #778); min-width: 120px; }
-    #ff2status.error { color: var(--danger); } #ff2status.ok { color: var(--success, #1a7f37); }
-    .ff2-stage { padding: 20px; display: flex; flex-direction: column; align-items: center; gap: 18px; }
-    .ff2-page { position: relative; box-shadow: var(--shadow); border: 1px solid var(--line); background: #fff; }
+    .ff2-bar .hint { font-size: var(--text-xs); color: var(--muted); }
+    .ff2-bar .button, .ff2-bar button { min-height: 34px; font-size: var(--text-xs); }
+    /* setStatus() assigns className outright, so this is styled BY ID. The old
+       120px floor was enough on its own to wrap the toolbar onto a second row at
+       1440, stranding "Download filled PDF" under everything else. */
+    #ff2status { font-size: var(--text-xs); color: var(--muted); }
+    #ff2status.error { color: var(--danger); } #ff2status.ok { color: var(--primary); }
+    /* The instructional hints are the first thing worth losing when the toolbar
+       runs out of room; the controls are not. Measured at 1440 (the laptop this
+       is used on): with the hints up, "Download filled PDF" wrapped to a second
+       row on its own, which is the worst place for the one button that produces
+       the output. The segmented Text / ✓ Check control says what "Placing:" said. */
+    @media (max-width: 1520px) { .ff2-bar .hint { display: none; } }
+
+    .ff2-eyebrow { font-size: 10px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: var(--primary); }
+
+    .ff2-stage { padding: 28px 20px 60px; display: flex; flex-direction: column; align-items: center; gap: 20px; }
+    .ff2-page { position: relative; box-shadow: var(--shadow); border: 1px solid var(--border); background: #fff; border-radius: var(--radius-sm); overflow: hidden; }
     .ff2-page canvas { display: block; }
-    .ff2-field { position: absolute; display: flex; align-items: stretch; background: rgba(99,102,241,.06); border: 1px solid var(--accent, #6366f1); border-radius: 3px; }
-    .ff2-field .grip { cursor: move; padding: 0 4px; display: flex; align-items: center; background: var(--accent, #6366f1); color: #fff; font-size: 10px; user-select: none; }
+    .ff2-field {
+      position: absolute; display: flex; align-items: stretch;
+      background: color-mix(in srgb, var(--primary) 7%, transparent);
+      border: 1px solid var(--primary); border-radius: 3px;
+    }
+    .ff2-field .grip { cursor: move; padding: 0 4px; display: flex; align-items: center; background: var(--primary); color: var(--primary-foreground); font-size: 10px; user-select: none; }
     .ff2-field input.val { border: 0; background: transparent; padding: 1px 4px; font-family: Helvetica, Arial, sans-serif; color: #111; min-width: 40px; outline: none; }
     .ff2-field .del { cursor: pointer; padding: 0 4px; color: var(--danger); font-weight: 700; display: flex; align-items: center; }
-    .ff2-seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
-    .ff2-seg button { border: 0; background: var(--surface); color: inherit; padding: 5px 10px; font: inherit; font-size: 12px; cursor: pointer; }
-    .ff2-seg button.active { background: var(--accent, #6366f1); color: #fff; }
-    .ff2-field input.size { width: 34px; border: 0; border-left: 1px solid rgba(99,102,241,.3); background: transparent; padding: 1px 2px; text-align: center; font-size: 11px; color: #444; outline: none; }
-    .ff2-data { background: var(--surface); border-bottom: 1px solid var(--line); padding: 14px 18px; }
-    .ff2-data-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px 12px; margin-bottom: 10px; }
-    .ff2-data-grid label { display: flex; flex-direction: column; font-size: 11px; font-weight: 700; gap: 3px; color: var(--muted, #667); }
-    .ff2-data-grid input { padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; font: inherit; font-weight: 400; background: var(--surface); color: inherit; }
-    .ff2-empty { color: var(--muted, #778); font-size: 14px; padding: 60px 20px; text-align: center; max-width: 460px; }
-    .ff2-empty code { background: var(--bg, #f1f2f4); padding: 1px 5px; border-radius: 4px; }
+    .ff2-field input.size { width: 34px; border: 0; border-left: 1px solid color-mix(in srgb, var(--primary) 30%, transparent); background: transparent; padding: 1px 2px; text-align: center; font-size: 11px; color: #444; outline: none; }
+
+    .ff2-seg { display: inline-flex; border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
+    .ff2-seg button { border: 0; border-radius: 0; min-height: 30px; background: var(--card); color: var(--text); padding: 4px 11px; font: inherit; font-size: var(--text-xs); font-weight: 600; cursor: pointer; }
+    .ff2-seg button.active { background: var(--primary); color: var(--primary-foreground); }
+
+    .ff2-data { background: var(--card); border-bottom: 1px solid var(--line); padding: 18px 20px; }
+    .ff2-data-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px 14px; margin-bottom: 14px; }
+    .ff2-data-grid label { display: flex; flex-direction: column; font-size: var(--text-xs); font-weight: 600; gap: 5px; color: var(--muted); }
+    .ff2-data-grid input {
+      padding: 8px 10px; border: 1px solid var(--input); border-radius: var(--radius-sm);
+      font: inherit; font-size: var(--text-sm); font-weight: 400; background: var(--card); color: var(--text);
+      transition: border-color .15s ease, box-shadow .15s ease;
+    }
+    .ff2-data-grid input:hover { border-color: var(--muted); }
+    .ff2-data-grid input:focus, .ff2-bar input:focus, .ff2-bar select:focus, textarea:focus {
+      outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 16%, transparent);
+    }
+    ::placeholder { color: color-mix(in oklab, var(--muted) 70%, transparent); }
+
+    .ff2-empty { color: var(--muted); font-size: var(--text-sm); line-height: 1.7; padding: 70px 20px; text-align: center; max-width: 460px; }
+    .ff2-empty code { background: var(--surface-2); border: 1px solid var(--border); padding: 1px 6px; border-radius: 4px; font-family: var(--font-mono); font-size: var(--text-xs); }
   </style>
 </head>
 <body>
@@ -68,7 +117,7 @@
   </div>
 
   <div id="ff2batch" style="display:none;background:var(--surface);border-bottom:1px solid var(--line);padding:14px 18px">
-    <div style="font-size:13px;font-weight:700;margin-bottom:6px">Batch fill — paste rows from your spreadsheet (tab-separated)</div>
+    <div class="ff2-eyebrow" style="margin-bottom:8px">Batch fill</div><div style="font-size:var(--text-sm);color:var(--muted);margin-bottom:10px">Paste rows from your spreadsheet (tab-separated).</div>
     <textarea id="bx_rows" placeholder="12758&#9;Jane Example&#9;&#9;123 Example St, Bellingham, WA, 98229&#9;…&#9;https://cob.org/.../024-refund-request-form.pdf" style="width:100%;height:90px;border:1px solid var(--line);border-radius:6px;padding:8px;font-family:monospace;font-size:12px"></textarea>
     <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-top:10px">
       <label style="font-size:11px;font-weight:700;display:flex;flex-direction:column;gap:3px">Person requesting refund (all rows)<input id="bx_requester" placeholder="Your company name" style="padding:7px 9px;border:1px solid var(--line);border-radius:6px;font:inherit;font-weight:400" /></label>
@@ -93,7 +142,7 @@
       <label>ZIP<input id="d_zip" /></label>
       <label>Date<input id="d_date" placeholder="05/04/2026" /></label>
     </div>
-    <div style="font-size:11px;font-weight:700;color:var(--muted,#667);margin:2px 0 6px">Company boilerplate (applied to every form — edit if needed)</div>
+    <div class="ff2-eyebrow" style="margin:4px 0 10px">Company boilerplate — applied to every form</div>
     <div class="ff2-data-grid">
       <label>Installer / company<input id="d_installer" placeholder="Your company LLC" /></label>
       <label>Mailing address<input id="d_mailingAddress" placeholder="Company mailing address" /></label>

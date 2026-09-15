@@ -110,6 +110,15 @@ export interface ApplicationDocContext {
   buildingApplicationName?: string;
   /** How to refer to this jurisdiction in `why`. */
   ahjLabel?: string;
+  /**
+   * The jurisdiction's application profile says the PRESCRIPTIVE path carries its own
+   * itemized checklist/worksheet (ApplicationRequirementProfile.requiresPrescriptiveChecklist).
+   * A structured per-AHJ field, resolved in applicationDocContext() — NOT prose. It is a
+   * separate signal from the process profile's requiresSolarChecklist flag: Coos Bay's
+   * process row has that flag FALSE while the application profile carries the checklist
+   * from Oregon's statewide prescriptive rule, which is why nothing ever demanded it.
+   */
+  requiresPrescriptiveChecklist?: boolean;
 }
 
 /** The application-family docTypes — the only keys a filled AHJ form may claim.
@@ -304,7 +313,20 @@ export function requiredApplicationDocs(
   const combo = structure === "combo";
   const wantsBuilding = separate || combo || Boolean(flags.requiresBuildingPermitApplication);
   const wantsElectrical = separate || Boolean(flags.requiresElectricalPermitApplication);
-  const wantsChecklist = Boolean(flags.requiresSolarChecklist);
+  // TWO SIGNALS, NOT ONE. The process profile's own flag is the narrow one; the
+  // jurisdiction's APPLICATION profile (requiresPrescriptiveChecklist) is the one that
+  // carries a state-level prescriptive-checklist rule down to an AHJ whose own row says
+  // nothing. Coos Bay is exactly that shape — process flag FALSE, application profile
+  // TRUE — so reading only the flag is why the checklist was never asked for.
+  //
+  // The profile field is a REFINEMENT of a building-side filing we already know about,
+  // never a signal on its own. findApplicationProfile ALWAYS returns something, and its
+  // Oregon fallback ("oregon-generic-epermitting") carries the checklist — so reading it
+  // standalone makes an AHJ we know nothing about demand a document nobody can name,
+  // which is exactly what the NO SIGNAL, NO DEMAND rule below exists to prevent. The
+  // process FLAG keeps its old standing as a signal in its own right.
+  const wantsChecklist = Boolean(flags.requiresSolarChecklist)
+    || (wantsBuilding && Boolean(ctx.requiresPrescriptiveChecklist));
   // NO SIGNAL, NO DEMAND. A project with no resolved structure and no process
   // flags (an AHJ we have no knowledge of, or a bare project in a unit test)
   // must not be told to attach applications nobody can name.
@@ -369,15 +391,50 @@ export function requiredApplicationDocs(
     });
   }
 
-  if (wantsChecklist) {
+  // THE PRESCRIPTIVE CHECKLIST IS THE PRESCRIPTIVE PATH'S SEALED LETTER.
+  //
+  // The two building-side paths are mutually exclusive, and each carries its OWN evidence
+  // that the path applies:
+  //
+  //     engineered    → PE stamp + sealed structural letter/calcs  (resolveStampRequirement,
+  //                     blocking, in requiredDocuments above)
+  //     prescriptive  → the itemized prescriptive checklist        (THIS ROW)
+  //
+  // Only the engineered half was ever demanded. The prescriptive half existed as an
+  // advisory sourced from one process-profile flag that most AHJ rows leave false — so a
+  // prescriptive filing went out with no checklist and nothing said a word. Coos Bay
+  // 187-26-000309-STR and 187-26-000305-STR came back "Intake Requirements Needed", and
+  // the operator's own account of why was "Prescriptive checklist and didnt call out
+  // stamps that were needed". A gate that polices one half of a mutually-exclusive pair
+  // is the same inverted gate formApplicationKind had, seen from the other side.
+  //
+  // PATH-SCOPED, and that scoping is load-bearing in BOTH directions: the checklist is
+  // required on the prescriptive path and must NOT go up on the engineered one, where it
+  // is precisely the upload the AHJ forbids ("upload only the application that pertains —
+  // DO NOT upload both"). documentInventory suppresses the KB's prose version on the
+  // engineered path for the same reason.
+  if (wantsChecklist && path !== "engineered") {
+    // Oregon publishes the checklist as a statewide form (BCD 440-5952) and its AHJs
+    // inherit it, which is where a Coos Bay project's requirement actually comes from —
+    // say that, rather than putting words in the city's mouth.
+    const oregon = (project.state || "").trim().toUpperCase() === "OR";
+    const basis = oregon
+      ? "Oregon publishes the checklist as BCD form 440-5952 and its jurisdictions file it on the prescriptive path."
+      : "This jurisdiction's application profile records a solar checklist / eligibility worksheet alongside the application.";
     out.push({
       docType: "solar_checklist",
       label: "Solar prescriptive checklist, filled",
-      // Advisory: a checklist flag is not evidence of a second permit, so it is
-      // not covered by the blocking-source rule above.
-      why: `${where}'s process profile records a solar checklist / worksheet requirement alongside the application.`,
+      why: path === "prescriptive"
+        ? `${where} takes one of two mutually exclusive building-side paths and this project resolved to the PRESCRIPTIVE one. The checklist is that path's own evidence that the system meets the prescriptive code — the counterpart to the PE stamp + sealed structural letter on the engineered path. ${basis} Without it the AHJ has nothing on which to grant the reduced-fee, no-plan-review path.`
+        : `${where} takes one of two mutually exclusive building-side applications, and the permit path is not confirmed. If it resolves to PRESCRIPTIVE the checklist is required as that path's evidence of prescriptive compliance; if it resolves to ENGINEERED do NOT file it — the PE stamp + sealed structural letter take its place. ${basis}`,
       lane: "permit",
-      blocking: false,
+      // BLOCKING ON A CONFIRMED PRESCRIPTIVE PATH. This is not a flag-derived guess about
+      // a second permit (the advisory-only case the blocking-source rule above guards):
+      // it is the evidence for a path THIS SYSTEM chose, and filing that path without it
+      // is what the two live records bounced for. An UNCONFIRMED path stays advisory —
+      // staging already hard-blocks an unknown path with a more precise message, and
+      // demanding a document we cannot yet say is owed would be the mirror-image mistake.
+      blocking: path === "prescriptive",
       discipline: combo ? "combo" : "structural",
     });
   }
@@ -408,7 +465,12 @@ export function applicationDocContext(project: ProjectRecord): ApplicationDocCon
     }
   } catch { /* process profile optional */ }
   try {
-    ctx.buildingApplicationName = namedApplicationForm(findApplicationProfile(project), resolvePermitPath(project).path);
+    const profile = findApplicationProfile(project);
+    ctx.buildingApplicationName = namedApplicationForm(profile, resolvePermitPath(project).path);
+    // The structured per-AHJ checklist field. Read from the SAME profile lookup that
+    // already names the form, so the set cannot demand a checklist for a jurisdiction
+    // whose profile we failed to resolve.
+    ctx.requiresPrescriptiveChecklist = Boolean(profile.requiresPrescriptiveChecklist);
   } catch { /* the AHJ's own name for the form is a nicety, not a requirement */ }
   return ctx;
 }
@@ -476,6 +538,15 @@ export function documentInventory(db: AppDb, project: ProjectRecord): DocumentIn
     const reqs = kb.ahj?.requiredDocuments ?? [];
     if (reqs.length) {
       const baseline = new Set(baselineItems.flatMap((i) => [i.docType, ...(i.altDocTypes || [])]));
+      // A PRESCRIPTIVE CHECKLIST ON THE ENGINEERED PATH IS THE UPLOAD THE AHJ FORBIDS.
+      //
+      // The baseline checklist row is path-scoped, so on the engineered path it emits
+      // nothing — which is exactly what let the KB's own prose ("Solar prescriptive
+      // checklist", matched by KB_APPLICATION_DOC_PATTERNS) back in behind it and tell an
+      // ENGINEERED filing to attach the prescriptive path's document. Suppression here is
+      // the same mutually-exclusive rule one layer down: on this path the PE stamp +
+      // sealed structural letter is the evidence, and the checklist is simply not owed.
+      if (permitPath === "engineered") baseline.add("solar_checklist");
       kbItems = kbApplicationDocItems(reqs, baseline);
     }
   } catch { /* KB optional */ }

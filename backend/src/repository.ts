@@ -3121,8 +3121,12 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
   // application (prescriptive vs structural) is skipped, so an unverified off-path
   // template must NOT block the submit.
   const gatePermitPath = resolvePermitPath(project).path;
+  // Read the STORED kind, exactly as buildFilledFormsForProject's fill gate does. With the
+  // name alone, a stamped-structural blank whose filename claims neither kind counted as
+  // "allowed" on a PRESCRIPTIVE project — so its unverified mapping blocked the submit
+  // gate over a form this project will never file.
   const unverifiedForms = loadStoredTemplates(db, project.ahj, project.state)
-    .filter((t) => !t.verified && formAllowedForPath(t.def.formName, gatePermitPath));
+    .filter((t) => !t.verified && formAllowedForPath(t.def.formName, gatePermitPath, t.applicationKind));
   const stagedRun = detail.portalRuns.find((run) => run.status === "awaiting_human_submit");
   const submittedOrBeyond = detail.submissions.some((submission) => submission.status === "submitted")
     || ["submitted", "approved", "ready_for_issue", "issued", "complete"].includes(project.status);
@@ -4235,10 +4239,32 @@ export function getApplicationDocumentPackage(db: AppDb, projectId: string): App
   // its OWN field: missingFields feeds packageReady and four stage-status computations,
   // so widening it would change four things to fix one. Never fatal — the packet screen
   // must still render for a project whose inventory cannot be resolved.
+  // AND A FAILURE TO ANSWER IS NOT AN ANSWER OF "NOTHING".
+  //
+  // This catch used to be bare. documentInventory throwing left missingDocuments undefined,
+  // the packet screen's `pkg.missingDocuments || []` turned that into an empty list, and the
+  // pass-styled "every required document is attached" printed — the exact sentence this
+  // block was added to stop, reproduced by the error path. The old excuse ("the staging gate
+  // is the authority") does not hold either: the staging gate calls the SAME
+  // documentInventory, so it goes quiet in the same breath rather than offering a second
+  // opinion. So the failure is REPRESENTABLE now (missingDocumentsStatus) instead of being
+  // an absence that reads as good news, and it is logged rather than discarded.
   try {
     pkg.missingDocuments = documentInventory(db, detail.project).missingBlocking
       .map((d) => ({ docType: d.docType, label: d.label, lane: d.lane, why: d.why }));
-  } catch { /* advisory surface — the staging gate is the authority and runs its own check */ }
+    pkg.missingDocumentsStatus = "resolved";
+  } catch (err) {
+    // Leave missingDocuments ABSENT on purpose: [] would be a claim we cannot make.
+    pkg.missingDocuments = undefined;
+    pkg.missingDocumentsStatus = "unavailable";
+    pkg.missingDocumentsError = err instanceof Error ? err.message : String(err);
+    logger.warn("application-docs", "the required-document inventory could not be computed — the packet cannot say what is missing", {
+      projectId,
+      ahj: detail.project.ahj,
+      state: detail.project.state,
+      error: pkg.missingDocumentsError,
+    });
+  }
 
   // Enrich with the LEARNED AHJ profile from the knowledge base. The static
   // builder only knows a handful of hardcoded jurisdictions; the KB knows many
@@ -4277,6 +4303,10 @@ export function getApplicationDocumentPackage(db: AppDb, projectId: string): App
     docCount: pkg.docs.length,
     missingFields: pkg.missingFields,
     missingDocuments: (pkg.missingDocuments || []).map((d) => d.docType),
+    // Without this the trail records the same empty list for "nothing is missing" and for
+    // "we could not find out" — the distinction the field above exists to keep.
+    missingDocumentsStatus: pkg.missingDocumentsStatus ?? null,
+    ...(pkg.missingDocumentsError ? { missingDocumentsError: pkg.missingDocumentsError } : {}),
     learnedProfile: learned ? `${learned.state}:${learned.ahj}:${learned.utility}` : null,
   });
   return pkg;
@@ -4490,8 +4520,9 @@ export function applyCorrectionProposals(
 }
 
 // Close a correction — the FIRST writer of closed_at / resubmitted. Called when the
-// operator marks it resolved, and automatically from prepareSubmission on a
-// resubmission (see the open-corrections check there).
+// operator marks it resolved (POST /api/corrections/:id/resolve), and automatically from
+// captureConfirmation via resolveOpenCorrectionsOnResubmit when a human confirms the
+// resubmission actually went out.
 export function resolveCorrection(
   db: AppDb,
   correctionId: string,
@@ -4550,8 +4581,31 @@ export function resolveCorrection(
   return mapCorrection(db.get<Row>("SELECT * FROM corrections WHERE id = ?", [correctionId])!);
 }
 
-// Close any open corrections for a project on a resubmission (called from
-// prepareSubmission). Sets resubmitted=1 + closed_at so cycle-time KPIs complete.
+/**
+ * Close any open corrections for a project once its resubmission has actually gone out.
+ * Sets resubmitted=1 + closed_at so cycle-time KPIs complete and every "open correction"
+ * surface stops calling the job blocked.
+ *
+ * CALLED FROM captureConfirmation, AND THAT MOMENT IS THE POINT. This function existed
+ * with ZERO callers while two comments (its own, and resolveCorrection's) claimed
+ * prepareSubmission called it — so a re-filed package kept closed_at NULL and
+ * resubmitted=0 unless an operator hit POST /api/corrections/:id/resolve by hand, and
+ * openCorrectionCount, both lane computations, the action queue and the KPI all went on
+ * reporting "Assign and resolve AHJ corrections before resubmittal" on a job already
+ * resubmitted.
+ *
+ * NOT prepareSubmission: staging is not submitting (hard safety rule 1 — automation never
+ * clicks final submit), and a staged run can be abandoned at the review screen. Closing a
+ * correction there would announce a resubmission that never happened. captureConfirmation
+ * is where a HUMAN says the filing went out.
+ *
+ * Corrections carry no track (project_id only — db.ts:413), so this is project-grained,
+ * and the caller only fires it when NO track is still awaiting a human submit. That is
+ * deliberately conservative: with two tracks staged together and one confirmed, the close
+ * waits for the second rather than closing a correction that may belong to it.
+ *
+ * A no-op on a first submission — there is nothing open to close.
+ */
 export function resolveOpenCorrectionsOnResubmit(db: AppDb, projectId: string): number {
   const open = db.query<Row>(
     "SELECT id FROM corrections WHERE project_id = ? AND closed_at IS NULL AND resubmitted = 0",
@@ -5859,7 +5913,10 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   }
   // DISCIPLINE GATE input (see portalChannel.recipeDisciplineFromSteps): the ACA
   // learner bakes the learn project's permit discipline into the recorded jurisdiction
-  // row + record-type steps, and recipes are not yet discipline-keyed. Best-effort load
+  // row + record-type steps. Recipes ARE keyed per discipline (migration v14,
+  // `recipe_discipline` — state|ahj|utility PER discipline), but a row recorded BEFORE
+  // that dimension existed carries discipline '' and is accepted as a legacy fallback at
+  // line ~5549, so its steps can still belong to the other discipline. Best-effort load
   // — a failed read must not block the stage.
   // DEFENCE IN DEPTH. The legacy check above drops a cross-discipline recipe before the
   // channel is chosen, so this should no longer fire; it stays as the last guard against
@@ -5892,9 +5949,17 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
     // its recorded steps select that discipline's jurisdiction row and record type, and
     // the replay clicks would succeed silently (no drift, no self-heal), filing this
     // track down the wrong jurisdiction's application path. NOT flagged for re-record:
-    // the recipe is valid for its own discipline; recipes just aren't discipline-keyed
-    // yet (open design decision — see HANDOFF).
-    const msg = `The recorded recipe for ${portalLabel} was learned for the ${recipeDisciplineConflict} permit path, so replaying it for the ${track} track would file under the wrong jurisdiction/application type. Recipes aren't discipline-scoped yet — submit this track by hand for now (the ${recipeDisciplineConflict} track still replays automatically).`;
+    // the recipe is valid for its own discipline, and its ROW is simply keyed wrong.
+    //
+    // RECIPES ARE DISCIPLINE-KEYED, AND THIS SAID THEY WERE NOT. Migration v14
+    // (`recipe_discipline`) keys portal_recipes on (profile_key, discipline) — see
+    // db.ts:892-894 and docs/HANDOFF.md ("RESOLVED (migration v14)"). The comment and the
+    // operator-facing message below both claimed, in the present tense, that the product
+    // lacked a capability it shipped, and then told the operator to hand-file. The real
+    // remedy is that this recipe's row carries discipline '' (a pre-v14 legacy row) or the
+    // wrong discipline, and it can be re-keyed — scripts/rekey-recipe.ts does exactly that.
+    // Rare gate, which is exactly when the operator has no context to doubt the message.
+    const msg = `The recorded recipe for ${portalLabel} is keyed for the ${recipeDisciplineConflict} permit discipline, so replaying it for the ${track} track would file under the wrong jurisdiction/application type. Its steps are valid for ${recipeDisciplineConflict} — the row is keyed wrong (usually a recipe recorded before recipes carried a discipline). Re-key it with scripts/rekey-recipe.ts, or record a recipe for the ${track} track; submit this one by hand meanwhile (the ${recipeDisciplineConflict} track still replays automatically).`;
     addAuditLog(db, projectId, "system", "submit gate", "portal.discipline_conflict", { track: track ?? "permit", recipeDiscipline: recipeDisciplineConflict, recipeId: recipe.id });
     result = { ok: false, finalSubmitClicked: false, pauseReason: null, message: msg, steps: [{ ok: false, message: msg }] };
   } else if (recipe && runActorLabel === "RecipeAdapter") {
@@ -6389,6 +6454,8 @@ export function captureConfirmation(
   const projectId = text(run.project_id);
   const runPermitType = text(run.permit_type);
   const ts = nowIso();
+  // Hoisted so the post-transaction correction close can read it — see below.
+  let remainingTracks = 0;
 
   db.transaction(() => {
     db.run("UPDATE portal_runs SET status = ?, finished_at = ? WHERE id = ?", ["submitted", ts, portalRunId]);
@@ -6439,6 +6506,7 @@ export function captureConfirmation(
       [projectId],
     );
     const remaining = Number(stillAwaiting?.n ?? 0);
+    remainingTracks = remaining;
     db.run("UPDATE projects SET status = ?, current_stage = ?, updated_at = ? WHERE id = ?", [
       remaining > 0 ? "awaiting_human_submit" : "submitted",
       remaining > 0 ? `One filing submitted; ${remaining} track(s) still awaiting human submit.` : "Human submitted. Confirmation captured.",
@@ -6452,6 +6520,38 @@ export function captureConfirmation(
       confirmationNumber: input.confirmationNumber || "",
     });
   });
+
+  // THE RESUBMISSION HAS NOW ACTUALLY GONE OUT — close the corrections it answers.
+  //
+  // resolveOpenCorrectionsOnResubmit had ZERO callers while its own header and
+  // resolveCorrection's both claimed prepareSubmission called it. So a corrected package
+  // was re-filed and its corrections stayed open forever unless an operator hit
+  // POST /api/corrections/:id/resolve by hand — and every surface filtering on
+  // `!closedAt && !resubmitted` (openCorrectionCount, the permit and NEM lanes, the action
+  // queue) went on telling the operator to "resolve AHJ corrections before resubmittal" on
+  // a job already resubmitted, while the cycle-time KPI that needs resubmitted=1 never
+  // completed.
+  //
+  // OUTSIDE the transaction on purpose: the human's confirmation capture is the more
+  // precious fact, and a throw in here must not roll it back. It also runs AFTER the
+  // project status update, so resolveCorrection's own correction-state transition sees
+  // "submitted" and leaves the status alone.
+  //
+  // Gated on remainingTracks === 0 — corrections are project-grained (no track column), so
+  // closing them while another staged filing is still awaiting a human submit could close
+  // one that belongs to THAT filing. A no-op on a first submission: nothing is open.
+  if (remainingTracks === 0) {
+    try {
+      const closed = resolveOpenCorrectionsOnResubmit(db, projectId);
+      if (closed > 0) {
+        addAuditLog(db, projectId, "system", "correction", "correction.closed_on_resubmit", { portalRunId, closed });
+      }
+    } catch (err) {
+      logger.warn("correction", "confirmed resubmission could not close its open corrections", {
+        projectId, portalRunId, error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
 
   const detail = getProjectDetail(db, projectId);
   learnFromSubmissionConfirmation(db, detail.project, input);

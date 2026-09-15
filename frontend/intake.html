@@ -3,43 +3,121 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Project details · Solar Submission Autopilot</title>
+  <!-- The token is in the URL, so keep this page out of indexes and out of Referer
+       headers — the same pair portal.html and status.html carry. -->
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="referrer" content="no-referrer">
+  <title>Project details · Keelix Automation</title>
+  <!-- /styles.css is one of the few paths open to a logged-out visitor
+       (openPaths in backend/src/auth.ts), which is why this public page can link
+       it when status.html and portal.html cannot. It carries the design tokens
+       and the control styles; everything below is this page's own layer. -->
   <link rel="stylesheet" href="/styles.css" />
-  <!-- Manrope. Unlike the vendored lucide above, a webfont degrades gracefully:
-       if fonts.googleapis.com is unreachable (offline demo, locked-down cloud)
-       the page falls back to the system stack in --font-sans and every layout
-       still holds. Icons would simply vanish, which is why THOSE are vendored. -->
+  <!-- Manrope. styles.css above now carries an @font-face for the vendored
+       frontend/vendor/manrope-*.woff2 — AND IT CANNOT REACH THIS PAGE. /vendor/* is not
+       in `openPaths` (backend/src/auth.ts), so for a logged-out homeowner requireAuth
+       302s the font request to /login and the face never arrives. MEASURED on this very
+       page: a logged-out load requests /vendor/manrope-latin.woff2 and gets 302, then
+       gets the face from fonts.gstatic.com with 200 — three weights loaded.
+       So this CDN link is not a duplicate of the vendored copy, it is the only source
+       that reaches a customer, and removing it would silently drop this page to the
+       system stack. It stays until `/vendor/` is added to openPaths.
+       Either way the fallback stack in --font-sans holds every layout, so an offline
+       demo or a locked-down cloud still renders a complete page. -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <style>
-    .intake-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; }
-    .intake-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg); box-shadow: var(--shadow); width: min(440px, 100%); padding: 28px; }
-    .intake-card h1 { font-size: var(--text-xl); margin-bottom: 4px; }
-    .intake-card p.muted { margin-bottom: 18px; font-size: var(--text-sm); }
-    .intake-card .project-label { font-weight: 700; margin-bottom: 18px; padding: 10px 12px; background: var(--surface-2); border-radius: var(--radius-md); font-size: var(--text-sm); }
-    .intake-card label { display: block; font-size: var(--text-sm); font-weight: 700; margin: 14px 0 4px; }
-    .intake-card input, .intake-card select { width: 100%; padding: 9px 11px; border: 1px solid var(--input); border-radius: var(--radius-sm); font: inherit; background: var(--surface); color: var(--text); }
-    .portal-q-head { margin: 20px 0 2px; font-size: var(--text-sm); font-weight: 700; }
-    .portal-q-sub { font-size: var(--text-xs); color: var(--muted); margin-bottom: 4px; }
-    .intake-card button { width: 100%; justify-content: center; margin-top: 20px; }
+    /* THE LOOK IS THE MARKETING SITE'S, deliberately: this is a page a homeowner
+       opens from an email, so it carries the same signature as status.html and
+       portal.html — the wordmark, a green uppercase eyebrow, a confident
+       sentence-case heading ending in a period, hairline cards on warm paper.
+       Behaviour, field keys and the submit payload are untouched. */
+
+    /* ---- Brand bar, matching status.html / portal.html exactly.
+            NOT called .topbar: styles.css already owns that name for the
+            operator dashboard's sticky masthead (display:flex, its own padding,
+            position:sticky), and inheriting half of it here would flex this
+            bar's inner wrapper and double its padding. ---------------------- */
+    .intake-topbar { border-bottom: 1px solid var(--line); background: var(--bg); }
+    .intake-topbar .bar { max-width: 620px; margin: 0 auto; padding: 16px 20px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+    .intake-mark { display: flex; align-items: center; gap: 9px; }
+    .intake-mark svg { display: block; flex: none; }
+    .intake-mark .name { font-size: 15px; font-weight: 800; letter-spacing: .07em; line-height: 1; }
+    .intake-mark .sub { font-size: 8px; font-weight: 700; letter-spacing: .2em; color: var(--muted); line-height: 1; margin-top: 3px; }
+    .intake-topbar .kicker { font-size: 11px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+
+    .intake-wrap { min-height: calc(100vh - 58px); display: flex; align-items: flex-start; justify-content: center; padding: clamp(32px, 7vh, 72px) 20px 64px; }
+    .intake-col { width: min(520px, 100%); }
+
+    /* The site's section signature, scaled to a single-column form. */
+    .intake-eyebrow { font-size: 11px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: var(--primary); margin: 0 0 12px; }
+    .intake-col h1 { font-size: clamp(25px, 5.6vw, 32px); font-weight: 600; letter-spacing: -.02em; line-height: 1.18; margin: 0 0 10px; }
+    .intake-lede { color: var(--muted); font-size: var(--text-sm); margin: 0 0 26px; max-width: 46ch; }
+
+    .intake-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-sm); box-shadow: var(--shadow-sm); padding: 0; }
+
+    /* Which job this form is about, stated plainly above the fields — the same
+       move the marketing site's mock card makes with its "City of Example" line. */
+    .project-strip { padding: 16px 20px; border-bottom: 1px solid var(--line); background: var(--surface-2); border-radius: var(--radius-sm) var(--radius-sm) 0 0; }
+    .project-strip-label { font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); margin-bottom: 4px; }
+    .project-label { font-weight: 600; font-size: var(--text-base); letter-spacing: -.01em; line-height: 1.35; }
+
+    .intake-body { padding: 6px 20px 22px; }
+    .intake-card label { display: block; font-size: var(--text-sm); font-weight: 700; margin: 18px 0 6px; letter-spacing: -.005em; }
+    .intake-card input, .intake-card select {
+      width: 100%; padding: 10px 12px; border: 1px solid var(--input);
+      border-radius: var(--radius-sm); font: inherit; background: var(--surface); color: var(--text);
+    }
+    .intake-card input:focus-visible, .intake-card select:focus-visible { outline: none; box-shadow: var(--focus-ring); border-color: var(--primary); }
+    .portal-q-head { margin: 26px 0 2px; padding-top: 20px; border-top: 1px solid var(--line); font-size: var(--text-sm); font-weight: 700; letter-spacing: -.005em; }
+    .portal-q-sub { font-size: var(--text-xs); color: var(--muted); margin-bottom: 4px; line-height: 1.5; }
+    .intake-card button { width: 100%; justify-content: center; margin-top: 26px; min-height: 44px; font-size: var(--text-sm); }
     .field-hint { font-weight: 400; font-size: var(--text-xs); color: var(--muted); }
     #intakeMsg { font-size: var(--text-sm); margin-top: 14px; min-height: 18px; }
-    #intakeMsg.error { color: var(--danger); }
-    #intakeMsg.ok { color: var(--success); }
+    /* Chips, not bare coloured text — the site states an outcome inside a shape. */
+    #intakeMsg.error, #intakeMsg.ok { display: inline-block; padding: 6px 12px; border-radius: 999px; font-weight: 600; }
+    #intakeMsg.error { background: color-mix(in oklab, var(--danger) 12%, var(--surface)); color: oklch(45% .18 27); }
+    #intakeMsg.ok { background: var(--accent); color: oklch(32% .08 160); }
+    .intake-foot { margin: 22px 0 0; font-size: var(--text-xs); color: var(--muted); text-align: center; line-height: 1.6; }
   </style>
 </head>
 <body>
-  <div class="intake-wrap">
-    <form class="intake-card" id="intakeForm">
-      <h1>Project details needed</h1>
-      <p class="muted">Your permit coordinator needs a few details to submit this solar permit. Please fill in what you can.</p>
-      <div class="project-label" id="projectLabel">Loading…</div>
-      <div id="fields"></div>
-      <button type="submit" class="primary" id="submitBtn" disabled>Submit details</button>
-      <div id="intakeMsg"></div>
-    </form>
-  </div>
+  <header class="intake-topbar">
+    <div class="bar">
+      <div class="intake-mark">
+        <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M12 21.5v-6.6" fill="none" stroke="oklch(42% .105 173)" stroke-width="2.1" stroke-linecap="round"/>
+          <path d="M12 15.1C12 10.7 9 7.1 4.6 6.2 4 10.7 7.2 14.5 12 15.1Z" fill="oklch(42% .105 173)"/>
+          <path d="M12 15.1C12 10.7 15 7.1 19.4 6.2 20 10.7 16.8 14.5 12 15.1Z" fill="oklch(42% .105 173)" opacity=".62"/>
+        </svg>
+        <div>
+          <div class="name">KEELIX</div>
+          <div class="sub">AUTOMATION</div>
+        </div>
+      </div>
+      <div class="kicker">Project details</div>
+    </div>
+  </header>
+  <main class="intake-wrap">
+    <div class="intake-col">
+      <p class="intake-eyebrow">Your solar permit</p>
+      <h1>A few details, and this permit can go in.</h1>
+      <p class="intake-lede">Your permit coordinator needs a few details to submit this solar permit. Please fill in what you can.</p>
+      <form class="intake-card" id="intakeForm">
+        <div class="project-strip">
+          <div class="project-strip-label">This form is for</div>
+          <div class="project-label" id="projectLabel">Loading…</div>
+        </div>
+        <div class="intake-body">
+          <div id="fields"></div>
+          <button type="submit" class="primary" id="submitBtn" disabled>Submit details</button>
+          <div id="intakeMsg"></div>
+        </div>
+      </form>
+      <p class="intake-foot">Sent to you by your solar installer's permitting team.<br>Nothing on this form is shared beyond your permit and interconnection applications.</p>
+    </div>
+  </main>
   <script>
     const token = new URLSearchParams(location.search).get("token");
     const msg = document.getElementById("intakeMsg");

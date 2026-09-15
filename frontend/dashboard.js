@@ -78,6 +78,323 @@ function esc(value) {
     .replaceAll('"', "&quot;");
 }
 
+/* ===========================================================================
+   PROJECT-DETAIL RHYTHM — the marketing site's own section signature.
+   ---------------------------------------------------------------------------
+   The detail screen read as one undifferentiated wall of cards. The site it is
+   supposed to look like has a very specific rhythm: a tiny uppercase GREEN
+   eyebrow label, a confident sentence-case heading ending in a period, hairline
+   borders, generous whitespace — and, for the checks/blockers surface, an
+   explicit mock it already draws ("AHJ PREFLIGHT / City of Example": a left
+   column of green ticks, a right red POTENTIAL ISSUE panel, a green
+   Recommended action box). These classes build exactly that.
+
+   WHY THIS LIVES IN JS AND NOT styles.css:
+   styles.css is owned by another stream this phase. Every rule below is wrapped
+   in :where(), which makes its specificity ZERO — so the moment styles.css
+   defines any of these class names (specificity 0,1,0) it wins the cascade
+   outright and this block silently stops mattering. It is a fallback, not a
+   competing palette: it declares no literal colours, only canonical tokens
+   (--primary, --success, --destructive, --border, --card, --space-*, --text-*)
+   that already invert correctly for the dark theme. The four --kx-tint- and
+   --kx-edge- values are derived with color-mix from those same tokens because
+   the existing --tint- / --edge- families are defined for DARK ONLY and would
+   resolve to nothing in light mode.
+
+   Elements carrying these classes are deliberately <div>/<span>: styles.css has
+   bare-element rules for p/h1-h3 (0,0,1) which would out-weigh a :where() rule.
+   =========================================================================== */
+const KEELIX_DETAIL_STYLE_ID = "keelixDetailStyles";
+const KEELIX_DETAIL_CSS = `
+:where(:root) {
+  /* Prefer the stylesheet's OWN semantic families (they are theme-aware and
+     defined for both light and dark); derive an equivalent only if a rewrite
+     ever leaves one undefined, so nothing here can resolve to nothing. */
+  --kx-tint-pass: var(--tint-pass, color-mix(in oklab, var(--success) 11%, var(--card)));
+  --kx-edge-pass: var(--edge-pass, color-mix(in oklab, var(--success) 38%, var(--border)));
+  --kx-ink-pass:  var(--ink-pass,  var(--success));
+  --kx-tint-fail: var(--tint-fail, color-mix(in oklab, var(--destructive) 8%, var(--card)));
+  --kx-edge-fail: var(--edge-fail, color-mix(in oklab, var(--destructive) 34%, var(--border)));
+  --kx-ink-fail:  var(--ink-fail,  var(--destructive));
+  --kx-tint-warn: var(--tint-warn, color-mix(in oklab, var(--warning) 11%, var(--card)));
+  --kx-edge-warn: var(--edge-warn, color-mix(in oklab, var(--warning) 38%, var(--border)));
+  --kx-ink-warn:  var(--ink-warn,  var(--warning));
+  --kx-band-fill: color-mix(in oklab, var(--secondary) 65%, var(--card));
+  --kx-radius: 5.2px;
+}
+
+/* --- 1. Eyebrow label + section heading ---------------------------------- */
+:where(.kx-band) { margin: 0 0 var(--space-5); }
+:where(.kx-band:last-child) { margin-bottom: 0; }
+:where(.kx-eyebrow) {
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--primary);
+  margin: 0 0 var(--space-2);
+}
+:where(.kx-eyebrow.is-muted) { color: var(--muted-foreground); }
+:where(.kx-band-title) {
+  display: block;
+  font-size: var(--text-lg);
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: -.01em;
+  color: var(--foreground);
+  margin: 0 0 var(--space-2);
+}
+:where(.kx-band-lede) {
+  display: block;
+  font-size: var(--text-sm);
+  color: var(--muted-foreground);
+  line-height: 1.6;
+  margin: 0 0 var(--space-4);
+  max-width: 68ch;
+}
+:where(.kx-band-head) { margin: 0 0 var(--space-4); }
+:where(.kx-band-head .kx-band-lede) { margin-bottom: 0; }
+
+/* --- 2. The AHJ PREFLIGHT card (the site draws this exact card) ----------- */
+:where(.kx-preflight) {
+  border: 1px solid var(--border);
+  border-radius: var(--kx-radius);
+  background: var(--card);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+  margin: 0 0 var(--space-4);
+}
+:where(.kx-preflight-head) {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
+:where(.kx-preflight-eyebrow) {
+  display: block;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+:where(.kx-preflight-subject) {
+  display: block;
+  font-size: var(--text-base);
+  font-weight: 600;
+  color: var(--foreground);
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+}
+:where(.kx-preflight-tag) {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--secondary);
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+:where(.kx-preflight-body) { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); }
+:where(.kx-preflight-col) { padding: var(--space-4); min-width: 0; }
+:where(.kx-preflight-col + .kx-preflight-col) { border-left: 1px solid var(--border); }
+@media (max-width: 900px) {
+  :where(.kx-preflight-body) { grid-template-columns: minmax(0, 1fr); }
+  :where(.kx-preflight-col + .kx-preflight-col) { border-left: 0; border-top: 1px solid var(--border); }
+}
+:where(.kx-preflight-coltitle) {
+  display: block;
+  font-size: var(--text-sm);
+  font-weight: 700;
+  color: var(--foreground);
+  margin: 0 0 var(--space-3);
+}
+:where(.kx-preflight-foot) {
+  padding: var(--space-3) var(--space-4);
+  border-top: 1px solid var(--border);
+  background: var(--kx-band-fill);
+  font-size: var(--text-xs);
+  color: var(--muted-foreground);
+  line-height: 1.55;
+}
+
+/* Left column: the green-tick "Project checks" list. */
+:where(.kx-check) {
+  display: flex;
+  gap: var(--space-2);
+  align-items: flex-start;
+  font-size: var(--text-sm);
+  line-height: 1.55;
+  color: var(--foreground);
+  padding: 3px 0;
+}
+:where(.kx-check-mark) { flex: 0 0 14px; width: 14px; font-weight: 700; color: var(--kx-ink-pass); }
+:where(.kx-check.is-warn .kx-check-mark) { color: var(--kx-ink-warn); }
+:where(.kx-check.is-idle .kx-check-mark) { color: var(--muted-foreground); }
+:where(.kx-check-text) { min-width: 0; overflow-wrap: anywhere; }
+:where(.kx-check-note) { display: block; font-size: var(--text-xs); color: var(--muted-foreground); }
+:where(.kx-check-empty) { font-size: var(--text-sm); color: var(--muted-foreground); line-height: 1.55; }
+
+/* Right column: the red POTENTIAL ISSUE panel + green Recommended action box. */
+:where(.kx-issue + .kx-issue) { margin-top: var(--space-4); padding-top: var(--space-4); border-top: 1px solid var(--border); }
+:where(.kx-issue-label) {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--kx-ink-fail);
+  margin: 0 0 var(--space-2);
+}
+:where(.kx-issue.is-warn .kx-issue-label) { color: var(--kx-ink-warn); }
+:where(.kx-issue-title) {
+  display: block;
+  font-size: var(--text-base);
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--foreground);
+  margin: 0 0 var(--space-3);
+  overflow-wrap: anywhere;
+}
+:where(.kx-issue-field) { margin: 0 0 var(--space-3); }
+:where(.kx-issue-field-label) { display: block; font-size: var(--text-xs); font-weight: 700; color: var(--foreground); margin-bottom: 2px; }
+:where(.kx-issue-field-value) { display: block; font-size: var(--text-sm); color: var(--muted-foreground); line-height: 1.55; overflow-wrap: anywhere; }
+:where(.kx-action) {
+  background: var(--kx-tint-pass);
+  border: 1px solid var(--kx-edge-pass);
+  border-radius: var(--kx-radius);
+  padding: var(--space-3);
+}
+:where(.kx-action-label) { display: block; font-size: var(--text-xs); font-weight: 700; color: var(--primary-strong); margin-bottom: 3px; }
+:where(.kx-action-text) { display: block; font-size: var(--text-sm); color: var(--foreground); line-height: 1.55; overflow-wrap: anywhere; }
+:where(.kx-issue-more) { margin-top: var(--space-3); font-size: var(--text-xs); color: var(--muted-foreground); }
+
+/* The evidence trail + code anchors that live one fold down inside an issue.
+   These three class names were emitted by dashboard.js and styled NOWHERE, so
+   they rendered as unformatted run-on text. Same zero-specificity fallback. */
+:where(.evidence-trail) { margin-top: var(--space-2); font-size: var(--text-sm); }
+:where(.evidence-card) {
+  margin-top: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--kx-radius);
+  background: var(--kx-band-fill);
+  line-height: 1.55;
+}
+:where(.evidence-card.pass) { border-color: var(--kx-edge-pass); background: var(--kx-tint-pass); border-left: 3px solid var(--kx-ink-pass); }
+:where(.evidence-card.warning) { border-color: var(--kx-edge-warn); background: var(--kx-tint-warn); border-left: 3px solid var(--kx-ink-warn); }
+:where(.evidence-card.screenshot-slot) { border-style: dashed; }
+:where(.code-refs) { margin-top: var(--space-2); font-size: var(--text-xs); line-height: 1.6; }
+
+/* --- 3. Three-state document-inventory verdict --------------------------- */
+:where(.kx-docstate) {
+  display: flex;
+  gap: var(--space-3);
+  align-items: flex-start;
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: var(--kx-radius);
+  padding: var(--space-3) var(--space-4);
+  background: var(--card);
+}
+:where(.kx-docstate.is-clear) { background: var(--kx-tint-pass); border-color: var(--kx-edge-pass); border-left-color: var(--kx-ink-pass); }
+:where(.kx-docstate.is-missing) { background: var(--kx-tint-fail); border-color: var(--kx-edge-fail); border-left-color: var(--kx-ink-fail); }
+:where(.kx-docstate.is-unknown) { background: var(--kx-tint-warn); border-color: var(--kx-edge-warn); border-left-color: var(--kx-ink-warn); }
+:where(.kx-docstate-icon) { flex: 0 0 auto; font-size: 14px; line-height: 1.5; }
+:where(.kx-docstate-body) { min-width: 0; }
+:where(.kx-docstate-title) { display: block; font-size: var(--text-sm); font-weight: 700; color: var(--foreground); margin-bottom: 3px; }
+:where(.kx-docstate-text) { display: block; font-size: var(--text-sm); color: var(--foreground); line-height: 1.6; }
+:where(.kx-docstate-list) { margin: var(--space-2) 0 0; padding-left: 18px; font-size: var(--text-sm); line-height: 1.7; color: var(--foreground); }
+:where(.kx-docstate-why) { color: var(--muted-foreground); }
+:where(.kx-docstate-reason) {
+  display: block;
+  margin-top: var(--space-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--muted-foreground);
+  overflow-wrap: anywhere;
+}
+
+/* --- 4. Numbered steps ("01 / 02 / 03" + an uppercase label) ------------- */
+:where(.kx-steps) { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); border-top: 1px solid var(--border); }
+:where(.kx-step) { padding: var(--space-4) var(--space-4) var(--space-4) 0; border-right: 1px solid var(--border); }
+:where(.kx-step:last-child) { border-right: 0; }
+:where(.kx-step + .kx-step) { padding-left: var(--space-4); }
+:where(.kx-step-num) { display: block; font-size: var(--text-xs); font-weight: 700; letter-spacing: .08em; color: var(--muted-foreground); }
+:where(.kx-step-label) { display: block; font-size: 11px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: var(--foreground); margin: var(--space-3) 0 var(--space-2); }
+:where(.kx-step-body) { display: block; font-size: var(--text-sm); color: var(--muted-foreground); line-height: 1.6; }
+:where(.kx-step-link) { color: inherit; font-weight: 700; text-decoration: underline; cursor: pointer; }
+
+/* --- 5. Inline split widget (was literal #fef9ee / #f59e0b) -------------- */
+:where(.kx-inline-tool) {
+  margin-top: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--kx-tint-warn);
+  border: 1px solid var(--kx-edge-warn);
+  border-radius: var(--kx-radius);
+}
+:where(.kx-inline-tool-title) { display: block; font-size: var(--text-sm); font-weight: 700; color: var(--foreground); }
+:where(.kx-inline-tool-row) { display: flex; gap: var(--space-2); flex-wrap: wrap; align-items: center; margin-top: var(--space-2); }
+:where(.kx-inline-tool-row select) {
+  font: inherit;
+  font-size: var(--text-sm);
+  padding: 5px 9px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--foreground);
+}
+:where(.kx-inline-tool-status) { font-size: var(--text-xs); color: var(--muted-foreground); }
+
+/* --- 6. Fee / payment callout panels (were literal #f59e0b borders) ------ */
+:where(.kx-callout-panel) {
+  margin: var(--space-3) 0;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--kx-radius);
+}
+/* These sections also carry .panel, whose own border rule is a real class
+   selector — so the attention state keeps ONE class outside :where() to tie it
+   and win on order. Anything the stylesheet writes for .kx-callout-panel.is-warn
+   is two classes and still beats this. */
+:where(.kx-callout-panel).is-warn { border-color: var(--kx-edge-warn); }
+`;
+
+// Idempotent: the rules are appended once, after the linked stylesheet, and only
+// ever act as a zero-specificity fallback (see the block comment above).
+function ensureKeelixDetailStyles() {
+  if (typeof document === "undefined" || !document.head) return;
+  if (document.getElementById(KEELIX_DETAIL_STYLE_ID)) return;
+  const style = document.createElement("style");
+  style.id = KEELIX_DETAIL_STYLE_ID;
+  style.textContent = KEELIX_DETAIL_CSS;
+  document.head.appendChild(style);
+}
+
+// "1 document", "2 documents" — the headings on this screen are written as real
+// sentences, and "(s)" is the tell that nobody read them out loud.
+function plural(count, singular, pluralForm) {
+  return `${count} ${count === 1 ? singular : (pluralForm || `${singular}s`)}`;
+}
+
+// An eyebrow label + sentence-case heading ending in a period, which is the
+// site's section signature. Both halves are escaped: AHJ and homeowner strings
+// reach these headings straight off parsed PDFs and portal scrapes.
+function bandHead(eyebrow, title, lede) {
+  return `<div class="kx-band-head">
+    <span class="kx-eyebrow">${esc(eyebrow)}</span>
+    ${title ? `<span class="kx-band-title">${esc(title)}</span>` : ""}
+    ${lede ? `<span class="kx-band-lede">${esc(lede)}</span>` : ""}
+  </div>`;
+}
+
 // Null-safe "snake_case" → "snake case". Avoids the whole class of
 // `someStatus.replaceAll(...)` throwing when a status field is null/undefined.
 // Safe date formatting — a null/empty/malformed timestamp must never render the
@@ -1181,7 +1498,7 @@ function renderPaymentQuoteCard(quote) {
         <tr><td style="padding:1px 14px 1px 0">Permit fees</td><td style="text-align:right"><strong>${money(quote.permitFeeUsd)}</strong></td>
             <td style="padding-left:10px" class="muted">${esc(FEE_SOURCE_LABELS[quote.permitFeeSource] || "")}</td></tr>
         <tr><td style="padding:1px 14px 1px 0">Our service fee</td><td style="text-align:right"><strong>${money(quote.serviceFeeUsd)}</strong></td><td></td></tr>
-        <tr style="border-top:1px solid var(--border,#d1d5db)"><td style="padding:3px 14px 1px 0"><strong>Client total</strong></td><td style="text-align:right"><strong>${money(quote.totalUsd)}</strong></td><td></td></tr>
+        <tr style="border-top:1px solid var(--border)"><td style="padding:3px 14px 1px 0"><strong>Client total</strong></td><td style="text-align:right"><strong>${money(quote.totalUsd)}</strong></td><td></td></tr>
       </table>
       <p class="muted" style="margin:2px 0;font-size:11px">${esc(quote.permitFeeBasis || "")}</p>
       ${status === "paid" ? `<p style="margin:2px 0;font-size:12px">Paid ${p.paidAt ? new Date(p.paidAt).toLocaleString() : ""}${p.paymentReference ? ` — ref: ${esc(p.paymentReference)}` : ""}</p>` : ""}
@@ -1208,7 +1525,7 @@ function renderPaymentPanel() {
   const unpaid = visible.filter((q) => q.required && q.payment?.status !== "paid" && q.payment?.status !== "waived");
   panel.hidden = false;
   panel.innerHTML = `
-    <section class="panel" style="margin:10px 0;padding:12px 14px;border:1px solid ${unpaid.length ? "#f59e0b" : "var(--border,#d1d5db)"};border-radius:8px">
+    <section class="panel kx-callout-panel ${unpaid.length ? "is-warn" : ""}">
       <div class="item-title" style="margin-bottom:6px">
         <span>💳 Payment — per-submission billing</span>
         ${statusBadge(unpaid.length ? "payment required before staging" : "cleared")}
@@ -1360,7 +1677,7 @@ function renderFeeSheetPanel() {
   const anyUnknown = sheet.totalUsd == null;
   panel.hidden = false;
   panel.innerHTML = `
-    <section class="panel" style="margin:10px 0;padding:12px 14px;border:1px solid ${anyUnknown || provisional.length ? "#f59e0b" : "var(--border,#d1d5db)"};border-radius:8px">
+    <section class="panel kx-callout-panel ${anyUnknown || provisional.length ? "is-warn" : ""}">
       <div class="item-title" style="margin-bottom:6px">
         <span>💵 Fees — permit and NEM</span>
         ${statusBadge(anyUnknown ? "incomplete" : provisional.length ? "provisional" : "known")}
@@ -1374,7 +1691,7 @@ function renderFeeSheetPanel() {
         <tr><td style="padding:1px 14px 1px 0">Jurisdiction fees (permit + NEM)</td><td style="text-align:right"><strong>${feeMoney(sheet.jurisdictionFeesUsd)}</strong></td></tr>
         <tr><td style="padding:1px 14px 1px 0">Our service fees${sheet.billingRequired ? " (per submission)" : ""}</td>
             <td style="text-align:right"><strong>${feeMoney(sheet.serviceFeesUsd)}</strong></td></tr>
-        <tr style="border-top:1px solid var(--border,#d1d5db)"><td style="padding:3px 14px 1px 0"><strong>Project total</strong></td>
+        <tr style="border-top:1px solid var(--border)"><td style="padding:3px 14px 1px 0"><strong>Project total</strong></td>
             <td style="text-align:right"><strong>${feeMoney(sheet.totalUsd)}</strong></td></tr>
       </table>
       ${sheet.billingRequired ? "" : `<p class="muted" style="margin:2px 0;font-size:11px">This client is not billed per submission (billing mode ${esc(sheet.billingMode || "monthly / none")}), so the service fees above are shown for reference and are not collected here.</p>`}
@@ -1982,6 +2299,7 @@ function safeRender(label, fn) {
 }
 
 function renderDetail() {
+  ensureKeelixDetailStyles();
   const { project } = state.detail;
   safeRender("header", () => {
     $("detailTitle").textContent = project.homeownerName || "Unnamed project";
@@ -2085,6 +2403,7 @@ function gotoSubmitFix(checkId) {
 }
 
 function renderSubmitGate() {
+  ensureKeelixDetailStyles();
   const gate = state.submitGate;
   if (!gate) {
     $("submitGateStatus").textContent = "not synced";
@@ -2113,21 +2432,36 @@ function renderSubmitGate() {
     if (!gate.canPrepareSubmission && blockers.length) {
       note.hidden = false;
       const hasDocBlocker = blockers.some((b) => b.id === "document-inventory");
-      note.innerHTML = `<strong>⛔ Can't submit yet — ${blockers.length} blocker(s):</strong> `
-        + blockers.map((b) => `<a href="#" class="fix-link" data-fix="${esc(b.id)}">${esc(b.title)} →</a> <span class="muted">${esc(b.nextAction || "resolve this")}</span>`).join("<br>")
-        + (hasDocBlocker ? `
-          <div id="inlineDocSplitWidget" style="margin-top:10px;padding:10px 12px;background:#fef9ee;border:1px solid #f59e0b;border-radius:7px">
-            <strong style="font-size:13px">Plan set uploaded? Split it into individual sheets now:</strong>
-            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;align-items:center">
-              <select id="inlineSplitTarget" style="font-size:13px;padding:4px 8px;border-radius:6px;border:1px solid #d1d5db">
+      // The site's numbered-step rhythm ("01 / 02 / 03" + an uppercase label)
+      // applied to the thing the operator most needs enumerated: what is in the
+      // way. The ids (#inlineDocSplitWidget, #inlineSplitTarget, #inlineSplitBtn,
+      // #inlineSplitStatus) and the .fix-link class are MATCHING KEYS — the
+      // SUBMIT_FIX_TARGETS scroll map and the handlers below query them — so they
+      // are unchanged; only the presentation moved off literal hex onto tokens.
+      note.innerHTML = `
+        <span class="kx-eyebrow is-muted">Blocked</span>
+        <span class="kx-band-title">${plural(blockers.length, "thing")} must clear before this can be submitted.</span>
+        <div class="kx-steps">
+          ${blockers.map((b, i) => `
+            <div class="kx-step">
+              <span class="kx-step-num">${esc(String(i + 1).padStart(2, "0"))}</span>
+              <span class="kx-step-label"><a href="#" class="kx-step-link fix-link" data-fix="${esc(b.id)}">${esc(b.title)} →</a></span>
+              <span class="kx-step-body">${esc(b.nextAction || "resolve this")}</span>
+            </div>`).join("")}
+        </div>
+        ${hasDocBlocker ? `
+          <div id="inlineDocSplitWidget" class="kx-inline-tool">
+            <span class="kx-inline-tool-title">Plan set uploaded? Split it into individual sheets now:</span>
+            <div class="kx-inline-tool-row">
+              <select id="inlineSplitTarget">
                 <option value="all">All sheets (permit + NEM)</option>
                 <option value="permit">Permit only (SLD + site plan + structural + specs)</option>
                 <option value="nem">NEM only (meter photo + SLD + site plan + inverter spec)</option>
               </select>
-              <button id="inlineSplitBtn" class="secondary" style="font-size:13px;padding:4px 14px">✂ Split plan set now</button>
-              <span id="inlineSplitStatus" style="font-size:12px;color:var(--muted)"></span>
+              <button id="inlineSplitBtn" class="secondary">✂ Split plan set now</button>
+              <span id="inlineSplitStatus" class="kx-inline-tool-status"></span>
             </div>
-          </div>` : "");
+          </div>` : ""}`;
       note.querySelectorAll(".fix-link").forEach((a) => {
         a.addEventListener("click", (e) => { e.preventDefault(); gotoSubmitFix(a.dataset.fix); });
       });
@@ -2162,6 +2496,7 @@ function renderSubmitGate() {
     ...checks.filter((check) => check.status === "pass"),
   ].slice(0, 10);
   $("submitGate").innerHTML = `
+    ${bandHead("SUBMIT GATE", "Nothing goes out until a human says so.", "Automation stages the application and stops. The final submit, the fee, and any CAPTCHA or MFA are executed by a person.")}
     <article class="item ${submitGateClass(gate.decision)}">
       <div class="item-title"><span>${esc(gate.headline)}</span>${statusBadge(gate.decision.replaceAll("_", " "))}</div>
       <p><strong>Next action:</strong> ${esc(gate.nextAction)}</p>
@@ -2310,7 +2645,7 @@ function trackCardHtml(t) {
     <p class="muted" style="margin:0 0 4px">Channel: ${esc(t.channel)}${t.lastCheckedAt ? ` · last checked ${esc(fmtDate(t.lastCheckedAt))}` : ""}</p>
     <p style="margin:0 0 6px;font-size:12px">→ ${esc(t.nextAction)}</p>
     ${captured ? `<p style="margin:0 0 4px">${captured} ${trackLink ? "&nbsp;·&nbsp; " + trackLink : ""}</p>` : (trackLink ? `<p style="margin:0 0 4px">${trackLink}</p>` : "")}
-    ${t.recipeId && (t.recipeStatus === "complete" || t.recipeStatus === "recording") ? `<div style="margin:6px 0 4px"><img src="/api/projects/${esc(state.selectedProjectId)}/portal-runs/${esc(t.recipeId)}/review-screenshot" alt="Auto-captured portal page" style="max-width:100%;border:1px solid #ddd;border-radius:4px" onerror="this.style.display='none';this.nextElementSibling.style.display='none'" /><p class="muted" style="font-size:11px;margin:2px 0 0">${t.recipeStatus === "complete" ? "Portal review screen (auto-captured)" : "Last captured page — recording not complete. If this is a login page, add this portal's login under “Manage logins” and re-stage."}</p></div>` : ""}
+    ${t.recipeId && (t.recipeStatus === "complete" || t.recipeStatus === "recording") ? `<div style="margin:6px 0 4px"><img src="/api/projects/${esc(state.selectedProjectId)}/portal-runs/${esc(t.recipeId)}/review-screenshot" alt="Auto-captured portal page" style="max-width:100%;border:1px solid var(--border);border-radius:var(--radius-sm)" onerror="this.style.display='none';this.nextElementSibling.style.display='none'" /><p class="muted" style="font-size:11px;margin:2px 0 0">${t.recipeStatus === "complete" ? "Portal review screen (auto-captured)" : "Last captured page — recording not complete. If this is a login page, add this portal's login under “Manage logins” and re-stage."}</p></div>` : ""}
     <div class="track-actions">
       <button type="button" class="secondary" data-track-stage="${esc(t.type)}" title="Auto-fill this filing's portal up to the final review screen — you submit manually"><i data-lucide="bot"></i><span>Stage in portal</span></button>
       <button type="button" class="secondary" data-track-approve="${esc(t.type)}" title="Hybrid: replay through the final application submit — only runs if you've trusted this portal for auto-submit, otherwise it stages to review. Never pays fees; stops for CAPTCHA/MFA."><i data-lucide="check-check"></i><span>Approve &amp; auto-submit</span></button>
@@ -3137,12 +3472,10 @@ function renderHistoricalFailures() {
   `;
 }
 
-function severityClass(severity) {
-  if (severity === "blocker") return "blocker";
-  if (severity === "warning") return "warning";
-  if (severity === "pass") return "pass";
-  return "info";
-}
+// (severityClass lived here. Its only caller was the eighteen-identical-cards
+// findings list that the AHJ preflight card replaced; severity now selects a
+// preflight column and an is-warn modifier instead of an .item tint. Removed
+// rather than left behind as a helper with no callers.)
 
 function renderCodeRefs(refs = []) {
   if (!refs.length) return "";
@@ -3160,7 +3493,10 @@ function renderVisionVerdict(finding) {
   if (!v || !v.checked) return "";
   const cls = v.present ? "pass" : "warning";
   const icon = v.present ? "✓ Vision-verified on the sheet" : "⚠ Vision could not confirm on the sheet";
-  return `<div class="evidence-card ${cls}" style="border-left:3px solid ${v.present ? "var(--ok,#1a7f37)" : "var(--warn,#b35900)"}">
+  // The left rule used to be an inline `border-left:3px solid var(--ok,#1a7f37)`.
+  // It is a token-driven class now (.evidence-card.pass / .warning) so the theme
+  // owns the colour — the hardcoded hex fallbacks were from an abandoned palette.
+  return `<div class="evidence-card ${cls}">
       <strong>${icon} (page ${esc(v.page)}, ${esc(v.confidence)} confidence)</strong>
       <p>${esc(v.observed || v.note || "")}</p>
     </div>`;
@@ -3191,7 +3527,39 @@ function renderFindingEvidence(finding) {
   `;
 }
 
+// The "Plan set" line of the preflight card: what the SUBMITTED drawing actually
+// shows, as opposed to what the AHJ requires. Prefer a real excerpt off the sheet;
+// fall back to the evidence verdict, then to what evidence is still owed.
+function findingPlanSetLine(finding) {
+  const vision = finding.visionVerification;
+  if (vision && vision.checked && vision.observed) {
+    return `${vision.observed} (vision, page ${vision.page}, ${vision.confidence} confidence)`;
+  }
+  const excerpt = (finding.evidenceFound || []).find((item) => item.excerpt);
+  if (excerpt) return `${excerpt.label}: ${String(excerpt.excerpt).slice(0, 220)}`;
+  if (finding.evidenceStatus) return `Evidence check: ${humanize(finding.evidenceStatus)}.`;
+  if ((finding.evidenceNeeded || []).length) return `Not evidenced on the submitted set — still owed: ${finding.evidenceNeeded.join(", ")}.`;
+  return "Nothing on the submitted set answers this yet.";
+}
+
+/**
+ * THE AHJ PREFLIGHT CARD.
+ *
+ * The marketing site already draws the product UI it wants for exactly this
+ * surface: a card headed "AHJ PREFLIGHT / City of Example" with a left "Project
+ * checks" column of green ticks and a right "POTENTIAL ISSUE" panel — a red
+ * uppercase label, the issue title, an "AHJ requirement" line, a "Plan set" line,
+ * and a green-tinted "Recommended action" box. This builds that out of the real
+ * reviewer report instead of the eighteen identical stacked cards it replaced.
+ *
+ * Mapping: severity "pass"/"callout" findings become the tick column; "blocker"
+ * and "warning" findings become the issue panels (cityFeedback = the AHJ
+ * requirement, findingPlanSetLine = what the sheet shows, designTeamAction = the
+ * recommended action). Full evidence + code anchors stay, one fold down, so the
+ * card stays readable without losing provenance.
+ */
 function renderReviewerGate() {
+  ensureKeelixDetailStyles();
   const report = state.reviewerReport;
   if (!report) {
     $("reviewerCounts").textContent = "not run";
@@ -3201,25 +3569,82 @@ function renderReviewerGate() {
   const findings = report.findings || [];
   const blockers = findings.filter((item) => item.severity === "blocker");
   const warnings = findings.filter((item) => item.severity === "warning");
+  const clears = findings.filter((item) => item.severity === "pass" || item.severity === "callout");
   $("reviewerCounts").textContent = `${blockers.length} blocker / ${warnings.length} warn`;
-  const topFindings = findings.slice(0, 18);
+
+  const issues = [...blockers, ...warnings].slice(0, 18);
+  const hiddenIssueCount = blockers.length + warnings.length - issues.length;
+  const profile = report.matchedProcessProfile;
+  const subject = (profile && profile.ahj) || state.detail?.project?.ahj || "This jurisdiction";
   const submitButtonEnough = report.finalSubmitGate?.finalSubmitButtonAloneIsEnough;
+
+  const checksColumn = clears.length
+    ? clears.slice(0, 14).map((item) => `
+        <div class="kx-check ${item.severity === "callout" ? "is-warn" : ""}">
+          <span class="kx-check-mark" aria-hidden="true">${item.severity === "callout" ? "!" : "✓"}</span>
+          <span class="kx-check-text">${esc(item.title)}${item.message || item.designTeamAction ? `<span class="kx-check-note">${esc([item.message, item.severity === "callout" ? item.designTeamAction : ""].filter(Boolean).join(" "))}</span>` : ""}</span>
+        </div>`).join("")
+    : `<span class="kx-check-empty">The gate produced no cleared checks for this project yet — everything it looked at is on the right.</span>`;
+
+  const issuesColumn = issues.length
+    ? issues.map((finding) => `
+        <div class="kx-issue ${finding.severity === "warning" ? "is-warn" : ""}">
+          <span class="kx-issue-label"><span aria-hidden="true">⚠</span>${finding.severity === "warning" ? "Potential issue" : "Blocker"}</span>
+          <span class="kx-issue-title">${esc(finding.title)}</span>
+          <div class="kx-issue-field">
+            <span class="kx-issue-field-label">AHJ requirement</span>
+            <span class="kx-issue-field-value">${esc(finding.cityFeedback || finding.message)}</span>
+          </div>
+          <div class="kx-issue-field">
+            <span class="kx-issue-field-label">Plan set</span>
+            <span class="kx-issue-field-value">${esc(findingPlanSetLine(finding))}</span>
+          </div>
+          <div class="kx-action">
+            <span class="kx-action-label">Recommended action</span>
+            <span class="kx-action-text">${esc(finding.designTeamAction || "Resolve before submittal.")}</span>
+          </div>
+          <details class="provenance">
+            <summary>${esc(humanize(finding.category))} · evidence and code anchors</summary>
+            <div class="provenance-body">
+              ${finding.evidenceNeeded?.length ? `<p><strong>Evidence needed:</strong> ${esc(finding.evidenceNeeded.join(", "))}</p>` : ""}
+              ${renderFindingEvidence(finding)}
+              ${renderCodeRefs(finding.codeReferences)}
+            </div>
+          </details>
+        </div>`).join("") + (hiddenIssueCount > 0 ? `<div class="kx-issue-more">${plural(hiddenIssueCount, "further finding")} not shown — copy the reviewer packet for the full list.</div>` : "")
+    : `<span class="kx-check-empty">No blockers or warnings. The gate found nothing an AHJ reviewer would correct on this set.</span>`;
+
   $("reviewerGate").innerHTML = `
-    <article class="item ${blockers.length ? "blocker" : warnings.length ? "warning" : "pass"}">
-      <div class="item-title"><span>Final submit gate</span>${statusBadge(submitButtonEnough ? "button enough" : "preview required")}</div>
-      <p>Submit button alone is ${submitButtonEnough ? "enough" : "not enough"}. The real AHJ/utility preview window or this internal correction packet must be visible before a human submits.</p>
-      <p class="muted">${report.matchedProcessProfile ? `Matched profile: ${esc(report.matchedProcessProfile.state)} / ${esc(report.matchedProcessProfile.ahj)} / ${esc(report.matchedProcessProfile.submissionMethod)}` : "No seeded AHJ process profile matched."}</p>
-    </article>
-    ${topFindings.map((finding) => `
-      <article class="item ${severityClass(finding.severity)}">
-        <div class="item-title"><span>${esc(finding.title)}</span>${statusBadge(finding.severity)}</div>
-        <p><strong>Reviewer comment:</strong> ${esc(finding.cityFeedback || finding.message)}</p>
-        <p><strong>Correction:</strong> ${esc(finding.designTeamAction || "Resolve before submittal.")}</p>
-        ${finding.evidenceNeeded?.length ? `<p><strong>Evidence:</strong> ${esc(finding.evidenceNeeded.join(", "))}</p>` : ""}
-        ${renderFindingEvidence(finding)}
-        ${renderCodeRefs(finding.codeReferences)}
+    <div class="kx-band">
+      ${bandHead("AHJ INTELLIGENCE", "Catch potential corrections before the AHJ does.")}
+      <div class="kx-preflight">
+        <div class="kx-preflight-head">
+          <div>
+            <span class="kx-preflight-eyebrow">AHJ preflight</span>
+            <span class="kx-preflight-subject">${esc(subject)}</span>
+          </div>
+          <span class="kx-preflight-tag">${profile ? esc(humanize(profile.submissionMethod) || "Plan review") : "Plan review"}</span>
+        </div>
+        <div class="kx-preflight-body">
+          <div class="kx-preflight-col">
+            <span class="kx-preflight-coltitle">Project checks</span>
+            ${checksColumn}
+          </div>
+          <div class="kx-preflight-col">
+            <span class="kx-preflight-coltitle">Potential issues</span>
+            ${issuesColumn}
+          </div>
+        </div>
+        <div class="kx-preflight-foot">
+          Keelix identifies potential issues for review. Final code interpretation and project approval remain with the applicable authority and responsible project professionals.
+          ${profile ? ` Matched profile: ${esc(profile.state)} / ${esc(profile.ahj)} / ${esc(profile.submissionMethod)}.` : " No seeded AHJ process profile matched."}
+        </div>
+      </div>
+      <article class="item ${submitButtonEnough ? "info" : "warning"}">
+        <div class="item-title"><span>Final submit gate</span>${statusBadge(submitButtonEnough ? "button enough" : "preview required")}</div>
+        <p>Submit button alone is ${submitButtonEnough ? "enough" : "not enough"}. The real AHJ/utility preview window or this internal correction packet must be visible before a human submits.</p>
       </article>
-    `).join("")}
+    </div>
   `;
   // Note: installer callouts are a subset of the findings rendered above (each
   // carries installerCallout=true), so they're intentionally NOT shown again as a
@@ -3331,6 +3756,20 @@ function reviewHint(item) {
 // hide it and require Save Edit.
 const REVIEW_WARNING_FIELDS = new Set(["permitPath", "locates", "splitPages"]);
 
+// A CORRECTION ITEM'S notes ARE NOT PROSE. correctionAgent stores its triage
+// payload there as `agent-triage:{…}` and parseCorrectionProposals matches that
+// exact shape, so the stored value is a MATCHING KEY and must never be rewritten
+// — which is why updateReview stopped sending a note at all. That leaves the raw
+// JSON as the card's description, so it is translated HERE, at display time
+// only. The stored notes are untouched.
+function reviewNotesDisplay(item) {
+  const notes = String(item.notes || "");
+  if (notes.startsWith("agent-triage:")) {
+    return "Correction triaged by the agent — approving this item applies its proposed data updates.";
+  }
+  return notes || "Review required.";
+}
+
 function renderReview() {
   const items = state.detail.humanReviewItems || [];
   const pending = items.filter((x) => x.status === "pending");
@@ -3349,7 +3788,7 @@ function renderReview() {
     return `
     <article class="item ${item.status === "pending" ? (isWarning ? "info" : "warning") : "pass"}">
       <div class="item-title"><strong>${esc(label)}</strong>${statusBadge(item.status)}</div>
-      <p style="margin:0 0 4px">${esc(item.notes || "Review required.")}</p>
+      <p style="margin:0 0 4px">${esc(reviewNotesDisplay(item))}</p>
       ${context.length ? `<p style="margin:0 0 4px">${context.join("<br>")}</p>` : ""}
       ${item.sourceExcerpt ? `<p style="margin:0 0 4px"><strong>Source:</strong> ${esc(item.sourceExcerpt)}</p>` : ""}
       ${item.status === "pending" ? `
@@ -3366,7 +3805,7 @@ function renderReview() {
 
   const pendingHtml = pending.map(reviewCard).join("");
   const resolvedHtml = resolved.length
-    ? `<details style="margin-top:.5rem"><summary style="cursor:pointer;color:var(--muted);font-size:13px">${resolved.length} resolved item(s)</summary><div class="stack" style="margin-top:.5rem">${resolved.map(reviewCard).join("")}</div></details>`
+    ? `<details style="margin-top:.5rem"><summary style="cursor:pointer;color:var(--muted);font-size:13px">${plural(resolved.length, "resolved item")}</summary><div class="stack" style="margin-top:.5rem">${resolved.map(reviewCard).join("")}</div></details>`
     : "";
 
   $("reviewItems").innerHTML = (pending.length || resolved.length)
@@ -3459,7 +3898,109 @@ function renderFilledForms(projectId) {
   }).join("");
 }
 
+/**
+ * THE REQUIRED-DOCUMENT VERDICT, IN THREE STATES THAT ARE ACTUALLY DIFFERENT.
+ *
+ * A MISSING DOCUMENT IS NOT A MISSING FIELD — and A FAILURE TO ANSWER IS NOT AN
+ * ANSWER OF "NOTHING". This card twice told an operator the packet was complete
+ * when it had no idea:
+ *
+ *   1. It printed "No critical document fields missing from the generated packet"
+ *      out of pkg.missingFields alone — fifteen SCALAR project-field checks that
+ *      never look at a document. True sentence, false impression; two permits went
+ *      out with an application never attached.
+ *   2. The replacement still read `pkg.missingDocuments || []`, so when the backend
+ *      inventory THREW and left the list absent, the `|| []` manufactured an empty
+ *      list and the pass-green "every required document is attached" printed over a
+ *      computation that never ran — the same lie, reproduced by the error path.
+ *
+ * So the state we render comes from pkg.missingDocumentsStatus, NOT from the length
+ * of the array (shared/src/types.ts: ApplicationDocumentPackage):
+ *
+ *   "resolved" + empty      → the all-clear. THE ONLY VALUE THAT MAY RENDER ONE.
+ *   "resolved" + non-empty  → name the documents.
+ *   "unavailable" / absent  → "we could not determine", with the reason. An absent
+ *                             status is the DB-free builder, which never resolves an
+ *                             inventory — so the test is `!== "resolved"`, never
+ *                             `=== "unavailable"`, and null fails it too.
+ *
+ * The CSS class is part of the claim: a pass-green card carrying "could not
+ * determine" would tell the operator the same lie in colour. Each state carries its
+ * own. Fields and documents get SEPARATE verdict rows — one sentence covering both
+ * is how the first version went wrong.
+ */
+function documentVerdictHtml(pkg) {
+  const missingFields = pkg.missingFields || [];
+  const inventoryResolved = pkg.missingDocumentsStatus === "resolved";
+  const missingDocs = inventoryResolved ? (pkg.missingDocuments || []) : [];
+
+  const fieldRow = missingFields.length
+    ? `<div class="kx-docstate is-missing">
+        <span class="kx-docstate-icon" aria-hidden="true">⚠</span>
+        <div class="kx-docstate-body">
+          <span class="kx-docstate-title">${plural(missingFields.length, "application field")} still blank</span>
+          <span class="kx-docstate-text">The generated packet cannot fill these from the plan set. Resolve them in QC / Human Review before staging.</span>
+          <ul class="kx-docstate-list">${missingFields.map((f) => `<li>${esc(f)}</li>`).join("")}</ul>
+        </div>
+      </div>`
+    : `<div class="kx-docstate is-clear">
+        <span class="kx-docstate-icon" aria-hidden="true">✓</span>
+        <div class="kx-docstate-body">
+          <span class="kx-docstate-title">No critical application field is blank</span>
+          <span class="kx-docstate-text">Every scalar field this packet needs was read off the project. This says nothing about the FILES — see below.</span>
+        </div>
+      </div>`;
+
+  let docRow;
+  if (!inventoryResolved) {
+    // NEVER an all-clear here, and never pass-green. The two ways of not knowing
+    // are one state but not one sentence, and the difference is what the operator
+    // should do next:
+    //
+    //  "unavailable" — documentInventory RAN AND THREW. Something is broken; the
+    //                  reason is worth showing and re-running may not help.
+    //   status absent — this package came off buildApplicationDocumentPackage,
+    //                  which is DB-free and never resolves an inventory at all.
+    //                  That is every package returned by POST /workflow. Nothing
+    //                  is broken — the question simply was not asked, and
+    //                  "Build AHJ docs" asks it. Printing a failure here would
+    //                  cry wolf after every workflow run and teach the operator
+    //                  to scroll past the warning that matters.
+    const failed = pkg.missingDocumentsStatus === "unavailable";
+    docRow = `<div class="kx-docstate is-unknown">
+        <span class="kx-docstate-icon" aria-hidden="true">?</span>
+        <div class="kx-docstate-body">
+          <span class="kx-docstate-title">We could not determine which documents this AHJ requires</span>
+          <span class="kx-docstate-text">${failed
+            ? "The required-document inventory ran and failed, so this packet cannot say whether anything is missing. Treat it as unchecked — not as clear. Rebuild the AHJ docs, and if it keeps failing, verify the required document set against the jurisdiction by hand before submitting."
+            : "This view came from the workflow run, which does not resolve the document inventory — it was never asked, so an empty list here would mean nothing. Build the AHJ docs to get the real answer. Until then treat it as unchecked, not as clear."}</span>
+          ${failed && pkg.missingDocumentsError ? `<span class="kx-docstate-reason">Reason: ${esc(pkg.missingDocumentsError)}</span>` : ""}
+        </div>
+      </div>`;
+  } else if (missingDocs.length) {
+    docRow = `<div class="kx-docstate is-missing">
+        <span class="kx-docstate-icon" aria-hidden="true">⚠</span>
+        <div class="kx-docstate-body">
+          <span class="kx-docstate-title">${plural(missingDocs.length, "required document")} NOT in the packet</span>
+          <span class="kx-docstate-text">These are files, not fields. The submittal is incomplete until each one is attached.</span>
+          <ul class="kx-docstate-list">${missingDocs.map((d) => `<li>${esc(d.label)}<span class="kx-docstate-why"> — ${esc(d.why)}</span></li>`).join("")}</ul>
+        </div>
+      </div>`;
+  } else {
+    docRow = `<div class="kx-docstate is-clear">
+        <span class="kx-docstate-icon" aria-hidden="true">✓</span>
+        <div class="kx-docstate-body">
+          <span class="kx-docstate-title">Every required document is attached</span>
+          <span class="kx-docstate-text">The required-document inventory ran against the real uploads and filled forms on disk and found nothing blocking missing.</span>
+        </div>
+      </div>`;
+  }
+
+  return `<div class="stack">${fieldRow}${docRow}</div>`;
+}
+
 function renderApplicationDocs() {
+  ensureKeelixDetailStyles();
   const pkg = state.applicationDocs;
   if (!pkg) {
     $("applicationDocs").innerHTML = `<p class="muted">Build the AHJ docs to see required forms for this jurisdiction.</p>`;
@@ -3469,27 +4010,28 @@ function renderApplicationDocs() {
   const profile = pkg.profile || {};
   const learnedDocs = (learned && learned.requiredDocuments) || [];
   const pid = state.selectedProjectId;
-  // A MISSING DOCUMENT IS NOT A MISSING FIELD. This card used to say "No critical
-  // document fields missing from the generated packet" whenever pkg.missingFields was
-  // empty — and missingFields is fifteen SCALAR project-field checks that never look at
-  // a document. The sentence was literally true and read as "the packet is complete";
-  // two permits went out with an application never attached. Missing DOCUMENTS now get
-  // their own line, stated as plainly as a missing field, and the all-clear sentence
-  // only appears when BOTH lists are empty.
-  const missingDocs = pkg.missingDocuments || [];
-  const missingFields = pkg.missingFields || [];
+  const docsRequired = profile.requiresAhjApplication || profile.requiresPortalEntryOnly;
+  const profileNotes = (profile.notes || []).filter(Boolean);
   $("applicationDocs").innerHTML = `
     ${renderFilledForms(pid)}
     <div id="submittalEmailCard"></div>
-    <article class="item ${missingFields.length || missingDocs.length ? "warning" : "pass"}">
-      <div class="item-title"><span>${esc(profile.name)}</span>${statusBadge(profile.requiresAhjApplication || profile.requiresPortalEntryOnly ? "docs required" : "manifest only")}</div>
-      ${pkg.permitType ? `<p><strong>Permitting type:</strong> ${esc(pkg.permitType)}</p>` : ""}
-      <p>${(profile.notes || []).map(esc).join("<br>")}</p>
-      ${missingFields.length ? `<p><strong>Missing fields:</strong> ${esc(missingFields.join(", "))}</p>` : ""}
-      ${missingDocs.length ? `<p><strong>Missing required documents (${missingDocs.length}) — these files are NOT in the packet:</strong></p>
-      <ul>${missingDocs.map((d) => `<li>${esc(d.label)}<span class="muted"> — ${esc(d.why)}</span></li>`).join("")}</ul>` : ""}
-      ${!missingFields.length && !missingDocs.length ? "<p>No critical document fields missing, and every required document is attached.</p>" : ""}
-    </article>
+    <div class="kx-band">
+      ${bandHead("AHJ PACKET", "Everything this jurisdiction asks for, in one set.")}
+      <div class="kx-preflight">
+        <div class="kx-preflight-head">
+          <div>
+            <span class="kx-preflight-eyebrow">Required document set</span>
+            <span class="kx-preflight-subject">${esc(profile.name)}</span>
+          </div>
+          <span class="kx-preflight-tag">${docsRequired ? "Docs required" : "Manifest only"}</span>
+        </div>
+        <div class="kx-preflight-col">
+          ${pkg.permitType ? `<div class="kx-issue-field"><span class="kx-issue-field-label">Permitting type</span><span class="kx-issue-field-value">${esc(pkg.permitType)}</span></div>` : ""}
+          ${profileNotes.length ? `<div class="kx-issue-field"><span class="kx-issue-field-label">Jurisdiction notes</span><span class="kx-issue-field-value">${profileNotes.map(esc).join("<br>")}</span></div>` : ""}
+          ${documentVerdictHtml(pkg)}
+        </div>
+      </div>
+    </div>
     ${learned ? `
     <article class="item info">
       <div class="item-title"><span>Learned ${esc(learned.ahj)}${learned.utility ? " / " + esc(learned.utility) : ""} requirements</span>${statusBadge(learned.confidence)}</div>
@@ -3825,11 +4367,25 @@ async function updateReview(reviewItemId, action) {
   document.querySelectorAll("[id^='review-']").forEach((el) => { if (el.value) savedInputs[el.id] = el.value; });
   delete savedInputs[`review-${reviewItemId}`];
 
+  // DO NOT SEND `notes`. The only visible button on a correction card used to
+  // post notes:"Verified from dashboard." (or "Rejected from dashboard."), and
+  // humanVerify writes `input.notes || item.notes` — so the generic string
+  // OVERWROTE the item's notes. For a correction review item those notes are not
+  // prose: correctionAgent stores its triage payload there as `agent-triage:{…}`,
+  // and parseCorrectionProposals only matches /^agent-triage:(\{…\})$/. Once the
+  // blob was clobbered it returned null forever, applyCorrectionProposals applied
+  // ZERO updates, and the approval endpoint still set corrections.human_approved
+  // = 1 — an approval that silently changed nothing.
+  //
+  // Omitting the field is the whole fix: `input.notes || item.notes` then keeps
+  // whatever the item already carried (the triage blob, or the QC reason the
+  // field was flagged), and the normalized-field row still gets its own
+  // "Human verified from review queue." default server-side. The ACTION is what
+  // records the human decision — the note was never load-bearing for that.
   const body = {
     reviewItemId,
     action,
     fieldValue: value,
-    notes: action === "reject" ? "Rejected from dashboard." : "Verified from dashboard.",
   };
   state.detail = await api(`/api/projects/${state.selectedProjectId}/human-verify`, {
     method: "POST",

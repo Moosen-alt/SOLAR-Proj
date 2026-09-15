@@ -70,7 +70,8 @@ import {
   undeliveredCommunications,
   updateCustomer,
 } from "./crm";
-import { clientPortalPayload, clientPortalUrl, ensureClientPortalToken, publicProjectStatusPayload } from "./clientPortal";
+import { clientPortalPayload, clientPortalUrl, ensureClientPortalToken, publicProjectStatusPayload, trackLabel } from "./clientPortal";
+import { staleStatusClassifications } from "./permitMonitor";
 import { getKpiReport } from "./kpi";
 import {
   ahjFormRegistry,
@@ -1678,6 +1679,43 @@ app.post("/api/projects/:id/research-ahj", asyncHandler(async (req, res) => {
 app.post("/api/projects/:id/permit-checks", asyncHandler(async (req, res) => {
   res.status(201).json(await recordPermitStatusCheck(db, String(req.params.id), req.body || {}));
 }));
+
+// WHICH OF THIS PROJECT'S STORED READINGS TODAY'S RULES WOULD CHANGE — and how to get a real one.
+//
+// The monitor's rules move. When they do, every row already in permit_status_checks keeps the
+// verdict the OLD rules gave it, and the client page reads stored rows: Coos Bay's stalled
+// structural permits were reclassified as "the city is waiting on us" one hour after the last
+// check ran, so the customer-facing page went on saying "In review by the jurisdiction" about a
+// permit nobody was reviewing. A classifier fix that never reaches the stored rows is invisible.
+//
+// NOTHING IS REWRITTEN HERE, and this route is deliberately a GET. permit_status_checks is an
+// audit trail — email_project_matches.status_check_id is a foreign key into it and correction_id /
+// reviewed_by_ahj feed other logic — so rewriting a row would change what we believed at the time.
+// The cure is a NEW row from a REAL check, which is the existing POST directly above; each entry
+// below carries the exact call that produces one, and `hasPortalUrl` says whether that call can
+// fetch anything or will honestly come back with "no status text".
+//
+// Scope: under /api/projects/:id, so it inherits the tenancy guard (CLAUDE.md rule 6) — no new
+// top-level path. getProjectDetail 404s an unknown project before anything is read.
+app.get("/api/projects/:id/permit-checks/stale", (req, res) => {
+  const projectId = String(req.params.id);
+  getProjectDetail(db, projectId); // 404 if missing / out of scope
+  const stale = staleStatusClassifications(db, [projectId]);
+  res.json({
+    projectId,
+    staleReadings: stale.map((s) => ({
+      ...s,
+      label: trackLabel(s.targetType, s.permitType),
+      // The production path, named rather than described. `public_url` is the fetching source for
+      // a target that has a portal URL; without one a re-check can only record what a human pastes.
+      recheck: {
+        method: "POST",
+        path: `/api/projects/${projectId}/permit-checks`,
+        body: { targetId: s.targetId, source: s.hasPortalUrl ? "public_url" : "manual" },
+      },
+    })),
+  });
+});
 
 app.post("/api/permit-monitor/run", asyncHandler(async (req, res) => {
   const targetType = req.body?.targetType || "all";

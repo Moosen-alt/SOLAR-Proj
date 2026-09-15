@@ -31,6 +31,7 @@ import type { AppDb } from "./db";
 import type { ProjectStatus, PublicProjectStatusPayload, PublicStatusHistoryEntry } from "../../shared/src/types";
 import { formatProjectAddress } from "./clientNotifier";
 import { getProjectDetail } from "./repository";
+import { staleStatusClassifications } from "./permitMonitor";
 import { logger } from "./logger";
 
 /**
@@ -80,6 +81,32 @@ export interface ClientPortalTrack {
   submittedAt: string | null;
   /** The jurisdiction's receipt, when it is a different string from the application number. */
   confirmationNumber: string;
+  /**
+   * This badge is showing a reading our CURRENT status rules would classify differently — it was
+   * taken before they landed. The page says so rather than asserting it. See staleTargetIds.
+   */
+  needsRecheck: boolean;
+}
+
+/**
+ * WHICH KIND OF FILING THIS IS — and therefore WHO REVIEWS IT.
+ *
+ * "NEM/interconnection isnt an ahj" (the operator, and they are right). An interconnection
+ * application is reviewed by the UTILITY — Pacific Power on every live project — and a permit is
+ * reviewed by the jurisdiction. The two are never the same body, so every public wording that
+ * names the reviewer needs this, not just the row's title.
+ *
+ * ONE PREDICATE, used by trackLabel and publicCheckLabel both. A second copy that tested only
+ * target_type would disagree with the row's own name on a legacy target whose target_type is blank
+ * and whose permit_type is 'nem' — a page calling one filing "Utility interconnection (NEM)" and
+ * then saying the jurisdiction is reviewing it.
+ */
+export type TrackKind = "nem" | "permit";
+
+export function trackKind(targetType: string, permitType: string): TrackKind {
+  const type = String(targetType || "").trim().toLowerCase();
+  const permit = String(permitType || "").trim().toLowerCase();
+  return type === "nem" || permit === "nem" ? "nem" : "permit";
 }
 
 /**
@@ -96,7 +123,7 @@ export interface ClientPortalTrack {
  * carries the jurisdiction's own suffix.
  */
 export function trackLabel(targetType: string, permitType: string): string {
-  if (targetType === "nem" || permitType === "nem") return "Utility interconnection (NEM)";
+  if (trackKind(targetType, permitType) === "nem") return "Utility interconnection (NEM)";
   switch ((permitType || "").trim().toLowerCase()) {
     case "electrical": return "Electrical permit";
     // The fee layer calls this "structural" and permit_type calls it "building"; they are the
@@ -135,11 +162,23 @@ export function trackLabel(targetType: string, permitType: string): string {
  * UNKNOWN LABELS PASS THROUGH UNCHANGED. Legacy rows hold labels no current classifier emits;
  * inventing a client wording for a string we cannot interpret is how a page states a fact it does
  * not have.
+ *
+ * AND THE REVIEWER IS NOT ALWAYS A JURISDICTION. This map used to be keyed on the status alone, so
+ * a NEM row sitting in waiting::in review told the client "In review by the jurisdiction" — about
+ * an interconnection application no jurisdiction has ever seen. It is Pacific Power's queue, not
+ * the city's. permit_check_targets.target_type has carried 'nem' vs 'permit' the whole time; the
+ * wording simply never asked. So a value is either ONE string (the reviewer is not named in it, so
+ * one wording is true for both) or a per-track pair, and the compiler makes that choice explicit.
+ *
+ * THE KEYS ARE MATCHING KEYS AND DO NOT MOVE. `outcome::lowercased status_label` is the stored
+ * pair the classifier writes and the monitor compares on. Only the VALUES below are display text.
  */
-const PUBLIC_CHECK_LABELS = new Map<string, string>([
-  // Waiting on THEM.
-  ["waiting::in review", "In review by the jurisdiction"],
-  ["reviewed_by_ahj::reviewed by ahj", "Reviewed by the jurisdiction"],
+type PublicCheckWording = string | Record<TrackKind, string>;
+
+const PUBLIC_CHECK_LABELS = new Map<string, PublicCheckWording>([
+  // Waiting on THEM — and "them" is the utility on an interconnection, the jurisdiction on a permit.
+  ["waiting::in review", { permit: "In review by the jurisdiction", nem: "In review by the utility" }],
+  ["reviewed_by_ahj::reviewed by ahj", { permit: "Reviewed by the jurisdiction", nem: "Reviewed by the utility" }],
   ["ready_for_issue::ready for issue", "Approved — ready for issue"],
   ["ready_for_issue::ready for issue - fee/payment needed", "Approved — fee due before issue"],
   ["issued::permit issued", "Permit issued"],
@@ -147,16 +186,53 @@ const PUBLIC_CHECK_LABELS = new Map<string, string>([
   // Waiting on US. Never phrased as something the client must do — a correction and an intake
   // shortfall are both our work, and telling a client to act on one is a wrong instruction.
   ["correction_flagged::correction flagged", "Correction requested — we are on it"],
-  ["needs_human_review::action needed before review", "Waiting on us — the jurisdiction wants more before review"],
-  ["needs_human_review::no status text", "Waiting on us — checking the jurisdiction by hand"],
-  ["needs_human_review::needs human review", "Waiting on us — reading the jurisdiction's latest update"],
+  ["needs_human_review::action needed before review", {
+    permit: "Waiting on us — the jurisdiction wants more before review",
+    nem: "Waiting on us — the utility wants more before review",
+  }],
+  ["needs_human_review::no status text", {
+    permit: "Waiting on us — checking the jurisdiction by hand",
+    nem: "Waiting on us — checking with the utility by hand",
+  }],
+  ["needs_human_review::needs human review", {
+    permit: "Waiting on us — reading the jurisdiction's latest update",
+    nem: "Waiting on us — reading the utility's latest update",
+  }],
 ]);
 
-export function publicCheckLabel(outcome: string, statusLabel: string): string {
+/**
+ * `track` is REQUIRED, not an optional trailing argument. An omitted one would default to some
+ * kind, and the kind it defaulted to would be wrong half the time — silently, on the page a
+ * customer reads. Every caller has the target row in hand; use trackKind() to derive it.
+ */
+export function publicCheckLabel(outcome: string, statusLabel: string, track: TrackKind): string {
   const label = String(statusLabel || "").replace(/\s+/g, " ").trim();
   if (!label) return "";
   const key = `${String(outcome || "").trim()}::${label.toLowerCase()}`;
-  return PUBLIC_CHECK_LABELS.get(key) || label;
+  const wording = PUBLIC_CHECK_LABELS.get(key);
+  if (!wording) return label;
+  return typeof wording === "string" ? wording : wording[track];
+}
+
+/**
+ * THE READINGS THIS PAGE IS PUBLISHING THAT TODAY'S RULES WOULD CHANGE.
+ *
+ * Ann's and Ivy's structural permits have said "Intake Requirements Needed" since Sep 3. The rule
+ * that reads that as "the city is waiting on US" landed an hour AFTER the last status check ran,
+ * so the stored rows still say waiting / "In review" and this page — which reads stored rows —
+ * goes on telling the customer the city is reviewing a stalled permit.
+ *
+ * Nothing is rewritten to fix that (permit_status_checks is an audit trail; see permitMonitor.ts).
+ * The page says so instead: the reading is marked as needing confirmation, and the fix is a real
+ * re-check, which writes a NEW row. Surfacing the staleness is the honest move; quietly re-deriving
+ * a nicer label at read time would publish a verdict no check ever produced and leave the stored
+ * row — the one every other consumer reads — wrong and unnoticed.
+ *
+ * Returns TARGET IDS only. The raw portal text the comparison needs is read inside
+ * staleStatusClassifications and never leaves it.
+ */
+function staleTargetIds(db: AppDb, projectIds: string[]): Set<string> {
+  return new Set(staleStatusClassifications(db, projectIds).map((s) => s.targetId).filter(Boolean));
 }
 
 export interface ClientPortalUpdate {
@@ -238,7 +314,7 @@ export function projectStatusHistory(db: AppDb, projectId: string, limit = 12): 
     [clean, HISTORY_SCAN_LIMIT],
   );
 
-  const entries: ClientPortalHistoryEntry[] = [];
+  const built: Array<{ targetId: string; entry: ClientPortalHistoryEntry }> = [];
   const lastStateByTarget = new Map<string, string>();
   // Oldest first, so "the first row of a run" is the row that actually recorded the change.
   for (const row of rows.slice().reverse()) {
@@ -248,16 +324,31 @@ export function projectStatusHistory(db: AppDb, projectId: string, limit = 12): 
     const state = `${outcome}::${rawLabel}`;
     if (lastStateByTarget.get(targetKey) === state) continue; // same state, still. Not news.
     lastStateByTarget.set(targetKey, state);
-    entries.push({
-      at: String(row.created_at || ""),
-      label: trackLabel(String(row.target_type || ""), String(row.permit_type || "")),
-      applicationNumber: String(row.application_number || row.target_application_number || ""),
-      statusLabel: publicCheckLabel(outcome, rawLabel),
-      outcome,
+    built.push({
+      targetId: targetKey,
+      entry: {
+        at: String(row.created_at || ""),
+        label: trackLabel(String(row.target_type || ""), String(row.permit_type || "")),
+        applicationNumber: String(row.application_number || row.target_application_number || ""),
+        statusLabel: publicCheckLabel(outcome, rawLabel, trackKind(String(row.target_type || ""), String(row.permit_type || ""))),
+        outcome,
+        // Set below: only the entry that is still the filing's CURRENT state can be a reading we
+        // are wrongly publishing. An "In review" from July that a later entry has superseded is
+        // history, and history is not re-opened because the rules moved on afterwards.
+        needsRecheck: false,
+      },
     });
   }
-  entries.reverse(); // newest first, the way a timeline is read
-  return entries.slice(0, Math.max(1, Math.floor(limit || 12)));
+  built.reverse(); // newest first, the way a timeline is read
+
+  const stale = staleTargetIds(db, [clean]);
+  const markedTargets = new Set<string>();
+  for (const row of built) {
+    if (markedTargets.has(row.targetId)) continue; // an older entry for a filing already handled
+    markedTargets.add(row.targetId);
+    if (stale.has(row.targetId)) row.entry.needsRecheck = true;
+  }
+  return built.map((row) => row.entry).slice(0, Math.max(1, Math.floor(limit || 12)));
 }
 
 export interface ClientPortalProject {
@@ -339,7 +430,7 @@ export function clientPortalPayload(db: AppDb, token: string): ClientPortalPaylo
   const ids = projects.map((p) => String(p.id));
   const placeholders = ids.map(() => "?").join(",");
   const targets = db.query<Record<string, unknown>>(
-    `SELECT project_id, target_type, permit_type, latest_status_label, latest_outcome, last_checked_at,
+    `SELECT id, project_id, target_type, permit_type, latest_status_label, latest_outcome, last_checked_at,
             application_number, permit_number
        FROM permit_check_targets WHERE project_id IN (${placeholders})`,
     ids,
@@ -394,6 +485,10 @@ export function clientPortalPayload(db: AppDb, token: string): ClientPortalPaylo
     });
   }
 
+  // ONE drift pass for the whole company's book, alongside the batched target read above. Every
+  // badge below is a stored reading, and a stale one must not be published as a fact.
+  const staleTargets = staleTargetIds(db, ids);
+
   const byProject = new Map<string, ClientPortalTrack[]>();
   for (const t of targets) {
     const pid = String(t.project_id);
@@ -410,14 +505,19 @@ export function clientPortalPayload(db: AppDb, token: string): ClientPortalPaylo
       label: trackLabel(type, String(t.permit_type || "")),
       // The badge says who the next move belongs to, not just what the queue is called. An
       // operator-facing "Action needed before review" on a client's page reads as THEIR action
-      // when the action is ours — see publicCheckLabel.
-      statusLabel: publicCheckLabel(String(t.latest_outcome || ""), String(t.latest_status_label || "")),
+      // when the action is ours — see publicCheckLabel. And WHO is holding it depends on the
+      // track: a NEM application is the utility's queue, never a jurisdiction's.
+      statusLabel: publicCheckLabel(
+        String(t.latest_outcome || ""), String(t.latest_status_label || ""),
+        trackKind(type, String(t.permit_type || "")),
+      ),
       outcome: String(t.latest_outcome || ""),
       lastCheckedAt: t.last_checked_at ? String(t.last_checked_at) : null,
       applicationNumber,
       permitNumber: String(t.permit_number || ""),
       submittedAt: filing?.submittedAt || null,
       confirmationNumber: confirmation,
+      needsRecheck: staleTargets.has(String(t.id || "")),
     });
     byProject.set(pid, list);
   }
@@ -481,6 +581,9 @@ export function publicProjectStatusPayload(db: AppDb, token: string): PublicProj
 
   const detail = getProjectDetail(db, String(row.id));
   const p = detail.project;
+  // Same drift pass as the per-client tracker. This page is the one the operator opened when they
+  // found a stalled permit reading "In review", so it is the one that has to stop saying it.
+  const staleTargets = staleTargetIds(db, [String(row.id)]);
   return {
     project: {
       address: formatProjectAddress(p),
@@ -501,11 +604,17 @@ export function publicProjectStatusPayload(db: AppDb, token: string): PublicProj
       // instruction to them when the action is ours. The badge is one span; the ownership of the
       // next move has to be in the words. The raw `outcome` below is untouched — status.html
       // colours from it, and a stuck filing must keep drawing the eye.
-      statusLabel: publicCheckLabel(String(t.latestOutcome || ""), t.latestStatusLabel || ""),
+      statusLabel: publicCheckLabel(
+        String(t.latestOutcome || ""), t.latestStatusLabel || "",
+        trackKind(t.targetType, String(t.permitType || "")),
+      ),
       outcome: String(t.latestOutcome || ""),
       lastCheckedAt: t.lastCheckedAt || null,
       applicationNumber: t.applicationNumber || "",
       permitNumber: t.permitNumber || "",
+      // A reading our current rules would classify differently is not published as a fact. The
+      // stored row stays exactly as it was written; the page stops asserting it.
+      needsRecheck: staleTargets.has(String(t.id || "")),
     })),
     history: projectStatusHistory(db, String(row.id)),
     submissions: (detail.submissions || []).slice(0, 6).map((sub) => ({

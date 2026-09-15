@@ -1,3 +1,4 @@
+import type { AppDb } from "./db";
 import type { PermitCheckOutcome, PermitCheckSource } from "../../shared/src/types";
 
 export interface PermitStatusClassification {
@@ -317,4 +318,154 @@ export function nextCheckIso(days: number, from = new Date()): string {
   const next = new Date(from);
   next.setDate(next.getDate() + Math.max(1, Math.floor(days || 7)));
   return next.toISOString();
+}
+
+// ---------------------------------------------------------------------------
+// A CLASSIFIER FIX THAT NEVER REACHES THE STORED ROWS IS INVISIBLE TO THE CUSTOMER.
+//
+// THE LIVE CASE. Two Coos Bay structural permits (187-26-000309-STR, 187-26-000305-STR) have read
+// "Record Status: Intake Requirements Needed" since Sep 3 — the city is waiting on US. The rule
+// that says so landed at 21:12; the last status check ran at 20:12, one hour earlier. So the
+// stored rows still say waiting / "In review", the client page reads STORED rows, and it will go
+// on telling the customer the city is reviewing a permit the city has stalled until something
+// checks again. The classifier was fixed and the customer never saw it.
+//
+// WHAT IS NOT DONE ABOUT IT, ON PURPOSE: the stored rows are NOT rewritten. permit_status_checks
+// is an audit trail — email_project_matches.status_check_id is a foreign key into it, and
+// correction_id / reviewed_by_ahj feed other logic. Rewriting a row changes what we believed at
+// the time, which is the one thing an audit trail must never do. The fix is a NEW row, written by
+// a real re-check through recordPermitStatusCheck; everything here exists to make the staleness
+// VISIBLE so somebody triggers one.
+//
+// WHY RE-CLASSIFICATION AND NOT A "RULES CHANGED AT" CONSTANT. The obvious design is a version or
+// date stamp on the rules, compared against created_at. It rots: the day somebody edits a pattern
+// without bumping the stamp, every affected row reads as current. Re-running the classifier over
+// the row's own stored text needs no maintenance and is stronger evidence — recordPermitStatusCheck
+// takes NO outcome/statusLabel override (its input is targetId/source/rawStatusText/application
+// /permit numbers only), so every stored label was produced by classifyPermitStatusText() from the
+// very text stored beside it. If today's rules disagree with the stored pair, the rules have
+// CHANGED since that row was written. That is a proof, not a heuristic.
+//
+// WHAT IT CANNOT SEE: a poll whose text moved but whose classification did not. Such a check is
+// suppressed by shouldRecordStatusCheck, so the newest STORED text can be older than the newest
+// text we fetched. The drift below is a statement about the reading we are still showing, which is
+// exactly the reading the client page is publishing.
+// ---------------------------------------------------------------------------
+
+export interface StoredClassificationDrift {
+  /** Today's rules disagree with what this row stored — i.e. the row predates the current rules. */
+  stale: boolean;
+  storedOutcome: string;
+  storedStatusLabel: string;
+  /** What classifyPermitStatusText() says about the SAME stored text today. */
+  currentOutcome: string;
+  currentStatusLabel: string;
+}
+
+/**
+ * Would a re-read of this stored row's own text, under today's rules, say something else?
+ *
+ * Blank text or a blank stored outcome answers `false`: there is nothing to re-derive, and
+ * inventing drift for a row we cannot re-classify would mark half a legacy table as suspect.
+ */
+export function classificationDrift(stored: {
+  outcome?: string | null;
+  statusLabel?: string | null;
+  rawStatusText?: string | null;
+}): StoredClassificationDrift {
+  const raw = String(stored.rawStatusText ?? "").trim();
+  const storedOutcome = String(stored.outcome ?? "").trim();
+  const storedStatusLabel = String(stored.statusLabel ?? "").trim();
+  if (!raw || !storedOutcome) {
+    return {
+      stale: false,
+      storedOutcome,
+      storedStatusLabel,
+      currentOutcome: storedOutcome,
+      currentStatusLabel: storedStatusLabel,
+    };
+  }
+  const current = classifyPermitStatusText(raw);
+  return {
+    stale: current.outcome !== storedOutcome || current.statusLabel !== storedStatusLabel,
+    storedOutcome,
+    storedStatusLabel,
+    currentOutcome: current.outcome,
+    currentStatusLabel: current.statusLabel,
+  };
+}
+
+/** One filing whose CURRENT stored reading was classified by rules we no longer use. */
+export interface StaleStatusReading extends StoredClassificationDrift {
+  projectId: string;
+  targetId: string;
+  /** The permit_status_checks row that is stale. Never rewritten — quoted so it can be audited. */
+  checkId: string;
+  /** When that reading was taken. */
+  checkedAt: string;
+  source: string;
+  targetType: string;
+  permitType: string;
+  applicationNumber: string;
+  /**
+   * Whether a re-check can actually FETCH anything. A `public_url` re-check against a target with
+   * no portal URL resolves to "No status text available…" and writes a needs_human_review row —
+   * an honest answer, but it replaces one stale reading with a blanker one, so an operator being
+   * offered the trigger has to be told which of the two they are about to get.
+   */
+  hasPortalUrl: boolean;
+}
+
+/**
+ * The stale readings across a set of projects — newest stored row per TARGET, and only the ones
+ * today's rules disagree with.
+ *
+ * NEWEST ROW PER TARGET, not per project: a project's structural filing can be stale while its
+ * electrical one is current, and permit_check_targets.latest_outcome/latest_status_label always
+ * mirror the newest row (the target UPDATE is never gated), so the row this finds is the one both
+ * public pages are publishing.
+ *
+ * raw_status_text is read HERE and nowhere else. It is scraped portal prose carrying homeowner
+ * names and examiners' direct lines; it is used to re-classify and is never returned. The client
+ * payload takes a boolean off this and nothing more — see clientPortal.ts.
+ */
+export function staleStatusClassifications(db: AppDb, projectIds: string[]): StaleStatusReading[] {
+  const ids = (projectIds || []).map((p) => String(p || "").trim()).filter(Boolean);
+  if (!ids.length) return [];
+  const placeholders = ids.map(() => "?").join(",");
+  // rowid, not created_at: two checks recorded in the same millisecond tie, and the primary key is
+  // a random UUID. SQLite's rowid is this table's insertion counter (TEXT primary key, so the
+  // implicit rowid is intact) — the same ordering projectStatusHistory relies on.
+  const rows = db.query<Record<string, unknown>>(
+    `SELECT c.id, c.project_id, c.target_id, c.source, c.outcome, c.status_label,
+            c.raw_status_text, c.created_at,
+            t.target_type, t.permit_type, t.application_number, t.portal_url
+       FROM permit_status_checks c
+       JOIN permit_check_targets t ON t.id = c.target_id
+      WHERE c.project_id IN (${placeholders})
+        AND c.rowid = (SELECT MAX(c2.rowid) FROM permit_status_checks c2 WHERE c2.target_id = c.target_id)`,
+    ids,
+  );
+  const stale: StaleStatusReading[] = [];
+  for (const row of rows) {
+    const drift = classificationDrift({
+      outcome: String(row.outcome || ""),
+      statusLabel: String(row.status_label || ""),
+      rawStatusText: String(row.raw_status_text || ""),
+    });
+    if (!drift.stale) continue;
+    stale.push({
+      ...drift,
+      projectId: String(row.project_id || ""),
+      targetId: String(row.target_id || ""),
+      checkId: String(row.id || ""),
+      checkedAt: String(row.created_at || ""),
+      source: String(row.source || ""),
+      targetType: String(row.target_type || ""),
+      permitType: String(row.permit_type || ""),
+      applicationNumber: String(row.application_number || ""),
+      hasPortalUrl: Boolean(String(row.portal_url || "").trim()),
+    });
+  }
+  return stale;
 }
