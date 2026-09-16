@@ -42,6 +42,7 @@ import { buildSubmittalEmailDraft } from "./applicationDocs";
 import type { EvidenceTopic } from "./projectEvidence";
 import { createClient, deleteClient, getClient, listClients, updateClient } from "./clients";
 import { enqueueJob, getJob, inFlightJobCount, listJobs, processNextJob, startJobWorker } from "./jobQueue";
+import { isPublicJobType } from "./publicJobTypes";
 import { createUser, getUserWorkload, listUsers, updateUser, assignProjectToUser } from "./users";
 import { listBackups, runBackup, startBackupScheduler } from "./backup";
 import { startArtifactRetention } from "./artifactRetention";
@@ -1906,6 +1907,7 @@ app.get("/api/jobs/:id", (req, res) => {
 app.post("/api/jobs", (req, res) => {
   const { jobType, payload, priority, assignedToUser, projectId, scheduledAt } = req.body || {};
   if (!jobType) throw new HttpError(400, "jobType is required.");
+  if (!isPublicJobType(jobType)) throw new HttpError(400, "This jobType cannot be queued through /api/jobs.");
   const scope = requestScope(db, req);
   // A job naming another tenant's project would run against it as system, so the
   // reference is checked before the job is ever queued.

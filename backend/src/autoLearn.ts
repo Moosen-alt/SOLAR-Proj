@@ -33,6 +33,7 @@ import { learnNoteTopicsFromMisses, activeLearnedNoteTerms } from "./noteTopics"
 import { RECIPE_FIELD_DESCRIPTIONS, deadFieldBindings, resolveRecipeFieldValues, startPortalRecording, savePortalRecipeSteps, getPortalRecipe, convertLiteralsToBoundFields, findAnyRecipeForProject, appendHumanPatchSteps, promoteRecordingIfEligible, recipeProfileKey } from "./portalRecipes";
 import { HUMAN_SUBMIT_OBSERVED_NOTE } from "../../portal-bot/src/humanCapture";
 import { projectDocsByType } from "./projectDocuments";
+import { submissionDocumentsByType } from "./submissionDocuments";
 import { logger } from "./logger";
 import { buildUtilityPackage } from "./docSplitter";
 import { addAuditLog } from "./audit";
@@ -637,15 +638,9 @@ async function autoLearnPortalInner(
     if (!hasSheets) {
       await buildUtilityPackage(db, projectId, scopeType === "utility" ? "nem" : "permit").catch(() => null);
     }
-    docsByType = projectDocsByType(db, projectId);
-    // Portal upload slots often ask for the COMPLETED application/checklist
-    // (yes, even portal-entry AHJs like some Accela configs). Overlay the
-    // already-built filled AHJ forms so those slots attach the real filled
-    // PDF instead of falling back to the plan set or staying empty.
-    try {
-      const { filledFormsByDocType } = await import("./ahjForms");
-      docsByType = { ...docsByType, ...filledFormsByDocType(db, projectId) };
-    } catch { /* filled forms optional */ }
+    // Use the replay selection policy: filled applications are available, and
+    // the operator's explicit upload wins when both versions exist.
+    docsByType = submissionDocumentsByType(db, project);
   } catch {
     docsByType = {};
   }

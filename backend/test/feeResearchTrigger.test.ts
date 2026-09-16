@@ -31,6 +31,9 @@
 //      'seeded'; a human-verified row is never overwritten — a later research
 //      pass refuses and appends to notes; the keyless handler is equally inert
 //      against it.
+//   8. Combo acquisition accepts both split schedules after backoff expires;
+//      incomplete split coverage researches only the missing discipline. Fuzzy
+//      names and delegation use the production lookup, and other states lose.
 //
 // Run: tsx backend/test/feeResearchTrigger.test.ts
 import fs from "node:fs";
@@ -194,6 +197,71 @@ async function main(): Promise<void> {
     JSON.stringify(splitDisciplines) === JSON.stringify(["nem|", "permit|electrical", "permit|structural"]),
     JSON.stringify(splitDisciplines));
 
+  // A COMBO RESEARCH REQUEST IS NOT A REQUIREMENT FOR A COMBO DATABASE ROW.
+  // These rows model an AHJ publishing split schedules, including a structural
+  // formula that cannot yet produce a quote. Holding that formula is coverage;
+  // a quote limitation must not become a perpetual twelve-turn research bill.
+  const seedSplit = (ahj: string, discipline: "electrical" | "structural", state = "ID") =>
+    saveFeeSchedule(db, { state, ahj, track: "permit", discipline }, {
+      found: true, reason: "", basis: "flat",
+      brackets: [{ feeUsd: discipline === "electrical" ? 160 : 100,
+        label: discipline === "electrical" ? "Electrical permit" : "$100 plus $5 per kW" }],
+      notes: "", sourceUrl: "https://split.example.test/fees",
+      sourceQuote: "Electrical permit $160. Structural fee $100 plus $5 per kW.", sourceKind: "official",
+    });
+  check("6d. both split schedules saved", seedSplit("City of Splitcovered", "electrical").saved &&
+    seedSplit("City of Splitcovered", "structural").saved);
+  const coveredKey = feeScheduleProfileKey({ state: "ID", ahj: "City of Splitcovered" }, "permit");
+  markFeeScheduleVerified(db, coveredKey, "permit", "test operator", "structural");
+  const splitRowsBefore = JSON.stringify(db.query("SELECT * FROM fee_schedules WHERE profile_key = ? ORDER BY discipline", [coveredKey]));
+  const oldAttempt = enqueueJob(db, "fee_research", {
+    state: "ID", ahj: "City of Splitcovered", utility: "", track: "permit", discipline: "combo",
+    profileKey: coveredKey, researchKey: `permit|${coveredKey}|combo`,
+  }, { projectId: p1.project.id, scheduledAt: "2000-01-01T00:00:00.000Z" });
+  db.run("UPDATE job_queue SET status = 'done', created_at = ?, finished_at = ? WHERE id = ?",
+    ["2000-01-01T00:00:00.000Z", "2000-01-01T00:00:00.000Z", oldAttempt.id]);
+  mkProject("City of Splitcovered");
+  await sleep(500);
+  check("6e. QC with split coverage does not re-research after the backoff expired", feeJobs("Splitcovered").length === 1,
+    JSON.stringify(feeJobs("Splitcovered").map((j) => j.p)));
+  const fuzzyCovered = await ensureFeeSchedulesResearched(db,
+    { id: p1.project.id, state: "ID", ahj: "Splitcovered", utility: "" } as never, ["combo"]);
+  check("6f. fuzzy name resolves both split schedules without research", fuzzyCovered === 0, `got ${fuzzyCovered}`);
+  check("6g. acquisition left split schedules byte-identical, including the verified formula row",
+    JSON.stringify(db.query("SELECT * FROM fee_schedules WHERE profile_key = ? ORDER BY discipline", [coveredKey])) === splitRowsBefore);
+
+  check("6h. electrical-only coverage seeded", seedSplit("City of Partialcovered", "electrical").saved);
+  const missingStructural = await ensureFeeSchedulesResearched(db,
+    { id: p1.project.id, state: "ID", ahj: "City of Partialcovered", utility: "" } as never, ["combo", "building"]);
+  check("6i. combo plus building needs enqueue only one missing structural job",
+    missingStructural === 1 && feeJobs("Partialcovered").length === 1 && feeJobs("Partialcovered")[0]?.p.discipline === "structural",
+    JSON.stringify(feeJobs("Partialcovered").map((j) => j.p)));
+  const partialAgain = await ensureFeeSchedulesResearched(db,
+    { id: p1.project.id, state: "ID", ahj: "City of Partialcovered", utility: "" } as never, ["combo"]);
+  check("6j. missing split discipline retains its dedupe/backoff", partialAgain === 0 && feeJobs("Partialcovered").length === 1);
+
+  check("6k. structural-only coverage seeded", seedSplit("City of Structurecovered", "structural").saved);
+  const missingElectrical = await ensureFeeSchedulesResearched(db,
+    { id: p1.project.id, state: "ID", ahj: "City of Structurecovered", utility: "" } as never, ["combo"]);
+  check("6l. structural-only coverage researches electrical", missingElectrical === 1 &&
+    feeJobs("Structurecovered")[0]?.p.discipline === "electrical");
+  const wrongState = await ensureFeeSchedulesResearched(db,
+    { id: p1.project.id, state: "WA", ahj: "City of Splitcovered", utility: "" } as never, ["combo"]);
+  check("6m. split rows from another state do not suppress new combo research", wrongState === 1 &&
+    feeJobs("Splitcovered").some((j) => j.p.state === "WA" && j.p.discipline === "combo"));
+
+  // A known delegation without its target is a modelling repair, not a gap to
+  // rediscover for every project. Preserve the trigger's existing treatment.
+  const delegated = saveFeeSchedule(db, { state: "ID", ahj: "City of Delegatecovered", track: "permit", discipline: "structural" }, {
+    found: true, reason: "", basis: "flat", brackets: [], notes: "",
+    collectedByProfileKey: "ID|county of missingtarget",
+    sourceUrl: "https://delegate.example.test/fees", sourceQuote: "County collects structural fees.", sourceKind: "official",
+  });
+  check("6n. unresolved structural delegation and electrical row saved", delegated.saved && seedSplit("City of Delegatecovered", "electrical").saved);
+  const unresolvedDelegation = await ensureFeeSchedulesResearched(db,
+    { id: p1.project.id, state: "ID", ahj: "City of Delegatecovered", utility: "" } as never, ["combo"]);
+  check("6o. an unresolved delegation does not trigger repeated combo research", unresolvedDelegation === 0);
+
   // -------------------------------------------------------------------------
   // 7) HARD RULE 3, through the REAL guard. Research lands seeded; a human
   //    verifies; later research may not touch the row — it refuses and appends
@@ -244,7 +312,7 @@ async function main(): Promise<void> {
   check("7h. the worker-path job left the verified row untouched", rowAfterJob?.confidence === "verified" && rowAfterJob?.brackets[0]?.feeUsd === 321,
     JSON.stringify({ confidence: rowAfterJob?.confidence, fee: rowAfterJob?.brackets[0]?.feeUsd }));
   const verifiedCount = db.get<{ n: number }>("SELECT COUNT(*) AS n FROM fee_schedules WHERE confidence = 'verified'");
-  check("7i. exactly one 'verified' row exists — the human-marked one; research wrote none", Number(verifiedCount?.n) === 1, String(verifiedCount?.n));
+  check("7i. exactly two 'verified' rows exist — the human-marked ones; research wrote none", Number(verifiedCount?.n) === 2, String(verifiedCount?.n));
 
   db.close();
   try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* Windows file locks — scratch dir, best-effort */ }

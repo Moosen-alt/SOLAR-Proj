@@ -1780,6 +1780,37 @@ export function feeResearchNeedsForTracks(tracks: readonly string[]): FeeResearc
   return out;
 }
 
+/** Acquisition coverage is not the same as one quotable combination row. An
+ *  AHJ can publish separate electrical and structural schedules; researching a
+ *  nonexistent combo row every backoff window would repeatedly buy the same
+ *  schedules. Keep lookup/evaluation semantics unchanged: held formula rows,
+ *  conflicts and unresolved delegations still need a person, not another pass.
+ *  With only one split row held, acquire only the missing discipline. */
+function missingFeeResearchNeeds(
+  db: AppDb,
+  project: Pick<ProjectRecord, "state" | "ahj" | "utility">,
+  tracks: readonly string[],
+): FeeResearchNeed[] {
+  const missing = new Map<string, FeeResearchNeed>();
+  for (const need of feeResearchNeedsForTracks(tracks)) {
+    if (findFeeScheduleForProject(db, project, need.track, need.discipline)) continue;
+    if (need.track === "permit" && need.discipline === "combo") {
+      const splitNeeds: FeeResearchNeed[] = [
+        { track: "permit", discipline: "electrical" },
+        { track: "permit", discipline: "structural" },
+      ];
+      const missingSplit = splitNeeds.filter((split) =>
+        !findFeeScheduleForProject(db, project, split.track, split.discipline));
+      if (missingSplit.length < splitNeeds.length) {
+        for (const split of missingSplit) missing.set(`${split.track}|${split.discipline}`, split);
+        continue;
+      }
+    }
+    missing.set(`${need.track}|${need.discipline}`, need);
+  }
+  return [...missing.values()];
+}
+
 /** WHEN A PROJECT LANDS AT AN AHJ (OR UTILITY) WE HOLD NO FEE ROW FOR, QUEUE THE
  *  RESEARCHER. Called from QC (runQcForProject) — the same day-the-plan-set-lands
  *  moment the document demands moved to — and fire-and-forget: the current QC run
@@ -1794,7 +1825,8 @@ export function feeResearchNeedsForTracks(tracks: readonly string[]): FeeResearc
  *     exactly the server.
  *   · the production lookup (findFeeScheduleForProject: exact key → undifferentiated
  *     fallback → state-scoped fuzzy → delegation hop) already holds a row for the
- *     (track, discipline) this project needs — including a delegation whose target
+ *     (track, discipline) this project needs, or a combo need is covered by both
+ *     electrical and structural schedules — including a delegation whose target
  *     is missing, which is a modelling question for a person, not a research gap;
  *   · an identical target (dedupe key `track|profileKey|discipline`, carried in the
  *     payload as researchKey) already has a pending/running fee_research job, or
@@ -1820,7 +1852,7 @@ export async function ensureFeeSchedulesResearched(
   }
   if (!jobQueue.jobWorkerRunning()) return 0;
   let enqueued = 0;
-  for (const need of feeResearchNeedsForTracks(tracks)) {
+  for (const need of missingFeeResearchNeeds(db, project, tracks)) {
     try {
       const subject = need.track === "nem" ? clean(project.utility) : clean(project.ahj);
       if (!subject) continue;

@@ -208,6 +208,10 @@ export function autoPlaceFromData(items: LabelItem[], data: Record<string, strin
 export interface CheckboxOpts {
   page: number;
   anchor: string; // the word next to the box, e.g. "Yes" / "No"
+  /** Baseline of the QUESTION's answer row. Repeated Yes/No captions must be
+   *  constrained to a row; a page-wide first match can attest the wrong item. */
+  rowY?: number;
+  rowTolerance?: number;
   /** Distance LEFT of the anchor word where the box sits. The box is a drawn
    *  rectangle (not text), so this is estimated from the label; tune per form. */
   boxGap?: number;
@@ -218,8 +222,11 @@ export interface CheckboxOpts {
  *  prescriptive checklist). Approximate — the box isn't in the text layer — but
  *  anchored to the real word position, so far better than a blind coordinate. */
 export function checkboxPlacement(items: LabelItem[], opts: CheckboxOpts): { x: number; y: number } | null {
-  const a = findLabel(items, opts.anchor, opts.page);
-  if (!a) return null;
+  const matches = items.filter((i) => i.page === opts.page && norm(i.str) === norm(opts.anchor)
+    && (opts.rowY == null || Math.abs(i.y - opts.rowY) <= (opts.rowTolerance ?? 2)));
+  // Never silently pick the first Yes on a checklist, even if no row was given.
+  if (matches.length !== 1) return null;
+  const a = matches[0];
   const gap = opts.boxGap ?? 12;
   return { x: a.x - gap, y: a.y };
 }

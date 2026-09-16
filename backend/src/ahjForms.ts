@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import dns from "node:dns/promises";
 import net from "node:net";
-import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
+import { PDFDocument, PDFName, PDFRadioGroup, StandardFonts, rgb } from "pdf-lib";
 import type { ProjectRecord } from "../../shared/src/types";
 import type { AppDb } from "./db";
 import { DEFAULT_ORG_ID } from "./db";
@@ -15,6 +15,7 @@ import { resolvePermitPath, evaluatePrescriptiveCriteria, type PrescriptiveCrite
 import { resolveEffectiveCodeContext } from "./codeProfiles";
 import { isDocumentDateStale } from "./documentDate";
 import { findFeeScheduleForProject } from "./feeSchedules";
+import type { ChecklistRecovery } from "./prescriptiveChecklist";
 
 /** Which of the two MUTUALLY EXCLUSIVE building-side applications a permit path calls
  *  for. THE single mapping from path → application kind; requiredApplicationDocs,
@@ -204,6 +205,9 @@ export interface AhjFormDefinition {
   overlayFields?: OverlayField[];
   // operator-signature image placements (applied to both fill modes)
   signatureFields?: SignaturePlacement[];
+  /** Runtime-only recovery for unverified stored checklists. Never set on
+   *  registry or human-verified definitions and never persisted to field maps. */
+  recoverPrescriptiveCheckboxes?: boolean;
   notes?: string[];
 }
 
@@ -915,6 +919,41 @@ export async function fillLoadedForm(
   outputPath: string,
 ): Promise<FilledFormResult> {
   const doc = await PDFDocument.load(templateBytes, { ignoreEncryption: true });
+  let checklist: ChecklistRecovery = { recognized: false, overlays: [], omittedTextFields: [], textFieldOverrides: {} };
+  let checklistCtx = ctx;
+  if (def.recoverPrescriptiveCheckboxes === true) {
+    const [{ extractLabels }, { recoverBcd5952Checklist, BCD_5952_LIMITS }] = await Promise.all([
+      import("./formTextLayer"), import("./prescriptiveChecklist"),
+    ]);
+    checklist = recoverBcd5952Checklist(doc, await extractLabels(templateBytes), def.overlayFields,
+      def.textFields, Object.values(def.checkboxes ?? {}).map((r) => r.source));
+    // A checklist's printed thresholds control its answers, even when a cached
+    // project evaluation used different jurisdiction limits. Do not mutate ctx.
+    checklistCtx = { ...ctx, prescriptive: undefined,
+      prescriptiveLimits: { ...ctx.prescriptiveLimits, ...BCD_5952_LIMITS } };
+  }
+  const drawChecklist = async (): Promise<number> => {
+    if (!checklist.overlays.length) return 0;
+    const font = await doc.embedFont(StandardFonts.Helvetica);
+    let drawn = 0;
+    for (const field of checklist.overlays) {
+      const text = resolveSource(field.source, checklistCtx);
+      const page = doc.getPages()[field.page];
+      if (!text || !page) continue;
+      page.drawText(text, { x: field.x, y: field.y, size: field.size ?? 9, font, color: rgb(0, 0, 0) });
+      drawn++;
+    }
+    return drawn;
+  };
+  const checklistMessage = checklist.recognized
+    ? "BCD 5952: recovered standalone checklist answers from parsed data. Unknown and compound compliance rows require human completion."
+      + (checklist.omittedTextFields.length ? " Unsupported framing or listing-agency defaults were omitted; see unmapped fields." : "")
+    : undefined;
+  // The cached research title can claim several applications were combined,
+  // while the actual two-page PDF is only this checklist.
+  const resultFormName = checklist.recognized
+    ? "Oregon BCD 5952 - Prescriptive Solar PV Installation Checklist"
+    : def.formName;
 
   // Overlay mode: flat PDF, draw text at coordinates.
   if (def.fillMode === "overlay") {
@@ -963,14 +1002,23 @@ export async function fillLoadedForm(
       page.drawText(text, { x: nx, y: ny, size, font, color: rgb(0, 0, 0) });
       drawn += 1;
     }
+    drawn += await drawChecklist();
     await drawSignatures(doc, def, ctx);
     fs.mkdirSync(path.dirname(outputPath), { recursive: true });
     fs.writeFileSync(outputPath, await doc.save());
-    return { formId: def.id, formName: def.formName, status: "filled", outputPath, filledFieldCount: drawn, unmappedRequested: [] };
+    return { formId: def.id, formName: resultFormName, status: "filled", outputPath, filledFieldCount: drawn,
+      unmappedRequested: checklist.omittedTextFields, message: checklistMessage };
   }
 
   const form = doc.getForm();
   const available = new Set(form.getFields().map((f) => f.getName()));
+  // A reused unverified BCD blank can contain stale radio selections. These
+  // groups span unrelated questions, so none is a trustworthy row answer.
+  if (checklist.recognized) {
+    for (const field of form.getFields()) {
+      if (field instanceof PDFRadioGroup) field.clear();
+    }
+  }
   if (available.size === 0) {
     return {
       formId: def.id,
@@ -984,9 +1032,10 @@ export async function fillLoadedForm(
   let filled = 0;
 
   for (const [fieldName, source] of Object.entries(def.textFields)) {
+    if (checklist.omittedTextFields.includes(fieldName)) { unmapped.push(fieldName); continue; }
     if (!available.has(fieldName)) { unmapped.push(fieldName); continue; }
     try {
-      form.getTextField(fieldName).setText(resolveSource(source, ctx));
+      form.getTextField(fieldName).setText(resolveSource(checklist.textFieldOverrides[fieldName] ?? source, ctx));
       filled += 1;
     } catch {
       unmapped.push(fieldName);
@@ -1007,7 +1056,26 @@ export async function fillLoadedForm(
   }
 
   // Flatten so the filled values are baked in and can't be edited in transit.
-  try { form.flatten(); } catch { /* some forms can't flatten; leave as-is */ }
+  try { form.flatten(); } catch (error) {
+    if (checklist.recognized) throw error;
+    // Some forms can't flatten; retain the existing generic behavior.
+  }
+  if (checklist.recognized && form.getFields().length === 0) {
+    // BCD's malformed radio groups leave annotation references to widgets that
+    // pdf-lib removed. Keep valid links, but remove these dangling references.
+    for (const page of doc.getPages()) {
+      const annotations = page.node.Annots();
+      if (!annotations) continue;
+      for (let i = annotations.size() - 1; i >= 0; i--) {
+        if (!doc.context.lookup(annotations.get(i))) annotations.remove(i);
+      }
+    }
+    doc.catalog.delete(PDFName.of("AcroForm"));
+  }
+
+  // BCD's Yes radio groups span unrelated questions. Independent X overlays
+  // after flattening preserve multiple answers without radio-group clearing.
+  filled += await drawChecklist();
 
   // Stamp signatures on top of the flattened form.
   await drawSignatures(doc, def, ctx);
@@ -1017,11 +1085,12 @@ export async function fillLoadedForm(
 
   return {
     formId: def.id,
-    formName: def.formName,
+    formName: resultFormName,
     status: "filled",
     outputPath,
     filledFieldCount: filled,
     unmappedRequested: unmapped,
+    message: checklistMessage,
   };
 }
 
@@ -1194,6 +1263,7 @@ export function loadStoredTemplates(db: AppDb, ahj: string, state: string): Arra
         checkboxes: map.checkboxes || {},
         overlayFields,
         signatureFields,
+        recoverPrescriptiveCheckboxes: map.verified !== true,
       },
       bytes: new Uint8Array(row.pdf_blob),
       templateId: row.id,

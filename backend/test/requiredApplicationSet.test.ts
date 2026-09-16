@@ -100,6 +100,7 @@ const {
   buildFilledFormsForProject,
 } = await import("../src/ahjForms");
 const { createLLMProvider } = await import("../src/llm");
+const { submissionDocumentsByType } = await import("../src/submissionDocuments");
 
 const db = await openDatabase();
 
@@ -320,6 +321,18 @@ await check("THE GATE ACCEPTS when both applications are present", () => {
 const filledOnly = mk("prescriptive");
 for (const d of [...PLAN_SET_FAMILY, "building_application", "solar_checklist"]) attach(filledOnly.id, d);
 buildFilledForm(filledOnly.id, "electrical_application", "Coos Bay Electrical Permit Application.pdf");
+
+await check("learn and replay use the same explicit upload when a generated application also exists", () => {
+  const project = mk("prescriptive");
+  buildFilledForm(project.id, "electrical_application", "Electrical Permit Application.pdf");
+  const generated = submissionDocumentsByType(db, project as never).electrical_application;
+  assert.ok(generated?.includes("tmpl-"), "the generated application is available before upload");
+  attach(project.id, "electrical_application");
+  const explicit = path.join(tmpDir, `${project.id}-electrical_application.pdf`);
+  assert.equal(submissionDocumentsByType(db, project as never).electrical_application, explicit);
+  assert.equal(packagedDocumentsByType(db, project as never).electrical_application, explicit);
+  assert.notEqual(explicit, generated);
+});
 
 await check("THE GATE CLEARS ON A FILLED FORM, NOT ONLY AN UPLOAD", () => {
   // Filled forms live in backend/data/filled/<pid>/ with no project_documents row, which is

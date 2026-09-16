@@ -108,7 +108,8 @@ import { compactAlnum, existingSystemFromSnapshot, fieldAliases, normalizeProjec
 import { classifyPermitStatusText, isAuthWallText, nextCheckIso, shouldRecordStatusCheck } from "./permitMonitor";
 import { evidenceForTopic, evidenceLines, type EvidenceTopic } from "./projectEvidence";
 import { runQcForProject } from "./qc";
-import { loadStoredTemplates, formAllowedForPath, filledFormsByDocType } from "./ahjForms";
+import { loadStoredTemplates, formAllowedForPath } from "./ahjForms";
+import { submissionDocumentsByType } from "./submissionDocuments";
 import { resolvePermitPath } from "./permitPath";
 import { buildReviewerReport, renderReviewerReportHtml } from "./reviewerEngine";
 import { resolveEffectiveCodeContext, ensureCodeProfilesResearched } from "./codeProfiles";
@@ -5341,10 +5342,7 @@ function validatePortalFields(
  * also upload the structural application."
  */
 export function packagedDocumentsByType(db: AppDb, project: ProjectRecord): Record<string, string> {
-  return {
-    ...filledFormsByDocType(db, project.id, resolvePermitPath(project).path),
-    ...projectDocsByType(db, project.id),
-  };
+  return submissionDocumentsByType(db, project);
 }
 
 /**

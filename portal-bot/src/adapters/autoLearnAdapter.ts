@@ -451,7 +451,7 @@ export const UPLOAD_LABEL_PATTERNS: Array<{ re: RegExp; docType: string }> = [
   // portal-entry AHJs (some Accela configs) ask for the filled application/
   // checklist PDF as an attachment. The filled forms are overlaid into
   // docsByType by the backend (filledFormsByDocType).
-  { re: /electrical\s*(permit\s*)?application/i, docType: "electrical_application" },
+  { re: /electrical\s*(renewable\s*energy\s*)?(permit\s*)?application/i, docType: "electrical_application" },
   { re: /(building|structural)\s*(permit\s*)?application/i, docType: "building_application" },
   { re: /checklist|worksheet|eligibilit/i, docType: "solar_checklist" },
   { re: /(completed|signed|permit|solar)\s*application|application\s*(form|packet)/i, docType: "permit_application" },
@@ -546,11 +546,18 @@ export function fileTypeAllowed(filePath: string, accept: string): boolean {
 // and it is exactly the failure the meter-photo note above records. Leave these empty so the
 // required-field sweep reports them and a human supplies the real file.
 const UPLOAD_NO_SUBSTITUTE = /insurance|invoice|\bw-?9\b|tax\s*form|voided\s*check|bank|volt\s*var|settings\s*(picture|photo|screenshot)|commissioning\s*(photo|report)|interconnection\s*agreement|signed\s*agreement/i;
+const EXACT_UPLOAD_TYPES = new Set(["building_application", "electrical_application", "permit_application", "solar_checklist", "structural_letter"]);
+
+export function exactUploadDocType(label: string): string | null {
+  const type = UPLOAD_LABEL_PATTERNS.find(({ re }) => re.test(label))?.docType;
+  return type && EXACT_UPLOAD_TYPES.has(type) ? type : null;
+}
 
 /** True when a slot names a document the split cannot produce, so the generic plan-set
  *  fallback must not fire for it. */
 export function uploadForbidsSubstitute(label: string | undefined): boolean {
-  return !!label && UPLOAD_NO_SUBSTITUTE.test(label);
+  if (!label) return false;
+  return UPLOAD_NO_SUBSTITUTE.test(label) || exactUploadDocType(label) !== null;
 }
 
 export function isPayFee(text: string | undefined): boolean {
@@ -2410,6 +2417,15 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       && this.fileFits(this.docsByType[docType], cap)
       && (fileTypeAllowed(this.docsByType[docType], accept)
         || shouldConvertToPdf(this.docsByType[docType], accept, false));
+    // Applications, compliance checklists and sealed letters cannot be supplied
+    // by a plan-set fallback, in either upload mode. Record only the exact type
+    // so learning cannot teach replay to repeat a substitute indefinitely.
+    const namedType = UPLOAD_LABEL_PATTERNS.find(({ re }) => re.test(label))?.docType;
+    if (uploadForbidsSubstitute(label)) {
+      if (namedType && fits(namedType)) return { docType: namedType, file: this.docsByType[namedType] };
+      this.debug?.event({ type: "upload_no_substitute", label: label.slice(0, 60) });
+      return null;
+    }
     // Combined mode (Accela / Oregon ePermitting): attach the SINGLE full plan-set PDF to
     // every upload control regardless of label — the AHJ wants all plan pages as one PDF.
     // fits() applies here too so an explicit PORTAL_UPLOAD_MAX_MB override is honored

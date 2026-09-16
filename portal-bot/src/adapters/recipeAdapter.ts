@@ -62,7 +62,7 @@ export function looksLikeProjectData(label: string, value: string): boolean {
 }
 import { rankAddressVersions } from "../addressVersion";
 import { imageToPdfBytes, pdfNameFor, shouldConvertToPdf } from "../imageToPdf";
-import { fileTypeAllowed, UPLOAD_LABEL_PATTERNS, uploadForbidsSubstitute } from "./autoLearnAdapter";
+import { exactUploadDocType, fileTypeAllowed, UPLOAD_LABEL_PATTERNS, uploadForbidsSubstitute } from "./autoLearnAdapter";
 import { reviewComparison, scrapeReviewScreen as scrapeReviewScreenShared, type ReviewMismatch } from "../reviewScreenScraper";
 import { sweepEmptyRequiredControls, type EmptyRequired } from "../requiredControlSweep";
 import { openPortal } from "../browser";
@@ -2080,7 +2080,8 @@ ${body.slice(0, 4000)}`);
       const label = String(slot.label || "");
       const key = label.trim().toLowerCase();
       if (!key || this.sweptUploadLabels.has(key)) continue;
-      if (uploadForbidsSubstitute(label)) continue;
+      // An application forbids substitutes, but its exact document is welcome.
+      if (uploadForbidsSubstitute(label) && !exactUploadDocType(label)) continue;
       // Only a slot that NAMES its document. A generic "attach files" control at replay is
       // not ours to guess at — the recipe would have recorded it if it mattered.
       const hit = UPLOAD_LABEL_PATTERNS.find((p) => p.re.test(label));
@@ -2911,6 +2912,13 @@ ${body.slice(0, 4000)}`);
         else await smartWait(this.page);
         return true;
       case "upload": {
+        const recordedLabel = String(step.note ?? "").split(":").slice(1).join(":").trim();
+        const requiredType = exactUploadDocType(recordedLabel);
+        if (requiredType && step.docType !== requiredType) {
+          this.driftWarnings.push(`refused ${step.docType || "unbound file"} for "${recordedLabel.slice(0, 60)}"; this slot requires ${requiredType}`);
+          this.noteUnresolved(step);
+          return false;
+        }
         const filePath = step.docType ? this.docsByType[step.docType] : undefined;
         if (!filePath) { this.noteUnresolved(step); return false; }
         // Attach under a CLEAN filename: stored files carry a UUID prefix for on-disk
