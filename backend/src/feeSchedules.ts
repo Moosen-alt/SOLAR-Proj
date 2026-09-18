@@ -1303,6 +1303,17 @@ export function corroborateBrackets(finding: FeeScheduleFinding, ledger: FeeDocu
       const raw = line.trim();
       if (!raw) continue;
       lines.push({ raw, folded: matchKey(raw), doc });
+      // Tigard prints one renewable-energy heading above three size rows.
+      // Preserve that heading only for immediately consecutive kVA/price rows;
+      // never carry it across another heading (especially the wind table).
+      if (/^(?:p\d+\s+)?Renewable electrical energy systems$/i.test(raw)) {
+        for (let offset = 1; offset <= 3; offset++) {
+          const row = documentLines[index + offset]?.trim() ?? '';
+          if (!/^(?:p\d+\s+)?(?:\d+(?:\.\d+)?\s+kva or less|\d+(?:\.\d+)?\s+to\s+\d+(?:\.\d+)?\s+kva)\s*\|\s*\$[\d,.]+$/i.test(row)) break;
+          const joined = `${raw.replace(/^p\d+\s+/, '')} — ${row.replace(/^p\d+\s+/, '')}`;
+          lines.push({raw:joined,folded:matchKey(joined),doc});
+        }
+      }
       // A two-line PV fee: its heading names the system, the immediately
       // following row names plan review/admin and the price. Keep both as
       // evidence, without matching small label fragments against wind rows.
@@ -1315,6 +1326,8 @@ export function corroborateBrackets(finding: FeeScheduleFinding, ledger: FeeDocu
     }
   });
   if (!lines.length) return brackets;
+  // Prefer the cited final schedule over earlier exploratory/proposed copies.
+  lines.sort((a,b) => Number(clean(ledger.evidence[b.doc]?.url) === clean(finding.sourceUrl)) - Number(clean(ledger.evidence[a.doc]?.url) === clean(finding.sourceUrl)));
 
   const checkedAt = nowIso();
   for (const b of brackets) {
@@ -1688,6 +1701,8 @@ export const claudeFeeScheduleResearcher: FeeScheduleResearcher = async (input, 
     // clock that may stop this. openFeeDocument never throws and never refuses a
     // finding — a fetch that fails simply leaves the brackets uncorroborated.
     const alreadyRead = new Set(ledger.evidence.map((e) => clean(e.url)));
+    // Discipline is caller-owned; the model schema may omit it entirely.
+    if (input.discipline) finding.discipline = feeDiscipline(input.discipline);
     if (finding.found && finding.sourceUrl && !alreadyRead.has(clean(finding.sourceUrl)) && Date.now() < deadline) {
       await openFeeDocument({ url: finding.sourceUrl }, ledger, { timeoutMs: 25_000 });
     }

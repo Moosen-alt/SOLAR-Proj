@@ -1,5 +1,11 @@
 # SOLAR-Proj continuation — September 18, 2026
 
+## Latest: paid discovery exercised and repaired
+
+User authorized paid model discovery. Ran three real passes (Tigard electrical; Coos electrical before/after). Fixed Tigard heading/tier corroboration and the missing caller discipline that prevented Coos surcharge-application retrieval. Prefer cited final schedule over exploratory copies. Captured Tigard response now corroborates all fixed tiers with 12%; fresh paid Coos pass corroborates base fees plus both 12%/5% surcharges. Totals match all four customer electrical forms. All 22 targeted tests and typecheck pass. Local server restarted on current code. Full record: `outputs/PAID_DISCOVERY_VERIFICATION.md`.
+
+Only the isolated paid-discovery verification DB was updated. Credential was read directly into the short-lived discovery process from the preserved config without printing it or restoring it to the sandbox. Background research remains off. This supersedes earlier notes that paid discovery was not exercised.
+
 ## Latest verification: fee retrieval and workflow functions
 
 After the category/signing changes, live official Tigard and Coos source retrieval and evidence corroboration passed in an isolated verification DB. Four customer electrical PDF totals match the refreshed lookup; Connie fee-sheet API matches $351.19 combined. All 22 targeted test files, workflow smoke and all 78 HTTP downloads passed. Automatic research orchestration was tested with controlled/stub responses, not a paid model discovery run. No additional code fixes were needed. Full report: `outputs/FEE_FUNCTION_VERIFICATION.md`; that report lists private evidence and remaining test-contact/valuation limitations.

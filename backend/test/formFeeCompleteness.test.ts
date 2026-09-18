@@ -24,6 +24,10 @@ try{
  const finding={found:true,reason:'',basis:'system_kw' as const,brackets:[{minKw:5.01,maxKw:15,feeUsd:133.56,label:'Renewable energy 5.01 to 15 kva'}],notes:'',sourceUrl:url,sourceQuote:row,sourceKind:'official',discipline:'electrical'};
  const ledger={evidence:[{url,via:'http' as const,status:200,kind:'pdf' as const,bytes:100,handed:2}],corpus:[row+'\n'+surcharge]};
  const saved=saveFeeSchedule(db,{state:'OR',ahj:'Tigard',track:'permit',discipline:'electrical'},finding,{corroborateAgainst:ledger});
+ const headed={...finding,brackets:[{minKw:5.01,maxKw:15,feeUsd:133.56,label:'Renewable electrical energy systems — 5.01 to 15 kva'}]};
+ const headedBody='p16 Renewable electrical energy systems\np16 5 kva or less | $100.70\np16 5.01 to 15 kva | $133.56\np16 15.01 to 25 kva | $200.34\n'+surcharge;
+ assert.equal(corroborateBrackets(headed,{...ledger,corpus:[headedBody]})[0].stateSurcharge?.percent,12,'Live discovery heading plus consecutive tier rows retain surcharge proof');
+ assert.equal(corroborateBrackets(headed,{...ledger,corpus:[headedBody.replace('p16 5.01','p16 Wind generation systems\np16 5.01')]})[0].corroboration,undefined,'Never carry renewable heading into a wind table');
  assert.equal(saved.saved,true);
  const project={state:'OR',ahj:'Tigard',city:'Tigard',utility:'',systemSizeAcKw:9.984,systemSizeDcKw:9.84,parserSnapshot:{}} as never;
  const line=feeForProject(db,project,'electrical')!.lines![0];
@@ -50,6 +54,9 @@ try{
  const coosFinding={...finding,sourceUrl:coosUrl};
  const coosLedger={evidence:[{...ledger.evidence[0],url:coosUrl},{...ledger.evidence[0],url:formUrl}],corpus:[row,'12% surcharge (.12 x subtotal)\nCommunity Dev surcharge 5%']};
  assert.equal(corroborateBrackets(coosFinding,coosLedger)[0].communitySurcharge?.percent,5);
+ const proposedUrl='https://co.coos.or.us/files/proposed.pdf';
+ const preferred=corroborateBrackets(coosFinding,{evidence:[{...coosLedger.evidence[0],url:proposedUrl},...coosLedger.evidence],corpus:[row,...coosLedger.corpus]});
+ assert.equal(preferred[0].corroboration?.sourceUrl,coosUrl,'Cited final schedule takes precedence over earlier proposed copy');
  assert.equal(corroborateBrackets({...coosFinding,discipline:'structural'},coosLedger)[0].communitySurcharge,undefined,'County electrical rule must not reach structural permit');
  assert.equal(corroborateBrackets(coosFinding,{...coosLedger,evidence:[coosLedger.evidence[0],{...coosLedger.evidence[1],url:'https://other.gov/form.pdf'}]})[0].communitySurcharge,undefined);
  for(const label of ['Renewable permit fee (includes state surcharge)','Renewable permit fee (includes 12% state surcharge)','Renewable total permit fee']){
