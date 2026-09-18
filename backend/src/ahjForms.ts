@@ -530,6 +530,7 @@ function computed(name: string, ctx: FillContext): string {
       return /^single[- ]family(?: dwelling)?$/i.test(str(ctx.snapshot.constructionCategory).trim()) ? "yes" : "";
     case "constructionCategory": {
       const v = str(ctx.snapshot.constructionCategory || ctx.snapshot.occupancyType).trim();
+      if (/^other$/i.test(v)) return str(ctx.snapshot.constructionCategoryOther).trim() ? "other" : "";
       return /^(?:single[- ]family(?: dwelling)?|1[- ]and[- ]2[- ]family|one[- ]and[- ]two[- ]family|R-?3)$/i.test(v) ? "residential" : "";
     }
     case "declaredValuation": {

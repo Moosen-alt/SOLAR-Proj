@@ -1,5 +1,9 @@
 # SOLAR-Proj continuation — September 18, 2026
 
+## Latest follow-up: Other - Solar construction category
+
+User directed Other with Solar in category of construction. Added explicit Other/category-description support to both exact-revision Tigard maps; Connie snapshot stores `constructionCategory: Other`, `constructionCategoryOther: Solar`, with user provenance. No default was applied to other projects. Refreshed sandbox maps, restarted server, rebuilt and downloaded both PDFs, and visually verified Other checked and Solar in the correct category row. Form completeness regression and typecheck passed. Electrical has no remaining mapped required-field gaps; building still needs declared job valuation. Test-only contact details still need replacement before filing. Checkpoint: `work/before-category-other.sqlite`.
+
 ## Latest follow-up: owner contact and signing dates
 
 User confirmed Connie's owner mailing address equals the installation address and explicitly authorized temporary test phone/email for this legacy intake record. Sandbox snapshot now has `14535 SW Klipsan Ln`, `Tigard, OR 97223`, synthetic `503-555-0142`, and `connie.rhinesmith@example.com`. `homeownerContactIsTest: true` and basis notes record the distinction. Replace the test contact values before any real filing. The plans say PHONE/EMAIL N/A; the utility bill has Gary's account email, which was not silently attributed to Connie. No contact-parser change was needed: existing canonical fields already feed the forms.

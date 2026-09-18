@@ -85,10 +85,12 @@ try{
   const template=fs.readFileSync('backend/test/fixtures/'+filename);
   const mapped=curatedFormMap(template,url)!.map;
   const filled=await fillLoadedForm({...mapped,id:'signed-test',notes:[],status:'verified',matchJurisdictions:['tigard'],version:'test'} as never,template,{
-   ...ctx,snapshot:{homeownerMailingAddress:'12 Example Way',homeownerMailingCityStateZip:'Example, OR 97000',homeownerPhone:'503-555-0142',homeownerEmail:'owner@example.com'},
+   ...ctx,snapshot:{constructionCategory:'Other',constructionCategoryOther:'Solar',homeownerMailingAddress:'12 Example Way',homeownerMailingCityStateZip:'Example, OR 97000',homeownerPhone:'503-555-0142',homeownerEmail:'owner@example.com'},
    signatures:{applicant:signature,electrician:{...signature,name:'Test Electrician'}},
   },output);
   const signedLabels=await extractLabels(fs.readFileSync(output));
+  assert.ok(signedLabels.some(l=>l.str==='Solar'&&l.y>550&&l.y<630),'Solar belongs in construction category Other');
+  assert.ok(!filled.unmappedRequested?.includes('construction category'));
   for(const text of ['12 Example Way','Example, OR 97000','503-555-0142']) assert.ok(signedLabels.some(l=>l.str===text),filename+': '+text);
   if(filename==='tigard-electrical.pdf') assert.ok(signedLabels.some(l=>l.str==='owner@example.com'));
   assert.ok(!filled.unmappedRequested?.includes('owner mailing address'));

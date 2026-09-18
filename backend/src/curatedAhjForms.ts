@@ -98,6 +98,8 @@ export function curatedFormMap(bytes:Uint8Array,sourceUrl:string){
    requiredFields['declared job valuation']='computed.declaredValuation';
   }
   fields.push({source:'lit:X',x:34,y:building?594:640,page:p,size:9,maxWidth:10,onlyIf:{source:'computed.constructionCategory',equals:'residential'}});
+  fields.push({source:'lit:X',x:building?205:249,y:building?562:625,page:p,size:9,maxWidth:10,onlyIf:{source:'computed.constructionCategory',equals:'other'}});
+  fields.push({source:'snapshot.constructionCategoryOther',x:building?246:289,y:building?563:625,page:p,size:9,maxWidth:building?105:64,onlyIf:{source:'computed.constructionCategory',equals:'other'}});
   at('snapshot.parcelNumber',124,building?425:505,p,230);
   at('computed.applicantSignerName',84,building?42:39,p,164);
   signatureFields.push({role:'applicant',page:p,x:117,y:building?62:54,width:232,height:building?16:14,dateX:282,dateY:building?42:39,dateSize:9,label:'Authorized signature'});
