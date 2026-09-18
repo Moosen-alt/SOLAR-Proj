@@ -318,6 +318,8 @@ const keywordRe = (kw: string): RegExp => new RegExp(`(?<![a-z])${escapeRe(kw.to
  *  measured against the line immediately above so a three-line label chains. */
 function isContinuationOf(child: PdfTextRow, head: PdfTextRow, prev: PdfTextRow, lineGap?: number): boolean {
   if (child.page !== head.page || child.page !== prev.page) return false;
+  // A new technology heading is not a wrapped tail of the preceding wind fee.
+  if (child.cells.length === 1 && /^(?:solar generation|wind generation|photovoltaic\s*\(PV\)|renewable electrical energy|electrical inspections|limited energy\s*\()/i.test(child.cells[0])) return false;
   // A row with a single cell gives us no column to be left of; refusing to
   // attach is the honest answer (it may be a paragraph, not a wrapped label).
   if (head.cells.length < 2 || !child.cells.length) return false;
@@ -366,7 +368,16 @@ export function findFeeRows(rows: PdfTextRow[], opts: FindFeeRowsOptions = {}): 
     const { labelCells, valueText, money } = splitRow(row);
     const label = squash([...labelCells, ...continuations].join(" "));
     const haystack = `${label} ${row.cells.join(" ")}`;
+    if (row.page !== sectionPage) { section = ""; sectionPage = row.page; }
     const matched = res.filter((r) => r.re.test(haystack)).map((r) => r.kw);
+    // The first priced row under an explicit PV heading often just says
+    // "Plan Review & Admin Fees". Carry the heading only across this adjacent
+    // row, never across unrelated tables or another page.
+    const prev = ordered[i - 1];
+    if (!matched.length && money.length === 1 && prev?.page === row.page && prev.cells.length === 1
+      && /photovoltaic.*solar.*(?:fees|system)/i.test(prev.cells[0]) && prev.y - row.y <= row.height * 2.2) {
+      matched.push("photovoltaic");
+    }
     if (!matched.length) return;
 
     const note = money.length === 0

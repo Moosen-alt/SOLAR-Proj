@@ -21,7 +21,15 @@ export function curatedFormMap(bytes:Uint8Array,sourceUrl:string){
  const fields:OverlayField[]=[];
  const at=(key:string,x:number,y:number,page:number,maxWidth=235)=>fields.push({source:key,x,y,page,size:9,maxWidth});
  const textFields:Record<string,string>={};
+ const fieldFontSizes:Record<string,number>={};
  const checkboxes:Record<string,{source:string;equals?:string}>={};
+ const requiredFields:Record<string,string>={
+  "construction category":"computed.constructionCategory",
+  "owner mailing address":"snapshot.homeownerMailingAddress",
+  "owner mailing city/state/ZIP":"snapshot.homeownerMailingCityStateZip",
+  "owner phone":"snapshot.homeownerPhone",
+  "contractor CCB license":"client.ccbLicenseNumber",
+ };
  if(source.ahj==='coos bay'){
   Object.assign(textFields,{
    "Job site address":"computed.streetAddress",CityStateZIP:"computed.cityStateZip", "Project Name":"project.homeownerName",Parcel:"snapshot.parcelNumber",
@@ -29,6 +37,24 @@ export function curatedFormMap(bytes:Uint8Array,sourceUrl:string){
    "Business name":"client.installerCompanyName",Address_2:"client.installerStreet",CityStateZIP_3:"client.installerCityStateZip",Phone_2:"client.installerPhone",Email_2:"client.installerEmail","Contractor CCB license":"client.ccbLicenseNumber","BCD license":"client.electricalLicenseNumber","Name of signing supervisor":"client.electricalSupervisorName","SS Lic":"client.electricianLicenseNumber",
   });
   checkboxes.Alteration={source:"lit:yes"};
+  checkboxes["Single Family Dwelling"]={source:"computed.singleFamilyCategory",equals:"yes"};
+  requiredFields['construction category']='computed.singleFamilyCategory';
+  requiredFields['land-use approval number']='snapshot.landUseApprovalNumber';
+  requiredFields['land-use approval date']='snapshot.landUseApprovalDate';
+  requiredFields['Coos County surcharges and grand total']='computed.coosElectricalTotal';
+  Object.assign(textFields,{
+   'File Number of Approval':'snapshot.landUseApprovalNumber','Date of Approval':'snapshot.landUseApprovalDate',
+   '5kva qty':'computed.electricalTier5Qty','5KVA TOTAL':'computed.electricalTier5Total',
+   '15kva qty':'computed.electricalTier15Qty','15KVA TOTAL':'computed.electricalTier15Total',
+   '25kva qty':'computed.electricalTier25Qty','25KVA TOTAL':'computed.electricalTier25Total',
+   'Subtotal add ALL fees  minimum fee':'computed.electricalBaseFee',
+   '12 surcharge 12 x subtotal':'computed.electricalStateSurcharge',
+   'Community Dev surcharge 5':'computed.electricalCommunitySurcharge',
+   'GRAND TOTAL fees and surcharges':'computed.coosElectricalTotal',
+  });
+  for (const [key,value] of Object.entries(textFields)) if (/^computed\.(?:electrical|coosElectrical)/.test(value)) fieldFontSizes[key]=8;
+  for(const [bucket,y] of [['le5',254],['5to15',243],['15to25',231]] as const)
+   fields.push({source:'computed.electricalBaseFee',x:478,y,page:0,size:8,maxWidth:34,onlyIf:{source:'computed.feeBracket',equals:bucket}});
  }else{
   const building=source.formType==='building_application',p=building?2:0;
   at('computed.streetAddress',building?104:188,building?532:598,p,building?251:166);
@@ -52,12 +78,29 @@ export function curatedFormMap(bytes:Uint8Array,sourceUrl:string){
    at('client.electricalLicenseNumber',198,114,p,50);
    at('client.electricianLicenseNumber',304,114,p,46);
    at('computed.electricianSignerName',84,81,p,160);
+   at('computed.electricalBaseFee',537,95,p,49);
+   at('computed.electricalStateSurcharge',537,72,p,49);
+   at('computed.electricalTotalFee',537,60,p,49);
+   at('lit:X',487,454,p,10); // renewable-energy table on page 2
+   for(const [bucket,y] of [['le5',657],['5to15',642],['15to25',628]] as const){
+    for(const [key,x,width] of [['computed.renewableFeeQty',480,16],['computed.electricalBaseFee',542,31]] as const){
+     fields.push({source:key,x,y,page:1,size:8,maxWidth:width,onlyIf:{source:'computed.feeBracket',equals:bucket}});
+    }
+   }
+   at('computed.electricalBaseFee',541,456,1,34);
+   requiredFields['electrical fee including required surcharges']='computed.electricalTotalFee';
+  }else{
+   at('computed.declaredValuation',487,601,p,98);
+   at('snapshot.buildingStories',491,551,p,90);
+   requiredFields['declared job valuation']='computed.declaredValuation';
   }
+  fields.push({source:'lit:X',x:34,y:building?594:640,page:p,size:9,maxWidth:10,onlyIf:{source:'computed.constructionCategory',equals:'residential'}});
+  at('snapshot.parcelNumber',124,building?425:505,p,230);
   at('computed.applicantSignerName',84,building?42:39,p,164);
   at('lit:X',building?34:146,building?628:677,p,10); // alteration
   at('lit:X',building?67:67,building?346:448,p,10); // property owner
   at('lit:X',building?84:84,building?269:319,p,10); // applicant
  }
- return {source,map:{formName:source.formName,sourceUrl,fillMode:source.ahj==='coos bay'?'acroform' as const:'overlay' as const,textFields,checkboxes,overlayFields:fields,signatureFields:[],notes:"Exact official revision map. Review missing particulars and obtain required signatures before filing. Printed historical fees are not used as current quotes."}};
+ return {source,map:{formName:source.formName,sourceUrl,fillMode:source.ahj==='coos bay'?'acroform' as const:'overlay' as const,textFields,fieldFontSizes,checkboxes,overlayFields:fields,signatureFields:[],requiredFields,preserveInteractive:source.ahj==='coos bay',notes:"Review listed missing details and obtain required signatures before filing. Fee entries use the current saved jurisdiction lookup; printed rates may be historical. Owner mailing/contact details require actual owner information."}};
 }
 

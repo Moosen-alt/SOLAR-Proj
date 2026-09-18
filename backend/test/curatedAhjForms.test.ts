@@ -37,12 +37,20 @@ try {
       const output = path.join(temp,`${index}-${owner}.pdf`);
       const project = {homeownerName:owner, projectAddress:"12 Example Way",city:"Example",state:"OR",zip:"97000",systemSizeDcKw:8,systemSizeAcKw:7};
       const client = {installerCompanyName:"Fixture Installer",electricalLicenseNumber:"ELE123",electricianLicenseNumber:"SUP456",ccbLicenseNumber:"CCB789"};
-      await fillLoadedForm(stored.def,bytes,{project,client,snapshot:{}} as never,output);
+      await fillLoadedForm(stored.def,bytes,{project,client,snapshot:{constructionCategory:'Single Family',jobValue:24000,buildingStories:2,parcelNumber:'TEST-PARCEL'}} as never,output);
       const result = fs.readFileSync(output);
-      const text = (await extractLabels(result)).map(i=>i.str).join(" ");
+      const filledDoc = await PDFDocument.load(result);
+      const widgetText = filledDoc.getForm().getFields().filter(f=>'getText' in f).map(f=>(f as any).getText()).join(' ');
+      const text = (await extractLabels(result)).map(i=>i.str).join(" ") + ' ' + widgetText;
+      if (source.ahj === 'coos bay') assert.equal(filledDoc.getForm().getTextField('Name').getText(),owner,'Keep canonical AcroForm values editable for missing particulars');
       assert.ok(text.includes(owner),`${filename}: owner must fill`);
       assert.ok(!text.includes(owner==="Fixture Alice"?"Fixture Bob":"Fixture Alice"),"No cached customer data");
       assert.ok(text.includes("Fixture Installer"));
+      if (source.formType === 'building_application') {
+        const positions=await extractLabels(result);
+        assert.ok(positions.some(l=>l.str==='24000'&&l.page===2&&l.y>599&&l.y<604&&l.x>480),'Declared valuation belongs on the valuation rule, not instruction text');
+        assert.ok(positions.some(l=>l.str==='TEST-PARCEL'&&l.page===2&&l.y>423&&l.y<428),'Parcel belongs on tax/parcel rule');
+      }
       if (source.formType === "electrical_application") assert.ok(text.includes("ELE123"),"Use existing client license keys");
       assert.equal((await PDFDocument.load(result)).getPageCount(),(await PDFDocument.load(bytes)).getPageCount());
     }

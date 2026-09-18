@@ -14,7 +14,7 @@ import { parseJson } from "./json";
 import { resolvePermitPath, evaluatePrescriptiveCriteria, type PrescriptiveCriterion, type PrescriptiveLimitInputs } from "./permitPath";
 import { resolveEffectiveCodeContext } from "./codeProfiles";
 import { isDocumentDateStale } from "./documentDate";
-import { findFeeScheduleForProject } from "./feeSchedules";
+import { findFeeScheduleForProject, feeForProject, knownElectricalReviewRequired, type FeeScheduleLine } from "./feeSchedules";
 import type { ChecklistRecovery } from "./prescriptiveChecklist";
 import { bcdChecklistAnswers } from "./bcdChecklistFacts";
 
@@ -210,6 +210,9 @@ export interface AhjFormDefinition {
    *  registry or human-verified definitions and never persisted to field maps. */
   recoverPrescriptiveCheckboxes?: boolean;
   notes?: string[];
+  requiredFields?: Record<string, string>;
+  preserveInteractive?: boolean;
+  fieldFontSizes?: Record<string, number>;
 }
 
 // The registry. Seed with verified forms as field maps are confirmed via the
@@ -353,6 +356,7 @@ export const ahjFormRegistry: AhjFormDefinition[] = [
 ];
 
 export interface FillContext {
+  publishedFeeLines?: FeeScheduleLine[];
   project: ProjectRecord;
   client: Record<string, string>; // overlay keys (installerCompanyName, ccbLicenseNumber, ...)
   snapshot: Record<string, unknown>;
@@ -499,6 +503,38 @@ function computed(name: string, ctx: FillContext): string {
     case "systemKva": {
       const k = systemKva(ctx);
       return k ? String(k) : "";
+    }
+    case "electricalBaseFee":
+    case "electricalStateSurcharge":
+    case "electricalCommunitySurcharge":
+    case "coosElectricalTotal":
+    case "electricalTotalFee": {
+      const line = ctx.publishedFeeLines?.find(l => l.discipline === "electrical");
+      if (line?.feeUsd == null) return "";
+      if (name === "electricalBaseFee") return line.baseFeeUsd == null ? "" : money(line.baseFeeUsd);
+      if (name === "electricalStateSurcharge") return line.stateSurchargeUsd == null ? "" : money(line.stateSurchargeUsd);
+      if (name === "electricalCommunitySurcharge") return line.communitySurchargeUsd == null ? "" : money(line.communitySurchargeUsd);
+      if (name === "coosElectricalTotal" && line.communitySurchargeUsd == null) return "";
+      // Do not represent a base-only lookup as the application's grand total.
+      // Review-triggering work requires an actual review charge first.
+      if (line.stateSurchargeUsd == null || systemKva(ctx) > 25 || knownElectricalReviewRequired(ctx.snapshot)) return "";
+      return money(line.feeUsd);
+    }
+    case "electricalTier5Qty": case "electricalTier15Qty": case "electricalTier25Qty":
+    case "electricalTier5Total": case "electricalTier15Total": case "electricalTier25Total": {
+      const tier = name.includes('Tier15') ? '5to15' : name.includes('Tier25') ? '15to25' : 'le5';
+      const base = computed('electricalBaseFee', ctx);
+      return base && feeBracket(ctx) === tier ? name.endsWith('Qty') ? '1' : base : '';
+    }
+    case "singleFamilyCategory":
+      return /^single[- ]family(?: dwelling)?$/i.test(str(ctx.snapshot.constructionCategory).trim()) ? "yes" : "";
+    case "constructionCategory": {
+      const v = str(ctx.snapshot.constructionCategory || ctx.snapshot.occupancyType).trim();
+      return /^(?:single[- ]family(?: dwelling)?|1[- ]and[- ]2[- ]family|one[- ]and[- ]two[- ]family|R-?3)$/i.test(v) ? "residential" : "";
+    }
+    case "declaredValuation": {
+      const value = Number(ctx.snapshot.jobValue);
+      return Number.isFinite(value) && value > 0 ? String(Math.round(value)) : "";
     }
     case "feeBracket":
       return feeBracket(ctx);
@@ -647,6 +683,7 @@ export function buildContext(db: AppDb, project: ProjectRecord): FillContext {
     project,
     client,
     publishedElectricalBrackets,
+    publishedFeeLines: feeForProject(db, project, "permit")?.lines,
     snapshot: (project.parserSnapshot ?? {}) as Record<string, unknown>,
     // The signature stamped on a permit form comes from the org that OWNS the
     // project — this runs from background jobs with no request, so it can't be
@@ -971,6 +1008,9 @@ export async function fillLoadedForm(
   const resultFormName = checklist.recognized
     ? "Oregon BCD 5952 - Prescriptive Solar PV Installation Checklist"
     : def.formName;
+  const missingRequired = Object.entries(def.requiredFields ?? {}).filter(([, source]) => !resolveSource(source, ctx).trim()).map(([label]) => label);
+  const completionMessage = [checklistMessage, missingRequired.length ? `Still needs: ${missingRequired.join("; ")}.` : "",
+    ...(def.notes ?? [])].filter(Boolean).join(" ") || undefined;
 
   // Both flat and AcroForm templates can have additional fields without widgets.
   const drawMappedOverlays = async (): Promise<number> => {
@@ -1028,7 +1068,7 @@ export async function fillLoadedForm(
     fs.mkdirSync(path.dirname(outputPath), { recursive: true });
     fs.writeFileSync(outputPath, await doc.save());
     return { formId: def.id, formName: resultFormName, status: "filled", outputPath, filledFieldCount: drawn,
-      unmappedRequested: checklist.omittedTextFields, message: checklistMessage };
+      unmappedRequested: [...checklist.omittedTextFields, ...missingRequired], message: completionMessage };
   }
 
   const form = doc.getForm();
@@ -1056,7 +1096,10 @@ export async function fillLoadedForm(
     if (checklist.omittedTextFields.includes(fieldName)) { unmapped.push(fieldName); continue; }
     if (!available.has(fieldName)) { unmapped.push(fieldName); continue; }
     try {
-      form.getTextField(fieldName).setText(resolveSource(checklist.textFieldOverrides[fieldName] ?? source, ctx));
+      const field = form.getTextField(fieldName);
+      field.setText(resolveSource(checklist.textFieldOverrides[fieldName] ?? source, ctx));
+      const fontSize = def.fieldFontSizes?.[fieldName];
+      if (fontSize && fontSize >= 6 && fontSize <= 16) field.setFontSize(fontSize);
       filled += 1;
     } catch {
       unmapped.push(fieldName);
@@ -1077,7 +1120,7 @@ export async function fillLoadedForm(
   }
 
   // Flatten so the filled values are baked in and can't be edited in transit.
-  try { form.flatten(); } catch (error) {
+  try { if (!def.preserveInteractive) form.flatten(); else form.updateFieldAppearances(); } catch (error) {
     if (checklist.recognized) throw error;
     // Some forms can't flatten; retain the existing generic behavior.
   }
@@ -1111,8 +1154,8 @@ export async function fillLoadedForm(
     status: "filled",
     outputPath,
     filledFieldCount: filled,
-    unmappedRequested: unmapped,
-    message: checklistMessage,
+    unmappedRequested: [...unmapped, ...missingRequired],
+    message: completionMessage,
   };
 }
 
@@ -1263,7 +1306,7 @@ export function loadStoredTemplates(db: AppDb, ahj: string, state: string): Arra
     const nameMatches = rowAhj === needle || needle.includes(rowAhj) || rowAhj.includes(needle);
     const stateOk = !row.state || !state || String(row.state).toLowerCase() === String(state).toLowerCase();
     if (!nameMatches || !stateOk || !row.pdf_blob) continue;
-    let map: { formName?: string; sourceUrl?: string; fillMode?: string; textFields?: Record<string, string>; checkboxes?: Record<string, { source: string; equals?: string }>; overlayFields?: OverlayField[]; signatureFields?: SignaturePlacement[]; verified?: boolean } = {};
+    let map: { formName?: string; sourceUrl?: string; fillMode?: string; textFields?: Record<string, string>; checkboxes?: Record<string, { source: string; equals?: string }>; overlayFields?: OverlayField[]; signatureFields?: SignaturePlacement[]; verified?: boolean; requiredFields?: Record<string,string>; notes?: string; preserveInteractive?: boolean; fieldFontSizes?: Record<string,number> } = {};
     map = parseJson(row.field_map, {});
     const textFields = map.textFields || {};
     const overlayFields = map.overlayFields || [];
@@ -1285,6 +1328,10 @@ export function loadStoredTemplates(db: AppDb, ahj: string, state: string): Arra
         checkboxes: map.checkboxes || {},
         overlayFields,
         signatureFields,
+        requiredFields: map.requiredFields,
+        preserveInteractive: map.preserveInteractive,
+        fieldFontSizes: map.fieldFontSizes,
+        notes: map.notes ? [map.notes] : undefined,
         recoverPrescriptiveCheckboxes: map.verified !== true,
       },
       bytes: new Uint8Array(row.pdf_blob),

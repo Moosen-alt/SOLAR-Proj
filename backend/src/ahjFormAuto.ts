@@ -130,6 +130,9 @@ export const AVAILABLE_FIELD_SOURCES: string[] = [
 ];
 
 export interface StoredFieldMap {
+  requiredFields?: Record<string, string>;
+  preserveInteractive?: boolean;
+  fieldFontSizes?: Record<string, number>;
   formName: string;
   sourceUrl: string;
   fillMode: "acroform" | "overlay";

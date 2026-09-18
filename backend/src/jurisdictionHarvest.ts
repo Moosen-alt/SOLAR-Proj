@@ -168,6 +168,7 @@ export interface HarvestLink {
 }
 
 export interface HarvestedFeeTable {
+  surchargeEvidence?: string[];
   found: boolean;
   reason: string;
   basis: FeeBasis;
@@ -511,6 +512,44 @@ export async function readFeeTableFromPdf(bytes: Uint8Array): Promise<HarvestedF
     return empty(`fee scan FAILED to read this PDF (not "no fee table"): ${err instanceof Error ? err.message : String(err)}`);
   }
 
+  // Some applications print a complete PV fee box in their right column.
+  // Crop by the heading's column before reading: whole-page rows can also
+  // contain unrelated owner/contractor text at the same baseline.
+  const heading = rows.find(r => r.cells.some(c => /^PHOTOVOLTAIC SOLAR PANEL SYSTEM FEES/i.test(c)));
+  if (heading) {
+    const x = heading.xs[heading.cells.findIndex(c => /^PHOTOVOLTAIC SOLAR PANEL SYSTEM FEES/i.test(c))] - 15;
+    const box = rows.filter(r => r.page === heading.page && r.y <= heading.y && r.y >= heading.y - 110)
+      .map(r => r.cells.filter((_, i) => r.xs[i] >= x).join(' ')).filter(Boolean).join(' ');
+    const permit = /Permit Fee\s*\(includes plan review\s*(?:and administrative fees\):)?\s*\$\s*(\d+(?:\.\d{2})?)/i.exec(box);
+    const surcharge = /State surcharge\s*\(12% of permit fee\):\s*\$\s*(\d+(?:\.\d{2})?)/i.exec(box);
+    const total = /Total fee due upon application:\s*\$\s*(\d+(?:\.\d{2})?)/i.exec(box);
+    if (permit && surcharge && total && /prescriptive installation/i.test(box)) {
+      const base = Number(permit[1]), extra = Number(surcharge[1]);
+      if (Math.round(base * 12) / 100 === extra && Math.round((base + extra) * 100) / 100 === Number(total[1])) {
+        const label = 'Prescriptive photovoltaic solar panel system permit fee (includes plan review and administrative fees)';
+        const quote = `${label}: $${base.toFixed(2)}`;
+        return {found:true,reason:'',basis:'flat',brackets:[{feeUsd:base,label}],quote,
+          rowQuotes:[quote],surchargeEvidence:[surcharge[0]],unreadableRows:[]};
+      }
+    }
+  }
+
+  // Multi-column applications also carry limited-energy fees and an inspection
+  // COUNT beside each renewable price. Use the table's printed column headers,
+  // not the unrelated $75 at the same baseline or the inspection count "2".
+  const renewableHeading = rows.find(r => r.cells.some(c => /^Renewable Energy Permit Fees:/i.test(c)));
+  if (renewableHeading) {
+    const header = rows.find(r => r.page === renewableHeading.page && r.y < renewableHeading.y
+      && r.cells.includes('Description') && r.cells.includes('Each') && r.cells.includes('Total'));
+    if (header) {
+      const left = header.xs[header.cells.indexOf('Description')] - 1;
+      const right = header.xs[header.cells.indexOf('Total')] - 1;
+      rows = rows.filter(r => r.page === header.page && r.y < header.y).map(r => {
+        const indices = r.xs.map((x,i) => x >= left && x < right ? i : -1).filter(i=>i>=0);
+        return {...r,cells:indices.map(i=>r.cells[i]),xs:indices.map(i=>r.xs[i])};
+      }).filter(r=>r.cells.length);
+    }
+  }
   const feeRows = findFeeRows(rows);
   if (!feeRows.length) return empty("no solar/photovoltaic/renewable/kVA row in this document");
 
@@ -591,6 +630,7 @@ export async function readFeeTableFromPdf(bytes: Uint8Array): Promise<HarvestedF
     // against — the guard that keeps a wind rate off a solar quote holds on this
     // path too, for free, because both read the same loop.
     rowQuotes: quotes,
+    surchargeEvidence: rows.map(r => r.cells.join(" ")).filter(s => /12\s*%.*surcharge.*State Building Codes Division.*all permit fees/i.test(s)),
     unreadableRows,
   };
 }
@@ -1075,7 +1115,7 @@ export async function harvestJurisdiction(
         bytes: bytes.length,
         handed: doc.fee.rowQuotes.length,
       });
-      feeLedger.corpus.push(doc.fee.rowQuotes.join("\n"));
+      feeLedger.corpus.push([...doc.fee.rowQuotes, ...(doc.fee.surchargeEvidence ?? [])].join("\n"));
       tagN += 1;
       candidates.push({
         tag: `S${tagN}`,

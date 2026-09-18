@@ -16,6 +16,10 @@ export function supplementStructuralIntake(result: ParserLlmExtraction, planText
   };
   // A single explicit roof-material label outranks a model guess from metal
   // mounting hardware or generic installation notes elsewhere in the plans.
+  add("constructionCategory", /(?:OCCUPANCY(?:\s*(?:TYPE|GROUP|CLASSIFICATION))?|BUILDING\s*(?:TYPE|USE))\s*[:=]\s*(R-?3\b|SINGLE[-\s]FAMILY(?:\s+DWELLING)?)/i,
+    m => m[1].toUpperCase());
+  add("buildingStories", /(?:NUMBER\s+OF\s+(?:STORIES|FLOORS)|TOTAL\s+(?:STORIES|FLOORS))\s*[:=]\s*(\d+)\b/i, m => Number(m[1]));
+  add("parcelNumber", /(?:PARCEL\s*(?:NUMBER|NO\.?|#)|APN)\s*[:=]\s*([A-Z0-9]+(?:[-.]?[A-Z0-9]+)*)/i, m => m[1]);
   add("roofMaterial", /ROOF\s*MATERIAL\s*:\s*(COMPOSITE?\s+SHINGLES?|COMPOSITION\s+SHINGLES?|ASPHALT\s+SHINGLES?|STANDING\s+SEAM\s+METAL|METAL)/i,
     m => /compos|asphalt/i.test(m[1]) ? "Composition Shingle" : "Metal", true);
   add("framingType", /\d+\s*"\s*[x×]\s*\d+\s*"\s*(TRUSS|RAFTER)\s*@\s*\d+/i, m => m[1].toLowerCase());

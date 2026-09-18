@@ -112,6 +112,10 @@ export const FEE_CONFLICT_MARKER = "UNRESOLVED FEE CONFLICT";
  *  the schedule's `basis`; a flat schedule carries one bracket with neither. A
  *  null/absent upper bound means "and above" (the open last row). */
 export interface FeeBracket {
+  /** Derived from an unconditional state-surcharge statement in the same
+   * retrieved document as this bracket. Never accepted from model output. */
+  stateSurcharge?: { percent: number; quote: string; sourceUrl: string };
+  communitySurcharge?: { percent: number; quote: string; sourceUrl: string };
   minKw?: number | null;
   maxKw?: number | null;
   minValuationUsd?: number | null;
@@ -380,6 +384,9 @@ export interface ProjectFeeResolution {
 
 /** One permit, one authority, one number. */
 export interface FeeScheduleLine {
+  baseFeeUsd?: number;
+  stateSurchargeUsd?: number;
+  communitySurchargeUsd?: number;
   discipline: FeeDiscipline;
   /** Who publishes and collects THIS line — the county on a hopped electrical
    *  row, even though the project's AHJ is the city. */
@@ -410,6 +417,10 @@ export interface FeeScheduleLine {
 
 const NOTE_SEGMENT_CAP = 40;
 const round2 = (n: number): number => Math.round(n * 100) / 100;
+
+export function knownElectricalReviewRequired(snapshot: Record<string, unknown> | undefined): boolean {
+  return /^(?:yes|true)$/i.test(String(snapshot?.electricalPlanReviewRequired ?? '')) || Number(snapshot?.buildingStories) > 3;
+}
 
 function clean(value: unknown): string {
   return text(value).replace(/\s+/g, " ").trim();
@@ -554,6 +565,12 @@ function normalizeBrackets(raw: unknown[], opts: { trusted?: boolean } = {}): Fe
       feeUsd: round2(fee),
       label: clean(b.label).slice(0, 200),
       ...(corroboration ? { corroboration } : {}),
+      ...(opts.trusted && b.stateSurcharge && typeof b.stateSurcharge === "object"
+        && (b.stateSurcharge as FeeBracket["stateSurcharge"])?.percent === 12
+        ? { stateSurcharge: b.stateSurcharge as NonNullable<FeeBracket["stateSurcharge"]> } : {}),
+      ...(opts.trusted && b.communitySurcharge && typeof b.communitySurcharge === "object"
+        && (b.communitySurcharge as FeeBracket["communitySurcharge"])?.percent === 5
+        ? { communitySurcharge: b.communitySurcharge as NonNullable<FeeBracket["communitySurcharge"]> } : {}),
     });
   }
   const sortKey = (b: FeeBracket): number => b.minKw ?? b.minValuationUsd ?? 0;
@@ -781,7 +798,7 @@ export function saveFeeSchedule(
   // read. Without one: untrusted, and corroboration is stripped — a caller that
   // cannot show what it read cannot claim to have read it.
   const brackets = opts.corroborateAgainst
-    ? normalizeBrackets(corroborateBrackets(finding, opts.corroborateAgainst), { trusted: true })
+    ? normalizeBrackets(corroborateBrackets({...finding, discipline}, opts.corroborateAgainst), { trusted: true })
     : normalizeBrackets(finding.brackets || [], {});
   const sourceUrl = clean(finding.sourceUrl);
   const sourceQuote = clean(finding.sourceQuote);
@@ -1013,7 +1030,7 @@ function selectRows(rows: PdfTextRow[], pages: number[], find: string): { picked
   };
   const keep = new Set<number>();
   ordered.forEach((r, i) => {
-    if (!hit(r)) return;
+    if (!hit(r) && !/12\s*%.*surcharge|Community Dev surcharge 5%/i.test(r.cells.join(" "))) return;
     for (let j = Math.max(0, i - 1); j <= Math.min(ordered.length - 1, i + 1); j++) keep.add(j);
   });
   return {
@@ -1272,6 +1289,8 @@ export function corroborateBrackets(finding: FeeScheduleFinding, ledger: FeeDocu
   const brackets: FeeBracket[] = (finding.brackets || []).map((b) => {
     const copy: FeeBracket = { ...b };
     delete copy.corroboration;
+    delete copy.stateSurcharge;
+    delete copy.communitySurcharge;
     return copy;
   });
 
@@ -1279,10 +1298,20 @@ export function corroborateBrackets(finding: FeeScheduleFinding, ledger: FeeDocu
   // two are index-parallel and a matched line can name the document it came off.
   const lines: Array<{ raw: string; folded: string; doc: number }> = [];
   ledger.corpus.forEach((body, doc) => {
-    for (const line of String(body ?? "").split("\n")) {
+    const documentLines = String(body ?? "").split("\n");
+    for (const [index, line] of documentLines.entries()) {
       const raw = line.trim();
       if (!raw) continue;
       lines.push({ raw, folded: matchKey(raw), doc });
+      // A two-line PV fee: its heading names the system, the immediately
+      // following row names plan review/admin and the price. Keep both as
+      // evidence, without matching small label fragments against wind rows.
+      const next = documentLines[index + 1]?.trim() ?? "";
+      if (/Photovoltaic\s*\(PV\)\s*Solar Panel System\s*$/i.test(raw)
+        && /^(?:p\d+\s+)?Plan Review\s*&\s*Admin Fees\s*\|\s*\$[\d,.]+$/i.test(next)) {
+        const joined = `${raw.replace(/^p\d+\s+/, '')} — ${next.replace(/^p\d+\s+/, '')}`;
+        lines.push({raw:joined,folded:matchKey(joined),doc});
+      }
     }
   });
   if (!lines.length) return brackets;
@@ -1304,6 +1333,31 @@ export function corroborateBrackets(finding: FeeScheduleFinding, ledger: FeeDocu
       checkedAt,
       via: doc?.via === "browser" ? "browser" : "http",
     };
+    // Deliberately narrow: only a mandatory surcharge on ALL permit fees.
+    // "12% of valuation", optional review, and totals already including the
+    // surcharge must never be converted into an additional permit charge.
+    const corpus = String(ledger.corpus[hitLine.doc] ?? "").replace(/\s+/g, " ");
+    const surcharge = /\b12\s*%\s+surcharge\s+fee\s+as\s+mandated\s+by\s+the\s+State\s+Building\s+Codes\s+Division\s+is\s+applied\s+to\s+all\s+permit\s+fees/i.exec(corpus);
+    const printed = /State surcharge\s*\(12% of permit fee\):\s*\$\s*(\d+(?:\.\d{2})?)/i.exec(corpus);
+    const applicationSurcharge = printed && /prescriptive photovoltaic solar panel system permit fee/i.test(b.label ?? "")
+      && round2(b.feeUsd * .12) === Number(printed[1]) ? printed : null;
+    if ((surcharge || applicationSurcharge) && !feeIncludesSurcharges(`${b.label ?? ''} ${hitLine.raw}`)) {
+      b.stateSurcharge = { percent: 12, quote: (surcharge || applicationSurcharge)![0], sourceUrl: b.corroboration.sourceUrl };
+    }
+    // Coos County's published application supplies two surcharge rows while
+    // its separate schedule supplies the base. Require BOTH retrieved sources
+    // from the collecting authority, and the electrical discipline; this must
+    // never spread to Coos Bay's separate structural charge.
+    if (finding.discipline === 'electrical' && /^https:\/\/co\.coos\.or\.us\//i.test(b.corroboration.sourceUrl)) {
+      const formIndex = ledger.evidence.findIndex(e => e.url === 'https://co.coos.or.us/files/5bb0a81e5/electrical_permit.pdf');
+      const form = formIndex < 0 ? '' : String(ledger.corpus[formIndex]).replace(/\s+/g,' ');
+      if (/12%\s*surcharge\s*\(?\s*\.?12\s*x\s*subtotal/i.test(form) && /Community Dev surcharge 5%/i.test(form)
+        && !feeIncludesSurcharges(`${b.label ?? ''} ${hitLine.raw}`)) {
+        const sourceUrl = ledger.evidence[formIndex].url;
+        b.stateSurcharge = {percent:12,quote:'12% surcharge (.12 x subtotal)',sourceUrl};
+        b.communitySurcharge = {percent:5,quote:'Community Dev surcharge 5%',sourceUrl};
+      }
+    }
   }
   return brackets;
 }
@@ -1636,6 +1690,10 @@ export const claudeFeeScheduleResearcher: FeeScheduleResearcher = async (input, 
     const alreadyRead = new Set(ledger.evidence.map((e) => clean(e.url)));
     if (finding.found && finding.sourceUrl && !alreadyRead.has(clean(finding.sourceUrl)) && Date.now() < deadline) {
       await openFeeDocument({ url: finding.sourceUrl }, ledger, { timeoutMs: 25_000 });
+    }
+    if (finding.found && finding.discipline === 'electrical' && /^https:\/\/co\.coos\.or\.us\//i.test(finding.sourceUrl)) {
+      const formUrl = 'https://co.coos.or.us/files/5bb0a81e5/electrical_permit.pdf';
+      if (!ledger.evidence.some(e => e.url === formUrl)) await openFeeDocument({url:formUrl,pages:[1]},ledger,{timeoutMs:25_000});
     }
     // Re-derived from retrieved bytes, and it discards anything the model may
     // have attached to its own brackets. Runs BEFORE the quote check so the
@@ -2108,12 +2166,15 @@ export function feeLinesForProject(
       : (schedule.basis === "valuation" ? resolveValuation(project.parserSnapshot, project.systemSizeDcKw).value : null);
     const evaluated = hop.unresolved
       ? { feeUsd: null, bracketLabel: "", bracketQuote: "", corroboration: undefined, reason: hop.unresolved }
-      : evaluateSchedule(schedule, { kw, kwSource: which, valuationUsd, track, permitPath });
+      : evaluateSchedule(schedule, { kw, kwSource: which, valuationUsd, track, permitPath, electricalReviewRequired: knownElectricalReviewRequired(project.parserSnapshot) });
     lines.push({
       discipline: row.discipline,
       authority: (track === "nem" ? schedule.utility : schedule.ahj) || (track === "nem" ? row.utility : row.ahj),
       hoppedFrom,
       feeUsd: evaluated.feeUsd,
+      baseFeeUsd: evaluated.baseFeeUsd,
+      stateSurchargeUsd: evaluated.stateSurchargeUsd,
+      communitySurchargeUsd: evaluated.communitySurchargeUsd,
       bracketLabel: evaluated.bracketLabel,
       basis: schedule.basis,
       paymentMethod: schedule.paymentMethod,
@@ -2202,7 +2263,11 @@ const FORMULA_LABEL =
   /\bper\s+(add|addl|additional|each)|\beach\s+(add|addl|additional|kva|kw|kilowatt|\$)|\bfor\s+each\b|\bplus\s*\$|\+\s*\$[\d.,]+\s*(for|per)|\bper\s+(kva|kw|kilowatt)\b|\bper\s+\$\s*1,?000|\brate\s+plus\b/i;
 
 export function bracketDescribesFormula(label: string | undefined): boolean {
-  return FORMULA_LABEL.test(String(label ?? ""));
+  return FORMULA_LABEL.test(String(label ?? "")) || /\bno\s*[-–]?\s*additional charge\b/i.test(String(label ?? ""));
+}
+
+function feeIncludesSurcharges(label: string): boolean {
+  return /\b(?:total|all[-\s]?in)\b|\binclud(?:es?|ing)\b[^.;]{0,50}\bsurcharges?\b|\bsurcharges?\b[^.;]{0,20}\bincluded\b/i.test(label);
 }
 
 function bracketLabelFor(b: FeeBracket, basis: FeeBasis): string {
@@ -2459,13 +2524,17 @@ function pathRefusalReason(schedule: FeeScheduleRecord, path: FeePathInput | und
  *  evaluations would drift, and the boundary is the whole point of the table. */
 function evaluateSchedule(
   schedule: FeeScheduleRecord,
-  inputs: { kw: number | null; kwSource: string; valuationUsd: number | null; track?: FeeTrack; permitPath?: FeePathInput },
-): { feeUsd: number | null; bracketLabel: string; bracketQuote: string; corroboration?: FeeBracketCorroboration; reason: string } {
+  inputs: { kw: number | null; kwSource: string; valuationUsd: number | null; track?: FeeTrack; permitPath?: FeePathInput; electricalReviewRequired?: boolean },
+): { feeUsd: number | null; baseFeeUsd?: number; stateSurchargeUsd?: number; communitySurchargeUsd?: number; bracketLabel: string; bracketQuote: string; corroboration?: FeeBracketCorroboration; reason: string } {
   const miss = (reason: string) => ({ feeUsd: null, bracketLabel: "", bracketQuote: "", reason });
   const hit = (b: FeeBracket) => {
     const bracketQuote = bracketEvidence(schedule, b);
     const corroboration = b.corroboration?.corroborated ? b.corroboration : undefined;
     const bracketLabel = bracketLabelFor(b, schedule.basis);
+    if (schedule.discipline === 'electrical' && inputs.electricalReviewRequired) {
+      return {feeUsd:null,bracketLabel,bracketQuote,corroboration,
+        reason:'Electrical plan review is required by the recorded project facts. Its additional charge must be resolved before quoting a grand total.'};
+    }
     if (bracketDescribesFormula(b.label)) {
       return {
         feeUsd: null,
@@ -2516,7 +2585,11 @@ function evaluateSchedule(
       };
     }
 
-    return { feeUsd: b.feeUsd, bracketLabel, bracketQuote, corroboration, reason: "" };
+    const stateSurchargeUsd = b.stateSurcharge ? round2(b.feeUsd * b.stateSurcharge.percent / 100) : undefined;
+    const communitySurchargeUsd = b.communitySurcharge ? round2(b.feeUsd * b.communitySurcharge.percent / 100) : undefined;
+    return { feeUsd: round2(b.feeUsd + (stateSurchargeUsd ?? 0) + (communitySurchargeUsd ?? 0)), baseFeeUsd: feeIncludesSurcharges(`${b.label ?? ''} ${bracketQuote}`) ? undefined : b.feeUsd, stateSurchargeUsd, communitySurchargeUsd,
+      bracketLabel, bracketQuote: stateSurchargeUsd == null ? bracketQuote
+        : `${bracketQuote}; ${b.stateSurcharge!.quote} (+$${stateSurchargeUsd.toFixed(2)})${communitySurchargeUsd == null ? '' : `; ${b.communitySurcharge!.quote} (+$${communitySurchargeUsd.toFixed(2)})`}.`, corroboration, reason: "" };
   };
 
   // A DISPUTED FEE IS REFUSED BY ITS OWN BRANCH, AND IT IS THE FIRST ONE.
@@ -2656,12 +2729,15 @@ function lineFor(
     : (schedule.basis === "valuation" ? resolveValuation(project.parserSnapshot, project.systemSizeDcKw).value : null);
   // Same ternary, same reason as feeLinesForProject — see the note there.
   const permitPath: FeePathInput = inputs ? inputs.permitPath : pathForProject(project, track);
-  const evaluated = evaluateSchedule(schedule, { kw, kwSource: which, valuationUsd, track, permitPath });
+  const evaluated = evaluateSchedule(schedule, { kw, kwSource: which, valuationUsd, track, permitPath, electricalReviewRequired: knownElectricalReviewRequired(project.parserSnapshot) });
   return {
     discipline: schedule.discipline,
     authority: track === "nem" ? schedule.utility : schedule.ahj,
     hoppedFrom,
     feeUsd: evaluated.feeUsd,
+    baseFeeUsd: evaluated.baseFeeUsd,
+    stateSurchargeUsd: evaluated.stateSurchargeUsd,
+    communitySurchargeUsd: evaluated.communitySurchargeUsd,
     bracketLabel: evaluated.bracketLabel,
     basis: schedule.basis,
     paymentMethod: schedule.paymentMethod,
