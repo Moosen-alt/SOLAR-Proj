@@ -120,6 +120,7 @@ async function main(): Promise<void> {
     check("download is a real PDF", bytes.subarray(0, 4).toString() === "%PDF", `magic=${bytes.subarray(0, 8).toString("hex")}`);
     check("content-type is pdf", /pdf/i.test(ct), ct);
     check("filename is friendly with .pdf", /filename=".+\.pdf"/.test(cd) && !/undefined/.test(cd), cd);
+    check("filename identifies the stored authority form", /Testburg/.test(cd), cd);
     const parsed = await PDFDocument.load(bytes).catch(() => null);
     check("downloaded PDF parses", Boolean(parsed && parsed.getPageCount() >= 1));
   }

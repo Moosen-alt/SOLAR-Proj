@@ -3928,7 +3928,10 @@ function renderFilledForms(projectId) {
       </div>
     </article>`;
   }
-  return forms.map((f) => {
+  const acquisitionControls = `<article class="item info"><button type="button" id="findAhjFormBtn" class="secondary">Find missing official forms</button>
+    <label class="secondary" style="margin-left:8px">Upload blank PDF<input id="uploadAhjFormInput" type="file" accept="application/pdf" style="display:none"></label>
+    <span id="findAhjFormStatus" class="muted"></span></article>`;
+  return acquisitionControls + forms.map((f) => {
     const ok = f.status === "filled";
     // "skipped" = the OTHER application for this permit path (prescriptive vs structural).
     // It's intentional, not a problem — render it neutral and never block on it.
@@ -4204,15 +4207,18 @@ async function findAhjForm() {
   const btn = $("findAhjFormBtn");
   const status = $("findAhjFormStatus");
   if (btn) btn.disabled = true;
-  if (status) status.textContent = "Searching the web for the AHJ's official permit PDF…";
+  if (status) status.textContent = "Checking the AHJ's required official forms…";
   try {
     const result = await api(`/api/projects/${state.selectedProjectId}/find-ahj-form`, { method: "POST", body: "{}" });
     state.filledForms = result.filled || state.filledForms;
+    state.applicationDocs = await api(`/api/projects/${state.selectedProjectId}/application-docs`);
     const e = result.ensure || {};
-    if (status) status.textContent = e.message || "Done.";
+    const results = [e, ...(result.additional || [])];
+    const missing = results.filter(r => !["acquired", "exists"].includes(r.status));
+    const acquired = results.filter(r => r.status === "acquired").length;
     renderApplicationDocs();
-    if (e.status === "acquired") showMessage(e.message, "success");
-    else if (e.status === "not_found") showMessage(e.message || "No official PDF found — upload the blank form.", "warning");
+    if (missing.length) showMessage(missing.map(r => r.message).join(" ") || "Some required forms still need attention.", "warning");
+    else showMessage(acquired ? `${acquired} official form(s) acquired. Review the filled PDFs and remaining project requirements.` : "Available official forms are up to date with the stored templates. Review remaining project requirements.", "success");
   } catch (err) {
     if (status) status.textContent = "";
     showMessage(err.message || "Form lookup failed.", "error");

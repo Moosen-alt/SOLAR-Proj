@@ -13,14 +13,15 @@ import { logger } from "./logger";
 export async function prepareOfficialDocuments(db: AppDb, project: ProjectRecord): Promise<void> {
   const permitPath = resolvePermitPath(project).path;
   if (permitPath === "unknown") return;
-  if (process.env.AHJ_FORM_RESEARCH !== "off" && process.env.ANTHROPIC_API_KEY) {
+  if (process.env.AHJ_FORM_DOWNLOADS !== "off") {
     db.exec(`CREATE TABLE IF NOT EXISTS ahj_form_acquisition_attempts (
       scope_key TEXT PRIMARY KEY, attempted_at INTEGER NOT NULL)`);
     const key = `${project.state}|${project.ahj}|${permitPath}`.trim().toLowerCase();
     const prior = db.get<{ attempted_at: number }>("SELECT attempted_at FROM ahj_form_acquisition_attempts WHERE scope_key = ?", [key]);
     if (!prior || Date.now() - prior.attempted_at >= 24 * 60 * 60 * 1000) {
       db.run("INSERT INTO ahj_form_acquisition_attempts(scope_key, attempted_at) VALUES (?, ?) ON CONFLICT(scope_key) DO UPDATE SET attempted_at = excluded.attempted_at", [key, Date.now()]);
-      try { await ensureAhjFormsForProject(db, createLLMProvider(), project); }
+      try { await ensureAhjFormsForProject(db, createLLMProvider(), project,
+        { allowResearch: process.env.AHJ_FORM_RESEARCH !== "off" && Boolean(process.env.ANTHROPIC_API_KEY) }); }
       catch { logger.warn("official-documents", "Form acquisition failed; filling available stored templates. Missing-document gates remain active.", { projectId: project.id }); }
     }
   }

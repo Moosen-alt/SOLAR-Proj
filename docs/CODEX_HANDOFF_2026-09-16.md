@@ -8,7 +8,25 @@ Branch: `codex/claude-continuation-2026-09-16`. Baseline: `08c978d96737f321e9b96
 
 Latest user direction: **avoid scope creep; make the current work reliable, then move to the next task.** This closes the current reliability batch. The remaining queue below is not claimed complete.
 
-## Backup and operating boundaries
+## Latest download verification — September 17 local / September 18 UTC
+
+The latest user request was to test every expected download and the original workflow functionality. This follow-up fixes three missing official form templates and the download filename/UI defects found by that test. It does not claim a completed live filing.
+
+- **78 actual HTTP downloads across Trask (11), Wynema (15), Ivy (17), Ann (16), and Connie (19): all 200; 65 PDFs parsed, 8 ZIP archives passed integrity checks, and 5 images decoded.** The count includes existing uploaded documents plus filled applications, not 78 distinct official form templates. Detailed local evidence: `work/download-audit.json`, `work/download-audit.log`, and `work/download-extra-validation.json`.
+- Connie now has the Tigard building application, Tigard electrical application, and BCD checklist. Coos Bay's separate electrical application now downloads from Coos County and fills for Ann, Ivy, and Wynema. Ann and Wynema still correctly report a missing structural letter. Ivy's checklist still reports unsupported structural details; a present PDF does not certify those answers or make it ready to file.
+- `curatedAhjForms.ts` supplies three exact-hash public PDF maps. Known-source acquisition runs before paid search and can operate without a model/API key. An unexpected revision or wrong jurisdiction is refused; existing verified maps are retained. Automatic preparation uses the existing 24-hour cooldown. `AHJ_FORM_DOWNLOADS=off` disables automatic free downloads as well. The broader master-link catalog has not all been individually mapped.
+- Fixed stored-template downloads looking up the `tmpl-` prefix as part of the database ID, which produced a generic filename. Added an actual HTTP filename regression assertion.
+- The dashboard keeps **Find missing official forms** and blank upload available after forms exist, refreshes the document inventory after lookup, and reports failures from additional forms rather than only the primary result. Confirmed Build Docs and Find through the real local dashboard.
+- New maps fill known owner/project/contractor data using the existing electrical and supervisor license keys. They remain unverified. Unknown owner mailing addresses, construction categories, parcel/valuation particulars, signatures and fee totals remain blank. Tigard's published blanks carry historical printed fee tables; they are preserved as source content, never learned as current charges. The electrical revision displays its age warning. Coos County prints only "Revised 2025"; no month/day was invented.
+- Rendered and visually inspected all five newly filled project PDFs (Connie x2, Coos Bay x3); reopened with pypdf, checked names/page counts, zero residual widgets, and unchanged instruction pages. Evidence: `work/official-forms/pdf-validation.json` plus rendered PNGs. Public blank fixtures and source provenance are committed; customer PDFs are not.
+- **19 targeted test files passed**: the 18 in `work/download-functionality-final-results.json` plus `curatedAhjForms.test.ts`. Includes downloads, upload selection, required applications, provenance/freshness, BCD/roof evidence, fee research dedupe/estimates/path scope, correction state/application, client portal, credential requests, tenancy route scope, and simulated rehearsal. Typecheck, dashboard syntax check, diff check and smoke passed. This supplements, rather than repeats, the prior full-suite runs below.
+- Final data audit: sandbox integrity OK; all 12 fee schedules, 21 code profiles and the existing verified form map unchanged; all 29 receipt source hashes, Connie's source plan and Trask's source letter unchanged. Connie still stores **Composition Shingle**, Contractor and 12-inch height, with the authorized two-layer upper bound explicitly marked as an assumption.
+
+Latest server uses current code on `http://127.0.0.1:4273`, workers off and stub LLM. Private checkpoint before acquisition: `work/before-official-downloads.sqlite`. Repro scripts: `data/audit-downloads.ts`, `data/verify-official-acquisition.ts`, `data/refresh-curated-maps.ts`, and `work/verify-official-pdfs.py`. The acquisition script creates a backup before its run; don't overwrite the checkpoint casually. The refresh script updates only the three matching unverified known maps.
+
+**Still open:** live correction-form reopening is not wired into production, despite passing correction bookkeeping tests. Real portal login/replay/resubmission and Docker build were not exercised here. Keep the current missing-document/verification gates; do not treat "filled" as signed or filing-ready. The scope remains reliability first, then the next task.
+
+## Backup and operating boundaries (original record)
 
 - Original: `C:\Users\isobl\SOLAR-Proj`, still clean at baseline on final inspection.
 - Isolated copy: 49,608 files / 8.268 GiB, zero copy failures, including Git history and installed dependencies.
@@ -96,7 +114,7 @@ Working `.env` also disables fee/portal research and correction/triage workers. 
 ## Separate queue — do not expand the current batch
 
 1. Connie's roof-layer checkbox is complete using the operator-authorized assumption. Preserve its assumption provenance; update it if actual layer evidence becomes available.
-2. Verify the complete per-AHJ form set for Ann/Ivy/Wynema/Connie, including separate electrical/building/owner forms as applicable. General curated-master-link-first acquisition remains incomplete; generic research can still have classification/title limitations.
+2. The five-project download pass and three missing form maps are complete as detailed above. Remaining work is jurisdiction-specific owner/other requirements where evidence is ambiguous, unsupported checklist particulars, and broader master-link coverage. Generic research can still have classification/title limitations.
 3. Resolve ambiguous jurisdiction/path profiles from operator evidence; check Trask's letter against the latest layout before live ingestion. Reconcile historical receipts with matching complete filing/project/date facts before making fee predictions.
 4. Wire the tested safe correction-form chooser into actual live reopening. The helper exists, but that production continuation is not complete.
 5. Build the Docker image in an environment with Docker and perform a separately authorized live workflow check. Broader UI reorganization is deferred under the user's scope limit.

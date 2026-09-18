@@ -586,7 +586,7 @@ app.get("/api/projects/:id/filled-forms/:formId", (req, res) => {
   } else {
     try {
       const formRow = db.get<{ ahj_name?: string; original_filename?: string }>(
-        "SELECT ahj_name, original_filename FROM ahj_form_templates WHERE id = ?", [formId],
+        "SELECT ahj_name, original_filename FROM ahj_form_templates WHERE id = ?", [formId.replace(/^tmpl-/, "")],
       );
       base = String(formRow?.original_filename || (formRow?.ahj_name ? `${formRow.ahj_name} application` : ""));
     } catch { /* fall through to the generic name */ }

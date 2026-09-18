@@ -24,6 +24,7 @@ export {
 } from "./documentDate";
 import { documentDateForPdf } from "./documentDate";
 import { bcd5952Template } from "./bcd5952Template";
+import { curatedFormSource, curatedFormMap } from "./curatedAhjForms";
 
 // ---------------------------------------------------------------------------
 // Auto-acquire an AHJ's official permit PDF form: web-research the URL, download
@@ -588,6 +589,7 @@ export async function ensureAhjFormsForProject(
   db: AppDb,
   llm: LLMProvider,
   project: ProjectRecord,
+  opts: { allowResearch?: boolean } = {},
 ): Promise<{ neededTypes: string[]; needed: NeededAhjForm[]; results: Array<EnsureFormResult & { formType: string; applicationKind: "prescriptive" | "structural" | null }> }> {
   // WHAT THIS PROJECT MUST FILE DECIDES WHAT WE GO AND FETCH.
   //
@@ -643,7 +645,7 @@ export async function ensureAhjFormsForProject(
     results.push({
       formType: item.formType,
       applicationKind: item.applicationKind,
-      ...(await ensureAhjFormTemplate(db, llm, project, item.formType, { applicationKind: item.applicationKind })),
+      ...(await ensureAhjFormTemplate(db, llm, project, item.formType, { applicationKind: item.applicationKind, allowResearch: opts.allowResearch })),
     });
   }
   return { neededTypes: [...needed.keys()], needed: [...needed.values()], results };
@@ -655,7 +657,7 @@ export async function ensureAhjFormTemplate(
   llm: LLMProvider,
   project: ProjectRecord,
   formType = "permit_application",
-  opts: { applicationKind?: "prescriptive" | "structural" | null } = {},
+  opts: { applicationKind?: "prescriptive" | "structural" | null; allowResearch?: boolean } = {},
 ): Promise<EnsureFormResult> {
   // WHICH of the two building-side applications this call is for. Given by the caller
   // (the required set decided it from the permit path); otherwise resolved from the
@@ -682,6 +684,25 @@ export async function ensureAhjFormTemplate(
     return { status: "exists", message: `A stored ${kindWord ? `${kindWord} ` : ""}${formType.replace(/_/g, " ")} template already exists for this AHJ.` };
   }
 
+  // Known public forms are free downloads; do not buy a search for a source we
+  // already hold. An online application can still require a PDF attachment.
+  const curated = curatedFormSource(project, formType);
+  const checklistUrl = project.state.toUpperCase() === "OR" && formType === "solar_checklist"
+    && resolvePermitPath(project).path === "prescriptive" ? "https://www.oregon.gov/bcd/Formslibrary/5952.pdf" : "";
+  if (curated || checklistUrl) {
+    const url = curated?.url || checklistUrl;
+    const bytes = await fetchPdf(url);
+    if (bytes) {
+      if (!(curated ? curatedFormMap(bytes, url)?.source.hash === curated.hash : bcd5952Template(bytes, url))) {
+        return { status: "needs_manual", sourceUrl: url, message: "The official PDF has changed since its field map was checked. Review and re-map the new revision before filling it." };
+      }
+      return acquireFromBytes(db, llm, { ahj: project.ahj, state: project.state, formType,
+        formName: curated?.formName || "Oregon BCD 5952", bytes, sourceUrl: url });
+    }
+    if (opts.allowResearch === false) return { status: "not_found", sourceUrl: url, message: "The official form could not be downloaded. Retry or upload the blank; it has not been counted as present." };
+  }
+  if (opts.allowResearch === false) return { status: "not_found", message: `No downloadable mapped ${formType.replace(/_/g, " ")} is held for this AHJ. Research is disabled; use Find official form or upload the official blank.` };
+
   // Check if the AHJ is known to be online-only (e-permitting portal). These
   // AHJs don't distribute a standalone PDF — the application is entered directly
   // in their portal. Skip the web search to save time and cost.
@@ -700,6 +721,16 @@ export async function ensureAhjFormTemplate(
   // The hint steers the web search; KB .pdf URLs become free download candidates.
   let kbHint: ReturnType<typeof knowledgeResearchHint> = null;
   try { kbHint = knowledgeResearchHint(db, { state: project.state, ahj: project.ahj }, "ahj"); } catch { /* non-fatal */ }
+  for (const url of (kbHint?.pdfUrls || []).slice(0, 4)) {
+    // Only a self-identifying link can avoid research classification. Do not
+    // call an opaque checklist URL an application merely because we asked for one.
+    if (classifyFormType(url, "") !== formType) continue;
+    const kind = formApplicationKind(url);
+    if (kind && applicationKind && kind !== applicationKind) continue;
+    const bytes = await fetchPdf(url);
+    if (bytes) return acquireFromBytes(db, llm, { ahj: project.ahj, state: project.state,
+      formType, formName: decodeURIComponent(new URL(url).pathname.split("/").pop() || formType), bytes, sourceUrl: url, applicationKind: kind });
+  }
 
   // STEER THE SEARCH AT THE RIGHT ONE OF THE TWO. An AHJ on the separate-permit model
   // publishes both a prescriptive solar application and a structural (standard building)
@@ -820,6 +851,17 @@ export async function acquireFromBytes(
   },
 ): Promise<EnsureFormResult> {
   const { ahj, state, formType, formName, bytes, sourceUrl, retrievedAt } = input;
+  const curated = curatedFormMap(bytes, sourceUrl);
+  if (curated) {
+    if (!curatedFormSource({ahj, state}, curated.source.formType)) {
+      return {status:"needs_manual", message:"This official PDF belongs to a different jurisdiction. Select the matching authority before mapping it.", sourceUrl};
+    }
+    const protectedRow = db.query<{field_map:string}>("SELECT field_map FROM ahj_form_templates WHERE lower(ahj_name)=lower(?) AND lower(state)=lower(?) AND form_type=?", [ahj,state,curated.source.formType])
+      .some(row => { try { return JSON.parse(row.field_map).verified === true; } catch { return false; } });
+    if (protectedRow) return {status:"exists",message:"The verified official form map was retained.",formName:curated.source.formName,sourceUrl};
+    storeAhjFormTemplate(db,{ahjName:ahj,state,formType:curated.source.formType,filename:curated.source.formName+".pdf",bytes,documentDate:curated.source.documentDate,retrievedAt,map:curated.map});
+    return {status:"acquired",message:"Downloaded and mapped the exact official revision. Review missing details and signatures in the filled copy before filing.",formName:curated.source.formName,sourceUrl,mappedFields:Object.keys(curated.map.textFields).length+curated.map.overlayFields.length};
+  }
   // The actual bytes outrank a research title claiming that this checklist
   // contains a separate electrical or building application. Mapping a known
   // revision requires no model call and leaves every project fact dynamic.
