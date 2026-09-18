@@ -16,6 +16,7 @@ import { resolveEffectiveCodeContext } from "./codeProfiles";
 import { isDocumentDateStale } from "./documentDate";
 import { findFeeScheduleForProject } from "./feeSchedules";
 import type { ChecklistRecovery } from "./prescriptiveChecklist";
+import { bcdChecklistAnswers } from "./bcdChecklistFacts";
 
 /** Which of the two MUTUALLY EXCLUSIVE building-side applications a permit path calls
  *  for. THE single mapping from path → application kind; requiredApplicationDocs,
@@ -478,8 +479,19 @@ function prescriptiveComputed(name: string, ctx: FillContext): string {
 }
 
 function computed(name: string, ctx: FillContext): string {
+  if (name.startsWith("bcd")) {
+    const m = name.match(/^bcd([A-Z][A-Za-z0-9]*?)(Yes|No)$/);
+    if (!m) return "";
+    const key = m[1][0].toLowerCase() + m[1].slice(1);
+    return bcdChecklistAnswers(ctx.project)[key] === m[2] ? "X" : "";
+  }
   if (name.startsWith("presc")) return prescriptiveComputed(name, ctx);
   switch (name) {
+    case "installerRole": {
+      const role = String(ctx.snapshot.installerRole ?? "").trim().toLowerCase();
+      if (role) return role === "owner" || role === "contractor" ? role : "";
+      return ctx.client.installerCompanyName ? "contractor" : "";
+    }
     case "todaySigned": {
       const d = new Date();
       return `${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}/${d.getFullYear()}`;
@@ -945,9 +957,14 @@ export async function fillLoadedForm(
     }
     return drawn;
   };
+  const unresolvedChecklistRows = checklist.recognized ? [
+    ["designInstallation", "gravity/wind design and manufacturer instructions"], ["framing", "framing compliance"],
+    ["roofing", "roof material and layer count"], ["heightFigures", "module height and referenced figure compliance"],
+    ["attachments", "attachment method compliance"],
+  ].filter(([key]) => !bcdChecklistAnswers(ctx.project)[key]).map(([, label]) => label) : [];
   const checklistMessage = checklist.recognized
-    ? "BCD 5952: recovered standalone checklist answers from parsed data. Unknown and compound compliance rows require human completion."
-      + (checklist.omittedTextFields.length ? " Unsupported framing or listing-agency defaults were omitted; see unmapped fields." : "")
+    ? "BCD 5952: filled independently supported answers. Review the completed PDF before filing."
+      + (unresolvedChecklistRows.length ? ` Still needs evidence: ${unresolvedChecklistRows.join("; ")}.` : "")
     : undefined;
   // The cached research title can claim several applications were combined,
   // while the actual two-page PDF is only this checklist.
@@ -955,8 +972,8 @@ export async function fillLoadedForm(
     ? "Oregon BCD 5952 - Prescriptive Solar PV Installation Checklist"
     : def.formName;
 
-  // Overlay mode: flat PDF, draw text at coordinates.
-  if (def.fillMode === "overlay") {
+  // Both flat and AcroForm templates can have additional fields without widgets.
+  const drawMappedOverlays = async (): Promise<number> => {
     const font = await doc.embedFont(StandardFonts.Helvetica);
     const pages = doc.getPages();
     let drawn = 0;
@@ -1002,7 +1019,11 @@ export async function fillLoadedForm(
       page.drawText(text, { x: nx, y: ny, size, font, color: rgb(0, 0, 0) });
       drawn += 1;
     }
-    drawn += await drawChecklist();
+    return drawn;
+  };
+  // Overlay mode: flat PDF, draw text at coordinates.
+  if (def.fillMode === "overlay") {
+    const drawn = await drawMappedOverlays() + await drawChecklist();
     await drawSignatures(doc, def, ctx);
     fs.mkdirSync(path.dirname(outputPath), { recursive: true });
     fs.writeFileSync(outputPath, await doc.save());
@@ -1075,6 +1096,7 @@ export async function fillLoadedForm(
 
   // BCD's Yes radio groups span unrelated questions. Independent X overlays
   // after flattening preserve multiple answers without radio-group clearing.
+  filled += await drawMappedOverlays();
   filled += await drawChecklist();
 
   // Stamp signatures on top of the flattened form.

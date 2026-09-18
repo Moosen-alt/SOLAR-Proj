@@ -442,7 +442,7 @@ app.get("/api/projects", (req, res) => {
   const validSorts = ["updated_desc", "created_desc", "name_asc", "status_asc"] as const;
   type SortOption = typeof validSorts[number];
   const sortVal = validSorts.includes(sort as SortOption) ? (sort as SortOption) : undefined;
-  res.json(getProjectList(db, { limit, offset, search, status, userId, clientId, sort: sortVal, orgId: reqOrgFilter(db, req) }));
+  res.json(getProjectList(db, { limit, offset, search, status, userId, clientId, includeArchived: req.query.includeArchived === "true", sort: sortVal, orgId: reqOrgFilter(db, req) }));
 });
 
 // --- Clients (contractor profiles + licensing) ---
@@ -2322,7 +2322,8 @@ app.post("/api/parser/llm-extract", asyncHandler(async (req, res) => {
   const llm = createLLMProvider();
   try {
     const result = await llm.extractProjectFields({ planText, utilityBillText, meterText, structuralLetterText, defaultState });
-    res.json(result);
+    const { supplementStructuralIntake } = await import("./structuralIntake");
+    res.json(supplementStructuralIntake(result, planText));
   } catch (err) {
     throw normalizeLlmError(err);
   }
@@ -2362,7 +2363,9 @@ app.post("/api/parser/vision-extract", asyncHandler(async (req, res) => {
 app.get("/api/projects/:id/payment-quote", asyncHandler(async (req, res) => {
   const { buildPaymentQuote } = await import("./submissionFees");
   const detail = getProjectDetail(db, String(req.params.id));
-  res.json({ quote: buildPaymentQuote(db, detail.project, String(req.query.track || "")) });
+  const { paidFeeReceiptsForProject } = await import("./feeReceipts");
+  res.json({ quote: buildPaymentQuote(db, detail.project, String(req.query.track || "")),
+    receipts: paidFeeReceiptsForProject(db, detail.project.id) });
 }));
 
 app.post("/api/projects/:id/payment/mark-paid", asyncHandler(async (req, res) => {
@@ -2823,14 +2826,14 @@ process.on("uncaughtException", (err) => {
   setTimeout(() => process.exit(1), 250).unref();
 });
 
-const server = app.listen(port, () => {
+const server = app.listen(port, process.env.SERVER_HOST || "0.0.0.0", () => {
   const diag = collectDiagnostics(db, { version: APP_VERSION, port, dbPath });
   startupBanner(diag, { base: `http://localhost:${port}` });
   // Exposure warning: app.listen(port) binds all interfaces. With auth OFF that serves all
   // customer PII + the credential/approve endpoints to anyone who can reach the port. Loud
   // warning so an operator doesn't unknowingly expose it; the fix is AUTH_ENABLED=true (and a
   // reverse proxy / firewall), or binding to loopback only.
-  if (!AUTH_ENABLED) {
+  if (!AUTH_ENABLED && !["127.0.0.1", "::1", "localhost"].includes(process.env.SERVER_HOST || "")) {
     logger.warn("security", "AUTH_ENABLED is off and the server listens on all interfaces — anyone who can reach this port has full access to customer data and the approve/credential endpoints. Set AUTH_ENABLED=true (with ADMIN_EMAIL/ADMIN_PASSWORD) before exposing it beyond localhost.");
   }
   // Do the concurrency numbers agree? Raising JOB_CONCURRENCY without raising the profile
@@ -2848,7 +2851,7 @@ const server = app.listen(port, () => {
   // reaper could SIGKILL a browser this very process had just launched — killing a live
   // portal submission and escalating it to a human for nothing. (The reaper also refuses to
   // kill anything younger than this process, so the two guards are belt and braces.)
-  void (async () => {
+  if (process.env.BACKGROUND_WORKERS !== "off") void (async () => {
     try {
       const { reapOrphanedProfileBrowsers } = await import("../../portal-bot/src/browser");
       const profileBase = process.env.PORTAL_PROFILES_DIR || path.join(process.cwd(), "portal-profiles");
@@ -2867,6 +2870,7 @@ const server = app.listen(port, () => {
       logger.warn("notify", `${stranded.length} client message(s) were never delivered — oldest ${oldest.occurredAt.slice(0, 10)} "${oldest.subject}". Run: npx tsx scripts/undelivered.ts`);
     }
   } catch { /* never block startup on a report */ }
+  if (process.env.BACKGROUND_WORKERS === "off") return;
   startBackupScheduler(db);
   startArtifactRetention();
   startMonitorScheduler(db);

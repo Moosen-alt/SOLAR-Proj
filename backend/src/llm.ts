@@ -6,6 +6,7 @@ import type { AgentRunInput, AgentRunResult, AgentToolResult, AhjFieldMapResult,
 import { RECIPE_FIELD_DESCRIPTIONS } from "./portalRecipes";
 import { logger } from "./logger";
 import { lookupCecInverter } from "./cecEquipment";
+import { planTextForExtraction } from "./structuralIntake";
 
 // Claude Opus 5: drop-in successor to Opus 4.8 at identical pricing with a
 // step-change in agentic/vision capability. Verified safe for this codebase:
@@ -1108,6 +1109,18 @@ STRUCTURAL (read from structural notes / roof framing plan — drive prescriptiv
 - framingType: "rafter" or "truss" — the roof framing member type
 - roofLayers: number of existing roofing layers/coverings under the array (number, e.g. 1)
 - moduleHeightAboveRoof: max height of the module top above the roof surface in inches (number, e.g. 10)
+- gravityWindDesign: "yes" only when structural design notes/details establish design for the site's gravity and wind loads; cite the evidence, not just a jurisdiction default.
+- manufacturerInstallation: "yes" when the PV array AND attachments/racking installation follows the manufacturer's instructions.
+- rafterExceptionCompliant: "yes/no" for explicit R324.4.1 Exception 1.4 through 1.6 compliance; spacing alone is insufficient. Omit if unknown.
+- moduleFiguresCompliant: "yes/no" for documented compliance with Figures R324.4.1(2) and (3); a height under 18 inches alone is insufficient. Omit if unknown.
+- attachmentToFraming: "yes/no" for direct attachment to roof framing or blocking.
+- attachmentSpacingIn: maximum attachment spacing in ANY direction in inches (convert feet).
+- attachmentEdgeSpacingIn: maximum spacing within 3 feet of roof edges, hips, eaves and ridges, if separately specified, inches.
+- attachmentsOutsideEdgeZone: "yes" only if all attachments with spacing over 24 inches are at least 3 feet from roof edges/hips/eaves/ridges.
+- standingSeamMethod2Compliant: "yes/no" only if ALL BCD 5952 Method 2 clamp capacity, spacing, tributary area, panel gauge/width, screws and sheathing/nailing requirements are documented. Omit if unknown.
+- moduleListingAgency: actual certification/testing agency from the MODULE's label/datasheet (not a racking certificate, not the name of a UL standard). Omit if unknown.
+For roofing layers, a generic drawn roof section or "composition shingles" does NOT establish the existing layer count. Do not invent it.
+Prefer explicit roof SECTION/mount DETAILS naming trusses over a generic table heading "rafter size & spacing".
 - permitPath: "prescriptive" or "engineered" if determinable
 BUILDING GEOMETRY (read from the site plan / structural sheet / cover-sheet project data block).
   AHJ permit portals ask for these on the application itself and refuse to advance without them —
@@ -1178,7 +1191,7 @@ Rules:
 
     const parts: string[] = [];
     if (input.defaultState) parts.push(`(Default state hint if ambiguous: ${input.defaultState})`);
-    if (input.planText?.trim()) parts.push(`=== PLAN_SET ===\n${input.planText.slice(0, 24000)}`);
+    if (input.planText?.trim()) parts.push(`=== PLAN_SET ===\n${planTextForExtraction(input.planText)}`);
     if (input.utilityBillText?.trim()) parts.push(`=== UTILITY_BILL ===\n${input.utilityBillText.slice(0, 8000)}`);
     if (input.meterText?.trim()) parts.push(`=== METER_PHOTO ===\n${input.meterText.slice(0, 2000)}`);
     if (input.structuralLetterText?.trim()) parts.push(`=== STRUCTURAL_LETTER ===\n${input.structuralLetterText.slice(0, 12000)}`);

@@ -7,6 +7,7 @@ import { nowIso } from "./time";
 import { text as s } from "./json";
 import { extractPdfText } from "./batchImport";
 import { parseFeeSummary, recordFeeSummary } from "./feeSummary";
+import { parsePaidFeeReceipt, recordPaidFeeReceipt } from "./feeReceipts";
 import { logger } from "./logger";
 import { sniffFileKind, looksLikeCad, isImageKind, describeKind, type SniffedKind } from "./fileTypes";
 
@@ -60,6 +61,12 @@ async function extractDocumentText(db: AppDb, docId: string, storedPath: string)
 // Never throws: a document is not worth less because a bill inside it was unreadable.
 function recordFeeSummaryIfPresent(db: AppDb, docId: string, extracted: string): void {
   try {
+    const receipt = parsePaidFeeReceipt(extracted);
+    if (receipt) {
+      const doc = db.get<{ project_id: string }>("SELECT project_id FROM project_documents WHERE id = ?", [docId]);
+      if (doc) recordPaidFeeReceipt(db, receipt, doc.project_id);
+      return;
+    }
     const summary = parseFeeSummary(extracted);
     if (!summary || summary.totalUsd == null) return;
     const row = db.get<Row>(

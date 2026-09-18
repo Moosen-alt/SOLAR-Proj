@@ -33,7 +33,7 @@ import { learnNoteTopicsFromMisses, activeLearnedNoteTerms } from "./noteTopics"
 import { RECIPE_FIELD_DESCRIPTIONS, deadFieldBindings, resolveRecipeFieldValues, startPortalRecording, savePortalRecipeSteps, getPortalRecipe, convertLiteralsToBoundFields, findAnyRecipeForProject, appendHumanPatchSteps, promoteRecordingIfEligible, recipeProfileKey } from "./portalRecipes";
 import { HUMAN_SUBMIT_OBSERVED_NOTE } from "../../portal-bot/src/humanCapture";
 import { projectDocsByType } from "./projectDocuments";
-import { submissionDocumentsByType } from "./submissionDocuments";
+import { submissionDocumentsByType, uploadDocumentGuard } from "./submissionDocuments";
 import { logger } from "./logger";
 import { buildUtilityPackage } from "./docSplitter";
 import { addAuditLog } from "./audit";
@@ -560,6 +560,11 @@ export async function autoLearnPortal(
     : baseProject;
 
   const scopeType = input.scope === "utility" ? "utility" : "ahj";
+  if (scopeType === "ahj") {
+    const { resolvePermitPath } = await import("./permitPath");
+    if (resolvePermitPath(project).path === "unknown") throw new HttpError(409,
+      "Confirm the permit path (prescriptive or engineered) before learning an AHJ application.");
+  }
   const portalUrl = (input.portalUrl || "").trim();
   if (!portalUrl) throw new HttpError(400, "portalUrl is required to learn a portal.");
 
@@ -632,6 +637,10 @@ async function autoLearnPortalInner(
   // (best-effort) if it hasn't been split yet, then collect docType → file path. The
   // adapter only uploads what's actually available; a missing doc is left for the human.
   let docsByType: Record<string, string> = {};
+  if (scopeType === "ahj") {
+    const { prepareOfficialDocuments } = await import("./prepareOfficialDocuments");
+    await prepareOfficialDocuments(db, project);
+  }
   try {
     const existing = projectDocsByType(db, projectId);
     const hasSheets = ["sld", "site_plan", "inverter_spec"].every((t) => existing[t]);
@@ -730,6 +739,7 @@ async function autoLearnPortalInner(
       // budget is handed down so the walk can end itself and still report what it reached.
       budgetMs: budgetForAttempt,
       docsByType,
+      beforeUpload: uploadDocumentGuard(db, projectId, scopeType === "ahj"),
       // Contractor contact identity for the deterministic ACA "Add New" contact pass
       // (Accela permit portals). buildPortalPlanner already split installerContactName
       // into first/last in projectFields; the account has many pre-existing contacts,
@@ -1382,6 +1392,7 @@ async function autoLearnPortalInner(
         credential,
         userDataDir,
         loginUrl: portalUrl,
+        beforeUpload: uploadDocumentGuard(db, projectId, input.scope === "ahj"),
       }) as Record<string, unknown>;
       const reproduced = replay.ok === true && !replay.pauseReason;
       if (!reproduced) {

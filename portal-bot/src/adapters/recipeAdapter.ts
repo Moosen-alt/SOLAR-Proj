@@ -343,7 +343,7 @@ export class RecipeAdapter extends BasePortalAdapter {
     private recipe: PortalRecipe,
     private fieldValues: Record<string, string>,
     private docsByType: Record<string, string>,
-    private options: { autoSubmit?: boolean } = {},
+    private options: { autoSubmit?: boolean; beforeUpload?: (docType: string, file: string) => void } = {},
   ) {
     super();
     this.portalName = `Recipe: ${recipe.ahj || recipe.utility || recipe.profileKey} (${recipe.portalPlatform || "portal"})`;
@@ -2097,11 +2097,15 @@ ${body.slice(0, 4000)}`);
         : file;
       const loc = await this.resolveLocator({ css: `[data-al-upl="${slot.key}"]` });
       if (!loc) continue;
+      this.options.beforeUpload?.(hit.docType, file);
       const ok = slot.kind === "browse"
         ? await Promise.all([
             this.page.waitForEvent("filechooser", { timeout: 8000 }),
             loc.click({ timeout: 6000 }),
-          ]).then(([chooser]: [{ setFiles: (f: unknown) => Promise<void> }, unknown]) => chooser.setFiles(payload)).then(() => true).catch(() => false)
+          ]).then(([chooser]: [{ setFiles: (f: unknown) => Promise<void> }, unknown]) => {
+            this.options.beforeUpload?.(hit.docType, file);
+            return chooser.setFiles(payload);
+          }).then(() => true).catch(() => false)
         : await loc.setInputFiles(payload).then(() => true).catch(() => false);
       if (!ok) continue;
       await this.waitForUploadAccepted();
@@ -2980,10 +2984,12 @@ ${body.slice(0, 4000)}`);
             this.page.waitForEvent("filechooser", { timeout: 8000 }),
             scoped!.click({ timeout: 6000 }),
           ]);
+          this.options.beforeUpload?.(step.docType!, filePath);
           await chooser.setFiles(file);
           await this.waitForUploadAccepted();
           return true;
         }
+        this.options.beforeUpload?.(step.docType!, filePath);
         await scoped!.setInputFiles(file);
         await this.waitForUploadAccepted();
         return true;

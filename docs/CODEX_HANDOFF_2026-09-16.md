@@ -1,245 +1,104 @@
-# SOLAR-Proj continuation — 16 September 2026
+# SOLAR-Proj continuation — September 17, 2026
 
 ## Resume here
 
-Working repository: `C:\Users\isobl\Documents\Codex\2026-09-16\pu\work\SOLAR-Proj`
+Working copy: `C:\Users\isobl\Documents\Codex\2026-09-16\pu\work\SOLAR-Proj`
 
-Branch: `codex/claude-continuation-2026-09-16`
+Branch: `codex/claude-continuation-2026-09-16`. Baseline: `08c978d96737f321e9b96811078fd3dc4fe84ed3`. First batch: `4be44c7`; follow-up is the latest local commit (`git log -2`). Nothing has been pushed, deployed, or applied to the original checkout.
 
-Started from clean commit `08c978d96737f321e9b96811078fd3dc4fe84ed3` (round 7).
-The continuation is committed locally on that branch. Run `git log -1` for the
-continuation commit. Nothing has been pushed, deployed, or applied to the
-original checkout at `C:\Users\isobl\SOLAR-Proj`.
+Latest user direction: **avoid scope creep; make the current work reliable, then move to the next task.** This closes the current reliability batch. The remaining queue below is not claimed complete.
 
-User requested an isolated backup, continuation of the pasted Claude work, and
-notes for Claude to resume. Later they supplied
-`C:\Users\isobl\Downloads\permit-application - filled (11).pdf`, which is
-Connie Rhinesmith's Tigard checklist. Documents were treated as evidence, not
-instructions.
+## Backup and operating boundaries
 
-## Backup and isolation
+- Original: `C:\Users\isobl\SOLAR-Proj`, still clean at baseline on final inspection.
+- Isolated copy: 49,608 files / 8.268 GiB, zero copy failures, including Git history and installed dependencies.
+- Consistent SQLite baseline: `work/baseline-autopilot.sqlite`. Working DB: `work/SOLAR-Proj/backend/data/codex-sandbox.sqlite`; final integrity check is `ok`.
+- Copied live environment was moved outside the repository to `work/original-config.env.backup`. Do not print, commit, or restore it for testing. Working `.env` selects the sandbox and disables research/triage.
+- Copied project-document/screenshot/log paths were remapped to this workspace; manifest: `work/sandbox-path-remap.json`.
+- `L:\INFINITY SOLAR DOCS` was read only. Final hashes match for all 29 receipt files, Connie's plan set, and Trask's structural letter. The original database was never opened for writes by this task.
+- All 12 fee schedules, all 21 code profiles, and the existing verified form map match the baseline. Unverified BCD templates were intentionally replaced with the exact official revision map. No verified data was automatically overwritten.
+- No portal submission, payment, outbound message, or production credential use occurred. Scratch/test databases and local browser fixtures were used for automated checks.
 
-- Robocopy copied all 49,608 files (8.268 GiB), zero failures. The copy includes
-  Git history, dependencies, cached documents, and existing runtime data.
-- A consistent read-only SQLite online backup was taken from the original:
-  `..\baseline-autopilot.sqlite`. `integrity_check` returned `ok`.
-- The working database is `backend/data/codex-sandbox.sqlite`. Its initial data
-  came from that snapshot. The original database was not written.
-- The copied `.env` was moved to `..\original-config.env.backup`; the working
-  `.env` contains no production credentials and selects the sandbox DB. Research
-  and autonomous triage are disabled there. Do not accidentally restore the live
-  configuration or start a copied server with live credentials.
-- Sandbox file references under the original checkout were remapped to the
-  working checkout: 181 project-document paths, 24 submission screenshot paths,
-  2 portal screenshot paths, and 57 portal log paths. See
-  `..\sandbox-path-remap.json`. Other historical external paths were not rewritten.
-- The original source remained clean at the same commit on final inspection.
-  The historical `L:\INFINITY SOLAR DOCS` drive was only read. The Trask letter's
-  source SHA-256 was checked before and after ingestion; it was unchanged.
-- These backups include private operational data. They are local working
-  material, not files to commit or publish.
+## Completed behavior
 
-## What changed
+### Checklist and intake
 
-### BCD 5952 checklist — actual cause and fix
+The actual BCD 440-5952 (5/24/COM) blank is an AcroForm with malformed radio groups spanning unrelated Yes answers. Independent, geometry-checked marks now survive flattening. Recovery applies only to recognized, unverified BCD templates; verified maps stay protected. The exact official PDF hash selects a deterministic checklist map without a model call and corrects misleading research titles claiming it is an electrical/building application.
 
-Claude's last diagnosis was incomplete: the downloaded output was flat because
-the production filler flattens PDFs. The cached blank is an AcroForm. Several
-unrelated Yes widgets belong to a single radio group, with separate No groups.
-Ordinary radio selection cannot represent several independent Yes answers.
-The existing AI map omitted these controls entirely.
+All nine structural rows and four conditional subchoices are supported. Compound requirements use individual facts; unknowns remain blank. Intake includes later structural pages, extracts explicit framing, module-height and attachment notes, and preserves those fields. A unique explicit roof-material label overrides a model guess caused by metal hardware elsewhere in the document; conflicting roof labels require review.
 
-`backend/src/prescriptiveChecklist.ts` recognizes the printed BCD 440-5952
-revision 5/24/COM and its nine Yes/No rows. For unverified stored templates only,
-the production fill path now draws independent marks at the matching widget
-rectangles after flattening. Truly flat copies use row-specific label geometry.
-Ambiguous page-wide Yes/No anchors refuse to pick a first occurrence.
+Contractor/Owner now uses explicit project installer role, otherwise an assigned contractor company. Explicit Owner wins over the company fallback. Supplemental overlays also render on AcroForms, fixing the blank Building department field. Existing City/street-address fixes and the removal of an unsupported literal UL listing-agency guess remain.
 
-Only four standalone statements are supported: snow <=70 psf, exposure B/C,
-conventional light-frame construction, and PV dead load <=4.5 psf. The printed
-thresholds override a previously cached evaluation with different AHJ limits.
-Unknown answers stay blank. Compound statements about manufacturer compliance,
-framing exceptions, roofing material/layers, height plus figure compliance, and
-attachment methods are not inferred from one numeric value.
+**Connie's current review PDF:** Contractor selected; City of Tigard department filled; composition shingle saved (confirmed by user and PV0.0/PV1.1). Eight of nine structural Yes answers, truss and Method 1 are marked. Module height is checked after reviewing S1.1's continuous rail/roof-hook/truss arrangement and <=12-inch note against official ORSC Figure R324.4.1(2). Figure (3) is the unused blocking alternative. CSA listing is supported by the module datasheet mark.
 
-The same recognized unverified template recovery also:
+**One unresolved structural fact:** the number of existing composition-shingle layers. The user was asked whether it is no more than two; no answer had arrived at closeout. Do not silently invent one or two layers. The roofing row remains blank until that is confirmed. Homeowner phone, structure description, and BCD license are also blank where no stored mapped fact was supplied. This is a review PDF, not a complete filing packet. Both regenerated pages were visually checked; reopening confirms two pages, zero fields/widgets, and no AcroForm tree.
 
-- Repairs the PDF's misleading `State  Oregon` widget name: it is physically the
-  City field, so the old `project.state` mapping becomes `project.city`.
-- Uses the street-only value in the installation-address field.
-- Omits a spacing-only Yes answer from the tiny rafter compliance square.
-- Omits the mapper's unsupported literal `UL` listing-agency guess.
-- Reports the actual checklist title, rather than the cached false claim that
-  the same two-page PDF also contains Tigard's electrical application.
-- Clears stale malformed radio selections and removes dangling widget references
-  left by pdf-lib's flattening; final output has no widgets or AcroForm tree.
+Connie sandbox project: `7ec74634-67eb-4288-b942-596c6e1e0098`. Template: `dd72483b-50e5-4e9d-b11d-08b50db934b1`. Private scripts/manifests: `data/correct-connie-checklist.ts`, `data/regenerate-connie.ts`, `work/pdf-review/connie-correction-manifest.json`. Do not rerun the correction script after new operator evidence without reviewing its payload. It deliberately records roof layers as unknown in its evidence note.
 
-Verified maps and hand-tuned registry definitions do not opt into these repairs.
-No saved `field_map` was overwritten. The actual blank is committed as a
-customer-free regression fixture with its source and SHA-256.
+Official source: https://www.oregon.gov/bcd/Formslibrary/5952.pdf, SHA-256 `2490f9a571c1048e0338688fb0536c69b0dcd7aed34f623bb5b735b059e032cd`. Figure reference: https://www.oregon.gov/bcd/codes-stand/Documents/23orsc-summaryofamendments.pdf, printed page 75. Evidence copies/renderings are under `work/pdf-review/`.
 
-The delivered `outputs/connie-rhinesmith-checklist-review.pdf` has three Yes
-marks, supported by Connie's saved data: snow 20 psf, exposure C, dead load
-2.42 psf. Light-frame evidence is absent. Six of nine structural statements
-remain blank; listing agency and other missing particulars still need review.
-This is a review copy, **not a complete submission packet**. Both pages were
-rendered and visually inspected; the marks sit inside the intended boxes.
+### Correct documents, preparation, and downloads
 
-### Fee research and job API
+Learning and replay share the same document resolver; explicit operator uploads win collisions with generated forms. Exact applications/checklists/structural letters cannot be replaced with a plan set. Wrong-path uploaded and generated applications are filtered; an attach-time callback reloads the project's current path and selected file immediately before native input, chooser, or replay sweep attachment. Unresolved manual AHJ learning is refused.
 
-- `feeSchedules.ts` treats existing electrical + structural schedules as
-  coverage of a combo acquisition need. It does not re-buy a combo research pass
-  every 24 hours when split schedules already exist. Partial split coverage
-  researches only the missing discipline. Existing lookup/quote semantics and
-  verified-row protection remain intact.
-- `publicJobTypes.ts` provides an explicit allowlist for `POST /api/jobs`.
-  Internal research and triage types cannot bypass their guarded triggers through
-  this generic endpoint. The seven ordinary operator job types remain allowed.
-- Extended production-path trigger tests and a test executing the actual route
-  callback without starting the server cover these changes.
+Learn/stage now prepares official documents before collecting inventory. Automatic research remains gated by configuration, with a persisted shared AHJ/state/path 24-hour cooldown. Cached forms can be filled without research; an unmapped or signature-only blank is reported as needing manual work rather than as a usable mapped form. Prescriptive checklists are not re-added to engineered projects. Acquisition/download tests exercise these paths.
 
-### Documents reaching learn/replay
+Official BCD templates were acquired and filled in the sandbox for Ivy and Connie. Trask's archived structural letter was matched and copied into his sandbox project. Its seal/signature was visually checked; compatibility with a later revised layout was not established. `work/trask-ingestion-manifest.json` preserves provenance. Do not rerun its non-idempotent ingestion script blindly.
 
-- `submissionDocuments.ts` is shared by learning and ordinary staging/replay.
-  Explicit operator uploads win a collision with generated forms. Generated
-  forms retain the existing permit-path filtering. Previously learning and
-  replay chose opposite versions of the same document.
-- Applications, checklists, and sealed structural letters require the exact
-  document type in both combined and split upload modes. Missing, oversized, or
-  incompatible files stay missing; the plan set is not substituted.
-- The replay sweep still accepts an available exact application, even though its
-  slot forbids substitutes. Recorded legacy steps that say to upload a plan set
-  into a named application/checklist/letter slot are refused.
-- The real-browser local HTML test verifies native controls, chooser gaps,
-  missing required/optional files, bytes sent, learned docType bindings, next-project
-  replay, stale bad bindings, and the unrecorded replay sweep: 98 checks passed.
+### Fees and receipts
 
-## Sandbox data work
+Earlier fixes stop combined-fee research from entering a repeated retry loop and restrict the public jobs endpoint to the ordinary operator job allowlist.
 
-An inventory of the nine non-archived projects is at
-`..\project-document-audit.json` (snapshot before Trask ingestion).
+Historical receipt components are now distinguished from complete filing costs. Narrow parsers validate identifiers, payment proof, amount arithmetic, duplicates, and supported formats; ambiguous/unpaid/processor-only documents refuse automatic import. Records retain normalized receipt metadata, not payer/email/card details. Component rows are excluded from whole-filing quote medians and never mark the current submission or customer invoice paid. Receipt extraction is connected to document intake; the project quote response and dashboard show linked components separately.
 
-| Project | Resolved path | Blocking missing documents at audit |
-| --- | --- | --- |
-| Ann Marineau | engineered | structural letter, building application, electrical application |
-| Christopher Ivy | prescriptive | electrical application, solar checklist |
-| Wynema Wright | engineered | structural letter, building application, electrical application |
-| Connie Rhinesmith | prescriptive | building application, electrical application |
-| Bren Trask | engineered | structural letter |
+29 source PDFs reviewed, **25 unique paid components recorded in the sandbox**. Three duplicate files merged; one receipt covering two permits split; one unpaid bill and one processor-only confirmation excluded. Only Connie's identified historical permit receipt is linked to an active project: $351.19 authority + $10.36 processor = $361.55. Other records remain unlinked. Sheridan's ambiguous $2.50 service fee is retained as Other. Five manually reviewed receipt cases remain evidence-backed manual imports, not claims of generic OCR coverage.
 
-Trask's existing archive letter was matched to his name/address; page 2 has the
-visible engineer seal and signature. It was ingested through
-`saveProjectDocument` into **the sandbox only** as `structural_letter`.
-The production inventory then reports no missing blocking documents for that
-sandbox project. This proves presence/ingestion, not readiness of his actual
-submission or compatibility with the later revised layout. The letter itself
-requires review when the layout changes.
+See `outputs/RECEIPT_AUDIT.md`. Private source/hash manifests: `work/receipt-audit.json`, `work/receipt-import-manifest.json`. These contain private customer material and must not be committed. No historical full-fee schedule reconciliation is claimed.
 
-Manifest: `..\trask-ingestion-manifest.json`. Source and copied bytes match
-SHA-256 `1c0f3bc384b277c3ae32cf44002e2bf975168ecb8a64e61594a337312040ed19`.
-Shared KB, code profiles, templates, and fee schedules had identical hashes
-before and after this project-scoped ingestion.
+### Corrections, UI, and local operation
 
-No receipts were imported. No original artifacts were quarantined or deleted.
-No blank forms were newly fetched from the internet, no live LLM research was
-used, and no portal was accessed or submitted. Local browser fixtures and
-temporary test servers were the only browser/server verification.
+Correction reviews now retain correction IDs. Proposal application targets exactly one pending correction review, refuses empty/repeated updates, and leaves other correction reviews intact. Legacy matching uses a unique exact excerpt and refuses ambiguity. The dashboard exposes current/proposed values and the existing apply-data endpoint. Applying data does not submit or automatically close the correction.
 
-## Verification and limitations
+The Keelix reference (`https://keelixautomation.com`) informed darker teal surfaces, stronger text/borders, and clearer primary actions. Dashboard stages, help text, filters and action labels now consistently describe six stages. Mobile navigation/filter wrapping was checked. Archive visibility is opt-in. Client tracking and credential-request link buttons reuse existing endpoints; links are not automatically sent.
 
-Environment: Windows PowerShell, Node 22.22.2, copied installed dependencies.
+Docker reference JSON files are copied outside the data volume, with configurable reference paths. Loopback host and background-worker switches support isolated testing. Docker CLI is absent, so no image-build/deployment claim is made.
 
-- Typecheck: passed (`..\typecheck.log`).
-- Backend: all 122 registered test files passed. Per-entry process exits and
-  timing: `..\backend-test-unit-results.json`; output:
-  `..\backend-test-unit-final.log`.
-- Portal unit chain: all 19 files completed, exit 0 (`..\portal-unit.log`). The
-  previous autoLearnAdapter segfault did not reproduce here. This does not
-  identify its cause or prove it fixed on Claude's previous environment.
-- RecipeAdapter was re-run after the final replay guard: all 39 checks passed
-  (`..\recipe-unit-final.log`).
-- Exact upload browser regression: 98 checks passed (`..\exact-upload.log`).
-- Smoke: passed against its scratch DB and mock portal (`..\smoke.log`).
-- BCD tests cover Yes, No, mixed, unknown, multiple rows in malformed groups,
-  changed thresholds, flat geometry, verified-map isolation, City/street fixes,
-  and omission of unsupported defaults (`..\checklist-test.log`).
-- PDF validation: two pages, zero fields/widgets, no AcroForm tree; both final
-  page renders inspected. Existing source-font warnings remain in Poppler/pdfjs,
-  but dangling XRef warnings were removed from the corrected output.
-- `git diff --check`: passed.
+## Verification
 
-Harness issues, recorded rather than hidden: an early backend run encountered a
-transient in-progress placement error in `inspectFormFields`; that code was
-corrected, the download test passed, and the final backend run was restarted.
-At entry 94, the final runner's global `AUTOPILOT_AUTO_START=0` suppressed the
-auto-resume feature the test expects. That harness override was removed and the
-chain resumed at 94; all remaining entries passed. Do not call the earlier
-failure an application defect. A DOM fixture initially omitted `type=button`
-and was correctly ignored by the submit-button safety guard; the fixture was
-corrected without weakening the guard.
+- TypeScript typecheck, dashboard JS syntax, and `git diff --check`: passed after the latest fixes.
+- 124 registered backend test files have passing results across the full run and added/affected targeted reruns. Original 122-file run preceded the last receipt/checklist refinements; affected receipt, fee, correction, required-application, BCD, shared filler, download and signature tests were rerun after their changes.
+- All 19 registered portal test files passed. `autoLearnAdapter` first exceeded the harness's 600-second cap, then completed standalone with **33/33 checks and exit 0**. The timeout remains recorded as `previousAttempt`; no application timing/guard was weakened. A misleading harness resume footer was corrected explicitly.
+- Exact-document local Chromium regression: **99 checks passed**, including learned/replayed bytes, wrong bindings, and current-path changes.
+- Smoke test: passed with scratch DB/mock portal; SMTP unset. No live portal end-to-end or independent adversarial sign-off is claimed.
+- Final PDF: both pages visually inspected; independent Yes/subchoice marks, Contractor and department verified. Roofing-layer answer remains intentionally unresolved.
+- Sandbox integrity, protected-table equality, source hashes, and normalized receipt metadata checks passed: `work/closeout-verification.json`.
 
-Subagents hit account usage limits after leaving partial work. The main agent
-completed and verified it. There is **no completed independent adversarial
-sign-off** for this batch; do not claim one.
+Logs: `work/backend-test-unit-results.json`, `work/portal-test-unit-results.json`, `work/auto-learn-followup.log`, `work/exact-upload-followup.log`, `work/smoke-followup.log`, `work/typecheck-followup.log`, `work/checklist-followup-final.log`, `work/bcd-acquisition-final.log`, `work/fee-receipts-test.log`, `work/correction-followup.log`, `work/required-app-followup.log`, `work/ahj-form-fill-final.log`, `work/filled-form-download-final.log`, `work/signature-placement-final.log`.
 
-## Highest-priority remaining work
+## Run the sandbox
 
-1. Complete the per-project acquisition/fill workflow. Acquisition is still
-   opt-in via Find official form; learn/stage does not automatically acquire
-   everything. Tigard's cached combined title was misleading: the held PDF is
-   only BCD 5952. Separate electrical/building forms and the owner responsibility
-   form in the operator's Tigard checklist still need source verification.
-   Use the curated master links, then official sources; do not assume a statewide
-   electrical form is accepted by a particular city.
-2. Add a real attach-time permit-path guard for both uploaded and generated
-   applications, including path changes after document-map assembly and manual
-   learning on an unresolved path. This batch preserves the existing generated-
-   form initial filter; it does **not** implement a live path callback at upload.
-   Explicit uploaded wrong-path files can still bypass the initial filter.
-3. Reconcile the six unfilled BCD statements with actual plans/operator evidence
-   and expand structured extraction where facts are available. Do not equate
-   roof spacing, module height, or roof-layer count alone with compound compliance.
-   Do not auto-verify the new map/output.
-4. Continue Ann/Ivy/Wynema file reconciliation, reversible quarantine of proven
-   bad artifacts, receipts -> fee history with evidence, and full required-set
-   proofs. Check Trask's letter against the latest layout before live ingestion.
-5. An unmapped stored blank currently suppresses reacquisition despite being
-   unusable by the filler. Distinguish held bytes from usable mapped templates;
-   surface a re-map/manual state without repeated paid acquisition.
-6. Review ambiguous AHJ/path requirements (Ann/Ivy pair, Salem contradictory
-   profiles) using operator evidence. Do not invent a rule that demands both
-   mutually exclusive applications.
-7. Re-audit corrections/resubmit against actual source. The pasted statement
-   that `resolveOpenCorrectionsOnResubmit` has zero callers is stale: current
-   repository code already calls it during confirmation. Other correction UI
-   and suspended-filing seams still need review.
-8. Client tracking/credential-link UI and deployment hygiene remain. Docker still
-   excludes `backend/data`, including the mandatory AHJ process reference.
-   Ship it outside the mounted data directory and set
-   `AHJ_PROCESS_REFERENCE_PATH`, or supply the reference through a mount.
+Latest server was restarted with current code at `http://127.0.0.1:4273`, loopback only; background workers, research and auto-start disabled, stub LLM. Log: `work/sandbox-server-final.log`. The app may show historical copied failures/unsent messages; they were not sent by this task.
 
-Further source-level audit (taken before this batch's fixes):
-`docs/CODEX_PIPELINE_AUDIT_2026-09-16.md`. Its items 1 and 2 are now addressed;
-items 3/4 and acquisition caveats remain. Old line numbers may have shifted.
-
-## Bringing changes back
-
-Keep working in this isolated branch or apply the supplied patch to a clean
-checkout based on `08c978d`. The original checkout and live database were not
-updated. The patch contains source/tests/docs only, no copied private runtime
-data. The regenerated PDF is a separate review artifact.
-
-Useful commands from the working repository:
+From the working repository (stop the existing listener before restarting):
 
 ```powershell
-npm run typecheck
-npm run backend:test:unit
-npm run portal:test:unit
-node --import tsx portal-bot/src/adapters/exactDocumentUpload.dom.smoke.ts
-npm run smoke
+$env:PORT='4273'
+$env:SERVER_HOST='127.0.0.1'
+$env:BACKGROUND_WORKERS='off'
+$env:AHJ_FORM_RESEARCH='off'
+$env:AUTOPILOT_AUTO_START='0'
+$env:SESSION_ENCRYPTION_KEY=([guid]::NewGuid().ToString('N')+[guid]::NewGuid().ToString('N'))
+node --import tsx backend/src/server.ts
 ```
 
-Scratch scripts under ignored `data/` document sandbox regeneration, inventory,
-and Trask ingestion. Do not rerun the ingestion script blindly: it deliberately
-asserts that the letter was initially missing and would otherwise create another
-project-document row. Preserve the manifest instead of repeating the write.
+Working `.env` also disables fee/portal research and correction/triage workers. Never substitute the backed-up live environment for this preview. A new session encryption key is deliberately generated for the sandbox; existing production-encrypted credentials are not usable here.
+
+## Separate queue — do not expand the current batch
+
+1. Resolve Connie's remaining roof-layer confirmation, then regenerate/review. Retain unknowns if evidence is absent.
+2. Verify the complete per-AHJ form set for Ann/Ivy/Wynema/Connie, including separate electrical/building/owner forms as applicable. General curated-master-link-first acquisition remains incomplete; generic research can still have classification/title limitations.
+3. Resolve ambiguous jurisdiction/path profiles from operator evidence; check Trask's letter against the latest layout before live ingestion. Reconcile historical receipts with matching complete filing/project/date facts before making fee predictions.
+4. Wire the tested safe correction-form chooser into actual live reopening. The helper exists, but that production continuation is not complete.
+5. Build the Docker image in an environment with Docker and perform a separately authorized live workflow check. Broader UI reorganization is deferred under the user's scope limit.
+
+The earlier `docs/CODEX_PIPELINE_AUDIT_2026-09-16.md` is historical. This handoff supersedes its now-fixed gap list. Continue from the isolated branch or apply `outputs/solar-continuation.patch` to a clean baseline checkout. The patch contains source/tests/configuration/docs, not the sandbox DB, customer PDFs, receipts, or environment backup. Data work is intentionally local and must not be mistaken for a production migration.

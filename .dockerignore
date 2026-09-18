@@ -6,7 +6,9 @@ node_modules
 dist
 **/dist
 # Local data — never bake into the image; mount a volume instead
-backend/data
+backend/data/*
+!backend/data/reference-ahj-processes.json
+!backend/data/reference-code-profiles.json
 backend/data/backups
 backend/data/batch-uploads
 backend/data/batch-reports

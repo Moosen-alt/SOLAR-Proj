@@ -191,6 +191,7 @@ function resolveStorageStatePath(encryptedStatePath: string | null | undefined):
 }
 
 interface StageOptions {
+  beforeUpload?: (docType: string, file: string) => void;
   encryptedStorageStatePath?: string;
   headless?: boolean;
   reviewerReport?: ReviewerReport;
@@ -476,7 +477,7 @@ export async function stageWithRecipe(
   files: string[],
   options: StageOptions = {},
 ): Promise<Record<string, unknown>> {
-  return browserLimiter(() => runAdapter(new RecipeAdapter(recipe, fieldValues, docsByType, { autoSubmit: options.autoSubmit }), project, files, options));
+  return browserLimiter(() => runAdapter(new RecipeAdapter(recipe, fieldValues, docsByType, { autoSubmit: options.autoSubmit, beforeUpload: options.beforeUpload }), project, files, options));
 }
 
 // AUTONOMOUS LEARN: drive an unknown portal with an LLM planner, fill the form up to
@@ -499,6 +500,7 @@ export async function learnPortal(input: {
   // docType → upload-ready file path (from the doc-splitting tools). Lets the learner
   // attach the right split document at each portal upload control while learning.
   docsByType?: Record<string, string>;
+  beforeUpload?: (docType: string, file: string) => void;
   // "combined" (AHJ/Accela) attaches the full plan-set PDF to every upload control;
   // "split" (utility/PowerClerk) attaches the matching split sheet per control. Default split.
   uploadMode?: "split" | "combined";
@@ -533,7 +535,7 @@ export async function learnPortal(input: {
   allowConsentAccept?: boolean;
 }): Promise<import("./adapters/autoLearnAdapter").LearnResult> {
   const { AutoLearnAdapter } = await import("./adapters/autoLearnAdapter");
-  const adapter = new AutoLearnAdapter(input.portalName, input.planner, { maxPages: input.maxPages, budgetMs: input.budgetMs, docsByType: input.docsByType, uploadMode: input.uploadMode, policyProfile: input.policyProfile, bindableFields: input.bindableFields, onProgress: input.onProgress, equipment: input.equipment, certifiedAliases: input.certifiedAliases, contactIdentity: input.contactIdentity, siteContactIdentity: input.siteContactIdentity, siteIdentity: input.siteIdentity, allowFinalSubmit: input.allowFinalSubmit, hasBattery: input.hasBattery, allowConsentAccept: input.allowConsentAccept });
+  const adapter = new AutoLearnAdapter(input.portalName, input.planner, { maxPages: input.maxPages, budgetMs: input.budgetMs, docsByType: input.docsByType, beforeUpload: input.beforeUpload, uploadMode: input.uploadMode, policyProfile: input.policyProfile, bindableFields: input.bindableFields, onProgress: input.onProgress, equipment: input.equipment, certifiedAliases: input.certifiedAliases, contactIdentity: input.contactIdentity, siteContactIdentity: input.siteContactIdentity, siteIdentity: input.siteIdentity, allowFinalSubmit: input.allowFinalSubmit, hasBattery: input.hasBattery, allowConsentAccept: input.allowConsentAccept });
   let tmpStatePath: string | undefined;
   let leaveOpen = false;
   // A browser left open by a prior guided-manual stage holds this profile's lock — close it
@@ -654,7 +656,7 @@ export async function checkStatusWithAdapter(
     adapter =
       adapterType === "accela" ? new OregonEPermittingAdapter() :
       adapterType === "powerclerk" ? new PowerClerkAdapter() :
-      options.recipe ? new RecipeAdapter(options.recipe, options.fieldValues ?? {}, options.docsByType ?? {}) :
+      options.recipe ? new RecipeAdapter(options.recipe, options.fieldValues ?? {}, options.docsByType ?? {}, { beforeUpload: options.beforeUpload }) :
       null;
 
     if (!adapter || !adapter.checkStatus) return null;

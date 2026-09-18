@@ -1046,7 +1046,7 @@ function stagePillHtml(project) {
 function renderProjects() {
   const projects = state.projects;
   const total = state.projectsTotal ?? projects.length;
-  $("projectCount").textContent = `${projects.length}${total > projects.length ? `/${total}` : ""}`;
+  $("projectCount").textContent = `${projects.length}${total > projects.length ? `/${total}` : ""} projects`;
   // Both views read the same (server-filtered) state.projects; the page router
   // decides which container is visible. Render both so a page switch is instant.
   renderBoard();
@@ -1099,8 +1099,8 @@ function boardCardHtml(p, userMap) {
     <span class="board-card-name">${esc(p.homeownerName || "Unnamed")}</span>
     <span class="board-card-addr muted">${esc(p.projectAddress || "No address")}</span>
     <span class="board-card-meta">
-      ${permit ? `<span class="chip">P: ${esc(permit)}</span>` : ""}
-      ${nem ? `<span class="chip">N: ${esc(nem)}</span>` : ""}
+      ${permit ? `<span class="chip">Permit: ${esc(permit)}</span>` : ""}
+      ${nem ? `<span class="chip">Interconnection: ${esc(nem)}</span>` : ""}
       ${p.qcFailCount ? `<span class="chip danger">${p.qcFailCount} QC</span>` : ""}
       ${p.isBlocked ? `<span class="chip danger">blocked</span>` : ""}
     </span>
@@ -1108,6 +1108,11 @@ function boardCardHtml(p, userMap) {
   </button>`;
 }
 
+const STAGE_HELP = {
+  intake: "Upload and extract project details", qc: "Check data and resolve flagged items",
+  build: "Prepare documents and review the plans", submit: "Review the application, then file",
+  track: "Monitor permits and interconnection", closeout: "Deliver the approved project packet",
+};
 function renderBoard() {
   const el = $("projectBoard");
   if (!el) return;
@@ -1122,8 +1127,9 @@ function renderBoard() {
     const items = groups.get(stage.key) || [];
     return `<div class="stage-col" data-stage="${stage.key}">
       <div class="stage-col-head"><span>${esc(stage.label)}</span><span class="badge">${items.length}</span></div>
+      <p class="stage-col-help">${esc(STAGE_HELP[stage.key] || "")}</p>
       <div class="stage-col-body">
-        ${items.length ? items.map((p) => boardCardHtml(p, userMap)).join("") : `<p class="muted board-empty">—</p>`}
+        ${items.length ? items.map((p) => boardCardHtml(p, userMap)).join("") : `<p class="muted board-empty">No projects here</p>`}
       </div>
     </div>`;
   }).join("");
@@ -1443,6 +1449,7 @@ async function selectProject(projectId) {
   state.recheckTargetId = null;
   state.submittalTracks = null;
   state.paymentQuotes = null;
+  state.feeReceipts = [];
   state.feeSheet = null;
   state.portalQuestions = null;
   $("emptyState").hidden = true;
@@ -1495,6 +1502,7 @@ async function loadPaymentQuotes() {
     api(`/api/projects/${id}/payment-quote?track=nem`),
   ]);
   state.paymentQuotes = { permit: permit.quote, nem: nem.quote };
+  state.feeReceipts = permit.receipts || [];
 }
 
 function money(v) {
@@ -1543,18 +1551,24 @@ function renderPaymentPanel() {
   // Only per-submission clients see the payment screen (plus anyone with an
   // existing paid/waived row, so history stays visible if the mode changes).
   const visible = list.filter((q) => q.required || (q.payment && q.payment.status !== "quoted"));
-  if (!visible.length) { panel.hidden = true; panel.innerHTML = ""; return; }
+  const receipts = state.feeReceipts || [];
+  if (!visible.length && !receipts.length) { panel.hidden = true; panel.innerHTML = ""; return; }
   const unpaid = visible.filter((q) => q.required && q.payment?.status !== "paid" && q.payment?.status !== "waived");
   panel.hidden = false;
   panel.innerHTML = `
-    <section class="panel kx-callout-panel ${unpaid.length ? "is-warn" : ""}">
+    ${visible.length ? `<section class="panel kx-callout-panel ${unpaid.length ? "is-warn" : ""}">
       <div class="item-title" style="margin-bottom:6px">
         <span>💳 Payment — per-submission billing</span>
         ${statusBadge(unpaid.length ? "payment required before staging" : "cleared")}
       </div>
-      ${unpaid.length ? `<p style="margin:0 0 8px;font-size:12px">This client pays per submission: collect the total below, then <strong>Mark paid</strong> to unlock <em>5 · Prepare Submittal</em>. Enter the portal's real fee when you see it on the fee/review screen — it replaces the estimate and is remembered for this AHJ. <span class="muted">The portal's own fee checkout is always completed by a human, never automated.</span></p>` : ""}
+      ${unpaid.length ? `<p style="margin:0 0 8px;font-size:12px">This client pays per submission: collect the total below, then <strong>Mark paid</strong> to unlock <em>4 · Prepare Submittal</em>. Enter the portal's real fee when you see it on the fee/review screen — it replaces the estimate and is remembered for this AHJ. <span class="muted">The portal's own fee checkout is always completed by a human, never automated.</span></p>` : ""}
       ${visible.map(renderPaymentQuoteCard).join("")}
-    </section>`;
+    </section>` : ""}
+    ${receipts.length ? `<section class="panel"><h3>Recorded receipt payments</h3>
+      <p class="muted">These are paid components. They do not establish the full permit cost or mark the current submission as paid.</p>
+      <table><thead><tr><th>Authority / permit</th><th>Paid to authority</th><th>Processing fee</th><th>Total paid</th></tr></thead><tbody>
+      ${receipts.map(r => `<tr><td>${esc(r.jurisdiction)}<br>${esc(r.permitNumber || "Permit not matched")} · ${esc(r.discipline)}</td><td>${money(r.authorityAmountUsd)}</td><td>${money(r.processingFeeUsd)}</td><td>${money(r.totalPaidUsd)}</td></tr>`).join("")}
+      </tbody></table></section>` : ""}`;
   panel.querySelectorAll("[data-pay-action]").forEach((btn) => {
     btn.addEventListener("click", () => handlePaymentAction(btn.dataset.payAction, btn.dataset.payTrack, btn));
   });
@@ -1774,24 +1788,24 @@ function statusLabel(status) {
 // Plain-language "what do I do next" guidance for every canonical status.
 // tone: "info" (blue, normal), "warn" (amber, needs attention), "done" (green).
 const NEXT_STEPS = {
-  intake_uploaded: { tone: "warn", step: "Step 1", text: "Files uploaded but not parsed yet. Open the <strong>Parser</strong>, click <strong>Parse</strong>, then <strong>Save to project</strong>." },
-  parsed: { tone: "info", step: "Step 2", text: "Parsed. Click <strong>2 · Run QC</strong> to check the data for missing or wrong info." },
-  qc_failed: { tone: "warn", step: "Step 2", text: "QC found problems. Open <strong>QC Results</strong> below, fix the flagged fields, then click <strong>2 · Run QC</strong> again." },
-  qc_passed: { tone: "info", step: "Step 3", text: "QC passed. Click <strong>3 · Build AHJ/NEM Docs</strong>, then <strong>4 · Reviewer Gate</strong>." },
-  ready_to_stage: { tone: "info", step: "Step 4", text: "Docs built. Click <strong>4 · Reviewer Gate</strong>, then <strong>5 · Prepare Submittal</strong>." },
-  submit_staging: { tone: "info", step: "Step 5", text: "Staging for submission. Click <strong>5 · Prepare Submittal</strong> to finish staging." },
-  awaiting_human_submit: { tone: "warn", step: "Step 5", text: "Staged and ready. <strong>A person must do the final submit</strong> in the portal now — automation stops here." },
-  submitted: { tone: "info", step: "Step 6", text: "Submitted. Track it with <strong>Permit Checks</strong> / <strong>NEM Checks</strong>. Paste any correction letter into <strong>Corrections</strong>." },
-  correction_received: { tone: "warn", step: "Step 6", text: "A correction came in. Open <strong>Corrections</strong> to triage it — the AI drafts a reply you review before sending." },
-  correction_triaged: { tone: "warn", step: "Step 6", text: "Correction triaged. Fix the docs per the reply, then move the project to <strong>Ready to resubmit</strong>." },
-  waiting_on_designer: { tone: "warn", step: "Step 6", text: "Waiting on the designer to revise stamped plans. Follow up if it has been a while." },
-  ready_to_resubmit: { tone: "info", step: "Step 5", text: "Revisions done. Click <strong>5 · Prepare Submittal</strong> to re-stage for resubmission." },
-  resubmit_staging: { tone: "info", step: "Step 5", text: "Staging the resubmission. Click <strong>5 · Prepare Submittal</strong> to finish." },
-  awaiting_human_resubmit: { tone: "warn", step: "Step 5", text: "Resubmission staged. <strong>A person must do the final resubmit</strong> in the portal — automation stops here." },
-  ready_for_issue: { tone: "info", step: "Step 6", text: "Approved — issuance/fees pending. Confirm the permit is issued, then keep tracking NEM." },
-  issued: { tone: "info", step: "Step 6", text: "Permit issued. Waiting on <strong>NEM approval</strong> to finish — keep running NEM Checks." },
-  approved: { tone: "info", step: "Step 6", text: "Approved. Confirm both permit issued and NEM approved to reach handoff." },
-  nem_approved: { tone: "info", step: "Step 7", text: "NEM approved. Once the permit is also issued, you will reach handoff." },
+  intake_uploaded: { tone: "warn", step: "Stage 1", text: "Files uploaded but not parsed yet. Open the <strong>Parser</strong>, click <strong>Parse</strong>, then <strong>Save to project</strong>." },
+  parsed: { tone: "info", step: "Stage 2", text: "Parsed. Click <strong>2 · Run QC</strong> to check the data for missing or wrong info." },
+  qc_failed: { tone: "warn", step: "Stage 2", text: "QC found problems. Open <strong>QC Results</strong> below, fix the flagged fields, then click <strong>2 · Run QC</strong> again." },
+  qc_passed: { tone: "info", step: "Stage 3", text: "QC passed. Click <strong>3 · Build AHJ/NEM Docs</strong>, then <strong>3 · Reviewer Gate</strong>." },
+  ready_to_stage: { tone: "info", step: "Stage 3", text: "Docs built. Click <strong>3 · Reviewer Gate</strong>, then <strong>4 · Prepare Submittal</strong>." },
+  submit_staging: { tone: "info", step: "Stage 4", text: "Staging for submission. Click <strong>4 · Prepare Submittal</strong> to finish staging." },
+  awaiting_human_submit: { tone: "warn", step: "Stage 4", text: "Staged and ready. <strong>A person must do the final submit</strong> in the portal now — automation stops here." },
+  submitted: { tone: "info", step: "Stage 5", text: "Submitted. Track it with <strong>Permit Checks</strong> / <strong>NEM Checks</strong>. Paste any correction letter into <strong>Corrections</strong>." },
+  correction_received: { tone: "warn", step: "Stage 4", text: "A correction came in. Open <strong>Corrections</strong> to triage it — the AI drafts a reply you review before sending." },
+  correction_triaged: { tone: "warn", step: "Stage 4", text: "Correction triaged. Fix the docs per the reply, then move the project to <strong>Ready to resubmit</strong>." },
+  waiting_on_designer: { tone: "warn", step: "Stage 4", text: "Waiting on the designer to revise stamped plans. Follow up if it has been a while." },
+  ready_to_resubmit: { tone: "info", step: "Stage 4", text: "Revisions done. Click <strong>4 · Prepare Submittal</strong> to re-stage for resubmission." },
+  resubmit_staging: { tone: "info", step: "Stage 4", text: "Staging the resubmission. Click <strong>4 · Prepare Submittal</strong> to finish." },
+  awaiting_human_resubmit: { tone: "warn", step: "Stage 4", text: "Resubmission staged. <strong>A person must do the final resubmit</strong> in the portal — automation stops here." },
+  ready_for_issue: { tone: "info", step: "Stage 5", text: "Approved — issuance/fees pending. Confirm the permit is issued, then keep tracking NEM." },
+  issued: { tone: "info", step: "Stage 5", text: "Permit issued. Waiting on <strong>NEM approval</strong> to finish — keep running NEM Checks." },
+  approved: { tone: "info", step: "Stage 5", text: "Approved. Confirm both permit issued and NEM approved to reach handoff." },
+  nem_approved: { tone: "info", step: "Stage 5", text: "NEM approved. Once the permit is also issued, you will reach handoff." },
   handoff_ready: { tone: "done", step: "Done", text: "Permit issued + NEM approved. Copy the <strong>Project Handoff Packet</strong> to the installer. PTO is the installer's job — our scope ends here." },
   blocked: { tone: "warn", step: "Blocked", text: "This project is blocked — see the red items below. Clear the blocker, then continue the steps." },
 };
@@ -3794,7 +3808,7 @@ const REVIEW_WARNING_FIELDS = new Set(["permitPath", "locates", "splitPages"]);
 function reviewNotesDisplay(item) {
   const notes = String(item.notes || "");
   if (notes.startsWith("agent-triage:")) {
-    return "Correction triaged by the agent — approving this item applies its proposed data updates.";
+    return "Review the proposed changes and required actions below. Applying data updates does not submit or close the correction.";
   }
   return notes || "Review required.";
 }
@@ -3810,6 +3824,13 @@ function renderReview() {
     const hint = reviewHint(item);
     const isWarning = REVIEW_WARNING_FIELDS.has(item.fieldName);
     const known = item.llmSuggestedValue || item.parserValue || "";
+    let triage = null;
+    try { if (String(item.notes).startsWith("agent-triage:")) triage = JSON.parse(item.notes.slice(13)); } catch {}
+    const proposals = Array.isArray(triage?.proposals) ? triage.proposals : [];
+    const correctionBody = item.fieldName === "correction" ? `
+      ${proposals.length ? `<table><thead><tr><th>Field</th><th>Current</th><th>Proposed</th><th>Evidence</th></tr></thead><tbody>${proposals.map(p => `<tr><td>${esc(p.field)}</td><td>${esc(p.currentValue || "Missing")}</td><td>${esc(p.proposedValue)}</td><td>${esc(p.basis)}</td></tr>`).join("")}</tbody></table>` : ""}
+      ${Array.isArray(triage?.actions) && triage.actions.length ? `<ol>${triage.actions.map(a => `<li>${esc(a)}</li>`).join("")}</ol>` : ""}
+      ${item.status === "pending" && triage?.correctionId && proposals.length ? `<button class="primary" data-apply-correction="${esc(triage.correctionId)}">Apply these data updates</button>` : `<p class="muted">Use Corrections in the Submit stage to review the response and record resolution.</p>`}` : "";
     const context = [];
     if (item.llmSuggestedValue) context.push(`<strong>AI suggestion:</strong> ${esc(item.llmSuggestedValue)}`);
     if (item.parserValue && item.parserValue !== item.llmSuggestedValue) context.push(`<strong>Parser read:</strong> ${esc(item.parserValue)}`);
@@ -3820,7 +3841,8 @@ function renderReview() {
       <p style="margin:0 0 4px">${esc(reviewNotesDisplay(item))}</p>
       ${context.length ? `<p style="margin:0 0 4px">${context.join("<br>")}</p>` : ""}
       ${item.sourceExcerpt ? `<p style="margin:0 0 4px"><strong>Source:</strong> ${esc(item.sourceExcerpt)}</p>` : ""}
-      ${item.status === "pending" ? `
+      ${correctionBody}
+      ${item.status === "pending" && item.fieldName !== "correction" ? `
         <div class="review-actions">
           <input id="review-${item.id}" value="${esc(known)}" placeholder="${esc(hint ? `Enter ${hint}, then Save Edit` : `Enter the ${label} (read it off the plan set / bill), then Save Edit`)}" />
           <div class="actions">
@@ -3843,6 +3865,16 @@ function renderReview() {
 
   $("reviewItems").querySelectorAll("button[data-review-action]").forEach((button) => {
     button.addEventListener("click", () => updateReview(button.dataset.reviewId, button.dataset.reviewAction));
+  });
+  $("reviewItems").querySelectorAll("button[data-apply-correction]").forEach(button => {
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      try {
+        await api(`/api/corrections/${encodeURIComponent(button.dataset.applyCorrection)}/apply`, { method: "POST", body: "{}" });
+        await selectProject(state.selectedProjectId);
+        showMessage("Proposed data updates applied. Review the revised documents and correction response before resubmitting.");
+      } catch (err) { showMessage(err.message, "error"); button.disabled = false; }
+    });
   });
 
   // The auto-fill helper only fills inverter-output / PV-breaker fields, so show it
@@ -5590,6 +5622,8 @@ function editClient(clientId) {
   const client = (state.clients || []).find((c) => c.id === clientId);
   if (!client) return;
   state.editingClientId = clientId;
+  if ($("clientLinkResultWrap")) $("clientLinkResultWrap").hidden = true;
+  if ($("clientLinkStatus")) $("clientLinkStatus").textContent = "";
   $("clientId").value = clientId;
   CLIENT_TEXT_FIELDS.forEach((field) => { const el = $("c_" + field); if (el) el.value = client[field] || ""; });
   state.portalIdentitiesDraft = (client.portalIdentities || []).map((i) => ({
@@ -6110,6 +6144,7 @@ function showBoardSkeleton() {
 async function fetchProjectPage(append) {
   if (!append) showBoardSkeleton();
   const params = new URLSearchParams({ limit: String(PROJECT_PAGE_SIZE), offset: String(projectFilterState.offset) });
+  if ($("showArchivedProjects")?.checked) params.set("includeArchived", "true");
   if (projectFilterState.search) params.set("search", projectFilterState.search);
   if (projectFilterState.status) params.set("status", projectFilterState.status);
   if (projectFilterState.userId) params.set("userId", projectFilterState.userId);
@@ -6919,3 +6954,31 @@ connectSse();
     if (e.target.id === "shortcutsOverlay") toggleShortcuts(false);
   });
 })();
+
+// Creating a client link does not send it.
+$("showArchivedProjects")?.addEventListener("change", () => { projectFilterState.offset = 0; fetchProjectPage(false); });
+async function createClientLink(kind) {
+  const clientId = state.editingClientId;
+  if (!clientId) return;
+  const status = $("clientLinkStatus");
+  $("clientLinkResultWrap").hidden = true;
+  status.textContent = "Creating link…";
+  try {
+    let result;
+    if (kind === "tracking") {
+      result = await api(`/api/clients/${clientId}/portal-link`, { method: "POST" });
+    } else {
+      const portalType = $("cred_portalType").value.trim();
+      const portalUrl = $("cred_portalUrl").value.trim();
+      if (!portalType || !portalUrl) throw new Error("Enter the portal type and URL below, then create the secure request. No password is needed here.");
+      result = await api(`/api/clients/${clientId}/credential-requests`, { method: "POST", body: JSON.stringify({ portals: [{ portalType, portalUrl }] }) });
+    }
+    if (state.editingClientId !== clientId) return;
+    $("clientLinkResult").value = new URL(result.url, location.origin).href;
+    $("clientLinkResultWrap").hidden = false;
+    $("clientLinkResult").select();
+    status.textContent = kind === "tracking" ? "Read-only company tracking link. Copy and share it with this client." : "One-time login request, valid for 72 hours. Copy and share it with this client.";
+  } catch (err) { status.textContent = err.message || "Could not create link."; }
+}
+$("clientTrackingLinkBtn")?.addEventListener("click", () => createClientLink("tracking"));
+$("clientCredentialLinkBtn")?.addEventListener("click", () => createClientLink("credentials"));

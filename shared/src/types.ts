@@ -2350,3 +2350,17 @@ export interface NetworkRecipe {
   updatedAt: string;
   notes: string;
 }
+/** A paid receipt is an observed component, not proof of a whole filing cost. */
+export interface PaidFeeReceipt {
+  jurisdiction: string;
+  permitNumber: string;
+  receiptNumber: string;
+  discipline: "electrical" | "building" | "unknown";
+  authorityAmountUsd: number;
+  processingFeeUsd: number;
+  /** Separately labelled service fees whose recipient is not established. */
+  otherFeeUsd?: number;
+  invoiceNumber?: string;
+  totalPaidUsd: number;
+  paidAt: string;
+}

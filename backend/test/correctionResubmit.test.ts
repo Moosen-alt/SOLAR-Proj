@@ -21,7 +21,7 @@ process.env.ANTHROPIC_API_KEY = ""; // regex classifier only — no agent job
 process.env.AUTOPILOT_AUTO_START = "0";
 
 const { openDatabase } = await import("../src/db");
-const { createProject, addManualCorrection, resolveCorrection } = await import("../src/repository");
+const { createProject, addManualCorrection, resolveCorrection, applyCorrectionProposals, getProjectDetail } = await import("../src/repository");
 const { getAutopilotState } = await import("../src/autopilot");
 const db = await openDatabase();
 
@@ -117,4 +117,26 @@ assert.equal(paused.phase, "paused_for_human", "a live pause must still surface"
 assert.equal(paused.pauseReason, "captcha");
 ok("a live paused run still reports paused_for_human");
 
+// Two simultaneous corrections must retain separate proposals and review state.
+const isolated = createProject(db, { owner: "Proposal Test", address: "2 Test Way", city: "Portland", state: "OR", zip: "97201", ahj: "City of Portland", utility: "PGE", dcKw: "6" });
+const pid = isolated.project.id;
+const first = addManualCorrection(db, pid, "Correct city on the application.").corrections[0];
+const second = addManualCorrection(db, pid, "Correct ZIP on the application.").corrections.find(c => c.id !== first.id)!;
+const items = db.query<{ id: string; notes: string }>("SELECT id, notes FROM human_review_items WHERE project_id = ? AND field_name = 'correction'", [pid]);
+const linked = (cid: string) => items.find(i => JSON.parse(i.notes.slice(13)).correctionId === cid)!;
+for (const [c, field, value] of [[first, "city", "Tigard"], [second, "zip", "97223"]] as const) {
+  db.run("UPDATE human_review_items SET notes = ? WHERE id = ?", [`agent-triage:${JSON.stringify({ correctionId: c.id, proposals: [{ field, currentValue: "", proposedValue: value, basis: "Fixture correction" }], actions: [] })}`, linked(c.id).id]);
+}
+applyCorrectionProposals(db, first.id);
+assert.equal(getProjectDetail(db, pid).project.city, "Tigard");
+assert.equal(getProjectDetail(db, pid).project.zip, "97201", "the other correction's ZIP must not apply");
+assert.throws(() => applyCorrectionProposals(db, first.id), /No unique pending/);
+resolveCorrection(db, first.id);
+assert.equal(db.get<{ status: string }>("SELECT status FROM human_review_items WHERE id = ?", [linked(second.id).id])?.status, "pending");
+assert.throws(() => applyCorrectionProposals(db, second.id, []), /no selected data updates/);
+applyCorrectionProposals(db, second.id);
+assert.equal(getProjectDetail(db, pid).project.zip, "97223");
+ok("correction approval and resolution target only their linked review, and empty/repeated approvals fail");
+
 console.log(`\ncorrectionResubmit: all ${passed} checks passed`);
+db.close();

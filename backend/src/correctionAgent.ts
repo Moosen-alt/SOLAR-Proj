@@ -190,8 +190,8 @@ function persistTriage(
   }
 
   // Store proposals + checklist in the linked correction review item's notes (JSON
-  // payload the endpoint reads back on apply). Update the most recent open
-  // "correction" review item for this project.
+  // payload the endpoint reads back on apply). Match the correction identity;
+  // another correction may have arrived while the model was running.
   const payload = JSON.stringify({
     correctionId: input.correctionId,
     bucket: t.bucket,
@@ -199,16 +199,20 @@ function persistTriage(
     actions: t.actions,
     generatedAt: ts,
   });
-  db.run(
-    `UPDATE human_review_items
-       SET llm_suggested_value = ?, notes = ?, updated_at = ?
-     WHERE id = (
-       SELECT id FROM human_review_items
-       WHERE project_id = ? AND field_name = 'correction' AND status = 'pending'
-       ORDER BY created_at DESC LIMIT 1
-     )`,
-    [t.requiredAction || "", `agent-triage:${payload}`, ts, input.projectId],
-  );
+  const items = db.query<{ id: string; notes: string; source_excerpt: string }>(
+    "SELECT id, notes, source_excerpt FROM human_review_items WHERE project_id = ? AND field_name = 'correction' AND status = 'pending'", [input.projectId]);
+  let linked = items.filter(item => parseCorrectionProposals(item.notes)?.correctionId === input.correctionId);
+  if (!linked.length) {
+    // Legacy review items predate the identity field. A unique exact excerpt
+    // match can migrate one; recency alone cannot associate two corrections.
+    const correction = db.get<{ correction_text: string }>("SELECT correction_text FROM corrections WHERE id = ? AND project_id = ?", [input.correctionId, input.projectId]);
+    if (correction?.correction_text) linked = items.filter(item => !parseCorrectionProposals(item.notes)?.correctionId
+      && item.source_excerpt === correction.correction_text.slice(0, 800));
+  }
+  if (linked.length !== 1) throw new Error("Correction triage could not identify one pending review item; proposals were not attached to another correction.");
+  if (linked.length === 1) db.run(
+    "UPDATE human_review_items SET llm_suggested_value = ?, notes = ?, updated_at = ? WHERE id = ?",
+    [t.requiredAction || "", `agent-triage:${payload}`, ts, linked[0].id]);
 
   addAuditLog(db, input.projectId, "system", "correction agent", "correction.agent_triaged", {
     correctionId: input.correctionId,
@@ -254,12 +258,15 @@ function projectSummary(project: ProjectRecord | null): Record<string, unknown> 
 }
 
 /** Parse the agent-triage payload stored in a correction review item's notes. */
-export function parseCorrectionProposals(notes: string): { proposals: CorrectionDataProposal[]; actions: string[]; bucket?: string } | null {
+export function parseCorrectionProposals(notes: string): { correctionId?: string; proposals: CorrectionDataProposal[]; actions: string[]; bucket?: string } | null {
   const m = notes.match(/^agent-triage:(\{[\s\S]*\})$/);
   if (!m) return null;
   try {
-    const parsed = JSON.parse(m[1]) as { proposals?: CorrectionDataProposal[]; actions?: string[]; bucket?: string };
-    return { proposals: parsed.proposals ?? [], actions: parsed.actions ?? [], bucket: parsed.bucket };
+    const parsed = JSON.parse(m[1]);
+    if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.proposals) || !Array.isArray(parsed.actions)) return null;
+    return { correctionId: typeof parsed.correctionId === "string" ? parsed.correctionId : undefined,
+      proposals: parsed.proposals.filter((p: CorrectionDataProposal) => p && typeof p.field === "string" && typeof p.proposedValue === "string"),
+      actions: parsed.actions.filter((a: unknown) => typeof a === "string"), bucket: parsed.bucket };
   } catch {
     return null;
   }

@@ -1,0 +1,34 @@
+import assert from "node:assert/strict";
+import fs from "node:fs"; import os from "node:os"; import path from "node:path";
+const temp=fs.mkdtempSync(path.join(os.tmpdir(),"fee-receipts-"));
+process.env.AUTOPILOT_DB_PATH=path.join(temp,"test.sqlite");process.env.SEED_TEST_INSTALLER="false";process.env.ANTHROPIC_API_KEY="";process.env.FEE_RESEARCH="off";
+const {openDatabase}=await import("../src/db");
+const {parsePaidFeeReceipt,recordPaidFeeReceipt,paidFeeReceiptsForProject}=await import("../src/feeReceipts");
+const {createProject}=await import("../src/repository");
+const {buildPaymentQuote}=await import("../src/submissionFees");
+const db=await openDatabase();
+try {
+ const text="City of Tigard Transaction type: Purchase Date: April 24, 2026 Confirmation number: TEST123 Permit: REP2026-9999 | Invoice: INV-9999 Subtotal$351.19 Processing fee$10.36 Total$361.55";
+ const receipt=parsePaidFeeReceipt(text)!; assert.ok(receipt);assert.equal(receipt.discipline,"electrical");assert.equal(receipt.authorityAmountUsd,351.19);assert.equal(receipt.processingFeeUsd,10.36);
+ assert.equal(parsePaidFeeReceipt(text.replace("361.55","371.55")),null,"arithmetic disagreement refuses");
+ assert.equal(parsePaidFeeReceipt(text+" Permit: REP2026-8888"),null,"multi-permit payment is not guessed");
+ assert.equal(parsePaidFeeReceipt("Invoice Total $500.00 Due now"),null);
+ assert.equal(parsePaidFeeReceipt("CITY OF BEAVERTON PERMITS SERVIC Payment approved Total $19.55 USD"),null,"processing-only receipt is not a permit cost");
+ const eperm=parsePaidFeeReceipt("Transaction Receipt Record ID: 999-26-000123-ELEC Receipt Number: 1234 Receipt Date: 4/27/26 Example County 100 Main St Town OR 97000 Fees Paid Renewable energy $133.00 Receipt Total: $155.61 Paid through ePermitting website")!;
+ assert.ok(eperm);assert.equal(eperm.jurisdiction,"Example County");assert.equal(eperm.authorityAmountUsd,155.61);
+ const elavon=parsePaidFeeReceipt("Your payment has been approved Total $17.93 USD Profile Name CITY OF BEAVERTON PERMITS Transaction Type SALE Transaction ID TEST-UUID Transaction Date/Time 05/05/2026 Amount $651.97 USD Service Fee $17.93 USD Total of all charges and fees $669.90 USD")!;
+ assert.equal(elavon.authorityAmountUsd,651.97,"ignore earlier processor-only email");assert.equal(elavon.permitNumber,"","do not invent a permit ID");
+ const salem=parsePaidFeeReceipt("Payment Receipt 12345678 April 27, 2026 Fee Description Structural Plans Review26-999999-00-DW $43.71 Total Paid : Please Note: $46.21 https://permits.cityofsalem.net")!;
+ assert.equal(salem.authorityAmountUsd,46.21);assert.equal(salem.discipline,"building");
+ const project=createProject(db,{owner:"Receipt Test",address:"1 Test Way",city:"Tigard",state:"OR",zip:"97223",ahj:"City of Tigard",utility:"PGE",dcKw:"8",valuation:"20000"}).project;
+ const before=buildPaymentQuote(db,project,"permit");
+ assert.equal(recordPaidFeeReceipt(db,receipt,project.id).recorded,true);
+ assert.equal(recordPaidFeeReceipt(db,receipt,project.id).recorded,false);
+ assert.match(recordPaidFeeReceipt(db,{...receipt,authorityAmountUsd:1}).reason,/conflicting/);
+ assert.equal(paidFeeReceiptsForProject(db,project.id).length,1);
+ const after=buildPaymentQuote(db,project,"permit");
+ assert.equal(after.permitFeeUsd,before.permitFeeUsd,"an electrical receipt cannot replace the whole permit quote");
+ assert.notEqual(after.feeSource,"learned_history");
+ assert.equal(db.get<{n:number}>("SELECT COUNT(*) n FROM permit_fee_history")!.n,1);
+ console.log("feeReceipts: formats, arithmetic, ambiguity, processing-fee refusal, idempotence, conflict and quote isolation passed");
+} finally {db.close();assert.equal(path.dirname(temp),os.tmpdir());fs.rmSync(temp,{recursive:true,force:true});}

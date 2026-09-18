@@ -114,7 +114,7 @@ function learnedFee(
 ): { fee: number; samples: number; matchedName: string } | null {
   const wanted = track === "nem" ? project.utility : project.ahj;
   if (!wanted) return null;
-  const rows = db.query<Row>("SELECT state, ahj, utility, fee_usd FROM permit_fee_history WHERE track = ?", [track]);
+  const rows = db.query<Row>("SELECT state, ahj, utility, fee_usd FROM permit_fee_history WHERE track = ? AND source NOT LIKE 'receipt_component:%'", [track]);
   const state = (project.state || "").trim().toUpperCase();
   const fees: number[] = [];
   let matchedName = "";

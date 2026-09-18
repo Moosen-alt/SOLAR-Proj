@@ -252,7 +252,7 @@ export function buildCodeContext(state: string, ahj: string, profile: Jurisdicti
 // Idempotent; NEVER overwrites a verified row; seeds only missing/seeded keys.
 export function seedReferenceCodeProfiles(db: AppDb): void {
   try {
-    const filePath = path.resolve(process.cwd(), "backend/data/reference-code-profiles.json");
+    const filePath = path.resolve(process.env.CODE_PROFILE_REFERENCE_PATH || path.join(process.cwd(), "backend/data/reference-code-profiles.json"));
     if (!fs.existsSync(filePath)) return;
     const data = JSON.parse(fs.readFileSync(filePath, "utf8")) as { profiles?: Array<JurisdictionCodeProfile & { confidence?: string }> };
     let seeded = 0;

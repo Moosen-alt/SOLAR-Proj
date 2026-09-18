@@ -23,6 +23,7 @@ export {
   type DocumentDateFinding, type TemplateProvenance,
 } from "./documentDate";
 import { documentDateForPdf } from "./documentDate";
+import { bcd5952Template } from "./bcd5952Template";
 
 // ---------------------------------------------------------------------------
 // Auto-acquire an AHJ's official permit PDF form: web-research the URL, download
@@ -631,11 +632,11 @@ export async function ensureAhjFormsForProject(
   }
   try {
     const proc = findAhjProcessProfile(project);
-    if (proc?.requiresSolarChecklist) want("solar_checklist");
+    if (proc?.requiresSolarChecklist && resolvePermitPath(project).path !== "engineered") want("solar_checklist");
   } catch { /* profile data optional */ }
   try {
     const kb = findKnowledgeForLearn(db, { state: project.state, ahj: project.ahj, utility: project.utility });
-    if ((kb.ahj?.requiredDocuments || []).some((d) => /checklist|worksheet/i.test(d))) want("solar_checklist");
+    if (resolvePermitPath(project).path !== "engineered" && (kb.ahj?.requiredDocuments || []).some((d) => /checklist|worksheet/i.test(d))) want("solar_checklist");
   } catch { /* KB optional */ }
   const results: Array<EnsureFormResult & { formType: string; applicationKind: "prescriptive" | "structural" | null }> = [];
   for (const item of needed.values()) {
@@ -671,6 +672,13 @@ export async function ensureAhjFormTemplate(
   // "exists" off it is what left a prescriptive project permanently without the
   // only form its AHJ will accept.
   if (hasStoredTemplateOfType(db, project.ahj, project.state, formType, applicationKind)) {
+    const usable = loadStoredTemplates(db, project.ahj, project.state).some(t => {
+      const type = db.get<{ form_type: string }>("SELECT form_type FROM ahj_form_templates WHERE id = ?", [t.templateId])?.form_type;
+      return type === formType && (!applicationKind || !t.applicationKind || t.applicationKind === applicationKind)
+        && (Object.keys(t.def.textFields || {}).length > 0 || Object.keys(t.def.checkboxes || {}).length > 0 || (t.def.overlayFields?.length ?? 0) > 0);
+    });
+    if (!usable) return { status: "needs_manual", mappedFields: 0,
+      message: `The official ${formType.replace(/_/g, " ")} blank is saved but has no usable field map. Re-map it in App Docs or complete and upload it manually; it is not ready to file.` };
     return { status: "exists", message: `A stored ${kindWord ? `${kindWord} ` : ""}${formType.replace(/_/g, " ")} template already exists for this AHJ.` };
   }
 
@@ -812,6 +820,18 @@ export async function acquireFromBytes(
   },
 ): Promise<EnsureFormResult> {
   const { ahj, state, formType, formName, bytes, sourceUrl, retrievedAt } = input;
+  // The actual bytes outrank a research title claiming that this checklist
+  // contains a separate electrical or building application. Mapping a known
+  // revision requires no model call and leaves every project fact dynamic.
+  const bcd = bcd5952Template(bytes, sourceUrl);
+  if (bcd) {
+    const protectedTemplate = loadStoredTemplates(db, ahj, state).find(t => t.verified &&
+      db.get<{ form_type: string }>("SELECT form_type FROM ahj_form_templates WHERE id = ?", [t.templateId])?.form_type === "solar_checklist");
+    if (protectedTemplate) return { status: "exists", message: "The verified BCD checklist map was retained.", formName: bcd.formName, sourceUrl };
+    storeAhjFormTemplate(db, { ahjName: ahj, state, formType: "solar_checklist", filename: `${bcd.formName}.pdf`, bytes,
+      applicationKind: "prescriptive", documentDate: "2024-05-01", retrievedAt, map: bcd });
+    return { status: "acquired", message: "Stored the official BCD 5952 checklist with the exact-revision field map. It is a checklist only; separate applications remain separate requirements. Preview before filing.", formName: bcd.formName, sourceUrl, mappedFields: Object.keys(bcd.textFields).length };
+  }
 
   // What the document says about ITSELF, read once and stamped on every branch
   // below. A form stored without it cannot answer "is this current", and the

@@ -113,7 +113,7 @@
   <div id="toastContainer" style="position:fixed;bottom:24px;right:24px;z-index:9999;display:flex;flex-direction:column;gap:8px;pointer-events:none"></div>
 
   <!-- The third of the three competing navigations, kept but demoted. A
-       seven-stage pipeline needs a legend, and this is the only place on the
+       six-stage pipeline needs a legend, and this is the only place on the
        dashboard where the human-does-the-final-submit rule is spelled out — so
        it is not deleted, it is a quiet hairline strip that stays shut until
        asked. The hint used to be the single static string "click to collapse",
@@ -122,24 +122,18 @@
   <details id="startHereGuide" class="start-here">
     <summary>
       <span class="start-here-title"><i data-lucide="compass"></i> How a project flows</span>
-      <span class="start-here-hint start-here-hint--closed">Show the 7 steps</span>
+      <span class="start-here-hint start-here-hint--closed">Show the 6 stages</span>
       <span class="start-here-hint start-here-hint--open">Hide</span>
     </summary>
     <div class="start-here-body">
-      <p class="start-here-intro">Every project moves left to right through these seven steps. Pick a project from the list to see its <strong>Next step</strong> banner, which names the button to click.</p>
+      <p class="start-here-intro">Every project moves left to right through these six stages. Pick a project from the list to see its <strong>Next step</strong> banner, which names the button to click.</p>
       <ol class="flow-steps">
         <li><span class="flow-num">1</span><div><strong>Intake</strong><p>Open the <a href="/parser">Parser</a>, upload the plan set + utility bill, click <em>Parse</em>, then <em>Save to project</em>.</p></div></li>
         <li><span class="flow-num">2</span><div><strong>QC check</strong><p>Select the project, click <em>Run QC</em>. Fix anything flagged in <em>QC Results</em>, then re-run.</p></div></li>
-        <li><span class="flow-num">3</span><div><strong>Build docs</strong><p>Click <em>Build AHJ/NEM Docs</em> to generate the application packet.</p></div></li>
-        <!-- The plan review gate is a STEP IN THIS WORKFLOW, not a destination.
-             The operator: "plan review gate is part of the workflow i dont know
-             why you showed me the separate tool." It has never been in this
-             page's navigation and it is not being added to it; you reach it on
-             the project you are working, which is what step 4 says. -->
-        <li><span class="flow-num">4</span><div><strong>Plan review</strong><p>Open the project and click <em>Reviewer Gate</em> — the last automated check before a human submits. It lives on the project, not on its own screen.</p></div></li>
-        <li><span class="flow-num">5</span><div><strong>Submit</strong><p>Click <em>Prepare Submittal</em>. <strong>A person does the final submit</strong> in the portal — automation never clicks submit, pays fees, or solves MFA/CAPTCHA.</p></div></li>
-        <li><span class="flow-num">6</span><div><strong>Track</strong><p>Use <em>Permit Checks</em> + <em>NEM Checks</em> to monitor. Paste any correction letter into <em>Corrections</em> for an AI-drafted reply (you review before sending).</p></div></li>
-        <li><span class="flow-num">7</span><div><strong>Handoff</strong><p>When the permit is issued <em>and</em> NEM approved, copy the <em>Handoff Packet</em> to the installer. Our scope ends here — PTO is the installer's job.</p></div></li>
+        <li><span class="flow-num">3</span><div><strong>Build &amp; validate</strong><p>Click <em>Build AHJ/NEM Docs</em>, then open <em>Reviewer Gate</em> on the project to check the packet before submission.</p></div></li>
+        <li><span class="flow-num">4</span><div><strong>Submit</strong><p>Click <em>Prepare Submittal</em>. <strong>A person does the final submit</strong> in the portal — automation never clicks submit, pays fees, or solves MFA/CAPTCHA.</p></div></li>
+        <li><span class="flow-num">5</span><div><strong>Track</strong><p>Use <em>Permit Checks</em> + <em>NEM Checks</em> to monitor. Paste any correction letter into <em>Corrections</em> for an AI-drafted reply (you review before sending).</p></div></li>
+        <li><span class="flow-num">6</span><div><strong>Handoff</strong><p>When the permit is issued <em>and</em> NEM approved, copy the <em>Handoff Packet</em> to the installer. Our scope ends here — PTO is the installer's job.</p></div></li>
       </ol>
     </div>
   </details>
@@ -187,12 +181,14 @@
         <div class="section-head-title">
           <span class="eyebrow">Solar operations</span>
           <h2 id="listPageTitle">Dashboard</h2>
+          <p id="listPageHelp" class="page-help">Choose a project to see what needs attention and its next step.</p>
         </div>
         <div class="actions">
           <span id="projectCount" class="badge">0</span>
         </div>
       </div>
       <div class="project-filters" id="listFilters">
+        <label class="archive-filter"><input type="checkbox" id="showArchivedProjects" /> Include archived projects</label>
         <input id="projectSearch" type="search" placeholder="Search homeowner, address, AHJ…" />
         <select id="projectStatusFilter">
           <option value="">All statuses</option>
@@ -202,13 +198,13 @@
             <option value="qc_failed">QC failed</option>
             <option value="qc_passed">QC passed</option>
           </optgroup>
-          <optgroup label="3–5 · Build & Submit">
+          <optgroup label="3–4 · Build & Submit">
             <option value="ready_to_stage">Ready to stage</option>
             <option value="submit_staging">Submit staging</option>
             <option value="awaiting_human_submit">Awaiting human submit</option>
             <option value="submitted">Submitted</option>
           </optgroup>
-          <optgroup label="6 · Corrections">
+          <optgroup label="4 · Corrections & Resubmit">
             <option value="correction_received">Correction received</option>
             <option value="correction_triaged">Correction triaged</option>
             <option value="waiting_on_designer">Waiting on designer</option>
@@ -216,7 +212,7 @@
             <option value="resubmit_staging">Resubmit staging</option>
             <option value="awaiting_human_resubmit">Awaiting human resubmit</option>
           </optgroup>
-          <optgroup label="6–7 · Issue & Handoff">
+          <optgroup label="5–6 · Approvals & Closeout">
             <option value="ready_for_issue">Ready for issue</option>
             <option value="issued">Permit issued</option>
             <option value="approved">Approved</option>
@@ -327,9 +323,9 @@
             <span class="actions-label">Advanced / override:</span>
             <button id="runQcBtn" class="secondary"><i data-lucide="shield-check"></i><span>2 · Run QC</span></button>
             <button id="buildAppDocsBtn" class="secondary"><i data-lucide="files"></i><span>3 · Build AHJ/NEM Docs</span></button>
-            <button id="runReviewerGateBtn" class="secondary"><i data-lucide="clipboard-list"></i><span>4 · Reviewer Gate</span></button>
+            <button id="runReviewerGateBtn" class="secondary"><i data-lucide="clipboard-list"></i><span>3 · Reviewer Gate</span></button>
             <button id="refreshReviewerGateBtn" class="secondary" style="font-size:11px" title="Clear vision cache and re-check all plan sheets"><i data-lucide="refresh-cw"></i><span>Re-run vision</span></button>
-            <button id="prepareBtn" class="secondary"><i data-lucide="send"></i><span>5 · Prepare Submittal</span></button>
+            <button id="prepareBtn" class="secondary"><i data-lucide="send"></i><span>4 · Prepare Submittal</span></button>
             <span class="actions-divider"></span>
             <span class="actions-label">Tools:</span>
             <button id="runWorkflowBtn" class="secondary"><i data-lucide="list-checks"></i><span>Run Workflow</span></button>
@@ -1114,6 +1110,14 @@
         </form>
 
         <div id="clientCredentials" hidden style="margin-top:14px;border-top:1px solid var(--line);padding-top:12px">
+          <h3>Client links</h3>
+          <p class="muted">Share project progress or let this client supply portal logins securely.</p>
+          <div class="actions" style="margin:10px 0">
+            <button type="button" id="clientTrackingLinkBtn" class="secondary">Create tracking link</button>
+            <button type="button" id="clientCredentialLinkBtn" class="secondary">Create secure login request</button>
+          </div>
+          <label id="clientLinkResultWrap" hidden>Link to share<input id="clientLinkResult" readonly /></label>
+          <p id="clientLinkStatus" role="status" class="muted"></p>
           <h3 style="margin:0 0 6px">Portal logins (encrypted)</h3>
           <p class="muted" style="font-size:12px;margin:0 0 8px">Passwords are stored encrypted (AES-256-GCM) and never shown again. Used by the bot to log in for this client only.</p>
           <div id="credList" class="stack" style="margin-bottom:8px"></div>

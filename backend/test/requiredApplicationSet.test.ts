@@ -100,7 +100,7 @@ const {
   buildFilledFormsForProject,
 } = await import("../src/ahjForms");
 const { createLLMProvider } = await import("../src/llm");
-const { submissionDocumentsByType } = await import("../src/submissionDocuments");
+const { submissionDocumentsByType, uploadDocumentGuard } = await import("../src/submissionDocuments");
 
 const db = await openDatabase();
 
@@ -752,8 +752,8 @@ await check("ACQUISITION GOES AFTER THE PRESCRIPTIVE BLANK, not 'whatever is und
   const forEngineered = await ensureAhjFormsForProject(db, llm, engineered as never);
   const bldEng = forEngineered.results.find((r) => r.formType === "building_application")!;
   assert.equal(bldEng.applicationKind, "structural");
-  assert.equal(bldEng.status, "exists",
-    "the engineered path's own blank is already stored — re-researching it is the paid round trip this check exists to prevent");
+  assert.equal(bldEng.status, "needs_manual",
+    "the saved engineered blank has no field map: report needs_manual without repeated research");
 });
 
 await check("...while an AHJ with no structure knowledge still gets its one generic application", () => {
@@ -1040,6 +1040,28 @@ await check("…and a FIRST submission with nothing open is an untouched no-op",
   assert.equal(row?.status, "submitted", "…and the confirmation itself still lands");
 });
 
+await check("wrong-path explicit uploads are rejected, including a path change during a browser run", () => {
+  const proj = mk("engineered");
+  attach(proj.id, "building_application");
+  db.run("UPDATE project_documents SET original_filename = 'Non-Prescriptive Structural Application.pdf' WHERE project_id = ?", [proj.id]);
+  const file = submissionDocumentsByType(db, proj).building_application;
+  assert.ok(file);
+  const guard = uploadDocumentGuard(db, proj.id, true);
+  assert.doesNotThrow(() => guard("building_application", file));
+  const snap = { ...proj.parserSnapshot, permitPathOverride: "prescriptive" };
+  db.run("UPDATE projects SET parser_json = ? WHERE id = ?", [JSON.stringify(snap), proj.id]);
+  assert.throws(() => guard("building_application", file), /changed|permit path/i);
+  const changed = { ...proj, parserSnapshot: snap };
+  assert.equal(submissionDocumentsByType(db, changed).building_application, undefined);
+  assert.ok(documentInventory(db, changed).missingBlocking.some(d => d.docType === "building_application"));
+});
+await check("active board excludes archived projects while explicit history includes them", async () => {
+  const { getProjectList } = await import("../src/repository");
+  const proj = mk("prescriptive");
+  db.run("UPDATE projects SET archived_at = ? WHERE id = ?", [new Date().toISOString(), proj.id]);
+  assert.equal(getProjectList(db, { search: proj.homeownerName, includeArchived: false }).projects.length, 0);
+  assert.equal(getProjectList(db, { search: proj.homeownerName, includeArchived: true }).projects.length, 1);
+});
 try { db.close(); } catch { /* best effort */ }
 for (const dir of filledDirs) { try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ } }
 fs.rmSync(tmpDir, { recursive: true, force: true });

@@ -1956,6 +1956,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       budgetMs?: number;
       autoSubmit?: false;
       docsByType?: Record<string, string>;
+      beforeUpload?: (docType: string, file: string) => void;
       uploadMode?: "split" | "combined";
       onProgress?: LearnProgressFn;
       // Which deterministic policy-answer set applyPolicyDefaults may use.
@@ -2787,6 +2788,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           if (slot.kind === "input") {
             // Native input — set files directly even when visually hidden behind a button.
             const loc = this.page!.locator(selector.css!);
+            this.options.beforeUpload?.(resolved.docType, resolved.file);
             await loc.setInputFiles(uploadPayload ?? resolved.file);
           } else {
             // Custom widget — the real <input> is created on click, so intercept the
@@ -2795,6 +2797,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
               this.page!.waitForEvent("filechooser", { timeout: 8000 }),
               this.page!.locator(selector.css!).click({ timeout: 6000 }),
             ]);
+            this.options.beforeUpload?.(resolved.docType, resolved.file);
             await chooser.setFiles(uploadPayload ?? resolved.file);
           }
           await smartWait(this.page!, 500);

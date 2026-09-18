@@ -157,6 +157,25 @@ try {
     });
     assert.deepEqual(await uploadedTexts(), types.map((type) => fs.readFileSync(replayDocs[type], "utf8")));
   }
+  // The project can change after the run assembled its upload map. Exercise
+  // the real upload boundaries, not just the backend's initial filter.
+  await page.setContent(html());
+  const reject = () => { throw new Error("permit path changed"); };
+  const guardedLearn = new AutoLearnAdapter("Guard fixture", noPlan, { docsByType: docs, beforeUpload: reject }) as unknown as UploadInternals;
+  guardedLearn.page = page;
+  const guardedSteps: RecipeStep[] = [];
+  const rejected = await guardedLearn.performUploads(guardedSteps, []);
+  check("learn rechecks before native upload and records no blocked attachment", () => {
+    assert.equal(rejected.attached, 0); assert.equal(guardedSteps.length, 0);
+  });
+  assert.ok((await uploadedTexts()).every(t => !t));
+  const guardedReplay = new RecipeAdapter({ id: "guarded", steps: [] } as unknown as PortalRecipe, {}, docs, { beforeUpload: reject }) as unknown as {
+    page: Page; executeStep(step: RecipeStep, review: boolean): Promise<boolean>; sweepUnrecordedUploads(): Promise<number>;
+  };
+  guardedReplay.page = page;
+  await assert.rejects(() => guardedReplay.executeStep({ action: "upload", docType: "building_application", selector: { css: '#doc0' }, note: "upload building_application: Building Permit Application" } as RecipeStep, false), /permit path changed/);
+  await assert.rejects(() => guardedReplay.sweepUnrecordedUploads(), /permit path changed/);
+  assert.ok((await uploadedTexts()).every(t => !t));
   console.log(`\nAll ${checks} exact-document-upload checks passed (real Chromium, local HTML only).`);
 } finally {
   await browser?.close();

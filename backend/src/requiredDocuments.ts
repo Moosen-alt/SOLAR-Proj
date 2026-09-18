@@ -37,6 +37,7 @@
 import type { AppDb } from "./db";
 import type { ProjectRecord } from "../../shared/src/types";
 import { projectDocsByType } from "./projectDocuments";
+import { uploadedSubmissionDocuments } from "./submissionDocuments";
 import { filledFormsByDocType, applicationKindForPath } from "./ahjForms";
 import { resolvePermitPath, resolveStampRequirement, hasStampedStructuralEvidence } from "./permitPath";
 import { resolveEffectiveCodeContext } from "./codeProfiles";
@@ -519,7 +520,7 @@ export function applicationDocContext(project: ProjectRecord): ApplicationDocCon
 
 /** Resolve the required docs against the actual uploaded/split file inventory. */
 export function documentInventory(db: AppDb, project: ProjectRecord): DocumentInventory {
-  const uploads = projectDocsByType(db, project.id);
+  const uploads = uploadedSubmissionDocuments(db, project);
   // A FILLED APPLICATION IS A DOCUMENT. Filled AHJ forms are written to
   // backend/data/filled/<projectId>/ and have NO project_documents row, so
   // projectDocsByType cannot see them — which is why prepareSubmission already

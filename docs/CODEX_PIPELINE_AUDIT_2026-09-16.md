@@ -1,3 +1,5 @@
+> Historical audit taken before the continuation fixes. For current behavior, verified results and the remaining queue, read `CODEX_HANDOFF_2026-09-16.md`. Several gaps below are now fixed.
+
 # Round 8 document pipeline audit — 2026-09-16
 
 Scope: read-only source review of `C:\Users\isobl\SOLAR-Proj`, including `CLAUDE.md` and the pasted Claude handoff. No database reads, source edits, environment/secret reads, network, portal access, or historical-drive changes. This note records source-confirmed mechanisms; it does not claim runtime, per-project, or live-data verification.

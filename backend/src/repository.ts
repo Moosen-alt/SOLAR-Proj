@@ -109,7 +109,7 @@ import { classifyPermitStatusText, isAuthWallText, nextCheckIso, shouldRecordSta
 import { evidenceForTopic, evidenceLines, type EvidenceTopic } from "./projectEvidence";
 import { runQcForProject } from "./qc";
 import { loadStoredTemplates, formAllowedForPath } from "./ahjForms";
-import { submissionDocumentsByType } from "./submissionDocuments";
+import { submissionDocumentsByType, uploadDocumentGuard } from "./submissionDocuments";
 import { resolvePermitPath } from "./permitPath";
 import { buildReviewerReport, renderReviewerReportHtml } from "./reviewerEngine";
 import { resolveEffectiveCodeContext, ensureCodeProfilesResearched } from "./codeProfiles";
@@ -764,6 +764,7 @@ export function getProjectList(
     status?: string;
     userId?: string;
     clientId?: string;
+    includeArchived?: boolean;
     sort?: "updated_desc" | "created_desc" | "name_asc" | "status_asc";
     /** Tenant filter. `null` reads across every org (superadmin); omitted means the
      *  single-operator default tenant, which is what every pre-tenancy row is. */
@@ -775,6 +776,7 @@ export function getProjectList(
   const offset = options.offset ?? 0;
 
   const conditions: string[] = [];
+  if (options.includeArchived === false) conditions.push("COALESCE(p.archived_at, '') = ''");
   const filterParams: (string | number)[] = [];
 
   // Tenant scope FIRST, so it is applied to the count and the page alike (both
@@ -4417,7 +4419,7 @@ export function addManualCorrection(db: AppDb, projectId: string, correctionText
         classification.requiredAction,
         correctionText.slice(0, 800),
         "pending",
-        `Bucket: ${humanizeBucket(classification.bucket)}. ${classification.rootCause}`,
+        `agent-triage:${JSON.stringify({ correctionId, bucket: classification.bucket, proposals: [], actions: [classification.requiredAction] })}`,
         ts,
         ts,
       ],
@@ -4505,12 +4507,17 @@ export function applyCorrectionProposals(
   const correction = db.get<Row>("SELECT * FROM corrections WHERE id = ?", [correctionId]);
   if (!correction) throw new HttpError(404, "Correction not found.");
   const projectId = text(correction.project_id);
-  const item = db.get<Row>(
-    "SELECT * FROM human_review_items WHERE project_id = ? AND field_name = 'correction' ORDER BY created_at DESC LIMIT 1",
+  const items = db.query<Row>(
+    "SELECT * FROM human_review_items WHERE project_id = ? AND field_name = 'correction' AND status = 'pending'",
     [projectId],
   );
+  const linked = items.filter(item => parseCorrectionProposals(text(item.notes))?.correctionId === correctionId);
+  if (linked.length !== 1) throw new HttpError(409, "No unique pending proposal set is linked to this correction. Re-triage it before approving.");
+  const item = linked[0];
   const parsed = item ? parseCorrectionProposals(text(item.notes)) : null;
   const proposals = (parsed?.proposals ?? []).filter((p) => !approvedFields || approvedFields.includes(p.field));
+  if (!proposals.some(p => p.proposedValue.trim())) throw new HttpError(409, "This correction has no selected data updates to apply. Review its action checklist instead.");
+  if (correction.closed_at) throw new HttpError(409, "This correction is already closed.");
 
   const payload: ParserPayload = {};
   for (const p of proposals) {
@@ -4545,10 +4552,11 @@ export function resolveCorrection(
     [ts, opts.resubmitted ? 1 : Number(correction.resubmitted ?? 0), correctionId],
   );
   const projectId = text(correction.project_id);
-  db.run(
-    "UPDATE human_review_items SET status = 'resolved', updated_at = ? WHERE project_id = ? AND field_name = 'correction' AND status != 'resolved'",
-    [ts, projectId],
-  );
+  for (const item of db.query<Row>("SELECT id, notes FROM human_review_items WHERE project_id = ? AND field_name = 'correction' AND status != 'resolved'", [projectId])) {
+    if (parseCorrectionProposals(text(item.notes))?.correctionId === correctionId) {
+      db.run("UPDATE human_review_items SET status = 'resolved', updated_at = ? WHERE id = ?", [ts, text(item.id)]);
+    }
+  }
   addAuditLog(db, projectId, "human", "correction", "correction.resolved", { correctionId, resubmitted: !!opts.resubmitted });
   // Closing the LAST open correction un-strands the project: correction_received /
   // correction_triaged are not pre-stage statuses, so autopilot (and its execution-time
@@ -4560,6 +4568,7 @@ export function resolveCorrection(
   const stillOpen = db.get<Row>(
     "SELECT id FROM corrections WHERE project_id = ? AND closed_at IS NULL LIMIT 1", [projectId],
   );
+  if (!stillOpen) db.run("UPDATE human_review_items SET status = 'resolved', updated_at = ? WHERE project_id = ? AND field_name = 'correction' AND status != 'resolved'", [ts, projectId]);
   if (inCorrectionState && !stillOpen) {
     // WHERE IT GOES BACK TO DEPENDS ON WHETHER IT IS STILL FILED.
     // "Ready to re-stage" assumes the fix happens HERE and the application is sent
@@ -4982,7 +4991,7 @@ function insertMonitorCorrection(db: AppDb, project: ProjectRecord, correctionTe
       classification.requiredAction,
       correctionText.slice(0, 800),
       "pending",
-      `${monitorMessage} Bucket: ${humanizeBucket(classification.bucket)}. ${classification.rootCause}`,
+      `agent-triage:${JSON.stringify({ correctionId, bucket: classification.bucket, proposals: [], actions: [monitorMessage, classification.requiredAction] })}`,
       ts,
       ts,
     ],
@@ -5472,6 +5481,10 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   // failure — the gate only let scalar fields through before. Scope NEM-only gaps out
   // when staging just the permit track and vice-versa, so a single-track stage isn't
   // blocked by the other lane's document.
+  if (track !== "nem") {
+    const { prepareOfficialDocuments } = await import("./prepareOfficialDocuments");
+    await prepareOfficialDocuments(db, detail.project);
+  }
   const inv = documentInventory(db, detail.project);
   const lane = track === "nem" ? "nem" : track ? "permit" : null;
   const missingDocs = stagingMissingDocuments(inv, track);
@@ -5830,6 +5843,7 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   }
 
   const stageOptions = {
+    beforeUpload: uploadDocumentGuard(db, projectId, track !== "nem"),
     encryptedStorageStatePath: portalProfile?.encrypted_storage_state ?? undefined,
     // HEADED IS A DESKTOP CHOICE, NOT A STAGING CONSTANT. This was hardcoded false, which
     // forced a HEADED browser on every staging run regardless of PORTAL_HEADLESS — and the

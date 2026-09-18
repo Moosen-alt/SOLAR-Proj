@@ -1,0 +1,37 @@
+import type { ParserLlmExtraction } from "../../shared/src/types";
+
+/** Explicit plan facts only. This supplements the text intake, including sheets
+ * beyond the model's text budget. It never turns a missing fact into compliance. */
+export function supplementStructuralIntake(result: ParserLlmExtraction, planText: string): ParserLlmExtraction {
+  const fields = { ...result.fields };
+  const text = planText.replace(/\s+/g, " ");
+  const add = (key: string, re: RegExp, value: (m: RegExpMatchArray) => string | number, explicitLabel = false) => {
+    if (!explicitLabel && fields[key]?.value != null && fields[key]?.value !== "") return;
+    const matches = [...text.matchAll(new RegExp(re.source, "gi"))];
+    const values = [...new Set(matches.map(value))];
+    if (values.length !== 1) return; // conflicting sheets require review
+    const m = matches[0];
+    fields[key] = { value: values[0], confidence: 0.95,
+      evidence: { source: "plan_set", sheet: "Structural plan / notes", excerpt: m[0].slice(0, 200) } };
+  };
+  // A single explicit roof-material label outranks a model guess from metal
+  // mounting hardware or generic installation notes elsewhere in the plans.
+  add("roofMaterial", /ROOF\s*MATERIAL\s*:\s*(COMPOSITE?\s+SHINGLES?|COMPOSITION\s+SHINGLES?|ASPHALT\s+SHINGLES?|STANDING\s+SEAM\s+METAL|METAL)/i,
+    m => /compos|asphalt/i.test(m[1]) ? "Composition Shingle" : "Metal", true);
+  add("framingType", /\d+\s*"\s*[x×]\s*\d+\s*"\s*(TRUSS|RAFTER)\s*@\s*\d+/i, m => m[1].toLowerCase());
+  add("roofRafterSpacing", /\d+\s*"\s*[x×]\s*\d+\s*"\s*(?:TRUSS|RAFTER)\s*@\s*(\d+)\s*"\s*O\.?\s*C/i, m => Number(m[1]));
+  add("lightFrame", /\d+\s*"\s*[x×]\s*\d+\s*"\s*(?:TRUSS|RAFTER)\s*@\s*\d+/i, () => "yes");
+  add("moduleHeightAboveRoof", /PANELS? WILL NOT MOUNT HIGHER\s*THAN\s*(\d+)\s*INCHES ABOVE THE SURFACE OF\s*THE ROOF/i, m => Number(m[1]));
+  add("roofLayers", /(?:EXISTING\s+)?(?:ROOF(?:ING)?\s+LAYERS?\s*[:=]\s*)(\d+)/i, m => Number(m[1]));
+  add("attachmentToFraming", /SOLAR PANELS ARE TO BE MOUNTED TO THE ROOF\s*FRAMING/i, () => "yes");
+  add("attachmentSpacingIn", /(?:NEW\s+)?PV ATTACHMENTS AT\s*(\d+)'[-\s]*(\d+)"\s*O\.?C/i, m => Number(m[1]) * 12 + Number(m[2]));
+  add("attachmentEdgeSpacingIn", /ROOF ATTACHMENTS SHALL BE SPACED NO\s*GREATER THAN\s*(\d+)\s*IN\.?\s*OC IN ANY DIRECTION\s*WHERE LOCATED WITHIN\s*3\s*FT\.?\s*OF A ROOF\s*EDGE, HIP, EAVE OR RIDGE/i, m => Number(m[1]));
+  add("manufacturerInstallation", /RACKING SYSTEM\s*&\s*PV ARRAY WILL BE INSTALLED ACCORDING TO CODE[-\s]*COMPLIANT INSTALLATION MANUAL/i, () => "yes");
+  return { ...result, fields };
+}
+
+/** Include later structural notes/datasheets instead of silently discarding
+ * everything after the first 24k characters. Bound the request at 80k. */
+export function planTextForExtraction(text: string): string {
+  return text.length <= 80000 ? text : text.slice(0, 60000) + "\n[Middle text omitted]\n" + text.slice(-20000);
+}
