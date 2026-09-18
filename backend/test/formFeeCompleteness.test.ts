@@ -71,8 +71,30 @@ try{
  const output=path.join(dir,'filled.pdf');
  const result=await fillLoadedForm({...map,id:'test',notes:[],status:'verified',matchJurisdictions:['tigard'],version:'test'} as never,bytes,ctx,output);
  assert.ok(result.unmappedRequested?.includes('owner mailing address'));
+ assert.ok(result.unmappedRequested?.includes('owner email'));
  const labels=await extractLabels(fs.readFileSync(output));
  assert.ok(labels.some(l=>l.page===1&&l.str==='133.56'&&l.y<650&&l.y>630),'page 2 solar tier filled');
  assert.ok(labels.some(l=>l.page===0&&l.str==='149.59'),'application grand total filled');
+ const today=resolveSource('computed.todaySigned',ctx);
+ assert.ok(!labels.some(l=>l.str===today),'No signing date before a signature is applied');
+ const {createCanvas}=await import('@napi-rs/canvas');
+ const canvas=createCanvas(100,20);
+ canvas.getContext('2d').fillRect(5,8,90,4);
+ const signature={bytes:canvas.toBuffer('image/png'),mime:'image/png',widthPx:100,heightPx:20,name:'Test Signer'};
+ for(const filename of ['tigard-electrical.pdf','tigard-building.pdf']) {
+  const template=fs.readFileSync('backend/test/fixtures/'+filename);
+  const mapped=curatedFormMap(template,url)!.map;
+  const filled=await fillLoadedForm({...mapped,id:'signed-test',notes:[],status:'verified',matchJurisdictions:['tigard'],version:'test'} as never,template,{
+   ...ctx,snapshot:{homeownerMailingAddress:'12 Example Way',homeownerMailingCityStateZip:'Example, OR 97000',homeownerPhone:'503-555-0142',homeownerEmail:'owner@example.com'},
+   signatures:{applicant:signature,electrician:{...signature,name:'Test Electrician'}},
+  },output);
+  const signedLabels=await extractLabels(fs.readFileSync(output));
+  for(const text of ['12 Example Way','Example, OR 97000','503-555-0142']) assert.ok(signedLabels.some(l=>l.str===text),filename+': '+text);
+  if(filename==='tigard-electrical.pdf') assert.ok(signedLabels.some(l=>l.str==='owner@example.com'));
+  assert.ok(!filled.unmappedRequested?.includes('owner mailing address'));
+  const dates=signedLabels.filter(l=>l.str===today);
+  assert.equal(dates.length,filename==='tigard-electrical.pdf'?2:1,'Only matched operator signatures date their own rows');
+  assert.ok(dates.every(l=>l.x>=282&&l.y<85),'Dates belong in bottom signature date cells, not owner installation section');
+ }
  console.log('formFeeCompleteness passed: sourced surcharge, component rounding, no fallback, required-field gaps and both PDF pages');
 }finally{db.close();fs.rmSync(dir,{recursive:true,force:true});}

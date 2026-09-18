@@ -1,5 +1,13 @@
 # SOLAR-Proj continuation — September 18, 2026
 
+## Latest follow-up: owner contact and signing dates
+
+User confirmed Connie's owner mailing address equals the installation address and explicitly authorized temporary test phone/email for this legacy intake record. Sandbox snapshot now has `14535 SW Klipsan Ln`, `Tigard, OR 97223`, synthetic `503-555-0142`, and `connie.rhinesmith@example.com`. `homeownerContactIsTest: true` and basis notes record the distinction. Replace the test contact values before any real filing. The plans say PHONE/EMAIL N/A; the utility bill has Gary's account email, which was not silently attributed to Connie. No contact-parser change was needed: existing canonical fields already feed the forms.
+
+User separately authorized using the saved applicant/electrician signatures and signing dates. The exact-revision Tigard maps now place each operator's own signature and date in the measured signature rows (electrical page 1 and building page 3). Dates are rendered only when that role's signature is applied. The owner-installation signature/date remains blank because this is a contractor installation. Electrical forms now report missing owner email along with other missing contact details.
+
+Validation: `formFeeCompleteness`, `curatedAhjForms`, and `signaturePlacement` passed; typecheck passed. Regression fills cover address/phone/email and both Tigard signing date layouts; unsigned output has no signing dates. Downloaded both updated forms through the actual HTTP endpoints, reopened/rendered and visually reviewed them. Construction category and declared valuation remain unresolved. Outputs are `outputs/connie-electrical-review.pdf` and `outputs/connie-building-review.pdf`. Database checkpoint: `work/before-owner-contact-signing.sqlite`. Original repository and source documents remain untouched. This follow-up supersedes the earlier statements that owner mailing address was unconfirmed and that no signatures were applied.
+
 ## Latest: incomplete forms and automatic fees
 
 This batch addresses the user's report that the downloaded forms were not fully filled and automatic lookup missed fees printed on the applications. It does not certify a complete live filing or completion of the entire original transcript backlog.

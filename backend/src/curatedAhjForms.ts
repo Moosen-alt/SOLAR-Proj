@@ -1,6 +1,6 @@
 import {createHash} from "node:crypto";
 import type {ProjectRecord} from "../../shared/src/types";
-import type {OverlayField} from "./ahjForms";
+import type {OverlayField, SignaturePlacement} from "./ahjForms";
 
 // Public sources checked against the authority's forms pages. Exact byte hashes
 // prevent a revised PDF from silently inheriting old coordinates. No customer
@@ -19,6 +19,7 @@ export function curatedFormMap(bytes:Uint8Array,sourceUrl:string){
  const source=CURATED_AHJ_FORMS.find(f=>f.hash===createHash("sha256").update(bytes).digest("hex"));
  if(!source)return null;
  const fields:OverlayField[]=[];
+ const signatureFields:SignaturePlacement[]=[];
  const at=(key:string,x:number,y:number,page:number,maxWidth=235)=>fields.push({source:key,x,y,page,size:9,maxWidth});
  const textFields:Record<string,string>={};
  const fieldFontSizes:Record<string,number>={};
@@ -30,6 +31,7 @@ export function curatedFormMap(bytes:Uint8Array,sourceUrl:string){
   "owner phone":"snapshot.homeownerPhone",
   "contractor CCB license":"client.ccbLicenseNumber",
  };
+ if(source.formType==='electrical_application') requiredFields['owner email']='snapshot.homeownerEmail';
  if(source.ahj==='coos bay'){
   Object.assign(textFields,{
    "Job site address":"computed.streetAddress",CityStateZIP:"computed.cityStateZip", "Project Name":"project.homeownerName",Parcel:"snapshot.parcelNumber",
@@ -74,6 +76,7 @@ export function curatedFormMap(bytes:Uint8Array,sourceUrl:string){
   ] as const)at('client.'+key,x,building?by:ey,p,width);
   at('client.installerContactName',101,building?237:288,p,247);
   if(!building){
+   signatureFields.push({role:'electrician',page:p,x:175,y:96,width:174,height:14,dateX:282,dateY:81,dateSize:9,label:'Supervising electrician signature'});
    at('client.installerEmail',65,131,p,286);
    at('client.electricalLicenseNumber',198,114,p,50);
    at('client.electricianLicenseNumber',304,114,p,46);
@@ -97,10 +100,11 @@ export function curatedFormMap(bytes:Uint8Array,sourceUrl:string){
   fields.push({source:'lit:X',x:34,y:building?594:640,page:p,size:9,maxWidth:10,onlyIf:{source:'computed.constructionCategory',equals:'residential'}});
   at('snapshot.parcelNumber',124,building?425:505,p,230);
   at('computed.applicantSignerName',84,building?42:39,p,164);
+  signatureFields.push({role:'applicant',page:p,x:117,y:building?62:54,width:232,height:building?16:14,dateX:282,dateY:building?42:39,dateSize:9,label:'Authorized signature'});
   at('lit:X',building?34:146,building?628:677,p,10); // alteration
   at('lit:X',building?67:67,building?346:448,p,10); // property owner
   at('lit:X',building?84:84,building?269:319,p,10); // applicant
  }
- return {source,map:{formName:source.formName,sourceUrl,fillMode:source.ahj==='coos bay'?'acroform' as const:'overlay' as const,textFields,fieldFontSizes,checkboxes,overlayFields:fields,signatureFields:[],requiredFields,preserveInteractive:source.ahj==='coos bay',notes:"Review listed missing details and obtain required signatures before filing. Fee entries use the current saved jurisdiction lookup; printed rates may be historical. Owner mailing/contact details require actual owner information."}};
+ return {source,map:{formName:source.formName,sourceUrl,fillMode:source.ahj==='coos bay'?'acroform' as const:'overlay' as const,textFields,fieldFontSizes,checkboxes,overlayFields:fields,signatureFields,requiredFields,preserveInteractive:source.ahj==='coos bay',notes:"Review listed missing details and obtain required signatures before filing. Mapped operator signing dates are filled only when the matching saved signature is applied. Owner-installation signatures are not auto-filled. Fee entries use the current saved jurisdiction lookup; printed rates may be historical. Owner mailing/contact details require actual owner information."}};
 }
 
