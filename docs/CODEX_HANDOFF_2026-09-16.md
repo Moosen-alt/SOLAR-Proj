@@ -1,5 +1,9 @@
 # SOLAR-Proj continuation — September 18, 2026
 
+## Latest verification: fee retrieval and workflow functions
+
+After the category/signing changes, live official Tigard and Coos source retrieval and evidence corroboration passed in an isolated verification DB. Four customer electrical PDF totals match the refreshed lookup; Connie fee-sheet API matches $351.19 combined. All 22 targeted test files, workflow smoke and all 78 HTTP downloads passed. Automatic research orchestration was tested with controlled/stub responses, not a paid model discovery run. No additional code fixes were needed. Full report: `outputs/FEE_FUNCTION_VERIFICATION.md`; that report lists private evidence and remaining test-contact/valuation limitations.
+
 ## Latest follow-up: Other - Solar construction category
 
 User directed Other with Solar in category of construction. Added explicit Other/category-description support to both exact-revision Tigard maps; Connie snapshot stores `constructionCategory: Other`, `constructionCategoryOther: Solar`, with user provenance. No default was applied to other projects. Refreshed sandbox maps, restarted server, rebuilt and downloaded both PDFs, and visually verified Other checked and Solar in the correct category row. Form completeness regression and typecheck passed. Electrical has no remaining mapped required-field gaps; building still needs declared job valuation. Test-only contact details still need replacement before filing. Checkpoint: `work/before-category-other.sqlite`.
