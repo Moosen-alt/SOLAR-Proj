@@ -467,6 +467,46 @@ async function main(): Promise<void> {
     `fee=${greshamFee?.feeUsd} charges=${JSON.stringify((greshamFee?.charges ?? []).map((c) => c.label))}`);
   check("7c. and it is still seeded", greshamFee?.confidence === "seeded", String(greshamFee?.confidence));
 
+  // -------------------------------------------------------------------------
+  // 8. ONE FILING-LEVEL CHARGE STAYS ONE CHARGE WHEN TWO PASSES CITE TWO DOCUMENTS.
+  //
+  // A jurisdiction's structural and electrical research passes each retrieve their
+  // own published document, and a filing-wide review is printed in BOTH. Keying the
+  // de-dupe on sourceUrl made that one review two charges and billed it twice:
+  // measured at $634 on a filing that owes $417. A jurisdiction's two genuinely
+  // different reviews are separated by their printed LABELS, never by which PDF
+  // happened to carry them.
+  // -------------------------------------------------------------------------
+  const twoDocReview = (url: string) => [{
+    label: "Land Use Plan Review Res", kind: "plan_review" as const, amountUsd: 217,
+    conditional: false, condition: "", appliesTo: "", quote: "Land Use Plan Review Res | $217.00",
+    sourceUrl: url,
+  }];
+  const saveSplitDoc = (discipline: "structural" | "electrical", url: string, feeUsd: number, label: string) => {
+    // EACH PASS READS ITS OWN DOCUMENT. That is the whole point of the fixture: the
+    // finding AND the ledger evidence must carry this discipline's own URL, or both
+    // saves share one URL and the defect cannot appear.
+    const f = finding({ basis: "flat", brackets: [{ feeUsd, label }], sourceQuote: `${label} | $${feeUsd}.00`, sourceUrl: url });
+    const l = newFeeDocumentLedger();
+    l.evidence.push({ url, via: "http", status: 200, kind: "pdf", bytes: PDX_CORPUS.length, handed: 7 });
+    l.corpus.push(PDX_CORPUS);
+    const anc = corroborateAncillaryCharges(twoDocReview(url) as never, f, l);
+    attachAncillaryCharges(f.brackets, anc.held);
+    saveFeeSchedule(db, { state: "OR", ahj: "City of Twodoc", track: "permit", discipline }, f, { corroborateAgainst: l });
+    return anc.held.length;
+  };
+  const heldA = saveSplitDoc("structural", "https://example.gov/building-fees.pdf", 100, "Building Permit RS");
+  const heldB = saveSplitDoc("electrical", "https://example.gov/electrical-fees.pdf", 100, "Electrical Permit RS");
+  const twodoc = mkProject("proj-twodoc", "City of Twodoc", 3.072, 3.52, PRESCRIPTIVE_SNAPSHOT);
+  const twodocFee = feeForProject(db, twodoc, "permit");
+  const reviewRows = (twodocFee?.charges ?? []).filter((c) => c.label === "Land Use Plan Review Res");
+  check("8a. the filing-wide review is carried on BOTH rows (fixture precondition)",
+    heldA === 1 && heldB === 1, `heldA=${heldA} heldB=${heldB}`);
+  check("8b. but it is counted ONCE, not once per document",
+    reviewRows.length === 1, `rows=${reviewRows.length} urls=${JSON.stringify(reviewRows.map((c) => c.sourceUrl))}`);
+  check("8c. so the filing totals $417, not the double-billed $634",
+    twodocFee?.feeUsd === 417, String(twodocFee?.feeUsd));
+
   console.log(failures ? `\n${failures} check(s) FAILED` : "\nall checks passed");
   db.close();
   fs.rmSync(dir, { recursive: true, force: true });

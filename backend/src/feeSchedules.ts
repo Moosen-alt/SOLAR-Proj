@@ -3389,7 +3389,24 @@ function resolutionFrom(lines: FeeScheduleLine[], track: FeeTrack): Omit<Project
   const charges: FeeChargeBreakdown[] = [];
   for (const line of lines) {
     for (const c of line.charges ?? []) {
-      const key = `${c.kind}|${c.label.toLowerCase()}|${c.sourceUrl.toLowerCase()}|${c.partOfLineFee ? line.scheduleId : ""}`;
+      // THE DOCUMENT IS NOT PART OF A FILING-LEVEL CHARGE'S IDENTITY.
+      //
+      // Measured: two $100 permits plus ONE filing-wide $217 review totalled $634
+      // instead of $417, because the jurisdiction's two discipline passes each
+      // corroborated that one review from a DIFFERENT published document. Keying on
+      // sourceUrl made the same charge two charges. The same fixture with both passes
+      // citing one URL deduped correctly, which isolates the URL term as the cause.
+      //
+      // Two genuinely different reviews are already distinguished by the thing the
+      // jurisdiction printed — Portland bills "Fire - Plan Review" and "Land Use Plan
+      // Review Res" — so kind+label separates them without the URL, and the URL only
+      // ever splits what should be one charge.
+      //
+      // A per-LINE charge (the permit and its own surcharges) keeps the line in its
+      // key, because those legitimately recur once per permit filed.
+      const key = c.partOfLineFee
+        ? `${c.kind}|${c.label.toLowerCase()}|${c.sourceUrl.toLowerCase()}|${line.scheduleId}`
+        : `${c.kind}|${c.label.toLowerCase()}`;
       if (seenCharge.has(key)) continue;
       seenCharge.add(key);
       charges.push(c);
