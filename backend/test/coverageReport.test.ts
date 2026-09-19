@@ -328,6 +328,57 @@ check("MUST NOT: a filing in a DIFFERENT jurisdiction is not evidence for this o
     "Everdale's filing was counted as evidence for Fallowmere");
 });
 
+// ---------------------------------------------------------------------------
+// AN MPU IS A FILING TOO.
+//
+// A main-panel upgrade is its own submittal track ("mpu" in SubmittalTrackType) and is written
+// to submissions.permit_type verbatim by the staging path. It goes through the SAME AHJ portal,
+// behind the SAME login, as any other electrical permit — so an MPU that came back with an
+// application number is exactly as good a proof that the login works.
+//
+// The filing lookup enumerates permit types by hand and the list stops at "permit". A customer
+// whose only filing in a jurisdiction is an MPU therefore reads as never having filed there,
+// and the report books them a supervised first run for a portal they have already filed through.
+// ---------------------------------------------------------------------------
+const ASHGROVE_URL = "https://ashgrove-permits.invalid/portal/";
+seedRecipe({ scopeType: "ahj", state: "NM", ahj: "Town of Ashgrove", status: "complete", portalUrl: ASHGROVE_URL, steps: 27 });
+createPortalCredential(db, CLIENT, {
+  portalType: "NM · Ashgrove", portalUrl: ASHGROVE_URL, username: "permits@thorncrest-solar.invalid", password: PASSWORD,
+});
+// Untried login, exactly like Everdale: the filing is the only evidence available.
+const ashgroveScope = [...jurisdictions, ...parseJurisdictions("NM|Town of Ashgrove|")];
+const ashgroveRow = () => buildCoverageReport(db, client, ashgroveScope).rows
+  .find((r) => r.jurisdiction.includes("Ashgrove") && r.track === "permit")!;
+const { project: ashgroveProject } = createProject(db, {
+  clientId: CLIENT, owner: "Ashgrove Owner", street: "7 Ashgrove Ln", city: "Ashgrove",
+  state: "NM", ahj: "Town of Ashgrove", utility: "Ashgrove Power", dcKw: "8", acKw: "6.4",
+});
+
+check("before any filing: Ashgrove's untried login is SUPERVISED", () => {
+  assert.equal(ashgroveRow().bucket, "supervised_first_run", ashgroveRow().reason);
+});
+
+check("THE HEADLINE: an MPU-ONLY filing is login evidence — same portal, same login", () => {
+  db.run(
+    `INSERT INTO submissions (id, project_id, submission_type, permit_type, status, application_number, submitted_at, created_at)
+     VALUES ('sub-ashgrove-mpu', ?, 'permit', 'mpu', 'submitted', 'AG-2026-0177', ?, ?)`,
+    [ashgroveProject.id, "2026-09-03T10:00:00.000Z", "2026-09-03T10:00:00.000Z"],
+  );
+  const row = ashgroveRow();
+  assert.equal(row.filedHere.filed, true,
+    "an MPU filed through this jurisdiction's own portal was not counted as a filing");
+  assert.equal(row.bucket, "ready_now", row.reason);
+  assert.match(row.reason, /AG-2026-0177/, `the reason must name the evidence: ${row.reason}`);
+});
+
+check("MUST NOT: an MPU is still a PERMIT-side filing, never evidence for the utility track", () => {
+  // The permit/utility split is a hard safety rule — a permit track must never resolve a
+  // utility portal, and the evidence must not cross either.
+  const nemRow = buildCoverageReport(db, client, ashgroveScope).rows
+    .find((r) => r.jurisdiction.includes("Ashgrove") && r.track === "nem");
+  if (nemRow) assert.equal(nemRow.filedHere.filed, false, "an MPU permit was counted as interconnection evidence");
+});
+
 check("MUST EXCLUDE: an ARCHIVED project is not a jurisdiction we serve", () => {
   // The archive (v27) hides superseded staging passes and test fixtures from the client portal.
   // Counting them here inflates the denominator of the only number this report states. On the

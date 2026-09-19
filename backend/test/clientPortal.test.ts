@@ -132,6 +132,46 @@ check("each project carries what a tracker needs, and the plain-English status",
   assert.ok(Array.isArray(p.tracks), "per-track permit/NEM rows are what the client actually watches");
 });
 
+check("THE RECEIPT SURVIVES A SPLIT FILING: one filing recorded as several rows still shows its confirmation number", () => {
+  // One filing is recorded as two or three submission rows on the live database — a re-record,
+  // a resume, a correction resubmit — and only the row that reached the confirmation page
+  // carries the number. The aggregate that collapses those rows takes MIN() over a column
+  // whose schema default is the EMPTY STRING, and '' sorts below every real receipt, so the
+  // client's page prints a blank where the portal handed us a number.
+  //
+  // MIN(submitted_at) is deliberate and stays: the earliest date is when the jurisdiction
+  // actually received it. MIN over the confirmation number is not the same decision.
+  db.run(
+    `INSERT INTO permit_check_targets (id, project_id, target_type, permit_type, jurisdiction, portal_name,
+       application_number, permit_number, latest_status_label, latest_outcome, active, created_at, updated_at)
+     VALUES ('tgt-split', ?, 'permit', 'electrical', 'City of Coos Bay', 'Accela',
+       'CB-2026-0511', '', 'Under review', 'waiting', 1, ?, ?)`,
+    [p2.id, "2026-09-01T10:00:00.000Z", "2026-09-01T10:00:00.000Z"],
+  );
+  // Row one: the re-record. It knows the application number and nothing else.
+  db.run(
+    `INSERT INTO submissions (id, project_id, submission_type, permit_type, status, application_number,
+       confirmation_number, submitted_at, created_at)
+     VALUES ('sub-split-blank', ?, 'permit', 'electrical', 'submitted', 'CB-2026-0511', '', ?, ?)`,
+    [p2.id, "2026-09-02T10:00:00.000Z", "2026-09-02T10:00:00.000Z"],
+  );
+  // Row two: the run that actually reached the portal's confirmation page.
+  db.run(
+    `INSERT INTO submissions (id, project_id, submission_type, permit_type, status, application_number,
+       confirmation_number, submitted_at, created_at)
+     VALUES ('sub-split-receipt', ?, 'permit', 'electrical', 'submitted', 'CB-2026-0511', 'RCPT-88421', ?, ?)`,
+    [p2.id, "2026-09-01T10:00:00.000Z", "2026-09-01T10:00:00.000Z"],
+  );
+  const project = clientPortalPayload(db, token)!.projects.find((x) => x.id === p2.id)!;
+  const track = project.tracks.find((t) => t.applicationNumber === "CB-2026-0511")!;
+  assert.ok(track, "the seeded tracking target did not appear on the client page at all");
+  assert.equal(track.confirmationNumber, "RCPT-88421",
+    "a real receipt exists on another row of the same filing, and the client's page shows a blank");
+  // The filing date still comes from the EARLIEST row, so a re-record cannot walk it forward.
+  assert.equal(track.submittedAt, "2026-09-01T10:00:00.000Z",
+    "the filing date must stay the earliest of the rows for this application number");
+});
+
 db.close();
 fs.rmSync(tmpDir, { recursive: true, force: true });
 console.log(failures === 0
