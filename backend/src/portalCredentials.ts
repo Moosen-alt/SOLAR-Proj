@@ -395,6 +395,17 @@ export function nearestStoredLogins(
     .map((c) => c.label);
 }
 
+/**
+ * `now`, unless the timestamp it has to beat is the same or later — then one millisecond
+ * past that one. Used so the most recent login outcome always compares greater than the
+ * one it replaces, whatever the clock's resolution.
+ */
+function outranks(now: string, other: string): string {
+  if (!other || other < now) return now;
+  const bumped = Date.parse(other) + 1;
+  return Number.isNaN(bumped) ? now : new Date(bumped).toISOString();
+}
+
 // ---------------------------------------------------------------------------
 // LOGIN HEALTH — remember which stored logins the portal actually accepted.
 //
@@ -430,7 +441,8 @@ export function recordLoginOutcome(
   let targetHost = "";
   try { targetHost = new URL(portalUrl).hostname.toLowerCase(); } catch { return false; }
   const rows = db.query<Row>(
-    "SELECT id, portal_url FROM portal_credentials WHERE client_id = ? ORDER BY updated_at DESC", [clientId],
+    "SELECT id, portal_url, last_login_ok_at, last_login_failed_at FROM portal_credentials WHERE client_id = ? ORDER BY updated_at DESC",
+    [clientId],
   );
   const now = nowIso();
   for (const row of rows) {
@@ -439,17 +451,31 @@ export function recordLoginOutcome(
     let storedHost = "";
     try { storedHost = new URL(stored).hostname.toLowerCase(); } catch { continue; }
     if (!hostsMatch(targetHost, storedHost)) continue;
+    // THE LATEST ANSWER WINS, EVEN INSIDE THE SAME MILLISECOND.
+    //
+    // `stale` is not a column: it is derived by comparing these two timestamps as ISO
+    // strings (see mapView). A wall clock is only accurate to the millisecond, so an
+    // outcome recorded in the same millisecond as the opposite one before it compares
+    // equal, not greater — and a portal that has just REFUSED a login reads as one that
+    // still accepts it. Two logins do not really resolve a millisecond apart, but a
+    // caller that records one after the other does, and this is the wrong way to be
+    // wrong: the whole point of the flag is that a refusal is remembered.
+    //
+    // So a write is stamped at least one millisecond past whatever it must outrank.
+    // Ordinary calls, seconds apart, are unaffected.
+    const opposite = outcome.ok ? s(row.last_login_failed_at) : s(row.last_login_ok_at);
+    const at = outranks(now, opposite);
     // Both outcomes are recorded. Only writing failures would leave a credential marked
     // stale forever after one bad night; a success is what clears it.
     if (outcome.ok) {
       db.run(
         "UPDATE portal_credentials SET last_login_ok_at = ?, last_login_note = ?, updated_at = ? WHERE id = ?",
-        [now, s(outcome.note).slice(0, 300), now, s(row.id)],
+        [at, s(outcome.note).slice(0, 300), at, s(row.id)],
       );
     } else {
       db.run(
         "UPDATE portal_credentials SET last_login_failed_at = ?, last_login_note = ?, updated_at = ? WHERE id = ?",
-        [now, s(outcome.note).slice(0, 300), now, s(row.id)],
+        [at, s(outcome.note).slice(0, 300), at, s(row.id)],
       );
     }
     return true;

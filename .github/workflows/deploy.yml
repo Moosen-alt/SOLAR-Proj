@@ -1,5 +1,7 @@
 # GitHub Actions — build, test, deploy to Fly.io
-# Runs on every push to main.
+#
+# Checks run on every branch push. Deploy is manual (workflow_dispatch) so no
+# branch deploys production on its own.
 #
 # Required repository secrets:
 #   FLY_API_TOKEN   — from `fly tokens create deploy`
@@ -9,13 +11,14 @@ name: Deploy
 
 on:
   push:
-    branches: [main]
+    branches: ["**"]
   workflow_dispatch:
 
 jobs:
   test:
     name: Typecheck + Smoke
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
@@ -37,6 +40,11 @@ jobs:
           SESSION_ENCRYPTION_KEY: "ci-only-not-real-replace-in-production"
           ANTHROPIC_API_KEY: ""
 
+      # profileQueue.test.ts launches a real persistent context, so the browser
+      # has to be on the runner before the portal-bot suite runs.
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
       - name: Portal-bot unit tests
         run: npm run portal:test:unit
         env:
@@ -53,6 +61,7 @@ jobs:
   deploy:
     name: Deploy to Fly.io
     needs: test
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     concurrency: deploy-production
     steps:
