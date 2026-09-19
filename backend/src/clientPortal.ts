@@ -491,12 +491,20 @@ export function clientPortalPayload(db: AppDb, token: string): ClientPortalPaylo
   // MIN(submitted_at), because one filing is recorded as two or three rows on the live database
   // and taking the latest would walk a client's filing date forward on any re-record.
   //
+  // THE CONFIRMATION NUMBER IS NOT THE SAME DECISION, and a bare MIN() over it was wrong.
+  // Only the row that reached the portal's confirmation page carries a number; the re-record,
+  // the resume and the correction resubmit beside it carry the column's schema default, the
+  // EMPTY STRING — which sorts below every real receipt. So the aggregate handed back '' and
+  // the client's page printed a blank for a filing we hold the receipt for. NULLIF drops the
+  // blanks and MIN ignores nulls, so the receipt wins and a filing that genuinely has none
+  // still yields nothing. Earliest DATE, earliest non-blank RECEIPT.
+  //
   // Keyed by (project_id, application_number) — the same scoping as migration v28. Application
   // numbers are unique within a jurisdiction, not globally.
   const filings = db.query<Record<string, unknown>>(
     `SELECT project_id, application_number,
             MIN(submitted_at) AS submitted_at,
-            MIN(confirmation_number) AS confirmation_number
+            MIN(NULLIF(confirmation_number, '')) AS confirmation_number
        FROM submissions
       WHERE project_id IN (${placeholders})
         AND status = 'submitted' AND submitted_at IS NOT NULL AND submitted_at != ''

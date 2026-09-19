@@ -69,7 +69,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AppDb } from "../backend/src/db";
-import type { PortalRecipe, ProjectRecord } from "../shared/src/types";
+import type { PortalRecipe, ProjectRecord, SubmittalTrackType } from "../shared/src/types";
 import { findCompleteRecipeForProject, findAnyRecipeForProject } from "../backend/src/portalRecipes";
 import { findKnowledgeForLearn } from "../backend/src/knowledgeBase";
 import { listPortalCredentials, selectCredentialUrlsFor, mfaCodeDestinationFor } from "../backend/src/portalCredentials";
@@ -538,6 +538,32 @@ export function mfaFacts(
 // ---------------------------------------------------------------------------------------
 
 /**
+ * WHICH SIDE EACH SUBMITTAL TRACK FILES ON — and the reason this is a Record and not a list.
+ *
+ * `submissions.permit_type` holds the TRACK, written verbatim by the staging path
+ * (repository.ts, `permitTypeTag = track ?? "permit"`) and by markTrackSubmitted. The lookup
+ * below used to enumerate the permit-side values by hand and the list stopped at "permit", so
+ * a main panel upgrade — its own track since the panel work split out — matched nothing. A
+ * customer whose only filing in a jurisdiction was an MPU read as never having filed there,
+ * and the report booked them a supervised first run for a portal they had already filed
+ * through: the exact failure this function exists to prevent.
+ *
+ * A Record over SubmittalTrackType is exhaustive, so the NEXT track added to the union fails
+ * typecheck here until somebody says which side it files on. A list would have silently
+ * dropped it the same way. "permit" is the column's own schema default and the legacy value
+ * for rows written before per-track tagging.
+ */
+const COVERAGE_TRACK_OF: Record<SubmittalTrackType, CoverageTrack> = {
+  nem: "nem",
+  building: "permit",
+  electrical: "permit",
+  combo: "permit",
+  permit: "permit",
+  mpu: "permit",
+};
+const SUBMISSION_PERMIT_TYPES = Object.keys(COVERAGE_TRACK_OF) as SubmittalTrackType[];
+
+/**
  * Has this client actually filed this track in this jurisdiction?
  *
  * WHY THIS EXISTS: READY NOW turns on portal_credentials.last_login_ok_at, and that flag is
@@ -561,8 +587,8 @@ export function filedInJurisdiction(
   track: CoverageTrack,
 ): { filed: boolean; at: string; reference: string } {
   const none = { filed: false, at: "", reference: "" };
-  const disciplines = track === "nem" ? ["nem"] : ["building", "electrical", "combo", "permit"];
-  const placeholders = disciplines.map(() => "?").join(",");
+  const permitTypes = SUBMISSION_PERMIT_TYPES.filter((t) => COVERAGE_TRACK_OF[t] === track);
+  const placeholders = permitTypes.map(() => "?").join(",");
   // Matched on the JURISDICTION the row is about, not on a portal URL: the URL a filing went
   // through is not stored on the submission, and the jurisdiction is what the row claims.
   const where = track === "nem"
@@ -577,7 +603,7 @@ export function filedInJurisdiction(
         AND sub.permit_type IN (${placeholders})
         AND sub.status = 'submitted' AND sub.application_number != ''
       ORDER BY sub.submitted_at DESC LIMIT 1`,
-    [clientId, j.state, match, ...disciplines],
+    [clientId, j.state, match, ...permitTypes],
   );
   if (!row?.submitted_at) return none;
   return { filed: true, at: s(row.submitted_at), reference: s(row.application_number) };
