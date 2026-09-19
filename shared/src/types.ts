@@ -31,6 +31,12 @@ export type PortalRunStatus =
   | "queued"
   | "running"
   | "awaiting_human_submit"
+  // A suspended filing's correction form was reopened and staged; the operator reviews
+  // and clicks the portal's resubmit themselves. DELIBERATELY not "awaiting_human_submit":
+  // that status is what the approve/auto-submit path selects runs by (autopilot.ts
+  // awaitingPortalRun), and a correction reopen must never become eligible for a
+  // delegated final submit — the resubmit confirmation is a human's click, recorded only.
+  | "awaiting_human_resubmit"
   | "paused_for_human"
   | "submitted"
   | "failed";

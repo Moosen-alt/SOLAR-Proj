@@ -74,6 +74,7 @@ import { selectWithFallback } from "../comboboxFill";
 const DRIFT_SETTLE_MS = Math.max(2000, Number(process.env.RECIPE_DRIFT_SETTLE_MS ?? 15000));
 import { detectChallengeFrame, frameSelectorFor, hasNumericValidationError, scanStatusFromBody, RETRY_BACKOFF_MS, sleep, smartWait, toBareNumber, waitForElement, waitForInteractiveControls } from "../safeAction";
 import { performLogin } from "./loginFlow";
+import { chooseCorrectionForm, correctionFormSelector, isRefusal, scanProjectForms, type ProjectFormRow } from "./correctionForm";
 import { EXTRACT_SEL, extractFieldsInPage, toExtractedField, dismissPageModals, clearPageOverlays, equipmentMakeCandidates, pageFingerprintOf, collectValidationErrorsFrom, acaApplyEntryFrom, advanceSignatureOf } from "./autoLearnAdapter";
 import { tagUploadControls } from "./autoLearnAdapter";
 
@@ -504,6 +505,141 @@ export class RecipeAdapter extends BasePortalAdapter {
       return scanStatusFromBody(this.page, applicationNumbers);
     } catch {
       return null;
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // CORRECTION CONTINUATION — reopen the ORIGINAL suspended filing's correction form.
+  //
+  // A suspended filing is not re-filed, it is REOPENED (see correctionForm.ts). This is
+  // the production caller of that chooser: it binds the ORIGINAL application number,
+  // opens THAT filing's landing page, picks the named correction form (never the
+  // cancellation form sitting beside it), clicks only the chooser's tagged control,
+  // stages revised documents through the attach-time gate, and STOPS. The resubmit
+  // confirmation is a human's click — this method never touches a submit control.
+  //
+  // Every uncertain outcome is a NEEDS-HUMAN refusal carrying what was seen, never a
+  // silent no-op: an unknown must never read as fine.
+  async reopenSuspendedFiling(applicationNumber: string): Promise<PortalStepResult> {
+    const appNo = String(applicationNumber || "").trim();
+    if (!this.page) return fail("Correction reopen: the portal is not open — login must run first.");
+    if (!appNo) {
+      return fail(
+        "Correction reopen refused: no application number is bound for this filing. The reopen must target the ORIGINAL application — never create a new one — so it cannot run without the filing's number.",
+        { needsHuman: true },
+      );
+    }
+    try {
+      await smartWait(this.page);
+      // THE BOUND FILING MUST BE ON THE PAGE WE ACT ON. Scanning a page that never
+      // mentions the application number means we are somewhere else entirely — refuse
+      // before anything is clicked, and say where we were.
+      const pageHasApp = async (): Promise<boolean> => {
+        const body = String(await this.page.locator("body").innerText().catch(() => ""));
+        return body.includes(appNo);
+      };
+      if (!(await pageHasApp())) {
+        return fail(
+          `Correction reopen stopped: application ${appNo} does not appear on the portal page (${String(this.page.url?.() ?? "")}). A human must locate the filing — nothing was clicked.`,
+          { needsHuman: true, applicationNumber: appNo },
+        );
+      }
+
+      // The applications LIST renders the number as the link into the filing; the filing's
+      // own landing page shows it as plain text. Click through only when a link exists —
+      // exact text first, so APP-1116 can never open APP-11168's project.
+      const linkish = this.page.locator("a, [role='link']").filter({ hasText: appNo });
+      const linkCount: number = await linkish.count().catch(() => 0);
+      if (linkCount > 0) {
+        let target = null as null | { click: (o?: { timeout?: number }) => Promise<void> };
+        for (let i = 0; i < Math.min(linkCount, 25); i++) {
+          const cand = linkish.nth(i);
+          const t = String(await cand.innerText().catch(() => "")).replace(/\s+/g, " ").trim();
+          if (t === appNo) { target = cand; break; }
+        }
+        if (!target && linkCount === 1) target = linkish.first();
+        if (!target && linkCount > 1) {
+          return fail(
+            `Correction reopen stopped: ${linkCount} links on this page contain "${appNo}" and none is an exact match — refusing to guess which opens the filing.`,
+            { needsHuman: true, applicationNumber: appNo },
+          );
+        }
+        if (target) {
+          await target.click({ timeout: 10_000 });
+          await smartWait(this.page);
+        }
+      }
+
+      // Scan the project's form list and choose BY NAME. The scan tags each row's own
+      // control (data-al-cform) so the click below cannot land on an adjacent row.
+      let scanFailed = false;
+      const rows = await this.page.evaluate(scanProjectForms).catch(() => { scanFailed = true; return []; });
+      if (scanFailed) {
+        // An evaluate error is NOT "no forms" — say which it was, or a broken shim reads
+        // as an empty portal (the exact failure the __name lesson records).
+        return fail(
+          `Correction reopen stopped: the form list on ${String(this.page.url?.() ?? "the page")} could not be scanned (in-page script failed). A human must reopen the correction form.`,
+          { needsHuman: true, applicationNumber: appNo },
+        );
+      }
+      const choice = chooseCorrectionForm(rows as ProjectFormRow[]);
+      if (isRefusal(choice)) {
+        return fail(
+          `Correction reopen refused for ${appNo}: ${choice.why}`,
+          { needsHuman: true, applicationNumber: appNo, offeredForms: choice.offered, refusalWhy: choice.why },
+        );
+      }
+
+      // Click ONLY the chosen row's own tagged control — and if it does not open
+      // anything, refuse and surface. Refusal beats preference at the click layer too:
+      // never fall through to a second-choice row.
+      const urlBefore = String(this.page.url?.() ?? "");
+      const control = this.page.locator(`[data-al-cform="${choice.row.key}"]`).first();
+      const clicked = await control.click({ timeout: 10_000 }).then(() => true).catch(() => false);
+      if (!clicked) {
+        return fail(
+          `Correction reopen stopped: the chosen form's own control ("${choice.row.name}" [${choice.row.action}]) could not be clicked. Nothing else was tried — a human must reopen it.`,
+          { needsHuman: true, applicationNumber: appNo, offeredForms: rows.map((r: ProjectFormRow) => r.name) },
+        );
+      }
+      await smartWait(this.page);
+      const urlAfter = String(this.page.url?.() ?? "");
+      const controlStillThere = await control.isVisible().catch(() => false);
+      if (urlAfter === urlBefore && controlStillThere) {
+        return fail(
+          `Correction reopen stopped: clicking "${choice.row.name}" [${choice.row.action}] did not open the form (the page did not change). No other row was tried — a human must look.`,
+          { needsHuman: true, applicationNumber: appNo, offeredForms: rows.map((r: ProjectFormRow) => r.name) },
+        );
+      }
+
+      // The reopened wizard is showing. Stage revised documents through the SAME
+      // attach-time gate replay uses (beforeUpload re-reads the project's current path +
+      // selected file immediately before each attach). A gate refusal stops the attach
+      // and is REPORTED — it never crashes the reopen or silently skips.
+      let attachedDocs = 0;
+      let attachNote = "";
+      try {
+        attachedDocs = await this.sweepUnrecordedUploads();
+      } catch (err) {
+        attachNote = ` Document staging stopped by the attach-time gate: ${err instanceof Error ? err.message : String(err)} — verify the documents and re-run.`;
+      }
+
+      return ok(
+        `Reopened the correction form for ${appNo}: ${choice.why}. ${attachedDocs} document(s) staged through the attach-time gate.${attachNote} AUTOMATION HAS STOPPED — review the reopened application and click the portal's resubmit yourself.`,
+        {
+          finalSubmitClicked: false,
+          applicationNumber: appNo,
+          reopenedForm: choice.row.name,
+          reopenWhy: choice.why,
+          // Recorded by NAME, never position — the same discipline the chooser documents.
+          reopenSelector: correctionFormSelector(choice.row),
+          attachedDocs,
+          offeredForms: rows.map((r: ProjectFormRow) => r.name),
+          ...(attachNote ? { attachGateStopped: true } : {}),
+        },
+      );
+    } catch (err) {
+      return fail(`Correction reopen errored: ${err instanceof Error ? err.message : String(err)}`, { needsHuman: true, applicationNumber: appNo });
     }
   }
 

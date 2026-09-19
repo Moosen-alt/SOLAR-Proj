@@ -107,3 +107,4 @@ docs/**/*.json
 # The draft ledger is an operational record of real portal drafts — keep it OUT of git
 # (it names live accounts and portal references) but never delete it.
 data/portal-drafts.jsonl
+IRL NOTES/

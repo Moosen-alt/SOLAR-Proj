@@ -42,7 +42,9 @@ export function parsePaidFeeReceipt(raw: string): PaidFeeReceipt | null {
     const permits = [...new Set([...t.matchAll(/\b(BLD-\d{2}-\d+)\b/g)].map(m => m[1]))];
     if (permits.length !== 1 || !/No processing fees/i.test(t)) return null;
     jurisdiction = "City of Newberg"; permitNumber = permits[0];
-    receiptNumber = grab(t, "Receipt number\\s*#(\\d+)") || "";
+    // The extractor may render "Receipt number # 2895" with a space after the
+    // hash — same printed receipt, different text-run spacing.
+    receiptNumber = grab(t, "Receipt number\\s*#\\s*(\\d+)") || "";
     paidAt = grab(t, "([A-Za-z]+ \\d{1,2}, \\d{4})") || "";
     amount = total = dollars(grab(t, `Total paid\\s*\\$${money}`));
   } else if (/permits\.cityofsalem\.net/.test(t) && /Payment Receipt/i.test(t)) {
@@ -65,6 +67,21 @@ export function parsePaidFeeReceipt(raw: string): PaidFeeReceipt | null {
     const main = t.slice(t.search(/Profile Name CITY OF BEAVERTON PERMITS Transaction Type/i));
     jurisdiction = "City of Beaverton";
     receiptNumber = grab(main, "(?<!Fee )Transaction ID\\s*([A-Z0-9-]+)") || "";
+    // A transaction ID that wraps across lines arrives, after whitespace
+    // normalisation, as "050526C1C-BC3ACA70-84CC-45F1- 9C11- 2E9019ED21CD".
+    // A chunk ending in "-" is a wrap point, not the end of the identity — and
+    // this string is the dedupe key, so it must not depend on where the PDF
+    // happened to break the line. Continuations join case-SENSITIVELY and must
+    // carry a digit, so a following heading ("Approval Code") is never swallowed.
+    if (receiptNumber.endsWith("-")) {
+      const run = /(?<!Fee )Transaction ID\s*((?:[A-Z\d-]+ )*[A-Z\d-]+(?![a-z]))/.exec(main)?.[1];
+      if (run && run.startsWith(receiptNumber)) {
+        for (const chunk of run.split(" ").slice(1)) {
+          if (!receiptNumber.endsWith("-") || !/\d/.test(chunk)) break;
+          receiptNumber += chunk;
+        }
+      }
+    }
     paidAt = grab(main, "(?<!Fee )Transaction Date/Time\\s*([0-9/]+)") || "";
     amount = dollars(grab(main, `(?<![a-z])Amount\\s*\\$${money}`));
     processing = dollars(grab(main, `Service Fee\\s*\\$${money}`)) ?? 0;

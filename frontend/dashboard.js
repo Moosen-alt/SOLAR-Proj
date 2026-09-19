@@ -4417,8 +4417,38 @@ function renderCorrections() {
       </div>
       <p>${esc(correction.requiredAction)}</p>
       <p class="muted">${esc(correction.correctionText)}</p>
+      ${!correction.closedAt ? `
+      <div style="margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button class="secondary" data-reopen-correction="${esc(correction.id)}" style="font-size:12px">Reopen correction form in portal</button>
+        <span class="muted" style="font-size:11px">Opens the SUSPENDED filing's own correction form (never a new application, never a cancel/withdraw) and stages revised docs — you review and click the portal's resubmit yourself.</span>
+      </div>` : ""}
     </article>
   `).join("") : `<p class="muted">No corrections recorded.</p>`;
+
+  $("corrections").querySelectorAll("button[data-reopen-correction]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      const originalLabel = button.textContent;
+      button.textContent = "Reopening in portal…";
+      try {
+        const result = await api(`/api/corrections/${encodeURIComponent(button.dataset.reopenCorrection)}/reopen-portal`, { method: "POST", body: "{}" });
+        await selectProject(state.selectedProjectId);
+        if (result.ok) {
+          showMessage(`Reopened "${result.reopenedForm || "the correction form"}" — ${result.attachedDocs || 0} document(s) staged through the attach gate. ${result.browserLeftOpen ? "The portal browser is open at the reopened application: verify everything, then click the portal's resubmit yourself." : "Open the portal, verify the reopened application, and resubmit it yourself."}`);
+        } else if (result.needsHuman) {
+          const offered = (result.offeredForms || [])
+            .concat((result.candidates || []).map((c) => `${c.applicationNumber} (${c.targetType}${c.portalName ? `, ${c.portalName}` : ""})`));
+          showMessage(`${result.message}${offered.length ? ` — on offer: ${offered.join(" | ")}` : ""}`, "warning");
+        } else {
+          showMessage(result.message || "Correction reopen did not complete.", "error");
+        }
+      } catch (err) {
+        showMessage(err.message, "error");
+        button.disabled = false;
+        button.textContent = originalLabel;
+      }
+    });
+  });
 }
 
 function renderPortalRuns() {

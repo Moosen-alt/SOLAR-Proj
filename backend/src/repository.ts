@@ -31,6 +31,7 @@ import type {
   PermitCheckTarget,
   PermitStatusCheck,
   PermitUtilityKnowledgeProfile,
+  PortalRecipe,
   PortalRun,
   ProjectCommunicationDraft,
   ProjectCommunicationDraftPacket,
@@ -61,7 +62,7 @@ import type {
 import { touchProjectMetrics } from "./kpi";
 import fs from "node:fs";
 import path from "node:path";
-import { checkStatusWithAdapter, stageWithAccela, stageWithMockPortal, stageWithPowerClerk, stageWithRecipe } from "../../portal-bot/src/index";
+import { checkStatusWithAdapter, runCorrectionReopen, stageWithAccela, stageWithMockPortal, stageWithPowerClerk, stageWithRecipe } from "../../portal-bot/src/index";
 import { resolveHeadless } from "../../portal-bot/src/browser";
 import { findCompleteRecipeForProject, findAnyRecipeForProject, resolveRecipeFieldValues, markPortalRecipeForRerecord, getPortalRecipe, savePortalRecipeSteps } from "./portalRecipes";
 import { notifyClientOfStatusChange, shouldNotifyClient } from "./clientNotifier";
@@ -4657,6 +4658,246 @@ export function setCorrectionsSlaDays(db: AppDb, correctionId: string, slaDays: 
     `UPDATE corrections SET sla_days = ?, due_at = date(created_at, '+' || ? || ' days') WHERE id = ?`,
     [slaDays, slaDays, correctionId],
   );
+}
+
+// ---------------------------------------------------------------------------
+// CORRECTION REOPEN — the operator action that reopens a SUSPENDED filing's
+// correction form on the live portal (the portal half of the correction flow;
+// the data half is applyCorrectionProposals above).
+//
+// Binds the ORIGINAL filing from the project's tracking targets
+// (permit_check_targets carries the application number, portal URL, and which
+// track the filing belongs to), then drives portal-bot's runCorrectionReopen:
+// login → open THAT application → choose the named correction form
+// (correctionForm.ts refuses cancellation/withdraw forms, View-only rows, and
+// ambiguity) → stage revised documents through the attach-time gate → STOP.
+//
+// What this NEVER does: create a new application, click any submit/withdraw
+// control, or mark the correction resubmitted — resolveCorrection({resubmitted})
+// records the human's own resubmit click. Every uncertain outcome (no bound
+// filing, two plausible filings, no correction form, two correction forms)
+// lands as a pending human_review_items row with the candidates listed, so an
+// unknown never reads as fine.
+// ---------------------------------------------------------------------------
+
+export interface CorrectionReopenResult {
+  ok: boolean;
+  needsHuman: boolean;
+  message: string;
+  reopenedForm?: string;
+  attachedDocs?: number;
+  browserLeftOpen?: boolean;
+  offeredForms?: string[];
+  /** Filing candidates when the reopen could not bind ONE target — operator picks by targetId. */
+  candidates?: Array<{ targetId: string; targetType: string; applicationNumber: string; portalName: string; portalUrl: string }>;
+  runId?: string;
+}
+
+// Same discriminator the corrections board uses to split NEM from permit corrections.
+const NEM_CORRECTION_RE = /nem|net.?meter|interconnection|pto|utility|meter|account|powerclerk|inverter|1741/i;
+
+export async function reopenCorrectionOnPortal(
+  db: AppDb,
+  correctionId: string,
+  opts: { targetId?: string; runner?: typeof runCorrectionReopen } = {},
+): Promise<CorrectionReopenResult> {
+  const correction = db.get<Row>("SELECT * FROM corrections WHERE id = ?", [correctionId]);
+  if (!correction) throw new HttpError(404, "Correction not found.");
+  if (correction.closed_at) {
+    throw new HttpError(409, "This correction is closed. Reopening applies to an OPEN correction on a suspended filing.");
+  }
+  const projectId = text(correction.project_id);
+  const detail = getProjectDetail(db, projectId);
+  const runner = opts.runner ?? runCorrectionReopen;
+  const ts = nowIso();
+
+  // NEEDS-HUMAN surface: a pending review item with the candidates listed — the
+  // operator's actual queue — plus an audit row. Never a silent no-op.
+  const surfaceNeedsHuman = (
+    why: string,
+    extras: { offeredForms?: string[]; candidates?: CorrectionReopenResult["candidates"]; runId?: string },
+  ): CorrectionReopenResult => {
+    const offered = extras.offeredForms ?? [];
+    const candidates = extras.candidates ?? [];
+    const excerpt = [
+      ...offered.map((f) => `form: ${f}`),
+      ...candidates.map((c) => `filing: ${c.applicationNumber} (${c.targetType}${c.portalName ? `, ${c.portalName}` : ""})`),
+    ].join(" | ").slice(0, 800);
+    db.run(
+      `INSERT INTO human_review_items
+        (id, project_id, issue_type, field_name, parser_value, llm_suggested_value, source_excerpt, status, notes, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id(), projectId, "Correction reopen needs a human", "correction_reopen", "", "", excerpt, "pending", why.slice(0, 900), ts, ts],
+    );
+    addAuditLog(db, projectId, "system", "correction reopen", "correction.reopen_needs_human", {
+      correctionId, why: why.slice(0, 300), offeredForms: offered.slice(0, 10), candidates: candidates.map((c) => c.applicationNumber).slice(0, 10),
+    });
+    return { ok: false, needsHuman: true, message: why, offeredForms: offered, candidates, runId: extras.runId };
+  };
+
+  // 1) BIND THE ORIGINAL FILING. Only an active tracking target that carries the
+  //    application number can anchor a reopen — the reopen must land on THAT filing,
+  //    never on "whatever the portal lists first" and never on a new application.
+  const targets = db.query<Row>(
+    "SELECT * FROM permit_check_targets WHERE project_id = ? AND active = 1 AND application_number != '' ORDER BY created_at DESC",
+    [projectId],
+  );
+  const describe = (t: Row) => ({
+    targetId: text(t.id),
+    targetType: text(t.target_type) === "nem" ? "nem" : "permit",
+    applicationNumber: text(t.application_number),
+    portalName: text(t.portal_name),
+    portalUrl: text(t.portal_url),
+  });
+  let target: Row | undefined;
+  if (opts.targetId) {
+    target = targets.find((t) => text(t.id) === opts.targetId);
+    if (!target) throw new HttpError(404, "That tracking target does not belong to this project (or carries no application number).");
+  } else if (targets.length === 1) {
+    target = targets[0];
+  } else if (targets.length > 1) {
+    // Two filings tracked (e.g. the permit AND the NEM application). The correction's own
+    // wording says which system suspended it; if that still leaves more than one filing
+    // (two permit disciplines), refuse and let the operator pick — guessing files the
+    // correction against the wrong application.
+    const blob = `${text(correction.correction_text)} ${text(correction.root_cause)} ${text(correction.required_action)}`;
+    const wantType = NEM_CORRECTION_RE.test(blob) ? "nem" : "permit";
+    const scoped = targets.filter((t) => text(t.target_type) === wantType || (wantType === "permit" && text(t.target_type) !== "nem"));
+    if (scoped.length === 1) target = scoped[0];
+    else {
+      return surfaceNeedsHuman(
+        `Correction reopen needs a human: ${scoped.length || targets.length} tracked filings could carry this correction — pick the one to reopen.`,
+        { candidates: (scoped.length ? scoped : targets).map(describe) },
+      );
+    }
+  }
+  if (!target) {
+    return surfaceNeedsHuman(
+      "Correction reopen needs a human: no tracked filing carries an application number for this project. Add the filing under Permit/NEM Checks (with its application number) and retry.",
+      { candidates: [] },
+    );
+  }
+
+  const targetType: "permit" | "nem" = text(target.target_type) === "nem" ? "nem" : "permit";
+  const scopeType: "ahj" | "utility" = targetType === "nem" ? "utility" : "ahj";
+  const applicationNumber = text(target.application_number);
+
+  // 2) RESOLVE THE PORTAL — the target's own URL first, else the track-scoped recipe's.
+  const recipe = findCompleteRecipeForProject(db, { scopeType, state: detail.project.state, ahj: detail.project.ahj, utility: detail.project.utility })
+    ?? findAnyRecipeForProject(db, { scopeType, state: detail.project.state, ahj: detail.project.ahj, utility: detail.project.utility });
+  const portalUrl = text(target.portal_url) || (recipe?.portalUrl ?? "");
+  // Rule 5: a PERMIT filing must never be reopened on a utility platform (and a poisoned
+  // URL is exactly how that would happen). Stop before any browser opens.
+  if (targetType === "permit" && isUtilityPlatformUrl(portalUrl)) {
+    addAuditLog(db, projectId, "system", "correction reopen", "portal.track_host_conflict", {
+      correctionId, targetId: text(target.id), url: portalUrl,
+    });
+    return surfaceNeedsHuman(
+      `Correction reopen stopped: the permit filing ${applicationNumber} is bound to a utility interconnection portal URL (${portalUrl}) — that's the NEM portal, not the permit portal. Fix the tracking target's portal URL and retry.`,
+      { candidates: [describe(target)] },
+    );
+  }
+  if (!portalUrl) {
+    return surfaceNeedsHuman(
+      `Correction reopen needs a human: no portal URL is known for filing ${applicationNumber}. Add the portal URL to its tracking target and retry.`,
+      { candidates: [describe(target)] },
+    );
+  }
+
+  // 3) REVISED DOCUMENTS through the SAME resolver + attach-time gate replay uses:
+  //    explicit uploads beat generated forms, wrong-path forms are filtered, and the
+  //    gate re-reads the project's current path + selected file at the attach itself.
+  const docsByType = submissionDocumentsByType(db, detail.project);
+  const beforeUpload = uploadDocumentGuard(db, projectId, targetType !== "nem");
+
+  // 4) Credential/session conventions shared with the learner/replay/monitor.
+  const clientId = detail.project.clientId ?? "";
+  const profileBase = process.env.PORTAL_PROFILES_DIR || path.join(process.cwd(), "portal-profiles");
+  const portalType = scopeType === "utility" ? "utility" : "AHJ";
+  const userDataDir = portalProfileDir(profileBase, clientId || null, portalType, portalUrl);
+  const credential = clientId
+    ? (getDecryptedCredential(db, clientId, portalType)
+        ?? getDecryptedCredentialByUrl(db, clientId, portalUrl)
+        ?? getDecryptedCredentialAny(db, clientId, portalUrl))
+      ?? undefined
+    : undefined;
+
+  // The adapter logs in via the recipe's portalUrl — hand it the resolved one. A portal
+  // with no recipe still reopens fine: the run replays no steps, so an empty recipe that
+  // names the track's authority is enough.
+  const recipeForRun: PortalRecipe = recipe
+    ? { ...recipe, portalUrl }
+    : {
+        id: `correction-reopen-${text(target.id)}`,
+        scopeType,
+        profileKey: "",
+        state: detail.project.state || "",
+        ahj: targetType === "nem" ? "" : (detail.project.ahj || text(target.jurisdiction)),
+        utility: targetType === "nem" ? (detail.project.utility || "") : "",
+        portalPlatform: text(target.portal_platform) || "portal",
+        portalUrl,
+        // "recording": an unpromoted shell — it exists only to carry the portal URL and
+        // authority name into the reopen run, and must never read as a replayable recipe.
+        status: "recording",
+        version: 1,
+        steps: [],
+        createdBy: "correction-reopen",
+        createdAt: ts,
+        updatedAt: ts,
+        notes: "",
+      } as PortalRecipe;
+
+  const result = await runner(recipeForRun, applicationNumber, docsByType, {
+    beforeUpload,
+    credential,
+    userDataDir,
+    headless: resolveHeadless(undefined),
+  });
+
+  const pauseReason = typeof result.pauseReason === "string" && result.pauseReason ? result.pauseReason : null;
+  const ok = result.ok === true;
+  const needsHuman = result.needsHuman === true;
+  const message = String(result.message ?? "");
+  const offeredForms = Array.isArray(result.offeredForms) ? (result.offeredForms as unknown[]).map((f) => String(f)) : [];
+  const runId = id();
+  // DELIBERATELY 'awaiting_human_resubmit', never 'awaiting_human_submit': the approve/
+  // auto-submit path selects runs by that other status, and a reopened correction must
+  // never become eligible for a delegated final submit (the resubmit click is human).
+  const runStatus = pauseReason ? "paused_for_human" : ok ? "awaiting_human_resubmit" : "failed";
+  db.run(
+    `INSERT INTO portal_runs
+      (id, project_id, portal_profile_id, run_type, status, started_at, finished_at, error_message,
+       human_action_required, screenshots_path, logs_path, result_json, pause_reason, permit_type)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [runId, projectId, null, "correction_reopen", runStatus, ts, nowIso(), ok ? "" : message.slice(0, 500), 1, "", "",
+      asJson({ ...result, correctionId, targetId: text(target.id), actor: "RecipeAdapter (correction reopen)" }),
+      pauseReason, text(target.permit_type) || (targetType === "nem" ? "nem" : "permit")],
+  );
+  addAuditLog(db, projectId, "portal_bot", "correction reopen", ok ? "correction.reopened_on_portal" : pauseReason ? "correction.reopen_paused" : "correction.reopen_stopped", {
+    correctionId,
+    targetId: text(target.id),
+    applicationNumber,
+    runId,
+    reopenedForm: String(result.reopenedForm ?? ""),
+    attachedDocs: Number(result.attachedDocs ?? 0),
+    finalSubmitClickedByAutomation: false,
+  });
+
+  if (!ok && needsHuman) {
+    return surfaceNeedsHuman(message || `Correction reopen for ${applicationNumber} needs a human.`, { offeredForms, runId });
+  }
+  return {
+    ok,
+    needsHuman: false,
+    message: message || (ok
+      ? `Reopened the correction form for ${applicationNumber}. Review the application in the portal and click its resubmit yourself.`
+      : `Correction reopen for ${applicationNumber} did not complete.`),
+    reopenedForm: String(result.reopenedForm ?? "") || undefined,
+    attachedDocs: Number(result.attachedDocs ?? 0),
+    browserLeftOpen: result.browserLeftOpen === true,
+    offeredForms,
+    runId,
+  };
 }
 
 // A review item that ADVISES rather than GATES. 'Background job failed' is an operator

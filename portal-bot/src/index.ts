@@ -480,6 +480,95 @@ export async function stageWithRecipe(
   return browserLimiter(() => runAdapter(new RecipeAdapter(recipe, fieldValues, docsByType, { autoSubmit: options.autoSubmit, beforeUpload: options.beforeUpload }), project, files, options));
 }
 
+// CORRECTION CONTINUATION: reopen a SUSPENDED filing's correction form on the live portal.
+//
+// Binds the ORIGINAL application number (from the project's tracking target) and drives
+// login → open THAT filing → choose the named correction form (correctionForm.ts — the
+// cancellation form beside it is refused by name, ambiguity is refused outright) → stage
+// revised documents through the attach-time gate → STOP for operator review. It never
+// creates a new application and never clicks any submit/withdraw/cancel control; the
+// resubmit confirmation is the human's click in the browser this run leaves open (headed).
+//
+// Returns the backend contract { ok, finalSubmitClicked:false, needsHuman?, offeredForms?,
+// reopenedForm?, ... } — a refusal or ambiguity comes back needsHuman with the candidate
+// forms listed, so the operator sees what was offered rather than a silent no-op.
+export async function runCorrectionReopen(
+  recipe: PortalRecipe,
+  applicationNumber: string,
+  docsByType: Record<string, string>,
+  options: StageOptions = {},
+): Promise<Record<string, unknown>> {
+  return browserLimiter(async () => {
+    const adapter = new RecipeAdapter(recipe, {}, docsByType, { beforeUpload: options.beforeUpload });
+    let tmpStatePath: string | undefined;
+    let leaveBrowserOpen = false;
+    // Release the profile lock a prior guided-manual review browser may still hold.
+    await closePriorStagingBrowser(options.userDataDir);
+    try {
+      tmpStatePath = resolveStorageStatePath(options.encryptedStorageStatePath);
+      const loginResult = await adapter.login({
+        storageStatePath: tmpStatePath,
+        headless: options.headless,
+        credential: options.credential,
+        userDataDir: options.userDataDir,
+      });
+      if (!loginResult.ok) {
+        return {
+          portalName: adapter.portalName,
+          ok: false,
+          finalSubmitClicked: false,
+          finalSubmitClickedByAutomation: false,
+          needsHuman: false,
+          pauseReason: loginResult.pauseReason ?? null,
+          message: `Login failed before the correction reopen ran: ${String(loginResult.message ?? loginResult.pauseReason ?? "no reason given")}`.slice(0, 300),
+          steps: [loginResult],
+        };
+      }
+
+      const reopenResult = await adapter.reopenSuspendedFiling(applicationNumber);
+      const data = (reopenResult.data ?? {}) as Record<string, unknown>;
+      // Leave the headed browser OPEN at the reopened form so the operator finishes and
+      // resubmits in it (same guided-manual contract as staging); headless/server closes.
+      leaveBrowserOpen = reopenResult.ok && options.headless === false && !!options.userDataDir;
+      return {
+        portalName: adapter.portalName,
+        ok: reopenResult.ok,
+        finalSubmitClicked: false,
+        finalSubmitClickedByAutomation: false,
+        needsHuman: data.needsHuman === true,
+        offeredForms: Array.isArray(data.offeredForms) ? data.offeredForms.map((f) => String(f)) : [],
+        reopenedForm: String(data.reopenedForm ?? ""),
+        reopenWhy: String(data.reopenWhy ?? ""),
+        attachedDocs: Number(data.attachedDocs ?? 0),
+        attachGateStopped: data.attachGateStopped === true,
+        applicationNumber: String(applicationNumber ?? ""),
+        browserLeftOpen: leaveBrowserOpen,
+        pauseReason: reopenResult.pauseReason ?? null,
+        message: reopenResult.message,
+        steps: [loginResult, reopenResult],
+      };
+    } catch (err) {
+      return {
+        portalName: adapter.portalName,
+        ok: false,
+        finalSubmitClicked: false,
+        finalSubmitClickedByAutomation: false,
+        needsHuman: true,
+        pauseReason: null,
+        message: `Correction reopen errored: ${err instanceof Error ? err.message : String(err)}`,
+        steps: [{ ok: false, message: `Correction reopen errored: ${err instanceof Error ? err.message : String(err)}` }],
+      };
+    } finally {
+      if (leaveBrowserOpen && options.userDataDir) {
+        trackOpenAdapter(options.userDataDir, adapter);
+      } else {
+        await adapter.close();
+      }
+      shredTmpStateFile(tmpStatePath);
+    }
+  });
+}
+
 // AUTONOMOUS LEARN: drive an unknown portal with an LLM planner, fill the form up to
 // the review screen, record a reusable recipe, and STOP. Never clicks final submit/pay.
 // Leaves a HEADED browser open at the review screen (tracked by userDataDir, released by the next

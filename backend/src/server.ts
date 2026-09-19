@@ -94,6 +94,7 @@ import {
   addManualCorrection,
   draftLatestCorrectionResponse,
   applyCorrectionProposals,
+  reopenCorrectionOnPortal,
   resolveCorrection,
   listOverdueCorrections,
   setCorrectionsSlaDays,
@@ -1362,6 +1363,20 @@ app.post("/api/corrections/:id/apply", (req, res) => {
   const fields = Array.isArray(req.body?.fields) ? (req.body.fields as unknown[]).map(String) : undefined;
   res.json(applyCorrectionProposals(db, String(req.params.id), fields));
 });
+
+// Reopen the SUSPENDED filing's correction form on the live portal (the portal half of
+// the correction flow). Binds the ORIGINAL application from the project's tracking
+// target; the chooser refuses cancellation/withdraw forms and ambiguity; revised docs
+// stage through the attach-time gate; automation STOPS for operator review — the
+// resubmit click stays human (recorded via /resolve with resubmitted:true). Optional
+// body.targetId picks the filing when more than one is tracked. Sits under the
+// /api/corrections/:id child scope guard + the autopilot entitlement (wildcard-only,
+// never API-key reachable) like its sibling actions.
+app.post("/api/corrections/:id/reopen-portal", asyncHandler(async (req, res) => {
+  res.json(await reopenCorrectionOnPortal(db, String(req.params.id), {
+    targetId: req.body?.targetId ? String(req.body.targetId) : undefined,
+  }));
+}));
 
 // Close a correction (first writer of closed_at/resubmitted). `resubmitted: true`
 // records that the corrected package was resubmitted, completing cycle-time KPIs.

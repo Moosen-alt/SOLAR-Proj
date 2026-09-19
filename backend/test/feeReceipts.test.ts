@@ -18,6 +18,13 @@ try {
  assert.ok(eperm);assert.equal(eperm.jurisdiction,"Example County");assert.equal(eperm.authorityAmountUsd,155.61);
  const elavon=parsePaidFeeReceipt("Your payment has been approved Total $17.93 USD Profile Name CITY OF BEAVERTON PERMITS Transaction Type SALE Transaction ID TEST-UUID Transaction Date/Time 05/05/2026 Amount $651.97 USD Service Fee $17.93 USD Total of all charges and fees $669.90 USD")!;
  assert.equal(elavon.authorityAmountUsd,651.97,"ignore earlier processor-only email");assert.equal(elavon.permitNumber,"","do not invent a permit ID");
+ // Real exports wrap the transaction ID across lines: "TEST1-AA11- BB22- C1D2E3" is ONE identity.
+ const wrapped=parsePaidFeeReceipt("Your payment has been approved Total $17.93 USD Profile Name CITY OF BEAVERTON PERMITS Transaction Type SALE Transaction ID TEST1-AA11- BB22- C1D2E3 Approval Code 111111 Transaction Date/Time 05/05/2026 Amount $651.97 USD Service Fee $17.93 USD Total of all charges and fees $669.90 USD")!;
+ assert.equal(wrapped.receiptNumber,"TEST1-AA11-BB22-C1D2E3","line-wrapped transaction ID heals into one dedupe identity");
+ const dangling=parsePaidFeeReceipt("Your payment has been approved Total $17.93 USD Profile Name CITY OF BEAVERTON PERMITS Transaction Type SALE Transaction ID XYZ1- Approval Code 111111 Transaction Date/Time 05/05/2026 Amount $651.97 USD Service Fee $17.93 USD Total of all charges and fees $669.90 USD")!;
+ assert.equal(dangling.receiptNumber,"XYZ1-","a heading after a dangling wrap is never swallowed into the ID");
+ const newberg=parsePaidFeeReceipt("City of Newberg, OR $126.62 Paid Via Credit Card J Doe June 8, 2026 Permit Fees $126.62 BLD-26-999 - *Building Permit BLDG- Solar Permit Fee $108.22 State Surcharge (12%-BLD Fee) $12.99 No processing fees Total paid $126.62 Powered by OpenGov Receipt number # 1234")!;
+ assert.ok(newberg,"a space after the receipt-number hash still parses");assert.equal(newberg.receiptNumber,"1234");assert.equal(newberg.authorityAmountUsd,126.62);assert.equal(newberg.discipline,"building");
  const salem=parsePaidFeeReceipt("Payment Receipt 12345678 April 27, 2026 Fee Description Structural Plans Review26-999999-00-DW $43.71 Total Paid : Please Note: $46.21 https://permits.cityofsalem.net")!;
  assert.equal(salem.authorityAmountUsd,46.21);assert.equal(salem.discipline,"building");
  const project=createProject(db,{owner:"Receipt Test",address:"1 Test Way",city:"Tigard",state:"OR",zip:"97223",ahj:"City of Tigard",utility:"PGE",dcKw:"8",valuation:"20000"}).project;
