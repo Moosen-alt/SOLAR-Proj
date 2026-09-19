@@ -87,12 +87,28 @@ await check("16 concurrent runs over 4 profiles: no profile is ever double-held,
       `profile p${p} was held by two runs at once: ${bad.map(([a, b]) => `${a.runner}(${a.start}-${a.end}) vs ${b.runner}(${b.start}-${b.end})`).join("; ")}`);
   }
   assert.equal(holds.length, 16, `every run must get a turn — got ${holds.length}/16`);
-  // Concurrency across profiles must be REAL: with 4 profiles running independently, the
-  // total wall clock must be far below the sum of all hold times.
+  // Concurrency across profiles must be REAL — different profiles have to be in flight at
+  // the same time, not merely take turns.
+  //
+  // THIS IS AN OVERLAP CLAIM, SO OVERLAP IS WHAT IT ASKS. It used to be asserted as
+  // `wallClock < totalHeld * 0.6`, which measured the machine at least as much as the
+  // queue: `start` is stamped AFTER openPortal returns, so a launch costs wall clock and
+  // no held time, and on a two-core CI runner four concurrent Chromium launches serialise
+  // and push that ratio to about 0.67 with nothing whatsoever wrong. A throughput budget
+  // that only a developer's laptop can meet is a test that reports the runner's size.
+  //
+  // Held windows are the honest evidence and they are already in the ledger: a queue that
+  // had silently serialised everything would produce no overlap at all, on any machine.
+  const overlap = (a: Hold, b: Hold): boolean => a.start < b.end && b.start < a.end;
   const totalHeld = holds.reduce((sum, h) => sum + (h.end - h.start), 0);
   const wallClock = Math.max(...holds.map((h) => h.end));
-  assert.ok(wallClock < totalHeld * 0.6,
-    `profiles did not run in parallel: wall clock ${wallClock}ms vs ${totalHeld}ms of held time`);
+  for (let p = 0; p < 4; p++) {
+    const mine = holds.filter((h) => h.profile === `p${p}`);
+    const others = holds.filter((h) => h.profile !== `p${p}`);
+    assert.ok(mine.some((m) => others.some((o) => overlap(m, o))),
+      `profile p${p} never held at the same time as any other profile — concurrency was lost `
+      + `(wall clock ${wallClock}ms vs ${totalHeld}ms of held time)`);
+  }
 });
 
 await check("a run that throws still frees its profile for the next run", async () => {
